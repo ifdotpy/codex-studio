@@ -133,7 +133,11 @@ async fn two_phase_open_gates_replay_until_worker_installs_mapping() {
         JournalPayload::Frame(Frame::Response { id, .. }) => {
             assert_eq!(id, RequestId::Number(42))
         }
-        _ => panic!("replayed response"),
+        JournalPayload::Frame(_)
+        | JournalPayload::RawStdout { .. }
+        | JournalPayload::Stderr(_)
+        | JournalPayload::Exit(_)
+        | JournalPayload::Other { .. } => panic!("replayed response"),
     }
     attachment.shutdown().await;
 }

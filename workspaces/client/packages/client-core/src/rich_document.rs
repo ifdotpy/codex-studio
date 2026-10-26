@@ -69,6 +69,8 @@ pub async fn dispatch(request: Request) -> Response {
 }
 
 #[cfg(target_os = "macos")]
+// SAFETY: WebKit delegates and native object lifetimes stay inside this adapter.
+#[allow(unsafe_code)]
 mod mac {
     use super::*;
     use base64::{Engine, engine::general_purpose::STANDARD};
@@ -281,11 +283,14 @@ mod mac {
         script: &str,
         callback: block2::RcBlock<dyn Fn(*mut AnyObject, *mut NSError)>,
     ) {
+        // WebKit invokes this renderer only on the main thread.
         unsafe {
             view.evaluateJavaScript_inFrame_inContentWorld_completionHandler(
                 &NSString::from_str(script),
                 None,
-                &WKContentWorld::defaultClientWorld(MainThreadMarker::new().unwrap()),
+                &WKContentWorld::defaultClientWorld(
+                    MainThreadMarker::new().expect("WebKit runs on the main thread"),
+                ),
                 Some(&callback),
             );
         }
@@ -349,12 +354,15 @@ mod mac {
                         })();
                         finish(id, result);
                     });
+                // This callback runs on the main thread owning the WebKit view.
                 unsafe {
                     web.callAsyncJavaScript_arguments_inFrame_inContentWorld_completionHandler(
                         &NSString::from_str(script),
                         Some(&arguments),
                         None,
-                        &WKContentWorld::defaultClientWorld(MainThreadMarker::new().unwrap()),
+                        &WKContentWorld::defaultClientWorld(
+                            MainThreadMarker::new().expect("WebKit runs on the main thread"),
+                        ),
                         Some(&callback),
                     );
                 }
@@ -436,7 +444,12 @@ mod mac {
         let Some(web) = view(id) else {
             return;
         };
-        let config = unsafe { WKSnapshotConfiguration::new(MainThreadMarker::new().unwrap()) };
+        // Snapshot callbacks execute on the main thread owning the view.
+        let config = unsafe {
+            WKSnapshotConfiguration::new(
+                MainThreadMarker::new().expect("WebKit runs on the main thread"),
+            )
+        };
         unsafe {
             config.setAfterScreenUpdates(true);
             config.setRect(NSRect::new(

@@ -442,7 +442,9 @@ pub(crate) fn merge_row(
                 let value = serde_json::from_slice(text).map_err(|_| invalid(id))?;
                 fields.insert((*field).to_owned(), value);
             }
-            _ => return Err(invalid(id)),
+            ValueRef::Integer(_) | ValueRef::Real(_) | ValueRef::Blob(_) => {
+                return Err(invalid(id));
+            }
         }
     }
     Ok(())
@@ -733,7 +735,11 @@ mod tests {
     fn stored_record_object(connection: &Connection, id: &str) -> Map<String, Value> {
         match stored(connection, id).0 {
             Value::Object(fields) => fields,
-            _ => panic!("record is an object"),
+            Value::Null
+            | Value::Bool(_)
+            | Value::Number(_)
+            | Value::String(_)
+            | Value::Array(_) => panic!("record is an object"),
         }
     }
 }

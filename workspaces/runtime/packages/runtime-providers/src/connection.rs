@@ -591,7 +591,9 @@ impl SessionState {
                 }
                 Ok(actions)
             }
-            other => Ok(vec![Action::Dispatch(other)]),
+            other @ Frame::Request(_)
+            | other @ Frame::Notification(_)
+            | other @ Frame::UnknownMethod(_) => Ok(vec![Action::Dispatch(other)]),
         }
     }
 
@@ -776,7 +778,11 @@ mod request_body_tests {
     fn written_request(actions: &[Action]) -> &RequestFrame {
         let mut requests = actions.iter().filter_map(|action| match action {
             Action::Write(Frame::Request(request)) => Some(request),
-            _ => None,
+            Action::Write(_)
+            | Action::Resolve { .. }
+            | Action::Dispatch(_)
+            | Action::GenerationClosed { .. }
+            | Action::ThreadReleased { .. } => None,
         });
         let request = requests.next().expect("one request write");
         assert!(requests.next().is_none(), "request is emitted only once");

@@ -710,7 +710,7 @@ mod tests {
                         normalize(value);
                     }
                 }
-                _ => {}
+                Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) => {}
             }
         }
         let mut generated = schemars::generate::SchemaSettings::draft07()

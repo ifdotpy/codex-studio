@@ -29,6 +29,8 @@ pub struct ConnectionConfig {
     pub backend_origin: String,
 }
 
+// SAFETY: flock uses the descriptor of the live lock file retained by this owner.
+#[allow(unsafe_code)]
 fn open_store(state: &std::path::Path) -> Result<(Store, File), String> {
     if !state.is_absolute() {
         return Err("The client state directory must be absolute.".into());
@@ -94,7 +96,7 @@ fn serve(channel: UnixStream, config: ConnectionConfig) -> Result<(), String> {
                 if mutation && response.error.is_none() {
                     changes.send_modify(|version| *version = version.wrapping_add(1));
                 }
-                let _ = reply.send(response);
+                drop(reply.send(response));
             }
         })
         .map_err(|error| error.to_string())?;
@@ -488,7 +490,11 @@ async fn write_packet(
             .as_object_mut()
             .expect("response object")
             .remove("value");
-        packet.as_object_mut().unwrap().remove("result");
+        // The object check above succeeded and only removed an object member.
+        packet
+            .as_object_mut()
+            .expect("response object")
+            .remove("result");
         packet["error"] = serde_json::to_value(crate::sync::error(
             "response_size",
             "The response exceeds the UI transport limit.",
@@ -506,6 +512,8 @@ async fn write_packet(
     Ok(())
 }
 
+// SAFETY: setsockopt borrows a live socket and an initialized scalar for this call.
+#[allow(unsafe_code)]
 pub fn connect(config: ConnectionConfig) -> io::Result<UnixStream> {
     let (ui, core) = UnixStream::pair()?;
     ui.set_nonblocking(true)?;

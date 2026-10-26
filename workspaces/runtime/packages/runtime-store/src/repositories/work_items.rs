@@ -489,7 +489,9 @@ fn optional_text(value: rusqlite::types::ValueRef<'_>) -> (Option<String>, bool)
             Ok(text) => (Some(text.to_owned()), true),
             Err(_) => (None, false),
         },
-        _ => (None, false),
+        rusqlite::types::ValueRef::Integer(_)
+        | rusqlite::types::ValueRef::Real(_)
+        | rusqlite::types::ValueRef::Blob(_) => (None, false),
     }
 }
 

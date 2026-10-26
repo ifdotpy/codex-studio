@@ -487,18 +487,26 @@ impl RemoteClient {
         let server = field(&receipt, "serverId")?;
         let result = json!({"id":server,"origin":origin,"label":receipt["label"].as_str().unwrap_or(server),"credentialId":draft["clientId"]});
         let mut credential = draft.clone();
-        credential.as_object_mut().unwrap().remove("body");
+        // field(&draft, "body") above proved this cloned draft is an object.
+        credential
+            .as_object_mut()
+            .expect("pairing draft is an object")
+            .remove("body");
         credential["targetPublicKey"] = receipt["publicKey"].clone();
         credential["tailscaleUser"] = receipt["tailscaleUser"].clone();
         state["servers"]
             .as_object_mut()
             .ok_or("Invalid server key store.")?
             .insert(server.to_owned(), credential);
+        // state still contains the draft validated above; its shape was not replaced.
         state["drafts"][id]
             .as_object_mut()
-            .unwrap()
+            .expect("pairing draft is an object")
             .remove("privateKey");
-        state["drafts"][id].as_object_mut().unwrap().remove("body");
+        state["drafts"][id]
+            .as_object_mut()
+            .expect("pairing draft is an object")
+            .remove("body");
         state["drafts"][id]["receipt"] = result.clone();
         self.vault.write(&state)?;
         Ok(result)

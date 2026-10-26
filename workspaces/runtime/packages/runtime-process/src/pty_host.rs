@@ -869,7 +869,13 @@ fn supervisor_io_error(error: &crate::supervisor_daemon::Error) -> std::io::Erro
         crate::supervisor_daemon::Error::Io(error) => {
             std::io::Error::new(error.kind(), "identity check failed")
         }
-        _ => std::io::Error::other("identity check failed"),
+        crate::supervisor_daemon::Error::Journal(_)
+        | crate::supervisor_daemon::Error::Json(_)
+        | crate::supervisor_daemon::Error::Protocol(_)
+        | crate::supervisor_daemon::Error::ActiveChild { .. }
+        | crate::supervisor_daemon::Error::Refused(_) => {
+            std::io::Error::other("identity check failed")
+        }
     }
 }
 

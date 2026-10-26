@@ -430,7 +430,7 @@ mod tests {
             let thread = std::thread::spawn(move || {
                 let mut store = Store::open(&path).unwrap();
                 while let Some((request, reply)) = receive.blocking_recv() {
-                    let _ = reply.send(store.dispatch(request));
+                    drop(reply.send(store.dispatch(request)));
                 }
             });
             (sender, thread)

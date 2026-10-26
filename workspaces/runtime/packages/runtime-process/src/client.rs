@@ -131,7 +131,13 @@ impl<T: SupervisorTransport> SupervisorClient<T> {
                 SupervisorError::Io(_) => {
                     Err(SupervisorError::UnknownOutcome { action, request_id })
                 }
-                other => Err(other),
+                other @ SupervisorError::Json(_)
+                | other @ SupervisorError::ProtocolMismatch { .. }
+                | other @ SupervisorError::InvalidFrame(_)
+                | other @ SupervisorError::ConnectionLost
+                | other @ SupervisorError::UnknownOutcome { .. }
+                | other @ SupervisorError::Remote { .. }
+                | other @ SupervisorError::UnsupportedTransport(_) => Err(other),
             };
         }
         let response = match read_frame(&mut self.stream) {

@@ -411,7 +411,14 @@ impl Supervisor {
                 }
                 Ok(json!({"closed":true,"handle":handle,"pid":expected_pid}))
             }
-            other => self.child_action(other),
+            other @ Command::Write { .. }
+            | other @ Command::Next { .. }
+            | other @ Command::Replay { .. }
+            | other @ Command::Ack { .. }
+            | other @ Command::OperationStatus { .. }
+            | other @ Command::Status { .. }
+            | other @ Command::Detach { .. }
+            | other @ Command::RetireCommand { .. } => self.child_action(other),
         }
     }
     fn next_batch_ready(
@@ -573,7 +580,10 @@ impl Supervisor {
                 self.active_children.fetch_sub(1, Ordering::AcqRel);
                 Ok(json!({"retired":true}))
             }
-            _ => Err(Error::Refused("Unknown supervisor action")),
+            Command::Health
+            | Command::FinishFallback
+            | Command::Open { .. }
+            | Command::AdminCloseHandle { .. } => Err(Error::Refused("Unknown supervisor action")),
         }
     }
     fn verified_start(&self, row: &StoredHandle) -> Result<Option<String>> {
@@ -591,7 +601,9 @@ impl Supervisor {
         match kind {
             StartMatch::Exact => {}
             StartMatch::Gone => return Ok(None),
-            _ => return Err(Error::Refused("Child identity changed before signal")),
+            StartMatch::Different => {
+                return Err(Error::Refused("Child identity changed before signal"));
+            }
         }
         match verify_group(row.pid, pgid) {
             Ok(_) => {}

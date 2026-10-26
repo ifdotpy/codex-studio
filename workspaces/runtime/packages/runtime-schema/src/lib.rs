@@ -637,7 +637,38 @@ fn extra_field_errors(error: &ValidationError<'_>) -> Vec<(String, Vec<String>)>
             }
         }
         ValidationErrorKind::OneOfMultipleValid { .. } => Vec::new(),
-        _ => Vec::new(),
+        ValidationErrorKind::AdditionalItems { .. }
+        | ValidationErrorKind::BacktrackLimitExceeded { .. }
+        | ValidationErrorKind::RegexEngineFailure { .. }
+        | ValidationErrorKind::Constant { .. }
+        | ValidationErrorKind::Contains
+        | ValidationErrorKind::ContentEncoding { .. }
+        | ValidationErrorKind::ContentMediaType { .. }
+        | ValidationErrorKind::Custom { .. }
+        | ValidationErrorKind::Enum { .. }
+        | ValidationErrorKind::ExclusiveMaximum { .. }
+        | ValidationErrorKind::ExclusiveMinimum { .. }
+        | ValidationErrorKind::FalseSchema
+        | ValidationErrorKind::Format { .. }
+        | ValidationErrorKind::FromUtf8 { .. }
+        | ValidationErrorKind::MaxItems { .. }
+        | ValidationErrorKind::Maximum { .. }
+        | ValidationErrorKind::MaxLength { .. }
+        | ValidationErrorKind::MaxProperties { .. }
+        | ValidationErrorKind::MinItems { .. }
+        | ValidationErrorKind::Minimum { .. }
+        | ValidationErrorKind::MinLength { .. }
+        | ValidationErrorKind::MinProperties { .. }
+        | ValidationErrorKind::MultipleOf { .. }
+        | ValidationErrorKind::Not { .. }
+        | ValidationErrorKind::Pattern { .. }
+        | ValidationErrorKind::PropertyNames { .. }
+        | ValidationErrorKind::Required { .. }
+        | ValidationErrorKind::Type { .. }
+        | ValidationErrorKind::UnevaluatedItems { .. }
+        | ValidationErrorKind::UnevaluatedProperties { .. }
+        | ValidationErrorKind::UniqueItems
+        | ValidationErrorKind::Referencing(_) => Vec::new(),
     }
 }
 
@@ -658,7 +689,38 @@ fn non_extra_error_count(error: &ValidationError<'_>) -> usize {
             .map(|branch| branch.iter().map(non_extra_error_count).sum::<usize>())
             .min()
             .unwrap_or(1),
-        _ => 1,
+        ValidationErrorKind::AdditionalItems { .. }
+        | ValidationErrorKind::BacktrackLimitExceeded { .. }
+        | ValidationErrorKind::RegexEngineFailure { .. }
+        | ValidationErrorKind::Constant { .. }
+        | ValidationErrorKind::Contains
+        | ValidationErrorKind::ContentEncoding { .. }
+        | ValidationErrorKind::ContentMediaType { .. }
+        | ValidationErrorKind::Custom { .. }
+        | ValidationErrorKind::Enum { .. }
+        | ValidationErrorKind::ExclusiveMaximum { .. }
+        | ValidationErrorKind::ExclusiveMinimum { .. }
+        | ValidationErrorKind::FalseSchema
+        | ValidationErrorKind::Format { .. }
+        | ValidationErrorKind::FromUtf8 { .. }
+        | ValidationErrorKind::MaxItems { .. }
+        | ValidationErrorKind::Maximum { .. }
+        | ValidationErrorKind::MaxLength { .. }
+        | ValidationErrorKind::MaxProperties { .. }
+        | ValidationErrorKind::MinItems { .. }
+        | ValidationErrorKind::Minimum { .. }
+        | ValidationErrorKind::MinLength { .. }
+        | ValidationErrorKind::MinProperties { .. }
+        | ValidationErrorKind::MultipleOf { .. }
+        | ValidationErrorKind::Not { .. }
+        | ValidationErrorKind::Pattern { .. }
+        | ValidationErrorKind::PropertyNames { .. }
+        | ValidationErrorKind::Required { .. }
+        | ValidationErrorKind::Type { .. }
+        | ValidationErrorKind::UnevaluatedItems { .. }
+        | ValidationErrorKind::UnevaluatedProperties { .. }
+        | ValidationErrorKind::UniqueItems
+        | ValidationErrorKind::Referencing(_) => 1,
     }
 }
 

@@ -60,6 +60,8 @@ impl Playback {
 }
 
 #[cfg(target_os = "macos")]
+// SAFETY: AVAudioEngine callbacks and native audio buffers stay inside this adapter.
+#[allow(unsafe_code)]
 pub mod mac {
     use super::*;
     use block2::RcBlock;

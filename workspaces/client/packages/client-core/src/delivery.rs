@@ -136,7 +136,12 @@ pub async fn dispatch(backend: &Backend, sender: &StoreSender, request: Request)
                     "message_failed",
                     value["error"].as_str().unwrap_or("Message failed."),
                 );
-                response.error.as_mut().unwrap().status = Some(400);
+                // Response::failure always initializes its error member.
+                response
+                    .error
+                    .as_mut()
+                    .expect("failure has an error")
+                    .status = Some(400);
                 response
             } else {
                 let result = value.get("receipt").cloned().unwrap_or_else(|| {
@@ -191,7 +196,7 @@ pub async fn drain(backend: &Backend, sender: &StoreSender) {
             id.to_owned(),
         );
         pending.spawn(async move {
-            let _ = deliver(&backend, &sender, &workspace, &id).await;
+            drop(deliver(&backend, &sender, &workspace, &id).await);
         });
         if pending.len() >= 4 {
             let _ = pending.join_next().await;
@@ -214,7 +219,7 @@ mod tests {
         let worker = std::thread::spawn(move || {
             let mut store = Store::open(&path).unwrap();
             while let Some((request, reply)) = receiver.blocking_recv() {
-                let _ = reply.send(store.dispatch(request));
+                drop(reply.send(store.dispatch(request)));
             }
         });
         (sender, worker)

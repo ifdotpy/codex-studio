@@ -1411,6 +1411,8 @@ mod tests {
     }
 
     #[test]
+    // AuthAction is non-exhaustive; only reads of the guarded table are denied.
+    #[allow(clippy::wildcard_enum_match_arm)]
     fn typed_usage_legacy_migration_keeps_totals_without_reading_usage_rows() {
         use rusqlite::hooks::{AuthAction, AuthContext, Authorization};
         let db = Connection::open_in_memory().expect("database");

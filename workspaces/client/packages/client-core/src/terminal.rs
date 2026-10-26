@@ -19,8 +19,8 @@ use tokio::{
 
 type Command = (Request, oneshot::Sender<Response>);
 // Initial terminal grid dimensions in rows and columns; both are nonzero.
-const INITIAL_ROWS: NonZeroU16 = NonZeroU16::new(24).unwrap();
-const INITIAL_COLS: NonZeroU16 = NonZeroU16::new(100).unwrap();
+const INITIAL_ROWS: NonZeroU16 = NonZeroU16::new(24).expect("initial row count is nonzero");
+const INITIAL_COLS: NonZeroU16 = NonZeroU16::new(100).expect("initial column count is nonzero");
 struct Entry {
     input: mpsc::Sender<Command>,
     value: watch::Receiver<Value>,
@@ -46,7 +46,8 @@ impl Terminals {
             Ok(v) => Response::success(id.clone(), v),
             Err(e) => Response::failure(id.clone(), "terminal", e),
         };
-        let mut entries = self.0.lock().unwrap();
+        // A poisoned owner means another operation panicked; preserve fail-closed behavior.
+        let mut entries = self.0.lock().expect("terminal owner mutex poisoned");
         if request.method == "terminal.open" {
             let result = (|| {
                 if entries.len() >= 4 {
@@ -61,30 +62,33 @@ impl Terminals {
                 entries.insert(handle.clone(), Entry { input, value, task });
                 Ok(json!({"handle":handle}))
             })();
-            let _ = reply.send(immediate(result));
+            drop(reply.send(immediate(result)));
         } else {
             let handle = request.params["handle"].as_str().unwrap_or("");
             if request.method == "terminal.release" {
                 entries.remove(handle);
-                let _ = reply.send(immediate(Ok(json!({"closed":true}))));
+                drop(reply.send(immediate(Ok(json!({"closed":true})))));
             } else if let Some(entry) = entries.get(handle) {
                 if let Err(e) = entry.input.try_send((request, reply)) {
                     let (_, reply) = e.into_inner();
-                    let _ = reply.send(immediate(Err(
-                        "The terminal command queue is unavailable. This input was not sent."
-                            .into(),
-                    )));
+                    drop(
+                        reply.send(immediate(Err(
+                            "The terminal command queue is unavailable. This input was not sent."
+                                .into(),
+                        ))),
+                    );
                 }
             } else {
-                let _ = reply.send(immediate(Err("This terminal view is closed.".into())));
+                drop(reply.send(immediate(Err("This terminal view is closed.".into()))));
             }
         }
         receive
     }
     pub fn watch(&self, handle: &str) -> Result<watch::Receiver<Value>, String> {
+        // A poisoned owner means another operation panicked; preserve fail-closed behavior.
         self.0
             .lock()
-            .unwrap()
+            .expect("terminal owner mutex poisoned")
             .get(handle)
             .map(|e| e.value.clone())
             .ok_or("This terminal view is closed.".into())
@@ -231,7 +235,8 @@ impl Screen {
         let lines:Vec<Value>=(0..rows).map(|r| {
             let mut runs:Vec<Value>=Vec::new();
             for c in 0..cols {
-                let cell=screen.cell(r,c).unwrap(); if cell.is_wide_continuation(){continue;}
+                // Both coordinates are inside the size reported by this screen.
+                let cell=screen.cell(r,c).expect("cell is inside screen dimensions"); if cell.is_wide_continuation(){continue;}
                 let mut fg=color(cell.fgcolor(),"#dadde5"); let mut bg=color(cell.bgcolor(),"#141519");
                 if cell.inverse(){std::mem::swap(&mut fg,&mut bg);}
                 let caret=screen.scrollback()==0 && !screen.hide_cursor() && cursor==(r,c);
@@ -240,8 +245,9 @@ impl Screen {
                     "opacity":if cell.dim(){0.65}else{1.0}});
                 let text=if cell.contents().is_empty(){" "}else{cell.contents()}; let width=if cell.is_wide(){2}else{1};
                 if let Some(last)=runs.last_mut().filter(|last|last["style"]==style && last["cursor"]==caret) {
-                    last["text"]=json!(format!("{}{}",last["text"].as_str().unwrap(),text));
-                    last["columns"]=json!(last["columns"].as_u64().unwrap()+width);
+                    // Every run is created below with string text and an integer width.
+                    last["text"]=json!(format!("{}{}",last["text"].as_str().expect("run text is a string"),text));
+                    last["columns"]=json!(last["columns"].as_u64().expect("run columns is an integer")+width);
                 } else {runs.push(json!({"text":text,"columns":width,"style":style,"cursor":caret}));}
             }
             json!(runs)
@@ -450,7 +456,7 @@ fn mouse(screen: &vt100::Screen, params: &Value) -> Result<String, String> {
             "\x1b[<{code};{col};{row}{}",
             if action == "release" { 'm' } else { 'M' }
         )),
-        encoding => {
+        encoding @ Encoding::Default | encoding @ Encoding::Utf8 => {
             if action == "release" {
                 code = 3;
             }
@@ -459,11 +465,13 @@ fn mouse(screen: &vt100::Screen, params: &Value) -> Result<String, String> {
             if encoding == Encoding::Default && (row > 95 || col > 95) {
                 return Err("This application uses legacy mouse coordinates outside the text input range. Use its keyboard controls.".into());
             }
+            // Grid dimensions are capped at 240; mouse codes and shifted coordinates
+            // remain below the Unicode surrogate range.
             Ok(format!(
                 "\x1b[M{}{}{}",
-                char::from_u32((code + 32) as u32).unwrap(),
-                char::from_u32((col + 32) as u32).unwrap(),
-                char::from_u32((row + 32) as u32).unwrap()
+                char::from_u32((code + 32) as u32).expect("bounded mouse code"),
+                char::from_u32((col + 32) as u32).expect("bounded mouse column"),
+                char::from_u32((row + 32) as u32).expect("bounded mouse row")
             ))
         }
     }
@@ -510,7 +518,7 @@ async fn run(
                     }
                 }.await;
                 let response=match result {Ok(v)=>Response::success(request.id,v),Err(e)=>Response::failure(request.id,"terminal",e)};
-                let _=reply.send(response);
+                drop(reply.send(response));
             },
             _=interval.tick()=>{
                 let result=async {

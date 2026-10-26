@@ -1589,7 +1589,20 @@ impl SchedulerRepository {
             AgentStatus::Completed => "completed",
             AgentStatus::Failed => "failed",
             AgentStatus::Interrupted => "interrupted",
-            _ => {
+            AgentStatus::Unknown
+            | AgentStatus::Idle
+            | AgentStatus::Queued
+            | AgentStatus::Starting
+            | AgentStatus::Running
+            | AgentStatus::Waiting
+            | AgentStatus::WaitingOnMonitor
+            | AgentStatus::Approval
+            | AgentStatus::Blocked
+            | AgentStatus::Paused
+            | AgentStatus::Parked
+            | AgentStatus::Abandoned
+            | AgentStatus::CapacityRetry
+            | AgentStatus::Other(_) => {
                 return Err(StoreError::SchemaMismatch(
                     "invalid terminal scheduler outcome".to_owned(),
                 ));

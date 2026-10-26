@@ -37,7 +37,9 @@ pub fn validate(value: &Value) -> Result<(String, String, Value, bool), String> 
     let sound = match &value["sound"] {
         Value::Null => false,
         Value::Bool(sound) => *sound,
-        _ => return Err("Invalid notification.".into()),
+        Value::Number(_) | Value::String(_) | Value::Array(_) | Value::Object(_) => {
+            return Err("Invalid notification.".into());
+        }
     };
     let target = &value["target"];
     let mut clean = json!({"agentId": text(&target["agentId"], 128)?, "section": "messages"});
@@ -72,7 +74,7 @@ fn clicked(id: &str) {
         targets.remove(index).map(|(_, target)| target)
     });
     if let Some(target) = target {
-        let _ = navigation().send(target);
+        drop(navigation().send(target));
     }
 }
 
@@ -93,6 +95,8 @@ pub async fn notify(value: &Value) -> Result<Value, String> {
 }
 
 #[cfg(target_os = "macos")]
+// SAFETY: Objective-C delegates and notification bindings stay inside this adapter.
+#[allow(unsafe_code)]
 pub mod mac {
     use super::*;
     use block2::RcBlock;

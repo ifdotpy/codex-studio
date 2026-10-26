@@ -406,7 +406,11 @@ mod patch_tests {
             for key in &path[..path.len() - 1] {
                 target = match key {
                     Value::String(k) => &mut target[k.as_str()],
-                    other => &mut target[other.as_u64().unwrap() as usize],
+                    other @ Value::Null
+                    | other @ Value::Bool(_)
+                    | other @ Value::Number(_)
+                    | other @ Value::Array(_)
+                    | other @ Value::Object(_) => &mut target[other.as_u64().unwrap() as usize],
                 };
             }
             match (&path[path.len() - 1], op.get("v")) {

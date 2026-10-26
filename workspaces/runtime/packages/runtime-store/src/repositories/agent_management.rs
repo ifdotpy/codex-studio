@@ -3,7 +3,7 @@ use crate::schema::{SchemaRequirements, TableRequirement};
 use crate::{
     AgentRecord, AgentRepository, RequestRecord, StoreError, StoreResult, Table, WorkItemRecord,
 };
-use rusqlite::{Connection, Transaction};
+use rusqlite::{Connection, OptionalExtension, Transaction};
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -51,11 +51,7 @@ pub fn read_agents(connection: &Connection, ids: &BTreeSet<String>) -> StoreResu
             .query_row([id], |row| {
                 Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
             })
-            .map(Some)
-            .or_else(|error| match error {
-                rusqlite::Error::QueryReturnedNoRows => Ok(None),
-                error => Err(error),
-            })?;
+            .optional()?;
         if let Some((rowid, raw)) = found {
             rows.push((
                 rowid,
@@ -323,11 +319,7 @@ pub fn read_reserved_operations(
     for id in ids {
         let raw = statement
             .query_row([id], |row| row.get::<_, String>(0))
-            .map(Some)
-            .or_else(|error| match error {
-                rusqlite::Error::QueryReturnedNoRows => Ok(None),
-                error => Err(error),
-            })?;
+            .optional()?;
         if let Some(raw) = raw {
             rows.push(parse_record(
                 connection,

@@ -683,15 +683,15 @@ fn check_history_rows(
 
         let id = match id {
             ValueRef::Text(bytes) => std::str::from_utf8(bytes).ok(),
-            _ => None,
+            ValueRef::Null | ValueRef::Integer(_) | ValueRef::Real(_) | ValueRef::Blob(_) => None,
         };
         let agent = match row.get_ref(1)? {
             ValueRef::Text(bytes) => std::str::from_utf8(bytes).ok(),
-            _ => None,
+            ValueRef::Null | ValueRef::Integer(_) | ValueRef::Real(_) | ValueRef::Blob(_) => None,
         };
         let raw = match row.get_ref(2)? {
             ValueRef::Text(bytes) => std::str::from_utf8(bytes).ok(),
-            _ => None,
+            ValueRef::Null | ValueRef::Integer(_) | ValueRef::Real(_) | ValueRef::Blob(_) => None,
         };
         let (Some(id), Some(agent), Some(raw)) = (id, agent, raw) else {
             record_analytics_failure(report, failures, (String::new(), "storageType".into()));

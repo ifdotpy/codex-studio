@@ -604,6 +604,8 @@ mod resource_change_classifier_tests {
     }
 }
 
+// AuthAction is non-exhaustive; only observed-table deletes disable truncation.
+#[allow(clippy::wildcard_enum_match_arm)]
 fn install_table_change_hooks(
     connection: &Connection,
     table_change_flags: Arc<AtomicU32>,
@@ -3114,7 +3116,14 @@ mod diagnostics_hook_tests {
                 .iter()
                 .filter_map(|event| match event {
                     StoreDiagnosticsEvent::SqliteLockError { total } => Some(*total),
-                    _ => None,
+                    StoreDiagnosticsEvent::WriterAdmission { .. }
+                    | StoreDiagnosticsEvent::WriterWaiters { .. }
+                    | StoreDiagnosticsEvent::ReadAdmission { .. }
+                    | StoreDiagnosticsEvent::ReadWaiters { .. }
+                    | StoreDiagnosticsEvent::WriterTransaction { .. }
+                    | StoreDiagnosticsEvent::SqlProfile { .. }
+                    | StoreDiagnosticsEvent::CommitDuration { .. }
+                    | StoreDiagnosticsEvent::WalCheckpoint { .. } => None,
                 })
                 .collect()
         };

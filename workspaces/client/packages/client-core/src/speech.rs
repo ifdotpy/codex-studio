@@ -66,7 +66,8 @@ pub fn cancel(id: &Value) -> Result<Value, String> {
         .insert(id.to_owned(), now + PERMIT_LIFETIME);
     Ok(Value::Bool(match &service.running {
         Some((running, stop)) if running == id => {
-            let _ = stop.send(true);
+            // A closed receiver already ended this capture.
+            let _stop_result = stop.send(true);
             true
         }
         _ => false,
@@ -120,7 +121,8 @@ fn valid_locale(value: &str) -> bool {
 /// Same WAV contract as the Electron helper: mono 16-bit PCM, at most 30 minutes.
 pub fn validate_wav(data: &[u8]) -> Result<(), String> {
     let u16_at = |at: usize| u16::from_le_bytes([data[at], data[at + 1]]);
-    let u32_at = |at: usize| u32::from_le_bytes(data[at..at + 4].try_into().unwrap());
+    let u32_at =
+        |at: usize| u32::from_le_bytes([data[at], data[at + 1], data[at + 2], data[at + 3]]);
     if data.len() < 46 || data.len() > 64 * 1024 * 1024 {
         return Err("Expected a WAV recording of at most 64 MB.".into());
     }
@@ -214,7 +216,7 @@ async fn run(
         let mut previous = -1;
         while let Ok(Some(line)) = lines.next_line().await {
             if let Some((completed, total)) = progress_line(&line, &mut previous) {
-                let _ = progress().send(json!({"id":id,"completed":completed,"total":total}));
+                drop(progress().send(json!({"id":id,"completed":completed,"total":total})));
             }
         }
     });
@@ -237,7 +239,7 @@ async fn run(
     let (status, bytes) = match result {
         Ok(value) => {
             // Deliver the final progress lines written just before exit.
-            let _ = tokio::time::timeout(Duration::from_secs(1), lines).await;
+            drop(tokio::time::timeout(Duration::from_secs(1), lines).await);
             value
         }
         Err(error) => {

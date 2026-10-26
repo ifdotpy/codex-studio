@@ -297,6 +297,8 @@ pub fn close_all() {
 }
 
 #[cfg(target_os = "macos")]
+// SAFETY: AVFoundation bindings and their audio buffers stay inside this adapter.
+#[allow(unsafe_code)]
 pub(crate) mod mac {
     use super::*;
     use block2::RcBlock;

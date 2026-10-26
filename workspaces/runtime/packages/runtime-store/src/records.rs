@@ -1102,10 +1102,12 @@ fn stored_text(value: ValueRef<'_>, table: &'static str, id: &str) -> StoreResul
                 id: id.to_owned(),
             })
         }
-        _ => Err(crate::StoreError::InvalidStoredObject {
-            table,
-            id: id.to_owned(),
-        }),
+        ValueRef::Null | ValueRef::Integer(_) | ValueRef::Real(_) | ValueRef::Blob(_) => {
+            Err(crate::StoreError::InvalidStoredObject {
+                table,
+                id: id.to_owned(),
+            })
+        }
     }
 }
 
@@ -1121,10 +1123,12 @@ fn stored_text_ref<'row>(
                 id: id.to_owned(),
             })
         }
-        _ => Err(crate::StoreError::InvalidStoredObject {
-            table,
-            id: id.to_owned(),
-        }),
+        ValueRef::Null | ValueRef::Integer(_) | ValueRef::Real(_) | ValueRef::Blob(_) => {
+            Err(crate::StoreError::InvalidStoredObject {
+                table,
+                id: id.to_owned(),
+            })
+        }
     }
 }
 
