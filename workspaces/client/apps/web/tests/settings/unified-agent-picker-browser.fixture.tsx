@@ -1,4 +1,4 @@
-import type { Agent } from "../../src/types.ts";
+import type { Snapshot, Agent } from "../../src/types.ts";
 import type { Account, AccountsState } from "../../src/components/Accounts.tsx";
 import type { WorkerModelInfo } from "../../src/components/agents/WorkerModelPicker.tsx";
 import type { PostBody } from "../../src/apiTypes.ts";
@@ -275,7 +275,7 @@ function Fixture() {
       setScene("picker");
       window.unifiedPickerFixture.calls = [];
     });
-  const data = fixtureSnapshot([]);
+  const data: Snapshot = fixtureSnapshot([]);
   data.stateDir = "fixture";
   data.runtime.projects = [
     { id: "project", path: "/fixture/project", name: "Project", created: 1 },
