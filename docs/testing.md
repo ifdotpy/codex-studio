@@ -112,8 +112,7 @@ the generated API and persisted-state checks in read-only mode; `just boundaries
 checks manifest-declared imports and workspace direction. Type-only imports may cross
 workspace boundaries for generated contracts and the shared type owners listed with
 their purposes in the [facade](../workspaces/tooling/apps/repository-checks/facade.ts);
-runtime imports retain the declared-dependency and documented-exception rules. The
-command
+runtime imports retain the declared-dependency and documented-exception rules.
 
 `just check-affected <base>` checks changed packages and reverse dependents
 discovered from workspace manifests. It widens to all packages for root policy

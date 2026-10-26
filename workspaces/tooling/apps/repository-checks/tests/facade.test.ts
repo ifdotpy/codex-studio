@@ -61,7 +61,7 @@ test("short and comprehensive recipes preserve their owned test boundaries", () 
   }
   assert.match(fast.command, /'--profile' 'fast'/);
   assert.match(fast.command, /test:unit:fast/);
-  assert.match(fast.command, /native\/check-native\.test\.mjs/);
+  assert.match(fast.command, /native\/check-native\.test\.ts/);
   assert.doesNotMatch(fast.command, /test:browser/);
   assert.match(comprehensive.command, /'--profile' 'ci'/);
   assert.match(comprehensive.command, /'clippy' '--workspace'/);
@@ -87,7 +87,7 @@ test("real IndexedDB staging belongs to provisioned browser smoke, not Node unit
   const grep = smoke.match(/--grep "([^"]+)"/)?.[1];
   assert.ok(grep, "package.json owns the smoke selector");
   assert.match(title, new RegExp(grep));
-  assert.match(spec, /from "\.\.\/playwright\.mjs"/);
+  assert.match(spec, /from "\.\.\/playwright\.ts"/);
   assert.equal(
     existsSync(`${web}/src/sync/entityTransfer.storage.test.ts`),
     false,
