@@ -30,25 +30,9 @@ type Harness = {
   stopHints: () => void;
 };
 declare global {
-  interface Window {
-    prefetchBrowser: Harness;
-  }
+  interface Window extends Harness {}
 }
-window.prefetchBrowser = {
-  client,
-  cache,
-  stops: [],
-  values: [],
-  activeValues: [],
-  coldReads: [],
-  jobs: [],
-  filterRead: false,
-  releaseFilter: () => {},
-  filteredWrites: [],
-  absentRead: false,
-  releaseAbsent: () => {},
-  stopActive: () => {},
-  stop: () => {},
-  revisionHints: [],
-  stopHints: () => {},
-};
+window.client = client;
+window.cache = cache;
+window.stops = [];
+window.values = [];

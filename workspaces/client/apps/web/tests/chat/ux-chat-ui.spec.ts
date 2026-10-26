@@ -1,3 +1,4 @@
+import type { AddressInfo } from "node:net";
 import type { Server, ServerResponse } from "node:http";
 import type { ViteDevServer } from "vite";
 import type { Route } from "@playwright/test";
@@ -93,8 +94,8 @@ test("Ux Chat Ui", async ({
     });
     server = createServer(async (request, response) => {
       try {
-        const path = new URL(request.url ?? "/", "http://fixture").pathname;
-        const requestUrl = new URL(request.url ?? "/", "http://fixture");
+        const path = new URL(request.url!, "http://fixture").pathname;
+        const requestUrl = new URL(request.url!, "http://fixture");
         if (path === "/api/sync/stream") {
           const resources = fixtureResourceRefs(
             requestUrl.searchParams.get("resources") || "[]",
@@ -188,7 +189,7 @@ test("Ux Chat Ui", async ({
           );
           return;
         }
-        vite?.middlewares(request, response, () => {
+        vite!.middlewares(request, response, () => {
           response.statusCode = 404;
           response.end("Not found");
         });
@@ -197,12 +198,9 @@ test("Ux Chat Ui", async ({
         response.end();
       }
     });
-    const runningServer = server;
     await new Promise<void>((resolve) =>
-      runningServer.listen(0, "127.0.0.1", resolve),
+      server!.listen(0, "127.0.0.1", resolve),
     );
-    const address = runningServer.address();
-    assert.ok(address && typeof address !== "string");
     const page = testPage;
     const errors: string[] = [];
     page.on("pageerror", (error) => errors.push(error.message));
@@ -222,10 +220,8 @@ test("Ux Chat Ui", async ({
             : `Message ${index}. ` + "Readable history. ".repeat(25),
       }),
     );
-    const clipped = records[10];
-    assert.ok(clipped);
-    clipped.truncated = true;
-    clipped.text = "Clipped original prompt";
+    records[10].truncated = true;
+    records[10].text = "Clipped original prompt";
     let latestItems = records.slice(10);
     let historyVersion = "version-1";
     let failBranch = true;
@@ -249,7 +245,7 @@ test("Ux Chat Ui", async ({
       nextCursor: id === "lead" ? "item-10" : null,
       historyVersion,
       truncated: id === "lead",
-      agent: { id: id ?? "", status: "idle" },
+      agent: { id: id!, status: "idle" },
     });
     const fulfillApi = (
       route: Route,
@@ -286,7 +282,7 @@ test("Ux Chat Ui", async ({
           },
         });
       if (path === "/api/transcript/search") {
-        const query = (url.searchParams.get("q") ?? "").toLowerCase();
+        const query = url.searchParams.get("q")!.toLowerCase();
         return fulfillApi(route, {
           json: {
             results: records.filter((record) =>
@@ -354,7 +350,9 @@ test("Ux Chat Ui", async ({
         return fulfillApi(route, { json: { items: [] } });
       return fulfillApi(route, { json: { ok: true } });
     });
-    await page.goto(`http://127.0.0.1:${address.port}`);
+    await page.goto(
+      `http://127.0.0.1:${(server!.address() as AddressInfo).port}`,
+    );
     await page.locator('[data-message="item-10"]').waitFor();
     const composer = page.locator("#message");
     const sendSettled = () =>
@@ -362,16 +360,15 @@ test("Ux Chat Ui", async ({
         () =>
           new Promise<void>((resolve) => {
             const status = document.querySelector("#send-state");
-            if (!status) throw new Error("Missing send state");
-            let active = !!status.textContent;
+            let active = !!status!.textContent;
             const observer = new MutationObserver(() => {
-              if (status.textContent) active = true;
+              if (status!.textContent) active = true;
               else if (active) {
                 observer.disconnect();
                 resolve();
               }
             });
-            observer.observe(status, {
+            observer.observe(status!, {
               childList: true,
               characterData: true,
               subtree: true,
@@ -388,16 +385,16 @@ test("Ux Chat Ui", async ({
     await firstSettled;
     await page.waitForFunction(
       () =>
-        document.querySelector<HTMLTextAreaElement>("#message")?.value === "",
+        document.querySelector<HTMLTextAreaElement>("#message")!.value === "",
     );
     assert.equal(
       await composer.evaluate((element) => element === document.activeElement),
       true,
     );
     assert.equal(writes.length, 1);
-    assert.equal(writes[0]?.path, "/api/fixture-send");
-    assert.equal(writes[0]?.body.text, "Draft must remain unsent");
-    assert.equal(writes[0]?.body.delivery, "next_turn");
+    assert.equal(writes[0].path, "/api/fixture-send");
+    assert.equal(writes[0].body.text, "Draft must remain unsent");
+    assert.equal(writes[0].body.delivery, "next_turn");
     await composer.fill("Send from button");
     const buttonSend = page.waitForResponse(
       (response) => new URL(response.url()).pathname === "/api/fixture-send",
@@ -408,11 +405,11 @@ test("Ux Chat Ui", async ({
     await buttonSettled;
     await page.waitForFunction(
       () =>
-        document.querySelector<HTMLTextAreaElement>("#message")?.value === "",
+        document.querySelector<HTMLTextAreaElement>("#message")!.value === "",
     );
     assert.equal(writes.length, 2);
-    assert.equal(writes[1]?.body.delivery, "current_turn");
-    assert.equal(writes[1]?.body.text, "Send from button");
+    assert.equal(writes[1].body.delivery, "current_turn");
+    assert.equal(writes[1].body.text, "Send from button");
     const longDraft = "L".repeat(12050);
     await composer.fill(longDraft);
     assert.equal(await composer.inputValue(), longDraft);
@@ -435,7 +432,7 @@ test("Ux Chat Ui", async ({
     await attach.click();
     await page.waitForFunction(
       () =>
-        document.querySelector<HTMLTextAreaElement>("#message")?.value === "",
+        document.querySelector<HTMLTextAreaElement>("#message")!.value === "",
     );
     await page
       .getByRole("button", { name: "Remove pending message.txt", exact: true })
@@ -456,19 +453,21 @@ test("Ux Chat Ui", async ({
               rows.onerror = () => reject(rows.error);
               rows.onsuccess = () => {
                 // This database is written by the uploads owner in this renderer.
-                const uploads = rows.result as PendingUpload[];
-                const row = uploads.find((item) => item.name === "message.txt");
+                const row = (rows.result as PendingUpload[]).find(
+                  (item) => item.name === "message.txt",
+                );
                 if (!row) return resolve(null);
                 const content = transaction.objectStore("contents").get(row.id);
                 content.onerror = () => reject(content.error);
                 content.onsuccess = () => {
                   database.close();
-                  const savedContent = content.result as PendingUploadContent;
-                  if (!savedContent.bytes)
-                    throw new Error("Saved fixture upload has no bytes");
                   resolve({
                     name: row.name,
-                    bytes: Array.from(new Uint8Array(savedContent.bytes)),
+                    bytes: Array.from(
+                      new Uint8Array(
+                        (content.result as PendingUploadContent).bytes!,
+                      ),
+                    ),
                   });
                 };
               };
@@ -523,9 +522,9 @@ test("Ux Chat Ui", async ({
       .locator('[data-message="item-3"]')
       .evaluate((element) => {
         const root = document.querySelector("#messages");
-        if (!root) throw new Error("Missing messages");
         return (
-          element.getBoundingClientRect().top - root.getBoundingClientRect().top
+          element.getBoundingClientRect().top -
+          root!.getBoundingClientRect().top
         );
       });
     assert.ok(
@@ -563,7 +562,7 @@ test("Ux Chat Ui", async ({
     await page.locator("#send").click();
     await page.waitForFunction(
       () =>
-        document.querySelector<HTMLTextAreaElement>("#message")?.value === "",
+        document.querySelector<HTMLTextAreaElement>("#message")!.value === "",
     );
     const releasedAroundResponse = page.waitForResponse((response) => {
       const url = new URL(response.url());
@@ -637,13 +636,13 @@ test("Ux Chat Ui", async ({
     );
     const attempts = writes.filter((write) => write.path === "/api/branch");
     assert.equal(
-      attempts[0]?.body.id,
-      attempts[1]?.body.id,
+      attempts[0].body.id,
+      attempts[1].body.id,
       "retry preserves the native branch request identity",
     );
-    assert.equal(attempts[0]?.body.before, true);
+    assert.equal(attempts[0].body.before, true);
     assert.equal(
-      attempts[0]?.body.message_id,
+      attempts[0].body.message_id,
       "item-10",
       "edit preserves the selected input identity inside a native batch",
     );
@@ -692,7 +691,7 @@ test("Ux Chat Ui", async ({
       ],
     );
     assert.equal(
-      writes.filter((write) => write.path === "/api/branch").at(-1)?.body
+      writes.filter((write) => write.path === "/api/branch").at(-1)!.body
         .before,
       undefined,
     );
@@ -727,12 +726,8 @@ test("Ux Chat Ui", async ({
     );
   } finally {
     for (const stream of syncStreams) stream.destroy();
-    if (server) {
-      const runningServer = server;
-      await new Promise<void>((resolve) =>
-        runningServer.close(() => resolve()),
-      );
-    }
+    if (server)
+      await new Promise<Error | undefined>((resolve) => server!.close(resolve));
     await vite?.close();
   }
 });
