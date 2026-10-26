@@ -1,6 +1,7 @@
 // Wire format owner: runtime-services/src/account_driver/claude_identity.rs.
 // account-identity.test.ts checks the shared identity fixtures in both languages.
 import fs from "node:fs";
+import type { AccountInfo } from "@anthropic-ai/claude-agent-sdk";
 import path from "node:path";
 import os from "node:os";
 
@@ -82,7 +83,7 @@ export function createAccountCheck({
     ".claude.json",
   ),
 }: {
-  expectedEmail: string;
+  expectedEmail?: string | undefined;
   expectedIdentity?: string | undefined;
   identityPath?: string;
   requireSubscription?: boolean;
@@ -245,3 +246,7 @@ export function createAccountCheck({
     }
   };
 }
+
+// Preserve the SDK account fields while naming the checker-owned identity enrichment.
+export type CheckedAccount = AccountInfo &
+  ReturnType<ReturnType<typeof createAccountCheck>>;
