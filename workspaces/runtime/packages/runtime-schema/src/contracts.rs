@@ -992,6 +992,21 @@ pub fn render(root: &Path, with_api_types: bool) -> Result<Vec<Rendered>, String
         });
     }
     if with_api_types {
+        let mut generator = schemars::generate::SchemaSettings::draft2020_12()
+            .for_deserialize()
+            .with(|settings| settings.definitions_path = "/components/schemas".into())
+            .into_generator();
+        generator.subschema_for::<crate::pricing::PricingArtifact>();
+        let document = serde_json::json!({
+            "openapi":"3.1.0", "info":{"title":"Pricing artifact","version":"1"},
+            "paths":{}, "components":{"schemas":generator.take_definitions(true)}
+        });
+        rendered.push(Rendered {
+            path: web("pricing.ts"),
+            text: api_types(root, &document, "--rust-owned")?,
+        });
+    }
+    if with_api_types {
         let mut usage_generator = schemars::generate::SchemaSettings::draft2020_12()
             .for_serialize()
             .with(|settings| settings.definitions_path = "/components/schemas".into())
