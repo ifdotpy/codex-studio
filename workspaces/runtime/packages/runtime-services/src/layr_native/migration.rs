@@ -170,15 +170,17 @@ pub fn migrate_with_options(
     let main_plan =
         super::import::Plan::new_with_git_policy(&project, false, &target, options.without_git)?;
     let existing_path = main_path(state_dir, &project_id);
-    let existing_main = if existing_path.exists() {
-        Some(super::import::Plan::saved_main(
-            state_dir,
-            &existing_path,
-            &target,
-        )?)
-    } else {
-        None
-    };
+    // A failed first import can leave an incomplete main. Only ready imports supply estimates.
+    let existing_main =
+        if existing_path.exists() && target.join(format!("{project_id}.json")).exists() {
+            Some(super::import::Plan::saved_main(
+                state_dir,
+                &existing_path,
+                &target,
+            )?)
+        } else {
+            None
+        };
     let clone_main = existing_main.as_ref().unwrap_or(&main_plan);
     let mut plans = Vec::new();
     let initial_size = if existing_main.is_some() {
@@ -709,6 +711,16 @@ mod tests {
         .expect("fixture operation succeeds");
         fs::set_permissions(&binary, fs::Permissions::from_mode(0o700))
             .expect("fixture operation succeeds");
+        let partial_report = migrate(&state, &project, true).expect("partial import report");
+        assert_eq!(
+            partial_report["lines"][0]["lineNewEntries"], initial["lines"][0]["lineNewEntries"],
+            "An unfinished import must not supply the saved-main estimate"
+        );
+        fs::write(
+            state.join(NATIVE_LAYR_DIRECTORY).join(format!("{id}.json")),
+            "{}",
+        )
+        .expect("ready import marker");
         let report = migrate(&state, &project, true).expect("fixture operation succeeds");
         assert_eq!(
             report["lines"][0]["lineNewEntries"], 202,

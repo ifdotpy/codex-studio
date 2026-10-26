@@ -18,7 +18,7 @@ The state directory must stay outside project folders.
 The project ID is the SHA-256 of the canonical source folder path.
 Later chats for that folder reuse its main line.
 
-Studio installs Layr 0.2.2 at `<Studio state>/layr-native/bin/layr`.
+Studio installs Layr 0.2.3 at `<Studio state>/layr-native/bin/layr`.
 It never selects `~/.cargo/bin/layr` for runtime operations.
 The package build compiles the vendored source once and includes the signed executable, version, and SHA-256 manifest.
 The first native turn verifies that manifest and copies the executable into the managed binary folder.
@@ -163,7 +163,7 @@ Attribute copies use descriptors or no-follow link calls on APFS and btrfs.
 Full-tree snapshots preserve empty directories, directory modes, and file mode changes in each imported head.
 The source repository root mode also applies to each staged repository root.
 
-Known Layr 0.2.2 limits, pending upstream fixes for 0.2.3:
+Known Layr 0.2.3 limits:
 
 - `caller_git` calls `command_as`, which clears `GIT_NO_LAZY_FETCH` and `GIT_OPTIONAL_LOCKS`.
   Studio refuses source object links and alternates that could reconnect a staged repository to the original object store.
@@ -172,6 +172,19 @@ Known Layr 0.2.2 limits, pending upstream fixes for 0.2.3:
 - The APFS thin snapshot comparison ignores attributes and change time (`ctime`).
   A directory attribute change alone can be absent from the saved head.
   A successful metadata fixture does not establish support for this case.
+
+Layr 0.2.3 keeps private directories writable until metadata updates finish.
+The final state and line retain source directory and file modes, including `0555` and `0444`.
+The source modes stay unchanged.
+Metadata errors name the affected path and operation.
+
+An explicitly failed first import can retry with the same request ID.
+On APFS, the retry removes only that import's private partial project before it imports the current source again.
+The removal uses directory descriptors and never follows source links.
+A ready project cannot be removed by this recovery.
+Pending and unknown receipts stay held for inspection.
+On btrfs, automatic removal of a partial project is unavailable.
+The error names the private project that needs daemon-owned subvolume removal.
 
 Capacity checks run before the pending receipt. A shortage can retry with the same request after capacity increases.
 
@@ -401,7 +414,7 @@ Run the focused Rust tests:
 cargo test -j 4 -p studio-runtime-services --lib layr_native
 ```
 
-Run the real host lifecycle check with a Studio-built Layr 0.2.2 binary:
+Run the real host lifecycle check with a Studio-built Layr 0.2.3 binary:
 
 ```sh
 STUDIO_LAYR_NATIVE_TEST_BINARY=/path/to/studio-state/layr-native/bin/layr \
@@ -418,7 +431,7 @@ On Linux, run this isolated check as root on btrfs.
 Check the managed Layr entry with a real Git repository and a local bare remote:
 
 ```sh
-STUDIO_LAYR_NATIVE_TEST_BINARY=/path/to/layr-0.2.2 \
+STUDIO_LAYR_NATIVE_TEST_BINARY=/path/to/layr-0.2.3 \
   CARGO_INCREMENTAL=0 cargo test -j 4 -p studio-runtime-services --lib \
   layr_native::git_guard::tests::real_managed_layr_ \
   -- --ignored --test-threads=1
@@ -430,7 +443,7 @@ They also verify that the managed Git entry still refuses agent writes.
 Check the proxy with real Layr, Git, Cargo, and pnpm callers:
 
 ```sh
-STUDIO_LAYR_NATIVE_TEST_BINARY=/path/to/layr-0.2.2 \
+STUDIO_LAYR_NATIVE_TEST_BINARY=/path/to/layr-0.2.3 \
   CARGO_INCREMENTAL=0 cargo test -j 4 -p studio-runtime-services --lib \
   layr_native::git_guard::tests::real_managed_git_proxy_ -- --ignored
 ```
