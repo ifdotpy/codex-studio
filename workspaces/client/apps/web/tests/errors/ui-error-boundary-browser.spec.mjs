@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { test, expect } from "../playwright.mjs";
+import { test, expect } from "../playwright.ts";
 
 test("ui-error-boundary-browser", async ({ page }) => {
   test.setTimeout(120_000);

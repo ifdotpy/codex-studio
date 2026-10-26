@@ -3,7 +3,7 @@ import {
   expect,
   rustUiFixture,
   spawnFixture as spawn,
-} from "../../tests/playwright.mjs";
+} from "../../tests/playwright.ts";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";

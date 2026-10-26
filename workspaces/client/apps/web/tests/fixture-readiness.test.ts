@@ -2,13 +2,10 @@ import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
 import test from "node:test";
-import { waitForFixturePort } from "./fixture-readiness.mjs";
+import { waitForFixturePort } from "./fixture-readiness.ts";
 
 class FakeChild extends EventEmitter {
-  constructor() {
-    super();
-    this.stdout = new PassThrough();
-  }
+  stdout = new PassThrough();
 }
 
 test("fixture readiness parses a port across output chunks", async () => {

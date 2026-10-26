@@ -3,7 +3,7 @@ import {
   expect,
   createFixtureViteServer,
   apiSchemaHeaders,
-} from "../playwright.mjs";
+} from "../playwright.ts";
 import { resolve } from "node:path";
 
 let server;

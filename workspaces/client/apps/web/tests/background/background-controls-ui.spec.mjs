@@ -7,7 +7,7 @@ import {
   expect,
   test,
   updateEntitySyncFixture,
-} from "../playwright.mjs";
+} from "../playwright.ts";
 import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
 import { createServer } from "node:http";

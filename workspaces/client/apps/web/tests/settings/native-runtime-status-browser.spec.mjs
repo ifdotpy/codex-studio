@@ -4,7 +4,7 @@ import { createRequire } from "node:module";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { test } from "../playwright.mjs";
+import { test } from "../playwright.ts";
 
 test("Native runtime status", async ({ context }) => {
   test.setTimeout(45_000);

@@ -1,8 +1,8 @@
-import { createRequire } from "node:module";
-const { test, expect } = createRequire(import.meta.url)("@playwright/test");
+import { test, expect } from "./playwright.ts";
+import type {} from "./scrollbars-ui.fixture.tsx";
 import { build } from "esbuild";
 import { fileURLToPath } from "node:url";
-import { browserExecutablePath } from "./browser-executable.mjs";
+import { browserExecutablePath } from "./browser-executable.ts";
 
 test.use({
   launchOptions: async ({ browserName }, use) => {
@@ -25,28 +25,9 @@ test("native panes and Mantine share scrollbar styling in both themes", async ({
 }, testInfo) => {
   const bundle = await build({
     absWorkingDir: root,
-    stdin: {
-      resolveDir: root,
-      loader: "jsx",
-      contents: `
-        import React from 'react';
-        import { createRoot } from 'react-dom/client';
-        import { createPortal } from 'react-dom';
-        import { MantineProvider, ScrollArea } from '@mantine/core';
-        import { theme } from './src/theme';
-        import '@mantine/core/styles.css';
-        import './src/style.css';
-        import './src/components/sidebar-projects.css';
-        const content = <div style={{height: 1200, width: 800}}>Scrollable content</div>;
-        createRoot(document.getElementById('fixture')).render(
-          <MantineProvider theme={theme}>
-            <div id="messages" tabIndex={0} style={{height:180,width:260,flex:'none',padding:8}}>{content}</div>
-            <div className="chat-scroll" tabIndex={0} style={{height:180,width:260,flex:'none'}}>{content}</div>
-            <ScrollArea type="always" style={{height:180,width:260}}>{content}</ScrollArea>
-            {createPortal(<textarea aria-label="Portal draft" defaultValue={'Draft line\\n'.repeat(100)} style={{height:180,width:260}} />, document.body)}
-          </MantineProvider>
-        );`,
-    },
+    entryPoints: [
+      fileURLToPath(new URL("./scrollbars-ui.fixture.tsx", import.meta.url)),
+    ],
     bundle: true,
     write: false,
     outdir: testInfo.outputPath("scrollbar-bundle"),
@@ -55,11 +36,16 @@ test("native panes and Mantine share scrollbar styling in both themes", async ({
   await page.setContent(
     '<div id="fixture" style="display:flex;gap:24px;padding:24px"></div>',
   );
+  const css = bundle.outputFiles.find((file) => file.path.endsWith(".css"));
+  const javascript = bundle.outputFiles.find((file) =>
+    file.path.endsWith(".js"),
+  );
+  if (!css || !javascript) throw new Error("Missing scrollbar fixture bundle");
   await page.addStyleTag({
-    content: bundle.outputFiles.find((file) => file.path.endsWith(".css")).text,
+    content: css.text,
   });
   await page.addScriptTag({
-    content: bundle.outputFiles.find((file) => file.path.endsWith(".js")).text,
+    content: javascript.text,
   });
   const viewport = page.locator(".mantine-ScrollArea-viewport");
   const verticalTrack = page.locator(
@@ -116,33 +102,7 @@ test("native panes and Mantine share scrollbar styling in both themes", async ({
     );
     await testInfo.attach(`${scheme}-computed`, {
       body: JSON.stringify(
-        await page.evaluate(() => {
-          const properties = [
-            "scrollbarColor",
-            "scrollbarWidth",
-            "backgroundColor",
-            "width",
-            "borderRadius",
-            "overflowY",
-            "overflowX",
-          ];
-          return Object.fromEntries(
-            [
-              "#messages",
-              ".chat-scroll",
-              "textarea",
-              ".mantine-ScrollArea-viewport",
-              '.mantine-ScrollArea-scrollbar[data-orientation="vertical"]',
-              '.mantine-ScrollArea-scrollbar[data-orientation="vertical"] > .mantine-ScrollArea-thumb',
-            ].map((selector) => {
-              const style = getComputedStyle(document.querySelector(selector));
-              return [
-                selector,
-                Object.fromEntries(properties.map((key) => [key, style[key]])),
-              ];
-            }),
-          );
-        }),
+        await page.evaluate(() => window.scrollbarFixture.computedStyles()),
         null,
         2,
       ),
@@ -169,6 +129,7 @@ test("native panes and Mantine share scrollbar styling in both themes", async ({
     )
     .toBeGreaterThan(0);
   const box = await thumb.boundingBox();
+  if (!box) throw new Error("Scrollbar thumb has no bounding box");
   await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
   await page.mouse.down();
   await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2 + 60);

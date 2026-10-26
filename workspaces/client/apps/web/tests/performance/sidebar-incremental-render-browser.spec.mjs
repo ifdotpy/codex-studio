@@ -3,7 +3,7 @@ import { createRequire } from "node:module";
 import { readFile, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { test, readApiSchemaHash } from "../playwright.mjs";
+import { test, readApiSchemaHash } from "../playwright.ts";
 
 test("Sidebar incremental rows and current callbacks @performance", async ({
   page,
@@ -13,7 +13,7 @@ test("Sidebar incremental rows and current callbacks @performance", async ({
   const require = createRequire(join(root, "package.json"));
   const { build } = require("esbuild");
   const { createFixtureViteServer: createServer } =
-    await import("../playwright.mjs");
+    await import("../playwright.ts");
   const directory = await mkdtemp(
     join(tmpdir(), "studio-sidebar-incremental-"),
   );

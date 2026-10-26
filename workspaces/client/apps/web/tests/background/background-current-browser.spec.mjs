@@ -10,7 +10,7 @@ import {
   expect,
   API_SCHEMA_HASH_HEADER,
   readApiSchemaHash,
-} from "../playwright.mjs";
+} from "../playwright.ts";
 
 test("Background Current Browser", async ({
   browser: _testBrowser,

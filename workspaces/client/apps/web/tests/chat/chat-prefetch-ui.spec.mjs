@@ -6,7 +6,7 @@ import {
   apiSchemaHandshakeSse,
   readTestState,
   rustUiFixture,
-} from "../playwright.mjs";
+} from "../playwright.ts";
 // Production App and real RxDB. Only the isolated fixture receives requests.
 import assert from "node:assert/strict";
 import { mkdtemp } from "node:fs/promises";

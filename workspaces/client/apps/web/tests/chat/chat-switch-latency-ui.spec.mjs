@@ -7,7 +7,7 @@ import {
   test,
   spawnFixture as spawn,
   rustUiFixture,
-} from "../playwright.mjs";
+} from "../playwright.ts";
 // Real renderer and isolated server. Delayed streams must not delay navigation.
 import assert from "node:assert/strict";
 import { mkdtemp } from "node:fs/promises";

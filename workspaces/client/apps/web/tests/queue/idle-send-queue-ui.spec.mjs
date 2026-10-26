@@ -5,7 +5,7 @@ import {
   spawnFixture as spawn,
   readTestState,
   rustUiFixture,
-} from "../playwright.mjs";
+} from "../playwright.ts";
 // Production renderer and isolated durable queue. No model service or user state.
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";

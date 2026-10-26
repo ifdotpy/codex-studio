@@ -1,5 +1,5 @@
-import { test, expect, spawnFixture, rustUiFixture } from "../playwright.mjs";
-import { chooseSetupValue } from "../fixtures/setup-controls.mjs";
+import { test, expect, spawnFixture, rustUiFixture } from "../playwright.ts";
+import { chooseSetupValue } from "../fixtures/setup-controls.ts";
 import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
