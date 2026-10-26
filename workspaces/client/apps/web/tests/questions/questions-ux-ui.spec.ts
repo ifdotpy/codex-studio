@@ -1,38 +1,19 @@
-#!/usr/bin/env node
+import { assert } from "../messages/assert.ts";
+import { requestBody, required } from "../messages/helpers.ts";
+import type { PostBody, PostResult } from "../../src/apiTypes.ts";
+import type { Page, Route } from "@playwright/test";
 // Isolated HTTP fixture and headless Chrome. No model requests or user state.
 
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import {
-  test,
-  expect,
-  spawnFixture as spawn,
-  rustUiFixture,
-} from "../playwright.ts";
+import { test, spawnFixture as spawn, rustUiFixture } from "../playwright.ts";
 
 test("Questions Ux Ui", async ({
   browser: _testBrowser,
   context: _testContext,
   page: testPage,
 }) => {
-  const assert = {
-    equal: (actual, expected, message) =>
-      expect(actual, message).toBe(expected),
-    notEqual: (actual, expected, message) =>
-      expect(actual, message).not.toBe(expected),
-    deepEqual: (actual, expected, message) =>
-      expect(actual, message).toEqual(expected),
-    ok: (actual, message) => expect(actual, message).toBeTruthy(),
-    match: (actual, expected, message) =>
-      expect(actual, message).toMatch(expected),
-    doesNotMatch: (actual, expected, message) =>
-      expect(actual, message).not.toMatch(expected),
-    fail: (message) => {
-      throw new Error(message);
-    },
-  };
-
   const root = await mkdtemp(join(tmpdir(), "codex-questions-ui-"));
   const proc = spawn(process.execPath, [rustUiFixture, root], {
     stdio: ["pipe", "pipe", "pipe"],
@@ -43,12 +24,15 @@ test("Questions Ux Ui", async ({
     },
   });
   let log = "",
-    page,
-    releaseResponse;
-  proc.stderr.on("data", (data) => {
+    page: Page | undefined,
+    releaseResponse: (() => void) | undefined;
+  proc.stderr?.on("data", (data) => {
     log += data;
   });
-  const poll = async (check, label) => {
+  const poll = async (
+    check: () => boolean | Promise<boolean>,
+    label: string,
+  ) => {
     for (let i = 0; i < 200; i++) {
       if (await check()) return;
       await new Promise((resolve) => setTimeout(resolve, 50));
@@ -56,8 +40,8 @@ test("Questions Ux Ui", async ({
     throw Error(label + "\n" + log);
   };
   try {
-    const port = await new Promise((resolve, reject) => {
-      proc.stdout.once("data", (data) => resolve(Number(String(data).trim())));
+    const port = await new Promise<number>((resolve, reject) => {
+      proc.stdout?.once("data", (data) => resolve(Number(String(data).trim())));
       proc.once("exit", () => reject(Error(log)));
     });
     const origin = `http://127.0.0.1:${port}`;
@@ -65,7 +49,7 @@ test("Questions Ux Ui", async ({
     page = testPage;
     await page.setViewportSize({ width: 1440, height: 960 });
     page.setDefaultTimeout(10000);
-    const errors = [];
+    const errors: string[] = [];
     page.on("pageerror", (error) => errors.push(error.message));
     await page.goto(origin);
     await page
@@ -151,10 +135,12 @@ test("Questions Ux Ui", async ({
     );
     await mcpForm.getByRole("textbox", { name: "Required scope" }).fill("One");
     await poll(() => mcpSend.isEnabled(), "optional fields do not block Send");
-    let mcpAnswer;
-    const captureMcp = async (route) => {
-      mcpAnswer = route.request().postDataJSON();
-      await route.fulfill({ json: { status: "answered" } });
+    let mcpAnswer: PostBody<"/api/answer"> | undefined;
+    const captureMcp = async (route: Route) => {
+      mcpAnswer = requestBody<PostBody<"/api/answer">>(route);
+      await route.fulfill({
+        json: { status: "answered" } satisfies PostResult<"/api/answer">,
+      });
     };
     await page.route("**/api/answer", captureMcp);
     await mcpSend.click();
@@ -189,15 +175,14 @@ test("Questions Ux Ui", async ({
     assert.equal(await form.getByText("Other", { exact: true }).count(), 0);
     assert.equal(await page.locator(".jump-slot").isVisible(), false);
     const openLayout = await card.evaluate((element) => {
-      const viewport = document
-        .querySelector("#messages")
-        .getBoundingClientRect();
-      const heading = element
-        .querySelector(".request-heading")
-        .getBoundingClientRect();
-      const actions = element
-        .querySelector(".request-answer-actions")
-        .getBoundingClientRect();
+      const viewportNode = document.querySelector("#messages");
+      const headingNode = element.querySelector(".request-heading");
+      const actionsNode = element.querySelector(".request-answer-actions");
+      if (!viewportNode || !headingNode || !actionsNode)
+        throw new Error("Missing question layout");
+      const viewport = viewportNode.getBoundingClientRect();
+      const heading = headingNode.getBoundingClientRect();
+      const actions = actionsNode.getBoundingClientRect();
       return {
         headingVisible:
           heading.top >= viewport.top && heading.bottom <= viewport.bottom,
@@ -345,7 +330,7 @@ test("Questions Ux Ui", async ({
       [390, 844, "light"],
       [1440, 960, "dark"],
       [390, 844, "dark"],
-    ]) {
+    ] as const) {
       await page.setViewportSize({ width, height });
       await page.emulateMedia({ colorScheme: theme });
       await send.click({ trial: true });
@@ -382,11 +367,11 @@ test("Questions Ux Ui", async ({
       });
     }
     await page.setViewportSize({ width: 1440, height: 960 });
-    const answers = [];
+    const answers: PostBody<"/api/answer">[] = [];
     let fail = true,
       answerCommitted = false;
     await page.route("**/api/answer", async (route) => {
-      answers.push(route.request().postDataJSON());
+      answers.push(requestBody<PostBody<"/api/answer">>(route));
       if (fail) {
         fail = false;
         await route.abort("failed");
@@ -394,7 +379,7 @@ test("Questions Ux Ui", async ({
       }
       const response = await route.fetch();
       answerCommitted = true;
-      await new Promise((resolve) => {
+      await new Promise<void>((resolve) => {
         releaseResponse = resolve;
       });
       await route.fulfill({ response });
@@ -433,7 +418,7 @@ test("Questions Ux Ui", async ({
     await otherForm
       .getByRole("textbox", { name: "Other project question?" })
       .fill("Keep this answer");
-    releaseResponse();
+    required(releaseResponse)();
     await page.waitForTimeout(250);
     assert.equal(
       await otherForm

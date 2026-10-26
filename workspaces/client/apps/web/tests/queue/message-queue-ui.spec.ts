@@ -1,108 +1,25 @@
-import {
-  readTestState,
-  test,
-  expect,
-  spawnFixture as spawn,
-  rustUiFixture,
-  queryFixtureDatabase,
-} from "../playwright.ts";
+import { queueUiFixture } from "./queue-ui.fixture.ts";
+import { required, requestBody } from "../messages/helpers.ts";
+import type { PostBody } from "../../src/apiTypes.ts";
+import type { BrowserContext, Page } from "@playwright/test";
+import { test, expect, queryFixtureDatabase } from "../playwright.ts";
 // Production renderer and isolated durable queue. No model service or user state.
 import assert from "node:assert/strict";
-import { randomUUID } from "node:crypto";
-import { mkdtemp } from "node:fs/promises";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 test("message-queue-ui", async ({ browser }) => {
   test.setTimeout(45_000);
-  const root = await mkdtemp(join(tmpdir(), "studio-message-queue-ui-"));
-  const models = ["gpt-6-astra", "gpt-5.6-sol", "gpt-5.6-luna"].map(
-    (model) => ({
-      model,
-      isDefault: model === "gpt-5.6-sol",
-      defaultReasoningEffort: "medium",
-      supportedReasoningEfforts: (model === "gpt-5.6-luna"
-        ? ["low", "medium", "high", "max"]
-        : ["low", "medium", "high", "ultra"]
-      ).map((reasoningEffort) => ({ reasoningEffort })),
-      serviceTiers: [{ id: "priority" }],
-    }),
-  );
-  const proc = spawn(process.execPath, [rustUiFixture, root], {
-    stdio: ["pipe", "pipe", "pipe"],
-    env: {
-      ...process.env,
-      CODEX_BOARD_STATE_DIR: join(root, "board"),
-      EXECUTION_SETTINGS_CATALOG: JSON.stringify(models),
-      FIXTURE_HOLD: "lead",
-    },
+  const { root, initial, lead, queue, wait, origin } = await queueUiFixture({
+    FIXTURE_HOLD: "lead",
   });
-  let context,
-    page,
-    log = "";
-  const diagnostics = [];
-  proc.stderr.on("data", (data) => {
-    log += data;
-  });
+  let context: BrowserContext | undefined;
+  let page: Page | undefined;
+  const diagnostics: unknown[] = [];
   try {
-    const port = await new Promise((resolve, reject) => {
-      const timer = setTimeout(
-        () => reject(Error("Fixture startup timed out: " + log)),
-        30000,
-      );
-      proc.stdout.once("data", (data) => {
-        clearTimeout(timer);
-        resolve(Number(String(data).trim()));
-      });
-      proc.once("exit", () => {
-        clearTimeout(timer);
-        reject(Error(log || "Fixture exited"));
-      });
-    });
-    const origin = `http://127.0.0.1:${port}`;
-    const initial = await readTestState(origin);
-    const lead = initial.threads.find((agent) => agent.name === "Release lead");
-    const queue = () =>
-      fetch(`${origin}/api/queue?agent=${lead.id}`).then((response) =>
-        response.json(),
-      );
-    const post = async (body) => {
-      const response = await fetch(origin + "/api/queue", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Origin: origin,
-          "X-Canvas-Token": initial.token,
-        },
-        body: JSON.stringify({
-          agent: lead.id,
-          request_id: randomUUID(),
-          ...body,
-        }),
-      });
-      assert.equal(response.status, 200, await response.clone().text());
-      return response.json();
-    };
-    for (const item of (await queue()).items) {
-      const current = await queue();
-      await post({
-        action: "cancel",
-        message_id: item.id,
-        expectedText: item.text,
-        expected_revision: current.revision,
-      });
-    }
-    const wait = async (test, label) => {
-      for (let i = 0; i < 120; i++) {
-        if (await test()) return;
-        await new Promise((resolve) => setTimeout(resolve, 50));
-      }
-      throw Error(label + "\n" + log);
-    };
-    const waitForQueueMutationToSettle = (label) =>
+    const waitForQueueMutationToSettle = (label: string) =>
       wait(
         async () =>
-          page.evaluate(() =>
+          required(page).evaluate(() =>
             Object.keys(localStorage)
               .filter((key) => key.startsWith("studio-queue-change:"))
               .every((key) => localStorage.getItem(key) === null),
@@ -116,9 +33,9 @@ test("message-queue-ui", async ({ browser }) => {
     });
     page = await context.newPage();
     page.setDefaultTimeout(10000);
-    const errors = [],
-      sent = [],
-      mutations = [];
+    const errors: string[] = [];
+    const sent: PostBody<"/api/messages">[] = [];
+    const mutations: PostBody<"/api/queue">[] = [];
     page.on("pageerror", (error) => {
       errors.push(error.message);
       diagnostics.push({
@@ -139,8 +56,14 @@ test("message-queue-ui", async ({ browser }) => {
     page.on("request", (request) => {
       if (request.method() !== "POST") return;
       const path = new URL(request.url()).pathname;
-      if (path === "/api/messages") sent.push(request.postDataJSON());
-      if (path === "/api/queue") mutations.push(request.postDataJSON());
+      if (path === "/api/messages")
+        sent.push(
+          requestBody<PostBody<"/api/messages">>({ request: () => request }),
+        );
+      if (path === "/api/queue")
+        mutations.push(
+          requestBody<PostBody<"/api/queue">>({ request: () => request }),
+        );
     });
     await page.addInitScript(
       ({ id, stateDir }) => {
@@ -157,7 +80,8 @@ test("message-queue-ui", async ({ browser }) => {
     const composer = page.locator("#message"),
       panel = page.getByTestId("message-queue"),
       list = page.getByRole("list", { name: "Queued messages", exact: true });
-    const button = (name) => panel.getByRole("button", { name, exact: true });
+    const button = (name: string) =>
+      panel.getByRole("button", { name, exact: true });
     const editor = () =>
       panel.getByRole("textbox", {
         name: "Edit queued message",
@@ -185,20 +109,24 @@ test("message-queue-ui", async ({ browser }) => {
       "First input reaches queue",
     );
     assert.equal(sent.length, 1);
-    assert.equal(sent[0].delivery, "next_turn", "Tab sends next-turn input");
+    assert.equal(
+      required(sent[0]).delivery,
+      "next_turn",
+      "Tab sends next-turn input",
+    );
     await panel.waitFor();
     await list.getByText("First input", { exact: true }).waitFor();
     for (const width of [1440, 390]) {
       await page.setViewportSize({ width, height: 960 });
-      for (const colorScheme of ["dark", "light"]) {
+      for (const colorScheme of ["dark", "light"] as const) {
         await page.emulateMedia({ colorScheme });
         await expect(async () => {
           const size = await panel.evaluate((element) => {
             const panelBox = element.getBoundingClientRect();
-            const contentBox = element
-              .querySelector("ol")
-              .getBoundingClientRect();
+            const content = element.querySelector("ol");
             const preview = element.querySelector(".message-queue-preview");
+            if (!content || !preview) throw new Error("Missing queue preview");
+            const contentBox = content.getBoundingClientRect();
             return {
               gap: panelBox.bottom - contentBox.bottom,
               previewHeight: preview.getBoundingClientRect().height,
@@ -218,7 +146,7 @@ test("message-queue-ui", async ({ browser }) => {
       }
     }
     await page.setViewportSize({ width: 1440, height: 960 });
-    const asset = (await queue()).items[0].assets[0].id;
+    const asset = required(required((await queue()).items[0]).assets?.[0]).id;
 
     for (const text of ["Second input", "Third input"]) {
       await composer.fill(text);
@@ -238,14 +166,18 @@ test("message-queue-ui", async ({ browser }) => {
     await editor().fill("Revised first input");
     await button("Save queued message").click();
     await wait(
-      async () => (await queue()).items[0].text === "Revised first input",
+      async () =>
+        required((await queue()).items[0]).text === "Revised first input",
       "Edit persists",
     );
     await waitForQueueMutationToSettle("Edit acknowledgement completes");
-    assert.equal((await queue()).items[0].assets[0].id, asset);
+    assert.equal(
+      required(required((await queue()).items[0]).assets?.[0]).id,
+      asset,
+    );
     await button("Move queued message 3 up").click();
     await wait(
-      async () => (await queue()).items[1].text === "Third input",
+      async () => required((await queue()).items[1]).text === "Third input",
       "Reorder persists",
     );
     await waitForQueueMutationToSettle("Reorder acknowledgement completes");
@@ -257,11 +189,11 @@ test("message-queue-ui", async ({ browser }) => {
           .evaluateAll((rows) => rows.map((row) => row.dataset.messageId)),
       )
       .toEqual(reorderedItems.map((item) => item.id));
-    const sourceId = reorderedItems.find(
-      (item) => item.text === "Second input",
+    const sourceId = required(
+      reorderedItems.find((item) => item.text === "Second input"),
     ).id;
-    const targetId = reorderedItems.find(
-      (item) => item.text === "Third input",
+    const targetId = required(
+      reorderedItems.find((item) => item.text === "Third input"),
     ).id;
     const grip = list
       .locator(`li[data-message-id="${sourceId}"]`)
@@ -269,7 +201,7 @@ test("message-queue-ui", async ({ browser }) => {
     await expect(grip).toHaveAttribute("draggable", "true");
     await grip.dragTo(list.locator(`li[data-message-id="${targetId}"]`));
     await wait(
-      async () => (await queue()).items[1].text === "Second input",
+      async () => required((await queue()).items[1]).text === "Second input",
       "Pointer drag reorders the durable queue",
     );
     await waitForQueueMutationToSettle("Drag acknowledgement completes");
@@ -290,15 +222,18 @@ test("message-queue-ui", async ({ browser }) => {
     await button("Expand queued message 4").click();
     await button("Collapse queued message 4").waitFor();
     const fullHeight = await list.locator("li").nth(3).boundingBox();
-    assert(fullHeight.height > shortHeight.height, "Long text expands");
+    assert(
+      required(fullHeight).height > required(shortHeight).height,
+      "Long text expands",
+    );
     await button("Collapse queued message 4").click();
-    const sendNowRequests = [];
+    const sendNowRequests: PostBody<"/api/queue">[] = [];
     await page.route("**/api/queue", async (route) => {
       if (
         route.request().method() === "POST" &&
-        route.request().postDataJSON()?.action === "send_now"
+        requestBody<PostBody<"/api/queue">>(route).action === "send_now"
       ) {
-        sendNowRequests.push(route.request().postDataJSON());
+        sendNowRequests.push(requestBody<PostBody<"/api/queue">>(route));
         if (sendNowRequests.length === 1) return route.abort("failed");
       }
       await route.continue();
@@ -318,17 +253,18 @@ test("message-queue-ui", async ({ browser }) => {
       queryFixtureDatabase(
         root,
         "SELECT e.id,m.record FROM runtime_events e JOIN runtime_event_meta m ON m.id=e.id WHERE e.id=?",
-        order[0],
+        required(order[0]),
       );
     await wait(
       async () =>
-        JSON.parse(String(promoted()[0].record)).delivery === "current_turn",
+        JSON.parse(String(required(promoted()[0]).record)).delivery ===
+        "current_turn",
       "Send now durably promotes the original input to the current turn",
     );
     assert.equal(promoted().length, 1);
-    assert.equal(promoted()[0].id, sendNowRequests[0].id);
+    assert.equal(required(promoted()[0]).id, required(sendNowRequests[0]).id);
     assert.equal(
-      JSON.parse(String(promoted()[0].record)).requestedDelivery,
+      JSON.parse(String(required(promoted()[0]).record)).requestedDelivery,
       "next_turn",
     );
     await page.unrouteAll({ behavior: "wait" });

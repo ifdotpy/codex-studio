@@ -1,29 +1,33 @@
+import { phoneSignInUrl } from "./sign-in.fixture.ts";
+import type {} from "./sign-in-card-phone-ui.fixture.tsx";
+import { createFixtureViteServer } from "../playwright.ts";
+import { requestBody } from "../messages/helpers.ts";
+import type { PostBody, PostResult } from "../../src/apiTypes.ts";
 // A sign-in card at phone width (docs/vm-browser-bridge.md, section 6.2). The window has no
 // desktop bridge and is not on the server's own Mac, so it opens the link in paste mode,
 // then sends the pasted address of the page that did not load once. A device code card
 // shows the code with a copy button. The card fits the screen without a horizontal scroll.
-import { createRequire } from "node:module";
+
 import { createServer as createNetServer } from "node:net";
-import { mkdtemp, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { test, expect } from "../playwright.ts";
 import { browserExecutablePath } from "../browser-executable.ts";
 
-const SIGN_IN =
-  "https://id.example.com/authorize?client_id=cli&redirect_uri=http%3A%2F%2F127.0.0.1%3A40645%2Foauth%2Fcallback&state=s1";
 const PASTED = "http://127.0.0.1:40645/oauth/callback?code=c1&state=s1";
 // A host name that is not a loopback name: the window acts as a phone on the tailnet. The
 // browser resolves it to the local Vite server.
 const PHONE_HOST = "studio-phone.test";
 // A phone reaches Studio over https, a secure context. The test page is plain http, so the
 // browser treats its origin as secure; that origin needs its port before the launch.
-const PORT = await new Promise((resolve, reject) => {
+const PORT = await new Promise<number>((resolve, reject) => {
   const probe = createNetServer();
   probe.once("error", reject);
   probe.listen(0, "127.0.0.1", () => {
-    const { port } = probe.address();
+    const address = probe.address();
+    if (!address || typeof address === "string")
+      throw new Error("Missing fixture address");
+    const { port } = address;
     probe.close(() => resolve(port));
   });
 });
@@ -45,38 +49,11 @@ test("Sign-in card at phone width uses paste mode and the device code", async ({
   page,
 }, testInfo) => {
   const root = fileURLToPath(new URL("../../../../../../", import.meta.url));
-  const require = createRequire(
-    join(root, "workspaces/client/apps/web/package.json"),
-  );
-  const { createServer } = await import(require.resolve("vite"));
-  const temporary = await mkdtemp(join(tmpdir(), "studio-sign-in-phone-"));
-  const harness = `
-import React from 'react';
-import {createRoot} from 'react-dom/client';
-import {MantineProvider} from '@mantine/core';
-import '@mantine/core/styles.css';
-import '/src/studio-theme.css';
-import Requests from '/src/components/questions/Requests.tsx';
-const agent={id:'worker',rootId:'lead',name:'Cluster worker with a long chat name',epoch:0,accountKey:'default'};
-const now=Date.now()/1000;
-const card=(id,url,host,redirect,extra={})=>({id,agent:'worker',method:'browser/open',status:'pending',params:{bridgeId:id,url,host,redirect,clientId:'cli-0123456789abcdef',scope:'sso:account:access openid profile',source:'host',expiresAt:now+540,...extra}});
-let requests=[
-  card('redirect',${JSON.stringify(SIGN_IN)},'id.example.com',{host:'127.0.0.1',port:40645,path:'/oauth/callback'}),
-  card('device','https://device.sso.eu-central-1.amazonaws.com/?user_code=WDJB-MJHT','device.sso.eu-central-1.amazonaws.com',null,{userCode:'WDJB-MJHT'}),
-];
-window.__notes=[];
-const rootNode=createRoot(document.getElementById('root'));
-const render=()=>rootNode.render(React.createElement(MantineProvider,null,React.createElement('div',{style:{padding:'0 16px'}},React.createElement(Requests,{requests,allRequests:requests,scope:'fixture',agents:[agent],refresh:async()=>{},notify:(s)=>window.__notes.push(s)}))));
-// The server keeps the card pending in the waiting phase after a paste-mode approval.
-window.__waiting=()=>{requests=requests.map((r)=>r.id==='redirect'?{...r,params:{...r.params,phase:'waiting',waiting:{expiresAt:now+600}}}:r);render();};
-render();
-`;
-  const server = await createServer({
+
+  const server = await createFixtureViteServer({
     configFile: false,
     root: join(root, "workspaces/client/apps/web"),
-    cacheDir: join(temporary, "vite"),
-    // The scanner cannot read the virtual harness. Without these entries Vite finds the
-    // card's dependencies late, bundles them again, and the first page load stalls.
+    // Prepare the card dependencies before the first page load.
     optimizeDeps: {
       entries: ["src/components/questions/Requests.tsx"],
       include: ["react", "react-dom/client", "@mantine/core"],
@@ -84,19 +61,13 @@ render();
     plugins: [
       {
         name: "sign-in-phone-fixture",
-        resolveId(id) {
-          return id === "virtual:sign-in-phone" ? "\0" + id : undefined;
-        },
-        load(id) {
-          return id === "\0virtual:sign-in-phone" ? harness : undefined;
-        },
         // The page comes from the same server as its modules, so the browser sees one
         // address space (a routed page would count as public and lose its loopback scripts).
         configureServer(vite) {
           vite.middlewares.use("/check", (_request, response) => {
             response.setHeader("Content-Type", "text/html");
             response.end(
-              '<!doctype html><meta name="viewport" content="width=device-width,initial-scale=1"><div id="root"></div><script type="module">import "/@id/__x00__virtual:sign-in-phone";</script>',
+              '<!doctype html><meta name="viewport" content="width=device-width,initial-scale=1"><div id="root"></div><script type="module">import "/tests/questions/sign-in-card-phone-ui.fixture.tsx";</script>',
             );
           });
         },
@@ -113,40 +84,48 @@ render();
   await server.listen();
   try {
     page.setDefaultTimeout(5000);
-    const errors = [];
+    const errors: string[] = [];
     page.on("pageerror", (error) => errors.push(error.message));
     page.on("console", (message) => {
       if (message.type() === "error") errors.push(message.text());
     });
     await page.addInitScript((pasted) => {
-      window.__opened = [];
-      window.__copied = [];
+      window.signInPhoneFixture = {
+        opened: [],
+        copied: [],
+        notes: [],
+        waiting: () => {},
+      };
       window.open = (url) => {
-        window.__opened.push(String(url));
-        return {};
+        window.signInPhoneFixture.opened.push(String(url));
+        return window;
       };
       Object.defineProperty(navigator, "clipboard", {
         configurable: true,
         value: {
-          writeText: async (text) => window.__copied.push(text),
+          writeText: async (text: string) =>
+            window.signInPhoneFixture.copied.push(text),
           readText: async () => pasted,
         },
       });
     }, PASTED);
-    const answers = [];
+    const answers: PostBody<"/api/answer">[] = [];
     await page.route("**/api/**", async (route) => {
       if (route.request().method() !== "POST")
         return route.fulfill({ json: {} });
-      const body = route.request().postDataJSON();
+      const body = requestBody<PostBody<"/api/answer">>(route);
       answers.push(body);
       if (body.decision === "accept")
         return route.fulfill({
           json: {
             status: "answered",
-            openUrl: body.id === "redirect" ? SIGN_IN : "https://x.invalid/",
-          },
+            openUrl:
+              body.id === "redirect" ? phoneSignInUrl : "https://x.invalid/",
+          } satisfies PostResult<"/api/answer">,
         });
-      return route.fulfill({ json: { status: "answered" } });
+      return route.fulfill({
+        json: { status: "answered" } satisfies PostResult<"/api/answer">,
+      });
     });
     // The first load waits for the Vite dependency scan.
     await page.goto(`${ORIGIN}/check`, { timeout: 30_000 });
@@ -187,8 +166,12 @@ render();
     await expect(
       device.getByRole("button", { name: "Code copied" }),
     ).toBeVisible();
-    expect(await page.evaluate(() => window.__copied)).toEqual(["WDJB-MJHT"]);
-    expect(await page.evaluate(() => window.__opened)).toEqual([]);
+    expect(await page.evaluate(() => window.signInPhoneFixture.copied)).toEqual(
+      ["WDJB-MJHT"],
+    );
+    expect(await page.evaluate(() => window.signInPhoneFixture.opened)).toEqual(
+      [],
+    );
     await page
       .screenshot({
         path: testInfo.outputPath("sign-in-card-phone-approval.png"),
@@ -199,13 +182,13 @@ render();
     // Paste mode: the approval opens the provider page in the system browser.
     await redirect.getByRole("button", { name: "Open in browser" }).click();
     await expect
-      .poll(() => page.evaluate(() => window.__opened))
-      .toEqual([SIGN_IN]);
+      .poll(() => page.evaluate(() => window.signInPhoneFixture.opened))
+      .toEqual([phoneSignInUrl]);
     expect(answers).toEqual([
       { decision: "accept", paste: true, id: "redirect" },
     ]);
 
-    await page.evaluate(() => window.__waiting());
+    await page.evaluate(() => window.signInPhoneFixture.waiting());
     await expect(redirect.getByText("Waiting for the browser")).toBeVisible();
     await expect(
       redirect.getByText("Copy its address and paste it here.", {
@@ -233,14 +216,16 @@ render();
       id: "redirect",
     });
     await expect
-      .poll(() => page.evaluate(() => window.__notes))
+      .poll(() => page.evaluate(() => window.signInPhoneFixture.notes))
       .toContain(
         "Studio sent the sign-in result to the command. The chat shows how it ended.",
       );
     // The field is cleared; a second click cannot send the code again.
     await expect(send).toBeDisabled();
     expect(answers).toHaveLength(2);
-    expect(await page.evaluate(() => window.__opened)).toEqual([SIGN_IN]);
+    expect(await page.evaluate(() => window.signInPhoneFixture.opened)).toEqual(
+      [phoneSignInUrl],
+    );
     // The pasted address is not kept in browser storage.
     const stored = await page.evaluate(() =>
       JSON.stringify({ ...localStorage, ...sessionStorage }),
@@ -248,6 +233,5 @@ render();
     expect(stored).not.toContain("code=c1");
   } finally {
     await server.close();
-    await rm(temporary, { recursive: true, force: true });
   }
 });

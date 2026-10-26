@@ -1,62 +1,32 @@
+import { browserSignInUrl } from "./sign-in.fixture.ts";
+import { required } from "../messages/helpers.ts";
+import type { DesktopBridge } from "../../src/desktop.ts";
+import type {} from "./browser-open-approval-ui.fixture.tsx";
+import { createFixtureViteServer } from "../playwright.ts";
+import { requestBody } from "../messages/helpers.ts";
+import type { PostBody, PostResult } from "../../src/apiTypes.ts";
 // A VM agent's sign-in link (browser/open, docs/vm-browser-bridge.md) renders as a sign-in
 // card. Nothing opens before the approval; after it, the desktop opens only the link that the
 // server returned. A refusal from the server, such as a remote window, opens nothing.
-import { createRequire } from "node:module";
-import { mkdtemp, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
+
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { test, expect } from "../playwright.ts";
 
-const SIGN_IN =
-  "https://accounts.example.com/oauth/authorize?client_id=kube&redirect_uri=http%3A%2F%2Flocalhost%3A8000&state=s";
 const REMOTE =
   "Open this chat in the window of the Mac that runs its server to sign in, or use the tool's device-code mode.";
 
 test("Browser Open Approval Ui", async ({ page }) => {
   const root = fileURLToPath(new URL("../../../../../../", import.meta.url));
-  const require = createRequire(
-    join(root, "workspaces/client/apps/web/package.json"),
-  );
-  const { createServer } = await import(require.resolve("vite"));
-  const temporary = await mkdtemp(join(tmpdir(), "studio-browser-open-"));
-  const harness = `
-import React from 'react';
-import {createRoot} from 'react-dom/client';
-import {MantineProvider} from '@mantine/core';
-import '@mantine/core/styles.css';
-import Requests from '/src/components/questions/Requests.tsx';
-const agent={id:'worker',rootId:'lead',name:'Cluster worker',epoch:0,accountKey:'default'};
-const card=(id,url,host,redirect,extra={})=>({id,agent:'worker',method:'browser/open',status:'pending',params:{bridgeId:id,url,host,redirect,clientId:'kube',scope:'openid',linuxUser:'studio-a-0123',source:'vm',...extra}});
-const requests=[
-  card('approve',${JSON.stringify(SIGN_IN)},'accounts.example.com',{host:'localhost',port:8000,path:'/'}),
-  card('remote','https://oidc.eu-central-1.amazonaws.com/authorize?x=1','oidc.eu-central-1.amazonaws.com',{host:'127.0.0.1',port:40645,path:'/oauth/callback'}),
-  card('device','https://device.sso.eu-central-1.amazonaws.com/?user_code=ABCD','device.sso.eu-central-1.amazonaws.com',null,{userCode:'ABCD'}),
-];
-window.__notes=[];
-createRoot(document.getElementById('root')).render(React.createElement(MantineProvider,null,React.createElement(Requests,{requests,allRequests:requests,scope:'fixture',agents:[agent],refresh:async()=>{},notify:(s)=>window.__notes.push(s)})));
-`;
-  const server = await createServer({
+
+  const server = await createFixtureViteServer({
     configFile: false,
     root: join(root, "workspaces/client/apps/web"),
-    cacheDir: join(temporary, "vite"),
-    // The scanner cannot read the virtual harness. Without these entries Vite finds the
-    // card's dependencies late, bundles them again, and the first page load stalls.
+    // Prepare the card dependencies before the first page load.
     optimizeDeps: {
       entries: ["src/components/questions/Requests.tsx"],
       include: ["react", "react-dom/client", "@mantine/core"],
     },
-    plugins: [
-      {
-        name: "browser-open-fixture",
-        resolveId(id) {
-          return id === "virtual:browser-open" ? "\0" + id : undefined;
-        },
-        load(id) {
-          return id === "\0virtual:browser-open" ? harness : undefined;
-        },
-      },
-    ],
     server: { host: "127.0.0.1", port: 0, hmr: false },
   });
   await server.listen();
@@ -64,18 +34,27 @@ createRoot(document.getElementById('root')).render(React.createElement(MantinePr
     page.setDefaultTimeout(5000);
     // The desktop bridge records what it would open; no real browser opens.
     await page.addInitScript(() => {
-      window.__opened = [];
-      window.codexDesktop = {
-        platform: "test",
-        openExternal: async (url) => window.__opened.push(["external", url]),
-        openSignIn: async (url) => window.__opened.push(["signIn", url]),
-      };
+      window.browserApprovalFixture = { opened: [], notes: [] };
+      Object.defineProperty(window, "codexDesktop", {
+        value: {
+          platform: "test",
+          openExternal: async (url) => {
+            window.browserApprovalFixture.opened.push(["external", url]);
+          },
+          openSignIn: async (url) => {
+            window.browserApprovalFixture.opened.push(["signIn", url]);
+          },
+        } satisfies Pick<
+          DesktopBridge,
+          "platform" | "openExternal" | "openSignIn"
+        >,
+      });
     });
-    const answers = [];
+    const answers: PostBody<"/api/answer">[] = [];
     await page.route("**/api/**", async (route) => {
       if (route.request().method() !== "POST")
         return route.fulfill({ json: {} });
-      const body = route.request().postDataJSON();
+      const body = requestBody<PostBody<"/api/answer">>(route);
       answers.push(body);
       if (body.id === "remote")
         return route.fulfill({ status: 400, json: { error: REMOTE } });
@@ -83,20 +62,23 @@ createRoot(document.getElementById('root')).render(React.createElement(MantinePr
         return route.fulfill({
           json: {
             status: "answered",
-            openUrl: body.id === "approve" ? SIGN_IN : "https://x.invalid/",
-          },
+            openUrl:
+              body.id === "approve" ? browserSignInUrl : "https://x.invalid/",
+          } satisfies PostResult<"/api/answer">,
         });
-      return route.fulfill({ json: { status: "answered" } });
+      return route.fulfill({
+        json: { status: "answered" } satisfies PostResult<"/api/answer">,
+      });
     });
     await page.route("**/check", (route) =>
       route.fulfill({
         contentType: "text/html",
-        body: '<!doctype html><div id="root"></div><script type="module">import "/@id/__x00__virtual:browser-open";</script>',
+        body: '<!doctype html><div id="root"></div><script type="module">import "/tests/questions/browser-open-approval-ui.fixture.tsx";</script>',
       }),
     );
     // The first load waits for the Vite dependency scan, which takes longer than the
     // 5 s action limit on a busy machine.
-    await page.goto(server.resolvedUrls.local[0] + "check", {
+    await page.goto(required(server.resolvedUrls?.local[0]) + "check", {
       timeout: 30_000,
     });
     const approve = page.locator('[data-request="approve"]');
@@ -119,21 +101,23 @@ createRoot(document.getElementById('root')).render(React.createElement(MantinePr
     await expect(device.getByText("No result to forward")).toBeVisible();
     await expect(device.getByText("Device code")).toBeVisible();
     await expect(device.getByText("ABCD", { exact: true })).toBeVisible();
-    expect(await page.evaluate(() => window.__opened)).toEqual([]);
+    expect(
+      await page.evaluate(() => window.browserApprovalFixture.opened),
+    ).toEqual([]);
 
     await approve
       .getByRole("button", { name: "Open in browser", exact: true })
       .click();
     await expect
-      .poll(() => page.evaluate(() => window.__opened))
-      .toEqual([["signIn", SIGN_IN]]);
+      .poll(() => page.evaluate(() => window.browserApprovalFixture.opened))
+      .toEqual([["signIn", browserSignInUrl]]);
 
     const remote = page.locator('[data-request="remote"]');
     await remote
       .getByRole("button", { name: "Open in browser", exact: true })
       .click();
     await expect
-      .poll(() => page.evaluate(() => window.__notes))
+      .poll(() => page.evaluate(() => window.browserApprovalFixture.notes))
       .toContain(REMOTE);
     await expect(remote.getByRole("alert")).toBeVisible();
 
@@ -147,11 +131,10 @@ createRoot(document.getElementById('root')).render(React.createElement(MantinePr
       { decision: "accept", id: "remote" },
       { decision: "decline", id: "device" },
     ]);
-    expect(await page.evaluate(() => window.__opened)).toEqual([
-      ["signIn", SIGN_IN],
-    ]);
+    expect(
+      await page.evaluate(() => window.browserApprovalFixture.opened),
+    ).toEqual([["signIn", browserSignInUrl]]);
   } finally {
     await server.close();
-    await rm(temporary, { recursive: true, force: true });
   }
 });
