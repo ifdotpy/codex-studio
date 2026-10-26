@@ -80,6 +80,13 @@ pub async fn admit_native(
             if let Some(body) = immediate(&snapshot, &request)? {
                 return Ok(NativeAdmission::Answer(body));
             }
+            // Read the mode once; Ask can race an approval already admitted.
+            if snapshot.actor()["provider"] != "claude"
+                && snapshot.actor()["yoloMode"] == true
+                && let Some(result) = full_access_answer(&request.method, &request.params)?
+            {
+                return Ok(NativeAdmission::Answer(ResponseBody::Result(result)));
+            }
             let CallbackDecision::Pending(id) = admit(tx, &context, &snapshot, &request, now)?
             else {
                 return Err(CallbackError::Unknown);
@@ -191,6 +198,21 @@ pub(super) fn immediate(
     snapshot.active()?;
     Ok(None)
 }
+
+/// Tool approvals share the same answer conversion as explicit user answers.
+/// Questions and elicitation always continue to require an answer from the user.
+fn full_access_answer(method: &str, params: &Value) -> Result<Option<Value>, CallbackError> {
+    if !matches!(
+        method,
+        "item/commandExecution/requestApproval"
+            | "item/fileChange/requestApproval"
+            | "item/permissions/requestApproval"
+    ) {
+        return Ok(None);
+    }
+    answer_value(method, params, &json!({"decision":"accept"})).map(|(result, _)| Some(result))
+}
+
 pub(super) fn save(tx: &Transaction<'_>, card: &Value) -> Result<(), CallbackError> {
     let id = card["id"]
         .as_str()

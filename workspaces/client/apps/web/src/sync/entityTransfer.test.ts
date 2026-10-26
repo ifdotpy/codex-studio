@@ -72,6 +72,20 @@ async function pages(interval: StagedEntityInterval | undefined) {
   return result;
 }
 describe("complete bounded entity transfer", () => {
+  it("leaves completed staging with its interval owner until disposal", async () => {
+    const storage = new MemoryStaging();
+    const assembler = new EntityTransferAssembler(storage);
+    const removed = await assembler.receive(parts([batch(0, 1)], "removed")[0]);
+    const kept = await assembler.receive(parts([batch(0, 1)], "kept")[0]);
+    await assembler.remove([{ kind: "agentDetail", agentId: "removed" }]);
+    expect(await pages(removed)).toEqual([batch(0, 1)]);
+    await removed?.dispose();
+    expect(
+      [...storage.rows.keys()].some((key) => key.startsWith("removed:")),
+    ).toBe(false);
+    expect(await pages(kept)).toEqual([batch(0, 1)]);
+    expect(storage.closed).toBe(false);
+  });
   it("keeps >512 records as separate canonical pages and does not publish a missing final part", async () => {
     const assembler = new EntityTransferAssembler(new MemoryStaging());
     const frames = parts([batch(0, 512), batch(512, 2)]);

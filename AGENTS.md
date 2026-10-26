@@ -5,6 +5,13 @@ This repository owns the application, command tools, and the project-local
 skill specific to this application. The application requires no external skill
 repository.
 
+## Simplicity
+
+Implement only the requested behavior, with the least code. Add no state,
+branches or recovery layers beyond it; if a change needs them, ask the owner
+first. Prefer a small documented limitation to complex machinery. Code must be
+describable in a few sentences.
+
 ## Fixes and test load
 
 Each bug fix needs a failing test first and a passing `just test-fast` stated in the PR;
