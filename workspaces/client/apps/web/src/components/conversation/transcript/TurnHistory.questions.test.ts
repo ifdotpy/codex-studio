@@ -4,7 +4,16 @@ import { MantineProvider } from "@mantine/core";
 import { expect, test } from "vitest";
 import type { Agent, Message } from "../../../types";
 import TurnHistory from "./TurnHistory";
-import type { QuestionCardModel } from "../../questions/questionCardModel";
+import {
+  questionCard,
+  questionHistoryIndex,
+  transcriptRequests,
+  type QuestionCardModel,
+  type QuestionHistoryEntry,
+  type QuestionLookup,
+} from "../../questions/questionCardModel";
+import { RequestCard } from "../../questions/Requests";
+import type { components } from "../../../generated/api";
 
 const question: Message = {
   id: "lead:toolu_9",
@@ -51,6 +60,76 @@ const tool = (id: string): Message => ({
     status: "completed",
   }),
 });
+
+for (const afterTool of [false, true]) {
+  test(`an empty async question source remains interactive ${afterTool ? "after a work row" : "as the first row"}`, () => {
+    const source: Message = {
+      id: "lead:empty-question",
+      role: "assistant",
+      text: "",
+      turnId: "turn-1",
+    };
+    const history: QuestionHistoryEntry = {
+      id: "request-empty",
+      agent: "lead",
+      itemId: "empty-question",
+      method: "agent/asyncQuestion",
+      status: "pending",
+      questions: [
+        { id: "0", question: "Continue with the release?", isSecret: false },
+      ],
+    };
+    const request: components["schemas"]["RequestEntityDto"] = {
+      id: history.id,
+      agent: history.agent,
+      method: history.method,
+      status: "pending",
+      params: { questions: history.questions },
+    };
+    const lookup: QuestionLookup = {
+      agentId: "lead",
+      history: questionHistoryIndex([history]),
+      pending: new Map(),
+      pendingIds: new Set([request.id]),
+    };
+    const cards = (item: Message) => questionCard(item, lookup);
+    const items = afterTool ? [tool("before"), source] : [source];
+    const inline = transcriptRequests(items, [request], cards);
+    expect(inline.get(source.id)).toBe(request);
+    const markup = renderToStaticMarkup(
+      createElement(
+        MantineProvider,
+        null,
+        createElement(TurnHistory, {
+          items,
+          enabled: false,
+          storageKey: "empty-async-question",
+          questionCards: cards,
+          requestCards: new Map(
+            [...inline].map(([messageId, entry]) => [
+              messageId,
+              entry &&
+                createElement(RequestCard, {
+                  request: entry,
+                  messageId,
+                  scope: "empty-async-question",
+                  agents: [],
+                  refresh: async () => {},
+                  notify: () => {},
+                }),
+            ]),
+          ),
+          renderMessage: (item: Message) => createElement("p", null, item.text),
+          onJump: () => {},
+        }),
+      ),
+    );
+    expect(markup.match(/data-request="request-empty"/g)).toHaveLength(1);
+    expect(markup).toContain("Continue with the release?");
+    expect(markup).toContain('data-answer="request-empty"');
+    expect(markup).not.toContain('class="question-card"');
+  });
+}
 
 test("a question renders as its own card between work logs, not as a tool row", () => {
   const markup = renderToStaticMarkup(

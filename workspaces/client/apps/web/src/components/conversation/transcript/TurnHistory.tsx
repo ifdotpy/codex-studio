@@ -114,7 +114,7 @@ function messageGroups(
   for (let index = 0; index < items.length; index++) {
     const item = items[index];
     if (!item) throw new Error("Missing transcript message");
-    if (isEmptyAssistantMessage(item)) continue;
+    if (!requestCards?.has(item.id) && isEmptyAssistantMessage(item)) continue;
     if (!requestCards?.has(item.id) && !showItem(item) && isPastCommand(item))
       continue;
     if (joinsWork(item)) {
@@ -123,7 +123,7 @@ function messageGroups(
         const next = items[index + 1];
         if (!next) throw new Error("Missing next transcript message");
         if (
-          isEmptyAssistantMessage(next) ||
+          (!requestCards?.has(next.id) && isEmptyAssistantMessage(next)) ||
           (!requestCards?.has(next.id) &&
             !showItem(next) &&
             isPastCommand(next))
