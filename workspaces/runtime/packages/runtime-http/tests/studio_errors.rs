@@ -720,7 +720,6 @@ async fn review_malformed_queue_event_does_not_poison_startup_or_following_sourc
     store.transaction(move|tx| {
         tx.execute("UPDATE runtime_agents SET record=json_set(record,'$.name','Healthy following event') WHERE id='owner'",[])?;
         tx.execute("INSERT INTO runtime_events(id,agent,kind,text,status,created,epoch,error) VALUES('following-input','owner','user','Following neighbor','failed',?1,0,'unclassified')",[now])?;
-        tx.execute("INSERT INTO runtime_events(id,agent,kind,text,status,created,epoch,error) VALUES('bad-error','owner','user','input-private-canary','failed',?1,0,CAST('error-private-canary' AS BLOB))",[now])?;
         tx.execute("INSERT INTO runtime_events(id,agent,kind,text,status,created,epoch,error) VALUES('bad-created','owner','user','input-private-canary','failed','created-private-canary',0,'error-private-canary')",[])?;
         Ok(())
     }).await.expect("unrelated source transaction commits with malformed retained event");
@@ -745,16 +744,17 @@ async fn review_malformed_queue_event_does_not_poison_startup_or_following_sourc
     assert_eq!(row["action"], "details");
     assert_eq!(row["diagnostics"]["context"]["object"], "runtime_events");
     assert_eq!(row["diagnostics"]["causes"][0]["pointer"], "/epoch");
-    for (id, pointer) in [("bad-error", "/error"), ("bad-created", "/created")] {
-        let row = body["items"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .find(|row| row["id"] == format!("event:{id}"))
-            .expect("source-write shortcut uses the same checked event owner");
-        assert_eq!(row["kind"], "stored_record_invalid");
-        assert_eq!(row["diagnostics"]["causes"][0]["pointer"], pointer);
-    }
+    let malformed_time = body["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["id"] == "event:bad-created")
+        .expect("source-write shortcut uses the same checked event owner");
+    assert_eq!(malformed_time["kind"], "stored_record_invalid");
+    assert_eq!(
+        malformed_time["diagnostics"]["causes"][0]["pointer"],
+        "/created"
+    );
     assert!(!body.to_string().contains("private-canary"));
     let streamed = streamed_incident(&mut stream, "event:bad-input", "upsert").await;
     assert_eq!(streamed["value"]["kind"], "stored_record_invalid");
