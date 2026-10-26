@@ -63,8 +63,7 @@ export function fixtureProtocol(child: ChildProcess) {
         ? Promise.resolve(saved)
         : new Promise<Reply>((resolve, reject) => {
             const timeout = setTimeout(() => {
-              waiters.delete(id);
-              reject(new Error(`Fixture command ${id} timed out: ${log}`));
+              reject(new Error(log));
             }, 8000);
             waiters.set(id, { resolve, timeout });
           });

@@ -82,7 +82,7 @@ const backend = {
   },
 };
 // This one-off fixture omits unused service adapters and API methods.
-const services = {
+const services: Partial<Record<keyof ServerServices, unknown>> = {
   owner: { id: "local", origin: location.origin },
   api,
   resources,
@@ -90,7 +90,7 @@ const services = {
     showVaultKeys: async () => {},
     canShowVaultKeys: () => true,
   },
-} as ServerServices;
+};
 // These one-off fixtures omit the unused vault state and account home/source fields.
 const entry = { vault: { projectId: "p1" } } as React.ComponentProps<
   typeof VaultSetup
@@ -110,7 +110,7 @@ const progress = (progress: ResourceProgress) =>
 window.transientProgressFixture = { reads, selectors, progress, ready: false };
 createRoot(fixtureElement("root")).render(
   <MantineProvider>
-    <ServerServicesProvider services={services}>
+    <ServerServicesProvider services={services as ServerServices}>
       {flow !== "auth" ? (
         <VaultSetup
           entry={entry}

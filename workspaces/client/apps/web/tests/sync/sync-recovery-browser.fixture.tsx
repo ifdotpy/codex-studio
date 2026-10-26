@@ -25,12 +25,8 @@ declare global {
 declare global {
   interface Window {
     syncRecoveryBrowserFixtureDurableSend: typeof import("../../src/sync/send.ts").durableSend;
-    syncRecoveryBrowserFixtureSnapshot: ReturnType<
-      typeof import("../../src/hooks.ts").useSnapshot
-    >;
-    syncRecoveryBrowserFixtureSecond: ReturnType<
-      typeof import("../../src/hooks.ts").useSnapshot
-    >;
+    syncRecoveryBrowserFixtureSnapshot: import("./browser-helpers.ts").FixtureSnapshot;
+    syncRecoveryBrowserFixtureSecond: import("./browser-helpers.ts").FixtureSnapshot;
     syncRecoveryBrowserFixtureOutbox: ReturnType<
       typeof import("../../src/sync/send.ts").useOutbox
     >;

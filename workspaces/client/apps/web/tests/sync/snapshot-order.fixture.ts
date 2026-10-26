@@ -1,4 +1,20 @@
 import type { ResourceChangeEvent } from "../playwright.ts";
+import type { components } from "../../src/generated/api.ts";
+
+/** The probe observes legacy serialized entity payloads owned by this fixture. */
+type FixtureResourceFrame = Omit<ResourceChangeEvent, "resourceVersions"> & {
+  resourceVersions: (Omit<
+    ResourceChangeEvent["resourceVersions"][number],
+    "entityChanges"
+  > & {
+    entityChanges?: Omit<
+      components["schemas"]["EntityChangeBatch"],
+      "documents"
+    > & {
+      documents: components["schemas"]["SyncDocument"][];
+    };
+  })[];
+};
 
 type Bounds = { y: number; width: number; height: number; className: string };
 type GeometryFrame = {
@@ -15,7 +31,7 @@ declare global {
   interface Window {
     __snapshotOrderResourceFrames: Array<{
       at: number;
-      frame: ResourceChangeEvent;
+      frame: FixtureResourceFrame;
     }>;
     __snapshotOrderOpenStable: { previous: number[] | null; frames: number };
     __snapshotOrderLabelFrames: {
