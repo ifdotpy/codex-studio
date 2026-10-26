@@ -887,7 +887,13 @@ pub fn dispatch_notification_with_effects(
                     if let TokenUsageObservation::Typed(usage) = &observation
                         && crate::event_write::truthy(agent.get("movedFrom"))
                     {
-                        effects.capture_move_cache(transaction, &agent, params, usage, observed_at)?;
+                        effects.capture_move_cache(
+                            transaction,
+                            &agent,
+                            params,
+                            usage,
+                            observed_at,
+                        )?;
                     }
                     apply_token_usage(&mut agent, &observation, observed_at)?
                 }
