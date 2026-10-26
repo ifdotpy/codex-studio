@@ -1,3 +1,7 @@
+import type { Browser, Request } from "@playwright/test";
+import type { ResourceChangeEvent, ResourceRef } from "../playwright.ts";
+import { readProviderObject } from "../fixtures/fixture-scripts.ts";
+import { required } from "./performance-fixture.ts";
 // Count real renderer GETs against the isolated repository fixture backend.
 import assert from "node:assert/strict";
 import { mkdtemp } from "node:fs/promises";
@@ -19,7 +23,7 @@ const measured = new Set([
 ]);
 
 async function repeatedReadCountsScenario(
-  browser,
+  browser: Browser,
   { modelOnly = false, accountsOnly = false } = {},
 ) {
   const state = await mkdtemp(join(tmpdir(), "repeated-read-counts-"));
@@ -35,16 +39,27 @@ async function repeatedReadCountsScenario(
     },
   });
   let log = "";
-  const fixtureResponses = new Map();
-  const fixtureWaiters = new Map();
+  const fixtureResponses = new Map<
+    string,
+    ReturnType<typeof readProviderObject>
+  >();
+  const fixtureWaiters = new Map<
+    string,
+    {
+      resolve: (value: ReturnType<typeof readProviderObject>) => void;
+      reject: (error: Error) => void;
+      timeout: ReturnType<typeof setTimeout>;
+    }
+  >();
   let fixtureOutputBuffer = "";
-  fixture.stdout.on("data", (chunk) => {
+  required(fixture.stdout).on("data", (chunk) => {
     fixtureOutputBuffer += String(chunk);
     const lines = fixtureOutputBuffer.split("\n");
     fixtureOutputBuffer = lines.pop() || "";
     for (const line of lines) {
       try {
-        const response = JSON.parse(line);
+        const response = readProviderObject(line);
+        if (typeof response.id !== "string") continue;
         const waiter = fixtureWaiters.get(response.id);
         if (waiter) {
           clearTimeout(waiter.timeout);
@@ -54,9 +69,9 @@ async function repeatedReadCountsScenario(
       } catch {}
     }
   });
-  fixture.stderr.on("data", (chunk) => (log += chunk));
-  const port = await new Promise((resolve, reject) => {
-    fixture.stdout.once("data", (chunk) =>
+  required(fixture.stderr).on("data", (chunk) => (log += chunk));
+  const port = await new Promise<number>((resolve, reject) => {
+    required(fixture.stdout).once("data", (chunk) =>
       resolve(Number(String(chunk).trim())),
     );
     fixture.once("exit", () => reject(Error(log)));
@@ -66,32 +81,35 @@ async function repeatedReadCountsScenario(
     const page = await context.newPage();
     page.setDefaultTimeout(10000);
     installApiSchemaFixtureHeaders(page);
-    const counts = new Map();
-    const resourceEvents = [];
+    const counts = new Map<string, number>();
+    const resourceEvents: TimedResourceEvent[] = [];
     let observedEventCount = 0;
-    const streamOpens = [];
-    const requestTimeline = [];
-    const accountReadTimings = [];
-    const accountReadByRequest = new Map();
+    const streamOpens: StreamAttempt[] = [];
+    const requestTimeline: { at: number; method: string; key: string }[] = [];
+    const accountReadTimings: AccountReadTiming[] = [];
+    const accountReadByRequest = new Map<Request, AccountReadTiming>();
     await page.addInitScript(() => {
+      // The isolated backend emits the generated resource-event contract.
+      const readResourceEvent = (text: string): ResourceChangeEvent =>
+        JSON.parse(text);
       const OriginalEventSource = window.EventSource;
       window.EventSource = class extends OriginalEventSource {
-        constructor(...args) {
+        constructor(...args: ConstructorParameters<typeof EventSource>) {
           super(...args);
           this.addEventListener("resources", (event) => {
-            window.__resourceEvents.push({
+            window.repeatedReadResourceEvents.push({
               at: Date.now(),
-              event: JSON.parse(event.data),
+              event: readResourceEvent(event.data),
             });
           });
         }
       };
-      window.__resourceEvents = [];
+      window.repeatedReadResourceEvents = [];
     });
     page.on("request", (request) => {
       const url = new URL(request.url());
       if (url.pathname === "/api/sync/stream") {
-        const attempt = {
+        const attempt: StreamAttempt = {
           at: Date.now(),
           url: `${url.pathname}${url.search}`,
           request,
@@ -109,7 +127,7 @@ async function repeatedReadCountsScenario(
         };
         requestTimeline.push(entry);
         if (url.pathname === "/api/accounts" && request.method() === "GET") {
-          const timing = {
+          const timing: AccountReadTiming = {
             requestAt: entry.at,
             responseAt: null,
             status: null,
@@ -146,11 +164,11 @@ async function repeatedReadCountsScenario(
         attempt.failure = request.failure()?.errorText || "network error";
       }
     });
-    const streamAccounting = (attempts) => {
-      const latestByUrl = new Map();
-      const logical = [];
-      const retries = [];
-      const failed = [];
+    const streamAccounting = (attempts: StreamAttempt[]) => {
+      const latestByUrl = new Map<string, StreamAttempt>();
+      const logical: StreamAttempt[] = [];
+      const retries: StreamAttempt[] = [];
+      const failed: StreamAttempt[] = [];
       for (const attempt of attempts) {
         const previous = latestByUrl.get(attempt.url);
         const retry =
@@ -169,16 +187,19 @@ async function repeatedReadCountsScenario(
       return { logical, retries, failed };
     };
     const snapshot = () => Object.fromEntries([...counts].sort());
-    const streamSummary = (entries) =>
+    const streamSummary = (entries: StreamAttempt[]) =>
       entries.map(({ at, url }) => {
         const parsed = new URL(url, "http://studio.test");
-        const resources = JSON.parse(parsed.searchParams.get("resources"));
+        const resources = parseResources(parsed.searchParams.get("resources"));
         return {
           at,
-          resources: resources.reduce((result, resource) => {
-            result[resource.kind] = (result[resource.kind] || 0) + 1;
-            return result;
-          }, {}),
+          resources: resources.reduce<Record<string, number>>(
+            (result, resource) => {
+              result[resource.kind] = (result[resource.kind] || 0) + 1;
+              return result;
+            },
+            {},
+          ),
         };
       });
     const waitForQuiet = async () => {
@@ -186,7 +207,7 @@ async function repeatedReadCountsScenario(
       let stable = 0;
       await page.waitForFunction(() => !!document.querySelector("#message"));
       await page.waitForFunction(() => {
-        const text = document.querySelector("#message");
+        const text = document.querySelector<HTMLTextAreaElement>("#message");
         return !!text && !text.disabled;
       });
       while (stable < 4) {
@@ -197,7 +218,9 @@ async function repeatedReadCountsScenario(
       }
     };
     const captureNewResourceEvents = async () => {
-      const events = await page.evaluate(() => window.__resourceEvents);
+      const events = await page.evaluate(
+        () => window.repeatedReadResourceEvents,
+      );
       resourceEvents.push(...events.slice(observedEventCount));
       observedEventCount = events.length;
     };
@@ -212,7 +235,7 @@ async function repeatedReadCountsScenario(
     await captureNewResourceEvents();
     if (accountsOnly) {
       const firstMainStage = loadStreams.find((attempt) =>
-        JSON.parse(
+        parseResources(
           new URL(attempt.url, "http://studio.test").searchParams.get(
             "resources",
           ),
@@ -222,7 +245,7 @@ async function repeatedReadCountsScenario(
         firstMainStage,
         "the initial main-client stage subscribes to drafts",
       );
-      const firstStageResources = JSON.parse(
+      const firstStageResources = parseResources(
         new URL(firstMainStage.url, "http://studio.test").searchParams.get(
           "resources",
         ),
@@ -269,22 +292,24 @@ async function repeatedReadCountsScenario(
     const streamRequestId = `stream-transcript-${Date.now()}`;
     const streamAck = fixtureResponses.has(streamRequestId)
       ? Promise.resolve(fixtureResponses.get(streamRequestId))
-      : new Promise((resolve, reject) => {
-          const timeout = setTimeout(
-            () => reject(new Error(`fixture stream write timed out: ${log}`)),
-            5000,
-          );
-          fixtureWaiters.set(streamRequestId, { resolve, reject, timeout });
-        });
+      : new Promise<ReturnType<typeof readProviderObject>>(
+          (resolve, reject) => {
+            const timeout = setTimeout(
+              () => reject(new Error(`fixture stream write timed out: ${log}`)),
+              5000,
+            );
+            fixtureWaiters.set(streamRequestId, { resolve, reject, timeout });
+          },
+        );
     const streamStartedAt = Date.now();
-    fixture.stdin.write(
+    required(fixture.stdin).write(
       `${JSON.stringify({
         id: streamRequestId,
         method: "fixture/stream-transcript",
         params: { agent: otherChatId, id: streamMessageId, text: streamedText },
       })}\n`,
     );
-    const streamReply = await streamAck;
+    const streamReply = required(await streamAck);
     assert.equal(streamReply.ok, true);
     await page
       .locator(`[data-message="${otherChatId}:${streamMessageId}"]`)
@@ -292,7 +317,7 @@ async function repeatedReadCountsScenario(
     const openedChatStreamMs = Date.now() - streamStartedAt;
     const transcriptEvent = await page.evaluate(
       ({ agentId, startedAt }) =>
-        window.__resourceEvents.find(
+        window.repeatedReadResourceEvents.find(
           ({ at, event }) =>
             at >= startedAt &&
             event.resources.some(
@@ -390,7 +415,7 @@ async function repeatedReadCountsScenario(
           );
           fixtureWaiters.set(freshnessId, { resolve, reject, timeout });
         });
-    fixture.stdin.write(
+    required(fixture.stdin).write(
       `${JSON.stringify({
         id: freshnessId,
         method: "fixture/model-catalog",
@@ -407,10 +432,10 @@ async function repeatedReadCountsScenario(
     await page.getByRole("option", { name: "Fixture model new" }).click();
     assert.match(await modelPicker.innerText(), /Fixture model new/);
     console.log(
-      `STREAM_NAVIGATION_LATENCY ${JSON.stringify({ firstStreamOpenMs: loadStreams[0]?.at - loadStartedAt, reconfigureAfterOpeningChatMs: otherStreams[0]?.at - openOtherStartedAt, streamedMessageToVisibleMs: openedChatStreamMs, transcriptEventToTextMs, firstContentMs: { load: loadFirstContentMs, openOther: openOtherFirstContentMs, back: openLeadFirstContentMs } })}`,
+      `STREAM_NAVIGATION_LATENCY ${JSON.stringify({ firstStreamOpenMs: (loadStreams[0]?.at ?? NaN) - loadStartedAt, reconfigureAfterOpeningChatMs: (otherStreams[0]?.at ?? NaN) - openOtherStartedAt, streamedMessageToVisibleMs: openedChatStreamMs, transcriptEventToTextMs, firstContentMs: { load: loadFirstContentMs, openOther: openOtherFirstContentMs, back: openLeadFirstContentMs } })}`,
     );
     console.log(
-      `REPEATED_READ_COUNTS ${JSON.stringify({ load, toOther, back, settings: settingsCounts, firstContentMs: { load: loadFirstContentMs, openOther: openOtherFirstContentMs, backToLead: openLeadFirstContentMs }, readTimeline: requestTimeline, streamOpens: { load: streamSummary(loadStreams), toOther: streamSummary(otherStreams), back: streamSummary(backStreams) }, resourceEvents: resourceEvents.map(({ at, event: { reason, resources } }) => ({ at, reason, resourceCounts: resources.reduce((result, resource) => ((result[resource.kind] = (result[resource.kind] || 0) + 1), result), {}) })), sendFlow: { streamOpens: streamSummary(sendStreams), duplicateUrls: repeatedSendStreamUrls.length, readsWithin700ms: sendRequests } })}`,
+      `REPEATED_READ_COUNTS ${JSON.stringify({ load, toOther, back, settings: settingsCounts, firstContentMs: { load: loadFirstContentMs, openOther: openOtherFirstContentMs, backToLead: openLeadFirstContentMs }, readTimeline: requestTimeline, streamOpens: { load: streamSummary(loadStreams), toOther: streamSummary(otherStreams), back: streamSummary(backStreams) }, resourceEvents: resourceEvents.map(({ at, event: { reason, resources } }) => ({ at, reason, resourceCounts: resources.reduce<Record<string, number>>((result, resource) => ((result[resource.kind] = (result[resource.kind] || 0) + 1), result), {}) })), sendFlow: { streamOpens: streamSummary(sendStreams), duplicateUrls: repeatedSendStreamUrls.length, readsWithin700ms: sendRequests } })}`,
     );
     if (!modelOnly)
       assert.deepEqual(
@@ -425,7 +450,7 @@ async function repeatedReadCountsScenario(
       const otherAccounting = streamAccounting(otherStreams);
       const backAccounting = streamAccounting(backStreams);
       const loadConfigurations = loadAccounting.logical.map(({ url }) => {
-        const resources = JSON.parse(
+        const resources = parseResources(
           new URL(url, "http://studio.test").searchParams.get("resources"),
         );
         return resources.map((resource) => resource.kind).sort();
@@ -468,7 +493,7 @@ async function repeatedReadCountsScenario(
         "return navigation must not reopen an identical healthy stream URL",
       );
     }
-    const routeKind = (key) =>
+    const routeKind = (key: string) =>
       key.startsWith("/api/models?")
         ? "models"
         : key.startsWith("/api/limits")
@@ -480,7 +505,7 @@ async function repeatedReadCountsScenario(
               : key.startsWith("/api/costs?")
                 ? "costs"
                 : undefined;
-    const phaseBounds = {
+    const phaseBounds: Record<string, readonly [number, number]> = {
       load: [loadStartedAt, loadSettledAt],
       toOther: [openOtherStartedAt, otherSettledAt],
       back: [openLeadStartedAt, backSettledAt],
@@ -495,7 +520,7 @@ async function repeatedReadCountsScenario(
     }))
       for (const [key, count] of Object.entries(countsInPhase)) {
         const kind = routeKind(key);
-        const [startedAt, settledAt] = phaseBounds[phase];
+        const [startedAt, settledAt] = required(phaseBounds[phase]);
         const invalidations = kind
           ? resourceEvents.filter(
               ({ at, event }) =>
@@ -557,3 +582,27 @@ test("account catalog reads stay within invalidation counts @performance", async
   test.setTimeout(180_000);
   await repeatedReadCountsScenario(browser, { accountsOnly: true });
 });
+
+type TimedResourceEvent = { at: number; event: ResourceChangeEvent };
+type StreamAttempt = {
+  at: number;
+  url: string;
+  request: Request;
+  status: number | null;
+  networkError: boolean;
+  failure: string | null;
+};
+type AccountReadTiming = {
+  requestAt: number;
+  responseAt: number | null;
+  status: number | null;
+};
+// Subscription URLs are produced by the renderer under test using ResourceRef.
+function parseResources(value: string | null): ResourceRef[] {
+  return JSON.parse(value ?? "null");
+}
+declare global {
+  interface Window {
+    repeatedReadResourceEvents: TimedResourceEvent[];
+  }
+}

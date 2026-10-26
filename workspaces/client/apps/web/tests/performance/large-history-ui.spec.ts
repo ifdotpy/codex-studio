@@ -1,3 +1,5 @@
+import type { PerformanceTranscriptItem as Message } from "./performance-fixture.ts";
+import { required, transcriptFixtureAgent } from "./performance-fixture.ts";
 import {
   readTestState,
   readFixtureSyncContract,
@@ -21,16 +23,19 @@ test("Large history @performance", async ({ context }) => {
   });
   let log = "",
     page;
-  proc.stderr.on("data", (d) => (log += d));
+  required(proc.stderr).on("data", (d) => (log += d));
   const port = await new Promise((resolve, reject) => {
-    proc.stdout.once("data", (d) => resolve(Number(String(d).trim())));
+    required(proc.stdout).once("data", (d) =>
+      resolve(Number(String(d).trim())),
+    );
     proc.once("exit", () => reject(Error(log)));
   });
   const origin = `http://127.0.0.1:${port}`;
   const state = await readTestState(origin);
   const lead = state.threads.find((x) => x.name === "Other project");
   const other = state.threads.find((x) => x.name === "Release lead");
-  let items = [];
+  if (!lead || !other) throw new Error("Missing fixture chats");
+  let items: Message[] = [];
   const turns = Number(process.env.HISTORY_TURNS || 70);
   const steps = Number(process.env.HISTORY_STEPS || 12);
   for (let t = 0; t < turns; t++) {
@@ -76,7 +81,7 @@ test("Large history @performance", async ({ context }) => {
   page = await context.newPage();
   await page.setViewportSize({ width: 1440, height: 960 });
   page.setDefaultTimeout(30000);
-  const errors = [];
+  const errors: string[] = [];
   page.on("pageerror", (e) => errors.push(e.message));
   installApiSchemaFixtureHeaders(page);
   await page.addInitScript(() => {
@@ -118,7 +123,7 @@ test("Large history @performance", async ({ context }) => {
   await stubEntityState(page, state, syncContract);
   const transcript = {
     items,
-    agent: lead,
+    agent: transcriptFixtureAgent(lead),
     historyVersion: "large-history-fixture",
     truncated: false,
     nextAfterCursor: null,
@@ -126,7 +131,7 @@ test("Large history @performance", async ({ context }) => {
     tail: null,
     unavailable: null,
   };
-  const deliveries = [];
+  const deliveries: number[] = [];
   await page.route("**/api/sync/pull?*", (route) => {
     const requestUrl = route.request().url();
     const url = new URL(requestUrl);
@@ -143,7 +148,7 @@ test("Large history @performance", async ({ context }) => {
     });
   });
   let pageRequests = 0;
-  const pageRequestUrls = [];
+  const pageRequestUrls: string[] = [];
   await page.route("**/api/transcript?*", async (r) => {
     const selected =
       new URL(r.request().url()).searchParams.get("id") === lead.id;
@@ -166,7 +171,7 @@ test("Large history @performance", async ({ context }) => {
     await r.fulfill({
       json: {
         items: selected,
-        nextCursor: start > 0 ? items[start - 1].id : null,
+        nextCursor: start > 0 ? required(items[start - 1]).id : null,
         nextAfterCursor:
           end < items.length ? selected.at(-1)?.id || null : null,
       },
@@ -301,10 +306,10 @@ test("Large history @performance", async ({ context }) => {
     try {
       await firstToolSummary.waitFor({ state: "visible" });
     } catch (error) {
-      const state = await page.evaluate(
+      const diagnosticState = await page.evaluate(
         ({ id, stateDir, agentId }) => {
           const turn = document.querySelector(`[data-turn="turn-${id}"]`);
-          const work = turn?.querySelector(".turn-work");
+          const work = turn?.querySelector<HTMLDetailsElement>(".turn-work");
           const firstTool = document.querySelector(
             `[data-message="tool-${id}-0"]`,
           );
@@ -321,7 +326,7 @@ test("Large history @performance", async ({ context }) => {
         { id: turns - 1, stateDir: state.stateDir, agentId: lead.id },
       );
       throw Error(
-        `Newest tool did not render: ${JSON.stringify(state)}. ${error}`,
+        `Newest tool did not render: ${JSON.stringify(diagnosticState)}. ${error}`,
       );
     }
     await page
@@ -355,7 +360,7 @@ test("Large history @performance", async ({ context }) => {
     assert.equal(
       await page
         .locator(`[data-message="tool-${turns - 1}-0"]`)
-        .evaluate((node) => node.open),
+        .evaluate((node) => node instanceof HTMLDetailsElement && node.open),
       true,
       "Reopening the group preserves the selected tool details",
     );
@@ -363,3 +368,10 @@ test("Large history @performance", async ({ context }) => {
   assert.deepEqual(errors, []);
   console.log("Large history UI: PASS", dir);
 });
+
+declare global {
+  interface Window {
+    largeHistoryClickAt: number;
+    largeHistoryChatId: string;
+  }
+}

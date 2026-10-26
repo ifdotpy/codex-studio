@@ -1,3 +1,7 @@
+import { installResponsivenessFixture } from "./ui-responsiveness.fixture.ts";
+import type { Agent } from "../../src/types.ts";
+import type { PerformanceTranscriptItem as Message } from "./performance-fixture.ts";
+import { required, transcriptFixtureAgent } from "./performance-fixture.ts";
 import {
   readTestState,
   readFixtureSyncContract,
@@ -46,13 +50,13 @@ test(
       env: { ...process.env, CODEX_BOARD_STATE_DIR: join(dir, "board") },
     });
     let fixtureLog = "";
-    fixture.stderr.on("data", (chunk) => {
+    required(fixture.stderr).on("data", (chunk) => {
       fixtureLog += chunk;
     });
     const results = [];
     try {
       const port = await new Promise((resolve, reject) => {
-        fixture.stdout.once("data", (chunk) =>
+        required(fixture.stdout).once("data", (chunk) =>
           resolve(Number(String(chunk).trim())),
         );
         fixture.once("exit", () => reject(new Error(fixtureLog)));
@@ -63,12 +67,16 @@ test(
         (agent) => agent.name === "Other project",
       );
       const b = original.threads.find((agent) => agent.name === "Release lead");
-      const agents = [a, b].map((agent) => ({
-        ...agent,
-        status: "completed",
-        inFlight: false,
-        turnId: null,
-      }));
+      if (!a || !b) throw new Error("Missing responsiveness fixture chats");
+      const agents = [a, b].map(
+        (agent) =>
+          ({
+            ...transcriptFixtureAgent(agent),
+            status: "completed",
+            inFlight: false,
+            turnId: null,
+          }) satisfies Agent,
+      );
       const state = {
         ...original,
         threads: agents,
@@ -88,8 +96,8 @@ test(
           monitors: [],
         },
       };
-      const history = (prefix) => {
-        const items = [];
+      const history = (prefix: string): Message[] => {
+        const items: Message[] = [];
         for (let turn = 0; turn < 30; turn++) {
           const shared = {
             turnId: `${prefix}-turn-${turn}`,
@@ -148,179 +156,24 @@ test(
       for (const [name, viewport] of [
         ["desktop", { width: 1440, height: 960 }],
         ["mobile", { width: 390, height: 844 }],
-      ]) {
+      ] as const) {
         const context = await testBrowser.newContext({
           viewport,
           serviceWorkers: "block",
         });
         const page = await context.newPage();
         page.setDefaultTimeout(30000);
-        const errors = [];
+        const errors: string[] = [];
         page.on("pageerror", (error) => errors.push(error.message));
         const cdp = await context.newCDPSession(page);
         await cdp.send("Emulation.setCPUThrottlingRate", { rate: 4 });
-        await page.addInitScript(
-          ({ stateDir, id, rows }) => {
-            localStorage.setItem(
-              `codex-desktop-opened:${stateDir}`,
-              JSON.stringify(id),
-            );
-            localStorage.setItem(
-              `codex-mobile-opened:${stateDir}`,
-              JSON.stringify(id),
-            );
-            for (const [chat, items] of rows)
-              localStorage.setItem(
-                `studio-turns:${stateDir}:${chat}:tools-v3`,
-                JSON.stringify(
-                  Object.fromEntries(
-                    items
-                      .filter((item) => item.role === "tool")
-                      .map((item) => [item.id, false]),
-                  ),
-                ),
-              );
-            window.fixtureStreams = [];
-            const NativeEventSource = window.EventSource;
-            window.EventSource = new Proxy(NativeEventSource, {
-              construct(target, args) {
-                const url = String(args[0]);
-                if (new URL(url, location.href).pathname === "/api/sync/stream")
-                  return Reflect.construct(target, args);
-                class TranscriptFixtureStream extends EventTarget {
-                  constructor() {
-                    super();
-                    this.url = url;
-                    window.fixtureStreams.push(this);
-                  }
-                  close() {
-                    window.fixtureStreams = window.fixtureStreams.filter(
-                      (stream) => stream !== this,
-                    );
-                  }
-                }
-                return new TranscriptFixtureStream();
-              },
-            });
-            window.metrics = {
-              phase: "startup",
-              inputSequence: 0,
-              lastInputAt: -Infinity,
-              input: [],
-              layoutReads: {},
-              longTasks: [],
-              events: [],
-              renderProbe: [],
-              switches: [],
-              stream: [],
-            };
-            window.__studioPromptComposerRenderProbe = (component) =>
-              window.metrics.renderProbe.push({
-                component,
-                phase: window.metrics.phase,
-                inputSequence: window.metrics.inputSequence,
-                inputAgeMs: performance.now() - window.metrics.lastInputAt,
-              });
-            document.addEventListener(
-              "input",
-              () => {
-                window.metrics.inputSequence++;
-                window.metrics.lastInputAt = performance.now();
-              },
-              true,
-            );
-            const rectangle = Element.prototype.getBoundingClientRect;
-            Element.prototype.getBoundingClientRect = function (...args) {
-              const key = `${window.metrics.phase}:${this.tagName}`;
-              window.metrics.layoutReads[key] =
-                (window.metrics.layoutReads[key] || 0) + 1;
-              return rectangle.apply(this, args);
-            };
-            new PerformanceObserver((list) =>
-              window.metrics.longTasks.push(
-                ...list.getEntries().map((entry) => ({
-                  phase: window.metrics.phase,
-                  start: entry.startTime,
-                  duration: entry.duration,
-                })),
-              ),
-            ).observe({ type: "longtask", buffered: true });
-            new PerformanceObserver((list) =>
-              window.metrics.events.push(
-                ...list.getEntries().map((entry) => ({
-                  phase: window.metrics.phase,
-                  type: entry.name,
-                  duration: entry.duration,
-                  inputDelay: entry.processingStart - entry.startTime,
-                })),
-              ),
-            ).observe({ type: "event", buffered: true, durationThreshold: 16 });
-            document.addEventListener(
-              "input",
-              (event) => {
-                if (event.target.id !== "message") return;
-                const started = event.timeStamp,
-                  value = event.target.value;
-                requestAnimationFrame(() =>
-                  requestAnimationFrame(() =>
-                    window.metrics.input.push({
-                      phase: window.metrics.phase,
-                      duration: performance.now() - started,
-                      value,
-                    }),
-                  ),
-                );
-              },
-              true,
-            );
-            document.addEventListener(
-              "pointerdown",
-              (event) => {
-                const chat = event.target.closest("[data-chat]");
-                if (!chat || !window.switchExpected) return;
-                const started = event.timeStamp,
-                  expected = window.switchExpected;
-                const inspect = () => {
-                  if (!document.querySelector(`[data-message="${expected}"]`))
-                    return requestAnimationFrame(inspect);
-                  requestAnimationFrame(() =>
-                    window.metrics.switches.push({
-                      phase: window.metrics.phase,
-                      duration: performance.now() - started,
-                      expected,
-                    }),
-                  );
-                };
-                requestAnimationFrame(inspect);
-              },
-              true,
-            );
-            window.emitFixture = async (id, revision) => {
-              const started = performance.now();
-              await window.__notifyTranscriptFixture(id);
-              await new Promise((resolve) => {
-                const inspect = () => {
-                  if (
-                    !document
-                      .querySelector('[data-message="a-live"]')
-                      ?.textContent.includes(`Stream revision ${revision}.`)
-                  )
-                    return requestAnimationFrame(inspect);
-                  requestAnimationFrame(() => {
-                    window.metrics.stream.push({
-                      phase: window.metrics.phase,
-                      revision,
-                      duration: performance.now() - started,
-                    });
-                    resolve();
-                  });
-                };
-                requestAnimationFrame(inspect);
-              });
-            };
-          },
-          { stateDir: original.stateDir, id: a.id, rows: [...histories] },
-        );
+        const initOptions: Parameters<typeof installResponsivenessFixture>[0] =
+          {
+            stateDir: required(original.stateDir),
+            id: a.id,
+            rows: [...histories],
+          };
+        await page.addInitScript(installResponsivenessFixture, initOptions);
         await page.route("**/*", async (route) => {
           const url = new URL(route.request().url());
           if (url.origin !== origin) return route.fallback();
@@ -338,7 +191,10 @@ test(
                   ? "text/html"
                   : undefined;
             return route
-              .fulfill({ path: join(staticDir, path), contentType: type })
+              .fulfill({
+                path: join(staticDir, path),
+                ...(type ? { contentType: type } : {}),
+              })
               .catch(() => route.fallback());
           }
           if (url.pathname === "/api/transcript") {
@@ -346,7 +202,7 @@ test(
             return route.fulfill({
               json: {
                 agent: agents.find((agent) => agent.id === id),
-                items: histories.get(id) || [],
+                items: histories.get(id ?? "") || [],
                 historyVersion: "fixed-history",
               },
             });
@@ -355,13 +211,16 @@ test(
         });
         const syncContract = await readFixtureSyncContract(origin);
         const { update } = await stubEntityState(page, state, syncContract);
-        await page.exposeFunction("__notifyTranscriptFixture", async (id) => {
-          await update(state, {
-            origin,
-            token: original.token,
-            resources: [{ kind: "transcript", agentId: id }],
-          });
-        });
+        await page.exposeFunction(
+          "__notifyTranscriptFixture",
+          async (id: string) => {
+            await update(state, {
+              origin,
+              token: original.token,
+              resources: [{ kind: "transcript", agentId: id }],
+            });
+          },
+        );
         await page.route("**/api/sync/pull**", (route) => {
           const requestUrl = new URL(route.request().url());
           const scope = requestUrl.searchParams.get("scope") || "";
@@ -384,6 +243,8 @@ test(
           const fixture = entityPullFixtureForRequest(state, pullUrl, {
             transcript,
           });
+          if (!("documents" in fixture))
+            throw new Error("Unexpected sync reset");
           for (const document of fixture.documents)
             document.seq = transcriptSequence;
           fixture.checkpoint.seq = transcriptSequence;
@@ -402,9 +263,9 @@ test(
         }
         await page.locator('[data-message="a-result-29"]').waitFor();
         await page.waitForTimeout(500);
-        const setPhase = (phase) =>
+        const setPhase = (phase: string) =>
           page.evaluate((phase) => {
-            window.metrics.phase = phase;
+            window.responsivenessMetrics.phase = phase;
           }, phase);
         const input = page.locator("#message");
         await setPhase("idle-input");
@@ -427,16 +288,16 @@ test(
         firstText += scrolledSuffix;
         assert.equal(await input.inputValue(), firstText);
         await page.waitForTimeout(150);
-        const switchTo = async (agent, prefix) => {
+        const switchTo = async (agent: Agent, prefix: string) => {
           if (name === "mobile")
             await page.getByLabel("Toggle conversations").click();
           const count = await page.evaluate((expected) => {
-            window.switchExpected = expected;
-            return window.metrics.switches.length;
+            window.responsivenessSwitchExpected = expected;
+            return window.responsivenessMetrics.switches.length;
           }, `${prefix}-result-29`);
           await page.locator(`[data-chat="${agent.id}"]`).click();
           await page.waitForFunction(
-            (count) => window.metrics.switches.length > count,
+            (count) => window.responsivenessMetrics.switches.length > count,
             count,
           );
         };
@@ -451,21 +312,27 @@ test(
         );
         await setPhase("stream-and-input");
         await input.focus();
-        await input.evaluate((element) =>
-          element.setSelectionRange(element.value.length, element.value.length),
+        await input.evaluate(
+          (element) =>
+            element instanceof HTMLTextAreaElement &&
+            element.setSelectionRange(
+              element.value.length,
+              element.value.length,
+            ),
         );
         const suffix = " Input while the answer streams.";
         const streaming = (async () => {
           for (let revision = 1; revision <= 12; revision++) {
-            const items = [...histories.get(a.id)];
+            const items = [...required(histories.get(a.id))];
             items[items.length - 1] = {
-              ...items.at(-1),
+              ...required(items.at(-1)),
               text: `Stream revision ${revision}. ${"Current response text. ".repeat(revision)}`,
             };
             histories.set(a.id, items);
             transcriptSequence++;
             await page.evaluate(
-              ({ id, revision }) => window.emitFixture(id, revision),
+              ({ id, revision }) =>
+                window.responsivenessEmitFixture(id, revision),
               {
                 id: a.id,
                 revision,
@@ -478,7 +345,9 @@ test(
           streaming,
           page.keyboard.type(suffix, { delay: 35 }),
         ]);
-        await page.waitForFunction(() => window.metrics.stream.length === 12);
+        await page.waitForFunction(
+          () => window.responsivenessMetrics.stream.length === 12,
+        );
         assert.equal(
           await input.inputValue(),
           firstText + suffix,
@@ -504,8 +373,8 @@ test(
           /Stream revision 12\./,
         );
         assert.deepEqual(errors, []);
-        const metrics = await page.evaluate(() => window.metrics);
-        const summarize = (values) => {
+        const metrics = await page.evaluate(() => window.responsivenessMetrics);
+        const summarize = (values: number[]) => {
           const sorted = [...values].sort((a, b) => a - b);
           return {
             count: sorted.length,
@@ -519,7 +388,7 @@ test(
         };
         const summary = {
           viewport: name,
-          records: histories.get(a.id).length,
+          records: required(histories.get(a.id)).length,
           domElements: await page.locator("#messages *").count(),
           idleInput: summarize(
             metrics.input
@@ -587,7 +456,9 @@ test(
           JSON.stringify(metrics, null, 2),
         );
         for (const phase of ["idle-input", "scrolled-input"]) {
-          const counts = summary.renderCounts[phase];
+          const counts: Record<string, number> = required(
+            summary.renderCounts[phase],
+          );
           // The paired baseline (7066718) already includes 075fab64's
           // per-chat composer subscription, so typing isolation applies to
           // both revisions; compare latency and render counts without claiming
@@ -603,7 +474,7 @@ test(
             `${name}/${phase}: typing must not rerender the sidebar`,
           );
           assert.ok(
-            counts.conversation <= 1,
+            (counts.conversation ?? 0) <= 1,
             `${name}/${phase}: one incidental Conversation update may coincide with typing, not one per key`,
           );
         }

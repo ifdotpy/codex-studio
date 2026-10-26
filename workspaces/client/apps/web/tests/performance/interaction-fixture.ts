@@ -1,5 +1,10 @@
+import type { components } from "../../src/generated/api.ts";
+import type { PerformanceTranscriptItem as TranscriptWireItem } from "./performance-fixture.ts";
+import type { TranscriptPageResponse } from "../playwright.ts";
+import { required, transcriptFixtureAgent } from "./performance-fixture.ts";
+import { build } from "esbuild";
 import { createServer, request as httpRequest } from "node:http";
-import { writeFile, readFile, appendFile, mkdir } from "node:fs/promises";
+import { writeFile, appendFile, mkdir } from "node:fs/promises";
 import {
   fixture,
   fixtureWorkspaceId,
@@ -10,7 +15,7 @@ const dir = process.argv[2];
 if (!dir?.startsWith("/"))
   throw new Error("Pass an absolute output directory outside the checkout.");
 await mkdir(dir, { recursive: true });
-const messages = Array.from({ length: 360 }, (_, i) => ({
+const messages: TranscriptWireItem[] = Array.from({ length: 360 }, (_, i) => ({
   id: `msg-${i}`,
   role: i % 2 ? "assistant" : "user",
   text:
@@ -25,9 +30,13 @@ const messages = Array.from({ length: 360 }, (_, i) => ({
   turnStatus: "completed",
   ...(i % 2 ? { phase: "final_answer" } : {}),
 }));
-let instance;
-const transcript = (id, before) => {
-  const agent = instance.snapshot.threads.find((a) => a.id === id);
+let instance: Awaited<ReturnType<typeof fixture>>;
+const transcript = (
+  id: string | null,
+  before?: string | null,
+): TranscriptPageResponse => {
+  const found = instance.snapshot.threads.find((a) => a.id === id);
+  const agent = found ? transcriptFixtureAgent(found) : found;
   const all = id === "short" ? messages.slice(0, 4) : messages;
   const end = before
     ? Math.max(
@@ -41,17 +50,20 @@ const transcript = (id, before) => {
     items: all.slice(start, end),
     historyVersion: "perf-1",
     truncated: start > 0,
-    nextCursor: start ? all[start].id : null,
+    nextCursor: start ? required(all[start]).id : null,
     nextAfterCursor: end < all.length ? all[end - 1]?.id : null,
     tail: null,
     unavailable: null,
   };
 };
 instance = await fixture("Performance", false, {
-  dist: process.argv[4],
+  ...(process.argv[4] ? { dist: process.argv[4] } : {}),
   handle({ url, json, snapshot }) {
     if (url.pathname === "/api/changes") {
-      json({ scope: "chat", git: true, files: [], diff: "" });
+      json({ scope: "chat", git: true, files: [], diff: "" } satisfies Pick<
+        components["schemas"]["ChangesResponse"],
+        "scope" | "git" | "files" | "diff"
+      >);
       return true;
     }
     if (url.pathname === "/api/linux-vm/settings") {
@@ -65,7 +77,7 @@ instance = await fixture("Performance", false, {
         state: "running",
         allocatedDiskBytes: 1024,
         error: null,
-      });
+      } satisfies components["schemas"]["LinuxVMSettingsResponse"]);
       return true;
     }
     if (url.pathname === "/api/desktop") {
@@ -75,18 +87,23 @@ instance = await fixture("Performance", false, {
         pid: process.pid,
         stateDir: dir,
         backendBuild: "a".repeat(64),
-      });
+      } satisfies Pick<
+        components["schemas"]["DesktopResponse"],
+        "application" | "protocol" | "pid" | "stateDir" | "backendBuild"
+      >);
       return true;
     }
     if (url.pathname === "/api/session") {
-      json({ token: "local-only" });
+      json({
+        token: "local-only",
+      } satisfies components["schemas"]["SessionResponse"]);
       return true;
     }
     if (
       url.pathname === "/api/sync/pull" &&
       url.searchParams.get("scope")?.startsWith("transcript:")
     ) {
-      const id = url.searchParams.get("scope").slice(11);
+      const id = url.searchParams.get("scope")?.slice(11) ?? "";
       json({
         workspaceId: fixtureWorkspaceId("Performance"),
         ...entityPullFixtureForRequest(snapshot, url.href, {
@@ -107,49 +124,60 @@ instance = await fixture("Performance", false, {
     }
   },
 });
-const base = instance.snapshot.threads[0];
+const base = required(instance.snapshot.threads[0]);
 instance.setChats(
   ["short", "long", "other"].map((id, i) => ({
     ...base,
     id,
     rootId: id,
     threadId: `thread-${id}`,
-    name: ["Short conversation", "Long conversation", "Other conversation"][i],
+    name: required(
+      ["Short conversation", "Long conversation", "Other conversation"][i],
+    ),
   })),
 );
+const scenario = await build({
+  entryPoints: [new URL("./interaction-scenario.ts", import.meta.url).pathname],
+  bundle: true,
+  write: false,
+  format: "iife",
+  platform: "browser",
+});
 const server = createServer(async (req, res) => {
-  if (req.url.startsWith("/api/"))
-    await appendFile(dir + "/requests.log", req.method + " " + req.url + "\n");
-  if (req.url === "/benchmark-result") {
+  const requestUrl = required(req.url);
+  if (requestUrl.startsWith("/api/"))
+    await appendFile(
+      dir + "/requests.log",
+      req.method + " " + requestUrl + "\n",
+    );
+  if (requestUrl === "/benchmark-result") {
     let body = "";
     for await (const chunk of req) body += chunk;
     await writeFile(dir + "/browser-latest.json", body);
     res.end("ok");
     return;
   }
-  if (req.url === "/scenario.js") {
+  if (requestUrl === "/scenario.js") {
     res.setHeader("Content-Type", "text/javascript");
-    res.end(
-      await readFile(new URL("./interaction-scenario.ts", import.meta.url)),
-    );
+    res.end(required(scenario.outputFiles[0]).contents);
     return;
   }
   const forward = httpRequest(
-    instance.origin + req.url,
+    instance.origin + requestUrl,
     { method: req.method, headers: req.headers },
     (up) => {
       const headers = { ...up.headers };
-      if (headers["content-security-policy"])
+      if (typeof headers["content-security-policy"] === "string")
         headers["content-security-policy"] = headers[
           "content-security-policy"
         ].replace("script-src 'self'", "script-src 'self' 'wasm-unsafe-eval'");
       delete headers["content-length"];
       headers["cache-control"] = "no-store";
-      if (req.url === "/" || req.url.startsWith("/?")) {
+      if (requestUrl === "/" || requestUrl.startsWith("/?")) {
         let body = "";
         up.on("data", (v) => (body += v));
         up.on("end", () => {
-          res.writeHead(up.statusCode, headers);
+          res.writeHead(required(up.statusCode), headers);
           res.end(
             body.replace(
               "<head>",
@@ -158,9 +186,9 @@ const server = createServer(async (req, res) => {
           );
         });
       } else {
-        if (req.url.endsWith(".wasm"))
+        if (requestUrl.endsWith(".wasm"))
           headers["content-type"] = "application/wasm";
-        res.writeHead(up.statusCode, headers);
+        res.writeHead(required(up.statusCode), headers);
         up.pipe(res);
       }
     },
@@ -173,7 +201,10 @@ const server = createServer(async (req, res) => {
   res.on("close", () => forward.destroy());
 });
 server.listen(Number(process.argv[3] || 0), "127.0.0.1", async () => {
-  const origin = `http://127.0.0.1:${server.address().port}`;
+  const address = server.address();
+  if (!address || typeof address === "string")
+    throw new Error("Missing fixture server address");
+  const origin = `http://127.0.0.1:${address.port}`;
   await writeFile(
     dir + "/fixture.json",
     JSON.stringify({ origin, pid: process.pid }),
