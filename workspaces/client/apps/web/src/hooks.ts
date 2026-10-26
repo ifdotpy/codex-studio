@@ -495,12 +495,12 @@ export function transcriptMessages(
 type TranscriptPage = {
   items: Message[];
   size: number;
-  anchorId?: string;
-  before: string | null;
+  anchorId?: string | undefined;
+  before: string | null | undefined;
   after: string | null;
   focused: boolean;
-  version?: string;
-  latest?: TranscriptPageData;
+  version?: string | undefined;
+  latest?: TranscriptPageData | undefined;
 };
 
 type RoomPage = {
@@ -509,7 +509,7 @@ type RoomPage = {
   before: number | null;
   after: number | null;
   pollAfter: number | null;
-  anchorId?: string;
+  anchorId?: string | undefined;
 };
 
 export function useMessages(
@@ -546,7 +546,12 @@ export function useMessages(
   const history = useRef(
     new Map<
       string,
-      { items: Message[]; notice: string; size: number; seq?: number }
+      {
+        items: Message[];
+        notice: string;
+        size: number;
+        seq?: number | undefined;
+      }
     >(),
   );
   const messageSizes = useRef(new WeakMap<Message, number>());
@@ -601,7 +606,7 @@ export function useMessages(
   const [items, setItems] = useState<Message[]>([]),
     [loadedId, setLoadedId] = useState<string | null>(null),
     [notice, setNotice] = useState(""),
-    [before, setBefore] = useState<number | string | null>(null),
+    [before, setBefore] = useState<number | string | null | undefined>(null),
     [after, setAfter] = useState<string | null>(null),
     [historical, setHistorical] = useState(false),
     [pageLoading, setPageLoading] = useState(false),
@@ -1049,7 +1054,7 @@ export function useMessages(
     before?: string;
     after?: string;
     around?: string;
-    anchor?: string;
+    anchor?: string | undefined;
   }) => {
     if (
       !id ||

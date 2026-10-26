@@ -22,7 +22,7 @@ const repositoryRoot = path.resolve(
 const hookSource = path.join(repositoryRoot, ".githooks", "pre-commit");
 const checkSource = path.join(
   repositoryRoot,
-  "workspaces/tooling/apps/repository-checks/check-code.mjs",
+  "workspaces/tooling/apps/repository-checks/check-code.ts",
 );
 const temporaryRoots = [];
 
@@ -48,7 +48,7 @@ function fixture() {
   mkdirSync(path.join(root, ".githooks"), { recursive: true });
   const checkerPath = path.join(
     root,
-    "workspaces/tooling/apps/repository-checks/check-code.mjs",
+    "workspaces/tooling/apps/repository-checks/check-code.ts",
   );
   mkdirSync(path.dirname(checkerPath), { recursive: true });
   mkdirSync(path.join(root, "node_modules", ".bin"), { recursive: true });
