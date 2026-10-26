@@ -1082,6 +1082,13 @@ export function gateSteps(root: string, name: string): GateStep[] {
       },
       { id: "tooling", label: "tooling tests", lane: "js", item: tooling },
       {
+        id: "root-lint",
+        label: "repository lint policy",
+        lane: "js",
+        item: tooling,
+        options: { script: "lint:all", allowZeroTests: true },
+      },
+      {
         id: "guest",
         label: "VM guest Python suite",
         lane: "guest",

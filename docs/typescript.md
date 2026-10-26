@@ -48,6 +48,19 @@ boundary for untrusted input.
 [`tsconfig.base.json`](../tsconfig.base.json) owns these compiler settings.
 Every project extends it, and `just test-fast` checks every project.
 
+The shared compiler policy also checks indexed access, exact optional properties,
+complete return paths, overrides, and switch fallthrough. Closed domains use the
+generated union or one local owner; exhaustive switches end with a `never` proof,
+and complete lookup tables use `satisfies Record<Domain, Value>`. Do not widen a
+closed domain to `string` or suppress a compiler error with a cast or fallback.
+Absence is distinct from failure: preserve meaningful missing wire fields, but
+represent failed operations with their typed error result. Successful command
+variants carry their required fields.
+
+The [compiler policy witness](../workspaces/tooling/apps/repository-checks/tests/compiler-policy.test.ts)
+checks every tracked program against the shared owner. Root lint runs in both
+local test tiers and their hosted non-Rust composition.
+
 ## JavaScript exceptions
 
 A file stays JavaScript only when its runtime loads that file unchanged and has
