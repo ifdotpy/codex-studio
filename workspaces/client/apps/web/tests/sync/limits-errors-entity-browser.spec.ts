@@ -1,3 +1,20 @@
+import type { FixtureResourceChange } from "./helpers.ts";
+import type {
+  AccountRateLimitsDto,
+  AgentEntityDto,
+  SyncEntity,
+} from "../playwright.ts";
+import type { components } from "../../src/generated/api.ts";
+import { fixtureResources } from "./helpers.ts";
+type PendingEntity = SyncEntity extends infer Entity
+  ? Entity extends SyncEntity
+    ? Omit<Entity, "seq"> & { seq?: number }
+    : never
+  : never;
+import type { IncomingMessage, ServerResponse } from "node:http";
+import type { Connect } from "vite";
+import { fixtureOrigin } from "./helpers.ts";
+import type {} from "./limits-errors-entity-browser.fixture.tsx";
 import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
 import {
@@ -32,8 +49,8 @@ test("limits and Studio errors update from entities with no idle HTTP refresh", 
     created: Date.now() / 1000,
     inFlight: false,
     canSend: true,
-  };
-  const limits = (usedPercent, at) => ({
+  } satisfies AgentEntityDto;
+  const limits = (usedPercent: number, at: number): AccountRateLimitsDto => ({
     accountKey: "default",
     at,
     data: {
@@ -68,10 +85,11 @@ test("limits and Studio errors update from entities with no idle HTTP refresh", 
       rateLimitsByAccount: { default: limits(11, 100) },
     },
   };
-  let through = entityPullFixture(snapshot).maxSeq;
-  const streams = new Set();
-  const requests = [];
-  const errors = [];
+  let through = entityPullFixture(snapshot).maxSeq ?? 0;
+  const streams = new Set<ServerResponse>();
+  const requests: { method: string | undefined; path: string; at: number }[] =
+    [];
+  const errors: string[] = [];
   page.on("pageerror", (error) => errors.push(error.stack || error.message));
   const server = await createFixtureViteServer({
     configFile: false,
@@ -80,36 +98,29 @@ test("limits and Studio errors update from entities with no idle HTTP refresh", 
     plugins: [
       {
         name: "limits-errors-app",
-        resolveId(id) {
-          if (id === "/entity-fixture.tsx") return "\0entity-fixture";
-        },
-        load(id) {
-          if (id !== "\0entity-fixture") return;
-          return `import React from 'react'; import {createRoot} from 'react-dom/client';
-          import {MantineProvider} from '@mantine/core'; import '@mantine/core/styles.css';
-          import App from '/src/App.tsx'; import {SidebarWarningsProvider} from '/src/components/SidebarWarnings.tsx'; import {theme} from '/src/theme.ts';
-          import '/src/style.css';
-          createRoot(document.getElementById('root')).render(React.createElement(MantineProvider,{theme},React.createElement(SidebarWarningsProvider,null,React.createElement(App))));`;
-        },
       },
     ],
   });
   server.middlewares.stack.unshift({
     route: "",
-    handle(req, res, next) {
-      const url = new URL(req.url, "http://fixture.local");
+    handle(
+      req: IncomingMessage,
+      res: ServerResponse,
+      next: Connect.NextFunction,
+    ) {
+      const url = new URL(req.url ?? "/", "http://fixture.local");
       if (!url.pathname.startsWith("/api/")) {
         if (url.pathname === "/check") {
           res.setHeader("Content-Type", "text/html");
           res.end(
-            '<div id="root"></div><script type="module" src="/entity-fixture.tsx"></script>',
+            '<div id="root"></div><script type="module" src="/tests/sync/limits-errors-entity-browser.fixture.tsx"></script>',
           );
           return;
         }
         return next();
       }
       requests.push({ method: req.method, path: url.pathname, at: Date.now() });
-      const json = (value, status = 200) => {
+      const json = (value: unknown, status = 200) => {
         res.writeHead(status, {
           ...apiSchemaHeaders(),
           "Content-Type": "application/json",
@@ -117,7 +128,7 @@ test("limits and Studio errors update from entities with no idle HTTP refresh", 
         res.end(JSON.stringify(value));
       };
       if (url.pathname === "/api/sync/stream") {
-        const resources = JSON.parse(url.searchParams.get("resources") || "[]");
+        const resources = fixtureResources(url.searchParams.get("resources"));
         res.writeHead(200, {
           ...apiSchemaHeaders(),
           "Content-Type": "text/event-stream",
@@ -174,9 +185,12 @@ test("limits and Studio errors update from entities with no idle HTTP refresh", 
       return json({ items: [], data: [], accounts: [], total: 0 });
     },
   });
-  const publish = (changes) => {
+  const publish = (changes: PendingEntity[]) => {
     const from = through;
-    for (const change of changes) change.seq = ++through;
+    const documents = changes.map((change): SyncEntity => {
+      change.seq = ++through;
+      return { ...change, seq: through };
+    });
     for (const stream of streams)
       stream.write(
         protocol3SseEvent("resources", {
@@ -190,17 +204,15 @@ test("limits and Studio errors update from entities with no idle HTTP refresh", 
             {
               resource: { kind: "state" },
               revision: through,
-              entityChanges: { after: from, through, documents: changes },
+              entityChanges: { after: from, through, documents },
             },
           ],
-        }),
+        } satisfies FixtureResourceChange),
       );
   };
   await server.listen();
   try {
-    await page.goto(
-      `http://127.0.0.1:${server.httpServer.address().port}/check`,
-    );
+    await page.goto(fixtureOrigin(server) + `/check`);
     try {
       await page.locator('[data-chat="lead"]').click({ timeout: 20_000 });
     } catch (error) {
@@ -230,7 +242,7 @@ test("limits and Studio errors update from entities with no idle HTTP refresh", 
       detail: "",
       subject: "",
       at: 100,
-    };
+    } satisfies components["schemas"]["StudioError"];
     publish([
       {
         op: "upsert",

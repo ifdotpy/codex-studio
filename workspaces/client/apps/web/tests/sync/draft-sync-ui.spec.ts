@@ -1,3 +1,11 @@
+import type { Page, Request } from "@playwright/test";
+import type { DraftVersion } from "../../src/generated/rustOwned.ts";
+import type { components } from "../../src/generated/api.ts";
+import {
+  fixturePostBody,
+  draftPushDocument,
+  readDraftDocuments,
+} from "./helpers.ts";
 import {
   readTestState,
   test,
@@ -23,12 +31,17 @@ test("Draft sync ui", async ({
     stdio: ["pipe", "pipe", "pipe"],
     env: { ...process.env, FIXTURE_WORKER_COUNT: "1" },
   });
+  if (!fixture.stdout || !fixture.stderr)
+    throw new Error("Fixture output pipes unavailable");
   let log = "";
   fixture.stderr.on("data", (chunk) => {
     log += chunk;
   });
   try {
     const port = await new Promise((resolve, reject) => {
+      if (!fixture.stdout) throw new Error("Missing fixture stdout");
+      if (!fixture.stdout) throw new Error("Missing fixture stdout");
+      if (!fixture.stdout) throw new Error("Missing fixture stdout");
       fixture.stdout.once("data", (chunk) =>
         resolve(Number(String(chunk).trim())),
       );
@@ -36,9 +49,11 @@ test("Draft sync ui", async ({
     });
     const origin = `http://127.0.0.1:${port}`;
     const snapshot = await readTestState(origin);
-    const session = snapshot.runtime.agents.find(
+    const sessionAgent = snapshot.runtime.agents.find(
       (agent) => agent.name === "Other project",
-    ).id;
+    );
+    assert.ok(sessionAgent);
+    const session = sessionAgent.id;
     const { workspaceId } = await (
       await fetch(origin + "/api/sync/identity")
     ).json();
@@ -57,7 +72,7 @@ test("Draft sync ui", async ({
           key,
           JSON.stringify({ [session]: "Retired aggregate-map draft" }),
         );
-        window.__retiredDraftMap = {
+        window.draftSyncUiFixture__retiredDraftMap = {
           key,
           original: JSON.stringify({
             [session]: "Retired aggregate-map draft",
@@ -66,31 +81,28 @@ test("Draft sync ui", async ({
           read: () => originalGetItem.call(localStorage, key),
         };
         Storage.prototype.getItem = function (candidate) {
-          if (candidate === key) window.__retiredDraftMap.accesses++;
+          if (candidate === key)
+            window.draftSyncUiFixture__retiredDraftMap.accesses++;
           return originalGetItem.call(this, candidate);
         };
         Storage.prototype.setItem = function (candidate, value) {
-          if (candidate === key) window.__retiredDraftMap.accesses++;
+          if (candidate === key)
+            window.draftSyncUiFixture__retiredDraftMap.accesses++;
           return originalSetItem.call(this, candidate, value);
         };
         Storage.prototype.removeItem = function (candidate) {
-          if (candidate === key) window.__retiredDraftMap.accesses++;
+          if (candidate === key)
+            window.draftSyncUiFixture__retiredDraftMap.accesses++;
           return originalRemoveItem.call(this, candidate);
         };
       },
       { workspaceId, session, key: retiredDraftMapKey },
     );
-    const documents = async () =>
-      (
-        await (
-          await fetch(origin + "/api/sync/pull?scope=drafts&after=0&limit=100")
-        ).json()
-      ).documents;
-    const push = async (value, previous) => {
-      const toApiDocument = (document) => {
-        const { _deleted, ...state } = document;
-        return { ...state, deleted: _deleted === true };
-      };
+    const documents = () => readDraftDocuments(origin);
+    const push = async (
+      value: DraftVersion,
+      previous?: Awaited<ReturnType<typeof readDraftDocuments>>[number],
+    ) => {
       const response = await fetch(origin + "/api/sync/drafts", {
         method: "POST",
         headers: {
@@ -102,14 +114,14 @@ test("Draft sync ui", async ({
         body: JSON.stringify({
           rows: [
             {
-              newDocumentState: toApiDocument({
+              newDocumentState: draftPushDocument({
                 id: value.id,
                 seq: 0,
                 payload: JSON.stringify(value),
                 _deleted: false,
               }),
               ...(previous
-                ? { assumedMasterState: toApiDocument(previous) }
+                ? { assumedMasterState: draftPushDocument(previous) }
                 : {}),
             },
           ],
@@ -118,18 +130,17 @@ test("Draft sync ui", async ({
       assert.equal(response.status, 200);
       assert.deepEqual(await response.json(), []);
     };
-    const editDraft = async (page, text) => {
+    const editDraft = async (page: Page, text: string) => {
       const saved = page.waitForResponse(
         (response) =>
           new URL(response.url()).pathname === "/api/sync/drafts" &&
           response.request().method() === "POST" &&
           response.ok() &&
-          response
-            .request()
-            .postDataJSON()
-            .rows.some(
-              (row) => JSON.parse(row.newDocumentState.payload).text === text,
-            ),
+          fixturePostBody<"/api/sync/drafts">(
+            response.request().postDataJSON(),
+          ).rows.some(
+            (row) => JSON.parse(row.newDocumentState.payload).text === text,
+          ),
       );
       await page.locator("#message").fill(text);
       assert.deepEqual(await (await saved).json(), []);
@@ -141,8 +152,8 @@ test("Draft sync ui", async ({
       isMobile: true,
       hasTouch: true,
     });
-    const errors = [];
-    const pushedIds = new Set();
+    const errors: string[] = [];
+    const pushedIds = new Set<string>();
     for (const page of [desktop, phone]) {
       page.on("pageerror", (error) => errors.push(error.message));
       page.on("request", (request) => {
@@ -151,14 +162,20 @@ test("Draft sync ui", async ({
           request.method() !== "POST"
         )
           return;
-        for (const row of request.postDataJSON().rows)
+        for (const row of fixturePostBody<"/api/sync/drafts">(
+          request.postDataJSON(),
+        ).rows)
           pushedIds.add(row.newDocumentState.id);
       });
     }
     await desktop.goto(origin);
-    await desktop.waitForFunction(() => window.__retiredDraftMap);
+    await desktop.waitForFunction(
+      () => window.draftSyncUiFixture__retiredDraftMap,
+    );
     assert.equal(
-      await desktop.evaluate(() => window.__retiredDraftMap.accesses),
+      await desktop.evaluate(
+        () => window.draftSyncUiFixture__retiredDraftMap.accesses,
+      ),
       0,
       "App startup must not access the retired aggregate draft map",
     );
@@ -172,12 +189,14 @@ test("Draft sync ui", async ({
       "A draft from the retired aggregate map must not appear",
     );
     assert.equal(
-      await desktop.evaluate(() => window.__retiredDraftMap.read()),
+      await desktop.evaluate(() =>
+        window.draftSyncUiFixture__retiredDraftMap.read(),
+      ),
       JSON.stringify({ [session]: "Retired aggregate-map draft" }),
       "The aggregate map must remain byte-identical",
     );
     await desktop.locator("#message").fill("Draft from desktop");
-    const waitText = (page, text) =>
+    const waitText = (page: Page, text: string) =>
       expect(page.locator("#message")).toHaveValue(text, { timeout: 15_000 });
     await phone.goto(origin);
     await phone
@@ -210,12 +229,16 @@ test("Draft sync ui", async ({
     await phone.locator("#message").fill("Current draft");
     await waitText(desktop, "Current draft");
     assert.equal(
-      await desktop.evaluate(() => window.__retiredDraftMap.accesses),
+      await desktop.evaluate(
+        () => window.draftSyncUiFixture__retiredDraftMap.accesses,
+      ),
       0,
       "Current draft edits and synchronization never access the retired aggregate map",
     );
     assert.equal(
-      await desktop.evaluate(() => window.__retiredDraftMap.read()),
+      await desktop.evaluate(() =>
+        window.draftSyncUiFixture__retiredDraftMap.read(),
+      ),
       JSON.stringify({ [session]: "Retired aggregate-map draft" }),
     );
     // Failure/retry scheduling is exercised with virtual time by
@@ -246,11 +269,14 @@ test("Draft sync ui", async ({
     const panel = phone.locator(".draft-versions");
     await panel.waitFor();
     const bounds = await panel.boundingBox();
+    assert.ok(bounds);
     assert.ok(
       bounds.height <= 321 && bounds.width <= 366,
       JSON.stringify(bounds),
     );
     const after = await phone.locator("#composer").boundingBox();
+    assert.ok(before);
+    assert.ok(after);
     assert.ok(
       Math.abs(before.y - after.y) < 1,
       "Conflict preview must not shrink the chat",
@@ -278,6 +304,7 @@ test("Draft sync ui", async ({
     const previous = (await documents()).find(
       (doc) => doc.id === `offline-0:${session}`,
     );
+    assert.ok(previous);
     await push(
       {
         ...JSON.parse(previous.payload),
@@ -332,12 +359,15 @@ test("Draft sync resume preserves a pending conflict", async ({ page }) => {
     stdio: ["pipe", "pipe", "pipe"],
     env: { ...process.env, FIXTURE_WORKER_COUNT: "1" },
   });
+  if (!fixture.stdout || !fixture.stderr)
+    throw new Error("Fixture output pipes unavailable");
   let log = "";
   fixture.stderr.on("data", (chunk) => {
     log += chunk;
   });
   try {
     const port = await new Promise((resolve, reject) => {
+      if (!fixture.stdout) throw new Error("Missing fixture stdout");
       fixture.stdout.once("data", (chunk) =>
         resolve(Number(String(chunk).trim())),
       );
@@ -350,16 +380,11 @@ test("Draft sync resume preserves a pending conflict", async ({ page }) => {
     const { workspaceId } = await (
       await fetch(`${origin}/api/sync/identity`)
     ).json();
-    const documents = async () =>
-      (
-        await (
-          await fetch(`${origin}/api/sync/pull?scope=drafts&after=0&limit=100`)
-        ).json()
-      ).documents;
+    const documents = () => readDraftDocuments(origin);
     // Observe the actual Dexie transaction commit used by the mounted app.
     // A successful HTTP response alone does not prove the remote row is local.
     await page.addInitScript(() => {
-      const committed = new Map();
+      const committed = new Map<string, DraftVersion>();
       const changes = new EventTarget();
       const put = IDBObjectStore.prototype.put;
       IDBObjectStore.prototype.put = function (value, ...args) {
@@ -373,8 +398,8 @@ test("Draft sync resume preserves a pending conflict", async ({ page }) => {
         }
         return request;
       };
-      window.waitForDraftText = (id, text) =>
-        new Promise((resolve) => {
+      window.draftSyncUiFixtureWaitForDraftText = (id, text) =>
+        new Promise<void>((resolve) => {
           const check = () => {
             if (committed.get(id)?.text !== text) return;
             changes.removeEventListener("commit", check);
@@ -384,11 +409,10 @@ test("Draft sync resume preserves a pending conflict", async ({ page }) => {
           check();
         });
     });
-    const sendRemote = async (value, previous) => {
-      const toApiDocument = (document) => {
-        const { _deleted, ...state } = document;
-        return { ...state, deleted: _deleted === true };
-      };
+    const sendRemote = async (
+      value: DraftVersion,
+      previous: Awaited<ReturnType<typeof readDraftDocuments>>[number],
+    ) => {
       const response = await fetch(`${origin}/api/sync/drafts`, {
         method: "POST",
         headers: {
@@ -400,13 +424,13 @@ test("Draft sync resume preserves a pending conflict", async ({ page }) => {
         body: JSON.stringify({
           rows: [
             {
-              newDocumentState: toApiDocument({
+              newDocumentState: draftPushDocument({
                 id: value.id,
                 seq: 0,
                 payload: JSON.stringify(value),
                 _deleted: false,
               }),
-              assumedMasterState: toApiDocument(previous),
+              assumedMasterState: draftPushDocument(previous),
             },
           ],
         }),
@@ -414,31 +438,29 @@ test("Draft sync resume preserves a pending conflict", async ({ page }) => {
       assert.equal(response.status, 200);
       assert.deepEqual(await response.json(), []);
     };
-    const hasText = (request, text) =>
+    const hasText = (request: Request, text: string) =>
       new URL(request.url()).pathname === "/api/sync/drafts" &&
       request.method() === "POST" &&
-      request
-        .postDataJSON()
-        .rows.some(
-          (row) => JSON.parse(row.newDocumentState.payload).text === text,
-        );
-    const savedText = (text) =>
+      fixturePostBody<"/api/sync/drafts">(request.postDataJSON()).rows.some(
+        (row) => JSON.parse(row.newDocumentState.payload).text === text,
+      );
+    const savedText = (text: string) =>
       page.waitForResponse(
         (response) => response.ok() && hasText(response.request(), text),
       );
-    const attempts = [];
+    const attempts: components["schemas"]["DraftPushRow"][] = [];
     let failPush = false;
     let remotePulled = false;
-    let completeRemotePull;
-    const remotePullCompleted = new Promise((resolve) => {
-      completeRemotePull = resolve;
-    });
+    const { promise: remotePullCompleted, resolve: completeRemotePull } =
+      Promise.withResolvers<void>();
     let targetId = "";
     let remoteText = "";
-    const pageErrors = [];
+    const pageErrors: string[] = [];
     page.on("pageerror", (error) => pageErrors.push(error.message));
     await page.route("**/api/sync/drafts", async (route) => {
-      const rows = route.request().postDataJSON().rows;
+      const rows = fixturePostBody<"/api/sync/drafts">(
+        route.request().postDataJSON(),
+      ).rows;
       attempts.push(...rows);
       if (failPush) {
         return route.abort("failed");
@@ -449,10 +471,12 @@ test("Draft sync resume preserves a pending conflict", async ({ page }) => {
       if (new URL(route.request().url()).searchParams.get("scope") !== "drafts")
         return route.continue();
       const response = await route.fetch();
-      const body = await response.json();
+      const body: import("../playwright.ts").SyncPullResponse =
+        await response.json();
       const containsRemoteWinner = body.documents.some(
         (document) =>
           document.id === targetId &&
+          "payload" in document &&
           JSON.parse(document.payload).text === remoteText,
       );
       await route.fulfill({ response, body: JSON.stringify(body) });
@@ -487,10 +511,13 @@ test("Draft sync resume preserves a pending conflict", async ({ page }) => {
       baseline,
     );
     await page.evaluate(() => window.dispatchEvent(new Event("online")));
-    await page.evaluate(({ id, text }) => window.waitForDraftText(id, text), {
-      id: targetId,
-      text: pulledRemoteText,
-    });
+    await page.evaluate(
+      ({ id, text }) => window.draftSyncUiFixtureWaitForDraftText(id, text),
+      {
+        id: targetId,
+        text: pulledRemoteText,
+      },
+    );
     const pulledRemoteMaster = (await documents()).find(
       (document) => document.id === targetId,
     );
@@ -532,10 +559,9 @@ test("Draft sync resume preserves a pending conflict", async ({ page }) => {
       "Draft sync paused. Retrying automatically.",
       "a healthy pull cannot hide the failed push",
     );
-    assert.ok(
-      (await status.boundingBox()).height < 50,
-      "failure is a compact status",
-    );
+    const statusBounds = await status.boundingBox();
+    assert.ok(statusBounds);
+    assert.ok(statusBounds.height < 50, "failure is a compact status");
     const recovered = savedText(remoteText);
     failPush = false;
     await page.clock.runFor(
@@ -545,8 +571,10 @@ test("Draft sync resume preserves a pending conflict", async ({ page }) => {
     const current = (await documents()).find(
       (document) => document.id === targetId,
     );
-    const version = JSON.parse(current.payload);
+    assert.ok(current);
+    const version: DraftVersion = JSON.parse(current.payload);
     assert.equal(version.text, remoteText);
+    assert.ok(version.alternatives);
     assert.ok(version.alternatives.includes("Pending local conflict"));
     assert.ok(
       attempts.some(
@@ -567,3 +595,18 @@ test("Draft sync resume preserves a pending conflict", async ({ page }) => {
     fixture.kill("SIGTERM");
   }
 });
+
+declare global {
+  interface Window {
+    draftSyncUiFixture__retiredDraftMap: {
+      key: string;
+      original: string;
+      accesses: number;
+      read: () => string | null;
+    };
+    draftSyncUiFixtureWaitForDraftText: (
+      id: string,
+      text: string,
+    ) => Promise<void>;
+  }
+}

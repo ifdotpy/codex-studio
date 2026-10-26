@@ -1,3 +1,9 @@
+import type { FixturePullResponse } from "./helpers.ts";
+import { fixtureResources } from "./helpers.ts";
+import type {} from "./sync-required-browser.fixture.tsx";
+import type { IncomingMessage, ServerResponse } from "node:http";
+import type { Connect } from "vite";
+import { fixtureOrigin } from "./helpers.ts";
 // Unsupported endpoints fail visibly and never bypass the durable outbox.
 import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
@@ -31,7 +37,7 @@ test("sync required browser", async ({ page: runnerPage }) => {
   await server.listen();
   try {
     const page = runnerPage,
-      errors = [];
+      errors: string[] = [];
     page.on("pageerror", (error) => errors.push(error.message));
     let status = 404,
       probes = 0,
@@ -57,37 +63,28 @@ test("sync required browser", async ({ page: runnerPage }) => {
       sends++;
       return route.fulfill({ json: { status: "queued" } });
     });
-    const url = `http://127.0.0.1:${server.httpServer.address().port}/sync-check`;
-    const mount = async () =>
-      page.evaluate(async () => {
-        const { useOutbox } = await import("/src/sync/send.ts");
-        const { useSyncedDrafts } = await import("/src/sync/drafts.ts");
-        const r = await import("/node_modules/.vite/deps/react.js"),
-          d = await import("/node_modules/.vite/deps/react-dom_client.js");
-        const React = r.default || r,
-          { createRoot } = d.default || d;
-        const root = document.createElement("div");
-        document.body.appendChild(root);
-        createRoot(root).render(
-          React.createElement(function Harness() {
-            const outbox = useOutbox(),
-              drafts = useSyncedDrafts();
-            window.state = { outbox, drafts };
-            return null;
-          }),
-        );
-      });
+    const url = fixtureOrigin(server) + `/sync-check`;
+    const mount = async () => (
+      await page.addScriptTag({
+        type: "module",
+        url: "/tests/sync/sync-required-browser.fixture.tsx",
+      }),
+      await page.evaluate(() => window.syncRequiredBrowserMount1())
+    );
     await page.clock.install();
     await page.goto(url);
     await mount();
-    await page.waitForFunction(() => window.state);
+    await page.waitForFunction(() => window.syncRequiredBrowserFixtureState);
     await page.evaluate(() =>
-      window.state.drafts.setDrafts({ lead: "Saved local draft" }),
+      window.syncRequiredBrowserFixtureState.drafts.setDrafts({
+        lead: "Saved local draft",
+      }),
     );
     await page.waitForFunction(
       () =>
-        JSON.parse(localStorage.getItem("codex-chat-draft:unassigned:lead"))
-          ?.text === "Saved local draft",
+        JSON.parse(
+          localStorage.getItem("codex-chat-draft:unassigned:lead") ?? "null",
+        )?.text === "Saved local draft",
     );
     await expect.poll(() => probes).toBeGreaterThan(0);
     assert.equal(
@@ -95,7 +92,9 @@ test("sync required browser", async ({ page: runnerPage }) => {
       null,
     );
     await page.waitForFunction(
-      () => window.state.outbox.error && window.state.drafts.error,
+      () =>
+        window.syncRequiredBrowserFixtureState.outbox?.error &&
+        window.syncRequiredBrowserFixtureState.drafts.error,
     );
     const sendError = await page.evaluate(async () => {
       try {
@@ -103,24 +102,31 @@ test("sync required browser", async ({ page: runnerPage }) => {
           await import("/src/sync/send.ts")
         ).durableSend({ id: "missing-sync", room: "lead", text: "message" });
       } catch (error) {
-        return error.message;
+        return error instanceof Error ? error.message : String(error);
       }
     });
+    assert.ok(sendError);
     assert.match(sendError, /Identity unavailable/);
     assert.equal(sends, 0);
     await page.reload();
     await mount();
     await page.waitForFunction(
-      () => window.state?.drafts.drafts.lead === "Saved local draft",
+      () =>
+        window.syncRequiredBrowserFixtureState?.drafts.drafts.lead ===
+        "Saved local draft",
     );
     status = 503;
     await page.reload();
     await mount();
     await page.waitForFunction(
-      () => window.state?.drafts.error && window.state?.outbox.error,
+      () =>
+        window.syncRequiredBrowserFixtureState?.drafts.error &&
+        window.syncRequiredBrowserFixtureState?.outbox?.error,
     );
     assert.equal(
-      await page.evaluate(() => window.state.drafts.error),
+      await page.evaluate(
+        () => window.syncRequiredBrowserFixtureState.drafts.error,
+      ),
       "Draft sync paused. Retrying automatically.",
     );
     // Initial connection failures retry without a reload or loss of the local draft.
@@ -130,43 +136,57 @@ test("sync required browser", async ({ page: runnerPage }) => {
           workspaceId: "a".repeat(32),
           documents: [],
           checkpoint: { seq: 0 },
-        },
+        } satisfies FixturePullResponse,
       }),
     );
     await page.route("**/api/sync/drafts", (route) =>
       route.fulfill({ json: [] }),
     );
     status = 200;
-    await page.waitForFunction(() => window.state.drafts.error === "");
+    await page.waitForFunction(
+      () => window.syncRequiredBrowserFixtureState.drafts.error === "",
+    );
     assert.equal(
-      await page.evaluate(() => window.state.drafts.drafts.lead),
+      await page.evaluate(
+        () => window.syncRequiredBrowserFixtureState.drafts.drafts.lead,
+      ),
       "Saved local draft",
     );
     // Successful remote reads cannot clear a local storage failure.
     await page.evaluate(async () => {
       const { db } = await (await import("/src/sync/client.ts")).syncDatabase();
       const original = db.drafts.incrementalUpsert;
-      window.restoreDraftWrites = () => {
+      window.syncRequiredBrowserFixtureRestoreDraftWrites = () => {
         db.drafts.incrementalUpsert = original;
       };
       db.drafts.incrementalUpsert = async () => {
         throw new Error("Local write fixture");
       };
-      window.state.drafts.setDrafts({ lead: "Unsaved local edit" });
+      window.syncRequiredBrowserFixtureState.drafts.setDrafts({
+        lead: "Unsaved local edit",
+      });
     });
     await page.waitForFunction(() =>
-      window.state.drafts.error.includes("could not be saved"),
+      window.syncRequiredBrowserFixtureState.drafts.error.includes(
+        "could not be saved",
+      ),
     );
     await page.clock.runFor(3500);
     assert.match(
-      await page.evaluate(() => window.state.drafts.error),
+      await page.evaluate(
+        () => window.syncRequiredBrowserFixtureState.drafts.error,
+      ),
       /could not be saved/,
     );
     await page.evaluate(() => {
-      window.restoreDraftWrites();
-      window.state.drafts.setDrafts({ lead: "Recovered local edit" });
+      window.syncRequiredBrowserFixtureRestoreDraftWrites();
+      window.syncRequiredBrowserFixtureState.drafts.setDrafts({
+        lead: "Recovered local edit",
+      });
     });
-    await page.waitForFunction(() => window.state.drafts.error === "");
+    await page.waitForFunction(
+      () => window.syncRequiredBrowserFixtureState.drafts.error === "",
+    );
     expect(errors).toEqual([]);
     console.log("sync endpoint requirement browser contract passed");
   } finally {
@@ -185,7 +205,7 @@ test("draft bootstrap retries pause and recover on explicit activity", async ({
   let identityRequests = 0;
   let draftPulls = 0;
   let draftPushes = 0;
-  const streams = new Set();
+  const streams = new Set<ServerResponse>();
   const server = await createServer({
     configFile: false,
     root: fileURLToPath(new URL("../../../web", import.meta.url)),
@@ -203,9 +223,13 @@ test("draft bootstrap retries pause and recover on explicit activity", async ({
   });
   server.middlewares.stack.unshift({
     route: "",
-    handle(req, res, next) {
-      const url = new URL(req.url, "http://localhost");
-      const json = (value, status = 200) => {
+    handle(
+      req: IncomingMessage,
+      res: ServerResponse,
+      next: Connect.NextFunction,
+    ) {
+      const url = new URL(req.url ?? "/", "http://localhost");
+      const json = (value: unknown, status = 200) => {
         res.writeHead(
           status,
           apiSchemaHeaders({ "Content-Type": "application/json" }),
@@ -224,7 +248,7 @@ test("draft bootstrap retries pause and recover on explicit activity", async ({
           identityStatus,
         );
       } else if (url.pathname === "/api/sync/stream") {
-        const resources = JSON.parse(url.searchParams.get("resources") || "[]");
+        const resources = fixtureResources(url.searchParams.get("resources"));
         res.writeHead(200, {
           "Content-Type": "text/event-stream",
           "Cache-Control": "no-cache",
@@ -258,28 +282,16 @@ test("draft bootstrap retries pause and recover on explicit activity", async ({
   await server.listen();
   try {
     const page = runnerPage;
-    const errors = [];
+    const errors: string[] = [];
     page.on("pageerror", (error) => errors.push(error.message));
     await page.clock.install();
-    await page.goto(
-      `http://127.0.0.1:${server.httpServer.address().port}/check`,
-    );
-    await page.evaluate(async () => {
-      const { useSyncedDrafts } = await import("/src/sync/drafts.ts");
-      const r = await import("/node_modules/.vite/deps/react.js");
-      const d = await import("/node_modules/.vite/deps/react-dom_client.js");
-      const React = r.default || r;
-      const { createRoot } = d.default || d;
-      const root = createRoot(document.getElementById("app"));
-      root.render(
-        React.createElement(function Harness() {
-          const drafts = useSyncedDrafts();
-          window.state = { drafts };
-          return null;
-        }),
-      );
+    await page.goto(fixtureOrigin(server) + `/check`);
+    await page.addScriptTag({
+      type: "module",
+      url: "/tests/sync/sync-required-browser.fixture.tsx",
     });
-    const waitForIdentityCount = async (count) => {
+    await page.evaluate(() => window.syncRequiredBrowserMount2());
+    const waitForIdentityCount = async (count: number) => {
       await expect.poll(() => identityRequests).toBeGreaterThanOrEqual(count);
     };
     const waitForDraftPull = async () => {
@@ -293,13 +305,13 @@ test("draft bootstrap retries pause and recover on explicit activity", async ({
       [1_000, 2],
       [3_000, 3],
       [10_000, 4],
-    ]) {
+    ] as const) {
       await page.clock.runFor(delay);
       await waitForIdentityCount(expected);
     }
     await page.waitForFunction(
       () =>
-        window.state?.drafts.error ===
+        window.syncRequiredBrowserFixtureState?.drafts.error ===
         "Draft sync paused. Edit a draft or reconnect to retry.",
     );
     await page.clock.runFor(20_000);
@@ -311,21 +323,22 @@ test("draft bootstrap retries pause and recover on explicit activity", async ({
     assert.equal(draftPulls, 0, "Failed bootstrap does not start draft pulls");
 
     await page.evaluate(() =>
-      window.state.drafts.setDrafts({
+      window.syncRequiredBrowserFixtureState.drafts.setDrafts({
         lead: "Retained while identity is unavailable",
       }),
     );
     await waitForIdentityCount(5);
     await page.waitForFunction(
       () =>
-        window.state.drafts.drafts.lead ===
+        window.syncRequiredBrowserFixtureState.drafts.drafts.lead ===
         "Retained while identity is unavailable",
     );
     assert.equal(
       await page.evaluate(
         () =>
-          JSON.parse(localStorage.getItem("codex-chat-draft:unassigned:lead"))
-            ?.text,
+          JSON.parse(
+            localStorage.getItem("codex-chat-draft:unassigned:lead") ?? "null",
+          )?.text,
       ),
       "Retained while identity is unavailable",
       "Manual retry keeps the local journal copy while the identity request fails",
@@ -335,12 +348,16 @@ test("draft bootstrap retries pause and recover on explicit activity", async ({
     await page.evaluate(() => window.dispatchEvent(new Event("online")));
     await waitForIdentityCount(6);
     await page.waitForFunction(
-      () => window.state.drafts.error === "" && window.state.drafts.drafts.lead,
+      () =>
+        window.syncRequiredBrowserFixtureState.drafts.error === "" &&
+        window.syncRequiredBrowserFixtureState.drafts.drafts.lead,
     );
     await waitForDraftPull();
     await waitForDraftPush();
     assert.equal(
-      await page.evaluate(() => window.state.drafts.drafts.lead),
+      await page.evaluate(
+        () => window.syncRequiredBrowserFixtureState.drafts.drafts.lead,
+      ),
       "Retained while identity is unavailable",
     );
     expect(errors).toEqual([]);

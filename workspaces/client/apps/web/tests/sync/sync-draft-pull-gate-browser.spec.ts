@@ -1,3 +1,9 @@
+import type { FixtureResourceChange } from "./helpers.ts";
+import type { ResourceRef } from "../playwright.ts";
+import { fixtureResources } from "./helpers.ts";
+import type { IncomingMessage, ServerResponse } from "node:http";
+import type { Connect } from "vite";
+import { fixtureOrigin } from "./helpers.ts";
 import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
 
@@ -16,7 +22,10 @@ test("draft pull waits for a real trigger without blocking push recovery", async
   const { createFixtureViteServer: createServer } =
     await import("../playwright.ts");
   const workspaceId = "c".repeat(32);
-  const streams = new Set();
+  const streams = new Set<{
+    resources: ResourceRef[];
+    response: ServerResponse;
+  }>();
   let pulls = 0;
   let pushes = 0;
   let failPush = false;
@@ -36,7 +45,7 @@ test("draft pull waits for a real trigger without blocking push recovery", async
           reason: "change",
           resources: [{ kind: "drafts" }],
           resourceVersions: [{ resource: { kind: "drafts" }, revision }],
-        })}\n\n`,
+        } satisfies FixtureResourceChange)}\n\n`,
       );
     }
   };
@@ -48,9 +57,13 @@ test("draft pull waits for a real trigger without blocking push recovery", async
   });
   server.middlewares.stack.unshift({
     route: "",
-    handle(req, res, next) {
+    handle(
+      req: IncomingMessage,
+      res: ServerResponse,
+      next: Connect.NextFunction,
+    ) {
       const url = new URL(req.url || "/", "http://localhost");
-      const json = (value, status = 200) => {
+      const json = (value: unknown, status = 200) => {
         res.writeHead(
           status,
           apiSchemaHeaders({ "Content-Type": "application/json" }),
@@ -61,7 +74,7 @@ test("draft pull waits for a real trigger without blocking push recovery", async
       else if (url.pathname === "/api/sync/identity")
         json(syncIdentityFixture(workspaceId));
       else if (url.pathname === "/api/sync/stream") {
-        const resources = JSON.parse(url.searchParams.get("resources") || "[]");
+        const resources = fixtureResources(url.searchParams.get("resources"));
         res.writeHead(200, { "Content-Type": "text/event-stream" });
         res.write(apiSchemaHandshakeSse());
         res.write(
@@ -97,44 +110,51 @@ test("draft pull waits for a real trigger without blocking push recovery", async
   await server.listen();
   try {
     const page = fixturePage;
-    const errors = [];
+    const errors: string[] = [];
     page.on("pageerror", (error) => errors.push(error.message));
     await page.clock.install();
-    await page.goto(
-      `http://127.0.0.1:${server.httpServer.address().port}/check`,
-    );
+    await page.goto(fixtureOrigin(server) + `/check`);
     const draftTiming = await page.evaluate(async () => {
       const client = await import("/src/sync/client.ts");
-      window.replicationErrors = [];
-      window.rejectCancelOnce = false;
-      window.cancelRejections = 0;
-      window.draftTiming = client.DRAFT_SYNC_TIMING_MS;
-      window.stopDrafts = await client.startDraftReplication(
-        (error) =>
-          window.replicationErrors.push(
-            error
-              ? {
-                  code: typeof error === "object" ? error.code : undefined,
-                  message: String(error),
+      window.syncDraftPullGateBrowserFixtureReplicationErrors = [];
+      window.syncDraftPullGateBrowserFixtureRejectCancelOnce = false;
+      window.syncDraftPullGateBrowserFixtureCancelRejections = 0;
+      window.syncDraftPullGateBrowserFixtureDraftTiming =
+        client.DRAFT_SYNC_TIMING_MS;
+      window.syncDraftPullGateBrowserFixtureStopDrafts =
+        await client.startDraftReplication(
+          (error) =>
+            window.syncDraftPullGateBrowserFixtureReplicationErrors.push(
+              error
+                ? {
+                    code:
+                      typeof error === "object" &&
+                      error !== null &&
+                      "code" in error
+                        ? error.code
+                        : undefined,
+                    message: String(error),
+                  }
+                : null,
+            ),
+          {
+            testOnly: {
+              cancel: async (cancel) => {
+                await cancel();
+                if (window.syncDraftPullGateBrowserFixtureRejectCancelOnce) {
+                  window.syncDraftPullGateBrowserFixtureRejectCancelOnce = false;
+                  window.syncDraftPullGateBrowserFixtureCancelRejections++;
+                  throw new Error("injected cancel rejection");
                 }
-              : null,
-          ),
-        {
-          testOnly: {
-            cancel: async (cancel) => {
-              await cancel();
-              if (window.rejectCancelOnce) {
-                window.rejectCancelOnce = false;
-                window.cancelRejections++;
-                throw new Error("injected cancel rejection");
-              }
+              },
             },
           },
-        },
-      );
+        );
       return client.DRAFT_SYNC_TIMING_MS;
     });
-    await page.waitForFunction(() => window.replicationErrors.length > 0);
+    await page.waitForFunction(
+      () => window.syncDraftPullGateBrowserFixtureReplicationErrors.length > 0,
+    );
     await page.evaluate(async () => {
       const { db } = await (await import("/src/sync/client.ts")).syncDatabase();
       await db.drafts.insert({
@@ -154,14 +174,18 @@ test("draft pull waits for a real trigger without blocking push recovery", async
       "The failed pull does not run periodic HTTP retries",
     );
     assert.ok(
-      await page.evaluate(() => window.replicationErrors.some(Boolean)),
+      await page.evaluate(() =>
+        window.syncDraftPullGateBrowserFixtureReplicationErrors.some(Boolean),
+      ),
       "The failed pull remains visible while idle",
     );
 
     pullSucceeds = true;
     notifyDrafts();
     await page.waitForFunction(() =>
-      window.replicationErrors.some((error) => error === null),
+      window.syncDraftPullGateBrowserFixtureReplicationErrors.some(
+        (error) => error === null,
+      ),
     );
     assert.equal(pulls, 2, "One draft event retries the failed pull once");
     assert.equal(pushes, 1);
@@ -193,7 +217,7 @@ test("draft pull waits for a real trigger without blocking push recovery", async
     failPush = true;
     const pushBeforeRestart = pushes;
     const errorsBeforePush = await page.evaluate(
-      () => window.replicationErrors.length,
+      () => window.syncDraftPullGateBrowserFixtureReplicationErrors.length,
     );
     await page.evaluate(async () => {
       const { db } = await (await import("/src/sync/client.ts")).syncDatabase();
@@ -206,12 +230,15 @@ test("draft pull waits for a real trigger without blocking push recovery", async
     await expect.poll(() => pushes).toBeGreaterThan(pushBeforeRestart);
     assert.ok(pushes > pushBeforeRestart, "A push failure is observed");
     await page.waitForFunction(
-      (count) => window.replicationErrors.slice(count).some(Boolean),
+      (count) =>
+        window.syncDraftPullGateBrowserFixtureReplicationErrors
+          .slice(count)
+          .some(Boolean),
       errorsBeforePush,
     );
     const beforeRestartPull = pulls;
     await page.evaluate(() => {
-      window.rejectCancelOnce = true;
+      window.syncDraftPullGateBrowserFixtureRejectCancelOnce = true;
       window.dispatchEvent(new Event("online"));
     });
     await expect.poll(() => pulls).toBeGreaterThan(beforeRestartPull);
@@ -220,7 +247,9 @@ test("draft pull waits for a real trigger without blocking push recovery", async
       "A replacement starts after cancel rejects",
     );
     assert.ok(
-      await page.evaluate(() => window.cancelRejections > 0),
+      await page.evaluate(
+        () => window.syncDraftPullGateBrowserFixtureCancelRejections > 0,
+      ),
       "the cancel seam rejected and the replacement still started",
     );
     failPush = false;
@@ -228,12 +257,12 @@ test("draft pull waits for a real trigger without blocking push recovery", async
     await page.clock.runFor(draftTiming.pushRetry + draftTiming.pushQuietWait);
     await expect.poll(() => pushes).toBeGreaterThan(postsBeforeRetry);
     await page.evaluate(async () => {
-      window.rejectCancelOnce = true;
-      await window.stopDrafts();
+      window.syncDraftPullGateBrowserFixtureRejectCancelOnce = true;
+      await window.syncDraftPullGateBrowserFixtureStopDrafts();
     });
     assert.ok(
       await page.evaluate(() =>
-        window.replicationErrors.some((error) =>
+        window.syncDraftPullGateBrowserFixtureReplicationErrors.some((error) =>
           (error?.message || String(error)).includes(
             "injected cancel rejection",
           ),
@@ -247,3 +276,20 @@ test("draft pull waits for a real trigger without blocking push recovery", async
     await server.close();
   }
 });
+
+declare global {
+  interface Window {
+    syncDraftPullGateBrowserFixtureReplicationErrors: ({
+      code: unknown;
+      message: string;
+    } | null)[];
+    syncDraftPullGateBrowserFixtureRejectCancelOnce: boolean;
+    syncDraftPullGateBrowserFixtureCancelRejections: number;
+    syncDraftPullGateBrowserFixtureDraftTiming: typeof import("../../src/sync/client.ts").DRAFT_SYNC_TIMING_MS;
+    syncDraftPullGateBrowserFixtureStopDrafts: Awaited<
+      ReturnType<
+        typeof import("../../src/sync/client.ts").startDraftReplication
+      >
+    >;
+  }
+}

@@ -1,3 +1,8 @@
+import type { FixtureResourceChange } from "./helpers.ts";
+import type { PostBody } from "../../src/apiTypes.ts";
+import { fixturePostBody } from "./helpers.ts";
+import type {} from "./sync-recovery-browser.fixture.tsx";
+import { fixtureOrigin } from "./helpers.ts";
 import {
   apiSchemaHeaders,
   apiSchemaHandshakeSse,
@@ -25,8 +30,10 @@ test("Sync recovery browser", async ({
   await server.listen();
   try {
     const page = runnerPage,
-      errors = [];
-    page.on("pageerror", (error) => errors.push(error.message));
+      errors: string[] = [];
+    page.on("pageerror", (error) =>
+      errors.push(error instanceof Error ? error.message : String(error)),
+    );
     let identityStatus = 503,
       hangSession = false,
       failPull = false,
@@ -34,7 +41,7 @@ test("Sync recovery browser", async ({
       streamRevision = 0,
       badReceipt = true;
     let workspaceId = "c".repeat(32);
-    const sends = [];
+    const sends: PostBody<"/api/messages">[] = [];
     await page.route("**/check", (route) =>
       route.fulfill({
         contentType: "text/html",
@@ -66,7 +73,7 @@ test("Sync recovery browser", async ({
           revision: streamRevision,
           reason: "change",
           resources: [{ kind: "state" }],
-        });
+        } satisfies FixtureResourceChange);
       }
       return route.fulfill({
         contentType: "text/event-stream",
@@ -107,7 +114,9 @@ test("Sync recovery browser", async ({
       });
     });
     await page.route("**/api/messages", (route) => {
-      const body = route.request().postDataJSON();
+      const body = fixturePostBody<"/api/messages">(
+        route.request().postDataJSON(),
+      );
       sends.push(body);
       return route.fulfill({
         json: {
@@ -117,40 +126,33 @@ test("Sync recovery browser", async ({
       });
     });
     await page.route("**/hang", () => {});
-    await page.goto(
-      `http://127.0.0.1:${server.httpServer.address().port}/check`,
-    );
-    await page.evaluate(async () => {
-      const { useSnapshot } = await import("/src/hooks.ts");
-      const send = await import("/src/sync/send.ts");
-      window.durableSend = send.durableSend;
-      const r = await import("/node_modules/.vite/deps/react.js"),
-        d = await import("/node_modules/.vite/deps/react-dom_client.js");
-      const React = r.default || r,
-        { createRoot } = d.default || d;
-      const node = document.createElement("div");
-      document.body.appendChild(node);
-      createRoot(node).render(
-        React.createElement(function Harness() {
-          window.snapshot = useSnapshot();
-          window.second = useSnapshot();
-          window.outbox = send.useOutbox();
-          return null;
-        }),
-      );
+    await page.goto(fixtureOrigin(server) + `/check`);
+    await page.addScriptTag({
+      type: "module",
+      url: "/tests/sync/sync-recovery-browser.fixture.tsx",
     });
+    await page.evaluate(() => window.syncRecoveryBrowserMount1());
     await page.waitForFunction(
-      () => window.snapshot?.error && window.outbox?.error,
+      () =>
+        window.syncRecoveryBrowserFixtureSnapshot?.error &&
+        window.syncRecoveryBrowserFixtureOutbox?.error,
     );
     identityStatus = 200;
     await page.evaluate(() => window.dispatchEvent(new Event("pageshow")));
-    await page.waitForFunction(
-      () =>
-        window.snapshot.data?.runtime?.marker === "replicated" &&
-        window.second.data?.runtime?.marker === "replicated" &&
-        !window.snapshot.error &&
-        !window.outbox.error,
-    );
+    await page.waitForFunction(() => {
+      const first = window.syncRecoveryBrowserFixtureSnapshot.data?.runtime;
+      const second = window.syncRecoveryBrowserFixtureSecond.data?.runtime;
+      return (
+        first &&
+        "marker" in first &&
+        first.marker === "replicated" &&
+        second &&
+        "marker" in second &&
+        second.marker === "replicated" &&
+        !window.syncRecoveryBrowserFixtureSnapshot.error &&
+        !window.syncRecoveryBrowserFixtureOutbox.error
+      );
+    });
     failPull = true;
     nextStreamResourceEvent = true;
     await page.evaluate(() => {
@@ -159,8 +161,9 @@ test("Sync recovery browser", async ({
     });
     await page.waitForFunction(
       () =>
-        window.snapshot.error === "Pull unavailable" &&
-        window.second.error === "Pull unavailable",
+        window.syncRecoveryBrowserFixtureSnapshot.error ===
+          "Pull unavailable" &&
+        window.syncRecoveryBrowserFixtureSecond.error === "Pull unavailable",
     );
     failPull = false;
     nextStreamResourceEvent = true;
@@ -168,10 +171,17 @@ test("Sync recovery browser", async ({
       document.dispatchEvent(new Event("visibilitychange"));
     });
     await page.waitForFunction(
-      () => !window.snapshot.error && !window.second.error,
+      () =>
+        !window.syncRecoveryBrowserFixtureSnapshot.error &&
+        !window.syncRecoveryBrowserFixtureSecond.error,
     );
     assert.equal(
-      await page.evaluate(() => window.snapshot.data.runtime.marker),
+      await page.evaluate(() =>
+        window.syncRecoveryBrowserFixtureSnapshot.data?.runtime &&
+        "marker" in window.syncRecoveryBrowserFixtureSnapshot.data.runtime
+          ? window.syncRecoveryBrowserFixtureSnapshot.data.runtime.marker
+          : undefined,
+      ),
       "replicated",
       "An empty pull clears stale errors without a new snapshot",
     );
@@ -184,13 +194,14 @@ test("Sync recovery browser", async ({
         return null;
       } catch (error) {
         return {
-          name: error.name,
-          message: error.message,
+          name: error instanceof Error ? error.name : "",
+          message: error instanceof Error ? error.message : String(error),
           elapsed: performance.now() - start,
         };
       }
     });
     hangSession = false;
+    assert.ok(timeout);
     assert.equal(
       timeout.name,
       "NetworkTimeoutError",
@@ -203,22 +214,27 @@ test("Sync recovery browser", async ({
       text: "Keep this exact request",
       assets: [],
       delivery: "queue",
-    };
-    const first = await page.evaluate((body) => window.durableSend(body), body);
+    } satisfies Parameters<
+      typeof import("../../src/sync/send.ts").durableSend
+    >[0];
+    const first = await page.evaluate(
+      (body) => window.syncRecoveryBrowserFixtureDurableSend(body),
+      body,
+    );
     assert.equal(
       first.queued,
       true,
       "An unrelated receipt must not confirm delivery",
     );
     await page.waitForFunction(() =>
-      window.outbox.entries.some(
+      window.syncRecoveryBrowserFixtureOutbox.entries.some(
         (entry) => entry.id === "receipt-check" && entry.status === "queued",
       ),
     );
     badReceipt = false;
     await page.evaluate(() => window.dispatchEvent(new Event("pageshow")));
     await page.waitForFunction(() =>
-      window.outbox.entries.some(
+      window.syncRecoveryBrowserFixtureOutbox.entries.some(
         (entry) => entry.id === "receipt-check" && entry.status === "accepted",
       ),
     );
@@ -233,7 +249,7 @@ test("Sync recovery browser", async ({
       for (const [id, created] of [
         ["z-first", 10],
         ["a-second", 20],
-      ])
+      ] as const)
         await db.outbox.insert({
           id,
           seq: 0,
@@ -247,7 +263,7 @@ test("Sync recovery browser", async ({
     });
     await page.waitForFunction(() =>
       ["z-first", "a-second"].every((id) =>
-        window.outbox.entries.some(
+        window.syncRecoveryBrowserFixtureOutbox.entries.some(
           (entry) => entry.id === id && entry.status === "accepted",
         ),
       ),
@@ -259,7 +275,10 @@ test("Sync recovery browser", async ({
     const beforeConcurrent = sends.length;
     await page.evaluate(async () => {
       const body = { id: "same-request", room: "lead", text: "Same intention" };
-      await Promise.all([window.durableSend(body), window.durableSend(body)]);
+      await Promise.all([
+        window.syncRecoveryBrowserFixtureDurableSend(body),
+        window.syncRecoveryBrowserFixtureDurableSend(body),
+      ]);
     });
     assert.equal(
       sends.length,
@@ -268,12 +287,12 @@ test("Sync recovery browser", async ({
     );
     const collisions = await page.evaluate(() =>
       Promise.allSettled([
-        window.durableSend({
+        window.syncRecoveryBrowserFixtureDurableSend({
           id: "collision",
           room: "lead",
           text: "First text",
         }),
-        window.durableSend({
+        window.syncRecoveryBrowserFixtureDurableSend({
           id: "collision",
           room: "lead",
           text: "Different text",
@@ -286,15 +305,16 @@ test("Sync recovery browser", async ({
     const beforeSwitch = sends.length;
     const rejected = await page.evaluate(async () => {
       try {
-        await window.durableSend({
+        await window.syncRecoveryBrowserFixtureDurableSend({
           id: "old-workspace",
           room: "lead",
           text: "Do not cross workspaces",
         });
       } catch (error) {
-        return error.message;
+        return error instanceof Error ? error.message : String(error);
       }
     });
+    assert.ok(rejected);
     assert.match(rejected, /workspace changed/);
     assert.equal(sends.length, beforeSwitch);
     assert.deepEqual(errors, []);

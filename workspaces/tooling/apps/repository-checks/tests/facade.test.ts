@@ -67,7 +67,7 @@ test("short and comprehensive recipes preserve their owned test boundaries", () 
 test("real IndexedDB staging belongs to provisioned browser smoke, not Node units", () => {
   const web = "workspaces/client/apps/web";
   const spec = readFileSync(
-    `${web}/tests/sync/entity-transfer-storage-browser.spec.mjs`,
+    `${web}/tests/sync/entity-transfer-storage-browser.spec.ts`,
     "utf8",
   );
   const title = spec.match(/test\(\s*"([^"]+)"/)?.[1];

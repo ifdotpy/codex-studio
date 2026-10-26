@@ -1,3 +1,5 @@
+import type { Route, BrowserContext, TestInfo } from "@playwright/test";
+import { fixtureOrigin } from "./helpers.ts";
 // Real RxDB/Dexie entity reset, with a hidden Chromium window and isolated API.
 import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
@@ -9,13 +11,13 @@ import {
   test,
 } from "../playwright.ts";
 
-const fulfill = (route, response) =>
+const fulfill = (route: Route, response: Parameters<Route["fulfill"]>[0]) =>
   route.fulfill({
     ...response,
     headers: { [API_SCHEMA_HASH_HEADER]: readApiSchemaHash() },
   });
 
-const browserContextsByTest = new WeakMap();
+const browserContextsByTest = new WeakMap<TestInfo, Set<BrowserContext>>();
 test.beforeEach(async ({ browser }, testInfo) => {
   browserContextsByTest.set(testInfo, new Set(browser.contexts()));
 });
@@ -47,18 +49,19 @@ test("sync reset browser", async ({ browser: _browser }) => {
   const browser = _browser;
   try {
     const page = await browser.newPage();
-    const errors = [];
+    const errors: string[] = [];
     page.on("pageerror", (error) => errors.push(error.message));
     const workspaceId = "b".repeat(32);
-    let releaseSecondPage;
-    let secondPageRequested;
-    const secondPageWaiting = new Promise((resolve) => {
-      secondPageRequested = resolve;
-    });
-    const secondPageRelease = new Promise((resolve) => {
-      releaseSecondPage = resolve;
-    });
-    const requests = [];
+    const { promise: secondPageWaiting, resolve: secondPageRequested } =
+      Promise.withResolvers<void>();
+    const { promise: secondPageRelease, resolve: releaseSecondPage } =
+      Promise.withResolvers<void>();
+    const requests: {
+      scope: string | null;
+      after: number;
+      reset: string | null;
+      fresh: string | null;
+    }[] = [];
     await page.route("**/sync-reset-check", (route) =>
       fulfill(route, {
         contentType: "text/html",
@@ -149,9 +152,7 @@ test("sync reset browser", async ({ browser: _browser }) => {
         });
       throw new Error(`Unexpected entity cursor ${after}`);
     });
-    await page.goto(
-      `http://127.0.0.1:${server.httpServer.address().port}/sync-reset-check`,
-    );
+    await page.goto(fixtureOrigin(server) + `/sync-reset-check`);
     await page.evaluate(async () => {
       const { db } = await (await import("/src/sync/client.ts")).syncDatabase();
       await db.projections.insert({
@@ -188,16 +189,20 @@ test("sync reset browser", async ({ browser: _browser }) => {
         payload: JSON.stringify({ id: "intent-1", text: "keep outbox" }),
         seq: 1,
       });
-      window.entityValues = [];
-      window.stopProjection = (
+      window.syncResetBrowserFixtureEntityValues = [];
+      window.syncResetBrowserFixtureStopProjection = (
         await import("/src/sync/client.ts")
       ).subscribeStateProjection(
         (value) =>
-          window.entityValues.push(
-            value.runtime.agents.map((agent) => agent.name).sort(),
+          window.syncResetBrowserFixtureEntityValues.push(
+            value?.runtime.agents.map((agent) => agent.name).sort() ?? [],
           ),
         (error) => {
-          if (error) window.syncError = error?.stack || String(error);
+          if (error)
+            window.syncResetBrowserFixtureSyncError =
+              error instanceof Error
+                ? error.stack || String(error)
+                : String(error);
         },
       );
     });
@@ -212,7 +217,7 @@ test("sync reset browser", async ({ browser: _browser }) => {
             ).syncDatabase();
             const rows = await db.projections.find().exec();
             return {
-              error: window.syncError,
+              error: window.syncResetBrowserFixtureSyncError,
               docs: rows.map((doc) => ({
                 id: doc.id,
                 seq: doc.seq,
@@ -230,14 +235,16 @@ test("sync reset browser", async ({ browser: _browser }) => {
       }),
     ]);
     clearTimeout(secondPageTimeout);
-    const paused = await page.evaluate(() => window.entityValues);
+    const paused = await page.evaluate(
+      () => window.syncResetBrowserFixtureEntityValues,
+    );
     assert.ok(
-      paused.every((names) => !names.some((name) => name.startsWith("new-"))),
+      paused.every((names) => !names.some((name) => name?.startsWith("new-"))),
       "the hidden reset must not publish its first partial page",
     );
     releaseSecondPage();
     await page.waitForFunction(
-      () => window.entityValues.at(-1)?.length === 501,
+      () => window.syncResetBrowserFixtureEntityValues.at(-1)?.length === 501,
       null,
       { timeout: 15000 },
     );
@@ -245,8 +252,10 @@ test("sync reset browser", async ({ browser: _browser }) => {
       const { db } = await (await import("/src/sync/client.ts")).syncDatabase();
       const draft = await db.drafts.findOne("device:lead").exec();
       const outbox = await db.outbox.findOne("intent-1").exec();
+      if (!draft || !outbox)
+        throw new Error("Missing retained draft or outbox");
       return {
-        names: window.entityValues.at(-1),
+        names: window.syncResetBrowserFixtureEntityValues.at(-1),
         draft: JSON.parse(draft.payload).text,
         outbox: JSON.parse(outbox.payload).text,
         stale: await db.projections.findOne("entity:agent:stale").exec(),
@@ -255,6 +264,7 @@ test("sync reset browser", async ({ browser: _browser }) => {
         )?.toJSON().seq,
       };
     });
+    assert.ok(result.names);
     assert.equal(result.names.includes("stale"), false);
     assert.equal(result.names.length, 501);
     assert.equal(result.draft, "keep draft");
@@ -288,3 +298,11 @@ test("sync reset browser", async ({ browser: _browser }) => {
     await server.close();
   }
 });
+
+declare global {
+  interface Window {
+    syncResetBrowserFixtureEntityValues: (string | null | undefined)[][];
+    syncResetBrowserFixtureStopProjection: () => void;
+    syncResetBrowserFixtureSyncError: string | undefined;
+  }
+}

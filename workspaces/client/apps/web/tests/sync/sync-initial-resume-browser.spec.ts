@@ -1,3 +1,4 @@
+import { fixtureOrigin } from "./helpers.ts";
 // A saved partial first-page marker reconstructs its original baseline.
 import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
@@ -14,9 +15,9 @@ test("sync initial resume browser", async ({ page }) => {
   });
   await server.listen();
   try {
-    const origin = `http://127.0.0.1:${server.httpServer.address().port}`;
+    const origin = fixtureOrigin(server);
     const workspaceId = "a".repeat(32);
-    const pulls = [];
+    const pulls: Record<string, string>[] = [];
     const live = Array.from({ length: 499 }, (_, index) => ({
       op: "upsert",
       collection: "agent",
@@ -71,31 +72,38 @@ test("sync initial resume browser", async ({ page }) => {
         seq: 600,
       });
       await client.persistProjection(db.projections, {
+        // @ts-expect-error stale seed: persistProjection expects EntityRow (id, payload, seq), not a wire SyncEntity
         op: "upsert",
         collection: "agent",
         id: "stale",
         value: { id: "stale", name: "Old" },
         seq: 1,
       });
-      window.writeCalls = 0;
+      window.syncSyncInitialResumeBrowserWriteCalls = 0;
       const storage = db.projections.storageInstance;
       const write = storage.bulkWrite.bind(storage);
       storage.bulkWrite = (...args) => {
-        window.writeCalls++;
+        window.syncSyncInitialResumeBrowserWriteCalls++;
         return write(...args);
       };
-      window.snapshots = [];
-      window.stop = client.subscribeStateProjection(
-        (value) => window.snapshots.push(value),
+      window.syncSyncInitialResumeBrowserSnapshots = [];
+      window.syncSyncInitialResumeBrowserStop = client.subscribeStateProjection(
+        (value) => window.syncSyncInitialResumeBrowserSnapshots.push(value),
         (error) => {
-          if (error) window.syncError = String(error);
+          if (error)
+            window.syncSyncInitialResumeBrowserSyncError = String(error);
         },
       );
     });
     await page.waitForFunction(
-      () => window.snapshots.length > 0 || window.syncError,
+      () =>
+        window.syncSyncInitialResumeBrowserSnapshots.length > 0 ||
+        window.syncSyncInitialResumeBrowserSyncError,
     );
-    assert.equal(await page.evaluate(() => window.syncError), undefined);
+    assert.equal(
+      await page.evaluate(() => window.syncSyncInitialResumeBrowserSyncError),
+      undefined,
+    );
     assert.deepEqual(pulls[0], {
       scope: "state:entities:v1",
       after: "0",
@@ -105,11 +113,16 @@ test("sync initial resume browser", async ({ page }) => {
       reset: "1",
     });
     assert.equal(
-      await page.evaluate(() => window.snapshots.at(-1).threads.length),
+      await page.evaluate(
+        () =>
+          window.syncSyncInitialResumeBrowserSnapshots.at(-1)?.threads.length,
+      ),
       499,
     );
     assert.ok(
-      await page.evaluate(() => window.writeCalls <= 5),
+      await page.evaluate(
+        () => window.syncSyncInitialResumeBrowserWriteCalls <= 5,
+      ),
       "A 500-row page uses one storage batch plus checkpoint writes",
     );
     assert.equal(
@@ -121,13 +134,27 @@ test("sync initial resume browser", async ({ page }) => {
           ["entity:agent:stale"],
           true,
         );
+        if (!row) throw new Error("Missing stale projection");
         return row._deleted;
       }),
       true,
     );
-    await page.evaluate(() => window.stop());
+    await page.evaluate(() => window.syncSyncInitialResumeBrowserStop());
     console.log("initial sync resume browser passed");
   } finally {
     await server.close();
   }
 });
+
+declare global {
+  interface Window {
+    syncSyncInitialResumeBrowserWriteCalls: number;
+    syncSyncInitialResumeBrowserSnapshots: Parameters<
+      Parameters<
+        typeof import("../../src/sync/client.ts").subscribeStateProjection
+      >[0]
+    >[0][];
+    syncSyncInitialResumeBrowserSyncError: string | undefined;
+    syncSyncInitialResumeBrowserStop: () => void;
+  }
+}

@@ -373,7 +373,7 @@ this receipt. Review an unconfirmed outcome before sending another instruction.
 Targeted checks:
 
 ```sh
-pnpm --filter codex-agents-web run test:browser -- disconnect-recovery-ui.spec.mjs
+pnpm --filter codex-agents-web run test:browser -- disconnect-recovery-ui.spec.ts
 ```
 
 ## Rust worker-defaults verification

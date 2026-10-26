@@ -1,3 +1,4 @@
+import { fixtureOrigin } from "./helpers.ts";
 import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
 
@@ -34,7 +35,7 @@ test("legacy transcript rows refetch online and stay hidden offline", async ({
     let workspaceId = "e".repeat(32);
     let responseMode = "unchanged";
     let deltaReplies = 0;
-    const pulls = [];
+    const pulls: { scope: string | null; after: number }[] = [];
     await context.route("**/api/sync/identity", (route) =>
       route.fulfill({ json: { workspaceId } }),
     );
@@ -90,7 +91,7 @@ test("legacy transcript rows refetch online and stay hidden offline", async ({
         },
       });
     });
-    const origin = `http://127.0.0.1:${server.httpServer.address().port}`;
+    const origin = fixtureOrigin(server);
     await page.goto(`${origin}/transcript-cache-check`);
     const online = await page.evaluate(async (workspaceId) => {
       const { syncDatabase, prefetchTranscript } =
@@ -106,6 +107,7 @@ test("legacy transcript rows refetch online and stay hidden offline", async ({
       });
       const succeeded = await prefetchTranscript(workspaceId, "lead");
       const row = await db.projections.findOne("transcript:lead").exec();
+      if (!row) throw new Error("Missing transcript projection");
       return {
         succeeded,
         payload: peekTranscript(workspaceId, "lead")?.payload,
@@ -113,6 +115,7 @@ test("legacy transcript rows refetch online and stay hidden offline", async ({
       };
     }, workspaceId);
     assert.equal(online.succeeded, true);
+    assert.ok(online.payload);
     assert.deepEqual(online.payload.items, [
       { id: "item-a", text: "still here" },
     ]);
@@ -135,6 +138,7 @@ test("legacy transcript rows refetch online and stay hidden offline", async ({
       const { db } = await syncDatabase();
       const succeeded = await prefetchTranscript(workspaceId, "lead");
       const row = await db.projections.findOne("transcript:lead").exec();
+      if (!row) throw new Error("Missing transcript projection");
       return { succeeded, stored: JSON.parse(row.payload) };
     }, workspaceId);
     assert.equal(delta.succeeded, true);
@@ -156,9 +160,9 @@ test("legacy transcript rows refetch online and stay hidden offline", async ({
         configurable: true,
         value: false,
       });
-      window.pageErrors = [];
+      window.syncTranscriptCacheRefetchBrowserPageErrors = [];
       window.addEventListener("error", (event) =>
-        window.pageErrors.push(event.message),
+        window.syncTranscriptCacheRefetchBrowserPageErrors.push(event.message),
       );
     });
     const offline = await offlinePage.evaluate(async () => {
@@ -168,7 +172,7 @@ test("legacy transcript rows refetch online and stay hidden offline", async ({
       return {
         refreshed: await prefetchTranscript(workspaceId, "lead"),
         cached: peekTranscript(workspaceId, "lead") ?? null,
-        errors: window.pageErrors,
+        errors: window.syncTranscriptCacheRefetchBrowserPageErrors,
       };
     });
     assert.deepEqual(offline, { refreshed: false, cached: null, errors: [] });
@@ -177,3 +181,9 @@ test("legacy transcript rows refetch online and stay hidden offline", async ({
     await server.close();
   }
 });
+
+declare global {
+  interface Window {
+    syncTranscriptCacheRefetchBrowserPageErrors: string[];
+  }
+}

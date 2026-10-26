@@ -1,3 +1,4 @@
+import type { Page } from "@playwright/test";
 import assert from "node:assert/strict";
 import { once } from "node:events";
 import { mkdtemp, rm } from "node:fs/promises";
@@ -14,17 +15,20 @@ test("mutation projections propagate between pages sharing one browser context @
   const fixture = spawnFixture(process.execPath, [rustUiFixture, state], {
     stdio: ["pipe", "pipe", "pipe"],
   });
+  if (!fixture.stdout || !fixture.stderr)
+    throw new Error("Fixture output pipes unavailable");
   let log = "";
   fixture.stderr.on("data", (chunk) => (log += String(chunk)));
   const context = await browser.newContext();
   try {
     const port = await new Promise((resolve, reject) => {
+      if (!fixture.stdout) throw new Error("Missing fixture stdout");
       fixture.stdout.once("data", (chunk) =>
         resolve(Number(String(chunk).trim())),
       );
       fixture.once("exit", () => reject(new Error(log)));
     });
-    const pages = [await context.newPage(), await context.newPage()];
+    const pages = [await context.newPage(), await context.newPage()] as const;
     for (const page of pages) {
       await page.goto(`http://127.0.0.1:${port}`);
       await page
@@ -40,7 +44,7 @@ test("mutation projections propagate between pages sharing one browser context @
       .filter({ hasText: "Release lead" })
       .getAttribute("data-chat");
     assert.ok(id);
-    const rename = async (page, current, name) => {
+    const rename = async (page: Page, current: string, name: string) => {
       const row = page.locator(`[data-sidebar-item="${id}"]`);
       await row.hover();
       await row

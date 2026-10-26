@@ -1,3 +1,9 @@
+import type { FixturePullResponse, FixtureResourceChange } from "./helpers.ts";
+import type { PostBody } from "../../src/apiTypes.ts";
+import type { components } from "../../src/generated/api.ts";
+import { fixturePostBody, fixtureResources } from "./helpers.ts";
+import type {} from "./sync-browser.fixture.tsx";
+import { fixtureOrigin, fixtureAssert as assert } from "./helpers.ts";
 import { SYNC_PROTOCOL_VERSION } from "../../src/generated/api.ts";
 import {
   apiSchemaHandshakeSse,
@@ -5,7 +11,6 @@ import {
   API_SCHEMA_HASH_HEADER,
   readApiSchemaHash,
   test,
-  expect,
 } from "../playwright.ts";
 // Real RxDB/Dexie in Chromium, with an isolated HTTP fixture and no runtime.
 import { fileURLToPath } from "node:url";
@@ -14,23 +19,6 @@ test("Sync Browser", async ({
   context: _testContext,
   page: testPage,
 }) => {
-  const assert = {
-    equal: (actual, expected, message) =>
-      expect(actual, message).toBe(expected),
-    notEqual: (actual, expected, message) =>
-      expect(actual, message).not.toBe(expected),
-    deepEqual: (actual, expected, message) =>
-      expect(actual, message).toEqual(expected),
-    ok: (actual, message) => expect(actual, message).toBeTruthy(),
-    match: (actual, expected, message) =>
-      expect(actual, message).toMatch(expected),
-    doesNotMatch: (actual, expected, message) =>
-      expect(actual, message).not.toMatch(expected),
-    fail: (message) => {
-      throw new Error(message);
-    },
-  };
-
   const { createFixtureViteServer: createServer } =
     await import("../playwright.ts");
   const server = await createServer({
@@ -46,7 +34,7 @@ test("Sync Browser", async ({
   await server.listen();
   try {
     const page = testPage;
-    const errors = [];
+    const errors: string[] = [];
     page.on("pageerror", (error) => errors.push(error.message));
     await page.route("**/sync-check", (route) =>
       route.fulfill({
@@ -56,9 +44,9 @@ test("Sync Browser", async ({
     );
     let revision = 1,
       failSend = true,
-      sends = [],
+      sends: PostBody<"/api/messages">[] = [],
       content = "first",
-      draftPushes = [];
+      draftPushes: components["schemas"]["DraftPushRow"][] = [];
     await page.route("**/api/session", (route) =>
       route.fulfill({ json: { token: "fixture" } }),
     );
@@ -69,14 +57,14 @@ test("Sync Browser", async ({
       }),
     );
     await page.addInitScript((protocol) => {
-      window.entityStreams = [];
+      window.syncBrowserFixtureEntityStreams = [];
       const Native = window.EventSource;
       window.EventSource = class extends Native {
-        constructor(url, options) {
+        constructor(url: string | URL, options?: EventSourceInit) {
           super(url, options);
           const parsed = new URL(url, location.href);
           if (parsed.searchParams.get("protocol") === String(protocol))
-            window.entityStreams.push({
+            window.syncBrowserFixtureEntityStreams.push({
               source: this,
               resources: JSON.parse(
                 parsed.searchParams.get("resources") || "[]",
@@ -86,8 +74,8 @@ test("Sync Browser", async ({
       };
     }, SYNC_PROTOCOL_VERSION);
     await page.route("**/api/sync/stream**", (route) => {
-      const resources = JSON.parse(
-        new URL(route.request().url()).searchParams.get("resources") || "[]",
+      const resources = fixtureResources(
+        new URL(route.request().url()).searchParams.get("resources"),
       );
       route.fulfill({
         contentType: "text/event-stream",
@@ -116,7 +104,7 @@ test("Sync Browser", async ({
             workspaceId: "a".repeat(32),
             documents: [],
             checkpoint: { seq: 0 },
-          },
+          } satisfies FixturePullResponse,
         });
       if (url.searchParams.get("scope") === "state:entities:v1")
         return route.fulfill({
@@ -142,7 +130,7 @@ test("Sync Browser", async ({
             checkpoint: { seq: Math.max(after, revision) },
             maxSeq: revision,
             initialHigh: revision,
-          },
+          } satisfies FixturePullResponse,
         });
       return route.fulfill({
         status: 400,
@@ -150,39 +138,53 @@ test("Sync Browser", async ({
       });
     });
     await page.route("**/api/sync/drafts", (route) => {
-      draftPushes.push(...route.request().postDataJSON().rows);
+      draftPushes.push(
+        ...fixturePostBody<"/api/sync/drafts">(route.request().postDataJSON())
+          .rows,
+      );
       return route.fulfill({ json: [] });
     });
     await page.route("**/api/messages", (route) => {
-      sends.push(route.request().postDataJSON());
+      sends.push(
+        fixturePostBody<"/api/messages">(route.request().postDataJSON()),
+      );
       return failSend
         ? route.abort("failed")
         : route.fulfill({ json: { status: "queued", id: "intent-one" } });
     });
-    const origin = `http://127.0.0.1:${server.httpServer.address().port}`;
+    const origin = fixtureOrigin(server);
     await page.goto(origin + "/sync-check");
     await page.evaluate(async () => {
       const client = await import("/src/sync/client.ts");
-      window.values = [];
-      window.stopSync = client.subscribeStateProjection(
+      window.syncBrowserFixtureValues = [];
+      window.syncBrowserFixtureStopSync = client.subscribeStateProjection(
         (value) => {
-          if (value) window.values.push(value.threads[0]?.name);
+          if (value)
+            window.syncBrowserFixtureValues.push(value.threads[0]?.name);
         },
         (error) => {
-          if (error) window.failure = String(error);
-          else delete window.failure;
+          if (error) window.syncBrowserFixtureFailure = String(error);
+          else delete window.syncBrowserFixtureFailure;
         },
       );
     });
     await page.waitForFunction(
-      () => window.values.includes("first") || window.failure,
+      () =>
+        window.syncBrowserFixtureValues.includes("first") ||
+        window.syncBrowserFixtureFailure,
     );
-    assert.equal(await page.evaluate(() => window.failure), undefined);
+    assert.equal(
+      await page.evaluate(() => window.syncBrowserFixtureFailure),
+      undefined,
+    );
     content = "second";
     revision++;
-    await page.waitForFunction(() => window.entityStreams.length > 0);
+    await page.waitForFunction(
+      () => window.syncBrowserFixtureEntityStreams.length > 0,
+    );
     await page.evaluate((seq) => {
-      const stream = window.entityStreams.at(-1);
+      const stream = window.syncBrowserFixtureEntityStreams.at(-1);
+      if (!stream) throw new Error("Missing captured entity stream");
       stream.source.dispatchEvent(
         new MessageEvent("resources", {
           data: JSON.stringify({
@@ -196,19 +198,25 @@ test("Sync Browser", async ({
               resource,
               revision: seq,
             })),
-          }),
+          } satisfies FixtureResourceChange),
         }),
       );
     }, revision);
-    await page.waitForFunction(() => window.values.includes("second"), null, {
-      timeout: 10000,
-    });
+    await page.waitForFunction(
+      () => window.syncBrowserFixtureValues.includes("second"),
+      null,
+      {
+        timeout: 10000,
+      },
+    );
     await page.evaluate(async () => {
       const client = await import("/src/sync/client.ts");
-      window.stopDrafts = await client.startDraftReplication((error) => {
-        if (error) window.failure = String(error);
-        else delete window.failure;
-      });
+      window.syncBrowserFixtureStopDrafts = await client.startDraftReplication(
+        (error) => {
+          if (error) window.syncBrowserFixtureFailure = String(error);
+          else delete window.syncBrowserFixtureFailure;
+        },
+      );
       const { db } = await client.syncDatabase();
       await db.drafts.insert({
         id: "device:lead",
@@ -224,11 +232,16 @@ test("Sync Browser", async ({
     for (let i = 0; i < 100 && !draftPushes.length; i++)
       await new Promise((resolve) => setTimeout(resolve, 50));
     assert.equal(draftPushes.length, 1);
+    const pushedDraft = draftPushes[0];
+    if (!pushedDraft) throw new Error("Missing pushed draft");
     assert.equal(
-      JSON.parse(draftPushes[0].newDocumentState.payload).text,
+      JSON.parse(pushedDraft.newDocumentState.payload).text,
       "draft",
     );
-    assert.equal(draftPushes[0].newForkState, undefined);
+    assert.equal(
+      "newForkState" in pushedDraft ? pushedDraft.newForkState : undefined,
+      undefined,
+    );
     const result = await page.evaluate(async () =>
       (await import("/src/sync/send.ts")).durableSend({
         id: "intent-one",
@@ -242,33 +255,25 @@ test("Sync Browser", async ({
     await page.reload();
     const stored = await page.evaluate(async () => {
       const { db } = await (await import("/src/sync/client.ts")).syncDatabase();
-      return JSON.parse((await db.outbox.findOne("intent-one").exec()).payload);
+      const row = await db.outbox.findOne("intent-one").exec();
+      if (!row) throw new Error("Missing outbox row");
+      return JSON.parse(row.payload);
     });
     assert.equal(stored.status, "queued");
     failSend = false;
-    await page.evaluate(async () => {
-      const { useOutbox } = await import("/src/sync/send.ts");
-      const reactModule = await import("/node_modules/.vite/deps/react.js");
-      const React = reactModule.default || reactModule;
-      const domModule =
-        await import("/node_modules/.vite/deps/react-dom_client.js");
-      const { createRoot } = domModule.default || domModule;
-      const root = document.createElement("div");
-      document.body.appendChild(root);
-      createRoot(root).render(
-        React.createElement(function Harness() {
-          useOutbox();
-          return null;
-        }),
-      );
+    await page.addScriptTag({
+      type: "module",
+      url: "/tests/sync/sync-browser.fixture.tsx",
     });
+    await page.evaluate(() => window.syncBrowserMount1());
     for (let i = 0; i < 100 && sends.length < 2; i++)
       await new Promise((resolve) => setTimeout(resolve, 50));
     await page.waitForFunction(async () => {
       const { db } = await (await import("/src/sync/client.ts")).syncDatabase();
       return (
-        JSON.parse((await db.outbox.findOne("intent-one").exec()).payload)
-          .status === "accepted"
+        JSON.parse(
+          (await db.outbox.findOne("intent-one").exec())?.payload ?? "null",
+        ).status === "accepted"
       );
     });
     assert.equal(sends.length, 2);
@@ -276,22 +281,28 @@ test("Sync Browser", async ({
     await page.evaluate(async () => {
       const { db } = await (await import("/src/sync/client.ts")).syncDatabase();
       const doc = await db.outbox.findOne("intent-one").exec();
+      if (!doc) throw new Error("Missing accepted outbox row");
       if (JSON.parse(doc.payload).status !== "accepted")
         throw Error("Receipt not saved");
       const handler = (await import("/src/sync/conflicts.ts"))
         .draftConflictHandler;
-      const merged = await handler.resolve({
-        realMasterState: {
-          id: "d",
-          seq: 1,
-          payload: JSON.stringify({ text: "desktop" }),
+      const merged = await handler.resolve(
+        {
+          realMasterState: {
+            id: "d",
+            seq: 1,
+            payload: JSON.stringify({ text: "desktop" }),
+            _deleted: false,
+          },
+          newDocumentState: {
+            id: "d",
+            seq: 0,
+            payload: JSON.stringify({ text: "phone" }),
+            _deleted: false,
+          },
         },
-        newDocumentState: {
-          id: "d",
-          seq: 0,
-          payload: JSON.stringify({ text: "phone" }),
-        },
-      });
+        "sync-browser-fixture",
+      );
       if (!JSON.parse(merged.payload).alternatives.includes("phone"))
         throw Error("Conflict lost");
     });
