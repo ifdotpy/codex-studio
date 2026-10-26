@@ -19,7 +19,7 @@ export type ExternalServer = {
 type Status = Pick<McpServerStatus, "name"> & {
   status: string;
   source?: string;
-  config?: ExternalConfig | undefined;
+  config?: McpServerStatus["config"];
 };
 export type CatalogDependencies = {
   localConfigs?: (cwd: string) => Promise<Record<string, unknown>>;
