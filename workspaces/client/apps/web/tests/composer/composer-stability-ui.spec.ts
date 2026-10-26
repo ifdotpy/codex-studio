@@ -1,4 +1,9 @@
+import type { GetResult, PostResult } from "../../src/apiTypes.ts";
+import type { Page, Route } from "@playwright/test";
+import type { TestAgent } from "../playwright.ts";
+import { fixtureGetResult, fixturePostBody } from "../chat/http.ts";
 import {
+  waitForFixturePort,
   readTestState,
   test,
   expect,
@@ -7,11 +12,26 @@ import {
   readFixtureSyncContract,
   stubEntityState,
 } from "../playwright.ts";
-// Real production React, isolated HTTP fixture, controlled status and delivery timing.
 import assert from "node:assert/strict";
 import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+type Geometry = Pick<DOMRect, "x" | "y" | "width" | "height">;
+type Boxes = Record<string, Geometry>;
+const boxAt = (boxes: Boxes, selector: string) => {
+  const box = boxes[selector];
+  assert.ok(box, `Missing geometry for ${selector}`);
+  return box;
+};
+declare global {
+  interface Window {
+    composerGeometryFrame: string | null;
+    composerTextareaBefore: Element | null;
+    composerTransitionSamples: Pick<Geometry, "y" | "height">[];
+    composerTransitionSampling: boolean;
+  }
+}
+// Real production React, isolated HTTP fixture, controlled status and delivery timing.
 
 test("composer-stability-ui", async ({ browser: fixtureBrowser }) => {
   test.setTimeout(120_000);
@@ -20,17 +40,11 @@ test("composer-stability-ui", async ({ browser: fixtureBrowser }) => {
     stdio: ["pipe", "pipe", "pipe"],
     env: { ...process.env, FIXTURE_WORKER_COUNT: "1" },
   });
-  let browser,
-    pages = new Set(),
-    log = "";
-  fixture.stderr.on("data", (data) => (log += data));
+  const pages = new Set<Page>();
+  let log = "";
+  fixture.stderr?.on("data", (data) => (log += data));
   try {
-    const port = await new Promise((resolve, reject) => {
-      fixture.stdout.once("data", (data) =>
-        resolve(Number(String(data).trim())),
-      );
-      fixture.once("exit", () => reject(Error(log)));
-    });
+    const port = await waitForFixturePort(fixture, { diagnostics: () => log });
     const origin = `http://127.0.0.1:${port}`;
     const initial = await readTestState(origin);
     const lead = initial.threads.find(
@@ -41,29 +55,35 @@ test("composer-stability-ui", async ({ browser: fixtureBrowser }) => {
     );
     assert.ok(lead, "fixture provides an empty managed lead chat");
     assert.ok(emptyWorker, "fixture provides a persistent managed worker chat");
-    browser = fixtureBrowser;
-    const measurements = [];
+
+    const measurements: { width: number; label: string; boxes: Boxes }[] = [];
     for (const width of [1440, 900, 390]) {
-      const openedChat = width === 390 ? lead : emptyWorker;
-      const originalTranscript = await (
-        await fetch(`${origin}/api/transcript?id=${openedChat.id}`)
-      ).json();
+      const openedChat: TestAgent = width === 390 ? lead : emptyWorker;
+      assert.ok(openedChat.name);
+      const originalTranscript = await fixtureGetResult(
+        "/api/transcript",
+        await fetch(`${origin}/api/transcript?id=${openedChat.id}`),
+      );
       const state = structuredClone(initial);
       const controlledAgent = state.runtime.agents.find(
         (agent) => agent.id === openedChat.id,
       );
+      assert.ok(controlledAgent);
       Object.assign(controlledAgent, {
         empty: true,
         status: "completed",
         inFlight: false,
         turnId: null,
-      });
+      } satisfies Partial<TestAgent>);
+      // This fixture sends the entity projection in place of the transcript agent projection.
       const transcript = {
         ...structuredClone(originalTranscript),
         agent: controlledAgent,
         items: [],
+      } satisfies Omit<GetResult<"/api/transcript">, "agent"> & {
+        agent: TestAgent;
       };
-      const page = await browser.newPage({
+      const page = await fixtureBrowser.newPage({
         viewport: { width: 1440, height: 960 },
       });
       pages.add(page);
@@ -83,55 +103,41 @@ test("composer-stability-ui", async ({ browser: fixtureBrowser }) => {
         },
         { stateDir: initial.stateDir, chatId: openedChat.id },
       );
-      let queue = [],
-        queueResponseGate = null,
-        resolveQueueResponse,
-        resolveQueueRequested,
-        queueRequested = new Promise((resolve) => {
-          resolveQueueRequested = resolve;
-        }),
-        pendingSend,
-        pendingStop,
-        resolveStopCapture,
-        stopCaptured = new Promise((resolve) => {
-          resolveStopCapture = resolve;
-        }),
-        resolveSendCapture,
-        sendCaptured = new Promise((resolve) => {
-          resolveSendCapture = resolve;
-        });
+      // Legacy queue fixture intentionally predates QueueItem; preserve its wire payload.
+      let queue: unknown[] = [];
+      let queueResponseGate: Promise<void> | null = null;
+      let queueRequested = Promise.withResolvers<void>();
+      let queueResponse = Promise.withResolvers<void>();
+      const stopCaptured = Promise.withResolvers<Route>();
+      let sendCaptured = Promise.withResolvers<Route>();
       const waitForSend = () =>
         Promise.race([
-          sendCaptured,
+          sendCaptured.promise,
           page.waitForTimeout(12000).then(() => {
             throw Error("send API request was not captured");
           }),
         ]);
-      const errors = [];
+      const errors: string[] = [];
       page.on("pageerror", (error) => errors.push(error.message));
       await page.route("**/api/transcript/stream?*", (route) =>
         route.fulfill({
           contentType: "text/event-stream",
-          body: `data: ${JSON.stringify({ ...transcript, items: transcript.items || [], order: (transcript.items || []).map((item) => item.id), replace: true })}\n\n`,
+          body: `data: ${JSON.stringify({ ...transcript, items: transcript.items || [], order: [], replace: true })}\n\n`,
         }),
       );
       await page.route("**/api/transcript?*", (route) =>
         route.fulfill({ json: transcript }),
       );
       await page.route("**/api/queue?*", async (route) => {
-        resolveQueueRequested?.();
-        resolveQueueRequested = null;
+        queueRequested.resolve();
         if (queueResponseGate) await queueResponseGate;
         await route.fulfill({ json: { items: queue } });
       });
       await page.route("**/api/messages", (route) => {
-        pendingSend = route;
-        resolveSendCapture?.();
-        resolveSendCapture = null;
+        sendCaptured.resolve(route);
       });
       await page.route("**/api/stop", (route) => {
-        pendingStop = route;
-        resolveStopCapture();
+        stopCaptured.resolve(route);
       });
       await page.setViewportSize({ width, height: 960 });
       await page.goto(origin);
@@ -182,18 +188,18 @@ test("composer-stability-ui", async ({ browser: fixtureBrowser }) => {
       );
       await page.locator("#message").fill("Check this task");
       await page.waitForFunction(() => {
-        const message = document.querySelector("#message");
-        const send = document.querySelector("#send");
+        const message = document.querySelector<HTMLTextAreaElement>("#message");
+        const send = document.querySelector<HTMLButtonElement>("#send");
         return (
           message?.value === "Check this task" &&
           send &&
           !send.disabled &&
-          !document.querySelector("#send-state").textContent
+          !document.querySelector("#send-state")?.textContent
         );
       });
       const boxes = () =>
         page.evaluate((mobile) => {
-          const result = {};
+          const result: Boxes = {};
           for (const selector of [
             "#composer",
             ...(mobile ? [] : ["#conversation-title"]),
@@ -205,10 +211,9 @@ test("composer-stability-ui", async ({ browser: fixtureBrowser }) => {
             ...(mobile ? [] : [".usage-footer"]),
           ]) {
             const node = document.querySelector(selector);
-            const box = node.getBoundingClientRect();
-            result[selector] = Object.fromEntries(
-              ["x", "y", "width", "height"].map((key) => [key, box[key]]),
-            );
+            if (!node) throw new Error(`Missing ${selector}`);
+            const { x, y, width, height } = node.getBoundingClientRect();
+            result[selector] = { x, y, width, height };
           }
           return result;
         }, width <= 760);
@@ -229,9 +234,9 @@ test("composer-stability-ui", async ({ browser: fixtureBrowser }) => {
         });
         await page.waitForFunction((selectors) => {
           const current = selectors.map((selector) => {
-            const rect = document
-              .querySelector(selector)
-              .getBoundingClientRect();
+            const node = document.querySelector(selector);
+            if (!node) throw new Error(`Missing ${selector}`);
+            const rect = node.getBoundingClientRect();
             return [rect.x, rect.y, rect.width, rect.height].map(Math.round);
           });
           const serialized = JSON.stringify(current);
@@ -258,14 +263,14 @@ test("composer-stability-ui", async ({ browser: fixtureBrowser }) => {
           "390px empty-chat transition starts from the selected empty chat",
         );
       const stable = async (
-        label,
+        label: string,
         { allowFirstPromptTitleResize = false } = {},
       ) => {
         await waitForStableGeometry();
         const current = await boxes();
         measurements.push({ width, label, boxes: current });
         for (const [selector, box] of Object.entries(baseline))
-          for (const key of ["x", "y", "width", "height"])
+          for (const key of ["x", "y", "width", "height"] as const)
             if (
               allowFirstPromptTitleResize &&
               selector === "#conversation-title" &&
@@ -274,8 +279,8 @@ test("composer-stability-ui", async ({ browser: fixtureBrowser }) => {
               continue;
             else
               assert.ok(
-                Math.abs(current[selector][key] - box[key]) <= 1,
-                `${width}px ${label} ${selector}.${key}: ${box[key]} -> ${current[selector][key]}`,
+                Math.abs(boxAt(current, selector)[key] - box[key]) <= 1,
+                `${width}px ${label} ${selector}.${key}: ${box[key]} -> ${boxAt(current, selector)[key]}`,
               );
         assert.equal(
           await page.evaluate(
@@ -284,26 +289,27 @@ test("composer-stability-ui", async ({ browser: fixtureBrowser }) => {
           false,
           `${width}px no horizontal page overflow`,
         );
-        const form = current["#composer"];
+        const form = boxAt(current, "#composer");
         for (const selector of [
           ".attach-button",
           ...(width <= 760 ? [] : [".dictation-trigger"]),
           "#send",
         ])
           assert.ok(
-            current[selector].x >= form.x &&
-              current[selector].x + current[selector].width <=
+            boxAt(current, selector).x >= form.x &&
+              boxAt(current, selector).x + boxAt(current, selector).width <=
                 form.x + form.width + 1,
             `${selector} stays inside composer`,
           );
       };
-      const updatePhase = async (next) => {
-        const active = ["starting", "running", "approval"].includes(next);
+      const updatePhase = async (next: TestAgent["status"]) => {
+        const active =
+          next === "starting" || next === "running" || next === "approval";
         Object.assign(controlledAgent, {
           status: next,
           inFlight: active,
           turnId: active ? "fixture-turn" : null,
-        });
+        } satisfies Partial<TestAgent>);
         await updateEntityState(state, { origin, token: initial.token });
         await page.evaluate(() => window.dispatchEvent(new Event("online")));
         await page.waitForFunction(
@@ -329,14 +335,15 @@ test("composer-stability-ui", async ({ browser: fixtureBrowser }) => {
       if (emptyPhoneStart) {
         await page.locator("#message").focus();
         await page.evaluate(() => {
-          window.composerTextareaBefore = document.querySelector("#message");
+          window.composerTextareaBefore =
+            document.querySelector<HTMLTextAreaElement>("#message");
           window.composerTransitionSamples = [];
           window.composerTransitionSampling = true;
           const sample = () => {
             if (!window.composerTransitionSampling) return;
-            const box = document
-              .querySelector("#composer")
-              .getBoundingClientRect();
+            const composer = document.querySelector("#composer");
+            if (!composer) throw new Error("Missing composer");
+            const box = composer.getBoundingClientRect();
             window.composerTransitionSamples.push({
               y: box.y,
               height: box.height,
@@ -350,9 +357,11 @@ test("composer-stability-ui", async ({ browser: fixtureBrowser }) => {
         );
       }
       if (emptyPhoneStart)
-        await page.locator("#send").evaluate((button) => button.click());
+        await page
+          .locator("#send")
+          .evaluate((button: HTMLButtonElement) => button.click());
       else await page.locator("#send").click();
-      await waitForSend();
+      const firstSend = await waitForSend();
       // The composer releases its lock when the durable outbox owns the request.
       // At that point the message row shows the in-flight state.
       await waitForSendingUI();
@@ -373,12 +382,12 @@ test("composer-stability-ui", async ({ browser: fixtureBrowser }) => {
         );
         assert.equal(
           positions[0],
-          Math.round(baseline["#composer"].y),
+          Math.round(boxAt(baseline, "#composer").y),
           "390px transition starts at the empty-chat composer position",
         );
         assert.equal(
           positions[0],
-          Math.round(current["#composer"].y),
+          Math.round(boxAt(current, "#composer").y),
           "390px transition ends at the non-empty composer position",
         );
         assert.equal(
@@ -389,10 +398,12 @@ test("composer-stability-ui", async ({ browser: fixtureBrowser }) => {
         assert.equal(
           await page.evaluate(
             () =>
-              document.querySelector("#message") ===
+              document.querySelector<HTMLTextAreaElement>("#message") ===
                 window.composerTextareaBefore &&
-              document.querySelector("#message")?.isConnected &&
-              document.activeElement === document.querySelector("#message"),
+              document.querySelector<HTMLTextAreaElement>("#message")
+                ?.isConnected &&
+              document.activeElement ===
+                document.querySelector<HTMLTextAreaElement>("#message"),
           ),
           true,
           "390px first-send transition keeps the focused textarea mounted",
@@ -417,45 +428,53 @@ test("composer-stability-ui", async ({ browser: fixtureBrowser }) => {
           // e4ef04aa places prompt navigation in the header tools. That
           // navigation mounts after the first prompt, and the flexible title
           // yields width to its prompt history control once.
-          baseline = measurements.at(-1).boxes;
+          const latest = measurements.at(-1);
+          assert.ok(latest);
+          baseline = latest.boxes;
         }
       }
-      await pendingSend.fulfill({
-        json: { id: pendingSend.request().postDataJSON().id, status: "sent" },
+      const firstMessage = fixturePostBody(
+        "/api/messages",
+        firstSend.request().postDataJSON(),
+      );
+      assert.ok(firstMessage.id);
+      await firstSend.fulfill({
+        json: {
+          id: firstMessage.id,
+          status: "sent",
+        } satisfies PostResult<"/api/messages">,
       });
       await page.waitForFunction(
-        () => !document.querySelector("#message").value,
+        () => !document.querySelector<HTMLTextAreaElement>("#message")?.value,
       );
       await page.waitForFunction(
-        () => !document.querySelector("#send-state").textContent,
+        () => !document.querySelector("#send-state")?.textContent,
       );
       await stable("sent and draft cleared");
-      for (const next of ["starting", "running", "approval"]) {
+      for (const next of ["starting", "running", "approval"] as const) {
         await updatePhase(next);
         await stable(next);
       }
       await page.locator("#message").fill("Additional instruction");
-      pendingSend = null;
-      sendCaptured = new Promise((resolve) => {
-        resolveSendCapture = resolve;
-      });
+      sendCaptured = Promise.withResolvers<Route>();
       await updatePhase("completed");
       await page.locator("#send").click();
-      await waitForSend();
+      const secondSend = await waitForSend();
       await stable("sending before failed delivery");
       if (emptyPhoneStart)
-        for (const key of ["y", "height"])
+        for (const key of ["y", "height"] as const)
           assert.equal(
-            measurements.at(-1).boxes["#composer"][key],
-            baseline["#composer"][key],
+            boxAt(measurements.at(-1)?.boxes ?? {}, "#composer")[key],
+            boxAt(baseline, "#composer")[key],
             `390px subsequent non-empty send preserves composer ${key}`,
           );
       assert.equal(
-        pendingSend.request().postDataJSON().delivery,
+        fixturePostBody("/api/messages", secondSend.request().postDataJSON())
+          .delivery,
         "current_turn",
         "An ordinary Send action keeps the current after-tool delivery mode",
       );
-      await pendingSend.fulfill({
+      await secondSend.fulfill({
         status: 400,
         json: { error: "Fixture delivery failed" },
       });
@@ -480,12 +499,9 @@ test("composer-stability-ui", async ({ browser: fixtureBrowser }) => {
           status: "queued",
         },
       ];
-      queueRequested = new Promise((resolve) => {
-        resolveQueueRequested = resolve;
-      });
-      queueResponseGate = new Promise((resolve) => {
-        resolveQueueResponse = resolve;
-      });
+      queueRequested = Promise.withResolvers<void>();
+      queueResponse = Promise.withResolvers<void>();
+      queueResponseGate = queueResponse.promise;
       await page.reload();
       if (width <= 760)
         await page.locator(`[data-chat="${openedChat.id}"]`).first().click();
@@ -493,14 +509,14 @@ test("composer-stability-ui", async ({ browser: fixtureBrowser }) => {
       await expect(page.locator("#conversation-title")).toContainText(
         openedChat.name,
       );
-      await queueRequested;
+      await queueRequested.promise;
       if (width > 760) await page.locator(".terminal-dock").waitFor();
       await page.locator("#stop:not(:disabled)").waitFor();
       await waitForStableGeometry();
       // Reload restores the running turn before queue rendering; establish the
       // post-reload geometry, then verify the queue response itself is stable.
       baseline = await boxes();
-      resolveQueueResponse();
+      queueResponse.resolve();
       queueResponseGate = null;
       await page
         .getByRole("button", { name: "Delete queued message 1", exact: true })
@@ -512,7 +528,7 @@ test("composer-stability-ui", async ({ browser: fixtureBrowser }) => {
         .waitFor();
       await stable("queue appears");
       await page.locator("#stop").click();
-      await stopCaptured;
+      const pendingStop = await stopCaptured.promise;
       assert.ok(pendingStop, "stop reaches API");
       await stable("stopping request");
       await pendingStop.fulfill({ json: {} });
