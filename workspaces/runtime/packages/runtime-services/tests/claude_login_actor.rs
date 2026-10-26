@@ -139,8 +139,24 @@ async fn auth_repair_regression_post_login_allows_only_fresh_safe_continuation()
         .expect("profile sign-in starts");
     let login = f.launcher.next().await;
     link(&f, &service, &login).await;
-    let ready = complete(&f, &service, &login).await;
-    assert_eq!(ready["chatsRefreshed"], true);
+    let (reached_tx, reached_rx) = std::sync::mpsc::channel();
+    let (release_tx, release_rx) = std::sync::mpsc::channel();
+    *f.receipts.ready_gate.lock().expect("gate") = Some(ReadyGate {
+        reached: reached_tx,
+        release: release_rx,
+    });
+    complete_probe(&f, &login).await;
+    tokio::task::spawn_blocking(move || reached_rx.recv())
+        .await
+        .expect("gate thread")
+        .expect("actor reached the Ready save");
+    release_tx.send(()).expect("release the Ready save");
+    // Ready is published before the chat repair. Wait for the repair result.
+    let ready = f
+        .status_where(&service, ID, |value| {
+            value["status"] == "ready" && value["chatsRefreshed"] == true
+        })
+        .await;
     service.shutdown().await.expect("login actor joined");
 
     let monitor_template = crate::monitor_fixtures::corpus(&f.directory)[0]["before"].clone();
