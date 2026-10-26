@@ -9,12 +9,14 @@ declare global {
     observed: string[][];
     edited: Array<{ id: string; text: string }>;
     advance: number;
-    reactRoot: Root;
+    // Renamed from reactRoot: terminal/terminal-stub.ts declares it as Root | null.
+    queueDeadlineRoot: Root;
     outcome: string;
     operation: Promise<string>;
     removal: typeof import("../../src/components/removeSendingMessages.ts");
     removed: typeof import("../../src/components/removedMessages.ts");
-    scope: Parameters<typeof removeSendingMessage>[0];
+    // Renamed from scope: files/upload-recovery-browser.fixture.tsx declares it as a string.
+    queueDeadlineScope: Parameters<typeof removeSendingMessage>[0];
     target: Parameters<typeof removeSendingMessage>[1];
   }
 }

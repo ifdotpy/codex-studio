@@ -122,7 +122,7 @@ test("queue-mutation-deadline-browser @performance", async ({
       Date.now = () => now() + window.advance;
       const fixturePath =
         "/tests/queue/queue-mutation-deadline-browser.fixture.tsx";
-      window.reactRoot = (await import(fixturePath)).mount(workspaceId);
+      window.queueDeadlineRoot = (await import(fixturePath)).mount(workspaceId);
     }, workspaceId);
     await page.waitForFunction(() => window.queue && !window.queue.loading);
     const untilPosts = async (count: number) => {
@@ -206,7 +206,7 @@ test("queue-mutation-deadline-browser @performance", async ({
       assert.equal(await page.evaluate(() => window.queue.pending), null);
       assert.equal(await page.evaluate(() => window.queue.busy), false);
     }
-    await page.evaluate(() => window.reactRoot.unmount());
+    await page.evaluate(() => window.queueDeadlineRoot.unmount());
     assert.equal(applied, 3);
 
     // Removal has its own saved request. Its retry must work after the row is gone.
@@ -224,7 +224,7 @@ test("queue-mutation-deadline-browser @performance", async ({
     await page.evaluate(async (workspaceId) => {
       window.removal = await import("/src/components/removeSendingMessages.ts");
       window.removed = await import("/src/components/removedMessages.ts");
-      window.scope = { stateDir: "deadline-fixture", workspaceId };
+      window.queueDeadlineScope = { stateDir: "deadline-fixture", workspaceId };
       window.target = {
         chat: "chat",
         message: {
@@ -237,7 +237,7 @@ test("queue-mutation-deadline-browser @performance", async ({
       };
       window.outcome = "pending";
       window.operation = window.removal
-        .removeSendingMessage(window.scope, window.target)
+        .removeSendingMessage(window.queueDeadlineScope, window.target)
         .then(
           () => (window.outcome = "success"),
           (error: Error) => (window.outcome = error.name),
@@ -254,7 +254,7 @@ test("queue-mutation-deadline-browser @performance", async ({
     assert.equal(
       await page.evaluate(() =>
         window.removed.isRemovedMessage(
-          window.scope.stateDir,
+          window.queueDeadlineScope.stateDir,
           "agent",
           "chat",
           window.target.message,
@@ -264,14 +264,17 @@ test("queue-mutation-deadline-browser @performance", async ({
       "An unknown queue result must remain available for exact retry",
     );
     await page.evaluate(() =>
-      window.removal.removeSendingMessage(window.scope, window.target),
+      window.removal.removeSendingMessage(
+        window.queueDeadlineScope,
+        window.target,
+      ),
     );
     assert.deepEqual(posts[before + 1], request);
     assert.equal(applied, 4);
     assert.equal(
       await page.evaluate(() =>
         window.removed.isRemovedMessage(
-          window.scope.stateDir,
+          window.queueDeadlineScope.stateDir,
           "agent",
           "chat",
           window.target.message,
