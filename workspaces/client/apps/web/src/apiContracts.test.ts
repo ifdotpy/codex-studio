@@ -334,7 +334,7 @@ void invalidMarkdownBlock;
 void markdownParserContract;
 
 // Desktop and local storage adapters consume their existing contract owners.
-type DesktopDeclaration = import("../../desktop/bridge").CodexDesktop;
+type DesktopDeclaration = import("../../desktop/api.ts").DesktopBridge;
 type WebDesktopDeclaration = import("./desktop").DesktopBridge;
 type PreferenceDeclaration =
   import("./components/accountPreference").PreferenceAccount;

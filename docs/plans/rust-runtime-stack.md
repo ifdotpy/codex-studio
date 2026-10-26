@@ -62,7 +62,7 @@ run. A missing fact is called out instead of inferred.
   interpreter ([`package.mjs`](../../workspaces/client/apps/desktop/package.mjs));
   launch resolution uses configured, managed, then equipped system Python
   ([`codex_python.py`](../../workspaces/runtime/apps/server/src/codex_python.py),
-  [`backend.cjs`](../../workspaces/client/apps/desktop/backend.cjs)). CLI setup
+  [`backend.ts`](../../workspaces/client/apps/desktop/backend.ts)). CLI setup
   creates a venv from a selected base interpreter. Windows install receives a
   Python path ([`install-windows-server.ps1`](../../workspaces/runtime/apps/server/src/install-windows-server.ps1)).
   Product/platform references: [product guide](../product-guide.md),

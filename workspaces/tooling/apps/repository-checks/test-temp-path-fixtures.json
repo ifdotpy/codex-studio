@@ -1,5 +1,5 @@
 {
-  "workspaces/client/apps/desktop/dictation-permissions.test.mjs": [
+  "workspaces/client/apps/desktop/dictation-permissions.test.ts": [
     "return \"/tmp\";",
     "return \"/tmp/not-installed-studio\";",
     "__dirname: \"/tmp\","
@@ -7,7 +7,7 @@
   "workspaces/client/apps/desktop/install-update-test.py": [
     "{\"executable\": \"/tmp/Codex Studio.app/Contents/MacOS/studio-native-client\"},"
   ],
-  "workspaces/client/apps/desktop/recovery.test.mjs": [
+  "workspaces/client/apps/desktop/recovery.test.ts": [
     "\"/tmp/Codex Studio.app/Contents/MacOS/studio-native-client\","
   ],
   "workspaces/client/apps/web/src/components/tool-images/toolImages.test.ts": [
@@ -31,7 +31,7 @@
     "await expect(remote.api.revealPath(\"/tmp/folder\")).rejects.toThrow(",
     "const delayedRemoteReveal = () => remote.revealPath(\"/tmp/remote-path\");"
   ],
-  "workspaces/client/apps/web/src/sync/entityProjection.test.mjs": [
+  "workspaces/client/apps/web/src/sync/entityProjection.test.ts": [
     "entityRow(\"workspace\", \"current\", { stateDir: \"/tmp/state\" }, 14),"
   ],
   "workspaces/client/apps/web/tests/accounts/account-project-ui.spec.mjs": [
