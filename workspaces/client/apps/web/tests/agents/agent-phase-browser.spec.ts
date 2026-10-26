@@ -78,14 +78,14 @@ test("chat reconnect follows transport across hidden conversations", async ({
     await expect(first).toContainText("Writing");
     await expect(first).not.toContainText("Provider is reconnecting");
     expect(await page.evaluate(() => window.connectionListeners())).toBe(2);
-    const beforeRepeatedStatus = await page.evaluate(() => window.renders);
+    const beforeRepeatedStatus = await page.evaluate(() => window.chatRenders);
     await page.evaluate(async () => {
       for (let repeated = 0; repeated < 20; repeated++) window.repeatLive();
       await new Promise((resolve) =>
         requestAnimationFrame(() => requestAnimationFrame(resolve)),
       );
     });
-    expect(await page.evaluate(() => window.renders)).toEqual(
+    expect(await page.evaluate(() => window.chatRenders)).toEqual(
       beforeRepeatedStatus,
     );
     expect(await page.evaluate(() => window.connectionListeners())).toBe(2);

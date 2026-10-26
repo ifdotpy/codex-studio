@@ -47,13 +47,13 @@ export type LimitSnapshot = {
 };
 declare global {
   interface Window {
-    fixtureActions: string[];
+    recoveryActions: string[];
     applyLimitSnapshot: (snapshot: LimitSnapshot) => void;
   }
 }
-window.fixtureActions = [];
+window.recoveryActions = [];
 const action = () => {
-  window.fixtureActions.push("action");
+  window.recoveryActions.push("action");
 };
 function parseSnapshot(serialized: string): LimitSnapshot | null {
   // This fixture owns both the session document writer and reader.

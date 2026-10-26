@@ -1,7 +1,7 @@
 declare global {
   interface Window {
-    fixture: Snapshot;
-    opened: string | null;
+    radioCreateSnapshot: Snapshot;
+    radioOpened: string | null;
     reopen: () => void;
     failRefresh: boolean;
     ordinary: boolean;
@@ -80,8 +80,8 @@ const initial: Snapshot = {
     peerTeams: [],
   },
 };
-window.fixture = initial;
-window.opened = null;
+window.radioCreateSnapshot = initial;
+window.radioOpened = null;
 window.reopen = () => {};
 window.failRefresh = false;
 window.ordinary = false;
@@ -91,8 +91,8 @@ function Fixture() {
     path: "/p",
   });
   const [opened, open] = useState<string | null>(null);
-  window.fixture = data;
-  window.opened = opened;
+  window.radioCreateSnapshot = data;
+  window.radioOpened = opened;
   window.reopen = () => setShow({ path: "/p" });
   const refresh = async () => {
     if (window.failRefresh) throw Error("Snapshot unavailable");

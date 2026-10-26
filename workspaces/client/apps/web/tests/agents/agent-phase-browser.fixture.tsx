@@ -26,7 +26,7 @@ type ConnectionListener = Parameters<
 declare global {
   interface Window {
     reads: unknown[][];
-    renders: Record<string, number>;
+    chatRenders: Record<string, number>;
     setConnection: (
       value: "offline" | "connecting" | "live",
     ) => void | Promise<void>;
@@ -38,7 +38,7 @@ declare global {
   }
 }
 window.reads = [];
-window.renders = { first: 0, second: 0 };
+window.chatRenders = { first: 0, second: 0 };
 window.connectionListeners = () => 0;
 
 const refs: Record<string, TranscriptRef> = Object.fromEntries(
@@ -247,7 +247,7 @@ function liveAgentView(
   return agent as Agent;
 }
 function Chat({ id, visible }: { id: string; visible: boolean }) {
-  window.renders[id] = (window.renders[id] ?? 0) + 1;
+  window.chatRenders[id] = (window.chatRenders[id] ?? 0) + 1;
   const messages = useMessages(
     id,
     "agent",

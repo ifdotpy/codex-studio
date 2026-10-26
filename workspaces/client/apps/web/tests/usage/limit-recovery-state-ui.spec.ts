@@ -191,7 +191,7 @@ test("Limit Recovery State Ui", async ({
       threadId: "another-thread",
       mountKey: 3,
     });
-    assert.deepEqual(await page.evaluate(() => window.fixtureActions), []);
+    assert.deepEqual(await page.evaluate(() => window.recoveryActions), []);
     await page.evaluate(
       (snapshot) => {
         sessionStorage.setItem("fixture-initial", JSON.stringify(snapshot));
@@ -203,7 +203,7 @@ test("Limit Recovery State Ui", async ({
     await assertBanner(false);
     await apply("new-quota-error", available, true, { episode: now });
     assert.deepEqual(writes, []);
-    assert.deepEqual(await page.evaluate(() => window.fixtureActions), []);
+    assert.deepEqual(await page.evaluate(() => window.recoveryActions), []);
     assert.deepEqual(errors, []);
     console.log(
       JSON.stringify({

@@ -3,7 +3,7 @@ declare global {
     radio: () => NonNullable<Room["radio"]>;
     setRoom: React.Dispatch<React.SetStateAction<Room>>;
     currentRoom: Room;
-    opened: string | null;
+    radioOpened: string | null;
     refreshCalls: number;
     holdRefresh: boolean;
     releaseRefresh: () => void | undefined;
@@ -64,7 +64,7 @@ window.radio = () => {
   return state;
 };
 window.setRoom = () => {};
-window.opened = null;
+window.radioOpened = null;
 function Fixture() {
   const [data] = useState<Snapshot>(initial);
   const [value, setRoom] = useState(room);
@@ -99,7 +99,7 @@ function Fixture() {
   const [roomId, setRoomId] = useState<string | undefined>(undefined);
   window.setRoom = setRoom;
   window.currentRoom = value;
-  window.opened = null;
+  window.radioOpened = null;
   const refresh = async () => {
     window.refreshCalls = (window.refreshCalls || 0) + 1;
     if (window.holdRefresh)
@@ -130,7 +130,7 @@ function Fixture() {
           edit={() => {}}
           dissolve={() => {}}
           roomId={roomId}
-          openRoom={(id) => (window.opened = id)}
+          openRoom={(id) => (window.radioOpened = id)}
           refresh={refresh}
         >
           <></>

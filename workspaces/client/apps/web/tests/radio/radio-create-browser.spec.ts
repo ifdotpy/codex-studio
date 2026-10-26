@@ -174,8 +174,8 @@ test("radio create browser", async ({ page: runnerPage }) => {
       return r.fulfill({ json: { room: state.runtime.rooms[0] } });
     });
     await page.goto(`${fixtureOrigin(server)}/check`);
-    await page.waitForFunction(() => window.fixture);
-    state = await page.evaluate(() => window.fixture);
+    await page.waitForFunction(() => window.radioCreateSnapshot);
+    state = await page.evaluate(() => window.radioCreateSnapshot);
     const form = page.getByRole("form", { name: "Create shared chat" });
     const create = form.getByRole("button", {
       name: "Create",
@@ -306,11 +306,11 @@ test("radio create browser", async ({ page: runnerPage }) => {
     await page.setViewportSize({ width: 1100, height: 950 });
     await create.click();
     await page.getByRole("button", { name: "Retry creation" }).waitFor();
-    assert.equal(await page.evaluate(() => window.opened), null);
+    assert.equal(await page.evaluate(() => window.radioOpened), null);
     assert.equal(await form.getByLabel("Chat name").isDisabled(), true);
     await page.reload();
     await page.getByRole("button", { name: "Retry creation" }).click();
-    await page.waitForFunction(() => window.opened === "radio:direct");
+    await page.waitForFunction(() => window.radioOpened === "radio:direct");
     assert.equal(requests.length, 2);
     assert.deepEqual(requests[0], requests[1]);
     const { request_id, ...body } = requests[0]!;

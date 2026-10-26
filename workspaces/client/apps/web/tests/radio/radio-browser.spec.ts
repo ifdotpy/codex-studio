@@ -155,9 +155,9 @@ test("Radio browser", async ({
       .click();
     await page.getByRole("menuitem", { name: "Open shared chat" }).click();
     await page.getByRole("button", { name: "Retry", exact: true }).waitFor();
-    assert.equal(await page.evaluate(() => window.opened), null);
+    assert.equal(await page.evaluate(() => window.radioOpened), null);
     await page.getByRole("button", { name: "Retry", exact: true }).click();
-    await page.waitForFunction(() => window.opened === "radio:t");
+    await page.waitForFunction(() => window.radioOpened === "radio:t");
     assert.equal(requests.length, 2);
     assert.deepEqual(requests[0], requests[1]);
     requests.length = 0;
@@ -373,7 +373,7 @@ test("Radio browser", async ({
       .getByRole("button", { name: "Options for team Research" })
       .click();
     await page.getByRole("menuitem", { name: "Open shared chat" }).click();
-    await page.waitForFunction(() => window.opened === "radio:t");
+    await page.waitForFunction(() => window.radioOpened === "radio:t");
     await page.getByRole("menu").waitFor({ state: "hidden" });
     for (const width of [1100, 375]) {
       await page.setViewportSize({ width, height: 850 });

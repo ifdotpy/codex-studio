@@ -41,9 +41,9 @@ type VoiceHarness = {
 declare global {
   interface Window {
     pc: FixturePeer;
-    calls: VoiceHarness["calls"];
+    voiceCalls: VoiceHarness["calls"];
     order: VoiceHarness["order"];
-    stops: VoiceHarness["stops"];
+    voiceStops: VoiceHarness["stops"];
     records: VoiceHarness["records"];
     pending: VoiceHarness["pending"];
     voiceError: VoiceHarness["voiceError"];
@@ -97,9 +97,9 @@ function voiceWindow(value: unknown): FixtureWindow {
 const fixtureWindow = voiceWindow(window);
 const nativeFetch = window.fetch.bind(window);
 const root = createRoot(fixtureRoot());
-window.calls = [];
+window.voiceCalls = [];
 window.order = [];
-window.stops = 0;
+window.voiceStops = 0;
 window.records = [];
 window.pending = false;
 window.voiceError = "";
@@ -158,7 +158,7 @@ fixtureWindow.RTCPeerConnection = class {
 const track = (window.track = {
   enabled: true,
   stop() {
-    window.stops++;
+    window.voiceStops++;
   },
 });
 Object.defineProperty(navigator, "mediaDevices", {
@@ -202,7 +202,7 @@ window.fetch = async (input, opts) => {
     .split("/")
     .at(-1)!;
   const payload = voiceBody(body as string);
-  window.calls.push([action, payload]);
+  window.voiceCalls.push([action, payload]);
   let data: unknown = {};
   if (action === "identity")
     data = {
