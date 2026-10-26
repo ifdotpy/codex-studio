@@ -1,5 +1,8 @@
+import type { components } from "../../src/generated/api.ts";
+import { fixtureServerOrigin } from "../mobile/browser-fixture.ts";
+import { createFixtureViteServer as createServer } from "../playwright.ts";
+import type {} from "./claude-login-ui.fixture.tsx";
 import assert from "node:assert/strict";
-import { createRequire } from "node:module";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve, join } from "node:path";
@@ -7,10 +10,8 @@ import { test } from "../playwright.ts";
 
 test("claude login ui", async ({ page: runnerPage }) => {
   const root = resolve(import.meta.dirname, "../../");
-  const require = createRequire(join(root, "package.json"));
-  const { createServer } = await import(require.resolve("vite"));
+
   const cacheDir = await mkdtemp(join(tmpdir(), "claude-login-ui-"));
-  const entry = join(root, "claude-login-fixture.tsx");
   const server = await createServer({
     configFile: false,
     root,
@@ -23,16 +24,9 @@ test("claude login ui", async ({ page: runnerPage }) => {
           server.middlewares.use("/check", (_req, res) => {
             res.setHeader("Content-Type", "text/html");
             res.end(
-              '<div id="root"></div><script type="module" src="/claude-login-fixture.tsx"></script>',
+              '<div id="root"></div><script type="module" src="/tests/claude/claude-login-ui.fixture.tsx"></script>',
             );
           });
-        },
-        resolveId(id) {
-          if (id === "/claude-login-fixture.tsx") return entry;
-        },
-        load(id) {
-          if (id === entry)
-            return `import React,{useState} from 'react';import {createRoot} from 'react-dom/client';import {MantineProvider,Modal,Button} from '@mantine/core';import '@mantine/core/styles.css';import Accounts from '/src/components/Accounts.tsx';import AccountSignInNotice from '/src/components/AccountSignInNotice.tsx';const account={id:'claude',label:'Personal',email:'me@example.com',provider:'claude',status:'changed',error:"This profile's account changed. Restore its original login or add a separate profile."};const state={scope:'fixture',data:{accounts:[account],defaultAccountKey:'claude'},setData:()=>{},refresh:async()=>{},error:''};function Fixture(){const[opened,setOpened]=useState(false);return <MantineProvider><AccountSignInNotice account={account} errors={[{message:"An unrelated earlier error"}]} onSignIn={key=>window.signInAccount=key}/><Button onClick={()=>setOpened(true)}>Manage accounts</Button><Modal opened={opened} onClose={()=>setOpened(false)} title='Accounts'><Accounts managerOnly state={state} onError={()=>{}}/></Modal></MantineProvider>}createRoot(document.getElementById('root')).render(<Fixture/>);`;
         },
       },
     ],
@@ -40,11 +34,11 @@ test("claude login ui", async ({ page: runnerPage }) => {
   try {
     await server.listen();
     const page = runnerPage;
-    const failures = [];
+    const failures: string[] = [];
     page.on("pageerror", (e) => failures.push(e.message));
-    let receipt = null;
-    let starts = [];
-    let codes = [];
+    let receipt: components["schemas"]["ClaudeLoginResponse"] | null = null;
+    const starts: string[] = [];
+    const codes: string[] = [];
     let unsafeNext = false;
     let failNextCode = false;
     await page.route("**/api/**", async (route) => {
@@ -55,6 +49,7 @@ test("claude login ui", async ({ page: runnerPage }) => {
         return route.fulfill({ status: 404, json: {} });
       if (url.pathname === "/api/accounts/claude/login") {
         if (req.method() === "POST") {
+          assert.equal(typeof body.login_id, "string");
           starts.push(body.login_id);
           receipt = {
             requestId: body.login_id,
@@ -67,7 +62,7 @@ test("claude login ui", async ({ page: runnerPage }) => {
           unsafeNext = false;
         } else {
           const status = receipt || {
-            requestId: url.searchParams.get("request_id"),
+            requestId: url.searchParams.get("request_id") ?? "",
             accountKey: "claude",
             status: "starting",
           };
@@ -80,6 +75,7 @@ test("claude login ui", async ({ page: runnerPage }) => {
         });
       }
       if (url.pathname.endsWith("/code")) {
+        assert.ok(receipt);
         codes.push(body.code);
         receipt = failNextCode
           ? {
@@ -93,6 +89,7 @@ test("claude login ui", async ({ page: runnerPage }) => {
         return route.fulfill({ json: receipt });
       }
       if (url.pathname.endsWith("/cancel")) {
+        assert.ok(receipt);
         receipt = { ...receipt, status: "cancelled" };
         return route.fulfill({ json: receipt });
       }
@@ -130,9 +127,7 @@ test("claude login ui", async ({ page: runnerPage }) => {
       localStorage.removeItem("claude-add-sign-in:fixture");
       sessionStorage.setItem("claude-login-ui-reset", token);
     }, resetToken);
-    await page.goto(
-      `http://127.0.0.1:${server.httpServer.address().port}/check`,
-    );
+    await page.goto(fixtureServerOrigin(server) + "/check");
     await page
       .getByRole("button", { name: "Sign in to Claude", exact: true })
       .click();

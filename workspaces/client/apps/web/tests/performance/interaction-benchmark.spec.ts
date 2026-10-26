@@ -16,7 +16,7 @@ test(
       "Use just benchmark-client-interactions to supply the explicit baseline and output.",
     );
     const script = fileURLToPath(
-      new URL("./interaction-fixture.mjs", import.meta.url),
+      new URL("./interaction-fixture.ts", import.meta.url),
     );
     const current = fileURLToPath(new URL("../../dist", import.meta.url));
     const results = [];

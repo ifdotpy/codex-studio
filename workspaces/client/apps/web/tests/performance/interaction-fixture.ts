@@ -130,7 +130,7 @@ const server = createServer(async (req, res) => {
   if (req.url === "/scenario.js") {
     res.setHeader("Content-Type", "text/javascript");
     res.end(
-      await readFile(new URL("./interaction-scenario.js", import.meta.url)),
+      await readFile(new URL("./interaction-scenario.ts", import.meta.url)),
     );
     return;
   }

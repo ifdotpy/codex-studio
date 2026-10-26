@@ -4,8 +4,8 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const specs = [
-  "draft-render-performance-browser.spec.mjs",
-  "ui-responsiveness-browser.spec.mjs",
+  "draft-render-performance-browser.spec.ts",
+  "ui-responsiveness-browser.spec.ts",
 ];
 const web = fileURLToPath(new URL("../../../", import.meta.url));
 const config = join(web, "playwright.config.ts");

@@ -1,6 +1,6 @@
 # Text clipping detector
 
-Import `detectTextClipping` from `text-clipping.mjs`.
+Import `detectTextClipping` from `text-clipping.ts`.
 Call it with `page.evaluate(detectTextClipping, { scene, profile })` after the page settles.
 
 The report contains the scene, profile, selector, text, rectangle, and reason.
@@ -21,7 +21,7 @@ Run the detector regression test:
 
 ```sh
 cd web
-npx playwright test --config playwright.config.ts --project=client text-clipping.spec.mjs
+npx playwright test --config playwright.config.ts --project=client text-clipping.spec.ts
 ```
 
 The scene runner is `/tmp/ui-compare/clip-audit/run.mjs`. See its README for the

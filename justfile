@@ -148,7 +148,7 @@ test-browser-multi-server:
 [doc("Manual client interaction benchmark: five cumulative builds, one browser worker, three samples each; no synthetic load. Output must be outside the checkout.")]
 benchmark-client-interactions baseline output:
     @pnpm --filter codex-agents-web run build:wasm
-    @pnpm --filter codex-agents-web exec node tests/performance/build-interaction-variants.mjs {{quote(baseline)}} {{quote(output)}}
+    @pnpm --filter codex-agents-web exec node tests/performance/build-interaction-variants.ts {{quote(baseline)}} {{quote(output)}}
     @STUDIO_BENCHMARK_VARIANTS={{quote(output + "/variants.json")}} STUDIO_BENCHMARK_OUTPUT={{quote(output + "/measurements.json")}} PLAYWRIGHT_INCLUDE_SPECIAL=1 pnpm --filter codex-agents-web exec node scripts/run-browser-tests.ts --config playwright.config.ts --project=performance tests/performance/interaction-benchmark.spec --workers=1
 
 [doc("Run the browser smoke subset included in the comprehensive tier and hosted CI.")]
