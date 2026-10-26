@@ -1,6 +1,6 @@
 import { test } from "vitest";
 import assert from "node:assert/strict";
-import { interruptInputQueue } from "./stop-inputs.mjs";
+import { interruptInputQueue } from "./stop-inputs.ts";
 
 function fixture(nativeIds = ["native"]) {
   const item = {

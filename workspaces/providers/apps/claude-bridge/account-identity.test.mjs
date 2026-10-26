@@ -8,7 +8,7 @@ import {
   createAccountCheck,
   credentialIdentity,
 } from "./account-identity.mjs";
-import { startBridge } from "./testing/bridge-harness.mjs";
+import { startBridge } from "./testing/bridge-harness.ts";
 
 const roots = [];
 const bridges = [];

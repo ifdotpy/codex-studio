@@ -3,7 +3,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import sharp from "sharp";
 import { test } from "vitest";
-import { startBridge } from "./testing/bridge-harness.mjs";
+import { startBridge } from "./testing/bridge-harness.ts";
 import { MAX_IMAGE_SIDE, MAX_IMAGE_BASE64_BYTES } from "./images.mjs";
 
 const SDK = String.raw`

@@ -3,10 +3,10 @@ import { createAccountCheck } from "./account-identity.mjs";
 import { query } from "@anthropic-ai/claude-agent-sdk";
 import { createInterface } from "node:readline";
 
-let release;
-const held = new Promise((resolve) => (release = resolve));
+let release = () => {};
+const held = new Promise<void>((resolve) => (release = resolve));
 // oxlint-disable-next-line require-yield
-async function* prompt() {
+async function* prompt(): AsyncGenerator<never> {
   await held;
 }
 const controller = new AbortController();

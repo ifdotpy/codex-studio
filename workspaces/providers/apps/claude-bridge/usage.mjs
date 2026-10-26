@@ -7,8 +7,8 @@
 /** @typedef {StreamMessage['event']} StreamEvent */
 /** @typedef {Extract<StreamEvent, {type: 'message_start'}>['message']} Message */
 /** @typedef {Extract<StreamEvent, {type: 'message_delta'}>['usage']} DeltaUsage */
-/** @typedef {import('./usage-contract.generated.d.mts').UsageTokens} UsageTokens */
-/** @typedef {import('./usage-contract.generated.d.mts').UsageObservation} UsageObservation */
+/** @typedef {import('./usage-contract.generated.ts').UsageTokens} UsageTokens */
+/** @typedef {import('./usage-contract.generated.ts').UsageObservation} UsageObservation */
 /** @typedef {Extract<UsageObservation, {kind: 'gap'}>['reason']} GapReason */
 
 /** Claude input excludes cache; thinking is already included in output.

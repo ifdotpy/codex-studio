@@ -4,7 +4,7 @@ import { afterEach, test } from "vitest";
 import assert from "node:assert/strict";
 import path from "node:path";
 import { createSessionStore } from "./session-store.mjs";
-import { startBridge } from "./testing/bridge-harness.mjs";
+import { startBridge } from "./testing/bridge-harness.ts";
 
 const FAKE_SDK = String.raw`
 export const tool=(name,description,schema,call)=>({name,description,schema,call});

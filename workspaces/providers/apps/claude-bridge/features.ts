@@ -43,7 +43,7 @@ type Limits = {
   extraUsage?: unknown;
 };
 export type QueuedInput = SDKUserMessage & { studioInputBatch?: QueuedInput[] };
-import usagePolicyJson from "./usage-policy.mjs";
+import usagePolicyJson from "./usage-policy.ts";
 const usagePolicy: {
   modelBuckets: Record<string, string>;
   allowedOverageStatuses: string[];
