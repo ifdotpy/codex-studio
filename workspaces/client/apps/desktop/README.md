@@ -41,7 +41,7 @@ rename to Codex Studio. The bundle identifier and state paths stay unchanged.
 
 People see the name LAYR Studio. The runtime identities keep the name Codex
 Studio: the bundle file `Codex Studio.app`, its executable, the bundle
-identifier, and the Electron app name in `main.cjs`. Electron names the macOS
+identifier, and the Electron app name in `main.ts`. Electron names the macOS
 Keychain item `<app name> Safe Storage` from the app name. That item encrypts
 the saved server credentials, so a new app name would lose them. `CFBundleName`
 in `Info.plist` also stays: Electron finds its helper apps as
@@ -216,7 +216,7 @@ focus. A click opens the chat or the request that needs attention.
 Alerts use the existing chat snapshot without separate workspace reads. The first
 snapshot after launch establishes a baseline; old events do not repeat.
 The desktop app must remain running. macOS notification settings still apply.
-Run `pnpm --filter codex-agents-web run test:unit -- desktopAlerts.test.mjs` and
+Run `pnpm --filter codex-agents-web run test:unit -- desktopAlerts.test.ts` and
 `pnpm --filter codex-agents-web run test:browser -- desktop-notifications-ui.spec.mjs` from the repository root. The UI check
 records native bridge calls; it does not display or verify macOS banners.
 
