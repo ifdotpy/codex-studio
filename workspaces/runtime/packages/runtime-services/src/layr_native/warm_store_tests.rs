@@ -77,6 +77,23 @@ fn real_native_preparation_reuses_an_existing_projects_saved_rust_cache() {
     .expect("source");
     fs::write(source.join(".gitignore"), "target/\n").expect("ignore");
     fs::write(source.join(".layrattributes"), "target regenerable\n").expect("cache policy");
+    let manifest = source.join("Cargo.toml");
+    crate::bounded_child::run_without_git_environment(crate::bounded_child::Request {
+        program: std::ffi::OsStr::new("cargo"),
+        git_directory: None,
+        args: &[
+            "generate-lockfile",
+            "--offline",
+            "--manifest-path",
+            manifest.to_str().expect("manifest"),
+        ],
+        environment: &[],
+        input: None,
+        stdout_limit: 4096,
+        stderr_limit: 4096,
+        timeout: Duration::from_secs(30),
+    })
+    .expect("commit the fixture lockfile before saving main caches");
     let git = |args: &[&str]| super::inventory::git(&source, args).expect("fixture Git command");
     git(&["init", "-q"]);
     git(&["-c", "core.hooksPath=/dev/null", "add", "."]);
