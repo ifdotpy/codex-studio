@@ -451,7 +451,9 @@ async fn stop_process(
         if found || claude {
             break;
         }
-        let Some(cursor) = result["nextCursor"].as_str().filter(|v| !v.is_empty()) else {
+        let Some(cursor) = studio_runtime_services::provider_pagination::next_cursor(&result)
+            .map_err(|_| invalid("Invalid native terminal list cursor"))?
+        else {
             break;
         };
         if page_index + 1 == NATIVE_TERMINAL_MAX_PAGES || !seen.insert(cursor.to_owned()) {

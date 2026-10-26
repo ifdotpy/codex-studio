@@ -469,10 +469,12 @@ fn data(v: &Value) -> Result<&Vec<Value>, HistoryError> {
     v["data"].as_array().ok_or(HistoryError::Invalid("data"))
 }
 fn next_cursor(page: &Value, seen: &mut BTreeSet<String>) -> Result<Option<String>, HistoryError> {
-    let Some(value) = page.get("nextCursor").filter(|v| !v.is_null()) else {
+    let Some(cursor) = crate::provider_pagination::next_cursor(page)
+        .map_err(|_| HistoryError::Invalid("nextCursor"))?
+    else {
         return Ok(None);
     };
-    let cursor = nonempty(value)?.to_owned();
+    let cursor = cursor.to_owned();
     if !seen.insert(cursor.clone()) {
         return Err(HistoryError::Invalid("nextCursor"));
     }
