@@ -83,7 +83,11 @@ fn cases() -> Vec<Value> {
 async fn seed(store: &RuntimeStore, records: Records) {
     store.transaction(move |tx| {
         for (table, records) in records.tables {
-            for row in records {
+            for mut row in records {
+                // This frozen lifecycle corpus predates explicit Codex identity.
+                if table == "runtime_agents" {
+                    row["provider"] = json!(studio_runtime_schema::ProviderKind::Codex);
+                }
                 if table == "runtime_events" {
                     tx.execute("INSERT INTO runtime_events(id,agent,kind,text,status,created,epoch) VALUES(?1,?2,'user','input',?3,1,?4)", params![row["id"].as_str(),row["agent"].as_str(),row["status"].as_str(),row["epoch"].as_i64()])?;
                 } else if table == "voice_sessions" {
@@ -881,6 +885,9 @@ fn assert_records(store: &RuntimeStore, case: &Value) {
         let mut actual = saved["tables"][table].clone();
         let mut expected = expected.clone();
         if table == "runtime_agents" {
+            for row in expected.as_array_mut().expect("expected agent rows") {
+                row["provider"] = json!(studio_runtime_schema::ProviderKind::Codex);
+            }
             for rows in [&mut actual, &mut expected] {
                 if let Some(rows) = rows.as_array_mut() {
                     for row in rows {
