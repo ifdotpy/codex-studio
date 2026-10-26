@@ -1,5 +1,5 @@
-import { test, expect } from "../playwright.mjs";
-import { fixture } from "../servers/multi-server-fixture.mjs";
+import { test, expect } from "../playwright.ts";
+import { fixture } from "../servers/multi-server-fixture.ts";
 
 for (const width of [1440, 390, 320]) {
   for (const colorScheme of ["light", "dark"]) {

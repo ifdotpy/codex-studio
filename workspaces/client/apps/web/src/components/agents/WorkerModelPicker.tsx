@@ -7,7 +7,13 @@ import {
   useSyncExternalStore,
   type ContextType,
 } from "react";
-import { ApiError, get, errorText, type GetResult } from "../../api";
+import {
+  ApiError,
+  get,
+  errorText,
+  type GetResult,
+  type GetOptions,
+} from "../../api";
 import { serverResourceScope } from "../../servers/registry";
 import type { Snapshot } from "../../types";
 import { subscribeStateProjection } from "../../sync/client";
@@ -122,11 +128,10 @@ export function supportsDaybreakMode(
 
 type ModelCatalogSource = {
   scope: string;
-  cacheOwner?: object;
-  read: (options: {
-    query?: { account_key?: string; workers?: "1"; retry?: "1" };
-    signal?: AbortSignal;
-  }) => Promise<GetResult<"/api/models">>;
+  cacheOwner?: object | undefined;
+  read: (
+    options: Pick<GetOptions<"/api/models">, "query" | "signal">,
+  ) => Promise<GetResult<"/api/models">>;
   subscribeState: (
     accept: (snapshot: ModelCatalogProjection) => void,
     fail: (error: unknown | null) => void,
@@ -184,9 +189,9 @@ type ModelCatalogSnapshot = {
 };
 type ModelCatalogEntry = {
   snapshot: ModelCatalogSnapshot;
-  inFlight?: Promise<void>;
+  inFlight?: Promise<void> | undefined;
   listeners: Set<() => void>;
-  stopWatching?: () => void;
+  stopWatching?: (() => void) | undefined;
 };
 
 const emptyModelCatalog: ModelCatalogSnapshot = {
@@ -260,8 +265,8 @@ function readModelCatalog(
       const data = await read({
         query: {
           account_key: accountKey,
-          workers: workers ? "1" : undefined,
-          retry: retry ? "1" : undefined,
+          ...(workers ? { workers: "1" as const } : {}),
+          ...(retry ? { retry: "1" as const } : {}),
         },
       });
       const pending =

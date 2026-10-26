@@ -10,7 +10,7 @@ import {
   spawnFixture,
   test,
   rustUiFixture,
-} from "../playwright.mjs";
+} from "../playwright.ts";
 
 const timestamp = () => performance.timeOrigin + performance.now();
 

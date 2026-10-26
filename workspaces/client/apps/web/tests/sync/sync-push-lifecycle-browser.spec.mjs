@@ -6,7 +6,7 @@ import {
   syncProtocolFixture,
   test,
   expect,
-} from "../playwright.mjs";
+} from "../playwright.ts";
 
 test("Sync Push Lifecycle Browser", async ({
   browser: _testBrowser,
@@ -31,7 +31,7 @@ test("Sync Push Lifecycle Browser", async ({
   };
 
   const { createFixtureViteServer: createServer } =
-    await import("../playwright.mjs");
+    await import("../playwright.ts");
   const workspaceId = "d".repeat(32);
   const streams = new Set();
   let opened = 0;

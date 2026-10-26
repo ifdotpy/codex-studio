@@ -17,9 +17,16 @@ export function mergeTranscript(
 }
 
 export function updateLiveTranscriptPage(
-  page: { items: Message[]; before: string | null; focused: boolean },
+  page: {
+    items: Message[];
+    before: string | null | undefined;
+    focused: boolean;
+  },
   liveItems: Message[],
-  snapshot: { truncated?: boolean; nextCursor?: string | null },
+  snapshot: {
+    truncated?: boolean | undefined;
+    nextCursor?: string | null | undefined;
+  },
 ) {
   if (page.focused) {
     const present = new Set(page.items.map((item) => item.id));

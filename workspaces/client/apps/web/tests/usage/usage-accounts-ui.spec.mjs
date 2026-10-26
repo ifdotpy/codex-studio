@@ -10,7 +10,7 @@ import {
   apiSchemaHandshakeSse,
   API_SCHEMA_HASH_HEADER,
   readApiSchemaHash,
-} from "../playwright.mjs";
+} from "../playwright.ts";
 
 const browserContextsByTest = new WeakMap();
 test.beforeEach(async ({ browser }, testInfo) => {

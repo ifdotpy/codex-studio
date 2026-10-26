@@ -2,7 +2,11 @@ import { useSubscription } from "../sync/subscriptions";
 import Disclosure from "./ui/Disclosure";
 import { useServerApi } from "../servers/ServerServicesContext";
 import { localDateTime, localTime } from "../local-time";
-import { accountLimits } from "../usage/accountUsage";
+import {
+  accountLimits,
+  jsonObject,
+  type AccountLimitsSnapshot,
+} from "../usage/accountUsage";
 import { weeklyRunway } from "../usage/weeklyRunway";
 import {
   lazy,
@@ -20,7 +24,7 @@ import {
   RefreshCw,
   CircleDollarSign,
 } from "lucide-react";
-import type { Agent, Json, JsonValue } from "../types";
+import type { Agent, Json, Snapshot } from "../types";
 import { errorText, type GetResult } from "../api";
 import { useServerSessionCosts } from "../servers/ServerServicesContext";
 import { useRecoveredLimit } from "./useRecoveredLimit";
@@ -42,15 +46,15 @@ import {
 import { accountDisplayName } from "../accountName";
 const Analytics = lazy(() => import("./Analytics"));
 
-export type UsageAccount = {
+import type { Account } from "./Accounts";
+export type UsageAccount = Pick<Account, "label"> & {
+  [Field in "email" | "provider" | "plan" | "accountId"]?:
+    | Account[Field]
+    | undefined;
+} & {
   key: string;
-  label: string;
-  email?: string | null;
-  provider?: string;
-  plan?: string | null;
-  accountId?: string | null;
   signedOut?: boolean;
-  limits: Json | null;
+  limits: UsageLimitSnapshot | null;
   loading: boolean;
   reload: (force?: boolean) => void | Promise<void>;
 };
@@ -70,6 +74,8 @@ const displayAccountName = (account?: UsageAccount) =>
 const accountProvider = (account?: UsageAccount) =>
   account?.provider === "claude" ? "claude" : "codex";
 
+type UsageLimitSnapshot = AccountLimitsSnapshot | Json;
+
 type LimitWindow = {
   label: string;
   remaining: number | null;
@@ -79,7 +85,7 @@ type LimitWindow = {
 type LimitBucket = {
   id: string;
   name: string;
-  data: Json;
+  data: NonNullable<ReturnType<typeof jsonObject>>;
   windows: LimitWindow[];
 };
 type AvailableReset = {
@@ -91,8 +97,6 @@ type AvailableReset = {
 };
 const number = (value: unknown): value is number =>
   typeof value === "number" && Number.isFinite(value);
-const jsonObject = (value: JsonValue | null | undefined): Json | null =>
-  value && typeof value === "object" && !Array.isArray(value) ? value : null;
 const percentage = (value: unknown) =>
   number(value) && value >= 0 && value <= 100 ? value : null;
 export const formatPercent = (value: number) =>
@@ -103,7 +107,10 @@ const duration = (minutes: unknown, fallback: string) => {
   if (minutes % 60 === 0) return `${minutes / 60}h`;
   return `${minutes}m`;
 };
-export function readBuckets(limits: Json | null, now: number): LimitBucket[] {
+export function readBuckets(
+  limits: UsageLimitSnapshot | null,
+  now: number,
+): LimitBucket[] {
   const responseData = jsonObject(limits?.data);
   const reported = jsonObject(responseData?.rateLimitsByLimitId);
   const rateLimits = jsonObject(responseData?.rateLimits);
@@ -200,13 +207,13 @@ export default function Usage({
 }: {
   agent: Agent;
   stateDir: string;
-  limits: Json | null;
-  accountLabel?: string;
+  limits: UsageLimitSnapshot | null;
+  accountLabel?: string | undefined;
   reload: () => void | Promise<void>;
   opened?: boolean;
   onChange?: (opened: boolean) => void;
-  limitsLoading?: boolean;
-  accounts?: UsageAccount[];
+  limitsLoading?: boolean | undefined;
+  accounts?: UsageAccount[] | undefined;
   visible?: boolean;
 }) {
   const { peekSessionCost, storeSessionCost } = useServerSessionCosts();
@@ -220,7 +227,7 @@ export default function Usage({
     onChange?.(value);
   };
   const fallbackKey = agent.accountKey || "default";
-  const usageAccounts = accounts.length
+  const usageAccounts: UsageAccount[] = accounts.length
     ? accounts
     : [
         {
@@ -387,7 +394,9 @@ export default function Usage({
   const costScope = JSON.stringify([stateDir, rootId]);
   const [sessionCostState, setSessionCostState] = useState<{
     scope: string;
-    value: Json | null;
+    value:
+      | ReturnType<typeof peekSessionCost>
+      | NonNullable<Snapshot["runtime"]["sessionCostsByAgent"]>[string];
     updating: boolean;
   }>(() => ({
     scope: costScope,
@@ -517,9 +526,9 @@ export default function Usage({
           sessionCost
             ? `Session estimate: ${dollars(sessionCost.totalUSD)}`
             : "",
-          ...Object.entries(sessionCost?.breakdown?.providers || {}).map(
-            ([provider, value]) => `${provider}: ${dollars(value)}`,
-          ),
+          ...Object.entries(
+            jsonObject(jsonObject(sessionCost?.breakdown)?.providers) || {},
+          ).map(([provider, value]) => `${provider}: ${dollars(value)}`),
           ...(Array.isArray(sessionCost?.unknownModels) &&
           sessionCost.unknownModels.length
             ? [`Unpriced models: ${sessionCost.unknownModels.join(", ")}`]
@@ -546,7 +555,8 @@ export default function Usage({
             <span>
               {dollars(sessionCost.totalUSD)}
               {sessionCost.claudeHistoryIncomplete ||
-              sessionCost.unknownModels?.length
+              (Array.isArray(sessionCost.unknownModels) &&
+                sessionCost.unknownModels.length)
                 ? "*"
                 : ""}
             </span>
@@ -760,85 +770,90 @@ export default function Usage({
               >
                 <div className="account-limits-tiles">
                   {[...new Set(usageAccounts.map(accountProvider))].map(
-                    (provider) => (
-                      <Tabs
-                        key={provider}
-                        value={
-                          accountProvider(activeAccount) === provider
-                            ? selectedAccountKey
-                            : usageAccounts.find(
-                                (item) => accountProvider(item) === provider,
-                              )?.key
-                        }
-                        onChange={(value) => {
-                          if (value) setActiveAccountKey(value);
-                        }}
-                        variant="pills"
-                        className="account-limits-provider-panel"
-                        data-active={
-                          accountProvider(activeAccount) === provider ||
-                          undefined
-                        }
-                        aria-hidden={
-                          accountProvider(activeAccount) !== provider
-                        }
-                        inert={accountProvider(activeAccount) !== provider}
-                      >
-                        <Tabs.List aria-label="Accounts with limits">
-                          {usageAccounts.map((item, index) => {
-                            if (accountProvider(item) !== provider) return null;
-                            const snapshot = accountLimits(
-                              item.limits,
-                              item.key,
-                              item.accountId,
-                            );
-                            const remaining = remainingLimit(
-                              readBuckets(snapshot, now).flatMap(
-                                (bucket) => bucket.windows,
-                              ),
-                            );
-                            return (
-                              <Tabs.Tab
-                                key={item.key}
-                                value={item.key}
-                                className="setup-account"
-                                data-account-key={item.key}
-                                data-selected={
-                                  item.key === selectedAccountKey || undefined
-                                }
-                                aria-current={
-                                  item.key === fallbackKey ? "true" : undefined
-                                }
-                                id={`usage-account-tab-${index}`}
-                                aria-controls="usage-account-panel"
-                                title={humanAccountLabel(item)}
-                                aria-label={`${humanAccountLabel(item)}${item.provider ? `, ${item.provider}` : ""} account limits`}
-                              >
-                                <AccountTileLabel
-                                  name={displayAccountName(item)}
-                                  nameClassName="account-limits-tile-name"
-                                  remaining={remaining}
-                                />
-                                {remaining === null && (
-                                  <small className="account-remaining">
-                                    Unavailable
-                                  </small>
-                                )}
-                                {item.key === fallbackKey && (
-                                  <small className="account-limits-current">
-                                    Current chat
-                                  </small>
-                                )}
-                                <AccountRemainingBar
-                                  remaining={remaining}
-                                  label={`${humanAccountLabel(item)} remaining limit`}
-                                />
-                              </Tabs.Tab>
-                            );
-                          })}
-                        </Tabs.List>
-                      </Tabs>
-                    ),
+                    (provider) => {
+                      const value =
+                        accountProvider(activeAccount) === provider
+                          ? selectedAccountKey
+                          : usageAccounts.find(
+                              (item) => accountProvider(item) === provider,
+                            )?.key;
+                      return (
+                        <Tabs
+                          key={provider}
+                          {...(value === undefined ? {} : { value })}
+                          onChange={(value) => {
+                            if (value) setActiveAccountKey(value);
+                          }}
+                          variant="pills"
+                          className="account-limits-provider-panel"
+                          data-active={
+                            accountProvider(activeAccount) === provider ||
+                            undefined
+                          }
+                          aria-hidden={
+                            accountProvider(activeAccount) !== provider
+                          }
+                          inert={accountProvider(activeAccount) !== provider}
+                        >
+                          <Tabs.List aria-label="Accounts with limits">
+                            {usageAccounts.map((item, index) => {
+                              if (accountProvider(item) !== provider)
+                                return null;
+                              const snapshot = accountLimits(
+                                item.limits,
+                                item.key,
+                                item.accountId,
+                              );
+                              const remaining = remainingLimit(
+                                readBuckets(snapshot, now).flatMap(
+                                  (bucket) => bucket.windows,
+                                ),
+                              );
+                              return (
+                                <Tabs.Tab
+                                  key={item.key}
+                                  value={item.key}
+                                  className="setup-account"
+                                  data-account-key={item.key}
+                                  data-selected={
+                                    item.key === selectedAccountKey || undefined
+                                  }
+                                  aria-current={
+                                    item.key === fallbackKey
+                                      ? "true"
+                                      : undefined
+                                  }
+                                  id={`usage-account-tab-${index}`}
+                                  aria-controls="usage-account-panel"
+                                  title={humanAccountLabel(item)}
+                                  aria-label={`${humanAccountLabel(item)}${item.provider ? `, ${item.provider}` : ""} account limits`}
+                                >
+                                  <AccountTileLabel
+                                    name={displayAccountName(item)}
+                                    nameClassName="account-limits-tile-name"
+                                    remaining={remaining}
+                                  />
+                                  {remaining === null && (
+                                    <small className="account-remaining">
+                                      Unavailable
+                                    </small>
+                                  )}
+                                  {item.key === fallbackKey && (
+                                    <small className="account-limits-current">
+                                      Current chat
+                                    </small>
+                                  )}
+                                  <AccountRemainingBar
+                                    remaining={remaining}
+                                    label={`${humanAccountLabel(item)} remaining limit`}
+                                  />
+                                </Tabs.Tab>
+                              );
+                            })}
+                          </Tabs.List>
+                        </Tabs>
+                      );
+                    },
                   )}
                 </div>
               </AccountTilesLayout>

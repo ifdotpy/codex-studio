@@ -5,11 +5,11 @@ import {
   createFixtureViteServer,
   FIXTURE_OPTIMIZE_DEPS,
   playwrightScratchRoot,
-} from "../playwright.mjs";
+} from "../playwright.ts";
 import { createServer } from "node:http";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { test, expect } from "../playwright.mjs";
+import { test, expect } from "../playwright.ts";
 
 test("Message Queue Drafts Ui", async ({
   browser: testBrowser,

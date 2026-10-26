@@ -2,10 +2,13 @@ import { hasNativeClient } from "../native/client";
 import { apiOrigin, serverFetch } from "./transport";
 import { serverViewId, isolatedServerView } from "./environment";
 
-export type ServerEventSource = Pick<
-  EventSource,
-  "close" | "onopen" | "onerror"
-> &
+type EventSourceHandlers = {
+  [K in "onopen" | "onerror"]: OmitThisParameter<
+    NonNullable<EventSource[K]>
+  > | null;
+};
+export type ServerEventSource = Pick<EventSource, "close"> &
+  EventSourceHandlers &
   Pick<EventTarget, "addEventListener"> & {
     holdUntil?(ready: Promise<unknown>): void;
   };
@@ -57,8 +60,8 @@ export class SignedEventSource
   extends EventTarget
   implements ServerEventSource
 {
-  onopen: EventSource["onopen"] = null;
-  onerror: EventSource["onerror"] = null;
+  onopen: ServerEventSource["onopen"] = null;
+  onerror: ServerEventSource["onerror"] = null;
   private controller = new AbortController();
   private stopped = false;
   private hold: Promise<void> = Promise.resolve();
@@ -104,7 +107,7 @@ export class SignedEventSource
         await response.body.cancel();
         return;
       }
-      this.onopen?.call(this as unknown as EventSource, new Event("open"));
+      this.onopen?.call(this, new Event("open"));
       const reader = response.body.getReader();
       this.reader = reader;
       const decoder = new TextDecoder();
@@ -125,8 +128,7 @@ export class SignedEventSource
       }
       if (!this.stopped) throw new Error("The server event stream closed.");
     })().catch(() => {
-      if (!this.stopped)
-        this.onerror?.call(this as unknown as EventSource, new Event("error"));
+      if (!this.stopped) this.onerror?.call(this, new Event("error"));
     });
   }
   close() {

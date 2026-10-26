@@ -13,7 +13,7 @@ import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { ArrowLeft, Inbox, Megaphone, Search, Users } from "lucide-react";
 import "../../../api";
 import { useMessages } from "../../../hooks";
-import type { JsonValue, Snapshot } from "../../../types";
+import type { JsonInput, Snapshot } from "../../../types";
 import StreamingText from "../../conversation/transcript/StreamingText";
 import Requests from "../../questions/Requests";
 import UserMessages from "./UserMessages";
@@ -24,7 +24,7 @@ import {
 import "./team-chats.css";
 
 /** A compact room clock; its native tooltip retains the full local date. */
-function RoomDate({ at }: { at?: number | null }) {
+function RoomDate({ at }: { at?: number | null | undefined }) {
   if (!at || !Number.isFinite(at)) return <MessageDate at={at} />;
   const date = new Date(at * 1000);
   return (
@@ -40,7 +40,7 @@ function RoomDate({ at }: { at?: number | null }) {
   );
 }
 
-function firstQuestion(params: JsonValue | undefined): string | undefined {
+function firstQuestion(params: JsonInput | undefined): string | undefined {
   if (!params || typeof params !== "object" || Array.isArray(params))
     return undefined;
   const questions = params.questions;
@@ -61,10 +61,10 @@ export default function TeamChats({
   notify,
 }: {
   data: Snapshot;
-  leadId?: string;
-  focusRequestId?: string;
-  focusItemId?: string;
-  focusRoomId?: string;
+  leadId?: string | undefined;
+  focusRequestId?: string | undefined;
+  focusItemId?: string | undefined;
+  focusRoomId?: string | undefined;
   refresh: () => Promise<void>;
   notify: (message: string) => void;
 }) {
@@ -274,23 +274,40 @@ export default function TeamChats({
       const estimate = (message: (typeof items)[number]) =>
         heights.current.get(message.id) ||
         Math.max(112, Math.ceil((message.text?.length || 0) / 78) * 23 + 82);
-      const offsets = Array.from<number>({ length: items.length + 1 });
-      offsets[0] = 0;
-      for (let index = 0; index < items.length; index++)
-        offsets[index + 1] = offsets[index] + estimate(items[index]);
+      const offsets = [0];
+      let total = 0;
+      for (const item of items) {
+        total += estimate(item);
+        offsets.push(total);
+      }
       const top = root.scrollTop;
       const bottom = top + root.clientHeight;
       let start = 0;
-      while (start < items.length && offsets[start + 1] < top) start++;
+      while (start < items.length) {
+        const offset = offsets[start + 1];
+        if (offset === undefined)
+          throw new Error("Missing message start offset");
+        if (offset >= top) break;
+        start++;
+      }
       let end = start;
-      while (end < items.length && offsets[end] < bottom) end++;
+      while (end < items.length) {
+        const offset = offsets[end];
+        if (offset === undefined) throw new Error("Missing message end offset");
+        if (offset >= bottom) break;
+        end++;
+      }
       start = Math.max(0, start - 8);
       end = Math.min(items.length, Math.max(start + 1, end + 8));
+      const startOffset = offsets[start],
+        endOffset = offsets[end];
+      if (startOffset === undefined || endOffset === undefined)
+        throw new Error("Missing message window offset");
       const next = {
         start,
         end,
-        top: offsets[start],
-        bottom: offsets.at(-1)! - offsets[end],
+        top: startOffset,
+        bottom: total - endOffset,
       };
       setVirtualRange((old) =>
         old.start === next.start &&

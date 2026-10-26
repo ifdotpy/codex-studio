@@ -3,7 +3,7 @@ import {
   test,
   expect,
   syncIdentityFixture,
-} from "../playwright.mjs";
+} from "../playwright.ts";
 // Real RxDB, with controlled HTTP failures. No live server writes.
 import { createRequire } from "node:module";
 import { mkdtemp, rm } from "node:fs/promises";

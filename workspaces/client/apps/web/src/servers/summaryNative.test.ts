@@ -29,7 +29,7 @@ it("loads the local shell summary through the verified native backend", async ()
     (await fetchServerSummary(server, new AbortController().signal)).ready,
   ).toBe(true);
   expect(nativeFetch).toHaveBeenCalledOnce();
-  expect(vi.mocked(nativeFetch).mock.calls[0][0].url).toBe(
+  expect(vi.mocked(nativeFetch).mock.calls[0]?.[0].url).toBe(
     "http://localhost/api/ui-summary",
   );
   expect(fetch).not.toHaveBeenCalled();

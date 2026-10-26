@@ -2,7 +2,7 @@ import { mkdtemp, mkdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createRequire } from "node:module";
-import { test, expect } from "../playwright.mjs";
+import { test, expect } from "../playwright.ts";
 
 // No backend: exercise the real picker with a small, deterministic catalog.
 test("native model group has one Tab stop and ArrowUp wraps from the selected model", async ({

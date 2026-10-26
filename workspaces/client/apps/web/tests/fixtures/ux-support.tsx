@@ -7,7 +7,16 @@ import "../../src/appearance.css";
 import TerminalDock from "../../src/components/TerminalDock";
 import BackgroundTasks from "../../src/components/shell/BackgroundTasks";
 import DraftVersions from "../../src/components/DraftVersions";
-const task = (id: string, created: number, agent = "lead") => ({
+import type { Agent, BackgroundTask } from "../../src/types";
+import { fixtureSnapshot } from "./snapshot.ts";
+
+declare global {
+  interface Window {
+    support: { initial: () => void; newer: () => void; scope: () => void };
+  }
+}
+
+const task = (id: string, created: number, agent = "lead"): BackgroundTask => ({
   id,
   created,
   agent,
@@ -19,7 +28,7 @@ const task = (id: string, created: number, agent = "lead") => ({
 });
 function Fixture() {
   const [scope, setScope] = useState("lead");
-  const [tasks, setTasks] = useState<any[]>([]);
+  const [tasks, setTasks] = useState<BackgroundTask[]>([]);
   const [text, setText] = useState("Current");
   const [opened, setOpened] = useState(false);
   const agent = {
@@ -28,12 +37,12 @@ function Fixture() {
     isLead: true,
     name: "Lead",
     cwd: "/fixture",
-  };
-  const data: any = {
-    threads: [agent, { ...agent, id: "other", rootId: "other" }],
-    runtime: { tasks, monitors: [], requests: [] },
-  };
-  (window as any).support = {
+  } satisfies Agent;
+  const data = fixtureSnapshot(
+    [agent, { ...agent, id: "other", rootId: "other" }],
+    tasks,
+  );
+  window.support = {
     initial: () => setTasks([task("first", 10)]),
     newer: () => setTasks([task("new", 20), task("first", 10)]),
     scope: () => {
@@ -82,8 +91,10 @@ function Fixture() {
         }
         dismiss={() => {}}
       />
-      <TerminalDock data={data} agent={agent as any} notify={() => {}} />
+      <TerminalDock data={data} agent={agent} notify={() => {}} />
     </MantineProvider>
   );
 }
-createRoot(document.getElementById("root")!).render(<Fixture />);
+const root = document.getElementById("root");
+if (!root) throw new Error("Missing support fixture root");
+createRoot(root).render(<Fixture />);

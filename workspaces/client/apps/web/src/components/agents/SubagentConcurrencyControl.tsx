@@ -21,7 +21,7 @@ const CONCURRENCY_SCHEMA_VERSION = 2;
 
 type Confirmed = { concurrency: number; revision: number };
 type PendingRequest = PostBody<"/api/conversation">;
-type Stored = { confirmed?: Confirmed; pending?: PendingRequest };
+type Stored = { confirmed?: Confirmed; pending?: PendingRequest | undefined };
 type ConcurrencyAgent = Pick<
   Agent,
   "subagentConcurrencyVersion" | "concurrency" | "agentModeRevision"
@@ -276,13 +276,15 @@ function ScopedConcurrencyControl({
         throw new Error(
           "The server did not confirm the concurrency request. Retry the same request.",
         );
-      const accepted = stateOf(result)!;
+      const accepted = stateOf(result);
+      if (!accepted) throw new Error("Missing accepted concurrency state");
       const disk = JSON.parse(
         localStorage.getItem(storageKey) || "{}",
       ) as Stored;
       const newest = [latest.current, disk.confirmed, accepted]
         .filter(validConfirmed)
         .sort((a, b) => b.revision - a.revision)[0];
+      if (!newest) throw new Error("Missing confirmed concurrency state");
       const next: Stored = {
         confirmed: newest,
         ...(disk.pending?.request_id !== request.request_id
@@ -305,6 +307,7 @@ function ScopedConcurrencyControl({
           const newest = [disk.confirmed, latest.current]
             .filter(validConfirmed)
             .sort((a, b) => b.revision - a.revision)[0];
+          if (!newest) throw new Error("Missing confirmed concurrency state");
           const next: Stored = {
             confirmed: newest,
             ...(disk.pending?.request_id !== request.request_id

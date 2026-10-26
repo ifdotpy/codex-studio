@@ -5,12 +5,14 @@ import type { ServerSidebarSnapshot } from "./sidebarSnapshot";
 type Override = {
   value: boolean | undefined;
   sources: Map<string, ServerSidebarSnapshot>;
-  choice?: {
-    owner: string;
-    name: string;
-    kind: "compact" | "collapsed";
-    snapshot: ServerSidebarSnapshot;
-  };
+  choice?:
+    | {
+        owner: string;
+        name: string;
+        kind: "compact" | "collapsed";
+        snapshot: ServerSidebarSnapshot;
+      }
+    | undefined;
 };
 
 /** Session views do not change saved preference records. */

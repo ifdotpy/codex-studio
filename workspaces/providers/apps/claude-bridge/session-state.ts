@@ -1,3 +1,4 @@
+import type { StallReport } from "./stall-watch.ts";
 import type {
   CacheReport,
   ToolDefinition,
@@ -42,7 +43,12 @@ export interface TurnError {
   resetsAt?: number | undefined;
   message: string;
   codexErrorInfo?: string | undefined;
-  data?: Record<string, unknown> | undefined;
+  data?:
+    | (Record<string, unknown> & {
+        claudeToolStall?: StallReport | undefined;
+        claudeStopTimeout?: boolean | undefined;
+      })
+    | undefined;
 }
 export interface Item {
   id?: string | undefined;
