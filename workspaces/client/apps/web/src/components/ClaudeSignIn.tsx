@@ -45,10 +45,10 @@ export default function ClaudeSignIn({
   serverLabel,
 }: {
   account: Account;
-  scope?: string;
+  scope?: string | undefined;
   onClose: () => void;
   onReady: () => unknown;
-  serverLabel?: string;
+  serverLabel?: string | undefined;
 }) {
   const resources = useServerResources();
   const { clearStableRequestId, get, post, save, saved, stableRequestId } =

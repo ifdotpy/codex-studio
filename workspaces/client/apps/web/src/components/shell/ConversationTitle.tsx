@@ -7,10 +7,10 @@ import "../conversation/conversation-chrome.css";
 
 export type ConversationTitleProps = {
   title: string;
-  agent?: Agent;
-  serverAlias?: string;
+  agent?: Agent | undefined;
+  serverAlias?: string | undefined;
   serverOffline?: boolean;
-  onBack?: () => void;
+  onBack?: (() => void) | undefined;
 };
 
 export default function ConversationTitle({

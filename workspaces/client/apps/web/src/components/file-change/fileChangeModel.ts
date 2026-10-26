@@ -6,7 +6,7 @@ export interface DiffLine {
 
 export interface FileDiff {
   path: string;
-  movePath?: string;
+  movePath?: string | undefined;
   kind: "add" | "delete" | "update" | "unknown";
   lines: DiffLine[];
   added: number;
@@ -30,7 +30,7 @@ function fallback(
 }
 
 function headerPath(header: string): string {
-  const text = header.slice(4).split("\t")[0];
+  const [text = ""] = header.slice(4).split("\t");
   // Git quotes paths containing special characters. Decode only valid escapes.
   let path = text;
   if (text.startsWith('"')) {
@@ -63,14 +63,16 @@ function parseFile(source: string, requestedPath: string): FileDiff {
     removed = 0;
   for (let i = 0; i < input.length; i++) {
     const text = input[i];
+    if (text === undefined) throw new Error("Missing diff line");
+    const next = input[i + 1];
     if (
       text.startsWith("--- ") &&
-      input[i + 1]?.startsWith("+++ ") &&
+      next?.startsWith("+++ ") &&
       !oldPath &&
       !hasHunks
     ) {
       oldPath = headerPath(text);
-      newPath = headerPath(input[i + 1]);
+      newPath = headerPath(next);
       if (!oldPath || !newPath) return result;
       result.path =
         requestedPath || (oldPath === "/dev/null" ? newPath : oldPath);
@@ -90,7 +92,7 @@ function parseFile(source: string, requestedPath: string): FileDiff {
         Number(match[2] ?? 1),
         Number(match[3]),
         Number(match[4] ?? 1),
-      ];
+      ] as const;
       if (
         (oldPath === "/dev/null" && oldStart !== 0) ||
         (newPath === "/dev/null" && newStart !== 0) ||
@@ -118,6 +120,7 @@ function parseFile(source: string, requestedPath: string): FileDiff {
       let canMark = false;
       for (; i < input.length; i++) {
         const body = input[i];
+        if (body === undefined) throw new Error("Missing diff body line");
         if (body === "\\ No newline at end of file") {
           if (!canMark) return result;
           lines.push({ kind: "meta", text: body });
@@ -144,7 +147,7 @@ function parseFile(source: string, requestedPath: string): FileDiff {
     }
     if (metadata.test(text) && !hasHunks) {
       const samePath = text.match(/^diff --git a\/(.+) b\/\1$/);
-      if (samePath) result.path ||= samePath[1];
+      if (samePath?.[1]) result.path ||= samePath[1];
       if (text.startsWith("new file mode ")) emptyKind = "add";
       if (text.startsWith("deleted file mode ")) emptyKind = "delete";
       if (text.startsWith("rename from ")) renameFrom = text.slice(12);
@@ -170,13 +173,14 @@ function parseFile(source: string, requestedPath: string): FileDiff {
 export function unifiedDiff(source: string, path = ""): FileDiff[] {
   const input = sourceLines(source);
   const chunks: string[] = [];
-  const rawLines = source.match(/[^\n]*\n|[^\n]+/g)!;
+  const rawLines = source.match(/[^\n]*\n|[^\n]+/g) ?? [];
   let chunk: string[] = [],
     oldLeft = 0,
     newLeft = 0,
     seenHeader = false;
   for (let i = 0; i < input.length; i++) {
     const text = input[i];
+    if (text === undefined) throw new Error("Missing diff line");
     const gitStart = text.startsWith("diff --git ");
     const pairStart =
       oldLeft === 0 &&
@@ -201,7 +205,9 @@ export function unifiedDiff(source: string, path = ""): FileDiff[] {
       } else if (text.startsWith("-")) oldLeft--;
       else if (text.startsWith("+")) newLeft--;
     }
-    chunk.push(rawLines[i]);
+    const rawLine = rawLines[i];
+    if (rawLine === undefined) throw new Error("Missing raw diff line");
+    chunk.push(rawLine);
   }
   if (chunk.length) chunks.push(chunk.join(""));
   return chunks.map((part) => parseFile(part, chunks.length === 1 ? path : ""));
@@ -232,16 +238,23 @@ export function claudeEditPatch(args: unknown): string | null {
 export function fileChanges(value: unknown, args?: unknown): FileDiff[] {
   if (!Array.isArray(value)) return [];
   const edit = value.length === 1 ? claudeEditPatch(args) : null;
-  if (edit) value = [{ ...value[0], diff: edit }];
-  return (value as unknown[]).flatMap((item: any): FileDiff[] => {
-    if (!item || typeof item !== "object" || typeof item.path !== "string")
-      return [];
+  const entries: unknown[] = edit
+    ? [Object.assign({}, value[0], { diff: edit })]
+    : value;
+  return entries.flatMap((entry): FileDiff[] => {
+    if (!entry || typeof entry !== "object") return [];
+    const item = entry as Record<string, unknown>;
+    if (typeof item.path !== "string") return [];
     const source = typeof item.diff === "string" ? item.diff : "";
-    const type =
-      typeof item.kind === "object" && item.kind ? item.kind.type : item.kind;
-    const kind = ["add", "delete", "update"].includes(type)
-      ? (type as FileDiff["kind"])
-      : "unknown";
+    const kindObject =
+      typeof item.kind === "object" && item.kind
+        ? (item.kind as Record<string, unknown>)
+        : undefined;
+    const type = kindObject ? kindObject.type : item.kind;
+    const kind =
+      type === "add" || type === "delete" || type === "update"
+        ? type
+        : "unknown";
     if (typeof item.diff !== "string")
       return [fallback(source, item.path, kind)];
     if (kind === "add" || kind === "delete") {
@@ -264,7 +277,7 @@ export function fileChanges(value: unknown, args?: unknown): FileDiff[] {
     }
     if (item.kind != null && kind === "unknown")
       return [fallback(source, item.path)];
-    const move = item.kind?.move_path ?? item.kind?.movePath;
+    const move = kindObject?.move_path ?? kindObject?.movePath;
     const movePath = typeof move === "string" && move ? move : undefined;
     const suffix = movePath ? `\n\nMoved to: ${movePath}` : undefined;
     const patch =
@@ -306,7 +319,8 @@ export function changeLabel(files: FileDiff[], status: string): string {
   if (status !== "completed") return "File changes";
   if (files.length !== 1)
     return files.length ? `Edited ${files.length} files` : "Edited files";
-  const file = files[0];
+  const [file] = files;
+  if (!file) throw new Error("Missing file change");
   const verb =
     file.kind === "add"
       ? "Added"

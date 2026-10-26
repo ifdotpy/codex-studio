@@ -86,8 +86,8 @@ export function bindShellTransport(frames: Map<string, HTMLIFrameElement>) {
       active.set(key, { controller, frame });
       ownedKey = key;
       const request = new Request(value.url!, {
-        method: value.method,
-        headers: value.headers,
+        ...(value.method === undefined ? {} : { method: value.method }),
+        ...(value.headers === undefined ? {} : { headers: value.headers }),
         ...(value.body?.byteLength ? { body: value.body } : {}),
         signal: controller.signal,
       });
