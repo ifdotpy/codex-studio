@@ -1,5 +1,5 @@
 import type { components } from "../generated/api";
-import type { JsonValue } from "../types";
+import type { JsonInput } from "../types";
 import { jsonObject } from "./accountUsage";
 
 type UsageLimitsData = components["schemas"]["UsageLimitsData"];
@@ -12,23 +12,23 @@ type RateLimitIndividualLimit =
 type RateLimitResetCredits = components["schemas"]["RateLimitResetCredits"];
 type RateLimitResetCredit = components["schemas"]["RateLimitResetCredit"];
 
-const isFiniteNumber = (value: JsonValue): value is number =>
+const isFiniteNumber = (value: JsonInput): value is number =>
   typeof value === "number" && Number.isFinite(value);
-const isString = (value: JsonValue): value is string =>
+const isString = (value: JsonInput): value is string =>
   typeof value === "string";
-const isBoolean = (value: JsonValue): value is boolean =>
+const isBoolean = (value: JsonInput): value is boolean =>
   typeof value === "boolean";
 const optional = (
-  value: JsonValue | undefined,
-  valid: (value: JsonValue) => boolean,
+  value: JsonInput | undefined,
+  valid: (value: JsonInput) => boolean,
 ) => value === undefined || valid(value);
-const nullableString = (value: JsonValue) => value === null || isString(value);
-const nullableBoolean = (value: JsonValue) =>
+const nullableString = (value: JsonInput) => value === null || isString(value);
+const nullableBoolean = (value: JsonInput) =>
   value === null || isBoolean(value);
-const nullableNumber = (value: JsonValue) =>
+const nullableNumber = (value: JsonInput) =>
   value === null || isFiniteNumber(value);
 
-function isRateLimitWindow(value: JsonValue): value is RateLimitWindow {
+function isRateLimitWindow(value: JsonInput): value is RateLimitWindow {
   const window = jsonObject(value);
   return Boolean(
     window &&
@@ -39,14 +39,14 @@ function isRateLimitWindow(value: JsonValue): value is RateLimitWindow {
 }
 
 function isRateLimitIndividualLimit(
-  value: JsonValue,
+  value: JsonInput,
 ): value is RateLimitIndividualLimit {
   const limit = jsonObject(value);
   return Boolean(limit && optional(limit.remainingPercent, nullableNumber));
 }
 
 function isRateLimitResetCredit(
-  value: JsonValue,
+  value: JsonInput,
 ): value is RateLimitResetCredit {
   const credit = jsonObject(value);
   return Boolean(
@@ -60,7 +60,7 @@ function isRateLimitResetCredit(
 }
 
 function isRateLimitResetCredits(
-  value: JsonValue,
+  value: JsonInput,
 ): value is RateLimitResetCredits {
   const credits = jsonObject(value);
   return Boolean(
@@ -74,13 +74,13 @@ function isRateLimitResetCredits(
 }
 
 export function providerRateLimitBucket(
-  value: JsonValue | null | undefined,
+  value: JsonInput | null | undefined,
 ): RateLimitBucket | null {
   if (value == null) return null;
   return isRateLimitBucket(value) ? value : null;
 }
 
-function isRateLimitBucket(value: JsonValue): value is RateLimitBucket {
+function isRateLimitBucket(value: JsonInput): value is RateLimitBucket {
   const bucket = jsonObject(value);
   return Boolean(
     bucket &&
@@ -103,12 +103,12 @@ function isRateLimitBucket(value: JsonValue): value is RateLimitBucket {
   );
 }
 
-function isRateLimitBucketMap(value: JsonValue): boolean {
+function isRateLimitBucketMap(value: JsonInput): boolean {
   const buckets = jsonObject(value);
   return Boolean(buckets && Object.values(buckets).every(isRateLimitBucket));
 }
 
-function isRateLimitBucketDto(value: JsonValue): value is RateLimitBucketDto {
+function isRateLimitBucketDto(value: JsonInput): value is RateLimitBucketDto {
   const bucket = jsonObject(value);
   return Boolean(
     bucket &&
@@ -132,13 +132,13 @@ function isRateLimitBucketDto(value: JsonValue): value is RateLimitBucketDto {
   );
 }
 
-function isRateLimitBucketDtoMap(value: JsonValue): boolean {
+function isRateLimitBucketDtoMap(value: JsonInput): boolean {
   const buckets = jsonObject(value);
   return Boolean(buckets && Object.values(buckets).every(isRateLimitBucketDto));
 }
 
 export function providerRateLimitsDataDto(
-  value: JsonValue | null | undefined,
+  value: JsonInput | null | undefined,
 ): RateLimitsDataDto | null {
   const data = value == null ? null : jsonObject(value);
   return data &&
@@ -158,7 +158,7 @@ export function providerRateLimitsDataDto(
     : null;
 }
 
-function isUsageLimitsData(value: JsonValue): value is UsageLimitsData {
+function isUsageLimitsData(value: JsonInput): value is UsageLimitsData {
   const data = jsonObject(value);
   if (
     !data ||
@@ -185,7 +185,7 @@ function isUsageLimitsData(value: JsonValue): value is UsageLimitsData {
 }
 
 export function providerLimitData(
-  value: JsonValue | null | undefined,
+  value: JsonInput | null | undefined,
 ): UsageLimitsData | null {
   if (value == null) return null;
   if (isUsageLimitsData(value)) return value;
