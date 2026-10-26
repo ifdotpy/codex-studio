@@ -136,7 +136,7 @@ const LEGACY_TRANSCRIPT_PROJECTION_FORMAT = 2;
 
 type TranscriptProjectionMeta = {
   format: typeof TRANSCRIPT_PROJECTION_FORMAT;
-  epoch?: string;
+  epoch?: string | undefined;
   metadata: Omit<Partial<TranscriptPageData>, "items">;
   order: string[];
 };
@@ -154,7 +154,8 @@ type ProjectionState = {
 
 type StateProjectionPayload = Snapshot | null;
 
-type TranscriptProjectionPayload = TranscriptPageData | null;
+type TranscriptProjectionPayload =
+  import("./transcriptCache").CachedTranscript["payload"];
 
 import { clearTranscript } from "./transcriptCache";
 export type SyncClientOptions = {
@@ -311,7 +312,11 @@ export function createSyncClient(options: SyncClientOptions) {
       return checking;
     };
     setWorkspace(workspaceId);
-    const db = await createRxDatabase({
+    const db = await createRxDatabase<{
+      drafts: RxCollection<SyncDocument>;
+      outbox: RxCollection<SyncDocument>;
+      projections: RxCollection<SyncDocument>;
+    }>({
       name: workspaceDatabaseName(workspaceId, serverDatabaseSuffix),
       storage: getRxStorageDexie(),
       multiInstance: true,
@@ -329,7 +334,9 @@ export function createSyncClient(options: SyncClientOptions) {
     projectionDatabaseLockHeld = await holdEntityProjectionDatabaseLock(
       currentProjectionDatabase,
     );
-    const projectionDb = await createRxDatabase({
+    const projectionDb = await createRxDatabase<{
+      projections: RxCollection<SyncDocument>;
+    }>({
       name: currentProjectionDatabase,
       storage: getRxStorageDexie(),
       multiInstance: true,
@@ -622,7 +629,7 @@ export function createSyncClient(options: SyncClientOptions) {
       changes.through !== cursor.seq
     )
       throw new Error("Invalid subscription cursor interval");
-    const selector = resource as unknown as Record<string, unknown>;
+    const selector = resource as Record<string, unknown>;
     const selectedAgent = scope.agentField
       ? selector[scope.agentField]
       : undefined;
@@ -767,7 +774,7 @@ export function createSyncClient(options: SyncClientOptions) {
     const resource = interval.resource;
     const scope = scopes[resource.kind];
     if (!scope) throw new Error("Unknown staged entity scope");
-    const selector = resource as unknown as Record<string, unknown>;
+    const selector = resource as Record<string, unknown>;
     const selectedAgent = scope.agentField
       ? selector[scope.agentField]
       : undefined;
@@ -1236,7 +1243,7 @@ export function createSyncClient(options: SyncClientOptions) {
         _rev: "",
       };
       const result = await collection.storageInstance.bulkWrite(
-        [{ previous, document }],
+        [{ ...(previous ? { previous } : {}), document }],
         "studio-projection-pull",
       );
       const failure = result.error[0];
@@ -1272,7 +1279,7 @@ export function createSyncClient(options: SyncClientOptions) {
           _meta: { lwt: 1 },
           _rev: "",
         };
-        writes.push({ previous, document });
+        writes.push({ ...(previous ? { previous } : {}), document });
       }
       if (!writes.length) return;
       if (!isCurrent()) return;
@@ -1334,7 +1341,7 @@ export function createSyncClient(options: SyncClientOptions) {
       deleted = false,
       previous?: RxDocumentData<SyncDocument>,
     ) => ({
-      previous,
+      ...(previous ? { previous } : {}),
       document: {
         id,
         payload,
@@ -1523,7 +1530,13 @@ export function createSyncClient(options: SyncClientOptions) {
         if (delta.order) {
           for (const item of changedItems) available.add(item.id);
           let start = delta.order.length;
-          while (start > 0 && available.has(delta.order[start - 1])) start--;
+          while (start > 0) {
+            const key = delta.order[start - 1];
+            if (key === undefined)
+              throw new Error("The transcript order item is missing.");
+            if (!available.has(key)) break;
+            start--;
+          }
           windowOrder = delta.order.slice(start);
           windowTruncated = start > 0;
         } else {
@@ -1594,16 +1607,19 @@ export function createSyncClient(options: SyncClientOptions) {
         if (!isCurrent()) return;
         await writeProjectionRows(
           collection,
-          rows.map((row) => ({
-            previous: byId.get(row.id),
-            document: {
-              ...row,
-              _deleted: row._deleted === true,
-              _attachments: {},
-              _meta: { lwt: 1 },
-              _rev: "",
-            },
-          })),
+          rows.map((row) => {
+            const previous = byId.get(row.id);
+            return {
+              ...(previous ? { previous } : {}),
+              document: {
+                ...row,
+                _deleted: row._deleted === true,
+                _attachments: {},
+                _meta: { lwt: 1 },
+                _rev: "",
+              },
+            };
+          }),
         );
       } else if (rows.length)
         await persistProjectionBatch(collection, rows, isCurrent);
@@ -1612,7 +1628,9 @@ export function createSyncClient(options: SyncClientOptions) {
         id: scope,
         payload: JSON.stringify(nextMeta),
         seq: document.seq,
-        _deleted: document._deleted,
+        ...(document._deleted !== undefined
+          ? { _deleted: document._deleted }
+          : {}),
       };
       await persistProjection(
         collection,
@@ -2847,7 +2865,7 @@ export function createSyncClient(options: SyncClientOptions) {
         }
       }
       replicationErrors = [
-        current.error$.subscribe((error: any) => {
+        current.error$.subscribe((error) => {
           if (generation !== replicationGeneration) return;
           const direction =
             error.code === "RC_PULL"

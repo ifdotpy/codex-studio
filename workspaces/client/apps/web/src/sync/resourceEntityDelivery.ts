@@ -94,17 +94,26 @@ export class ResourceEntityDelivery {
     }
   }
 
+  private readonly persist: (
+    event: ResourceChangeEvent,
+    isCurrent: () => boolean,
+  ) => Promise<void>;
+  private readonly dispatch: (event: ResourceChangeEvent) => void;
+  private readonly failed:
+    | ((event: ResourceChangeEvent, error: unknown) => boolean | void)
+    | undefined;
   constructor(
-    private readonly persist: (
+    persist: (
       event: ResourceChangeEvent,
       isCurrent: () => boolean,
     ) => Promise<void>,
-    private readonly dispatch: (event: ResourceChangeEvent) => void,
-    private readonly failed?: (
-      event: ResourceChangeEvent,
-      error: unknown,
-    ) => boolean | void,
-  ) {}
+    dispatch: (event: ResourceChangeEvent) => void,
+    failed?: (event: ResourceChangeEvent, error: unknown) => boolean | void,
+  ) {
+    this.persist = persist;
+    this.dispatch = dispatch;
+    this.failed = failed;
+  }
 
   /** Cancel reads from an earlier subscription set and retain active pull hints. */
   invalidate(recover = false) {
@@ -129,7 +138,8 @@ export class ResourceEntityDelivery {
           entry.transcriptSnapshot,
       ),
     );
-    if (!this.failed || !typed.length) return false;
+    const [first] = typed;
+    if (!this.failed || !first) return false;
     const resources = [
       ...new Map(
         typed
@@ -140,7 +150,7 @@ export class ResourceEntityDelivery {
     for (const frame of typed) this.revoke(frame);
     return (
       this.failed(
-        { ...typed[0], resources },
+        { ...first, resources },
         new Error(
           "Subscribed entity interval was discarded before application",
         ),
