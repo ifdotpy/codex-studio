@@ -22,7 +22,7 @@ test("another entry URL keeps one Studio tree after lazy modules load", async ({
     log += chunk;
   });
   try {
-    const port = await waitForFixturePort(fixture);
+    const port = await waitForFixturePort(fixture, { diagnostics: () => log });
     await page.setViewportSize({ width: 1440, height: 960 });
     await page.goto(`http://127.0.0.1:${port}`);
     await expect(page.locator("#message")).toBeVisible({ timeout: 10_000 });

@@ -51,7 +51,7 @@ test("team-navigation-ui", async ({ page: fixturePage }) => {
   let log = "";
   proc.stderr?.on("data", (data) => (log += data));
   try {
-    const port = await waitForFixturePort(proc);
+    const port = await waitForFixturePort(proc, { diagnostics: () => log });
     const origin = `http://127.0.0.1:${port}`;
     const initial = await readTestState(origin);
     const lead = required(

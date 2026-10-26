@@ -30,7 +30,7 @@ test("Team panel ui", async ({
     log += chunk;
   });
   try {
-    const port = await waitForFixturePort(fixture);
+    const port = await waitForFixturePort(fixture, { diagnostics: () => log });
     const origin = `http://127.0.0.1:${port}`;
     const snapshot = await readTestState(origin);
     const page = runnerPage;
@@ -368,7 +368,7 @@ test("Team panel scrolls past retained worktrees to the last worker", async ({
   fixture.stderr?.on("data", (chunk) => {
     log += chunk;
   });
-  const port = await waitForFixturePort(fixture);
+  const port = await waitForFixturePort(fixture, { diagnostics: () => log });
   const origin = `http://127.0.0.1:${port}`;
   const snapshot = await readTestState(origin);
   const lead = required(

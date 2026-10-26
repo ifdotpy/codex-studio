@@ -70,7 +70,7 @@ test("subagent concurrency ui", async ({ browser: _browser }) => {
     log += chunk;
   });
   try {
-    const port = await waitForFixturePort(server);
+    const port = await waitForFixturePort(server, { diagnostics: () => log });
     const origin = `http://127.0.0.1:${port}`;
     const snapshot = async () => readTestState(origin);
     const initial = await snapshot();
