@@ -97,8 +97,10 @@ function parseBridgeMessage<M extends BridgeMethod>(
   return value as BridgeNote | BridgeResponse<BridgeResult<M>>;
 }
 
-// Virtual milliseconds per step, and the longest real wait between steps.
+// Virtual milliseconds per clock step.
 const VIRTUAL_STEP_MS = 10;
+// Longest real wait for a new bridge line between two clock steps.
+const REAL_STEP_WAIT_MS = 10;
 const BRIDGE = path.join(path.dirname(fileURLToPath(import.meta.url)), "..");
 import { HANG_GUARD_MS } from "./file-signals.ts";
 export { HANG_GUARD_MS };
@@ -188,6 +190,8 @@ export async function startBridge(
   // One exit observation per launched child, registered at spawn so cleanup can
   // never miss an exit that already happened (including a signal exit).
   let exited: Promise<void>;
+  // Closed stdio means every bridge line has been read.
+  let closed: Promise<void>;
   let stderr = "";
   const notes: BridgeNote[] = [];
   const waiting = new Map<
@@ -200,6 +204,9 @@ export async function startBridge(
     const attached = child;
     exited = new Promise<void>((resolve) =>
       attached.once("exit", () => resolve()),
+    );
+    closed = new Promise<void>((resolve) =>
+      attached.once("close", () => resolve()),
     );
     child.stderr?.on("data", (chunk) => (stderr += chunk));
     child.once("close", () => {
@@ -247,21 +254,32 @@ export async function startBridge(
     for (;;) {
       const found = notes.find(predicate);
       if (found) return found;
-      if (performance.now() >= deadline)
+      if (childExited()) {
+        // An exited bridge cannot produce the notification. Read its last
+        // lines, then fail at once instead of at the deadline.
+        await waitReal(closed, deadline - performance.now());
+        const last = notes.find(predicate);
+        if (last) return last;
         throw new Error(
-          "notification missing after virtual deadline\n" + stderr,
+          `notification missing: bridge exited (code ${child.exitCode}, signal ${child.signalCode})\n` +
+            stderr,
         );
+      }
+      if (performance.now() >= deadline)
+        throw new Error("notification missing after deadline\n" + stderr);
       await bridge.advanceTime(VIRTUAL_STEP_MS);
-      await new Promise<void>((resolve) => {
+      const line = new Promise<void>((resolve) => {
         const done = () => {
-          clearTimeout(timer);
           notifications.delete(done);
           resolve();
         };
-        const timer = setTimeout(done, VIRTUAL_STEP_MS);
         notifications.add(done);
       });
+      await waitReal(line, REAL_STEP_WAIT_MS);
     }
+  }
+  function childExited() {
+    return child.exitCode !== null || child.signalCode !== null;
   }
   function note<N extends BridgeNote>(
     predicate: (note: BridgeNote) => note is N,
@@ -327,10 +345,10 @@ export async function startBridge(
       });
     },
     async advanceTime(ms: number) {
-      if (child.exitCode !== null) return;
+      if (childExited()) return;
       const controller = new AbortController();
       const timer = setTimeout(
-        () => controller.abort(new Error("virtual clock hung")),
+        () => controller.abort(new Error("virtual clock hung\n" + stderr)),
         HANG_GUARD_MS,
       );
       try {
@@ -426,7 +444,7 @@ export async function startBridge(
       // Bounded shutdown timers run on the virtual clock; advance it until exit.
       // A clock that can no longer be driven cannot finish the child: reap it.
       if (clock)
-        while (child.exitCode === null && child.signalCode === null)
+        while (!childExited())
           try {
             await bridge.advanceTime(VIRTUAL_STEP_MS);
           } catch {
@@ -449,3 +467,16 @@ export async function startBridge(
 }
 
 export type BridgeHarness = Awaited<ReturnType<typeof startBridge>>;
+
+// Resolves when the promise settles or after ms of real time.
+async function waitReal(promise: Promise<void>, ms: number) {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    await Promise.race([
+      promise,
+      new Promise<void>((resolve) => (timer = setTimeout(resolve, ms))),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
