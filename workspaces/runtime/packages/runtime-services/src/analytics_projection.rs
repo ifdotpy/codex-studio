@@ -47,17 +47,21 @@ pub(crate) fn log_effect(
         ..
     } = &mut effect
     {
-        *ledger_since = observation
-            .agent
-            .as_ref()
-            .map(|agent| {
-                studio_runtime_store::budget::BudgetRepository::ledger_since(
-                    canvas,
-                    agent["id"].as_str().unwrap_or_default(),
-                )
-            })
-            .transpose()?
-            .flatten();
+        *ledger_since = if observation.method == "thread/tokenUsage/updated" {
+            observation
+                .agent
+                .as_ref()
+                .map(|agent| {
+                    studio_runtime_store::budget::BudgetRepository::ledger_since(
+                        canvas,
+                        agent["id"].as_str().unwrap_or_default(),
+                    )
+                })
+                .transpose()?
+                .unwrap_or_default()
+        } else {
+            studio_runtime_schema::usage::ledger::LedgerEpoch::Current
+        };
     }
     let observation = match &effect {
         NotificationPostCommit::Analytics { observation, .. }
@@ -272,7 +276,7 @@ mod tests {
             },
             budget_capture_value: None,
             usage_conflict: None,
-            ledger_since: None,
+            ledger_since: Default::default(),
         }
     }
 

@@ -1367,7 +1367,7 @@ mod tests {
             observation: analytics_observation("thread/tokenUsage/updated", 1_000),
             budget_capture_value: Some(12),
             usage_conflict: None,
-            ledger_since: None,
+            ledger_since: Default::default(),
         });
         streams.queue_effect(NotificationPostCommit::AnalyticsStream {
             observation: analytics_observation("item/agentMessage/delta", 1_001),
@@ -1382,7 +1382,6 @@ mod tests {
             NotificationPostCommit::Analytics {
                 budget_capture_value: Some(12),
                 usage_conflict: None,
-                ledger_since: None,
                 ..
             }
         )));

@@ -1,10 +1,150 @@
 {
   "$defs": {
-    "JsonValue": {}
+    "JsonValue": {},
+    "UsageIdentity": {
+      "description": "Logical owner of usage, independent of capture time, account, turn and provenance.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "description": "A provider response (including a gap awaiting its final usage).",
+          "properties": {
+            "agent": {
+              "type": "string"
+            },
+            "kind": {
+              "const": "response",
+              "type": "string"
+            },
+            "responseId": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "agent",
+            "responseId"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "description": "A running counter, whose individual observations have separate receipts.",
+          "properties": {
+            "agent": {
+              "type": "string"
+            },
+            "kind": {
+              "const": "cumulative",
+              "type": "string"
+            },
+            "scope": {
+              "$ref": "#/$defs/UsageScope"
+            },
+            "threadId": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "kind",
+            "agent",
+            "scope"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "UsageScope": {
+      "description": "Counter ownership: a native Codex thread or one Claude SDK query.",
+      "enum": [
+        "codexThread",
+        "claudeQuery"
+      ],
+      "type": "string"
+    },
+    "UsageTokens": {
+      "additionalProperties": false,
+      "description": "Disjoint billable token categories; reasoning is already included in output.",
+      "properties": {
+        "cacheReadInput": {
+          "description": "Input served from the prompt cache; tokens.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "cacheWriteInput": {
+          "description": "Input written to the prompt cache; tokens.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "cacheWriteInput1h": {
+          "description": "Subset of cache writes with a one-hour lifetime; tokens, absent for legacy pricing.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "output": {
+          "description": "All generated output, including reasoning; tokens.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "reasoningOutput": {
+          "description": "Known reasoning subset of output; tokens, absent when unknown.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "uncachedInput": {
+          "description": "Base-rate input, excluding cache reads and writes; tokens.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "uncachedInput",
+        "cacheReadInput",
+        "cacheWriteInput",
+        "output"
+      ],
+      "type": "object"
+    }
   },
   "additionalProperties": {
     "$ref": "#/$defs/JsonValue"
   },
+  "allOf": [
+    {
+      "if": {
+        "required": [
+          "diagnosticBoundsVersion"
+        ]
+      },
+      "then": {
+        "properties": {
+          "replayConflicts": {
+            "maxItems": 64
+          },
+          "unknownReceipts": {
+            "maxItems": 64
+          },
+          "unresolvedGaps": {
+            "maxItems": 64
+          }
+        }
+      }
+    }
+  ],
   "properties": {
     "after": {
       "maximum": 9007199254740991,
@@ -46,6 +186,30 @@
       "title": "Cutoff",
       "type": "number"
     },
+    "diagnosticBoundsVersion": {
+      "const": 1
+    },
+    "diagnosticOverflow": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "additionalProperties": false,
+      "description": "Sticky loss of complete diagnostic coverage, independently for each list.",
+      "properties": {
+        "replayConflicts": {
+          "default": false,
+          "type": "boolean"
+        },
+        "unknownReceipts": {
+          "default": false,
+          "type": "boolean"
+        },
+        "unresolvedGaps": {
+          "default": false,
+          "type": "boolean"
+        }
+      },
+      "title": "LedgerDiagnosticOverflow",
+      "type": "object"
+    },
     "faults": {
       "items": {
         "type": "string"
@@ -78,6 +242,18 @@
       ],
       "title": "Lastamount"
     },
+    "ledgerSince": {
+      "anyOf": [
+        {
+          "minimum": 0,
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Server Unix seconds of the pre-v5 ledger migration; null for ledgers created under v5."
+    },
     "noticeAt": {
       "title": "Noticeat",
       "type": "number"
@@ -87,6 +263,57 @@
       "minimum": 0,
       "title": "Noticespent",
       "type": "integer"
+    },
+    "replayConflicts": {
+      "items": {
+        "additionalProperties": false,
+        "description": "A rejected replay, preserving both totals without inventing missing legacy categories.",
+        "properties": {
+          "identity": {
+            "$ref": "#/$defs/UsageIdentity"
+          },
+          "incomingTokens": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/UsageTokens"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "incomingTotalTokens": {
+            "description": "Rejected billable total; tokens.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "retainedTokens": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/UsageTokens"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "retainedTotalTokens": {
+            "description": "Retained billable total; tokens.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "identity",
+          "retainedTotalTokens",
+          "incomingTotalTokens"
+        ],
+        "title": "UsageReplayConflict",
+        "type": "object"
+      },
+      "type": "array"
     },
     "spent": {
       "maximum": 9007199254740991,
@@ -105,17 +332,17 @@
       ],
       "title": "Thread"
     },
-    "ledgerSince": {
-      "description": "Server Unix seconds of the pre-v5 ledger migration; null for ledgers created under v5.",
-      "anyOf": [
-        {
-          "type": "number",
-          "minimum": 0
-        },
-        {
-          "type": "null"
-        }
-      ]
+    "unknownReceipts": {
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    },
+    "unresolvedGaps": {
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
     }
   },
   "required": [

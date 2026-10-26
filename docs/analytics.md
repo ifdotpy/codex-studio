@@ -139,6 +139,14 @@ second accounting row. This deliberately leaves previously unrecorded legacy
 usage unknown. Observations after the epoch use only the canonical key; legacy
 aliases do not apply. Context capacity, model lists and provider cost estimates
 cannot change the accounting identity.
+The journal preserves three epoch states end to end: an absent field marks a
+v4 effect as legacy, explicit null marks a v5-created ledger, and a number is
+the migration time. Projection needs no budget lookup to interpret an old effect.
+Budget diagnostics retain at most 64 entries and 16 KiB of JSON per kind,
+owned by runtime-schema. If a list overflows, a durable flag keeps its fault
+sticky even after the retained subset resolves. Gap overflow also makes coverage
+unknown. Older unbounded rows are reduced lazily; no import is blocked by adding
+a diagnostic to a near-limit record.
 Old gap coverage remains explicitly unknown when no authoritative complete
 old-era inventory exists. A bounded search can establish known pre-ledger gap
 identities, but available rows alone cannot prove that no other gap was erased.

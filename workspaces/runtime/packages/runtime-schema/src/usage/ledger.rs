@@ -13,6 +13,114 @@ pub const RESPONSE_REPLAY_CONFLICT: &str = "responseReplayConflict";
 /// Maximum analytics source rows examined to establish old gap identities; rows.
 pub const LEGACY_GAP_COVERAGE_ROWS: usize = 256;
 
+/// Maximum retained diagnostic entries per kind in one budget ledger; entries.
+pub const LEDGER_DIAGNOSTIC_ITEMS: usize = 64;
+/// Maximum serialized JSON storage per diagnostic kind; UTF-8 bytes.
+pub const LEDGER_DIAGNOSTIC_BYTES: usize = 16_384;
+
+/// The wire preserves missing (v4), null (v5-created), and migration Unix seconds.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub enum LedgerEpoch {
+    #[default]
+    Legacy,
+    Current,
+    Since(f64),
+}
+impl LedgerEpoch {
+    pub fn is_legacy(&self) -> bool {
+        matches!(self, Self::Legacy)
+    }
+}
+impl Serialize for LedgerEpoch {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        match self {
+            Self::Legacy => Err(serde::ser::Error::custom(
+                "legacy ledger epoch must be omitted",
+            )),
+            Self::Current => serializer.serialize_none(),
+            Self::Since(epoch) if epoch.is_finite() && *epoch >= 0. => {
+                serializer.serialize_f64(*epoch)
+            }
+            Self::Since(_) => Err(serde::ser::Error::custom("invalid ledger epoch")),
+        }
+    }
+}
+impl<'de> Deserialize<'de> for LedgerEpoch {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        match Option::<f64>::deserialize(deserializer)? {
+            None => Ok(Self::Current),
+            Some(epoch) if epoch.is_finite() && epoch >= 0. => Ok(Self::Since(epoch)),
+            Some(_) => Err(serde::de::Error::custom("invalid ledger epoch")),
+        }
+    }
+}
+
+/// Sticky loss of complete diagnostic coverage, independently for each list.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(default, rename_all = "camelCase", deny_unknown_fields)]
+pub struct LedgerDiagnosticOverflow {
+    pub unknown_receipts: bool,
+    pub unresolved_gaps: bool,
+    pub replay_conflicts: bool,
+}
+
+/// Retain a bounded prefix without losing whether evidence was dropped.
+pub fn bound_diagnostics<T: Serialize>(values: &mut Vec<T>) -> bool {
+    let mut bytes = 2;
+    let mut keep = 0;
+    for value in values.iter().take(LEDGER_DIAGNOSTIC_ITEMS) {
+        let Ok(encoded) = serde_json::to_vec(value) else {
+            break;
+        };
+        let next = bytes + encoded.len() + usize::from(keep != 0);
+        if next > LEDGER_DIAGNOSTIC_BYTES {
+            break;
+        }
+        bytes = next;
+        keep += 1;
+    }
+    let overflow = values.len() > keep;
+    values.truncate(keep);
+    overflow
+}
+
+/// Generated persisted-budget constraints share the retention owner's item bound.
+/// Older rows lack the bounds version and remain readable for lazy normalization.
+pub fn budget_state_schema() -> Value {
+    let mut schema: Value = serde_json::from_str(include_str!(
+        "../schemas/persisted-budget-state.schema.json"
+    ))
+    .expect("budget schema");
+    schema["properties"]["diagnosticBoundsVersion"] = json!({"const":1});
+    schema["properties"]["diagnosticOverflow"] =
+        schemars::schema_for!(LedgerDiagnosticOverflow).to_value();
+    for key in ["unknownReceipts", "unresolvedGaps"] {
+        schema["properties"][key] = json!({"type":"array","items":{"type":"string"}});
+    }
+    let mut conflict = schemars::schema_for!(UsageReplayConflict).to_value();
+    if let Some(Value::Object(definitions)) = conflict
+        .as_object_mut()
+        .expect("schema object")
+        .remove("$defs")
+    {
+        schema["$defs"]
+            .as_object_mut()
+            .expect("schema definitions")
+            .extend(definitions);
+    }
+    conflict
+        .as_object_mut()
+        .expect("schema object")
+        .remove("$schema");
+    schema["properties"]["replayConflicts"] = json!({"type":"array", "items":conflict});
+    schema["allOf"] = json!([{"if":{"required":["diagnosticBoundsVersion"]},"then":{"properties":{
+        "unknownReceipts":{"maxItems":LEDGER_DIAGNOSTIC_ITEMS},
+        "unresolvedGaps":{"maxItems":LEDGER_DIAGNOSTIC_ITEMS},
+        "replayConflicts":{"maxItems":LEDGER_DIAGNOSTIC_ITEMS}
+    }}}]);
+    schema
+}
+
 /// Whether the budget knows every unresolved response identity.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
@@ -197,8 +305,12 @@ pub fn legacy_counter_observation_key(
 
 /// Whether accounting evidence belongs to a migrated ledger's legacy era.
 /// Epoch and observation time are server/provider Unix seconds respectively.
-pub fn legacy_era(ledger_since: Option<f64>, at: f64, estimated: bool) -> bool {
-    ledger_since.is_some_and(|since| estimated || at < since)
+pub fn legacy_era(ledger_since: LedgerEpoch, at: f64, estimated: bool) -> bool {
+    match ledger_since {
+        LedgerEpoch::Legacy => true,
+        LedgerEpoch::Current => false,
+        LedgerEpoch::Since(since) => estimated || at < since,
+    }
 }
 
 /// Recover supported old counter spellings from persisted typed facts, never by

@@ -64,7 +64,7 @@ pub struct PreparedCapture {
     usage: Option<UsageObservation>,
     legacy_usage: Option<LegacyUsageTotals>,
     rejected_usage: Option<studio_runtime_schema::usage::ledger::UsageReplayConflict>,
-    ledger_since: Option<f64>,
+    ledger_since: studio_runtime_schema::usage::ledger::LedgerEpoch,
 }
 impl PreparedCapture {
     pub fn event(
@@ -167,7 +167,7 @@ impl PreparedCapture {
             usage,
             legacy_usage,
             rejected_usage: None,
-            ledger_since: None,
+            ledger_since: studio_runtime_schema::usage::ledger::LedgerEpoch::Current,
         })
     }
     pub(crate) fn apply_budget_conflicts(

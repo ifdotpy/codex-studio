@@ -50,10 +50,19 @@ pub struct BudgetUsageDetails {
 pub struct BudgetRepository;
 impl BudgetRepository {
     /// Migration epoch in Unix seconds; null means this ledger was created under v5.
-    pub fn ledger_since(db: &Connection, agent: &str) -> StoreResult<Option<f64>> {
-        Ok(Table::<BudgetRecord>::new(db)
-            .get(&agent.into())?
-            .and_then(|record| record.0["ledgerSince"].as_f64()))
+    pub fn ledger_since(
+        db: &Connection,
+        agent: &str,
+    ) -> StoreResult<studio_runtime_schema::usage::ledger::LedgerEpoch> {
+        use studio_runtime_schema::usage::ledger::LedgerEpoch;
+        let Some(record) = Table::<BudgetRecord>::new(db).get(&agent.into())? else {
+            return Ok(LedgerEpoch::Current);
+        };
+        record
+            .0
+            .get("ledgerSince")
+            .map(|value| serde_json::from_value(value.clone()).map_err(Into::into))
+            .unwrap_or(Ok(LedgerEpoch::Legacy))
     }
     pub fn agent(db: &Connection, id: &str) -> StoreResult<Value> {
         Table::<AgentRecord>::new(db)

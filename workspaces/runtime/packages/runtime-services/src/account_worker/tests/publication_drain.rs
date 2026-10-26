@@ -65,7 +65,7 @@ fn analytics_effect_for(
         },
         budget_capture_value: None,
         usage_conflict: None,
-        ledger_since: None,
+        ledger_since: Default::default(),
     }
 }
 
@@ -881,7 +881,7 @@ async fn analytics_receipts_preserve_entity_delivery_but_recovery_still_resets()
             observation: observation.clone(),
             budget_capture_value: None,
             usage_conflict: None,
-            ledger_since: None,
+            ledger_since: Default::default(),
         },
         NotificationPostCommit::AnalyticsCaptured(observation.clone()),
         NotificationPostCommit::AnalyticsStream {

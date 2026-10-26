@@ -5,7 +5,9 @@ use crate::provider_adapter::{self, ProviderKind};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
-use studio_runtime_schema::usage::ledger::{UsageCorrection, UsageLedgerRow, correction};
+use studio_runtime_schema::usage::ledger::{
+    LedgerDiagnosticOverflow, LedgerEpoch, UsageCorrection, UsageLedgerRow, correction,
+};
 use studio_runtime_schema::usage::{UsageEvidence, UsageTokens};
 use studio_runtime_store::{python_json_with_separators, sha256_hex};
 use thiserror::Error;
@@ -61,12 +63,12 @@ fn add(a: u64, b: u64) -> Result<u64, BudgetError> {
 pub struct BudgetState {
     cutoff: f64,
     /// Missing before v5; null for a v5-created ledger, otherwise its migration time in Unix seconds.
-    #[serde(
-        default,
-        skip_serializing_if = "Option::is_none",
-        deserialize_with = "deserialize_ledger_epoch"
-    )]
-    ledger_since: Option<Option<f64>>,
+    #[serde(default, skip_serializing_if = "LedgerEpoch::is_legacy")]
+    ledger_since: LedgerEpoch,
+    #[serde(default)]
+    diagnostic_overflow: LedgerDiagnosticOverflow,
+    #[serde(default)]
+    diagnostic_bounds_version: u8,
     floor: u64,
     spent: u64,
     before: u64,
@@ -97,13 +99,27 @@ pub struct BudgetState {
     #[serde(flatten)]
     extra: BTreeMap<String, Value>,
 }
-fn deserialize_ledger_epoch<'de, D: serde::Deserializer<'de>>(
-    deserializer: D,
-) -> Result<Option<Option<f64>>, D::Error> {
-    Option::<f64>::deserialize(deserializer).map(Some)
-}
-
 impl BudgetState {
+    fn bound_diagnostics(&mut self) {
+        use studio_runtime_schema::usage::ledger::{
+            GapCoverage, MISSING_FINAL_USAGE, RESPONSE_REPLAY_CONFLICT, UNKNOWN_USAGE_RECEIPT,
+            bound_diagnostics,
+        };
+        self.diagnostic_overflow.unknown_receipts |= bound_diagnostics(&mut self.unknown_receipts);
+        self.diagnostic_overflow.unresolved_gaps |= bound_diagnostics(&mut self.unresolved_gaps);
+        self.diagnostic_overflow.replay_conflicts |= bound_diagnostics(&mut self.replay_conflicts);
+        self.diagnostic_bounds_version = 1;
+        if self.diagnostic_overflow.unknown_receipts {
+            self.fault(UNKNOWN_USAGE_RECEIPT);
+        }
+        if self.diagnostic_overflow.unresolved_gaps {
+            self.gap_coverage = GapCoverage::LegacyUnknown;
+            self.fault(MISSING_FINAL_USAGE);
+        }
+        if self.diagnostic_overflow.replay_conflicts {
+            self.fault(RESPONSE_REPLAY_CONFLICT);
+        }
+    }
     fn fault(&mut self, fault: &str) {
         if !self.faults.iter().any(|f| f == fault) {
             self.faults.push(fault.into());
@@ -132,7 +148,9 @@ impl BudgetState {
         json!({"tokensUsed":self.spent,"tokenUsageAccounting":self.accounting()})
     }
     pub fn record(&self) -> Result<Value, BudgetError> {
-        let value = serde_json::to_value(self).map_err(|_| invalid("runtime_budget"))?;
+        let mut bounded = self.clone();
+        bounded.bound_diagnostics();
+        let value = serde_json::to_value(bounded).map_err(|_| invalid("runtime_budget"))?;
         validate("PersistedBudgetState", &value, "runtime_budget")?;
         Ok(value)
     }
@@ -154,6 +172,7 @@ pub(crate) fn record_legacy_gap_identities(
     unresolved: Vec<String>,
 ) -> Result<BudgetState, BudgetError> {
     let mut state: BudgetState = decode(value, "runtime_budget")?;
+    state.bound_diagnostics();
     // Available rows cannot prove how many old gaps were erased. Keep this
     // uncertainty until an authoritative complete old-era source supplies proof.
     state.gap_coverage = studio_runtime_schema::usage::ledger::GapCoverage::LegacyUnknown;
@@ -162,6 +181,7 @@ pub(crate) fn record_legacy_gap_identities(
             state.unresolved_gaps.push(key);
         }
     }
+    state.bound_diagnostics();
     Ok(state)
 }
 
@@ -256,8 +276,10 @@ impl BudgetSnapshot {
             }
         }
         let floor = durable.tokens_used.unwrap_or(0);
-        let initialized =
-            state.is_none() || state.is_some_and(|value| value.get("ledgerSince").is_none());
+        let initialized = state.is_none()
+            || state.is_some_and(|value| {
+                value.get("ledgerSince").is_none() || value.get("diagnosticBoundsVersion").is_none()
+            });
         let legacy_unknown = state
             .map(needs_legacy_gap_coverage)
             .transpose()?
@@ -266,7 +288,9 @@ impl BudgetSnapshot {
             Some(value) => decode(value, "runtime_budget")?,
             None => BudgetState {
                 cutoff: now,
-                ledger_since: Some(None),
+                ledger_since: LedgerEpoch::Current,
+                diagnostic_overflow: Default::default(),
+                diagnostic_bounds_version: 1,
                 floor,
                 spent: floor,
                 before: 0,
@@ -289,9 +313,10 @@ impl BudgetSnapshot {
                 extra: BTreeMap::new(),
             },
         };
-        if state.ledger_since.is_none() {
-            state.ledger_since = Some(Some(now));
+        if state.ledger_since.is_legacy() {
+            state.ledger_since = LedgerEpoch::Since(now);
         }
+        state.bound_diagnostics();
         if legacy_unknown {
             state.gap_coverage = studio_runtime_schema::usage::ledger::GapCoverage::LegacyUnknown;
         }
@@ -556,7 +581,7 @@ impl UsageObservation {
             || params.get("timestampSource").and_then(Value::as_str)
                 == Some("fileModifiedEstimate");
         let legacy_era = studio_runtime_schema::usage::ledger::legacy_era(
-            snapshot.state.ledger_since.flatten(),
+            snapshot.state.ledger_since,
             at,
             estimated,
         );
@@ -696,6 +721,7 @@ fn rejected_replay(
     if !state.replay_conflicts.contains(&conflict) {
         state.replay_conflicts.push(conflict.clone());
     }
+    state.bound_diagnostics();
     Ok(CaptureDecision {
         acceptance: UsageAcceptance::RejectedReplayConflict(conflict),
         state,
@@ -724,7 +750,7 @@ pub fn capture(
         if let Some(key) = &observation_key {
             state.unknown_receipts.retain(|unknown| unknown != key);
         }
-        if state.unknown_receipts.is_empty() {
+        if state.unknown_receipts.is_empty() && !state.diagnostic_overflow.unknown_receipts {
             state.faults.retain(|fault| {
                 fault != studio_runtime_schema::usage::ledger::UNKNOWN_USAGE_RECEIPT
             });
@@ -742,6 +768,7 @@ pub fn capture(
             state.unknown_receipts.push(key);
         }
         state.fault(studio_runtime_schema::usage::ledger::UNKNOWN_USAGE_RECEIPT);
+        state.bound_diagnostics();
         return Ok(CaptureDecision {
             acceptance: UsageAcceptance::Accepted,
             state,
@@ -931,6 +958,7 @@ pub fn capture(
             state.fault("missingRequestUsage");
         }
     }
+    state.bound_diagnostics();
     state.settle()?;
     Ok(CaptureDecision {
         acceptance: UsageAcceptance::Accepted,
@@ -1297,7 +1325,7 @@ mod typed_usage_tests {
         let agent = json!({"id":"a","provider":"codex","accountKey":"default","threadId":"t","turnId":"u","created":0});
         let mut snapshot =
             BudgetSnapshot::from_records(&agent, &agent, None, 100.).expect("snapshot");
-        snapshot.state.ledger_since = Some(Some(102.));
+        snapshot.state.ledger_since = LedgerEpoch::Since(102.);
         let total = json!({"inputTokens":20,"cachedInputTokens":5,"cacheWriteInputTokens":0,"outputTokens":4,"reasoningOutputTokens":1,"totalTokens":24});
         let last = json!({"inputTokens":5,"cachedInputTokens":1,"cacheWriteInputTokens":0,"outputTokens":1,"reasoningOutputTokens":0,"totalTokens":6});
         let params = json!({"threadId":"t","turnId":"u","tokenUsage":{"total":total,"last":last}});

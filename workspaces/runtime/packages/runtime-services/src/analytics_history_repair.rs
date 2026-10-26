@@ -278,7 +278,7 @@ mod usage_contract_tests {
                 },
                 budget_capture_value: None,
                 usage_conflict: conflict.map(Box::new),
-                ledger_since: None,
+                ledger_since: Default::default(),
             };
             store
                 .transaction(move |tx| {
@@ -611,6 +611,281 @@ mod usage_contract_tests {
             })
             .await
             .expect("projection diagnostics");
+    }
+
+    async fn era_old_serialized_effect_does_not_duplicate(metadata: bool) {
+        use crate::notification_dispatch::{
+            NotificationObservation, NotificationPostCommit, ProviderDeliveryIdentity, SharedJson,
+        };
+        let (temp, store, mut agent) = ledger_store("codex").await;
+        let mut params = era_old_typed(&store, &agent).await;
+        if metadata {
+            params["studioUsage"]["modelContextWindow"] = json!(200000);
+        } else {
+            era_switch_account(&store, &mut agent).await;
+        }
+        let mut supplied = agent.clone();
+        let budget_params = params.clone();
+        store
+            .transaction_with(move |tx| {
+                crate::budget_service::capture_acceptance(
+                    tx,
+                    &mut supplied,
+                    &budget_params,
+                    1.,
+                    crate::budget::CaptureSource::History,
+                    200.,
+                )
+            })
+            .await
+            .expect("legacy budget replay");
+        let effect = NotificationPostCommit::Analytics {
+            observation: NotificationObservation {
+                agent: Some(SharedJson::new(agent)),
+                method: "thread/tokenUsage/updated".into(),
+                params: SharedJson::new(params),
+                delivery: ProviderDeliveryIdentity {
+                    provider_handle: "account:default".into(),
+                    generation: 1,
+                    cursor: 1,
+                },
+                observed_at: 1.,
+                provider_at: 1.,
+            },
+            budget_capture_value: None,
+            usage_conflict: None,
+            ledger_since: Default::default(),
+        };
+        let mut old = serde_json::to_value(effect).expect("serialize");
+        old["Analytics"]
+            .as_object_mut()
+            .expect("old effect")
+            .remove("ledger_since");
+        assert!(old["Analytics"].get("ledger_since").is_none());
+        let decoded: NotificationPostCommit =
+            serde_json::from_value(old.clone()).expect("old effect decode");
+        assert!(
+            serde_json::to_value(decoded).expect("old effect reserialize")["Analytics"]
+                .get("ledger_since")
+                .is_none()
+        );
+        store.transaction(move |tx| {
+            studio_runtime_store::analytics_capture::AnalyticsCaptureRepository::append_projection(tx, &old.to_string())?;
+            Ok(())
+        }).await.expect("v4 journal shape without epoch field");
+        drop(store);
+        let store = RuntimeStore::open(Some(temp.path()))
+            .await
+            .expect("v4 journal restart");
+        for _ in 0..2 {
+            crate::analytics_projection::project_pending(&store)
+                .await
+                .expect("v5 projection of v4 journal");
+        }
+        assert_eq!(ledger_tokens(&store).await, 10);
+        assert_eq!(
+            era_analytics_rows(&store).await,
+            1,
+            "v4 journal misses stay legacy even without an epoch field"
+        );
+    }
+
+    #[tokio::test]
+    async fn typed_usage_ledger_era_old_serialized_metadata_effect_stays_legacy() {
+        era_old_serialized_effect_does_not_duplicate(true).await;
+    }
+
+    #[tokio::test]
+    async fn typed_usage_ledger_era_old_serialized_account_effect_stays_legacy() {
+        era_old_serialized_effect_does_not_duplicate(false).await;
+    }
+
+    #[tokio::test]
+    async fn typed_usage_ledger_era_current_journal_serializes_explicit_null() {
+        let (_temp, store, agent) = ledger_store("codex").await;
+        let mut params = counter_params();
+        ledger_capture(
+            &store,
+            &agent,
+            params.clone(),
+            crate::budget::CaptureSource::Live,
+            1.,
+        )
+        .await;
+        params["tokenUsage"]["modelContextWindow"] = json!(200000);
+        ledger_capture(
+            &store,
+            &agent,
+            params,
+            crate::budget::CaptureSource::Live,
+            2.,
+        )
+        .await;
+        let effect = store
+            .transaction(|tx| {
+                let raw: String = tx.query_row(
+                    "SELECT record FROM runtime_analytics_projection ORDER BY seq DESC LIMIT 1",
+                    [],
+                    |row| row.get(0),
+                )?;
+                Ok(serde_json::from_str::<Value>(&raw)?)
+            })
+            .await
+            .expect("serialized v5 effect");
+        assert_eq!(effect["Analytics"].get("ledger_since"), Some(&Value::Null));
+        let mut invalid = effect.clone();
+        invalid["Analytics"]["ledger_since"] = json!(-1);
+        assert!(
+            serde_json::from_value::<crate::notification_dispatch::NotificationPostCommit>(invalid)
+                .is_err()
+        );
+        assert!(
+            serde_json::from_str::<studio_runtime_schema::usage::ledger::LedgerEpoch>("1e999")
+                .is_err()
+        );
+        for epoch in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            assert!(
+                serde_json::to_value(studio_runtime_schema::usage::ledger::LedgerEpoch::Since(
+                    epoch
+                ))
+                .is_err()
+            );
+        }
+        assert_eq!(ledger_tokens(&store).await, 10);
+        assert_eq!(era_analytics_rows(&store).await, 1);
+    }
+
+    #[tokio::test]
+    async fn typed_usage_ledger_era_unknown_diagnostics_cannot_exhaust_record() {
+        let (_temp, store, agent) = ledger_store("codex").await;
+        let _params = era_old_typed(&store, &agent).await;
+        let hashes = (0..15_646).map(|i| format!("{i:064x}")).collect::<Vec<_>>();
+        let mut state = json!({"cutoff":0,"ledgerSince":100,"floor":10,"spent":10,"before":0,"after":0,"historicalNotices":10,"noticeSpent":0,"counter":null,"thread":null,"noticeAt":0,"created":0,"lastAmount":null,"ambiguousNotices":[],"faults":[],"unknownReceipts":hashes});
+        let padding = 1_048_572 - state.to_string().len() - r#""padding":"","#.len();
+        state["padding"] = json!("x".repeat(padding));
+        assert_eq!(state.to_string().len(), 1_048_572);
+        store
+            .transaction(move |tx| {
+                tx.execute("UPDATE runtime_budget SET record=?1", [state.to_string()])?;
+                Ok(())
+            })
+            .await
+            .expect("valid near-limit state");
+        let mut missed = counter_params();
+        missed["turnId"] = json!("unmatched-turn");
+        ledger_capture(
+            &store,
+            &agent,
+            missed,
+            crate::budget::CaptureSource::History,
+            1.,
+        )
+        .await;
+        assert_eq!(ledger_tokens(&store).await, 10);
+        let state = era_state(&store).await;
+        assert!(state.to_string().len() < 65_536);
+        assert_eq!(state["diagnosticOverflow"]["unknownReceipts"], true);
+        assert!(
+            state["faults"]
+                .as_array()
+                .expect("faults")
+                .contains(&json!("unknownUsageReceipt"))
+        );
+        store.transaction(|tx| {
+            tx.execute("UPDATE runtime_budget SET record=json_set(record,'$.unknownReceipts',json('[]'))", [])?;
+            Ok(())
+        }).await.expect("retained diagnostics resolved");
+        for _ in 0..2 {
+            ledger_capture(
+                &store,
+                &agent,
+                ledger_response("live", 1),
+                crate::budget::CaptureSource::Live,
+                200.,
+            )
+            .await;
+        }
+        assert!(
+            era_state(&store).await["faults"]
+                .as_array()
+                .expect("sticky faults")
+                .contains(&json!("unknownUsageReceipt"))
+        );
+    }
+
+    #[tokio::test]
+    async fn typed_usage_ledger_era_gap_and_conflict_overflow_survive_restart() {
+        for gaps in [true, false] {
+            let (temp, store, agent) = ledger_store("claude").await;
+            ledger_capture(
+                &store,
+                &agent,
+                ledger_response("live", 1),
+                crate::budget::CaptureSource::Live,
+                1.,
+            )
+            .await;
+            let mut state = era_state(&store).await;
+            state
+                .as_object_mut()
+                .expect("pre-bound state")
+                .remove("diagnosticBoundsVersion");
+            if gaps {
+                state["unresolvedGaps"] =
+                    json!((0..1000).map(|i| format!("{i:064x}")).collect::<Vec<_>>());
+                state["faults"] = json!(["missingFinalUsage"]);
+            } else {
+                state["replayConflicts"] = json!((0..1000).map(|i| json!({"identity":{"kind":"response","agent":"agent","responseId":format!("old-{i}")},"retainedTotalTokens":11,"incomingTotalTokens":12,"retainedTokens":null,"incomingTokens":null})).collect::<Vec<_>>());
+            }
+            store
+                .transaction(move |tx| {
+                    tx.execute("UPDATE runtime_budget SET record=?1", [state.to_string()])?;
+                    Ok(())
+                })
+                .await
+                .expect("old unbounded diagnostics");
+            let incoming = if gaps {
+                json!({"threadId":"thread","studioUsage":{"kind":"gap","responseId":"new-gap","reason":"queryClosed"}})
+            } else {
+                ledger_response("live", 2)
+            };
+            ledger_capture(
+                &store,
+                &agent,
+                incoming,
+                crate::budget::CaptureSource::Live,
+                2.,
+            )
+            .await;
+            drop(store);
+            let store = RuntimeStore::open(Some(temp.path()))
+                .await
+                .expect("restart");
+            let state = era_state(&store).await;
+            let key = if gaps {
+                "unresolvedGaps"
+            } else {
+                "replayConflicts"
+            };
+            assert!(
+                state[key].as_array().expect("bounded list").len()
+                    <= studio_runtime_schema::usage::ledger::LEDGER_DIAGNOSTIC_ITEMS
+            );
+            assert_eq!(state["diagnosticOverflow"][key], true);
+            if gaps {
+                assert_eq!(state["gapCoverage"], "legacyUnknown");
+            }
+            assert!(
+                state["faults"]
+                    .as_array()
+                    .expect("faults")
+                    .contains(&json!(if gaps {
+                        "missingFinalUsage"
+                    } else {
+                        "responseReplayConflict"
+                    }))
+            );
+        }
     }
 
     #[tokio::test]

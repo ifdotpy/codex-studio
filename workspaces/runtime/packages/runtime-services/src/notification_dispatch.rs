@@ -862,11 +862,19 @@ pub fn dispatch_notification_with_effects(
             for effect in &mut current {
                 if let NotificationPostCommit::Analytics {
                     usage_conflict: rejected,
-                    ledger_since: None,
+                    ledger_since,
                     ..
                 } = effect
                 {
                     *rejected = usage_conflict.clone();
+                    *ledger_since = if kind == "thread/tokenUsage/updated" {
+                        studio_runtime_store::budget::BudgetRepository::ledger_since(
+                            transaction,
+                            agent_id,
+                        )?
+                    } else {
+                        studio_runtime_schema::usage::ledger::LedgerEpoch::Current
+                    };
                 }
                 if let NotificationPostCommit::TokenRateAssociation(observation) = effect {
                     enrich_association(transaction, agent_id, observation)?;
