@@ -18,6 +18,14 @@ export const JAVASCRIPT_EXCEPTIONS = [
     purpose: "Rust include_str! embeds these WebView bytes unchanged.",
   },
   {
+    file: "workspaces/client/apps/native/src-tauri/src/ios_diag.js",
+    purpose: "Rust include_str! embeds these WebView bytes unchanged.",
+  },
+  {
+    file: "workspaces/client/apps/native/src-tauri/src/ios_viewport.js",
+    purpose: "Rust include_str! embeds these WebView bytes unchanged.",
+  },
+  {
     file: "workspaces/client/apps/web/public/studio-startup.js",
     purpose: "Browser startup script is served unchanged.",
   },

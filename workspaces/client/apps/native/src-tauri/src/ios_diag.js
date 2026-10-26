@@ -1,6 +1,7 @@
+// @ts-check
 // Diagnostic geometry sample for STUDIO_SHELL_DIAG=1 (ios_shell.rs).
 (() => {
-  const rect = (node) => {
+  const rect = (/** @type {Element | null} */ node) => {
     if (!node) return null;
     const r = node.getBoundingClientRect();
     return [r.x, r.y, r.width, r.height].map((v) => Math.round(v * 10) / 10);
@@ -26,10 +27,10 @@
     nativeVars: ["top", "right", "bottom", "left"].map((s) =>
       html.style.getPropertyValue(`--native-safe-${s}`),
     ),
-    shell: window.__studioNativeViewport?.state ?? null,
-    attrs: [...html.attributes]
-      .map((a) => a.name)
-      .filter((n) => n.startsWith("data-")),
+    shell: /** @type {any} */ (window).__studioNativeViewport?.state ?? null,
+    attrs: Array.from(html.attributes, (a) => a.name).filter((n) =>
+      n.startsWith("data-"),
+    ),
     inlineStyle: html.getAttribute("style"),
     root: rect(root),
     rootPadding: style ? style.padding : null,
