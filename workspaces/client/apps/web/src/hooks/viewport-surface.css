@@ -53,9 +53,10 @@ html body #root {
   padding-left: var(--viewport-safe-left);
 }
 
-/* Native shell, portrait top status strip (mobileViewport.ts): the page runs
-   under the strip; the edge rail floats in it beside the clock. */
-html[data-viewport-top-strip] {
+/* Native shell, portrait top status strip (mobileViewport.ts): while the
+   edge rail floats in the strip beside the clock, the page runs under it.
+   Pages without the rail (no open chat) keep the strip as the top inset. */
+html[data-viewport-top-strip]:has(> body > .edge-rail[data-side="top"]) {
   --viewport-device-safe-top: 0px;
 }
 
