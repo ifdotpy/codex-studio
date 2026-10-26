@@ -1,5 +1,4 @@
 import type { Agent } from "../../src/types.ts";
-import type { WorkerModelInfo } from "../../src/components/agents/WorkerModelPicker.tsx";
 import type { GetOptions } from "../../src/api.ts";
 import type { PostBody, PostResult } from "../../src/apiTypes.ts";
 import {
@@ -99,19 +98,16 @@ const initial: Agent = {
   yoloMode: false,
   nextTurnSettingsSupported: true,
 };
-const models: WorkerModelInfo[] = [
-  "gpt-6-astra",
-  "gpt-5.6-sol",
-  "gpt-5.6-luna",
-  "gpt-6-luna",
-].map((model) => ({
-  model,
-  supportedReasoningEfforts: ["low", "medium", "high", "max"].map(
-    (reasoningEffort) => ({ reasoningEffort }),
-  ),
-  serviceTiers: [{ id: "priority" }],
-  availableAccessPrograms: { cyber: ["standard", "daybreakBlue"] },
-}));
+const models = ["gpt-6-astra", "gpt-5.6-sol", "gpt-5.6-luna", "gpt-6-luna"].map(
+  (model) => ({
+    model,
+    supportedReasoningEfforts: ["low", "medium", "high", "max"].map(
+      (reasoningEffort) => ({ reasoningEffort }),
+    ),
+    serviceTiers: [{ id: "priority" }],
+    availableAccessPrograms: { cyber: ["standard", "daybreakBlue"] },
+  }),
+);
 window.canonicalSettingsFixture = {
   ready: false,
   required,

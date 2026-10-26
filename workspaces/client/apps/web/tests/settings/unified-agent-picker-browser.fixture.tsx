@@ -86,8 +86,8 @@ const codex = ["gpt-6-astra", "gpt-6-luna"].map((model, i) => ({
 const claudeRow = (
   model: string,
   displayName: string,
-  extra: Partial<WorkerModelInfo>,
-): WorkerModelInfo => ({
+  extra: Partial<Pick<WorkerModelInfo, "isDefault" | "resolvedModel">>,
+): WorkerModelInfo & components["schemas"]["ProviderModel"] => ({
   model,
   displayName,
   provider: "claude",
@@ -148,7 +148,7 @@ window.fetch = async (input, options) => {
     const key = u.searchParams.get("account_key"),
       i = Number(key?.split("-")[1]);
     result = {
-      accountKey: key,
+      accountKey: key || "",
       at: Date.now() / 1000,
       data: {
         rateLimits: {
@@ -160,7 +160,7 @@ window.fetch = async (input, options) => {
           },
         },
       },
-    };
+    } satisfies components["schemas"]["ModelCatalogResponse"];
   } else if (u.pathname === "/api/models") {
     result = {
       data: u.searchParams.get("workers")
@@ -170,7 +170,7 @@ window.fetch = async (input, options) => {
         : Number(u.searchParams.get("account_key")?.split("-")[1]) >= 4
           ? claude
           : codex,
-    };
+    } satisfies components["schemas"]["ModelCatalogResponse"];
   } else if (requestOptions?.method === "POST") {
     if (u.pathname === "/api/conversation") {
       const body = fixturePostBody<"/api/conversation">(requestOptions.body);

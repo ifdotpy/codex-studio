@@ -19,7 +19,7 @@ export function fixtureAccount(
   return Object.assign(
     {
       home: "",
-      source: "Codex",
+      source: "",
       provider: "codex" as const,
       status: "ready" as const,
     },

@@ -1,5 +1,5 @@
+import type { components } from "../../src/generated/api.ts";
 import type { Agent } from "../../src/types.ts";
-import type { WorkerModelInfo } from "../../src/components/agents/WorkerModelPicker.tsx";
 import type { PostBody, GetResult } from "../../src/apiTypes.ts";
 import { fixtureSnapshot } from "../fixtures/snapshot.ts";
 import {
@@ -40,7 +40,7 @@ const names = [
   "gpt-5.6-terra",
   "gpt-6-sol",
 ];
-const models: WorkerModelInfo[] = names.map((model, index) => ({
+const models = names.map((model, index) => ({
   model,
   provider: "codex",
   isDefault: !index,
@@ -113,7 +113,7 @@ window.fetch = async (input, options) => {
   if (u.pathname === "/api/limits") {
     const key = u.searchParams.get("account_key");
     result = {
-      accountKey: key,
+      accountKey: key || "",
       at: Date.now() / 1000,
       data: {
         rateLimits: {
@@ -124,15 +124,18 @@ window.fetch = async (input, options) => {
           },
         },
       },
-    };
-  } else if (u.pathname === "/api/models") result = { data: models };
+    } satisfies components["schemas"]["ModelCatalogResponse"];
+  } else if (u.pathname === "/api/models")
+    result = {
+      data: models,
+    } satisfies components["schemas"]["ModelCatalogResponse"];
   else if (u.pathname === "/api/desktop")
     result = {
       browser: {
         enabled: false,
         reason: "Browser access is disabled for this account.",
       },
-    };
+    } satisfies Pick<components["schemas"]["DesktopResponse"], "browser">;
   else if (u.pathname === "/api/accounts") result = accountsData;
   else if (u.pathname === "/api/conversation") {
     const body = fixturePostBody<"/api/conversation">(requestOptions?.body);
