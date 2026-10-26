@@ -33,6 +33,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
+import type { ResourceProgress } from "../src/sync/subscriptions/contracts.ts";
 import type { Json, JsonInput, JsonInputOf } from "../src/apiTypes.ts";
 import type { OpenAPI3 } from "openapi-typescript";
 import { fixtureStateDirectory as rustFixtureStateDirectory } from "./fixtures/rust-ui-fixture.ts";
@@ -1921,23 +1922,12 @@ export function handleEntitySyncFixtureRequest(
     workspaceId: string;
     unixSocket?: boolean;
     versionedResources?: boolean;
-    epoch?: string;
+    epoch?: string | undefined;
     onPull?: () => void;
-    subscriptionUpdate?: import("../src/generated/api.ts").components["schemas"]["SyncSubscriptionRequest"];
-    progress?: (
-      resource: ResourceRef,
-    ) =>
-      | (
-          | Pick<
-              import("../src/generated/api.ts").components["schemas"]["AuthProgressEvent"],
-              "resource" | "value"
-            >
-          | Pick<
-              import("../src/generated/api.ts").components["schemas"]["VaultReadinessEvent"],
-              "resource" | "value"
-            >
-        )
+    subscriptionUpdate?:
+      | import("../src/generated/api.ts").components["schemas"]["SyncSubscriptionRequest"]
       | undefined;
+    progress?: (resource: ResourceRef) => ResourceProgress | undefined;
     onStreamReady?: (
       notify: (
         resources: ResourceRef[],
