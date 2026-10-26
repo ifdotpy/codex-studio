@@ -1,25 +1,40 @@
-const fs = require("node:fs");
-const path = require("node:path");
-const { atomicJSON } = require("./recovery.cjs");
+import type { Rectangle, Display, BrowserWindow, App } from "electron";
+export type SavedWindowState = {
+  version?: number;
+  bounds?: Rectangle;
+  maximized?: boolean;
+};
+import * as fs from "node:fs";
+import * as path from "node:path";
+import { atomicJSON } from "./recovery.ts";
 
-function rectangle(value) {
+function rectangle(value: unknown): value is Rectangle {
+  if (!value || typeof value !== "object") return false;
+  const fields = value as Record<string, unknown>;
   return (
     value &&
     ["x", "y", "width", "height"].every((key) =>
-      Number.isSafeInteger(value[key]),
+      Number.isSafeInteger(fields[key]),
     ) &&
-    value.width > 0 &&
-    value.height > 0
+    typeof fields.width === "number" &&
+    fields.width > 0 &&
+    typeof fields.height === "number" &&
+    fields.height > 0
   );
 }
-function windowState(saved, displays) {
+function windowState(
+  saved: SavedWindowState | undefined,
+  displays: Pick<Display, "workArea">[],
+) {
   const areas = displays.map((display) => display.workArea).filter(rectangle);
-  if (!areas.length) throw new Error("No display work area is available.");
+  const first = areas[0];
+  if (!first) throw new Error("No display work area is available.");
   const valid = saved?.version === 1 && rectangle(saved.bounds);
-  const bounds = valid
-    ? saved.bounds
-    : { x: areas[0].x, y: areas[0].y, width: 1440, height: 960 };
-  const overlap = (area) =>
+  const bounds =
+    valid && saved?.bounds
+      ? saved.bounds
+      : { x: first.x, y: first.y, width: 1440, height: 960 };
+  const overlap = (area: Rectangle) =>
     Math.max(
       0,
       Math.min(area.x + area.width, bounds.x + bounds.width) -
@@ -30,7 +45,7 @@ function windowState(saved, displays) {
       Math.min(area.y + area.height, bounds.y + bounds.height) -
         Math.max(area.y, bounds.y),
     );
-  const distance = (area) => {
+  const distance = (area: Rectangle) => {
     const x = bounds.x + bounds.width / 2,
       y = bounds.y + bounds.height / 2;
     return (
@@ -39,10 +54,10 @@ function windowState(saved, displays) {
     );
   };
   const area = valid
-    ? [...areas].sort(
+    ? ([...areas].sort(
         (a, b) => overlap(b) - overlap(a) || distance(a) - distance(b),
-      )[0]
-    : areas[0];
+      )[0] ?? first)
+    : first;
   const minWidth = Math.min(420, area.width),
     minHeight = Math.min(600, area.height);
   const width = Math.max(minWidth, Math.min(bounds.width, area.width));
@@ -63,21 +78,40 @@ function windowState(saved, displays) {
     maximized: valid && saved.maximized === true,
   };
 }
-function loadWindowState(profile, displays) {
-  let saved;
+function loadWindowState(
+  profile: string,
+  displays: Pick<Display, "workArea">[],
+) {
+  let saved: SavedWindowState | undefined;
   try {
     saved = JSON.parse(
       fs.readFileSync(path.join(profile, "window-state.json"), "utf8"),
     );
-  } catch (error) {
+  } catch (caughterror) {
+    if (!(caughterror instanceof Error)) throw caughterror;
+    const error: NodeJS.ErrnoException = caughterror;
     if (error.code !== "ENOENT")
       console.error("Cannot read saved window bounds:", error.message);
   }
   return windowState(saved, displays);
 }
-function trackWindowState(win, app, profile, initial, { hidden = false } = {}) {
+function trackWindowState(
+  win: Pick<
+    BrowserWindow,
+    | "isDestroyed"
+    | "isFullScreen"
+    | "isMaximized"
+    | "getNormalBounds"
+    | "on"
+    | "maximize"
+  >,
+  app: Pick<App, "on" | "removeListener">,
+  profile: string,
+  initial: ReturnType<typeof windowState>,
+  { hidden = false } = {},
+) {
   const filename = path.join(profile, "window-state.json");
-  let timer;
+  let timer: ReturnType<typeof setTimeout> | undefined;
   let maximized = initial.maximized;
   const save = () => {
     clearTimeout(timer);
@@ -88,21 +122,20 @@ function trackWindowState(win, app, profile, initial, { hidden = false } = {}) {
     if (!rectangle(bounds)) return;
     try {
       atomicJSON(filename, { version: 1, bounds, maximized });
-    } catch (error) {
+    } catch (caughterror) {
+      if (!(caughterror instanceof Error)) throw caughterror;
+      const error: NodeJS.ErrnoException = caughterror;
       console.error("Cannot save window bounds:", error.message);
     }
   };
   const schedule = () => {
     if (!timer) timer = setTimeout(save, 100);
   };
-  for (const event of [
-    "move",
-    "resize",
-    "maximize",
-    "unmaximize",
-    "leave-full-screen",
-  ])
-    win.on(event, schedule);
+  win.on("move", schedule);
+  win.on("resize", schedule);
+  win.on("maximize", schedule);
+  win.on("unmaximize", schedule);
+  win.on("leave-full-screen", schedule);
   win.on("close", save);
   app.on("before-quit", save);
   win.on("closed", () => {
@@ -117,4 +150,4 @@ function trackWindowState(win, app, profile, initial, { hidden = false } = {}) {
     },
   };
 }
-module.exports = { windowState, loadWindowState, trackWindowState };
+export { windowState, loadWindowState, trackWindowState };

@@ -1,4 +1,4 @@
-function serverFrameHost(id) {
+function serverFrameHost(id: string) {
   const alphabet = "abcdefghijklmnopqrstuvwxyz234567";
   let bits = 0,
     value = 0,
@@ -12,12 +12,16 @@ function serverFrameHost(id) {
     }
   }
   if (bits) encoded += alphabet[(value << (5 - bits)) & 31];
-  return "studio-" + encoded.match(/.{1,50}/g).join(".") + ".localhost";
+  return "studio-" + encoded.match(/.{1,50}/g)?.join(".") + ".localhost";
 }
-function frameOwner(url, assetsOrigin, shellOrigin) {
+function frameOwner(
+  url: string | undefined,
+  assetsOrigin: string | undefined,
+  shellOrigin: string,
+) {
   try {
-    const value = new URL(url);
-    const base = new URL(assetsOrigin);
+    const value = new URL(url ?? "");
+    const base = new URL(assetsOrigin ?? "");
     const owner = value.searchParams.get("studio-server");
     if (
       !/^[a-zA-Z0-9_-]{1,128}$/.test(owner || "") ||
@@ -27,6 +31,7 @@ function frameOwner(url, assetsOrigin, shellOrigin) {
       value.password
     )
       return;
+    if (owner === null) return;
     const host = serverFrameHost(owner);
     if (
       value.protocol !== base.protocol ||
@@ -39,7 +44,7 @@ function frameOwner(url, assetsOrigin, shellOrigin) {
     if (
       navigation.length > 1 ||
       (navigation.length === 1 &&
-        !["classic", "combined"].includes(navigation[0]))
+        !["classic", "combined"].includes(navigation[0] ?? ""))
     )
       return;
     if (
@@ -58,4 +63,4 @@ function frameOwner(url, assetsOrigin, shellOrigin) {
     return owner;
   } catch {}
 }
-module.exports = { frameOwner, serverFrameHost };
+export { frameOwner, serverFrameHost };

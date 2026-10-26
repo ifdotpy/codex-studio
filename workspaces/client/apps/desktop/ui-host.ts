@@ -1,7 +1,7 @@
-const http = require("node:http");
-const fs = require("node:fs/promises");
-const path = require("node:path");
-const contentTypes = {
+import * as http from "node:http";
+import * as fs from "node:fs/promises";
+import * as path from "node:path";
+const contentTypes: Record<string, string> = {
   ".html": "text/html; charset=utf-8",
   ".js": "text/javascript; charset=utf-8",
   ".css": "text/css; charset=utf-8",
@@ -12,7 +12,13 @@ const contentTypes = {
   ".ico": "image/x-icon",
   ".woff2": "font/woff2",
 };
-async function startUiHost({ resources, port = 4621 }) {
+async function startUiHost({
+  resources,
+  port = 4621,
+}: {
+  resources: string;
+  port?: number;
+}) {
   if (!Number.isInteger(port) || port < 0 || port > 65535)
     throw new Error("Invalid UI port.");
   const packagedRoot = path.join(resources, "web/dist");
@@ -31,14 +37,14 @@ async function startUiHost({ resources, port = 4621 }) {
   const server = http.createServer(async (request, response) => {
     response.setHeader("X-Content-Type-Options", "nosniff");
     response.setHeader("Referrer-Policy", "same-origin");
-    const fail = (status) => {
+    const fail = (status: number) => {
       response.writeHead(status);
       response.end();
     };
-    if (!["GET", "HEAD"].includes(request.method)) return fail(405);
+    if (!["GET", "HEAD"].includes(request.method ?? "")) return fail(405);
     // The UI host owns no API or state. It never forwards a local API request.
     try {
-      const url = new URL(request.url, "http://127.0.0.1");
+      const url = new URL(request.url ?? "", "http://127.0.0.1");
       const pathname = decodeURIComponent(url.pathname);
       if (
         pathname.startsWith("/api/") ||
@@ -79,19 +85,22 @@ async function startUiHost({ resources, port = 4621 }) {
       fail(404);
     }
   });
-  await new Promise((resolve, reject) => {
+  await new Promise<void>((resolve, reject) => {
     server.once("error", reject);
     server.listen(port, "127.0.0.1", resolve);
   });
+  const address = server.address();
+  if (!address || typeof address === "string")
+    throw new Error("UI server has no TCP address.");
   return {
-    origin: `http://127.0.0.1:${server.address().port}`,
+    origin: `http://127.0.0.1:${address.port}`,
     pid: process.pid,
     owned: false,
     uiOnly: true,
     close: () =>
-      new Promise((resolve, reject) =>
+      new Promise<void>((resolve, reject) =>
         server.close((error) => (error ? reject(error) : resolve())),
       ),
   };
 }
-module.exports = { startUiHost };
+export { startUiHost };

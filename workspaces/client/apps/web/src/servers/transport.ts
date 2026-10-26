@@ -24,12 +24,8 @@ export type FrameSigningCredential = {
   clientId: string;
   privateKey: CryptoKey;
 };
-export type AutomaticPairApproval = {
-  localServerId: string;
-  serverId: string;
-  generation: string;
-  inviteRequestId: string;
-};
+import type { AutomaticPairApproval } from "../../../desktop/api.ts";
+export type { AutomaticPairApproval } from "../../../desktop/api.ts";
 export interface ServerCredentialAdapter {
   hasPairAttempt(attempt: PairAttemptIdentity): Promise<boolean>;
   pair(

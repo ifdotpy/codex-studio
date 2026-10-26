@@ -1,10 +1,23 @@
-const { execFile } = require("node:child_process");
-const { createInterface } = require("node:readline");
-const fs = require("node:fs/promises");
-const path = require("node:path");
-const os = require("node:os");
-function run(helper, args, { signal, onProgress }) {
-  return new Promise((resolve, reject) => {
+import type { DesktopBridge } from "./api.ts";
+export type SpeechProgress = Omit<
+  Parameters<Parameters<DesktopBridge["onTranscriptionProgress"]>[0]>[0],
+  "id"
+>;
+export type SpeechOptions = {
+  signal?: AbortSignal;
+  onProgress?: (value: SpeechProgress) => void;
+};
+import { execFile } from "node:child_process";
+import { createInterface } from "node:readline";
+import * as fs from "node:fs/promises";
+import * as path from "node:path";
+import * as os from "node:os";
+function run(
+  helper: string,
+  args: string[],
+  { signal, onProgress }: SpeechOptions,
+) {
+  return new Promise<{ stdout: string }>((resolve, reject) => {
     if (signal?.aborted)
       return reject(Error("Transcription canceled. Your recording is saved."));
     const child = execFile(
@@ -29,8 +42,12 @@ function run(helper, args, { signal, onProgress }) {
         resolve({ stdout });
       },
     );
-    const cancel = () => child.kill("SIGKILL");
+    const cancel = () => {
+      child.kill("SIGKILL");
+    };
     signal?.addEventListener("abort", cancel, { once: true });
+    if (!child.stderr)
+      throw new Error("Speech helper has no diagnostics stream.");
     const lines = createInterface({ input: child.stderr });
     let previous = -1;
     lines.on("line", (line) => {
@@ -55,7 +72,7 @@ function run(helper, args, { signal, onProgress }) {
     });
   });
 }
-function validateAudio(value) {
+function validateAudio(value: unknown) {
   if (
     !(value instanceof ArrayBuffer) ||
     value.byteLength < 46 ||
@@ -88,7 +105,14 @@ function validateAudio(value) {
     throw Error("Invalid WAV recording or duration exceeds 30 minutes.");
   return data;
 }
-async function transcribe({ audio, locale }, helper, options = {}) {
+async function transcribe(
+  {
+    audio,
+    locale,
+  }: Pick<Parameters<DesktopBridge["transcribeAudio"]>[0], "audio" | "locale">,
+  helper: string,
+  options: SpeechOptions = {},
+): ReturnType<DesktopBridge["transcribeAudio"]> {
   const data = validateAudio(audio);
   if (
     typeof locale !== "string" ||
@@ -109,12 +133,20 @@ async function transcribe({ audio, locale }, helper, options = {}) {
     let stdout;
     try {
       ({ stdout } = await run(helper, [file, locale], options));
-    } catch (error) {
+    } catch (caughterror) {
+      if (!(caughterror instanceof Error)) throw caughterror;
+      const error: NodeJS.ErrnoException = caughterror;
       if (options.signal?.aborted) throw error;
       try {
-        const detail = JSON.parse(error.stdout);
+        const detail: { error?: string } = JSON.parse(
+          "stdout" in error && typeof error.stdout === "string"
+            ? error.stdout
+            : "",
+        );
         if (detail.error) throw Error(detail.error);
-      } catch (parsed) {
+      } catch (caughtparsed) {
+        if (!(caughtparsed instanceof Error)) throw caughtparsed;
+        const parsed: NodeJS.ErrnoException = caughtparsed;
         if (parsed instanceof SyntaxError)
           throw Error(
             "Native transcription failed. Your recording is saved; retry transcription.",
@@ -122,7 +154,9 @@ async function transcribe({ audio, locale }, helper, options = {}) {
         throw parsed;
       }
     }
-    const result = JSON.parse(stdout);
+    const result: Awaited<ReturnType<DesktopBridge["transcribeAudio"]>> & {
+      error?: string;
+    } = JSON.parse(stdout ?? "");
     if (typeof result.text !== "string" || !result.text.trim())
       throw Error(
         result.error || "No speech was recognized. Your recording is saved.",
@@ -132,4 +166,4 @@ async function transcribe({ audio, locale }, helper, options = {}) {
     await fs.rm(directory, { recursive: true, force: true });
   }
 }
-module.exports = { transcribe, validateAudio };
+export { transcribe, validateAudio };
