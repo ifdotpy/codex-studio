@@ -2958,8 +2958,7 @@ async function handle(
     if (!turn) throw new Error("Unknown Claude turn");
     return page(turn.items) satisfies HandlerResult<typeof method>;
   }
-  if (request.method === "thread/list") {
-    const p = request.params;
+  if (method === "thread/list") {
     const page = await sessionStore.listMetadata(p.cursor, p.limit);
     return {
       data: page.data.map((metadata) => ({
