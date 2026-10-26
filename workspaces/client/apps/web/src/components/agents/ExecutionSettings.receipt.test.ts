@@ -174,7 +174,7 @@ function render(
   controls: ReturnType<typeof invoke>;
   model: string;
   label: string;
-  picker: undefined;
+  picker: Partial<ComponentProps<typeof AgentSetupPicker>>;
   triggerAgent: Agent;
 };
 function render(agent = initial, permissions = false) {
@@ -218,7 +218,7 @@ function render(agent = initial, permissions = false) {
       controls,
       model: "",
       label: "",
-      picker: undefined,
+      picker: {},
       triggerAgent: agent,
     };
   const picker = children(controls).find(
@@ -391,7 +391,7 @@ test("newer same-field SSE wins over an older in-flight model response", async (
 for (const changed of [
   { ...initial, id: "other-chat" },
   { ...initial, accountKey: "other" },
-]) {
+] as const) {
   test(`an old response cannot cross ${changed.id === initial.id ? "account" : "chat"} scope`, async () => {
     let finish!: (agent: Agent) => void;
     h.post.mockImplementation(
@@ -452,7 +452,6 @@ for (const status of ["running", "approval"] as const) {
     ).controls;
     const permission = children(controls).find(
       (node): node is ReactElement<SwitchFixtureProps> =>
-        isValidElement<SwitchFixtureProps>(node) &&
         node.props["aria-label"] === "Full access without approval",
     )!;
     expect(permission).toBeDefined();
@@ -476,7 +475,6 @@ for (const status of ["running", "approval"] as const) {
     const controls = invoke(element);
     const permission = children(controls).find(
       (node): node is ReactElement<SelectFixtureProps> =>
-        isValidElement<SelectFixtureProps>(node) &&
         node.props.label === "Permission mode",
     )!;
     expect(permission).toBeDefined();
@@ -496,7 +494,6 @@ test("Codex explains when Ask takes effect for a turn started with Full", () => 
   ).controls;
   const permission = children(controls).find(
     (node): node is ReactElement<SwitchFixtureProps> =>
-      isValidElement<SwitchFixtureProps>(node) &&
       node.props["aria-label"] === "Full access without approval",
   )!;
   expect(permission.props.description).toBe(
@@ -508,7 +505,6 @@ test("Codex describes the selected Ask mode truthfully", () => {
   const controls = render({ ...initial, yoloMode: false }, true).controls;
   const permission = children(controls).find(
     (node): node is ReactElement<SwitchFixtureProps> =>
-      isValidElement<SwitchFixtureProps>(node) &&
       node.props["aria-label"] === "Full access without approval",
   )!;
   expect(permission.props.description).toBe("Tools ask for permission.");
@@ -518,7 +514,6 @@ test("a superseding Ask intent prevents reuse of a lost Full request identity", 
   const control = (agent: Agent) =>
     children(render(agent, true).controls).find(
       (node): node is ReactElement<SwitchFixtureProps> =>
-        isValidElement<SwitchFixtureProps>(node) &&
         node.props["aria-label"] === "Full access without approval",
     )!;
   const ask = { ...initial, yoloMode: false };
@@ -539,7 +534,7 @@ test("a superseding Ask intent prevents reuse of a lost Full request identity", 
 for (const [first, opposite] of [
   ["bypassPermissions", "default"],
   ["default", "bypassPermissions"],
-]) {
+] as const) {
   test(`Claude replaces a superseded lost ${first} intent after reopening`, async () => {
     let persisted: Extract<
       PostBody<"/api/claude/session">,
@@ -571,7 +566,6 @@ for (const [first, opposite] of [
     const control = () =>
       children(invoke(element)).find(
         (node): node is ReactElement<SelectFixtureProps> =>
-          isValidElement<SelectFixtureProps>(node) &&
           node.props.label === "Permission mode",
       )!;
     const reopen = async () => {
@@ -633,7 +627,6 @@ test("a late Claude success preserves the newer unresolved permission request", 
   const control = () =>
     children(invoke(element)).find(
       (node): node is ReactElement<SelectFixtureProps> =>
-        isValidElement<SelectFixtureProps>(node) &&
         node.props.label === "Permission mode",
     )!;
   const reopen = async () => {

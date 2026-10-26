@@ -109,7 +109,7 @@ test("a metadata failure after the journal append restores persisted and live pe
   const stored = await createSessionStore(path.join(bridge.root, "state")).get(
     bridge.thread,
   );
-  assert.equal(stored.claude?.permissionMode, "default");
+  assert.equal(stored.claude!.permissionMode, "default");
   assert.equal(
     bridge.notes.some((n) => n.method === "fixture/permission"),
     false,

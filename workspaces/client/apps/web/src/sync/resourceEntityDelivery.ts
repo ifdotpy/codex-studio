@@ -8,17 +8,15 @@ const PERSIST_DEADLINE_MS = 1000;
 
 type QueuedFrame = {
   event: ResourceChangeEvent;
-  prerequisite?: Promise<boolean> | undefined;
-  operation?:
-    | {
-        persist(isCurrent: () => boolean): Promise<void>;
-        dispose(): void;
-      }
-    | undefined;
+  prerequisite?: Promise<boolean>;
+  operation?: {
+    persist(isCurrent: () => boolean): Promise<void>;
+    dispose(): void;
+  };
 };
 type Application = QueuedFrame & {
   cancelled: boolean;
-  release?: (() => void) | undefined;
+  release?: () => void;
 };
 
 /** One source's FIFO: persist each frame before publishing it. */
@@ -28,12 +26,12 @@ export class ResourceEntityDelivery {
   private running = false;
   private stopped = false;
 
-  private readonly persist: (
+  declare private readonly persist: (
     event: ResourceChangeEvent,
     isCurrent: () => boolean,
   ) => Promise<void>;
-  private readonly dispatch: (event: ResourceChangeEvent) => void;
-  private readonly failed:
+  declare private readonly dispatch: (event: ResourceChangeEvent) => void;
+  declare private readonly failed:
     | ((event: ResourceChangeEvent, error: unknown) => boolean | void)
     | undefined;
   constructor(
