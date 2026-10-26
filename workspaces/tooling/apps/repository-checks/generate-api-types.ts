@@ -144,16 +144,25 @@ try {
       "openapi-typescript output is missing the components export",
     );
   }
+  const recursiveJsonValue =
+    JSON.stringify(document.components?.schemas?.JsonValue)?.includes(
+      '"#/components/schemas/JsonValue"',
+    ) ?? false;
+  const declarations =
+    !rustOwned || recursiveJsonValue
+      ? `${normalizeRecursiveJsonValue(generated)}\n\n${JSON_VALUE_ALIAS}`
+      : generated;
   writeFileSync(
     output,
     rustOwned
-      ? `${generated}\n${Object.keys(document.components?.schemas ?? {})
+      ? `${declarations}\n${Object.keys(document.components?.schemas ?? {})
+          .filter((name) => name !== "JsonValue" || !recursiveJsonValue)
           .sort()
           .map(
             (name) => `export type ${name} = components["schemas"]["${name}"];`,
           )
           .join("\n")}\n`
-      : `${normalizeRecursiveJsonValue(generated)}\n\n${JSON_VALUE_ALIAS}${entityAliases(document)}\n`,
+      : `${declarations}${entityAliases(document)}\n`,
   );
   run("oxfmt", ["--write", `--config=${join(ROOT, ".oxfmtrc.json")}`, output]);
   process.stdout.write(readFileSync(output, "utf8"));
