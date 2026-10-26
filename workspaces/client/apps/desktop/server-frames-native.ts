@@ -33,6 +33,7 @@ try {
   await desktop.evaluate(
     ({ safeStorage }, { origin, destination }) => {
       safeStorage.isEncryptionAvailable = () => true;
+      // Complete the secure-storage fixture: the displayless host selects basic_text.
       safeStorage.getSelectedStorageBackend = () => "gnome_libsecret";
       safeStorage.encryptString = (value) => Buffer.from(value);
       safeStorage.decryptString = (bytes) => bytes.toString();
@@ -54,10 +55,6 @@ try {
     { origin: remote.invitation.origin, destination: remote.origin },
   );
   const page = await desktop.firstWindow();
-  await desktop.evaluate(({ BrowserWindow }) => {
-    for (const win of BrowserWindow.getAllWindows())
-      win.setBounds({ width: 1440, height: 960 });
-  });
   page.setDefaultTimeout(15000);
   assert.equal(
     await desktop.evaluate(({ BrowserWindow }) =>

@@ -25,10 +25,11 @@ try {
     },
   });
   const page = await desktop.firstWindow();
-  await desktop.evaluate(({ BrowserWindow }) => {
-    for (const win of BrowserWindow.getAllWindows())
-      win.setBounds({ width: 1440, height: 960 });
-  });
+  // Ozone headless reports a 1x1 display; the settings dialog has no visible height there.
+  if (hiddenElectronArguments.length)
+    await desktop.evaluate(({ BrowserWindow }) =>
+      BrowserWindow.getAllWindows()[0].setBounds({ width: 1440, height: 960 }),
+    );
   page.setDefaultTimeout(15000);
   const apiRequests: string[] = [];
   page.on("request", (request) => {
