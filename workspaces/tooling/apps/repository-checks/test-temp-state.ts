@@ -6,7 +6,7 @@ import path from "node:path";
 // than whole files, so adding another allocation or literal still fails.
 const fixturePaths = new URL("./test-temp-path-fixtures.json", import.meta.url);
 
-export function testSource(file, source) {
+export function testSource(file: string, source: string) {
   if (!/\.(rs|py|mjs|[cm]?[jt]sx?|sh)$/.test(file)) return "";
   if (
     /(?:^|\/)check-package-start\.mjs$|(^|\/)(tests?|fixtures|support)(\/|\.)|(^|\/)test[_-]|[._-]test[._-]|[_-](tests?|oracle|contract)\./.test(
@@ -21,9 +21,13 @@ export function testSource(file, source) {
   return "";
 }
 
-export function temporaryStateFindings(file, source, allowed = []) {
+export function temporaryStateFindings(
+  file: string,
+  source: string,
+  allowed: string[] = [],
+) {
   const code = testSource(file, source);
-  const findings = [];
+  const findings: string[] = [];
   if (/(?:\.|::)\s*(keep|into_path|disable_cleanup)\s*\(/.test(code))
     findings.push(
       `${file}: test temporary state must retain its cleanup owner`,
@@ -31,7 +35,8 @@ export function temporaryStateFindings(file, source, allowed = []) {
   if (file.endsWith(".rs")) {
     const resourceTypes = ["TempDir", "Child"];
     for (const match of code.matchAll(/struct\s+(\w+)\s*\{([^}]+)\}/g)) {
-      if (/\b(?:TempDir|Child)\b/.test(match[2])) resourceTypes.push(match[1]);
+      if (match[1] && /\b(?:TempDir|Child)\b/.test(match[2] ?? ""))
+        resourceTypes.push(match[1]);
     }
     for (const owner of resourceTypes) {
       if (
@@ -62,8 +67,10 @@ export function temporaryStateFindings(file, source, allowed = []) {
   return findings;
 }
 
-export function repositoryTemporaryStateFindings(root) {
-  const allowed = JSON.parse(readFileSync(fixturePaths, "utf8"));
+export function repositoryTemporaryStateFindings(root: string) {
+  const allowed: Record<string, string[]> = JSON.parse(
+    readFileSync(fixturePaths, "utf8"),
+  );
   const files = execFileSync("git", ["ls-files", "-z"], {
     cwd: root,
     encoding: "utf8",
