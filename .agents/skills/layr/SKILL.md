@@ -360,6 +360,13 @@ Use a saved view for a check of an exact stack. Its check applies to that view.
 Use `view_id` from the saved view JSON with the `views/` prefix.
 Routing patterns, ephemeral overlays, and folder overlays are unavailable in the older bundled CLI.
 
+## Studio development in lines
+
+For Studio work in layr lines (warm `target/`, gate result reuse, disk cleanup),
+read the "Developing in layr lines" section of `docs/testing.md` first.
+Studio lines need layr 0.4.0 or later. Use the state ID from
+`layr log --auto -n 1` to start a line with warm caches, not the line name.
+
 ## Diagnose a refusal and use a Git mirror
 
 `layr access check <user> <action>` explains a refused action. Work in your own

@@ -111,6 +111,64 @@ remain owned by their source rather than copied into this document. Rust corpora
 use isolated SQLite state and recorded fixtures; they do not claim live provider
 behavior. The full corpus recipe selects the expanded scenario matrices.
 
+## Developing in layr lines
+
+Studio development runs in layr lines (layr 0.4.0 or later). A line is a folder
+with a real `.git`, so git, just, cargo, and pnpm work in it.
+
+Make the project once:
+
+```sh
+export LAYR_ROOT=~/Projects/layr-store
+layr git clone git@github.com:ifdotpy/codex-studio.git studio
+```
+
+Start a line with a warm build:
+
+1. In a built line, run `layr save --caches`.
+2. Find the new automatic state: `layr log --auto -n 1`.
+3. Start the line from that state ID: `layr line new <name> <state-id>`.
+4. Enter it: `cd ../<name>`.
+
+Use the state ID, not the line name. On an unprotected line, `save --caches`
+puts the caches on an automatic state.
+`target/` (about 11 GB) is regenerable. Starting the line copies it as an APFS
+clone in 5 to 15 seconds. Cargo rebuilds only what changed.
+
+### Run the gates
+
+```sh
+nice -n 10 just test-fast
+nice -n 10 just test-comprehensive
+```
+
+Use `nice -n 10`, not `taskpolicy -b`. Background priority made the WASM build
+miss its 30-minute limit. On macOS, `just test-fast` takes 12.3 min cold, about
+4 min in a warm line after a code change, and 17 s after a docs-only change.
+
+### Test result cache
+
+- A step with declared inputs reuses its saved result while the git tree IDs of
+  its inputs stay the same. Shared inputs are the lockfiles, toolchain, justfile,
+  and test runner folder.
+- Uncommitted input changes always run the step. Failures are never saved.
+- Rust reuses results per crate. A crate runs again only when its folder or a
+  workspace crate it depends on changed.
+- Results live in `target/studio-test-results/` and travel with the warm build.
+- Code: `workspaces/tooling/apps/repository-checks/test-result-cache.mjs`.
+
+For the daily full run and before an install:
+
+```sh
+STUDIO_TEST_REUSE=0 just test-comprehensive
+```
+
+### Disk
+
+- Each line that rebuilds writes about 6 GB of new build output.
+- Delete a line you no longer need: `layr line delete <name> -D`. `-D` also
+  deletes unmerged work. Then run `layr gc`.
+
 ## Choose an evidence scope
 
 Use the root [`justfile`](../justfile) for the three independent scopes:
