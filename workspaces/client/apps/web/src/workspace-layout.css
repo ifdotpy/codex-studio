@@ -314,7 +314,7 @@
 }
 
 /* 60rem = --studio-form-max + --studio-team-size. Container conditions
-   cannot consume custom properties; TeamPanel.layout.test.mjs checks parity. */
+   cannot consume custom properties; TeamPanel.layout.test.ts checks parity. */
 @container workspace-frame (min-width: 60rem) {
   .workspace-frame > #team {
     display: flex;
