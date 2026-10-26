@@ -786,7 +786,7 @@ mod tests {
                 tx.execute(
                     "INSERT INTO runtime_agents(id,record) VALUES('pricing-team',?1)",
                     [
-                        json!({"id":"pricing-team","rootId":"pricing-team","isLead":true})
+                        json!({"id":"pricing-team","rootId":"pricing-team","isLead":true,"provider":studio_runtime_schema::ProviderKind::Codex})
                             .to_string(),
                     ],
                 )?;
@@ -950,7 +950,7 @@ mod tests {
                 for id in ["a", "b"] {
                     tx.execute(
                         "INSERT INTO runtime_agents(id,record) VALUES(?1,?2)",
-                        [id, &json!({"id":id,"rootId":id,"isLead":true}).to_string()],
+                        [id, &json!({"id":id,"rootId":id,"isLead":true,"provider":studio_runtime_schema::ProviderKind::Codex}).to_string()],
                     )?;
                 }
                 Ok(())
@@ -1465,7 +1465,7 @@ mod tests {
                 for id in ["a", "b"] {
                     tx.execute(
                         "INSERT INTO runtime_agents(id,record) VALUES(?1,?2)",
-                        [id, &json!({"id":id,"rootId":id,"isLead":true}).to_string()],
+                        [id, &json!({"id":id,"rootId":id,"isLead":true,"provider":studio_runtime_schema::ProviderKind::Codex}).to_string()],
                     )?;
                 }
                 Ok(())

@@ -229,6 +229,12 @@ pub(crate) async fn fixture() -> (
         .unwrap();
     let native = Arc::new(Native::default());
     let clock = SessionClock::default();
+    let mut resources = PreparationResources::bundled(
+        String::new(),
+        studio_runtime_services::model_catalog::ModelCatalogService::new(),
+    )
+    .unwrap();
+    resources.claude_account_pin = json!({"provider":studio_runtime_schema::ProviderKind::Claude});
     let worker = start_account_worker(
         StoreBridge::new(store.clone()).await.unwrap(),
         "account".into(),
@@ -247,11 +253,7 @@ pub(crate) async fn fixture() -> (
             request_id_prefix: None,
             recovered: vec![],
         },
-        PreparationResources::bundled(
-            String::new(),
-            studio_runtime_services::model_catalog::ModelCatalogService::new(),
-        )
-        .unwrap(),
+        resources,
     )
     .await
     .unwrap();
