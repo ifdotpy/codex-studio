@@ -14,7 +14,7 @@ pub(crate) async fn state() -> (tempfile::TempDir, RuntimeStore) {
     let root = tempfile::tempdir().expect("isolated state");
     let path = root.path().display().to_string();
     let store = RuntimeStore::open(Some(root.path())).await.expect("open");
-    let agent = json!({"id":"lead","rootId":"lead","epoch":3,"status":"idle","isLead":true,"autoWake":false,"accountKey":"source","threadId":"source-thread","cwd":path,"name":"Lead","model":"gpt-6-astra","accountTransferId":OP}).to_string();
+    let agent = json!({"provider":studio_runtime_schema::ProviderKind::Codex,"id":"lead","rootId":"lead","epoch":3,"status":"idle","isLead":true,"autoWake":false,"accountKey":"source","threadId":"source-thread","cwd":path,"name":"Lead","model":"gpt-6-astra","accountTransferId":OP}).to_string();
     let operation = json!({"id":OP,"leadId":"lead","targetAccountKey":"target","status":"pending","scope":"team","created":1.0,"members":{"lead":{"phase":"waiting","sourceAccountKey":"source","sourceThreadId":"source-thread","name":"Lead","provider":"codex","lazy":false}},"requests":{}}).to_string();
     store
         .transaction(move |tx| {

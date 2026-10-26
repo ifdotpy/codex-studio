@@ -1,4 +1,3 @@
-import { required } from "./componentTestFixtures";
 import { afterEach, expect, it, vi } from "vitest";
 import type { SidebarServices } from "./sidebar/services";
 const h = vi.hoisted(() => ({ effects: [] as Array<() => unknown> }));
@@ -75,7 +74,7 @@ it.each(["empty", "empty-group", "legacy", "pending"] as const)(
       expect(post).not.toHaveBeenCalled();
     else {
       expect(post).toHaveBeenCalledTimes(1);
-      expect(required(required(post.mock.calls[0])[1])).toEqual(
+      expect(post.mock.calls[0][1]).toEqual(
         pending?.body ?? expect.objectContaining({ groups, migration: true }),
       );
     }

@@ -2,6 +2,7 @@ import type { components } from "../web/src/generated/api.ts";
 import type {
   BrowserWindow as ElectronWindow,
   MediaAccessPermissionRequest,
+  PermissionRequest,
   MenuItem,
   WebContents,
   WebFrameMain,
@@ -603,7 +604,7 @@ async function nativeAction(
           if (
             url.origin !== backend.origin ||
             !url.pathname.startsWith("/api/") ||
-            !["GET", "POST", "HEAD"].includes(value.method)
+            !["GET", "POST", "HEAD"].includes(value.method!)
           )
             throw new Error("The request does not belong to this server.");
           response = await fetch(url, {
@@ -1140,7 +1141,12 @@ async function start() {
       ? microphoneOwner === undefined
       : new URL(url!).searchParams.get("studio-server") === microphoneOwner);
   win.webContents.session.setPermissionRequestHandler(
-    (contents, permission, callback, details) =>
+    (
+      contents,
+      permission,
+      callback,
+      details: PermissionRequest & Partial<MediaAccessPermissionRequest>,
+    ) =>
       callback(
         contents === win.webContents &&
           ((permission === "clipboard-sanitized-write" &&

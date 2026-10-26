@@ -1,25 +1,20 @@
 import { fixtureElement } from "./browser-helpers.ts";
 const mount1 = async () => {
-  window.entityFirstLoadRetryBrowserFixtureSnapshotMountedAt =
-    performance.now();
+  window.snapshotMountedAt = performance.now();
   const { useSnapshot } = await import("../../src/hooks.ts");
   const React = await import("react");
   const { createRoot } = await import("react-dom/client");
   const root = createRoot(fixtureElement("root"));
-  window.entityFirstLoadRetryBrowserFixtureUnmountSnapshot = () =>
-    root.unmount();
+  window.unmountSnapshot = () => root.unmount();
   root.render(
     React.createElement(function SnapshotHarness() {
-      window.entityFirstLoadRetryBrowserFixtureSnapshot = useSnapshot();
+      window.snapshot = useSnapshot();
       return React.createElement(
         "p",
         {
-          role: window.entityFirstLoadRetryBrowserFixtureSnapshot.error
-            ? "alert"
-            : "status",
+          role: window.snapshot.error ? "alert" : "status",
         },
-        window.entityFirstLoadRetryBrowserFixtureSnapshot.error ||
-          "Connecting to LAYR Studio…",
+        window.snapshot.error || "Connecting to LAYR Studio…",
       );
     }),
   );
@@ -33,10 +28,7 @@ declare global {
 
 declare global {
   interface Window {
-    entityFirstLoadRetryBrowserFixtureSnapshotMountedAt: number;
-    entityFirstLoadRetryBrowserFixtureUnmountSnapshot: () => void;
-    entityFirstLoadRetryBrowserFixtureSnapshot: ReturnType<
-      typeof import("../../src/hooks.ts").useSnapshot
-    >;
+    snapshotMountedAt: number;
+    unmountSnapshot: () => void;
   }
 }

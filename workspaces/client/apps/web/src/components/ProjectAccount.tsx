@@ -1,4 +1,5 @@
 import { accountCanStart, accountDisplayName } from "../accountName";
+import { providerLabel } from "../generated/providerKind.ts";
 import { newChatDefault, parseGroups } from "./accountPreference";
 import { TextInput } from "@mantine/core";
 import { AccountTiles } from "./AccountTiles";
@@ -294,9 +295,9 @@ export default function ProjectAccount({
       </form>
       <p className="project-settings-path" role="status">
         {previewAccount
-          ? `New chats start on ${accountDisplayName(previewAccount)} (${
-              previewAccount.provider === "claude" ? "Claude" : "Codex"
-            })${preview.model ? " with Opus 5.5 · Medium" : ""}.`
+          ? `New chats start on ${accountDisplayName(previewAccount)} (${providerLabel(
+              previewAccount.provider,
+            )})${preview.model ? " with Opus 5.5 · Medium" : ""}.`
           : "No account can start a new chat. Sign in to an account first."}
       </p>
       <form

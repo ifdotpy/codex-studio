@@ -18,7 +18,7 @@ pub fn corpus(root: &Path) -> Vec<Value> {
         "outputEventCount":0,"outputEventIds":[],"status":"running","created":2000.0,
         "exitCode":null,"tail":"","bytes":0,"interactive":false,"ruleId":null,"log":log,
         "operation":operation,"cancelRequested":false});
-    let actor = json!({"id":"agent","rootId":"agent","epoch":2,"autoWake":true,"status":"idle",
+    let actor = json!({"provider":studio_runtime_schema::ProviderKind::Codex,"id":"agent","rootId":"agent","epoch":2,"autoWake":true,"status":"idle",
         "cwd":cwd,"accountKey":"default"});
     let events = json!([{"id":format!("monitor:{id}"),"agent":"agent","kind":"monitor_exit",
         "text":{"id":id,"command":"printf marker","status":"completed","exitCode":0,"error":null,

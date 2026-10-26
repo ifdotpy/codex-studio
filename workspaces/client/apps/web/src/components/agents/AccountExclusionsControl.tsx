@@ -11,6 +11,10 @@ import {
   useAccountLimitView,
 } from "../AccountTiles";
 import type { Account, AccountsState } from "../Accounts";
+import {
+  PROVIDER_KINDS,
+  PROVIDER_LABELS,
+} from "../../generated/providerKind.ts";
 
 function EligibilityAccount({
   account,
@@ -108,9 +112,9 @@ export function AccountExclusionsControl({
         }}
       >
         <div className="execution-account-eligibility">
-          {["codex", "claude"].map((provider) => {
+          {PROVIDER_KINDS.map((provider) => {
             const grouped = accounts.accounts.filter(
-              (account) => (account.provider || "codex") === provider,
+              (account) => account.provider === provider,
             );
             return grouped.length ? (
               <section key={provider}>
@@ -122,7 +126,7 @@ export function AccountExclusionsControl({
                   fw={500}
                 >
                   <ProviderMark provider={provider} />
-                  {provider === "claude" ? "Claude" : "Codex"} {grouped.length}
+                  {PROVIDER_LABELS[provider]} {grouped.length}
                 </Text>
                 <div className="eligibility-provider-accounts">
                   {grouped.map((account) => (

@@ -6,7 +6,7 @@ import React, { useState } from "react";
 import { createRoot } from "react-dom/client";
 import { MantineProvider, Button } from "@mantine/core";
 import "@mantine/core/styles.css";
-import Usage from "../../src/components/Usage.tsx";
+import Usage, { type UsageAccount } from "../../src/components/Usage.tsx";
 import { NativeError } from "../../src/components/NativeNotice.tsx";
 import Accounts from "../../src/components/Accounts.tsx";
 import ClaudeProfile from "../../src/components/ClaudeProfile.tsx";
@@ -17,10 +17,10 @@ import "../../src/appearance.css";
 import { theme } from "../../src/theme.ts";
 declare global {
   interface Window {
-    limitsOrgFixture: { refresh: () => void; signedInAccount?: string };
+    refreshFixture: () => void;
+    signedInAccount: string | undefined;
   }
 }
-window.limitsOrgFixture = { refresh: () => {} };
 const expected = {
   name: "Research organization for the selected Claude profile",
   idSuffix: "12345678",
@@ -29,17 +29,21 @@ const observed = {
   name: "Another organization with a separate subscription",
   idSuffix: "87654321",
 };
-const account: Account = {
+// The base one-off account omits its home and source.
+function partialOrganizationAccount(
+  value: Omit<Account, "home" | "source">,
+): Account {
+  return value as Account;
+}
+const account = partialOrganizationAccount({
   id: "claude",
-  home: "",
-  source: "fixture",
   label: "Research",
   email: "research@example.test",
   provider: "claude",
   status: "changed",
   organization: expected,
   organizationMismatch: { expected, observed },
-};
+});
 const now = Date.now() / 1000;
 const agent: Agent = {
   id: "worker",
@@ -61,7 +65,7 @@ function Fixture() {
   const [screen, setScreen] = useState("limits");
   const [at, setAt] = useState(now);
   const [limitsOpen, setLimitsOpen] = useState(false);
-  window.limitsOrgFixture.refresh = () => setAt(Date.now() / 1000);
+  window.refreshFixture = () => setAt(Date.now() / 1000);
   const limits = {
     accountKey: "claude",
     at,
@@ -110,7 +114,7 @@ function Fixture() {
               <NativeError
                 agent={agent}
                 limits={limits}
-                refreshLimits={() => window.limitsOrgFixture.refresh()}
+                refreshLimits={() => window.refreshFixture()}
               />
             </div>
             <div
@@ -122,19 +126,18 @@ function Fixture() {
                 stateDir="fixture"
                 limits={limits}
                 accounts={[
-                  {
+                  partialOrganizationUsageAccount({
                     key: "claude",
                     provider: "claude",
                     label: "Research",
                     limits,
-                    loading: false,
-                    reload: async () => window.limitsOrgFixture.refresh(),
-                  },
+                    reload: async () => window.refreshFixture(),
+                  }),
                 ]}
                 accountLabel="Research"
                 opened={limitsOpen}
                 onChange={setLimitsOpen}
-                reload={async () => window.limitsOrgFixture.refresh()}
+                reload={async () => window.refreshFixture()}
               />
             </div>
           </>
@@ -143,27 +146,23 @@ function Fixture() {
             <AccountSignInNotice
               account={account}
               errors={[]}
-              onSignIn={(key) =>
-                (window.limitsOrgFixture.signedInAccount = key)
-              }
+              onSignIn={(key) => (window.signedInAccount = key)}
             />
             <Accounts
               managerOnly
-              state={{
+              state={partialOrganizationState({
                 data: {
                   accounts: [account],
                   archivedAccounts: [],
                   defaultAccountKey: "claude",
                   defaultAccountGroups: [],
                   logins: [],
-                  supportsDelete: false,
-                  supportsDisconnect: false,
                 },
                 setData: () => {},
-                refresh: async () => null,
+                refresh: async () => {},
                 error: "",
                 scope: "fixture",
-              }}
+              } satisfies PartialOrganizationState)}
               onError={() => {}}
             />
             <ClaudeProfile account={account} onSaved={() => {}} expanded />
@@ -174,3 +173,22 @@ function Fixture() {
   );
 }
 createRoot(fixtureRoot()).render(<Fixture />);
+
+// The base one-off usage account omits loading.
+function partialOrganizationUsageAccount(
+  value: Omit<UsageAccount, "loading">,
+): UsageAccount {
+  return value as UsageAccount;
+}
+type OrganizationState = React.ComponentProps<typeof Accounts>["state"];
+type PartialOrganizationState = Omit<OrganizationState, "data" | "refresh"> & {
+  data: Omit<
+    NonNullable<OrganizationState["data"]>,
+    "supportsDelete" | "supportsDisconnect"
+  >;
+  refresh: (...args: Parameters<OrganizationState["refresh"]>) => Promise<void>;
+};
+// Base state omits supportsDelete/supportsDisconnect; refresh resolves undefined.
+function partialOrganizationState(value: unknown): OrganizationState {
+  return value as OrganizationState;
+}

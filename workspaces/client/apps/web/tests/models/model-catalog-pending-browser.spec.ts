@@ -21,11 +21,6 @@ test("Model Catalog Entity Browser", async ({ page }) => {
     optimizeDeps: {
       include: ["react", "react-dom/client", "react/jsx-dev-runtime"],
     },
-    plugins: [
-      {
-        name: "model-entity-harness",
-      },
-    ],
     server: { host: "127.0.0.1", port: 0, hmr: false },
   });
   await server.listen();
@@ -53,27 +48,19 @@ test("Model Catalog Entity Browser", async ({ page }) => {
         serviceTiers: [],
         supportedReasoningEfforts: [],
       });
-      window.modelCatalogFixture = {
-        gets: 0,
-        mount: () => {
-          throw new Error("Catalog not mounted");
-        },
-        publish: () => {
-          throw new Error("Catalog not mounted");
-        },
-        snapshot: {
-          entitiesComplete: true,
-          runtime: {
-            modelsByAccount: {
-              default: [
-                model("default", "shared-model", false, 0, "codex"),
-                model("default", "hidden-model", true, 1, "codex"),
-              ],
-              secondary: [
-                model("secondary", "other-model", false, 0, "claude"),
-                model("secondary", "shared-model", false, 1, "claude"),
-              ],
-            },
+      window.modelGets = 0;
+      window.modelSnapshot = {
+        entitiesComplete: true,
+        runtime: {
+          modelsByAccount: {
+            default: [
+              model("default", "shared-model", false, 0, "codex"),
+              model("default", "hidden-model", true, 1, "codex"),
+            ],
+            secondary: [
+              model("secondary", "other-model", false, 0, "claude"),
+              model("secondary", "shared-model", false, 1, "claude"),
+            ],
           },
         },
       };
@@ -81,7 +68,7 @@ test("Model Catalog Entity Browser", async ({ page }) => {
         const request =
           input instanceof Request ? input : new Request(input, options);
         if (new URL(request.url).pathname === "/api/models") {
-          window.modelCatalogFixture.gets++;
+          window.modelGets++;
           return new Response(
             JSON.stringify({ data: [{ model: "refreshed-model" }] }),
             {
@@ -96,21 +83,19 @@ test("Model Catalog Entity Browser", async ({ page }) => {
       await import(fixturePath);
     }, apiSchemaHeaders());
 
-    await page.evaluate(() =>
-      window.modelCatalogFixture.mount("default", false),
-    );
+    await page.evaluate(() => window.mountCatalog("default", false));
     await expect
       .poll(() =>
         page.evaluate(() =>
-          window.modelCatalogFixture.result?.models.map((row) => row.model),
+          window.catalogResult!.models.map((row) => row.model),
         ),
       )
       .toEqual(["shared-model"]);
     await page.waitForTimeout(500);
-    expect(await page.evaluate(() => window.modelCatalogFixture.gets)).toBe(0);
+    expect(await page.evaluate(() => window.modelGets)).toBe(0);
 
     await page.evaluate(() =>
-      window.modelCatalogFixture.publish({
+      window.publishModelSnapshot({
         entitiesComplete: true,
         runtime: {
           modelsByAccount: {
@@ -130,20 +115,18 @@ test("Model Catalog Entity Browser", async ({ page }) => {
     await expect
       .poll(() =>
         page.evaluate(() =>
-          window.modelCatalogFixture.result?.models.map((row) => row.model),
+          window.catalogResult!.models.map((row) => row.model),
         ),
       )
       .toEqual(["updated-model"]);
-    expect(await page.evaluate(() => window.modelCatalogFixture.gets)).toBe(0);
+    expect(await page.evaluate(() => window.modelGets)).toBe(0);
 
-    await page.evaluate(() => window.modelCatalogFixture.result?.retry());
-    await expect
-      .poll(() => page.evaluate(() => window.modelCatalogFixture.gets))
-      .toBe(1);
+    await page.evaluate(() => window.catalogResult!.retry());
+    await expect.poll(() => page.evaluate(() => window.modelGets)).toBe(1);
     await expect
       .poll(() =>
         page.evaluate(() =>
-          window.modelCatalogFixture.result?.models.map((row) => row.model),
+          window.catalogResult!.models.map((row) => row.model),
         ),
       )
       .toEqual(["refreshed-model"]);

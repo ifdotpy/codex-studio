@@ -1,3 +1,5 @@
+import type { GetResult } from "../../src/apiTypes.ts";
+import type { FixturePullResponse } from "./helpers.ts";
 import { fixtureOrigin } from "./helpers.ts";
 // A saved partial first-page marker reconstructs its original baseline.
 import assert from "node:assert/strict";
@@ -19,8 +21,8 @@ test("sync initial resume browser", async ({ page }) => {
     const workspaceId = "a".repeat(32);
     const pulls: Record<string, string>[] = [];
     const live = Array.from({ length: 499 }, (_, index) => ({
-      op: "upsert",
-      collection: "agent",
+      op: "upsert" as const,
+      collection: "agent" as const,
       id: `worker-${index}`,
       value: { id: `worker-${index}`, name: `Worker ${index}` },
       seq: index + 2,
@@ -32,7 +34,12 @@ test("sync initial resume browser", async ({ page }) => {
       }),
     );
     await page.route("**/api/sync/identity", (route) =>
-      route.fulfill({ json: { workspaceId } }),
+      route.fulfill({
+        json: { workspaceId } satisfies Pick<
+          GetResult<"/api/sync/identity">,
+          "workspaceId"
+        >,
+      }),
     );
     await page.route("**/api/sync/stream**", (route) =>
       route.fulfill({
@@ -59,6 +66,18 @@ test("sync initial resume browser", async ({ page }) => {
           checkpoint: { seq: 601 },
           maxSeq: 601,
           initialHigh: 600,
+        } satisfies Omit<FixturePullResponse, "documents"> & {
+          documents: (Pick<
+            import("../playwright.ts").SyncEntity,
+            "op" | "collection" | "id" | "seq"
+          > & {
+            value: Partial<
+              Extract<
+                import("../playwright.ts").SyncEntity,
+                { collection: "agent"; op: "upsert" }
+              >["value"]
+            >;
+          })[];
         },
       });
     });
@@ -79,31 +98,25 @@ test("sync initial resume browser", async ({ page }) => {
         value: { id: "stale", name: "Old" },
         seq: 1,
       });
-      window.syncSyncInitialResumeBrowserWriteCalls = 0;
+      window.writeCalls = 0;
       const storage = db.projections.storageInstance;
       const write = storage.bulkWrite.bind(storage);
       storage.bulkWrite = (...args) => {
-        window.syncSyncInitialResumeBrowserWriteCalls++;
+        window.writeCalls++;
         return write(...args);
       };
-      window.syncSyncInitialResumeBrowserSnapshots = [];
-      window.syncSyncInitialResumeBrowserStop = client.subscribeStateProjection(
-        (value) => window.syncSyncInitialResumeBrowserSnapshots.push(value),
+      window.snapshots = [];
+      window.stop = client.subscribeStateProjection(
+        (value) => window.snapshots.push(value),
         (error) => {
-          if (error)
-            window.syncSyncInitialResumeBrowserSyncError = String(error);
+          if (error) window.syncError = String(error);
         },
       );
     });
     await page.waitForFunction(
-      () =>
-        window.syncSyncInitialResumeBrowserSnapshots.length > 0 ||
-        window.syncSyncInitialResumeBrowserSyncError,
+      () => window.snapshots.length > 0 || window.syncError,
     );
-    assert.equal(
-      await page.evaluate(() => window.syncSyncInitialResumeBrowserSyncError),
-      undefined,
-    );
+    assert.equal(await page.evaluate(() => window.syncError), undefined);
     assert.deepEqual(pulls[0], {
       scope: "state:entities:v1",
       after: "0",
@@ -113,16 +126,11 @@ test("sync initial resume browser", async ({ page }) => {
       reset: "1",
     });
     assert.equal(
-      await page.evaluate(
-        () =>
-          window.syncSyncInitialResumeBrowserSnapshots.at(-1)?.threads.length,
-      ),
+      await page.evaluate(() => window.snapshots.at(-1)?.threads.length),
       499,
     );
     assert.ok(
-      await page.evaluate(
-        () => window.syncSyncInitialResumeBrowserWriteCalls <= 5,
-      ),
+      await page.evaluate(() => window.writeCalls <= 5),
       "A 500-row page uses one storage batch plus checkpoint writes",
     );
     assert.equal(
@@ -134,12 +142,11 @@ test("sync initial resume browser", async ({ page }) => {
           ["entity:agent:stale"],
           true,
         );
-        if (!row) throw new Error("Missing stale projection");
         return row._deleted;
       }),
       true,
     );
-    await page.evaluate(() => window.syncSyncInitialResumeBrowserStop());
+    await page.evaluate(() => window.stop());
     console.log("initial sync resume browser passed");
   } finally {
     await server.close();
@@ -148,13 +155,13 @@ test("sync initial resume browser", async ({ page }) => {
 
 declare global {
   interface Window {
-    syncSyncInitialResumeBrowserWriteCalls: number;
-    syncSyncInitialResumeBrowserSnapshots: Parameters<
+    writeCalls: number;
+    snapshots: Parameters<
       Parameters<
         typeof import("../../src/sync/client.ts").subscribeStateProjection
       >[0]
     >[0][];
-    syncSyncInitialResumeBrowserSyncError: string | undefined;
-    syncSyncInitialResumeBrowserStop: () => void;
+    syncError: string | undefined;
+    stop: () => void;
   }
 }

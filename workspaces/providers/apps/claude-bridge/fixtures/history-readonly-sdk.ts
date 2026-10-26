@@ -4,5 +4,9 @@ export const query = () => {
 };
 export const tool = () => ({});
 export const createSdkMcpServer = (value: unknown) => value;
-export const getSessionMessages = async () => [];
-export const forkSession = async () => {};
+export const getSessionMessages = () => {
+  throw new Error("No SDK history read expected");
+};
+export const forkSession = () => {
+  throw new Error("No fork expected");
+};

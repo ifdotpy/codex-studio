@@ -5,6 +5,7 @@ use serde_json::Value;
 use std::collections::{BTreeSet, HashMap};
 use std::fs;
 use std::path::Path;
+use studio_runtime_schema::provider_kind::ProviderKind;
 use studio_runtime_store::analytics::{self as repo, AnalyticsRepository};
 use studio_runtime_store::sha256_hex;
 use studio_runtime_store::{Connection, RuntimeStore};
@@ -149,7 +150,7 @@ struct MessageInfo {
     #[serde(skip_serializing_if = "Option::is_none")]
     account_label: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    provider: Option<String>,
+    provider: Option<ProviderKind>,
     #[serde(skip_serializing_if = "Option::is_none")]
     turn_duration_ms: Option<serde_json::Number>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -200,18 +201,12 @@ fn message_info(
         result.effort = text(&turn, "effort").filter(|s| !s.is_empty());
         result.account_key = text(&turn, "accountKey").filter(|s| !s.is_empty());
         if let Some(key) = &result.account_key
-            && let Ok(raw) = fs::read(root.join("registry.json"))
+            && let Ok(raw) = fs::read(root.join("accounts/registry.json"))
             && let Ok(registry) = serde_json::from_slice::<Value>(&raw)
             && let Some(account) = registry.pointer(&format!("/accounts/{key}"))
         {
             result.account_label = text(account, "label");
-            if account.is_object() {
-                result.provider = if account.get("provider").is_some() {
-                    text(account, "provider")
-                } else {
-                    Some("codex".into())
-                };
-            }
+            result.provider = ProviderKind::of_record(account).ok();
         }
         result.turn_duration_ms = turn
             .get("nativeDurationMs")
@@ -244,13 +239,21 @@ fn message_info(
             result.model = text(&response, "model")
                 .filter(|s| !s.is_empty())
                 .or(result.model);
-            let provider = if result.provider.as_deref() == Some("claude") {
-                studio_runtime_schema::usage::UsageProvider::Claude
+            let observation = if response.get("studioUsage").is_some() {
+                studio_runtime_schema::usage::ledger::UsageLedgerRow::from_typed_analytics(
+                    &response,
+                )
+                .map(|ledger| ledger.studio_usage)
+                .ok()
             } else {
-                studio_runtime_schema::usage::UsageProvider::Codex
+                result.provider.and_then(|provider| {
+                    studio_runtime_schema::usage::parse_analytics_usage_row(provider, &response)
+                        .ok()
+                })
             };
-            if let Ok(studio_runtime_schema::usage::UsageObservation::Response { tokens, .. }) =
-                studio_runtime_schema::usage::parse_analytics_usage_row(provider, &response)
+            if let Some(studio_runtime_schema::usage::UsageObservation::Response {
+                tokens, ..
+            }) = observation
             {
                 result.tokens = Some(crate::analytics_capture::analytics_tokens(&tokens));
             }
@@ -263,4 +266,89 @@ fn signature(value: impl serde::Serialize) -> Result<String, serde_json::Error> 
     Ok(sha256_hex(
         python_json_compact(&serde_json::to_value(value)?).as_bytes(),
     ))
+}
+
+#[cfg(test)]
+mod provider_identity_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[tokio::test]
+    async fn provider_identity_message_info_preserves_typed_facts_and_canonical_account_metadata() {
+        let root = tempfile::tempdir().expect("state");
+        let store = RuntimeStore::open(Some(root.path())).await.expect("store");
+        let agent = json!({"id":"agent","name":"Agent","rootId":"agent","provider":"claude","accountKey":"account","threadId":"thread","turnId":"turn","status":"running","epoch":0});
+        let seed = agent.clone();
+        store
+            .transaction(move |tx| {
+                tx.execute(
+                    "INSERT INTO runtime_agents(id,record) VALUES('agent',?1)",
+                    [seed.to_string()],
+                )?;
+                Ok(())
+            })
+            .await
+            .expect("agent");
+        let usage = json!({"threadId":"thread","turnId":"turn","studioUsage":{"kind":"response","responseId":"response","model":"claude-test","evidence":"live","tokens":{"uncachedInput":12,"cacheReadInput":3,"cacheWriteInput":2,"output":7}}});
+        for (method, params) in [
+            (
+                "turn/started",
+                json!({"threadId":"thread","turn":{"id":"turn"}}),
+            ),
+            (
+                "item/completed",
+                json!({"threadId":"thread","turnId":"turn","item":{"id":"response","type":"agentMessage","text":"Answer"}}),
+            ),
+            ("thread/tokenUsage/updated", usage),
+        ] {
+            let prepared = crate::analytics_capture::PreparedCapture::event(
+                &agent,
+                method,
+                &params,
+                1.,
+                2.,
+                crate::analytics_capture::CaptureSource::Live,
+                Default::default(),
+            )
+            .expect("capture input");
+            crate::analytics_capture::capture(&store, prepared)
+                .await
+                .expect("capture");
+        }
+        fs::create_dir_all(root.path().join("accounts")).expect("accounts");
+        let registry = root.path().join("accounts/registry.json");
+        fs::write(
+            &registry,
+            json!({"version":studio_runtime_schema::shared_values::ACCOUNT_REGISTRY_FORMAT_VERSION,"accounts":{"account":{"provider":"claude","label":"Account"}}}).to_string(),
+        )
+        .expect("registry");
+        let options = AnalyticsOptions {
+            agent: Some("agent".into()),
+            item: Some("response".into()),
+            view: Some("message-info".into()),
+            ..Default::default()
+        };
+        let known = read(&store, &options).expect("message info");
+        assert_eq!(known["provider"], "claude");
+        assert_eq!(known["accountLabel"], "Account");
+        assert_eq!(known["tokens"]["totalTokens"], 24);
+        fs::write(
+            &registry,
+            json!({"version":studio_runtime_schema::shared_values::ACCOUNT_REGISTRY_FORMAT_VERSION,"accounts":{"account":{"provider":"future"}}}).to_string(),
+        )
+        .expect("unknown registry provider");
+        let unknown = read(&store, &options).expect("provider-neutral message info");
+        assert_eq!(unknown["tokens"], known["tokens"]);
+        assert!(unknown.get("provider").is_none());
+        store.analytics_transaction::<_, studio_runtime_store::StoreError>(|tx, _| {
+            tx.execute("UPDATE analytics_usage SET record=json_remove(record,'$.studioUsage','$.usageIdentity','$.receiptKey')", [])?;
+            Ok(())
+        }).await.expect("legacy evidence");
+        assert!(
+            read(&store, &options)
+                .expect("unknown legacy metadata")
+                .get("tokens")
+                .is_none()
+        );
+    }
 }

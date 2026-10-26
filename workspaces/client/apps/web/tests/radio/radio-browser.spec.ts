@@ -1,5 +1,5 @@
-import { required } from "../../src/components/componentTestFixtures.ts";
 import { createFixtureViteServer as createServer } from "../playwright.ts";
+import type { Room } from "../../src/types.ts";
 import type { PostBody } from "../../src/api.ts";
 import { fixturePostBody } from "../misc-fixture.ts";
 import { fixtureOrigin } from "../misc-fixture.ts";
@@ -38,7 +38,7 @@ test("Radio browser", async ({
             streams.add(res);
             res.on("close", () => streams.delete(res));
             const resources = JSON.parse(
-              new URL(req.url ?? "/", "http://localhost").searchParams.get(
+              new URL(req.url!, "http://localhost").searchParams.get(
                 "resources",
               ) || "[]",
             );
@@ -116,7 +116,7 @@ test("Radio browser", async ({
     );
     await page.route("**/snapshot", async (r) =>
       r.fulfill({
-        json: await page.evaluate(() => window.radioFixture.currentRoom),
+        json: await page.evaluate(() => window.currentRoom),
       }),
     );
     await page.route("**/api/peer-teams", async (r) => {
@@ -155,9 +155,9 @@ test("Radio browser", async ({
       .click();
     await page.getByRole("menuitem", { name: "Open shared chat" }).click();
     await page.getByRole("button", { name: "Retry", exact: true }).waitFor();
-    assert.equal(await page.evaluate(() => window.radioFixture.opened), null);
+    assert.equal(await page.evaluate(() => window.radioOpened), null);
     await page.getByRole("button", { name: "Retry", exact: true }).click();
-    await page.waitForFunction(() => window.radioFixture.opened === "radio:t");
+    await page.waitForFunction(() => window.radioOpened === "radio:t");
     assert.equal(requests.length, 2);
     assert.deepEqual(requests[0], requests[1]);
     requests.length = 0;
@@ -173,13 +173,28 @@ test("Radio browser", async ({
     await page.waitForFunction(() => !document.querySelector(".radio-retry"));
     assert.equal(requests.length, 2);
     assert.deepEqual(requests[0], requests[1]);
-    assert.ok(requests[0] && "rounds" in requests[0]);
-    assert.equal(requests[0].rounds, 1);
-    assert.equal(requests[0].target, "both");
+    assert.equal(
+      (
+        requests[0] as Extract<
+          PostBody<"/api/peer-teams">,
+          { radio_action: "send" }
+        >
+      ).rounds,
+      1,
+    );
+    assert.equal(
+      (
+        requests[0] as Extract<
+          PostBody<"/api/peer-teams">,
+          { radio_action: "send" }
+        >
+      ).target,
+      "both",
+    );
     mode = "held";
     await page.evaluate(() => {
-      window.radioFixture.holdRefresh = true;
-      window.radioFixture.refreshCalls = 0;
+      window.holdRefresh = true;
+      window.refreshCalls = 0;
     });
     await input.fill("Confirmed send");
     const beforeTranscript = transcriptReads;
@@ -187,56 +202,57 @@ test("Radio browser", async ({
     await expect.poll(() => typeof releaseResponse).toBe("function");
     assert.equal(await input.inputValue(), "Confirmed send");
     assert.equal(await input.isDisabled(), true);
-    assert.equal(
-      await page.evaluate(() => window.radioFixture.refreshCalls),
-      0,
-    );
+    assert.equal(await page.evaluate(() => window.refreshCalls), 0);
     const acceptedPosts = requests.length;
-    assert.ok(releaseResponse, "The fixture captured the held response");
-    releaseResponse();
+    releaseResponse!();
     await expect(input).toBeEnabled({ timeout: 2000 });
     assert.equal(await input.inputValue(), "");
     await expect.poll(() => transcriptReads).toBeGreaterThan(beforeTranscript);
     await page.waitForFunction(
-      () => typeof window.radioFixture.rejectRefresh === "function",
+      () => typeof window.rejectRefresh === "function",
     );
     await page.evaluate(() => {
-      window.radioFixture.holdRefresh = false;
-      const reject = window.radioFixture.rejectRefresh;
-      if (!reject) throw new Error("Missing held fixture refresh");
-      reject(Error("Refresh unavailable"));
+      window.holdRefresh = false;
+      const reject = window.rejectRefresh;
+
+      reject!(Error("Refresh unavailable"));
     });
     await page.waitForFunction(() =>
-      window.radioFixture.notifications?.includes("Refresh unavailable"),
+      window.notifications?.includes("Refresh unavailable"),
     );
     assert.equal(requests.length, acceptedPosts);
     assert.equal(
       await page.evaluate(() =>
         JSON.parse(
-          localStorage.getItem("studio-radio-command:radio-test:radio:t") ??
-            "null",
+          localStorage.getItem("studio-radio-command:radio-test:radio:t")!,
         ),
       ),
       null,
     );
     mode = "ok";
     await input.fill("Discuss tradeoffs");
-    await page.evaluate(() => (window.radioFixture.failRefresh = true));
+    await page.evaluate(() => (window.failRefresh = true));
     await page
       .getByRole("button", { name: "Discuss (4 replies)", exact: true })
       .click();
     await expect(input).toBeEnabled();
     await page.waitForFunction(() =>
-      window.radioFixture.notifications?.includes("Refresh failed"),
+      window.notifications?.includes("Refresh failed"),
     );
     assert.equal(await input.inputValue(), "");
     const posted = requests.length;
-    await page.evaluate(() => (window.radioFixture.failRefresh = false));
+    await page.evaluate(() => (window.failRefresh = false));
     assert.equal(await page.locator(".radio-retry").count(), 0);
     assert.equal(requests.length, posted);
-    const lastCommand1 = required(requests.at(-1));
-    assert.ok("rounds" in lastCommand1);
-    assert.equal(lastCommand1.rounds, 2);
+    assert.equal(
+      (
+        requests.at(-1)! as Extract<
+          PostBody<"/api/peer-teams">,
+          { radio_action: "send" }
+        >
+      ).rounds,
+      2,
+    );
     mode = "reject";
     await input.fill("Stale proposal");
     await page.getByRole("button", { name: "Send", exact: true }).click();
@@ -248,10 +264,10 @@ test("Radio browser", async ({
     assert.equal(await input.inputValue(), "Stale proposal");
     mode = "ok";
     await page.evaluate(() =>
-      window.radioFixture.setRoom({
-        ...window.radioFixture.currentRoom,
+      window.setRoom({
+        ...window.currentRoom,
         radio: {
-          ...window.radioFixture.radio(),
+          ...window.currentRoom.radio!,
           status: "speaking",
           speaker: "a",
         },
@@ -259,32 +275,56 @@ test("Radio browser", async ({
     );
     await page.getByRole("button", { name: "Reply next" }).click();
     await page.waitForFunction(() => !document.querySelector(".radio-retry"));
-    const lastCommand2 = required(requests.at(-1));
-    assert.ok("radio_action" in lastCommand2);
-    assert.equal(lastCommand2.radio_action, "pass");
-    const lastCommand3 = required(requests.at(-1));
-    assert.ok("target" in lastCommand3);
-    assert.equal(lastCommand3.target, "b");
+    assert.equal(
+      (
+        requests.at(-1)! as Extract<
+          PostBody<"/api/peer-teams">,
+          { radio_action: "pass" }
+        >
+      ).radio_action,
+      "pass",
+    );
+    assert.equal(
+      (
+        requests.at(-1)! as Extract<
+          PostBody<"/api/peer-teams">,
+          { radio_action: "pass" }
+        >
+      ).target,
+      "b",
+    );
     await page.getByRole("button", { name: "Stop", exact: true }).click();
     await page.waitForFunction(() => !document.querySelector(".radio-retry"));
-    const lastCommand4 = required(requests.at(-1));
-    assert.ok("radio_action" in lastCommand4);
-    assert.equal(lastCommand4.radio_action, "stop");
+    assert.equal(
+      (
+        requests.at(-1)! as Extract<
+          PostBody<"/api/peer-teams">,
+          { radio_action: "stop" }
+        >
+      ).radio_action,
+      "stop",
+    );
     assert.equal(
       await page.getByRole("button", { name: "Send", exact: true }).isEnabled(),
       true,
     );
     await page.getByRole("button", { name: "Send", exact: true }).click();
     await page.waitForFunction(() => !document.querySelector(".radio-retry"));
-    const lastCommand5 = required(requests.at(-1));
-    assert.ok("radio_action" in lastCommand5);
-    assert.equal(lastCommand5.radio_action, "send");
+    assert.equal(
+      (
+        requests.at(-1)! as Extract<
+          PostBody<"/api/peer-teams">,
+          { radio_action: "send" }
+        >
+      ).radio_action,
+      "send",
+    );
     await input.fill("New instruction");
     await page.evaluate(() =>
-      window.radioFixture.setRoom({
-        ...window.radioFixture.currentRoom,
+      window.setRoom({
+        ...window.currentRoom,
         radio: {
-          ...window.radioFixture.radio(),
+          ...window.currentRoom.radio!,
           status: "blocked",
           error: "Reply interrupted. Send a new message.",
           active: null,
@@ -297,19 +337,12 @@ test("Radio browser", async ({
       true,
     );
     await page.evaluate(() =>
-      window.radioFixture.setRoom({
-        ...window.radioFixture.currentRoom,
+      window.setRoom({
+        ...window.currentRoom,
         radio: {
-          ...window.radioFixture.radio(),
+          ...window.currentRoom.radio!,
           status: "blocked",
-          active: {
-            eventId: "e",
-            agentId: "a",
-            epoch: 0,
-            identity: [null, null, 0],
-            threadId: null,
-            through: 0,
-          },
+          active: radioActive(),
           speaker: "a",
         },
       }),
@@ -325,20 +358,13 @@ test("Radio browser", async ({
       true,
     );
     await page.evaluate(() =>
-      window.radioFixture.setRoom({
-        ...window.radioFixture.currentRoom,
+      window.setRoom({
+        ...window.currentRoom,
         radio: {
-          ...window.radioFixture.radio(),
+          ...window.currentRoom.radio!,
           status: "speaking",
           error: null,
-          active: {
-            eventId: "e",
-            agentId: "a",
-            epoch: 0,
-            identity: [null, null, 0],
-            threadId: null,
-            through: 0,
-          },
+          active: radioActive(),
           speaker: "a",
         },
       }),
@@ -347,7 +373,7 @@ test("Radio browser", async ({
       .getByRole("button", { name: "Options for team Research" })
       .click();
     await page.getByRole("menuitem", { name: "Open shared chat" }).click();
-    await page.waitForFunction(() => window.radioFixture.opened === "radio:t");
+    await page.waitForFunction(() => window.radioOpened === "radio:t");
     await page.getByRole("menu").waitFor({ state: "hidden" });
     for (const width of [1100, 375]) {
       await page.setViewportSize({ width, height: 850 });
@@ -363,8 +389,7 @@ test("Radio browser", async ({
           .evaluate(
             (e) =>
               e.getBoundingClientRect().bottom <=
-              (document.getElementById("root")?.getBoundingClientRect()
-                .bottom ?? 0),
+              document.getElementById("root")!.getBoundingClientRect().bottom,
           ),
         true,
       );
@@ -390,3 +415,10 @@ test("Radio browser", async ({
     await rm(cacheDir, { recursive: true, force: true });
   }
 });
+
+// The two base speaking/blocked fixtures omit the remaining active-turn metadata.
+function radioActive() {
+  return { eventId: "e", agentId: "a" } as NonNullable<
+    NonNullable<Room["radio"]>["active"]
+  >;
+}

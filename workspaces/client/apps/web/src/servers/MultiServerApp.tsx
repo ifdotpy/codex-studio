@@ -906,7 +906,7 @@ function MultiServerShell({
         <App />
       </ServerSettingsContext.Provider>
     );
-  const terminal = terminals[current];
+  const terminal = preferences.showTerminals ? terminals[current] : undefined;
   const terminalLayout =
     terminal && shellSidebarWidth > 0
       ? terminal.opened

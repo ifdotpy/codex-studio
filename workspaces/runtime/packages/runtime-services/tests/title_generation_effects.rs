@@ -12,6 +12,7 @@ use studio_runtime_services::title_generation::{
     TitleReceipt, TitleRequest, TitleRequestPort, TitleResult, WriteOutcome, admit_python_request,
     generate, generate_admitted, settle_catalog_failure,
 };
+use studio_runtime_store::provider_identity::TITLE_FINGERPRINT_PROVIDER_2026_10_26;
 use studio_runtime_store::{AgentRecord, AgentRepository, RuntimeStore};
 use tokio::sync::{mpsc, oneshot};
 
@@ -32,6 +33,428 @@ fn catalog() -> Value {
 }
 fn deadline() -> SystemTime {
     SystemTime::UNIX_EPOCH + Duration::from_secs(2_000_000_000)
+}
+
+async fn legacy_title_effect(
+    state: &str,
+    null_provider: bool,
+) -> (tempfile::TempDir, RuntimeStore) {
+    legacy_title_effect_changed(state, null_provider, None).await
+}
+
+async fn legacy_title_effect_changed(
+    state: &str,
+    null_provider: bool,
+    change: Option<&str>,
+) -> (tempfile::TempDir, RuntimeStore) {
+    let root = tempfile::tempdir().expect("legacy title state");
+    crate::media_auth_fixtures::write_state(
+        root.path(),
+        include_str!("title_generation/initial-state.json"),
+    );
+    {
+        let db = rusqlite::Connection::open(root.path().join("canvas.sqlite3"))
+            .expect("closed historical database");
+        db.execute(
+            if null_provider {
+                "UPDATE runtime_agents SET record=json_set(record,'$.provider',NULL)"
+            } else {
+                "UPDATE runtime_agents SET record=json_remove(record,'$.provider')"
+            },
+            [],
+        )
+        .expect("historical provider representation");
+        let agent: String = db
+            .query_row(
+                "SELECT record FROM runtime_agents WHERE id='title-agent'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("legacy agent");
+        let agent: Value = serde_json::from_str(&agent).expect("legacy agent JSON");
+        let items = db
+            .prepare("SELECT record FROM runtime_items ORDER BY created")
+            .expect("items")
+            .query_map([], |row| row.get::<_, String>(0))
+            .expect("item rows")
+            .map(|row| serde_json::from_str::<Value>(&row.expect("item")).expect("item JSON"))
+            .collect::<Vec<_>>();
+        let prompt =
+            studio_runtime_services::title_generation::title_prompt(&agent, &items, &items)
+                .expect("historical title prompt");
+        // Frozen v1 fingerprint preimage: absent and null providers both encoded JSON null.
+        let content = json!({"agent":{"id":"title-agent","epoch":1,"provider":null,
+            "model":"gpt-6","accountKey":"default"},"requestId":"legacy-title",
+            "model":"gpt-6-mini","effort":"low","prompt":prompt,"accountKey":"default"});
+        let fingerprint = data_encoding::HEXLOWER.encode(&sha2::Sha256::digest(
+            serde_json::to_vec(&content).expect("preimage"),
+        ));
+        let public_signature = data_encoding::HEXLOWER.encode(&sha2::Sha256::digest(
+            br#"{"chat": "title-agent", "name": null, "operation": "rename"}"#,
+        ));
+        let effect_id = format!(
+            "title-generation:{}",
+            data_encoding::HEXLOWER.encode(&sha2::Sha256::digest(b"legacy-title"))
+        );
+        db.execute(
+            "INSERT INTO runtime_operation_receipts(id,signature,result) VALUES(?1,?2,?3)",
+            rusqlite::params![
+                "legacy-title",
+                public_signature,
+                json!({"id":"title-agent","request_id":"legacy-title","status":"pending"})
+                    .to_string()
+            ],
+        )
+        .expect("historical public receipt");
+        db.execute("INSERT INTO runtime_operation_receipts(id,signature,result) VALUES(?1,?2,?3)",
+            rusqlite::params![effect_id,"title-generation-effect-v1",json!({"request_id":"legacy-title","agent_id":"title-agent","state":state,"epoch":1,"fingerprint":fingerprint,"title":"Saved legacy title"}).to_string()]).expect("historical effect");
+        if let Some(change) = change {
+            db.execute_batch(change)
+                .expect("historical input changed after request");
+        }
+    }
+    let store = RuntimeStore::open(Some(root.path()))
+        .await
+        .expect("dated provider migration");
+    (root, store)
+}
+
+#[tokio::test]
+async fn provider_identity_migration_preserves_not_sent_and_uncertain_effects() {
+    for state in ["not_sent", "pending", "unknown"] {
+        let (_root, store) = legacy_title_effect(state, false).await;
+        let (pending, finish) = admit_python_request(&store, "title-agent", "legacy-title")
+            .await
+            .expect("same HTTP rename admission");
+        assert_eq!(pending["status"], "pending");
+        assert_eq!(finish, state == "not_sent");
+        let port = FixedPort::new(if state == "not_sent" {
+            vec![TitleReceipt {
+                request_id: "legacy-title".into(),
+                agent_id: "title-agent".into(),
+                epoch: 1,
+                account_key: "default".into(),
+                outcome: WriteOutcome::Written,
+                title: Some("Safely retried title".into()),
+            }]
+        } else {
+            Vec::new()
+        });
+        let result = generate_admitted(
+            &store,
+            &port,
+            "title-agent",
+            &catalog(),
+            "legacy-title",
+            deadline(),
+        )
+        .await
+        .expect("migrated effect semantics");
+        if state == "not_sent" {
+            assert_eq!(
+                result,
+                TitleResult::Applied {
+                    title: "Safely retried title".into()
+                }
+            );
+            assert_eq!(port.calls.load(Ordering::SeqCst), 1);
+        } else {
+            assert_eq!(result, TitleResult::HeldUnknown);
+            assert_eq!(port.calls.load(Ordering::SeqCst), 0);
+            let effect = legacy_effect_record(&store);
+            assert_eq!(effect["state"], state);
+            assert_eq!(effect["title"], "Saved legacy title");
+            assert!(effect.get(TITLE_FINGERPRINT_PROVIDER_2026_10_26).is_none());
+            let canonical = persisted_snapshot(&store);
+            assert_eq!(
+                generate_admitted(
+                    &store,
+                    &port,
+                    "title-agent",
+                    &catalog(),
+                    "legacy-title",
+                    deadline()
+                )
+                .await
+                .expect("held canonical replay"),
+                TitleResult::HeldUnknown
+            );
+            assert_eq!(persisted_snapshot(&store), canonical);
+        }
+    }
+}
+
+fn legacy_effect_record(store: &RuntimeStore) -> Value {
+    let raw: String = store
+        .test_reader()
+        .expect("effect reader")
+        .query_row(
+            "SELECT result FROM runtime_operation_receipts WHERE signature=?1",
+            [studio_runtime_schema::shared_values::TITLE_EFFECT_SIGNATURE],
+            |row| row.get(0),
+        )
+        .expect("saved title effect");
+    serde_json::from_str(&raw).expect("effect JSON")
+}
+
+#[tokio::test]
+async fn provider_identity_migration_title_conversion_rolls_back_with_admission() {
+    let (_root, store) = legacy_title_effect("written", false).await;
+    store
+        .transaction(|tx| {
+            tx.execute_batch(
+                "CREATE TRIGGER fail_title_conversion AFTER UPDATE ON runtime_operation_receipts
+            BEGIN SELECT RAISE(ABORT,'conversion failpoint'); END",
+            )?;
+            Ok(())
+        })
+        .await
+        .expect("conversion failpoint");
+    let before = persisted_snapshot(&store);
+    let port = FixedPort::new(Vec::new());
+    assert!(
+        generate_admitted(
+            &store,
+            &port,
+            "title-agent",
+            &catalog(),
+            "legacy-title",
+            deadline()
+        )
+        .await
+        .is_err()
+    );
+    assert_eq!(persisted_snapshot(&store), before);
+    assert_eq!(port.calls.load(Ordering::SeqCst), 0);
+    store
+        .transaction(|tx| {
+            tx.execute_batch("DROP TRIGGER fail_title_conversion")?;
+            Ok(())
+        })
+        .await
+        .expect("remove conversion failpoint");
+    assert_eq!(
+        generate_admitted(
+            &store,
+            &port,
+            "title-agent",
+            &catalog(),
+            "legacy-title",
+            deadline()
+        )
+        .await
+        .expect("retry atomic conversion"),
+        TitleResult::Applied {
+            title: "Saved legacy title".into()
+        }
+    );
+    assert_eq!(port.calls.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn provider_identity_migration_rejects_provider_change_after_tagging() {
+    let (_root, store) = legacy_title_effect("written", true).await;
+    store
+        .transaction(|tx| {
+            tx.execute(
+                "UPDATE runtime_agents SET record=json_set(record,'$.provider','claude')",
+                [],
+            )?;
+            Ok(())
+        })
+        .await
+        .expect("provider changed after migration");
+    let before = persisted_snapshot(&store);
+    let port = FixedPort::new(Vec::new());
+    let catalog = json!({"data":[{"model":"claude-haiku"}]});
+    assert!(matches!(
+        generate_admitted(
+            &store,
+            &port,
+            "title-agent",
+            &catalog,
+            "legacy-title",
+            deadline()
+        )
+        .await,
+        Err(studio_runtime_services::title_generation::TitleError::Conflict)
+    ));
+    assert_eq!(persisted_snapshot(&store), before);
+    assert_eq!(port.calls.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn provider_identity_migration_keeps_changed_title_requests_in_conflict() {
+    for state in ["written", "not_sent", "pending", "unknown"] {
+        for (change, current_catalog) in [
+            (
+                Some(
+                    "UPDATE runtime_items SET record=json_set(record,'$.text','changed prompt') WHERE id='title-item-1'",
+                ),
+                catalog(),
+            ),
+            (
+                Some(
+                    "UPDATE runtime_agents SET record=json_set(record,'$.model','changed-chat-model')",
+                ),
+                catalog(),
+            ),
+            (
+                Some(
+                    "UPDATE runtime_agents SET record=json_set(record,'$.accountKey','changed-account')",
+                ),
+                catalog(),
+            ),
+            (
+                Some("UPDATE runtime_agents SET record=json_set(record,'$.epoch',2)"),
+                catalog(),
+            ),
+            (
+                None,
+                json!({"data":[{"model":"changed-mini","supportedReasoningEfforts":[{"reasoningEffort":"low"}]}]}),
+            ),
+            (None, json!({"data":[{"model":"gpt-6-mini"}]})),
+        ] {
+            let (_root, store) = legacy_title_effect_changed(state, true, change).await;
+            let before = persisted_snapshot(&store);
+            let port = FixedPort::new(Vec::new());
+            assert!(
+                matches!(
+                    generate_admitted(
+                        &store,
+                        &port,
+                        "title-agent",
+                        &current_catalog,
+                        "legacy-title",
+                        deadline()
+                    )
+                    .await,
+                    Err(studio_runtime_services::title_generation::TitleError::Conflict)
+                ),
+                "{state}, {change:?}, {current_catalog}"
+            );
+            assert_eq!(port.calls.load(Ordering::SeqCst), 0);
+            assert_eq!(
+                persisted_snapshot(&store),
+                before,
+                "conflict preserves receipts and provenance"
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn provider_identity_migration_finishes_saved_written_title_without_resend() {
+    for null_provider in [false, true] {
+        let (root, store) = legacy_title_effect("written", null_provider).await;
+        let mut original = legacy_effect_record(&store);
+        assert_eq!(
+            original.get(TITLE_FINGERPRINT_PROVIDER_2026_10_26),
+            Some(&Value::Null)
+        );
+        let (pending, finish) = admit_python_request(&store, "title-agent", "legacy-title")
+            .await
+            .expect("HTTP rename replay admission");
+        assert_eq!(pending["status"], "pending");
+        assert!(finish);
+        let port = FixedPort::new(Vec::new());
+        assert_eq!(
+            generate_admitted(
+                &store,
+                &port,
+                "title-agent",
+                &catalog(),
+                "legacy-title",
+                deadline()
+            )
+            .await
+            .expect("finish migrated durable title"),
+            TitleResult::Applied {
+                title: "Saved legacy title".into()
+            }
+        );
+        assert_eq!(port.calls.load(Ordering::SeqCst), 0);
+        let converted = legacy_effect_record(&store);
+        assert_ne!(original["fingerprint"], converted["fingerprint"]);
+        original
+            .as_object_mut()
+            .expect("original effect")
+            .remove(TITLE_FINGERPRINT_PROVIDER_2026_10_26);
+        original["fingerprint"] = converted["fingerprint"].clone();
+        original["state"] = json!("applied");
+        assert_eq!(
+            converted, original,
+            "only canonical fingerprint and normal apply state change"
+        );
+        let applied = persisted_snapshot(&store);
+        assert_eq!(applied["agent"]["name"], "Saved legacy title");
+        drop(store);
+        let reopened = RuntimeStore::open(Some(root.path()))
+            .await
+            .expect("reopen canonical effect");
+        assert_eq!(
+            generate_admitted(
+                &reopened,
+                &port,
+                "title-agent",
+                &catalog(),
+                "legacy-title",
+                deadline()
+            )
+            .await
+            .expect("idempotent canonical replay"),
+            TitleResult::Applied {
+                title: "Saved legacy title".into()
+            }
+        );
+        assert_eq!(persisted_snapshot(&reopened), applied);
+        assert_eq!(port.calls.load(Ordering::SeqCst), 0);
+    }
+}
+
+#[tokio::test]
+async fn provider_identity_title_generation_refuses_before_request_or_receipt() {
+    let (_root, store) = fixture().await;
+    for provider in [json!("future"), json!(7)] {
+        store.transaction(move |db| {
+            db.execute("UPDATE runtime_agents SET record=json_set(record,'$.provider',json(?1)) WHERE id='title-agent'", [provider.to_string()])?;
+            Ok(())
+        }).await.expect("unknown provider");
+        let before = agent_and_projection(&store);
+        let port = FixedPort::new(vec![TitleReceipt {
+            request_id: "provider-identity".into(),
+            agent_id: "title-agent".into(),
+            epoch: 0,
+            account_key: "default".into(),
+            outcome: WriteOutcome::NotSent,
+            title: None,
+        }]);
+        let error = generate(
+            &store,
+            &port,
+            "title-agent",
+            &catalog(),
+            "provider-identity",
+            deadline(),
+        )
+        .await
+        .expect_err("unknown provider refused");
+        assert!(
+            matches!(error, studio_runtime_services::title_generation::TitleError::InvalidStoredObject { table: "runtime_agents", id } if id == "title-agent")
+        );
+        assert_eq!(port.calls.load(Ordering::SeqCst), 0);
+        assert_eq!(agent_and_projection(&store), before);
+        let receipts: i64 = store
+            .test_reader()
+            .expect("reader")
+            .query_row(
+                "SELECT count(*) FROM runtime_operation_receipts",
+                [],
+                |row| row.get(0),
+            )
+            .expect("receipts");
+        assert_eq!(receipts, 0, "no request intent created");
+    }
 }
 
 struct FixedPort {

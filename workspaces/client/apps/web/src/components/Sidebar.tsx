@@ -1563,7 +1563,7 @@ function SidebarContents(p: SidebarProps & { services: SidebarServices }) {
                           aria-label={`New chat in ${group.name}`}
                           aria-description={blocked || undefined}
                           aria-disabled={blocked ? true : undefined}
-                          {...(blocked ? { "data-disabled": true } : {})}
+                          data-disabled={blocked ? true : undefined}
                           onClick={() => {
                             if (!blocked) p.newChat(group.path || undefined);
                           }}

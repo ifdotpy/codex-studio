@@ -230,14 +230,11 @@ fn claim_takes_eligible_current_turn_input_in_order_once() {
 }
 
 #[test]
-fn codex_and_unlabelled_turns_are_steered_like_claude() {
-    for provider in [Some("codex"), None] {
+fn explicitly_identified_codex_and_claude_turns_are_steered() {
+    for provider in ["codex", "claude"] {
         let mut connection = database();
         let mut record = running();
-        match provider {
-            Some(provider) => record.extra.insert("provider".into(), json!(provider)),
-            None => record.extra.remove("provider"),
-        };
+        record.extra.insert("provider".into(), json!(provider));
         put_agent(&connection, record);
         let claimed = claim(&mut connection, "s1").expect("running turn claims");
         assert_eq!(claimed.turn_id, TURN, "{provider:?}");

@@ -414,7 +414,7 @@ mod legacy_tool_reply_tests {
         let store = RuntimeStore::open(Some(directory.path()))
             .await
             .expect("open runtime store");
-        let agent = json!({
+        let agent = json!({"provider":studio_runtime_schema::ProviderKind::Codex,
             "id":"agent", "rootId":"agent", "epoch":2, "status":"running", "autoWake":true,
             "accountKey":"default", "threadId":"thread", "turnId":"live-turn",
             "startAttempt":{"connectionGeneration":5,"connectionId":"connection"},

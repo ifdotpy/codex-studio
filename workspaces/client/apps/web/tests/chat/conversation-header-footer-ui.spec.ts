@@ -1,5 +1,5 @@
+import type { EntityFixtureState, TestStateView } from "../playwright.ts";
 import type { BrowserRectangle } from "./browser.ts";
-import assert from "node:assert/strict";
 import {
   test,
   expect,
@@ -14,17 +14,14 @@ test("conversation header stays compact and usage facts remain visible", async (
 }, testInfo) => {
   test.setTimeout(90_000);
   const serverAlias = "MAC";
-  const snapshot = await readTestState(readOnlyRust.origin);
+  const snapshot: EntityFixtureState & Pick<TestStateView, "threads"> =
+    await readTestState(readOnlyRust.origin);
   const contract = await readFixtureSyncContract(readOnlyRust.origin);
-  const lead = snapshot.threads.find((agent) => agent.name === "Release lead");
-  assert.ok(lead, "fixture lead exists");
+  const lead = snapshot.threads.find((agent) => agent.name === "Release lead")!;
   snapshot.runtime.sessionCostsByAgent = {
     [lead.id]: {
       rootId: lead.id,
       totalUSD: 0,
-      estimated: false,
-      pricedSamples: 0,
-      refreshing: false,
       pricingState: "ready",
       cacheAgeSeconds: 0,
       breakdown: { providers: {}, models: {} },
@@ -52,11 +49,19 @@ test("conversation header stays compact and usage facts remain visible", async (
         );
         await readOnlyRust.open(page);
         await page
-          .getByLabel(width <= 760 ? "Back to chats" : "Toggle conversations")
+          .getByLabel(
+            page.viewportSize()!.width <= 760
+              ? "Back to chats"
+              : "Toggle conversations",
+          )
           .waitFor();
         if (!(await page.locator("#sidebar").isVisible()))
           await page
-            .getByLabel(width <= 760 ? "Back to chats" : "Toggle conversations")
+            .getByLabel(
+              page.viewportSize()!.width <= 760
+                ? "Back to chats"
+                : "Toggle conversations",
+            )
             .click();
         await page
           .locator("[data-chat]")
@@ -122,11 +127,8 @@ test("conversation header stays compact and usage facts remain visible", async (
         );
         await page.evaluate(() => document.fonts.ready);
         const geometry = await page.evaluate(() => {
-          const rect = (s: string): BrowserRectangle => {
-            const node = document.querySelector(s);
-            if (!node) throw new Error(`Missing geometry element ${s}`);
-            return node.getBoundingClientRect().toJSON();
-          };
+          const rect = (s: string): BrowserRectangle =>
+            document.querySelector(s)!.getBoundingClientRect().toJSON();
           return {
             header: rect(".simple-workspace-header"),
             title: rect("#conversation-title"),

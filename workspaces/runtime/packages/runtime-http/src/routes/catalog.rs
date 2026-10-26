@@ -202,16 +202,16 @@ mod tests {
 
     #[tokio::test]
     #[allow(clippy::disallowed_methods)] // Test fixture writes and rereads the registry file.
-    async fn accounts_route_requires_provider_for_legacy_codex_and_claude() {
+    async fn accounts_route_exposes_explicit_codex_and_claude_providers() {
         for with_driver in [false, true] {
             let root = tempfile::tempdir().expect("isolated state");
             let store = Arc::new(RuntimeStore::open(Some(root.path())).await.expect("store"));
-            let row = json!({"id":"default","home":root.path(),"label":"Default","source":"Fixture","status":"signedOut"});
+            let row = json!({"id":"default","provider":studio_runtime_schema::ProviderKind::Codex,"home":root.path(),"label":"Default","source":"Fixture","status":"signedOut"});
             let mut claude = row.clone();
             claude["id"] = json!("claude");
             claude["provider"] = json!("claude");
             claude["deleted"] = json!(true);
-            let registry = json!({"version":1,"defaultAccountKey":"default","accounts":{"default":row,"claude":claude},"logins":{}});
+            let registry = json!({"version":studio_runtime_schema::shared_values::ACCOUNT_REGISTRY_FORMAT_VERSION,"defaultAccountKey":"default","accounts":{"default":row,"claude":claude},"logins":{}});
             let bytes = serde_json::to_vec(&registry).expect("registry JSON");
             let path = root.path().join("registry.json");
             std::fs::write(&path, &bytes).expect("registry");

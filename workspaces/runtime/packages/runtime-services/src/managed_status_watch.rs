@@ -1360,14 +1360,14 @@ mod tests {
         store
             .transaction_with(move |tx| {
                 for record in [
-                    json!({
+                    json!({"provider":studio_runtime_schema::ProviderKind::Codex,
                         "id":"lead","rootId":"lead","epoch":3,"status":"running",
                         "isLead":true,"autoWake":true,"cwd":cwd,
                         "concurrency":2,"maxAgents":8,
                         "workerDefaults":{"model":"gpt-fixture","effort":"high","fastMode":false}
                     }),
-                    json!({"id":"queued","rootId":"lead","epoch":4,"status":"queued","autoWake":false,"cwd":cwd}),
-                    json!({"id":"done","rootId":"lead","epoch":2,"status":"completed","autoWake":false,"cwd":cwd}),
+                    json!({"provider":studio_runtime_schema::ProviderKind::Codex,"id":"queued","rootId":"lead","epoch":4,"status":"queued","autoWake":false,"cwd":cwd}),
+                    json!({"provider":studio_runtime_schema::ProviderKind::Codex,"id":"done","rootId":"lead","epoch":2,"status":"completed","autoWake":false,"cwd":cwd}),
                 ] {
                     AgentRepository::put(
                         tx,

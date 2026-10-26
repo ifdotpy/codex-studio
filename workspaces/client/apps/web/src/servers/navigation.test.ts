@@ -1,9 +1,6 @@
-import { snapshotFixture } from "../snapshotFixture";
-import assert from "node:assert/strict";
-import { navigationSnapshot } from "./navigation.ts";
-import type { Agent } from "../types";
 import { expect, it } from "vitest";
-import { isServerCommand } from "./navigation";
+import assert from "node:assert/strict";
+import { navigationSnapshot, isServerCommand } from "./navigation";
 
 it("accepts account commands with only public account identity fields", () => {
   expect(
@@ -49,29 +46,33 @@ it("rejects malformed account providers and operations", () => {
   ).toBe(false);
 });
 
+// These upstream fixtures omit snapshot metadata, thread timestamps and move IDs.
+const partialSnapshot = (data: object) =>
+  data as NonNullable<Parameters<typeof navigationSnapshot>[0]>;
+
 it("shows the active target chat and hides the source move record", () => {
-  const chat: Agent = {
+  const chat = {
     id: "same-id",
     source: "managed",
     isLead: true,
     cwd: "/project",
   };
   const source = navigationSnapshot(
-    snapshotFixture([{ ...chat, movedTo: { server: "target", move: "move" } }]),
+    partialSnapshot({ threads: [{ ...chat, movedTo: { server: "target" } }] }),
     null,
     "",
   );
   const target = navigationSnapshot(
-    snapshotFixture([
-      { ...chat, movedFrom: { server: "source", move: "move" } },
-    ]),
+    partialSnapshot({
+      threads: [{ ...chat, movedFrom: { server: "source" } }],
+    }),
     null,
     "",
   );
   assert.deepEqual(source.chats, []);
   assert.deepEqual(
     navigationSnapshot(
-      snapshotFixture([{ ...chat, moveImportPending: true }]),
+      partialSnapshot({ threads: [{ ...chat, moveImportPending: true }] }),
       null,
       "",
     ).chats,

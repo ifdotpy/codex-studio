@@ -174,7 +174,7 @@ impl CallbackRuntime {
                 "SELECT r.id FROM runtime_requests r JOIN runtime_agents a ON a.id=json_extract(r.record,'$.agent')
                  WHERE json_extract(r.record,'$.status')='pending'
                  AND json_extract(r.record,'$.method') IN ('item/commandExecution/requestApproval','item/fileChange/requestApproval','item/permissions/requestApproval')
-                 AND json_extract(a.record,'$.yoloMode')=1 AND COALESCE(json_extract(a.record,'$.provider'),'codex')!='claude'
+                 AND json_extract(a.record,'$.yoloMode')=1 AND json_extract(a.record,'$.provider')='codex'
                  AND (a.id=?1 OR json_extract(a.record,'$.rootId')=?1)"
             )?;
             Ok(query.query_map([root], |row| row.get::<_, String>(0))?.collect::<Result<Vec<_>,_>>()?)
@@ -358,7 +358,7 @@ mod tests {
     async fn pending_native_question() -> (tempfile::TempDir, Arc<RuntimeStore>) {
         let directory = tempfile::tempdir().unwrap();
         let store = Arc::new(RuntimeStore::open(Some(directory.path())).await.unwrap());
-        let actor = json!({
+        let actor = json!({"provider":studio_runtime_schema::ProviderKind::Codex,
             "id":"delete-agent", "rootId":"delete-agent", "epoch":0,
             "status":"running", "autoWake":true, "isLead":true,
             "accountKey":"default", "threadId":"thread", "turnId":"turn",

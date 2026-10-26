@@ -359,7 +359,7 @@ async fn reserved_batch_events_are_recovered_by_the_scheduler_scan() {
     fixtures::seed(&store, &case).await;
     store
         .transaction(move |tx| {
-            let agent = AgentRecord::from_value(json!({
+            let agent = AgentRecord::from_value(json!({"provider":studio_runtime_schema::ProviderKind::Codex,
                 "id":"starting-agent","rootId":"starting-agent","epoch":0,
                 "status":"starting","autoWake":true,"inFlight":true,
                 "startAttempt":{"id":"attempt","epoch":0,"submitted":false,"events":["reserved-batch"]}
@@ -513,7 +513,7 @@ async fn startup_event_ownership_uses_exact_scheduler_batch_and_submitted_attemp
         let store = fixtures::store(root.path(), name).await;
         fixtures::seed(&store, &case).await;
         store.transaction(move |tx| {
-            AgentRepository::put(tx, &AgentRecord::from_value(json!({
+            AgentRepository::put(tx, &AgentRecord::from_value(json!({"provider":studio_runtime_schema::ProviderKind::Codex,
                 "id":"claimed-agent","rootId":"claimed-agent","epoch":0,
                 "status":"starting","autoWake":true,"inFlight":true,
                 "startAttempt":{"id":"attempt","epoch":0,"submitted":submitted,"events":events}

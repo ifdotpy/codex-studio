@@ -1,6 +1,5 @@
 import type { Agent } from "../../src/types.ts";
-const rootElement = document.getElementById("root");
-if (!rootElement) throw new Error("Missing model fixture root");
+const rootElement = document.getElementById("root")!;
 import React from "react";
 import { createRoot } from "react-dom/client";
 import { MantineProvider, ActionIcon, Textarea } from "@mantine/core";
@@ -57,7 +56,14 @@ const reader: React.ContextType<typeof ModelCatalogReader> = {
     return () => {};
   },
 };
-const lead: Agent = {
+type ComposerLead = Omit<Agent, "workerDefaults"> & {
+  workerDefaults: Omit<NonNullable<Agent["workerDefaults"]>, "fastMode">;
+};
+// The base one-off composer lead omits workerDefaults.fastMode.
+function partialComposerLead(value: ComposerLead): Agent {
+  return value as Agent;
+}
+const lead = partialComposerLead({
   id: "lead",
   isLead: true,
   source: "managed",
@@ -66,9 +72,9 @@ const lead: Agent = {
   model: "opus",
   effort: "high",
   status: query.has("active") ? "running" : "idle",
-  workerDefaults: { model: "sol", effort: "high", fastMode: false },
+  workerDefaults: { model: "sol", effort: "high" },
   reviewDefaults: { model: null, effort: null },
-};
+});
 const agent = query.has("worker")
   ? { ...lead, id: "worker", isLead: false, rootId: "lead" }
   : lead;
@@ -76,7 +82,7 @@ function Fixture() {
   return (
     <MantineProvider
       theme={theme}
-      forceColorScheme={query.get("theme") === "light" ? "light" : "dark"}
+      forceColorScheme={(query.get("theme") || "dark") as "light" | "dark"}
     >
       <ModelCatalogReader.Provider value={reader}>
         <main

@@ -1,4 +1,3 @@
-import { visibleBounds } from "../mobile/mobile-ui-fixture.ts";
 import { test, expect } from "../playwright.ts";
 import { sidebarParityFixture } from "./sidebar-parity-fixture.ts";
 
@@ -22,20 +21,14 @@ test("the combined window keeps the closed terminal bar under the sidebar and op
     // The view's own closed bar gives way to the shell's.
     await expect(frame.locator(".terminal-dock")).toBeHidden();
     const closed = await page.evaluate(() => ({
-      bar: (
-        document.querySelector(".shell-terminal-bar") ??
-        (() => {
-          throw new Error("Missing fixture value");
-        })()
-      )
+      bar: document
+        .querySelector(".shell-terminal-bar")!
+
         .getBoundingClientRect()
         .toJSON(),
-      sidebar: (
-        document.querySelector(".multi-server-shell > #sidebar") ??
-        (() => {
-          throw new Error("Missing fixture value");
-        })()
-      )
+      sidebar: document
+        .querySelector(".multi-server-shell > #sidebar")!
+
         .getBoundingClientRect()
         .toJSON(),
       height: innerHeight,
@@ -55,18 +48,12 @@ test("the combined window keeps the closed terminal bar under the sidebar and op
     await expect
       .poll(() =>
         page.evaluate(() => {
-          const views = (
-            document.querySelector(".server-views") ??
-            (() => {
-              throw new Error("Missing fixture value");
-            })()
-          ).getBoundingClientRect();
-          const side = (
-            document.querySelector(".multi-server-shell > #sidebar") ??
-            (() => {
-              throw new Error("Missing fixture value");
-            })()
-          ).getBoundingClientRect();
+          const views = document
+            .querySelector(".server-views")!
+            .getBoundingClientRect();
+          const side = document
+            .querySelector(".multi-server-shell > #sidebar")!
+            .getBoundingClientRect();
           return {
             left: views.left,
             width: views.width,
@@ -96,12 +83,9 @@ test("the combined window keeps the closed terminal bar under the sidebar and op
     );
     const sideBottom = await page.evaluate(() =>
       Math.round(
-        (
-          document.querySelector(".multi-server-shell > #sidebar") ??
-          (() => {
-            throw new Error("Missing fixture value");
-          })()
-        ).getBoundingClientRect().bottom,
+        document
+          .querySelector(".multi-server-shell > #sidebar")!
+          .getBoundingClientRect().bottom,
       ),
     );
     expect(sideBottom).toBe(Math.round(open.dock.top));
@@ -160,7 +144,7 @@ test("the combined window keeps the closed terminal bar under the sidebar and op
     const preference = await page.evaluate(() =>
       localStorage.getItem("codex.terminal.height"),
     );
-    const handle = await visibleBounds(dock.getByRole("separator"));
+    const handle = (await dock.getByRole("separator").boundingBox())!;
     await page.mouse.move(
       handle.x + handle.width / 2,
       handle.y + handle.height / 2,

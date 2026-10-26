@@ -288,6 +288,11 @@ impl AccountLauncher for Scripted {
                 ready_notice: self.ready_notice.clone(),
                 initialize_holds: self.initialize_holds.clone(),
             });
+            let mut resources =
+                PreparationResources::bundled(String::new(), ModelCatalogService::new()).unwrap();
+            // HostLauncher supplies the account pin for every provider.
+            resources.claude_account_pin =
+                json!({"provider":studio_runtime_schema::ProviderKind::Codex});
             Ok(AccountLaunch {
                 factory,
                 options: OpenOptions {
@@ -308,11 +313,7 @@ impl AccountLauncher for Scripted {
                     request_id_prefix: None,
                     recovered: vec![],
                 },
-                resources: PreparationResources::bundled(
-                    String::new(),
-                    ModelCatalogService::new(),
-                )
-                .unwrap(),
+                resources,
                 publication_sink: Arc::new(
                     studio_runtime_services::notification_runtime_effects::UnavailablePostCommitSink,
                 ),
@@ -1776,10 +1777,12 @@ fn seed_backlog_rows(
 fn backlog_database(count: usize, each_account: bool) -> (rusqlite::Connection, Vec<String>) {
     let mut db = studio_runtime_store::test_canvas();
     let tx = db.transaction().unwrap();
-    let agent = studio_runtime_store::AgentRecord::from_value(json!({
-        "id":"source", "rootId":"source", "epoch":1, "status":"queued",
-        "autoWake":true, "accountKey":"default", "contextRepairWait":"blocked"
-    }))
+    let agent = studio_runtime_store::AgentRecord::from_value(
+        json!({"provider":studio_runtime_schema::ProviderKind::Codex,
+            "id":"source", "rootId":"source", "epoch":1, "status":"queued",
+            "autoWake":true, "accountKey":"default", "contextRepairWait":"blocked"
+        }),
+    )
     .unwrap();
     studio_runtime_store::AgentRepository::put(&tx, &agent).unwrap();
     let ids = seed_backlog_rows(&tx, "source", count, each_account).unwrap();
@@ -2538,7 +2541,7 @@ fn account_driver(
     std::fs::create_dir_all(&home).unwrap();
     let registry = root.join("accounts/registry.json");
     std::fs::create_dir_all(registry.parent().unwrap()).unwrap();
-    std::fs::write(&registry,json!({"version":1,"defaultAccountKey":"default","accounts":{"default":{"id":"default","home":home,"label":"Fixture","source":"Codex CLI","status":"signedOut"}},"logins":{},"deleteReceipts":{}}).to_string()).unwrap();
+    std::fs::write(&registry,json!({"version":studio_runtime_schema::shared_values::ACCOUNT_REGISTRY_FORMAT_VERSION,"defaultAccountKey":"default","accounts":{"default":{"provider":studio_runtime_schema::ProviderKind::Codex,"id":"default","home":home,"label":"Fixture","source":"Codex CLI","status":"signedOut"}},"logins":{},"deleteReceipts":{}}).to_string()).unwrap();
     (
         Arc::new(studio_runtime_services::account_driver::AccountDriver::open(registry).unwrap()),
         home,
@@ -2577,10 +2580,10 @@ fn sign_in_dispatch_admits_launch_of_an_account_that_is_not_ready() {
     let write = |status: &str| {
         std::fs::write(
             &registry,
-            json!({"version":1,"defaultAccountKey":"default",
+            json!({"version":studio_runtime_schema::shared_values::ACCOUNT_REGISTRY_FORMAT_VERSION,"defaultAccountKey":"default",
                 "accounts":{
-                    "default":{"id":"default","home":root.path(),"label":"Fixture","source":"Codex CLI","status":"signedOut"},
-                    "login-fixture":{"id":"login-fixture","home":login_home,"label":"New account","source":"Codex Agents","accountId":null,"email":null,"plan":null,"status":"pending"}
+                    "default":{"provider":studio_runtime_schema::ProviderKind::Codex,"id":"default","home":root.path(),"label":"Fixture","source":"Codex CLI","status":"signedOut"},
+                    "login-fixture":{"provider":studio_runtime_schema::ProviderKind::Codex,"id":"login-fixture","home":login_home,"label":"New account","source":"Codex Agents","accountId":null,"email":null,"plan":null,"status":"pending"}
                 },
                 "logins":{"fixture-request":{"requestId":"fixture-request","accountKey":"login-fixture","status":status,"createdAt":1.0}},
                 "deleteReceipts":{}})
@@ -3182,7 +3185,7 @@ async fn rust_direct_claude_launch_runs_the_scripted_bridge_turn() {
     let identity = "claude:test@example.test";
     std::fs::write(
         &registry,
-        json!({"version":1,"defaultAccountKey":"default","accounts":{"default":{"id":"default","provider":"claude","home":account_home,"label":"Scripted Claude","source":"Claude Code","status":"ready","accountId":identity,"email":"test@example.test","plan":"Claude Max","_credentialIdentity":identity,"claudeOptions":{"configDir":std::env::var("CLAUDE_CONFIG_DIR").unwrap(),"customModels":[]}}},"logins":{},"deleteReceipts":{}}).to_string(),
+        json!({"version":studio_runtime_schema::shared_values::ACCOUNT_REGISTRY_FORMAT_VERSION,"defaultAccountKey":"default","accounts":{"default":{"id":"default","provider":"claude","home":account_home,"label":"Scripted Claude","source":"Claude Code","status":"ready","accountId":identity,"email":"test@example.test","plan":"Claude Max","_credentialIdentity":identity,"claudeOptions":{"configDir":std::env::var("CLAUDE_CONFIG_DIR").unwrap(),"customModels":[]}}},"logins":{},"deleteReceipts":{}}).to_string(),
     )
     .unwrap();
     let accounts =

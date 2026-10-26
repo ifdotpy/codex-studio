@@ -384,6 +384,7 @@ mod tests {
     fn saved_receipt_survives_its_completion_but_not_a_new_disconnect() {
         let mut agent = json!({
             "id":"agent", "epoch":2, "accountKey":"account", "threadId":"thread",
+            "provider":studio_runtime_schema::ProviderKind::Codex,
             "turnId":"turn-1", "disconnectRecovery":{"connectionId":"connection-1","at":10.0},
             "connectionRecovery":{"turnId":"turn-1","requestState":"result"}
         });

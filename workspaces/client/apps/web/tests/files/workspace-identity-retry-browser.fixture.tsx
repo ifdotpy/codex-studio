@@ -1,6 +1,6 @@
 declare global {
   interface Window {
-    workspaceIdentityRetryBrowserWorkspace: string | undefined;
+    workspace: string | undefined;
     workspaceIdentityRetryBrowserMount: typeof mount;
   }
 }
@@ -12,7 +12,7 @@ import { useSnapshot } from "../../src/hooks.ts";
 export function mount() {
   createRoot(document.body).render(
     React.createElement(function Harness() {
-      window.workspaceIdentityRetryBrowserWorkspace = useSnapshot().workspaceId;
+      window.workspace = useSnapshot().workspaceId;
       return null;
     }),
   );

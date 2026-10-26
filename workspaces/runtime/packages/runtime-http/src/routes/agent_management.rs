@@ -1073,10 +1073,12 @@ mod native_review_preflight_tests {
         let store = RuntimeStore::open(Some(directory.path()))
             .await
             .expect("open store");
-        let agent = AgentRecord::from_value(json!({
-            "id":"vm-native", "rootId":"vm-native", "epoch":5,
-            "status":"idle", "executionMode":"vm", "accountKey":"vm-account"
-        }))
+        let agent = AgentRecord::from_value(
+            json!({"provider":studio_runtime_schema::ProviderKind::Codex,
+                "id":"vm-native", "rootId":"vm-native", "epoch":5,
+                "status":"idle", "executionMode":"vm", "accountKey":"vm-account"
+            }),
+        )
         .expect("VM agent record");
         let guest = Arc::new(GuestSpy::new(json!({"ok":true})));
         let guest_port: Arc<dyn studio_runtime_services::linux_vm_guest::GuestRpc> = guest.clone();

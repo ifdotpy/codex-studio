@@ -306,8 +306,8 @@ mod tests {
         connection
             .execute_batch(
                 "INSERT INTO runtime_agents VALUES
-                   ('a1','{\"accountKey\":\"acc1\"}'),('a2','{\"accountKey\":\"acc2\"}'),
-                   ('a3','{}');
+                   ('a1','{\"provider\":\"codex\",\"accountKey\":\"acc1\"}'),('a2','{\"provider\":\"codex\",\"accountKey\":\"acc2\"}'),
+                   ('a3','{\"provider\":\"codex\"}');
                  INSERT INTO runtime_tool_requests VALUES
                    ('r1','{\"agent\":\"a1\",\"stage\":\"queued\"}'),
                    ('r2','{\"agent\":\"a1\",\"stage\":\"running\"}'),
@@ -469,20 +469,29 @@ mod tests {
         for (id, record) in [
             (
                 "a-intent",
-                r#"{"workspaceCleanupIntent":{"phase":"queued"}}"#,
+                r#"{"provider":"codex","workspaceCleanupIntent":{"phase":"queued"}}"#,
             ),
-            ("b-null-intent", r#"{"workspaceCleanupIntent":null}"#),
-            ("c-running", r#"{"deletedAt":5,"status":"running"}"#),
-            ("d-turn", r#"{"deletedAt":5,"turnId":"t"}"#),
+            (
+                "b-null-intent",
+                r#"{"provider":"codex","workspaceCleanupIntent":null}"#,
+            ),
+            (
+                "c-running",
+                r#"{"provider":"codex","deletedAt":5,"status":"running"}"#,
+            ),
+            (
+                "d-turn",
+                r#"{"provider":"codex","deletedAt":5,"turnId":"t"}"#,
+            ),
             (
                 "e-reserved",
-                r#"{"deletedAt":5,"startAttempt":{"activeAtReservation":true}}"#,
+                r#"{"provider":"codex","deletedAt":5,"startAttempt":{"activeAtReservation":true}}"#,
             ),
             (
                 "f-tombstone",
-                r#"{"deletedAt":5,"inFlight":false,"turnId":null,"status":"idle"}"#,
+                r#"{"provider":"codex","deletedAt":5,"inFlight":false,"turnId":null,"status":"idle"}"#,
             ),
-            ("g-live", r#"{"status":"running"}"#),
+            ("g-live", r#"{"provider":"codex","status":"running"}"#),
         ] {
             connection
                 .execute("INSERT INTO runtime_agents VALUES(?1,?2)", [id, record])

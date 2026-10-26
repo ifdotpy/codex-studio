@@ -2,6 +2,7 @@ import { organizationLabel } from "./ClaudeOrganization";
 import { Button } from "@mantine/core";
 import { errorText } from "../api";
 import type { Account } from "./Accounts";
+import { providerLabel } from "../generated/providerKind.ts";
 
 export default function AccountSignInNotice({
   account,
@@ -22,7 +23,7 @@ export default function AccountSignInNotice({
       ),
     );
   if (!needsSignIn) return null;
-  const provider = account.provider === "claude" ? "Claude" : "Codex";
+  const provider = providerLabel(account.provider);
   return (
     <div className="sync-status">
       <span>

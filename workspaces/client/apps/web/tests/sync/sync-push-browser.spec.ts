@@ -37,7 +37,7 @@ test("Sync push", async ({ context: testContext }) => {
       res: ServerResponse,
       next: Connect.NextFunction,
     ) {
-      const url = new URL(req.url ?? "/", "http://localhost");
+      const url = new URL(req.url!, "http://localhost");
       const json = (value: unknown) => {
         for (const [name, value] of Object.entries(
           apiSchemaHeaders({ "Content-Type": "application/json" }),
@@ -104,22 +104,19 @@ test("Sync push", async ({ context: testContext }) => {
     page.on("pageerror", (error) => errors.push(error.message));
     await page.goto(fixtureOrigin(server) + `/push-check`);
     await page.evaluate(async () => {
-      window.syncSyncPushBrowserClient = await import("/src/sync/client.ts");
-      window.syncSyncPushBrowserStopPush =
-        window.syncSyncPushBrowserClient.subscribeStateProjection(
-          (value) => {
-            window.syncSyncPushBrowserPushState = value?.threads?.find(
-              (row) => row.id === "lead",
-            )?.name;
-          },
-          (error) => {
-            if (error) window.syncSyncPushBrowserPushError = String(error);
-          },
-        );
+      window.client = await import("/src/sync/client.ts");
+      window.stopPush = window.client.subscribeStateProjection(
+        (value) => {
+          window.pushState = value?.threads?.find(
+            (row) => row.id === "lead",
+          )?.name;
+        },
+        (error) => {
+          if (error) window.pushError = String(error);
+        },
+      );
     });
-    await page.waitForFunction(
-      () => window.syncSyncPushBrowserPushState === "Initial lead",
-    );
+    await page.waitForFunction(() => window.pushState === "Initial lead");
     const before = pulls;
     revision = 2;
     for (const [res, resources] of streams)
@@ -137,9 +134,7 @@ test("Sync push", async ({ context: testContext }) => {
           })),
         }),
       );
-    await page.waitForFunction(
-      () => window.syncSyncPushBrowserPushState === "Pushed lead",
-    );
+    await page.waitForFunction(() => window.pushState === "Pushed lead");
     assert.ok(
       pulls > before,
       "The stream does not replace an authoritative pull.",
@@ -147,20 +142,20 @@ test("Sync push", async ({ context: testContext }) => {
     assert.equal(streams.size, 1);
     assert.equal(
       await page.evaluate(async () => {
-        const { db } = await window.syncSyncPushBrowserClient.syncDatabase();
+        const { db } = await window.client.syncDatabase();
         const row = await db.projections.findOne("entity:agent:lead").exec();
-        if (row?.entity?.collection !== "agent")
-          throw new Error("Missing lead entity");
-        return row.entity.value.name;
+        // This fixture wrote an agent projection under the known entity key.
+        const entity = row!.entity as Extract<
+          import("/src/generated/api.ts").components["schemas"]["SyncEntity"],
+          { collection: "agent"; op: "upsert" }
+        >;
+        return entity.value.name;
       }),
       "Pushed lead",
     );
     assert.deepEqual(errors, []);
-    assert.equal(
-      await page.evaluate(() => window.syncSyncPushBrowserPushError),
-      undefined,
-    );
-    await page.evaluate(() => window.syncSyncPushBrowserStopPush());
+    assert.equal(await page.evaluate(() => window.pushError), undefined);
+    await page.evaluate(() => window.stopPush());
     console.log("sync push browser contract passed");
   } finally {
     for (const res of streams.keys()) res.end();
@@ -170,9 +165,9 @@ test("Sync push", async ({ context: testContext }) => {
 
 declare global {
   interface Window {
-    syncSyncPushBrowserClient: typeof import("../../src/sync/client.ts");
-    syncSyncPushBrowserStopPush: () => void;
-    syncSyncPushBrowserPushState: string | null | undefined;
-    syncSyncPushBrowserPushError: string | undefined;
+    client: typeof import("../../src/sync/client.ts");
+    stopPush: () => void;
+    pushState: string | null | undefined;
+    pushError: string | undefined;
   }
 }

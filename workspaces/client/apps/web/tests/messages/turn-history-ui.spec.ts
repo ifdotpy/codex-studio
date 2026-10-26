@@ -1,5 +1,5 @@
+#!/usr/bin/env node
 import { responseJson } from "./helpers.ts";
-import { required } from "./helpers.ts";
 import {
   entityPullFixtureForRequest,
   installApiSchemaFixtureHeaders,
@@ -38,19 +38,15 @@ test("Turn History Ui", async ({
   });
   let page,
     log = "";
-  required(proc.stderr).on("data", (d) => (log += d));
+  proc.stderr!.on("data", (d) => (log += d));
   try {
     const port = await new Promise((resolve, reject) => {
-      required(proc.stdout).once("data", (d) =>
-        resolve(Number(String(d).trim())),
-      );
+      proc.stdout!.once("data", (d) => resolve(Number(String(d).trim())));
       proc.once("exit", () => reject(Error(log)));
     });
     const url = `http://127.0.0.1:${port}`;
     const state = await readTestState(url);
-    const lead = required(
-      state.runtime.agents.find((a) => a.name === "Release lead"),
-    );
+    const lead = state.runtime.agents.find((a) => a.name === "Release lead")!;
     const initial = await responseJson<
       import("../playwright.ts").TranscriptPageResponse
     >(await fetch(url + "/api/transcript?id=" + lead.id));
@@ -58,7 +54,14 @@ test("Turn History Ui", async ({
       id: string,
       role: import("../../src/types.ts").Message["role"],
       text: string,
-      extra: Partial<import("../../src/types.ts").Message> = {},
+      extra: Partial<Omit<import("../../src/types.ts").Message, "assets">> & {
+        assets?: Array<
+          Pick<
+            NonNullable<import("../../src/types.ts").Message["assets"]>[number],
+            "id" | "name" | "image"
+          >
+        >;
+      } = {},
     ) => ({ id, role, text, ...extra });
     const items = [
       item("ask1", "user", "Check the build", {
@@ -188,11 +191,6 @@ test("Turn History Ui", async ({
             id: "report-asset",
             name: "worker-report.txt",
             image: false,
-            agent: lead.id,
-            created: 0,
-            hash: "",
-            mime: "text/plain",
-            size: 0,
           },
         ],
       }),
@@ -448,7 +446,7 @@ test("Turn History Ui", async ({
       .click();
     await activeWork.locator(":scope > summary").click();
     assert.equal(await activeWork.getAttribute("open"), null);
-    required(required(items).find((entry) => entry.id === "empty-live")).text =
+    items.find((entry) => entry.id === "empty-live")!.text =
       "The first text delta is visible.";
     transcriptSeq++;
     await page.reload();

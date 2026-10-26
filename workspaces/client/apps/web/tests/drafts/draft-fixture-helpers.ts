@@ -1,10 +1,12 @@
-import type { TranscriptPageData } from "../../src/apiTypes.ts";
-import type { ViteDevServer } from "vite";
-export function fixtureOrigin(server: ViteDevServer): string {
-  const origin = server.resolvedUrls?.local[0];
-  if (!origin) throw new Error("Fixture server has no local URL");
-  return origin;
+import type { useSyncedDrafts } from "../../src/sync/drafts.ts";
+import type { syncDatabase } from "../../src/sync/client.ts";
+declare global {
+  interface Window {
+    draft: ReturnType<typeof useSyncedDrafts>;
+    db: Awaited<ReturnType<typeof syncDatabase>>["db"];
+  }
 }
+import type { TranscriptPageData } from "../../src/apiTypes.ts";
 import type { DraftVersion } from "../../src/sync/drafts.ts";
 import type { LocalDraftRecord } from "../../src/sync/draftStorage.ts";
 import type { OutboxEntry } from "../../src/sync/send.ts";

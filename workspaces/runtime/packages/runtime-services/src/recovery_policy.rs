@@ -532,7 +532,7 @@ mod unbounded_batch_tests {
     fn recovery_batch_eligibility_keeps_identity_checks_above_the_former_cap() {
         for count in [1, 1000] {
             let ids: Vec<_> = (0..count).map(|index| format!("event-{index}")).collect();
-            let mut agent = json!({"id":"agent","rootId":"agent","epoch":1,"accountKey":"default",
+            let mut agent = json!({"provider":studio_runtime_schema::ProviderKind::Codex,"id":"agent","rootId":"agent","epoch":1,"accountKey":"default",
                 "threadId":"thread","status":"interrupted","inFlight":false,"autoWake":false,
                 "error":PROVIDER_DISCONNECTED_TURN_ERROR,"disconnectRecovery":{"autoWake":true,
                     "epoch":1,"accountKey":"default","threadId":"thread",

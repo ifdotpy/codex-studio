@@ -1,8 +1,3 @@
-declare global {
-  interface Window {
-    projectTreeFixture: { originalSetItem: Storage["setItem"] };
-  }
-}
 import {
   test,
   expect,
@@ -20,7 +15,6 @@ import type { ElectronApplication, Page } from "@playwright/test";
 import type { PostBody, PostResult } from "../../src/api.ts";
 import type { ApiPostPath } from "../../src/apiTypes.ts";
 import { fixturePostBody } from "../misc-fixture.ts";
-import { required } from "../../src/components/componentTestFixtures.ts";
 import { waitForFixturePort } from "../fixture-readiness.ts";
 test("project pointer and keyboard order persist, and a click collapses the project", async ({
   page: runnerPage,
@@ -75,7 +69,7 @@ test("project pointer and keyboard order persist, and a click collapses the proj
   });
   let browser: ElectronApplication | undefined;
   let log = "";
-  proc.stderr?.on("data", (d) => (log += d));
+  proc.stderr!.on("data", (d) => (log += d));
   try {
     const port = await waitForFixturePort(proc, { diagnostics: () => log });
     const url = `http://127.0.0.1:${port}`;
@@ -181,7 +175,7 @@ test("project pointer and keyboard order persist, and a click collapses the proj
     );
     await Promise.all(
       ["assistant", "litos", "Newcrom Case"].map((name) =>
-        post("/api/projects", { path: required(folders[name]) }),
+        post("/api/projects", { path: folders[name]! }),
       ),
     );
     const [created, legal] = await Promise.all([
@@ -189,13 +183,13 @@ test("project pointer and keyboard order persist, and a click collapses the proj
         Array.from({ length: 7 }, (_, i) =>
           post("/api/leads", {
             id: crypto.randomUUID(),
-            cwd: required(folders.assistant),
+            cwd: folders.assistant!,
           }).then((chat) => ({ ...chat, name: `Review component ${i}` })),
         ),
       ),
       post("/api/leads", {
         id: crypto.randomUUID(),
-        cwd: required(folders["Newcrom Case"]),
+        cwd: folders["Newcrom Case"]!,
       }),
     ]);
     await Promise.all([
@@ -215,7 +209,7 @@ test("project pointer and keyboard order persist, and a click collapses the proj
             `codex-project-tree:${stateDir}`,
             JSON.stringify({ [path]: true }),
           ),
-        { stateDir, path: required(folders.assistant) },
+        { stateDir, path: folders.assistant! },
       );
       await page.reload({ waitUntil: "domcontentloaded" });
     } else {
@@ -225,7 +219,7 @@ test("project pointer and keyboard order persist, and a click collapses the proj
             `codex-project-tree:${stateDir}`,
             JSON.stringify({ [path]: true }),
           ),
-        { stateDir, path: required(folders.assistant) },
+        { stateDir, path: folders.assistant! },
       );
       await page.goto(url, { waitUntil: "domcontentloaded" });
     }
@@ -290,14 +284,12 @@ test("project pointer and keyboard order persist, and a click collapses the proj
       "Sidebar migration waits for the session token",
     );
     if (!process.env.CODEX_TEST_DESKTOP) {
-      const migrated = required(
-        (await readTestState(url)).runtime.sidebarOrder,
-      );
+      const migrated = (await readTestState(url)).runtime.sidebarOrder!;
       assert.ok(migrated.groups);
       assert.deepEqual(migrated.groups.projects, [
-        required(folders.assistant),
-        required(folders["Newcrom Case"]),
-        required(folders.litos),
+        folders.assistant!,
+        folders["Newcrom Case"]!,
+        folders.litos!,
       ]);
     }
     const secondContext = process.env.CODEX_TEST_DESKTOP
@@ -318,8 +310,8 @@ test("project pointer and keyboard order persist, and a click collapses the proj
       });
     const movedProjects = await projectOrder();
     assert.ok(
-      movedProjects.indexOf(required(folders.litos)) <
-        movedProjects.indexOf(required(folders.assistant)),
+      movedProjects.indexOf(folders.litos!) <
+        movedProjects.indexOf(folders.assistant!),
     );
     assert.notDeepEqual(movedProjects, beforeProjects);
     await waitForOrderReceipt();
@@ -328,8 +320,8 @@ test("project pointer and keyboard order persist, and a click collapses the proj
     await page.keyboard.press("Alt+ArrowUp");
     const keyboardProjects = await projectOrder();
     assert.ok(
-      keyboardProjects.indexOf(required(folders.assistant)) <
-        keyboardProjects.indexOf(required(folders.litos)),
+      keyboardProjects.indexOf(folders.assistant!) <
+        keyboardProjects.indexOf(folders.litos!),
     );
     await waitForOrderReceipt();
     if (secondPage) {
@@ -368,9 +360,7 @@ test("project pointer and keyboard order persist, and a click collapses the proj
       await expect
         .poll(() =>
           secondPage
-            .locator(
-              `[data-project-path="${required(folders.assistant)}"] [data-chat]`,
-            )
+            .locator(`[data-project-path="${folders.assistant!}"] [data-chat]`)
             .evaluateAll((rows) =>
               rows.map((row) => row.getAttribute("data-chat")),
             ),
@@ -378,16 +368,13 @@ test("project pointer and keyboard order persist, and a click collapses the proj
         .toEqual(await chatOrder());
     }
     const pinnedId = beforeChats[3];
-    const pinnedName = required(
-      (await state()).find((a) => a.id === pinnedId),
-    ).name;
+    const pinnedName = (await state()).find((a) => a.id === pinnedId)!.name;
     await chatButton(pinnedId).hover();
     await page
       .getByRole("button", { name: `Pin ${pinnedName}`, exact: true })
       .click();
     await waitFor(
-      async () =>
-        required((await state()).find((a) => a.id === pinnedId)).pinned,
+      async () => (await state()).find((a) => a.id === pinnedId)!.pinned,
     );
     await page.waitForFunction(
       (id) =>
@@ -396,7 +383,7 @@ test("project pointer and keyboard order persist, and a click collapses the proj
             `.sidebar-project[data-project-path="${CSS.escape(id.path)}"] [data-chat]`,
           )
           ?.getAttribute("data-chat") === id.chat,
-      { path: required(folders.assistant), chat: pinnedId },
+      { path: folders.assistant!, chat: pinnedId },
     );
     assert.equal(
       (await chatOrder())[0],
@@ -416,7 +403,7 @@ test("project pointer and keyboard order persist, and a click collapses the proj
     await chatButton(pinnedId).hover();
     const hovering = await row.locator(".row-copy").boundingBox();
     assert.ok(
-      required(resting).width >= required(hovering).width + 40,
+      resting!.width >= hovering!.width + 40,
       "Hidden controls return title space",
     );
     await page.mouse.move(1100, 100);
@@ -451,13 +438,11 @@ test("project pointer and keyboard order persist, and a click collapses the proj
     await waitForOrderReceipt();
     const beforeFailure = await chatOrder();
     await page.evaluate(() => {
-      window.projectTreeFixture = {
-        originalSetItem: Storage.prototype.setItem,
-      };
+      window.originalSetItem = Storage.prototype.setItem;
       Storage.prototype.setItem = function (key, value) {
         if (key.startsWith("codex-sidebar-order:"))
           throw new Error("Storage full fixture");
-        return window.projectTreeFixture.originalSetItem.call(this, key, value);
+        return window.originalSetItem.call(this, key, value);
       };
     });
     await chatButton(keyboardId).press("Alt+ArrowDown");
@@ -470,7 +455,7 @@ test("project pointer and keyboard order persist, and a click collapses the proj
       .getByText(/Could not save sidebar order:.*Storage full fixture/)
       .waitFor();
     await page.evaluate(() => {
-      Storage.prototype.setItem = window.projectTreeFixture.originalSetItem;
+      Storage.prototype.setItem = window.originalSetItem;
     });
     const savedChatOrder = await chatOrder();
     // Cross-project drags cannot change an agent's working directory.
@@ -478,8 +463,8 @@ test("project pointer and keyboard order persist, and a click collapses the proj
       group("litos").locator(".project-tree-toggle"),
     );
     assert.equal(
-      required((await state()).find((a) => a.id === keyboardId)).cwd,
-      required(folders.assistant),
+      (await state()).find((a) => a.id === keyboardId)!.cwd,
+      folders.assistant!,
     );
     await page.reload({ waitUntil: "domcontentloaded" });
     await group("assistant").waitFor();
@@ -499,8 +484,7 @@ test("project pointer and keyboard order persist, and a click collapses the proj
       .getByRole("button", { name: `Unpin ${pinnedName}`, exact: true })
       .click();
     await waitFor(
-      async () =>
-        !required((await state()).find((a) => a.id === pinnedId)).pinned,
+      async () => !(await state()).find((a) => a.id === pinnedId)!.pinned,
     );
     assert.equal(await assistantProject.getAttribute("aria-expanded"), "true");
     const assistantChatCount = await group("assistant")
@@ -538,7 +522,7 @@ test("project pointer and keyboard order persist, and a click collapses the proj
     await page
       .getByLabel("Filter projects and chats")
       .fill("Review component 2");
-    await page.locator(`[data-chat="${required(created[2]).id}"]`).click();
+    await page.locator(`[data-chat="${created[2]!.id}"]`).click();
     // The previous reload also cleared this filter implicitly. Clear it
     // explicitly so the next interaction targets the now-visible project.
     await page.getByLabel("Filter projects and chats").fill("");
@@ -560,9 +544,8 @@ test("project pointer and keyboard order persist, and a click collapses the proj
       async () => (await state()).filter((a) => a.isLead).length === 11,
     );
     assert.equal(
-      required((await state()).find((a) => a.id === required(created[2]).id))
-        .cwd,
-      required(folders.assistant),
+      (await state()).find((a) => a.id === created[2].id)!.cwd,
+      folders.assistant!,
       "New chat does not move the previous chat",
     );
     await page
@@ -572,9 +555,7 @@ test("project pointer and keyboard order persist, and a click collapses the proj
       name: "Add project",
       exact: true,
     });
-    await dialog
-      .getByLabel("Folder path")
-      .fill(required(folders["Empty project"]));
+    await dialog.getByLabel("Folder path").fill(folders["Empty project"]!);
     const directoryReadStartedAt = performance.now();
     const directoryRead = page.waitForResponse((response) => {
       const request = response.request();
@@ -582,7 +563,7 @@ test("project pointer and keyboard order persist, and a click collapses the proj
       return (
         request.method() === "GET" &&
         url.pathname === "/api/directories" &&
-        url.searchParams.get("path") === required(folders["Empty project"])
+        url.searchParams.get("path") === folders["Empty project"]!
       );
     });
     await dialog
@@ -625,8 +606,8 @@ test("project pointer and keyboard order persist, and a click collapses the proj
     await renameProject.waitFor({ state: "hidden" });
     await group("Client work").waitFor();
     assert.equal(
-      await realpath(required(folders.litos)),
-      required(folders.litos),
+      await realpath(folders.litos!),
+      folders.litos!,
       "project rename preserves the directory",
     );
     await secondContext?.close();

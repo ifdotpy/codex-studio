@@ -32,9 +32,7 @@ const imagePath = (path: string) => /\.(png|jpe?g|gif|webp|svg)$/i.test(path);
 function patchPaths(source: string) {
   const paths = new Set<string>();
   for (const match of source.matchAll(/^(?:---|\+\+\+) (.+)/gm)) {
-    const [, header] = match;
-    if (header === undefined) throw new Error("Missing patch path");
-    let [path = ""] = header.split("\t");
+    let path = match[1].split("\t")[0];
     if (path.startsWith('"')) {
       try {
         path = JSON.parse(path);
@@ -96,19 +94,13 @@ export function conversationResults(messages: Message[]): ConversationResult[] {
             if (language !== "html" && language !== "mermaid") break;
             const lines = token.raw.trimEnd().split("\n");
             // Stryker disable next-line Regex: Only the removed-start-anchor variant survives because Marked emits code tokens only for recognized fence-start lines; indentation and fence-length variants are killed by “rich output retains exact source, merges raw HTML, and excludes unfinished fences” and “only closed supported fences become previews”.
-            const first = lines[0],
-              last = lines.at(-1);
-            if (first === undefined || last === undefined)
-              throw new Error("Missing code fence lines");
-            const open = first.match(/^ {0,3}(`{3,}|~{3,})/);
-            const close = last.match(/^ {0,3}(`{3,}|~{3,})\s*$/);
-            const openingFence = open?.[1],
-              closingFence = close?.[1];
+            const open = lines[0].match(/^ {0,3}(`{3,}|~{3,})/);
+            const close = lines.at(-1)!.match(/^ {0,3}(`{3,}|~{3,})\s*$/);
             if (
-              !openingFence ||
-              !closingFence ||
-              openingFence[0] !== closingFence[0] ||
-              closingFence.length < openingFence.length
+              !open ||
+              !close ||
+              open[1][0] !== close[1][0] ||
+              close[1].length < open[1].length
             )
               break;
             add(
@@ -212,14 +204,11 @@ export function conversationResults(messages: Message[]): ConversationResult[] {
       result.diff.trim()
     ) {
       const paths = patchPaths(result.diff);
-      const [firstPath] = paths;
-      if (paths.length === 1 && firstPath === undefined)
-        throw new Error("Missing patch result path");
       add(
         {
           ...base(
-            paths.length === 1 && firstPath !== undefined
-              ? filename(firstPath)
+            paths.length === 1
+              ? filename(paths[0])
               : `Changes${paths.length ? ` · ${paths.length} files` : ""}`,
           ),
           kind: "patch",

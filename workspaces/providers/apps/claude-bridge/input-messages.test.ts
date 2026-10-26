@@ -19,8 +19,7 @@ test("unmarked input retains the legacy user message shape", async () => {
       "session",
       "input",
       groups,
-      // @ts-expect-error The identity callback deliberately bypasses native UUID encoding.
-      (id) => id,
+      (id) => id as ReturnType<typeof sdkInputMessages>[number]["uuid"],
     ),
     [
       {
@@ -60,10 +59,9 @@ test("a split input leaves the retry queue before its first part is yielded", as
     (id) => id,
   );
   const wrapper = messages.at(-1);
-  assert(wrapper);
   Object.defineProperty(wrapper, "studioInputBatch", { value: messages });
   const queue = new InputQueue<{ uuid: string; shouldQuery?: boolean }>();
-  queue.push(wrapper);
+  queue.push(wrapper!);
   const iterator = queue[Symbol.asyncIterator]();
   assert.equal((await iterator.next()).value, messages[0]);
   assert.equal(queue.values.length, 0);

@@ -2,8 +2,7 @@ import type { LocalDraftRecord } from "../../src/sync/draftStorage.ts";
 import type { useSyncedDrafts } from "../../src/sync/drafts.ts";
 import type { syncDatabase } from "../../src/sync/client.ts";
 import type PromptComposer from "../../src/components/prompt-composer/PromptComposer.tsx";
-import React from "react";
-import { createRoot } from "react-dom/client";
+import type React from "react";
 export async function mountDraftFixture({
   count,
   workspaceId,
@@ -48,18 +47,18 @@ export async function mountDraftFixture({
     () => import("../../src/sync/drafts.ts"),
   );
   try {
-    window.draftPerformancePromptComposer = (
+    window.PromptComposer = (
       await importWithRetry(
         () => import("../../src/components/prompt-composer/PromptComposer.tsx"),
       )
     ).default;
   } catch {
-    window.draftPerformancePromptComposer = null;
+    window.PromptComposer = null;
   }
   const { db } = await (
     await importWithRetry(() => import("../../src/sync/client.ts"))
   ).syncDatabase();
-  window.draftPerformanceDb = db;
+  window.db = db;
   const docs = Object.entries(drafts).map(([session, text]) => ({
     id: "fixture:" + session,
     seq: 0,
@@ -78,42 +77,41 @@ export async function mountDraftFixture({
     { createRoot } = d.default || d;
   const node = document.createElement("div");
   document.body.append(node);
-  window.draftPerformanceCommits = 0;
-  window.draftPerformanceRenders = 0;
-  window.draftPerformanceComposerCommits = 0;
-  window.draftPerformanceSidebarRenders = 0;
-  window.draftPerformanceTranscriptRenders = 0;
+  window.commits = 0;
+  window.renders = 0;
+  window.composerCommits = 0;
+  window.sidebarRenders = 0;
+  window.transcriptRenders = 0;
   createRoot(node).render(
     React.createElement(
       React.Profiler,
-      { id: "draft", onRender: () => window.draftPerformanceCommits++ },
+      { id: "draft", onRender: () => window.commits++ },
       React.createElement(function Harness() {
-        window.draftPerformanceRenders++;
-        window.draftPerformanceDraft = useSyncedDrafts();
+        window.renders++;
+        window.draft = useSyncedDrafts();
         return React.createElement(
           React.Fragment,
           null,
           React.createElement(function SidebarFixture() {
-            window.draftPerformanceSidebarRenders++;
+            window.sidebarRenders++;
             return React.createElement("aside");
           }),
           React.createElement(function TranscriptFixture() {
-            window.draftPerformanceTranscriptRenders++;
+            window.transcriptRenders++;
             return React.createElement("main");
           }),
-          typeof window.draftPerformanceDraft.getDraft === "function" &&
-            window.draftPerformancePromptComposer
-            ? React.createElement(window.draftPerformancePromptComposer, {
+          typeof window.draft.getDraft === "function" && window.PromptComposer
+            ? React.createElement(window.PromptComposer, {
                 session: "chat-0",
-                getDraft: window.draftPerformanceDraft.getDraft,
-                subscribeDraft: window.draftPerformanceDraft.subscribeDraft,
+                getDraft: window.draft.getDraft,
+                subscribeDraft: window.draft.subscribeDraft,
                 onSubmit: (event: React.FormEvent) => event.preventDefault(),
                 children: (value: string) =>
                   React.createElement(
                     React.Profiler,
                     {
                       id: "prompt-composer",
-                      onRender: () => window.draftPerformanceComposerCommits++,
+                      onRender: () => window.composerCommits++,
                     },
                     React.createElement("span", null, value),
                   ),
@@ -122,12 +120,12 @@ export async function mountDraftFixture({
                 React.Profiler,
                 {
                   id: "prompt-composer",
-                  onRender: () => window.draftPerformanceComposerCommits++,
+                  onRender: () => window.composerCommits++,
                 },
                 React.createElement(
                   "span",
                   null,
-                  window.draftPerformanceDraft.drafts["chat-0"],
+                  window.draft.drafts["chat-0"],
                 ),
               ),
         );
@@ -137,24 +135,28 @@ export async function mountDraftFixture({
 }
 export async function mountOtherDraftFixture() {
   const { useSyncedDrafts } = await import("../../src/sync/drafts.ts");
+  const r = await import("react");
+  const d = await import("react-dom/client");
+  const React = r.default || r;
+  const { createRoot } = d.default || d;
   const node = document.createElement("div");
   document.body.appendChild(node);
   createRoot(node).render(
     React.createElement(function Harness() {
-      window.draftPerformanceDraft = useSyncedDrafts();
+      window.draft = useSyncedDrafts();
       return null;
     }),
   );
 }
 declare global {
   interface Window {
-    draftPerformanceDraft: ReturnType<typeof useSyncedDrafts>;
-    draftPerformanceDb: Awaited<ReturnType<typeof syncDatabase>>["db"];
-    draftPerformancePromptComposer: typeof PromptComposer | null;
-    draftPerformanceCommits: number;
-    draftPerformanceRenders: number;
-    draftPerformanceComposerCommits: number;
-    draftPerformanceSidebarRenders: number;
-    draftPerformanceTranscriptRenders: number;
+    draft: ReturnType<typeof useSyncedDrafts>;
+    db: Awaited<ReturnType<typeof syncDatabase>>["db"];
+    PromptComposer: typeof PromptComposer | null;
+    commits: number;
+    renders: number;
+    composerCommits: number;
+    sidebarRenders: number;
+    transcriptRenders: number;
   }
 }

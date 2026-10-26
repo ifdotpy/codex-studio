@@ -350,7 +350,7 @@ mod unbounded_batch_tests {
             .iter()
             .map(|id| json!({"id":id,"agent":"agent","epoch":1,"status":"reserved","turn_id":null}))
             .collect();
-        let agent = json!({"id":"agent","rootId":"agent","epoch":1,"accountKey":"default","threadId":"thread",
+        let agent = json!({"provider":studio_runtime_schema::ProviderKind::Codex,"id":"agent","rootId":"agent","epoch":1,"accountKey":"default","threadId":"thread",
             "autoWake":true,"status":"starting","inFlight":true,"startAttempt":{"id":"attempt","epoch":1,
             "accountKey":"default","threadId":"thread","submitted":false,"events":ids}});
         let denial = AdmissionDenial {

@@ -29,7 +29,7 @@ use serde_json::{Value, json};
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
-use studio_runtime_providers::ProviderKind;
+use studio_runtime_schema::ProviderKind;
 use studio_runtime_schema::shared_values::{
     ACCOUNT_RUNNING_TURNS_DEFAULT_CLAUDE, ACCOUNT_RUNNING_TURNS_DEFAULT_CODEX,
     ACCOUNT_RUNNING_TURNS_MAX, ACCOUNT_RUNNING_TURNS_MIN, ACCOUNT_START_BURST_DEFAULT_CLAUDE,
@@ -96,18 +96,19 @@ impl StartThrottle {
     }
 
     /// The throttle stored on an account registry row; its provider's
-    /// defaults when the row has none (a row without a known provider is the
-    /// legacy Codex form). The registry schema validates a stored value.
-    pub fn of_record(row: &Value) -> Self {
+    /// defaults when the row has none. A known provider is required even when
+    /// the row contains valid stored limits.
+    pub fn of_record(row: &Value) -> Option<Self> {
+        let provider = ProviderKind::of_record(row).ok()?;
         let stored = &row[REGISTRY_FIELD];
         let field = |key: &str| stored.get(key).and_then(Value::as_u64);
-        field("burst")
-            .zip(field("pauseSeconds"))
-            .zip(field("maxRunningTurns"))
-            .and_then(|((burst, pause), running)| Self::new(burst, pause, running))
-            .unwrap_or_else(|| {
-                Self::provider_default(ProviderKind::of_record(row).unwrap_or(ProviderKind::Codex))
-            })
+        Some(
+            field("burst")
+                .zip(field("pauseSeconds"))
+                .zip(field("maxRunningTurns"))
+                .and_then(|((burst, pause), running)| Self::new(burst, pause, running))
+                .unwrap_or_else(|| Self::provider_default(provider)),
+        )
     }
 
     /// The registry row value of this throttle.
@@ -343,7 +344,15 @@ impl StartGate {
         let mut accounts = sources.driver.change_signal().subscribe();
         let mut shown = None;
         loop {
-            let throttle = sources.driver.start_throttle(&sources.account);
+            let throttle = sources
+                .driver
+                .start_throttle(&sources.account)
+                .map_err(|error| {
+                    ContinuationError::Invalid(format!(
+                        "account-start/{}: {error}",
+                        sources.account
+                    ))
+                })?;
             // Mark the current agent-row generation seen before reading the
             // in-flight state, so a commit after the read wakes this waiter.
             sources.agent_changes.borrow_and_update();
@@ -863,21 +872,90 @@ mod tests {
     }
 
     #[test]
+    fn provider_identity_throttle_rejects_unknown_even_with_stored_limits() {
+        use super::REGISTRY_FIELD;
+        use serde_json::{Value, json};
+        let stored = throttle(2, 5, 3);
+        for provider in [
+            None,
+            Some(Value::Null),
+            Some(json!("future")),
+            Some(json!(7)),
+        ] {
+            for limits in [None, Some(stored.to_record())] {
+                let mut row = json!({});
+                if let Some(provider) = provider.clone() {
+                    row["provider"] = provider;
+                }
+                if let Some(limits) = limits {
+                    row[REGISTRY_FIELD] = limits;
+                }
+                assert_eq!(StartThrottle::of_record(&row), None, "{row}");
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn provider_identity_gate_refuses_missing_account_without_admission() {
+        use super::{AccountDriver, ContinuationError, StartGate, StartSources};
+        use serde_json::json;
+        use std::sync::Arc;
+        use studio_runtime_schema::shared_values::ACCOUNT_REGISTRY_FORMAT_VERSION;
+        use studio_runtime_store::RuntimeStore;
+        let root = tempfile::tempdir().expect("state directory");
+        let store = Arc::new(RuntimeStore::open(Some(root.path())).await.expect("store"));
+        let registry = root.path().join("accounts/registry.json");
+        std::fs::create_dir_all(registry.parent().expect("registry parent"))
+            .expect("accounts directory");
+        std::fs::write(&registry, json!({"version":ACCOUNT_REGISTRY_FORMAT_VERSION,"defaultAccountKey":"default","accounts":{"default":{"id":"default","provider":"codex","home":root.path(),"label":"Fixture","source":"Codex CLI","status":"signedOut"}},"logins":{}}).to_string()).expect("registry");
+        let driver = Arc::new(AccountDriver::open(registry).expect("driver"));
+        assert!(driver.start_throttle("default").is_ok());
+        assert!(matches!(
+            driver.start_throttle("missing"),
+            Err(crate::account_driver::AccountDriverError::UnknownAccount)
+        ));
+        let (_changes, agent_changes) = tokio::sync::watch::channel(0);
+        let gate = Arc::new(StartGate::default());
+        let result = gate
+            .admit(
+                "a",
+                0,
+                StartSources {
+                    store,
+                    agent_changes,
+                    driver,
+                    account: "missing".into(),
+                },
+            )
+            .await;
+        assert!(
+            matches!(result, Err(ContinuationError::Invalid(reason)) if reason.contains("account-start/missing"))
+        );
+        assert!(gate.lock().running.is_empty());
+        assert!(gate.lock().waiters.is_empty());
+    }
+
+    #[test]
     fn stored_throttles_outside_the_bounds_read_as_the_provider_defaults() {
         use serde_json::json;
-        use studio_runtime_providers::ProviderKind;
+        use studio_runtime_schema::ProviderKind;
         let codex = StartThrottle::provider_default(ProviderKind::Codex);
         let claude = StartThrottle::provider_default(ProviderKind::Claude);
         assert_ne!(codex, claude);
-        assert_eq!(StartThrottle::of_record(&json!({})), codex);
+        assert_eq!(
+            StartThrottle::of_record(&json!({"provider":"codex"})),
+            Some(codex)
+        );
         assert_eq!(
             StartThrottle::of_record(&json!({"provider":"claude"})),
-            claude
+            Some(claude)
         );
         let stored = throttle(2, 5, 3);
         assert_eq!(
-            StartThrottle::of_record(&json!({"startThrottle": stored.to_record()})),
-            stored
+            StartThrottle::of_record(
+                &json!({"provider":"codex","startThrottle": stored.to_record()})
+            ),
+            Some(stored)
         );
         for invalid in [
             json!({"burst":0,"pauseSeconds":1,"maxRunningTurns":1}),
@@ -885,14 +963,14 @@ mod tests {
             json!({"burst":1,"pauseSeconds":-1,"maxRunningTurns":1}),
         ] {
             assert_eq!(
-                StartThrottle::of_record(&json!({ "startThrottle": invalid })),
-                codex
+                StartThrottle::of_record(&json!({ "provider":"codex", "startThrottle": invalid })),
+                Some(codex)
             );
             assert_eq!(
                 StartThrottle::of_record(
                     &json!({ "provider": "claude", "startThrottle": invalid })
                 ),
-                claude
+                Some(claude)
             );
         }
     }

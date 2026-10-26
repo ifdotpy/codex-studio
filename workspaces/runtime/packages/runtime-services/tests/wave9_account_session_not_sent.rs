@@ -161,9 +161,9 @@ impl Fixture {
         std::fs::write(
             &registry,
             json!({
-                "version":1,
+                "version":studio_runtime_schema::shared_values::ACCOUNT_REGISTRY_FORMAT_VERSION,
                 "defaultAccountKey":"default",
-                "accounts":{"default":{"id":"default","home":base_home,"source":"Fixture","label":"Default","status":"signedOut"}},
+                "accounts":{"default":{"provider":studio_runtime_schema::ProviderKind::Codex,"id":"default","home":base_home,"source":"Fixture","label":"Default","status":"signedOut"}},
                 "logins":{}
             })
             .to_string(),

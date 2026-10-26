@@ -2228,10 +2228,11 @@ mod limits_runtime_tests {
         let registry_path = root.path().join("accounts/registry.json");
         fs::create_dir_all(registry_path.parent().unwrap()).unwrap();
         let registry = serde_json::to_vec(&json!({
-            "version":1,
+            "version":studio_runtime_schema::shared_values::ACCOUNT_REGISTRY_FORMAT_VERSION,
             "defaultAccountKey":"default",
             "accounts":{"default":{
-                "id":"default","home":home,"label":"Codex","source":"Codex CLI","accountId":"fixture-account","status":"signedOut"
+                "id":"default","home":home,"label":"Codex","source":"Codex CLI","accountId":"fixture-account","status":"signedOut",
+                "provider":studio_runtime_schema::ProviderKind::Codex
             }},
             "logins":{},"deleteReceipts":{}
         }))
@@ -2522,7 +2523,7 @@ mod limits_runtime_tests {
         let now = super::timestamp().unwrap();
         store.transaction_with(move |tx| {
             let resume=json!({"id":"resume","accountKey":"default","threadId":"thread","epoch":1,"turnId":"turn","cause":"rate_limit","status":"scheduled","failedAt":now-61.0,"dueAt":now+900.0,"taskClaims":[]});
-            let agent=json!({"id":"a","rootId":"a","epoch":1,"status":"failed","accountKey":"default","threadId":"thread","lastCompletedTurn":"turn","autoWake":true,"nativeFailureHold":true,"cwd":"/fixture","isLead":true,"usageResume":resume});
+            let agent=json!({"id":"a","rootId":"a","epoch":1,"status":"failed","accountKey":"default","threadId":"thread","lastCompletedTurn":"turn","autoWake":true,"nativeFailureHold":true,"cwd":"/fixture","isLead":true,"usageResume":resume,"provider":studio_runtime_schema::ProviderKind::Codex});
             tx.execute("INSERT INTO runtime_agents(id,record) VALUES ('a',?1)",[agent.to_string()])?;
             tx.execute("INSERT INTO runtime_usage_resumes(id,agent,record) VALUES ('resume','a',?1)",[resume.to_string()])?;
             Ok::<_,studio_runtime_store::StoreError>(())

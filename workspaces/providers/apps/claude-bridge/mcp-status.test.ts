@@ -40,7 +40,7 @@ test("MCP status and reconnect use the session query and preserve discovery pagi
       cursor: first.nextCursor,
       limit: 1,
     });
-    assert.ok(second.data[0]);
+
     assert.equal(second.data[0].status, "failed");
     assert.equal(second.nextCursor, null);
     await bridge.call("mcpServer/reconnect", {
@@ -49,7 +49,7 @@ test("MCP status and reconnect use the session query and preserve discovery pagi
     });
     assert.equal(
       (await bridge.call("mcpServerStatus/list", { threadId: bridge.thread }))
-        .data[1]?.status,
+        .data[1].status,
       "connected",
     );
     await assert.rejects(

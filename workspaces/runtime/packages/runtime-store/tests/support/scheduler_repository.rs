@@ -28,6 +28,7 @@ fn database() -> Connection {
         .execute_batch(crate::agent_volatile::agent_volatile_table_sql())
         .expect("volatile agent table creates");
     let mut extra = BTreeMap::new();
+    extra.insert("provider".to_owned(), json!("codex"));
     extra.insert("autoWake".to_owned(), json!(true));
     extra.insert("inFlight".to_owned(), json!(false));
     AgentRepository::put(

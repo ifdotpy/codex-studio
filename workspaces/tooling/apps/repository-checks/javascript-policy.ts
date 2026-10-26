@@ -3,33 +3,21 @@ import { readFileSync } from "node:fs";
 import ts from "typescript";
 
 // Runtime entrypoints loaded unchanged, without a TypeScript loader.
-export const JAVASCRIPT_EXCEPTIONS = [
-  {
-    file: "workspaces/client/apps/desktop/preload.cjs",
-    purpose: "Sandboxed Electron preload has no TypeScript loader.",
-  },
-  {
-    file: "workspaces/providers/apps/claude-bridge/bridge.mjs",
-    purpose:
-      "Stable VM launcher checks Node TypeScript support before loading the bridge.",
-  },
-  {
-    file: "workspaces/client/apps/native/src-tauri/src/native-check.js",
-    purpose: "Rust include_str! embeds these WebView bytes unchanged.",
-  },
-  {
-    file: "workspaces/client/apps/web/public/studio-startup.js",
-    purpose: "Browser startup script is served unchanged.",
-  },
-  {
-    file: "workspaces/client/apps/web/public/studio-sw.js",
-    purpose: "Browser service worker is served unchanged.",
-  },
-  {
-    file: "workspaces/client/apps/web/stryker.config.mjs",
-    purpose: "Installed Stryker loads JavaScript or JSON configuration only.",
-  },
-];
+export const JAVASCRIPT_EXCEPTIONS_FILE =
+  "workspaces/tooling/apps/repository-checks/javascript-exceptions.json";
+export interface JavaScriptException {
+  file: string;
+  purpose: string;
+}
+// The repository owns this document; the hook passes its staged version explicitly.
+export function readJavaScriptExceptions(): JavaScriptException[] {
+  return JSON.parse(
+    readFileSync(
+      new URL("./javascript-exceptions.json", import.meta.url),
+      "utf8",
+    ),
+  );
+}
 
 export function isJavaScript(file: string) {
   return /\.(?:[cm]?js|jsx)$/.test(file);
@@ -47,6 +35,7 @@ export function javascriptFindings(
   root: string,
   tracked: string[],
   selected = tracked,
+  exceptions = readJavaScriptExceptions(),
 ): string[] {
   const javascript = selected.filter(isJavaScript);
   if (!javascript.length) return [];
@@ -69,7 +58,7 @@ export function javascriptFindings(
       included.add(path.resolve(file));
   }
   for (const file of javascript) {
-    if (!JAVASCRIPT_EXCEPTIONS.some((entry) => entry.file === file)) {
+    if (!exceptions.some((entry) => entry.file === file)) {
       findings.push(
         `${file}: tracked JavaScript is not a documented runtime exception`,
       );

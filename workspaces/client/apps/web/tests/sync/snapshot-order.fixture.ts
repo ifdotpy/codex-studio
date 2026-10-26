@@ -1,4 +1,4 @@
-import type { ResourceChangeEvent } from "../playwright.ts";
+import type { FixtureResourceFrame } from "./browser-helpers.ts";
 
 type Bounds = { y: number; width: number; height: number; className: string };
 type GeometryFrame = {
@@ -15,7 +15,7 @@ declare global {
   interface Window {
     __snapshotOrderResourceFrames: Array<{
       at: number;
-      frame: ResourceChangeEvent;
+      frame: FixtureResourceFrame;
     }>;
     __snapshotOrderOpenStable: { previous: number[] | null; frames: number };
     __snapshotOrderLabelFrames: {

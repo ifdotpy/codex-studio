@@ -3947,6 +3947,7 @@ mod tests {
             .expect("runtime store");
         let record = json!({
             "id":"conversation",
+            "provider":studio_runtime_schema::ProviderKind::Codex,
             "accountKey":"conversation-account",
             "rootId":"conversation",
             "workerDefaults":{"accountKey":"worker-default-account"}
@@ -4035,7 +4036,7 @@ mod tests {
                     "INSERT INTO runtime_agents(id,record) VALUES(?1,?2)",
                     rusqlite::params![
                         "conversation",
-                        json!({"id":"conversation","accountKey":"old-account"}).to_string()
+                        json!({"id":"conversation","provider":studio_runtime_schema::ProviderKind::Codex,"accountKey":"old-account"}).to_string()
                     ],
                 )?;
                 Ok(())
@@ -4044,7 +4045,7 @@ mod tests {
             .expect("seed project and conversation");
         let accounts = AccountPolicyState::from_startup(
             Some(
-                br#"{"version":1,"defaultAccountKey":"default","accounts":{"default":{"id":"default","home":"/default","label":"Default","source":"Codex CLI","status":"signedOut"}},"logins":{},"deleteReceipts":{}}"#,
+                &serde_json::to_vec(&json!({"version":studio_runtime_schema::shared_values::ACCOUNT_REGISTRY_FORMAT_VERSION,"defaultAccountKey":"default","accounts":{"default":{"id":"default","provider":studio_runtime_schema::ProviderKind::Codex,"home":"/default","label":"Default","source":"Codex CLI","status":"signedOut"}},"logins":{},"deleteReceipts":{}})).expect("current registry JSON"),
             ),
             [],
         )
@@ -4110,7 +4111,7 @@ mod tests {
                     "INSERT INTO runtime_agents(id,record) VALUES(?1,?2)",
                     rusqlite::params![
                         "conversation",
-                        json!({"id":"conversation","accountKey":"claude-own"}).to_string()
+                        json!({"id":"conversation","provider":studio_runtime_schema::ProviderKind::Claude,"accountKey":"claude-own"}).to_string()
                     ],
                 )?;
                 Ok(())
@@ -4120,9 +4121,9 @@ mod tests {
         // Claude profiles name their own config folders, so the credential watch
         // stays inside the fixture.
         let config = |name: &str| state.path().join(name).to_string_lossy().into_owned();
-        let registry = json!({"version":1,"defaultAccountKey":"codex-own","accounts":{
-            "codex-own":{"id":"codex-own","home":config("a"),"label":"A","source":"Codex CLI","status":"ready"},
-            "codex-work":{"id":"codex-work","home":config("b"),"label":"B","source":"Codex CLI","status":"ready"},
+        let registry = json!({"version":studio_runtime_schema::shared_values::ACCOUNT_REGISTRY_FORMAT_VERSION,"defaultAccountKey":"codex-own","accounts":{
+            "codex-own":{"provider":studio_runtime_schema::ProviderKind::Codex,"id":"codex-own","home":config("a"),"label":"A","source":"Codex CLI","status":"ready"},
+            "codex-work":{"provider":studio_runtime_schema::ProviderKind::Codex,"id":"codex-work","home":config("b"),"label":"B","source":"Codex CLI","status":"ready"},
             "claude-own":{"id":"claude-own","home":config("c"),"label":"C","source":"Claude Code","provider":"claude","status":"ready","claudeOptions":{"configDir":config("c")}},
             "claude-work":{"id":"claude-work","home":config("d"),"label":"D","source":"Claude Code","provider":"claude","status":"ready","claudeOptions":{"configDir":config("d")}}
         },"logins":{},"deleteReceipts":{}});
@@ -4345,9 +4346,9 @@ mod tests {
         std::fs::write(
             &registry_path,
             json!({
-                "version":1,
+                "version":studio_runtime_schema::shared_values::ACCOUNT_REGISTRY_FORMAT_VERSION,
                 "defaultAccountKey":"default",
-                "accounts":{"default":{"id":"default","home":root,"label":"Codex","source":"Codex CLI","status":"signedOut"}},
+                "accounts":{"default":{"provider":studio_runtime_schema::ProviderKind::Codex,"id":"default","home":root,"label":"Codex","source":"Codex CLI","status":"signedOut"}},
                 "logins":{},
                 "deleteReceipts":{}
             })
@@ -4364,7 +4365,7 @@ mod tests {
             } else {
                 json!({"cwd":root})
             };
-            let mut record = json!({"id":scenario,"isLead":true,"cwd":root,"status":"idle"});
+            let mut record = json!({"id":scenario,"provider":studio_runtime_schema::ProviderKind::Codex,"isLead":true,"cwd":root,"status":"idle"});
             record["creationIntent"] = intent.clone();
             record["quickCreate"] = json!(true);
             record["quickCreateRequest"] =

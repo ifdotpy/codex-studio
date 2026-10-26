@@ -6,7 +6,7 @@ import type {
 } from "../../src/apiTypes.ts";
 import { sidebarFixtureRadio } from "./sidebar-fixture-values.ts";
 import type { TestRuntimeView } from "../playwright.ts";
-import type { ApiPostPath, PostBody } from "../../src/apiTypes.ts";
+import type { FixtureRequestFields } from "../servers/browser-fixture.ts";
 import type { BrowserContext, Page } from "playwright";
 import type { components } from "../../src/generated/api.ts";
 import type { TestAgent } from "../playwright.ts";
@@ -222,8 +222,17 @@ export async function sidebarParityFixture(
   const calls: Record<
     Owner,
     {
-      [Path in ApiPostPath]: { path: Path; body: PostBody<Path> };
-    }[ApiPostPath][]
+      path: string;
+      body: FixtureRequestFields<
+        | "/api/organization"
+        | "/api/projects"
+        | "/api/peer-teams"
+        | "/api/rename"
+        | "/api/conversation"
+        | "/api/conversation/delete"
+        | "/api/leads"
+      >;
+    }[]
   > = { local: [], remote: [] };
   const reads: Record<Owner, string[]> = { local: [], remote: [] };
   const preferences: Record<
@@ -661,7 +670,7 @@ export async function sidebarParityFixture(
             projectPath: body.path,
             members:
               ("participants" in body
-                ? body.participants.map((_, index) => `radio-${index}`)
+                ? body.participants?.map((_, index) => `radio-${index}`)
                 : undefined) ||
               teams.find(
                 (team) =>

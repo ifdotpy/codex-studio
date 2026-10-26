@@ -7,11 +7,12 @@ use crate::notification_dispatch::NotificationStreamMetrics;
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use serde_json::{Value, json};
 use std::sync::Arc;
+use studio_runtime_schema::provider_kind::ProviderKind;
 use studio_runtime_schema::usage::ledger::{
     UsageCorrection, UsageIdentity, UsageLedgerRow, correction,
 };
 use studio_runtime_schema::usage::{
-    LegacyUsageTotals, UsageObservation, UsageParseError, UsageProvider, UsageScope, UsageTokens,
+    LegacyUsageTotals, UsageObservation, UsageParseError, UsageScope, UsageTokens,
     parse_analytics_usage_row, parse_legacy_totals, parse_token_usage,
 };
 use studio_runtime_store::CachedSql;
@@ -130,6 +131,8 @@ impl PreparedCapture {
         source: CaptureSource,
         ledger_since: studio_runtime_schema::usage::ledger::LedgerEpoch,
     ) -> Result<Self, CaptureError> {
+        let provider = ProviderKind::of_record(&agent)
+            .map_err(|_| CaptureError::Invalid("/agent/provider"))?;
         if !params.is_object() {
             return Err(CaptureError::Invalid("/params"));
         }
@@ -145,7 +148,6 @@ impl PreparedCapture {
             return Err(StoreError::SchemaValidation(format!("analytics_notice{pointer}")).into());
         }
         let (usage, legacy_usage) = if method == "thread/tokenUsage/updated" {
-            let provider = usage_provider(&agent);
             match parse_token_usage(provider, params) {
                 Ok(observation) => (Some(observation), None),
                 Err(error) => match parse_legacy_totals(provider, params) {
@@ -423,7 +425,7 @@ impl CaptureSnapshot {
             if let Some(row) = row {
                 table.validate(row)?;
                 if table == CaptureTable::Usage && row.get("studioUsage").is_some() {
-                    UsageLedgerRow::from_analytics(usage_provider(&prepared.agent), row)?;
+                    UsageLedgerRow::from_typed_analytics(row)?;
                 }
             }
         }
@@ -985,7 +987,9 @@ pub fn decide(
         );
     }
     if method == "thread/tokenUsage/updated" {
-        usage(&q, &mut meta, &rows, &mut result);
+        let provider = ProviderKind::of_record(&q.agent)
+            .map_err(|_| CaptureError::Invalid("/agent/provider"))?;
+        usage(&q, provider, &mut meta, &rows, &mut result);
         return Ok(result);
     }
     if q.model {
@@ -1428,13 +1432,6 @@ fn hash(v: &Value) -> String {
     sha256_hex(python_json_compact(v).as_bytes())
 }
 
-pub(crate) fn usage_provider(agent: &Value) -> UsageProvider {
-    if agent["provider"] == "claude" {
-        UsageProvider::Claude
-    } else {
-        UsageProvider::Codex
-    }
-}
 fn domain(observation: &UsageObservation) -> &'static str {
     match observation {
         UsageObservation::Response { .. } => "response",
@@ -1509,7 +1506,13 @@ fn old_legacy_usage_key(meta: &Value, legacy: &LegacyUsageTotals, params: &Value
     });
     hash(&identity)
 }
-fn usage(q: &PreparedCapture, meta: &mut Value, rows: &CaptureRows, out: &mut CaptureDecision) {
+fn usage(
+    q: &PreparedCapture,
+    provider: ProviderKind,
+    meta: &mut Value,
+    rows: &CaptureRows,
+    out: &mut CaptureDecision,
+) {
     if q.usage_unknown {
         out.unknown_usage = Some(
             json!({"agent":meta["agentId"],"observationKey":q.usage.as_ref().map(|observation|UsageLedgerRow::capture(text(&meta["agentId"]),meta["threadId"].as_str(),observation.clone()).observation_key()).or_else(||q.legacy_usage.as_ref().map(|legacy|legacy_usage_key(meta,legacy,&q.params))),"fault":studio_runtime_schema::usage::ledger::UNKNOWN_USAGE_RECEIPT}),
@@ -1591,7 +1594,7 @@ fn usage(q: &PreparedCapture, meta: &mut Value, rows: &CaptureRows, out: &mut Ca
         return;
     }
     if let Some(previous) = existing
-        && let Ok(old) = UsageLedgerRow::from_analytics(usage_provider(&q.agent), previous)
+        && let Ok(old) = UsageLedgerRow::from_analytics(provider, previous)
     {
         match correction(&old.studio_usage, &observation) {
             UsageCorrection::Apply | UsageCorrection::UnresolvedGap => {}
@@ -1622,8 +1625,7 @@ fn usage(q: &PreparedCapture, meta: &mut Value, rows: &CaptureRows, out: &mut Ca
         meta["threadId"].as_str(),
         observation.clone(),
     );
-    if let Some(old) =
-        existing.and_then(|row| UsageLedgerRow::from_analytics(usage_provider(&q.agent), row).ok())
+    if let Some(old) = existing.and_then(|row| UsageLedgerRow::from_analytics(provider, row).ok())
         && old.receipt_key.is_some()
     {
         ledger.receipt_key = old.receipt_key;
@@ -1671,7 +1673,7 @@ fn usage(q: &PreparedCapture, meta: &mut Value, rows: &CaptureRows, out: &mut Ca
             let prior = rows
                 .prior_usage
                 .as_ref()
-                .and_then(|row| parse_analytics_usage_row(usage_provider(&q.agent), row).ok());
+                .and_then(|row| parse_analytics_usage_row(provider, row).ok());
             let previous = match prior {
                 Some(UsageObservation::Cumulative { total, .. }) => Some(total),
                 _ => None,
@@ -1768,6 +1770,85 @@ pub async fn capture_limit(
 #[cfg(test)]
 mod usage_contract_tests {
     use super::*;
+
+    #[test]
+    fn provider_identity_invalid_capture_is_refused() {
+        for provider in [
+            None,
+            Some(Value::Null),
+            Some(json!("future")),
+            Some(json!("")),
+            Some(json!(7)),
+            Some(json!({})),
+        ] {
+            let mut agent =
+                json!({"id":"agent","name":"Agent","rootId":"root","threadId":"thread"});
+            if let Some(provider) = &provider {
+                agent["provider"] = provider.clone();
+            }
+            let params = json!({"threadId":"thread","studioUsage":{"kind":"response","responseId":"r","model":"gpt-test","evidence":"live","tokens":{"uncachedInput":12,"cacheReadInput":3,"cacheWriteInput":2,"output":7}}});
+            assert!(
+                PreparedCapture::event(
+                    &agent,
+                    "thread/tokenUsage/updated",
+                    &params,
+                    1.,
+                    2.,
+                    CaptureSource::Live,
+                    Default::default()
+                )
+                .is_err(),
+                "provider {provider:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn provider_identity_capture_preserves_known_typed_usage() {
+        for provider in ProviderKind::ALL {
+            let mut agent =
+                json!({"id":"agent","name":"Agent","rootId":"root","threadId":"thread"});
+            agent["provider"] = json!(provider.key());
+            let params = json!({"threadId":"thread","studioUsage":{"kind":"response","responseId":"r","model":"model","evidence":"live","tokens":{"uncachedInput":12,"cacheReadInput":3,"cacheWriteInput":2,"output":7}}});
+            let prepared = PreparedCapture::event(
+                &agent,
+                "thread/tokenUsage/updated",
+                &params,
+                1.,
+                2.,
+                CaptureSource::Live,
+                Default::default(),
+            )
+            .expect("known identity");
+            let decision = decide(
+                CaptureSnapshot::from_records(Arc::new(prepared), CaptureRows::default())
+                    .expect("snapshot"),
+                Default::default(),
+            )
+            .expect("capture");
+            let usage = &decision
+                .rows
+                .iter()
+                .find(|(table, _)| *table == CaptureTable::Usage)
+                .expect("usage row")
+                .1;
+            assert_eq!(usage["studioUsage"], params["studioUsage"]);
+            let mut malformed = params.clone();
+            malformed["studioUsage"]["tokens"]["uncachedInput"] = json!("invalid");
+            assert!(
+                PreparedCapture::event(
+                    &agent,
+                    "thread/tokenUsage/updated",
+                    &malformed,
+                    1.,
+                    2.,
+                    CaptureSource::Live,
+                    Default::default()
+                )
+                .is_err()
+            );
+        }
+    }
 
     #[test]
     fn typed_usage_legacy_claude_totals_are_preserved_without_invented_categories() {

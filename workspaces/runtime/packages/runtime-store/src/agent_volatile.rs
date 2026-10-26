@@ -257,7 +257,7 @@ pub fn prepare(transaction: &Transaction<'_>) -> StoreResult<()> {
 /// Tables that `runtime_agents` triggers advance on every record change. The
 /// 2026-10-20 move changes no agent's content, so it restores them: no change
 /// journal entry, transcript revision or sync projection follows from it.
-const MIGRATION_PRESERVED_TABLES: [&str; 4] = [
+pub(crate) const MIGRATION_PRESERVED_TABLES: [&str; 4] = [
     "runtime_agent_record_generation",
     "runtime_scheduler_agent_change_state",
     "runtime_scheduler_agent_changes",
@@ -556,11 +556,11 @@ mod tests {
 
     fn agents() -> Vec<Value> {
         vec![
-            json!({"id":"a","rootId":"a","epoch":1,"status":"running","threadId":"t",
+            json!({"id":"a","provider":"codex","rootId":"a","epoch":1,"status":"running","threadId":"t",
                 "events":7,"lastEvent":"2026-10-20T00:00:00Z","activity":{"phase":"writing","at":5.0},
                 "activeTools":[],"tail":"answer tail","lastAnswer":"answer","contextUsage":null,
                 "tokensUsed":120,"tokenUsageAccounting":"total","prompt":"keep"}),
-            json!({"id":"b","rootId":"a","epoch":0,"status":"idle","name":"no volatile fields"}),
+            json!({"id":"b","provider":"codex","rootId":"a","epoch":0,"status":"idle","name":"no volatile fields"}),
         ]
     }
 

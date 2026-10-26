@@ -1,38 +1,27 @@
 declare global {
   interface Window {
-    dictationFixture: {
-      speechProgress?: Parameters<DesktopBridge["onTranscriptionProgress"]>[0];
-      rejectTranscription?: (reason: Error) => void;
-      attemptId: string;
-      audioBytes: number;
-      deferTranscription: boolean;
-      finishTranscription:
-        | ((
-            value: Awaited<ReturnType<DesktopBridge["transcribeAudio"]>>,
-          ) => void)
-        | null;
-      retryOK: boolean;
-      emitAudio: () => void;
-      captureStopped: number;
-      failStop: boolean;
-    };
+    speechProgress:
+      | Parameters<DesktopBridge["onTranscriptionProgress"]>[0]
+      | undefined;
+    rejectTranscription: (reason: Error) => void | undefined;
+    attemptId: string;
+    audioBytes: number;
+    deferTranscription: boolean;
+    finishTranscription:
+      | ((
+          value: Pick<
+            Awaited<ReturnType<DesktopBridge["transcribeAudio"]>>,
+            "text"
+          >,
+        ) => void)
+      | null;
+    retryOK: boolean;
+    emitAudio: () => void;
+    captureStopped: number;
+    failStop: boolean;
   }
 }
-window.dictationFixture = {
-  attemptId: "",
-  audioBytes: 0,
-  deferTranscription: false,
-  finishTranscription: null,
-  retryOK: false,
-  emitAudio: () => {
-    throw new Error("Audio fixture unavailable");
-  },
-  captureStopped: 0,
-  failStop: false,
-};
-const root = document.getElementById("root");
-if (!root) throw new Error("Missing dictation fixture root");
-import { desktopBridgeFixture } from "../desktop-bridge-fixture.ts";
+const root = document.getElementById("root")!;
 import type { DesktopBridge } from "../../src/desktop.ts";
 import React, { useState } from "react";
 import { createRoot } from "react-dom/client";
@@ -41,36 +30,57 @@ import "@mantine/core/styles.css";
 import "../../src/studio-theme.css";
 import { theme } from "../../src/theme.ts";
 import { Dictation } from "../../src/components/Dictation.tsx";
-window.codexDesktop = desktopBridgeFixture({
+// Base bridge fixture supplies only the five methods used by dictation.
+type BridgeView = Omit<
+  Pick<
+    DesktopBridge,
+    | "requestMicrophone"
+    | "prepareTranscription"
+    | "onTranscriptionProgress"
+    | "cancelTranscription"
+    | "transcribeAudio"
+  >,
+  "transcribeAudio"
+> & {
+  transcribeAudio: (
+    ...args: Parameters<DesktopBridge["transcribeAudio"]>
+  ) => Promise<
+    Pick<Awaited<ReturnType<DesktopBridge["transcribeAudio"]>>, "text">
+  >;
+};
+const bridgeFixture: BridgeView = {
   requestMicrophone: async () => true,
   prepareTranscription: async () => "permit",
   onTranscriptionProgress: (callback) => {
-    window.dictationFixture.speechProgress = callback;
+    window.speechProgress = callback;
     return () => {};
   },
   cancelTranscription: async () => {
-    window.dictationFixture.rejectTranscription?.(
+    window.rejectTranscription?.(
       Error("Transcription cancelled. Your recording is saved."),
     );
     return true;
   },
   transcribeAudio: async (value) => {
-    window.dictationFixture.attemptId = value.id;
-    window.dictationFixture.audioBytes = value.audio.byteLength;
-    if (window.dictationFixture.deferTranscription)
+    window.attemptId = value.id;
+    window.audioBytes = value.audio.byteLength;
+    if (window.deferTranscription)
       return new Promise((resolve, reject) => {
-        window.dictationFixture.finishTranscription = resolve;
-        window.dictationFixture.rejectTranscription = reject;
+        window.finishTranscription = resolve;
+        window.rejectTranscription = reject;
       });
-    if (!window.dictationFixture.retryOK)
+    if (!window.retryOK)
       throw Error("Recognition unavailable; recording preserved.");
     return {
       text: "Recovered spoken instruction",
-      provider: "fixture",
-      onDevice: true,
     };
   },
-});
+};
+// The base document omits platform and unrelated desktop capabilities.
+function partialBridge(value: unknown): DesktopBridge {
+  return value as DesktopBridge;
+}
+window.codexDesktop = partialBridge(bridgeFixture);
 function App() {
   const [chat, setChat] = useState("first"),
     [draft, setDraft] = useState("Original draft");

@@ -3071,11 +3071,7 @@ export interface components {
        * @default null
        */
       plan?: null | string | undefined;
-      /**
-       * Provider
-       * @enum {string}
-       */
-      provider: "codex" | "claude";
+      provider: components["schemas"]["ProviderKind"];
       /** Source */
       source: string;
       /** @default null */
@@ -3627,7 +3623,7 @@ export interface components {
        * Provider
        * @default null
        */
-      provider?: ("codex" | "claude") | null | undefined;
+      provider?: components["schemas"]["ProviderKind"] | null | undefined;
       /**
        * Reason
        * @default null
@@ -4820,11 +4816,7 @@ export interface components {
        */
       taskTruncated?: boolean | null | undefined;
     };
-    /**
-     * AgentProvider
-     * @enum {string}
-     */
-    AgentProvider: "codex" | "claude";
+    AgentProvider: components["schemas"]["ProviderKind"];
     /** AgentRecordResponse */
     AgentRecordResponse: {
       /**
@@ -5688,12 +5680,7 @@ export interface components {
        * @default null
        */
       prompt?: string | undefined;
-      /**
-       * Provider
-       * @default null
-       * @enum {string}
-       */
-      provider?: "codex" | "claude" | undefined;
+      provider?: components["schemas"]["ProviderKind"] | undefined;
       /**
        * Queuemutationrevision
        * @default null
@@ -8756,6 +8743,11 @@ export interface components {
        * @default false
        */
       showMessageAvatars?: boolean | undefined;
+      /**
+       * Showterminals
+       * @default true
+       */
+      showTerminals?: boolean | undefined;
       /**
        * Sidebarfontsize
        * @default 14
@@ -14418,12 +14410,7 @@ export interface components {
        * @default null
        */
       pendingSettingsAccountKey?: null | string | undefined;
-      /**
-       * Provider
-       * @default null
-       * @enum {string}
-       */
-      provider?: "codex" | "claude" | undefined;
+      provider?: components["schemas"]["ProviderKind"] | undefined;
       /**
        * Status
        * @default null
@@ -18628,6 +18615,12 @@ export interface components {
        */
       server?: string | null | undefined;
     };
+    /**
+     * ProviderKind
+     * @description The provider that owns an account and every agent on it.
+     * @enum {string}
+     */
+    ProviderKind: "codex" | "claude";
     /**
      * ProviderModel
      * @description One extensible provider catalog entry; names remain provider-owned strings.
@@ -22919,11 +22912,7 @@ export interface components {
        * @default null
        */
       plan?: null | string | undefined;
-      /**
-       * Provider
-       * @enum {string}
-       */
-      provider: "codex" | "claude";
+      provider: components["schemas"]["ProviderKind"];
       /** Status */
       status: string;
     };

@@ -9,6 +9,305 @@ use studio_runtime_store::{
 
 const LIVE_SCHEMA: &str = include_str!("fixtures/live-state-schema.json");
 
+fn usage_rows(db: &Connection) -> Vec<Value> {
+    db.prepare("SELECT seq,id,agent,root,thread,turn,at,record FROM analytics_usage ORDER BY seq")
+        .expect("usage snapshot")
+        .query_map([], |row| {
+            Ok(json!([
+                row.get::<_, i64>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, Option<String>>(3)?,
+                row.get::<_, Option<String>>(4)?,
+                row.get::<_, Option<String>>(5)?,
+                row.get::<_, f64>(6)?,
+                row.get::<_, String>(7)?
+            ]))
+        })
+        .expect("usage rows")
+        .collect::<Result<_, _>>()
+        .expect("usage facts")
+}
+
+fn cost_facts(db: &Connection) -> Vec<Value> {
+    db.prepare("SELECT id,seq,input,cached,cache_write,output,counted,eligible,final_evidence FROM analytics_cost_rows ORDER BY seq")
+        .expect("cost snapshot").query_map([], |row| Ok(json!([
+            row.get::<_,String>(0)?,row.get::<_,i64>(1)?,row.get::<_,Option<f64>>(2)?,
+            row.get::<_,Option<f64>>(3)?,row.get::<_,Option<f64>>(4)?,row.get::<_,Option<f64>>(5)?,
+            row.get::<_,i64>(6)?,row.get::<_,Option<i64>>(7)?,row.get::<_,i64>(8)?
+        ]))).expect("cost rows").collect::<Result<_,_>>().expect("cost facts")
+}
+
+#[tokio::test]
+async fn provider_identity_migration_preserves_historical_orphan_usage() {
+    use studio_runtime_schema::{
+        ProviderKind,
+        usage::{UsageObservation, ledger::UsageLedgerRow},
+    };
+    use studio_runtime_store::{
+        analytics_capture::{AnalyticsCaptureRepository, CaptureTable},
+        cost_aggregate,
+    };
+
+    for existing_aggregate in [false, true] {
+        let root = temporary_state();
+        create_from_live_schema(root.path());
+        let path = root.path().join("analytics.sqlite3");
+        let mut db = Connection::open(&path).expect("historical analytics");
+        let mut rows = [
+            json!({"id":"inclusive","agentId":"orphan","rootId":"root","threadId":"thread","turnId":"t1","at":1,"model":"m","responseId":"r1","last":{"inputTokens":12,"cachedInputTokens":3,"cacheWriteInputTokens":2,"outputTokens":7},"total":{},"timestampSource":"fileModifiedEstimate"}),
+            json!({"id":"uncached","agentId":"orphan","rootId":"root","threadId":"thread","turnId":"t2","at":2,"model":"m","responseId":"r2","inputTokensAreUncached":true,"last":{"inputTokens":12,"cachedInputTokens":3,"cacheWriteInputTokens":2,"outputTokens":7},"total":{}}),
+            json!({"id":"sparse-response","agentId":"orphan","rootId":"root","threadId":"thread","turnId":"t3","at":3,"model":"m","responseId":"sparse","last":{"inputTokens":5,"outputTokens":1},"total":{}}),
+            json!({"id":"sparse-notice","agentId":"orphan","rootId":"root","threadId":"thread","at":4,"model":"m","last":{"inputTokens":5,"outputTokens":1}}),
+            json!({"id":"cumulative","agentId":"orphan","rootId":"root","threadId":"thread","at":5,"model":"m","last":{},"total":{"inputTokens":100,"cachedInputTokens":30,"cacheWriteInputTokens":20,"outputTokens":7}}),
+            json!({"id":"typed","agentId":"orphan","rootId":"root","threadId":"thread","turnId":"typed-turn","at":6,"model":"m","responseId":"typed-response","last":{},"total":{}}),
+        ];
+        let typed: UsageObservation = serde_json::from_value(json!({"kind":"response","responseId":"typed-response","turnId":"typed-turn","model":"m","evidence":"live","tokens":{"uncachedInput":20,"cacheReadInput":0,"cacheWriteInput":0,"output":4}})).expect("typed fact");
+        rows[5].as_object_mut().expect("typed row").extend(
+            serde_json::to_value(UsageLedgerRow::capture("orphan", Some("thread"), typed))
+                .expect("typed ledger")
+                .as_object()
+                .expect("ledger object")
+                .clone(),
+        );
+        if existing_aggregate {
+            cost_aggregate::install(&db).expect("existing aggregate catalog");
+            let tx = db.transaction().expect("old aggregate facts");
+            for row in &rows {
+                let mut materialized = row.clone();
+                if row.get("studioUsage").is_none() {
+                    match studio_runtime_schema::usage::persisted::parse_analytics_cost_usage_row(
+                        ProviderKind::Codex,
+                        row,
+                    )
+                    .expect("old cost interpretation")
+                    {
+                        Some(observation) => {
+                            materialized["studioUsage"] =
+                                serde_json::to_value(observation).expect("neutral cost")
+                        }
+                        None => materialized["provider"] = json!("codex"),
+                    }
+                }
+                if materialized.get("total").is_none() {
+                    materialized["total"] = json!({});
+                }
+                AnalyticsCaptureRepository::write(&tx, CaptureTable::Usage, &materialized)
+                    .expect("seed exact existing cost facts");
+            }
+            tx.commit().expect("existing aggregate");
+        }
+        for row in &rows {
+            let raw = format!("  {row}\n");
+            db.execute("INSERT INTO analytics_usage(id,agent,root,thread,turn,at,record) VALUES(?1,'orphan','root','thread',?2,?3,?4) ON CONFLICT(id) DO UPDATE SET record=excluded.record",
+                params![row["id"].as_str(),row["turnId"].as_str(),row["at"].as_f64(),raw]).expect("historical orphan source");
+        }
+        let original = usage_rows(&db);
+        let prior_cost = existing_aggregate.then(|| cost_facts(&db));
+        let prior_groups = existing_aggregate.then(|| {
+            cost_aggregate::cost_groups(&db, "root", &Default::default()).expect("old groups")
+        });
+        drop(db);
+        let store = RuntimeStore::open(Some(root.path()))
+            .await
+            .expect("migrate historical orphans");
+        let db = Connection::open(&path).expect("migrated analytics");
+        let migrated = usage_rows(&db);
+        for (old, new) in original.iter().zip(&migrated) {
+            assert_eq!(
+                &old.as_array().expect("old row")[..7],
+                &new.as_array().expect("new row")[..7],
+                "row identity/order/placement unchanged"
+            );
+            let old_record: Value =
+                serde_json::from_str(old[7].as_str().expect("raw source")).expect("old JSON");
+            let mut new_record: Value =
+                serde_json::from_str(new[7].as_str().expect("migrated source")).expect("new JSON");
+            if old_record.get("studioUsage").is_some() {
+                assert_eq!(old[7], new[7], "typed facts remain byte-identical");
+                continue;
+            }
+            assert!(new_record.get("receiptKey").is_none());
+            assert!(new_record.get("usageIdentity").is_none());
+            if old_record["id"].as_str().expect("id").starts_with("sparse") {
+                assert_eq!(
+                    new_record.as_object_mut().expect("row").remove("provider"),
+                    Some(json!("codex"))
+                );
+                assert!(new_record.get("studioUsage").is_none());
+            } else {
+                let added = new_record
+                    .as_object_mut()
+                    .expect("row")
+                    .remove("studioUsage")
+                    .expect("neutral facts");
+                assert_eq!(
+                    added,
+                    serde_json::to_value(
+                        studio_runtime_schema::usage::persisted::parse_analytics_cost_usage_row(
+                            ProviderKind::Codex,
+                            &old_record
+                        )
+                        .expect("old parser")
+                        .expect("complete observation")
+                    )
+                    .expect("observation")
+                );
+            }
+            assert_eq!(
+                new_record, old_record,
+                "all raw facts and provenance retained"
+            );
+        }
+        let facts = cost_facts(&db);
+        if let Some(prior) = prior_cost {
+            assert_eq!(facts, prior, "existing cost arithmetic unchanged");
+        }
+        for row in &facts {
+            if row[0].as_str().expect("cost id").starts_with("sparse") {
+                assert!(
+                    row.as_array().expect("fact")[2..6]
+                        .iter()
+                        .all(Value::is_null)
+                );
+                assert_eq!(row[6], 0, "unknown rows remain unpriced");
+            }
+        }
+        let groups =
+            cost_aggregate::cost_groups(&db, "root", &Default::default()).expect("migrated groups");
+        assert_eq!(groups.iter().map(|group| group.count).sum::<u64>(), 3);
+        assert!(
+            groups
+                .iter()
+                .any(|group| group.tokens.input_tokens == Some(7.0)
+                    && group.tokens.cached_input_tokens == Some(3.0))
+        );
+        assert!(
+            groups
+                .iter()
+                .any(|group| group.tokens.input_tokens == Some(12.0)
+                    && group.tokens.cache_write_input_tokens == Some(2.0))
+        );
+        if let Some(prior) = prior_groups {
+            assert_eq!(groups, prior);
+        }
+        let responses = cost_aggregate::recorded_responses(&db, &["orphan".into()])
+            .expect("cost evidence reader");
+        assert!(
+            responses
+                .iter()
+                .find(|row| row.response_id == "sparse")
+                .expect("sparse response")
+                .tokens
+                .is_none()
+        );
+        assert!(AnalyticsCaptureRepository::usage_inventory(&db, "orphan").is_ok());
+        let (provenance, estimated) =
+            AnalyticsCaptureRepository::usage_provenance(&db, "orphan", Some("thread"), "r1")
+                .expect("provenance reader")
+                .expect("complete legacy provenance");
+        assert!(estimated);
+        assert!(matches!(
+            provenance.studio_usage,
+            UsageObservation::Response {
+                evidence: studio_runtime_schema::usage::UsageEvidence::Legacy,
+                ..
+            }
+        ));
+        drop(db);
+        drop(store);
+        let before_catalog = catalog(&path);
+        let before_cookie = schema_version(&path);
+        let reopened = RuntimeStore::open(Some(root.path()))
+            .await
+            .expect("once-only migration reopen");
+        let db = Connection::open(&path).expect("reopened analytics");
+        assert_eq!(usage_rows(&db), migrated);
+        assert_eq!(cost_facts(&db), facts);
+        assert_eq!(
+            cost_aggregate::cost_groups(&db, "root", &Default::default()).expect("reopened groups"),
+            groups
+        );
+        assert_eq!(catalog(&path), before_catalog);
+        assert_eq!(schema_version(&path), before_cookie);
+        drop(reopened);
+    }
+}
+
+#[tokio::test]
+async fn provider_identity_cutover_never_repairs_current_ownerless_or_invalid_usage() {
+    use studio_runtime_store::{
+        analytics_capture::{AnalyticsCaptureRepository, CaptureTable},
+        cost_aggregate,
+    };
+
+    let root = temporary_state();
+    let store = RuntimeStore::open(Some(root.path()))
+        .await
+        .expect("current state");
+    for provider in [
+        None,
+        Some(Value::Null),
+        Some(json!("future")),
+        Some(json!(7)),
+    ] {
+        if provider.is_some() {
+            store
+                .analytics_transaction::<_, StoreError>(|tx, _| {
+                    AnalyticsCaptureRepository::write(
+                        tx,
+                        CaptureTable::Agents,
+                        &json!({"id":"current-agent","provider":"codex"}),
+                    )
+                })
+                .await
+                .expect("known owner cannot override invalid explicit provenance");
+        }
+        let mut record = json!({"id":"current-orphan","agentId":"current-agent","rootId":"root","threadId":"thread","at":1,"responseId":"current-response","model":"m","last":{"inputTokens":5,"outputTokens":1},"total":{}});
+        if let Some(provider) = provider {
+            record["provider"] = provider;
+        }
+        let copied = record.clone();
+        assert!(
+            store
+                .analytics_transaction::<_, StoreError>(move |tx, _| {
+                    AnalyticsCaptureRepository::write(tx, CaptureTable::Usage, &copied)
+                })
+                .await
+                .is_err(),
+            "invalid or absent identity cannot become a normal write"
+        );
+        store.analytics_transaction::<_,StoreError>(move |tx,_| {
+            tx.execute("INSERT INTO analytics_usage(id,agent,root,thread,at,record) VALUES('current-orphan','current-agent','root','thread',1,?1)", [record.to_string()])?;
+            assert!(cost_aggregate::recorded_responses(tx,&["current-agent".into()]).is_err());
+            assert!(AnalyticsCaptureRepository::usage_inventory(tx,"current-agent").is_err());
+            assert!(AnalyticsCaptureRepository::usage_provenance(tx,"current-agent",Some("thread"),"current-response").is_err());
+            tx.execute("DELETE FROM analytics_usage WHERE id='current-orphan'",[])?;
+            Ok(())
+        }).await.expect("strict ordinary readers");
+    }
+    store.analytics_transaction::<_,StoreError>(|tx,_| {
+        tx.execute("DELETE FROM analytics_agents WHERE id='current-agent'",[])?;
+        tx.execute("INSERT INTO analytics_usage(id,agent,root,thread,at,record) VALUES('late-orphan','current-agent','root','thread',2,?1)",
+            [json!({"id":"late-orphan","agentId":"current-agent","rootId":"root","threadId":"thread","at":2,"model":"m","last":{"inputTokens":5,"outputTokens":1},"total":{}}).to_string()])?;
+        Ok(())
+    }).await.expect("source appearing after cutover");
+    let path = root.path().join("analytics.sqlite3");
+    let before = usage_rows(&Connection::open(&path).expect("current source"));
+    drop(store);
+    let reopened = RuntimeStore::open(Some(root.path()))
+        .await
+        .expect("current format reopens");
+    let db = Connection::open(&path).expect("reopened source");
+    assert_eq!(
+        usage_rows(&db),
+        before,
+        "dated conversion never runs on current rows"
+    );
+    assert!(AnalyticsCaptureRepository::usage_inventory(&db, "current-agent").is_err());
+    drop(reopened);
+}
+
 #[tokio::test]
 async fn live_schema_opens_and_supported_repositories_preserve_the_catalog() {
     let state_directory = temporary_state();
@@ -153,21 +452,34 @@ async fn migration_2026_10_22_drops_python_cost_projection_once() {
     let store = RuntimeStore::open(Some(state))
         .await
         .expect("fixture opens");
+    let migrated: String = Connection::open(&analytics)
+        .expect("analytics opens")
+        .query_row(
+            "SELECT record FROM analytics_usage WHERE id='existing-usage'",
+            [],
+            |row| row.get::<_, String>(0),
+        )
+        .expect("original usage survives");
+    let mut expected: Value = serde_json::from_str(existing_record).expect("legacy fact");
+    expected["provider"] = json!("codex");
     assert_eq!(
-        Connection::open(&analytics)
-            .expect("analytics opens")
-            .query_row(
-                "SELECT record FROM analytics_usage WHERE id='existing-usage'",
-                [],
-                |row| row.get::<_, String>(0)
-            )
-            .expect("original usage survives"),
-        existing_record
+        serde_json::from_str::<Value>(&migrated).expect("migrated fact"),
+        expected
     );
     assert!(
         retired_objects(&analytics).is_empty(),
         "Python projection objects are removed"
     );
+    store
+        .analytics_transaction::<_, StoreError>(|tx, _| {
+            tx.execute(
+                "INSERT INTO analytics_agents(id,record) VALUES('agent',?1)",
+                [r#"{"id":"agent","rootId":"root","provider":"codex"}"#],
+            )?;
+            Ok(())
+        })
+        .await
+        .expect("explicit owner for new post-upgrade writes");
     let record = json!({
         "id": "usage-after-migration", "agentId": "agent", "rootId": "root",
         "threadId": "thread", "turnId": "turn", "at": 1.0, "model": "gpt-5",
@@ -236,6 +548,7 @@ async fn cost_projection_migration_rolls_back_if_rust_backfill_fails() {
         .expect("valid JSON with an invalid token object inserts");
     let before = catalog(&analytics);
     let cookie = schema_version(&analytics);
+    let original_usage = usage_rows(&Connection::open(&analytics).expect("legacy source"));
     assert!(
         RuntimeStore::open(Some(state)).await.is_err(),
         "invalid cost facts refuse open"
@@ -249,6 +562,15 @@ async fn cost_projection_migration_rolls_back_if_rust_backfill_fails() {
         schema_version(&analytics),
         cookie,
         "failed migration commits no DDL"
+    );
+    let db = Connection::open(&analytics).expect("unchanged source");
+    assert_eq!(usage_rows(&db), original_usage);
+    let migrated_keys: i64 = db
+        .query_row("SELECT count(*) FROM analytics_meta", [], |row| row.get(0))
+        .expect("format metadata");
+    assert_eq!(
+        migrated_keys, 0,
+        "invalid planned conversion writes no format marker"
     );
 }
 
@@ -748,7 +1070,7 @@ async fn sync_bootstrap_repairs_missing_objects_in_the_committed_live_fixture() 
                 [],
             )?;
             tx.execute(
-                "INSERT INTO runtime_agents(id,record) VALUES('revision-agent','{}')",
+                "INSERT INTO runtime_agents(id,record) VALUES('revision-agent','{\"provider\":\"codex\"}')",
                 [],
             )?;
             Ok(())

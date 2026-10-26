@@ -1,4 +1,3 @@
-import { visibleBounds } from "../mobile/mobile-ui-fixture.ts";
 import { test, expect } from "../playwright.ts";
 import { sidebarParityFixture } from "../sidebar/sidebar-parity-fixture.ts";
 import { detectTextClipping } from "./text-clipping.ts";
@@ -55,14 +54,14 @@ for (const paired of [false, true]) {
                 .evaluate((node) => node.getBoundingClientRect().right),
             )
             .toBeLessThanOrEqual(867);
-          const bounds = await visibleBounds(rail);
+          const bounds = (await rail.boundingBox())!;
           expect(bounds.x).toBe(867);
           expect(bounds.y).toBeGreaterThanOrEqual(112);
           expect(bounds.y + bounds.height).toBeLessThanOrEqual(635);
           const band = page.locator(".viewport-bottom-band");
           await expect(band).toHaveCSS("height", "34px");
           await expect(page.locator(".usage-passive-band")).toBeVisible();
-          const bandBounds = await visibleBounds(band);
+          const bandBounds = (await band.boundingBox())!;
           expect(bandBounds.y).toBe(635);
           expect(bandBounds.y + bandBounds.height).toBe(669);
           for (const target of await page
@@ -75,9 +74,9 @@ for (const paired of [false, true]) {
             paired,
             oldEmptyBand: 34,
             newEmptyBand: 0,
-            passive: await visibleBounds(page.locator(".usage-passive-band")),
+            passive: (await page.locator(".usage-passive-band").boundingBox())!,
           });
-          const composer = await visibleBounds(page.locator("#composer"));
+          const composer = (await page.locator("#composer").boundingBox())!;
           expect(composer.y + composer.height).toBeLessThanOrEqual(635);
           await page.screenshot({
             path: test.info().outputPath("duo-safe-layout.png"),

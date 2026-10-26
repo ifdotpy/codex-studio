@@ -5,6 +5,7 @@ pub use crate::relocation::RelocationError as MoveError;
 use crate::relocation::{checked, identity, invalid, timestamp};
 use serde::Deserialize;
 use serde_json::{Value, json};
+use studio_runtime_schema::provider_kind::ProviderKind;
 use studio_runtime_store::{
     AgentId, AgentMoveRepository as Repository, AgentRecord, AgentRepository, RuntimeStore,
     Transaction,
@@ -373,12 +374,9 @@ impl MoveSnapshot {
         if self.fields.phase != Phase::Active || truthy(self.raw.get("firstTurnCache")) {
             return Ok(None);
         }
-        use studio_runtime_schema::usage::{UsageObservation, UsageProvider};
-        let provider = if agent["provider"] == "claude" {
-            UsageProvider::Claude
-        } else {
-            UsageProvider::Codex
-        };
+        use studio_runtime_schema::usage::UsageObservation;
+        let provider =
+            ProviderKind::of_record(agent).map_err(|_| invalid("runtime_agents", "/provider"))?;
         let tokens = match observation {
             UsageObservation::Response { tokens, .. } => Some(tokens),
             UsageObservation::Cumulative { last, .. } => last.as_ref(),
@@ -391,8 +389,8 @@ impl MoveSnapshot {
         let mut row = self.raw.clone();
         // Preserve the stored provider input convention while consuming disjoint counts.
         let input = match provider {
-            UsageProvider::Claude => tokens.uncached_input,
-            UsageProvider::Codex => tokens
+            ProviderKind::Claude => tokens.uncached_input,
+            ProviderKind::Codex => tokens
                 .uncached_input
                 .checked_add(tokens.cache_read_input)
                 .and_then(|n| n.checked_add(tokens.cache_write_input))
@@ -406,6 +404,71 @@ impl MoveSnapshot {
 #[cfg(test)]
 mod usage_tests {
     use super::*;
+    #[test]
+    fn provider_identity_invalid_move_cache_is_refused() {
+        let snapshot = MoveSnapshot {
+            fields: Fields {
+                id: "move".into(),
+                side: Side::Source,
+                phase: Phase::Active,
+                created: 0.,
+                deadline: None,
+                uncertain_phase: None,
+            },
+            raw: json!({}),
+            agent: "agent".into(),
+        };
+        let usage = studio_runtime_schema::usage::parse_token_usage(
+            studio_runtime_schema::provider_kind::ProviderKind::Claude,
+            &json!({"studioUsage":{"kind":"response","responseId":"r","model":"claude","evidence":"live","tokens":{"uncachedInput":12,"cacheReadInput":32,"cacheWriteInput":42,"output":7}}}),
+        ).expect("typed usage");
+        for provider in [
+            None,
+            Some(Value::Null),
+            Some(json!("future")),
+            Some(json!("")),
+            Some(json!(7)),
+            Some(json!({})),
+        ] {
+            let mut agent = json!({"id":"agent","turnId":"turn"});
+            if let Some(provider) = &provider {
+                agent["provider"] = provider.clone();
+            }
+            assert!(
+                snapshot.observe_cache(&agent, &usage, 100.).is_err(),
+                "provider {provider:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn provider_identity_move_cache_preserves_provider_input_conventions() {
+        let snapshot = MoveSnapshot {
+            fields: Fields {
+                id: "move".into(),
+                side: Side::Source,
+                phase: Phase::Active,
+                created: 0.,
+                deadline: None,
+                uncertain_phase: None,
+            },
+            raw: json!({}),
+            agent: "agent".into(),
+        };
+        let usage = studio_runtime_schema::usage::parse_token_usage(
+            studio_runtime_schema::provider_kind::ProviderKind::Claude,
+            &json!({"studioUsage":{"kind":"response","responseId":"r","model":"model","evidence":"live","tokens":{"uncachedInput":12,"cacheReadInput":32,"cacheWriteInput":42,"output":7}}}),
+        ).expect("typed usage");
+        for (provider, input) in [(ProviderKind::Codex, 86), (ProviderKind::Claude, 12)] {
+            let mut agent = json!({"id":"agent","turnId":"turn"});
+            agent["provider"] = json!(provider.key());
+            let row = snapshot
+                .observe_cache(&agent, &usage, 100.)
+                .expect("known identity")
+                .expect("cache observation");
+            assert_eq!(row["firstTurnCache"]["inputTokens"], input);
+        }
+    }
     #[test]
     fn typed_response_populates_first_turn_cache_without_legacy_keys() {
         let snapshot = MoveSnapshot {
@@ -423,7 +486,7 @@ mod usage_tests {
         let agent = json!({"id":"agent","provider":"claude","turnId":"turn"});
         let notification = json!({"studioUsage":{"kind":"response","responseId":"r","model":"claude","evidence":"live","tokens":{"uncachedInput":12,"cacheReadInput":32,"cacheWriteInput":42,"output":720}}});
         let usage = studio_runtime_schema::usage::parse_token_usage(
-            studio_runtime_schema::usage::UsageProvider::Claude,
+            studio_runtime_schema::provider_kind::ProviderKind::Claude,
             &notification,
         )
         .expect("typed usage");

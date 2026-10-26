@@ -53,7 +53,7 @@ export async function openProjectionDatabase(name: string) {
 
 declare global {
   interface Window {
-    schemaCacheOldBuildDatabase: Awaited<ReturnType<typeof openBuildDatabase>>;
-    schemaCacheNewBuildDatabase: Awaited<ReturnType<typeof openBuildDatabase>>;
+    oldBuildDatabase: Awaited<ReturnType<typeof openBuildDatabase>>;
+    newBuildDatabase: Awaited<ReturnType<typeof openBuildDatabase>>;
   }
 }

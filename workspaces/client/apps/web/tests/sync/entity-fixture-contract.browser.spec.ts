@@ -5,11 +5,10 @@ import {
   pullPage,
   entityRows,
   fixtureObject,
-  fixtureItem,
 } from "./entity-fixture-protocol.ts";
 
 import type {
-  TestStateView,
+  EntityFixtureState,
   TranscriptPageResponse,
   SyncPullResponse,
 } from "../playwright.ts";
@@ -42,24 +41,9 @@ test("transcript fixture applies its sequence before the request cursor", async 
     threads: [],
     chats: [],
     edges: [],
-    runtime: {
-      agents: [],
-      rooms: [],
-      tasks: [],
-      monitors: [],
-      complaints: [],
-      projects: [],
-      events: [],
-      peerTeams: [],
-      requests: [],
-      rules: [],
-      work: [],
-      nativeNotices: [],
-      sidebarOrder: { groups: null, revision: 0 },
-      rateLimits: null,
-      rateLimitsByAccount: {},
-    },
-  } satisfies TestStateView;
+    runtime: {},
+  } satisfies EntityFixtureState &
+    Pick<import("../playwright.ts").TestStateView, "token" | "threads">;
   const transcript = {
     items: [],
     truncated: false,
@@ -141,15 +125,14 @@ test("entity fixture contract matches the real sync backend", async () => {
       "?scope=state%3Aentities%3Av1&after=0&limit=500",
     ),
   );
-  assert.ok(typeof realPull.maxSeq === "number");
-  const realMaxSeq = realPull.maxSeq;
+
   const stubPull = pullPage(
     entityPullFixture(snapshot, {
       scope: "state:entities:v1",
       after: 0,
       limit: 500,
       fresh: true,
-      maxSeq: realMaxSeq,
+      maxSeq: realPull.maxSeq!,
     }),
   );
   const realById = new Map(
@@ -158,7 +141,7 @@ test("entity fixture contract matches the real sync backend", async () => {
       {
         collection: doc.collection,
         id: doc.id,
-        value: "value" in doc ? fixtureObject(doc.value) : {},
+        value: doc.value,
       },
     ]),
   );
@@ -168,7 +151,7 @@ test("entity fixture contract matches the real sync backend", async () => {
       {
         collection: doc.collection,
         id: doc.id,
-        value: "value" in doc ? fixtureObject(doc.value) : {},
+        value: doc.value,
       },
     ]),
   );
@@ -179,11 +162,11 @@ test("entity fixture contract matches the real sync backend", async () => {
   );
   for (const [id, value] of stubById) {
     const realValue = realById.get(id);
-    assert.ok(realValue);
+
     assert.equal(typeof value.collection, "string", id);
     assert.equal(typeof value.id, "string", id);
     assert.deepEqual(
-      Object.keys(realValue).sort(),
+      Object.keys(realValue!).sort(),
       Object.keys(value).sort(),
       `${id} envelope`,
     );
@@ -191,7 +174,7 @@ test("entity fixture contract matches the real sync backend", async () => {
       const expected = { ...value, value: { ...value.value } };
       const actual = {
         ...realById.get(id),
-        value: { ...realValue.value },
+        value: { ...realValue!.value },
       };
       // The event delivery worker can advance status between the snapshot and
       // pull; its persisted entity status is the authoritative value.
@@ -202,7 +185,7 @@ test("entity fixture contract matches the real sync backend", async () => {
       const expected = { ...value, value: { ...value.value } };
       const actual = {
         ...realById.get(id),
-        value: { ...realValue.value },
+        value: { ...realValue!.value },
       };
       // The fixture's active workers advance between independent snapshot and
       // pull transactions; compare their stable persisted identity/data here.
@@ -241,8 +224,8 @@ test("entity fixture contract matches the real sync backend", async () => {
   }
   assert.equal(stubPull.initialHigh, realPull.initialHigh, "fresh initialHigh");
   const workspaceEntity = stubById.get("entity:workspace:current");
-  assert.ok(workspaceEntity);
-  const workspace = workspaceEntity.value;
+
+  const workspace = workspaceEntity!.value;
   assert.deepEqual(Object.keys(workspace).sort(), [
     "connected",
     "nativeNotices",
@@ -252,13 +235,14 @@ test("entity fixture contract matches the real sync backend", async () => {
     "stateDir",
     "tasksHistoryLimit",
   ]);
-  const serverMaxSeq = capturedServerHead.maxSeq;
+  const serverMaxSeq = capturedServerHead.maxSeq!;
   const stubHead = pullPage(
     entityPullFixture(snapshot, {
       scope: "state:entities:v1",
-      after: realMaxSeq,
+      after: realPull.maxSeq!,
       limit: 500,
-      documents: entityRows(capturedServerHead.documents),
+      documents:
+        capturedServerHead.documents as import("../playwright.ts").EntityPullFixtureOptions["documents"],
     }),
   );
   assert.deepEqual(stubHead.documents, []);
@@ -270,13 +254,13 @@ test("entity fixture contract matches the real sync backend", async () => {
   assert.equal(onePage.documents.length, 1, "entity page limit is honored");
   assert.equal(
     onePage.checkpoint.seq,
-    fixtureItem(onePage.documents, 0).seq,
+    onePage.documents[0].seq,
     "a full page checkpoints at its last returned document",
   );
   const resetPage = entityPullFixture(snapshot, {
     after: 1,
     floor: 2,
-    maxSeq: realPull.maxSeq,
+    maxSeq: realPull.maxSeq!,
     reset: true,
   });
   assert.equal(resetPage.reset, true, "expired cursors request a reset");
@@ -290,7 +274,7 @@ test("entity fixture contract matches the real sync backend", async () => {
       }),
     );
     assert.equal(
-      `entity:${fixtureItem(entityRows(priorityPage.documents), 0).collection}:${fixtureItem(priorityPage.documents, 0).id}`,
+      `entity:${entityRows(priorityPage.documents)[0].collection}:${priorityPage.documents[0].id}`,
       `entity:agent:${priorityAgent.id}`,
       "priorityId places its agent first",
     );
@@ -303,8 +287,8 @@ test("entity fixture contract matches the real sync backend", async () => {
     ),
   );
   assert.equal(stream.status, 200, "fixture stream remains open");
-  assert.ok(stream.body);
-  const reader = stream.body.getReader();
+
+  const reader = stream.body!.getReader();
   let streamText = "";
   const streamDeadline = Date.now() + 2000;
   while (
@@ -354,21 +338,20 @@ test("entity fixture contract matches the real sync backend", async () => {
   await new Promise<void>((resolve) =>
     streamServer.listen(0, "127.0.0.1", resolve),
   );
-  const address = streamServer.address();
-  assert.ok(address && typeof address !== "string");
+  const address = streamServer.address() as import("node:net").AddressInfo;
+
   const stubStream = await fetch(
-    `http://127.0.0.1:${address.port}/api/sync/stream?protocol=4&resources=%5B%5D`,
+    `http://127.0.0.1:${address!.port}/api/sync/stream?protocol=4&resources=%5B%5D`,
   );
   assert.equal(stubStream.status, 200);
-  const stubOrigin = `http://127.0.0.1:${address.port}`;
+  const stubOrigin = `http://127.0.0.1:${address!.port}`;
   const nodeInitial: SyncPullResponse = await fetch(
     new URL("/api/sync/pull?scope=state%3Aentities%3Av1&fresh=1", stubOrigin),
   ).then((response) => response.json());
-  assert.ok(typeof nodeInitial.maxSeq === "number");
-  const nodeInitialMax = nodeInitial.maxSeq;
-  const removedNodeProject = fixtureItem(nodeSnapshot.runtime.projects, 0);
-  assert.ok(typeof nodeSnapshot.runtime.tasksHistoryLimit === "number");
-  nodeSnapshot.runtime.tasksHistoryLimit++;
+
+  const removedNodeProject = nodeSnapshot.runtime.projects[0];
+
+  nodeSnapshot.runtime.tasksHistoryLimit!++;
   nodeSnapshot.runtime.projects = nodeSnapshot.runtime.projects.slice(1);
   const nodeChanged: SyncPullResponse = await fetch(
     new URL(
@@ -381,7 +364,7 @@ test("entity fixture contract matches the real sync backend", async () => {
       (document) =>
         document.collection === "workspace" &&
         document.id === "current" &&
-        document.seq > nodeInitialMax,
+        document.seq > nodeInitial.maxSeq!,
     ),
     "Node fixture assigns a new sequence to an in-place entity change",
   );
@@ -391,12 +374,12 @@ test("entity fixture contract matches the real sync backend", async () => {
         document.collection === "project" &&
         document.id === removedNodeProject.id &&
         document.op === "delete" &&
-        document.seq > nodeInitialMax,
+        document.seq > nodeInitial.maxSeq!,
     ),
     "Node fixture emits a sequenced tombstone for an in-place removal",
   );
   // Detach stored entity values from live fixture objects, including nested DTOs.
-  const nodeAgent = fixtureItem(nodeSnapshot.runtime.agents, 0);
+  const nodeAgent = nodeSnapshot.runtime.agents[0];
   nodeAgent.activity = { phase: "writing", at: 1 };
   const nestedBaseline: SyncPullResponse = await fetch(
     new URL(
@@ -419,24 +402,18 @@ test("entity fixture contract matches the real sync backend", async () => {
     (document) =>
       document.collection === "agent" && document.id === nodeAgent.id,
   );
-  assert.ok(
-    writing?.collection === "agent" &&
-      writing.op === "upsert" &&
-      writing.value.activity,
-  );
-  assert.ok(
-    thinking?.collection === "agent" &&
-      thinking.op === "upsert" &&
-      thinking.value.activity,
-  );
+
   assert.equal(
-    writing.value.activity.phase,
+    fixtureObject(fixtureObject(writing!.value).activity).phase,
     "writing",
     "an in-place nested edit does not rewrite its previous fixture document",
   );
-  assert.equal(thinking.value.activity.phase, "thinking");
+  assert.equal(
+    fixtureObject(fixtureObject(thinking!.value).activity).phase,
+    "thinking",
+  );
   assert.ok(
-    thinking.seq > writing.seq,
+    thinking!.seq > writing!.seq,
     "an in-place nested edit receives a new sequence",
   );
   for (const path of [
@@ -457,8 +434,8 @@ test("entity fixture contract matches the real sync backend", async () => {
         `${path} error response matches the real server`,
       );
   }
-  assert.ok(stubStream.body);
-  const stubReader = stubStream.body.getReader();
+
+  const stubReader = stubStream.body!.getReader();
   let stubStreamText = "";
   const stubStreamDeadline = Date.now() + 6500;
   while (
@@ -483,7 +460,6 @@ test("entity fixture contract matches the real sync backend", async () => {
   const streamEvents: Record<string, unknown> = Object.fromEntries(
     [...stubStreamText.matchAll(/event: ([^\n]+)\ndata: ([^\n]+)/g)].map(
       ([, name, data]) => {
-        assert.ok(name && data);
         const frame: unknown = JSON.parse(data);
         return [name, frame];
       },
@@ -492,17 +468,14 @@ test("entity fixture contract matches the real sync backend", async () => {
   const resources = fixtureObject(streamEvents.resources);
   const tokenRates = fixtureObject(streamEvents["token-rates"]);
   const heartbeat = fixtureObject(streamEvents.heartbeat);
-  assert.ok(
-    typeof heartbeat.revision === "number" &&
-      typeof resources.revision === "number",
-  );
+
   assert.equal(resources.protocol, protocol.protocolVersion);
   assert.equal(resources.workspaceId, identity.workspaceId);
   assert.equal(resources.reason, "initial");
   assert.equal(tokenRates.epoch, resources.epoch);
   assert.equal(tokenRates.revision, resources.revision);
   assert.equal(heartbeat.epoch, resources.epoch);
-  assert.ok(heartbeat.revision > resources.revision);
+  assert.ok((heartbeat.revision as number) > (resources.revision as number));
   await stubReader.cancel();
   streamServer.closeAllConnections();
   await new Promise<void>((resolve) => streamServer.close(() => resolve()));
@@ -540,12 +513,10 @@ test("entity fixture contract matches the real sync backend", async () => {
       stubTranscript.documents.length,
       realTranscript.documents.length,
     );
-    const stubDocument = fixtureItem(stubTranscript.documents, 0);
-    const realDocument = fixtureItem(realTranscript.documents, 0);
-    assert.ok("payload" in stubDocument && "payload" in realDocument);
+
     assert.deepEqual(
-      JSON.parse(stubDocument.payload),
-      JSON.parse(realDocument.payload),
+      JSON.parse(stubTranscript.documents[0].payload),
+      JSON.parse(realTranscript.documents[0].payload),
     );
   }
 });
@@ -669,7 +640,7 @@ test("shared entity stub converges on one matching stream", async ({
       "resource union changes reuse the original v4 stream",
     );
     assert.equal(
-      fixtureItem(streamLifecycle, 0).closeCalls,
+      streamLifecycle[0].closeCalls,
       0,
       "live subscription updates do not close the stream",
     );
@@ -698,11 +669,11 @@ test("shared entity stub converges on one matching stream", async ({
       ).json(),
     );
     assert.ok(snapshot.runtime.projects.length > 0, "fixture has a project");
-    const removedProject = fixtureItem(snapshot.runtime.projects, 0);
+    const removedProject = snapshot.runtime.projects[0];
     // Mutate the fixture snapshot directly, as the request fixtures do. This
     // does not commit through Runtime.db, so announce it through the stub.
-    assert.ok(typeof snapshot.runtime.tasksHistoryLimit === "number");
-    snapshot.runtime.tasksHistoryLimit++;
+
+    snapshot.runtime.tasksHistoryLimit!++;
     snapshot.runtime.projects = snapshot.runtime.projects.slice(1);
     const notification = await stub.update(snapshot, {
       origin,
@@ -737,15 +708,15 @@ test("shared entity stub converges on one matching stream", async ({
         document.collection === "project" && document.id === removedProject.id,
     );
     assert.ok(changedWorkspace, "changed workspace receives a new sequence");
-    assert.ok(typeof initial.maxSeq === "number");
-    assert.ok(changedWorkspace.seq > initial.maxSeq);
+
+    assert.ok(changedWorkspace.seq > initial.maxSeq!);
     assert.equal(
       removedDocument?.op,
       "delete",
       "removed work gets a tombstone",
     );
-    assert.ok(removedDocument);
-    assert.ok(removedDocument.seq > initial.maxSeq);
+
+    assert.ok(removedDocument.seq > initial.maxSeq!);
   } finally {
     child.kill("SIGTERM");
   }

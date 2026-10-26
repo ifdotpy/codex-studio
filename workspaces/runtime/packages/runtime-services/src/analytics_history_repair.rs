@@ -40,6 +40,8 @@ pub async fn migrate_budget(
     budget: &dyn HistoryBudgetSink,
     now: f64,
 ) -> Result<bool, HistoryError> {
+    let provider = studio_runtime_schema::provider_kind::ProviderKind::of_record(&agent)
+        .map_err(|_| CaptureError::Invalid("/agent/provider"))?;
     let key = format!("budgetUsageMigrationV1:{}", text(&agent["id"]));
     let metadata_key = key.clone();
     let root = store.root().to_owned();
@@ -72,7 +74,6 @@ pub async fn migrate_budget(
                 for (seq, raw) in &records {
                     let record: Value = serde_json::from_str(raw).map_err(studio_runtime_store::StoreError::from)?;
                     CaptureTable::Usage.validate(&record)?;
-                    let provider = if blocking_agent["provider"] == "claude" { studio_runtime_schema::usage::UsageProvider::Claude } else { studio_runtime_schema::usage::UsageProvider::Codex };
                     let mut params = if record.get("studioUsage").is_some() {
                         // Typed receipts retain the first capture key; never reconstruct a wire notification.
                         studio_runtime_schema::usage::ledger::UsageLedgerRow::from_analytics(provider, &record).map_err(CaptureError::from)?;
@@ -207,6 +208,69 @@ fn repaired_turn(mut record: Value, notice: &Value) -> Value {
 #[cfg(test)]
 mod usage_contract_tests {
     use super::*;
+
+    #[tokio::test]
+    async fn provider_identity_invalid_repair_is_refused_before_checkpoint() {
+        let (_temp, store, mut agent) = ledger_store("codex").await;
+        agent["provider"] = json!("future");
+        let sink = crate::analytics_history::StoreHistoryBudgetSink::new(&store);
+        assert!(migrate_budget(&store, agent, &sink, 2.).await.is_err());
+        store.analytics_transaction::<_, studio_runtime_store::StoreError>(|tx, _| {
+            assert_eq!(tx.query_row("SELECT count(*) FROM analytics_meta WHERE key LIKE 'budgetUsageMigrationV1:%'", [], |row| row.get::<_, i64>(0))?, 0);
+            Ok(())
+        }).await.expect("unchanged checkpoint");
+    }
+
+    #[tokio::test]
+    async fn provider_identity_invalid_budget_prepare_preserves_gap_state_agent_and_sync() {
+        let (_temp, store, mut agent) = ledger_store("codex").await;
+        let gap = json!({"threadId":"thread","studioUsage":{"kind":"gap","responseId":"missing","reason":"queryClosed"}});
+        ledger_capture(
+            &store,
+            &agent,
+            gap.clone(),
+            crate::budget::CaptureSource::History,
+            1.,
+        )
+        .await;
+        store
+            .transaction(|tx| {
+                tx.execute(
+                    "UPDATE runtime_budget SET record=json_remove(record,'$.gapCoverage')",
+                    [],
+                )?;
+                Ok(())
+            })
+            .await
+            .expect("pre-coverage budget");
+        store.analytics_transaction::<_, studio_runtime_store::StoreError>(|tx, _| {
+            tx.execute("UPDATE analytics_usage SET record=json_remove(record,'$.usageIdentity','$.receiptKey')", [])?;
+            Ok(())
+        }).await.expect("pre-ledger gap");
+        let snapshot = |tx: &rusqlite::Transaction<'_>| -> Result<Vec<String>, studio_runtime_store::StoreError> {
+            ["SELECT record FROM runtime_budget WHERE id='agent'", "SELECT record FROM runtime_agents WHERE id='agent'", "SELECT COALESCE(json_group_array(json_array(collection,id,seq,hash,payload,deleted)),'[]') FROM sync_entities"].into_iter().map(|sql| Ok(tx.query_row(sql, [], |row| row.get(0))?)).collect()
+        };
+        let before = store
+            .read_async("test/provider-prepare-before", snapshot)
+            .await
+            .expect("snapshot");
+        for provider in ["future", "claude"] {
+            agent["provider"] = json!(provider);
+            assert!(
+                crate::budget_service::prepare_legacy_corrections(
+                    &store,
+                    vec![(agent.clone(), gap.clone())]
+                )
+                .await
+                .is_err()
+            );
+            let after = store
+                .read_async("test/provider-prepare-after", snapshot)
+                .await
+                .expect("snapshot");
+            assert_eq!(after, before);
+        }
+    }
 
     async fn ledger_store(provider: &str) -> (tempfile::TempDir, RuntimeStore, Value) {
         let temp = tempfile::tempdir().expect("state");
@@ -396,7 +460,7 @@ mod usage_contract_tests {
         );
         let original = counter_params();
         let mut observation = studio_runtime_schema::usage::parse_token_usage(
-            studio_runtime_schema::usage::UsageProvider::Codex,
+            studio_runtime_schema::provider_kind::ProviderKind::Codex,
             &original,
         )
         .expect("counter");
@@ -473,7 +537,7 @@ mod usage_contract_tests {
 
     async fn era_old_typed(store: &RuntimeStore, agent: &Value) -> Value {
         let observation = studio_runtime_schema::usage::parse_token_usage(
-            studio_runtime_schema::usage::UsageProvider::Codex,
+            studio_runtime_schema::provider_kind::ProviderKind::Codex,
             &counter_params(),
         )
         .expect("typed");
@@ -1148,7 +1212,7 @@ mod usage_contract_tests {
     async fn typed_usage_ledger_era_post_epoch_replay_has_one_accounting_row() {
         let (_temp, store, mut agent) = ledger_store("codex").await;
         let observation = studio_runtime_schema::usage::parse_token_usage(
-            studio_runtime_schema::usage::UsageProvider::Codex,
+            studio_runtime_schema::provider_kind::ProviderKind::Codex,
             &counter_params(),
         )
         .expect("typed");
@@ -1244,7 +1308,7 @@ mod usage_contract_tests {
         let (_temp, store, agent) = ledger_store("codex").await;
         let native = rollout_counter("thread");
         let observation = studio_runtime_schema::usage::parse_token_usage(
-            studio_runtime_schema::usage::UsageProvider::Codex,
+            studio_runtime_schema::provider_kind::ProviderKind::Codex,
             &native,
         )
         .expect("complete canonical counter");
@@ -1260,7 +1324,7 @@ mod usage_contract_tests {
         let mut enriched = first;
         enriched["studioUsage"]["modelContextWindow"] = json!(200000);
         studio_runtime_schema::usage::parse_token_usage(
-            studio_runtime_schema::usage::UsageProvider::Codex,
+            studio_runtime_schema::provider_kind::ProviderKind::Codex,
             &enriched,
         )
         .expect("enriched supported counter");
@@ -1407,7 +1471,7 @@ mod usage_contract_tests {
         )
         .await;
         let observation = studio_runtime_schema::usage::parse_token_usage(
-            studio_runtime_schema::usage::UsageProvider::Codex,
+            studio_runtime_schema::provider_kind::ProviderKind::Codex,
             &first,
         )
         .expect("typed counter");
@@ -1486,7 +1550,7 @@ mod usage_contract_tests {
         )
         .await;
         let observation = studio_runtime_schema::usage::parse_token_usage(
-            studio_runtime_schema::usage::UsageProvider::Codex,
+            studio_runtime_schema::provider_kind::ProviderKind::Codex,
             &first,
         )
         .expect("counter");
@@ -2331,6 +2395,7 @@ mod usage_contract_tests {
             .await
             .expect("seed agent");
         store.analytics_transaction::<_,studio_runtime_store::StoreError>(|tx,_| {
+            Repo::write(tx,CaptureTable::Agents,&json!({"id":"agent","provider":"claude"}))?;
             Repo::write(tx,CaptureTable::Usage,&json!({"id":"legacy","agentId":"agent","rootId":"agent","threadId":"thread","turnId":"turn","at":1,"last":{"totalTokens":23},"total":{"totalTokens":23}}))?;
             Ok(())
         }).await.expect("seed sparse legacy usage");

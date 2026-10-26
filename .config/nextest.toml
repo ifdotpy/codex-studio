@@ -73,7 +73,11 @@ inherits = "ci"
 default-filter = '''
     (package(=studio-runtime-http) & kind(lib) & test(pricing_refresh)) |
     (package(=studio-runtime-services) & kind(lib) & (test(rejected_usage_does_not_feed_rate_or_move_cache) | test(usage::tests::claude_cost_snapshot_) | test(usage::tests::local_claude_session_fixture_) | test(usage::tests::claude_refresh_uses_completion_time))) |
-    (package(=studio-runtime-schema) & kind(lib) & test(bridge_wire)) |
+    (package(=studio-runtime-schema) & kind(lib) & (test(bridge_wire) | test(provider_kind::tests::) | test(provider_identity))) |
+    (package(=studio-runtime-providers) & kind(lib) & test(provider_kind::tests::)) |
+    ((package(=studio-runtime-services) | package(=studio-runtime-store)) & kind(lib) & (test(provider_identity) | test(migration_2026_10_26) | test(codex_account_producers_))) |
+    (package(=studio-runtime-server) & test(startup_registry_migrates_version_one_before_policy_reads)) |
+    ((package(=studio-runtime-services) | package(=studio-runtime-store)) & kind(test) & binary(=integration) & test(::provider_identity_)) |
     (package(=studio-runtime-services) & kind(test) & binary(=integration) & test(only_a_claude_worker_turns_user_mcp_servers_off)) |
     (package(=studio-runtime-services) & kind(lib) & (test(usage::tests::codex_session_fixture_) | test(restored_claude_query_total_keeps_the_pending_estimate_until_response))) |
     (package(=studio-runtime-services) & ((kind(lib) & test(analytics_projection::tests::projection_equals_the_direct_capture_of_a_turn)) | (kind(test) & binary(=integration) & test(session_cost_golden::session_cost_matches_the_row_scanning_golden_answers)))) |
@@ -140,6 +144,7 @@ default-filter = '''
     | (package(=studio-runtime-store) & kind(lib) & test(entity_replay_and_patch_preserve_sequence_until_value_or_deletion_changes))
     | (package(=studio-runtime-http) & (kind(lib) | binary(integration)) & test(startup_model))
     | (package(=studio-runtime-services) & kind(lib) & test(sync_policy::tests::model_whitelist))
+    | (package(=studio-runtime-services) & kind(lib) & test(sync_policy::tests::preference_validation_rejects_unknown_fields_and_scope_leaks))
     | (package(=studio-client-core) & kind(lib) & test(studio_error_entities_reach_native_state_and_dismissal_removes_them))
     | ((package(=studio-runtime-services)) & ((kind(lib) | kind(test))) & (test(/^worktree_root::tests::/) | test(/workspace_cleanup_runtime::tests::(archive_keeps_repository_default_worktrees_manageable_after_configuration|archive_removes_a_worktree_under_the_configured_root|worktree_outside_a_worker_directory_is_not_owned|substituted_worker_link_is_refused_and_target_survives|substituted_worker_ancestor_is_refused_and_target_survives|archive_manages_a_configured_root_named_like_the_default|worker_provisioned_from_a_linked_source_stays_owned|legacy_worker_under_a_linked_default_root_stays_owned)$/) | test(/::(configured_root_places_the_worktree_outside_the_repository|missing_configured_root_fails_closed)$/)))
     | (package(=studio-runtime-store) & kind(lib) & test(/^diagnostics_hook_tests::(writer_job_timing_separates_queue_and_hold|optional_hook_observes_writer_and_sql_timing_and_can_be_cleared)$/))
@@ -184,7 +189,11 @@ platform = 'cfg(target_os = "linux")'
 default-filter = '''
     (package(=studio-runtime-http) & kind(lib) & test(pricing_refresh)) |
     (package(=studio-runtime-services) & kind(lib) & (test(rejected_usage_does_not_feed_rate_or_move_cache) | test(usage::tests::claude_cost_snapshot_) | test(usage::tests::local_claude_session_fixture_) | test(usage::tests::claude_refresh_uses_completion_time))) |
-    (package(=studio-runtime-schema) & kind(lib) & test(bridge_wire)) |
+    (package(=studio-runtime-schema) & kind(lib) & (test(bridge_wire) | test(provider_kind::tests::) | test(provider_identity))) |
+    (package(=studio-runtime-providers) & kind(lib) & test(provider_kind::tests::)) |
+    ((package(=studio-runtime-services) | package(=studio-runtime-store)) & kind(lib) & (test(provider_identity) | test(migration_2026_10_26) | test(codex_account_producers_))) |
+    (package(=studio-runtime-server) & test(startup_registry_migrates_version_one_before_policy_reads)) |
+    ((package(=studio-runtime-services) | package(=studio-runtime-store)) & kind(test) & binary(=integration) & test(::provider_identity_)) |
     (package(=studio-runtime-services) & kind(test) & binary(=integration) & test(only_a_claude_worker_turns_user_mcp_servers_off)) |
     (package(=studio-runtime-services) & kind(lib) & (test(usage::tests::codex_session_fixture_) | test(restored_claude_query_total_keeps_the_pending_estimate_until_response))) |
     (package(=studio-runtime-services) & ((kind(lib) & test(analytics_projection::tests::projection_equals_the_direct_capture_of_a_turn)) | (kind(test) & binary(=integration) & test(session_cost_golden::session_cost_matches_the_row_scanning_golden_answers)))) |
@@ -251,6 +260,7 @@ default-filter = '''
     | (package(=studio-runtime-store) & kind(lib) & test(entity_replay_and_patch_preserve_sequence_until_value_or_deletion_changes))
     | (package(=studio-runtime-http) & (kind(lib) | binary(integration)) & test(startup_model))
     | (package(=studio-runtime-services) & kind(lib) & test(sync_policy::tests::model_whitelist))
+    | (package(=studio-runtime-services) & kind(lib) & test(sync_policy::tests::preference_validation_rejects_unknown_fields_and_scope_leaks))
     | (package(=studio-client-core) & kind(lib) & test(studio_error_entities_reach_native_state_and_dismissal_removes_them))
     | ((package(=studio-runtime-services)) & ((kind(lib) | kind(test))) & (test(/^worktree_root::tests::/) | test(/workspace_cleanup_runtime::tests::(archive_keeps_repository_default_worktrees_manageable_after_configuration|archive_removes_a_worktree_under_the_configured_root|worktree_outside_a_worker_directory_is_not_owned|substituted_worker_link_is_refused_and_target_survives|substituted_worker_ancestor_is_refused_and_target_survives|archive_manages_a_configured_root_named_like_the_default|worker_provisioned_from_a_linked_source_stays_owned|legacy_worker_under_a_linked_default_root_stays_owned)$/) | test(/::(configured_root_places_the_worktree_outside_the_repository|missing_configured_root_fails_closed)$/)))
     | (package(=studio-runtime-store) & kind(lib) & test(/^diagnostics_hook_tests::(writer_job_timing_separates_queue_and_hold|optional_hook_observes_writer_and_sql_timing_and_can_be_cleared)$/))

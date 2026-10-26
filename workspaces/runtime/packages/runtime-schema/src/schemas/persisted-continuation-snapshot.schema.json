@@ -81,7 +81,11 @@
           "type": "object"
         },
         "status": {
-          "enum": ["auth_probe_wait", "completed", "cancelled"],
+          "enum": [
+            "auth_probe_wait",
+            "completed",
+            "cancelled"
+          ],
           "title": "Status",
           "type": "string"
         },
@@ -295,7 +299,9 @@
           "type": "string"
         }
       },
-      "required": ["author"],
+      "required": [
+        "author"
+      ],
       "title": "ComplaintResponse",
       "type": "object"
     },
@@ -426,16 +432,7 @@
           "title": "Parentid"
         },
         "provider": {
-          "anyOf": [
-            {
-              "enum": ["codex", "claude"],
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "title": "Provider"
+          "$ref": "#/$defs/ProviderKind"
         },
         "rootId": {
           "maxLength": 4096,
@@ -513,7 +510,13 @@
           "type": "boolean"
         }
       },
-      "required": ["id", "rootId", "epoch", "status"],
+      "required": [
+        "id",
+        "rootId",
+        "epoch",
+        "status",
+        "provider"
+      ],
       "title": "ContinuationAgent",
       "type": "object"
     },
@@ -603,7 +606,11 @@
           "title": "Turnid"
         }
       },
-      "required": ["id", "epoch", "submitted"],
+      "required": [
+        "id",
+        "epoch",
+        "submitted"
+      ],
       "title": "ContinuationAttempt",
       "type": "object"
     },
@@ -686,7 +693,15 @@
           "title": "Turn Id"
         }
       },
-      "required": ["id", "agent", "epoch", "kind", "text", "status", "created"],
+      "required": [
+        "id",
+        "agent",
+        "epoch",
+        "kind",
+        "text",
+        "status",
+        "created"
+      ],
       "title": "ContinuationEvent",
       "type": "object"
     },
@@ -793,7 +808,9 @@
           "type": "boolean"
         }
       },
-      "required": ["accountKey"],
+      "required": [
+        "accountKey"
+      ],
       "title": "ContinuationLimitsObservation",
       "type": "object"
     },
@@ -827,6 +844,15 @@
       "type": "object"
     },
     "JsonValue": {},
+    "ProviderKind": {
+      "description": "The provider that owns an account and every agent on it.",
+      "enum": [
+        "codex",
+        "claude"
+      ],
+      "title": "ProviderKind",
+      "type": "string"
+    },
     "RateLimitBucket": {
       "additionalProperties": {
         "$ref": "#/$defs/JsonValue"
@@ -982,7 +1008,11 @@
           "type": "string"
         }
       },
-      "required": ["id", "status", "resetType"],
+      "required": [
+        "id",
+        "status",
+        "resetType"
+      ],
       "title": "RateLimitResetCredit",
       "type": "object"
     },
@@ -1089,7 +1119,12 @@
           "x-safe-integer": "unsigned"
         }
       },
-      "required": ["id", "seq", "payload", "_deleted"],
+      "required": [
+        "id",
+        "seq",
+        "payload",
+        "_deleted"
+      ],
       "title": "SyncEntity",
       "type": "object"
     },
@@ -1123,7 +1158,11 @@
           "title": "Authrefreshmarker"
         },
         "cause": {
-          "enum": ["usage_limit", "rate_limit", "auth"],
+          "enum": [
+            "usage_limit",
+            "rate_limit",
+            "auth"
+          ],
           "title": "Cause",
           "type": "string"
         },
@@ -1210,7 +1249,12 @@
           "title": "Resetat"
         },
         "status": {
-          "enum": ["scheduled", "started", "cancelled", "unknown"],
+          "enum": [
+            "scheduled",
+            "started",
+            "cancelled",
+            "unknown"
+          ],
           "title": "Status",
           "type": "string"
         },
@@ -1393,7 +1437,12 @@
           "type": "string"
         }
       },
-      "required": ["id", "leadId", "recipient", "status"],
+      "required": [
+        "id",
+        "leadId",
+        "recipient",
+        "status"
+      ],
       "title": "WakeComplaint",
       "type": "object"
     },
@@ -1431,7 +1480,10 @@
           "type": "string"
         }
       },
-      "required": ["id", "rootId"],
+      "required": [
+        "id",
+        "rootId"
+      ],
       "title": "WakeWork",
       "type": "object"
     },
@@ -1447,7 +1499,9 @@
           "type": "string"
         }
       },
-      "required": ["resultId"],
+      "required": [
+        "resultId"
+      ],
       "title": "WorkDecision",
       "type": "object"
     },
@@ -1463,7 +1517,9 @@
           "type": "string"
         }
       },
-      "required": ["id"],
+      "required": [
+        "id"
+      ],
       "title": "WorkResult",
       "type": "object"
     }
@@ -1565,7 +1621,9 @@
       "type": "object"
     }
   },
-  "required": ["agent"],
+  "required": [
+    "agent"
+  ],
   "title": "ContinuationSnapshotRecord",
   "type": "object"
 }

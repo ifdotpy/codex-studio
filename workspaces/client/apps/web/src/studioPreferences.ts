@@ -37,6 +37,7 @@ export const defaultStudioPreferences: StudioPreferences = {
   contentWidth: 100,
   sidebarShortcut: `${navigator.platform.toLowerCase().includes("mac") ? "Meta" : "Control"}+b`,
   showMessageAvatars: false,
+  showTerminals: true,
   hideOldChatsThreshold: DEFAULT_HIDE_OLD_CHATS_THRESHOLD,
   checkProviderUpdates: DEFAULT_CHECK_PROVIDER_UPDATES,
 };
@@ -69,6 +70,8 @@ export function parseStudioPreferences(value: string): StudioPreferences {
     Number(candidate.contentWidth) > 100 ||
     (candidate.showMessageAvatars !== undefined &&
       typeof candidate.showMessageAvatars !== "boolean") ||
+    (candidate.showTerminals !== undefined &&
+      typeof candidate.showTerminals !== "boolean") ||
     (candidate.checkProviderUpdates !== undefined &&
       typeof candidate.checkProviderUpdates !== "boolean") ||
     (candidate.hideOldChatsThreshold !== undefined &&
@@ -92,6 +95,10 @@ export function parseStudioPreferences(value: string): StudioPreferences {
     contentWidth: candidate.contentWidth as number,
     sidebarShortcut: candidate.sidebarShortcut,
     showMessageAvatars: candidate.showMessageAvatars === true,
+    showTerminals:
+      typeof candidate.showTerminals === "boolean"
+        ? candidate.showTerminals
+        : defaultStudioPreferences.showTerminals,
     hideOldChatsThreshold:
       typeof candidate.hideOldChatsThreshold === "number"
         ? candidate.hideOldChatsThreshold

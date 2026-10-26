@@ -356,20 +356,25 @@ impl VersionProbe for SystemVersionProbe {
         profile: &ProviderProfile,
         deadline: Instant,
     ) -> Result<VersionFacts, ProviderPortError> {
-        if profile.provider == "claude" {
-            let launched_binary = profile
-                .launched_binary
-                .as_deref()
-                .ok_or(ProviderPortError)?;
-            let (installed_version, launched_error) =
-                match read_cli_version(launched_binary, deadline) {
-                    Ok(version) => (Some(version), None),
-                    Err(_) => (
-                        None,
-                        Some("Could not read the Claude Code executable version.".to_owned()),
-                    ),
-                };
-            let (configured_version, configured_error) = match profile.configured_binary.as_deref()
+        match profile
+            .provider
+            .parse::<studio_runtime_schema::ProviderKind>()
+            .map_err(|_| ProviderPortError)?
+        {
+            studio_runtime_schema::ProviderKind::Claude => {
+                let launched_binary = profile
+                    .launched_binary
+                    .as_deref()
+                    .ok_or(ProviderPortError)?;
+                let (installed_version, launched_error) =
+                    match read_cli_version(launched_binary, deadline) {
+                        Ok(version) => (Some(version), None),
+                        Err(_) => (
+                            None,
+                            Some("Could not read the Claude Code executable version.".to_owned()),
+                        ),
+                    };
+                let (configured_version, configured_error) = match profile.configured_binary.as_deref()
             {
                 Some(binary) => match read_cli_version(binary, deadline) {
                     Ok(version) => (Some(version), None),
@@ -386,33 +391,36 @@ impl VersionProbe for SystemVersionProbe {
                     Some("Claude Code executable was not found for this profile.".to_owned()),
                 ),
             };
-            let available_version = configured_version.clone();
-            return Ok(VersionFacts {
-                running_version: None,
-                installed_version,
-                configured_version,
-                available_version,
-                error: launched_error.or(configured_error),
-                running_note: Some(
-                    "The exact version already running in Claude sessions is unknown.".into(),
-                ),
-            });
+                let available_version = configured_version.clone();
+                Ok(VersionFacts {
+                    running_version: None,
+                    installed_version,
+                    configured_version,
+                    available_version,
+                    error: launched_error.or(configured_error),
+                    running_note: Some(
+                        "The exact version already running in Claude sessions is unknown.".into(),
+                    ),
+                })
+            }
+            studio_runtime_schema::ProviderKind::Codex => {
+                let default_binary = "codex";
+                let launched_binary = profile
+                    .launched_binary
+                    .as_deref()
+                    .or(profile.configured_binary.as_deref())
+                    .unwrap_or(default_binary);
+                let version = read_cli_version(launched_binary, deadline)?;
+                Ok(VersionFacts {
+                    running_version: Some(version.clone()),
+                    installed_version: Some(version),
+                    configured_version: None,
+                    available_version: None,
+                    error: None,
+                    running_note: None,
+                })
+            }
         }
-        let default_binary = "codex";
-        let launched_binary = profile
-            .launched_binary
-            .as_deref()
-            .or(profile.configured_binary.as_deref())
-            .unwrap_or(default_binary);
-        let version = read_cli_version(launched_binary, deadline)?;
-        Ok(VersionFacts {
-            running_version: Some(version.clone()),
-            installed_version: Some(version),
-            configured_version: None,
-            available_version: None,
-            error: None,
-            running_note: None,
-        })
     }
 }
 
@@ -879,7 +887,11 @@ impl ProviderVersionMonitor {
             if !self.connection_is_current(&profiles) {
                 return CheckOutcome { retry: false };
             }
-            if !matches!(profile.provider.as_str(), "codex" | "claude") {
+            if profile
+                .provider
+                .parse::<studio_runtime_schema::ProviderKind>()
+                .is_err()
+            {
                 providers.push(unknown_row(profile, now));
                 continue;
             }

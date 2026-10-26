@@ -1,5 +1,4 @@
 import type { Json } from "../../types";
-import { required } from "../componentTestFixtures";
 import assert from "node:assert/strict";
 import { toolImages, toolImageDisplayPayload } from "./toolImages.ts";
 
@@ -91,27 +90,24 @@ it("classifies image paths and content without exposing raw image bytes", () => 
   assert.deepEqual(toolImages(input), [
     { kind: "inline", source: uri, name: "Tool image" },
   ]);
-  const displayInput = toolImageDisplayPayload(input);
-  assert.ok(Array.isArray(displayInput.contentItems));
-  const firstText = required(displayInput.contentItems[0]);
-  assert.ok(typeof firstText === "object" && !Array.isArray(firstText));
-  assert.deepEqual(required(displayInput.contentItems[1]), {
+  const displayInput = toolImageDisplayPayload(input) as typeof input;
+  assert.deepEqual(displayInput.contentItems[1], {
     type: "inputImage",
     imageUrl: "[Image content]",
     id: "first",
   });
-  assert.deepEqual(required(displayInput.contentItems[2]), {
+  assert.deepEqual(displayInput.contentItems[2], {
     type: "inputImage",
     imageUrl: "[Image content]",
     id: "duplicate",
   });
-  assert.equal(firstText.text, "Result text");
+  assert.equal(displayInput.contentItems[0].text, "Result text");
   assert.ok(
     !JSON.stringify(displayInput).includes("aW1hZ2U="),
     "Raw event does not duplicate image bytes",
   );
   assert.equal(
-    required(input.contentItems[1]).imageUrl,
+    input.contentItems[1].imageUrl,
     uri,
     "Display formatting cannot mutate stored data",
   );
@@ -130,21 +126,13 @@ it("classifies image paths and content without exposing raw image bytes", () => 
   assert.deepEqual(toolImages(mcp), [
     { kind: "inline", source: uri, name: "Tool image" },
   ]);
-  const displayMcp = toolImageDisplayPayload(mcp);
-  assert.ok(
-    displayMcp.result &&
-      typeof displayMcp.result === "object" &&
-      !Array.isArray(displayMcp.result),
-  );
-  assert.ok(Array.isArray(displayMcp.result.content));
-  const mcpText = required(displayMcp.result.content[2]);
-  assert.ok(typeof mcpText === "object" && !Array.isArray(mcpText));
-  assert.deepEqual(required(displayMcp.result.content[0]), {
+  const displayMcp = toolImageDisplayPayload(mcp) as typeof mcp;
+  assert.deepEqual(displayMcp.result.content[0], {
     type: "image",
     mimeType: "image/png",
     data: "[Image content]",
   });
-  assert.equal(mcpText.text, "MCP text");
+  assert.equal(displayMcp.result.content[2]!.text, "MCP text");
   assert.equal(displayMcp.result.isError, false);
   assert.equal(displayMcp.result.content[3], null);
   assert.ok(!JSON.stringify(displayMcp).includes("aW1hZ2U="));

@@ -516,6 +516,7 @@ mod tests {
         let agent = |id: &str| {
             json!({
                 "id": id, "rootId": id, "epoch": 1, "status": "running", "autoWake": true,
+                "provider": studio_runtime_schema::ProviderKind::Codex,
                 "accountKey": "account-a", "threadId": "thread-a", "turnId": "turn-a",
                 "startAttempt": {"connectionGeneration": 7, "connectionId": "connection-a"}
             })

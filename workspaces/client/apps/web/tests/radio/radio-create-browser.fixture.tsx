@@ -1,16 +1,15 @@
 declare global {
   interface Window {
-    radioCreateFixture: {
-      fixture: Snapshot;
-      opened: string | null;
-      reopen: () => void;
-      failRefresh: boolean;
-      ordinary: boolean;
-    };
+    // fixture stores scroll handlers in tests/performance/scroll-restart.fixture.tsx.
+    radioCreateSnapshot: Snapshot;
+    // opened is SessionActivityItem[] in tests/chat/session-activity-browser.fixture.tsx.
+    radioOpened: string | null;
+    reopen: () => void;
+    failRefresh: boolean;
+    ordinary: boolean;
   }
 }
-const rootElement = document.getElementById("root");
-if (!rootElement) throw new Error("Missing radio fixture root");
+const rootElement = document.getElementById("root")!;
 import { snapshotFixture } from "../../src/snapshotFixture.ts";
 import type { Snapshot } from "../../src/types.ts";
 import { radioSnapshot } from "./radio-fixture.ts";
@@ -25,12 +24,23 @@ import "../../src/style.css";
 import "../../src/appearance.css";
 import "../../src/workspace-layout.css";
 import { theme } from "../../src/theme.ts";
-const accounts: React.ComponentProps<typeof SharedChatCreate>["accounts"] = {
-  archivedAccounts: [],
-  defaultAccountGroups: [],
-  logins: [],
-  supportsDelete: false,
-  supportsDisconnect: false,
+type SharedAccounts = NonNullable<
+  React.ComponentProps<typeof SharedChatCreate>["accounts"]
+>;
+type RadioAccount = Pick<
+  SharedAccounts["accounts"][number],
+  "id" | "label" | "email" | "provider" | "status"
+>;
+// Base accounts omit archivedAccounts, defaultAccountGroups, logins, supportsDelete,
+// supportsDisconnect, and each account's home/source.
+function partialRadioAccounts(
+  value: Pick<SharedAccounts, "defaultAccountKey"> & {
+    accounts: RadioAccount[];
+  },
+): SharedAccounts {
+  return value as SharedAccounts;
+}
+const accounts = partialRadioAccounts({
   defaultAccountKey: "codex",
   accounts: [
     {
@@ -39,8 +49,6 @@ const accounts: React.ComponentProps<typeof SharedChatCreate>["accounts"] = {
       email: "personal@example.com",
       provider: "codex",
       status: "ready",
-      home: "/fixture",
-      source: "fixture",
     },
     {
       id: "claude",
@@ -48,28 +56,16 @@ const accounts: React.ComponentProps<typeof SharedChatCreate>["accounts"] = {
       email: "work@example.com",
       provider: "claude",
       status: "ready",
-      home: "/fixture",
-      source: "fixture",
     },
-    ...Array.from(
-      { length: 5 },
-      (
-        _,
-        i,
-      ): NonNullable<
-        React.ComponentProps<typeof SharedChatCreate>["accounts"]
-      >["accounts"][number] => ({
-        id: "extra" + i,
-        label: "Account " + (i + 3),
-        email: "account" + i + "@example.com",
-        provider: i < 3 ? "codex" : "claude",
-        status: "ready",
-        home: "/fixture",
-        source: "fixture",
-      }),
-    ),
+    ...Array.from({ length: 5 }, (_, i): RadioAccount => ({
+      id: "extra" + i,
+      label: "Account " + (i + 3),
+      email: "account" + i + "@example.com",
+      provider: i < 3 ? "codex" : "claude",
+      status: "ready",
+    })),
   ],
-};
+});
 const initial: Snapshot = {
   ...snapshotFixture(),
   stateDir: "create-test",
@@ -83,25 +79,22 @@ const initial: Snapshot = {
     peerTeams: [],
   },
 };
-window.radioCreateFixture = {
-  fixture: initial,
-  opened: null,
-  reopen: () => {},
-  failRefresh: false,
-  ordinary: false,
-};
+window.radioCreateSnapshot = initial;
+window.radioOpened = null;
+window.reopen = () => {};
+window.failRefresh = false;
+window.ordinary = false;
 function Fixture() {
   const [data, setData] = useState(initial);
   const [show, setShow] = useState<{ path?: string | undefined } | null>({
     path: "/p",
   });
   const [opened, open] = useState<string | null>(null);
-  window.radioCreateFixture.fixture = data;
-  window.radioCreateFixture.opened = opened;
-  window.radioCreateFixture.reopen = () => setShow({ path: "/p" });
+  window.radioCreateSnapshot = data;
+  window.radioOpened = opened;
+  window.reopen = () => setShow({ path: "/p" });
   const refresh = async () => {
-    if (window.radioCreateFixture.failRefresh)
-      throw Error("Snapshot unavailable");
+    if (window.failRefresh) throw Error("Snapshot unavailable");
     const result = await fetch("/snapshot");
     setData(radioSnapshot(await result.json()));
   };
@@ -111,7 +104,7 @@ function Fixture() {
         data={data}
         opened={opened}
         open={open}
-        newChat={() => (window.radioCreateFixture.ordinary = true)}
+        newChat={() => (window.ordinary = true)}
         newSharedChat={(path) => setShow({ path })}
         addProject={() => {}}
         changeProject={() => {}}

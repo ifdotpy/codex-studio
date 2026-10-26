@@ -20,14 +20,14 @@ declare global {
 
 declare global {
   interface Window {
-    syncBrowserFixtureEntityStreams: {
+    entityStreams: {
       source: EventSource;
       resources: import("../playwright.ts").ResourceRef[];
     }[];
     syncBrowserFixtureValues: (string | null | undefined)[];
-    syncBrowserFixtureStopSync: () => void;
-    syncBrowserFixtureFailure?: string | undefined;
-    syncBrowserFixtureStopDrafts: Awaited<
+    stopSync: () => void;
+    failure?: string | undefined;
+    syncStopDrafts: Awaited<
       ReturnType<
         typeof import("../../src/sync/client.ts").startDraftReplication
       >

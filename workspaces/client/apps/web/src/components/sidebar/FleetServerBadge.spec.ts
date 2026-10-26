@@ -28,7 +28,7 @@ test("default-server strips maximize title width and reveal actions on hover or 
     },
   });
   let errors = "";
-  proc.stderr?.on("data", (chunk) => {
+  proc.stderr!.on("data", (chunk) => {
     errors += chunk;
   });
   try {
@@ -38,7 +38,7 @@ test("default-server strips maximize title width and reveal actions on hover or 
     const lead = state.runtime.agents.find(
       (agent) => agent.name === "Release lead",
     );
-    if (!lead) throw new Error("Missing release lead");
+
     const titles = [
       "Review deployment permissions for all parallel projects and release environments",
       "Обновление интерфейса нескольких параллельных проектов и проверка навигации",
@@ -89,10 +89,10 @@ test("default-server strips maximize title width and reveal actions on hover or 
           await expect(strip).toHaveCSS("box-shadow", "none");
           const measurement = await strip.evaluate((element) => {
             const title = element.querySelector("strong");
-            if (!title) throw new Error("Missing fleet title");
+
             return {
-              title: title.textContent,
-              width: title.getBoundingClientRect().width,
+              title: title!.textContent,
+              width: title!.getBoundingClientRect().width,
               rowWidth: element.getBoundingClientRect().width,
             };
           });
@@ -116,26 +116,23 @@ test("default-server strips maximize title width and reveal actions on hover or 
             .last();
           const menu = idle.locator(".row-actions");
           await page.mouse.move(1400, 900);
-          await page.evaluate(
-            () =>
-              document.activeElement instanceof HTMLElement &&
-              document.activeElement.blur(),
+          await page.evaluate(() =>
+            (document.activeElement as HTMLElement | null)?.blur(),
           );
           await expect(menu).toHaveCSS("opacity", "0");
           const idleTitle = await idle.locator("strong").boundingBox();
-          if (!idleTitle) throw new Error("Missing idle title bounds");
-          const idleTitleWidth = idleTitle.width;
+
+          const idleTitleWidth = idleTitle!.width;
           await idle.hover();
           await expect(menu).toHaveCSS("opacity", "1");
           expect(
-            (await idle.locator("strong").boundingBox())?.width,
+            (await idle.locator("strong").boundingBox())!.width,
           ).toBeLessThan(idleTitleWidth);
           const titleBounds = await idle.locator("strong").boundingBox();
           const menuBounds = await menu.boundingBox();
-          if (!titleBounds || !menuBounds)
-            throw new Error("Missing menu bounds");
-          expect(titleBounds.x + titleBounds.width).toBeLessThanOrEqual(
-            menuBounds.x,
+
+          expect(titleBounds!.x + titleBounds!.width).toBeLessThanOrEqual(
+            menuBounds!.x,
           );
           await page.mouse.move(1400, 900);
           await menu.focus();
@@ -144,17 +141,15 @@ test("default-server strips maximize title width and reveal actions on hover or 
           await expect(page.getByRole("menu")).toBeVisible();
           await page.keyboard.press("Escape");
         }
-        await page.evaluate(
-          () =>
-            document.activeElement instanceof HTMLElement &&
-            document.activeElement.blur(),
+        await page.evaluate(() =>
+          (document.activeElement as HTMLElement | null)?.blur(),
         );
         await page.screenshot({
           path: join(evidence, `server-badge-real-${scheme}-${width}.png`),
         });
         // The same built renderer also hosts Team at desktop and phone widths.
         await sidebar
-          .locator(`.sidebar-project [data-chat="${lead.id}"]`)
+          .locator(`.sidebar-project [data-chat="${lead!.id}"]`)
           .click();
         if (width === 1440) {
           await page.locator("#team-toggle").click();

@@ -251,19 +251,23 @@ mod workspace_admission_tests {
 
     #[test]
     fn child_image_request_does_not_require_parent_image_repository() {
-        let native = studio_runtime_store::AgentRecord::from_value(serde_json::json!({
-            "id":"native-parent","rootId":"native-parent","epoch":1,"status":"queued",
-            "workspaceMode":"worktree","cwd":"/fake/project"
-        }))
+        let native = studio_runtime_store::AgentRecord::from_value(
+            serde_json::json!({"provider":studio_runtime_schema::ProviderKind::Codex,
+                "id":"native-parent","rootId":"native-parent","epoch":1,"status":"queued",
+                "workspaceMode":"worktree","cwd":"/fake/project"
+            }),
+        )
         .expect("native parent");
         assert!(prepare_parent_workspace(&native).is_ok());
 
-        let image_lead = studio_runtime_store::AgentRecord::from_value(serde_json::json!({
-            "id":"image-parent","rootId":"image-parent","epoch":2,"status":"queued",
-            "workspaceMode":"image","imageWorkspace":true,
-            "imageWorkspaceReady":true,"imageWorkspaceRepo":"/fake/project",
-            "cwd":"/fake/mount/repo"
-        }))
+        let image_lead = studio_runtime_store::AgentRecord::from_value(
+            serde_json::json!({"provider":studio_runtime_schema::ProviderKind::Codex,
+                "id":"image-parent","rootId":"image-parent","epoch":2,"status":"queued",
+                "workspaceMode":"image","imageWorkspace":true,
+                "imageWorkspaceReady":true,"imageWorkspaceRepo":"/fake/project",
+                "cwd":"/fake/mount/repo"
+            }),
+        )
         .expect("image lead");
         assert!(prepare_parent_workspace(&image_lead).is_ok());
         let mut unready = image_lead;
@@ -280,10 +284,12 @@ mod workspace_admission_tests {
             .await
             .expect("runtime store opens");
         let record = |id: &str, epoch: i64, status: &str| {
-            studio_runtime_store::AgentRecord::from_value(serde_json::json!({
-                "id":id,"rootId":"lead","epoch":epoch,"status":status,
-                "workspaceMode":"shared","cwd":"/fake/project"
-            }))
+            studio_runtime_store::AgentRecord::from_value(
+                serde_json::json!({"provider":studio_runtime_schema::ProviderKind::Codex,
+                    "id":id,"rootId":"lead","epoch":epoch,"status":status,
+                    "workspaceMode":"shared","cwd":"/fake/project"
+                }),
+            )
             .expect("agent record")
         };
         let lead = record("lead", 3, "running");
@@ -350,7 +356,7 @@ impl studio_runtime_services::provider_callbacks::ManagedCreationAccountRead
                     deleted: row.get("deleted").and_then(Value::as_bool) == Some(true),
                     duplicate: row.get("duplicateOf").and_then(Value::as_str).is_some(),
                     max_running_turns:
-                        studio_runtime_services::account_start_gate::StartThrottle::of_record(row)
+                        studio_runtime_services::account_start_gate::StartThrottle::of_record(row)?
                             .max_running,
                     group: row
                         .get(studio_runtime_services::account_preference::ACCOUNT_GROUP_FIELD)

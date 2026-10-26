@@ -1,8 +1,8 @@
+import type { AddressInfo } from "node:net";
 import type { components } from "../../src/generated/api.ts";
 import { requestBody } from "../messages/helpers.ts";
 import { readLocalDraft } from "../drafts/draft-fixture-helpers.ts";
 import type { PostBody } from "../../src/apiTypes.ts";
-import { fixtureOrigin } from "../drafts/draft-fixture-helpers.ts";
 import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
 import { test } from "../playwright.ts";
@@ -54,7 +54,7 @@ test("Draft recovery", async ({ context: testContext }) => {
         >,
       }),
     );
-    const origin = fixtureOrigin(server);
+    const origin = `http://127.0.0.1:${(server.httpServer!.address() as AddressInfo).port}`;
     const mount = async (fail: boolean) => {
       await page.goto(origin + "/check");
       await page.evaluate(async (fail: boolean) => {
@@ -62,12 +62,12 @@ test("Draft recovery", async ({ context: testContext }) => {
           await import("/src/../tests/drafts/draft-recovery-browser.fixture.tsx");
         await mount(fail);
       }, fail);
-      await page.waitForFunction(() => !!window.recoveryDraft_draft);
+      await page.waitForFunction(() => !!window.draft);
     };
     const edit = (text: string) =>
       page.evaluate(
         (text: string) =>
-          window.recoveryDraft_draft.setDrafts((old) => ({
+          window.draft.setDrafts((old) => ({
             ...old,
             lead: text,
           })),
@@ -76,7 +76,7 @@ test("Draft recovery", async ({ context: testContext }) => {
     const stored = (text: string) =>
       page.waitForFunction(
         async (text: string) =>
-          (await window.recoveryDraft_db.drafts.find().exec()).some(
+          (await window.db.drafts.find().exec()).some(
             (doc) => window.recoveryDraft_readDraft(doc.payload).text === text,
           ),
         text,
@@ -85,19 +85,19 @@ test("Draft recovery", async ({ context: testContext }) => {
     await edit("Saved version");
     await stored("Saved version");
     await page.evaluate(() => {
-      window.recoveryDraft_failWrites = true;
-      window.recoveryDraft_blockDraftJournal = true;
-      window.recoveryDraft_originalSetItem = Storage.prototype.setItem;
+      window.failWrites = true;
+      window.blockDraftJournal = true;
+      window.originalSetItem = Storage.prototype.setItem;
       Storage.prototype.setItem = function (key, value) {
-        if (window.recoveryDraft_blockDraftJournal && key.includes(":pending:"))
+        if (window.blockDraftJournal && key.includes(":pending:"))
           throw new Error("Injected journal write failure");
-        return window.recoveryDraft_originalSetItem.call(this, key, value);
+        return window.originalSetItem.call(this, key, value);
       };
     });
     await edit("Journal failure retries from the current draft record");
-    await page.waitForFunction(() => !!window.recoveryDraft_draft.error);
+    await page.waitForFunction(() => !!window.draft.error);
     const journalFailure = await page.evaluate(() => ({
-      error: window.recoveryDraft_draft.error,
+      error: window.draft.error,
       record: Object.entries(localStorage).find(([key]) =>
         key.startsWith("codex-chat-draft:"),
       )?.[1],
@@ -113,73 +113,73 @@ test("Draft recovery", async ({ context: testContext }) => {
     );
     assert.equal(journalFailure.pending, false);
     await page.evaluate(() => {
-      window.recoveryDraft_blockDraftJournal = false;
-      Storage.prototype.setItem = window.recoveryDraft_originalSetItem;
-      window.recoveryDraft_failWrites = false;
+      window.blockDraftJournal = false;
+      Storage.prototype.setItem = window.originalSetItem;
+      window.failWrites = false;
       window.dispatchEvent(new Event("pageshow"));
     });
     await stored("Journal failure retries from the current draft record");
-    await page.waitForFunction(() => !window.recoveryDraft_draft.error);
+    await page.waitForFunction(() => !window.draft.error);
     await page.evaluate(() => {
-      window.recoveryDraft_failWrites = true;
+      window.failWrites = true;
     });
     await edit("New draft during a write failure");
-    await page.waitForFunction(() => !!window.recoveryDraft_draft.error);
+    await page.waitForFunction(() => !!window.draft.error);
     await mount(true);
     await page.waitForTimeout(500);
     assert.equal(
-      await page.evaluate(() => window.recoveryDraft_draft.drafts.lead),
+      await page.evaluate(() => window.draft.drafts.lead),
       "New draft during a write failure",
       "Reload must not restore the older IndexedDB value over the unsaved edit",
     );
     await page.evaluate(() => {
-      window.recoveryDraft_failWrites = false;
+      window.failWrites = false;
       window.dispatchEvent(new Event("pageshow"));
     });
     await stored("New draft during a write failure");
-    await page.waitForFunction(() => !window.recoveryDraft_draft.error);
+    await page.waitForFunction(() => !window.draft.error);
     await page.evaluate(() => {
-      window.recoveryDraft_failWrites = true;
+      window.failWrites = true;
     });
     await edit("");
-    await page.waitForFunction(() => !!window.recoveryDraft_draft.error);
+    await page.waitForFunction(() => !!window.draft.error);
     await mount(true);
     await page.waitForTimeout(500);
     assert.equal(
-      await page.evaluate(() => window.recoveryDraft_draft.drafts.lead),
+      await page.evaluate(() => window.draft.drafts.lead),
       "",
       "An unsaved clear must remain empty after reload",
     );
     await page.evaluate(() => {
-      window.recoveryDraft_failWrites = false;
+      window.failWrites = false;
       window.dispatchEvent(new Event("pageshow"));
     });
     await stored("");
-    await page.waitForFunction(() => !window.recoveryDraft_draft.error);
+    await page.waitForFunction(() => !window.draft.error);
     await page.evaluate(() => {
       for (let i = 0; i < 20; i++)
-        window.recoveryDraft_draft.setDrafts((old) => ({
+        window.draft.setDrafts((old) => ({
           ...old,
           lead: `Rapid edit ${i}`,
         }));
     });
     await stored("Rapid edit 19");
-    await page.waitForFunction(() => !window.recoveryDraft_draft.error);
+    await page.waitForFunction(() => !window.draft.error);
     assert.equal(
-      await page.evaluate(() => window.recoveryDraft_draft.conflicts.length),
+      await page.evaluate(() => window.draft.conflicts.length),
       0,
       "Typing must not create conflicts with earlier keystrokes",
     );
     await page.evaluate(() => {
-      window.recoveryDraft_failWrites = true;
+      window.failWrites = true;
     });
     await edit("Workspace A draft");
-    await page.waitForFunction(() => !!window.recoveryDraft_draft.error);
+    await page.waitForFunction(() => !!window.draft.error);
     workspaceId = "e".repeat(32);
     await mount(true);
     await page.waitForTimeout(500);
     assert.equal(
-      await page.evaluate(() => window.recoveryDraft_draft.drafts.lead),
+      await page.evaluate(() => window.draft.drafts.lead),
       undefined,
       "Pending drafts must not move to a different workspace",
     );
@@ -194,17 +194,17 @@ test("Draft recovery", async ({ context: testContext }) => {
     await mount(false);
     await stored("Workspace A draft");
     await page.waitForFunction(
-      () => window.recoveryDraft_draft.drafts.lead === "Workspace A draft",
+      () => window.draft.drafts.lead === "Workspace A draft",
     );
     // A recovered old write preserves, rather than overwrites, a newer tab's text.
     await page.evaluate(() => {
-      window.recoveryDraft_failWrites = true;
+      window.failWrites = true;
     });
     await edit("Recovered concurrent draft");
-    await page.waitForFunction(() => !!window.recoveryDraft_draft.error);
+    await page.waitForFunction(() => !!window.draft.error);
     await page.evaluate(async () => {
-      window.recoveryDraft_failWrites = false;
-      const doc = (await window.recoveryDraft_db.drafts.find().exec())[0];
+      window.failWrites = false;
+      const doc = (await window.db.drafts.find().exec())[0];
       const pendingKey = Object.keys(localStorage).find((key) =>
         key.includes(":pending:"),
       );
@@ -219,18 +219,18 @@ test("Draft recovery", async ({ context: testContext }) => {
         seen: {},
         alternatives: [],
       };
-      await window.recoveryDraft_db.drafts.incrementalUpsert({
+      await window.db.drafts.incrementalUpsert({
         id: doc.id,
         seq: 0,
         payload: JSON.stringify(payload),
       });
-      window.recoveryDraft_failWrites = true;
+      window.failWrites = true;
     });
     await mount(false);
     await page.waitForFunction(
       () =>
-        window.recoveryDraft_draft.drafts.lead === "Newer tab draft" &&
-        window.recoveryDraft_draft.conflicts.some(
+        window.draft.drafts.lead === "Newer tab draft" &&
+        window.draft.conflicts.some(
           (version) => version.text === "Recovered concurrent draft",
         ),
     );

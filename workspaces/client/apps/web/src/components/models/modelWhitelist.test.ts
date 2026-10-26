@@ -1,4 +1,3 @@
-import { required } from "../componentTestFixtures";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { INHERITED_MODEL, toModelOptions } from "./modelOption";
 import {
@@ -64,25 +63,25 @@ describe("model whitelist", () => {
     );
   });
   it("uses resolved provider-qualified identities for aliases", () => {
-    const allowed = [modelWhitelistKey(required(models[1]))];
+    const allowed = [modelWhitelistKey(models[1])];
     expect(whitelistedModelOptions(models, "opus", allowed)).toEqual(
       models.slice(0, 2),
     );
     expect(modelWhitelistKey({ model: "opus", provider: "codex" })).not.toBe(
-      modelWhitelistKey(required(models[1])),
+      modelWhitelistKey(models[1]),
     );
   });
   it("preserves an excluded current model as a disabled choice without changing catalog metadata", () => {
     const visible = whitelistedModelOptions(models, "gpt-6-astra", [
-      modelWhitelistKey(required(models[1])),
+      modelWhitelistKey(models[1]),
     ]);
     expect(visible).toHaveLength(3);
-    expect(required(visible[2])).toMatchObject({
+    expect(visible[2]).toMatchObject({
       value: "gpt-6-astra",
       badges: ["current"],
       disabledReason: expect.stringContaining("Hidden in Studio settings"),
     });
-    expect(required(models[2]).disabledReason).toBeUndefined();
+    expect(models[2].disabledReason).toBeUndefined();
   });
   it("keeps inherited settings available with no whitelisted models", () => {
     const inherited = {
@@ -128,7 +127,7 @@ it("does not retain an excluded default for a new draft", () => {
     whitelistedModelOptions(
       models,
       "gpt-6-astra",
-      [modelWhitelistKey(required(models[0]))],
+      [modelWhitelistKey(models[0])],
       false,
     ),
   ).toEqual(models.slice(0, 2));

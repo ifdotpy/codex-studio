@@ -6,5 +6,5 @@ export {
   getSessionMessages,
 } from "./sdk-fixtures.ts";
 import { fixtureQuery } from "./unload.fixture.mts";
-import type { FixtureQuery } from "./sdk-fixtures.ts";
+import type { FixtureTextQuery as FixtureQuery } from "./sdk-fixtures.ts";
 export const query = (args: FixtureQuery) => fixtureQuery(args, true);

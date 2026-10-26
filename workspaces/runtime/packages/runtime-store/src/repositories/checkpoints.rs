@@ -1066,6 +1066,7 @@ mod tests {
             id: "agent".to_owned(),
             record: json!({
                 "id": "agent",
+                "provider": "codex",
                 "cwd": "/workspace",
                 "epoch": 0,
                 "accountKey": "default",
@@ -1082,6 +1083,7 @@ mod tests {
             id: "other".to_owned(),
             record: json!({
                 "id": "other",
+                "provider": "codex",
                 "cwd": "/another-workspace",
                 "inFlight": false,
                 "workspaceOperation": null,

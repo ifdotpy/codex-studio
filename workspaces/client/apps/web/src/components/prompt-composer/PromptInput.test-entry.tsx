@@ -76,9 +76,7 @@ function IsolatedInputHarness() {
 }
 
 export function mount() {
-  const root = document.getElementById("root");
-  if (!root) throw new Error("Missing prompt input harness root");
-  createRoot(root).render(<IsolatedInputHarness />);
+  createRoot(document.getElementById("root")!).render(<IsolatedInputHarness />);
 }
 
 export function mountControls() {

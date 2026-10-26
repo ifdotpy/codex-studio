@@ -3932,7 +3932,7 @@ async fn ancestry_reads_only_the_checked_parent_chain() {
     store.transaction(move |tx| {
         for index in 0..UNRELATED_AGENTS {
             let id = format!("unrelated-{index}");
-            let record = json!({"id":id,"deletedAt":if index % 2 == 0 {json!(1.0)} else {Value::Null}});
+            let record = json!({"id":id,"provider":studio_runtime_schema::ProviderKind::Codex,"deletedAt":if index % 2 == 0 {json!(1.0)} else {Value::Null}});
             tx.execute("INSERT INTO runtime_agents(id,record) VALUES(?1,?2)", params![id, record.to_string()])?;
         }
         tx.execute("UPDATE runtime_agents SET record=json_set(record,'$.deletedAt',1.0) WHERE id='chain-middle'", [])?;

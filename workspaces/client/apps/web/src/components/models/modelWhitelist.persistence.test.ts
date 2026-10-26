@@ -1,4 +1,3 @@
-import { required } from "../componentTestFixtures";
 import { beforeEach, afterEach, expect, it, vi } from "vitest";
 import { createUiPreferenceBridge } from "../../sync/uiPreferenceBridge";
 import {
@@ -118,10 +117,10 @@ it("shows failed writes and retries an uncertain successful write with the same 
     error: expect.stringContaining("Response lost"),
   });
   expect(readModelWhitelist(storage)).toEqual([]);
-  expect(required(committed[key]).value).toEqual([]);
+  expect(committed[key].value).toEqual([]);
   retryPreferenceWrites(storage);
   await expectState(storage, "saved");
-  expect(required(post.mock.calls[1])).toEqual(required(post.mock.calls[0]));
+  expect(post.mock.calls[1]).toEqual(post.mock.calls[0]);
   expect(readPreferenceWriteStatus(storage, "server").state).toBe("saved");
   stop();
 });
@@ -146,14 +145,14 @@ it("keeps newer rapid edits while an earlier request is in flight and clock-corr
   writeModelWhitelist(["codex:astra"], storage);
   await vi.waitFor(() => expect(post).toHaveBeenCalledTimes(1));
   writeModelWhitelist(["codex:astra", "claude:opus"], storage);
-  const first = required(required(post.mock.calls[0])[1]).fields!;
+  const first = post.mock.calls[0][1].fields!;
   finish({
-    fields: { ...first, [key]: { ...required(first[key]), timestamp: 1 } },
+    fields: { ...first, [key]: { ...first[key], timestamp: 1 } },
   });
   await expectState(storage, "saved");
   expect(post).toHaveBeenCalledTimes(2);
-  expect(required(required(post.mock.calls[1])[2])?.requestId).not.toBe(
-    required(required(post.mock.calls[0])[2])?.requestId,
+  expect(post.mock.calls[1][2]?.requestId).not.toBe(
+    post.mock.calls[0][2]?.requestId,
   );
   expect(readModelWhitelist(storage)).toEqual(["codex:astra", "claude:opus"]);
   expect(readPreferenceWriteStatus(storage, "server").state).toBe("saved");
@@ -163,7 +162,7 @@ it("keeps newer rapid edits while an earlier request is in flight and clock-corr
 it("retains explicit null and none through projected updates, ignoring older server choices", () => {
   const storage = preferenceStorageForServer("local");
   writeModelWhitelist([], storage);
-  const field = required(readPreferenceFields("server", storage)[key]);
+  const field = readPreferenceFields("server", storage)[key];
   receivePreferenceFields(
     "server",
     { [key]: { ...field, timestamp: 0, value: null } },
@@ -171,9 +170,7 @@ it("retains explicit null and none through projected updates, ignoring older ser
   );
   expect(readModelWhitelist(storage)).toEqual([]);
   writeModelWhitelist(null, storage);
-  expect(
-    required(readPreferenceFields("server", storage)[key]).value,
-  ).toBeNull();
+  expect(readPreferenceFields("server", storage)[key].value).toBeNull();
   expect(readModelWhitelist(storage)).toBeNull();
 });
 
@@ -203,21 +200,19 @@ it("saves the server whitelist when user preferences are rejected and retries on
       state: "error",
       error: "User preferences rejected",
     });
-    expect(post.mock.calls.map((call) => required(call[1]).scope)).toEqual([
+    expect(post.mock.calls.map((call) => call[1].scope)).toEqual([
       "user",
       "server",
     ]);
-    expect(required(readPreferenceFields("user", storage)[userKey]).value).toBe(
-      "dark",
-    );
+    expect(readPreferenceFields("user", storage)[userKey].value).toBe("dark");
     expect(readModelWhitelist(storage)).toEqual(["codex:astra"]);
     retryPreferenceWrites(storage);
     await vi.waitFor(() => expect(post).toHaveBeenCalledTimes(3));
     await vi.waitFor(() =>
       expect(readPreferenceWriteStatus(storage, "user").state).toBe("error"),
     );
-    expect(required(post.mock.calls[2])).toEqual(required(post.mock.calls[0]));
-    expect(post.mock.calls.map((call) => required(call[1]).scope)).toEqual([
+    expect(post.mock.calls[2]).toEqual(post.mock.calls[0]);
+    expect(post.mock.calls.map((call) => call[1].scope)).toEqual([
       "user",
       "server",
       "user",
@@ -257,7 +252,7 @@ it.each(["edit", "retry"] as const)(
       bridge.receiveProjection({});
       writeModelWhitelist(["codex:astra"], storage);
       await vi.waitFor(() => expect(post).toHaveBeenCalledTimes(1));
-      expect(required(required(post.mock.calls[0])[1]).scope).toBe("server");
+      expect(post.mock.calls[0][1].scope).toBe("server");
       receivePreferenceFields(
         "user",
         {
@@ -271,24 +266,22 @@ it.each(["edit", "retry"] as const)(
       );
       rejectServer(new Error("Server preference rejected"));
       await vi.waitFor(() => expect(post).toHaveBeenCalledTimes(2));
-      expect(required(required(post.mock.calls[1])[1]).scope).toBe("user");
+      expect(post.mock.calls[1][1].scope).toBe("user");
       if (action === "edit") writeModelWhitelist(["claude:opus"], storage);
       else retryPreferenceWrites(storage);
       finishUser();
       await vi.waitFor(() => expect(post).toHaveBeenCalledTimes(3));
       await expectState(storage, "saved");
-      expect(post.mock.calls.map((call) => required(call[1]).scope)).toEqual([
+      expect(post.mock.calls.map((call) => call[1].scope)).toEqual([
         "server",
         "user",
         "server",
       ]);
       if (action === "retry")
-        expect(required(post.mock.calls[2])).toEqual(
-          required(post.mock.calls[0]),
-        );
+        expect(post.mock.calls[2]).toEqual(post.mock.calls[0]);
       else {
-        expect(required(required(post.mock.calls[2])[2])?.requestId).not.toBe(
-          required(required(post.mock.calls[0])[2])?.requestId,
+        expect(post.mock.calls[2][2]?.requestId).not.toBe(
+          post.mock.calls[0][2]?.requestId,
         );
         expect(readModelWhitelist(storage)).toEqual(["claude:opus"]);
       }

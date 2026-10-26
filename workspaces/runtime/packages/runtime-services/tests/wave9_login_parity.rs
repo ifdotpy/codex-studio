@@ -133,6 +133,24 @@ async fn claude_login_service_matches_python_add_profile_code_and_cancel_replays
 }
 
 async fn compare_codex(expected: &Value) {
+    let mut expected = expected.clone();
+    // These captured initial/stored accounts belong to the Codex login flow.
+    for field in ["initial", "stored"] {
+        let registry = &mut expected[field];
+        registry["version"] =
+            json!(studio_runtime_schema::shared_values::ACCOUNT_REGISTRY_FORMAT_VERSION);
+        for account in registry["accounts"]
+            .as_object_mut()
+            .expect("accounts")
+            .values_mut()
+        {
+            assert!(matches!(
+                account["source"].as_str(),
+                Some("Codex CLI" | "Codex Agents")
+            ));
+            account["provider"] = json!(studio_runtime_schema::ProviderKind::Codex);
+        }
+    }
     let root = tempfile::tempdir().expect("isolated Rust account root");
     let accounts_root = root.path().join("codex-runtime/accounts");
     let base_home = root.path().join("codex-home");

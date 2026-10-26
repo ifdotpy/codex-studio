@@ -123,7 +123,7 @@ pub struct InterruptRequest {
     pub turn: String,
     pub scope: ConnectionScope,
     /// The provider request that ends the thread's command processes which
-    /// outlive the interrupt (see `ProviderKind::stop_terminals_method`).
+    /// outlive the interrupt (see `studio_runtime_providers::stop_terminals_method`).
     pub terminals: Option<TerminalCleanup>,
 }
 
@@ -326,7 +326,7 @@ impl ProductionLifecyclePorts {
         }
         let terminals = studio_runtime_providers::ProviderKind::of_field(before.get("provider"))
             .ok()
-            .and_then(studio_runtime_providers::ProviderKind::stop_terminals_method)
+            .and_then(studio_runtime_providers::stop_terminals_method)
             .map(|method| TerminalCleanup {
                 operation: format!("{TERMINALS_OPERATION_PREFIX}{signature}"),
                 method,

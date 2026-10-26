@@ -54,7 +54,7 @@ test("server cards rename all four names and retain aliases after reload", async
       .evaluateAll((rows) =>
         rows.map((row) => ({
           strip: row.getBoundingClientRect().width,
-          list: row.parentElement?.getBoundingClientRect().width ?? 0,
+          list: row.parentElement!.getBoundingClientRect().width,
         })),
       );
     expect(stripWidths).toHaveLength(4);
@@ -63,11 +63,7 @@ test("server cards rename all four names and retain aliases after reload", async
     const aliases = await dialog
       .getByRole("textbox", { name: "Server alias", exact: true })
       .evaluateAll((inputs) =>
-        inputs.map((input) => {
-          if (!(input instanceof HTMLInputElement))
-            throw new Error("Expected an input");
-          return input.value;
-        }),
+        inputs.map((input) => (input as HTMLInputElement).value),
       );
     const names = {
       local: "Lumina Mac",
@@ -90,11 +86,7 @@ test("server cards rename all four names and retain aliases after reload", async
       await dialog
         .getByRole("textbox", { name: "Server alias", exact: true })
         .evaluateAll((inputs) =>
-          inputs.map((input) => {
-            if (!(input instanceof HTMLInputElement))
-              throw new Error("Expected an input");
-            return input.value;
-          }),
+          inputs.map((input) => (input as HTMLInputElement).value),
         )
         .then((values) => values.sort()),
     ).toEqual(aliases.sort());
@@ -120,7 +112,7 @@ test("server cards rename all four names and retain aliases after reload", async
       await page.evaluate(() =>
         (
           JSON.parse(
-            localStorage.getItem("studio-paired-servers-v1") ?? "[]",
+            localStorage.getItem("studio-paired-servers-v1")!,
           ) as StudioServer[]
         )
           .map((row) => row.label)
@@ -182,15 +174,15 @@ test("a UI-only client renames through its signed credential and retries the sam
               credentials: "omit",
             },
           );
-          const body: unknown =
-            request.method === "POST" && url.pathname === "/api/multi-server"
-              ? JSON.parse(new TextDecoder().decode(bytes))
-              : null;
+          // The typed renderer under test owns the name request sent through this shim.
+          const nameRequest = (
+            bytes: ArrayBuffer,
+          ): import("../../src/apiTypes.ts").PostBody<"/api/multi-server"> =>
+            JSON.parse(new TextDecoder().decode(bytes));
           if (
-            body &&
-            typeof body === "object" &&
-            "action" in body &&
-            body.action === "name" &&
+            request.method === "POST" &&
+            url.pathname === "/api/multi-server" &&
+            nameRequest(bytes).action === "name" &&
             !sessionStorage.getItem("name-response-lost")
           ) {
             sessionStorage.setItem("name-response-lost", "1");
@@ -240,7 +232,7 @@ test("a UI-only client renames through its signed credential and retries the sam
     );
     expect(requests).toHaveLength(2);
     expect(requests[0]).toEqual(requests[1]);
-    expect(requests[0]?.serverId).toBe("local");
+    expect(requests[0].serverId).toBe("local");
     expect(
       local.accessRequests.filter((body) => body.action === "name"),
     ).toHaveLength(0);

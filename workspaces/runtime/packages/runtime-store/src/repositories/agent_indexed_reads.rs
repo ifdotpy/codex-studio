@@ -272,19 +272,19 @@ mod tests {
     fn fixture() -> Connection {
         let connection = database();
         let agents = [
-            json!({"id":"lead","rootId":"lead","status":"running","cwd":"/w"}),
-            json!({"id":"a","rootId":"lead","status":"waiting","cwd":"/w"}),
-            json!({"id":"paused-wake","rootId":"lead","status":"paused","autoWake":true}),
-            json!({"id":"paused-off","rootId":"lead","status":"paused","autoWake":false}),
-            json!({"id":"done","rootId":"lead","status":"completed"}),
-            json!({"id":"failed","rootId":"lead","status":"failed"}),
-            json!({"id":"gone","rootId":"lead","status":"running","deletedAt":5}),
-            json!({"id":"tombstone","rootId":"lead","status":"paused","deletedAt":6}),
-            json!({"id":"no-status","rootId":"lead"}),
-            json!({"id":"remote","rootId":"lead","status":"running","remoteWorker":true}),
-            json!({"id":"op","rootId":"other","status":"running","cwd":"/x","workspaceOperation":"branch"}),
-            json!({"id":"op-empty","rootId":"other","status":"completed","cwd":"/y","workspaceOperation":""}),
-            json!({"id":"other-idle","rootId":"other","status":"paused","cwd":"/z"}),
+            json!({"id":"lead","provider":"codex","rootId":"lead","status":"running","cwd":"/w"}),
+            json!({"id":"a","provider":"codex","rootId":"lead","status":"waiting","cwd":"/w"}),
+            json!({"id":"paused-wake","provider":"codex","rootId":"lead","status":"paused","autoWake":true}),
+            json!({"id":"paused-off","provider":"codex","rootId":"lead","status":"paused","autoWake":false}),
+            json!({"id":"done","provider":"codex","rootId":"lead","status":"completed"}),
+            json!({"id":"failed","provider":"codex","rootId":"lead","status":"failed"}),
+            json!({"id":"gone","provider":"codex","rootId":"lead","status":"running","deletedAt":5}),
+            json!({"id":"tombstone","provider":"codex","rootId":"lead","status":"paused","deletedAt":6}),
+            json!({"id":"no-status","provider":"codex","rootId":"lead"}),
+            json!({"id":"remote","provider":"codex","rootId":"lead","status":"running","remoteWorker":true}),
+            json!({"id":"op","provider":"codex","rootId":"other","status":"running","cwd":"/x","workspaceOperation":"branch"}),
+            json!({"id":"op-empty","provider":"codex","rootId":"other","status":"completed","cwd":"/y","workspaceOperation":""}),
+            json!({"id":"other-idle","provider":"codex","rootId":"other","status":"paused","cwd":"/z"}),
         ];
         for agent in agents {
             insert(&connection, agent);
@@ -354,7 +354,7 @@ mod tests {
         );
         insert(
             &connection,
-            json!({"id":"on-b","rootId":"o","status":"running","accountKey":"b"}),
+            json!({"id":"on-b","provider":"codex","rootId":"o","status":"running","accountKey":"b"}),
         );
         let by_account = AgentIndexedReads::slots_by_account(&connection).expect("by account");
         assert_eq!(by_account.len(), 2);

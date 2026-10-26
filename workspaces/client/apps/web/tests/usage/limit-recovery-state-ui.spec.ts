@@ -54,7 +54,7 @@ test("Limit Recovery State Ui", async ({
         1,
       );
       assert.match(
-        (await page.locator("#history").textContent()) ?? "",
+        (await page.locator("#history").textContent())!,
         /Historical quota failure/,
       );
       assert.equal(
@@ -78,9 +78,13 @@ test("Limit Recovery State Ui", async ({
             agentId: identity.agentId || "lumina",
           },
         };
-      await page.evaluate(
-        (serialized) => window.limitRecoveryFixture.applySerialized(serialized),
-        JSON.stringify({ label, limits, ...identity } satisfies LimitSnapshot),
+      await page.evaluate<void, unknown>(
+        (snapshot) => window.applyLimitSnapshot(snapshot as LimitSnapshot),
+        {
+          label,
+          limits,
+          ...identity,
+        } satisfies LimitSnapshot,
       );
       await page.locator(`main[data-case="${label}"]`).waitFor();
       await assertBanner(visible);
@@ -187,10 +191,7 @@ test("Limit Recovery State Ui", async ({
       threadId: "another-thread",
       mountKey: 3,
     });
-    assert.deepEqual(
-      await page.evaluate(() => window.limitRecoveryFixture.actions),
-      [],
-    );
+    assert.deepEqual(await page.evaluate(() => window.recoveryActions), []);
     await page.evaluate(
       (snapshot) => {
         sessionStorage.setItem("fixture-initial", JSON.stringify(snapshot));
@@ -202,10 +203,7 @@ test("Limit Recovery State Ui", async ({
     await assertBanner(false);
     await apply("new-quota-error", available, true, { episode: now });
     assert.deepEqual(writes, []);
-    assert.deepEqual(
-      await page.evaluate(() => window.limitRecoveryFixture.actions),
-      [],
-    );
+    assert.deepEqual(await page.evaluate(() => window.recoveryActions), []);
     assert.deepEqual(errors, []);
     console.log(
       JSON.stringify({

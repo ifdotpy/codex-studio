@@ -4,12 +4,11 @@ import type {
 } from "../sync/subscriptions/contracts";
 import type { ComponentHookCell } from "./componentTestFixtures";
 import {
-  isValidElement,
   type EffectCallback,
   type PropsWithChildren,
   type ComponentProps,
 } from "react";
-import { required, componentSnapshot } from "./componentTestFixtures";
+import { componentSnapshot } from "./componentTestFixtures";
 import { afterEach, expect, it, vi } from "vitest";
 import type { ReactElement, ReactNode } from "react";
 const h = vi.hoisted(() => ({
@@ -34,9 +33,9 @@ vi.mock("react", async (original) => {
   const memo = (factory: () => unknown, deps: unknown[]) => {
     const index = h.cursor++;
     const old = h.cells[index];
-    if (!old || deps.some((value, i) => value !== old.deps?.[i]))
+    if (!old || deps.some((value, i) => value !== old.deps![i]))
       h.cells[index] = { deps, value: factory() };
-    return required(h.cells[index]).value;
+    return h.cells[index].value;
   };
   return {
     ...react,
@@ -46,12 +45,10 @@ vi.mock("react", async (original) => {
         value: typeof initial === "function" ? initial() : initial,
       };
       return [
-        required(h.cells[index]).value,
+        h.cells[index].value,
         (value: unknown) => {
-          required(h.cells[index]).value =
-            typeof value === "function"
-              ? value(required(h.cells[index]).value)
-              : value;
+          h.cells[index].value =
+            typeof value === "function" ? value(h.cells[index].value) : value;
         },
       ];
     },
@@ -69,11 +66,11 @@ vi.mock("react", async (original) => {
     useEffect: (effect: EffectCallback, deps: unknown[]) => {
       const index = h.cursor++;
       const old = h.cells[index];
-      if (!old || !deps || deps.some((value, i) => value !== old.deps?.[i])) {
+      if (!old || !deps || deps.some((value, i) => value !== old.deps![i])) {
         old?.cleanup?.();
         h.cells[index] = { deps };
         h.effects.push(() => {
-          required(h.cells[index]).cleanup = effect() || undefined;
+          h.cells[index].cleanup = effect() as ComponentHookCell["cleanup"];
         });
       }
     },
@@ -122,10 +119,8 @@ vi.mock("@xterm/addon-fit", () => ({
     fit() {}
   },
 }));
-import BackgroundTasks, {
-  BackgroundTaskStrip,
-  TaskDetail,
-} from "./shell/BackgroundTasks";
+import BackgroundTasks from "./shell/BackgroundTasks";
+import type { BackgroundTaskStrip, TaskDetail } from "./shell/BackgroundTasks";
 import Tasks from "./shell/Tasks";
 import { UserMessage } from "./shell/messages/UserMessages";
 import { ShellView } from "./TerminalDock";
@@ -151,28 +146,14 @@ afterEach(() => {
   h.errors.clear();
   vi.unstubAllGlobals();
 });
-function isTaskStrip(
-  node: ReactElement<unknown>,
-): node is ReactElement<ComponentProps<typeof BackgroundTaskStrip>> {
-  return (
-    isValidElement<ComponentProps<typeof BackgroundTaskStrip>>(node) &&
-    node.type === BackgroundTaskStrip
-  );
-}
-function isTaskDetail(
-  node: ReactElement<unknown>,
-): node is ReactElement<ComponentProps<typeof TaskDetail>> {
-  return (
-    isValidElement<ComponentProps<typeof TaskDetail>>(node) &&
-    node.type === TaskDetail
-  );
-}
 function elements(
   node: ReactNode,
 ): ReactElement<PropsWithChildren<Record<string, unknown>>>[] {
   if (Array.isArray(node)) return node.flatMap(elements);
-  if (isValidElement<PropsWithChildren<Record<string, unknown>>>(node)) {
-    const element = node;
+  if (node && typeof node === "object" && "props" in node) {
+    const element = node as ReactElement<
+      PropsWithChildren<Record<string, unknown>>
+    >;
     return [element, ...elements(element.props.children)];
   }
   return [];
@@ -218,8 +199,16 @@ it("an open process panel and its selected detail need only two distinct resourc
     processes: [commandProcess()],
   } satisfies ResourceData<Extract<ResourceRef, { kind: "processes" }>>);
   const view = render(() => BackgroundTasks(processProps()));
-  const detail = elements(view).find(isTaskDetail)!;
-  render(() => TaskDetail(detail.props), 100);
+  const detail = elements(view).find(
+    (node) => node.props.canStop !== undefined,
+  )!;
+  render(
+    () =>
+      (detail.type as typeof TaskDetail)(
+        detail.props as ComponentProps<typeof TaskDetail>,
+      ),
+    100,
+  );
   expect(h.refs).toEqual([
     { kind: "tasks", agentId: "lead" },
     { kind: "processes", agentId: "lead" },
@@ -258,7 +247,10 @@ it("process rows use streamed task-only records and authoritative process output
   ] satisfies ResourceData<Extract<ResourceRef, { kind: "tasks" }>>);
   const read = () => BackgroundTasks(props);
   const view = render(read);
-  const rows = elements(view).filter(isTaskStrip);
+  const rows = elements(view).filter(
+    (node): node is ReactElement<ComponentProps<typeof BackgroundTaskStrip>> =>
+      node.props.select as boolean,
+  );
   expect(rows.map((node) => node.props.task.id).sort()).toEqual([
     "claude",
     "command",
@@ -267,13 +259,19 @@ it("process rows use streamed task-only records and authoritative process output
   expect(
     rows.find((node) => node.props.task.id === "command")!.props.task.tail,
   ).toBe("Streamed command output");
-  const detail = elements(view).find(isTaskDetail)!;
-  const detailView = render(() => TaskDetail(detail.props), 100);
+  const detail = elements(view).find(
+    (node) => node.props.canStop !== undefined,
+  )!;
+  const detailView = render(
+    () =>
+      (detail.type as typeof TaskDetail)(
+        detail.props as ComponentProps<typeof TaskDetail>,
+      ),
+    100,
+  );
   expect(
-    elements(detailView).find(
-      (node) =>
-        typeof node.props.className === "string" &&
-        node.props.className.startsWith("task-output"),
+    elements(detailView).find((node) =>
+      (node.props.className as string | undefined)?.startsWith("task-output"),
     )!.props.children,
   ).toBe("Streamed command output");
   expect(detail.props.canStop).toBe(true);
@@ -287,7 +285,9 @@ it("process rows use streamed task-only records and authoritative process output
       },
     ],
   } satisfies ResourceData<Extract<ResourceRef, { kind: "processes" }>>);
-  const updated = elements(render(read)).find(isTaskDetail)!;
+  const updated = elements(render(read)).find(
+    (node) => node.props.canStop !== undefined,
+  )!;
   expect(updated.key).toBe(detail.key);
   expect(updated.props.task).toMatchObject({
     tail: "Updated output",
@@ -300,7 +300,12 @@ it("process rows use streamed task-only records and authoritative process output
   );
   expect(
     elements(render(read))
-      .filter(isTaskStrip)
+      .filter(
+        (
+          node,
+        ): node is ReactElement<ComponentProps<typeof BackgroundTaskStrip>> =>
+          node.props.select as boolean,
+      )
       .map((node) => node.props.task.id),
   ).toEqual(["command"]);
   expect(h.get).not.toHaveBeenCalled();
@@ -334,9 +339,16 @@ it("task-only stream failures remain visible beside available process rows", () 
       .flatMap((node) => node.props.children)
       .join(""),
   ).toContain("Task stream unavailable");
-  expect(nodes.filter(isTaskStrip).map((node) => node.props.task.id)).toEqual([
-    "command",
-  ]);
+  expect(
+    nodes
+      .filter(
+        (
+          node,
+        ): node is ReactElement<ComponentProps<typeof BackgroundTaskStrip>> =>
+          node.props.select as boolean,
+      )
+      .map((node) => node.props.task.id),
+  ).toEqual(["command"]);
   expect(h.get).not.toHaveBeenCalled();
 });
 it("process owner/task events consume process records without GET /api/processes", () => {
@@ -375,17 +387,13 @@ it("work changes consume the stream without GET /api/work", () => {
     id: "lead",
     taskDefaultGate: null,
   } satisfies ResourceData<Extract<ResourceRef, { kind: "agentDetail" }>>);
+  // Work fixture omits created, updated and version, which this rendering does not read.
   const task = {
-    created: 1,
-    updated: 1,
-    version: 1,
     id: "work",
     rootId: "lead",
     title: "Before",
     status: "running",
-  } satisfies ResourceData<
-    Extract<ResourceRef, { kind: "work" }>
-  >["items"][number];
+  } as ResourceData<Extract<ResourceRef, { kind: "work" }>>["items"][number];
   h.data.set("work", { items: [task], tasks: [] } satisfies ResourceData<
     Extract<ResourceRef, { kind: "work" }>
   >);
@@ -395,7 +403,7 @@ it("work changes consume the stream without GET /api/work", () => {
       .map((node) => node.props.children);
   expect(titles()).toContain("Before");
   h.data.set("work", {
-    items: [{ ...task, title: "After" }],
+    items: [{ ...task, title: "After" } as typeof task],
     tasks: [],
   } satisfies ResourceData<Extract<ResourceRef, { kind: "work" }>>);
   expect(titles()).toContain("After");
@@ -436,13 +444,11 @@ it.each(["agent", "room"] as const)(
     h.nullRefs = 100;
     h.data.set(
       kind === "agent" ? "transcript" : "room",
+      // Transcript omits truncated; room messages omit senderName, room and deliveries.
       kind === "agent"
         ? ({
-            truncated: false,
             items: [{ id: "new", role: "assistant", text: "Streamed" }],
-          } satisfies ResourceData<
-            Extract<ResourceRef, { kind: "transcript" }>
-          >)
+          } as ResourceData<Extract<ResourceRef, { kind: "transcript" }>>)
         : ({
             messages: [
               {
@@ -451,13 +457,10 @@ it.each(["agent", "room"] as const)(
                 text: "Streamed",
                 created: 1,
                 sender: "lead",
-                senderName: "Lead",
-                room: "team",
-                deliveries: {},
               },
             ],
             room: { id: "team" },
-          } satisfies ResourceData<Extract<ResourceRef, { kind: "room" }>>),
+          } as ResourceData<Extract<ResourceRef, { kind: "room" }>>),
     );
     const read = () =>
       useMessages("team", kind, false, "workspace", "workspace");

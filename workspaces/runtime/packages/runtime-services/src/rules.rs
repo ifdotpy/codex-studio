@@ -55,7 +55,7 @@ mod tests {
     use studio_runtime_store::{AgentRecord, RuleRecord};
 
     fn agent(id: &str, deleted_at: Option<serde_json::Value>) -> AgentRecord {
-        let mut record = json!({
+        let mut record = json!({"provider":studio_runtime_schema::ProviderKind::Codex,
             "id": id,
             "rootId": id,
             "epoch": 0,

@@ -35,7 +35,7 @@ impl Account {
         }
         std::fs::write(
             &registry,
-            json!({"version":1,"defaultAccountKey":"default","accounts":{"default":row},
+            json!({"version":studio_runtime_schema::shared_values::ACCOUNT_REGISTRY_FORMAT_VERSION,"defaultAccountKey":"default","accounts":{"default":row},
                 "logins":{},"deleteReceipts":{}})
             .to_string(),
         )
