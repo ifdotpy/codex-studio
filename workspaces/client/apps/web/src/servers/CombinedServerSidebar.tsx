@@ -144,7 +144,7 @@ export default function CombinedServerSidebar({
           {
             kind: "project",
             path,
-            ...(folder === undefined ? {} : { folder }),
+            folder,
           },
           (owner) => {
             const group = model.groups.get(path);
@@ -169,13 +169,9 @@ export default function CombinedServerSidebar({
               ...(nativeFolder
                 ? {
                     folder: nativeFolder,
-                    ...(group
-                      ? {
-                          projectId: group.id,
-                          projectServerId:
-                            group.home.project.homeServerId || group.owner,
-                        }
-                      : {}),
+                    projectId: group?.id,
+                    projectServerId:
+                      group?.home.project.homeServerId || group?.owner,
                   }
                 : {}),
             };

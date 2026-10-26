@@ -1,3 +1,4 @@
+import { portOf, present, nodeFixture } from "./test-support.ts";
 import { afterEach, expect, test } from "vitest";
 import {
   mkdtemp,
@@ -13,11 +14,9 @@ import { createServer as createHttpServer } from "node:http";
 import { createHash } from "node:crypto";
 import os from "node:os";
 import path from "node:path";
-import { createRequire } from "node:module";
 
-const require = createRequire(import.meta.url);
-const { ensureBackend, identity } = require("./backend.cjs");
-const fixtures = [];
+import { ensureBackend, identity } from "./backend.ts";
+const fixtures: { root: string; pid?: number }[] = [];
 
 afterEach(async () => {
   for (const fixture of fixtures.splice(0)) {
@@ -45,17 +44,16 @@ test("desktop identity rejects a Rust backend build that differs from the select
       }),
     );
   });
-  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
-  const address = server.address();
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
   try {
     await expect(
-      identity(`http://127.0.0.1:${address.port}`, state, {
+      identity(`http://127.0.0.1:${portOf(server)}`, state, {
         timeoutMs: 1000,
         expectedBackendBuild: "a".repeat(64),
       }),
     ).rejects.toThrow("does not match the selected executable");
   } finally {
-    await new Promise((resolve, reject) =>
+    await new Promise<void>((resolve, reject) =>
       server.close((error) => (error ? reject(error) : resolve())),
     );
   }
@@ -73,26 +71,13 @@ test("desktop starts only the Rust executable with Python unavailable", async ()
   fixtures.push({ root });
   await mkdir(renderer, { recursive: true });
   await writeFile(path.join(renderer, "index.html"), "fixture");
-  await writeFile(
-    binary,
-    `#!/usr/bin/env node
-const http = require("node:http");
-const port = Number(process.argv[process.argv.indexOf("--port") + 1]);
-http.createServer((request, response) => {
-  if (request.url !== "/api/desktop") { response.writeHead(404).end(); return; }
-  response.setHeader("content-type", "application/json");
-  response.end(JSON.stringify({ application: "codex-agents", protocol: 1, backendKind: "rust", backendBuild: process.env.CODEX_BACKEND_BUILD, pid: process.pid, stateDir: process.env.CODEX_AGENTS_STATE_DIR }));
-}).listen(port, "127.0.0.1");
-const fixtureLifetimeMs = 15000;
-setTimeout(() => process.exit(0), fixtureLifetimeMs);
-`,
-  );
+  await writeFile(binary, nodeFixture("runtime-identity"));
   await chmod(binary, 0o755);
-  const port = await new Promise((resolve, reject) => {
+  const port = await new Promise<number>((resolve, reject) => {
     const probe = createServer();
     probe.once("error", reject);
     probe.listen(0, "127.0.0.1", () => {
-      const selected = probe.address().port;
+      const selected = portOf(probe);
       probe.close((error) => (error ? reject(error) : resolve(selected)));
     });
   });
@@ -109,7 +94,7 @@ setTimeout(() => process.exit(0), fixtureLifetimeMs);
       XDG_CACHE_HOME: path.join(root, "cache"),
     },
   });
-  fixtures[fixtures.length - 1].pid = backend.pid;
+  present(fixtures.at(-1)).pid = backend.pid;
   expect(backend.owned).toBe(true);
   expect(backend.backendBuild).toMatch(/^[a-f0-9]{64}$/);
   expect(backend.backendBuild).toBe(

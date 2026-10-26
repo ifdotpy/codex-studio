@@ -12,7 +12,9 @@ function serverFrameHost(id: string) {
     }
   }
   if (bits) encoded += alphabet[(value << (5 - bits)) & 31];
-  return "studio-" + encoded.match(/.{1,50}/g)?.join(".") + ".localhost";
+  const labels = encoded.match(/.{1,50}/g);
+  if (!labels) throw new TypeError("Server frame identity is empty.");
+  return "studio-" + labels.join(".") + ".localhost";
 }
 function frameOwner(
   url: string | undefined,

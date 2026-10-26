@@ -11,6 +11,16 @@ import {
 import { it } from "vitest";
 
 const check = it;
+check("edit patches do not inherit a path from a __proto__ payload", () => {
+  assert.deepEqual(
+    fileChanges(JSON.parse('[{"__proto__":{"path":"injected.txt"}}]'), {
+      old_string: "before",
+      new_string: "after",
+    }),
+    [],
+  );
+});
+
 function native(
   diff: string,
   type = "update",

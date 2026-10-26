@@ -46,7 +46,7 @@ Keychain item `<app name> Safe Storage` from the app name. That item encrypts
 the saved server credentials, so a new app name would lose them. `CFBundleName`
 in `Info.plist` also stays: Electron finds its helper apps as
 `<CFBundleName> Helper.app` and does not start without them. The package step
-(`bundle-name.mjs`) writes the shown name into localized `InfoPlist.strings`,
+(`bundle-name.ts`) writes the shown name into localized `InfoPlist.strings`,
 so the menu bar, the About panel, the Dock and Finder show LAYR Studio.
 
 The launcher checks `PATH`, `/opt/homebrew/bin`, `/usr/local/bin`, and `/usr/bin`. Set `CODEX_BIN` to an absolute Codex executable path when needed. `CODEX_RUNTIME_SERVER` selects an absolute Rust runtime executable; otherwise the launcher uses the packaged binary or a local Cargo build. It does not run a login shell. `CODEX_AGENTS_STATE_DIR`, `XDG_STATE_HOME`, and `CODEX_HOME` retain the backend meanings. `CODEX_DESKTOP_PORT` and `CODEX_DESKTOP_PROFILE` support isolated tests.
@@ -82,11 +82,11 @@ Signing needs a persistent certificate. Follow the
 before you package. The build refuses ad hoc signing because it changes the
 application identity that macOS uses for saved permissions. Keep the same
 certificate for updates.
-After changing installed resources, run `node workspaces/client/apps/desktop/signing.mjs /path/to/Codex\ Studio.app`.
+After changing installed resources, run `node workspaces/client/apps/desktop/signing.ts /path/to/Codex\ Studio.app`.
 Do not replace this signature with `codesign --sign -`.
 The signer makes the bundled Python cache directory read-only. This prevents
 external Python imports from adding files that invalidate the resource seal.
-Run `node workspaces/client/apps/desktop/signing-test.mjs` from the repository root to check the local
+Run `node workspaces/client/apps/desktop/signing-test.ts` from the repository root to check the local
 certificate and cache behavior.
 
 To install a locally built update while keeping the detached backend and its
@@ -95,7 +95,7 @@ active work running:
 1. Build and verify the signed app under `/tmp`:
 
    ```sh
-   CODEX_DESKTOP_PACKAGE_OUT=/tmp/codex-studio-supervisor node workspaces/client/apps/desktop/package.mjs
+   CODEX_DESKTOP_PACKAGE_OUT=/tmp/codex-studio-supervisor node workspaces/client/apps/desktop/package.ts
    codesign --verify --deep --strict \
      "/tmp/codex-studio-supervisor/Codex Studio-darwin-arm64/Codex Studio.app"
    ```
@@ -132,7 +132,7 @@ installed before this change has no installer; install it once by hand.
 
 ## Native bridge
 
-`bridge.d.ts` re-exports the shared declaration from `web/src/desktop.ts`, which defines `window.codexDesktop`. The bridge is available only in the workspace main frame.
+`api.ts` owns the preload API and `window.codexDesktop`; the renderer imports that contract. Native actions remain subject to the main process frame-owner checks.
 
 | Method                          | Result                                                                         |
 | ------------------------------- | ------------------------------------------------------------------------------ |
