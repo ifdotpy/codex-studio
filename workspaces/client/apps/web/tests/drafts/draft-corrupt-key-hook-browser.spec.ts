@@ -1,3 +1,4 @@
+import { fixtureOrigin } from "../drafts/draft-fixture-helpers.ts";
 import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
 import { test } from "../playwright.ts";
@@ -5,9 +6,8 @@ import { test } from "../playwright.ts";
 test("malformed current-draft key does not crash hook initialization", async ({
   browser,
 }) => {
-  const { createServer } = await import(
-    new URL("../../node_modules/vite/dist/node/index.js", import.meta.url)
-  );
+  const { createFixtureViteServer: createServer } =
+    await import("../playwright.ts");
   const server = await createServer({
     configFile: false,
     root: fileURLToPath(new URL("../../", import.meta.url)),
@@ -21,7 +21,7 @@ test("malformed current-draft key does not crash hook initialization", async ({
   const context = await browser.newContext();
   try {
     const page = await context.newPage();
-    const errors = [];
+    const errors: string[] = [];
     page.on("pageerror", (error) => errors.push(error.message));
     const workspaceId = "a".repeat(32);
     await context.route("**/api/sync/identity", (route) =>
@@ -32,7 +32,7 @@ test("malformed current-draft key does not crash hook initialization", async ({
         json: { workspaceId, documents: [], checkpoint: { seq: 0 } },
       }),
     );
-    const origin = `http://127.0.0.1:${server.httpServer.address().port}`;
+    const origin = fixtureOrigin(server);
     await page.goto(`${origin}/draft-corrupt-check`);
     await page.evaluate((workspaceId) => {
       localStorage.setItem("codex-sync-workspace", JSON.stringify(workspaceId));
@@ -50,25 +50,17 @@ test("malformed current-draft key does not crash hook initialization", async ({
       localStorage.setItem(`codex-chat-draft:${workspaceId}:%E0%A4%A`, "{}");
     }, workspaceId);
     await page.evaluate(async () => {
-      const { useSyncedDrafts } = await import("/src/sync/drafts.ts");
-      const r = await import("/node_modules/.vite/deps/react.js");
-      const d = await import("/node_modules/.vite/deps/react-dom_client.js");
-      const React = r.default || r;
-      const { createRoot } = d.default || d;
-      const node = document.createElement("div");
-      document.body.appendChild(node);
-      createRoot(node).render(
-        React.createElement(function Harness() {
-          window.draft = useSyncedDrafts();
-          return null;
-        }),
-      );
+      const { mount } =
+        await import("/src/../tests/drafts/draft-corrupt-key-hook-browser.fixture.tsx");
+      await mount();
     });
     await page.waitForFunction(
-      () => window.draft?.drafts.healthy === "Healthy chat remains visible",
+      () =>
+        window.corruptDraft_draft?.drafts.healthy ===
+        "Healthy chat remains visible",
     );
     assert.match(
-      await page.evaluate(() => window.draft.error),
+      await page.evaluate(() => window.corruptDraft_draft.error),
       /saved drafts could not be read/i,
     );
     assert.deepEqual(errors, []);

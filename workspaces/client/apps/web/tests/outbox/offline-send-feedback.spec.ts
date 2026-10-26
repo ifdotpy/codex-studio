@@ -1,3 +1,5 @@
+import { fixturePostBody } from "../drafts/draft-fixture-helpers.ts";
+import type { PostBody } from "../../src/apiTypes.ts";
 import {
   test,
   expect,
@@ -20,16 +22,16 @@ test("offline send has one saved-message status and preserves its delivery ident
     stdio: ["ignore", "pipe", "pipe"],
   });
   let log = "";
-  fixture.stderr.on("data", (chunk) => (log += chunk));
+  fixture.stderr?.on("data", (chunk) => (log += chunk));
   try {
-    const port = await new Promise((resolve, reject) => {
-      fixture.stdout.once("data", (chunk) =>
+    const port = await new Promise<number>((resolve, reject) => {
+      fixture.stdout?.once("data", (chunk) =>
         resolve(Number(String(chunk).trim())),
       );
       fixture.once("exit", () => reject(Error(log)));
     });
     for (const width of [390, 320, 1440])
-      for (const scheme of ["light", "dark"]) {
+      for (const scheme of ["light", "dark"] as const) {
         const page = await browser.newPage({
           viewport: { width, height: width === 320 ? 568 : 844 },
           isMobile: width < 760,
@@ -37,14 +39,18 @@ test("offline send has one saved-message status and preserves its delivery ident
           colorScheme: scheme,
         });
         const text = `Saved offline ${width} ${scheme}`;
-        const posts = [];
-        let release;
-        const deliveryGate = new Promise((resolve) => (release = resolve));
+        const posts: PostBody<"/api/messages">[] = [];
+        let release = () => {};
+        const deliveryGate = new Promise<void>(
+          (resolve) => (release = resolve),
+        );
         try {
           await stubSessionCost(page);
           await page.route("**/api/messages", async (route) => {
             if (route.request().method() !== "POST") return route.fallback();
-            const body = route.request().postDataJSON();
+            const body = fixturePostBody<"/api/messages">(
+              route.request().postDataJSON(),
+            );
             if (body.text !== text) return route.fallback();
             posts.push(body);
             await deliveryGate;

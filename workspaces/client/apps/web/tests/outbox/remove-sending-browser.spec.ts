@@ -1,3 +1,6 @@
+import { fixturePostBody } from "../drafts/draft-fixture-helpers.ts";
+import type { Page } from "playwright";
+import type { PostBody, GetResult } from "../../src/apiTypes.ts";
 import {
   readTestState,
   test,
@@ -13,21 +16,21 @@ import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-async function setupSendingRemovePointer(page) {
+async function setupSendingRemovePointer(page: Page) {
   const evidence = await mkdtemp(join(tmpdir(), "studio-remove-hit-test-"));
   const fixture = spawn(process.execPath, [rustUiFixture, evidence], {
     stdio: ["ignore", "pipe", "pipe"],
     env: { ...process.env, FIXTURE_WORKER_COUNT: "1" },
   });
   let log = "";
-  fixture.stderr.on("data", (chunk) => (log += chunk));
-  let startupTimeout;
-  const port = await new Promise((resolve, reject) => {
+  fixture.stderr?.on("data", (chunk) => (log += chunk));
+  let startupTimeout: ReturnType<typeof setTimeout> | undefined;
+  const port = await new Promise<number>((resolve, reject) => {
     startupTimeout = setTimeout(
       () => reject(new Error(`Sending-message fixture did not start: ${log}`)),
       10_000,
     );
-    fixture.stdout.once("data", (chunk) =>
+    fixture.stdout?.once("data", (chunk) =>
       resolve(Number(String(chunk).trim())),
     );
     fixture.once("exit", () => reject(new Error(log)));
@@ -35,6 +38,7 @@ async function setupSendingRemovePointer(page) {
   const origin = `http://127.0.0.1:${port}`;
   const initial = await readTestState(origin);
   const lead = initial.threads.find((agent) => agent.name === "Release lead");
+  assert.ok(lead);
   await fetch(`${origin}/api/messages`, {
     method: "POST",
     headers: {
@@ -70,16 +74,19 @@ async function setupSendingRemovePointer(page) {
   await remove.waitFor({ state: "visible", timeout: 10_000 });
   await copy.waitFor({ state: "visible", timeout: 10_000 });
   const body = await card.locator(".prose.plain").boundingBox();
+  assert.ok(body);
   await page.mouse.move(body.x + body.width / 2, body.y + body.height / 2, {
     steps: 5,
   });
   const removeBox = await remove.boundingBox();
+  assert.ok(removeBox);
   await page.mouse.move(
     removeBox.x + removeBox.width / 2,
     removeBox.y + removeBox.height / 2,
     { steps: 5 },
   );
   const hovered = await remove.boundingBox();
+  assert.ok(hovered);
   const center = {
     x: hovered.x + hovered.width / 2,
     y: hovered.y + hovered.height / 2,
@@ -107,6 +114,7 @@ test("remove-sending pointer hit target", async ({ page }) => {
   page.setDefaultTimeout(10_000);
   const { card, hit, center } = await setupSendingRemovePointer(page);
   test.fail(
+    true,
     "Known delivery-control overlap; see workspaces/client/apps/web/tests/status/msg-known-failures.md.",
   );
   assert.equal(hit, "Copy message");
@@ -122,16 +130,23 @@ test("remove-sending-browser", async ({ page: fixturePage }) => {
     env: { ...process.env, FIXTURE_WORKER_COUNT: "1" },
   });
   let log = "";
-  fixture.stderr.on("data", (data) => (log += data));
-  const port = await new Promise((resolve, reject) => {
-    fixture.stdout.once("data", (data) => resolve(Number(String(data).trim())));
+  fixture.stderr?.on("data", (data) => (log += data));
+  const port = await new Promise<number>((resolve, reject) => {
+    fixture.stdout?.once("data", (data) =>
+      resolve(Number(String(data).trim())),
+    );
     fixture.once("exit", () => reject(new Error(log)));
   });
   const origin = `http://127.0.0.1:${port}`;
   const initial = await readTestState(origin);
   const lead = initial.threads.find((a) => a.name === "Release lead");
+  assert.ok(lead);
   const other = initial.threads.find((a) => a.name === "Other project");
-  const post = async (path, body) => {
+  assert.ok(other);
+  const post = async <Path extends "/api/queue" | "/api/stop">(
+    path: Path,
+    body: PostBody<Path>,
+  ) => {
     const response = await fetch(origin + path, {
       method: "POST",
       headers: {
@@ -144,7 +159,7 @@ test("remove-sending-browser", async ({ page: fixturePage }) => {
     assert.equal(response.status, 200, await response.clone().text());
     return response.json();
   };
-  const queue = (id) =>
+  const queue = async (id: string): Promise<GetResult<"/api/queue">> =>
     fetch(`${origin}/api/queue?agent=${id}`).then((r) => r.json());
   for (const agent of initial.threads.filter((a) => a.source === "managed"))
     for (const item of (await queue(agent.id)).items)
@@ -176,13 +191,19 @@ test("remove-sending-browser", async ({ page: fixturePage }) => {
       [lead, "Remove two", "current_turn"],
       [other, "Remove in another chat", "current_turn"],
       [lead, "Keep after turn", "next_turn"],
-    ]) {
+    ] as const) {
       const id = randomUUID();
       const acceptedAt = Date.now() / 1000;
-      const record = JSON.parse(
-        database
-          .prepare("SELECT record FROM runtime_agents WHERE id=?")
-          .get(agent.id).record,
+      const row = database
+        .prepare("SELECT record FROM runtime_agents WHERE id=?")
+        .get(agent.id);
+      assert.ok(row && typeof row.record === "string");
+      const record: unknown = JSON.parse(row.record);
+      assert.ok(
+        record &&
+          typeof record === "object" &&
+          "epoch" in record &&
+          typeof record.epoch === "number",
       );
       database
         .prepare(
@@ -208,14 +229,15 @@ test("remove-sending-browser", async ({ page: fixturePage }) => {
   const page = fixturePage;
   await fixturePage.setViewportSize({ width: 1440, height: 960 });
   page.setDefaultTimeout(10000);
-  const errors = [],
-    mutations = [],
-    starts = [];
+  const errors: string[] = [],
+    mutations: PostBody<"/api/queue">[] = [],
+    starts: string[] = [];
   page.on("pageerror", (error) => errors.push(error.message));
   page.on("request", (request) => {
     if (request.method() === "POST") {
       const path = new URL(request.url()).pathname;
-      if (path === "/api/queue") mutations.push(request.postDataJSON());
+      if (path === "/api/queue")
+        mutations.push(fixturePostBody<"/api/queue">(request.postDataJSON()));
       if (path === "/api/messages" || path === "/api/stop") starts.push(path);
     }
   });
@@ -237,7 +259,7 @@ test("remove-sending-browser", async ({ page: fixturePage }) => {
   });
   await page.goto(origin);
   await page.locator(".chat-row").filter({ hasText: "Release lead" }).click();
-  const card = (text) =>
+  const card = (text: string) =>
     page.locator(".message.user").filter({ hasText: text });
   const firstCard = card("Remove one");
   const removeButton = firstCard.getByRole("button", {
@@ -256,7 +278,10 @@ test("remove-sending-browser", async ({ page: fixturePage }) => {
     const keys = Object.keys(localStorage).filter((key) =>
       key.startsWith("studio-remove-sending:"),
     );
-    return keys.map((key) => JSON.parse(localStorage.getItem(key)));
+    // These saved commands were written by the renderer under test.
+    const readCommand = (payload: string): PostBody<"/api/queue"> =>
+      JSON.parse(payload);
+    return keys.map((key) => readCommand(localStorage.getItem(key) ?? "null"));
   });
   assert.deepEqual(savedCancellation, [mutations[0]]);
   assert.equal(
@@ -277,7 +302,7 @@ test("remove-sending-browser", async ({ page: fixturePage }) => {
     200,
   );
   await card("Remove one").waitFor({ state: "hidden" });
-  assert.equal(mutations[0].request_id, mutations[1].request_id);
+  assert.equal(mutations[0]?.request_id, mutations[1]?.request_id);
   const removeSecond = card("Remove two").getByRole("button", {
     name: "Remove sending message",
     exact: true,

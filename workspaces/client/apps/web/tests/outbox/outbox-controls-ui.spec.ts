@@ -1,3 +1,25 @@
+import {
+  readTranscript,
+  fixturePostBody,
+  fixtureGet,
+} from "../drafts/draft-fixture-helpers.ts";
+import type { Browser, BrowserContext, Route } from "playwright";
+import type { ViteDevServer } from "vite";
+import type {
+  PostBody,
+  GetResult,
+  TranscriptWireItem,
+} from "../../src/apiTypes.ts";
+declare global {
+  interface Window {
+    outboxControls_outboxModule: typeof import("../../src/sync/send.ts");
+    outboxControls_syncModule: typeof import("../../src/sync/client.ts");
+    outboxControls_raceResult: ReturnType<
+      typeof import("../../src/sync/send.ts").durableSend
+    >;
+  }
+}
+import { fixtureOrigin } from "../drafts/draft-fixture-helpers.ts";
 // Full React client and shared RxDB, isolated server. No live agent requests.
 import { FIXTURE_OPTIMIZE_DEPS } from "../playwright.ts";
 import assert from "node:assert/strict";
@@ -26,14 +48,14 @@ test("outbox-controls-ui", async ({ browser: fixtureBrowser }) => {
     // Selects SettingsRuntime, which publishes changes without starting the waiting turn.
     env: { ...process.env, FIXTURE_WORKER_COUNT: "1" },
   });
-  let browser,
-    context,
-    server,
-    log = "";
-  fixture.stderr.on("data", (chunk) => {
+  let browser: Browser;
+  let context: BrowserContext | undefined;
+  let server: ViteDevServer | undefined;
+  let log = "";
+  fixture.stderr?.on("data", (chunk) => {
     log += chunk;
   });
-  async function until(check) {
+  async function until(check: () => unknown | Promise<unknown>) {
     const deadline = Date.now() + 15000;
     while (Date.now() < deadline) {
       if (await check()) return;
@@ -42,14 +64,17 @@ test("outbox-controls-ui", async ({ browser: fixtureBrowser }) => {
     throw new Error("The expected outbox state did not arrive.");
   }
   try {
-    const port = await new Promise((resolve, reject) => {
-      fixture.stdout.once("data", (chunk) =>
+    const port = await new Promise<number>((resolve, reject) => {
+      fixture.stdout?.once("data", (chunk) =>
         resolve(Number(String(chunk).trim())),
       );
       fixture.once("exit", () => reject(new Error(log)));
     });
     const target = `http://127.0.0.1:${port}`;
-    const identity = await (await fetch(target + "/api/sync/identity")).json();
+    const identity = await fixtureGet(
+      await fetch(target + "/api/sync/identity"),
+      "/api/sync/identity",
+    );
     server = await createServer({
       optimizeDeps: { ...FIXTURE_OPTIMIZE_DEPS },
       configFile: false,
@@ -72,19 +97,24 @@ test("outbox-controls-ui", async ({ browser: fixtureBrowser }) => {
       },
     });
     await server.listen();
-    const origin = server.resolvedUrls.local[0];
+    const origin = fixtureOrigin(server);
     browser = fixtureBrowser;
     context = await browser.newContext({
       viewport: { width: 1440, height: 960 },
     });
     installApiSchemaFixtureHeaders(context);
-    const errors = [],
-      posts = [];
+    const errors: string[] = [],
+      posts: PostBody<"/api/messages">[] = [];
     let available = true,
-      holdSession = null,
-      holdPost = null,
+      holdSession: ((route: Route) => void | Promise<void>) | null = null,
+      holdPost: ((route: Route) => void | Promise<void>) | null = null,
       showDeliveredOutbox = false;
-    let deliveredTranscriptDocument = null;
+    let deliveredTranscriptDocument:
+      | Extract<
+          GetResult<"/api/sync/pull">,
+          { documents: unknown }
+        >["documents"][number]
+      | null = null;
     await context.route("**/api/sync/identity", (route) =>
       route.fulfill({
         status: available ? 200 : 503,
@@ -97,7 +127,9 @@ test("outbox-controls-ui", async ({ browser: fixtureBrowser }) => {
     });
     await context.route("**/api/messages", async (route) => {
       if (route.request().method() !== "POST") return route.fallback();
-      const body = route.request().postDataJSON();
+      const body = fixturePostBody<"/api/messages">(
+        route.request().postDataJSON(),
+      );
       posts.push(body);
       if (holdPost) return holdPost(route);
       const response = await fetch(target + "/api/messages", {
@@ -105,7 +137,7 @@ test("outbox-controls-ui", async ({ browser: fixtureBrowser }) => {
         headers: {
           "content-type": "application/json",
           origin: target,
-          "X-Canvas-Token": route.request().headers()["x-canvas-token"],
+          "X-Canvas-Token": route.request().headers()["x-canvas-token"] ?? "",
         },
         body: JSON.stringify(body),
       });
@@ -115,20 +147,26 @@ test("outbox-controls-ui", async ({ browser: fixtureBrowser }) => {
         body: await response.text(),
       });
     });
-    const deliverTranscriptOutbox = async (route) => {
+    const deliverTranscriptOutbox = async (route: Route) => {
       if (!showDeliveredOutbox) return route.fallback();
       const response = await route.fetch();
-      const transcript = await response.json();
+      const transcript = await fixtureGet(response, "/api/transcript");
       transcript.items = markOutboxDelivered(transcript.items);
       await route.fulfill({ response, json: transcript });
     };
-    const isLostResponse = (item) =>
+    const isLostResponse = (
+      item: Pick<TranscriptWireItem, "clientMessageId"> & {
+        id?: string | null | undefined;
+      },
+    ) =>
       item.clientMessageId === "lost-response-pause" ||
       item.id === "lost-response-pause" ||
       (typeof item.id === "string" &&
         (item.id.endsWith(":lost-response-pause") ||
           item.id.endsWith(":lost-response-pause:0")));
-    const markOutboxDelivered = (items) =>
+    const markOutboxDelivered = (
+      items: GetResult<"/api/transcript">["items"],
+    ): GetResult<"/api/transcript">["items"] =>
       items.map((item) => {
         if (isLostResponse(item))
           return {
@@ -160,7 +198,7 @@ test("outbox-controls-ui", async ({ browser: fixtureBrowser }) => {
       if (!showDeliveredOutbox || route.request().method() !== "GET")
         return route.fallback();
       const response = await route.fetch();
-      const queue = await response.json();
+      const queue = await fixtureGet(response, "/api/queue");
       queue.items = queue.items.filter(
         (item) => item.id !== "lost-response-pause",
       );
@@ -172,18 +210,21 @@ test("outbox-controls-ui", async ({ browser: fixtureBrowser }) => {
       const scope = pullUrl.searchParams.get("scope");
       if (!scope?.startsWith("transcript:")) return route.fallback();
       const response = await route.fetch();
-      const result = await response.json();
+      const result = await fixtureGet(response, "/api/sync/pull");
+      if (!("documents" in result))
+        throw new Error("Unexpected reset response");
       const current = result.documents.find(
         (document) => document.id === scope,
       );
       if (!deliveredTranscriptDocument) {
-        const transcript = current
-          ? JSON.parse(current.payload)
-          : await (
-              await fetch(
-                `${target}/api/transcript?id=${scope.slice("transcript:".length)}`,
-              )
-            ).json();
+        const transcript =
+          current && "payload" in current
+            ? readTranscript(current.payload)
+            : await (
+                await fetch(
+                  `${target}/api/transcript?id=${scope.slice("transcript:".length)}`,
+                )
+              ).json();
         transcript.items = markOutboxDelivered(transcript.items);
         const after = Number(pullUrl.searchParams.get("after") || 0);
         deliveredTranscriptDocument = {
@@ -228,12 +269,13 @@ test("outbox-controls-ui", async ({ browser: fixtureBrowser }) => {
     await page.goto(origin);
     await page.locator("#message").waitFor();
     await page.evaluate(async () => {
-      window.outboxModule = await import("/src/sync/send.ts");
-      window.syncModule = await import("/src/sync/client.ts");
-      await window.syncModule.syncDatabase();
+      window.outboxControls_outboxModule = await import("/src/sync/send.ts");
+      window.outboxControls_syncModule = await import("/src/sync/client.ts");
+      await window.outboxControls_syncModule.syncDatabase();
     });
-    const entry = (text) => page.locator(".message").filter({ hasText: text });
-    const confirmedMessage = async (text) => {
+    const entry = (text: string) =>
+      page.locator(".message").filter({ hasText: text });
+    const confirmedMessage = async (text: string) => {
       await entry(text).waitFor();
       await entry(text).getByRole("status").waitFor({ state: "detached" });
       assert.equal(
@@ -242,12 +284,20 @@ test("outbox-controls-ui", async ({ browser: fixtureBrowser }) => {
         "The accepted message is visible without a pending status",
       );
     };
-    const serverTranscriptHas = async (body, text) => {
-      const transcript = await (
-        await fetch(`${target}/api/transcript?id=${body.room}`)
-      ).json();
+    const serverTranscriptHas = async (
+      body: PostBody<"/api/messages">,
+      text: string,
+    ) => {
+      const transcript = await fixtureGet(
+        await fetch(`${target}/api/transcript?id=${body.room}`),
+        "/api/transcript",
+      );
       const key = `${body.room}:${body.id}`;
-      const matches = (item) =>
+      const matches = (
+        item: Pick<TranscriptWireItem, "clientMessageId"> & {
+          id?: string | null | undefined;
+        },
+      ) =>
         item.clientMessageId === body.id ||
         item.id === body.id ||
         item.id === key ||
@@ -258,15 +308,17 @@ test("outbox-controls-ui", async ({ browser: fixtureBrowser }) => {
           item.inputs?.some((input) => matches(input) && input.text === text),
       );
     };
-    const accepted = async (text, { rendered = true } = {}) => {
+    const accepted = async (text: string, { rendered = true } = {}) => {
       try {
         await until(() =>
           page.evaluate(async (text) => {
             const { syncDatabase } = await import("/src/sync/client.ts");
             const { db } = await syncDatabase();
+            const { readOutbox } =
+              await import("/src/../tests/drafts/draft-fixture-helpers.ts");
             const rows = await db.outbox.find().exec();
             return rows.some((row) => {
-              const value = JSON.parse(row.payload);
+              const value = readOutbox(row.payload);
               return value.body.text === text && value.status === "accepted";
             });
           }, text),
@@ -278,8 +330,6 @@ test("outbox-controls-ui", async ({ browser: fixtureBrowser }) => {
           ).syncDatabase();
           return (await db.outbox.find().exec()).map((row) => ({
             payload: row.payload,
-            status: row.status,
-            error: row.error,
           }));
         });
         throw new Error(
@@ -293,6 +343,7 @@ test("outbox-controls-ui", async ({ browser: fixtureBrowser }) => {
         );
       } else {
         const body = posts.at(-1);
+        assert.ok(body);
         assert.ok(
           await serverTranscriptHas(body, text),
           "The accepted outbox request appears in the server transcript",
@@ -345,7 +396,9 @@ test("outbox-controls-ui", async ({ browser: fixtureBrowser }) => {
       .getByRole("button", { name: "Edit message", exact: true })
       .click();
     await page.waitForFunction(
-      () => document.querySelector("#message").value === "Edit while offline",
+      () =>
+        document.querySelector<HTMLTextAreaElement>("#message")?.value ===
+        "Edit while offline",
     );
     await page
       .getByRole("button", { name: "Remove notes.txt", exact: true })
@@ -359,11 +412,11 @@ test("outbox-controls-ui", async ({ browser: fixtureBrowser }) => {
     await page.locator("#send").click();
     await accepted("Corrected offline message");
     assert.equal(posts.length, 1);
-    assert.equal(posts[0].text, "Corrected offline message");
-    assert.equal(posts[0].assets.length, 1);
+    assert.equal(posts[0]?.text, "Corrected offline message");
+    assert.equal(posts[0]?.assets?.length, 1);
     await page.evaluate(async () => {
-      window.outboxModule = await import("/src/sync/send.ts");
-      window.syncModule = await import("/src/sync/client.ts");
+      window.outboxControls_outboxModule = await import("/src/sync/send.ts");
+      window.outboxControls_syncModule = await import("/src/sync/client.ts");
     });
 
     const second = await context.newPage();
@@ -375,21 +428,24 @@ test("outbox-controls-ui", async ({ browser: fixtureBrowser }) => {
     );
     await second.goto(origin + "empty-check");
     await second.evaluate(async () => {
-      window.outboxModule = await import("/src/sync/send.ts");
+      window.outboxControls_outboxModule = await import("/src/sync/send.ts");
       await (await import("/src/sync/client.ts")).syncDatabase();
     });
-    const room = posts[0].room;
+    const room = posts[0]?.room;
+    assert.ok(room);
     const beforeRaces = posts.length;
-    const pendingSessions = [];
+    const pendingSessions: Route[] = [];
     assert.equal(
       await second.evaluate(() =>
-        window.outboxModule.stopRemovedMessage("remove-before-store"),
+        window.outboxControls_outboxModule.stopRemovedMessage(
+          "remove-before-store",
+        ),
       ),
       false,
     );
     const removedBeforeStore = await page.evaluate(
       (room) =>
-        window.outboxModule.durableSend({
+        window.outboxControls_outboxModule.durableSend({
           id: "remove-before-store",
           room,
           text: "Removed before the durable insert",
@@ -406,27 +462,32 @@ test("outbox-controls-ui", async ({ browser: fixtureBrowser }) => {
       pendingSessions.push(route);
     };
     await page.evaluate((room) => {
-      window.raceResult = window.outboxModule.durableSend({
-        id: "cancel-before-post",
-        room,
-        text: "Never post this",
-      });
+      window.outboxControls_raceResult =
+        window.outboxControls_outboxModule.durableSend({
+          id: "cancel-before-post",
+          room,
+          text: "Never post this",
+        });
     }, room);
     await until(() =>
       page.evaluate(async () => {
-        const { db } = await window.syncModule.syncDatabase();
+        const { db } = await window.outboxControls_syncModule.syncDatabase();
         return !!(await db.outbox.findOne("cancel-before-post").exec());
       }),
     );
     assert.equal(
       await second.evaluate(() =>
-        window.outboxModule.stopRemovedMessage("cancel-before-post"),
+        window.outboxControls_outboxModule.stopRemovedMessage(
+          "cancel-before-post",
+        ),
       ),
       true,
     );
     holdSession = null;
     for (const route of pendingSessions) await route.fallback();
-    const cancelled = await page.evaluate(() => window.raceResult);
+    const cancelled = await page.evaluate(
+      () => window.outboxControls_raceResult,
+    );
     assert.equal(cancelled.status, "cancelled");
     assert.equal(
       posts.length,
@@ -434,9 +495,9 @@ test("outbox-controls-ui", async ({ browser: fixtureBrowser }) => {
       "A second tab cancels before the HTTP claim",
     );
 
-    let postRoute;
+    const heldPost: { route?: Route } = {};
     holdPost = (route) => {
-      postRoute = route;
+      heldPost.route = route;
     };
     const body = {
       id: "lost-response-pause",
@@ -444,40 +505,49 @@ test("outbox-controls-ui", async ({ browser: fixtureBrowser }) => {
       text: "Keep the immutable request",
       assets: [],
       delivery: "queue",
-    };
+    } satisfies PostBody<"/api/messages">;
     await page.evaluate((body) => {
-      window.raceResult = window.outboxModule.durableSend(body);
+      window.outboxControls_raceResult =
+        window.outboxControls_outboxModule.durableSend(body);
     }, body);
     await until(() =>
       page.evaluate(async () => {
-        const { db } = await window.syncModule.syncDatabase();
+        const { db } = await window.outboxControls_syncModule.syncDatabase();
         const doc = await db.outbox.findOne("lost-response-pause").exec();
-        return doc && JSON.parse(doc.payload).attempted;
+        const { readOutbox } =
+          await import("/src/../tests/drafts/draft-fixture-helpers.ts");
+        return doc && readOutbox(doc.payload).attempted;
       }),
     );
     const forbidden = await second.evaluate(async () => {
       try {
-        await window.outboxModule.changeOutbox("lost-response-pause", "cancel");
+        await window.outboxControls_outboxModule.changeOutbox(
+          "lost-response-pause",
+          "cancel",
+        );
         return "";
       } catch (error) {
+        if (!(error instanceof Error)) throw error;
         return error.message;
       }
     });
     assert.match(forbidden, /Delivery may have started/);
     assert.equal(
       await second.evaluate(() =>
-        window.outboxModule.stopRemovedMessage("lost-response-pause"),
+        window.outboxControls_outboxModule.stopRemovedMessage(
+          "lost-response-pause",
+        ),
       ),
       false,
     );
     await second.close();
     const deadline = Date.now() + 5000;
-    while (!postRoute && Date.now() < deadline)
+    while (!heldPost.route && Date.now() < deadline)
       await new Promise((resolve) => setTimeout(resolve, 20));
-    assert.ok(postRoute);
-    await postRoute.abort("failed");
+    assert.ok(heldPost.route);
+    await heldPost.route.abort("failed");
     holdPost = null;
-    const paused = await page.evaluate(() => window.raceResult);
+    const paused = await page.evaluate(() => window.outboxControls_raceResult);
     assert.equal(paused.status, "paused");
     await entry("Keep the immutable request")
       .getByRole("button", { name: "Resume retries", exact: true })
@@ -500,7 +570,7 @@ test("outbox-controls-ui", async ({ browser: fixtureBrowser }) => {
     await confirmedMessage("Keep the immutable request");
     expect(errors).toEqual([]);
     const nativePosts = posts.length;
-    const forbiddenNativeMutations = [];
+    const forbiddenNativeMutations: string[] = [];
     page.on("request", (request) => {
       if (
         request.method() === "POST" &&
@@ -525,10 +595,12 @@ test("outbox-controls-ui", async ({ browser: fixtureBrowser }) => {
             },
           },
         );
-        const keys = JSON.parse(
+        const { readRemovedKeys } =
+          await import("/src/../tests/drafts/draft-fixture-helpers.ts");
+        const keys = readRemovedKeys(
           localStorage.getItem(
             `studio-removed-messages:${JSON.stringify([stateDir, "agent", room])}`,
-          ),
+          ) ?? "null",
         );
         if (!keys.includes("client:native-dispatch"))
           throw new Error("Native message was not removed.");
