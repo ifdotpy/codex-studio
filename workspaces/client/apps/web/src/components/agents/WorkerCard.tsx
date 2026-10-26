@@ -203,7 +203,7 @@ const WorkerCardView = memo(function WorkerCardView({
         (indicator?.kind === "answer" ||
         ["waiting", "parked"].includes(agent.status ?? "") ||
         (indicator?.kind === "working" && !agent.inFlight)
-          ? indicator?.label || statusLabel(agent.status ?? "")
+          ? indicator?.label || statusLabel(agent.status)
           : awaitingAnswer
             ? "Needs your answer"
             : agent.status === "starting" && agent.worktreePreparation
@@ -229,7 +229,7 @@ const WorkerCardView = memo(function WorkerCardView({
                                 agent.activity?.phase || undefined,
                               )
                             : statusLabel(
-                                agent.status ?? "",
+                                agent.status,
                                 undefined,
                                 agent.parkedEvent ?? undefined,
                               ),

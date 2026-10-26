@@ -5,33 +5,30 @@ export type WorkspaceBadgeInfo = {
   title: string;
 };
 
+function workspaceModeInfo(
+  mode: NonNullable<Agent["workspaceMode"]>,
+): WorkspaceBadgeInfo {
+  switch (mode) {
+    case "layr":
+      return { label: "LAYR", title: "VM with layr" };
+    case "image":
+      return { label: "IMAGE", title: "Isolated disk image workspace" };
+    case "worktree":
+      return { label: "WT", title: "Git worktree" };
+    case "shared":
+      return { label: "SHARED", title: "Shared folder" };
+  }
+  return mode satisfies never;
+}
+
 export function workspaceBadgeInfo(agent?: Agent): WorkspaceBadgeInfo | null {
   if (!agent) return null;
   if (agent.isLead) {
-    const mode = (agent as { workspaceMode?: string }).workspaceMode;
-    if (!mode) return null;
-    const label =
-      mode === "layr"
-        ? "LAYR"
-        : mode === "image"
-          ? "IMAGE"
-          : mode === "worktree"
-            ? "WT"
-            : undefined;
-    return label
-      ? {
-          label,
-          title:
-            label === "LAYR"
-              ? "VM with layr"
-              : label === "IMAGE"
-                ? "Isolated disk image workspace"
-                : "Git worktree",
-        }
-      : null;
+    const mode = agent.workspaceMode;
+    return mode && mode !== "shared" ? workspaceModeInfo(mode) : null;
   }
   if (agent.remoteWorker && (!agent.cwd || !agent.workspaceMode)) return null;
-  const mode: string | undefined =
+  const mode =
     agent.workspaceMode ??
     (agent.imageWorkspace
       ? "image"
@@ -42,29 +39,14 @@ export function workspaceBadgeInfo(agent?: Agent): WorkspaceBadgeInfo | null {
           : undefined);
   if (!mode) return null;
 
-  const label =
-    mode === "layr"
-      ? "LAYR"
-      : mode === "image"
-        ? "IMAGE"
-        : mode === "worktree"
-          ? "WT"
-          : "SHARED";
-  const name =
-    label === "LAYR"
-      ? "VM with layr"
-      : label === "IMAGE"
-        ? "Isolated disk image workspace"
-        : label === "WT"
-          ? "Git worktree"
-          : "Shared folder";
+  const info = workspaceModeInfo(mode);
   const path =
     agent.imageWorkspace && !agent.imageWorkspaceReady
       ? agent.imageWorkspaceRepo || agent.cwd
       : agent.cwd || agent.imageWorkspaceRepo;
   return {
-    label,
-    title: `${name}${path ? ` · ${path}` : ""}`,
+    label: info.label,
+    title: `${info.title}${path ? ` · ${path}` : ""}`,
   };
 }
 
