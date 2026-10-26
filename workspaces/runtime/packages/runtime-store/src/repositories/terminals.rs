@@ -9,7 +9,7 @@ use crate::{StoreError, StoreResult};
 const TABLES: &[TableRequirement] = &[
     TableRequirement {
         name: "user_terminals",
-        columns: &["id", "record", "output", "offset"],
+        columns: &["id", "record", "output", "offset", "output_generation"],
     },
     TableRequirement {
         name: "user_terminal_receipts",
@@ -46,6 +46,8 @@ pub struct TerminalRow {
     pub record: TerminalRecord,
     pub output: String,
     pub offset: i64,
+    /// Durable counter incremented when replacement output moves its end backwards.
+    pub output_generation: i64,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -82,18 +84,19 @@ impl TerminalsRepository {
     pub fn get(connection: &Connection, id: &str) -> StoreResult<Option<TerminalRow>> {
         let snapshot = connection
             .query_row(
-                "SELECT record,output,offset FROM user_terminals WHERE id=?1",
+                "SELECT record,output,offset,output_generation FROM user_terminals WHERE id=?1",
                 [id],
                 |row| {
                     Ok((
                         row.get::<_, rusqlite::types::Value>(0)?,
                         row.get::<_, String>(1)?,
                         row.get::<_, i64>(2)?,
+                        row.get::<_, i64>(3)?,
                     ))
                 },
             )
             .optional()?;
-        let Some((record_value, output, offset)) = snapshot else {
+        let Some((record_value, output, offset, output_generation)) = snapshot else {
             return Ok(None);
         };
         let SqlValue::Text(encoded) = record_value else {
@@ -108,6 +111,7 @@ impl TerminalsRepository {
             record,
             output,
             offset,
+            output_generation,
         }))
     }
 
@@ -125,11 +129,21 @@ impl TerminalsRepository {
                 "terminal record identity does not match its key".to_owned(),
             ));
         }
+        // This is the single reset-counter owner. Retention moves the start
+        // forward without reducing the end and therefore keeps the generation.
+        let generation = Self::get(transaction, id)?.map_or(0, |previous| {
+            previous.output_generation
+                + i64::from(
+                    offset + (output.chars().count() as i64)
+                        < previous.offset + (previous.output.chars().count() as i64),
+                )
+        });
         table.put_with_columns(
             typed,
             &[
                 ("output", SqlValue::Text(output.to_owned())),
                 ("offset", SqlValue::Integer(offset)),
+                ("output_generation", SqlValue::Integer(generation)),
             ],
         )?;
         Ok(())
@@ -356,7 +370,7 @@ mod tests {
             .execute_batch(
                 "PRAGMA journal_mode=WAL;
                  CREATE TABLE terminal_backing(id TEXT PRIMARY KEY,record TEXT,output TEXT,offset INTEGER);
-                 CREATE VIEW user_terminals AS SELECT id,record_and_advance(record) AS record,output,offset FROM terminal_backing;",
+                 CREATE VIEW user_terminals AS SELECT id,record_and_advance(record) AS record,output,offset,0 AS output_generation FROM terminal_backing;",
             )
             .expect("WAL-backed fixture creates");
         let record = json!({"id":"terminal","agent":"a","title":"Terminal","cwd":"/tmp","status":"running","created":1});

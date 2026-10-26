@@ -1,3 +1,5 @@
+import { NativeSelect, Switch } from "@mantine/core";
+import type { PostBody } from "../../apiTypes";
 import type { ComponentHookCell } from "../componentTestFixtures";
 import type { EffectCallback, PropsWithChildren, ComponentProps } from "react";
 import assert from "node:assert/strict";
@@ -11,8 +13,32 @@ import {
 import { afterEach, expect, test, vi } from "vitest";
 import type { Agent } from "../../types";
 
+type SwitchFixtureProps = Omit<ComponentProps<typeof Switch>, "onChange"> & {
+  onChange(event: {
+    currentTarget: Pick<
+      Parameters<
+        NonNullable<ComponentProps<typeof Switch>["onChange"]>
+      >[0]["currentTarget"],
+      "checked"
+    >;
+  }): void;
+};
+type SelectFixtureProps = Omit<
+  ComponentProps<typeof NativeSelect>,
+  "onChange"
+> & {
+  onChange(event: {
+    currentTarget: Pick<
+      Parameters<
+        NonNullable<ComponentProps<typeof NativeSelect>["onChange"]>
+      >[0]["currentTarget"],
+      "value"
+    >;
+  }): void;
+};
 const h = vi.hoisted(() => ({
   cells: new Map<string, ComponentHookCell[]>(),
+  storage: new Map<string, unknown>(),
   scope: "",
   scoped: "",
   cursor: 0,
@@ -72,10 +98,14 @@ vi.mock("react", async (load) => ({
   useCallback: (callback: unknown) => callback,
 }));
 vi.mock("../../servers/ServerServicesContext", () => ({
+  useServerStorage: () => ({
+    setItem: (key: string, raw: string) => h.storage.set(key, JSON.parse(raw)),
+    removeItem: (key: string) => h.storage.delete(key),
+  }),
   useServerApi: () => ({
     post: h.post,
-    saved: (_key: string, fallback: unknown) => fallback,
-    save: vi.fn(),
+    saved: (key: string, fallback: unknown) => h.storage.get(key) ?? fallback,
+    save: (key: string, value: unknown) => h.storage.set(key, value),
   }),
 }));
 vi.mock("../models/modelWhitelist", () => ({
@@ -97,7 +127,8 @@ vi.mock("./WorkerModelPicker", async (load) => ({
   }),
 }));
 import { AgentSetupPicker } from "./AgentSetupPicker";
-import { ExecutionSettings } from "./ExecutionSettings";
+import { ExecutionSettings, ExecutionPermissions } from "./ExecutionSettings";
+import { ClaudeSettings } from "../ClaudeSettings";
 import { ExecutionSummaryTrigger } from "./ExecutionSummaryTrigger";
 
 function children(
@@ -126,9 +157,29 @@ const initial: Agent = {
   effort: "medium",
   status: "idle",
 };
-function render(agent = initial) {
+function render(
+  agent?: Agent,
+  permissions?: false,
+): {
+  controls: ReturnType<typeof invoke>;
+  model: ReactNode;
+  label: unknown;
+  picker: ComponentProps<typeof AgentSetupPicker>;
+  triggerAgent: Agent;
+};
+function render(
+  agent: Agent,
+  permissions: true,
+): {
+  controls: ReturnType<typeof invoke>;
+  model: string;
+  label: string;
+  picker: Partial<ComponentProps<typeof AgentSetupPicker>>;
+  triggerAgent: Agent;
+};
+function render(agent = initial, permissions = false) {
   const controller = invoke(
-    createElement(ExecutionSettings, {
+    createElement(permissions ? ExecutionPermissions : ExecutionSettings, {
       agent,
       catalog: {
         models: ["gpt-6-astra", "gpt-6-luna"].map((model) => ({
@@ -150,7 +201,7 @@ function render(agent = initial) {
     }),
   );
   const menu = invoke(controller);
-  const scoped = children(menu.props.children).find(
+  const scoped = (permissions ? [menu] : children(menu.props.children)).find(
     (node) =>
       typeof node.type === "function" &&
       node.type.name === "ScopedExecutionSettings",
@@ -162,6 +213,14 @@ function render(agent = initial) {
   }
   h.scoped = scopedKey;
   const controls = invoke(scoped);
+  if (permissions)
+    return {
+      controls,
+      model: "",
+      label: "",
+      picker: {},
+      triggerAgent: agent,
+    };
   const picker = children(controls).find(
     (node) =>
       typeof node.type === "function" && node.type.name === "AgentSetupPicker",
@@ -181,6 +240,7 @@ function render(agent = initial) {
   )!.props.children;
   for (const effect of h.effects.splice(0)) effect();
   return {
+    controls,
     model,
     label: trigger.props["aria-label"],
     picker: picker.props,
@@ -191,6 +251,7 @@ afterEach(() => {
   for (const cells of h.cells.values())
     for (const cell of cells) cell.cleanup?.();
   h.cells.clear();
+  h.storage.clear();
   h.scoped = "";
   h.effects = [];
   h.post.mockReset();
@@ -330,7 +391,7 @@ test("newer same-field SSE wins over an older in-flight model response", async (
 for (const changed of [
   { ...initial, id: "other-chat" },
   { ...initial, accountKey: "other" },
-]) {
+] as const) {
   test(`an old response cannot cross ${changed.id === initial.id ? "account" : "chat"} scope`, async () => {
     let finish!: (agent: Agent) => void;
     h.post.mockImplementation(
@@ -376,4 +437,215 @@ test("an older same-domain request cannot replace the latest acknowledgment", as
   required(finish[0])({ ...initial, model: "gpt-6-luna" });
   await Promise.resolve();
   expect(render().model).toBe("Astra 6");
+});
+
+for (const status of ["running", "approval"] as const) {
+  test(`Codex permissions remain enabled while ${status}`, () => {
+    const controls = render(
+      {
+        ...initial,
+        status,
+        inFlight: true,
+        yoloMode: false,
+      },
+      true,
+    ).controls;
+    const permission = children(controls).find(
+      (node): node is ReactElement<SwitchFixtureProps> =>
+        node.props["aria-label"] === "Full access without approval",
+    )!;
+    expect(permission).toBeDefined();
+    expect(permission.props.disabled).toBe(false);
+  });
+}
+
+for (const status of ["running", "approval"] as const) {
+  test(`Claude permissions remain enabled while ${status}`, async () => {
+    h.post.mockResolvedValue({
+      settings: { permissionMode: "default" },
+      turns: [],
+      tasks: [],
+    });
+    const element = createElement(ClaudeSettings, {
+      agent: { ...initial, provider: "claude", status, inFlight: true },
+    });
+    invoke(element);
+    for (const effect of h.effects.splice(0)) effect();
+    await new Promise<void>(queueMicrotask);
+    const controls = invoke(element);
+    const permission = children(controls).find(
+      (node): node is ReactElement<SelectFixtureProps> =>
+        node.props.label === "Permission mode",
+    )!;
+    expect(permission).toBeDefined();
+    expect(permission.props.disabled).toBe(false);
+  });
+}
+
+test("Codex explains when Ask takes effect for a turn started with Full", () => {
+  const controls = render(
+    {
+      ...initial,
+      status: "running",
+      inFlight: true,
+      yoloMode: false,
+    },
+    true,
+  ).controls;
+  const permission = children(controls).find(
+    (node): node is ReactElement<SwitchFixtureProps> =>
+      node.props["aria-label"] === "Full access without approval",
+  )!;
+  expect(permission.props.description).toBe(
+    "Ask policy changes apply from the next turn.",
+  );
+});
+
+test("Codex describes the selected Ask mode truthfully", () => {
+  const controls = render({ ...initial, yoloMode: false }, true).controls;
+  const permission = children(controls).find(
+    (node): node is ReactElement<SwitchFixtureProps> =>
+      node.props["aria-label"] === "Full access without approval",
+  )!;
+  expect(permission.props.description).toBe("Tools ask for permission.");
+});
+
+test("a superseding Ask intent prevents reuse of a lost Full request identity", async () => {
+  const control = (agent: Agent) =>
+    children(render(agent, true).controls).find(
+      (node): node is ReactElement<SwitchFixtureProps> =>
+        node.props["aria-label"] === "Full access without approval",
+    )!;
+  const ask = { ...initial, yoloMode: false };
+  const full = { ...initial, yoloMode: true };
+  h.post.mockRejectedValueOnce(new Error("response lost"));
+  control(ask).props.onChange({ currentTarget: { checked: true } });
+  await vi.waitFor(() => expect(control(full).props.disabled).toBe(false));
+  const lostFullId = h.post.mock.calls[0][1].request_id;
+  h.post.mockResolvedValueOnce(ask);
+  control(full).props.onChange({ currentTarget: { checked: false } });
+  await vi.waitFor(() => expect(control(ask).props.disabled).toBe(false));
+  h.post.mockResolvedValueOnce(full);
+  control(ask).props.onChange({ currentTarget: { checked: true } });
+  await vi.waitFor(() => expect(h.post).toHaveBeenCalledTimes(3));
+  expect(h.post.mock.calls[2][1].request_id).not.toBe(lostFullId);
+});
+
+for (const [first, opposite] of [
+  ["bypassPermissions", "default"],
+  ["default", "bypassPermissions"],
+] as const) {
+  test(`Claude replaces a superseded lost ${first} intent after reopening`, async () => {
+    let persisted: Extract<
+      PostBody<"/api/claude/session">,
+      { action: "settings" }
+    >["settings"]["permissionMode"] = opposite;
+    let loseResponse = true;
+    const mutations: Extract<
+      PostBody<"/api/claude/session">,
+      { action: "settings" }
+    >[] = [];
+    h.post.mockImplementation(
+      async (_path: string, body: PostBody<"/api/claude/session">) => {
+        if (body.action === "settings") {
+          mutations.push(body);
+          persisted = body.settings.permissionMode;
+          if (loseResponse) throw new Error("response lost");
+          return {};
+        }
+        return {
+          settings: { permissionMode: persisted },
+          turns: [],
+          tasks: [],
+        };
+      },
+    );
+    const element = createElement(ClaudeSettings, {
+      agent: { ...initial, provider: "claude" },
+    });
+    const control = () =>
+      children(invoke(element)).find(
+        (node): node is ReactElement<SelectFixtureProps> =>
+          node.props.label === "Permission mode",
+      )!;
+    const reopen = async () => {
+      for (const cell of h.cells.get("ClaudeSettings") || []) cell.cleanup?.();
+      h.cells.delete("ClaudeSettings");
+      invoke(element);
+      for (const effect of h.effects.splice(0)) effect();
+      await vi.waitFor(() => expect(control().props.disabled).toBe(false));
+    };
+    const choose = async (mode: string) => {
+      control().props.onChange({ currentTarget: { value: mode } });
+      await vi.waitFor(() => expect(control().props.disabled).toBe(false));
+    };
+    await reopen();
+    await choose(first);
+    await choose(first); // The same unresolved click retains its request identity.
+    expect(mutations[1].request_id).toBe(mutations[0].request_id);
+    await reopen();
+    loseResponse = false;
+    await choose(opposite);
+    await choose(first);
+    expect(mutations[2].request_id).not.toBe(mutations[0].request_id);
+    expect(mutations[3].request_id).not.toBe(mutations[0].request_id);
+    expect(mutations[3].request_id).not.toBe(mutations[2].request_id);
+  });
+}
+
+test("a late Claude success preserves the newer unresolved permission request", async () => {
+  let persisted: Extract<
+    PostBody<"/api/claude/session">,
+    { action: "settings" }
+  >["settings"]["permissionMode"] = "default";
+  let finish!: (value: unknown) => void;
+  const mutations: Extract<
+    PostBody<"/api/claude/session">,
+    { action: "settings" }
+  >[] = [];
+  h.post.mockImplementation(
+    (_path: string, body: PostBody<"/api/claude/session">) => {
+      if (body.action === "settings") {
+        mutations.push(body);
+        persisted = body.settings.permissionMode;
+        return mutations.length === 1
+          ? new Promise((resolve) => {
+              finish = resolve;
+            })
+          : Promise.reject(new Error("response lost"));
+      }
+      return Promise.resolve({
+        settings: { permissionMode: persisted },
+        turns: [],
+        tasks: [],
+      });
+    },
+  );
+  const element = createElement(ClaudeSettings, {
+    agent: { ...initial, provider: "claude" },
+  });
+  const control = () =>
+    children(invoke(element)).find(
+      (node): node is ReactElement<SelectFixtureProps> =>
+        node.props.label === "Permission mode",
+    )!;
+  const reopen = async () => {
+    for (const cell of h.cells.get("ClaudeSettings") || []) cell.cleanup?.();
+    h.cells.delete("ClaudeSettings");
+    invoke(element);
+    for (const effect of h.effects.splice(0)) effect();
+    await vi.waitFor(() => expect(control().props.disabled).toBe(false));
+  };
+  await reopen();
+  control().props.onChange({ currentTarget: { value: "bypassPermissions" } });
+  await reopen();
+  control().props.onChange({ currentTarget: { value: "default" } });
+  await vi.waitFor(() => expect(control().props.disabled).toBe(false));
+  const unresolvedId = mutations[1].request_id;
+  expect(unresolvedId).not.toBe(mutations[0].request_id);
+  finish({});
+  await Promise.resolve();
+  control().props.onChange({ currentTarget: { value: "default" } });
+  await vi.waitFor(() => expect(mutations).toHaveLength(3));
+  expect(mutations[2].request_id).toBe(unresolvedId);
 });
