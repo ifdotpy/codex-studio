@@ -986,7 +986,13 @@ pub fn render(root: &Path, with_api_types: bool) -> Result<Vec<Rendered>, String
         generator.subschema_for::<crate::provider_input::ToolDefinition>();
         generator.subschema_for::<crate::idle_compaction::CacheReport>();
         let mut schemas = generator.take_definitions(true);
-        for name in ["RateLimitBucketDto", "RateLimitWindowDto", "JsonValue"] {
+        for name in [
+            "RateLimitBucketDto",
+            "RateLimitWindowDto",
+            "JsonValue",
+            "ClaudeSessionSettings",
+            "ClaudeCustomModel",
+        ] {
             schemas.insert(name.into(), openapi["components"]["schemas"][name].clone());
         }
         let document = serde_json::json!({
