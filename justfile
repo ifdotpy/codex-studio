@@ -36,7 +36,7 @@ signing-check:
 
 [doc("Native package cycle (checks signing first, then signs with the configured identity): host check, release binaries once per commit, package, package checks. Flag --hosted-ci-passed skips the dev-profile host check.")]
 package-native out *flags:
-    @node workspaces/client/apps/native/package-flow.mjs {{quote(out)}} {{flags}}
+    @node workspaces/client/apps/native/package-flow.ts {{quote(out)}} {{flags}}
 
 [doc("List pnpm and Cargo packages discovered from their manifests.")]
 packages:
@@ -175,4 +175,4 @@ test-native-profile-migration:
 test-native-webview:
     @pnpm --filter codex-agents-web run build
     @cargo build -p studio-native-client --features native-check --locked
-    @node workspaces/client/apps/native/check-native.mjs
+    @node workspaces/client/apps/native/check-native.ts

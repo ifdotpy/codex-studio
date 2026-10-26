@@ -15,7 +15,7 @@ import {
 import {
   parseFlowArguments,
   planFlow,
-} from "../../../../client/apps/native/package-flow.mjs";
+} from "../../../../client/apps/native/package-flow.ts";
 
 const commitA = "a".repeat(40);
 const commitB = "b".repeat(40);

@@ -1,16 +1,21 @@
+// @ts-check
 // Native desktop entry point for the same guarded recovery configuration as Electron.
 const path = require("node:path");
-const { configureRecovery } = require("./desktop-recovery/recovery.cjs");
+const helper = path.join(__dirname, "desktop-recovery", "recovery.cjs");
+/** @type {typeof import("../desktop/recovery.cjs")} */
+const { configureRecovery } = require(helper);
 
 async function main() {
   const [executable, resources, enabled] = process.argv.slice(2);
-  if (!["true", "false"].includes(enabled))
+  if (!enabled || !["true", "false"].includes(enabled))
     throw new Error("Invalid recovery setting.");
   if (
     path.resolve(resources || "") !==
     "/Applications/Codex Studio.app/Contents/Resources"
   )
     throw new Error("Recovery requires the installed application resources.");
+  if (!executable || !resources)
+    throw new Error("Recovery requires application paths.");
   const result = await configureRecovery({
     applicationPath: executable,
     resources: path.join(resources, "workspace"),

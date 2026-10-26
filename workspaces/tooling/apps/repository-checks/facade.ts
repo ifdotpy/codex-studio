@@ -824,10 +824,10 @@ export function gateSteps(root, name) {
       "workspaces/client/apps/desktop/retained-helper-witness.test.cjs",
     ]),
     nodeTest("mac-sync", "Mac sync chunk read witness", [
-      "workspaces/runtime/apps/vm-guest/mac-sync-witness.test.mjs",
+      "workspaces/runtime/apps/vm-guest/mac-sync-witness.test.mts",
     ]),
     nodeTest("native-fixture", "native WebView fixture", [
-      "workspaces/client/apps/native/check-native.test.mjs",
+      "workspaces/client/apps/native/check-native.test.ts",
     ]),
     nodeTest("recovery-helpers", "Rust desktop recovery witnesses", [
       "workspaces/client/apps/desktop/recovery-helper-witness.test.cjs",
@@ -866,10 +866,10 @@ export function gateSteps(root, name) {
           "node",
           [
             "--test",
-            "workspaces/runtime/apps/vm-guest/run-guest-suite.test.mjs",
+            "workspaces/runtime/apps/vm-guest/run-guest-suite.test.mts",
           ],
         ],
-        ["node", ["workspaces/runtime/apps/vm-guest/run-guest-suite.mjs"]],
+        ["node", ["workspaces/runtime/apps/vm-guest/run-guest-suite.mts"]],
       ],
     },
     ...(name === "test-comprehensive"

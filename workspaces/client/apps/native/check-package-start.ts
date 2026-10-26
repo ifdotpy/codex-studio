@@ -1,5 +1,6 @@
 // Start the packaged host hidden with isolated client and backend state.
 import assert from "node:assert/strict";
+import type { ChildProcess } from "node:child_process";
 import { execFileSync, spawn } from "node:child_process";
 import { once } from "node:events";
 import { open, mkdtemp, realpath, rm, stat } from "node:fs/promises";
@@ -12,7 +13,9 @@ import { identity } from "../desktop/backend.cjs";
 const startupTimeoutMs = 60_000;
 const startupPollMs = 100;
 const hostStopTimeoutMs = 10_000;
-const bundle = path.resolve(process.argv[2]);
+const application = process.argv[2];
+assert.ok(application, "Supply the packaged application path.");
+const bundle = path.resolve(application);
 const executableName = execFileSync(
   "plutil",
   [
@@ -33,12 +36,14 @@ const state = path.join(fixture, "state");
 const listener = createServer();
 listener.listen(0, "127.0.0.1");
 await once(listener, "listening");
-const port = listener.address().port;
-await new Promise((resolve, reject) =>
+const address = listener.address();
+assert.ok(address && typeof address !== "string");
+const port = address.port;
+await new Promise<void>((resolve, reject) =>
   listener.close((error) => (error ? reject(error) : resolve())),
 );
 const log = await open(path.join(fixture, "host.log"), "w");
-let host;
+let host: ChildProcess | undefined;
 let ownedPid;
 try {
   host = spawn(
@@ -109,7 +114,8 @@ try {
   );
 } finally {
   if (host?.pid && host.exitCode === null && host.signalCode === null) {
-    const exited = once(host, "exit");
+    const child = host;
+    const exited = once(child, "exit");
     host.kill("SIGTERM");
     let timer;
     try {
@@ -117,7 +123,7 @@ try {
         exited,
         new Promise((resolve) => {
           timer = setTimeout(() => {
-            host.kill("SIGKILL");
+            child.kill("SIGKILL");
             resolve(exited);
           }, hostStopTimeoutMs);
         }),
@@ -130,8 +136,13 @@ try {
     try {
       process.kill(ownedPid, "SIGTERM");
     } catch (error) {
-      if (error.code !== "ESRCH")
-        console.error("Cannot stop the fixture backend:", error.message);
+      if (
+        !(error instanceof Error && "code" in error && error.code === "ESRCH")
+      )
+        console.error(
+          "Cannot stop the fixture backend:",
+          error instanceof Error ? error.message : String(error),
+        );
     }
   }
   await log.close();

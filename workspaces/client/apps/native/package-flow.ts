@@ -4,7 +4,7 @@
 //   1. dev-profile native host check (skip: --hosted-ci-passed)
 //   2. Rust release binaries for HEAD, reused when the manifest verifies
 //   3. package.mjs (signs with the configured identity)
-//   4. check-package.mjs and check-package-start.mjs
+//   4. check-package.ts and check-package-start.ts
 //
 // Step 0 runs the same check as `just signing-check`. See the "Signing setup"
 // section of README.md.
@@ -27,7 +27,7 @@ import {
 const root = path.dirname(fileURLToPath(import.meta.url));
 const repository = path.resolve(root, "../../../..");
 
-export function parseFlowArguments(argv) {
+export function parseFlowArguments(argv: string[]) {
   const flags = new Set(["--hosted-ci-passed"]);
   const positional = [];
   let hostedCiPassed = false;
@@ -38,14 +38,24 @@ export function parseFlowArguments(argv) {
   }
   if (positional.length !== 1)
     throw new Error(
-      "Usage: package-flow.mjs <new output directory> [--hosted-ci-passed]",
+      "Usage: package-flow.ts <new output directory> [--hosted-ci-passed]",
     );
-  return { out: path.resolve(positional[0]), hostedCiPassed };
+  return { out: path.resolve(positional[0] ?? ""), hostedCiPassed };
 }
 
 // Ordered steps of the flow. Each step is data, so a test can check the plan
 // without running anything.
-export function planFlow({ out, hostedCiPassed, directory, commit }) {
+export function planFlow({
+  out,
+  hostedCiPassed,
+  directory,
+  commit,
+}: {
+  out: string;
+  hostedCiPassed: boolean;
+  directory: string;
+  commit: string;
+}) {
   const application = path.join(out, "Codex Studio.app");
   const environment = {
     CODEX_NATIVE_PACKAGE_OUT: out,
@@ -80,27 +90,29 @@ export function planFlow({ out, hostedCiPassed, directory, commit }) {
     {
       label: "check package",
       command: "node",
-      args: [path.join(root, "check-package.mjs"), application],
+      args: [path.join(root, "check-package.ts"), application],
     },
     {
       label: "check package start",
       command: "node",
-      args: [path.join(root, "check-package-start.mjs"), application],
+      args: [path.join(root, "check-package-start.ts"), application],
     },
   ];
 }
 
-async function ensureReleaseBinaries(directory, commit) {
+async function ensureReleaseBinaries(directory: string, commit: string) {
   try {
     await verifyReleaseBinaries({ directory, commit });
     console.log(`Reusing release binaries for ${commit} in ${directory}`);
   } catch (error) {
-    console.log(`Building release binaries: ${error.message}`);
+    console.log(
+      `Building release binaries: ${error instanceof Error ? error.message : String(error)}`,
+    );
     await buildReleaseBinaries({ repository, directory });
   }
 }
 
-async function main(argv) {
+async function main(argv: string[]) {
   const { out, hostedCiPassed } = parseFlowArguments(argv);
   const { commit, dirty } = checkoutState(repository);
   if (dirty)
@@ -115,8 +127,9 @@ async function main(argv) {
       await ensureReleaseBinaries(directory, commit);
       continue;
     }
-    const env = { ...process.env, ...step.environment };
+    const env: NodeJS.ProcessEnv = { ...process.env, ...step.environment };
     for (const name of step.withoutEnvironment ?? []) delete env[name];
+    if (!step.command) throw new Error("A package step needs a command.");
     execFileSync(step.command, step.args, {
       cwd: repository,
       stdio: "inherit",

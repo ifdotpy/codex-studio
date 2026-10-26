@@ -100,7 +100,7 @@ Set up package signing first. See [Signing setup](#signing-setup) and run
 
 `package.mjs` builds the Tauri client and the Rust runtime binaries, signs the
 bundle with the configured identity, and writes the app to
-`CODEX_NATIVE_PACKAGE_OUT`. `check-package.mjs` and `check-package-start.mjs`
+`CODEX_NATIVE_PACKAGE_OUT`. `check-package.ts` and `check-package-start.ts`
 verify it. The Rust release build is the longest step. Do it once per commit:
 
 ```sh
@@ -124,7 +124,7 @@ just package-native /tmp/out --hosted-ci-passed
   Package validation and the hidden startup check run with Node and require
   no Python backend environment or PyO3 module.
 - `just package-native` runs the dev-profile host check next (`just
-test-native-webview`). `--hosted-ci-passed` skips it; use the flag only
+  test-native-webview`). `--hosted-ci-passed` skips it; use the flag only
   when hosted CI passed on the exact commit. The default runs the check.
 
 ## Signing setup

@@ -18,7 +18,7 @@ model request or a real reset-credit redemption.
 `just test-fast` runs the [`fast` nextest profile](../.config/nextest.toml), desktop
 recovery and retained-helper boundaries, web API/type witnesses, tooling tests,
 generated-contract and dependency guards, and the VM guest Python suite through its
-[runner](../workspaces/runtime/apps/vm-guest/run-guest-suite.mjs). The facade uses five
+[runner](../workspaces/runtime/apps/vm-guest/run-guest-suite.mts). The facade uses five
 bounded concurrent lanes: Rust preparation and tests, type checks, web tests,
 independent tooling/provider/desktop checks, and the guest suite. Independent
 checks start immediately; artifact consumers wait only for their preparation. Cargo compilation stays in the Rust lane with four build jobs. WASM is
@@ -26,7 +26,7 @@ generated once; the renderer is built once before the native crate embeds it.
 Type checks wait for WASM; web tests wait for the workspace build's debug
 `examples/draft-server`, and the guest waits for its debug supervisor. The gate
 passes both binary paths explicitly. These checks overlap the Rust build or test run. The
-[WASM builder](../workspaces/client/apps/web/scripts/build-client-wasm.mjs) requires
+[WASM builder](../workspaces/client/apps/web/scripts/build-client-wasm.ts) requires
 the exact binding generator version pinned by the client-wasm crate; its error
 gives the installation command. Cold builds are outside the warm short-tier
 target. The nextest configuration also owns the failure deadline; its CI profile
