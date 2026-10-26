@@ -70,21 +70,17 @@ test("Sync Push Lifecycle Browser", async ({
     await page.clock.install();
     await page.goto(`${origin}/check`);
     await page.evaluate(async () => {
-      window.syncSyncPushLifecycleBrowserClient =
-        await import("/src/sync/client.ts");
-      window.syncSyncPushLifecycleBrowserStopPush =
-        window.syncSyncPushLifecycleBrowserClient.watchSyncInvalidations(
-          "entities",
-          () => {},
-        );
+      window.client = await import("/src/sync/client.ts");
+      window.stopPush = window.client.watchSyncInvalidations(
+        "entities",
+        () => {},
+      );
     });
     await expect.poll(() => Boolean(identityResponse)).toBe(true);
-    await page.evaluate(() => window.syncSyncPushLifecycleBrowserStopPush());
+    await page.evaluate(() => window.stopPush());
     delayIdentity = false;
     identityResponse!();
-    await page.evaluate(() =>
-      window.syncSyncPushLifecycleBrowserClient.syncDatabase(),
-    );
+    await page.evaluate(() => window.client.syncDatabase());
     await page.clock.runFor(250);
     assert.equal(
       opened,
@@ -93,16 +89,15 @@ test("Sync Push Lifecycle Browser", async ({
     );
 
     await page.evaluate(() => {
-      window.syncSyncPushLifecycleBrowserStopPush =
-        window.syncSyncPushLifecycleBrowserClient.watchSyncInvalidations(
-          "entities",
-          () => {},
-        );
+      window.stopPush = window.client.watchSyncInvalidations(
+        "entities",
+        () => {},
+      );
     });
     await expect.poll(() => streams.size).toBe(1);
     for (const response of streams) response.end();
     await expect.poll(() => streams.size).toBe(0);
-    await page.evaluate(() => window.syncSyncPushLifecycleBrowserStopPush());
+    await page.evaluate(() => window.stopPush());
     const beforeRetry = opened;
     await page.clock.runFor(1200);
     assert.equal(
@@ -113,14 +108,8 @@ test("Sync Push Lifecycle Browser", async ({
 
     await page.evaluate(() => {
       window.syncSyncPushLifecycleBrowserStops = [
-        window.syncSyncPushLifecycleBrowserClient.watchSyncInvalidations(
-          "entities",
-          () => {},
-        ),
-        window.syncSyncPushLifecycleBrowserClient.watchSyncInvalidations(
-          "entities",
-          () => {},
-        ),
+        window.client.watchSyncInvalidations("entities", () => {}),
+        window.client.watchSyncInvalidations("entities", () => {}),
       ];
     });
     await expect.poll(() => streams.size).toBeGreaterThan(0);
@@ -144,8 +133,8 @@ test("Sync Push Lifecycle Browser", async ({
 
 declare global {
   interface Window {
-    syncSyncPushLifecycleBrowserClient: typeof import("../../src/sync/client.ts");
-    syncSyncPushLifecycleBrowserStopPush: () => void;
+    client: typeof import("../../src/sync/client.ts");
+    stopPush: () => void;
     syncSyncPushLifecycleBrowserStops: [() => void, () => void];
   }
 }

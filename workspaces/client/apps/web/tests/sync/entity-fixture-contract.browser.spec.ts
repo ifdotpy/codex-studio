@@ -141,7 +141,7 @@ test("entity fixture contract matches the real sync backend", async () => {
     ),
   );
 
-  const realMaxSeq = realPull.maxSeq;
+  const realMaxSeq = realPull.maxSeq!;
   const stubPull = pullPage(
     entityPullFixture(snapshot, {
       scope: "state:entities:v1",
@@ -251,7 +251,7 @@ test("entity fixture contract matches the real sync backend", async () => {
     "stateDir",
     "tasksHistoryLimit",
   ]);
-  const serverMaxSeq = capturedServerHead.maxSeq;
+  const serverMaxSeq = capturedServerHead.maxSeq!;
   const stubHead = pullPage(
     entityPullFixture(snapshot, {
       scope: "state:entities:v1",
@@ -420,11 +420,14 @@ test("entity fixture contract matches the real sync backend", async () => {
   );
 
   assert.equal(
-    writing!.value.activity.phase,
+    fixtureObject(fixtureObject(writing!.value).activity).phase,
     "writing",
     "an in-place nested edit does not rewrite its previous fixture document",
   );
-  assert.equal(thinking!.value.activity.phase, "thinking");
+  assert.equal(
+    fixtureObject(fixtureObject(thinking!.value).activity).phase,
+    "thinking",
+  );
   assert.ok(
     thinking!.seq > writing!.seq,
     "an in-place nested edit receives a new sequence",
@@ -488,7 +491,7 @@ test("entity fixture contract matches the real sync backend", async () => {
   assert.equal(tokenRates.epoch, resources.epoch);
   assert.equal(tokenRates.revision, resources.revision);
   assert.equal(heartbeat.epoch, resources.epoch);
-  assert.ok(heartbeat.revision > resources.revision);
+  assert.ok((heartbeat.revision as number) > (resources.revision as number));
   await stubReader.cancel();
   streamServer.closeAllConnections();
   await new Promise<void>((resolve) => streamServer.close(() => resolve()));

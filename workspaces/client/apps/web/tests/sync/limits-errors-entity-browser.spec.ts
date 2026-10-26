@@ -85,7 +85,7 @@ test("limits and Studio errors update from entities with no idle HTTP refresh", 
       rateLimitsByAccount: { default: limits(11, 100) },
     },
   };
-  let through = entityPullFixture(snapshot).maxSeq ?? 0;
+  let through = entityPullFixture(snapshot).maxSeq!;
   const streams = new Set<ServerResponse>();
   const requests: { method: string | undefined; path: string; at: number }[] =
     [];
@@ -187,10 +187,7 @@ test("limits and Studio errors update from entities with no idle HTTP refresh", 
   });
   const publish = (changes: PendingEntity[]) => {
     const from = through;
-    const documents = changes.map((change): SyncEntity => {
-      change.seq = ++through;
-      return { ...change, seq: through };
-    });
+    for (const change of changes) change.seq = ++through;
     for (const stream of streams)
       stream.write(
         protocol3SseEvent("resources", {
@@ -204,7 +201,11 @@ test("limits and Studio errors update from entities with no idle HTTP refresh", 
             {
               resource: { kind: "state" },
               revision: through,
-              entityChanges: { after: from, through, documents },
+              entityChanges: {
+                after: from,
+                through,
+                documents: changes as import("../playwright.ts").SyncEntity[],
+              },
             },
           ],
         } satisfies FixtureResourceChange),

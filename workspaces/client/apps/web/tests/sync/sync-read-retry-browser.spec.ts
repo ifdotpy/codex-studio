@@ -134,25 +134,21 @@ test("sync-read-retry-browser", async ({ page: fixturePage }) => {
     await page.clock.install();
     await page.goto(fixtureOrigin(server) + `/check`);
     await page.evaluate(async () => {
-      window.syncSyncReadRetryBrowserClient =
-        await import("/src/sync/client.ts");
+      window.client = await import("/src/sync/client.ts");
       const { readRetryDelay } = await import("/src/sync/readRetry.ts");
-      window.syncSyncReadRetryBrowserRetryDelay = readRetryDelay(0);
+      window.retryDelay = readRetryDelay(0);
       window.syncSyncReadRetryBrowserStates = [];
-      window.syncSyncReadRetryBrowserStop =
-        window.syncSyncReadRetryBrowserClient.subscribeTranscriptProjection(
-          "transcript:503",
-          () => {},
-          (error) =>
-            window.syncSyncReadRetryBrowserStates.push(
-              error ? String(error) : "live",
-            ),
-        );
+      window.stop = window.client.subscribeTranscriptProjection(
+        "transcript:503",
+        () => {},
+        (error) =>
+          window.syncSyncReadRetryBrowserStates.push(
+            error ? String(error) : "live",
+          ),
+      );
     });
     await expect.poll(() => attempts.get("503")).toBe(1);
-    const retryDelay = await page.evaluate(
-      () => window.syncSyncReadRetryBrowserRetryDelay,
-    );
+    const retryDelay = await page.evaluate(() => window.retryDelay);
     await page.clock.runFor(retryDelay);
     await page.waitForFunction(
       () => window.syncSyncReadRetryBrowserStates.at(-1) === "live",
@@ -164,19 +160,18 @@ test("sync-read-retry-browser", async ({ page: fixturePage }) => {
     );
     await page.clock.runFor(2 * retryDelay);
     assert.equal(attempts.get("503"), 2, "A successful read stops retrying");
-    await page.evaluate(() => window.syncSyncReadRetryBrowserStop());
+    await page.evaluate(() => window.stop());
     for (const kind of ["403", "workspace"]) {
       await page.evaluate((kind) => {
         window.syncSyncReadRetryBrowserStates = [];
-        window.syncSyncReadRetryBrowserStop =
-          window.syncSyncReadRetryBrowserClient.subscribeTranscriptProjection(
-            `transcript:${kind}`,
-            () => {},
-            (error) =>
-              window.syncSyncReadRetryBrowserStates.push(
-                error ? String(error) : "live",
-              ),
-          );
+        window.stop = window.client.subscribeTranscriptProjection(
+          `transcript:${kind}`,
+          () => {},
+          (error) =>
+            window.syncSyncReadRetryBrowserStates.push(
+              error ? String(error) : "live",
+            ),
+        );
       }, kind);
       await page.waitForFunction(
         () => window.syncSyncReadRetryBrowserStates.length > 0,
@@ -192,19 +187,18 @@ test("sync-read-retry-browser", async ({ page: fixturePage }) => {
           () => !window.syncSyncReadRetryBrowserStates.includes("live"),
         ),
       );
-      await page.evaluate(() => window.syncSyncReadRetryBrowserStop());
+      await page.evaluate(() => window.stop());
     }
     await page.evaluate(() => {
       window.syncSyncReadRetryBrowserStates = [];
-      window.syncSyncReadRetryBrowserStop =
-        window.syncSyncReadRetryBrowserClient.subscribeTranscriptProjection(
-          "transcript:decode",
-          () => {},
-          (error) =>
-            window.syncSyncReadRetryBrowserStates.push(
-              error ? String(error) : "live",
-            ),
-        );
+      window.stop = window.client.subscribeTranscriptProjection(
+        "transcript:decode",
+        () => {},
+        (error) =>
+          window.syncSyncReadRetryBrowserStates.push(
+            error ? String(error) : "live",
+          ),
+      );
     });
     await page.waitForFunction(() =>
       window.syncSyncReadRetryBrowserStates.some((state) => state !== "live"),
@@ -218,7 +212,7 @@ test("sync-read-retry-browser", async ({ page: fixturePage }) => {
       2,
       "A new stream hint must recover a malformed projection response.",
     );
-    await page.evaluate(() => window.syncSyncReadRetryBrowserStop());
+    await page.evaluate(() => window.stop());
     expect(errors).toEqual([]);
     console.log("sync read retry browser contract passed");
   } finally {
@@ -229,9 +223,9 @@ test("sync-read-retry-browser", async ({ page: fixturePage }) => {
 
 declare global {
   interface Window {
-    syncSyncReadRetryBrowserClient: typeof import("../../src/sync/client.ts");
-    syncSyncReadRetryBrowserRetryDelay: number;
+    client: typeof import("../../src/sync/client.ts");
+    retryDelay: number;
     syncSyncReadRetryBrowserStates: string[];
-    syncSyncReadRetryBrowserStop: () => void;
+    stop: () => void;
   }
 }

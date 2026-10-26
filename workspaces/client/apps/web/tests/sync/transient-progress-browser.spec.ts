@@ -73,20 +73,15 @@ for (const flow of ["vault", "auth", "vault-job"]) {
           .click();
         await page.waitForFunction(
           () =>
-            window.transientProgressFixture.reads.jobs === 1 &&
-            window.transientProgressFixture.selectors.some(
-              (r) => r.kind === "vault-job-progress",
-            ),
+            window.reads.jobs === 1 &&
+            window.selectors.some((r) => r.kind === "vault-job-progress"),
         );
       }
       const before = await page.evaluate(() => ({
-        ...window.transientProgressFixture.reads,
+        ...window.reads,
       }));
       await page.clock.fastForward(10_000);
-      assert.deepEqual(
-        await page.evaluate(() => window.transientProgressFixture.reads),
-        before,
-      );
+      assert.deepEqual(await page.evaluate(() => window.reads), before);
       assert.deepEqual(
         before,
         flow === "vault"
@@ -102,56 +97,43 @@ for (const flow of ["vault", "auth", "vault-job"]) {
             ? "vault-job-progress"
             : "auth-progress";
       await page.waitForFunction(
-        (kind) =>
-          window.transientProgressFixture.selectors.some(
-            (resource) => resource.kind === kind,
-          ),
+        (kind) => window.selectors.some((resource) => resource.kind === kind),
         kind,
       );
       await page.evaluate((flow) => {
         if (flow === "vault")
-          window.transientProgressFixture.progress({
-            resource: { kind: "vault-readiness", prefix: "project-one" },
-            value: true,
-          });
+          window.progress(
+            { kind: "vault-readiness", prefix: "project-one" },
+            true,
+          );
         else if (flow === "vault-job") {
-          const resource = window.transientProgressFixture.selectors.find(
+          const resource = window.selectors.find(
             (r) => r.kind === "vault-job-progress",
           );
-          if (!resource) throw new Error("Missing vault progress subscription");
-          window.transientProgressFixture.progress({
-            resource,
-            value: {
-              requestId: resource.requestId,
-              state: "running",
-              prefix: "project-one",
-              progress: "creating stack",
-            },
+          window.progress(resource!, {
+            requestId: resource!.requestId,
+            state: "running",
+            prefix: "project-one",
+            progress: "creating stack",
           });
-          window.transientProgressFixture.progress({
-            resource,
-            value: {
-              requestId: resource.requestId,
-              state: "done",
-              prefix: "project-one",
-            },
+          window.progress(resource!, {
+            requestId: resource!.requestId,
+            state: "done",
+            prefix: "project-one",
           });
         } else
-          window.transientProgressFixture.progress({
-            resource: { kind: "auth-progress", requestId: "login-one" },
-            value: {
+          window.progress(
+            { kind: "auth-progress", requestId: "login-one" },
+            {
               requestId: "login-one",
               accountKey: "claude-one",
               status: "ready",
             },
-          });
+          );
       }, flow);
       if (flow === "vault")
         await page.getByText("The paper key of project-one is made.").waitFor();
-      else
-        await page.waitForFunction(
-          () => window.transientProgressFixture.ready === true,
-        );
+      else await page.waitForFunction(() => window.ready === true);
       if (flow === "vault-job")
         assert.deepEqual(
           requests,

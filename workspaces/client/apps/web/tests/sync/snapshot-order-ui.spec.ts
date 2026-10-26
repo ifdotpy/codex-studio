@@ -5,7 +5,7 @@ import {
   fixtureRequestId,
 } from "./entity-fixture-protocol.ts";
 import type { Page, Route } from "@playwright/test";
-import type { SessionResponse, SyncPullResponse } from "../playwright.ts";
+import type { SessionResponse } from "../playwright.ts";
 
 import type { PostResult } from "../../src/apiTypes.ts";
 import {
@@ -75,7 +75,9 @@ async function runSnapshotOrderUi(
   const entityPulls: Array<{
     url: string;
     checkpoint: number;
-    documents: SyncPullResponse["documents"];
+    documents: ReturnType<
+      typeof import("./entity-fixture-protocol.ts").pullPage
+    >["documents"];
   }> = [];
   page.on("pageerror", (error) => errors.push(error.message));
   let revision = 0,
@@ -89,7 +91,9 @@ async function runSnapshotOrderUi(
     if (url.searchParams.get("scope") !== "state:entities:v1")
       return route.fallback();
     const response = await route.fetch();
-    const body: SyncPullResponse = await response.json();
+    const body: ReturnType<
+      typeof import("./entity-fixture-protocol.ts").pullPage
+    > = await response.json();
     entityPulls.push({
       url: `${url.pathname}${url.search}`,
       checkpoint: body.checkpoint?.seq,
@@ -413,8 +417,8 @@ async function runSnapshotOrderUi(
       Math.abs(before![key] - during![key]) <= 1,
       `Loading label ${key} stays stable; before=${JSON.stringify(before)}, during=${JSON.stringify(during)}, frames=${JSON.stringify(geometryFrames)}`,
     );
-  const requestId = fixtureRequestId(pendingAnswer.request().postDataJSON());
-  const serverAnswer = await pendingAnswer.fetch();
+  const requestId = fixtureRequestId(pendingAnswer!.request().postDataJSON());
+  const serverAnswer = await pendingAnswer!.fetch();
   const answerResponse: PostResult<"/api/answer"> = await serverAnswer.json();
   assert.equal(serverAnswer.status(), 200);
   assert.equal(answerResponse.status, "answered");
@@ -430,7 +434,10 @@ async function runSnapshotOrderUi(
     serverTombstone.payload,
     JSON.stringify({ collection: "request", id: requestId, value: {} }),
   );
-  await pendingAnswer.fulfill({ response: serverAnswer, json: answerResponse });
+  await pendingAnswer!.fulfill({
+    response: serverAnswer,
+    json: answerResponse,
+  });
   await card.waitFor({ state: "hidden" });
   assert.ok(
     mutationDocuments!.some(
@@ -507,7 +514,7 @@ async function runSnapshotOrderUi(
     assert.ok(
       Number.isSafeInteger(committedWorkerSequence) &&
         committedWorkerSequence === committedMutationSequence &&
-        committedWorkerSequence > seededWorker.seq,
+        committedWorkerSequence! > seededWorker.seq,
       "The pushed worker entity matches the committed mutation sequence and advances the seeded entity",
     );
     await newerSession;
@@ -525,11 +532,11 @@ async function runSnapshotOrderUi(
     );
     const freshNode = await workerButton.elementHandle();
     assert.equal(
-      oldRequest.revision,
+      oldRequest!.revision,
       oldRevision,
       "Held credential request started before the worker entity changed",
     );
-    await oldRequest.route.fulfill(
+    await oldRequest!.route.fulfill(
       oldFailure
         ? { status: 503, json: { error: "Obsolete snapshot failure" } }
         : { json: { token: initial.token } satisfies SessionResponse },

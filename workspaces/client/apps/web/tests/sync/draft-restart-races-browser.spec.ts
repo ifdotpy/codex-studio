@@ -99,14 +99,12 @@ async function createFixture(page: Page) {
   await server.listen();
   await page.addInitScript((id) => {
     localStorage.setItem("codex-sync-workspace", JSON.stringify(id));
-    window.draftRestartRacesBrowserFixture__draftReplicationCreations = 0;
-    window.draftRestartRacesBrowserFixture__draftReplicationCreationTimes = [];
-    window.draftRestartRacesBrowserFixtureTestOnly = {
+    window.__draftReplicationCreations = 0;
+    window.__draftReplicationCreationTimes = [];
+    window.__codexDraftReplicationTestOnly = {
       onCreate: () => {
-        window.draftRestartRacesBrowserFixture__draftReplicationCreations++;
-        window.draftRestartRacesBrowserFixture__draftReplicationCreationTimes.push(
-          Date.now(),
-        );
+        window.__draftReplicationCreations++;
+        window.__draftReplicationCreationTimes.push(Date.now());
       },
     };
   }, workspaceId);
@@ -114,21 +112,17 @@ async function createFixture(page: Page) {
   await page.goto(fixtureOrigin(server) + `/check`);
   await page.evaluate(async () => {
     const client = await import("/src/sync/client.ts");
-    window.draftRestartRacesBrowserFixtureDraftTiming =
-      client.DRAFT_SYNC_TIMING_MS;
-    window.draftRestartRacesBrowserFixtureDb = await client
-      .syncDatabase()
-      .then((value) => value.db);
+    window.draftTiming = client.DRAFT_SYNC_TIMING_MS;
+    window.db = await client.syncDatabase().then((value) => value.db);
     window.draftRestartRacesBrowserFixtureSyncErrors = [];
-    window.draftRestartRacesBrowserFixtureStopDraftSync =
-      await client.startDraftReplication(
-        (error) => {
-          window.draftRestartRacesBrowserFixtureSyncErrors.push(
-            error === null ? null : String(error),
-          );
-        },
-        { testOnly: window.draftRestartRacesBrowserFixtureTestOnly },
-      );
+    window.stopDraftSync = await client.startDraftReplication(
+      (error) => {
+        window.draftRestartRacesBrowserFixtureSyncErrors.push(
+          error === null ? null : String(error),
+        );
+      },
+      { testOnly: window.__codexDraftReplicationTestOnly },
+    );
   });
 
   const gate = <T>(): Gate<T> => {
@@ -157,7 +151,7 @@ async function createFixture(page: Page) {
   const insertLocal = (id: string) =>
     page.evaluate(
       async (id) =>
-        window.draftRestartRacesBrowserFixtureDb.drafts.insert({
+        window.db.drafts.insert({
           id,
           seq: 0,
           payload: JSON.stringify({ text: id }),
@@ -166,25 +160,17 @@ async function createFixture(page: Page) {
     );
   const localText = (id: string) =>
     page.evaluate(async (id) => {
-      const doc = await window.draftRestartRacesBrowserFixtureDb.drafts
-        .findOne(id)
-        .exec();
+      const doc = await window.db.drafts.findOne(id).exec();
       return doc ? JSON.parse(doc.payload).text : null;
     }, id);
   const trigger = () =>
     page.evaluate(() => window.dispatchEvent(new Event("online")));
   const countCreations = () =>
-    page.evaluate(
-      () => window.draftRestartRacesBrowserFixture__draftReplicationCreations,
-    );
+    page.evaluate(() => window.__draftReplicationCreations);
   const creationTimes = () =>
-    page.evaluate(() => [
-      ...window.draftRestartRacesBrowserFixture__draftReplicationCreationTimes,
-    ]);
+    page.evaluate(() => [...window.__draftReplicationCreationTimes]);
   const stop = async () => {
-    await page.evaluate(async () =>
-      window.draftRestartRacesBrowserFixtureStopDraftSync?.(),
-    );
+    await page.evaluate(async () => window.stopDraftSync?.());
     await server.close();
   };
   return {
@@ -309,9 +295,7 @@ test("a later trigger in the outage is served at the restart interval", async ({
     );
     const restartAAt = (await fx.creationTimes()).at(-1);
     assert.ok(restartAAt, "trigger A created the first replacement");
-    const timing = await page.evaluate(
-      () => window.draftRestartRacesBrowserFixtureDraftTiming,
-    );
+    const timing = await page.evaluate(() => window.draftTiming);
     await page.waitForTimeout(500);
     fx.remote.set("interval-b", {
       id: "interval-b",
@@ -421,12 +405,7 @@ async function assertOneTriggeredBatchPull(page: Page, failPush: boolean) {
     await fx.waitFor(
       async () => {
         const count = await page.evaluate(
-          async () =>
-            (
-              await window.draftRestartRacesBrowserFixtureDb.drafts
-                .find()
-                .exec()
-            ).length,
+          async () => (await window.db.drafts.find().exec()).length,
         );
         return count >= 250 + Number(failPush);
       },
@@ -439,9 +418,7 @@ async function assertOneTriggeredBatchPull(page: Page, failPush: boolean) {
     assert.equal(fx.pulls.length - before, 3);
     assert.equal(
       await page.evaluate(
-        async () =>
-          (await window.draftRestartRacesBrowserFixtureDb.drafts.find().exec())
-            .length,
+        async () => (await window.db.drafts.find().exec()).length,
       ),
       250 + Number(failPush),
       "all server pages are stored locally",
@@ -526,21 +503,21 @@ test("a trigger during a full-page continuation is served after that sequence", 
 
 declare global {
   interface Window {
-    draftRestartRacesBrowserFixture__draftReplicationCreations: number;
-    draftRestartRacesBrowserFixture__draftReplicationCreationTimes: number[];
-    draftRestartRacesBrowserFixtureDraftTiming: typeof import("../../src/sync/client.ts").DRAFT_SYNC_TIMING_MS;
-    draftRestartRacesBrowserFixtureDb: Awaited<
+    __draftReplicationCreations: number;
+    __draftReplicationCreationTimes: number[];
+    draftTiming: typeof import("../../src/sync/client.ts").DRAFT_SYNC_TIMING_MS;
+    db: Awaited<
       ReturnType<typeof import("../../src/sync/client.ts").syncDatabase>
     >["db"];
     draftRestartRacesBrowserFixtureSyncErrors: (string | null)[];
-    draftRestartRacesBrowserFixtureTestOnly: NonNullable<
+    __codexDraftReplicationTestOnly: NonNullable<
       NonNullable<
         Parameters<
           typeof import("../../src/sync/client.ts").startDraftReplication
         >[1]
       >["testOnly"]
     >;
-    draftRestartRacesBrowserFixtureStopDraftSync: Awaited<
+    stopDraftSync: Awaited<
       ReturnType<
         typeof import("../../src/sync/client.ts").startDraftReplication
       >

@@ -212,12 +212,12 @@ test("sync reset browser", async ({ browser: _browser }) => {
         payload: JSON.stringify({ id: "intent-1", text: "keep outbox" }),
         seq: 1,
       });
-      window.syncResetBrowserFixtureEntityValues = [];
-      window.syncResetBrowserFixtureStopProjection = (
+      window.entityValues = [];
+      window.stopProjection = (
         await import("/src/sync/client.ts")
       ).subscribeStateProjection(
         (value) =>
-          window.syncResetBrowserFixtureEntityValues.push(
+          window.entityValues.push(
             value!.runtime.agents.map((agent) => agent.name).sort(),
           ),
         (error) => {
@@ -256,16 +256,14 @@ test("sync reset browser", async ({ browser: _browser }) => {
       }),
     ]);
     clearTimeout(secondPageTimeout);
-    const paused = await page.evaluate(
-      () => window.syncResetBrowserFixtureEntityValues,
-    );
+    const paused = await page.evaluate(() => window.entityValues);
     assert.ok(
       paused.every((names) => !names.some((name) => name!.startsWith("new-"))),
       "the hidden reset must not publish its first partial page",
     );
     releaseSecondPage!();
     await page.waitForFunction(
-      () => window.syncResetBrowserFixtureEntityValues.at(-1)?.length === 501,
+      () => window.entityValues.at(-1)?.length === 501,
       null,
       { timeout: 15000 },
     );
@@ -274,7 +272,7 @@ test("sync reset browser", async ({ browser: _browser }) => {
       const draft = await db.drafts.findOne("device:lead").exec();
       const outbox = await db.outbox.findOne("intent-1").exec();
       return {
-        names: window.syncResetBrowserFixtureEntityValues.at(-1),
+        names: window.entityValues.at(-1),
         draft: JSON.parse(draft!.payload).text,
         outbox: JSON.parse(outbox!.payload).text,
         stale: await db.projections.findOne("entity:agent:stale").exec(),
@@ -320,8 +318,8 @@ test("sync reset browser", async ({ browser: _browser }) => {
 
 declare global {
   interface Window {
-    syncResetBrowserFixtureEntityValues: (string | null | undefined)[][];
-    syncResetBrowserFixtureStopProjection: () => void;
+    entityValues: (string | null | undefined)[][];
+    stopProjection: () => void;
     syncResetBrowserFixtureSyncError: string | undefined;
   }
 }

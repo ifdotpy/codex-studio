@@ -37,9 +37,6 @@ test("Draft sync ui", async ({
   });
   try {
     const port = await new Promise((resolve, reject) => {
-      if (!fixture.stdout) throw new Error("Missing fixture stdout");
-      if (!fixture.stdout) throw new Error("Missing fixture stdout");
-      if (!fixture.stdout) throw new Error("Missing fixture stdout");
       fixture.stdout!.once("data", (chunk) =>
         resolve(Number(String(chunk).trim())),
       );
@@ -70,7 +67,7 @@ test("Draft sync ui", async ({
           key,
           JSON.stringify({ [session]: "Retired aggregate-map draft" }),
         );
-        window.draftSyncUiFixture__retiredDraftMap = {
+        window.__retiredDraftMap = {
           key,
           original: JSON.stringify({
             [session]: "Retired aggregate-map draft",
@@ -79,18 +76,15 @@ test("Draft sync ui", async ({
           read: () => originalGetItem.call(localStorage, key),
         };
         Storage.prototype.getItem = function (candidate) {
-          if (candidate === key)
-            window.draftSyncUiFixture__retiredDraftMap.accesses++;
+          if (candidate === key) window.__retiredDraftMap.accesses++;
           return originalGetItem.call(this, candidate);
         };
         Storage.prototype.setItem = function (candidate, value) {
-          if (candidate === key)
-            window.draftSyncUiFixture__retiredDraftMap.accesses++;
+          if (candidate === key) window.__retiredDraftMap.accesses++;
           return originalSetItem.call(this, candidate, value);
         };
         Storage.prototype.removeItem = function (candidate) {
-          if (candidate === key)
-            window.draftSyncUiFixture__retiredDraftMap.accesses++;
+          if (candidate === key) window.__retiredDraftMap.accesses++;
           return originalRemoveItem.call(this, candidate);
         };
       },
@@ -167,13 +161,9 @@ test("Draft sync ui", async ({
       });
     }
     await desktop.goto(origin);
-    await desktop.waitForFunction(
-      () => window.draftSyncUiFixture__retiredDraftMap,
-    );
+    await desktop.waitForFunction(() => window.__retiredDraftMap);
     assert.equal(
-      await desktop.evaluate(
-        () => window.draftSyncUiFixture__retiredDraftMap.accesses,
-      ),
+      await desktop.evaluate(() => window.__retiredDraftMap.accesses),
       0,
       "App startup must not access the retired aggregate draft map",
     );
@@ -187,9 +177,7 @@ test("Draft sync ui", async ({
       "A draft from the retired aggregate map must not appear",
     );
     assert.equal(
-      await desktop.evaluate(() =>
-        window.draftSyncUiFixture__retiredDraftMap.read(),
-      ),
+      await desktop.evaluate(() => window.__retiredDraftMap.read()),
       JSON.stringify({ [session]: "Retired aggregate-map draft" }),
       "The aggregate map must remain byte-identical",
     );
@@ -227,16 +215,12 @@ test("Draft sync ui", async ({
     await phone.locator("#message").fill("Current draft");
     await waitText(desktop, "Current draft");
     assert.equal(
-      await desktop.evaluate(
-        () => window.draftSyncUiFixture__retiredDraftMap.accesses,
-      ),
+      await desktop.evaluate(() => window.__retiredDraftMap.accesses),
       0,
       "Current draft edits and synchronization never access the retired aggregate map",
     );
     assert.equal(
-      await desktop.evaluate(() =>
-        window.draftSyncUiFixture__retiredDraftMap.read(),
-      ),
+      await desktop.evaluate(() => window.__retiredDraftMap.read()),
       JSON.stringify({ [session]: "Retired aggregate-map draft" }),
     );
     // Failure/retry scheduling is exercised with virtual time by
@@ -362,7 +346,6 @@ test("Draft sync resume preserves a pending conflict", async ({ page }) => {
   });
   try {
     const port = await new Promise((resolve, reject) => {
-      if (!fixture.stdout) throw new Error("Missing fixture stdout");
       fixture.stdout!.once("data", (chunk) =>
         resolve(Number(String(chunk).trim())),
       );
@@ -393,7 +376,7 @@ test("Draft sync resume preserves a pending conflict", async ({ page }) => {
         }
         return request;
       };
-      window.draftSyncUiFixtureWaitForDraftText = (id, text) =>
+      window.waitForDraftText = (id, text) =>
         new Promise<void>((resolve) => {
           const check = () => {
             if (committed.get(id)?.text !== text) return;
@@ -508,13 +491,10 @@ test("Draft sync resume preserves a pending conflict", async ({ page }) => {
       baseline,
     );
     await page.evaluate(() => window.dispatchEvent(new Event("online")));
-    await page.evaluate(
-      ({ id, text }) => window.draftSyncUiFixtureWaitForDraftText(id, text),
-      {
-        id: targetId,
-        text: pulledRemoteText,
-      },
-    );
+    await page.evaluate(({ id, text }) => window.waitForDraftText(id, text), {
+      id: targetId,
+      text: pulledRemoteText,
+    });
     const pulledRemoteMaster = (await documents()).find(
       (document) => document.id === targetId,
     );
@@ -595,15 +575,12 @@ test("Draft sync resume preserves a pending conflict", async ({ page }) => {
 
 declare global {
   interface Window {
-    draftSyncUiFixture__retiredDraftMap: {
+    __retiredDraftMap: {
       key: string;
       original: string;
       accesses: number;
       read: () => string | null;
     };
-    draftSyncUiFixtureWaitForDraftText: (
-      id: string,
-      text: string,
-    ) => Promise<void>;
+    waitForDraftText: (id: string, text: string) => Promise<void>;
   }
 }

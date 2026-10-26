@@ -116,43 +116,39 @@ test("draft pull waits for a real trigger without blocking push recovery", async
     await page.goto(fixtureOrigin(server) + `/check`);
     const draftTiming = await page.evaluate(async () => {
       const client = await import("/src/sync/client.ts");
-      window.syncDraftPullGateBrowserFixtureReplicationErrors = [];
-      window.syncDraftPullGateBrowserFixtureRejectCancelOnce = false;
-      window.syncDraftPullGateBrowserFixtureCancelRejections = 0;
-      window.syncDraftPullGateBrowserFixtureDraftTiming =
-        client.DRAFT_SYNC_TIMING_MS;
-      window.syncDraftPullGateBrowserFixtureStopDrafts =
-        await client.startDraftReplication(
-          (error) =>
-            window.syncDraftPullGateBrowserFixtureReplicationErrors.push(
-              error
-                ? {
-                    code:
-                      typeof error === "object"
-                        ? (error as Error & { code?: string }).code
-                        : undefined,
-                    message: String(error),
-                  }
-                : null,
-            ),
-          {
-            testOnly: {
-              cancel: async (cancel) => {
-                await cancel();
-                if (window.syncDraftPullGateBrowserFixtureRejectCancelOnce) {
-                  window.syncDraftPullGateBrowserFixtureRejectCancelOnce = false;
-                  window.syncDraftPullGateBrowserFixtureCancelRejections++;
-                  throw new Error("injected cancel rejection");
+      window.replicationErrors = [];
+      window.rejectCancelOnce = false;
+      window.cancelRejections = 0;
+      window.draftTiming = client.DRAFT_SYNC_TIMING_MS;
+      window.stopDrafts = await client.startDraftReplication(
+        (error) =>
+          window.replicationErrors.push(
+            error
+              ? {
+                  code:
+                    typeof error === "object"
+                      ? (error as Error & { code?: string }).code
+                      : undefined,
+                  message: String(error),
                 }
-              },
+              : null,
+          ),
+        {
+          testOnly: {
+            cancel: async (cancel) => {
+              await cancel();
+              if (window.rejectCancelOnce) {
+                window.rejectCancelOnce = false;
+                window.cancelRejections++;
+                throw new Error("injected cancel rejection");
+              }
             },
           },
-        );
+        },
+      );
       return client.DRAFT_SYNC_TIMING_MS;
     });
-    await page.waitForFunction(
-      () => window.syncDraftPullGateBrowserFixtureReplicationErrors.length > 0,
-    );
+    await page.waitForFunction(() => window.replicationErrors.length > 0);
     await page.evaluate(async () => {
       const { db } = await (await import("/src/sync/client.ts")).syncDatabase();
       await db.drafts.insert({
@@ -172,18 +168,14 @@ test("draft pull waits for a real trigger without blocking push recovery", async
       "The failed pull does not run periodic HTTP retries",
     );
     assert.ok(
-      await page.evaluate(() =>
-        window.syncDraftPullGateBrowserFixtureReplicationErrors.some(Boolean),
-      ),
+      await page.evaluate(() => window.replicationErrors.some(Boolean)),
       "The failed pull remains visible while idle",
     );
 
     pullSucceeds = true;
     notifyDrafts();
     await page.waitForFunction(() =>
-      window.syncDraftPullGateBrowserFixtureReplicationErrors.some(
-        (error) => error === null,
-      ),
+      window.replicationErrors.some((error) => error === null),
     );
     assert.equal(pulls, 2, "One draft event retries the failed pull once");
     assert.equal(pushes, 1);
@@ -215,7 +207,7 @@ test("draft pull waits for a real trigger without blocking push recovery", async
     failPush = true;
     const pushBeforeRestart = pushes;
     const errorsBeforePush = await page.evaluate(
-      () => window.syncDraftPullGateBrowserFixtureReplicationErrors.length,
+      () => window.replicationErrors.length,
     );
     await page.evaluate(async () => {
       const { db } = await (await import("/src/sync/client.ts")).syncDatabase();
@@ -228,15 +220,12 @@ test("draft pull waits for a real trigger without blocking push recovery", async
     await expect.poll(() => pushes).toBeGreaterThan(pushBeforeRestart);
     assert.ok(pushes > pushBeforeRestart, "A push failure is observed");
     await page.waitForFunction(
-      (count) =>
-        window.syncDraftPullGateBrowserFixtureReplicationErrors
-          .slice(count)
-          .some(Boolean),
+      (count) => window.replicationErrors.slice(count).some(Boolean),
       errorsBeforePush,
     );
     const beforeRestartPull = pulls;
     await page.evaluate(() => {
-      window.syncDraftPullGateBrowserFixtureRejectCancelOnce = true;
+      window.rejectCancelOnce = true;
       window.dispatchEvent(new Event("online"));
     });
     await expect.poll(() => pulls).toBeGreaterThan(beforeRestartPull);
@@ -245,9 +234,7 @@ test("draft pull waits for a real trigger without blocking push recovery", async
       "A replacement starts after cancel rejects",
     );
     assert.ok(
-      await page.evaluate(
-        () => window.syncDraftPullGateBrowserFixtureCancelRejections > 0,
-      ),
+      await page.evaluate(() => window.cancelRejections > 0),
       "the cancel seam rejected and the replacement still started",
     );
     failPush = false;
@@ -255,12 +242,12 @@ test("draft pull waits for a real trigger without blocking push recovery", async
     await page.clock.runFor(draftTiming.pushRetry + draftTiming.pushQuietWait);
     await expect.poll(() => pushes).toBeGreaterThan(postsBeforeRetry);
     await page.evaluate(async () => {
-      window.syncDraftPullGateBrowserFixtureRejectCancelOnce = true;
-      await window.syncDraftPullGateBrowserFixtureStopDrafts();
+      window.rejectCancelOnce = true;
+      await window.stopDrafts();
     });
     assert.ok(
       await page.evaluate(() =>
-        window.syncDraftPullGateBrowserFixtureReplicationErrors.some((error) =>
+        window.replicationErrors.some((error) =>
           (error?.message || String(error)).includes(
             "injected cancel rejection",
           ),
@@ -277,14 +264,14 @@ test("draft pull waits for a real trigger without blocking push recovery", async
 
 declare global {
   interface Window {
-    syncDraftPullGateBrowserFixtureReplicationErrors: ({
+    replicationErrors: ({
       code: unknown;
       message: string;
     } | null)[];
-    syncDraftPullGateBrowserFixtureRejectCancelOnce: boolean;
-    syncDraftPullGateBrowserFixtureCancelRejections: number;
-    syncDraftPullGateBrowserFixtureDraftTiming: typeof import("../../src/sync/client.ts").DRAFT_SYNC_TIMING_MS;
-    syncDraftPullGateBrowserFixtureStopDrafts: Awaited<
+    rejectCancelOnce: boolean;
+    cancelRejections: number;
+    draftTiming: typeof import("../../src/sync/client.ts").DRAFT_SYNC_TIMING_MS;
+    stopDrafts: Awaited<
       ReturnType<
         typeof import("../../src/sync/client.ts").startDraftReplication
       >

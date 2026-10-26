@@ -155,7 +155,7 @@ test("sync required browser", async ({ page: runnerPage }) => {
     await page.evaluate(async () => {
       const { db } = await (await import("/src/sync/client.ts")).syncDatabase();
       const original = db.drafts.incrementalUpsert;
-      window.syncRequiredBrowserFixtureRestoreDraftWrites = () => {
+      window.restoreDraftWrites = () => {
         db.drafts.incrementalUpsert = original;
       };
       db.drafts.incrementalUpsert = async () => {
@@ -178,7 +178,7 @@ test("sync required browser", async ({ page: runnerPage }) => {
       /could not be saved/,
     );
     await page.evaluate(() => {
-      window.syncRequiredBrowserFixtureRestoreDraftWrites();
+      window.restoreDraftWrites();
       window.syncRequiredBrowserFixtureState.drafts.setDrafts({
         lead: "Recovered local edit",
       });

@@ -48,7 +48,7 @@ test("real IndexedDB staging removes crash orphans while preserving another tab'
         await import("/src/sync/entityTransfer.ts");
       const storage = new IndexedTransferStorage();
       await storage.put("owner", "active");
-      window.syncEntityTransferStorageBrowserStaging = storage;
+      window.staging = storage;
       const databases = await indexedDB.databases();
       const name = databases.find((database) =>
         database.name?.startsWith("studio-entity-transfer-"),
@@ -95,7 +95,7 @@ test("real IndexedDB staging removes crash orphans while preserving another tab'
     });
     expect(
       await first.evaluate(async () => {
-        const storage = window.syncEntityTransferStorageBrowserStaging;
+        const storage = window.staging;
         const value = await storage.get("owner");
         await storage.close();
         return {
@@ -114,6 +114,6 @@ test("real IndexedDB staging removes crash orphans while preserving another tab'
 
 declare global {
   interface Window {
-    syncEntityTransferStorageBrowserStaging: import("../../src/sync/entityTransfer.ts").IndexedTransferStorage;
+    staging: import("../../src/sync/entityTransfer.ts").IndexedTransferStorage;
   }
 }

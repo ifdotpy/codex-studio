@@ -209,11 +209,7 @@ test("Sync http connection budget browser", async ({
     await Promise.all(
       pages.map((page) =>
         page
-          .waitForFunction(
-            () => window.syncHttpConnectionBudgetBrowserFixtureMount,
-            undefined,
-            { timeout: 15_000 },
-          )
+          .waitForFunction(() => window.mount, undefined, { timeout: 15_000 })
           .catch(async (error) => {
             throw new Error(
               `${error.message}; page errors: ${JSON.stringify(errors)}`,
@@ -223,13 +219,7 @@ test("Sync http connection budget browser", async ({
     );
     await Promise.all(
       pages.map((page, index) =>
-        page.evaluate(
-          (index) =>
-            window.syncHttpConnectionBudgetBrowserFixtureMount(
-              "selected-" + index,
-            ),
-          index,
-        ),
+        page.evaluate((index) => window.mount("selected-" + index), index),
       ),
     );
     await Promise.all(
@@ -245,7 +235,7 @@ test("Sync http connection budget browser", async ({
     ).length;
     const started = Date.now();
     await pages[0].evaluate(() => {
-      window.syncHttpConnectionBudgetBrowserFixtureRefresh =
+      window.refresh =
         window.syncHttpConnectionBudgetBrowserFixtureSnapshot.refresh();
     });
     await pages[0].waitForFunction(
@@ -256,9 +246,7 @@ test("Sync http connection budget browser", async ({
       { timeout: 20000 },
     );
     await Promise.race([
-      pages[0].evaluate(
-        () => window.syncHttpConnectionBudgetBrowserFixtureRefresh,
-      ),
+      pages[0].evaluate(() => window.refresh),
       new Promise((_, reject) =>
         setTimeout(() => reject(new Error("refresh did not terminate")), 18000),
       ),
@@ -315,11 +303,8 @@ test("Sync http connection budget browser", async ({
       pages.map((page, index) =>
         page.evaluate(
           ({ workspaceId, index }) => {
-            window.syncHttpConnectionBudgetBrowserFixtureWarm = window
-              .syncHttpConnectionBudgetBrowserFixturePrefetchTranscript(
-                workspaceId,
-                "warm-" + index,
-              )
+            window.warm = window
+              .prefetchTranscript(workspaceId, "warm-" + index)
               .catch(() => false);
           },
           { workspaceId, index },
@@ -331,12 +316,7 @@ test("Sync http connection budget browser", async ({
     await Promise.all(
       pages.map((page) =>
         page.evaluate(async (workspaceId) => {
-          if (
-            await window.syncHttpConnectionBudgetBrowserFixturePrefetchTranscript(
-              workspaceId,
-              "warm-over-limit",
-            )
-          )
+          if (await window.prefetchTranscript(workspaceId, "warm-over-limit"))
             throw new Error(
               "a second background history request exceeded the limit",
             );
@@ -349,12 +329,11 @@ test("Sync http connection budget browser", async ({
         page.evaluate(async (index) => {
           await window.syncHttpConnectionBudgetBrowserFixtureSnapshot.refresh();
           const id = "exact-request-" + index;
-          const receipt =
-            await window.syncHttpConnectionBudgetBrowserFixtureDurableSend({
-              id,
-              room: "selected-" + index,
-              text: "fixture",
-            });
+          const receipt = await window.durableSend({
+            id,
+            room: "selected-" + index,
+            text: "fixture",
+          });
           if (receipt.id !== id) throw new Error("request identity changed");
         }, index),
       ),

@@ -98,31 +98,25 @@ test("sync initial resume browser", async ({ page }) => {
         value: { id: "stale", name: "Old" },
         seq: 1,
       });
-      window.syncSyncInitialResumeBrowserWriteCalls = 0;
+      window.writeCalls = 0;
       const storage = db.projections.storageInstance;
       const write = storage.bulkWrite.bind(storage);
       storage.bulkWrite = (...args) => {
-        window.syncSyncInitialResumeBrowserWriteCalls++;
+        window.writeCalls++;
         return write(...args);
       };
-      window.syncSyncInitialResumeBrowserSnapshots = [];
-      window.syncSyncInitialResumeBrowserStop = client.subscribeStateProjection(
-        (value) => window.syncSyncInitialResumeBrowserSnapshots.push(value),
+      window.snapshots = [];
+      window.stop = client.subscribeStateProjection(
+        (value) => window.snapshots.push(value),
         (error) => {
-          if (error)
-            window.syncSyncInitialResumeBrowserSyncError = String(error);
+          if (error) window.syncError = String(error);
         },
       );
     });
     await page.waitForFunction(
-      () =>
-        window.syncSyncInitialResumeBrowserSnapshots.length > 0 ||
-        window.syncSyncInitialResumeBrowserSyncError,
+      () => window.snapshots.length > 0 || window.syncError,
     );
-    assert.equal(
-      await page.evaluate(() => window.syncSyncInitialResumeBrowserSyncError),
-      undefined,
-    );
+    assert.equal(await page.evaluate(() => window.syncError), undefined);
     assert.deepEqual(pulls[0], {
       scope: "state:entities:v1",
       after: "0",
@@ -132,16 +126,11 @@ test("sync initial resume browser", async ({ page }) => {
       reset: "1",
     });
     assert.equal(
-      await page.evaluate(
-        () =>
-          window.syncSyncInitialResumeBrowserSnapshots.at(-1)?.threads.length,
-      ),
+      await page.evaluate(() => window.snapshots.at(-1)?.threads.length),
       499,
     );
     assert.ok(
-      await page.evaluate(
-        () => window.syncSyncInitialResumeBrowserWriteCalls <= 5,
-      ),
+      await page.evaluate(() => window.writeCalls <= 5),
       "A 500-row page uses one storage batch plus checkpoint writes",
     );
     assert.equal(
@@ -157,7 +146,7 @@ test("sync initial resume browser", async ({ page }) => {
       }),
       true,
     );
-    await page.evaluate(() => window.syncSyncInitialResumeBrowserStop());
+    await page.evaluate(() => window.stop());
     console.log("initial sync resume browser passed");
   } finally {
     await server.close();
@@ -166,13 +155,13 @@ test("sync initial resume browser", async ({ page }) => {
 
 declare global {
   interface Window {
-    syncSyncInitialResumeBrowserWriteCalls: number;
-    syncSyncInitialResumeBrowserSnapshots: Parameters<
+    writeCalls: number;
+    snapshots: Parameters<
       Parameters<
         typeof import("../../src/sync/client.ts").subscribeStateProjection
       >[0]
     >[0][];
-    syncSyncInitialResumeBrowserSyncError: string | undefined;
-    syncSyncInitialResumeBrowserStop: () => void;
+    syncError: string | undefined;
+    stop: () => void;
   }
 }

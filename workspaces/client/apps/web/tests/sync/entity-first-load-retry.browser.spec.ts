@@ -189,9 +189,7 @@ async function createFixture(page: Page, options: FixtureOptions = {}) {
       return streams.size;
     },
     async close() {
-      await page.evaluate(() =>
-        window.entityFirstLoadRetryBrowserFixtureUnmountSnapshot?.(),
-      );
+      await page.evaluate(() => window.unmountSnapshot?.());
       await server.close();
     },
     setPullStatus(value: number | undefined) {
@@ -299,9 +297,7 @@ test("records first content time while stream headers are held", async ({
   try {
     await waitForData(page);
     const firstContentMs = await page.evaluate(
-      () =>
-        performance.now() -
-        window.entityFirstLoadRetryBrowserFixtureSnapshotMountedAt,
+      () => performance.now() - window.snapshotMountedAt,
     );
     console.log(`FIRST_CONTENT_WITH_HELD_STREAM ${firstContentMs}`);
     assert.ok(firstContentMs < 5_000, `first content ${firstContentMs}ms`);

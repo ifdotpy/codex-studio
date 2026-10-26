@@ -20,7 +20,6 @@ test("mutation projections propagate between pages sharing one browser context @
   const context = await browser.newContext();
   try {
     const port = await new Promise((resolve, reject) => {
-      if (!fixture.stdout) throw new Error("Missing fixture stdout");
       fixture.stdout!.once("data", (chunk) =>
         resolve(Number(String(chunk).trim())),
       );

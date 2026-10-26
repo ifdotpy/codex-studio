@@ -169,9 +169,9 @@ test("legacy transcript rows refetch online and stay hidden offline", async ({
         configurable: true,
         value: false,
       });
-      window.syncTranscriptCacheRefetchBrowserPageErrors = [];
+      window.pageErrors = [];
       window.addEventListener("error", (event) =>
-        window.syncTranscriptCacheRefetchBrowserPageErrors.push(event.message),
+        window.pageErrors.push(event.message),
       );
     });
     const offline = await offlinePage.evaluate(async () => {
@@ -181,7 +181,7 @@ test("legacy transcript rows refetch online and stay hidden offline", async ({
       return {
         refreshed: await prefetchTranscript(workspaceId, "lead"),
         cached: peekTranscript(workspaceId, "lead") ?? null,
-        errors: window.syncTranscriptCacheRefetchBrowserPageErrors,
+        errors: window.pageErrors,
       };
     });
     assert.deepEqual(offline, { refreshed: false, cached: null, errors: [] });
@@ -193,6 +193,6 @@ test("legacy transcript rows refetch online and stay hidden offline", async ({
 
 declare global {
   interface Window {
-    syncTranscriptCacheRefetchBrowserPageErrors: string[];
+    pageErrors: string[];
   }
 }

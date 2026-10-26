@@ -36,16 +36,11 @@ test("chat list uses summaries and detail interest follows the visible chat", as
   expect(response.ok()).toBe(true);
   const initial: SyncPullResponse = await response.json();
   expect(
-    initial.documents.some(
-      (row) =>
-        ("collection" in row ? row.collection : undefined) === "agentSummary",
-    ),
+    initial.documents.some((row) => row.collection === "agentSummary"),
   ).toBe(true);
   expect(
     initial.documents.some(
-      (row) =>
-        "collection" in row &&
-        (row.collection === "agent" || row.collection === "agentDetail"),
+      (row) => row.collection === "agent" || row.collection === "agentDetail",
     ),
   ).toBe(false);
   await row.click();
