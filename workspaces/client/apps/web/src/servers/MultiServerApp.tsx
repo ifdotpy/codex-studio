@@ -682,20 +682,7 @@ function MultiServerShell({
       data.requestId === searchRequest.current
     ) {
       const results = data.results;
-      if (
-        results !== undefined &&
-        results !== null &&
-        (!Array.isArray(results) ||
-          !results.every(
-            (result: unknown) =>
-              result !== null &&
-              typeof result === "object" &&
-              "id" in result &&
-              typeof result.id === "string" &&
-              "agent" in result &&
-              typeof result.agent === "string",
-          ))
-      )
+      if (results !== undefined && results !== null && !Array.isArray(results))
         return;
       const error = typeof data.error === "string" ? data.error : undefined;
       setSearchResults((old) => ({
