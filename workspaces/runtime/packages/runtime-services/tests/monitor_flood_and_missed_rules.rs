@@ -1,5 +1,6 @@
 //! Deterministic witnesses for bounded monitor wakes and missed one-shot rules.
-use crate::monitor_fixtures as fixtures;
+#[path = "monitors/fixtures.rs"]
+mod fixtures;
 use serde_json::{Value, json};
 use studio_runtime_services::{
     monitor_policy::{self, Effect, MonitorSnapshot, Operation},

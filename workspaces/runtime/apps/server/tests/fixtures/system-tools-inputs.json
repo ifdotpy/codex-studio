@@ -1,0 +1,126 @@
+{
+  "invalid_cancel_bodies": [
+    {},
+    {
+      "agent": null,
+      "request_id": "r"
+    },
+    {
+      "agent": [],
+      "request_id": "r"
+    },
+    {
+      "agent": "ACTOR",
+      "request_id": null
+    },
+    {
+      "agent": "ACTOR",
+      "request_id": 4
+    },
+    {
+      "agent": "ACTOR",
+      "request_id": ""
+    },
+    {
+      "agent": "ACTOR",
+      "request_id": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+    },
+    {
+      "agent": "ACTOR",
+      "request_id": "r",
+      "extra": true
+    }
+  ],
+  "invalid_stored_receipts": [
+    {
+      "stage": null
+    },
+    {
+      "outcome": 7
+    },
+    {
+      "agentIds": "bad"
+    },
+    {
+      "agentIds": [4]
+    },
+    {
+      "cancelRequested": "yes"
+    },
+    {
+      "result": []
+    },
+    {
+      "result": {
+        "success": "yes"
+      }
+    },
+    {
+      "result": {
+        "contentItems": [
+          {
+            "type": "inputText",
+            "text": 4
+          }
+        ]
+      }
+    },
+    {
+      "epoch": -1
+    },
+    {
+      "epoch": 9007199254740992
+    },
+    {
+      "supervisor": {
+        "generation": "invalid"
+      }
+    },
+    {
+      "supervisor": {
+        "generation": -1
+      }
+    },
+    {
+      "supervisor": {
+        "generation": 9007199254740992
+      }
+    }
+  ],
+  "valid_cancel_patches": [
+    {
+      "stage": "queued",
+      "outcome": "pending",
+      "result": null
+    },
+    {
+      "stage": "running",
+      "outcome": "pending",
+      "result": null
+    },
+    {
+      "stage": "running",
+      "outcome": "pending",
+      "cancelRequested": true,
+      "result": null
+    },
+    {
+      "stage": "completed",
+      "outcome": "applied"
+    },
+    {
+      "stage": "failed",
+      "outcome": "not_applied"
+    },
+    {
+      "stage": "cancelled",
+      "outcome": "not_applied",
+      "cancelRequested": true
+    },
+    {
+      "stage": "interrupted",
+      "outcome": "unknown",
+      "result": null
+    }
+  ]
+}

@@ -1,13 +1,19 @@
+import { useServerApi } from "./ServerServicesContext";
 import { orderPreferenceServers } from "./preferenceServerOrder";
 import { legacyPreferenceSeed } from "./legacyPreferenceSeed";
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
+import "../api";
+import { connectUiPreferences } from "../sync/uiPreferenceConnection";
+import { createPreferenceSyncConnectionManager } from "./preferenceSyncConnectionManager";
 import {
   capturePreferenceWrite,
+  preferenceStorageForServer,
   readPreferenceFields,
   receivePreferenceFields,
   watchPreferenceWrites,
 } from "../sync/uiPreferenceStore";
 import { preferenceEvent } from "../sync/uiPreferenceMerge";
+import { serverCredentialAdapter } from "./transport";
 import {
   defaultServerAlias,
   DEFAULT_LOCAL_SERVER_ALIAS,
@@ -21,16 +27,22 @@ import {
   type StudioServer,
 } from "./registry";
 
-/** Applies shell registry preferences; each mounted App owns its projection feed. */
-export function useUiPreferenceSync(servers: StudioServer[]) {
+export function useUiPreferenceSync(
+  servers: StudioServer[],
+  lastSeenByServer: Record<string, number | undefined> = {},
+) {
+  const { fetchApiRequest } = useServerApi();
+
   const ownership = JSON.stringify(
-    servers.map(({ id, origin, credentialId, workspaceId }) => [
-      id,
-      origin,
-      credentialId,
-      localStorage.getItem(`studio-server-workspace-id:${id}`) || workspaceId,
-    ]),
+    servers.map(({ id, origin, credentialId }) => [id, origin, credentialId]),
   );
+  const usableSnapshot = JSON.stringify(
+    servers.map(({ id }) => [id, lastSeenByServer[id]]),
+  );
+  const serverSnapshot = JSON.stringify(servers);
+  const connections = useRef<ReturnType<
+    typeof createPreferenceSyncConnectionManager<StudioServer>
+  > | null>(null);
   useEffect(() => {
     let applying = false;
     const identities = new Map<string, string>();
@@ -38,8 +50,8 @@ export function useUiPreferenceSync(servers: StudioServer[]) {
     let previousOrder: string[] | undefined;
     for (const server of servers) {
       const identity =
-        localStorage.getItem(`studio-server-workspace-id:${server.id}`) ||
-        server.workspaceId;
+        server.workspaceId ||
+        localStorage.getItem(`studio-server-workspace-id:${server.id}`);
       if (identity) identities.set(server.id, identity);
       snapshots.set(server.id, { alias: server.alias, label: server.label });
     }
@@ -154,7 +166,29 @@ export function useUiPreferenceSync(servers: StudioServer[]) {
       previousOrder = order;
     };
     seed();
-    apply();
+    const manager = createPreferenceSyncConnectionManager<StudioServer>(
+      (server, onSchemaMismatch) =>
+        connectUiPreferences(
+          server.origin,
+          server.id === "local"
+            ? fetchApiRequest
+            : (request) => serverCredentialAdapter().fetch(server, request),
+          preferenceStorageForServer(server.id),
+          (identity) => {
+            if (identities.get(server.id) === identity) return;
+            identities.set(server.id, identity);
+            localStorage.setItem(
+              `studio-server-workspace-id:${server.id}`,
+              identity,
+            );
+            seed();
+            apply();
+          },
+          onSchemaMismatch,
+        ),
+    );
+    connections.current = manager;
+    manager.updateServers(servers, lastSeenByServer);
     const stopWrites = watchPreferenceWrites(apply);
     window.addEventListener(SERVER_REGISTRY_EVENT, capture);
     const stored = (event: StorageEvent) => {
@@ -172,10 +206,16 @@ export function useUiPreferenceSync(servers: StudioServer[]) {
     };
     window.addEventListener(preferenceEvent, visual);
     return () => {
+      manager.stop();
+      if (connections.current === manager) connections.current = null;
       stopWrites();
       window.removeEventListener(SERVER_REGISTRY_EVENT, capture);
       window.removeEventListener("storage", stored);
       window.removeEventListener(preferenceEvent, visual);
     };
   }, [ownership]);
+  useEffect(() => {
+    connections.current?.updateServers(servers, lastSeenByServer);
+    connections.current?.updateLastSeen(lastSeenByServer);
+  }, [ownership, serverSnapshot, usableSnapshot]);
 }

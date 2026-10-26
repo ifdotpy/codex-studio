@@ -1,6 +1,9 @@
+use crate::prepared_python_support as prepared_python;
+
 use serde_json::{Value, json};
 use std::{
-    path::Path,
+    path::{Path, PathBuf},
+    process::{Command, Stdio},
     sync::{
         Mutex,
         atomic::{AtomicUsize, Ordering},
@@ -15,8 +18,21 @@ use studio_runtime_store::{ContinuationRepository, ContinuationTable, RuntimeSto
 
 #[allow(clippy::disallowed_methods)]
 fn template() -> tempfile::TempDir {
-    let dir = tempfile::tempdir().expect("isolated completion state");
-    crate::turn_fixtures::write_state(include_bytes!("wave7_p12_completion.json"), dir.path());
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let dir = tempfile::tempdir().expect("isolated Python state");
+    let python = prepared_python::prepared_python(&root.join("../../apps/server/src"));
+    let output = Command::new(python)
+        .arg(root.join("tests/turn_lifecycle/continuation_oracle.py"))
+        .arg("template")
+        .arg(dir.path())
+        .arg("usage")
+        .output()
+        .expect("Python continuation writer");
+    assert!(
+        output.status.success(),
+        "Python writer failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
     dir
 }
 
@@ -613,8 +629,27 @@ async fn production_classifier_matches_python_word_boundaries_and_bounded_eviden
         ),
         (json!({"codexErrorInfo":"rateLimitExceeded"}), "claude"),
     ];
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let python = prepared_python::prepared_python(&root.join("../../apps/server/src"));
+    let script = root.join("tests/wave7_p12_classifier_oracle.py");
+    let mut child = Command::new(python)
+        .arg(script)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("isolated Python oracle starts");
+    serde_json::to_writer(child.stdin.as_mut().expect("oracle stdin"), &cases)
+        .expect("write cases");
+    drop(child.stdin.take());
+    let output = child.wait_with_output().expect("oracle completes");
+    assert!(
+        output.status.success(),
+        "Python oracle: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
     let expected: Vec<Option<String>> =
-        crate::turn_fixtures::load(include_bytes!("wave7_p12_classifier.json"));
+        serde_json::from_slice(&output.stdout).expect("oracle output");
     let actual: Vec<Option<String>> = cases
         .iter()
         .map(|(error, provider)| {

@@ -2,6 +2,7 @@ import {
   useServerSync,
   useServerResources,
   useServerTranscripts,
+  useServerProgress,
 } from "../servers/ServerServicesContext";
 import { useCallback, useEffect, useMemo, useRef } from "react";
 import "../sync/client";
@@ -15,7 +16,7 @@ import {
 } from "./chatPrefetchState";
 
 // History stays warm only while a targeted transcript notification says it
-// changed.
+// changed. Progress is fetched lazily for an explicit navigation target.
 export function useChatPrefetch(
   data: Snapshot | null,
   opened: string | null,
@@ -28,6 +29,8 @@ export function useChatPrefetch(
   } = useServerSync();
   const { watchResourceChanges } = useServerResources();
   const { peekTranscript, subscribeTranscript } = useServerTranscripts();
+
+  const { readProgress } = useServerProgress();
 
   const current = useRef({ data, opened });
   current.current = { data, opened };
@@ -49,6 +52,7 @@ export function useChatPrefetch(
     const pendingHistory = new Set<string>();
     const pendingVersions = new Map<string, ResourceVersion>();
     const refreshGate = new TranscriptRefreshGate();
+    const pendingProgress = new Set<string>();
     const transcriptStops = new Map<string, () => void>();
     const suppressed = new Set<string>();
     let foregroundId: string | null | undefined;
@@ -96,42 +100,58 @@ export function useChatPrefetch(
       );
       transcriptStops.set(id, stop);
     };
-    const run = (id: string, version?: ResourceVersion) => {
+    const run = (
+      id: string,
+      stateDir: string,
+      history: boolean,
+      progress: boolean,
+      version?: ResourceVersion,
+    ) => {
       const controller = new AbortController();
       running.set(id, controller);
-      refreshGate.start(id, version);
+      if (history) refreshGate.start(id, version);
       active++;
       void (async () => {
         let historySucceeded = false;
         try {
-          pendingHistory.delete(id);
-          const done = await prefetchTranscript(
-            workspaceId,
-            id,
-            controller.signal,
-          );
-          historySucceeded = done;
-          if (!done && !controller.signal.aborted && !pendingHistory.has(id))
-            failedHistory.add(id);
-          refreshGate.historySettled(id);
+          if (history) {
+            pendingHistory.delete(id);
+            const done = await prefetchTranscript(
+              workspaceId,
+              id,
+              controller.signal,
+            );
+            historySucceeded = done;
+            if (!done && !controller.signal.aborted && !pendingHistory.has(id))
+              failedHistory.add(id);
+          }
+          // Version suppression covers the history read, not any later
+          // progress request that happens to share this run.
+          if (history) refreshGate.historySettled(id);
+          if (progress && !controller.signal.aborted) {
+            pendingProgress.delete(id);
+            await readProgress(stateDir, id, controller.signal);
+          }
         } catch {
-          if (!controller.signal.aborted && !pendingHistory.has(id))
+          if (history && !controller.signal.aborted && !pendingHistory.has(id))
             failedHistory.add(id);
         } finally {
           running.delete(id);
-          const retryAfterFailure = refreshGate.finish(
-            id,
-            historySucceeded,
-            controller.signal.aborted,
-          );
-          if (
-            retryAfterFailure &&
-            !historySucceeded &&
-            !controller.signal.aborted &&
-            !pendingHistory.has(id)
-          ) {
-            failedHistory.delete(id);
-            pendingHistory.add(id);
+          if (history) {
+            const retryAfterFailure = refreshGate.finish(
+              id,
+              historySucceeded,
+              controller.signal.aborted,
+            );
+            if (
+              retryAfterFailure &&
+              !historySucceeded &&
+              !controller.signal.aborted &&
+              !pendingHistory.has(id)
+            ) {
+              failedHistory.delete(id);
+              pendingHistory.add(id);
+            }
           }
           active--;
           schedule();
@@ -184,6 +204,8 @@ export function useChatPrefetch(
       }
       for (const [id, controller] of running)
         if (!targets.has(id)) controller.abort();
+      for (const id of pendingProgress)
+        if (!targets.has(id)) pendingProgress.delete(id);
       const candidates = ranked.filter(
         (agent) =>
           targets.has(agent.id) &&
@@ -197,7 +219,20 @@ export function useChatPrefetch(
         if (active >= TRANSCRIPT_PREFETCH_LIMIT) break;
         const version = pendingVersions.get(agent.id);
         pendingVersions.delete(agent.id);
-        run(agent.id, version);
+        run(
+          agent.id,
+          data.stateDir,
+          true,
+          pendingProgress.has(agent.id),
+          version,
+        );
+      }
+      if (active >= TRANSCRIPT_PREFETCH_LIMIT) return;
+      for (const agent of ranked) {
+        if (!pendingProgress.has(agent.id) || running.has(agent.id)) continue;
+        if (active >= TRANSCRIPT_PREFETCH_LIMIT) break;
+        pendingProgress.delete(agent.id);
+        run(agent.id, data.stateDir, false, true);
       }
       for (const id of pendingHistory)
         if (!targets.has(id)) {
@@ -212,6 +247,7 @@ export function useChatPrefetch(
         failedHistory.delete(id);
         pendingHistory.add(id);
       }
+      pendingProgress.add(id);
       schedule();
     };
     const suspend = (ids: ReadonlySet<string>) => {
@@ -222,6 +258,7 @@ export function useChatPrefetch(
         transcriptStops.delete(id);
         pendingHistory.delete(id);
         pendingVersions.delete(id);
+        pendingProgress.delete(id);
         refreshGate.forget(id);
         failedHistory.delete(id);
         if (foregroundId === id) {

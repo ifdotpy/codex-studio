@@ -1,0 +1,8 @@
+[
+  { "name": "single-character", "q": "R" },
+  { "name": "exact-match", "q": "Recovered output." },
+  { "name": "case-insensitive", "q": "recovered OUTPUT." },
+  { "name": "no-match", "q": "not-present-in-transcript" },
+  { "name": "maximum-length", "q": "x", "repeat": 500 },
+  { "name": "whitespace-only", "q": "   " }
+]

@@ -127,36 +127,29 @@ mod tests {
 
     #[test]
     fn shared_claude_identity_contract() {
-        let cases: Value = serde_json::from_str(include_str!("claude_identity_cases.json"))
-            .expect("identity cases parse");
-        let identities = cases["identities"]
-            .as_array()
-            .expect("identity cases are an array");
+        let cases: Value =
+            serde_json::from_str(include_str!("claude_identity_cases.json")).unwrap();
+        let identities = cases["identities"].as_array().unwrap();
         for case in identities {
             assert_eq!(
                 identity(
-                    case[0].as_str().expect("identity email is text"),
+                    case[0].as_str().unwrap(),
                     case[1].as_str(),
                     case[2].as_str()
                 ),
-                case[3].as_str().expect("expected identity is text")
+                case[3].as_str().unwrap()
             );
         }
-        for case in cases["comparisons"]
-            .as_array()
-            .expect("comparison cases are an array")
-        {
-            let old = identities
-                [case[0].as_u64().expect("old identity index is unsigned") as usize][3]
+        for case in cases["comparisons"].as_array().unwrap() {
+            let old = identities[case[0].as_u64().unwrap() as usize][3]
                 .as_str()
-                .expect("old identity is text");
-            let new = identities
-                [case[1].as_u64().expect("new identity index is unsigned") as usize][3]
+                .unwrap();
+            let new = identities[case[1].as_u64().unwrap() as usize][3]
                 .as_str()
-                .expect("new identity is text");
+                .unwrap();
             assert_eq!(
                 accepts(old, new),
-                case[2].as_bool().expect("expected acceptance is boolean"),
+                case[2].as_bool().unwrap(),
                 "{old} -> {new}"
             );
         }
@@ -164,17 +157,17 @@ mod tests {
 
     #[test]
     fn native_profile_adds_uuid_and_refuses_conflicting_organization() {
-        let dir = tempfile::tempdir().expect("temporary home creates");
+        let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join(".claude.json");
         let status = br#"{"loggedIn":true,"authMethod":"claude.ai","email":"a@example.test","orgId":"org-a"}"#;
         let metadata = super::super::parse_claude_status(status, true);
-        std::fs::write(&path, json!({"oauthAccount":{"emailAddress":"a@example.test","organizationUuid":"org-a","accountUuid":"account-a"}}).to_string()).expect("native profile writes");
+        std::fs::write(&path, json!({"oauthAccount":{"emailAddress":"a@example.test","organizationUuid":"org-a","accountUuid":"account-a"}}).to_string()).unwrap();
         let observed = with_native_identity(metadata.clone(), &path);
         assert_eq!(
             observed.credential_identity.as_deref(),
             Some(identity("a@example.test", Some("org-a"), Some("account-a")).as_str())
         );
-        std::fs::write(&path, json!({"oauthAccount":{"emailAddress":"a@example.test","organizationUuid":"org-b","accountUuid":"account-a"}}).to_string()).expect("conflicting native profile writes");
+        std::fs::write(&path, json!({"oauthAccount":{"emailAddress":"a@example.test","organizationUuid":"org-b","accountUuid":"account-a"}}).to_string()).unwrap();
         assert_eq!(
             with_native_identity(metadata, &path).status,
             AuthStatus::Error

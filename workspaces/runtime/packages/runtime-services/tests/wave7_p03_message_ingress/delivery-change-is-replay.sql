@@ -1,1 +1,0 @@
--- Historical live configuration applied after RuntimeStore opens.

@@ -48,23 +48,21 @@ pub async fn verify(
         startup::ensure(&backend, &state, resources).await?;
         return Ok(());
     }
-    #[derive(Default, serde::Deserialize)]
-    #[serde(rename_all = "camelCase")]
-    struct RecoveryPreferences {
-        #[serde(default)]
-        supervisor_enabled: bool,
-    }
-    let saved: RecoveryPreferences = match std::fs::read(state.join("background-recovery.json")) {
+    let saved: serde_json::Value = match std::fs::read(state.join("background-recovery.json")) {
         Ok(bytes) => serde_json::from_slice(&bytes)
             .map_err(|e| format!("Cannot read backend recovery settings: {e}"))?,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            RecoveryPreferences::default()
-        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => serde_json::Value::Null,
         Err(error) => return Err(error.to_string()),
     };
+    if saved
+        .get("supervisorEnabled")
+        .is_some_and(|value| !value.is_boolean())
+    {
+        return Err("The saved supervisor setting is invalid.".into());
+    }
     let supervisor = std::env::var("CODEX_AGENTS_SUPERVISOR_MODE")
         .map(|value| value == "1")
-        .unwrap_or(saved.supervisor_enabled);
+        .unwrap_or(saved["supervisorEnabled"] == true);
     let backend = Backend::desktop_client(origin)?;
     let identity = startup::identity(
         &backend,
@@ -76,7 +74,7 @@ pub async fn verify(
     .ok_or(
         "The local backend is not running. Start the installed Studio backend before connecting.",
     )?;
-    if supervisor && !identity.supervisor_mode && !identity.supervisor_fallback {
+    if supervisor && identity["supervisorMode"] != true && identity["supervisorFallback"] != true {
         return Err("Supervisor mode is enabled, but the running backend does not use it. Use the coordinated restart preflight before attaching.".into());
     }
     Ok(())

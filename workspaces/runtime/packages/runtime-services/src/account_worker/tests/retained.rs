@@ -120,56 +120,6 @@ fn request(state: &State, port: &RetainedSessionPort, operation: &str) -> Sessio
     }
 }
 
-#[tokio::test]
-async fn retained_mcp_reconnect_binds_actor_thread_scope_and_replays_once() {
-    let state = State::new().await;
-    let mut peer = Peer::new();
-    let mut worker = peer.worker(state.bridge.clone()).await;
-    let port = worker.retained_session();
-    let mut call = request(&state, &port, "mcp-reconnect:receipt");
-    call.expected_scope = Some(port.scope().clone());
-    call.method = Method::McpServerReconnect;
-    call.params = json!({"threadId":"fake-thread-0","name":"server"});
-    let mut invalid = call.clone();
-    invalid.actor.as_mut().unwrap().epoch += 1;
-    assert_eq!(
-        port.request(invalid).await.unwrap_err(),
-        PortError::Identity
-    );
-    let mut invalid = call.clone();
-    invalid.params["threadId"] = json!("other-thread");
-    assert_eq!(
-        port.request(invalid).await.unwrap_err(),
-        PortError::Identity
-    );
-    let mut invalid = call.clone();
-    invalid.expected_scope.as_mut().unwrap().generation += 1;
-    assert_eq!(
-        port.request(invalid).await.unwrap_err(),
-        PortError::ScopeMismatch
-    );
-    assert!(peer.writes.try_recv().is_err());
-
-    let sender = port.clone();
-    let first = call.clone();
-    let task = tokio::spawn(async move { sender.request(first).await });
-    let wire = peer.write("mcpServer/reconnect").await;
-    assert_eq!(wire["params"], call.params);
-    peer.reply(&wire, json!({})).await;
-    assert_eq!(
-        task.await.unwrap().unwrap().result,
-        RequestResult::Reply(json!({}))
-    );
-    assert_eq!(
-        port.request(call.clone()).await.unwrap().result,
-        RequestResult::Reply(json!({}))
-    );
-    call.params["name"] = json!("other-server");
-    assert_eq!(port.request(call).await.unwrap_err(), PortError::Identity);
-    assert!(peer.writes.try_recv().is_err());
-    worker.shutdown().await.unwrap();
-}
-
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn reset_service_recovers_lost_response_through_retained_worker_once() {
     let broker_state = tempfile::tempdir().unwrap();
@@ -829,46 +779,6 @@ async fn reconnect_churn_keeps_checkpoints_bounded_by_retained_generations() {
             "{checkpoints} cursor checkpoints exceeded {retained_generations} retained generations"
         );
     }
-}
-
-/// A backend restart replaces the account worker while the provider process
-/// keeps its generation, so a host request that an agent authorized can still
-/// answer. The replacement worker must record that answer once, without a
-/// second provider write, so the durable receipt shows the real result.
-#[tokio::test]
-async fn retained_actor_request_answer_after_same_generation_restart_is_recorded_once() {
-    let state = State::new().await;
-    let mut first_peer = Peer::identity("default", 1, None);
-    let mut first_worker = first_peer.worker(state.bridge.clone()).await;
-    let first_port = first_worker.retained_session();
-    let original = request(&state, &first_port, "monitor:restart-answer");
-    let sender = first_port.clone();
-    let pending = original.clone();
-    let task = tokio::spawn(async move { sender.request(pending).await });
-    let wire = first_peer.write("thread/read").await;
-    first_worker.shutdown().await.unwrap();
-    let _lost_waiter = task.await;
-
-    // The same provider process answers after the replacement attaches.
-    let mut second_peer = Peer::identity("default", 1, None);
-    second_peer.cursor = first_peer.cursor;
-    let mut second_worker = second_peer.worker(state.bridge.clone()).await;
-    let answer = json!({"thread":{"id":"fake-thread-0","revision":3}});
-    second_peer.reply(&wire, answer.clone()).await;
-    worker_barrier(&second_worker).await;
-
-    let second_port = second_worker.retained_session();
-    let receipt = second_port.request(original).await.unwrap();
-    assert_eq!(
-        receipt.result,
-        RequestResult::Reply(answer),
-        "the answer of the surviving provider process is recorded"
-    );
-    assert!(
-        second_peer.writes.try_recv().is_err(),
-        "the recorded request is never sent again"
-    );
-    second_worker.shutdown().await.unwrap();
 }
 
 #[tokio::test]

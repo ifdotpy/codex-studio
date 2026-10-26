@@ -233,5 +233,6 @@ Regenerate the combined API schema after that integration.
 
 Check the final server's export header list after integration:
 
-The former Python backend command has been removed. See [testing](testing.md)
-for current Rust checks.
+```sh
+python3 workspaces/runtime/apps/server/tests/multi-server-ui-cors-contract.py
+```

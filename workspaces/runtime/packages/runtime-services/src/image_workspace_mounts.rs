@@ -21,7 +21,7 @@ pub struct WorkspaceAttachment {
 }
 
 /// The result of one mount point check. `status` is one of
-/// `IMAGE_MOUNT_STATUSES` (owner: runtime-schema shared values).
+/// `IMAGE_MOUNT_STATUSES` (owner: `codex_shared_values.py`).
 #[derive(Clone, Debug)]
 pub(super) struct MountProbe {
     agent_id: String,

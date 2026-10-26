@@ -63,10 +63,6 @@ pub(crate) async fn queue(
     query: QueryParams,
 ) -> Result<Json<Value>, ApiError> {
     let agent_id = query_string(&query, "agent")?;
-    queue_for_agent(state, agent_id).await.map(Json)
-}
-
-pub(super) async fn queue_for_agent(state: HttpState, agent_id: String) -> Result<Value, ApiError> {
     read_agent(state, agent_id, |connection, agent, _validators| {
         let snapshot = super::queue_read::queue_snapshot(connection, agent)
             .map_err(super::queue_read::api_error)?;
@@ -77,6 +73,7 @@ pub(super) async fn queue_for_agent(state: HttpState, agent_id: String) -> Resul
         }))
     })
     .await
+    .map(Json)
 }
 
 pub(crate) async fn plan(

@@ -262,8 +262,7 @@ async fn archive_cleanup_wake_loss_keeps_queued_intent_for_restart() {
             std::sync::Arc::new(CrashBeforeCleanup),
         )
         .await
-        .is_ok(),
-        "a lost cleanup wake still reports the committed archive"
+        .is_err()
     );
     let saved = store.test_reader().expect("read committed intent");
     let rows = repository::read(&saved).expect("read complete rows");

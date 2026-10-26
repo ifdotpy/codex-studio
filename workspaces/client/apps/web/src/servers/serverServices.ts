@@ -1,3 +1,4 @@
+import { createProgressCache } from "../components/agents/progressCache";
 import { createSessionCostCache } from "../usage/sessionCostCache";
 import { createUploads, UPLOAD_DATABASE_NAME } from "../sync/uploads";
 import { createServerAudio } from "../native/serverAudio";
@@ -64,6 +65,7 @@ export function createServerServices(server: StudioServer) {
     entityCheckpoint: sequences.getEntitySequenceCheckpointForWorkspace,
   });
   const audio = createServerAudio();
+  let progress: ReturnType<typeof createProgressCache> | undefined;
   const sessionCosts = createSessionCostCache(storage);
   const transcripts = createTranscriptCache();
   const tokenRates = createTokenRateCache();
@@ -167,6 +169,9 @@ export function createServerServices(server: StudioServer) {
     owner: transport.owner,
     audio,
     sessionCosts,
+    get progress() {
+      return (progress ??= createProgressCache(api.get, storage));
+    },
     chatCreations: createChatCreationStore(storage),
     recordings: createRecordingStorage(
       storageNameForServer(transport.owner.id, DICTATION_DATABASE_NAME),
@@ -203,6 +208,7 @@ export function createServerServices(server: StudioServer) {
     ready,
     close() {
       audio.close();
+      progress?.close();
       runtime?.resources.dispose();
       transport.close();
     },

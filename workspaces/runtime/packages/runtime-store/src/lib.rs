@@ -109,9 +109,8 @@ pub use repositories::rules::RulesRepository;
 pub use repositories::rules_tick;
 pub use repositories::scheduler::{
     AccountWakePage, AcknowledgedSteer, BACKEND_RESTARTED_TURN_ERROR, ClaimedEvents, ClaimedSteer,
-    NATIVE_ACTION_ATTEMPT_KINDS, PROVIDER_DISCONNECTED_TURN_ERROR, START_RETURN_LIMIT,
-    STEER_UNCONFIRMED_ERROR, SchedulerRepository, TurnAttemptIdentity,
-    VM_PROVIDER_DISCONNECTED_TURN_ERROR,
+    NATIVE_ACTION_ATTEMPT_KINDS, PROVIDER_DISCONNECTED_TURN_ERROR, STEER_UNCONFIRMED_ERROR,
+    SchedulerRepository, TurnAttemptIdentity, VM_PROVIDER_DISCONNECTED_TURN_ERROR,
 };
 pub use repositories::startup_recovery::{self, StartupRecoveryRepository};
 pub use repositories::sync_documents::{
@@ -219,18 +218,7 @@ pub enum TableChange<'a> {
     Full,
 }
 
-/// Committed resource scope proven by the writer's exact SQLite update counts.
-/// Unknown and mixed writes always retain the broad refresh.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum ResourceChange {
-    Entities,
-    All,
-}
-
-// Entity projection tables whose rows are delivered by entity-backed sync refs.
-const ENTITY_RESOURCE_TABLES: [&str; 2] = ["sync_entities", "sync_entity_meta"];
-
-type ResourceChangeObserver = Arc<dyn Fn(ResourceChange) + Send + Sync>;
+type ChangeObserver = Arc<dyn Fn() + Send + Sync>;
 type TableChangeObserver = Arc<dyn for<'a> Fn(TableChange<'a>) + Send + Sync>;
 type TableChangeObserverRegistry = Mutex<HashMap<ObservedTable, Vec<TableChangeObserver>>>;
 
@@ -490,17 +478,14 @@ fn fire_table_change_observers(
     }
 }
 
-fn fire_resource_change_observers(
-    observers: &Mutex<Vec<ResourceChangeObserver>>,
-    change: ResourceChange,
-) {
+fn fire_resource_change_observers(observers: &Mutex<Vec<ChangeObserver>>) {
     let callbacks = observers
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .clone();
     for callback in callbacks {
         if let Err(_panic_payload) =
-            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| callback(change)))
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| callback()))
         {
             // Resource observers are hints and cannot report panics to their caller.
         }
@@ -511,54 +496,33 @@ fn saturating_nanos(duration: Duration) -> u64 {
     u64::try_from(duration.as_nanos()).unwrap_or(u64::MAX)
 }
 
-fn transaction_resource_change(
-    total_changes: Option<u64>,
-    receipt_updates: u64,
-    entity_updates: u64,
-) -> Option<ResourceChange> {
+fn transaction_has_resource_change(total_changes: Option<u64>, receipt_updates: u64) -> bool {
     let Some(total_changes) = total_changes else {
-        return Some(ResourceChange::All);
+        // A missing or underflowed delta cannot prove the write was receipt-only.
+        return true;
     };
-    if total_changes == receipt_updates && entity_updates == 0 {
-        None
-    } else if entity_updates > 0
-        && receipt_updates.checked_add(entity_updates) == Some(total_changes)
-    {
-        Some(ResourceChange::Entities)
-    } else {
-        Some(ResourceChange::All)
+    if total_changes == 0 && receipt_updates == 0 {
+        return false;
     }
+    let receipt_only = total_changes > 0 && total_changes == receipt_updates;
+    !receipt_only
 }
 
 #[cfg(test)]
 mod resource_change_classifier_tests {
-    use super::{ResourceChange, transaction_resource_change};
+    use super::transaction_has_resource_change;
 
     #[test]
-    fn only_exact_receipt_and_entity_counts_narrow_the_refresh() {
-        assert_eq!(transaction_resource_change(Some(0), 0, 0), None);
-        assert_eq!(transaction_resource_change(Some(3), 3, 0), None);
-        assert_eq!(
-            transaction_resource_change(Some(3), 0, 3),
-            Some(ResourceChange::Entities)
-        );
-        assert_eq!(
-            transaction_resource_change(Some(3), 1, 2),
-            Some(ResourceChange::Entities)
-        );
-        for (total, receipts, entities) in [
-            (Some(3), 2, 0),
-            (Some(3), 0, 2),
-            (Some(3), 0, 0),
-            (None, 0, 0),
-            (Some(0), 0, 1),
-            (Some(u64::MAX), u64::MAX, 1),
-        ] {
-            assert_eq!(
-                transaction_resource_change(total, receipts, entities),
-                Some(ResourceChange::All)
-            );
-        }
+    fn suppresses_only_an_exact_positive_receipt_only_count() {
+        assert!(!transaction_has_resource_change(Some(0), 0));
+        assert!(!transaction_has_resource_change(Some(3), 3));
+        assert!(transaction_has_resource_change(Some(3), 2));
+        assert!(transaction_has_resource_change(Some(3), 0));
+        assert!(transaction_has_resource_change(None, 0));
+        assert!(transaction_has_resource_change(
+            Some(u64::MAX),
+            u64::MAX - 1
+        ));
     }
 }
 
@@ -566,7 +530,6 @@ fn install_table_change_hooks(
     connection: &Connection,
     table_change_flags: Arc<AtomicU32>,
     resource_receipt_update_count: Arc<AtomicU64>,
-    resource_entity_update_count: Arc<AtomicU64>,
     row_interest: Arc<AtomicU32>,
     changed_rows: Arc<Mutex<ChangedRowHints>>,
 ) -> rusqlite::Result<()> {
@@ -577,9 +540,6 @@ fn install_table_change_hooks(
               row_id: i64| {
             if database_name != "main" {
                 return;
-            }
-            if ENTITY_RESOURCE_TABLES.contains(&table_name) {
-                resource_entity_update_count.fetch_add(1, Ordering::Relaxed);
             }
             let Some(observed) = OBSERVED_TABLES
                 .iter()
@@ -601,9 +561,6 @@ fn install_table_change_hooks(
             }
         },
     ))?;
-    // Leave entity tables outside this rule: SQLite also authorizes DELETE
-    // during DROP TABLE, where IGNORE would suppress the schema operation.
-    // Missing entity delete counts already fall back to a broad refresh.
     connection.authorizer(Some(|context: AuthContext<'_>| match context.action {
         AuthAction::Delete { table_name }
             if context.database_name == Some("main")
@@ -620,19 +577,16 @@ fn install_table_change_hooks(
 }
 
 fn verify_observed_tables_are_rowid(connection: &Connection) -> StoreResult<()> {
-    for table in OBSERVED_TABLES
-        .iter()
-        .map(|table| table.name())
-        .chain(ENTITY_RESOURCE_TABLES)
-    {
+    for table in OBSERVED_TABLES {
         let without_rowid = connection.query_row(
             "SELECT wr FROM pragma_table_list WHERE schema = 'main' AND name = ?1",
-            [table],
+            [table.name()],
             |row| row.get::<_, i64>(0),
         )?;
         if without_rowid != 0 {
             return Err(StoreError::SchemaMismatch(format!(
-                "Canvas table {table} must use rowid storage for change notifications"
+                "Canvas table {} must use rowid storage for change notifications",
+                table.name()
             )));
         }
     }
@@ -876,10 +830,9 @@ pub struct RuntimeStore {
     identity_registry_lease: Arc<IdentityRegistryLease>,
     commit_notifiers: Arc<Mutex<CommitNotifiers>>,
     table_commit_observers: Arc<TableChangeObserverRegistry>,
-    resource_change_observers: Arc<Mutex<Vec<ResourceChangeObserver>>>,
+    resource_change_observers: Arc<Mutex<Vec<ChangeObserver>>>,
     table_change_flags: Arc<AtomicU32>,
     resource_receipt_update_count: Arc<AtomicU64>,
-    resource_entity_update_count: Arc<AtomicU64>,
     /// Observed tables with a row-aware observer; set before the observer is added.
     table_row_interest: Arc<AtomicU32>,
     changed_rows: Arc<Mutex<ChangedRowHints>>,
@@ -1145,11 +1098,12 @@ enum WriterTransactionOutcome<T, E> {
         changed: bool,
         changed_tables: u32,
         changed_rows: Box<ChangedRowHints>,
-        resource_change: Option<ResourceChange>,
+        resource_change: bool,
     },
     CommitOutcomeUnknown {
         error: StoreError,
         possible_table_changes: u32,
+        possible_resource_change: bool,
     },
 }
 
@@ -1246,11 +1200,9 @@ impl RuntimeStore {
 
         let table_change_flags = Arc::new(AtomicU32::new(0));
         let resource_receipt_update_count = Arc::new(AtomicU64::new(0));
-        let resource_entity_update_count = Arc::new(AtomicU64::new(0));
         let writer = SqliteActor::open(&canvas_path, Arc::clone(&runtime_lock)).await?;
         let hook_table_change_flags = Arc::clone(&table_change_flags);
         let hook_resource_receipt_update_count = Arc::clone(&resource_receipt_update_count);
-        let hook_resource_entity_update_count = Arc::clone(&resource_entity_update_count);
         let table_row_interest = Arc::new(AtomicU32::new(0));
         let changed_rows = Arc::new(Mutex::new(ChangedRowHints::default()));
         let hook_table_row_interest = Arc::clone(&table_row_interest);
@@ -1270,7 +1222,6 @@ impl RuntimeStore {
                     connection,
                     hook_table_change_flags,
                     hook_resource_receipt_update_count,
-                    hook_resource_entity_update_count,
                     hook_table_row_interest,
                     hook_changed_rows,
                 )
@@ -1321,7 +1272,6 @@ impl RuntimeStore {
             resource_change_observers: Arc::new(Mutex::new(Vec::new())),
             table_change_flags,
             resource_receipt_update_count,
-            resource_entity_update_count,
             table_row_interest,
             changed_rows,
             #[cfg(test)]
@@ -1342,7 +1292,6 @@ impl RuntimeStore {
                 agent_volatile::prepare(transaction)?;
                 feature_schema::prepare(transaction)?;
                 StartupRecoveryRepository::prepare_indexes(transaction)?;
-                MonitorsRepository::prepare_indexes(transaction)?;
                 AgentIndexedReads::prepare_index(transaction)?;
                 schema::verify_bootstrap(transaction)?;
                 verify_observed_tables_are_rowid(transaction)
@@ -1461,18 +1410,14 @@ impl RuntimeStore {
     /// Register a notification for durable changes visible to HTTP resource
     /// subscribers. Writes exclusively to the three named idempotency receipt
     /// tables are suppressed only when their update-hook count exactly matches
-    /// SQLite's transaction change count. Exact entity-projection-only writes
-    /// carry `Entities`; unknown, mixed, and uncertain writes carry `All`.
+    /// SQLite's transaction change count; all uncertain or mixed writes wake.
     /// A known commit and an ambiguous commit that may have landed both notify,
     /// so consumers must reread authoritative state. On known commits, callbacks
     /// run after the transaction's post-commit callback. Register before taking
     /// the subscriber's initial snapshot. Callbacks run outside the transaction
     /// and registry lock. After caller cancellation they may run on the actor
     /// thread, so keep them short and free of database or provider I/O.
-    pub fn add_resource_change_observer(
-        &self,
-        observer: impl Fn(ResourceChange) + Send + Sync + 'static,
-    ) {
+    pub fn add_resource_change_observer(&self, observer: impl Fn() + Send + Sync + 'static) {
         self.resource_change_observers
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -1771,7 +1716,6 @@ impl RuntimeStore {
         let identity_registry_lease = Arc::clone(&self.identity_registry_lease);
         let table_change_flags = Arc::clone(&self.table_change_flags);
         let resource_receipt_update_count = Arc::clone(&self.resource_receipt_update_count);
-        let resource_entity_update_count = Arc::clone(&self.resource_entity_update_count);
         let table_row_interest = Arc::clone(&self.table_row_interest);
         let changed_rows = Arc::clone(&self.changed_rows);
         #[cfg(test)]
@@ -1782,7 +1726,6 @@ impl RuntimeStore {
                 let _identity_registry_lease = identity_registry_lease;
                 table_change_flags.store(0, Ordering::Release);
                 resource_receipt_update_count.store(0, Ordering::Release);
-                resource_entity_update_count.store(0, Ordering::Release);
                 // Row precision is kept only for tables observed when this transaction starts.
                 *changed_rows
                     .lock()
@@ -1800,11 +1743,8 @@ impl RuntimeStore {
                         let changed = final_changes != initial_changes;
                         let total_changes = final_changes.checked_sub(initial_changes);
                         let receipt_updates = resource_receipt_update_count.load(Ordering::Acquire);
-                        let resource_change = transaction_resource_change(
-                            total_changes,
-                            receipt_updates,
-                            resource_entity_update_count.load(Ordering::Acquire),
-                        );
+                        let resource_change =
+                            transaction_has_resource_change(total_changes, receipt_updates);
                         let transaction_rows = std::mem::take(
                             &mut *changed_rows
                                 .lock()
@@ -1816,6 +1756,7 @@ impl RuntimeStore {
                                 error: StoreError::commit_outcome_unknown(error),
                                 possible_table_changes: table_change_flags
                                     .swap(0, Ordering::AcqRel),
+                                possible_resource_change: true,
                             });
                         }
                         #[cfg(test)]
@@ -1826,6 +1767,7 @@ impl RuntimeStore {
                                 ),
                                 possible_table_changes: table_change_flags
                                     .swap(0, Ordering::AcqRel),
+                                possible_resource_change: true,
                             });
                         }
                         if let Some(started) = commit_started {
@@ -1854,14 +1796,13 @@ impl RuntimeStore {
                         drop(transaction);
                         table_change_flags.store(0, Ordering::Release);
                         resource_receipt_update_count.store(0, Ordering::Release);
-                        resource_entity_update_count.store(0, Ordering::Release);
                         Ok(WriterTransactionOutcome::Known {
                             result: Err(error),
                             generation: generation.load(Ordering::Acquire),
                             changed: false,
                             changed_tables: 0,
                             changed_rows: Box::default(),
-                            resource_change: None,
+                            resource_change: false,
                         })
                     }
                 }
@@ -1913,15 +1854,16 @@ impl RuntimeStore {
                         }
                         WriterTransactionOutcome::CommitOutcomeUnknown {
                             possible_table_changes,
+                            possible_resource_change,
                             ..
                         } => (
                             *possible_table_changes,
                             None,
-                            Some(ResourceChange::All),
+                            *possible_resource_change,
                             None,
                         ),
                         WriterTransactionOutcome::Known { result: Err(_), .. } => {
-                            (0, None, None, None)
+                            (0, None, false, None)
                         }
                     };
                     let table_observer_result =
@@ -1937,9 +1879,9 @@ impl RuntimeStore {
                             post_commit(value)
                         }))
                     });
-                    let resource_observer_result = resource_change.map(|change| {
+                    let resource_observer_result = resource_change.then(|| {
                         std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                            fire_resource_change_observers(&resource_change_observers, change);
+                            fire_resource_change_observers(&resource_change_observers);
                         }))
                     });
                     if let Err(panic) = table_observer_result {
@@ -3296,33 +3238,30 @@ mod commit_notification_tests {
     #[test]
     fn tracked_observer_tables_must_keep_rowid_storage() {
         let database = Connection::open_in_memory().expect("in-memory database");
-        for table in OBSERVED_TABLES
-            .iter()
-            .map(|table| table.name())
-            .chain(ENTITY_RESOURCE_TABLES)
-        {
+        for table in OBSERVED_TABLES {
             database
-                .execute_batch(&format!("CREATE TABLE {}(id TEXT PRIMARY KEY);", table))
+                .execute_batch(&format!(
+                    "CREATE TABLE {}(id TEXT PRIMARY KEY);",
+                    table.name()
+                ))
                 .expect("create test table");
         }
         verify_observed_tables_are_rowid(&database).expect("all observed tables use rowid storage");
 
         for table in [
-            ObservedTable::AccessClients.name(),
-            ObservedTable::EventMeta.name(),
-            ObservedTable::OperationReceipts.name(),
-            ObservedTable::NativeActionReceipts.name(),
-            ObservedTable::AccessReceipts.name(),
-            ENTITY_RESOURCE_TABLES[0],
-            ENTITY_RESOURCE_TABLES[1],
+            ObservedTable::AccessClients,
+            ObservedTable::EventMeta,
+            ObservedTable::OperationReceipts,
+            ObservedTable::NativeActionReceipts,
+            ObservedTable::AccessReceipts,
         ] {
             database
-                .execute_batch(&format!("DROP TABLE {};", table))
+                .execute_batch(&format!("DROP TABLE {};", table.name()))
                 .expect("drop rowid test table");
             database
                 .execute_batch(&format!(
                     "CREATE TABLE {}(id TEXT PRIMARY KEY) WITHOUT ROWID;",
-                    table
+                    table.name()
                 ))
                 .expect("create without-rowid test table");
             assert!(matches!(
@@ -3331,10 +3270,13 @@ mod commit_notification_tests {
             ));
 
             database
-                .execute_batch(&format!("DROP TABLE {};", table))
+                .execute_batch(&format!("DROP TABLE {};", table.name()))
                 .expect("drop without-rowid table");
             database
-                .execute_batch(&format!("CREATE TABLE {}(id TEXT PRIMARY KEY);", table))
+                .execute_batch(&format!(
+                    "CREATE TABLE {}(id TEXT PRIMARY KEY);",
+                    table.name()
+                ))
                 .expect("restore rowid test table");
         }
         verify_observed_tables_are_rowid(&database).expect("all observed tables use rowid storage");
@@ -3357,7 +3299,6 @@ mod commit_notification_tests {
             &database,
             Arc::clone(&table_change_flags),
             Arc::clone(&receipt_update_count),
-            Arc::new(AtomicU64::new(0)),
             Arc::new(AtomicU32::new(0)),
             Arc::new(Mutex::new(ChangedRowHints::default())),
         )
@@ -3511,81 +3452,6 @@ mod commit_notification_tests {
     }
 
     #[tokio::test]
-    async fn entity_resource_hints_cover_tombstones_deletes_and_unknown_commits() {
-        let directory = tempfile::tempdir().expect("isolated state");
-        let store = RuntimeStore::open(Some(directory.path()))
-            .await
-            .expect("store");
-        let hints = Arc::new(Mutex::new(Vec::new()));
-        let observed = Arc::clone(&hints);
-        store.add_resource_change_observer(move |change| {
-            observed.lock().expect("hints").push(change);
-        });
-        store
-            .transaction(|tx| {
-                SyncDocumentsRepository::put_entity(
-                    tx,
-                    "agent",
-                    "agent",
-                    serde_json::json!({"id":"agent"}),
-                    false,
-                )?;
-                Ok(())
-            })
-            .await
-            .expect("entity insert");
-        store
-            .transaction(|tx| {
-                SyncDocumentsRepository::put_entity(
-                    tx,
-                    "agent",
-                    "agent",
-                    serde_json::json!({}),
-                    true,
-                )?;
-                Ok(())
-            })
-            .await
-            .expect("tombstone and metadata update");
-        store
-            .transaction(|tx| {
-                tx.execute("DELETE FROM sync_entities", [])?;
-                Ok(())
-            })
-            .await
-            .expect("delete hook includes every entity and metadata row");
-        assert_eq!(
-            *hints.lock().expect("hints"),
-            vec![ResourceChange::Entities; 3]
-        );
-        store
-            .simulate_unknown_commit_after_success
-            .store(true, Ordering::Release);
-        let result = store
-            .transaction(|tx| {
-                SyncDocumentsRepository::put_entity(
-                    tx,
-                    "agent",
-                    "agent",
-                    serde_json::json!({"id":"agent"}),
-                    false,
-                )?;
-                Ok(())
-            })
-            .await;
-        assert!(matches!(result, Err(StoreError::CommitOutcomeUnknown(_))));
-        assert_eq!(
-            *hints.lock().expect("hints"),
-            vec![
-                ResourceChange::Entities,
-                ResourceChange::Entities,
-                ResourceChange::Entities,
-                ResourceChange::All,
-            ]
-        );
-    }
-
-    #[tokio::test]
     async fn resource_observer_suppresses_only_proven_receipt_only_writes() {
         let directory = tempfile::tempdir().expect("temporary state directory");
         let store = RuntimeStore::open(Some(directory.path()))
@@ -3593,7 +3459,7 @@ mod commit_notification_tests {
             .expect("open runtime store");
         let notifications = Arc::new(AtomicUsize::new(0));
         let observed = Arc::clone(&notifications);
-        store.add_resource_change_observer(move |_| {
+        store.add_resource_change_observer(move || {
             observed.fetch_add(1, Ordering::AcqRel);
         });
 
@@ -3752,7 +3618,6 @@ mod commit_notification_tests {
 
         let table_change_flags = Arc::clone(&store.table_change_flags);
         let receipt_update_count = Arc::clone(&store.resource_receipt_update_count);
-        let entity_update_count = Arc::clone(&store.resource_entity_update_count);
         let row_interest = Arc::clone(&store.table_row_interest);
         let changed_rows = Arc::clone(&store.changed_rows);
         store
@@ -3762,7 +3627,6 @@ mod commit_notification_tests {
                     connection,
                     table_change_flags,
                     receipt_update_count,
-                    entity_update_count,
                     row_interest,
                     changed_rows,
                 )
@@ -3852,7 +3716,7 @@ mod commit_notification_tests {
         });
         let resource_notifications = Arc::new(AtomicUsize::new(0));
         let resource_notified = Arc::clone(&resource_notifications);
-        store.add_resource_change_observer(move |_| {
+        store.add_resource_change_observer(move || {
             resource_notified.fetch_add(1, Ordering::AcqRel);
         });
         store
@@ -4364,7 +4228,7 @@ mod commit_notification_tests {
         let observer_seen_cache_marker = Arc::new(AtomicUsize::new(0));
         let published_marker_for_observer = Arc::clone(&published_cache_marker);
         let seen_marker = Arc::clone(&observer_seen_cache_marker);
-        store.add_resource_change_observer(move |_| {
+        store.add_resource_change_observer(move || {
             seen_marker.store(
                 published_marker_for_observer.load(Ordering::Acquire),
                 Ordering::Release,

@@ -106,12 +106,12 @@ impl ProviderTaskFactory for Factory {
                         } => {
                             let method = write.message()["method"].as_str().unwrap_or("");
                             if method == "initialize" {
-                                drop(reply.send(CommandReceipt::CachedInitialize(json!({}))));
+                                let _ = reply.send(CommandReceipt::CachedInitialize(json!({})));
                             } else {
-                                drop(reply.send(CommandReceipt::Written {
+                                let _ = reply.send(CommandReceipt::Written {
                                     remote_id: None,
                                     duplicate: false,
-                                }));
+                                });
                                 if method == "initialized" {
                                     native.ready.notify_one();
                                 } else {
@@ -133,10 +133,10 @@ impl ProviderTaskFactory for Factory {
                                         .unwrap();
                                 }
                             }
-                            let _observed = observed.await;
+                            let _ = observed.await;
                         }
                         AdapterCommand::Ack { cursor, reply } => {
-                            drop(reply.send(CommandReceipt::Acknowledged(cursor)));
+                            let _ = reply.send(CommandReceipt::Acknowledged(cursor));
                         }
                     }
                 }

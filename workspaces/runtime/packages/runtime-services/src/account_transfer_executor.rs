@@ -1630,6 +1630,7 @@ mod retained_executor_tests {
         let catalog = ModelCatalogService::new();
         let resources = crate::account_worker::preparation::PreparationResources {
             instructions: String::new(),
+            progress_template: String::new(),
             thread_config: Default::default(),
             tools: vec![],
             legacy_tools: vec![],
@@ -1639,6 +1640,7 @@ mod retained_executor_tests {
             account_home: "/tmp/source".into(),
             shared_home: String::new(),
             filesystem_inputs: None,
+            server_source_root: PathBuf::from("/tmp/server"),
             claude_account_pin: serde_json::Value::Null,
             account_driver: None,
             account_session: None,
@@ -1720,6 +1722,7 @@ mod retained_executor_tests {
         ]);
         let resources = crate::account_worker::preparation::PreparationResources {
             instructions: String::new(),
+            progress_template: String::new(),
             thread_config: Default::default(),
             tools: vec![],
             legacy_tools: vec![],
@@ -1729,6 +1732,7 @@ mod retained_executor_tests {
             account_home: "/tmp/target".into(),
             shared_home: String::new(),
             filesystem_inputs: None,
+            server_source_root: PathBuf::from("/tmp/server"),
             claude_account_pin: serde_json::Value::Null,
             account_driver: None,
             account_session: Some(session.clone()),
@@ -1858,6 +1862,7 @@ mod retained_executor_tests {
         });
         let resources = crate::account_worker::preparation::PreparationResources {
             instructions: String::new(),
+            progress_template: String::new(),
             thread_config: Default::default(),
             tools: vec![],
             legacy_tools: vec![],
@@ -1871,6 +1876,7 @@ mod retained_executor_tests {
             account_home: target_home.to_string_lossy().into_owned(),
             shared_home: String::new(),
             filesystem_inputs: None,
+            server_source_root: fixture.join("server"),
             claude_account_pin: Value::Null,
             account_driver: None,
             account_session: Some(session.clone()),
@@ -2059,6 +2065,7 @@ mod retained_executor_tests {
         });
         let recovered_resources = crate::account_worker::preparation::PreparationResources {
             instructions: String::new(),
+            progress_template: String::new(),
             thread_config: Default::default(),
             tools: vec![],
             legacy_tools: vec![],
@@ -2072,6 +2079,7 @@ mod retained_executor_tests {
             account_home: target_home.to_string_lossy().into_owned(),
             shared_home: String::new(),
             filesystem_inputs: None,
+            server_source_root: fixture.join("server"),
             claude_account_pin: Value::Null,
             account_driver: None,
             account_session: Some(recovered_session.clone()),

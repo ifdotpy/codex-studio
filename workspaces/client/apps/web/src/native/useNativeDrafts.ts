@@ -9,10 +9,6 @@ import {
 } from "react";
 import type { DraftVersion } from "../sync/drafts";
 import { onResume } from "../sync/resume";
-import {
-  watchResourceChanges,
-  watchResourceConnection,
-} from "../sync/resourceEvents";
 import { nativeRequest } from "./client";
 import { guardNativeClose } from "./closeState";
 import { NativeDraftState, type DraftView } from "./draftState";
@@ -22,7 +18,6 @@ export function useNativeDrafts() {
   const controller = useRef<NativeDraftState | null>(null);
   const current = useRef<Drafts>({});
   const early = useRef<Drafts>({});
-  const refreshDrafts = useRef(() => {});
   const listeners = useRef(new Map<string, Set<() => void>>());
   const [conflicts, setConflicts] = useState<DraftVersion[]>([]);
   const [error, setError] = useState("");
@@ -52,10 +47,9 @@ export function useNativeDrafts() {
   );
   useEffect(() => {
     let stopped = false;
-    let wasPending = false;
     let running = false;
-    let dirty = false;
     let unsubscribe = () => {};
+    let timer: ReturnType<typeof setTimeout> | undefined;
     const unguard = guardNativeClose(async () => {
       if (Object.keys(early.current).length)
         throw new Error(
@@ -69,9 +63,6 @@ export function useNativeDrafts() {
       publish(view.drafts);
       setConflicts(view.conflicts);
       setPending(view.pending);
-      const committed = wasPending && !view.pending;
-      wasPending = view.pending;
-      if (committed) refreshDrafts.current();
       setError(
         view.localError
           ? "Draft changes are not saved yet. Keep this chat open. " +
@@ -80,15 +71,10 @@ export function useNativeDrafts() {
       );
     };
     const refresh = async () => {
-      if (stopped) return;
-      dirty = true;
-      if (running) return;
+      if (stopped || running) return;
+      clearTimeout(timer);
       running = true;
-      // Coalesce notifications and reconnect baselines delivered together.
-      await Promise.resolve();
-      dirty = false;
       try {
-        if (stopped) return;
         if (!controller.current) {
           // Recover local drafts before contacting the server. A server outage
           // must not hide already committed text or prevent another local edit.
@@ -133,23 +119,10 @@ export function useNativeDrafts() {
           );
       } finally {
         running = false;
-        if (dirty && !stopped) void refresh();
+        if (!stopped) timer = setTimeout(refresh, 5_000);
       }
     };
-    refreshDrafts.current = () => {
-      void refresh();
-    };
-    const stopChanges = watchResourceChanges(
-      { kind: "drafts" },
-      refreshDrafts.current,
-    );
     void refresh();
-    let connected = false;
-    const stopConnection = watchResourceConnection((status) => {
-      const live = status === "live";
-      if (live && !connected) void refresh();
-      connected = live;
-    });
     const resume = onResume(() => {
       void controller.current?.retry();
       void refresh();
@@ -157,9 +130,7 @@ export function useNativeDrafts() {
     return () => {
       stopped = true;
       unguard();
-      stopChanges();
-      stopConnection();
-      refreshDrafts.current = () => {};
+      clearTimeout(timer);
       resume();
       unsubscribe();
       controller.current = null;
@@ -193,10 +164,7 @@ export function useNativeDrafts() {
       workspace: state.workspace,
       version,
     })
-      .then((view) => {
-        state.accept(view);
-        refreshDrafts.current();
-      })
+      .then((view) => state.accept(view))
       .catch((failure) =>
         setError(failure instanceof Error ? failure.message : String(failure)),
       );

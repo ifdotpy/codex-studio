@@ -300,7 +300,6 @@ fn validate(request: &SessionRequest) -> Result<(), PortError> {
                 | Method::ThreadItemsList
                 | Method::ThreadBackgroundTerminalsList
                 | Method::ThreadBackgroundTerminalsTerminate
-                | Method::ThreadBackgroundTerminalsClean
                 | Method::ThreadCommandExecutionBackground
                 | Method::ThreadStart
                 | Method::TurnStart
@@ -356,13 +355,8 @@ fn validate(request: &SessionRequest) -> Result<(), PortError> {
             && (request.expected_scope.as_ref() != Some(&request.scope)
                 || !request.operation.starts_with("mcp-reconnect:")
                 || request.params.as_object().is_none_or(|params| {
-                    params.len() != 2
-                        || !["threadId", "name"].iter().all(|key| {
-                            params
-                                .get(*key)
-                                .and_then(Value::as_str)
-                                .is_some_and(|v| !v.trim().is_empty())
-                        })
+                    params.len() != 2 || !["threadId", "name"].iter().all(|key|
+                        params.get(*key).and_then(Value::as_str).is_some_and(|v| !v.trim().is_empty()))
                 })))
         || (request.method == Method::ThreadRead
             && request
@@ -386,8 +380,6 @@ fn validate(request: &SessionRequest) -> Result<(), PortError> {
             && !valid_background_terminals_list(&request.params))
         || (request.method == Method::ThreadBackgroundTerminalsTerminate
             && !valid_background_terminals_terminate(&request.params))
-        || (request.method == Method::ThreadBackgroundTerminalsClean
-            && !valid_background_terminals_clean(&request.params))
         || (request.method == Method::ThreadCommandExecutionBackground
             && !valid_command_background(&request.params))
         || (request.method == Method::ThreadSettingsUpdate && !valid_settings_update(request))
@@ -451,17 +443,6 @@ fn valid_background_terminals_terminate(params: &Value) -> bool {
             .get("processId")
             .and_then(Value::as_str)
             .is_some_and(|id| !id.is_empty())
-}
-
-/// `thread/backgroundTerminals/clean` names exactly one thread.
-fn valid_background_terminals_clean(params: &Value) -> bool {
-    params.as_object().is_some_and(|params| {
-        params.len() == 1
-            && params
-                .get("threadId")
-                .and_then(Value::as_str)
-                .is_some_and(|id| !id.is_empty())
-    })
 }
 
 /// `thread/commandExecution/background` names exactly one item of one turn.
@@ -615,13 +596,8 @@ pub(super) fn valid_actorless_request_shape(
         }
         Method::McpServerStatusList => {
             only(&["threadId", "limit"], &["cursor"])
-                && params
-                    .get("cursor")
-                    .is_none_or(|v| v.as_str().is_some_and(|v| !v.is_empty()))
-                && params.get("limit")
-                    == Some(&json!(
-                        studio_runtime_schema::shared_values::NATIVE_TERMINAL_ITEMS_PER_PAGE
-                    ))
+                && params.get("cursor").is_none_or(|v| v.as_str().is_some_and(|v| !v.is_empty()))
+                && params.get("limit") == Some(&json!(100))
                 && params.get("threadId").is_some_and(|thread_id| {
                     thread_id.is_null()
                         || thread_id
@@ -766,37 +742,6 @@ pub(super) struct Call {
     method: String,
     params: Value,
 }
-/// The retained `command/exec` call of monitor `id`, checked against its
-/// operation identity. `None` when no request was submitted for it.
-fn monitor_call(
-    tx: &rusqlite::Transaction<'_>,
-    id: &str,
-    operation: &crate::monitor_policy::Operation,
-) -> Result<Option<Call>, WorkerError> {
-    #[derive(serde::Deserialize)]
-    struct Submitted {
-        call: Call,
-    }
-    let identity = format!("monitor:{id}");
-    let key = Call::operation_key(&operation.account_key, &identity);
-    let Some(value) = super::store::receipt(tx, &key, "submitted")? else {
-        return Ok(None);
-    };
-    let submitted: Submitted = serde_json::from_value(value).map_err(|_| WorkerError::Capacity)?;
-    let call = submitted.call;
-    if call.operation != identity
-        || call.method != Method::CommandExec.as_str()
-        || call
-            .actor
-            .as_ref()
-            .is_none_or(|actor| actor.agent != operation.agent || actor.epoch != operation.epoch)
-    {
-        return Err(WorkerError::PreparationRefused(
-            "monitor retained receipt identity changed".into(),
-        ));
-    }
-    Ok(Some(call))
-}
 /// Read a monitor's checkpoint-verified retained terminal receipt. This never
 /// creates a provider request; recovered pending requests publish into this ledger.
 pub async fn monitor_result(
@@ -808,9 +753,28 @@ pub async fn monitor_result(
     let operation = operation.clone();
     store
         .read_async("runtime-services/retained_monitor_result", move |tx| {
-            let Some(call) = monitor_call(tx, &id, &operation)? else {
+            #[derive(serde::Deserialize)]
+            struct Submitted {
+                call: Call,
+            }
+            let identity = format!("monitor:{id}");
+            let key = Call::operation_key(&operation.account_key, &identity);
+            let Some(value) = super::store::receipt(tx, &key, "submitted")? else {
                 return Ok(None);
             };
+            let submitted: Submitted =
+                serde_json::from_value(value).map_err(|_| WorkerError::Capacity)?;
+            let call = submitted.call;
+            if call.operation != identity
+                || call.method != Method::CommandExec.as_str()
+                || call.actor.as_ref().is_none_or(|actor| {
+                    actor.agent != operation.agent || actor.epoch != operation.epoch
+                })
+            {
+                return Err(WorkerError::PreparationRefused(
+                    "monitor retained receipt identity changed".into(),
+                ));
+            }
             let receipt = match storage::replay_in_transaction(tx, &call)? {
                 Ok(storage::Replay::Return(receipt)) => receipt,
                 Ok(storage::Replay::Miss | storage::Replay::Retry(_)) => return Ok(None),
@@ -829,32 +793,6 @@ pub async fn monitor_result(
                 ),
                 RequestResult::Unknown | RequestResult::NotSent => None,
             })
-        })
-        .await
-}
-/// The provider generation that received monitor `id`'s retained
-/// `command/exec`. While that generation's provider process runs, its answer
-/// reaches the retained ledger. `None` when no request was submitted for it,
-/// or when the ledger proves that the request was not sent.
-pub async fn monitor_request_generation(
-    store: &RuntimeStore,
-    id: &str,
-    operation: &crate::monitor_policy::Operation,
-) -> Result<Option<u64>, WorkerError> {
-    let id = id.to_owned();
-    let operation = operation.clone();
-    store
-        .read_async("runtime-services/retained_monitor_generation", move |tx| {
-            let Some(call) = monitor_call(tx, &id, &operation)? else {
-                return Ok(None);
-            };
-            if matches!(
-                storage::replay_in_transaction(tx, &call)?,
-                Ok(storage::Replay::Retry(_))
-            ) {
-                return Ok(None);
-            }
-            Ok(Some(call.scope.generation))
         })
         .await
 }
@@ -904,7 +842,6 @@ pub(super) struct PendingBarrier {
 mod runtime;
 mod storage;
 pub(super) use storage::recover;
-pub use storage::vm_actor;
 #[cfg(test)]
 pub(super) async fn test_submitted(
     store: &RuntimeStore,
@@ -956,25 +893,15 @@ mod validation_tests {
         request.expected_scope = Some(request.scope.clone());
         request.params = json!({"threadId":"thread","name":"server"});
         assert!(validate(&request).is_ok());
-        for params in [
-            json!({"threadId":"thread","name":""}),
-            json!({"threadId":"thread","name":"server","all":true}),
-        ] {
-            let mut invalid = request.clone();
-            invalid.params = params;
+        for params in [json!({"threadId":"thread","name":""}), json!({"threadId":"thread","name":"server","all":true})] {
+            let mut invalid = request.clone(); invalid.params = params;
             assert_eq!(validate(&invalid), Err(PortError::Invalid));
         }
-        let mut invalid = request.clone();
-        invalid.actor = None;
+        let mut invalid = request.clone(); invalid.actor = None;
         assert_eq!(validate(&invalid), Err(PortError::Invalid));
-        let mut invalid = request;
-        invalid.expected_scope = None;
+        let mut invalid = request; invalid.expected_scope = None;
         assert_eq!(validate(&invalid), Err(PortError::Invalid));
-        assert!(valid_actorless_request_shape(
-            Method::McpServerStatusList,
-            &json!({"threadId":"thread","limit":100,"cursor":"next"}),
-            "catalog"
-        ));
+        assert!(valid_actorless_request_shape(Method::McpServerStatusList, &json!({"threadId":"thread","limit":100,"cursor":"next"}), "catalog"));
     }
 
     #[test]
@@ -991,27 +918,6 @@ mod validation_tests {
             json!({"threadId":"thread","turnId":"turn"}),
             json!({"threadId":"thread","turnId":"turn","itemId":""}),
             json!({"threadId":"thread","turnId":"turn","itemId":"item","extra":1}),
-        ] {
-            assert_eq!(validate(&request(params, true)), Err(PortError::Invalid));
-        }
-    }
-
-    #[test]
-    fn background_terminal_clean_names_exactly_one_thread() {
-        let request = |params: Value, actor: bool| SessionRequest {
-            method: Method::ThreadBackgroundTerminalsClean,
-            params,
-            ..turns_request("full", 1, actor)
-        };
-        assert!(validate(&request(json!({"threadId":"thread"}), true)).is_ok());
-        assert_eq!(
-            validate(&request(json!({"threadId":"thread"}), false)),
-            Err(PortError::Invalid)
-        );
-        for params in [
-            json!({}),
-            json!({"threadId":""}),
-            json!({"threadId":"thread","processId":"process"}),
         ] {
             assert_eq!(validate(&request(params, true)), Err(PortError::Invalid));
         }

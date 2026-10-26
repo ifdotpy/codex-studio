@@ -15,9 +15,15 @@ const NATIVE_PREFIX: &str = "macos:";
 #[test]
 fn child_survives_abrupt_disconnect_and_a_new_connection_sees_it() {
     let state = DisposableState::new();
-    let mut supervisor = SupervisorProcess::start(&state);
+    let python = python_executable();
+    let mut supervisor = SupervisorProcess::start(&state, &python);
     let handle = "serve-reattach";
-    let command = shell_command("printf 'ready\\n'; while IFS= read -r line; do :; done");
+    let command = vec![
+        python.clone(),
+        "-u".into(),
+        "-c".into(),
+        "import sys; print('ready', flush=True); sys.stdin.read()".into(),
+    ];
     let mut client = connect_client(&state);
     let opened = client
         .open(open_request(handle, command.clone(), &state.0))

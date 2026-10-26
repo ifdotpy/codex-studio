@@ -20,6 +20,7 @@ mod ordered_json;
 pub mod outbox;
 mod pdf;
 pub mod platform;
+pub mod progress;
 pub mod projections;
 pub use studio_client_domain::protocol;
 #[cfg(target_os = "macos")]

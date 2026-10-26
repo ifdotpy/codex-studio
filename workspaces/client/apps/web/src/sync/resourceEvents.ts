@@ -5,11 +5,7 @@ import {
 
 import { serverStorageName } from "../servers/environment";
 
-import {
-  SYNC_PROTOCOL_VERSION,
-  type components,
-  type operations,
-} from "../generated/api";
+import { SYNC_PROTOCOL_VERSION, type components } from "../generated/api";
 
 import { API_SCHEMA_HASH, API_SCHEMA_HASH_PARAM } from "../generated/apiSchema";
 
@@ -49,12 +45,8 @@ export type ResourceTokenRatesEvent =
 export type ResourceVersion = {
   epoch: string;
   revision: number;
-  reason?: ResourceChangeEvent["reason"];
-  draftChanges?: components["schemas"]["DraftChangeBatch"];
   /** Highest entity row represented by this StateResource revision, when present. */
   entitySequence?: number;
-  /** Transcript cursor persisted before this notification; readers verify local coverage. */
-  transcriptSequence?: number;
   /** The server cannot enumerate the exact changed rows; clients must reconcile. */
   entitySequenceReset?: boolean;
 };
@@ -414,12 +406,6 @@ export function createResourceEvents(options: ResourceEventsOptions) {
     const key = resourceKey(resource);
     if (force) resourceValues.set(key, version);
     else if (!rememberResourceVersion(resource, version)) return;
-    // Draft data is admitted to RxDB in stream order. Hint coalescing may drop
-    // intermediate versions, which would turn a complete interval into a gap.
-    if (resource.kind === "drafts" && version.reason === "change") {
-      for (const listener of subscribers.get(key) ?? []) listener(version);
-      return;
-    }
     pendingResources.add(key);
   }
 
@@ -435,7 +421,6 @@ export function createResourceEvents(options: ResourceEventsOptions) {
       previous.revision >= version.revision
     ) {
       if (previous.revision === version.revision) {
-        if (version.reason) previous.reason = version.reason;
         resourceValues.delete(key);
         resourceValues.set(key, previous);
       }
@@ -527,17 +512,6 @@ export function createResourceEvents(options: ResourceEventsOptions) {
         event.resourceVersions?.find(
           (entry) => entry.resource && resourceKey(entry.resource) === key,
         ) ?? event.resourceVersions?.[resourceIndex];
-      if (
-        resource.kind === "transcript" &&
-        event.reason === "change" &&
-        !epochChanged &&
-        revisionEntry?.transcriptChanges
-      )
-        version.transcriptSequence = revisionEntry.transcriptChanges.through;
-      if (resource.kind === "drafts") {
-        version.reason = event.reason;
-        version.draftChanges = revisionEntry?.draftChanges ?? undefined;
-      }
       const entitySequences =
         resource.kind === "state" ? revisionEntry?.entitySequences : undefined;
       if (
@@ -564,12 +538,7 @@ export function createResourceEvents(options: ResourceEventsOptions) {
         dispatchResource(
           resource,
           version,
-          !versions ||
-            !!revisionEntry?.entitySequenceReset ||
-            (resource.kind === "transcript" &&
-              !revisionEntry?.transcriptChanges &&
-              !isDuplicate &&
-              !staleRevision),
+          !versions || !!revisionEntry?.entitySequenceReset,
         );
         if (event.reason !== "change") pendingBaselines.add(key);
       } else if (!rememberResourceVersion(resource, version) && !versions) {
@@ -610,18 +579,17 @@ export function createResourceEvents(options: ResourceEventsOptions) {
     }
     if (fromPeer && (owner || independent)) return;
     if (!fromPeer) refreshHeartbeatTimeout();
-    if (
-      lastTokenEpoch === event.epoch &&
-      lastTokenRevision !== undefined &&
-      event.revision <= lastTokenRevision
-    )
+    if (lastTokenEpoch !== event.epoch) {
+      lastTokenEpoch = event.epoch;
+      lastTokenRevision = undefined;
+      lastTokenEvent = undefined;
+    }
+    if (lastTokenRevision !== undefined && event.revision <= lastTokenRevision)
       return;
-    if (!receiveResourceTokenRates(event))
-      throw new TypeError("Invalid token-rate snapshot");
-    lastTokenEpoch = event.epoch;
     lastTokenRevision = event.revision;
     lastTokenEvent = event;
     setStatus("live");
+    receiveResourceTokenRates(event);
     for (const listener of tokenRateListeners) listener(event);
     if (owner || independent) broadcast({ kind: "token-rates", event });
   }
@@ -979,20 +947,11 @@ export function createResourceEvents(options: ResourceEventsOptions) {
       setStatus("connecting");
     keepLiveOnReconfigure = false;
     try {
-      const subscription: NonNullable<
-        operations["sync_stream_api_sync_stream_get"]["parameters"]["query"]
-      > = {
+      const query = new URLSearchParams({
         protocol: String(SYNC_PROTOCOL_VERSION),
         resources: JSON.stringify(resources),
-        tokenRates,
         [API_SCHEMA_HASH_PARAM]: API_SCHEMA_HASH,
-      };
-      const query = new URLSearchParams(
-        Object.entries(subscription).map(([key, value]) => [
-          key,
-          String(value),
-        ]),
-      );
+      });
       const connected = openServerEvents(`/api/sync/stream?${query}`);
       source = connected;
       notifyConnectionListeners();

@@ -1138,23 +1138,6 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
-  "/api/mcp/reconnect": {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    get?: never;
-    put?: never;
-    /** Reconnect one MCP server in one agent session */
-    post: operations["mcp_reconnect_api_mcp_reconnect_post"];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
   "/api/messages": {
     parameters: {
       query?: never;
@@ -1424,6 +1407,40 @@ export interface paths {
     put?: never;
     /** Organization */
     post: operations["organization_api_organization_post"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/panel": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** Panel */
+    get: operations["panel_api_panel_get"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/panel/layout": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** Save Panel Layout */
+    post: operations["save_panel_layout_api_panel_layout_post"];
     delete?: never;
     options?: never;
     head?: never;
@@ -2710,7 +2727,7 @@ export interface components {
       status: "paired" | "revoked" | "discovered" | "unreachable";
       /**
        * Tailscaleuser
-       * @description The Tailscale owner; null for the previous identity of this server after a historical identity replacement.
+       * @description The Tailscale owner; null for the previous identity of this server after replace_server.
        */
       tailscaleUser: null | string;
     };
@@ -2773,7 +2790,7 @@ export interface components {
       identity: components["schemas"]["ServerIdentity"];
       /**
        * Identityalerts
-       * @description Warnings about references to previous server identities.
+       * @description Fix each alert with the replace_server action.
        * @default []
        */
       identityAlerts?: components["schemas"]["IdentityAlert"][];
@@ -3807,13 +3824,15 @@ export interface components {
     } & {
       [key: string]: components["schemas"]["JsonValue"];
     };
-    /** @description A managed command currently starting or running for this agent. */
+    /** AgentCommandProgress */
     AgentCommandProgress: {
+      /** Lastoutputline */
       lastOutputLine: string;
+      /** Monitorid */
       monitorId: string;
-      /** @description Human-readable stage: the first line of the managed command. */
+      /** Stage */
       stage: string;
-      /** Format: double */
+      /** Startedat */
       startedAt: number;
     };
     /** AgentDraftRecordResponse */
@@ -6091,13 +6110,11 @@ export interface components {
       | "registered"
       | "app-server"
       | "orchestrator-reference";
-    /** @description An idle worker still owns this unsubmitted assignment. */
+    /** AgentStall */
     AgentStall: {
-      /**
-       * Format: double
-       * @description Later of the assignment update and latest settled execution, in Unix seconds.
-       */
+      /** Since */
       since: number;
+      /** Taskid */
       taskId: string;
     };
     /** AgentStartAttempt */
@@ -8988,8 +9005,6 @@ export interface components {
       managed: components["schemas"]["JsonValue"][];
       /** Mcp */
       mcp: components["schemas"]["JsonValue"][];
-      /** @default null */
-      mcpSession?: components["schemas"]["McpSessionBinding"] | null;
       /** Model */
       model: string;
       /** Nativeinventory */
@@ -12162,7 +12177,7 @@ export interface components {
       status: "paired" | "revoked" | "discovered" | "unreachable";
       /**
        * Tailscaleuser
-       * @description The Tailscale owner; null for the previous identity of this server after a historical identity replacement.
+       * @description The Tailscale owner; null for the previous identity of this server after replace_server.
        */
       tailscaleUser: null | string;
     } & {
@@ -12208,23 +12223,17 @@ export interface components {
       /** Tailscaleuser */
       tailscaleUser: null | string;
     };
-    /** @description The visible disk notice returned by `/api/desktop`. */
+    /** DiskSpaceStatus */
     DiskSpaceStatus: {
-      /** @enum {string|null} */
-      level: "warning" | "critical" | "full" | null;
-      message: string | null;
-    };
-    /**
-     * DraftChangeBatch
-     * @description Complete draft interval. Each SyncDocument payload is the original stored DraftVersion JSON, validated by the Rust draft owner without rewriting legacy bytes.
-     */
-    DraftChangeBatch: {
-      /** After */
-      after: number;
-      /** Documents */
-      documents: components["schemas"]["SyncDocument"][];
-      /** Through */
-      through: number;
+      /** Freebytes */
+      freeBytes: number | null;
+      /**
+       * Level
+       * @description Set when the free space of the state volume is below the warning or the critical threshold. full: the disk is full; Studio starts no new turn and holds agents until space returns.
+       */
+      level: ("warning" | "critical" | "full") | null;
+      /** Message */
+      message: null | string;
     };
     /** DraftDocumentInput */
     DraftDocumentInput: {
@@ -14347,25 +14356,6 @@ export interface components {
        */
       stdinError?: null | string;
     };
-    McpReconnectRequest: {
-      id: string;
-      name: string;
-      /** Format: uuid */
-      request_id: string;
-      session: components["schemas"]["McpSessionBinding"];
-    };
-    McpReconnectResponse: {
-      message: string;
-      /** @enum {string} */
-      status: "completed" | "failed" | "unknown";
-    };
-    McpSessionBinding: {
-      account: string;
-      connection: string;
-      epoch: number;
-      generation: number;
-      thread: string;
-    };
     /** MessageHistory */
     MessageHistory: components["schemas"]["MessageRecord"][];
     /**
@@ -16345,6 +16335,190 @@ export interface components {
       /** Token */
       token: string;
     };
+    /** PanelLayoutBody */
+    PanelLayoutBody: {
+      /** Agent */
+      agent: string;
+      /** Client */
+      client: string;
+      /** Contentheight */
+      contentHeight: number;
+      /** Contentwidth */
+      contentWidth: number;
+      /** Fits */
+      fits: boolean;
+      /** Height */
+      height: number;
+      /**
+       * Lastvisibleheading
+       * @default null
+       */
+      lastVisibleHeading?: null | string;
+      /**
+       * Lastvisibleline
+       * @default null
+       */
+      lastVisibleLine?: null | string;
+      /**
+       * Overflowx
+       * @default null
+       */
+      overflowX?: number | null;
+      /**
+       * Overflowy
+       * @default null
+       */
+      overflowY?: number | null;
+      /** Reason */
+      reason: ("overflow" | "unsupported") | null;
+      /**
+       * Renderer
+       * @enum {string}
+       */
+      renderer: "progress-markdown-v2" | "progress-markdown-v1";
+      /** Revision */
+      revision: string;
+      /** Sequence */
+      sequence: number;
+      /**
+       * Totallines
+       * @default null
+       */
+      totalLines?: number | null;
+      /**
+       * Visiblelines
+       * @default null
+       */
+      visibleLines?: number | null;
+      /** Width */
+      width: number;
+    };
+    /** PanelLayoutReport */
+    PanelLayoutReport: {
+      /** Client */
+      client: string;
+      /**
+       * Contentheight
+       * @default null
+       */
+      contentHeight?: number | null;
+      /**
+       * Contentwidth
+       * @default null
+       */
+      contentWidth?: number | null;
+      /**
+       * Expiresat
+       * @default null
+       */
+      expiresAt?: number | null;
+      /** Fits */
+      fits: boolean;
+      /**
+       * Height
+       * @default null
+       */
+      height?: number | null;
+      /**
+       * Lastvisibleheading
+       * @default null
+       */
+      lastVisibleHeading?: null | string;
+      /**
+       * Lastvisibleline
+       * @default null
+       */
+      lastVisibleLine?: null | string;
+      /**
+       * Measuredat
+       * @default null
+       */
+      measuredAt?: number | null;
+      /**
+       * Overflowx
+       * @default null
+       */
+      overflowX?: number | null;
+      /**
+       * Overflowy
+       * @default null
+       */
+      overflowY?: number | null;
+      /** Reason */
+      reason: ("overflow" | "unsupported") | null;
+      /** Renderer */
+      renderer: string;
+      /**
+       * Revision
+       * @default null
+       */
+      revision?: null | string;
+      /** Sequence */
+      sequence: number;
+      /**
+       * Sha256
+       * @default null
+       */
+      sha256?: null | string;
+      /**
+       * Totallines
+       * @default null
+       */
+      totalLines?: number | null;
+      /**
+       * Visiblelines
+       * @default null
+       */
+      visibleLines?: number | null;
+      /**
+       * Width
+       * @default null
+       */
+      width?: number | null;
+    };
+    /** PanelLayoutResult */
+    PanelLayoutResult: {
+      /**
+       * Syncentities
+       * @default null
+       */
+      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
+      /**
+       * Syncentitiesafter
+       * @default null
+       */
+      _syncEntitiesAfter?: number | null;
+      /** Agent */
+      agent: string;
+      /** Reports */
+      reports: components["schemas"]["PanelLayoutReport"][];
+      /** Revision */
+      revision: string;
+      /** Sha256 */
+      sha256: string;
+      /**
+       * Status
+       * @enum {string}
+       */
+      status: "fits" | "does_not_fit" | "unmeasured" | "empty" | "clipped";
+      /**
+       * Updatedat
+       * @default null
+       */
+      updatedAt?: number | null;
+      /** Version */
+      version: number;
+    };
+    /** PanelResource */
+    PanelResource: {
+      /** Agentid */
+      agentId: string;
+      /**
+       * @description discriminator enum property added by openapi-typescript
+       * @enum {string}
+       */
+      kind: "panel";
+    };
     /** ParkReceiptRecordResponse */
     ParkReceiptRecordResponse: {
       /**
@@ -17584,6 +17758,40 @@ export interface components {
        */
       role: "reviewer" | "implementer";
       skills?: string[] | null;
+    };
+    /** ProgressPanel */
+    ProgressPanel: {
+      /**
+       * Syncentities
+       * @default null
+       */
+      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
+      /**
+       * Syncentitiesafter
+       * @default null
+       */
+      _syncEntitiesAfter?: number | null;
+      /** Agent */
+      agent: string;
+      /** Error */
+      error: null | string;
+      /** Exists */
+      exists: boolean;
+      /**
+       * Format
+       * @constant
+       */
+      format: "markdown";
+      /** Id */
+      id: string;
+      /** Markdown */
+      markdown: string;
+      /** Path */
+      path: string;
+      /** Revision */
+      revision: null | string;
+      /** Updated */
+      updated: number | null;
     };
     /**
      * Project
@@ -19157,6 +19365,23 @@ export interface components {
       /** Requestid */
       requestId: string;
     };
+    /**
+     * ReplaceServer
+     * @description Record that a paired server, or this server, succeeds a lost server identity.
+     */
+    ReplaceServer: {
+      /**
+       * @description discriminator enum property added by openapi-typescript
+       * @enum {string}
+       */
+      action: "replace_server";
+      /** Newserverid */
+      newServerId: string;
+      /** Oldserverid */
+      oldServerId: string;
+      /** Requestid */
+      requestId: string;
+    };
     /** RequestAnswerRecordResponse */
     RequestAnswerRecordResponse: {
       /**
@@ -19692,6 +19917,7 @@ export interface components {
       | components["schemas"]["LimitsResource"]
       | components["schemas"]["ModelsResource"]
       | components["schemas"]["MultiServerResource"]
+      | components["schemas"]["PanelResource"]
       | components["schemas"]["QueueResource"]
       | components["schemas"]["ReceiptsResource"]
       | components["schemas"]["RoomResource"]
@@ -19710,7 +19936,6 @@ export interface components {
      * @description Per-resource revision; StateResource uses the entity sequence.
      */
     ResourceRevisionEntry: {
-      draftChanges?: components["schemas"]["DraftChangeBatch"] | null;
       entityChanges?: components["schemas"]["EntityChangeBatch"] | null;
       /** Entitysequencereset */
       entitySequenceReset?: boolean | null;
@@ -19719,11 +19944,10 @@ export interface components {
       resource?: components["schemas"]["ResourceRef"] | null;
       /** Revision */
       revision: number;
-      transcriptChanges?: components["schemas"]["TranscriptChangeBatch"] | null;
     };
     /**
      * ResourceTokenRatesEvent
-     * @description Named token-rates SSE payload; one complete record per agent with authoritative root membership.
+     * @description Named `token-rates` SSE payload; values come from workspace_snapshot().
      */
     ResourceTokenRatesEvent: {
       /** Epoch */
@@ -19733,10 +19957,18 @@ export interface components {
        * @constant
        */
       protocol: 3;
-      /** Records */
-      records: components["schemas"]["TokenRateRecord"][];
+      /** Rates */
+      rates: {
+        [key: string]: components["schemas"]["TokenRateValue"];
+      };
       /** Revision */
       revision: number;
+      /** Teams */
+      teams: {
+        [key: string]: {
+          [key: string]: components["schemas"]["TokenRateValue"];
+        };
+      };
       /** Workspaceid */
       workspaceId: string;
     };
@@ -23524,32 +23756,36 @@ export interface components {
      */
     TerminalState: "running" | "exited" | "closed";
     /**
-     * TokenRateRecord
+     * TokenRateSnapshot
+     * @description Typed payload accepted from the token-rate producer boundary.
+     */
+    TokenRateSnapshot: {
+      /** Rates */
+      rates: {
+        [key: string]: components["schemas"]["TokenRateValue"];
+      };
+      /** Teams */
+      teams: {
+        [key: string]: {
+          [key: string]: components["schemas"]["TokenRateValue"];
+        };
+      };
+    };
+    /**
+     * TokenRateValue
      * @description One active or completed agent turn's volatile token-rate snapshot.
      */
-    TokenRateRecord: {
+    TokenRateValue: {
       /** Active */
       active: boolean;
-      /** Agentid */
-      agentId: string;
       /** Estimated */
       estimated: boolean;
       /** Outputtokens */
       outputTokens: number;
       /** Rate */
       rate: number;
-      /** Rootid */
-      rootId: string;
       /** Turnid */
       turnId: string;
-    };
-    /**
-     * TokenRateSnapshot
-     * @description Typed payload accepted from the token-rate producer boundary.
-     */
-    TokenRateSnapshot: {
-      /** Records */
-      records: components["schemas"]["TokenRateRecord"][];
     };
     /** TombstoneMigration */
     TombstoneMigration: {
@@ -23911,15 +24147,6 @@ export interface components {
       size: number;
     };
     /**
-     * TranscriptChangeBatch
-     * @description Complete transcript sync interval. The delta flag is true; oversize or unavailable intervals remain hints.
-     */
-    TranscriptChangeBatch: {
-      after: number;
-      delta: components["schemas"]["TranscriptStreamDelta"];
-      through: number;
-    };
-    /**
      * TranscriptContextUsage
      * @description Runtime token usage shape published by tokenUsage notifications.
      */
@@ -23937,11 +24164,6 @@ export interface components {
        */
       window?: number | null;
     };
-    /**
-     * TranscriptHistoryVersion
-     * @description The threadId:restoredCheckpoint version, 1 to 8193 Unicode code points (two bounded stream identities and their separator).
-     */
-    TranscriptHistoryVersion: string;
     /**
      * TranscriptInput
      * @description One native/runtime input batch entry shown inside a transcript item.
@@ -24228,11 +24450,6 @@ export interface components {
     } & {
       [key: string]: components["schemas"]["JsonValue"];
     };
-    /**
-     * TranscriptItemRevision
-     * @description Canonical SHA-256 item revision from runtime-store repositories/transcript.rs canonical_hash, encoded as 64 lowercase hexadecimal characters.
-     */
-    TranscriptItemRevision: string;
     /**
      * TranscriptMessageRecord
      * @description Transcript rows always carry their runtime role and display text.
@@ -24543,67 +24760,6 @@ export interface components {
        */
       kind: "transcripts";
     };
-    /**
-     * TranscriptStreamDelta
-     * @description Existing full transcript snapshot or sparse sync delta; item records share TranscriptMessageRecord.
-     */
-    TranscriptStreamDelta: {
-      /** @default null */
-      agent?: components["schemas"]["TranscriptAgent"] | null;
-      /** @constant */
-      delta: true;
-      /** @default null */
-      historyVersion?: components["schemas"]["TranscriptHistoryVersion"] | null;
-      itemRevisions: {
-        [key: string]: components["schemas"]["TranscriptItemRevision"];
-      };
-      /** Items */
-      items: components["schemas"]["TranscriptMessageRecord"][];
-      /** @default null */
-      nextAfterCursor?: components["schemas"]["TranscriptStreamItemId"] | null;
-      /** @default null */
-      nextCursor?: components["schemas"]["TranscriptStreamItemId"] | null;
-      order?: components["schemas"]["TranscriptStreamItemId"][];
-      removed: components["schemas"]["TranscriptStreamItemId"][];
-      /** @default null */
-      tail?: components["schemas"]["TranscriptStreamTail"] | null;
-      /** Truncated */
-      truncated: boolean;
-      /**
-       * @description The transcript projection owner emits only null; unavailable conversations fail the pull with an HTTP error rather than a string-valued reason.
-       * @default null
-       */
-      unavailable?: null;
-    };
-    /**
-     * TranscriptStreamItemId
-     * @description TranscriptMessageRecord.id in stream controls and item cursors; 1 to 4096 Unicode code points. Longer stored identities use pull recovery.
-     */
-    TranscriptStreamItemId: components["schemas"]["TranscriptMessageRecord"]["id"] &
-      string;
-    /**
-     * TranscriptStreamTail
-     * @description Optional transcript preview, 0 to 300 Unicode code points; the current transcript producer omits this field.
-     */
-    TranscriptStreamTail: string;
-    /**
-     * TranscriptSyncPage
-     * @description Transcript projection owner result before the HTTP adapter adds generation.
-     */
-    TranscriptSyncPage: {
-      checkpoint: components["schemas"]["SyncCheckpoint"];
-      /** Documents */
-      documents: components["schemas"]["SyncDocument"][];
-      /** Workspaceid */
-      workspaceId: string;
-    };
-    /**
-     * TranscriptSyncPayload
-     * @description Existing complete snapshot or sparse sync delta, decoded at the projection boundary.
-     */
-    TranscriptSyncPayload:
-      | components["schemas"]["TranscriptPageResponse"]
-      | components["schemas"]["TranscriptStreamDelta"];
     /**
      * TransferAction
      * @enum {string}
@@ -29499,8 +29655,6 @@ export interface operations {
     parameters: {
       query?: {
         agent?: string;
-        fresh?: boolean;
-        serversCursor?: string;
       };
       header?: never;
       path?: never;
@@ -31818,79 +31972,6 @@ export interface operations {
       503: components["responses"]["ApiError503"];
     };
   };
-  mcp_reconnect_api_mcp_reconnect_post: {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    requestBody: {
-      content: {
-        "application/json": components["schemas"]["McpReconnectRequest"];
-      };
-    };
-    responses: {
-      /** @description Successful Response */
-      200: {
-        headers: {
-          "Access-Control-Allow-Origin": components["headers"]["AccessControlAllowOrigin"];
-          "Access-Control-Expose-Headers": components["headers"]["AccessControlExposeHeaders"];
-          "Cache-Control": components["headers"]["CacheControl"];
-          "Content-Encoding": components["headers"]["ContentEncoding"];
-          "Content-Length": components["headers"]["ContentLength"];
-          "Content-Security-Policy": components["headers"]["ContentSecurityPolicy"];
-          "Content-Type": components["headers"]["ContentType"];
-          ETag: components["headers"]["ETag"];
-          "Referrer-Policy": components["headers"]["ReferrerPolicy"];
-          "Server-Timing": components["headers"]["ServerTiming"];
-          Vary: components["headers"]["Vary"];
-          "X-Content-Type-Options": components["headers"]["XContentTypeOptions"];
-          "X-Studio-API-Schema": components["headers"]["StudioApiSchema"];
-          "X-Studio-Server": components["headers"]["StudioServer"];
-          [name: string]: unknown;
-        };
-        content: {
-          "application/json": components["schemas"]["McpReconnectResponse"];
-        };
-      };
-      /** @description Not Modified */
-      304: {
-        headers: {
-          "Access-Control-Allow-Origin": components["headers"]["AccessControlAllowOrigin"];
-          "Access-Control-Expose-Headers": components["headers"]["AccessControlExposeHeaders"];
-          "Cache-Control": components["headers"]["CacheControl"];
-          "Content-Encoding": components["headers"]["ContentEncoding"];
-          "Content-Length": components["headers"]["ContentLength"];
-          "Content-Security-Policy": components["headers"]["ContentSecurityPolicy"];
-          "Content-Type": components["headers"]["ContentType"];
-          ETag: components["headers"]["ETag"];
-          "Referrer-Policy": components["headers"]["ReferrerPolicy"];
-          "Server-Timing": components["headers"]["ServerTiming"];
-          Vary: components["headers"]["Vary"];
-          "X-Content-Type-Options": components["headers"]["XContentTypeOptions"];
-          "X-Studio-API-Schema": components["headers"]["StudioApiSchema"];
-          "X-Studio-Server": components["headers"]["StudioServer"];
-          [name: string]: unknown;
-        };
-        content?: never;
-      };
-      /** @description Bad Request */
-      400: components["responses"]["ApiError400"];
-      /** @description Unauthorized */
-      401: components["responses"]["ApiError401"];
-      /** @description Forbidden */
-      403: components["responses"]["ApiError403"];
-      /** @description Not Found */
-      404: components["responses"]["ApiError404"];
-      /** @description Too Many Requests */
-      429: components["responses"]["ApiError429"];
-      /** @description Internal Server Error */
-      500: components["responses"]["ApiError500"];
-      /** @description Service Unavailable */
-      503: components["responses"]["ApiError503"];
-    };
-  };
   messages_api_messages_get: {
     parameters: {
       query?: {
@@ -32459,6 +32540,7 @@ export interface operations {
           | components["schemas"]["AcceptInvite"]
           | components["schemas"]["CreateInvite"]
           | components["schemas"]["DiscoverServers"]
+          | components["schemas"]["ReplaceServer"]
           | components["schemas"]["RevokeClient"]
           | components["schemas"]["SetAccessSettings"]
           | components["schemas"]["SetServerAlias"]
@@ -33522,6 +33604,116 @@ export interface operations {
         };
         content: {
           "application/json": components["schemas"]["AgentRecordResponse"];
+        };
+      };
+      /** @description Bad Request */
+      400: components["responses"]["ApiError400"];
+      /** @description Unauthorized */
+      401: components["responses"]["ApiError401"];
+      /** @description Forbidden */
+      403: components["responses"]["ApiError403"];
+      /** @description Request Timeout */
+      408: components["responses"]["ApiError408"];
+      /** @description Conflict */
+      409: components["responses"]["ApiError409"];
+      /** @description Gone */
+      410: components["responses"]["ApiError410"];
+      /** @description Content Too Large */
+      413: components["responses"]["ApiError413"];
+      /** @description Unsupported Media Type */
+      415: components["responses"]["ApiError415"];
+      /** @description Upgrade Required */
+      426: components["responses"]["ApiError426"];
+      /** @description Too Many Requests */
+      429: components["responses"]["ApiError429"];
+      /** @description Internal Server Error */
+      500: components["responses"]["ApiError500"];
+      /** @description Bad Gateway */
+      502: components["responses"]["ApiError502"];
+      /** @description Service Unavailable */
+      503: components["responses"]["ApiError503"];
+    };
+  };
+  panel_api_panel_get: {
+    parameters: {
+      query?: {
+        agent?: string;
+      };
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          "Access-Control-Allow-Origin": components["headers"]["AccessControlAllowOrigin"];
+          "Access-Control-Expose-Headers": components["headers"]["AccessControlExposeHeaders"];
+          "Cache-Control": components["headers"]["CacheControl"];
+          "Content-Encoding": components["headers"]["ContentEncoding"];
+          "Content-Length": components["headers"]["ContentLength"];
+          "Content-Security-Policy": components["headers"]["ContentSecurityPolicy"];
+          "Content-Type": components["headers"]["ContentType"];
+          "Referrer-Policy": components["headers"]["ReferrerPolicy"];
+          "Server-Timing": components["headers"]["ServerTiming"];
+          Vary: components["headers"]["Vary"];
+          "X-Content-Type-Options": components["headers"]["XContentTypeOptions"];
+          "X-Studio-API-Schema": components["headers"]["StudioApiSchema"];
+          "X-Studio-Server": components["headers"]["StudioServer"];
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ProgressPanel"];
+        };
+      };
+      /** @description Bad Request */
+      400: components["responses"]["ApiError400"];
+      /** @description Unauthorized */
+      401: components["responses"]["ApiError401"];
+      /** @description Forbidden */
+      403: components["responses"]["ApiError403"];
+      /** @description Too Many Requests */
+      429: components["responses"]["ApiError429"];
+      /** @description Internal Server Error */
+      500: components["responses"]["ApiError500"];
+      /** @description Service Unavailable */
+      503: components["responses"]["ApiError503"];
+    };
+  };
+  save_panel_layout_api_panel_layout_post: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["PanelLayoutBody"];
+      };
+    };
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          "Access-Control-Allow-Origin": components["headers"]["AccessControlAllowOrigin"];
+          "Access-Control-Expose-Headers": components["headers"]["AccessControlExposeHeaders"];
+          "Cache-Control": components["headers"]["CacheControl"];
+          "Content-Encoding": components["headers"]["ContentEncoding"];
+          "Content-Length": components["headers"]["ContentLength"];
+          "Content-Security-Policy": components["headers"]["ContentSecurityPolicy"];
+          "Content-Type": components["headers"]["ContentType"];
+          "Referrer-Policy": components["headers"]["ReferrerPolicy"];
+          "Server-Timing": components["headers"]["ServerTiming"];
+          Vary: components["headers"]["Vary"];
+          "X-Content-Type-Options": components["headers"]["XContentTypeOptions"];
+          "X-Studio-API-Schema": components["headers"]["StudioApiSchema"];
+          "X-Studio-Server": components["headers"]["StudioServer"];
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["PanelLayoutResult"];
         };
       };
       /** @description Bad Request */
@@ -35670,8 +35862,6 @@ export interface operations {
         protocol?: string;
         resources?: string;
         scope?: string;
-        /** @description Whether this stream includes token-rate snapshots. Omitted selectors preserve native and signed-client behavior. Browser owners send the aggregate interest of their tabs. */
-        tokenRates?: boolean;
       };
       header?: {
         "Last-Event-ID"?: number;
@@ -37891,4 +38081,5 @@ export type SyncEntityPayload = components["schemas"]["SyncEntityPayload"];
 export const SYNC_PROTOCOL_VERSION = 3 as const;
 export const SYNC_ENTITY_SCOPE = "state:entities:v1" as const;
 export const TOKEN_RATE_MAX_ENTRIES = 4096 as const;
+export const TOKEN_RATE_MAX_TOTAL_ENTRIES = 8192 as const;
 export const TOKEN_RATE_IDENTIFIER_MAX_CODEPOINTS = 200 as const;
