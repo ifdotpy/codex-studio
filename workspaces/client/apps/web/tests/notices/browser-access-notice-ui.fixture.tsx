@@ -26,6 +26,4 @@ function Fixture() {
     </MantineProvider>
   );
 }
-const root = document.getElementById("root");
-if (!root) throw new Error("Missing fixture root");
-createRoot(root).render(<Fixture />);
+createRoot(document.getElementById("root")!).render(<Fixture />);

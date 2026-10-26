@@ -81,9 +81,7 @@ test("Browser access notice ui", async ({
     const details = notice.locator("details");
     await details.locator("summary").click();
     assert.equal(
-      await details.evaluate(
-        (element) => element instanceof HTMLDetailsElement && element.open,
-      ),
+      await details.evaluate((element) => (element as HTMLDetailsElement).open),
       true,
     );
     assert.match(

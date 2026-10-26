@@ -7,11 +7,9 @@ import {
 import { fixtureServerOrigin } from "./browser-fixture.ts";
 declare global {
   interface Window {
-    mobileDeadline: {
-      outcomes: Record<string, string>;
-      cancelWithDeadline: AbortController;
-      cancelOnly: AbortController;
-    };
+    mobileDeadlineOutcomes: Record<string, string>;
+    mobileDeadlineCancelWithDeadline: AbortController;
+    mobileDeadlineCancelOnly: AbortController;
   }
 }
 import { FIXTURE_OPTIMIZE_DEPS } from "../playwright.ts";
@@ -70,15 +68,11 @@ async function runDeadlineChecks(
       const { start, readDeadline } = await page.evaluate(async () => {
         const { get, post, syncPost, READ_DEADLINE_MS } =
           await import("/src/api.ts");
-        window.mobileDeadline = {
-          outcomes: {},
-          cancelWithDeadline: new AbortController(),
-          cancelOnly: new AbortController(),
-        };
+        window.mobileDeadlineOutcomes = {};
         const record = (key: string, p: Promise<unknown>) =>
           p.then(
-            () => (window.mobileDeadline.outcomes[key] = "success"),
-            (e) => (window.mobileDeadline.outcomes[key] = e.name),
+            () => (window.mobileDeadlineOutcomes[key] = "success"),
+            (e) => (window.mobileDeadlineOutcomes[key] = e.name),
           );
         record(
           "read",
@@ -108,38 +102,36 @@ async function runDeadlineChecks(
       await expect.poll(() => held.size).toBe(3);
       await page.clock.setSystemTime(start + 16_000);
       await page.evaluate(() => window.dispatchEvent(new Event("pageshow")));
-      await page.waitForFunction(() => window.mobileDeadline.outcomes.durable);
+      await page.waitForFunction(() => window.mobileDeadlineOutcomes.durable);
       assert.deepEqual(
-        await page.evaluate(() => window.mobileDeadline.outcomes),
+        await page.evaluate(() => window.mobileDeadlineOutcomes),
         {
           durable: "NetworkTimeoutError",
         },
       );
       await page.clock.setSystemTime(start + readDeadline + 1);
       await page.evaluate(() => window.dispatchEvent(new Event("pageshow")));
-      await page.waitForFunction(() => window.mobileDeadline.outcomes.read);
+      await page.waitForFunction(() => window.mobileDeadlineOutcomes.read);
       assert.deepEqual(
-        await page.evaluate(() => window.mobileDeadline.outcomes),
+        await page.evaluate(() => window.mobileDeadlineOutcomes),
         {
           read: "NetworkTimeoutError",
           durable: "NetworkTimeoutError",
         },
       );
-      const ordinary = held.get("/api/held-ordinary");
-      assert.ok(ordinary);
-      await ordinary.fulfill({ json: { ok: true } });
+      await held.get("/api/held-ordinary")!.fulfill({ json: { ok: true } });
       await page.waitForFunction(
-        () => window.mobileDeadline.outcomes.ordinary === "success",
+        () => window.mobileDeadlineOutcomes.ordinary === "success",
       );
       await page.evaluate(async () => {
         const { get, post } = await import("/src/api.ts");
         const record = (key: string, promise: Promise<unknown>) =>
           promise.then(
-            () => (window.mobileDeadline.outcomes[key] = "success"),
-            (error) => (window.mobileDeadline.outcomes[key] = error.name),
+            () => (window.mobileDeadlineOutcomes[key] = "success"),
+            (error) => (window.mobileDeadlineOutcomes[key] = error.name),
           );
-        window.mobileDeadline.cancelWithDeadline = new AbortController();
-        window.mobileDeadline.cancelOnly = new AbortController();
+        window.mobileDeadlineCancelWithDeadline = new AbortController();
+        window.mobileDeadlineCancelOnly = new AbortController();
         const alreadyAborted = new AbortController();
         alreadyAborted.abort();
         record(
@@ -148,7 +140,7 @@ async function runDeadlineChecks(
             // @ts-expect-error Synthetic held endpoint tests cancellation.
             "/api/held-cancel-read",
             {
-              signal: window.mobileDeadline.cancelWithDeadline.signal,
+              signal: window.mobileDeadlineCancelWithDeadline.signal,
               timeoutMs: 15000,
             },
           ),
@@ -160,7 +152,7 @@ async function runDeadlineChecks(
             "/api/held-cancel-post",
             {},
             {
-              signal: window.mobileDeadline.cancelOnly.signal,
+              signal: window.mobileDeadlineCancelOnly.signal,
             },
           ),
         );
@@ -185,19 +177,19 @@ async function runDeadlineChecks(
         )
         .toBe(true);
       await page.evaluate(() => {
-        window.mobileDeadline.cancelWithDeadline.abort();
-        window.mobileDeadline.cancelOnly.abort();
+        window.mobileDeadlineCancelWithDeadline.abort();
+        window.mobileDeadlineCancelOnly.abort();
       });
       await page.waitForFunction(
         () =>
-          window.mobileDeadline.outcomes.cancelledRead &&
-          window.mobileDeadline.outcomes.cancelledPost,
+          window.mobileDeadlineOutcomes.cancelledRead &&
+          window.mobileDeadlineOutcomes.cancelledPost,
       );
       assert.deepEqual(
         await page.evaluate(() => ({
-          read: window.mobileDeadline.outcomes.cancelledRead,
-          post: window.mobileDeadline.outcomes.cancelledPost,
-          beforeStart: window.mobileDeadline.outcomes.alreadyAborted,
+          read: window.mobileDeadlineOutcomes.cancelledRead,
+          post: window.mobileDeadlineOutcomes.cancelledPost,
+          beforeStart: window.mobileDeadlineOutcomes.alreadyAborted,
         })),
         { read: "AbortError", post: "AbortError", beforeStart: "AbortError" },
       );

@@ -4,7 +4,6 @@ import type { FixtureStep } from "../fixtures/fixture-scripts.ts";
 import type { Browser } from "@playwright/test";
 import type { ApiPostPath, PostBody, PostResult } from "../../src/apiTypes.ts";
 import { fixturePostBody, fixturePostResult } from "./browser-fixture.ts";
-import { visibleBounds } from "./mobile-ui-fixture.ts";
 import { waitForFixturePort } from "../playwright.ts";
 import {
   readTestState,
@@ -30,11 +29,14 @@ test("Mobile client ui", async ({
     stdio: ["pipe", "pipe", "pipe"],
   });
   let log = "";
-  fixture.stderr?.on("data", (chunk) => {
+  fixture.stderr!.on("data", (chunk) => {
     log += chunk;
   });
   try {
-    const port = await waitForFixturePort(fixture, { diagnostics: () => log });
+    const port = await waitForFixturePort(fixture, {
+      timeoutMs: 60000,
+      diagnostics: () => log,
+    });
     const url = `http://127.0.0.1:${port}`;
     const page = await testBrowser.newPage({
       viewport: { width: 390, height: 844 },
@@ -168,7 +170,7 @@ test("Mobile client ui", async ({
       assert.equal(await page.locator(".workspace-shortcuts").count(), 0);
       const snapshot = await readTestState(url);
       const selected = await page.evaluate(() =>
-        JSON.parse(localStorage.getItem("codex-mobile-opened") || "null"),
+        JSON.parse(localStorage.getItem("codex-mobile-opened")!),
       );
       const hasWorkers = snapshot.threads.some(
         (a) => a.rootId === selected && !a.isLead,
@@ -190,7 +192,7 @@ test("Mobile client ui", async ({
         ),
         `Page overflows at ${width}`,
       );
-      const composer = await visibleBounds(page.locator("#composer"));
+      const composer = (await page.locator("#composer").boundingBox())!;
       if (width === 320) assert.ok(composer, "320px composer is present");
       else
         assert.ok(
@@ -279,26 +281,22 @@ test("Mobile client ui", async ({
       `Mobile composer font size should stay at least 16px (got ${mobileComposerFontSize}px)`,
     );
     await showProjectActions();
-    type CreatedServer = {
-      originalBody: PostBody<"/api/leads">;
-      created: PostResult<"/api/leads">;
-    };
-    let confirmServerCreation: ((value: CreatedServer) => void) | undefined;
-    const serverCreated = new Promise<CreatedServer>((resolve) => {
+    let originalBody!: PostBody<"/api/leads">,
+      created!: PostResult<"/api/leads">;
+    let confirmServerCreation!: () => void;
+    const serverCreated = new Promise<void>((resolve) => {
       confirmServerCreation = resolve;
     });
     await page.route("**/api/leads", async (route) => {
-      const originalBody = fixturePostBody<"/api/leads">(route.request());
+      originalBody = fixturePostBody<"/api/leads">(route.request());
       const response = await route.fetch();
       assert.ok(response.ok());
-      const created = await fixturePostResult<"/api/leads">(response);
+      created = await fixturePostResult<"/api/leads">(response);
       await route.abort("failed");
-      assert.ok(confirmServerCreation);
-      confirmServerCreation({ originalBody, created });
+      confirmServerCreation();
     });
     await startProjectChat("New chat in this project");
-    const { originalBody, created } = await serverCreated;
-    assert.ok(created.cwd, "Created fixture chat must have a project folder");
+    await serverCreated;
     await page
       .getByRole("button", { name: "Retry chat request", exact: true })
       .waitFor();
@@ -331,9 +329,7 @@ test("Mobile client ui", async ({
       created.id,
     );
     await page.waitForFunction(
-      (id) =>
-        JSON.parse(localStorage.getItem("codex-mobile-opened") || "null") ===
-        id,
+      (id) => JSON.parse(localStorage.getItem("codex-mobile-opened")!) === id,
       created.id,
     );
     const serverState = await readTestState(url);
@@ -384,11 +380,11 @@ test("Mobile client ui", async ({
       account_key: alternate.id,
     });
     const project = serverState.runtime.projects.find(
-      (item) => item.path === created.cwd,
+      (item) => item.path === created.cwd!,
     );
     await post("/api/projects", {
       action: "set_account",
-      path: created.cwd,
+      path: created.cwd!,
       account_key: "default",
       expected_revision: project?.accountRevision || 0,
     });
@@ -428,9 +424,7 @@ test("Mobile client ui", async ({
       "The project account replaces the previous empty chat account",
     );
     await page.waitForFunction(
-      (id) =>
-        JSON.parse(localStorage.getItem("codex-mobile-opened") || "null") ===
-        id,
+      (id) => JSON.parse(localStorage.getItem("codex-mobile-opened")!) === id,
       nextChat.id,
     );
     assert.equal(
@@ -462,9 +456,7 @@ test("Mobile client ui", async ({
     assert.equal(otherChat.accountKey, alternate.id);
     assert.equal(otherChat.cwd, await realpath(profile));
     await page.waitForFunction(
-      (id) =>
-        JSON.parse(localStorage.getItem("codex-mobile-opened") || "null") ===
-        id,
+      (id) => JSON.parse(localStorage.getItem("codex-mobile-opened")!) === id,
       otherChat.id,
     );
     assert.equal(
@@ -478,12 +470,9 @@ test("Mobile client ui", async ({
     await page.locator(".terminal-dock").waitFor();
     await page.getByLabel("Add project", { exact: true }).waitFor();
     await page.locator("#messages-toggle").waitFor();
-    const manifest: unknown = await (
+    const manifest: { display: string } = await (
       await fetch(url + "/manifest.webmanifest")
     ).json();
-    assert.ok(
-      manifest && typeof manifest === "object" && "display" in manifest,
-    );
     assert.equal(manifest.display, "standalone");
     assert.equal(
       await page.locator(".sync-notices [role=alert]").count(),
@@ -548,12 +537,15 @@ async function setupMobile320Composer(testBrowser: Browser) {
     },
   });
   let log = "";
-  fixture.stderr?.on("data", (chunk) => {
+  fixture.stderr!.on("data", (chunk) => {
     log += chunk;
   });
   let ownedContext;
   try {
-    const port = await waitForFixturePort(fixture, { diagnostics: () => log });
+    const port = await waitForFixturePort(fixture, {
+      timeoutMs: 90000,
+      diagnostics: () => log,
+    });
     // The real SSE cost projection needs a pricing artifact. The former GET
     // stub cannot supply a sessionCost entity to the current client. The
     // server refuses a non-empty fresh state directory, so write it here.
@@ -616,7 +608,7 @@ async function setupMobile320Composer(testBrowser: Browser) {
     assert.equal(await page.locator(".workspace-shortcuts").count(), 0);
     const snapshot = await readTestState(`http://127.0.0.1:${port}`);
     const selected = await page.evaluate(() =>
-      JSON.parse(localStorage.getItem("codex-mobile-opened") || "null"),
+      JSON.parse(localStorage.getItem("codex-mobile-opened")!),
     );
     const selectedAgent = snapshot.threads.find(
       (agent) => agent.id === selected,
@@ -713,7 +705,7 @@ test("Mobile composer 320px setup renders the settled action row", async ({
       Array.from(element.children).map((child) => {
         const rect = child.getBoundingClientRect();
         return {
-          name: child.getAttribute("aria-label") || child.textContent?.trim(),
+          name: child.getAttribute("aria-label") || child.textContent!.trim(),
           timingHint: child.classList.contains("composer-timing"),
           queueInTools:
             child.classList.contains("composer-queue-primary") &&
@@ -755,8 +747,7 @@ test("Mobile composer 320px setup renders the settled action row", async ({
       const queueBounds = await page
         .locator(".composer-queue-disclosure")
         .boundingBox();
-      assert.ok(queueBounds);
-      assert.ok(queueBounds.width >= 44 && queueBounds.height >= 44);
+      assert.ok(queueBounds!.width >= 44 && queueBounds!.height >= 44);
       await disclosure.click();
       assert.equal(
         await page

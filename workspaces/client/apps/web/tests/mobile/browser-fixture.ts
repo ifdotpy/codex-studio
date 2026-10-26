@@ -1,9 +1,7 @@
 import type { ViteDevServer } from "vite";
 
 export function fixtureServerOrigin(server: ViteDevServer): string {
-  const origin = server.resolvedUrls?.local[0];
-  if (!origin) throw new Error("Fixture server did not publish a local URL");
-  return origin;
+  return server.resolvedUrls!.local[0];
 }
 
 export async function until(
