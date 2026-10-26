@@ -868,9 +868,10 @@ fn commands_commit_before_send_and_reject_changed_input() {
 fn stored_native_action_errors_name_the_table_and_row() {
     let case = &corpus()["actions"][0];
     let db = db(case);
+    // Keep the schema-invalid witness writable under the explicit-provider column.
     db.execute(
-        r#"UPDATE runtime_agents SET record='{"id":"lead"}' WHERE id='lead'"#,
-        [],
+        "UPDATE runtime_agents SET record=?1 WHERE id='lead'",
+        [json!({"id":"lead","provider":studio_runtime_schema::ProviderKind::Codex}).to_string()],
     )
     .expect("corrupt agent fixture");
     let request: Request = serde_json::from_value(case["request"].clone()).expect("request");

@@ -366,15 +366,15 @@ fn input_states(deleted_worker: bool) -> Connection {
     connection
         .execute_batch(studio_runtime_store::agent_volatile::agent_volatile_table_sql())
         .expect("volatile agent table creates");
-    let worker = if deleted_worker {
-        r#"{"epoch":1,"deletedAt":5.0}"#
-    } else {
-        r#"{"epoch":1}"#
-    };
+    let mut worker = json!({"epoch":1,"provider":studio_runtime_schema::ProviderKind::Codex});
+    if deleted_worker {
+        worker["deletedAt"] = json!(5.0);
+    }
+    let other = json!({"epoch":1,"provider":studio_runtime_schema::ProviderKind::Codex});
     connection
         .execute(
-            "INSERT INTO runtime_agents VALUES('worker',?1),('other','{\"epoch\":1}')",
-            [worker],
+            "INSERT INTO runtime_agents VALUES('worker',?1),('other',?2)",
+            [worker.to_string(), other.to_string()],
         )
         .expect("agents");
     connection
