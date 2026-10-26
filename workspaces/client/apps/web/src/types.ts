@@ -18,9 +18,14 @@ import type {
   components,
 } from "./generated/api";
 
-// Provider and extensible app-server payloads are JSON objects, not untyped maps.
-export type JsonValue = components["schemas"]["JsonValue"];
-export type Json = Record<string, JsonValue>;
+export type {
+  JsonValue,
+  Json,
+  KnownApiFields,
+  TranscriptWireItem,
+  TranscriptPageData,
+} from "./apiTypes";
+import type { TranscriptWireItem } from "./apiTypes";
 export type Agent = AgentEntityDto;
 export type Chat = ChatEntityDto;
 export type PeerTeam = PeerTeamEntityDto;
@@ -37,29 +42,34 @@ export type Work = WorkEntityDto;
 export type Edge = EdgeEntityDto;
 
 type SnapshotRuntime = WorkspaceEntityDto & {
-  modelsByAccount?: Record<string, components["schemas"]["ModelEntityDto"][]>;
-  terminals?: components["schemas"]["TerminalRecord"][];
-  desktop?: components["schemas"]["DesktopResponse"];
-  sessionCostsByAgent?: Record<
-    string,
-    components["schemas"]["SessionCostResponse"]
-  >;
-  accountCostsByAccount?: Record<
-    string,
-    components["schemas"]["AccountCostResponse"]
-  >;
-  accountsSummary?: components["schemas"]["AccountsSummaryDto"];
-  queuesByAgent?: Record<string, components["schemas"]["QueueView"]>;
-  rateLimitsByAccount?: Record<
-    string,
-    components["schemas"]["AccountRateLimitsDto"]
-  >;
-  rateLimits?: components["schemas"]["AccountRateLimitsDto"] | null;
-  retainedWorktrees?: components["schemas"]["RetainedWorktreeEntityDto"][];
-  questionHistory?: components["schemas"]["AgentRequest"][];
-  messageReceipts?: components["schemas"]["MessageReceiptEntityDto"][];
-  plans?: components["schemas"]["PlanSummaryEntityDto"][];
-  annotations?: components["schemas"]["AnnotationEntityDto"][];
+  modelsByAccount?:
+    | Record<string, components["schemas"]["ModelEntityDto"][]>
+    | undefined;
+  terminals?: components["schemas"]["TerminalRecord"][] | undefined;
+  desktop?: components["schemas"]["DesktopResponse"] | undefined;
+  sessionCostsByAgent?:
+    | Record<string, components["schemas"]["SessionCostResponse"]>
+    | undefined;
+  accountCostsByAccount?:
+    | Record<string, components["schemas"]["AccountCostResponse"]>
+    | undefined;
+  accountsSummary?: components["schemas"]["AccountsSummaryDto"] | undefined;
+  queuesByAgent?:
+    | Record<string, components["schemas"]["QueueView"]>
+    | undefined;
+  rateLimitsByAccount?:
+    | Record<string, components["schemas"]["AccountRateLimitsDto"]>
+    | undefined;
+  rateLimits?: components["schemas"]["AccountRateLimitsDto"] | null | undefined;
+  retainedWorktrees?:
+    | components["schemas"]["RetainedWorktreeEntityDto"][]
+    | undefined;
+  questionHistory?: components["schemas"]["AgentRequest"][] | undefined;
+  messageReceipts?:
+    | components["schemas"]["MessageReceiptEntityDto"][]
+    | undefined;
+  plans?: components["schemas"]["PlanSummaryEntityDto"][] | undefined;
+  annotations?: components["schemas"]["AnnotationEntityDto"][] | undefined;
   studioErrors: components["schemas"]["StudioError"][];
   agents: Agent[];
   rooms: Room[];
@@ -70,35 +80,16 @@ type SnapshotRuntime = WorkspaceEntityDto & {
   rules: Rule[];
   projects: Project[];
   /** Project entity sequence by native ID, owned by the entity projection; stale-delete guard. */
-  projectSequences?: Record<string, number>;
+  projectSequences?: Record<string, number> | undefined;
   peerTeams: PeerTeam[];
   events: Event[];
   work: Work[];
 };
 
-// Transcript records retain typed JSON extension fields on the wire. UI state
-// consumes their declared API fields; strip only the generated index signature
-// at this local boundary so optional fields keep their narrower types.
-export type KnownApiFields<T> = T extends Record<string, JsonValue> &
-  (infer Fields)
-  ? Fields
-  : T;
-type TranscriptApiItem = components["schemas"]["TranscriptMessageRecord"];
-type TranscriptApiInput = components["schemas"]["TranscriptInput"];
-export type TranscriptWireItem = Omit<
-  KnownApiFields<TranscriptApiItem>,
-  "inputs"
-> & {
-  inputs?: Array<KnownApiFields<TranscriptApiInput>> | null;
-};
-export type TranscriptPageData = Omit<GetResult<"/api/transcript">, "items"> & {
-  items: TranscriptWireItem[];
-};
-
 /** Fields assembled for renderer consumers from entity collections. */
 type ProjectionSnapshotFields = {
   /** Workspace of the applied entity rows, stamped by their projection handle. */
-  entityWorkspaceId?: string;
+  entityWorkspaceId?: string | undefined;
   token: string;
   stateDir: string;
   threads: Agent[];
@@ -106,7 +97,7 @@ type ProjectionSnapshotFields = {
   nodes: Array<Agent | Chat>;
   edges: Edge[];
   /** False while the first sync pull of this projection still runs: records can be missing. */
-  entitiesComplete?: boolean;
+  entitiesComplete?: boolean | undefined;
 };
 
 export type Snapshot = ProjectionSnapshotFields & { runtime: SnapshotRuntime };
@@ -121,30 +112,34 @@ export type LocalMessageAttachment = {
   mime: string;
   image: boolean;
   size: number;
-  preview?: string;
+  preview?: string | undefined;
 };
 export type Message = Omit<
   TranscriptWireItem,
   "assets" | "deliveryStatus" | "role" | "text" | "threadId"
 > & {
-  assets?: Array<TranscriptAsset | LocalMessageAttachment> | null;
-  deliveryStatus?: TranscriptWireItem["deliveryStatus"] | "sending" | "paused";
+  assets?: Array<TranscriptAsset | LocalMessageAttachment> | null | undefined;
+  deliveryStatus?:
+    | TranscriptWireItem["deliveryStatus"]
+    | "sending"
+    | "paused"
+    | undefined;
   role: NonNullable<TranscriptWireItem["role"]>;
   text: NonNullable<TranscriptWireItem["text"]>;
-  accountKey?: string;
-  author?: string;
-  effort?: string;
-  excerpt?: string;
-  localDelivery?: boolean;
-  model?: string;
-  title?: string;
-  pending?: boolean;
-  senderName?: string;
-  sender?: string;
-  seq?: number;
-  created?: number;
-  threadId?: string;
-  timestamp?: number | string;
+  accountKey?: string | undefined;
+  author?: string | undefined;
+  effort?: string | undefined;
+  excerpt?: string | undefined;
+  localDelivery?: boolean | undefined;
+  model?: string | undefined;
+  title?: string | undefined;
+  pending?: boolean | undefined;
+  senderName?: string | undefined;
+  sender?: string | undefined;
+  seq?: number | undefined;
+  created?: number | undefined;
+  threadId?: string | undefined;
+  timestamp?: number | string | undefined;
 };
 export const busy = new Set(["running", "starting", "approval"]);
 export const nativeReleaseLabel = (agent: Agent) => {
