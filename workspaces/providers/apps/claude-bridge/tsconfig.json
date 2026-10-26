@@ -4,17 +4,5 @@
     "allowJs": true,
     "types": ["node"]
   },
-  "include": [
-    "**/*.ts",
-    "account-identity.fixture.mts",
-    "images-bridge.fixture.mts",
-    "usage-bridge.fixture.mts",
-    "usage-limit.fixture.mts",
-    "usage-events.fixture.mts",
-    "usage.ts",
-    "usage.test.ts",
-    "usage-fixtures.ts",
-    "history-index.ts",
-    "session-identity.ts"
-  ]
+  "include": ["**/*.ts", "**/*.mts", "bridge.mjs"]
 }

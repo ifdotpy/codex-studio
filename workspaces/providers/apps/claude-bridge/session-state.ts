@@ -1,3 +1,4 @@
+import type { ClaudeSettings } from "./thinking.ts";
 import type { BridgeMoveProof } from "./bridge-protocol.ts";
 import type {
   CacheReport,
@@ -8,7 +9,6 @@ import type {
   RewindFilesResult,
   SessionMessage,
   SessionStartHookInput,
-  Settings,
 } from "@anthropic-ai/claude-agent-sdk";
 
 // The bridge owns its mutable mirror and recovery receipts. Native messages,
@@ -157,7 +157,7 @@ export interface Session {
   approvalPolicy?: string;
   activePermissionProfile?: unknown;
   sandbox?: string;
-  claude?: Settings;
+  claude?: ClaudeSettings;
   developerInstructions?: string;
   dynamicTools?: ToolDefinition[];
   idleCache?: CacheReport;
