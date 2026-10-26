@@ -39,19 +39,12 @@ fn main() -> Result<(), Box<dyn Error>> {
     let document: serde_json::Value = serde_json::from_slice(&fs::read(&spec_path)?)?;
     let mut analyzer = SchemaAnalyzer::new(document)?;
     let mut analysis = analyzer.analyze()?;
-    // Preserve optional/null wire identity while parsing response status into
-    // the same closed owner used by the service and generated web schema.
-    let SchemaType::Object { properties, .. } = &mut analysis
+    // Alias the named component to its runtime owner. References retain their
+    // optional/null wrappers without generating a second status enum.
+    analysis
         .schemas
-        .get_mut("ComplaintBody")
-        .ok_or("missing complaint request schema")?
-        .schema_type
-    else {
-        return Err("complaint request schema must be an object".into());
-    };
-    properties
-        .get_mut("status")
-        .ok_or("missing complaint status")?
+        .get_mut("ComplaintResponseStatus")
+        .ok_or("missing complaint response status schema")?
         .schema_type = SchemaType::Primitive {
         rust_type: "studio_runtime_schema::complaints::ComplaintResponseStatus".to_owned(),
         serde_with: None,
