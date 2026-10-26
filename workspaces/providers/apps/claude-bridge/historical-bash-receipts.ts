@@ -35,8 +35,8 @@ function candidates(session: Session) {
         typeof item.arguments.command !== "string" ||
         item.command !== item.arguments.command ||
         item.cwd !== session.cwd ||
-        ![undefined, false].some(
-          (value) => value === item.arguments?.run_in_background,
+        ![undefined, false].includes(
+          item.arguments.run_in_background as undefined | false,
         )
       )
         return [];
@@ -84,7 +84,7 @@ async function receipts(
       (row.type === "system" && row.subtype === "compact_boundary")
     )
       return [];
-    const message = object(row.message) ? row.message : undefined;
+    const message = row.message as { content?: unknown[] } | undefined;
     if (Array.isArray(message?.content)) {
       const blocks = message.content.filter(
         (block: unknown): block is Record<string, unknown> =>
@@ -111,14 +111,8 @@ async function receipts(
       result = results.get(entry.item.id);
     if (!use || !result) continue;
     const outcome = result.row.toolUseResult;
-    const startedAtMs =
-        typeof use.row.timestamp === "string"
-          ? Date.parse(use.row.timestamp)
-          : NaN,
-      completedAtMs =
-        typeof result.row.timestamp === "string"
-          ? Date.parse(result.row.timestamp)
-          : NaN;
+    const startedAtMs = Date.parse(use.row.timestamp as string),
+      completedAtMs = Date.parse(result.row.timestamp as string);
     if (
       use.row.type !== "assistant" ||
       result.row.type !== "user" ||

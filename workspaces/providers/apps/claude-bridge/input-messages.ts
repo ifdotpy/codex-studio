@@ -24,13 +24,14 @@ export async function inputGroups<T extends object, B>(
 ) {
   const groups: { origin: InputGroup["origin"]; input: T[] }[] = [];
   for (const item of input || []) {
-    const suppliedOrigin = "inputOrigin" in item ? item.inputOrigin : undefined;
-    const origin = suppliedOrigin === undefined ? HUMAN_INPUT : suppliedOrigin;
+    const origin =
+      (item as { inputOrigin?: unknown }).inputOrigin === undefined
+        ? HUMAN_INPUT
+        : (item as { inputOrigin?: unknown }).inputOrigin;
     if (origin !== HUMAN_INPUT && origin !== STUDIO_EVENT_INPUT)
       throw new Error("Unsupported Claude input origin: " + origin);
     if (groups.at(-1)?.origin !== origin) groups.push({ origin, input: [] });
-    const group = groups.at(-1);
-    if (group) group.input.push(item);
+    groups.at(-1)!.input.push(item);
   }
   if (!groups.length) groups.push({ origin: HUMAN_INPUT, input: input || [] });
   return Promise.all(

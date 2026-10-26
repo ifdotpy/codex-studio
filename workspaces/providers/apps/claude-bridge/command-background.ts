@@ -28,26 +28,24 @@ export function foregroundCommandUpdate(
   task: BackgroundTask,
   message: TaskEvent,
 ) {
-  if (
-    task.task_type !== FOREGROUND_SHELL ||
-    !("tool_use_id" in task) ||
-    !task.tool_use_id
-  )
-    return null;
+  if (task.task_type !== FOREGROUND_SHELL || !task.tool_use_id) return null;
   const item = active.tools.get(task.tool_use_id);
   if (item?.type !== "commandExecution" || item.status !== "inProgress")
     return null;
   let available = item.canMoveToBackground === true;
   if (message.subtype === "task_started")
     available = message.is_backgrounded === false;
-  if ("patch" in message && message.patch.is_backgrounded === true)
+  if (
+    (message as Extract<TaskEvent, { patch: unknown }>).patch
+      ?.is_backgrounded === true
+  )
     available = false;
   if (
     message.subtype === "task_notification" ||
-    ("patch" in message &&
-      ["completed", "failed", "killed"].some(
-        (status) => status === message.patch.status,
-      ))
+    ["completed", "failed", "killed"].includes(
+      (message as Extract<TaskEvent, { patch: unknown }>).patch
+        ?.status as string,
+    )
   )
     available = false;
   if (available === (item.canMoveToBackground === true)) return null;
@@ -58,21 +56,15 @@ export function foregroundCommandUpdate(
 // Fields for a Bash result whose command keeps running as a background task.
 // A backgrounded command has no exit code yet, so none is reported.
 export function backgroundedCommandFields(toolUseResult: unknown) {
-  const taskId =
-    toolUseResult &&
-    typeof toolUseResult === "object" &&
-    "backgroundTaskId" in toolUseResult
-      ? toolUseResult.backgroundTaskId
-      : undefined;
+  const taskId = (toolUseResult as { backgroundTaskId?: unknown } | undefined)
+    ?.backgroundTaskId;
   if (typeof taskId !== "string" || !taskId) return null;
   return {
     canMoveToBackground: false,
     backgroundTaskId: taskId,
     backgroundedByUser:
-      toolUseResult !== null &&
-      typeof toolUseResult === "object" &&
-      "backgroundedByUser" in toolUseResult &&
-      toolUseResult.backgroundedByUser === true,
+      (toolUseResult as { backgroundedByUser?: boolean }).backgroundedByUser ===
+      true,
   };
 }
 
