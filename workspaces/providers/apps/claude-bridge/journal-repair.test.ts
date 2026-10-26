@@ -1,20 +1,32 @@
+import type { Session } from "./session-state.ts";
+import type { StoreOptions } from "./session-store.ts";
+import { object } from "./history-records.ts";
 import assert from "node:assert/strict";
 import { test } from "vitest";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { createSessionStore } from "./session-store.mjs";
+import { createSessionStore } from "./session-store.ts";
 import { startBridge } from "./testing/bridge-harness.ts";
 
 const id = "11111111-1111-4111-8111-111111111111";
 const userId = "22222222-2222-4222-8222-222222222222";
 const answerId = "33333333-3333-4333-8333-333333333333";
-async function fixture(run) {
+async function fixture(
+  run: (value: {
+    root: string;
+    native: string;
+    journal: string;
+    session: Session;
+    options: StoreOptions;
+    valid: string;
+  }) => Promise<void>,
+) {
   const root = await fs.realpath(
     await fs.mkdtemp(path.join(os.tmpdir(), "claude-journal-repair-")),
   );
   const configDir = path.join(root, "native");
-  const session = {
+  const session: Session = {
     id,
     cwd: root,
     turns: [
@@ -95,10 +107,10 @@ test("malformed complete journal row repairs only with exact native history and 
     const restored = await createSessionStore(f.root, f.options).get(id);
     assert.deepEqual(restored.turns, f.session.turns);
     assert.equal(restored.name, "Saved name");
-    assert.equal(restored.journalRepair.status, "repaired");
-    assert.equal(restored.journalRepair.skippedRows, 1);
-    assert.equal(restored.journalRepair.scopeConfirmed, true);
-    assert.equal(restored.journalRepair.nativeHistoryConfirmed, true);
+    assert.equal(restored.journalRepair?.status, "repaired");
+    assert.equal(restored.journalRepair?.skippedRows, 1);
+    assert.equal(restored.journalRepair?.scopeConfirmed, true);
+    assert.equal(restored.journalRepair?.nativeHistoryConfirmed, true);
     assert.match(
       await fs.readFile(f.journal + ".corrupt", "utf8"),
       /broken complete row/,
@@ -149,15 +161,21 @@ for (const kind of [
       const before = await fs.readFile(f.journal, "utf8");
       await assert.rejects(
         createSessionStore(f.root, f.options).get(id),
-        (error) => {
+        (error: unknown) => {
+          assert.ok(object(error));
           assert.equal(error.code, "CLAUDE_SESSION_REPAIR_REQUIRED");
+          assert.ok(typeof error.message === "string");
           assert.match(error.message, /needs repair/);
-          assert.ok(error.data.skippedRows >= 1);
+          assert.ok(object(error.data));
+          assert.ok(
+            typeof error.data.skippedRows === "number" &&
+              error.data.skippedRows >= 1,
+          );
           return true;
         },
       );
       assert.equal(await fs.readFile(f.journal, "utf8"), before);
-      assert.equal({}.polluted, undefined);
+      assert.equal(Reflect.get({}, "polluted"), undefined);
       const marker = JSON.parse(
         await fs.readFile(
           path.join(f.root, "sessions", id + ".repair.json"),
@@ -172,17 +190,12 @@ for (const kind of [
     }));
 }
 
-const READ_ONLY_SDK = `
-export const query=()=>{throw new Error('History must not start a query')};
-export const tool=()=>{};
-export const createSdkMcpServer=()=>{};
-export const getSessionMessages=async()=>[];
-export const forkSession=async()=>{};
-`;
 for (const confirmed of [true, false]) {
   test(`bridge history and resume ${confirmed ? "report confirmed repair" : "reject unconfirmed repair without crashing"}`, async () =>
     fixture(async (f) => {
-      const bridge = await startBridge(READ_ONLY_SDK);
+      const bridge = await startBridge(
+        new URL("./fixtures/history-readonly-sdk.ts", import.meta.url),
+      );
       try {
         for (const suffix of [".json", ".jsonl", ".meta.json"])
           await fs.copyFile(

@@ -7,7 +7,7 @@ import path from "node:path";
 import http from "node:http";
 import { randomUUID, createHash } from "node:crypto";
 import { query, getSessionMessages } from "@anthropic-ai/claude-agent-sdk";
-import { inputGroups, sdkInputMessages } from "../input-messages.mjs";
+import { inputGroups, sdkInputMessages } from "../input-messages.ts";
 import { readHistoryIndex, verifiedHistoryMessages } from "../history-index.ts";
 import { forkAtTurn, rollbackSession } from "../controls.mjs";
 import { forkSession } from "@anthropic-ai/claude-agent-sdk";

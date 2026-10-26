@@ -1,12 +1,22 @@
-// @ts-check
+import type { HistorySession, NativeHistoryOptions } from "./native-history.ts";
+export interface HistoryReadOptions extends NativeHistoryOptions {
+  sessionApi?: Pick<
+    typeof sdk,
+    "getSessionInfo" | "getSessionMessages" | "importSessionToStore"
+  >;
+}
+interface ChainEntry extends sdk.SessionStoreEntry {
+  uuid: string;
+  type: "user" | "assistant";
+}
 import * as sdk from "@anthropic-ai/claude-agent-sdk";
-import { historyRecordKind } from "./history-records.mjs";
+import { historyRecordKind, object } from "./history-records.ts";
 import { isDeepStrictEqual } from "node:util";
 import {
   readNativeHistory,
   nativeHistoryRows,
   nativeUuid,
-} from "./native-history.mjs";
+} from "./native-history.ts";
 
 /** One UUID lookup for a complete history snapshot, shared by controls and recovery.
  * @param {sdk.SessionMessage[]} messages
@@ -14,22 +24,22 @@ import {
  * @param {Set<string>} [uncertainIds]
  */
 export function messageIndex(
-  messages,
-  inputIds = new Set(
+  messages: sdk.SessionMessage[],
+  inputIds: Set<string> = new Set(
     messages
       .filter((message) => message.type === "user")
       .map((message) => message.uuid),
   ),
-  uncertainIds = new Set(),
+  uncertainIds: Set<string> = new Set(),
 ) {
   /** @type {Map<string, number>} */
-  const positions = new Map();
+  const positions: Map<string, number> = new Map();
   for (const [position, message] of messages.entries())
     positions.set(message.uuid, positions.has(message.uuid) ? -1 : position);
   return {
     messages,
     /** @param {string[]} ids */
-    positions(ids) {
+    positions(ids: string[]) {
       const found = ids.map((id) => positions.get(id) ?? -1);
       return found.every(
         (position, i) =>
@@ -39,7 +49,7 @@ export function messageIndex(
         : null;
     },
     /** @param {string[] | null} ids @param {string[] | null} anchors */
-    outcome(ids, anchors) {
+    outcome(ids: string[] | null, anchors: string[] | null) {
       if (
         !ids?.length ||
         !anchors?.length ||
@@ -68,16 +78,20 @@ export function messageIndex(
 // records. A stable, complete, strictly recognized file is required before any
 // absence or branch can be trusted. Unknown CLI formats fail closed.
 /** @param {sdk.SessionStoreEntry[]} rows @param {string} sessionId @param {string} cwd */
-function verifiedChain(rows, sessionId, cwd) {
+function verifiedChain(
+  rows: sdk.SessionStoreEntry[],
+  sessionId: string,
+  cwd: string,
+) {
   /** @type {sdk.SessionStoreEntry[]} */
-  const chain = [];
+  const chain: ChainEntry[] = [];
   const seen = new Set();
   /** @type {Map<string, string | null>} */
-  const nearestInput = new Map();
+  const nearestInput: Map<string, string | null> = new Map();
   /** @type {string | null} */
-  let previousInput = null;
-  const inputIds = new Set();
-  const uncertainIds = new Set();
+  let previousInput: string | null = null;
+  const inputIds = new Set<string>();
+  const uncertainIds = new Set<string>();
   for (const row of rows) {
     if (
       !row ||
@@ -113,7 +127,7 @@ function verifiedChain(rows, sessionId, cwd) {
     const ancestor =
       row.parentUuid === null
         ? null
-        : (nearestInput.get(/** @type {string} */ (row.parentUuid)) ?? null);
+        : (nearestInput.get(row.parentUuid) ?? null);
     // Inputs must belong to one proven conversation; output/progress may be
     // siblings and carry evolving payloads without changing input coverage.
     if (
@@ -125,11 +139,13 @@ function verifiedChain(rows, sessionId, cwd) {
     nearestInput.set(row.uuid, kind === "input" ? row.uuid : ancestor);
     if (kind === "input") previousInput = row.uuid;
     if (row.type === "user" || row.type === "assistant") {
-      chain.push(row);
+      chain.push({ ...row, type: row.type, uuid: row.uuid });
       if (kind === "input") inputIds.add(row.uuid);
     }
     if (row.type === "attachment" && kind === "input") {
-      const attachment = /** @type {{source_uuid: string}} */ (row.attachment);
+      const attachment = row.attachment;
+      if (!object(attachment) || !nativeUuid(attachment.source_uuid))
+        return null;
       inputIds.add(attachment.source_uuid);
       chain.push({
         ...row,
@@ -143,10 +159,11 @@ function verifiedChain(rows, sessionId, cwd) {
   return chain.length ? Object.assign(chain, { inputIds, uncertainIds }) : null;
 }
 
-/** @typedef {{id: string, nativeId?: string, cwd: string, nativeHistoryCwd?: string}} HistorySession */
-/** @typedef {{configDir?: string, filesystem?: object, sessionApi?: Pick<typeof sdk, "getSessionInfo" | "getSessionMessages" | "importSessionToStore">}} HistoryReadOptions */
 /** @param {HistorySession} session @param {HistoryReadOptions} [options] */
-export async function readHistoryIndex(session, options = {}) {
+export async function readHistoryIndex(
+  session: HistorySession,
+  options: HistoryReadOptions = {},
+) {
   const api = options.sessionApi || sdk;
   const sessionId = session.nativeId || session.id;
   const dir = session.nativeHistoryCwd || session.cwd;
@@ -164,9 +181,9 @@ export async function readHistoryIndex(session, options = {}) {
       )
         return null;
       /** @type {sdk.SessionStoreEntry[]} */
-      const entries = [];
+      const entries: sdk.SessionStoreEntry[] = [];
       /** @type {sdk.SessionStore} */
-      const store = {
+      const store: sdk.SessionStore = {
         append: async (key, batch) => {
           if (
             key.sessionId !== sessionId ||
@@ -221,16 +238,16 @@ export async function readHistoryIndex(session, options = {}) {
         .filter((message) => message.type !== "system")
         .map((message) => message.uuid);
       const expectedOrder = chain
-        .filter((row) => visibleIds.has(/** @type {string} */ (row.uuid)))
+        .filter((row) => visibleIds.has(row.uuid))
         .map((row) => row.uuid);
       if (!isDeepStrictEqual(visibleOrder, expectedOrder)) return null;
       if (
         chain.some(
           (row) =>
-            chain.inputIds.has(/** @type {string} */ (row.uuid)) &&
+            chain.inputIds.has(row.uuid) &&
             !row.isMeta &&
             !row.queuedProvenance &&
-            !visibleIds.has(/** @type {string} */ (row.uuid)),
+            !visibleIds.has(row.uuid),
         )
       )
         return null;
@@ -240,8 +257,8 @@ export async function readHistoryIndex(session, options = {}) {
         Object.assign(
           messageIndex(
             chain.map((row) => ({
-              type: /** @type {"user" | "assistant"} */ (row.type),
-              uuid: /** @type {string} */ (row.uuid),
+              type: row.type,
+              uuid: row.uuid,
               session_id: sessionId,
               message: row.message,
               parent_tool_use_id: null,
@@ -263,7 +280,7 @@ export async function readHistoryIndex(session, options = {}) {
 /** Controls cannot perform a native effect from uncertain coverage.
  * @param {HistorySession} session
  */
-export async function verifiedHistoryMessages(session) {
+export async function verifiedHistoryMessages(session: HistorySession) {
   const index = await readHistoryIndex(session);
   if (!index)
     throw new Error(
@@ -277,14 +294,22 @@ export async function verifiedHistoryMessages(session) {
  * @param {sdk.SessionStoreEntry[] | undefined | null} rows
  * @param {{sessionId: string, cwd: string, anchorIds: string[] | null, inputIds: string[] | null}} scope
  */
-export function inputHistoryOutcome(rows, scope) {
+export function inputHistoryOutcome(
+  rows: sdk.SessionStoreEntry[] | undefined | null,
+  scope: {
+    sessionId: string;
+    cwd: string;
+    anchorIds: string[] | null;
+    inputIds: string[] | null;
+  },
+) {
   if (!Array.isArray(rows)) return "unknown";
   const chain = verifiedChain(rows, scope.sessionId, scope.cwd);
   if (!chain) return "unknown";
   return messageIndex(
     chain.map((row) => ({
-      type: /** @type {"user" | "assistant"} */ (row.type),
-      uuid: /** @type {string} */ (row.uuid),
+      type: row.type,
+      uuid: row.uuid,
       session_id: scope.sessionId,
       message: row.message,
       parent_tool_use_id: null,

@@ -1,12 +1,54 @@
+import type { Options } from "@anthropic-ai/claude-agent-sdk";
+import type {
+  Session,
+  SessionMetadata,
+  JournalRepairReport,
+} from "./session-state.ts";
+import type { HistoryReadOptions } from "./history-index.ts";
+import type { JournalChange } from "./journal-repair.ts";
+import { object } from "./history-records.ts";
+export interface StoreOptions {
+  maxCacheBytes?: number;
+  compactBytes?: number;
+  compactRecords?: number;
+  diskFullRetryMs?: number;
+  isPinned?: (id: string) => boolean;
+  onSaved?: (session: Session) => void;
+  nativeHistory?: HistoryReadOptions;
+}
+interface SavedSession {
+  session: Session;
+  sequence: number;
+  records: number;
+  journalBytes: number;
+}
+interface CacheEntry extends SavedSession {
+  shadow: Session;
+  used: number;
+  syncSessionBytesOnWrite: boolean;
+  metadataDirty?: boolean;
+  journalRepairNeeded?: boolean;
+  sessionBytes: number;
+  shadowBytes: number;
+  bytes: number;
+}
 import fs from "node:fs/promises";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
-import { reconcileNativeSession } from "./session-identity.mjs";
-import { reconcileRestartTurns } from "./restart-reconcile.mjs";
-import {
-  validJournalRecord,
-  nativeConfirmsJournal,
-} from "./journal-repair.mjs";
+import { reconcileNativeSession } from "./session-identity.ts";
+import { reconcileRestartTurns } from "./restart-reconcile.ts";
+import { validJournalRecord, nativeConfirmsJournal } from "./journal-repair.ts";
+
+// These documents are written and read by this bridge; preserve the existing
+// trusted local persistence boundary without adding migration-time validation.
+function parseSessionSnapshot(
+  text: string,
+): Session & { format?: string; session: Session; sequence: number } {
+  return JSON.parse(text);
+}
+function parseSessionMetadata(text: string): SessionMetadata {
+  return JSON.parse(text);
+}
 
 const FORMAT = "studio-claude-session-v1";
 // Maximum bytes read from a saved repair marker. Never read journal or transcript text here.
@@ -18,8 +60,12 @@ const DEFAULT_COMPACT_RECORDS = 128;
 const DEFAULT_DISK_FULL_RETRY_MS = 15_000;
 
 // A write failed because the volume has no free space (ENOSPC) or the user quota is used (EDQUOT).
-export function isDiskFull(error) {
-  for (let current = error, depth = 0; current && depth < 8; depth++) {
+export function isDiskFull(error: unknown): boolean {
+  for (
+    let current: unknown = error, depth = 0;
+    object(current) && depth < 8;
+    depth++
+  ) {
     if (current.code === "ENOSPC" || current.code === "EDQUOT") return true;
     if (Array.isArray(current.errors) && current.errors.some(isDiskFull))
       return true;
@@ -30,7 +76,11 @@ export function isDiskFull(error) {
 
 // Replace a file in one rename. A failed write or rename removes the
 // temporary file, so the previous file stays and no partial file remains.
-export async function writeFileAtomic(file, data, mode = 0o600) {
+export async function writeFileAtomic(
+  file: string,
+  data: Parameters<typeof fs.writeFile>[1],
+  mode = 0o600,
+) {
   const tmp = file + "." + randomUUID() + ".tmp";
   try {
     await fs.writeFile(tmp, data, { mode });
@@ -41,7 +91,9 @@ export async function writeFileAtomic(file, data, mode = 0o600) {
   }
 }
 
-export function ephemeralSessionOptions(session) {
+export function ephemeralSessionOptions(
+  session?: Pick<Session, "ephemeral">,
+): Partial<Options> {
   if (session?.ephemeral !== true) return {};
   return {
     persistSession: false,
@@ -54,11 +106,11 @@ export function ephemeralSessionOptions(session) {
   };
 }
 
-function copy(value) {
+function copy<T>(value: T): T {
   return structuredClone(value);
 }
 
-function estimateJsonBytes(value) {
+function estimateJsonBytes(value: unknown): number {
   if (value === undefined) return 0;
   if (value === null) return 4;
   if (typeof value === "string")
@@ -75,7 +127,7 @@ function estimateJsonBytes(value) {
       ) +
       Math.max(0, value.length - 1)
     );
-  const entries = Object.entries(value).filter(
+  const entries = Object.entries(value ?? {}).filter(
     ([, item]) => item !== undefined,
   );
   return (
@@ -92,7 +144,12 @@ function estimateJsonBytes(value) {
   );
 }
 
-function diff(before, after, location = [], changes = []) {
+function diff(
+  before: unknown,
+  after: unknown,
+  location: JournalChange["path"] = [],
+  changes: JournalChange[] = [],
+): number {
   if (before === after) return 0;
   if (
     before == null ||
@@ -130,8 +187,8 @@ function diff(before, after, location = [], changes = []) {
     after &&
     typeof before === "object" &&
     typeof after === "object" &&
-    !Array.isArray(before) &&
-    !Array.isArray(after)
+    object(before) &&
+    object(after)
   ) {
     const oldKeys = Object.keys(before).filter(
       (key) => before[key] !== undefined,
@@ -165,20 +222,39 @@ function diff(before, after, location = [], changes = []) {
   return estimateJsonBytes(after) - estimateJsonBytes(before);
 }
 
-function apply(session, changes) {
+function replaySessionJournal(
+  session: Session,
+  changes: JournalChange[],
+): Session {
+  let result: unknown = session;
   for (const change of changes) {
-    let parent = session;
-    for (const key of change.path.slice(0, -1)) parent = parent[key];
+    let parent: unknown = result;
+    for (const key of change.path.slice(0, -1)) {
+      if (parent === null || typeof parent !== "object")
+        throw new TypeError("Invalid journal parent");
+      parent = Reflect.get(parent, key);
+    }
     const key = change.path.at(-1);
-    if (change.op === "append") parent[key].push(...change.value);
-    else if (change.op === "delete") delete parent[key];
-    else if (change.path.length) parent[key] = change.value;
-    else session = change.value;
+    if (change.op === "set" && !change.path.length) {
+      result = change.value;
+      continue;
+    }
+    if (parent === null || typeof parent !== "object" || key === undefined)
+      throw new TypeError("Invalid journal path");
+    if (change.op === "append") {
+      const target: unknown = Reflect.get(parent, key);
+      if (!Array.isArray(target) || !Array.isArray(change.value))
+        throw new TypeError("Invalid journal append");
+      target.push(...change.value);
+    } else if (change.op === "delete") Reflect.deleteProperty(parent, key);
+    else Reflect.set(parent, key, change.value);
   }
-  return session;
+  // Trust boundary: this bridge wrote these journal records and snapshots.
+  // Schema validation is deliberately outside this behavior-preserving migration.
+  return result as Session;
 }
 
-export function createSessionStore(root, options = {}) {
+export function createSessionStore(root: string, options: StoreOptions = {}) {
   const directory = path.join(root, "sessions");
   const ready = fs.mkdir(directory, { recursive: true, mode: 0o700 });
   const configuredCacheBytes = Number(process.env.STUDIO_CLAUDE_CACHE_BYTES);
@@ -199,30 +275,40 @@ export function createSessionStore(root, options = {}) {
       : DEFAULT_DISK_FULL_RETRY_MS);
   // Sessions whose last write failed because the disk is full. They stay cached
   // and are saved again from the live object until a write succeeds.
-  const unsaved = new Map();
-  let unsavedTimer = null;
-  const sessions = new Map();
-  const entries = new Map();
-  const writes = new Map();
+  const unsaved = new Map<string, Session>();
+  let unsavedTimer: NodeJS.Timeout | null = null;
+  const sessions = new Map<string, Session>();
+  const entries = new Map<string, CacheEntry>();
+  const writes = new Map<string, Promise<void>>();
   // Per session, the save that waits behind the running one and has not started.
-  const queued = new Map();
-  const loads = new Map();
-  const evicted = new Map();
-  const metadataCache = new Map();
-  const finalizer = new FinalizationRegistry(({ id, ref }) => {
+  const queued = new Map<
+    string,
+    { session: Session; promise: Promise<void> }
+  >();
+  const loads = new Map<string, Promise<Session>>();
+  const evicted = new Map<string, WeakRef<Session>>();
+  const metadataCache = new Map<string, SessionMetadata>();
+  const finalizer = new FinalizationRegistry<{
+    id: string;
+    ref: WeakRef<Session>;
+  }>(({ id, ref }) => {
     if (evicted.get(id) === ref) evicted.delete(id);
   });
   let clock = 0;
   let retainedBytes = 0;
 
-  const fileFor = (id) => {
+  const fileFor = (id: string) => {
     if (!/^[a-f0-9-]{36}$/.test(id))
       throw new Error("Invalid Claude session identity");
     return path.join(directory, id + ".json");
   };
-  const logFor = (id) => fileFor(id).replace(/\.json$/, ".jsonl");
-  const metadataFileFor = (id) => fileFor(id).replace(/\.json$/, ".meta.json");
-  const metadataFor = (session, revision) => ({
+  const logFor = (id: string) => fileFor(id).replace(/\.json$/, ".jsonl");
+  const metadataFileFor = (id: string) =>
+    fileFor(id).replace(/\.json$/, ".meta.json");
+  const metadataFor = (
+    session: Session,
+    revision: string,
+  ): SessionMetadata => ({
     id: session.id,
     cwd: session.cwd,
     createdAt: session.createdAt,
@@ -234,7 +320,10 @@ export function createSessionStore(root, options = {}) {
     activePermissionProfile: session.activePermissionProfile ?? null,
     revision,
   });
-  const writeMetadata = async (session, revision = randomUUID()) => {
+  const writeMetadata = async (
+    session: Session,
+    revision: string = randomUUID(),
+  ) => {
     const metadata = metadataFor(session, revision);
     await writeFileAtomic(
       metadataFileFor(session.id),
@@ -243,21 +332,26 @@ export function createSessionStore(root, options = {}) {
     metadataCache.set(session.id, metadata);
     return metadata;
   };
-  const readBase = async (id) => {
+  const readBase = async (id: string): Promise<SavedSession> => {
     await ready;
     const raw = await fs.readFile(fileFor(id), "utf8");
-    const saved = JSON.parse(raw);
+    const saved = parseSessionSnapshot(raw);
     if (saved?.format === FORMAT)
-      return { session: saved.session, sequence: saved.sequence };
-    return { session: saved, sequence: 0 };
+      return {
+        session: saved.session,
+        sequence: saved.sequence,
+        records: 0,
+        journalBytes: 0,
+      };
+    return { session: saved, sequence: 0, records: 0, journalBytes: 0 };
   };
-  const readAll = async (id) => {
+  const readAll = async (id: string): Promise<SavedSession> => {
     const base = await readBase(id);
     let logBytes = Buffer.alloc(0);
     try {
       logBytes = await fs.readFile(logFor(id));
     } catch (error) {
-      if (error.code !== "ENOENT") throw error;
+      if (!object(error) || error.code !== "ENOENT") throw error;
     }
     const log = logBytes.toString("utf8");
     const completeLines = log.split("\n");
@@ -280,7 +374,7 @@ export function createSessionStore(root, options = {}) {
     const snapshotSequence = base.sequence;
     for (const line of completeLines) {
       if (!line) continue;
-      let record;
+      let record: unknown;
       try {
         record = JSON.parse(line);
       } catch {
@@ -297,7 +391,7 @@ export function createSessionStore(root, options = {}) {
       if (record.sequence <= snapshotSequence) continue;
       if (record.sequence !== base.sequence + 1) invalidSequence = true;
       try {
-        base.session = apply(base.session, record.changes);
+        base.session = replaySessionJournal(base.session, record.changes);
       } catch {
         skippedRows++;
         invalidSequence = true;
@@ -313,7 +407,13 @@ export function createSessionStore(root, options = {}) {
     base.journalBytes = validLogBytes;
     if (skippedRows || invalidSequence) {
       const marker = fileFor(id).replace(/\.json$/, ".repair.json");
-      const report = { status: "needs_repair", skippedRows, invalidSequence };
+      const report: JournalRepairReport = {
+        status: "needs_repair",
+        skippedRows,
+        invalidSequence,
+        scopeConfirmed: false,
+        nativeHistoryConfirmed: false,
+      };
       const sameScope =
         JSON.stringify(originalScope) ===
         JSON.stringify([
@@ -350,19 +450,22 @@ export function createSessionStore(root, options = {}) {
     return base;
   };
   // Measure both retained objects only when the cache adopts or creates an entry.
-  const measure = (entry) => {
+  const measure = (entry: CacheEntry) => {
     entry.sessionBytes = estimateJsonBytes(entry.session);
     entry.shadowBytes = estimateJsonBytes(entry.shadow);
     entry.bytes = entry.sessionBytes + entry.shadowBytes;
   };
-  const rememberEvicted = (id, session) => {
+  const rememberEvicted = (id: string, session: Session) => {
     const ref = new WeakRef(session);
     evicted.set(id, ref);
     finalizer.unregister(session);
     finalizer.register(session, { id, ref }, session);
   };
-  const adopt = (id, session, saved) => {
-    const entry = {
+  const adopt = (id: string, session: Session, saved: SavedSession) => {
+    const entry: CacheEntry = {
+      sessionBytes: 0,
+      shadowBytes: 0,
+      bytes: 0,
       session,
       shadow: saved.session,
       sequence: saved.sequence,
@@ -387,7 +490,7 @@ export function createSessionStore(root, options = {}) {
   };
   const enforceLimit = () => {
     while (retainedBytes > maxCacheBytes) {
-      let candidate;
+      let candidate: [string, CacheEntry] | undefined;
       for (const [id, entry] of entries) {
         if (options.isPinned?.(id) || writes.has(id) || unsaved.has(id))
           continue;
@@ -403,7 +506,7 @@ export function createSessionStore(root, options = {}) {
     }
   };
   const remember = (
-    session,
+    session: Session,
     sequence = 0,
     records = 0,
     journalBytes = 0,
@@ -414,7 +517,10 @@ export function createSessionStore(root, options = {}) {
     sessions.set(id, session);
     const previous = entries.get(id);
     if (previous) retainedBytes -= previous.bytes;
-    const entry = {
+    const entry: CacheEntry = {
+      sessionBytes: 0,
+      shadowBytes: 0,
+      bytes: 0,
       session,
       shadow: previous?.shadow || shadow,
       sequence: previous?.sequence ?? sequence,
@@ -429,12 +535,12 @@ export function createSessionStore(root, options = {}) {
     enforceLimit();
     return session;
   };
-  const atomicSnapshot = (id, session, sequence) =>
+  const atomicSnapshot = (id: string, session: Session, sequence: number) =>
     writeFileAtomic(
       fileFor(id),
       JSON.stringify({ format: FORMAT, sequence, session }),
     );
-  const persistNow = async (session) => {
+  const persistNow = async (session: Session) => {
     await ready;
     const id = session.id;
     if (loads.has(id) && (await loads.get(id)) !== session)
@@ -453,7 +559,7 @@ export function createSessionStore(root, options = {}) {
       try {
         saved = await readAll(id);
       } catch (error) {
-        if (error.code !== "ENOENT") throw error;
+        if (!object(error) || error.code !== "ENOENT") throw error;
         const initial = copy(session);
         await atomicSnapshot(id, initial, 0);
         await fs.writeFile(logFor(id), "", { mode: 0o600 });
@@ -465,6 +571,9 @@ export function createSessionStore(root, options = {}) {
         return;
       }
       entry = {
+        sessionBytes: 0,
+        shadowBytes: 0,
+        bytes: 0,
         session,
         shadow: saved.session,
         sequence: saved.sequence,
@@ -493,7 +602,7 @@ export function createSessionStore(root, options = {}) {
       await fs.truncate(journalFile, entry.journalBytes);
       entry.journalRepairNeeded = false;
     }
-    const changes = [];
+    const changes: JournalChange[] = [];
     const deltaBytes = diff(entry.shadow, session, [], changes);
     if (!changes.length && !entry.metadataDirty) return;
     if (changes.length) {
@@ -518,7 +627,7 @@ export function createSessionStore(root, options = {}) {
         }
         throw error;
       }
-      entry.shadow = apply(entry.shadow, frozenChanges);
+      entry.shadow = replaySessionJournal(entry.shadow, frozenChanges);
       entry.sequence = sequence;
       entry.records++;
       entry.journalBytes += Buffer.byteLength(record);
@@ -568,7 +677,10 @@ export function createSessionStore(root, options = {}) {
     }
   };
 
-  async function load(id, reused = null) {
+  async function load(
+    id: string,
+    reused: Session | null = null,
+  ): Promise<Session> {
     const saved = await readAll(id);
     let shadow = copy(saved.session);
     const session = reused || saved.session;
@@ -588,11 +700,11 @@ export function createSessionStore(root, options = {}) {
     }
     return adopt(id, session, { ...saved, session: shadow });
   }
-  async function get(id) {
+  async function get(id: string): Promise<Session> {
     if (sessions.has(id)) {
       const entry = entries.get(id);
       if (entry) entry.used = ++clock;
-      return sessions.get(id);
+      return sessions.get(id) ?? load(id);
     }
     if (!loads.has(id)) {
       const weak = evicted.get(id);
@@ -609,22 +721,26 @@ export function createSessionStore(root, options = {}) {
         },
       );
     }
-    return loads.get(id);
+    const pending = loads.get(id);
+    if (!pending) throw new Error("Claude session load was not scheduled");
+    return pending;
   }
-  async function metadata(id) {
+  async function metadata(id: string): Promise<SessionMetadata> {
     const live = sessions.get(id);
     if (live?.ephemeral === true) return metadataFor(live, `ephemeral:${id}`);
     const cached = metadataCache.get(id);
     if (cached) return cached;
     await ready;
     try {
-      const saved = JSON.parse(await fs.readFile(metadataFileFor(id), "utf8"));
+      const saved = parseSessionMetadata(
+        await fs.readFile(metadataFileFor(id), "utf8"),
+      );
       if (saved?.id !== id || typeof saved.revision !== "string")
         throw new Error("Claude session metadata is invalid");
       metadataCache.set(id, saved);
       return saved;
     } catch (error) {
-      if (error.code !== "ENOENT") throw error;
+      if (!object(error) || error.code !== "ENOENT") throw error;
     }
     // Legacy sessions have no header. Load only the requested record, then
     // write a sidecar so later list and read requests avoid the transcript.
@@ -634,7 +750,7 @@ export function createSessionStore(root, options = {}) {
     if (!wasCached) await evict(id);
     return metadata;
   }
-  async function listMetadata(cursor = null, limit = 50) {
+  async function listMetadata(cursor: string | null = null, limit = 50) {
     await ready;
     const ids = (await fs.readdir(directory))
       .filter((file) => /^[a-f0-9-]{36}\.json$/.test(file))
@@ -655,7 +771,7 @@ export function createSessionStore(root, options = {}) {
       nextCursor: offset + size < ids.length ? String(offset + size) : null,
     };
   }
-  function persist(session) {
+  function persist(session: Session): Promise<void> {
     // Claude title requests use Python's --no-session-persistence behavior.
     // Keep their turns in the live map for the duration of the request, but
     // never create transcript, journal, or metadata files for them.
@@ -698,7 +814,7 @@ export function createSessionStore(root, options = {}) {
   }
   // The disk is full: keep the live session and save it again later. The
   // journal diff starts from the last saved shadow, so nothing is lost.
-  function deferSave(session) {
+  function deferSave(session: Session) {
     unsaved.set(session.id, session);
     if (unsavedTimer) return;
     unsavedTimer = setTimeout(() => {
@@ -709,7 +825,7 @@ export function createSessionStore(root, options = {}) {
   }
   // Save without failing the caller when the disk is full. Returns true when
   // the save is deferred; any other write error still rejects.
-  async function persistOrDefer(session) {
+  async function persistOrDefer(session: Session) {
     try {
       await persist(session);
       return false;
@@ -718,7 +834,7 @@ export function createSessionStore(root, options = {}) {
       return true;
     }
   }
-  async function evict(id) {
+  async function evict(id: string) {
     const pending = writes.get(id);
     if (pending) await pending.catch(() => {});
     if (options.isPinned?.(id) || writes.has(id) || unsaved.has(id))
@@ -753,7 +869,7 @@ export function createSessionStore(root, options = {}) {
   }
   // This read must remain available when get() refuses a damaged session.
   // Do not call readAll(): it can compact a confirmed journal repair.
-  async function repairReport(id) {
+  async function repairReport(id: string) {
     await ready;
     const marker = fileFor(id).replace(/\.json$/, ".repair.json");
     let handle;
@@ -763,9 +879,13 @@ export function createSessionStore(root, options = {}) {
       const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0);
       if (bytesRead > MAX_REPAIR_REPORT_BYTES)
         throw new Error("Claude repair report exceeds the read limit");
-      const report = JSON.parse(buffer.subarray(0, bytesRead).toString("utf8"));
+      const report: unknown = JSON.parse(
+        buffer.subarray(0, bytesRead).toString("utf8"),
+      );
       if (
-        !["needs_repair", "repaired"].includes(report.status) ||
+        !object(report) ||
+        !["needs_repair", "repaired"].includes(String(report.status)) ||
+        typeof report.skippedRows !== "number" ||
         !Number.isSafeInteger(report.skippedRows) ||
         report.skippedRows < 0 ||
         typeof report.invalidSequence !== "boolean"
@@ -785,7 +905,7 @@ export function createSessionStore(root, options = {}) {
             : null,
       };
     } catch (error) {
-      if (error.code !== "ENOENT") throw error;
+      if (!object(error) || error.code !== "ENOENT") throw error;
       return {
         status: "none",
         skippedRows: 0,
@@ -805,7 +925,7 @@ export function createSessionStore(root, options = {}) {
     listMetadata,
     persist,
     persistOrDefer,
-    isUnsaved: (id) => unsaved.has(id),
+    isUnsaved: (id: string) => unsaved.has(id),
     evict,
     drain,
     stats,

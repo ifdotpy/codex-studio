@@ -1,13 +1,20 @@
+import assert from "node:assert/strict";
+import type { Session, Turn } from "./session-state.ts";
 import { afterEach, expect, test } from "vitest";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import * as sdk from "@anthropic-ai/claude-agent-sdk";
-import { readHistoryIndex, verifiedHistoryMessages } from "./history-index.mjs";
+import { readHistoryIndex, verifiedHistoryMessages } from "./history-index.ts";
 import { forkAtTurn, rollbackSession } from "./controls.mjs";
 
-const roots = [];
+function at<T>(values: readonly T[], index: number): T {
+  const value = values[index];
+  assert.ok(value !== undefined, "Expected fixture entry");
+  return value;
+}
+const roots: string[] = [];
 const previous = process.env.CLAUDE_CONFIG_DIR;
 afterEach(async () => {
   if (previous === undefined) delete process.env.CLAUDE_CONFIG_DIR;
@@ -26,8 +33,8 @@ async function fixture(serviceFirst = true) {
   const configDir = path.join(cwd, "config");
   process.env.CLAUDE_CONFIG_DIR = configDir;
   const nativeId = randomUUID();
-  const ids = Array.from({ length: 6 }, () => randomUUID());
-  const rows = ids.map((uuid, index) => ({
+  const ids: string[] = Array.from({ length: 6 }, () => randomUUID());
+  const rows: sdk.SessionStoreEntry[] = ids.map((uuid, index) => ({
     type: index === 2 || index === 5 ? "assistant" : "user",
     uuid,
     parentUuid: index ? ids[index - 1] : null,
@@ -63,8 +70,11 @@ async function fixture(serviceFirst = true) {
     `${nativeId}.jsonl`,
   );
   await fs.mkdir(path.dirname(file), { recursive: true });
-  await fs.writeFile(file, rows.map(JSON.stringify).join("\n") + "\n");
-  const session = {
+  await fs.writeFile(
+    file,
+    rows.map((value) => JSON.stringify(value)).join("\n") + "\n",
+  );
+  const session: Session & { nativeId: string } = {
     id: randomUUID(),
     nativeId,
     cwd,
@@ -72,11 +82,11 @@ async function fixture(serviceFirst = true) {
     turns: [0, 3].map((index) => ({
       id: `turn${index}`,
       status: "completed",
-      nativeMessageId: ids[index],
+      nativeMessageId: at(ids, index),
       items: [
         {
           type: "userMessage",
-          nativeId: ids[index + 1],
+          nativeId: at(ids, index + 1),
           nativeIds: ids.slice(index, index + 2),
         },
       ],
@@ -90,12 +100,15 @@ for (const damage of ["malformed uuid", "unknown record"])
     const f = await fixture();
     const rows = f.rows.slice(0, 3);
     rows.push({
-      ...rows[2],
+      ...at(rows, 2),
       uuid: damage === "malformed uuid" ? "bad-uuid" : randomUUID(),
-      parentUuid: rows[2].uuid,
+      parentUuid: at(rows, 2).uuid,
       ...(damage === "unknown record" ? { type: "future-input" } : {}),
     });
-    await fs.writeFile(f.file, rows.map(JSON.stringify).join("\n") + "\n");
+    await fs.writeFile(
+      f.file,
+      rows.map((value) => JSON.stringify(value)).join("\n") + "\n",
+    );
     // The installed SDK silently skips unknown rows and accepts malformed UUIDs.
     expect(
       (await sdk.getSessionMessages(f.session.nativeId, { dir: f.cwd })).length,
@@ -109,49 +122,52 @@ for (const serviceFirst of [true, false])
       dir: f.cwd,
     });
     expect(visible).toHaveLength(4);
-    const deps = {
+    const deps: typeof sdk & { persist: () => Promise<void> } = {
       ...sdk,
       getSessionMessages: (id, options) =>
-        verifiedHistoryMessages({ id, cwd: options.dir }),
+        verifiedHistoryMessages({ id, cwd: options?.dir ?? f.cwd }),
       persist: async () => {},
     };
     const fork = await forkAtTurn(f.session, { lastTurnId: "turn0" }, deps);
     expect(fork.turns).toHaveLength(1);
-    expect(fork.turns[0].items[0].nativeIds).toHaveLength(2);
+    expect(fork.turns[0]?.items[0]?.nativeIds).toHaveLength(2);
     await rollbackSession(
       f.session,
       { requestId: randomUUID(), turnId: "turn3" },
       deps,
     );
     expect(f.session.turns).toHaveLength(1);
-    expect(f.session.turns[0].items[0].nativeIds).toHaveLength(2);
+    expect(f.session.turns[0]?.items[0]?.nativeIds).toHaveLength(2);
   });
 
 for (const damage of ["malformed uuid", "unknown record"])
   test(`restart preserves uncertain input receipts after ${damage}`, async () => {
     const f = await fixture(false);
     const rows = [
-      f.rows[0],
+      at(f.rows, 0),
       {
-        ...f.rows[2],
-        parentUuid: f.ids[0],
+        ...at(f.rows, 2),
+        parentUuid: at(f.ids, 0),
         uuid: damage === "malformed uuid" ? "bad-uuid" : randomUUID(),
         ...(damage === "unknown record" ? { type: "future-input" } : {}),
       },
     ];
-    await fs.writeFile(f.file, rows.map(JSON.stringify).join("\n") + "\n");
-    const { createSessionStore } = await import("./session-store.mjs");
+    await fs.writeFile(
+      f.file,
+      rows.map((value) => JSON.stringify(value)).join("\n") + "\n",
+    );
+    const { createSessionStore } = await import("./session-store.ts");
     f.session.turns = [
       {
         id: "stale",
         status: "inProgress",
         startOutcome: "preparing",
         items: [
-          { id: "initial", type: "userMessage", nativeId: f.ids[0] },
+          { id: "initial", type: "userMessage", nativeId: at(f.ids, 0) },
           {
             id: "steer",
             type: "userMessage",
-            nativeId: f.ids[3],
+            nativeId: at(f.ids, 3),
             delivery: "steer",
             deliveryStatus: "submitted",
           },
@@ -161,22 +177,24 @@ for (const damage of ["malformed uuid", "unknown record"])
     const root = path.join(f.cwd, "state");
     await createSessionStore(root).persist(f.session);
     const restored = await createSessionStore(root).get(f.session.id);
-    expect(restored.turns[0].status).toBe("uncertain");
-    expect(restored.turns[0].startOutcome).toBe("preparing");
-    expect(restored.turns[0].items[1].deliveryStatus).toBe("submitted");
-    expect(restored.turns[0].unappliedSteers).toBeUndefined();
+    expect(restored.turns[0]?.status).toBe("uncertain");
+    expect(restored.turns[0]?.startOutcome).toBe("preparing");
+    expect(restored.turns[0]?.items[1]?.deliveryStatus).toBe("submitted");
+    expect(
+      Reflect.get(at(restored.turns, 0), "unappliedSteers"),
+    ).toBeUndefined();
   });
 
 test("post-clear controls use current native turns while preserving earlier mirror history", async () => {
   const f = await fixture();
   for (const turn of f.session.turns) turn.nativeSessionId = f.session.nativeId;
-  const earlier = {
+  const earlier: Turn = {
     id: "before-clear",
     nativeSessionId: randomUUID(),
     status: "completed",
     items: [{ type: "userMessage", nativeId: randomUUID() }],
   };
-  const clear = {
+  const clear: Turn = {
     id: "clear",
     nativeSessionId: f.session.nativeId,
     nativeHistoryDetached: true,
@@ -184,14 +202,14 @@ test("post-clear controls use current native turns while preserving earlier mirr
     items: [{ type: "userMessage", nativeId: randomUUID() }],
   };
   f.session.turns.unshift(earlier, clear);
-  const deps = {
+  const deps: typeof sdk & { persist: () => Promise<void> } = {
     ...sdk,
     getSessionMessages: (id, options) =>
-      verifiedHistoryMessages({ id, cwd: options.dir }),
+      verifiedHistoryMessages({ id, cwd: options?.dir ?? f.cwd }),
     persist: async () => {},
   };
   const fork = await forkAtTurn(f.session, { lastTurnId: "turn0" }, deps);
-  expect(fork.turns.map((turn) => turn.id)).toEqual([
+  expect(fork.turns.map((turn: Turn) => turn.id)).toEqual([
     "before-clear",
     "clear",
     "turn0",
@@ -225,27 +243,30 @@ for (const [kind, change] of [
       },
     },
   ],
-])
+] satisfies [string, Record<string, unknown>][])
   test(`unsupported structure cannot prove absence: ${kind}`, async () => {
     const f = await fixture();
     const rows = f.rows.slice(0, 3);
     rows.push({
-      ...f.rows[2],
+      ...at(f.rows, 2),
       uuid: randomUUID(),
-      parentUuid: f.ids[2],
+      parentUuid: at(f.ids, 2),
       ...change,
     });
-    await fs.writeFile(f.file, rows.map(JSON.stringify).join("\n") + "\n");
+    await fs.writeFile(
+      f.file,
+      rows.map((value) => JSON.stringify(value)).join("\n") + "\n",
+    );
     const index = await readHistoryIndex(f.session);
-    expect(index?.outcome([randomUUID()], [f.ids[1]]) ?? "unknown").toBe(
+    expect(index?.outcome([randomUUID()], [at(f.ids, 1)]) ?? "unknown").toBe(
       "unknown",
     );
   });
 
 test("installed alpha import retains exact ordered meta provenance", async () => {
   const f = await fixture();
-  const entries = [];
-  const keys = [];
+  const entries: sdk.SessionStoreEntry[] = [];
+  const keys: sdk.SessionKey[] = [];
   const result = await sdk.importSessionToStore(
     f.session.nativeId,
     {
@@ -269,8 +290,8 @@ test("installed alpha import retains exact ordered meta provenance", async () =>
   ).toBe(true);
   expect(entries).toEqual(f.rows);
   expect(entries.filter((row) => row.isMeta).map((row) => row.uuid)).toEqual([
-    f.ids[0],
-    f.ids[3],
+    at(f.ids, 0),
+    at(f.ids, 3),
   ]);
 });
 for (const behavior of [
@@ -283,7 +304,11 @@ for (const behavior of [
     const f = await fixture();
     const sessionApi = {
       ...sdk,
-      importSessionToStore: async (id, store, options) => {
+      importSessionToStore: async (
+        id: string,
+        store: sdk.SessionStore,
+        options: Parameters<typeof sdk.importSessionToStore>[2],
+      ) => {
         if (behavior === "throws") throw new Error("alpha API changed");
         if (behavior === "missing batch") return;
         if (behavior === "unexpected project key")
@@ -295,6 +320,7 @@ for (const behavior of [
         return { newShape: true };
       },
     };
+    // @ts-expect-error importSessionToStore intentionally returns an unsupported result shape.
     expect(await readHistoryIndex(f.session, { sessionApi })).toBeNull();
   });
 
@@ -314,7 +340,7 @@ for (const [field, value] of [
   ["commandUuid", "not-a-uuid"],
   ["reason", []],
   ["deliveryId", {}],
-])
+] satisfies [string, unknown][])
   test(`queue input payload rejects malformed ${field}`, async () => {
     const f = await fixture();
     const rows = [
@@ -327,9 +353,12 @@ for (const [field, value] of [
         [field]: value,
       },
     ];
-    await fs.writeFile(f.file, rows.map(JSON.stringify).join("\n") + "\n");
+    await fs.writeFile(
+      f.file,
+      rows.map((value) => JSON.stringify(value)).join("\n") + "\n",
+    );
     const index = await readHistoryIndex(f.session);
-    expect(index?.outcome([randomUUID()], [f.ids[1]]) ?? "unknown").toBe(
+    expect(index?.outcome([randomUUID()], [at(f.ids, 1)]) ?? "unknown").toBe(
       "unknown",
     );
   });
@@ -337,7 +366,11 @@ for (const [field, value] of [
 for (const kind of ["system retry", "tool references", "non-input attachment"])
   test(`non-input ${kind} preserves complete input coverage`, async () => {
     const f = await fixture();
-    const extra = { ...f.rows[5], uuid: randomUUID(), parentUuid: f.ids[5] };
+    const extra = {
+      ...at(f.rows, 5),
+      uuid: randomUUID(),
+      parentUuid: at(f.ids, 5),
+    };
     if (kind === "future system subtype")
       Object.assign(extra, {
         type: "system",
@@ -381,32 +414,33 @@ for (const kind of ["system retry", "tool references", "non-input attachment"])
       });
     await fs.writeFile(
       f.file,
-      [...f.rows, extra].map(JSON.stringify).join("\n") + "\n",
+      [...f.rows, extra].map((value) => JSON.stringify(value)).join("\n") +
+        "\n",
     );
     const index = await readHistoryIndex(f.session);
-    expect(index?.outcome([randomUUID()], [f.ids[1]]) ?? "unknown").toBe(
+    expect(index?.outcome([randomUUID()], [at(f.ids, 1)]) ?? "unknown").toBe(
       "not_applied",
     );
-    expect(index?.outcome([f.ids[1]], [f.ids[1]])).toBe("delivered");
+    expect(index?.outcome([at(f.ids, 1)], [at(f.ids, 1)])).toBe("delivered");
   });
 
 for (const content of [[{ type: "text", text: "Studio instruction" }], 42])
   test(`an unknown input-shaped attachment remains unknown: ${JSON.stringify(content)}`, async () => {
     const f = await fixture();
     const row = {
-      ...f.rows[5],
+      ...at(f.rows, 5),
       type: "attachment",
       uuid: randomUUID(),
-      parentUuid: f.ids[5],
+      parentUuid: at(f.ids, 5),
       message: undefined,
       attachment: { type: "future-input", content },
     };
     await fs.writeFile(
       f.file,
-      [...f.rows, row].map(JSON.stringify).join("\n") + "\n",
+      [...f.rows, row].map((value) => JSON.stringify(value)).join("\n") + "\n",
     );
     const index = await readHistoryIndex(f.session);
-    expect(index?.outcome([randomUUID()], [f.ids[1]]) ?? "unknown").toBe(
+    expect(index?.outcome([randomUUID()], [at(f.ids, 1)]) ?? "unknown").toBe(
       "unknown",
     );
   });
@@ -414,10 +448,10 @@ for (const content of [[{ type: "text", text: "Studio instruction" }], 42])
 test("a known output attachment with an input-shaped payload stays unknown", async () => {
   const f = await fixture();
   const row = {
-    ...f.rows[5],
+    ...at(f.rows, 5),
     type: "attachment",
     uuid: randomUUID(),
-    parentUuid: f.ids[5],
+    parentUuid: at(f.ids, 5),
     message: undefined,
     attachment: {
       type: "deferred_tools_record",
@@ -427,10 +461,10 @@ test("a known output attachment with an input-shaped payload stays unknown", asy
   };
   await fs.writeFile(
     f.file,
-    [...f.rows, row].map(JSON.stringify).join("\n") + "\n",
+    [...f.rows, row].map((value) => JSON.stringify(value)).join("\n") + "\n",
   );
   const index = await readHistoryIndex(f.session);
-  expect(index?.outcome([randomUUID()], [f.ids[1]]) ?? "unknown").toBe(
+  expect(index?.outcome([randomUUID()], [at(f.ids, 1)]) ?? "unknown").toBe(
     "unknown",
   );
 });
