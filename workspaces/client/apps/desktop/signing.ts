@@ -1,3 +1,6 @@
+import { validate, validateSigningConfiguration } from "./signing-settings.ts";
+import type { SigningConfiguration } from "./signing-settings.ts";
+export { validate } from "./signing-settings.ts";
 // Keep one certificate identity across local application updates.
 import { execFileSync, spawnSync } from "node:child_process";
 import {
@@ -18,43 +21,54 @@ import { pathToFileURL, fileURLToPath } from "node:url";
 export function signingConfigPath() {
   return path.join(homedir(), ".config/codex-studio/signing.json");
 }
-export function configuration(env = process.env) {
+export function configuration(env = process.env): SigningConfiguration {
   if (env.CODEX_STUDIO_SIGNING_IDENTITY)
     return {
       identity: env.CODEX_STUDIO_SIGNING_IDENTITY,
       keychain: env.CODEX_STUDIO_SIGNING_KEYCHAIN,
     };
   try {
-    return JSON.parse(readFileSync(signingConfigPath(), "utf8"));
+    const value: unknown = JSON.parse(
+      readFileSync(signingConfigPath(), "utf8"),
+    );
+    validateSigningConfiguration(value, signingConfigPath());
+    return value;
   } catch (error) {
-    if (error.code !== "ENOENT") throw error;
+    if (!(error instanceof Error && "code" in error && error.code === "ENOENT"))
+      throw error;
     return {};
   }
 }
-export function validate(identity) {
-  if (typeof identity !== "string" || !/^[a-fA-F0-9]{40}$/.test(identity))
-    throw new Error(
-      "Configure a persistent Studio signing certificate. Ad hoc signing loses macOS permissions after updates.",
-    );
-}
-function privateArgument(value) {
+function privateArgument(value: unknown) {
   if (typeof value !== "string" || /[\0\r\n]/.test(value))
     throw new Error("Invalid dedicated Studio signing input.");
   return `"${value.replace(/[\\"]/g, "\\$&")}"`;
 }
 // The first line of the security stderr names the cause. Keep it short, free of
 // control characters and free of the password. Never include other output.
-function unlockReason(result, keychain, password) {
+function unlockReason(
+  result: { error?: unknown; status?: number | null; stderr?: string },
+  keychain: string,
+  password: string,
+) {
   const secrets = [password, privateArgument(password).slice(1, -1)].filter(
     Boolean,
   );
-  const clean = (text) =>
+  const clean = (text: string) =>
     secrets
       .reduce((value, secret) => value.split(secret).join("[redacted]"), text)
       .replaceAll(/\p{Cc}/gu, " ")
       .trim();
   if (result.error)
-    return clean(String(result.error.code ?? result.error.message));
+    return clean(
+      String(
+        result.error instanceof Error
+          ? "code" in result.error
+            ? result.error.code
+            : result.error.message
+          : result.error,
+      ),
+    );
   const line = String(result.stderr ?? "")
     .split("\n")
     .map((text) => text.trim())
@@ -74,7 +88,7 @@ export function signingIdentity(env = process.env) {
     // security has a 4096-byte line buffer. Never allow a second parsed command.
     if (Buffer.byteLength(input, "utf8") > 4095)
       throw new Error("Invalid dedicated Studio signing input.");
-    const failure = (reason) =>
+    const failure = (reason: string) =>
       new Error(
         `Could not unlock the dedicated Studio signing keychain ${config.keychain}: ${reason}.`,
       );
@@ -108,7 +122,11 @@ export function signingIdentity(env = process.env) {
     );
   return config.identity;
 }
-export function signCode(target, identity = signingIdentity(), extra = []) {
+export function signCode(
+  target: string,
+  identity = signingIdentity(),
+  extra: string[] = [],
+) {
   validate(identity);
   const config = configuration();
   const keychain =
@@ -127,7 +145,7 @@ export function signCode(target, identity = signingIdentity(), extra = []) {
     { stdio: "inherit" },
   );
 }
-export function signLinuxVM(target, identity = signingIdentity()) {
+export function signLinuxVM(target: string, identity = signingIdentity()) {
   signCode(target, identity, [
     "--identifier",
     "local.codex.agents.linux-vm",
@@ -142,7 +160,7 @@ export function signLinuxVM(target, identity = signingIdentity()) {
   });
 }
 // Every folder with Python modules gets an empty read-only __pycache__.
-function guardBytecode(directory) {
+function guardBytecode(directory: string) {
   const entries = readdirSync(directory, { withFileTypes: true });
   if (entries.some((entry) => entry.isFile() && entry.name.endsWith(".py"))) {
     const cache = path.join(directory, "__pycache__");
@@ -158,7 +176,10 @@ function guardBytecode(directory) {
       guardBytecode(path.join(directory, entry.name));
   }
 }
-export function signApplication(application, identity = signingIdentity()) {
+export function signApplication(
+  application: string,
+  identity = signingIdentity(),
+) {
   // External Python callers (a VM helper child, the host_exec service) can import
   // these modules without -B. Cache writes would add unsealed resources after
   // installation, invalidate the bundle, and fail the update of a paired Mac.
@@ -183,7 +204,7 @@ if (
   process.argv[1] &&
   import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href
 ) {
-  if (process.argv.length !== 3)
+  if (process.argv.length !== 3 || !process.argv[2])
     throw new Error("Supply the application bundle path.");
   signApplication(path.resolve(process.argv[2]));
 }

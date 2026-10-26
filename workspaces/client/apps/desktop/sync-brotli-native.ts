@@ -1,24 +1,30 @@
+import { hiddenElectronArguments } from "./hidden-electron.ts";
+import type {} from "./sync-brotli-fixture.ts";
 import assert from "node:assert/strict";
+import type { ElectronApplication } from "playwright-core";
 import { createServer } from "node:http";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { createBrotliCompress, constants } from "node:zlib";
 import { chromium, _electron as electron } from "playwright-core";
 
-const root = path.dirname(fileURLToPath(import.meta.url));
 const folder = await mkdtemp(path.join(tmpdir(), "studio-sync-brotli-"));
-const streams = new Map();
-const accepted = [];
-const frame = (revision) =>
+type Stream = {
+  encoder: ReturnType<typeof createBrotliCompress>;
+  revision: number;
+};
+const streams = new Map<string | null, Stream>();
+const accepted: (string | null)[] = [];
+const frame = (revision: number) =>
   `event: ${revision === 2 ? "heartbeat" : "resources"}\nid: ${revision}\ndata: ${JSON.stringify({ revision, text: "é" })}\n\n`;
-function produce(stream) {
+function produce(stream: Stream) {
   stream.encoder.write(frame(++stream.revision));
   stream.encoder.flush(constants.BROTLI_OPERATION_FLUSH);
 }
 const server = createServer((request, response) => {
-  const url = new URL(request.url, "http://localhost");
+  const url = new URL(request.url ?? "/", "http://localhost");
   if (url.pathname === "/api/sync/stream") {
     assert.match(request.headers["accept-encoding"] || "", /\bbr\b/);
     const client = url.searchParams.get("client");
@@ -54,10 +60,12 @@ const server = createServer((request, response) => {
     response.end("<!doctype html><title>Brotli stream witness</title>");
   }
 });
-await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
-const destination = `http://127.0.0.1:${server.address().port}`;
+await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+const address = server.address();
+assert.ok(address && typeof address !== "string");
+const destination = `http://127.0.0.1:${address.port}`;
 let browser;
-let desktop;
+let desktop: ElectronApplication | null = null;
 try {
   browser = await chromium.launch({ headless: true });
   const page = await browser.newPage();
@@ -66,14 +74,22 @@ try {
     await page.evaluate(
       () =>
         new Promise((resolve, reject) => {
-          const events = [];
+          const events: [string, number, string][] = [];
           const source = new EventSource("/api/sync/stream?client=browser");
           const deadline = setTimeout(() => {
             source.close();
             reject(new Error("event buffered until next production"));
           }, 5000);
-          function receive(event) {
-            const parsed = JSON.parse(event.data);
+          function receive(event: Event) {
+            if (
+              !(event instanceof MessageEvent) ||
+              typeof event.data !== "string"
+            )
+              throw new Error("Invalid fixture event.");
+            // This server writes the event immediately before this read.
+            const parsed: { revision: number; text: string } = JSON.parse(
+              event.data,
+            );
             events.push([event.type, parsed.revision, parsed.text]);
             if (events.length === 3) {
               clearTimeout(deadline);
@@ -93,22 +109,16 @@ try {
     ],
   );
 
-  const entry = path.join(folder, "main.ts");
-  await writeFile(
-    entry,
-    `const {app,BrowserWindow}=require('electron');globalThis.syncTestCredentials=require(${JSON.stringify(path.join(root, "server-credentials.ts"))});app.setPath('userData',${JSON.stringify(path.join(folder, "profile"))});app.whenReady().then(()=>{const window=new BrowserWindow({show:false});window.loadURL('about:blank');});`,
-  );
   desktop = await electron.launch({
     args: [
-      entry,
-      ...(process.platform === "linux" && !process.env.DISPLAY
-        ? ["--ozone-platform=headless"]
-        : []),
+      fileURLToPath(new URL("./sync-brotli-fixture.ts", import.meta.url)),
+      path.join(folder, "profile"),
+      ...hiddenElectronArguments,
     ],
   });
   assert.equal(
     await desktop.evaluate(({ BrowserWindow }) =>
-      BrowserWindow.getAllWindows()[0].isVisible(),
+      BrowserWindow.getAllWindows().at(0)?.isVisible(),
     ),
     false,
   );
@@ -135,7 +145,9 @@ try {
         fetchRequest: async (request) => {
           const url = new URL(request.url);
           if (url.pathname.endsWith("/pair")) {
-            const body = await request.json();
+            const body: unknown = await request.json();
+            if (!body || typeof body !== "object" || !("clientId" in body))
+              throw new Error("Fixture client identity is unavailable.");
             return new Response(
               JSON.stringify({
                 ...invitation,
@@ -166,10 +178,16 @@ try {
           serverId: receipt.id,
           credentialId: receipt.credentialId,
           url: origin + "/api/sync/stream?client=signed",
-          headers: { Accept: "text/event-stream", "Accept-Encoding": "br" },
+          method: "GET",
+          headers: [
+            ["Accept", "text/event-stream"],
+            ["Accept-Encoding", "br"],
+          ],
         },
         controller.signal,
       );
+      if (!response.body)
+        throw new Error("Fixture stream body is unavailable.");
       const reader = response.body.getReader();
       const decoder = new TextDecoder();
       const frames = [];
@@ -213,6 +231,6 @@ try {
   await desktop?.close();
   await browser?.close();
   server.closeAllConnections();
-  await new Promise((resolve) => server.close(resolve));
+  await new Promise<void>((resolve) => server.close(() => resolve()));
   await rm(folder, { recursive: true, force: true });
 }

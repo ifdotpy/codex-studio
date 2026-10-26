@@ -347,7 +347,7 @@ Remaining risks:
 | Server  | `test_codex_browser_bridge.py` (new)                                                                       | Server checks and the fake end-to-end flows.                                                                                |
 | Web     | `Requests.tsx`, `requestData.ts`, `openSignIn.ts`, `request-questions.css`, `desktop.ts`, `generated/api*` | The card, the open after the answer.                                                                                        |
 | Web     | `tests/questions/browser-open-approval-ui.spec.ts`, `openSignIn.test.ts` (new), `requestData.test.ts`      | Card and open checks.                                                                                                       |
-| Desktop | `main.ts`, `preload.cjs`, `bridge.d.ts`, `test.mjs`                                                        | The `openSignIn` action.                                                                                                    |
+| Desktop | `main.ts`, `preload.cjs`, `api.ts`, `test.mjs`                                                             | The `openSignIn` action.                                                                                                    |
 | Helper  | `workspaces/client/apps/desktop/native/linux-vm/main.swift`                                                | No change.                                                                                                                  |
 | Docs    | `docs/linux-vm-workspaces.md`, `.agents/skills/codex-workspace/references/layr.md`                         | The method table, and one generic paragraph for agents.                                                                     |
 

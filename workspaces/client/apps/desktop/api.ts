@@ -1,3 +1,4 @@
+import type { components } from "../web/src/generated/api.ts";
 export type AutomaticPairApproval = {
   localServerId: string;
   serverId: string;
@@ -11,7 +12,7 @@ export type PairRequest = {
 };
 export type ServerRequest = {
   serverId: string;
-  credentialId: string;
+  credentialId?: string | undefined;
   url: string;
   method: string;
   headers?: [string, string][] | undefined;
@@ -48,15 +49,7 @@ export type StreamChunk = {
   error?: string;
 };
 /** The redirect port of a sign-in that another server approved for this window. */
-export type SignInForward = {
-  server: string;
-  bridgeId: string;
-  host: "127.0.0.1" | "localhost" | "::1";
-  port: number;
-  path: string;
-  expiresAt: number;
-  token: string;
-};
+export type SignInForward = components["schemas"]["BrowserForward"];
 
 export interface DesktopBridge {
   serverViewOrigin?: string | undefined;
