@@ -1,3 +1,14 @@
+import { installSnapshotOrderProbe } from "./snapshot-order.fixture.ts";
+import {
+  legacyMutationDocuments,
+  fixtureProtocol,
+  fixtureObject,
+  fixturePostBody,
+} from "./entity-fixture-protocol.ts";
+import type { Page, Route } from "@playwright/test";
+import type { SessionResponse, SyncPullResponse } from "../playwright.ts";
+
+import type { PostResult } from "../../src/apiTypes.ts";
 import {
   readTestState,
   test,
@@ -13,21 +24,20 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 async function runSnapshotOrderUi(
-  fixturePage,
+  fixturePage: Page,
   { checkRequestAnchor = false } = {},
 ) {
   test.setTimeout(45_000);
   const evidence = await mkdtemp(join(tmpdir(), "studio-snapshot-order-"));
   const fixture = spawn(process.execPath, [rustUiFixture, evidence], {
     stdio: ["pipe", "pipe", "pipe"],
-    env: { ...process.env, CODEX_BOARD_STATE_DIR: join(evidence, "board") },
+    env: { ...process.env },
   });
-  let log = "";
-  let output = "";
-  const fixtureReplies = new Map();
-  const fixtureWaiters = new Map();
-  fixture.stderr.on("data", (data) => (log += data));
-  const waitFor = async (condition, label) => {
+  const protocol = fixtureProtocol(fixture);
+  const waitFor = async <T>(
+    condition: () => T | Promise<T>,
+    label: string,
+  ): Promise<NonNullable<T>> => {
     for (let index = 0; index < 120; index++) {
       const result = await condition();
       if (result) return result;
@@ -35,47 +45,16 @@ async function runSnapshotOrderUi(
     }
     throw Error(label);
   };
-  const port = await new Promise((resolve, reject) => {
-    fixture.stdout.once("data", (data) => resolve(Number(String(data).trim())));
-    fixture.once("exit", () => reject(Error(log)));
-  });
-  fixture.stdout.on("data", (chunk) => {
-    output += String(chunk);
-    const lines = output.split("\n");
-    output = lines.pop() || "";
-    for (const line of lines) {
-      try {
-        const reply = JSON.parse(line);
-        const waiter = fixtureWaiters.get(reply.id);
-        if (waiter) {
-          clearTimeout(waiter.timeout);
-          fixtureWaiters.delete(reply.id);
-          waiter.resolve(reply);
-        } else if (reply.id) fixtureReplies.set(reply.id, reply);
-      } catch {}
-    }
-  });
-  const fixtureCommand = (id, params) => {
-    const reply = fixtureReplies.has(id)
-      ? Promise.resolve(fixtureReplies.get(id))
-      : new Promise((resolve, reject) => {
-          const timeout = setTimeout(() => {
-            fixtureWaiters.delete(id);
-            reject(new Error(`Fixture command ${id} timed out: ${log}`));
-          }, 8000);
-          fixtureWaiters.set(id, { resolve, reject, timeout });
-        });
-    fixture.stdin.write(
-      `${JSON.stringify({ id, method: "fixture/entity-change", params })}\n`,
-    );
-    return reply;
-  };
+  const port = await protocol.port;
+  const fixtureCommand = protocol.command;
   const origin = `http://127.0.0.1:${port}`;
   const initial = await readTestState(origin);
   const lead = initial.threads.find((agent) => agent.name === "Release lead");
+  assert.ok(lead);
   const worker = initial.threads.find(
     (agent) => agent.rootId === lead.id && agent.name === "Worker 00",
   );
+  assert.ok(worker);
   const seededWorker = await fixtureCommand("snapshot-revision-0", {
     operation: "rename",
     agent: worker.id,
@@ -91,22 +70,29 @@ async function runSnapshotOrderUi(
   await fixturePage.setViewportSize({ width: 1440, height: 960 });
   page.setDefaultTimeout(12000);
   installApiSchemaFixtureHeaders(page);
-  const errors = [],
-    requests = [],
-    entityPulls = [];
+  const errors: string[] = [];
+  const requests: Array<{ revision: number; held: boolean; failure: boolean }> =
+    [];
+  const entityPulls: Array<{
+    url: string;
+    checkpoint: number;
+    documents: SyncPullResponse["documents"];
+  }> = [];
   page.on("pageerror", (error) => errors.push(error.message));
   let revision = 0,
     holdNext = false,
-    oldRequest,
-    currentFailure = false,
-    pendingAnswer;
-  const mutationSequences = new Map();
+    currentFailure = false;
+  const held: {
+    oldRequest?: { route: Route; revision: number };
+    pendingAnswer?: Route;
+  } = {};
+  const mutationSequences = new Map<number, number>();
   await page.route("**/api/sync/pull?*", async (route) => {
     const url = new URL(route.request().url());
     if (url.searchParams.get("scope") !== "state:entities:v1")
       return route.fallback();
     const response = await route.fetch();
-    const body = await response.json();
+    const body: SyncPullResponse = await response.json();
     entityPulls.push({
       url: `${url.pathname}${url.search}`,
       checkpoint: body.checkpoint?.seq,
@@ -118,13 +104,13 @@ async function runSnapshotOrderUi(
     requests.push({ revision, held: holdNext, failure: currentFailure });
     if (holdNext) {
       holdNext = false;
-      oldRequest = { route, revision };
+      held.oldRequest = { route, revision };
       return;
     }
     await route.fulfill(
       currentFailure
         ? { status: 503, json: { error: "Current session unavailable" } }
-        : { json: { token: initial.token } },
+        : { json: { token: initial.token } satisfies SessionResponse },
     );
   });
   await page.route("**/api/messages", async (route) => {
@@ -142,28 +128,16 @@ async function runSnapshotOrderUi(
     );
     mutationSequences.set(revision, committed.seq);
     return route.fulfill({
-      json: { id: route.request().postDataJSON().id, status: "sent" },
+      json: {
+        id: fixturePostBody<"/api/messages">(route.request().postDataJSON()).id,
+        status: "sent",
+      } satisfies PostResult<"/api/messages">,
     });
   });
   await page.route("**/api/answer", async (route) => {
-    pendingAnswer = route;
+    held.pendingAnswer = route;
   });
-  await page.addInitScript(() => {
-    const NativeEventSource = window.EventSource;
-    window.__snapshotOrderResourceFrames = [];
-    window.EventSource = new Proxy(NativeEventSource, {
-      construct(Target, args) {
-        const stream = new Target(...args);
-        stream.addEventListener("resources", (event) => {
-          window.__snapshotOrderResourceFrames.push({
-            at: performance.timeOrigin + performance.now(),
-            frame: JSON.parse(event.data),
-          });
-        });
-        return stream;
-      },
-    });
-  });
+  await page.addInitScript(installSnapshotOrderProbe);
   await page.goto(origin);
   await page.locator(`[data-chat="${lead.id}"]`).click();
   await page.locator("#team-toggle").click();
@@ -196,7 +170,7 @@ async function runSnapshotOrderUi(
         root.querySelectorAll("[data-message]").length === 0
       )
         return false;
-      const rect = (node) => {
+      const rect = (node: Element) => {
         const { x, y, width, height } = node.getBoundingClientRect();
         return [x, y, width, height];
       };
@@ -214,7 +188,10 @@ async function runSnapshotOrderUi(
       state.frames =
         state.previous &&
         current.every(
-          (value, index) => Math.abs(value - state.previous[index]) < 0.1,
+          (value, index) =>
+            Math.abs(
+              value - (state.previous?.[index] ?? Number.NaN ?? Number.NaN),
+            ) < 0.1,
         )
           ? state.frames + 1
           : 0;
@@ -282,7 +259,7 @@ async function runSnapshotOrderUi(
       const fields = form?.querySelector(".request-answer-fields");
       const actions = form?.querySelector(".request-answer-actions");
       if (!record || !label || !card || !form || !fields || !actions) return;
-      const rect = (element) => {
+      const rect = (element: Element) => {
         const bounds = element.getBoundingClientRect();
         return {
           y: bounds.y,
@@ -294,7 +271,7 @@ async function runSnapshotOrderUi(
       };
       const priorSiblings = [];
       for (
-        let node = actions;
+        let node: Element | null = actions;
         node && node !== card;
         node = node.parentElement
       ) {
@@ -373,7 +350,8 @@ async function runSnapshotOrderUi(
       state.frames =
         state.previous &&
         current.every(
-          (value, index) => Math.abs(value - state.previous[index]) < 0.1,
+          (value, index) =>
+            Math.abs(value - (state.previous?.[index] ?? Number.NaN)) < 0.1,
         )
           ? state.frames + 1
           : 0;
@@ -393,7 +371,10 @@ async function runSnapshotOrderUi(
     window.__snapshotOrderLabelFrames.phase = "loading";
   });
   await answer.click();
-  await waitFor(() => pendingAnswer, "Answer request reaches the held route");
+  const pendingAnswer = await waitFor(
+    () => held.pendingAnswer,
+    "Answer request reaches the held route",
+  );
   await page.waitForFunction(() =>
     document.querySelector(
       '.request-answer-actions button[data-loading="true"]',
@@ -405,6 +386,7 @@ async function runSnapshotOrderUi(
     "Loading keeps the inner button transform unset",
   );
   const during = await label.boundingBox();
+  assert.ok(before && during);
   const geometryFrames = await page.evaluate(() => {
     const record = window.__snapshotOrderLabelFrames;
     record.phase = "done";
@@ -436,17 +418,21 @@ async function runSnapshotOrderUi(
     )}`,
   );
 
-  for (const key of ["x", "y", "width", "height"])
+  for (const key of ["x", "y", "width", "height"] as const)
     assert.ok(
       Math.abs(before[key] - during[key]) <= 1,
       `Loading label ${key} stays stable; before=${JSON.stringify(before)}, during=${JSON.stringify(during)}, frames=${JSON.stringify(geometryFrames)}`,
     );
-  const requestId = pendingAnswer.request().postDataJSON().id;
+  const answerBody = fixturePostBody<"/api/answer">(
+    pendingAnswer.request().postDataJSON(),
+  );
+  const requestId = answerBody.id;
   const serverAnswer = await pendingAnswer.fetch();
-  const answerResponse = await serverAnswer.json();
+  const answerResponse: PostResult<"/api/answer"> = await serverAnswer.json();
   assert.equal(serverAnswer.status(), 200);
   assert.equal(answerResponse.status, "answered");
-  const serverTombstone = answerResponse._syncEntities?.find(
+  const mutationDocuments = legacyMutationDocuments(answerResponse);
+  const serverTombstone = mutationDocuments?.find(
     (document) => document.id === `entity:request:${requestId}`,
   );
   assert.ok(
@@ -460,14 +446,20 @@ async function runSnapshotOrderUi(
   await pendingAnswer.fulfill({ response: serverAnswer, json: answerResponse });
   await card.waitFor({ state: "hidden" });
   assert.ok(
-    answerResponse._syncEntities.some(
-      (document) => document.id === serverTombstone.id && document._deleted,
+    mutationDocuments?.some(
+      (document) =>
+        document.id === serverTombstone.id &&
+        "_deleted" in document &&
+        document._deleted,
     ),
   );
   assert.equal(
     entityPulls.some((pull) =>
       pull.documents.some(
-        (document) => document.id === serverTombstone.id && document._deleted,
+        (document) =>
+          document.id === serverTombstone.id &&
+          "_deleted" in document &&
+          document._deleted,
       ),
     ),
     false,
@@ -475,10 +467,13 @@ async function runSnapshotOrderUi(
   );
 
   for (const oldFailure of [false, true]) {
-    oldRequest = null;
+    delete held.oldRequest;
     holdNext = true;
     await page.evaluate(() => window.dispatchEvent(new Event("online")));
-    await waitFor(() => oldRequest, "Background snapshot poll is held");
+    const oldRequest = await waitFor(
+      () => held.oldRequest,
+      "Background snapshot poll is held",
+    );
     const oldRevision = revision;
     revision++;
     const newerSession = page
@@ -496,29 +491,54 @@ async function runSnapshotOrderUi(
     await workerButton
       .getByText(`Worker revision ${revision}`, { exact: true })
       .waitFor();
-    const committedFrame = await waitFor(
-      () =>
-        page.evaluate(
-          ({ workerId, expectedName }) =>
-            window.__snapshotOrderResourceFrames.find(({ frame }) =>
-              frame.resourceVersions?.some((version) =>
-                version.entityChanges?.documents?.some((document) => {
-                  if (document.id !== `entity:agent:${workerId}`) return false;
-                  return (
-                    JSON.parse(document.payload).value.name === expectedName
-                  );
-                }),
+    const committedFrame: Window["__snapshotOrderResourceFrames"][number] =
+      await waitFor(
+        () =>
+          page.evaluate(
+            ({ workerId, expectedName }) =>
+              window.__snapshotOrderResourceFrames.find(({ frame }) =>
+                frame.resourceVersions?.some((version) =>
+                  version.entityChanges?.documents?.some((document) => {
+                    if (document.id !== `entity:agent:${workerId}`)
+                      return false;
+                    if (
+                      !("payload" in document) ||
+                      typeof document.payload !== "string"
+                    )
+                      return false;
+                    const payload: unknown = JSON.parse(document.payload);
+                    if (
+                      !payload ||
+                      typeof payload !== "object" ||
+                      !("value" in payload)
+                    )
+                      return false;
+                    const value = payload.value;
+                    return (
+                      !!value &&
+                      typeof value === "object" &&
+                      "name" in value &&
+                      value.name === expectedName
+                    );
+                  }),
+                ),
               ),
-            ),
-          { workerId: worker.id, expectedName: `Worker revision ${revision}` },
-        ),
-      "A real resource frame pushes the committed worker revision",
-    );
+            {
+              workerId: worker.id,
+              expectedName: `Worker revision ${revision}`,
+            },
+          ),
+        "A real resource frame pushes the committed worker revision",
+      );
     const workerRows = committedFrame.frame.resourceVersions.flatMap(
       (version) =>
         (version.entityChanges?.documents ?? []).flatMap((document) => {
           if (document.id !== `entity:agent:${worker.id}`) return [];
-          const value = JSON.parse(document.payload).value;
+          if (!("payload" in document) || typeof document.payload !== "string")
+            return [];
+          const value = fixtureObject(
+            fixtureObject(JSON.parse(document.payload)).value,
+          );
           return [{ seq: document.seq, name: value.name }];
         }),
     );
@@ -527,7 +547,8 @@ async function runSnapshotOrderUi(
     )?.seq;
     const committedMutationSequence = mutationSequences.get(revision);
     assert.ok(
-      Number.isSafeInteger(committedWorkerSequence) &&
+      committedWorkerSequence !== undefined &&
+        Number.isSafeInteger(committedWorkerSequence) &&
         committedWorkerSequence === committedMutationSequence &&
         committedWorkerSequence > seededWorker.seq,
       "The pushed worker entity matches the committed mutation sequence and advances the seeded entity",
@@ -554,7 +575,7 @@ async function runSnapshotOrderUi(
     await oldRequest.route.fulfill(
       oldFailure
         ? { status: 503, json: { error: "Obsolete snapshot failure" } }
-        : { json: { token: initial.token } },
+        : { json: { token: initial.token } satisfies SessionResponse },
     );
     // Two paints settle the response before the next scheduled 1.6s poll can hide a regression.
     await page.waitForTimeout(150);

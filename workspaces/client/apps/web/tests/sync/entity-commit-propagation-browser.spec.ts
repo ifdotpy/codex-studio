@@ -1,3 +1,14 @@
+import { installEntityPropagationProbe } from "./entity-commit-propagation.fixture.ts";
+import {
+  legacyMutationEntities,
+  fixtureProtocol,
+  entityRows,
+  fixtureItem,
+} from "./entity-fixture-protocol.ts";
+import type { Page, Request } from "@playwright/test";
+import type { SyncPullResponse, SyncEntity } from "../playwright.ts";
+
+import type { PostResult } from "../../src/apiTypes.ts";
 // Real renderer tabs exercise every direct sync entity writer through the
 // common SQLite post-commit StateResource invalidation.
 import assert from "node:assert/strict";
@@ -12,6 +23,35 @@ import {
   rustUiFixture,
 } from "../playwright.ts";
 
+type PullStart = {
+  at: number;
+  after: string | null;
+  reset: boolean;
+  fresh: boolean;
+};
+type PullRecord = {
+  at: number;
+  startedAt: number;
+  after: string | null | undefined;
+  reset: boolean;
+  fresh: boolean;
+  documents: SyncEntity[];
+  checkpoint: number | undefined;
+  maxSeq: number | null | undefined;
+};
+
+type ChatObservations = {
+  mutationEntity: { id: string; seq: number; deleted: boolean };
+  entitySequence: number;
+  deliveredSequences: number[];
+  responseReceivedAt: number;
+  responseDecodedAt: number;
+  persisterDoneAt: number;
+  persisterAdvanced: boolean;
+  persisterCompletion: import("./entity-commit-propagation.fixture.ts").PersisterCompletion;
+  collection: string;
+  deleted: boolean;
+};
 const timestamp = () => performance.timeOrigin + performance.now();
 
 test("committed entities propagate between renderer tabs @sync", async ({
@@ -21,46 +61,26 @@ test("committed entities propagate between renderer tabs @sync", async ({
   const state = await mkdtemp(join(tmpdir(), "entity-commit-propagation-"));
   const fixture = spawnFixture(process.execPath, [rustUiFixture, state], {
     stdio: ["pipe", "pipe", "pipe"],
-    env: { ...process.env, RESOURCE_FRESHNESS_UI_FIXTURE: "1" },
+    env: { ...process.env },
   });
-  let log = "";
-  let output = "";
-  const fixtureReplies = new Map();
-  const fixtureWaiters = new Map();
-  fixture.stdout.on("data", (chunk) => {
-    output += String(chunk);
-    const lines = output.split("\n");
-    output = lines.pop() || "";
-    for (const line of lines) {
-      try {
-        const reply = JSON.parse(line);
-        const waiter = fixtureWaiters.get(reply.id);
-        if (waiter) {
-          clearTimeout(waiter.timeout);
-          fixtureWaiters.delete(reply.id);
-          waiter.resolve(reply);
-        } else if (reply.id) fixtureReplies.set(reply.id, reply);
-      } catch {}
-    }
-  });
-  fixture.stderr.on("data", (chunk) => (log += String(chunk)));
-  const port = await new Promise((resolve, reject) => {
-    fixture.stdout.once("data", (chunk) =>
-      resolve(Number(String(chunk).trim())),
-    );
-    fixture.once("exit", () => reject(new Error(log)));
-  });
+  const protocol = fixtureProtocol(fixture);
+  const port = await protocol.port;
+  const command = protocol.command;
   const origin = `http://127.0.0.1:${port}`;
   const contexts = [
     await browser.newContext(),
     await browser.newContext(),
     await browser.newContext(),
   ];
-  const pages = [];
-  const pulls = contexts.map(() => []);
+  const pages: Page[] = [];
+  const pulls = contexts.map((): PullRecord[] => []);
   const statePullRequestCounts = contexts.map(() => 0);
-  const pullStarts = contexts.map(() => new WeakMap());
-  const waitFor = async (predicate, message, timeoutMs = 8000) => {
+  const pullStarts = contexts.map(() => new WeakMap<Request, PullStart>());
+  const waitFor = async (
+    predicate: () => unknown | Promise<unknown>,
+    message: string,
+    timeoutMs = 8000,
+  ) => {
     const end = Date.now() + timeoutMs;
     while (Date.now() < end) {
       if (await predicate()) return;
@@ -68,21 +88,9 @@ test("committed entities propagate between renderer tabs @sync", async ({
     }
     assert.fail(message);
   };
-  const command = async (id, params) => {
-    const reply = fixtureReplies.has(id)
-      ? Promise.resolve(fixtureReplies.get(id))
-      : new Promise((resolve, reject) => {
-          const timeout = setTimeout(() => reject(new Error(log)), 8000);
-          fixtureWaiters.set(id, { resolve, reject, timeout });
-        });
-    fixture.stdin.write(
-      `${JSON.stringify({ id, method: "fixture/entity-change", params })}\n`,
-    );
-    return reply;
-  };
   try {
     for (let index = 0; index < contexts.length; index++) {
-      const page = await contexts[index].newPage();
+      const page = await fixtureItem(contexts, index).newPage();
       page.setDefaultTimeout(10000);
       page.on("request", (request) => {
         const url = new URL(request.url());
@@ -90,8 +98,9 @@ test("committed entities propagate between renderer tabs @sync", async ({
           url.pathname === "/api/sync/pull" &&
           url.searchParams.get("scope") === "state:entities:v1"
         ) {
-          statePullRequestCounts[index]++;
-          pullStarts[index].set(request, {
+          statePullRequestCounts[index] =
+            fixtureItem(statePullRequestCounts, index) + 1;
+          fixtureItem(pullStarts, index).set(request, {
             at: timestamp(),
             after: url.searchParams.get("after"),
             reset: url.searchParams.has("reset"),
@@ -99,49 +108,7 @@ test("committed entities propagate between renderer tabs @sync", async ({
           });
         }
       });
-      await page.addInitScript(() => {
-        const OriginalEventSource = window.EventSource;
-        window.__entityFrames = [];
-        window.__entityStreamUrls = [];
-        window.__entityStreamAttempts = [];
-        window.__entityPersisterCompletions = [];
-        window.__entityMutationDecodes = [];
-        const responseJson = Response.prototype.json;
-        Response.prototype.json = async function (...args) {
-          const value = await responseJson.apply(this, args);
-          if (
-            this.url &&
-            new URL(this.url).pathname === "/api/leads" &&
-            value?._syncEntities?.length
-          )
-            window.__entityMutationDecodes.push({
-              at: performance.timeOrigin + performance.now(),
-              sequences: value._syncEntities.map((row) => row.seq),
-            });
-          return value;
-        };
-        window.__studioSyncEntityPersisterProbe = (value) =>
-          window.__entityPersisterCompletions.push(value);
-        window.EventSource = class extends OriginalEventSource {
-          constructor(...args) {
-            super(...args);
-            const streamIndex = window.__entityStreamUrls.length;
-            const url = String(args[0]);
-            const attempt = { url, opened: false, errored: false };
-            window.__entityStreamUrls.push(url);
-            window.__entityStreamAttempts.push(attempt);
-            this.addEventListener("open", () => (attempt.opened = true));
-            this.addEventListener("error", () => (attempt.errored = true));
-            this.addEventListener("resources", (event) =>
-              window.__entityFrames.push({
-                at: performance.timeOrigin + performance.now(),
-                streamIndex,
-                event: JSON.parse(event.data),
-              }),
-            );
-          }
-        };
-      });
+      await page.addInitScript(installEntityPropagationProbe);
       page.on("response", async (response) => {
         const url = new URL(response.url());
         if (
@@ -150,15 +117,21 @@ test("committed entities propagate between renderer tabs @sync", async ({
         )
           return;
         try {
-          const body = await response.json();
-          pulls[index].push({
+          const body: SyncPullResponse = await response.json();
+          fixtureItem(pulls, index).push({
             at: timestamp(),
             startedAt:
-              pullStarts[index].get(response.request())?.at ?? timestamp(),
-            after: pullStarts[index].get(response.request())?.after,
-            reset: pullStarts[index].get(response.request())?.reset ?? false,
-            fresh: pullStarts[index].get(response.request())?.fresh ?? false,
-            documents: body.documents || [],
+              fixtureItem(pullStarts, index).get(response.request())?.at ??
+              timestamp(),
+            after: fixtureItem(pullStarts, index).get(response.request())
+              ?.after,
+            reset:
+              fixtureItem(pullStarts, index).get(response.request())?.reset ??
+              false,
+            fresh:
+              fixtureItem(pullStarts, index).get(response.request())?.fresh ??
+              false,
+            documents: entityRows(body.documents || []),
             checkpoint: body.checkpoint?.seq,
             maxSeq: body.maxSeq,
           });
@@ -179,6 +152,7 @@ test("committed entities propagate between renderer tabs @sync", async ({
     const lead = currentState.threads.find(
       (agent) => agent.name === "Release lead",
     );
+    assert.ok(lead);
     const leadId = lead.id;
     await waitFor(
       () =>
@@ -227,7 +201,11 @@ test("committed entities propagate between renderer tabs @sync", async ({
         `a successfully opened stream URL was reopened before error: ${JSON.stringify(liveReopens)}`,
       );
     }
-    const results = [];
+    const results: Array<{
+      elapsedMs: number;
+      staleAfterMs?: number;
+      [key: string]: unknown;
+    }> = [];
     const operations = [
       {
         operation: "chat",
@@ -267,19 +245,26 @@ test("committed entities propagate between renderer tabs @sync", async ({
       );
       const commandId = `entity-change-${index}`;
       const startedAt = Date.now();
-      let reply;
+      let reply: Pick<
+        Awaited<ReturnType<typeof command>>,
+        "ok" | "seq" | "entityId"
+      > &
+        Partial<ChatObservations>;
       if (params.operation === "chat") {
-        await pages[0].locator(".project-tree-heading").first().hover();
-        const creationResponse = pages[0].waitForResponse(
+        await fixtureItem(pages, 0)
+          .locator(".project-tree-heading")
+          .first()
+          .hover();
+        const creationResponse = fixtureItem(pages, 0).waitForResponse(
           (response) =>
             response.request().method() === "POST" &&
             new URL(response.url()).pathname === "/api/leads",
         );
-        await pages[0]
+        await fixtureItem(pages, 0)
           .getByRole("button", { name: /^New chat in / })
           .first()
           .click();
-        const newChatDialog = pages[0].getByRole("dialog", {
+        const newChatDialog = fixtureItem(pages, 0).getByRole("dialog", {
           name: "New chat",
           exact: true,
         });
@@ -288,10 +273,12 @@ test("committed entities propagate between renderer tabs @sync", async ({
           .click();
         const created = await creationResponse;
         const responseReceivedAt = timestamp();
-        const createdBody = await created.json();
+        const createdBody: PostResult<"/api/leads"> = await created.json();
+        assert.ok("id" in createdBody && typeof createdBody.id === "string");
+        const mutationEntities = legacyMutationEntities(createdBody);
         assert.equal(created.status(), 200);
-        assert.ok(createdBody._syncEntities?.length);
-        const createdEntity = createdBody._syncEntities.find(
+        assert.ok(mutationEntities?.length);
+        const createdEntity = mutationEntities.find(
           (document) =>
             document.collection === "agent" && document.id === createdBody.id,
         );
@@ -299,10 +286,8 @@ test("committed entities propagate between renderer tabs @sync", async ({
           createdEntity,
           "create response must include the new agent row",
         );
-        const deliveredSequences = createdBody._syncEntities.map(
-          (doc) => doc.seq,
-        );
-        await pages[0].waitForFunction(
+        const deliveredSequences = mutationEntities.map((doc) => doc.seq);
+        await fixtureItem(pages, 0).waitForFunction(
           (sequences) =>
             window.__entityPersisterCompletions.some((completion) =>
               sequences.every((sequence) =>
@@ -312,7 +297,7 @@ test("committed entities propagate between renderer tabs @sync", async ({
           deliveredSequences,
           { timeout: 8000 },
         );
-        const persisterDoneAt = await pages[0].evaluate(
+        const persisterDoneAt = await fixtureItem(pages, 0).evaluate(
           (sequences) =>
             window.__entityPersisterCompletions.find((completion) =>
               sequences.every((sequence) =>
@@ -322,7 +307,7 @@ test("committed entities propagate between renderer tabs @sync", async ({
           deliveredSequences,
         );
         assert.equal(typeof persisterDoneAt, "number");
-        const persisterCompletion = await pages[0].evaluate(
+        const persisterCompletion = await fixtureItem(pages, 0).evaluate(
           (sequences) =>
             window.__entityPersisterCompletions.find((completion) =>
               sequences.every((sequence) =>
@@ -331,7 +316,7 @@ test("committed entities propagate between renderer tabs @sync", async ({
             ),
           deliveredSequences,
         );
-        const responseDecodedAt = await pages[0].evaluate(
+        const responseDecodedAt = await fixtureItem(pages, 0).evaluate(
           (sequences) =>
             window.__entityMutationDecodes.find((decode) =>
               sequences.every((sequence) =>
@@ -340,15 +325,17 @@ test("committed entities propagate between renderer tabs @sync", async ({
             )?.at,
           deliveredSequences,
         );
-        assert.equal(typeof responseDecodedAt, "number");
-        await pages[0]
+        assert.ok(typeof responseDecodedAt === "number");
+        assert.ok(typeof persisterDoneAt === "number");
+        assert.ok(persisterCompletion);
+        await fixtureItem(pages, 0)
           .locator("#conversation-title")
           .getByText("New chat", { exact: true })
           .waitFor();
         reply = {
           ok: true,
           entityId: createdBody.id,
-          seq: Math.max(...createdBody._syncEntities.map((doc) => doc.seq)),
+          seq: Math.max(...mutationEntities.map((doc) => doc.seq)),
           entitySequence: createdEntity.seq,
           deliveredSequences,
           responseReceivedAt,
@@ -404,7 +391,7 @@ test("committed entities propagate between renderer tabs @sync", async ({
                       ),
                     ),
                 {
-                  from: previousFrames[tab],
+                  from: fixtureItem(previousFrames, tab),
                   documentId: entityDocumentId,
                   seq: expectedEntitySequence,
                   deleted: params.deleted,
@@ -432,7 +419,7 @@ test("committed entities propagate between renderer tabs @sync", async ({
         `${params.operation} entity row was not persisted on every tab`,
       );
       const observedTab = params.operation === "chat" ? 1 : 0;
-      const observed = await pages[observedTab].evaluate(
+      const observed = await fixtureItem(pages, observedTab).evaluate(
         ({ from, documentId, seq }) => {
           for (const frame of window.__entityFrames.slice(from)) {
             for (const [index, version] of (
@@ -454,7 +441,7 @@ test("committed entities propagate between renderer tabs @sync", async ({
           return null;
         },
         {
-          from: previousFrames[observedTab],
+          from: fixtureItem(previousFrames, observedTab),
           documentId: entityDocumentId,
           seq: expectedEntitySequence,
         },
@@ -462,9 +449,15 @@ test("committed entities propagate between renderer tabs @sync", async ({
       assert.ok(observed, `${params.operation} pushed row must be observable`);
       const document = observed.document;
       if (params.operation === "chat") {
-        await pages[0].locator(`[data-chat="${entityId}"]`).waitFor();
-        await pages[1].locator(`[data-chat="${entityId}"]`).waitFor();
-        await pages[2].locator(`[data-chat="${entityId}"]`).waitFor();
+        await fixtureItem(pages, 0)
+          .locator(`[data-chat="${entityId}"]`)
+          .waitFor();
+        await fixtureItem(pages, 1)
+          .locator(`[data-chat="${entityId}"]`)
+          .waitFor();
+        await fixtureItem(pages, 2)
+          .locator(`[data-chat="${entityId}"]`)
+          .waitFor();
       }
       // Attribute the delayed stream-reopen baseline to this operation before
       // starting the next one. A coalesced baseline can arrive after the
@@ -480,7 +473,7 @@ test("committed entities propagate between renderer tabs @sync", async ({
                 resources: event.resources,
                 resourceVersions: event.resourceVersions,
               })),
-            previousFrames[tab],
+            fixtureItem(previousFrames, tab),
           ),
         ),
       );
@@ -491,22 +484,29 @@ test("committed entities propagate between renderer tabs @sync", async ({
           ).length,
       );
       const operationPullCounts = pulls.map(
-        (rows, tab) => rows.length - previousPulls[tab],
+        (rows, tab) => rows.length - fixtureItem(previousPulls, tab),
       );
       console.log(
         `ENTITY_OPERATION_COUNTS ${JSON.stringify({ operation: params.operation, frames: operationFrameCounts, pulls: operationPullCounts })}`,
       );
       assert.ok(
         operationPullCounts.every(
-          (count, tab) => count <= operationFrameCounts[tab],
+          (count, tab) => count <= fixtureItem(operationFrameCounts, tab),
         ),
         `${params.operation} must not pull more times than it publishes state`,
       );
       if (params.operation === "chat") {
+        assert.ok(
+          reply.deliveredSequences &&
+            reply.persisterDoneAt !== undefined &&
+            reply.responseDecodedAt !== undefined,
+        );
+        const persisterDoneAt = reply.persisterDoneAt;
+        const responseDecodedAt = reply.responseDecodedAt;
         const responseSequences = new Set(reply.deliveredSequences);
-        const actorFramesAfterMutation = operationFrames[0];
-        const actorPullTimings = pulls[0]
-          .slice(previousPulls[0])
+        const actorFramesAfterMutation = fixtureItem(operationFrames, 0);
+        const actorPullTimings = fixtureItem(pulls, 0)
+          .slice(fixtureItem(previousPulls, 0))
           .map(({ startedAt, after, at, documents }) => ({
             startedAt,
             after,
@@ -524,16 +524,16 @@ test("committed entities propagate between renderer tabs @sync", async ({
             actorPulls: actorPullTimings,
           })}`,
         );
-        const actorDuplicatePulls = pulls[0]
-          .slice(previousPulls[0])
+        const actorDuplicatePulls = fixtureItem(pulls, 0)
+          .slice(fixtureItem(previousPulls, 0))
           .filter((pull) =>
             pull.documents.some((row) => responseSequences.has(row.seq)),
           );
         const actorPrePersisterPulls = actorDuplicatePulls.filter(
-          (pull) => pull.startedAt <= reply.persisterDoneAt,
+          (pull) => pull.startedAt <= persisterDoneAt,
         );
         const actorPostPersisterPulls = actorDuplicatePulls.filter(
-          (pull) => pull.startedAt > reply.persisterDoneAt,
+          (pull) => pull.startedAt > persisterDoneAt,
         );
         const duplicateCauses = actorDuplicatePulls.map((pull) => {
           const precedingStateFrame = actorFramesAfterMutation
@@ -572,10 +572,10 @@ test("committed entities propagate between renderer tabs @sync", async ({
             beforePersisterDone: actorPrePersisterPulls.length,
             afterPersisterDone: actorPostPersisterPulls.length,
             beforeResponseDecode: actorDuplicatePulls.filter(
-              (pull) => pull.startedAt <= reply.responseDecodedAt,
+              (pull) => pull.startedAt <= responseDecodedAt,
             ).length,
             afterResponseDecode: actorDuplicatePulls.filter(
-              (pull) => pull.startedAt > reply.responseDecodedAt,
+              (pull) => pull.startedAt > responseDecodedAt,
             ).length,
             causes: duplicateCauses,
             responseDecodedAt: reply.responseDecodedAt,
@@ -596,18 +596,19 @@ test("committed entities propagate between renderer tabs @sync", async ({
                   frame.resources.some((resource) => resource.kind === "state"),
               )
               .at(-1);
-            return (
-              !!precedingFrame && precedingFrame.at < reply.responseDecodedAt
-            );
+            return !!precedingFrame && precedingFrame.at < responseDecodedAt;
           }),
           `every remaining duplicate must be triggered by a frame handled before response decoding: ${JSON.stringify(duplicateCauses)}`,
         );
       }
       if (params.operation === "rename") {
+        assert.ok(document.collection === "agent" && document.op === "upsert");
         assert.equal(document.value.name, params.name);
       }
-      if (params.operation === "budget")
-        assert.ok(document.value.tokensUsed >= 13);
+      if (params.operation === "budget") {
+        assert.ok(document.collection === "agent" && document.op === "upsert");
+        assert.ok(Number(document.value.tokensUsed) >= 13);
+      }
       const observedAt = observed.at;
       const changedFrames = await Promise.all(
         pages.map((page, tab) =>
@@ -619,7 +620,7 @@ test("committed entities propagate between renderer tabs @sync", async ({
                 resources: event.resources,
                 resourceVersions: event.resourceVersions,
               })),
-            { from: previousFrames[tab], startedAt },
+            { from: fixtureItem(previousFrames, tab), startedAt },
           ),
         ),
       );
@@ -630,11 +631,11 @@ test("committed entities propagate between renderer tabs @sync", async ({
         ...(params.operation === "chat"
           ? {
               responseReceivedAt: reply.responseReceivedAt,
-              frameArrivals: changedFrames[0].map(
+              frameArrivals: fixtureItem(changedFrames, 0).map(
                 ({ elapsedMs }) => startedAt + elapsedMs,
               ),
-              actorPullStarts: pulls[0]
-                .slice(previousPulls[0])
+              actorPullStarts: fixtureItem(pulls, 0)
+                .slice(fixtureItem(previousPulls, 0))
                 .map(({ startedAt: pullStartedAt }) => pullStartedAt),
             }
           : {}),
@@ -645,7 +646,9 @@ test("committed entities propagate between renderer tabs @sync", async ({
           : {}),
         elapsedMs: observedAt - startedAt,
         changedFrames,
-        pulls: pulls.map((rows, tab) => rows.length - previousPulls[tab]),
+        pulls: pulls.map(
+          (rows, tab) => rows.length - fixtureItem(previousPulls, tab),
+        ),
       });
     }
     const batchPulls = pulls.map((rows) => rows.length);
@@ -664,6 +667,7 @@ test("committed entities propagate between renderer tabs @sync", async ({
     );
     const batchState = await readTestState(origin);
     const batchLead = batchState.threads.find((agent) => agent.id === leadId);
+    assert.ok(batchLead);
     const batchBeforeTokensUsed = Number(batchLead.tokensUsed || 0);
     const batch = await command("entity-change-batch-30", {
       operation: "batch",
@@ -682,10 +686,11 @@ test("committed entities propagate between renderer tabs @sync", async ({
                   event.resourceVersions?.some(
                     (version, index) =>
                       (version.resource ?? event.resources[index])?.kind ===
-                        "state" && version.entityChanges?.through >= seq,
+                        "state" &&
+                      (version.entityChanges?.through ?? Number.NaN) >= seq,
                   ),
                 ),
-            { from: batchFrameOffsets[tab], seq: batch.seq },
+            { from: fixtureItem(batchFrameOffsets, tab), seq: batch.seq },
           ),
         ),
       );
@@ -721,17 +726,19 @@ test("committed entities propagate between renderer tabs @sync", async ({
     const batchCounts = {
       commits: 30,
       frames: afterBatchFrames.map(
-        (count, index) => count - batchFrames[index],
+        (count, index) => count - fixtureItem(batchFrames, index),
       ),
-      pulls: pulls.map((rows, index) => rows.length - batchPulls[index]),
+      pulls: pulls.map(
+        (rows, index) => rows.length - fixtureItem(batchPulls, index),
+      ),
     };
     console.log(`ENTITY_BATCH_30 ${JSON.stringify(batchCounts)}`);
     for (let tab = 0; tab < pages.length; tab++) {
       assert.ok(
-        batchCounts.frames[tab] >= 1,
+        fixtureItem(batchCounts.frames, tab) >= 1,
         `tab ${tab} should receive a publication for the 30-commit burst`,
       );
-      const delivered = await pages[tab].evaluate(
+      const delivered = await fixtureItem(pages, tab).evaluate(
         ({ from, leadId, seq }) => {
           for (const { event } of window.__entityFrames.slice(from)) {
             for (const [index, version] of (
@@ -740,10 +747,10 @@ test("committed entities propagate between renderer tabs @sync", async ({
               if (
                 (version.resource ?? event.resources[index])?.kind !==
                   "state" ||
-                version.entityChanges?.through < seq
+                (version.entityChanges?.through ?? Number.NaN) < seq
               )
                 continue;
-              const document = version.entityChanges.documents.find(
+              const document = version.entityChanges?.documents.find(
                 (row) =>
                   row.collection === "agent" &&
                   row.id === leadId &&
@@ -752,13 +759,13 @@ test("committed entities propagate between renderer tabs @sync", async ({
               if (document)
                 return {
                   seq: document.seq,
-                  value: document.value,
+                  value: "value" in document ? document.value : undefined,
                 };
             }
           }
           return null;
         },
-        { from: batchFrameOffsets[tab], leadId, seq: batch.seq },
+        { from: fixtureItem(batchFrameOffsets, tab), leadId, seq: batch.seq },
       );
       assert.equal(
         delivered?.seq,
@@ -766,7 +773,11 @@ test("committed entities propagate between renderer tabs @sync", async ({
         `tab ${tab} must persist the final entity sequence from its stream frame`,
       );
       assert.equal(
-        Number(delivered?.value.tokensUsed),
+        Number(
+          delivered?.value && "tokensUsed" in delivered.value
+            ? delivered.value.tokensUsed
+            : undefined,
+        ),
         batchBeforeTokensUsed + 30,
         `tab ${tab} must persist all thirty committed token increments`,
       );
@@ -777,12 +788,12 @@ test("committed entities propagate between renderer tabs @sync", async ({
     await waitFor(
       () =>
         statePullRequestCounts.every(
-          (count, tab) => count === pulls[tab].length,
+          (count, tab) => count === fixtureItem(pulls, tab).length,
         ),
       "every state pull response must be observed before assertions",
     );
     for (let tab = 0; tab < pulls.length; tab++) {
-      for (const pull of pulls[tab]) {
+      for (const pull of fixtureItem(pulls, tab)) {
         const bootstrap = Number(pull.after) === 0 || pull.reset || pull.fresh;
         assert.ok(
           pull.documents.length > 0,
