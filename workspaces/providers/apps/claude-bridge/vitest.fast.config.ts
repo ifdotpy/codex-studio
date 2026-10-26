@@ -9,7 +9,7 @@ export default {
     include: [
       "launcher.test.ts",
       "request-regressions.test.ts",
-      "live-permissions.test.mjs",
+      "live-permissions.test.ts",
       // Test-side fixture waits must preserve the worker's IPC lifetime.
       "file-signals.test.ts",
       // Preserve unconfirmed outcomes and bounded, read-only repair evidence without a model query.
