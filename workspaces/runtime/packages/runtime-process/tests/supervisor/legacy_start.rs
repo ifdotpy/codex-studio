@@ -67,7 +67,7 @@ fn open(supervisor: &Supervisor, handle: &str) -> Result<Value> {
             env: BTreeMap::new(),
             cwd: Some(supervisor.root.to_string_lossy().into_owned()),
         },
-        false,
+        &super::deadline_tests::backend_capabilities(supervisor),
     )
 }
 

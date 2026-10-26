@@ -583,6 +583,7 @@ pub(super) async fn transcript_initial_snapshot(
         entry.reply_kind = Some(crate::generated::SubscriptionReplyKind::Snapshot);
     }
     entry.cursor = Some(SubscriptionCursor {
+        terminal_generation: None,
         workspace_id: state.workspace_id,
         seq: through,
     });
@@ -1019,6 +1020,7 @@ fn attach_transcript_changes(
                 .is_some_and(|batch| batch.is_some())
         {
             entry.cursor = Some(SubscriptionCursor {
+                terminal_generation: None,
                 workspace_id: event.workspace_id.clone(),
                 seq: entry.revision,
             });
@@ -1539,6 +1541,7 @@ fn resource_changes_event(
             let complete = entity_changes.is_some() && !view.entity_reset;
             ResourceRevisionEntry {
                 cursor: complete.then(|| SubscriptionCursor {
+                    terminal_generation: None,
                     workspace_id: workspace.into(),
                     seq: sequence,
                 }),
@@ -1557,6 +1560,7 @@ fn resource_changes_event(
                 entity_changes: entity_changes.map(Some),
                 entity_sequence_reset: state.then_some(Some(view.entity_reset)),
                 entity_sequences: None,
+                terminal_base_offset: None,
                 transcript_changes: None,
                 transcript_snapshot: None,
                 resource: None,
@@ -1726,6 +1730,7 @@ fn resource_sse_event(revision: i64, mut payload: ResourceChangeEvent) -> Event 
     for entry in &mut payload.resource_versions {
         entry.cursor = None;
         entry.reply_kind = None;
+        entry.terminal_base_offset = None;
         entry.entity_changes = None;
         entry.transcript_changes = None;
         entry.transcript_snapshot = None;
@@ -2010,9 +2015,14 @@ mod tests {
         ] {
             store
                 .transaction_with(move |tx| {
-                    tx.execute(
-                        "UPDATE user_terminals SET output=?1,offset=?2 WHERE id='shell'",
-                        rusqlite::params![text, offset],
+                    let row = studio_runtime_store::TerminalsRepository::get(tx, "shell")?
+                        .expect("terminal");
+                    studio_runtime_store::TerminalsRepository::put(
+                        tx,
+                        "shell",
+                        &row.record,
+                        text,
+                        offset,
                     )?;
                     Ok::<_, studio_runtime_store::StoreError>(())
                 })
@@ -3214,6 +3224,7 @@ mod tests {
             http,
             resource,
             Some(SubscriptionCursor {
+                terminal_generation: None,
                 workspace_id: "replaced-database".into(),
                 seq: through,
             }),
@@ -3383,6 +3394,7 @@ mod tests {
         .expect("event");
         event.resource_versions[0].view_snapshot = Some(serde_json::from_value(json!({"complaint":{"id":"message","version":1,"text":"x".repeat(SYNC_STREAM_EVENT_MAX_BYTES),"responses":[]}})).expect("snapshot"));
         event.resource_versions[0].cursor = Some(SubscriptionCursor {
+            terminal_generation: None,
             workspace_id: "workspace".into(),
             seq: 1,
         });
@@ -3583,9 +3595,8 @@ mod tests {
             dispatch_notification_with_effects, flush_notification_streams,
         };
         let streams = store.transaction_with(|tx| {
-            let mut decoder = studio_runtime_providers::LineDecoder::new();
-            let notification = decoder.push(b"{\"method\":\"item/agentMessage/delta\",\"params\":{\"threadId\":\"thread\",\"turnId\":\"turn\",\"itemId\":\"answer\",\"delta\":\" streamed text\"}}\n")
-                .expect("real provider frame").remove(0);
+            let studio_runtime_providers::DecodedJournalPayload::Frame(notification) = studio_runtime_providers::decode_journal_entry_borrowed(1, 1, b"{\"method\":\"item/agentMessage/delta\",\"params\":{\"threadId\":\"thread\",\"turnId\":\"turn\",\"itemId\":\"answer\",\"delta\":\" streamed text\"}}\n")
+                .payload else { panic!("real provider frame must decode"); };
             let result = dispatch_notification_with_effects(tx, "open", &PublicationContext::default(),
                 &NotificationStreamBuffer::default(), &ProviderDeliveryIdentity { provider_handle: "account:default".into(), generation: 1, cursor: 1 },
                 &notification, 2.0, &studio_runtime_services::notification_runtime_effects::RuntimeNotificationEffects)?;

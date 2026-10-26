@@ -209,3 +209,97 @@ inventory::submit! {
         dependencies: &["costs/pricing-refresh"],
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use axum::{body::Body, extract::ConnectInfo, http::Request};
+    use serde_json::{Value, json};
+    use std::{
+        net::{Ipv4Addr, SocketAddr},
+        sync::Arc,
+    };
+    use studio_runtime_store::{
+        RuntimeStore, StoreError,
+        analytics_capture::{AnalyticsCaptureRepository, CaptureTable},
+    };
+    use tower::ServiceExt;
+
+    /// Persisted rows exactly as typed usage capture writes them: a response,
+    /// a Claude query cumulative and a gap carry no legacy counter fields.
+    #[tokio::test]
+    async fn analytics_route_serves_typed_usage_rows_within_its_contract() {
+        let root = tempfile::tempdir().expect("temporary state");
+        let store = Arc::new(RuntimeStore::open(Some(root.path())).await.expect("store"));
+        let tokens = json!({"cacheWriteInputTokens":25647,"cachedInputTokens":0,"inputTokens":25649,
+            "outputTokens":19,"reasoningOutputTokens":0,"totalTokens":25668});
+        let typed = json!({"cacheReadInput":0,"cacheWriteInput":25647,"output":19,"reasoningOutput":0,"uncachedInput":2});
+        let base = |id: &str, at: f64| {
+            json!({"id":id,"agentId":"typed","rootId":"typed","threadId":"thread",
+            "turnId":"turn","accountKey":"claude","accountHistory":[],"at":at,"recordedAt":at,"source":"live",
+            "timestampSource":"observed","provider":"claude","model":"claude-haiku-5-5","fingerprint":id,
+            "last":{},"total":{},"delta":{}})
+        };
+        // Capture sets modelContextWindow for responses and cumulatives only.
+        let mut response = base("typed-response", 1.0);
+        response["counterDomain"] = json!("response");
+        response["modelContextWindow"] = Value::Null;
+        response["responseId"] = json!("msg-1");
+        response["last"] = tokens.clone();
+        response["delta"] = tokens.clone();
+        response["studioUsage"] = json!({"kind":"response","evidence":"live","model":"claude-haiku-5-5",
+            "responseId":"msg-1","turnId":"turn","tokens":typed});
+        let mut cumulative = base("typed-cumulative", 2.0);
+        cumulative["counterDomain"] = json!("claudeQuery");
+        cumulative["reset"] = json!(false);
+        cumulative["baselineMissing"] = json!(false);
+        cumulative["modelContextWindow"] = json!(1_000_000);
+        cumulative["total"] = tokens;
+        cumulative["studioUsage"] = json!({"kind":"cumulative","scope":"claudeQuery","turnId":"turn",
+            "modelContextWindow":1_000_000,"total":typed,"models":[{"model":"claude-haiku-5-5",
+            "providerCostUsd":0.0051391,"tokens":typed}]});
+        let mut gap = base("typed-gap", 3.0);
+        gap["counterDomain"] = json!("gap");
+        gap["responseId"] = json!("msg-2");
+        gap["studioUsage"] = json!({"kind":"gap","responseId":"msg-2","turnId":"turn",
+            "model":"claude-haiku-5-5","reason":"queryClosed"});
+        store
+            .analytics_transaction::<_, StoreError>(move |tx, _| {
+                AnalyticsCaptureRepository::write(tx, CaptureTable::Agents, &json!({"id":"typed",
+                    "rootId":"typed","provider":"claude","accountKey":"claude","threadId":"thread"}))?;
+                for row in [response, cumulative, gap] {
+                    AnalyticsCaptureRepository::write(tx, CaptureTable::Usage, &row)?;
+                }
+                Ok(())
+            })
+            .await
+            .expect("typed analytics rows");
+        let state = crate::router::HttpState::new(
+            "token".into(),
+            "fixture".into(),
+            root.path().display().to_string(),
+            49173,
+            None,
+            Some(store),
+            None,
+        );
+        let app = crate::router::router(state).expect("router");
+        let request = Request::builder()
+            .uri("/api/analytics?agent=typed&scope=agent&limit=500")
+            .header("host", "127.0.0.1:49173")
+            .header("x-canvas-token", "token")
+            .extension(ConnectInfo(SocketAddr::from((Ipv4Addr::LOCALHOST, 12345))))
+            .body(Body::empty())
+            .expect("request");
+        let response = app.oneshot(request).await.expect("route");
+        assert_eq!(response.status(), axum::http::StatusCode::OK);
+        let bytes = axum::body::to_bytes(response.into_body(), 4 * 1024 * 1024)
+            .await
+            .expect("bounded body");
+        let value: Value = serde_json::from_slice(&bytes).expect("JSON");
+        // Only the response is a usage sample; the cumulative stays provisional
+        // and the gap is unknown usage, not a zero sample.
+        assert_eq!(value["summary"]["usageSamples"], json!(1), "{value}");
+        assert_eq!(value["summary"]["tokens"]["totalTokens"], json!(25668.0));
+        assert_eq!(value["summary"]["provisionalUsageSamples"], json!(1));
+    }
+}

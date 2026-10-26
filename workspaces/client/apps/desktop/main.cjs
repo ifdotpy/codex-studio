@@ -290,7 +290,7 @@ async function holdSignInPort(forward) {
   });
   const token = (await session.json().catch(() => ({}))).token;
   if (!session.ok || typeof token !== "string")
-    throw new Error("The Studio server of this Mac is unavailable.");
+    throw new Error("The Studio server on this computer is unavailable.");
   const response = await fetch(`${backend.origin}/api/browser/forward`, {
     method: "POST",
     headers: {
@@ -305,7 +305,7 @@ async function holdSignInPort(forward) {
   const result = await response.json().catch(() => ({}));
   if (!response.ok)
     throw new Error(
-      result.error || "This Mac could not hold the sign-in port.",
+      result.error || "This computer could not hold the sign-in port.",
     );
 }
 async function nativeAction(event, request) {
@@ -653,9 +653,7 @@ async function nativeAction(event, request) {
           !DOCUMENT_EXTENSIONS.has(path.extname(file.path).toLowerCase()) ||
           ((await fs.stat(file.path)).mode & 0o111) !== 0
         )
-          throw new Error(
-            "Use Quick Look or Show in Folder for this file type.",
-          );
+          throw new Error("Use Preview or Show in Folder for this file type.");
         trusted(event);
         const error = await shell.openPath(file.path);
         if (error) throw new Error(error);
@@ -668,7 +666,7 @@ async function nativeAction(event, request) {
         !(await systemPreferences.askForMediaAccess("microphone"))
       )
         throw new Error(
-          `Microphone access was denied. Allow ${productName} in macOS Privacy & Security.`,
+          `Microphone access was denied. Allow ${productName} in this computer's privacy settings.`,
         );
       trusted(event);
       microphoneUntil = Date.now() + 15000;
@@ -677,7 +675,7 @@ async function nativeAction(event, request) {
     }
     case "prepareTranscription": {
       if (process.platform !== "darwin")
-        throw new Error("Local transcription currently requires macOS.");
+        throw new Error("Local transcription is unavailable on this computer.");
       for (const [token, permit] of transcriptionPermits)
         if (permit.expiry < Date.now()) transcriptionPermits.delete(token);
       const token = require("node:crypto").randomUUID();
@@ -899,7 +897,7 @@ async function nativeAction(event, request) {
           activeNotifications.delete(notification);
           reject(
             new Error(
-              "macOS did not confirm the notification. Check Studio in System Settings > Notifications.",
+              "The notification was not confirmed. Check Studio in this computer's notification settings.",
             ),
           );
         }, 15000);
@@ -913,8 +911,8 @@ async function nativeAction(event, request) {
           reject(
             new Error(
               /not allowed/i.test(error || "")
-                ? `STUDIO_NOTIFICATIONS_DENIED: Enable Allow notifications for ${productName} in macOS System Settings > Notifications.`
-                : error || "macOS could not show the notification.",
+                ? `STUDIO_NOTIFICATIONS_DENIED: Allow notifications for ${productName} in this computer's notification settings.`
+                : error || "The notification could not be shown.",
             ),
           );
         });

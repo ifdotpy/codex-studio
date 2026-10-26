@@ -1,5 +1,9 @@
 import { errorDetails } from "./errorPresentation.ts";
-import { DISK_FULL_ERROR_PATTERN } from "./generated/sharedValues.ts";
+import {
+  DISK_FULL_ERROR_PATTERN,
+  LEGACY_VM_PROVIDER_DISCONNECTED_TURN_ERROR,
+  VM_PROVIDER_DISCONNECTED_TURN_ERROR,
+} from "./generated/sharedValues.ts";
 import type { Agent } from "./types";
 
 // A Studio condition, not a Codex error kind: the state volume has no free space.
@@ -8,7 +12,7 @@ export const DISK_FULL_TITLE = "Disk is full";
 const DISK_FULL_MESSAGE =
   "Studio holds this agent and resumes it when free space returns.";
 const DISK_FULL_HINT =
-  "Free disk space on this Mac. Queued work starts again on its own.";
+  "Free disk space on the server. Queued work starts again on its own.";
 
 // Codex 0.153.4 CodexErrorInfo, including unknown future variants.
 export const nativeErrorHints: Record<string, string> = {
@@ -178,6 +182,12 @@ export function isDiskFullError(value: unknown): boolean {
 
 export function nativeErrorView(value: unknown, planType?: string) {
   const view = codexErrorView(value, planType);
+  if (view.message === LEGACY_VM_PROVIDER_DISCONNECTED_TURN_ERROR)
+    return {
+      ...view,
+      message: VM_PROVIDER_DISCONNECTED_TURN_ERROR,
+      details: view.details || view.message,
+    };
   if (!isDiskFullError(value)) return view;
   return {
     ...view,

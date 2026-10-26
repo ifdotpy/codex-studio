@@ -75,7 +75,7 @@ async fn xdg_open_queues_a_link_through_the_runtime_binary() {
     );
     assert_eq!(
         String::from_utf8_lossy(&accepted.stderr).trim(),
-        "studio-browser: Studio asks the person to open device.example.com. The sign-in continues in the browser on the Mac after the approval."
+        "studio-browser: Studio asks the person to open device.example.com. The sign-in continues in the browser on this computer after the approval."
     );
     let queue: serde_json::Value = serde_json::from_slice(
         &std::fs::read(folder.join("browser/requests.json")).expect("test step"),

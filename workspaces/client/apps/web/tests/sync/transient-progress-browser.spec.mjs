@@ -92,7 +92,7 @@ for (const flow of ["vault", "auth", "vault-job"]) {
       );
       if (flow === "vault") {
         await page
-          .getByRole("button", { name: "Show the paper key in Terminal" })
+          .getByRole("button", { name: "Show the paper key in a terminal" })
           .click();
       }
       if (flow === "vault")

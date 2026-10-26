@@ -19,22 +19,37 @@ export { HANG_GUARD_MS };
 export async function startBridge(
   fakeSdk,
   prefix = "claude-bridge-",
-  { env = {}, thread = {}, clock = false } = {},
+  { env = {}, thread = {}, clock = false, temporaryBase = os.tmpdir() } = {},
 ) {
+  // SDK init always carries a native session id. Keep older scripted fixtures
+  // faithful to that declaration; an explicit session_id still takes precedence.
+  fakeSdk = fakeSdk.replace(
+    /subtype:\s*(["'])init\1/g,
+    "subtype:'init',session_id:options.resume||options.sessionId",
+  );
   const root = await fs.realpath(
-    await fs.mkdtemp(path.join(os.tmpdir(), prefix)),
+    await fs.mkdtemp(path.join(temporaryBase, prefix)),
   );
   for (const name of await fs.readdir(BRIDGE)) {
     if (!name.endsWith(".mjs") || name.endsWith(".test.mjs")) continue;
     const source = await fs.readFile(path.join(BRIDGE, name), "utf8");
     await fs.writeFile(
       path.join(root, name),
-      source.replaceAll("@anthropic-ai/claude-agent-sdk", "./fake.mjs"),
+      source.replaceAll(
+        "@anthropic-ai/claude-agent-sdk",
+        name === "history-index.mjs"
+          ? path.join(
+              BRIDGE,
+              "node_modules/@anthropic-ai/claude-agent-sdk/sdk.mjs",
+            )
+          : "./fake.mjs",
+      ),
     );
   }
   await fs.writeFile(
     path.join(root, "fake.mjs"),
-    `import { waitForFile } from ${JSON.stringify(path.join(BRIDGE, "testing/file-signals.mjs"))};\n` +
+    `import { waitForFile as waitForFileSignal } from ${JSON.stringify(path.join(BRIDGE, "testing/file-signals.mjs"))};\n` +
+      `const waitForFile=(file,options)=>waitForFileSignal(file,{...options,childIpc:true});\n` +
       (fakeSdk.includes("export const resolveSettings") ||
       fakeSdk.includes("export function resolveSettings")
         ? fakeSdk
@@ -57,7 +72,7 @@ export async function startBridge(
       ],
       {
         cwd: root,
-        stdio: ["pipe", "pipe", "pipe", ...(clock ? ["ipc"] : [])],
+        stdio: ["pipe", "pipe", "pipe", "ipc"],
         env: {
           ...process.env,
           STUDIO_CLAUDE_ACCOUNT: "test@example.test",
@@ -68,6 +83,9 @@ export async function startBridge(
       },
     );
   let child;
+  // One exit observation per launched child, registered at spawn so cleanup can
+  // never miss an exit that already happened (including a signal exit).
+  let exited;
   let stderr = "";
   const notes = [];
   const waiting = new Map();
@@ -75,6 +93,7 @@ export async function startBridge(
   const attach = () => {
     child = launch();
     const attached = child;
+    exited = new Promise((resolve) => attached.once("exit", resolve));
     child.stderr.on("data", (chunk) => (stderr += chunk));
     child.once("close", () => {
       if (child !== attached) return;
@@ -90,21 +109,41 @@ export async function startBridge(
   };
   attach();
   let sequence = 0;
+  let signalSequence = 0;
   const bridge = {
     root,
     notes,
+    get process() {
+      return child;
+    },
+    async writeSignal(name, content = "") {
+      const file = path.join(root, name);
+      const temporary = path.join(root, `.signal-${++signalSequence}.tmp`);
+      await fs.writeFile(temporary, content);
+      await fs.rename(temporary, file);
+      await new Promise((resolve, reject) => {
+        child.send({ fixtureFile: file }, (error) =>
+          error ? reject(error) : resolve(),
+        );
+      });
+    },
     async advanceTime(ms) {
+      if (child.exitCode !== null) return;
       const controller = new AbortController();
       const timer = setTimeout(
         () => controller.abort(new Error("virtual clock hung")),
         HANG_GUARD_MS,
       );
       try {
-        const advanced = once(child, "message", { signal: controller.signal });
+        const advanced = Promise.race([
+          once(child, "message", { signal: controller.signal }),
+          once(child, "exit", { signal: controller.signal }),
+        ]);
         child.send({ advance: ms });
         await advanced;
       } finally {
         clearTimeout(timer);
+        controller.abort();
       }
     },
     async advanceUntil(predicate) {
@@ -127,7 +166,16 @@ export async function startBridge(
         const message = await new Promise((resolve, reject) => {
           waiting.set(id, { resolve, reject });
           timer = setTimeout(
-            () => reject(new Error(method + " hung\n" + stderr)),
+            () =>
+              reject(
+                new Error(
+                  method +
+                    " hung\n" +
+                    stderr +
+                    "\nRecent notifications: " +
+                    JSON.stringify(notes.slice(-10)),
+                ),
+              ),
             HANG_GUARD_MS,
           );
           child.stdin.write(JSON.stringify({ id, method, params }) + "\n");
@@ -155,7 +203,15 @@ export async function startBridge(
           };
           notifications.add(notify);
           timer = setTimeout(
-            () => reject(new Error("notification missing\n" + stderr)),
+            () =>
+              reject(
+                new Error(
+                  "notification missing\n" +
+                    stderr +
+                    "\nRecent notifications: " +
+                    JSON.stringify(notes.slice(-10)),
+                ),
+              ),
             HANG_GUARD_MS,
           );
           notify();
@@ -166,9 +222,7 @@ export async function startBridge(
       }
     },
     async restart() {
-      child.stdin.end();
-      if (child.exitCode === null)
-        await new Promise((resolve) => child.once("exit", resolve));
+      await stop();
       notes.length = 0;
       waiting.clear();
       stderr = "";
@@ -176,12 +230,37 @@ export async function startBridge(
       await bridge.call("thread/resume", { threadId: bridge.thread });
     },
     async close() {
-      child.stdin.end();
-      if (child.exitCode === null)
-        await new Promise((resolve) => child.once("exit", resolve));
-      await fs.rm(root, { recursive: true, force: true });
+      try {
+        await stop();
+      } finally {
+        await fs.rm(root, { recursive: true, force: true });
+      }
     },
   };
+  // Ends the current child for close() and restart(): drives a virtual clock
+  // until exit, reaps a child whose clock can no longer be driven, and always
+  // observes the exit registered at spawn.
+  async function stop() {
+    child.stdin.end();
+    // A failed virtual-clock scenario can leave teardown waiting on a frozen timer.
+    // Always reap this fixture's child, including when the test itself timed out.
+    const guard = setTimeout(() => child.kill("SIGKILL"), HANG_GUARD_MS);
+    try {
+      // Bounded shutdown timers run on the virtual clock; advance it until exit.
+      // A clock that can no longer be driven cannot finish the child: reap it.
+      if (clock)
+        while (child.exitCode === null && child.signalCode === null)
+          try {
+            await bridge.advanceTime(VIRTUAL_STEP_MS);
+          } catch {
+            child.kill("SIGKILL");
+            break;
+          }
+      await exited;
+    } finally {
+      clearTimeout(guard);
+    }
+  }
   bridge.thread = (
     await bridge.call("thread/start", {
       cwd: root,

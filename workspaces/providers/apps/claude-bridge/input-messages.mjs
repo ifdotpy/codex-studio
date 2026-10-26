@@ -51,3 +51,18 @@ export function sdkInputMessages(sessionId, identity, groups, nativeId) {
     return message;
   });
 }
+
+// Ordered native UUIDs of one logical input. The final UUID keeps the logical
+// input identity; the first UUID is its history boundary, never a checkpoint.
+export function nativeInputIds(item) {
+  const ids = item?.nativeIds ?? [item?.nativeId];
+  if (
+    !Array.isArray(ids) ||
+    !ids.length ||
+    ids.some((id) => typeof id !== "string" || !id) ||
+    new Set(ids).size !== ids.length ||
+    (item?.nativeId && ids.at(-1) !== item.nativeId)
+  )
+    return null;
+  return ids;
+}

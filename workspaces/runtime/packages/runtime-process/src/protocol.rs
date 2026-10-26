@@ -23,6 +23,29 @@ pub struct SupervisorHandshakeV2 {
     pub operator: bool,
 }
 
+impl SupervisorHandshakeV2 {
+    pub(crate) fn connection_identity(
+        &self,
+    ) -> Result<
+        studio_runtime_providers::supervisor_protocol::ConnectionIdentity<'_>,
+        studio_runtime_providers::supervisor_protocol::Refusal,
+    > {
+        use studio_runtime_providers::supervisor_protocol::{ConnectionIdentity, Refusal};
+        match (self.probe, self.operator, self.backend_id.as_ref()) {
+            (true, false, None) => Ok(ConnectionIdentity::Probe),
+            // Older retained guests include backendId on operator requests. It
+            // never acquires backend ownership or grants backend capabilities.
+            (false, true, _) => Ok(ConnectionIdentity::Operator),
+            (false, false, Some(backend)) if !backend.0.is_empty() => {
+                Ok(ConnectionIdentity::Backend(&backend.0))
+            }
+            _ => Err(Refusal(
+                "Supervisor handshake requires exactly one connection identity",
+            )),
+        }
+    }
+}
+
 fn is_false(value: &bool) -> bool {
     !value
 }

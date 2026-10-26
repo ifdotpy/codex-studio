@@ -110,7 +110,7 @@ createRoot(document.getElementById('root')).render(React.createElement(MantinePr
     await expect(approve.getByText("kube", { exact: true })).toBeVisible();
     await expect(
       approve.getByText(
-        "The Linux VM on the chat's server, user studio-a-0123, port 8000",
+        "The VM on the chat's server, user studio-a-0123, port 8000",
       ),
     ).toBeVisible();
     // The card offers no direct link: the link opens only through the approval.

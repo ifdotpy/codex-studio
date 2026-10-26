@@ -1,6 +1,4 @@
-import { Equal } from "lucide-react";
 import type { Agent } from "../../types";
-import { ProviderMark } from "../AccountTiles";
 import type { ComponentProps } from "react";
 import { ActionButton } from "../ui/primitives";
 import { modelDisplayName, modelForValue } from "../models/modelOption";
@@ -117,18 +115,6 @@ export function ExecutionSummaryTrigger({
             data-role={role}
             key={role}
           >
-            <span className="execution-symbols">
-              {value ? (
-                <span
-                  className="execution-provider"
-                  data-provider={value.provider}
-                >
-                  <ProviderMark provider={value.provider} />
-                </span>
-              ) : (
-                <Equal className="execution-inherited-icon" />
-              )}
-            </span>
             <span className="execution-role">{label}</span>
             {value ? (
               <span className="execution-model">{value.name}</span>
@@ -137,9 +123,6 @@ export function ExecutionSummaryTrigger({
             )}
           </span>
         ))}
-        {entries.length > 1 && (
-          <span className="execution-summary-more">+{entries.length - 1}</span>
-        )}
       </span>
     </ActionButton>
   );

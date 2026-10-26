@@ -244,11 +244,16 @@ fn message_info(
             result.model = text(&response, "model")
                 .filter(|s| !s.is_empty())
                 .or(result.model);
-            result.tokens = response
-                .get("requestUsage")
-                .or_else(|| response.get("last"))
-                .filter(|v| !v.is_null())
-                .cloned();
+            let provider = if result.provider.as_deref() == Some("claude") {
+                studio_runtime_schema::usage::UsageProvider::Claude
+            } else {
+                studio_runtime_schema::usage::UsageProvider::Codex
+            };
+            if let Ok(studio_runtime_schema::usage::UsageObservation::Response { tokens, .. }) =
+                studio_runtime_schema::usage::parse_analytics_usage_row(provider, &response)
+            {
+                result.tokens = Some(crate::analytics_capture::analytics_tokens(&tokens));
+            }
         }
     }
     Ok(serde_json::to_value(result)?)

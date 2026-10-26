@@ -31,7 +31,7 @@ func address(_ path: String) throws -> sockaddr_un {
     result.sun_family = sa_family_t(AF_UNIX)
     let bytes = Array(path.utf8) + [0]
     guard bytes.count <= MemoryLayout.size(ofValue: result.sun_path) else {
-        try fail("VM socket path exceeds the macOS limit. Use a shorter state directory.")
+        try fail("VM socket path exceeds the system limit. Use a shorter state directory.")
     }
     withUnsafeMutableBytes(of: &result.sun_path) { target in target.copyBytes(from: bytes) }
     return result
@@ -86,7 +86,7 @@ final class Host: NSObject, VZVirtualMachineDelegate {
 
     init(directory: URL) { self.directory = directory }
     func boot() throws {
-        guard VZVirtualMachine.isSupported else { try fail("Virtualization.framework is unavailable on this computer.") }
+        guard VZVirtualMachine.isSupported else { try fail("Virtualization is unavailable on this computer.") }
         lease = open(directory.appendingPathComponent("host.lock").path, O_CREAT | O_RDWR, 0o600)
         guard lease >= 0, flock(lease, LOCK_EX | LOCK_NB) == 0 else {
             try fail("Another VM helper owns this state directory.")
@@ -394,4 +394,4 @@ guard CommandLine.arguments.count == 3, CommandLine.arguments[1] == "serve" else
 }
 let host = Host(directory: URL(fileURLWithPath: CommandLine.arguments[2]).standardizedFileURL)
 do { try host.boot(); RunLoop.main.run() }
-catch { fputs("Linux VM helper: \(error.localizedDescription)\n", stderr); exit(1) }
+catch { fputs("VM helper: \(error.localizedDescription)\n", stderr); exit(1) }

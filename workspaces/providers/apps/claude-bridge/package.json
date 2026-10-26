@@ -4,15 +4,24 @@
   "type": "module",
   "scripts": {
     "test": "vitest run --config vitest.config.mjs",
-    "check:focused": "vitest run --config vitest.config.mjs",
-    "test:fast": "vitest run --config vitest.fast.config.mjs --project fast"
+    "check:focused": "pnpm run typecheck && vitest run --config vitest.config.mjs",
+    "test:fast": "pnpm run typecheck && vitest run --config vitest.fast.config.mjs --project fast",
+    "typecheck": "tsc --project tsconfig.json --incremental --tsBuildInfoFile \"${STUDIO_TSC_CACHE:-${TMPDIR:-/tmp}}/codex-studio-claude-usage.tsbuildinfo\""
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "0.3.308",
+    "@img/sharp-darwin-arm64": "0.35.5",
+    "@img/sharp-libvips-darwin-arm64": "1.3.4",
+    "@img/sharp-libvips-linux-arm64": "1.3.4",
+    "@img/sharp-libvips-linux-x64": "1.3.4",
+    "@img/sharp-linux-arm64": "0.35.5",
+    "@img/sharp-linux-x64": "0.35.5",
     "@modelcontextprotocol/sdk": "1.32.1",
+    "sharp": "0.35.5",
     "zod": "4.6.7"
   },
   "devDependencies": {
+    "@types/node": "26.6.5",
     "vitest": "5.0.5"
   },
   "codexStudioChecks": {

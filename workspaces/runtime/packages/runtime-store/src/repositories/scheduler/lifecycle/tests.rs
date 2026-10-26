@@ -119,6 +119,55 @@ fn waiting_with_finished_marker() -> Value {
 }
 
 #[test]
+fn platform_neutral_and_legacy_vm_errors_keep_transport_recovery_fenced() {
+    for error in [
+        VM_PROVIDER_DISCONNECTED_TURN_ERROR,
+        studio_runtime_schema::shared_values::LEGACY_VM_PROVIDER_DISCONNECTED_TURN_ERROR,
+    ] {
+        let mut record = json!({
+            "status":"interrupted", "inFlight":false, "autoWake":false,
+            "turnId":"turn-old", "error":error,
+            "disconnectRecovery": {
+                "epoch":0, "accountKey":ACCOUNT, "threadId":"thread", "turnId":"turn-old",
+                "autoWake":true, "source":"transport"
+            }
+        });
+        assert!(
+            transport_continuation_allowed(&agent_from(record.clone())),
+            "{error}"
+        );
+        record["disconnectRecovery"]["turnId"] = json!("another-turn");
+        assert!(
+            !transport_continuation_allowed(&agent_from(record)),
+            "a different turn cannot recover"
+        );
+    }
+}
+
+#[test]
+fn platform_neutral_and_legacy_vm_errors_settle_a_completed_recovery() {
+    for error in [
+        VM_PROVIDER_DISCONNECTED_TURN_ERROR,
+        studio_runtime_schema::shared_values::LEGACY_VM_PROVIDER_DISCONNECTED_TURN_ERROR,
+    ] {
+        let mut connection = database();
+        let mut record = waiting_with_finished_marker();
+        record["status"] = json!("interrupted");
+        record["error"] = json!(error);
+        record["disconnectRecovery"]["startAttempt"] =
+            python_attempt("settled", Some("turn-later"), true);
+        put(&connection, record);
+        with(&mut connection, |tx| {
+            SchedulerRepository::settle_stale_recovery(tx, ACCOUNT, 10.0)
+                .expect("settle completed recovery")
+        });
+        let recovered = stored(&connection);
+        assert_eq!(recovered["status"], "completed", "{error}");
+        assert!(recovered["error"].is_null());
+    }
+}
+
+#[test]
 fn a_finished_python_restart_marker_does_not_interrupt_a_waiting_agent() {
     let mut connection = database();
     let before = waiting_with_finished_marker();

@@ -202,7 +202,9 @@ installed-build evidence.
 ## Installed scenario smoke
 
 `just smoke-installed` checks the main user scenarios on the app that is installed
-on this Mac, against its live backend. Run it after an install. The
+on this host, against its live backend. On Linux it checks the `codex-studio`
+user service and the delivered release under
+`~/.local/share/codex-studio/server/current`; macOS keeps the application bundle layout. Run it after an install. The
 [script](../workspaces/tooling/apps/installed-smoke/smoke.mjs) owns the steps and
 their time limits:
 
@@ -229,6 +231,56 @@ The smoke sends small real model requests and never changes the owner's chats.
 `--no-model` runs only the read-only steps; `--provider` and `--model
 provider=id` narrow the scenarios. A pending card raises an approval alert in a
 build without the 10 s alert grace.
+
+For usage accounting acceptance, announce and run `just smoke-installed --usage`.
+It uses both providers' cheapest offered models, with three turns each: short,
+about 300 words with one read of a script-created `notes.txt`, then short.
+The chats are first created idle with YOLO disabled; the script verifies their
+returned settings before sending a model message. Codex uses workspace-write
+restricted to the disposable run folder with approvals enabled. The verifier
+normalizes stored policy objects, rejects unknown/bypass policies, and checks the
+folder's captured realpath/device/inode identity. Claude uses
+default permission mode. Read-only Codex leads require a server API change and
+are outside this verifier. Claude also receives a steer during the second turn.
+Older evidence retains its original harmless `pwd` step. Usage waits follow SSE invalidations. The evidence
+contains final native Claude journal usage per message id, Codex rollout response
+usage, recorded response rows, budget tokens and accounting, the `sessionCost`
+entities sent to the renderer, independent base-rate price arithmetic from the
+installed pricing artifact, and server/Claude bridge binary and release identity.
+The optional usage reconciliation endpoint is included when available; only HTTP
+404 skips it. Python's standard-library SQLite reader opens the live database
+strictly read-only for the accounting label absent from the installed API.
+
+The collector waits for the scoped cost publication to match a fresh server cost
+generation containing final-turn usage, and rejects unavailable pricing. It checks
+the exact Claude steer receipt and its materialized current-turn input. Interrupts
+cancel model waits and prohibit further model submissions; cleanup continues under
+the same signal handlers. SSE connection establishment has a deadline. Server and
+bridge provenance captured before model submission stays immutable; recovery-time
+observations are recorded separately. Direct-child ancestry or the backend's
+authoritative supervisor account handle and matching native process-start
+identity identify a bridge. Recovery retains
+saved serving provenance when a current bridge is unavailable. Evidence
+checkpoints use an atomic rename, and recovery resumes completed snapshots.
+
+Evidence is written with private permissions below
+`~/.cache/codex-studio/live-usage/`. The run archives its chats and removes only its
+own project and marked folder; archived records remain available for comparison.
+After installing the new build, run the same usage scenario and compare with
+`just smoke-installed --compare <old.json> <new.json>`. The table reports token
+categories, recorded/truth ratio, budget, native-evidence price, displayed price,
+and reconciliation costs when present. Differences are evidence, not an automatic
+pass: inspect response identities and category differences as well as the totals.
+If collection fails after the model turns, `--collect <run.json>` recovers the
+same run's evidence without another paid request or mutation of its chats; it
+requires the original server build and state directory. It preserves the failed
+checks in the artifact rather than turning the original run into a passing run.
+Explicitly approved recovery can add `--sqlite-ro-agent <owned-Claude-id>` when
+that run's analytics endpoint is unavailable. This reads only bounded rows for
+that exact run with SQLite read-only mode, query-only transactions and a short
+busy timeout; costs remain SSE entities and receipts remain API reads. The
+artifact marks the analytics source `sqlite-ro`. Normal runs measure analytics
+request latency so OLD/NEW comparison also shows successful or timed-out reads.
 
 ## Add or move a test
 
@@ -283,7 +335,14 @@ composite actions. Heavy and load checks remain outside hosted CI.
 backend through headless Chromium: it creates a lead chat in the dialog, types one
 prompt, and measures agent visibility, UI responsiveness, API latency, SQLite lock
 counters and process load while the team runs. It deletes the chat and its agents
-afterward and checks that no provider or tool process leaked (`--keep` skips this).
+afterward and checks that no agent or identifiable provider/tool process owned by
+the run remains (`--keep` skips this). Loaded-thread totals remain evidence only:
+the diagnostics API exposes counts, not the identities needed to attribute a
+loaded thread to this run on a shared server. Agent summaries and scoped details
+arrive through the current SSE resource contract. Multipart entity transfers stay
+staged until every page is continuous and the complete marker arrives; incomplete
+required transfers make the audit inconclusive and fail the run. Cleanup reports
+agents and owned processes separately from the unverified owned-thread boundary.
 It is a manual, announced live run, outside every test tier. A small run:
 `PLAYWRIGHT_BROWSERS_PATH=~/.cache/ms-playwright node
 workspaces/client/apps/web/scripts/verify-ui-team-scale.mjs --workers 3`; `--help`
@@ -303,11 +362,24 @@ Before the cleanup, a strict audit (`scripts/uiTeamScaleAudit.mjs`) reads the
 lead and worker transcripts, the lead's tool requests, the backend journal of the
 run window (`journalctl --user --unit codex-studio`, `--journal-unit` changes it)
 and diagnostics counters. The run fails on a failed or interrupted turn, a worker
-with more than one turn or an error, a `child_result` delivered twice or never,
+with unexplained extra turns or an error, a `child_result` delivered twice or never,
 any input delivered twice, a tool call or request without a result, a tool request
 applied while the model was told it failed, a lead final report made before the
 last worker reply, a backend restart, an `ERROR` or panic journal line, a growing
-error counter or a non-empty input queue. Everything else suspicious (failed lead
+error counter, or pending durable inputs on the run's own lead or workers.
+Shared-server input/recovery gauges are evidence only: the summary reports their
+baseline, end and delta, without attributing other chats' work to this team. The scoped input audit reads
+a fenced, read-only snapshot of every retained `runtime_events` row through
+`readRetainedInputRows` in
+[`verify-rust-chat-scale.mjs`](../workspaces/client/apps/web/scripts/verify-rust-chat-scale.mjs).
+The bounded event SSE window is not authoritative for pending-input absence.
+The audit uses the status projection owned by
+[`scaleVerifierHelpers.mjs`](../workspaces/client/apps/web/scripts/scaleVerifierHelpers.mjs).
+Baseline and final global gauges remain in the evidence. A worker's extra turn
+triggered by a unique `agent_message` from the run's lead is attributed to the
+lead and reported as an anomaly with the message text; repeated input identities
+still fail. An empty journal grep result is a clean journal, not a read failure.
+Everything else suspicious (failed lead
 tool calls, placeholder answers, repeated final reports, long lead input waits,
 start-order inversions, provider retries, other journal warnings) is listed under
 `anomalies` in `summary.txt` and `evidence.json`.

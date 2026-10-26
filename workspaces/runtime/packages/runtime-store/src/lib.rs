@@ -219,6 +219,13 @@ pub enum TableChange<'a> {
     Full,
 }
 
+/// Account/team roots proven by a committed analytics generation write.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ChangedRoots {
+    Roots(std::collections::BTreeSet<String>),
+    Full,
+}
+
 /// Committed resource scope proven by the writer's exact SQLite update counts.
 /// Unknown and mixed writes always retain the broad refresh.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -455,6 +462,18 @@ fn fire_commit_observers(notifiers: &Mutex<CommitNotifiers>) {
     }
     for observer in observers {
         observer();
+    }
+}
+
+fn fire_analytics_commit_observers(notifiers: &Mutex<CommitNotifiers>, roots: ChangedRoots) {
+    fire_commit_observers(notifiers);
+    let observers = notifiers
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .scoped_analytics
+        .clone();
+    for observer in observers {
+        observer(roots.clone());
     }
 }
 
@@ -1164,6 +1183,7 @@ where
 struct CommitNotifiers {
     primary: Option<Arc<dyn Fn() + Send + Sync>>,
     observers: Vec<Arc<dyn Fn() + Send + Sync>>,
+    scoped_analytics: Vec<Arc<dyn Fn(ChangedRoots) + Send + Sync>>,
 }
 
 enum WriterTransactionOutcome<T, E> {
@@ -1523,6 +1543,19 @@ impl RuntimeStore {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .observers
+            .push(Arc::new(observer));
+    }
+
+    /// Observe analytics commits with the roots whose usage generation changed.
+    /// Unknown writes require full reconciliation. Callbacks must only enqueue.
+    pub fn add_analytics_root_change_observer(
+        &self,
+        observer: impl Fn(ChangedRoots) + Send + Sync + 'static,
+    ) {
+        self.analytics_commit_notifiers
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .scoped_analytics
             .push(Arc::new(observer));
     }
 
@@ -3323,6 +3356,7 @@ mod commit_notification_tests {
         )
         .expect("install update and delete hooks");
 
+        let mut receipts = Vec::new();
         for (index, table) in OBSERVED_TABLES.into_iter().enumerate() {
             let insert = format!("INSERT INTO {}(id) VALUES (?1)", table.name());
             database
@@ -3332,16 +3366,40 @@ mod commit_notification_tests {
                 table_change_flags.swap(0, Ordering::AcqRel),
                 table.change_bit()
             );
-            assert_eq!(
-                receipt_update_count.swap(0, Ordering::AcqRel),
-                if table.suppressible_resource_receipt() {
-                    1
-                } else {
-                    0
-                },
-                "only named internal receipts count toward the resource filter"
-            );
+            receipts.push((table.name(), receipt_update_count.swap(0, Ordering::AcqRel)));
         }
+        assert_eq!(
+            receipts,
+            [
+                ("runtime_access_clients", 0),
+                ("runtime_usage_resumes", 0),
+                ("runtime_agents", 0),
+                ("runtime_events", 0),
+                ("runtime_event_meta", 0),
+                ("runtime_rooms", 0),
+                ("runtime_operation_receipts", 1),
+                ("runtime_work", 0),
+                ("runtime_monitors", 0),
+                ("runtime_rules", 0),
+                ("runtime_server_outbox", 0),
+                ("runtime_server_links", 0),
+                ("runtime_federation_settings", 0),
+                ("runtime_federation_identity", 0),
+                ("runtime_federation_peers", 0),
+                ("runtime_federation_invites", 0),
+                ("runtime_federation_rooms", 0),
+                ("runtime_federation_outbox", 0),
+                ("runtime_native_action_receipts", 1),
+                ("runtime_access_receipts", 1),
+                ("runtime_budget", 0),
+                ("runtime_budget_usage", 0),
+                ("runtime_account_transfers", 0),
+                ("runtime_orchestration_settings", 0),
+                ("runtime_requests", 0),
+                ("runtime_tool_requests", 0),
+                ("runtime_analytics_projection", 0),
+            ]
+        );
     }
 
     #[test]

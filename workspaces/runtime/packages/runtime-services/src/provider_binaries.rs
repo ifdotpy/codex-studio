@@ -309,7 +309,7 @@ impl NativePlatform {
 
 #[derive(Debug, Error, Eq, PartialEq)]
 pub enum BinaryResolutionError {
-    #[error("Windows npm codex.cmd shim resolution is unsupported")]
+    #[error("npm codex.cmd shim resolution is unavailable on this server")]
     UnsupportedWindowsShimResolution,
     #[error("Codex npm launcher has no valid package metadata")]
     InvalidPackageMetadata,

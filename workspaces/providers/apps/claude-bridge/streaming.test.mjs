@@ -12,7 +12,7 @@ export const createSdkMcpServer=value=>({...value});
 export const forkSession=async()=>({sessionId:'22222222-2222-4222-8222-222222222222'});
 export const getSessionMessages=async()=>[];
 const usage={input_tokens:10,output_tokens:2};
-export function query({prompt}){
+export function query({prompt,options}){
  const abort=new AbortController();
  return {
   mcpServerStatus:async()=>[],reconnectMcpServer:async()=>{},

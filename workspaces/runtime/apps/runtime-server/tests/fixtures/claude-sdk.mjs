@@ -291,7 +291,11 @@ export function query({ prompt, options }) {
         transcriptPrefix = [];
         turnAbort = new AbortController();
         const turnSignal = turnAbort.signal;
-        yield { type: "system", subtype: "init" };
+        yield {
+          type: "system",
+          subtype: "init",
+          session_id: options.resume || options.sessionId,
+        };
         if (text === "steer-race") {
           await raceStarted;
           yield {
@@ -412,6 +416,9 @@ export function query({ prompt, options }) {
             if (turnSignal.aborted) resolve();
             else turnSignal.addEventListener("abort", resolve, { once: true });
           });
+        // Closing the real SDK terminates its stream; it does not generate a
+        // successful model response after releasing an aborted wait.
+        if (abort.signal.aborted) return;
         if (text === "fail") throw new Error("Native failure");
         if (text === "/compact")
           yield {

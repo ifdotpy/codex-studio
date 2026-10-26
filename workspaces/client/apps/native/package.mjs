@@ -9,6 +9,7 @@ import {
   prebuiltReleaseDirectory,
   releaseTargetEnvironment,
 } from "../desktop/release-binaries.mjs";
+import { pruneBridgeImageCodecs } from "./bridge-image-package.mjs";
 
 const root = path.dirname(fileURLToPath(import.meta.url));
 const repository = path.resolve(root, "../../../..");
@@ -54,6 +55,9 @@ try {
         CODEX_DESKTOP_UI_ONLY: "0",
       },
     },
+  );
+  await pruneBridgeImageCodecs(
+    path.join(stage, "workspace/scripts/claude_bridge"),
   );
   const target =
     prebuiltRelease ??

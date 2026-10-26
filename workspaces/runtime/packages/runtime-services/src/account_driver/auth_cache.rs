@@ -964,19 +964,22 @@ mod tests {
             let cache = AuthCache::default();
             let mut watcher =
                 CredentialWatcher::new(Arc::downgrade(&cache.core)).expect("directory watcher");
-            for wanted in [
-                vec![first_location.clone()],
-                vec![first_location, second_location.clone()],
-                vec![second_location],
+            for (wanted, expected_directories) in [
+                (
+                    vec![first_location.clone()],
+                    HashSet::from([first.path().to_owned()]),
+                ),
+                (
+                    vec![first_location, second_location.clone()],
+                    HashSet::from([first.path().to_owned(), second.path().to_owned()]),
+                ),
+                (
+                    vec![second_location],
+                    HashSet::from([second.path().to_owned()]),
+                ),
             ] {
                 watcher.set(wanted.clone());
-                assert_eq!(
-                    watcher.watched,
-                    wanted
-                        .iter()
-                        .flat_map(|location| location.directories.clone())
-                        .collect()
-                );
+                assert_eq!(watcher.watched, expected_directories);
                 assert_eq!(
                     watcher
                         .locations

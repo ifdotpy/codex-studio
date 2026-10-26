@@ -315,13 +315,13 @@ impl HostService {
         self.refuse_orphan(identity)?;
         require(
             protocol::conflicts(source.keys()).is_empty(),
-            "The source names conflict on macOS",
+            "The source names conflict on the host filesystem",
             "name_conflict",
         )?;
         require(
             params.get("manifestSha256").and_then(Value::as_str)
                 == Some(protocol::manifest_digest(&source).as_str()),
-            "The Mac sources differ from the layr slot",
+            "The host sources differ from the layr slot",
             "sync_conflict",
         )?;
         if caches.iter().any(|cache| cache == ".git") {

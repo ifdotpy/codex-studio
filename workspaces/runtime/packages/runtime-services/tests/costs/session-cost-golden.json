@@ -2,14 +2,14 @@
   "claude-worker": {
     "breakdown": {
       "models": {
-        "claude-sonnet-4-5": 0.009543,
-        "gpt-5": 0.00100625,
+        "claude-sonnet-4-5": 0.009498,
+        "gpt-5": 0.00091625,
         "gpt-5-mini": 0.00024349999999999998,
         "gpt-long": 0.00606
       },
       "providers": {
-        "anthropic": 0.009543,
-        "openai": 0.00730975
+        "anthropic": 0.009498,
+        "openai": 0.0072197500000000005
       }
     },
     "cacheAgeSeconds": 0,
@@ -17,24 +17,24 @@
     "estimated": true,
     "generation": 0,
     "method": "API prices from models.dev; cached input rates are applied when reported. Earlier Claude totals can be incomplete because earlier responses may not have separate saved usage rows. Published context tier applied where request size matched its threshold.",
-    "pricedSamples": 16,
+    "pricedSamples": 14,
     "pricingState": "ready",
     "refreshing": false,
     "rootId": "lead",
-    "totalUSD": 0.01685275,
+    "totalUSD": 0.016717750000000003,
     "unknownModels": ["mystery-model"]
   },
   "codex-worker": {
     "breakdown": {
       "models": {
-        "claude-sonnet-4-5": 0.009543,
-        "gpt-5": 0.00100625,
+        "claude-sonnet-4-5": 0.009498,
+        "gpt-5": 0.00091625,
         "gpt-5-mini": 0.00024349999999999998,
         "gpt-long": 0.00606
       },
       "providers": {
-        "anthropic": 0.009543,
-        "openai": 0.00730975
+        "anthropic": 0.009498,
+        "openai": 0.0072197500000000005
       }
     },
     "cacheAgeSeconds": 0,
@@ -42,24 +42,24 @@
     "estimated": true,
     "generation": 0,
     "method": "API prices from models.dev; cached input rates are applied when reported. Earlier Claude totals can be incomplete because earlier responses may not have separate saved usage rows. Published context tier applied where request size matched its threshold.",
-    "pricedSamples": 16,
+    "pricedSamples": 14,
     "pricingState": "ready",
     "refreshing": false,
     "rootId": "lead",
-    "totalUSD": 0.01685275,
+    "totalUSD": 0.016717750000000003,
     "unknownModels": ["mystery-model"]
   },
   "lead": {
     "breakdown": {
       "models": {
-        "claude-sonnet-4-5": 0.009543,
-        "gpt-5": 0.00100625,
+        "claude-sonnet-4-5": 0.009498,
+        "gpt-5": 0.00091625,
         "gpt-5-mini": 0.00024349999999999998,
         "gpt-long": 0.00606
       },
       "providers": {
-        "anthropic": 0.009543,
-        "openai": 0.00730975
+        "anthropic": 0.009498,
+        "openai": 0.0072197500000000005
       }
     },
     "cacheAgeSeconds": 0,
@@ -67,11 +67,11 @@
     "estimated": true,
     "generation": 0,
     "method": "API prices from models.dev; cached input rates are applied when reported. Earlier Claude totals can be incomplete because earlier responses may not have separate saved usage rows. Published context tier applied where request size matched its threshold.",
-    "pricedSamples": 16,
+    "pricedSamples": 14,
     "pricingState": "ready",
     "refreshing": false,
     "rootId": "lead",
-    "totalUSD": 0.01685275,
+    "totalUSD": 0.016717750000000003,
     "unknownModels": ["mystery-model"]
   },
   "other-root": {

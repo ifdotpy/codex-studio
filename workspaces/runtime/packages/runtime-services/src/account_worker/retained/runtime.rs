@@ -149,7 +149,10 @@ impl Worker {
             method: request.method,
             params: call.params.clone(),
             thread_id: call.params["threadId"].as_str().map(str::to_owned),
-            lightweight: true,
+            lightweight: !studio_runtime_schema::provider_method_policy::is_thread_serialized(
+                request.method.as_str(),
+                &call.params,
+            ),
             timeout_ms: remaining.as_millis().try_into().unwrap_or(u64::MAX),
         });
         let prepared = self

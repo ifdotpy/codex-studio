@@ -608,6 +608,275 @@ describe("resource read callers", () => {
     expect(subscription).not.toHaveBeenCalledWith({ kind: "costs" });
   });
 
+  it("requests account cost interest once when the limits window opens without polling", async () => {
+    post.mockResolvedValue({});
+    const render = (opened: boolean) =>
+      mount(() =>
+        Usage({
+          agent: { id: "lead", rootId: "lead", accountKey: "default" } as Agent,
+          stateDir: "private-fixture",
+          limits: null,
+          reload: vi.fn(),
+          opened,
+        }),
+      );
+    render(false);
+    for (const accept of projectionListeners) accept({ runtime: {} });
+    expect(post).not.toHaveBeenCalled();
+    render(true);
+    render(true);
+    await vi.advanceTimersByTimeAsync(600_000);
+    expect(post).toHaveBeenCalledExactlyOnceWith("/api/costs/interest", {
+      account_key: "default",
+    });
+    expect(get).not.toHaveBeenCalled();
+    render(false);
+    render(true);
+    expect(post).toHaveBeenCalledTimes(2);
+    post.mockClear();
+  });
+
+  it("shows a failed refresh as stale while retaining the streamed saved value and its age", async () => {
+    vi.setSystemTime(new Date(200_000));
+    post.mockRejectedValue(new Error("Interest unavailable"));
+    const render = () =>
+      mount(() =>
+        Usage({
+          agent: { id: "lead", rootId: "lead", accountKey: "default" } as Agent,
+          stateDir: "private-fixture",
+          limits: null,
+          reload: vi.fn(),
+          opened: true,
+        }),
+      );
+    render();
+    for (const accept of projectionListeners) accept({ runtime: {} });
+    await Promise.resolve();
+    const saved = {
+      accountKey: "default",
+      at: 100,
+      error: "Scan failed",
+      stale: true,
+      refreshing: false,
+      data: { last30DaysUSD: 3 },
+    };
+    for (const accept of projectionListeners)
+      accept({ runtime: { accountCostsByAccount: { default: saved } } });
+    const view = JSON.stringify(render());
+    expect(view).toContain("Refresh failed · stale estimate");
+    expect(view).toContain("Updated 100 seconds ago");
+    expect(view).toContain("$3.00");
+    expect(post).toHaveBeenCalledTimes(1);
+    expect(get).not.toHaveBeenCalled();
+    post.mockClear();
+  });
+
+  it("settles a lost interest response with a newer authoritative cost result", async () => {
+    let reject!: (error: Error) => void;
+    post.mockReturnValue(
+      new Promise((_resolve, fail) => {
+        reject = fail;
+      }),
+    );
+    const render = (opened: boolean) =>
+      mount(() =>
+        Usage({
+          agent: { id: "lead", rootId: "lead", accountKey: "default" } as Agent,
+          stateDir: "private-fixture",
+          limits: null,
+          reload: vi.fn(),
+          opened,
+        }),
+      );
+    render(false);
+    const saved = {
+      accountKey: "default",
+      at: 100,
+      checkedAt: 100,
+      error: null,
+      stale: true,
+      refreshing: false,
+      data: { last30DaysUSD: 3 },
+    };
+    for (const accept of projectionListeners)
+      accept({ runtime: { accountCostsByAccount: { default: saved } } });
+    render(true);
+    reject(new Error("Response lost"));
+    await Promise.resolve();
+    expect(JSON.stringify(render(true))).toContain(
+      "Refresh failed · stale estimate",
+    );
+    for (const accept of projectionListeners)
+      accept({ runtime: { accountCostsByAccount: { default: { ...saved } } } });
+    expect(JSON.stringify(render(true))).toContain(
+      "Refresh failed · stale estimate",
+    );
+    const fresh = { ...saved, at: 200, checkedAt: 200, stale: false };
+    for (const accept of projectionListeners)
+      accept({ runtime: { accountCostsByAccount: { default: fresh } } });
+    const view = JSON.stringify(render(true));
+    expect(view).not.toContain("Refresh failed · stale estimate");
+    expect(view).toContain("$3.00");
+    post.mockClear();
+  });
+
+  it("ignores an obsolete opening rejection and a rejection after fresh SSE settlement", async () => {
+    const rejections: Array<(error: Error) => void> = [];
+    post.mockImplementation(
+      () =>
+        new Promise((_resolve, reject) => {
+          rejections.push(reject);
+        }),
+    );
+    const render = (opened: boolean) =>
+      mount(() =>
+        Usage({
+          agent: { id: "lead", rootId: "lead", accountKey: "default" } as Agent,
+          stateDir: "private-fixture",
+          limits: null,
+          reload: vi.fn(),
+          opened,
+        }),
+      );
+    render(true);
+    for (const accept of projectionListeners) accept({ runtime: {} });
+    render(false);
+    render(true);
+    rejections[0]!(new Error("Old opening failed"));
+    await Promise.resolve();
+    expect(JSON.stringify(render(true))).not.toContain(
+      "Refresh failed · stale estimate",
+    );
+    const fresh = {
+      accountKey: "default",
+      at: 200,
+      checkedAt: 200,
+      error: null,
+      stale: false,
+      refreshing: false,
+      data: { last30DaysUSD: 4 },
+    };
+    for (const accept of projectionListeners)
+      accept({ runtime: { accountCostsByAccount: { default: fresh } } });
+    rejections[1]!(new Error("New response lost after SSE"));
+    await Promise.resolve();
+    const view = JSON.stringify(render(true));
+    expect(view).not.toContain("Refresh failed · stale estimate");
+    expect(view).toContain("$4.00");
+    post.mockClear();
+  });
+
+  it("does not treat a switched account's initial cached value as refresh confirmation", async () => {
+    const rejections: Array<(error: Error) => void> = [];
+    post.mockImplementation(
+      () =>
+        new Promise((_resolve, reject) => {
+          rejections.push(reject);
+        }),
+    );
+    const render = (accountKey: string) =>
+      mount(() =>
+        Usage({
+          agent: { id: "lead", rootId: "lead", accountKey } as Agent,
+          stateDir: "private-fixture",
+          limits: null,
+          reload: vi.fn(),
+          opened: true,
+        }),
+      );
+    render("default");
+    for (const accept of projectionListeners)
+      accept({
+        runtime: {
+          accountCostsByAccount: {
+            default: {
+              accountKey: "default",
+              at: 100,
+              stale: false,
+              refreshing: false,
+              error: null,
+            },
+          },
+        },
+      });
+    render("second");
+    expect(post).toHaveBeenCalledTimes(1);
+    for (const accept of projectionListeners)
+      accept({
+        runtime: {
+          accountCostsByAccount: {
+            second: {
+              accountKey: "second",
+              at: 100,
+              stale: false,
+              refreshing: false,
+              error: null,
+              data: { last30DaysUSD: 5 },
+            },
+          },
+        },
+      });
+    expect(post).toHaveBeenCalledTimes(2);
+    rejections[1]!(new Error("Second account interest failed"));
+    await Promise.resolve();
+    const view = JSON.stringify(render("second"));
+    expect(view).toContain("Refresh failed · stale estimate");
+    expect(view).toContain("$5.00");
+    post.mockClear();
+  });
+
+  it("waits for a new baseline after A to B to A before B's baseline arrives", async () => {
+    const rejections: Array<(error: Error) => void> = [];
+    post.mockImplementation(
+      () =>
+        new Promise((_resolve, reject) => {
+          rejections.push(reject);
+        }),
+    );
+    const render = (accountKey: string) =>
+      mount(() =>
+        Usage({
+          agent: { id: "lead", rootId: "lead", accountKey } as Agent,
+          stateDir: "private-fixture",
+          limits: null,
+          reload: vi.fn(),
+          opened: true,
+        }),
+      );
+    render("a");
+    const old = {
+      accountKey: "a",
+      at: 100,
+      error: null,
+      stale: false,
+      refreshing: false,
+      data: { last30DaysUSD: 3 },
+    };
+    for (const accept of projectionListeners)
+      accept({ runtime: { accountCostsByAccount: { a: old } } });
+    expect(post).toHaveBeenCalledTimes(1);
+    // React tears down the previous projection effect before installing the
+    // new account's effects; the existing effect fixture retains component refs.
+    for (const cleanup of cleanups.splice(0).reverse()) cleanup();
+    render("b");
+    for (const cleanup of cleanups.splice(0).reverse()) cleanup();
+    render("a");
+    expect(post).toHaveBeenCalledTimes(1);
+    const current = { ...old, at: 200, data: { last30DaysUSD: 4 } };
+    for (const accept of projectionListeners)
+      accept({ runtime: { accountCostsByAccount: { a: current } } });
+    expect(post).toHaveBeenCalledTimes(2);
+    expect(post).toHaveBeenLastCalledWith("/api/costs/interest", {
+      account_key: "a",
+    });
+    rejections[1]!(new Error("Newest A interest failed"));
+    await Promise.resolve();
+    const view = JSON.stringify(render("a"));
+    expect(view).toContain("Refresh failed · stale estimate");
+    expect(view).toContain("$4.00");
+    post.mockClear();
+  });
+
   it("applies both cost display projections without GETs", async () => {
     const session = {
       rootId: "lead",

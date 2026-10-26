@@ -10,7 +10,7 @@
   min-height: var(--studio-touch-target);
   min-width: 0;
   max-width: 100%;
-  padding-inline: calc(var(--mantine-spacing-xs) / 2);
+  padding: calc(var(--mantine-spacing-xs) / 2);
   font-size: var(--studio-text-meta);
 }
 .execution-summary-trigger .mantine-Button-label {
@@ -18,68 +18,41 @@
   width: 100%;
 }
 .execution-summary-segments,
-.execution-summary-segment,
-.execution-symbols {
+.execution-summary-segment {
   display: flex;
-  align-items: center;
+  align-items: baseline;
+  flex-wrap: wrap;
   gap: calc(var(--mantine-spacing-xs) / 2);
   min-width: 0;
 }
 .execution-summary-segments {
   width: 100%;
 }
-.execution-symbols,
-.execution-summary-more {
-  flex: none;
-}
-.execution-summary-segment svg {
-  display: block;
-  flex: none;
-  width: var(--mantine-font-size-sm);
-  height: var(--mantine-font-size-sm);
-  color: var(--text);
-}
-.execution-summary-segment .execution-model {
-  /* Unusually long names wrap at word boundaries instead of being truncated. */
-  white-space: normal;
-  overflow-wrap: normal;
-  word-break: normal;
+.execution-summary-segment {
+  max-width: 100%;
   text-align: start;
 }
-.execution-summary-segment:not([data-role="lead"]),
-.execution-summary-segment .execution-role,
-.execution-inherited-label {
-  display: none;
+.execution-summary-segment .execution-role {
+  flex: none;
 }
-.execution-summary-more,
+.execution-summary-segment .execution-model,
+.execution-inherited-label {
+  min-width: 0;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  text-align: start;
+}
 .execution-summary-segment .execution-role,
 .execution-inherited-label {
   font-size: var(--studio-text-meta);
   color: var(--mantine-color-dimmed);
 }
-/* Medium: retain secondary provider marks, with full descriptions on the button. */
-@container composer (min-width: 30em) {
+/* Separate roles when the composer has room for an inline summary. */
+@container composer (min-width: 50em) {
   .execution-summary-segment:not([data-role="lead"]) {
-    display: flex;
-    flex: none;
     border-inline-start: var(--studio-border-width) solid
       var(--mantine-color-default-border);
     padding-inline-start: var(--mantine-spacing-xs);
-  }
-  .execution-summary-segment:not([data-role="lead"]) .execution-model,
-  .execution-summary-more {
-    display: none;
-  }
-}
-/* Wide: there is room for every role and name beside the action controls. */
-@container composer (min-width: 50em) {
-  .execution-summary-segment .execution-role,
-  .execution-summary-segment:not([data-role="lead"]) .execution-model,
-  .execution-inherited-label {
-    display: inline;
-  }
-  .execution-summary-segment:not([data-role="lead"]) {
-    flex: 0 1 auto;
   }
 }
 /* Status never competes with the model summary or Send for horizontal space. */

@@ -457,6 +457,19 @@
   }
 }
 
+@media (hover: none), (pointer: coarse) {
+  /* Touch has no preview hover: keep chat and menu targets stable on first tap. */
+  #sidebar .fleet-strip > .chat-row {
+    padding-inline-end: calc(
+      var(--studio-action-size) + var(--mantine-spacing-xs)
+    );
+  }
+  .sidebar-row .row-actions {
+    opacity: 1;
+    pointer-events: auto;
+  }
+}
+
 @media (hover: none) {
   .project-tree-heading > .project-tree-action,
   .project-tree-heading:is(

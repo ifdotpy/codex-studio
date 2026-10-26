@@ -52,8 +52,10 @@ class Native:
             unproven(action, "connect", exc, started)
             raise GuestError("outcome_unknown", "The native supervisor connection is unavailable") from exc
         try:
-            writer.write(json.dumps({"protocol": SUPERVISOR_PROTOCOL_V2, "stateDir": str(self.root),
-                                     "backendId": self.backend, "operator": operator}).encode() + b"\n")
+            hello = {"protocol": SUPERVISOR_PROTOCOL_V2, "stateDir": str(self.root), "operator": operator}
+            if not operator:
+                hello["backendId"] = self.backend
+            writer.write(json.dumps(hello).encode() + b"\n")
             await asyncio.wait_for(writer.drain(), 2)
             hello = json.loads(await asyncio.wait_for(reader.readline(), 2))
             if hello.get("ok") is not True or hello.get("protocol") != SUPERVISOR_PROTOCOL_V2:

@@ -733,12 +733,6 @@ export const layoutTokens = {
     purpose:
       "Main src/components/conversation-warnings.css query: @media (max-width: 47.5rem) {",
   },
-  "legacy_main_components_conversation_empty_chat_settings.query0bb6bc05": {
-    value: 30,
-    unit: "em",
-    purpose:
-      "Main src/components/conversation/empty-chat-settings.css query: @container composer (min-width: 30em) {",
-  },
   "legacy_main_components_conversation_empty_chat_settings.querybb18e0cc": {
     value: 50,
     unit: "em",
@@ -1096,7 +1090,6 @@ export const layoutValues = {
     query0bafbd4a: 47.5,
   },
   legacy_main_components_conversation_empty_chat_settings: {
-    query0bb6bc05: 30,
     querybb18e0cc: 50,
     query7a8a99ac: 35,
     query62cf757f: 25,

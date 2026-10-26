@@ -8,7 +8,7 @@ export const HANG_GUARD_MS = 10_000;
 // the condition check and subscription. The timeout is only a failure guard.
 export function waitForFile(
   file,
-  { signal, matches = () => true, absent = false } = {},
+  { signal, matches = () => true, absent = false, childIpc = false } = {},
 ) {
   return new Promise((resolve, reject) => {
     const controller = new AbortController();
@@ -24,6 +24,7 @@ export function waitForFile(
       watcher.close();
       clearTimeout(deadline);
       signal.removeEventListener("abort", abort);
+      process.off("message", notified);
     };
     function abort() {
       cleanup();
@@ -38,6 +39,16 @@ export function waitForFile(
         cleanup();
         reject(error);
       }
+    }
+    function notified(message) {
+      if (message?.fixtureFile === file) check();
+    }
+    // Only scripted children opt in: test workers also have process.send, but
+    // their IPC reference belongs to the test runner. A publisher notification
+    // handles coalesced filesystem events; the file remains the durable condition.
+    if (childIpc && typeof process.send === "function") {
+      process.on("message", notified);
+      process.channel?.unref();
     }
     watcher.on("error", (error) => {
       cleanup();

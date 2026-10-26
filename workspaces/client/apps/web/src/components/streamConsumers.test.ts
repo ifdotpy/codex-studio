@@ -407,11 +407,17 @@ it("keeps live agent transport after visiting a stale room in the same component
   const room = () =>
     useMessages("team", "room", true, "workspace", "workspace");
   render(agent);
-  expect(render(agent).connection).toBe("live");
+  expect(render(agent).connection).toMatchObject({
+    health: "live",
+    message: "",
+  });
   render(room);
-  expect(render(room).connection).toBe("");
+  expect(render(room).connection).toBeNull();
   render(agent);
-  expect(render(agent).connection).toBe("live");
+  expect(render(agent).connection).toMatchObject({
+    health: "live",
+    message: "",
+  });
   expect(h.watchConnection).toHaveBeenCalledTimes(2);
   expect(h.get).not.toHaveBeenCalled();
 });

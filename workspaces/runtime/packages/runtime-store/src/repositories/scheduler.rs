@@ -20,6 +20,8 @@ pub use studio_runtime_schema::shared_values::{
     VM_PROVIDER_DISCONNECTED_TURN_ERROR,
 };
 
+use studio_runtime_schema::shared_values::LEGACY_VM_PROVIDER_DISCONNECTED_TURN_ERROR;
+
 /// `startAttempt.action` wire names of the native provider actions
 /// (`thread/compact/start` and `review/start`). Such an attempt submits no
 /// queued input, so its `events` list is empty, and the provider reply binds
@@ -30,6 +32,9 @@ pub const NATIVE_ACTION_ATTEMPT_KINDS: [&str; 2] = ["compact", "review"];
 /// Kinds whose admission belongs to a dedicated policy, rather than the shared
 /// generic notification compiler. Timing is independently owned by DeliveryMoment.
 const DEDICATED_TURN_EVENT_KINDS: &[&str] = &["radio", "radio_turn", "chat_review"];
+/// Kinds the runtime-services radio policy may claim alone by event id: a radio
+/// turn, or the exact answer to the live radio turn (a user or followup input).
+const SELECTED_EVENT_KINDS: &[&str] = &["radio_turn", "user", "followup"];
 const TABLES: &[TableRequirement] = &[
     TableRequirement {
         name: "runtime_agents",

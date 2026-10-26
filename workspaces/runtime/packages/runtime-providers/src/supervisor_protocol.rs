@@ -46,30 +46,92 @@ pub struct Ownership {
     owner: Option<String>,
     connections: usize,
 }
+
+/// Admission intent decoded from the handshake. A connection has exactly one role.
+pub enum ConnectionIdentity<'a> {
+    Backend(&'a str),
+    Probe,
+    Operator,
+}
+
+/// Capabilities captured only after state-directory and backend-conflict checks.
+pub struct ConnectionCapabilities {
+    identity: AdmittedIdentity,
+}
+
+enum AdmittedIdentity {
+    Backend(String),
+    Probe,
+    Operator,
+}
+
+const CAPABILITY_REFUSAL: Refusal = Refusal("Supervisor connection lacks the required capability");
+
+impl ConnectionCapabilities {
+    pub fn backend_owner(&self) -> Option<&str> {
+        match &self.identity {
+            AdmittedIdentity::Backend(owner) => Some(owner),
+            AdmittedIdentity::Probe | AdmittedIdentity::Operator => None,
+        }
+    }
+
+    pub fn authorize(&self, command: &Command) -> Result<(), Refusal> {
+        let allowed = match command {
+            Command::Health => true,
+            Command::FinishFallback => matches!(
+                self.identity,
+                AdmittedIdentity::Backend(_) | AdmittedIdentity::Operator
+            ),
+            Command::AdminCloseHandle { .. } => matches!(self.identity, AdmittedIdentity::Operator),
+            Command::Open { .. }
+            | Command::Write { .. }
+            | Command::Ack { .. }
+            | Command::OperationStatus { .. }
+            | Command::Next { .. }
+            | Command::Replay { .. }
+            | Command::Status { .. }
+            | Command::Detach { .. }
+            | Command::RetireCommand { .. } => return self.authorize_journal(),
+        };
+        if allowed {
+            Ok(())
+        } else {
+            Err(CAPABILITY_REFUSAL)
+        }
+    }
+
+    /// The v2 event-wait path bypasses Command decoding but requires the same owner.
+    pub fn authorize_journal(&self) -> Result<(), Refusal> {
+        self.backend_owner().map(|_| ()).ok_or(CAPABILITY_REFUSAL)
+    }
+}
+
 impl Ownership {
     pub fn attach(
         &mut self,
         state_dir: &std::path::Path,
-        backend_id: Option<&str>,
-        probe: bool,
+        identity: ConnectionIdentity<'_>,
         root: &std::path::Path,
-    ) -> Result<Option<String>, Refusal> {
+    ) -> Result<ConnectionCapabilities, Refusal> {
         if state_dir != root {
             return Err(Refusal("Supervisor protocol or state directory mismatch"));
         }
-        let owner = if probe {
-            None
-        } else {
-            backend_id.map(str::to_owned)
-        };
-        if let Some(id) = &owner {
-            if self.connections > 0 && self.owner.as_ref() != Some(id) {
-                return Err(Refusal("Another backend is attached to this supervisor"));
+        let identity = match identity {
+            ConnectionIdentity::Probe => AdmittedIdentity::Probe,
+            ConnectionIdentity::Operator => AdmittedIdentity::Operator,
+            ConnectionIdentity::Backend(id) => {
+                if id.is_empty() {
+                    return Err(Refusal("Supervisor backend identity is required"));
+                }
+                if self.connections > 0 && self.owner.as_deref() != Some(id) {
+                    return Err(Refusal("Another backend is attached to this supervisor"));
+                }
+                self.owner = Some(id.to_owned());
+                self.connections += 1;
+                AdmittedIdentity::Backend(id.to_owned())
             }
-            self.owner = Some(id.clone());
-            self.connections += 1;
-        }
-        Ok(owner)
+        };
+        Ok(ConnectionCapabilities { identity })
     }
     pub fn detach(&mut self, owner: Option<&str>) {
         if owner.is_some() && self.owner.as_deref() == owner {

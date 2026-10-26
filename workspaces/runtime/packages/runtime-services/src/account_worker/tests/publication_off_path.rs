@@ -265,8 +265,8 @@ async fn analytics_are_logged_in_the_journal_commit_and_projected_off_the_writer
 
 fn usage_frame(index: usize) -> Value {
     json!({"method":"thread/tokenUsage/updated","params":{"threadId":"fake-thread-0","turnId":"turn",
-        "tokenUsage":{"total":{"inputTokens":index,"outputTokens":1,"totalTokens":index + 1},
-            "last":{"inputTokens":1,"outputTokens":1,"totalTokens":2}}}})
+        "tokenUsage":{"total":{"inputTokens":index,"cachedInputTokens":0,"reasoningOutputTokens":0,"outputTokens":1,"totalTokens":index + 1},
+            "last":{"inputTokens":1,"cachedInputTokens":0,"reasoningOutputTokens":0,"outputTokens":1,"totalTokens":2}}}})
 }
 
 /// Pending publication receipts that carry provider `cursor`.

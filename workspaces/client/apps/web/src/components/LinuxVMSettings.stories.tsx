@@ -5,7 +5,7 @@ import { LinuxVMSettings } from "./LinuxVMSettings";
 const GiB = 1024 ** 3;
 let savedSettings: unknown;
 const meta = {
-  title: "Settings/Linux VM",
+  title: "Settings/VM",
   component: LinuxVMSettings,
   args: { active: true },
   beforeEach: ({ parameters }) => {

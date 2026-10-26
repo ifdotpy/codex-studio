@@ -282,10 +282,7 @@ pub fn connect_address(
         );
     }
     if reachable.iter().any(|row| row.uid != uid) {
-        return bridge_error(
-            "forbidden",
-            format!("Another Linux user listens on port {port}"),
-        );
+        return bridge_error("forbidden", format!("Another user listens on port {port}"));
     }
     let ipv4 = reachable
         .iter()
@@ -696,10 +693,7 @@ impl HostBridge {
             message: "Studio does not know the chat in LAYR_SESSION".into(),
         })?;
         if context.uid != uid {
-            return bridge_error(
-                "unknown_agent",
-                "LAYR_SESSION names a chat of another Linux user",
-            );
+            return bridge_error("unknown_agent", "LAYR_SESSION names a chat of another user");
         }
         self.queue_link(uid, url, agent, context).await
     }
@@ -779,7 +773,7 @@ impl HostBridge {
                 return bridge_error(
                     "limit",
                     format!(
-                        "This Linux user asked {LIMIT_COUNT} times in 10 minutes. Wait, then try again"
+                        "This user asked {LIMIT_COUNT} times in 10 minutes. Wait, then try again"
                     ),
                 );
             }
@@ -1741,7 +1735,7 @@ pub fn shim(
             return (
                 0,
                 format!(
-                    "studio-browser: Opened the page in the browser of this Mac. Studio shows no sign-in card: {message}"
+                    "studio-browser: Opened the page in the browser of this computer. Studio shows no sign-in card: {message}"
                 ),
             );
         }
@@ -1763,14 +1757,14 @@ pub fn shim(
         return (
             0,
             format!(
-                "studio-browser: Opened the page in the browser of this Mac. Studio also shows the person a sign-in card for {host}, so the person can answer from another window or a phone."
+                "studio-browser: Opened the page in the browser of this computer. Studio also shows the person a sign-in card for {host}, so the person can answer from another window or a phone."
             ),
         );
     }
     (
         0,
         format!(
-            "studio-browser: Studio asks the person to open {host}. The sign-in continues in the browser on the Mac after the approval."
+            "studio-browser: Studio asks the person to open {host}. The sign-in continues in the browser on this computer after the approval."
         ),
     )
 }

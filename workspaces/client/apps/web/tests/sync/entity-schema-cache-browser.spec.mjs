@@ -102,6 +102,7 @@ test.describe("legacy schema mismatch", () => {
     const errors = [];
     const streamFrames = new Map();
     const openStreams = new Set();
+    const sessionStreams = new Map();
     // Inline baselines are persisted asynchronously. A fulfilled finite body
     // immediately disconnects and cancels those writes, unlike a real stream.
     const streamServer = createServer((request, response) => {
@@ -116,9 +117,19 @@ test.describe("legacy schema mismatch", () => {
         "cache-control": "no-cache",
         [API_SCHEMA_HASH_HEADER]: frame.hash,
       });
-      response.write(frame.body);
+      sessionStreams.set(frame.sessionId, response);
+      response.write(
+        apiSchemaHandshakeSse(
+          protocol3SseEvent("session", { sessionId: frame.sessionId }) +
+            frame.body,
+          { hash: frame.hash },
+        ),
+      );
       openStreams.add(response);
-      response.on("close", () => openStreams.delete(response));
+      response.on("close", () => {
+        openStreams.delete(response);
+        sessionStreams.delete(frame.sessionId);
+      });
       if (frame.pendingChange) {
         const { body, sequence, page, release } = frame.pendingChange;
         pendingChangeStreamOpened.resolve(frame.pendingChange.cursor);
@@ -171,6 +182,47 @@ test.describe("legacy schema mismatch", () => {
           page: route.request().frame().page(),
           after: requestUrl.searchParams.get("after"),
           query: Object.fromEntries(requestUrl.searchParams),
+        });
+      }
+      if (requestUrl.pathname === "/api/sync/subscriptions") {
+        // Keep subscription changes on the same stream, as the server does.
+        // Reconnecting here would cancel the baseline this test is measuring.
+        const change = route.request().postDataJSON();
+        const stream = sessionStreams.get(change.sessionId);
+        assert.ok(stream, "subscription update has a live fixture session");
+        const resources = change.add.map(({ resource }) => resource);
+        const typed = resources.filter(
+          (resource) =>
+            resource.kind === "agentDetail" || resource.kind === "state",
+        );
+        const baselines = await readResourceBaselines(backendOrigin, typed);
+        const { workspaceId } = await fetch(
+          new URL("/api/sync/identity", backendOrigin),
+        ).then((response) => response.json());
+        stream.write(protocol3SseEvent("subscriptions", { gen: change.gen }));
+        if (resources.length)
+          stream.write(
+            protocol3SseEvent("resources", {
+              protocol: 4,
+              workspaceId,
+              epoch: "schema-cache-test",
+              revision: 1,
+              reason: "initial",
+              resources,
+              resourceVersions: resources.map(
+                (resource) =>
+                  baselines.find(
+                    (entry) =>
+                      entry.resource?.kind === resource.kind &&
+                      entry.resource?.agentId === resource.agentId,
+                  ) || { resource, revision: 1 },
+              ),
+            }),
+          );
+        return route.fulfill({
+          status: 200,
+          headers: { [API_SCHEMA_HASH_HEADER]: activeHash },
+          json: { ok: true },
         });
       }
       if (requestUrl.pathname === "/api/sync/stream") {
@@ -299,7 +351,8 @@ test.describe("legacy schema mismatch", () => {
         const streamPath = `/stream/${randomUUID()}`;
         streamFrames.set(streamPath, {
           hash: activeHash,
-          body: apiSchemaHandshakeSse(body, { hash: activeHash }),
+          sessionId: randomUUID(),
+          body,
           pendingChange,
         });
         return route.continue({ url: `${streamOrigin}${streamPath}` });

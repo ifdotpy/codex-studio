@@ -35,7 +35,7 @@ pub(super) fn notice_text(record: &Map<String, Value>) -> String {
         })
         .unwrap_or_default();
     let lead = format!(
-        "The Linux VM stopped working ({}). ",
+        "The VM stopped working ({}). ",
         text("reason").unwrap_or("no reason")
     );
     match text("outcome") {
@@ -124,7 +124,7 @@ impl VmChatNotices for StoreChatNotices {
                             continue;
                         }
                         let item = format!("{agent}:linux-vm-restart:{id}");
-                        let notice = json!({"id": item, "role": "system", "title": "Linux VM",
+                        let notice = json!({"id": item, "role": "system", "title": "VM",
                             "text": text, "truncated": false, "at": at, "nativeNotice": "error"});
                         studio_runtime_store::NotificationDispatchRepository::put_transcript_item(
                             tx, &item, agent, &notice, at, &text, true,

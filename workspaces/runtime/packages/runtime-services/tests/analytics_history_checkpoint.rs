@@ -95,7 +95,12 @@ async fn restart_after_ack_loss_retains_exact_effects_and_cursor() {
     let cancel = AtomicBool::new(false);
     let store = RuntimeStore::open(Some(root.path())).await.expect("store");
     let first = history::prepare(
-        HistorySnapshot::from_records(agent.clone(), None).expect("snapshot"),
+        HistorySnapshot::from_records(
+            agent.clone(),
+            None,
+            studio_runtime_schema::usage::ledger::LedgerEpoch::Current,
+        )
+        .expect("snapshot"),
         root.path(),
         RolloutPath::Found(path.clone()),
         BatchLimits::default(),
@@ -104,7 +109,12 @@ async fn restart_after_ack_loss_retains_exact_effects_and_cursor() {
     )
     .expect("batch");
     let stale = history::prepare(
-        HistorySnapshot::from_records(agent.clone(), None).expect("snapshot"),
+        HistorySnapshot::from_records(
+            agent.clone(),
+            None,
+            studio_runtime_schema::usage::ledger::LedgerEpoch::Current,
+        )
+        .expect("snapshot"),
         root.path(),
         RolloutPath::Found(path.clone()),
         BatchLimits::default(),
@@ -130,7 +140,12 @@ async fn restart_after_ack_loss_retains_exact_effects_and_cursor() {
         .await
         .expect("restart");
     let batch = history::prepare(
-        HistorySnapshot::from_records(agent, checkpoint(&store)).expect("snapshot"),
+        HistorySnapshot::from_records(
+            agent,
+            checkpoint(&store),
+            studio_runtime_schema::usage::ledger::LedgerEpoch::Current,
+        )
+        .expect("snapshot"),
         root.path(),
         RolloutPath::Found(path),
         BatchLimits::default(),
@@ -254,7 +269,12 @@ async fn main_store_write_runs_between_separately_scheduled_history_batches() {
     let cancel = AtomicBool::new(false);
     let store = Arc::new(RuntimeStore::open(Some(root.path())).await.expect("store"));
     let first = history::prepare(
-        HistorySnapshot::from_records(agent.clone(), checkpoint(&store)).expect("snapshot"),
+        HistorySnapshot::from_records(
+            agent.clone(),
+            checkpoint(&store),
+            studio_runtime_schema::usage::ledger::LedgerEpoch::Current,
+        )
+        .expect("snapshot"),
         root.path(),
         RolloutPath::Found(path.clone()),
         BatchLimits::new(1024 * 1024, 1).expect("batch limits"),
@@ -294,7 +314,12 @@ async fn main_store_write_runs_between_separately_scheduled_history_batches() {
         .expect("main write commits before next batch");
 
     let second = history::prepare(
-        HistorySnapshot::from_records(agent, checkpoint(&store)).expect("next snapshot"),
+        HistorySnapshot::from_records(
+            agent,
+            checkpoint(&store),
+            studio_runtime_schema::usage::ledger::LedgerEpoch::Current,
+        )
+        .expect("next snapshot"),
         root.path(),
         RolloutPath::Found(path),
         BatchLimits::new(1024 * 1024, 1).expect("batch limits"),
@@ -316,7 +341,12 @@ fn partial_tail_and_changed_anchor_never_acknowledge_unread_bytes() {
     let (root, agent) = fixture();
     let path = file(root.path(), &records()[..2], b"{\"type\":");
     let cancel = AtomicBool::new(false);
-    let snapshot = HistorySnapshot::from_records(agent.clone(), None).expect("snapshot");
+    let snapshot = HistorySnapshot::from_records(
+        agent.clone(),
+        None,
+        studio_runtime_schema::usage::ledger::LedgerEpoch::Current,
+    )
+    .expect("snapshot");
     let batch = history::prepare(
         snapshot,
         root.path(),
@@ -336,7 +366,12 @@ fn partial_tail_and_changed_anchor_never_acknowledge_unread_bytes() {
     bytes[10] = b'x';
     fs::write(&path, bytes).expect("change checkpoint byte");
     let refused = history::prepare(
-        HistorySnapshot::from_records(agent, Some(previous.clone())).expect("snapshot"),
+        HistorySnapshot::from_records(
+            agent,
+            Some(previous.clone()),
+            studio_runtime_schema::usage::ledger::LedgerEpoch::Current,
+        )
+        .expect("snapshot"),
         root.path(),
         RolloutPath::Found(path),
         BatchLimits::default(),
@@ -363,7 +398,7 @@ async fn store_failure_rolls_back_each_effect_and_the_checkpoint() {
             let (root, agent) = fixture();
             let mut lines = records();
             lines.push(json!({"type":"response_item","timestamp":4,"payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"synthetic"}]}}));
-            lines.push(json!({"type":"token_usage_record","timestamp":5,"payload":{"thread_id":"thread","response_id":"r","usage":{"total_tokens":2},"thread_token_usage":{"total_tokens":2}}}));
+            lines.push(json!({"type":"token_usage_record","timestamp":5,"payload":{"thread_id":"thread","response_id":"r","usage":{"input_tokens":2,"output_tokens":0,"total_tokens":2},"thread_token_usage":{"input_tokens":2,"output_tokens":0,"total_tokens":2}}}));
             let path = file(root.path(), &lines, b"");
             let store = RuntimeStore::open(Some(root.path())).await.expect("store");
             let db = rusqlite::Connection::open(root.path().join("analytics.sqlite3")).expect("db");
@@ -373,7 +408,12 @@ async fn store_failure_rolls_back_each_effect_and_the_checkpoint() {
             let before = common::actual(&db, &common::tables());
             drop(db);
             let batch = history::prepare(
-                HistorySnapshot::from_records(agent.clone(), None).expect("snapshot"),
+                HistorySnapshot::from_records(
+                    agent.clone(),
+                    None,
+                    studio_runtime_schema::usage::ledger::LedgerEpoch::Current,
+                )
+                .expect("snapshot"),
                 root.path(),
                 RolloutPath::Found(path.clone()),
                 BatchLimits::default(),
@@ -400,7 +440,12 @@ async fn store_failure_rolls_back_each_effect_and_the_checkpoint() {
                 before
             );
             let batch = history::prepare(
-                HistorySnapshot::from_records(agent, None).expect("snapshot"),
+                HistorySnapshot::from_records(
+                    agent,
+                    None,
+                    studio_runtime_schema::usage::ledger::LedgerEpoch::Current,
+                )
+                .expect("snapshot"),
                 root.path(),
                 RolloutPath::Found(path),
                 BatchLimits::default(),
@@ -420,12 +465,17 @@ async fn store_failure_rolls_back_each_effect_and_the_checkpoint() {
 async fn stale_agent_budget_failure_and_cancellation_write_nothing() {
     let (root, agent) = fixture();
     let mut lines = records();
-    lines.push(json!({"type":"token_usage_record","timestamp":4,"payload":{"thread_id":"thread","response_id":"r","usage":{"total_tokens":2},"thread_token_usage":{"total_tokens":2}}}));
+    lines.push(json!({"type":"token_usage_record","timestamp":4,"payload":{"thread_id":"thread","response_id":"r","usage":{"input_tokens":2,"output_tokens":0,"total_tokens":2},"thread_token_usage":{"input_tokens":2,"output_tokens":0,"total_tokens":2}}}));
     let path = file(root.path(), &lines, b"");
     let store = RuntimeStore::open(Some(root.path())).await.expect("store");
     let before = common::actual(&common::analytics(root.path()), &common::tables());
     let batch = history::prepare(
-        HistorySnapshot::from_records(agent.clone(), None).expect("snapshot"),
+        HistorySnapshot::from_records(
+            agent.clone(),
+            None,
+            studio_runtime_schema::usage::ledger::LedgerEpoch::Current,
+        )
+        .expect("snapshot"),
         root.path(),
         RolloutPath::Found(path.clone()),
         BatchLimits::default(),
@@ -446,7 +496,12 @@ async fn stale_agent_budget_failure_and_cancellation_write_nothing() {
     );
     assert!(matches!(
         history::prepare(
-            HistorySnapshot::from_records(agent.clone(), None).expect("snapshot"),
+            HistorySnapshot::from_records(
+                agent.clone(),
+                None,
+                studio_runtime_schema::usage::ledger::LedgerEpoch::Current
+            )
+            .expect("snapshot"),
             root.path(),
             RolloutPath::Found(path.clone()),
             BatchLimits::default(),
@@ -456,7 +511,12 @@ async fn stale_agent_budget_failure_and_cancellation_write_nothing() {
         Err(HistoryError::Cancelled)
     ));
     let batch = history::prepare(
-        HistorySnapshot::from_records(agent, None).expect("snapshot"),
+        HistorySnapshot::from_records(
+            agent,
+            None,
+            studio_runtime_schema::usage::ledger::LedgerEpoch::Current,
+        )
+        .expect("snapshot"),
         root.path(),
         RolloutPath::Found(path),
         BatchLimits::default(),
@@ -498,7 +558,7 @@ async fn history_usage_is_admitted_once_per_bounded_page() {
                     captures
                         .iter()
                         .map(|(_, params, _)| {
-                            params["responseId"]
+                            params["studioUsage"]["responseId"]
                                 .as_str()
                                 .expect("captured history page includes response ID")
                                 .to_owned()
@@ -513,14 +573,19 @@ async fn history_usage_is_admitted_once_per_bounded_page() {
     let mut lines = records();
     for response in ["r1", "r2"] {
         lines.push(json!({"type":"token_usage_record","timestamp":5,"payload":{
-            "thread_id":"thread","response_id":response,"usage":{"total_tokens":2},
-            "thread_token_usage":{"total_tokens":2}
+            "thread_id":"thread","response_id":response,"usage":{"input_tokens":2,"output_tokens":0,"total_tokens":2},
+            "thread_token_usage":{"input_tokens":2,"output_tokens":0,"total_tokens":2}
         }}));
     }
     let path = file(root.path(), &lines, b"");
     let store = RuntimeStore::open(Some(root.path())).await.expect("store");
     let batch = history::prepare(
-        HistorySnapshot::from_records(agent, None).expect("snapshot"),
+        HistorySnapshot::from_records(
+            agent,
+            None,
+            studio_runtime_schema::usage::ledger::LedgerEpoch::Current,
+        )
+        .expect("snapshot"),
         root.path(),
         RolloutPath::Found(path),
         BatchLimits::new(1024 * 1024, 16).expect("page limit"),
@@ -555,8 +620,8 @@ async fn store_history_budget_sink_commits_page_once_and_replays_exactly() {
             json!({
                 "threadId":"thread", "turnId":"turn", "responseId":response,
                 "rawTokenUsageRecord":{"response_id":response},
-                "requestUsage":{"totalTokens":2},
-                "tokenUsage":{"total":{"totalTokens":2},"last":{"totalTokens":2}}
+                "requestUsage":{"inputTokens":2,"cachedInputTokens":0,"cacheWriteInputTokens":0,"outputTokens":0,"reasoningOutputTokens":0,"totalTokens":2},
+                "tokenUsage":{"total":{"inputTokens":2,"cachedInputTokens":0,"cacheWriteInputTokens":0,"outputTokens":0,"reasoningOutputTokens":0,"totalTokens":2},"last":{"inputTokens":2,"cachedInputTokens":0,"cacheWriteInputTokens":0,"outputTokens":0,"reasoningOutputTokens":0,"totalTokens":2}}
             }),
             5.0,
         )
@@ -607,7 +672,7 @@ async fn collector_tick_imports_rollout_usage_and_replay_is_exactly_once() {
     let mut lines = records();
     lines.push(json!({"type":"token_usage_record","timestamp":4,"payload":{
         "thread_id":"thread","response_id":"history-response",
-        "usage":{"total_tokens":23},"thread_token_usage":{"total_tokens":23}
+        "usage":{"input_tokens":23,"output_tokens":0,"total_tokens":23},"thread_token_usage":{"input_tokens":23,"output_tokens":0,"total_tokens":23}
     }}));
     let mut bytes = Vec::new();
     for line in &lines {
@@ -738,7 +803,7 @@ async fn historical_budget_capture_accepts_prior_turn_notices_and_keeps_other_id
         json!({"type":"event_msg","timestamp":4,"payload":{"type":"task_complete","turn_id":"earlier-turn","status":"completed"}}),
         json!({"type":"event_msg","timestamp":5,"payload":{"type":"task_started","turn_id":"current-turn"}}),
         json!({"type":"event_msg","timestamp":6,"payload":{"type":"token_count","info":{"total_token_usage":usage,"last_token_usage":usage}}}),
-        json!({"type":"token_usage_record","timestamp":6.5,"payload":{"thread_id":"thread","turn_id":"earlier-turn","response_id":"delayed-earlier-response","usage":{"total_tokens":4},"thread_token_usage":{"total_tokens":19}}}),
+        json!({"type":"token_usage_record","timestamp":6.5,"payload":{"thread_id":"thread","turn_id":"earlier-turn","response_id":"delayed-earlier-response","usage":{"input_tokens":4,"output_tokens":0,"total_tokens":4},"thread_token_usage":{"input_tokens":19,"output_tokens":0,"total_tokens":19}}}),
         json!({"type":"event_msg","timestamp":7,"payload":{"type":"task_complete","turn_id":"current-turn","status":"completed"}}),
     ];
     // Discovery gives the collector the resolved path; the replay below uses
@@ -798,8 +863,12 @@ async fn historical_budget_capture_accepts_prior_turn_notices_and_keeps_other_id
     assert_eq!(stored_checkpoint["importedRecords"], lines.len() as u64);
 
     let replay = history::prepare(
-        HistorySnapshot::from_records(agent.clone(), Some(stored_checkpoint.clone()))
-            .expect("checkpoint snapshot"),
+        HistorySnapshot::from_records(
+            agent.clone(),
+            Some(stored_checkpoint.clone()),
+            studio_runtime_schema::usage::ledger::LedgerEpoch::Current,
+        )
+        .expect("checkpoint snapshot"),
         root.path(),
         RolloutPath::Found(path),
         BatchLimits::default(),
@@ -820,8 +889,8 @@ async fn historical_budget_capture_accepts_prior_turn_notices_and_keeps_other_id
         "turnId":"earlier-turn",
         "responseId":"live-wrong-turn",
         "rawTokenUsageRecord":{"response_id":"live-wrong-turn"},
-        "requestUsage":{"totalTokens":5},
-        "tokenUsage":{"total":{"totalTokens":5},"last":{"totalTokens":5}}
+        "requestUsage":{"inputTokens":5,"cachedInputTokens":0,"cacheWriteInputTokens":0,"outputTokens":0,"reasoningOutputTokens":0,"totalTokens":5},
+        "tokenUsage":{"total":{"inputTokens":5,"cachedInputTokens":0,"cacheWriteInputTokens":0,"outputTokens":0,"reasoningOutputTokens":0,"totalTokens":5},"last":{"inputTokens":5,"cachedInputTokens":0,"cacheWriteInputTokens":0,"outputTokens":0,"reasoningOutputTokens":0,"totalTokens":5}}
     });
     let mut wrong_live_agent = agent.clone();
     wrong_live_agent["turnId"] = json!("earlier-turn");
@@ -931,6 +1000,7 @@ async fn terminal_error_repair_is_idempotent_for_exact_and_ambiguous_notices() {
                 1.,
                 200.,
                 CaptureSource::Live,
+                studio_runtime_schema::usage::ledger::LedgerEpoch::Current,
             )
             .expect("prepared"),
         )
@@ -1041,7 +1111,12 @@ async fn budget_migration_reconciles_lost_cursor_ack_without_double_charging() {
                     .push(captures.len());
                 let mut receipts = self.ids.lock().expect("receipts");
                 for (_, params, _) in captures {
-                    receipts.insert(params["responseId"].as_str().expect("response").into());
+                    receipts.insert(
+                        params["studioUsage"]["responseId"]
+                            .as_str()
+                            .expect("response")
+                            .into(),
+                    );
                 }
                 Ok(())
             })
@@ -1049,7 +1124,7 @@ async fn budget_migration_reconciles_lost_cursor_ack_without_double_charging() {
     }
     let (root, agent) = fixture();
     let store = RuntimeStore::open(Some(root.path())).await.expect("store");
-    let params = json!({"responseId":"r0","tokenUsage":{"total":{"totalTokens":2},"last":{"totalTokens":2}},"rawTokenUsageRecord":{"response_id":"r0"}});
+    let params = json!({"responseId":"r0","tokenUsage":{"total":{"inputTokens":2,"cachedInputTokens":0,"cacheWriteInputTokens":0,"outputTokens":0,"reasoningOutputTokens":0,"totalTokens":2},"last":{"inputTokens":2,"cachedInputTokens":0,"cacheWriteInputTokens":0,"outputTokens":0,"reasoningOutputTokens":0,"totalTokens":2}},"rawTokenUsageRecord":{"response_id":"r0"}});
     capture(
         &store,
         PreparedCapture::event(
@@ -1059,12 +1134,13 @@ async fn budget_migration_reconciles_lost_cursor_ack_without_double_charging() {
             1.,
             200.,
             CaptureSource::Rollout,
+            studio_runtime_schema::usage::ledger::LedgerEpoch::Current,
         )
         .expect("input"),
     )
     .await
     .expect("capture");
-    store.analytics_transaction::<_,studio_runtime_store::StoreError>(|tx,_|{let raw:String=tx.query_row("SELECT record FROM analytics_usage LIMIT 1",[],|r|r.get(0))?;let base:Value=serde_json::from_str(&raw)?;for index in 1..65{let mut record=base.clone();record["id"]=json!(format!("usage-{index}"));record["responseId"]=json!(format!("r{index}"));Repo::write(tx,CaptureTable::Usage,&record)?;}tx.execute_batch("CREATE TRIGGER abort_migration BEFORE INSERT ON analytics_meta WHEN NEW.key LIKE 'budgetUsageMigrationV1:%' BEGIN SELECT RAISE(ABORT,'injected'); END;")?;Ok(())}).await.expect("65 saved responses and failpoint");
+    store.analytics_transaction::<_,studio_runtime_store::StoreError>(|tx,_|{let raw:String=tx.query_row("SELECT record FROM analytics_usage LIMIT 1",[],|r|r.get(0))?;let base:Value=serde_json::from_str(&raw)?;for index in 1..65{let mut record=base.clone();record["id"]=json!(format!("usage-{index}"));record["responseId"]=json!(format!("r{index}"));record["studioUsage"]["responseId"]=json!(format!("r{index}"));record["usageIdentity"]["responseId"]=json!(format!("r{index}"));record["receiptKey"]=json!(studio_runtime_schema::usage::ledger::receipt_hash(&json!([record["agentId"],"response",format!("r{index}")])));Repo::write(tx,CaptureTable::Usage,&record)?;}tx.execute_batch("CREATE TRIGGER abort_migration BEFORE INSERT ON analytics_meta WHEN NEW.key LIKE 'budgetUsageMigrationV1:%' BEGIN SELECT RAISE(ABORT,'injected'); END;")?;Ok(())}).await.expect("65 saved responses and failpoint");
     let receipts = Receipts::default();
     assert!(
         migrate_budget(&store, agent.clone(), &receipts, 200.)
@@ -1125,6 +1201,7 @@ async fn notification_batch_and_account_limit_consumers_commit_or_refuse_atomica
         1.,
         200.,
         CaptureSource::Live,
+        studio_runtime_schema::usage::ledger::LedgerEpoch::Current,
     )
     .expect("prepare");
     let mut stale = agent.clone();
@@ -1136,6 +1213,7 @@ async fn notification_batch_and_account_limit_consumers_commit_or_refuse_atomica
         2.,
         200.,
         CaptureSource::Live,
+        studio_runtime_schema::usage::ledger::LedgerEpoch::Current,
     )
     .expect("stale");
     assert!(
@@ -1199,7 +1277,14 @@ async fn checked_history_identity_and_state_check_refuse_malformed_rows() {
     ] {
         let mut invalid = base.clone();
         invalid[field] = value;
-        assert!(HistorySnapshot::from_records(agent.clone(), Some(invalid)).is_err());
+        assert!(
+            HistorySnapshot::from_records(
+                agent.clone(),
+                Some(invalid),
+                studio_runtime_schema::usage::ledger::LedgerEpoch::Current
+            )
+            .is_err()
+        );
     }
     let db = rusqlite::Connection::open(root.path().join("analytics.sqlite3")).expect("db");
     db.execute("INSERT INTO analytics_history VALUES ('bad','a','{}')", [])
@@ -1240,7 +1325,12 @@ fn conflicting_header_alias_does_not_authorize_a_foreign_file() {
         b"",
     );
     let batch = history::prepare(
-        HistorySnapshot::from_records(agent, None).expect("snapshot"),
+        HistorySnapshot::from_records(
+            agent,
+            None,
+            studio_runtime_schema::usage::ledger::LedgerEpoch::Current,
+        )
+        .expect("snapshot"),
         root.path(),
         RolloutPath::Found(path),
         BatchLimits::default(),
@@ -1267,13 +1357,18 @@ async fn changed_consumed_range_is_refused_before_any_effect() {
     for change in ["rewrite", "truncate", "replace"] {
         let (root, agent) = fixture();
         let mut lines = records();
-        lines.push(json!({"type":"token_usage_record","timestamp":4,"payload":{"thread_id":"thread","response_id":"r","usage":{"total_tokens":2},"thread_token_usage":{"total_tokens":2}}}));
+        lines.push(json!({"type":"token_usage_record","timestamp":4,"payload":{"thread_id":"thread","response_id":"r","usage":{"input_tokens":2,"output_tokens":0,"total_tokens":2},"thread_token_usage":{"input_tokens":2,"output_tokens":0,"total_tokens":2}}}));
         lines.push(json!({"type":"ignored","padding":"x".repeat(512)}));
         let path = file(root.path(), &lines, b"");
         let original = fs::read(&path).expect("original");
         let store = RuntimeStore::open(Some(root.path())).await.expect("store");
         let batch = history::prepare(
-            HistorySnapshot::from_records(agent, None).expect("snapshot"),
+            HistorySnapshot::from_records(
+                agent,
+                None,
+                studio_runtime_schema::usage::ledger::LedgerEpoch::Current,
+            )
+            .expect("snapshot"),
             root.path(),
             RolloutPath::Found(path.clone()),
             BatchLimits::default(),

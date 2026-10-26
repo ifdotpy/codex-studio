@@ -20,25 +20,25 @@ const sync = (values: Partial<LayrSync>): LayrSync => ({
 });
 
 test.each([
-  [sync({}), "Mac folder synced with the VM"],
-  [sync({ state: "syncing" }), "Mac folder sync is running"],
-  [sync({ state: "waiting" }), "Mac folder sync waits for the VM"],
+  [sync({}), "Folder synced with the VM"],
+  [sync({ state: "syncing" }), "Folder sync is running"],
+  [sync({ state: "waiting" }), "Folder sync waits for the VM"],
   [
     sync({ state: "waiting", withAgent: ["a.txt"] }),
-    "Mac folder sync: the agent combines 1 file",
+    "Folder sync: the agent combines 1 file",
   ],
   [
     sync({ state: "conflict", conflicts: ["a", "b"], choices: ["b"] }),
-    "Mac folder sync: 2 files changed on both sides",
+    "Folder sync: 2 files changed on both sides",
   ],
-  [sync({ state: "paused", enabled: false }), "Mac folder sync paused"],
+  [sync({ state: "paused", enabled: false }), "Folder sync paused"],
   [
     sync({ state: "paused", deletes: 600 }),
-    "Mac folder sync paused: confirm 600 files deleted on the Mac",
+    "Folder sync paused: confirm 600 files deleted locally",
   ],
   [
     sync({ state: "error", reason: "The VM stopped" }),
-    "Mac folder sync failed: The VM stopped",
+    "Folder sync failed: The VM stopped",
   ],
 ] as const)("states %j in plain words", (value, text) => {
   expect(layrSyncText(value)).toBe(text);
@@ -65,8 +65,7 @@ test("the LAYR chip marks a sync that needs the user and hides a quiet one", () 
   expect(conflict).toEqual({
     summary: {
       state: "ready",
-      title:
-        "Ready for layr chats\nMac folder sync: 2 files changed on both sides",
+      title: "Ready for layr chats\nFolder sync: 2 files changed on both sides",
     },
     attention: true,
   });
@@ -84,7 +83,7 @@ test("the summary shows the server that needs attention first", () => {
   ]);
   expect(summary?.state).toBe("error");
   expect(summary?.title).toBe(
-    "MAC: Mac folder synced with the VM\nMINI: Mac folder sync failed: VM stopped",
+    "MAC: Folder synced with the VM\nMINI: Folder sync failed: VM stopped",
   );
   expect(layrSyncSummary([])).toBeNull();
 });

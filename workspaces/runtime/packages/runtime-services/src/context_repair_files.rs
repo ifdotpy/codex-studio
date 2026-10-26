@@ -1610,7 +1610,7 @@ mod tests {
         assert_eq!(json!(receipt.event_ids), json!(["event-1"]));
         assert_eq!(
             receipt.source_sha256,
-            studio_runtime_store::sha256_hex(&source_before)
+            "fec9c87d92cd95fc69045f04610e4267367b0f7846663aa17d4500baf7bfbf6d"
         );
         assert_eq!(receipt.source_bytes, source_before.len() as u64);
         assert!(!copy_records(&receipt).is_empty());
@@ -1670,7 +1670,7 @@ mod tests {
         assert_eq!(receipt.ancestry.len(), 2);
         assert_eq!(
             receipt.source_sha256,
-            studio_runtime_store::sha256_hex(&fs::read(&child_path).expect("child bytes"))
+            "5b6503cee31dc7128f73d547e1c0a3e2c7515fff592439a7aea19407e768de2a"
         );
         assert!(!copy_records(&receipt).is_empty());
     }
@@ -1835,7 +1835,7 @@ mod tests {
         assert_eq!(receipt.source_path, source);
         assert_eq!(
             receipt.source_sha256,
-            studio_runtime_store::sha256_hex(&fs::read(&source).expect("source bytes"))
+            "12317fe1306e922e474799797b44016d86aaac46d4cef2cc64072364ab5706d9"
         );
         assert!(!copy_records(&receipt).is_empty());
     }

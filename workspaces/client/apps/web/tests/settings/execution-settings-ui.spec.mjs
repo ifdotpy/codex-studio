@@ -381,16 +381,29 @@ test("execution settings ui", async ({ browser: _browser }) => {
       lead.id,
       (body) => body.yolo_mode === false,
     );
+    // Permissions switch live during a turn (unit tests cover the Ask copy).
     await page
       .locator("#chat-settings-permissions")
       .getByText("Ask", { exact: true })
       .click();
+    assert.ok((await yoloSaved).ok());
+    await waitFor(
+      async () =>
+        (await state()).find((a) => a.id === lead.id).yoloMode === false,
+    );
+    const fullSaved = settingsResponse(
+      lead.id,
+      (body) => body.yolo_mode === true,
+    );
     await page
-      .locator("#chat-settings-permissions .execution-error[role=alert]")
-      .filter({ hasText: "Wait for this turn to end" })
-      .waitFor();
-    assert.equal((await yoloSaved).status(), 400);
-    assert.equal((await state()).find((a) => a.id === lead.id).yoloMode, true);
+      .locator("#chat-settings-permissions")
+      .getByText("Full", { exact: true })
+      .click();
+    assert.ok((await fullSaved).ok());
+    await waitFor(
+      async () =>
+        (await state()).find((a) => a.id === lead.id).yoloMode === true,
+    );
     await waitFor(() => yolo.isChecked());
     await waitFor(() => yolo.isEnabled());
     await openSettings("Main agent settings");
@@ -498,8 +511,10 @@ test("execution settings ui", async ({ browser: _browser }) => {
           (node) => node.scrollWidth <= node.clientWidth + 1,
         ),
       );
-      // The open model list stays inside the window at every width.
+      // The open model list stays inside the window at every width. A width
+      // change remounts the responsive sheet; measure after it is visible.
       await openModelList(defaultModel);
+      await defaultModel.waitFor({ state: "visible" });
       const box = await defaultModel.boundingBox();
       assert.ok(
         box.x >= 0 && box.x + box.width <= width + 1,

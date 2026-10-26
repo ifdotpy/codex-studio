@@ -698,6 +698,13 @@ async fn create(
     } else {
         project_directory_default_async().await?
     };
+    let admission_path = cwd.clone();
+    let admission_version = context
+        .store
+        .read_async("runtime-services/project_deletion/admission", move |db| {
+            crate::project_deletion::admission_version(db, &admission_path)
+        })
+        .await?;
     let binding = if request.project_binding {
         Some(
             resolve_project_binding(
@@ -954,6 +961,11 @@ async fn create(
         };
         if let Some(existing) = replay(tx)? {
             return Ok(sync_projection(tx, &existing)?);
+        }
+        if crate::project_deletion::admission_version(tx, &cwd)? != admission_version
+            || admission_version.is_some_and(|(_, deleted)| deleted)
+        {
+            return Err(CreateError::IdentityChanged.into());
         }
         if let Some(prior) = previous_lead(tx, request.previous.as_deref(), &validate)?
             && request.reuse_empty.unwrap_or(true)
@@ -2219,7 +2231,29 @@ pub async fn conversation(
         }) {
             return Err(MutationError::Stale.into());
         }
-        if (execution_requested || request.cwd.is_some() || request.yolo_mode.is_some())
+        let permission_receipt = request.yolo_mode.and(request_id.as_ref()).map(|id| {
+            (
+                id.clone(),
+                crate::event_write::request_signature(&json!({
+                    "operation":"live_permissions", "agent":request.id,
+                    "yolo":request.yolo_mode, "account":request.expected_account,
+                    "cwd":request.cwd, "model":request.model,
+                    // Explicit null resets effort; omission preserves it.
+                    "effort":[request.effort_present, request.effort],
+                    "fastMode":request.fast_mode, "daybreak":request.daybreak_enabled,
+                    "excluded":request.excluded,
+                })),
+            )
+        });
+        if let Some((id, signature)) = &permission_receipt
+            && let Some(receipt) = EventWriteRepository::receipt(tx, id)?
+        {
+            if receipt.signature != *signature {
+                return Err(MutationError::Conflict.into());
+            }
+            return Ok(sync_projection(tx, &target)?);
+        }
+        if (execution_requested || request.cwd.is_some())
             && (truthy(target.get("inFlight"))
                 || matches!(
                     target.get("status").and_then(Value::as_str),
@@ -2298,6 +2332,9 @@ pub async fn conversation(
         if let Some(yolo) = request.yolo_mode {
             update_team_yolo(tx, &request.id, yolo, &validate)?;
         }
+        if let Some((id, signature)) = permission_receipt {
+            EventWriteRepository::put_receipt(tx, &id, &signature, "{\"applied\":true}")?;
+        }
         Ok(projection)
     })
     .await
@@ -2334,46 +2371,13 @@ fn update_team_yolo(
             team.push((id, record));
         }
     }
-    let team_ids = team
+    // Permission changes are live; running turns, tools and monitors do not
+    // lock this policy. Workspace transitions retain their existing exclusion.
+    if team
         .iter()
-        .map(|(id, _)| id.as_str())
-        .collect::<std::collections::HashSet<_>>();
-    for (_, record) in &team {
-        if truthy(record.get("workspaceOperation"))
-            || truthy(record.get("inFlight"))
-            || matches!(
-                record.get("status").and_then(Value::as_str),
-                Some("running" | "starting" | "approval")
-            )
-        {
-            return Err(MutationError::InFlight.into());
-        }
-    }
-    for table in ["runtime_monitors", "runtime_tasks"] {
-        let query = if table == "runtime_monitors" {
-            "SELECT record FROM runtime_monitors WHERE json_extract(record,'$.status') IN ('starting','running','approval')"
-        } else {
-            "SELECT record FROM runtime_tasks WHERE json_extract(record,'$.status') IN ('running','starting','pending','unknown')"
-        };
-        let mut statement = tx.prepare(query).map_err(StoreError::from)?;
-        let records = statement
-            .query_map([], |row| row.get::<_, String>(0))
-            .map_err(StoreError::from)?
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(StoreError::from)?;
-        if records.iter().any(|raw| {
-            serde_json::from_str::<Value>(raw)
-                .ok()
-                .and_then(|record| {
-                    record
-                        .get("agent")
-                        .and_then(Value::as_str)
-                        .map(str::to_owned)
-                })
-                .is_some_and(|agent| team_ids.contains(agent.as_str()))
-        }) {
-            return Err(MutationError::InFlight.into());
-        }
+        .any(|(_, record)| truthy(record.get("workspaceOperation")))
+    {
+        return Err(MutationError::InFlight.into());
     }
     for (id, mut record) in team {
         if id == root_id {
@@ -2472,12 +2476,16 @@ fn previous_lead(
             if !truthy(record.get("isLead")) {
                 return Err(OperationError::Invalid("Select a lead conversation"));
             }
+            if truthy(record.get("agentArchive")) {
+                return Ok(None);
+            }
             if truthy(record.get("deletedAt")) {
                 return Err(MutationError::Deleted.into());
             }
-            Ok(record)
+            Ok(Some(record))
         })
         .transpose()
+        .map(Option::flatten)
 }
 
 /// The startup account snapshot, or the live registry when a driver is present.
@@ -3028,8 +3036,15 @@ fn resolve_project_binding_from(
                 }
                 Some(_) => return Err(OperationError::Invalid("Select a project folder")),
             };
+            let version = crate::project_deletion::admission_version(
+                connection,
+                project
+                    .get("id")
+                    .and_then(Value::as_str)
+                    .ok_or(OperationError::Internal)?,
+            )?;
             return Ok(
-                json!({"cwd":cwd,"projectId":project_id,"projectServerId":home_server,"localServerId":local,"projectFolder":folder_id}),
+                json!({"cwd":cwd,"projectId":project_id,"projectServerId":home_server,"localServerId":local,"projectFolder":folder_id,"projectVersion":version}),
             );
         }
     }
@@ -3178,12 +3193,10 @@ mod tests {
     #[test]
     fn default_workspace_mode_follows_platform_defaults() {
         assert_eq!(default_workspace_mode(false), DEFAULT_WORKSPACE_MODE);
-        let lead = if cfg!(target_os = "macos") {
-            MACOS_LEAD_WORKSPACE_MODE
-        } else {
-            DEFAULT_WORKSPACE_MODE
-        };
-        assert_eq!(default_workspace_mode(true), lead);
+        #[cfg(target_os = "macos")]
+        assert_eq!(default_workspace_mode(true), MACOS_LEAD_WORKSPACE_MODE);
+        #[cfg(not(target_os = "macos"))]
+        assert_eq!(default_workspace_mode(true), DEFAULT_WORKSPACE_MODE);
     }
 
     #[test]
@@ -3732,21 +3745,14 @@ mod tests {
         assert!(!image_provision_is_current(&terminal, 7));
     }
 
-    #[test]
-    fn lead_project_folder_must_belong_to_selected_project() {
-        let connection = rusqlite::Connection::open_in_memory().expect("open project fixture");
-        connection
-            .execute(
-                "CREATE TABLE runtime_projects(id TEXT PRIMARY KEY,record TEXT NOT NULL)",
-                [],
-            )
-            .expect("project table");
-        connection
-            .execute(
-                "CREATE TABLE runtime_access_clients(id TEXT PRIMARY KEY,record TEXT NOT NULL)",
-                [],
-            )
-            .expect("paired clients table");
+    #[tokio::test]
+    async fn lead_project_folder_must_belong_to_selected_project() {
+        // Production always prepares the sync schema before exposing a store.
+        // Use that owner here so binding admission reads a real project version.
+        let state = tempfile::tempdir().expect("project fixture state");
+        let store = RuntimeStore::open(Some(state.path()))
+            .await
+            .expect("open project fixture");
         let project = json!({
             "id":"project:example",
             "path":"project:example",
@@ -3755,12 +3761,6 @@ mod tests {
             "locations":[{"serverId":"local-server","path":"/work/example"}],
             "folders":[{"id":"folder-a","name":"Nested","parentId":null}]
         });
-        connection
-            .execute(
-                "INSERT INTO runtime_projects(id,record) VALUES(?1,?2)",
-                ("project:example", project.to_string()),
-            )
-            .expect("save local project");
         let alias = json!({
             "id":"/work/alias",
             "path":"/work/alias",
@@ -3770,21 +3770,22 @@ mod tests {
             "projectAliases":[{"serverId":"home-server","projectId":"project:remote","name":"Remote"}],
             "folders":[{"id":"remote-folder","name":"Nested","parentId":null}]
         });
-        connection
-            .execute(
-                "INSERT INTO runtime_projects(id,record) VALUES(?1,?2)",
-                ("/work/alias", alias.to_string()),
-            )
-            .expect("save remote project alias");
-        connection
-            .execute(
-                "INSERT INTO runtime_access_clients(id,record) VALUES(?1,?2)",
-                (
-                    "home-server",
-                    json!({"id":"home-server","kind":"server","status":"paired"}).to_string(),
-                ),
-            )
-            .expect("paired home server");
+        store
+            .transaction(move |tx| {
+                studio_runtime_store::ProjectsRepository::put_project(tx, &project)?;
+                studio_runtime_store::ProjectsRepository::put_project(tx, &alias)?;
+                tx.execute(
+                    "INSERT INTO runtime_access_clients(id,record) VALUES(?1,?2)",
+                    (
+                        "home-server",
+                        json!({"id":"home-server","kind":"server","status":"paired"}).to_string(),
+                    ),
+                )?;
+                Ok(())
+            })
+            .await
+            .expect("project and paired-server fixtures");
+        let connection = store.test_reader().expect("project fixture reader");
         let valid = resolve_project_binding_from(
             &connection,
             "/work/example",

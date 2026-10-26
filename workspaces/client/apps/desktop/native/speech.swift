@@ -8,19 +8,19 @@ func emit(_ value: [String: Any], code: Int32 = 0) -> Never {
     exit(code)
 }
 if CommandLine.arguments.contains("--check") {
-    emit(["provider": "macOS Speech", "helperReady": true, "onDeviceOnly": true])
+    emit(["provider": "On-device speech", "helperReady": true, "onDeviceOnly": true])
 }
 guard CommandLine.arguments.count == 3 else { emit(["error": "Expected a WAV file and a language."], code: 1) }
 let fileURL = URL(fileURLWithPath: CommandLine.arguments[1])
 let locale = Locale(identifier: CommandLine.arguments[2])
 guard let recognizer = SFSpeechRecognizer(locale: locale), recognizer.supportsOnDeviceRecognition else {
-    emit(["error": "On-device speech is unavailable for this language. Enable Dictation and download the language in macOS settings, then retry."], code: 1)
+    emit(["error": "On-device speech is unavailable for this language. Enable Dictation and download the language in this computer's settings, then retry."], code: 1)
 }
 var permission: SFSpeechRecognizerAuthorizationStatus?
 SFSpeechRecognizer.requestAuthorization { permission = $0 }
 let permissionDeadline = Date().addingTimeInterval(120)
 while permission == nil && Date() < permissionDeadline { RunLoop.current.run(until: Date().addingTimeInterval(0.05)) }
-guard permission == .authorized else { emit(["error": "Speech recognition permission was not granted. Allow LAYR Studio in macOS Privacy & Security, then retry."], code: 1) }
+guard permission == .authorized else { emit(["error": "Speech recognition permission was not granted. Allow LAYR Studio in this computer's privacy settings, then retry."], code: 1) }
 do {
     let source = try AVAudioFile(forReading: fileURL)
     let segmentFrames = AVAudioFrameCount(source.processingFormat.sampleRate * 50)
@@ -56,5 +56,5 @@ do {
     }
     let text = parts.joined(separator: " ").trimmingCharacters(in: .whitespacesAndNewlines)
     if text.isEmpty { throw NSError(domain: "Speech", code: 3, userInfo: [NSLocalizedDescriptionKey: "No speech was recognized. Play the recording before retrying."]) }
-    emit(["text": text, "provider": "macOS Speech", "onDevice": true])
+    emit(["text": text, "provider": "On-device speech", "onDevice": true])
 } catch { emit(["error": error.localizedDescription], code: 1) }

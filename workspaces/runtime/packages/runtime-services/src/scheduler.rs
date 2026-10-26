@@ -874,7 +874,7 @@ pub(crate) fn claim_preparation_in_transaction(
     )
 }
 
-pub(crate) fn claim_radio_turn_in_transaction(
+pub(crate) fn claim_selected_event_in_transaction(
     transaction: &rusqlite::Transaction<'_>,
     agent_id: &str,
     epoch: i64,
@@ -885,7 +885,7 @@ pub(crate) fn claim_radio_turn_in_transaction(
     if !attempt_created.is_finite() {
         return Err(SchedulerError::InvalidAttemptTimestamp);
     }
-    let claimed = SchedulerRepository::claim_selected_radio_turn(
+    let claimed = SchedulerRepository::claim_selected_event(
         transaction,
         agent_id,
         epoch,

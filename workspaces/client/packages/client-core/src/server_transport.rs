@@ -703,19 +703,30 @@ mod tests {
                     .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-')
             );
 
-            assert_eq!(
-                headers["x-studio-signature"],
-                server_keys::signature(
-                    &expected,
-                    "POST",
-                    "/api/test?q=1",
-                    &headers["x-studio-timestamp"],
-                    &headers["x-studio-nonce"],
-                    "original",
-                    &body
-                )
-                .unwrap()
-            );
+            {
+                // Verify the wire request with the public key; never sign the expectation
+                // with the implementation under test. The body digest is the fixed null vector.
+                let public = expected["publicKey"]
+                    .as_str()
+                    .unwrap()
+                    .lines()
+                    .filter(|line| !line.starts_with("-----"))
+                    .collect::<String>();
+                let public = STANDARD.decode(public).unwrap();
+                assert_eq!(public.len(), 44);
+                let message = format!(
+                    "studio-multi-server-v1\nPOST\n/api/test?q=1\nserver\n{}\n{}\n{}\noriginal\n74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b",
+                    expected["clientId"].as_str().unwrap(),
+                    headers["x-studio-timestamp"],
+                    headers["x-studio-nonce"]
+                );
+                ring::signature::UnparsedPublicKey::new(&ring::signature::ED25519, &public[12..])
+                    .verify(
+                        message.as_bytes(),
+                        &STANDARD.decode(&headers["x-studio-signature"]).unwrap(),
+                    )
+                    .unwrap();
+            };
             stream.write_all(b"HTTP/1.1 409 Conflict\r\nContent-Length: 3\r\nContent-Type: application/octet-stream\r\nConnection: close\r\n\r\na\0\xff").unwrap();
             stream.flush().unwrap();
         });

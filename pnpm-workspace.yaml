@@ -11,6 +11,17 @@ allowBuilds:
   esbuild: true
   playwright: true
 
+# The packaged bridge runs on the Mac host and Linux guests.
+supportedArchitectures:
+  os:
+    - darwin
+    - linux
+  cpu:
+    - arm64
+    - x64
+  libc:
+    - glibc
+
 patchedDependencies:
   # Weak event-bulk caching releases payloads; projection pulls retain 409
   # conflicts for server-sequence comparison. The incremental-write queue fix

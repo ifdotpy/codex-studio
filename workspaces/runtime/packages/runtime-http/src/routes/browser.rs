@@ -137,7 +137,7 @@ async fn forward(
     if !local_window(&headers, peer) {
         return Err(ApiError::new(
             StatusCode::FORBIDDEN,
-            "Only a window on this Mac can hold a sign-in port here.",
+            "Only a window on this computer can hold a sign-in port here.",
         ));
     }
     let input = ForwardInput {
@@ -286,6 +286,24 @@ mod tests {
             .expect("system clock follows the Unix epoch")
             .as_secs_f64()
             + 30.0;
+        let refusal = forward(
+            State(state.clone()),
+            ConnectInfo(SocketAddr::from(([192, 0, 2, 1], 54321))),
+            HeaderMap::new(),
+            ApiJson(json!({})),
+        )
+        .await
+        .expect_err("nonlocal windows cannot hold a sign-in port");
+        let refused = axum::response::IntoResponse::into_response(refusal);
+        assert_eq!(refused.status(), StatusCode::FORBIDDEN);
+        let bytes = axum::body::to_bytes(refused.into_body(), 4096)
+            .await
+            .expect("refusal body");
+        let refusal: Value = serde_json::from_slice(&bytes).expect("refusal envelope");
+        assert_eq!(
+            refusal["error"],
+            "Only a window on this computer can hold a sign-in port here."
+        );
         let app = crate::router::router(state).expect("HTTP router composes the route");
         let body = json!({
             "server":"peer",
@@ -316,6 +334,7 @@ mod tests {
                 54321,
             ))));
         let generation = store.committed_change_generation();
+
         let response = app.oneshot(request).await.expect("HTTP response");
         assert_eq!(response.status(), axum::http::StatusCode::OK);
         let bytes = axum::body::to_bytes(response.into_body(), 4096)

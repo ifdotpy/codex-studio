@@ -225,7 +225,7 @@ fn guest(state: &HttpState) -> Result<std::sync::Arc<dyn GuestRpc>, ApiError> {
     state.project_secrets_guest.clone().ok_or_else(|| {
         ApiError::new(
             StatusCode::SERVICE_UNAVAILABLE,
-            "Linux VM guest RPC is unavailable",
+            "VM guest RPC is unavailable",
         )
     })
 }
@@ -1997,7 +1997,7 @@ mod tests {
             String::from_utf8_lossy(&body)
         );
         let body = String::from_utf8_lossy(&body);
-        assert!(body.contains("Linux VM guest RPC is unavailable"));
+        assert!(body.contains("VM guest RPC is unavailable"));
         assert!(!body.contains("generated-test-value"));
         assert_eq!(
             std::fs::read_dir(state.path())

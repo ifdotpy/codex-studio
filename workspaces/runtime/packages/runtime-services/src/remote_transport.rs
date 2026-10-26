@@ -39,7 +39,7 @@ pub enum RemoteTransportError {
     InvalidIdentity,
     #[error("remote identity storage is unavailable or unsafe")]
     IdentityStorage,
-    #[error("remote identity loading is unsupported on Windows")]
+    #[error("remote identity loading is unavailable on this server")]
     UnsupportedPlatform,
     #[error("invalid stored object {table}/{key}")]
     InvalidStoredObject { table: &'static str, key: String },

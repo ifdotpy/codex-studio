@@ -34,7 +34,7 @@ export default function VaultUnlock({
         { timeoutMs: 30000 },
       );
       setWords("");
-      onDone(`${name}: this Mac keeps the vault key in its Keychain`);
+      onDone(`${name}: this computer keeps the vault key in secure storage`);
       onClose();
     } catch (failure) {
       setError(errorText(failure));
@@ -43,11 +43,11 @@ export default function VaultUnlock({
     }
   };
   return (
-    <Modal opened onClose={onClose} title={`Unlock ${name} on this Mac`}>
+    <Modal opened onClose={onClose} title={`Unlock ${name} on this computer`}>
       <Stack>
         <Text size="sm">
-          Enter the 24 words of the vault&apos;s paper key. This Mac keeps the
-          vault key in its Keychain, so the Desk disk and Pull work here.
+          Enter the 24 words of the vault&apos;s paper key. This computer keeps
+          the vault key in secure storage, so the Desk disk and Pull work here.
         </Text>
         <Textarea
           aria-label="Paper key"

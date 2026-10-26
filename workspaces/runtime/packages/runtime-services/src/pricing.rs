@@ -43,7 +43,7 @@ pub struct PricingCatalog {
 }
 
 /// Path of the models.dev pricing artifact under the state root.
-const PRICING_ARTIFACT: &str = "model-pricing/models-dev-v1.json";
+pub(crate) const PRICING_ARTIFACT: &str = "model-pricing/models-dev-v1.json";
 
 /// The pricing artifact (about 6 MB of JSON) parsed once per file version.
 pub struct LoadedPricing {
@@ -51,6 +51,8 @@ pub struct LoadedPricing {
     pub catalog: Option<PricingCatalog>,
     /// Cache signature of the catalog, which stored session costs record.
     pub signature: Option<String>,
+    /// Most recent catalog refresh attempt, in Unix epoch seconds.
+    pub(crate) last_attempt_at: f64,
 }
 
 /// The artifact envelope; the catalog stays a document because its signature is the hash
@@ -59,6 +61,12 @@ pub struct LoadedPricing {
 struct PricingArtifact {
     version: u64,
     catalog: Value,
+    #[serde(default, rename = "lastAttemptAt")]
+    last_attempt_at: Option<f64>,
+    #[serde(default, rename = "fetchedAtEpoch")]
+    fetched_at_epoch: Option<f64>,
+    #[serde(default, rename = "fetchedAt")]
+    fetched_at: Option<String>,
 }
 
 static LOADED: LazyLock<crate::file_derived::FileDerived<LoadedPricing>> =
@@ -77,7 +85,26 @@ pub fn load_pricing(state_root: &Path) -> Option<Arc<LoadedPricing>> {
         let signature = catalog_value
             .filter(|_| catalog.is_some())
             .and_then(crate::analytics::catalog_signature);
-        Some(LoadedPricing { catalog, signature })
+        let last_attempt_at = artifact
+            .as_ref()
+            .and_then(|artifact| {
+                artifact
+                    .last_attempt_at
+                    .or(artifact.fetched_at_epoch)
+                    .or_else(|| {
+                        artifact
+                            .fetched_at
+                            .as_deref()
+                            .and_then(|stamp| chrono::DateTime::parse_from_rfc3339(stamp).ok())
+                            .map(|stamp| stamp.timestamp() as f64)
+                    })
+            })
+            .unwrap_or_default();
+        Some(LoadedPricing {
+            catalog,
+            signature,
+            last_attempt_at,
+        })
     })
 }
 
@@ -300,6 +327,10 @@ impl RawRates {
     }
 }
 
+/// Anthropic one-hour cache-write USD per million as a ratio to the selected input rate.
+/// Other-language consumers: installed-smoke/usage.mjs, guarded by its owner parity test.
+pub const CLAUDE_CACHE_WRITE_1H_INPUT_MULTIPLIER: f64 = 2.0;
+
 /// Token counts of one priced sample; a missing count is `None`.
 #[derive(Clone, Copy, Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -307,6 +338,7 @@ pub struct TokenUsage {
     pub input_tokens: Option<f64>,
     pub cached_input_tokens: Option<f64>,
     pub cache_write_input_tokens: Option<f64>,
+    pub cache_write_input_1h_tokens: Option<f64>,
     pub output_tokens: Option<f64>,
 }
 
@@ -369,13 +401,19 @@ fn price_with_rates(
     let write_rate = selected
         .and_then(|tier| tier.cache_write)
         .or(rates.cache_write);
-    if (cached > 0.0 && read_rate.is_none()) || (cache_write > 0.0 && write_rate.is_none()) {
+    let hour = match usage.cache_write_input_1h_tokens {
+        None => 0.0,
+        Some(value) if value.is_finite() && value >= 0.0 && value <= cache_write => value,
+        Some(_) => return Price::incomplete(tier_used),
+    };
+    if (cached > 0.0 && read_rate.is_none()) || (cache_write > hour && write_rate.is_none()) {
         return Price::incomplete(tier_used);
     }
     let total = (base * input_rate
         + output * output_rate
         + cached * read_rate.unwrap_or(0.0)
-        + cache_write * write_rate.unwrap_or(0.0))
+        + (cache_write - hour) * write_rate.unwrap_or(0.0)
+        + hour * CLAUDE_CACHE_WRITE_1H_INPUT_MULTIPLIER * input_rate)
         / 1_000_000.0;
     Price {
         amount_usd: Some(total),
@@ -411,6 +449,24 @@ mod tests {
         .expect("valid catalog")
     }
 
+    #[test]
+    fn cache_write_1h_prices_selected_input_tier_and_preserves_legacy() {
+        let catalog = catalog();
+        let split = usage(
+            json!({"inputTokens":100,"cachedInputTokens":20,"cacheWriteInputTokens":10,"cacheWriteInput1hTokens":6,"outputTokens":5}),
+        );
+        let price = catalog.price_usage("openai", "gpt-test", split, Some(100.0), true);
+        assert_eq!(price.amount_usd, Some(384.0 / 1_000_000.0));
+        let legacy = usage(
+            json!({"inputTokens":100,"cachedInputTokens":20,"cacheWriteInputTokens":10,"outputTokens":5}),
+        );
+        assert_eq!(
+            catalog
+                .price_usage("openai", "gpt-test", legacy, Some(100.0), true)
+                .amount_usd,
+            Some(360.0 / 1_000_000.0)
+        );
+    }
     #[test]
     fn prices_cached_tokens_and_inclusive_context_tier() {
         let value = catalog().price_usage(

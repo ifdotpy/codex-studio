@@ -858,6 +858,23 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/api/costs/interest": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** Request an on-demand account cost refresh; results arrive through sync entities */
+    post: operations["cost_interest_api_costs_interest_post"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   "/api/desktop": {
     parameters: {
       query?: never;
@@ -884,6 +901,26 @@ export interface paths {
     };
     /** Diagnostics */
     get: operations["diagnostics_api_diagnostics_get"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/diagnostics/usage-reconciliation": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /**
+     * Reconcile one agent usage against native evidence
+     * @description Read-only bounded diagnostic for current or archived agents. Costs use request-level catalog tiers; null means unavailable pricing or tokens. Incomplete evidence and truncated scans are explicit.
+     */
+    get: operations["usage_reconciliation_api_diagnostics_usage_reconciliation_get"];
     put?: never;
     post?: never;
     delete?: never;
@@ -1641,6 +1678,26 @@ export interface paths {
     put?: never;
     /** Project Write */
     post: operations["project_write_api_projects_post"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/projects/delete": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /**
+     * Delete a registered project and all its chats
+     * @description One canvas transaction commits logical deletion, cancellation intents, room retirement, projections and a durable exact-request receipt. An identical request replays its committed reply before target existence checks. Conflicts require fresh SSE state and confirmation. No per-chat fallback or blind retry with a new identity.
+     */
+    post: operations["project_delete_api_projects_delete_post"];
     delete?: never;
     options?: never;
     head?: never;
@@ -7863,13 +7920,18 @@ export interface components {
       /** At */
       at: number;
       /** Baselinemissing */
-      baselineMissing: boolean;
+      baselineMissing?: boolean;
       /**
        * Counterdomain
        * @enum {string}
        */
-      counterDomain: "response" | "nativeNotice";
-      cumulativeDelta: components["schemas"]["AnalyticsProviderTokens"];
+      counterDomain:
+        | "response"
+        | "nativeNotice"
+        | "codexThread"
+        | "claudeQuery"
+        | "gap";
+      cumulativeDelta?: components["schemas"]["AnalyticsProviderTokens"];
       /**
        * Cyberaccessprogram
        * @default null
@@ -7934,7 +7996,7 @@ export interface components {
       /** @default null */
       requestUsage?: components["schemas"]["AnalyticsProviderTokens"] | null;
       /** Reset */
-      reset: boolean | null;
+      reset?: boolean | null;
       /**
        * Responseid
        * @default null
@@ -11467,6 +11529,10 @@ export interface components {
         [key: string]: number;
       };
     };
+    /** CostInterestRequest */
+    CostInterestRequest: {
+      account_key: string;
+    };
     /** CostsResource */
     CostsResource: {
       /**
@@ -11710,6 +11776,18 @@ export interface components {
        * @default false
        */
       share_status?: boolean;
+    };
+    /** @description One model's cumulative contribution to a Claude query. */
+    CumulativeModelUsage: {
+      /** @description Provider model identifier; dimensionless. */
+      model: string;
+      /**
+       * Format: double
+       * @description Provider's informational cost estimate; USD.
+       */
+      providerCostUsd?: number | null;
+      /** @description Disjoint cumulative token counts; tokens. */
+      tokens: components["schemas"]["UsageTokens"];
     };
     /**
      * DefaultAccountGroupsRequest
@@ -17144,6 +17222,81 @@ export interface components {
       /** Serverid */
       serverId: string;
     };
+    /**
+     * ProjectDeleteErrorResponse
+     * @description Standard API error envelope with an optional first-problem location.
+     */
+    ProjectDeleteErrorResponse: {
+      /**
+       * Catalogpending
+       * @default null
+       */
+      catalogPending?: boolean | null;
+      code: components["schemas"]["ProjectDeleteFailureCode"];
+      /** Error */
+      error: string;
+      /**
+       * Location
+       * @default null
+       */
+      location?: string[] | null;
+      /**
+       * Metadata
+       * @default null
+       */
+      metadata?: {
+        [key: string]: components["schemas"]["JsonValue"];
+      } | null;
+      /**
+       * Outcome
+       * @default null
+       */
+      outcome?: "not_applied" | null;
+      /**
+       * Protocolversion
+       * @default null
+       */
+      protocolVersion?: number | null;
+      /**
+       * Supportedversions
+       * @default null
+       */
+      supportedVersions?: number[] | null;
+    };
+    /**
+     * ProjectDeleteFailureCode
+     * @enum {string}
+     */
+    ProjectDeleteFailureCode:
+      | "project_not_found"
+      | "project_workspace_conflict"
+      | "project_sequence_conflict"
+      | "project_request_conflict"
+      | "project_remote_scope"
+      | "project_membership_conflict"
+      | "project_lifecycle_unavailable";
+    /**
+     * ProjectDeleteRequest
+     * @description Delete one registered project lifetime and all owned chats atomically. Obtain expected_project_seq from the project SyncEntity seq (not the stream revision or global checkpoint), and expected_workspace_id from the same SSE entity baseline workspaceId. Retain this request_id and complete body across uncertain responses.
+     */
+    ProjectDeleteRequest: {
+      expected_project_seq: number;
+      expected_workspace_id: string;
+      id: string;
+      request_id: string;
+    };
+    /**
+     * ProjectDeleteResponse
+     * @description Committed logical deletion only. External stops and disposable workspace cleanup may remain pending. Retained histories and source directories are preserved. ID arrays are authoritative, sorted and unique.
+     */
+    ProjectDeleteResponse: {
+      deletedAgentIds: string[];
+      deletedRoomIds: string[];
+      id: string;
+      /** @constant */
+      outcome: "deleted";
+      request_id: string;
+    };
     /** ProjectEntityDto */
     ProjectEntityDto: {
       /** Accountgroups */
@@ -19109,6 +19262,8 @@ export interface components {
       resource?: components["schemas"]["ResourceRef"] | null;
       /** Revision */
       revision: number;
+      /** @description Required for terminal-output delta entries: the persisted base offset in Unicode scalars. The client applies the delta only when this equals its persisted terminal output offset. Omitted for snapshots. */
+      terminalBaseOffset?: number;
       transcriptChanges?: components["schemas"]["TranscriptChangeBatch"] | null;
       /** @description Newest transcript history window sent immediately after a subscription acknowledgement, with older-history cursors. The server shrinks it to fit the stream event byte limit; a single oversized newest item requires scoped recovery. */
       transcriptSnapshot?:
@@ -21735,6 +21890,8 @@ export interface components {
      */
     SubscriptionCursor: {
       seq: number;
+      /** @description Terminal output reset counter, owned by TerminalsRepository. Set and checked only for terminal-output. Missing or mismatched counters require a snapshot; offsets are resumable only within the same generation. */
+      terminalGeneration?: number;
       workspaceId: string;
     };
     /** @description Authoritative resource kind to domain data mapping for the screen subscription API. Keys must equal ResourceRef kinds. Transport metadata never belongs in this map. */
@@ -24817,6 +24974,53 @@ export interface components {
       validUntil: number | null;
     };
     /**
+     * @description Provenance of a final response; legacy observations may be provisional.
+     * @enum {string}
+     */
+    UsageEvidence: "live" | "recovered" | "legacy";
+    UsageEvidenceFile: {
+      /** @description Native evidence file name; never file contents. */
+      file: string;
+      incomplete: boolean;
+      /** @enum {string} */
+      kind: "claudeState" | "claudeJournal" | "codexRollout";
+      /** @description Human-readable coverage failure or refusal reason. */
+      reason: string | null;
+      truncated: boolean;
+    };
+    /** @description Why final response accounting is unavailable. */
+    UsageGapReason:
+      | ("streamInterrupted" | "queryClosed")
+      | "unconfirmedStop"
+      | "noStream";
+    /** @description Logical owner of usage, independent of capture time, account, turn and provenance. */
+    UsageIdentity:
+      | {
+          agent: string;
+          /** @constant */
+          kind: "response";
+          responseId: string;
+        }
+      | {
+          agent: string;
+          /** @constant */
+          kind: "cumulative";
+          scope: components["schemas"]["UsageScope"];
+          threadId: string | null;
+        };
+    /**
+     * @description Durable typed receipt. Analytics stores these fields alongside presentation metadata;
+     *     budget stores the same value alongside its accounting placement.
+     */
+    UsageLedgerRow: {
+      /** @description First-capture deduplication key; retained across restore and re-import. */
+      receiptKey: string | null;
+      /** @description Provider-neutral evidence; token fields have units of tokens. */
+      studioUsage: components["schemas"]["UsageObservation"];
+      /** @description Immutable logical usage identity; dimensionless. */
+      usageIdentity: components["schemas"]["UsageIdentity"];
+    };
+    /**
      * UsageLimitsData
      * @description Known usage projection plus account-service fields passed through unchanged.
      */
@@ -24894,6 +25098,116 @@ export interface components {
        * @default null
        */
       readAt?: null | number;
+    };
+    /** @description Accounting evidence, preserving response identity and cumulative counter scope. */
+    UsageObservation:
+      | {
+          /** @description How the final usage was collected. */
+          evidence: components["schemas"]["UsageEvidence"];
+          /** @constant */
+          kind: "response";
+          /** @description Provider model identifier; dimensionless. */
+          model: string;
+          /**
+           * Format: uint64
+           * @description Model context capacity; tokens.
+           */
+          modelContextWindow?: number | null;
+          /** @description Parent tool identifier; absent means main loop. */
+          parentToolUseId?: string | null;
+          /** @description Native response identifier; dimensionless. */
+          responseId: string;
+          /** @description Final disjoint token counts; tokens. */
+          tokens: components["schemas"]["UsageTokens"];
+          /** @description Native turn identifier; dimensionless. */
+          turnId?: string | null;
+        }
+      | {
+          /** @constant */
+          kind: "cumulative";
+          /** @description Most recent response without an identity; tokens. */
+          last?: components["schemas"]["UsageTokens"] | null;
+          /**
+           * Format: uint64
+           * @description Model context capacity; tokens.
+           */
+          modelContextWindow?: number | null;
+          /** @description Per-model running counters and informational provider costs. */
+          models?: components["schemas"]["CumulativeModelUsage"][] | null;
+          /** @description Counter's reset and accumulation domain. */
+          scope: components["schemas"]["UsageScope"];
+          /** @description Running disjoint category counts; tokens. */
+          total: components["schemas"]["UsageTokens"];
+          /** @description Native turn identifier; dimensionless. */
+          turnId?: string | null;
+        }
+      | {
+          /** @constant */
+          kind: "gap";
+          /** @description Provider model identifier, when known. */
+          model?: string | null;
+          /** @description Final-usage loss reason. */
+          reason: components["schemas"]["UsageGapReason"];
+          /** @description Native response identifier; dimensionless. */
+          responseId: string;
+          /** @description Native turn identifier; dimensionless. */
+          turnId?: string | null;
+        };
+    UsageReconciliationResponse: {
+      agentId: string;
+      counts: {
+        mismatched: number;
+        missingEvidence: number;
+        missingRecorded: number;
+        /** @description Native paths refused by configured-root or regular-file validation. */
+        rejectedEntries: number;
+        responses: number;
+        /** @description Recorded responses with absent or null token categories; excluded from known totals and token mismatch comparisons. */
+        unknownRecorded: number;
+      };
+      files: components["schemas"]["UsageEvidenceFile"][];
+      gaps: components["schemas"]["UsageObservation"][];
+      incomplete: boolean;
+      providerCosts: {
+        model: string;
+        providerCostUsd: number;
+      }[];
+      replayConflicts?: components["schemas"]["UsageReplayConflict"][];
+      responses: components["schemas"]["UsageReconciliationRow"][];
+      totals: {
+        evidenceCostUsd: number | null;
+        evidenceTokens: components["schemas"]["UsageTokens"] | null;
+        recordedCostUsd: number | null;
+        recordedTokens: components["schemas"]["UsageTokens"] | null;
+      };
+      truncated: boolean;
+    };
+    UsageReconciliationRow: {
+      evidenceCostUsd: number | null;
+      evidenceTokens: components["schemas"]["UsageTokens"] | null;
+      journalConflict: boolean;
+      mismatched: boolean;
+      model: string | null;
+      recordedCostUsd: number | null;
+      recordedEvidence: components["schemas"]["UsageEvidence"] | null;
+      recordedTokens: components["schemas"]["UsageTokens"] | null;
+      responseId: string;
+    };
+    /** @description A rejected replay, preserving both totals without inventing missing legacy categories. */
+    UsageReplayConflict: {
+      identity: components["schemas"]["UsageIdentity"];
+      incomingTokens?: components["schemas"]["UsageTokens"] | null;
+      /**
+       * Format: uint64
+       * @description Rejected billable total; tokens.
+       */
+      incomingTotalTokens: number;
+      retainedTokens?: components["schemas"]["UsageTokens"] | null;
+      /**
+       * Format: uint64
+       * @description Retained billable total; tokens.
+       */
+      retainedTotalTokens: number;
     };
     /**
      * UsageResumeCause
@@ -25101,6 +25415,44 @@ export interface components {
      * @enum {string}
      */
     UsageResumeStatus: "scheduled" | "started" | "cancelled" | "unknown";
+    /**
+     * @description Counter ownership: a native Codex thread or one Claude SDK query.
+     * @enum {string}
+     */
+    UsageScope: "codexThread" | "claudeQuery";
+    /** @description Disjoint billable token categories; reasoning is already included in output. */
+    UsageTokens: {
+      /**
+       * Format: uint64
+       * @description Input served from the prompt cache; tokens.
+       */
+      cacheReadInput: number;
+      /**
+       * Format: uint64
+       * @description Input written to the prompt cache; tokens.
+       */
+      cacheWriteInput: number;
+      /**
+       * Format: uint64
+       * @description Subset of cache writes with a one-hour lifetime; tokens, absent for legacy pricing.
+       */
+      cacheWriteInput1h?: number | null;
+      /**
+       * Format: uint64
+       * @description All generated output, including reasoning; tokens.
+       */
+      output: number;
+      /**
+       * Format: uint64
+       * @description Known reasoning subset of output; tokens, absent when unknown.
+       */
+      reasoningOutput?: number | null;
+      /**
+       * Format: uint64
+       * @description Base-rate input, excluding cache reads and writes; tokens.
+       */
+      uncachedInput: number;
+    };
     /**
      * VaultAwsProfileDto
      * @description An AWS profile of this Mac: signedIn says whether it has keys or a usable sign-in.
@@ -30371,6 +30723,30 @@ export interface operations {
       503: components["responses"]["ApiError503"];
     };
   };
+  cost_interest_api_costs_interest_post: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["CostInterestRequest"];
+      };
+    };
+    responses: {
+      /** @description Interest accepted; joins an existing refresh when one is active */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": Record<string, never>;
+        };
+      };
+    };
+  };
   desktop_api_desktop_get: {
     parameters: {
       query?: {
@@ -30463,6 +30839,55 @@ export interface operations {
       500: components["responses"]["ApiError500"];
       /** @description Not Implemented */
       501: components["responses"]["ApiError501"];
+      /** @description Service Unavailable */
+      503: components["responses"]["ApiError503"];
+    };
+  };
+  usage_reconciliation_api_diagnostics_usage_reconciliation_get: {
+    parameters: {
+      query: {
+        agent: string;
+      };
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          "Access-Control-Allow-Origin": components["headers"]["AccessControlAllowOrigin"];
+          "Access-Control-Expose-Headers": components["headers"]["AccessControlExposeHeaders"];
+          "Cache-Control": components["headers"]["CacheControl"];
+          "Content-Encoding": components["headers"]["ContentEncoding"];
+          "Content-Length": components["headers"]["ContentLength"];
+          "Content-Security-Policy": components["headers"]["ContentSecurityPolicy"];
+          "Content-Type": components["headers"]["ContentType"];
+          "Referrer-Policy": components["headers"]["ReferrerPolicy"];
+          "Server-Timing": components["headers"]["ServerTiming"];
+          Vary: components["headers"]["Vary"];
+          "X-Content-Type-Options": components["headers"]["XContentTypeOptions"];
+          "X-Studio-API-Schema": components["headers"]["StudioApiSchema"];
+          "X-Studio-Server": components["headers"]["StudioServer"];
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["UsageReconciliationResponse"];
+        };
+      };
+      /** @description Bad Request */
+      400: components["responses"]["ApiError400"];
+      /** @description Unauthorized */
+      401: components["responses"]["ApiError401"];
+      /** @description Forbidden */
+      403: components["responses"]["ApiError403"];
+      /** @description Unknown agent */
+      404: components["responses"]["ApiError404"];
+      /** @description Too Many Requests */
+      429: components["responses"]["ApiError429"];
+      /** @description Internal Server Error */
+      500: components["responses"]["ApiError500"];
       /** @description Service Unavailable */
       503: components["responses"]["ApiError503"];
     };
@@ -34130,6 +34555,92 @@ export interface operations {
       502: components["responses"]["ApiError502"];
       /** @description Service Unavailable */
       503: components["responses"]["ApiError503"];
+    };
+  };
+  project_delete_api_projects_delete_post: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["ProjectDeleteRequest"];
+      };
+    };
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          "Access-Control-Allow-Origin": components["headers"]["AccessControlAllowOrigin"];
+          "Access-Control-Expose-Headers": components["headers"]["AccessControlExposeHeaders"];
+          "Cache-Control": components["headers"]["CacheControl"];
+          "Content-Encoding": components["headers"]["ContentEncoding"];
+          "Content-Length": components["headers"]["ContentLength"];
+          "Content-Security-Policy": components["headers"]["ContentSecurityPolicy"];
+          "Content-Type": components["headers"]["ContentType"];
+          "Referrer-Policy": components["headers"]["ReferrerPolicy"];
+          "Server-Timing": components["headers"]["ServerTiming"];
+          Vary: components["headers"]["Vary"];
+          "X-Content-Type-Options": components["headers"]["XContentTypeOptions"];
+          "X-Studio-API-Schema": components["headers"]["StudioApiSchema"];
+          "X-Studio-Server": components["headers"]["StudioServer"];
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ProjectDeleteResponse"];
+        };
+      };
+      /** @description Bad Request */
+      400: components["responses"]["ApiError400"];
+      /** @description Unauthorized */
+      401: components["responses"]["ApiError401"];
+      /** @description Forbidden */
+      403: components["responses"]["ApiError403"];
+      /** @description Not Found */
+      404: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ProjectDeleteErrorResponse"];
+        };
+      };
+      /** @description Request Timeout */
+      408: components["responses"]["ApiError408"];
+      /** @description Conflict */
+      409: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ProjectDeleteErrorResponse"];
+        };
+      };
+      /** @description Gone */
+      410: components["responses"]["ApiError410"];
+      /** @description Content Too Large */
+      413: components["responses"]["ApiError413"];
+      /** @description Unsupported Media Type */
+      415: components["responses"]["ApiError415"];
+      /** @description Upgrade Required */
+      426: components["responses"]["ApiError426"];
+      /** @description Too Many Requests */
+      429: components["responses"]["ApiError429"];
+      /** @description Internal Server Error */
+      500: components["responses"]["ApiError500"];
+      /** @description Bad Gateway */
+      502: components["responses"]["ApiError502"];
+      /** @description Service Unavailable */
+      503: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ProjectDeleteErrorResponse"];
+        };
+      };
     };
   };
   questions_api_questions_get: {

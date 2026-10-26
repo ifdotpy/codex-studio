@@ -710,7 +710,6 @@ mod tests {
 
     use base64::Engine;
     use serde_json::{Value, json};
-    use sha2::{Digest, Sha256};
 
     use super::{CHUNK_BYTES, EXPORT_WAIT, Offer, UpdateError, fixture};
 
@@ -788,7 +787,7 @@ mod tests {
         assert_eq!(meta["size"], json!(expected.len()));
         assert_eq!(
             meta["sha256"],
-            json!(data_encoding::HEXLOWER.encode(&Sha256::digest(&expected)))
+            json!("eb608359d3f6b6237f580573c9f57a08ab2aed97d515e5d969ac553641c41eab")
         );
         assert!(!cache.join("module.cpython-314.pyc").exists());
         assert!(cache.join("keep.txt").exists());
@@ -804,7 +803,11 @@ mod tests {
         assert_eq!(again, meta, "a second export reuses the archive");
 
         let mut received = Vec::new();
-        while received.len() < expected.len() {
+        for expected_hash in [
+            "61d1d9c5745bdaa4fab39240651bc242a5186b15393fd475082fcf6e84f400ab",
+            "c6edd274fd1dde0ecf8b0440b9c38c91a9989ed002b1f54c9ee7079997012d98",
+            "fe60079befe6a202ab8c03711649592f19fe2ccfa528b548956bbecf0fa5f2cc",
+        ] {
             let chunk = call(
                 &offer,
                 &root,
@@ -819,10 +822,7 @@ mod tests {
             assert!(!data.is_empty() && data.len() <= CHUNK_BYTES);
             assert_eq!(chunk["offset"], json!(received.len()));
             assert_eq!(chunk["nextOffset"], json!(received.len() + data.len()));
-            assert_eq!(
-                chunk["sha256"],
-                json!(data_encoding::HEXLOWER.encode(&Sha256::digest(&data)))
-            );
+            assert_eq!(chunk["sha256"], expected_hash);
             received.extend(data);
         }
         assert_eq!(received, expected);

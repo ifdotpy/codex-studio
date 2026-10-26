@@ -34,7 +34,7 @@ impl GuestRpc for super::linux_vm_guest::UnixGuestRpc {
                 code: error.code().unwrap_or("guest_error").to_owned(),
                 detail: error
                     .detail()
-                    .unwrap_or("Linux VM guest request failed")
+                    .unwrap_or("VM guest request failed")
                     .to_owned(),
                 uncertain: error.uncertain(),
             },

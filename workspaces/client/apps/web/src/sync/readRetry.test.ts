@@ -46,8 +46,9 @@ describe("failed resource reads", () => {
   it("reports exhaustion with its HTTP cause and cannot itself be retried", () => {
     const error = new ApiError("Unavailable", 503);
     const budget = new ReadRecoveryBudget();
-    for (let failed = 1; failed < READ_RECOVERY_MAX_ATTEMPTS; failed++)
-      expect(budget.nextDelay(error)).toBe(readRetryDelay(failed - 1));
+    const delays = [1_000, 2_000, 4_000, 8_000, 16_000];
+    expect(delays).toHaveLength(READ_RECOVERY_MAX_ATTEMPTS - 1);
+    for (const delay of delays) expect(budget.nextDelay(error)).toBe(delay);
     expect(() => budget.nextDelay(error)).toThrow(ReadRecoveryExhaustedError);
     expect(budget.exhaustedError?.cause).toBe(error);
     expect(retryableReadError(budget.exhaustedError)).toBe(false);

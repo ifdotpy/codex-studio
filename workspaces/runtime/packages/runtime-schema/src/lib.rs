@@ -9,10 +9,13 @@ pub mod delivery;
 pub mod desktop;
 pub mod federation_limits;
 pub mod idle_compaction;
+pub mod json_compat;
 pub mod multi_server_protocol;
 pub mod provider_input;
+pub mod provider_method_policy;
 pub mod shared_values;
 pub mod task_results;
+pub mod usage;
 
 pub use delivery::DeliveryMoment;
 
@@ -229,6 +232,10 @@ const PERSISTED_SCHEMAS: &[(&str, &[u8])] = &[
     (
         "https://codex-studio.invalid/persisted-budget-state.schema.json",
         include_bytes!("schemas/persisted-budget-state.schema.json"),
+    ),
+    (
+        "https://codex-studio.invalid/persisted-budget-state-write.schema.json",
+        include_bytes!("schemas/persisted-budget-state-write.schema.json"),
     ),
     (
         "https://codex-studio.invalid/persisted-budget-usage.schema.json",
@@ -825,6 +832,10 @@ fn prepare_schemas() -> SchemaResult<CompiledSchemas> {
         (
             "PersistedBudgetState",
             "https://codex-studio.invalid/persisted-budget-state.schema.json",
+        ),
+        (
+            "PersistedBudgetStateWrite",
+            "https://codex-studio.invalid/persisted-budget-state-write.schema.json",
         ),
         (
             "PersistedBudgetUsage",

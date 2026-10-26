@@ -322,6 +322,11 @@ fn send_as_actor(
     let recipients = admitted;
     let room_id = text(&room, "id")?.to_owned();
     if let Some(mut previous) = records::get(tx, "runtime_rooms", &room_id)? {
+        if studio_runtime_store::ProjectsRepository::room_retired(&previous) {
+            return Err(CallbackError::Invalid(
+                "This project chat was permanently deleted",
+            ));
+        }
         let fields = room
             .as_object()
             .ok_or(CallbackError::Invalid("Invalid room"))?;

@@ -1694,8 +1694,10 @@ mod resource_tests {
                 let names = |tools: Vec<thread::ToolDefinition>| {
                     tools.into_iter().map(|tool| tool.name).collect::<Vec<_>>()
                 };
-                for mode in ["vm", "native"] {
-                    let vm = mode == "vm";
+                for (mode, expected_tools, vm) in [
+                    ("vm", &resources.tools, true),
+                    ("native", &resources.legacy_tools, false),
+                ] {
                     // An old thread without a saved source, and a new thread
                     // of an agent whose saved source is legacy.
                     for (thread_id, source) in [(Some("thread-old"), None), (None, Some("legacy"))]
@@ -1728,12 +1730,7 @@ mod resource_tests {
                             thread::CatalogSource::Legacy,
                             "{case}"
                         );
-                        let expected = if vm {
-                            &resources.tools
-                        } else {
-                            &resources.legacy_tools
-                        };
-                        assert_eq!(&snapshot.catalog.definitions, expected, "{case}");
+                        assert_eq!(&snapshot.catalog.definitions, expected_tools, "{case}");
                         let tools = names(thread::tool_definitions(&snapshot).expect("tools"));
                         assert_eq!(
                             tools.iter().any(|name| name == "orchestration_sign_in"),
@@ -2068,15 +2065,15 @@ mod workspace_fence_tests {
             let root = json!({"id":"lead","rootId":"lead","epoch":1,"status":"running",
                 "isLead":true,"cwd":"/source checkout","hostProjectPath":"/source checkout"});
             AgentRepository::put(tx, &AgentRecord::from_value(root).expect("lead"))?;
-            for (mode, provider, role, ready, fenced) in [
-                ("worktree", "claude", "implementer", true, true),
-                ("image", "claude", "implementer", true, true),
-                ("shared", "claude", "implementer", true, false),
-                ("worktree", "claude", "reviewer", true, false),
-                ("image", "claude", "reviewer", true, false),
-                ("worktree", "claude", "implementer", false, false),
-                ("image", "claude", "implementer", false, false),
-                ("worktree", "codex", "implementer", true, false),
+            for (mode, provider, role, ready, fenced, expected_sandbox) in [
+                ("worktree", "claude", "implementer", true, true, "danger-full-access"),
+                ("image", "claude", "implementer", true, true, "danger-full-access"),
+                ("shared", "claude", "implementer", true, false, "danger-full-access"),
+                ("worktree", "claude", "reviewer", true, false, "read-only"),
+                ("image", "claude", "reviewer", true, false, "read-only"),
+                ("worktree", "claude", "implementer", false, false, "danger-full-access"),
+                ("image", "claude", "implementer", false, false, "danger-full-access"),
+                ("worktree", "codex", "implementer", true, false, "danger-full-access"),
             ] {
                 let record = json!({"id":"worker","rootId":"lead","parentId":"lead",
                     "epoch":1,"status":"queued","isLead":false,"role":role,"provider":provider,
@@ -2130,11 +2127,7 @@ mod workspace_fence_tests {
                     } else {
                         assert!(options.get("env").is_none(), "{mode}/{provider}/{role}/{ready}: {options}");
                     }
-                    assert_eq!(attempt.params["sandbox"], if provider == "claude" && role == "reviewer" {
-                        "read-only"
-                    } else {
-                        "danger-full-access"
-                    });
+                    assert_eq!(attempt.params["sandbox"], expected_sandbox);
                 }
             }
             Ok::<_, WorkerError>(())

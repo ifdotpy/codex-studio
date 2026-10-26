@@ -1,11 +1,23 @@
 import { afterEach, expect, it, vi } from "vitest";
 import { READ_RECOVERY_MAX_ATTEMPTS } from "../sync/readRetry";
+import type {
+  ResourceConnectionDetail,
+  ResourceConnectionState,
+  ResourceStreamState,
+} from "../sync/resourceConnection";
+import { localTime } from "../local-time";
 const h = vi.hoisted(() => ({
   effects: [] as (() => void | (() => void))[],
   session: vi.fn(),
   database: vi.fn(),
   writes: [] as unknown[],
-  connection: undefined as undefined | ((state: string) => void),
+  connection: undefined as
+    | undefined
+    | ((
+        state: ResourceConnectionState,
+        activity?: ResourceStreamState,
+        detail?: ResourceConnectionDetail,
+      ) => void),
 }));
 vi.mock("react", () => ({
   useEffect: (fn: () => void | (() => void)) => h.effects.push(fn),
@@ -84,3 +96,99 @@ it.each(["credentials", "database"])(
     expect(read).toHaveBeenCalledTimes(READ_RECOVERY_MAX_ATTEMPTS * 3);
   },
 );
+
+it.each([true, false])(
+  "does not turn the browser offline hint into a startup failure (initiallyOnline=%s)",
+  (online) => {
+    vi.stubGlobal("window", new EventTarget());
+    vi.stubGlobal("document", { hidden: false });
+    vi.stubGlobal("navigator", { onLine: online });
+    h.database.mockResolvedValue({ workspaceId: "workspace" });
+    h.session.mockResolvedValue({ token: "token" });
+    useSnapshot();
+    stops = h.effects.flatMap((effect) => {
+      const stop = effect();
+      return stop ? [stop] : [];
+    });
+    h.connection?.("live");
+    window.dispatchEvent(new Event("offline"));
+    expect(h.writes).not.toContainEqual(
+      expect.objectContaining({
+        startupError: expect.stringContaining("Offline"),
+      }),
+    );
+    h.connection?.("degraded");
+    expect(h.writes).toContainEqual(
+      expect.objectContaining({
+        transportError: "Reason unknown. Connection interrupted.",
+      }),
+    );
+    h.connection?.("paused");
+    expect(h.writes.at(-1)).toEqual(
+      expect.objectContaining({ transportError: "" }),
+    );
+  },
+);
+
+it.each([
+  ["live", "offline", {}, "No network."],
+  ["degraded", "preparing", {}, "Preparing connection…"],
+  ["connecting", "preparing", {}, ""],
+  [
+    "degraded",
+    "connecting",
+    { failure: "heartbeat-timeout" },
+    "Server updates timed out. Reconnecting…",
+  ],
+  [
+    "degraded",
+    "waiting-owner",
+    { failure: "stream-error" },
+    "Connection failed. Waiting for the shared connection…",
+  ],
+] as const)(
+  "uses actual %s health and %s activity for the snapshot warning",
+  (health, activity, detail, transportError) => {
+    vi.stubGlobal("window", new EventTarget());
+    vi.stubGlobal("document", { hidden: false });
+    h.database.mockResolvedValue({ workspaceId: "workspace" });
+    h.session.mockResolvedValue({ token: "token" });
+    useSnapshot();
+    stops = h.effects.flatMap((effect) => {
+      const stop = effect();
+      return stop ? [stop] : [];
+    });
+    h.connection?.(health, activity, detail);
+    if (transportError)
+      expect(h.writes).toContainEqual(
+        expect.objectContaining({ transportError }),
+      );
+    else
+      expect(h.writes).not.toContainEqual(
+        expect.objectContaining({
+          transportError: expect.stringContaining("Preparing"),
+        }),
+      );
+  },
+);
+it("shows the scheduled retry deadline in the snapshot warning", () => {
+  vi.stubGlobal("window", new EventTarget());
+  vi.stubGlobal("document", { hidden: false });
+  h.database.mockResolvedValue({ workspaceId: "workspace" });
+  h.session.mockResolvedValue({ token: "token" });
+  useSnapshot();
+  stops = h.effects.flatMap((effect) => {
+    const stop = effect();
+    return stop ? [stop] : [];
+  });
+  const retryAt = 1_792_965_000_000;
+  h.connection?.("degraded", "retry-scheduled", {
+    failure: "stream-error",
+    retryAt,
+  });
+  expect(h.writes).toContainEqual(
+    expect.objectContaining({
+      transportError: `Connection failed. Retry scheduled for ${localTime(new Date(retryAt), { hour: "2-digit", minute: "2-digit", second: "2-digit" })}.`,
+    }),
+  );
+});

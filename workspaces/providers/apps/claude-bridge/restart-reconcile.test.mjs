@@ -3,6 +3,7 @@ import { test } from "vitest";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { fixtureSessionApi } from "./testing/history-fixture.mjs";
 import { createSessionStore } from "./session-store.mjs";
 import { startBridge } from "./testing/bridge-harness.mjs";
 
@@ -119,6 +120,7 @@ async function loadStale(rows, options, check) {
       nativeHistory: {
         configDir: "/config",
         filesystem: nativeFilesystem(rows, options),
+        sessionApi: fixtureSessionApi(rows, { sessionId, cwd }),
       },
     });
     const restored = await store.get(sessionId);

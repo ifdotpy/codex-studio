@@ -866,13 +866,22 @@ mod tests {
         let stored_token_hash: serde_json::Value =
             serde_json::from_str(&stored_token_hash).expect("stored invitation JSON");
         assert_eq!(
-            stored_token_hash["tokenHash"],
-            studio_runtime_store::sha256_hex(
+            data_encoding::HEXLOWER
+                .decode(
+                    stored_token_hash["tokenHash"]
+                        .as_str()
+                        .expect("stored token hash")
+                        .as_bytes()
+                )
+                .expect("hexadecimal token hash"),
+            ring::digest::digest(
+                &ring::digest::SHA256,
                 first["invitation"]["token"]
                     .as_str()
-                    .expect("token")
+                    .expect("invitation token")
                     .as_bytes()
             )
+            .as_ref()
         );
         let conflict = json!({"action":"create_invite","requestId":"invite-test","label":"Other"});
         assert!(

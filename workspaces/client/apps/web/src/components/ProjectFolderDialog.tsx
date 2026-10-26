@@ -6,7 +6,7 @@ import { useWorkspaceResource } from "./useWorkspaceResource";
 export type FinderView = GetResult<"/api/agents/finder-view">;
 
 export const VM_FOLDER_NOTE =
-  "This chat works in the Studio VM. Finder shows a read-only view of the project's main line and states.";
+  "This chat works in the Studio VM. The folder view is a read-only copy of the project's main line and states.";
 
 type FolderProps = {
   agent: Agent;
@@ -35,7 +35,7 @@ export function FinderLocation({
     <>
       <p>{location.path}</p>
       {canReveal && (
-        <Button onClick={() => onReveal(location.path)}>Show in Finder</Button>
+        <Button onClick={() => onReveal(location.path)}>Show folder</Button>
       )}
     </>
   );
@@ -57,7 +57,7 @@ function VmProjectFolder({ agent, canReveal, onReveal }: FolderProps) {
           onReveal={onReveal}
         />
       ) : (
-        <Loader size="sm" aria-label="Loading the Finder view" />
+        <Loader size="sm" aria-label="Loading the folder view" />
       )}
       <p>To use another folder, start a new chat.</p>
     </>
@@ -73,7 +73,7 @@ export default function ProjectFolderDialog(props: FolderProps) {
       <p>{agent.cwd}</p>
       <p>To use another folder, start a new chat.</p>
       {canReveal && agent.cwd && (
-        <Button onClick={() => onReveal(agent.cwd!)}>Show in Finder</Button>
+        <Button onClick={() => onReveal(agent.cwd!)}>Show folder</Button>
       )}
     </>
   );

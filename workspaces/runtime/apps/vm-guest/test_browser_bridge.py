@@ -240,6 +240,7 @@ class Bridge(unittest.IsolatedAsyncioTestCase):
         result = await self.launch(tool)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("Studio asks the person to open 127.0.0.1", result.stderr)
+        self.assertIn("The sign-in continues in the browser on this computer after the approval.", result.stderr)
         waited = await self.bridge.call("browser.wait", {"after": 0, "waitSeconds": 0})
         [item] = waited["items"]
         self.assertEqual((item["state"], item["agentId"], item["uid"], item["linuxUser"]),

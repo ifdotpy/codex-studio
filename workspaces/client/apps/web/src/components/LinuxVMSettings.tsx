@@ -60,9 +60,11 @@ export function LinuxVMSettings({ active }: { active: boolean }) {
     },
   ] as const;
   return (
-    <section className="settings-group" aria-label="Linux VM settings">
-      <h2>Linux virtual machine (VM)</h2>
-      <p>New Linux workers share this VM. Disk files use space as they grow.</p>
+    <section className="settings-group" aria-label="VM settings">
+      <h2>Virtual machine (VM)</h2>
+      <p>
+        Workers in VM mode share this VM. Disk files use space as they grow.
+      </p>
       <p>
         Stop the VM before you change its limits. Saved disks cannot shrink.
       </p>

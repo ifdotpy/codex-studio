@@ -110,7 +110,7 @@ export default function ProjectGroupsSidebar({
                     <MoreHorizontal size={15} />
                   </ActionIcon>
                 </Menu.Target>
-                <Menu.Dropdown>
+                <Menu.Dropdown className="fleet-menu">
                   <Menu.Label>Project settings</Menu.Label>
                   <Menu.Item
                     onClick={() =>
@@ -122,6 +122,19 @@ export default function ProjectGroupsSidebar({
                   >
                     Folders
                   </Menu.Item>
+                  {project.deleteTarget && (
+                    <Menu.Item
+                      color="red"
+                      onClick={() =>
+                        send(project.owner, {
+                          action: "delete-project",
+                          projectId: project.deleteTarget!,
+                        })
+                      }
+                    >
+                      Delete project…
+                    </Menu.Item>
+                  )}
                 </Menu.Dropdown>
               </Menu>
             </div>

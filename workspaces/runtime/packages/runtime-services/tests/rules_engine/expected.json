@@ -13135,7 +13135,7 @@
         "name": "Watch 東京",
         "kind": "once",
         "intervalSeconds": 60,
-        "nextAt": 1800000060.0,
+        "nextAt": 1799999000.0,
         "at": 1800000000.0,
         "path": null,
         "event": "worker_completed",
@@ -13146,26 +13146,22 @@
         "fileGeneration": 0,
         "stallWakeGeneration": -1,
         "text": "Continue 🦀",
-        "status": "completed",
+        "status": "paused",
         "created": 1800000000.0,
         "inFlight": false,
-        "checks": 1,
+        "checks": 0,
         "wakes": 1,
         "fingerprint": null,
-        "lastAt": 1800000000.0,
-        "lastExitCode": 0,
-        "error": null,
-        "lastOutput": "",
-        "lastFinished": 1800000000.0
+        "error": "Missed scheduled run. Resume this rule to schedule a new run, or delete it to cancel."
       },
+      "launches": [],
       "wakes": [
         {
-          "id": "rule-wake:rule:1",
-          "kind": "rule",
-          "text": "{\"rule\": \"rule\", \"name\": \"Watch \\u6771\\u4eac\", \"instruction\": \"Continue \\ud83e\\udd80\", \"output\": \"\"}"
+          "id": "rule-missed:rule:7:1799999000",
+          "kind": "rule_missed",
+          "text": "{\"rule\":\"rule\",\"name\":\"Watch 東京\",\"dueAt\":1799999000.0,\"delaySeconds\":1000.0,\"message\":\"Missed scheduled run. Resume this rule to schedule a new run, or delete it to cancel.\"}"
         }
-      ],
-      "launches": []
+      ]
     }
   },
   {

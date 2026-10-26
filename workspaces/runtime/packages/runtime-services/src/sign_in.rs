@@ -95,7 +95,7 @@ pub async fn submit(
     let vm = agent.get("executionMode").and_then(Value::as_str) == Some("vm");
     let source = sources.source(vm).ok_or_else(|| {
         if vm {
-            "Sign-in links of VM chats open only on the Mac that runs the VM".to_owned()
+            "Sign-in links of VM chats open only on the computer that runs the VM".to_owned()
         } else {
             "The browser bridge of native chats is not running".to_owned()
         }

@@ -672,7 +672,7 @@ export default function Conversation(p: {
   const detailedActivity =
     !!threadBlock ||
     capacityRetry?.status === "scheduled" ||
-    connection === "reconnecting" ||
+    !!connection?.message ||
     !!p.offlineSendPending ||
     !!agent?.error ||
     !!agent?.startAttempt?.prepareError ||

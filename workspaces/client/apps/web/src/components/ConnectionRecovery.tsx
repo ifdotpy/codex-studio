@@ -6,6 +6,7 @@ import type { Agent } from "../types";
 import { nativeThreadError } from "../nativeErrors";
 import {
   BACKEND_RESTARTED_TURN_ERROR,
+  LEGACY_VM_PROVIDER_DISCONNECTED_TURN_ERROR,
   PROVIDER_DISCONNECTED_TURN_ERROR,
   VM_PROVIDER_DISCONNECTED_TURN_ERROR,
 } from "../generated/sharedValues";
@@ -15,6 +16,7 @@ import {
 const transportErrors = new Set<string>([
   PROVIDER_DISCONNECTED_TURN_ERROR,
   VM_PROVIDER_DISCONNECTED_TURN_ERROR,
+  LEGACY_VM_PROVIDER_DISCONNECTED_TURN_ERROR,
 ]);
 const disconnectErrors = new Set<string>([
   ...transportErrors,

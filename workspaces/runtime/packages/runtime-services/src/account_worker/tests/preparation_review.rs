@@ -684,6 +684,46 @@ async fn radio_authorized_preparation_uses_the_radio_receipt_gate() {
         .unwrap();
 }
 
+/// A user answer that the radio route did not consume is ordinary input; it
+/// must neither hold the agent nor stay pending behind a refusal.
+#[tokio::test]
+async fn tagged_radio_answer_claims_as_ordinary_input_without_a_hold() {
+    let state = State::new().await;
+    let agent_id = state.agent.clone();
+    let epoch = state.epoch;
+    state
+        .bridge
+        .run(move |store| async move {
+            store
+                .transaction_with(move |tx| {
+                    tx.execute(
+                        "UPDATE runtime_events SET kind='followup' WHERE id='annotation:input'",
+                        [],
+                    )?;
+                    tx.execute(
+                        "UPDATE runtime_event_meta SET record=json_set(record,'$.radioAnswerTurnId','turn') WHERE id='annotation:input'",
+                        [],
+                    )?;
+                    Ok::<_, WorkerError>(())
+                })
+                .await?;
+            let intent = store::claim(Arc::clone(&store), "default", &agent_id, epoch)
+                .await?
+                .expect("the tagged answer is claimable");
+            assert_eq!(intent.events[0].id, "annotation:input");
+            let held = store
+                .transaction_with(move |tx| {
+                    let row = AgentRepository::get(tx, &AgentId::from(agent_id.as_str()))?.unwrap();
+                    Ok::<_, WorkerError>(row.extra.contains_key("nativeFailureHold"))
+                })
+                .await?;
+            assert!(!held, "no permanent hold is written");
+            Ok(())
+        })
+        .await
+        .unwrap();
+}
+
 #[tokio::test]
 async fn bundled_delivery_tools_reach_current_actors_and_preserve_historical_catalogs() {
     let state = State::new().await;

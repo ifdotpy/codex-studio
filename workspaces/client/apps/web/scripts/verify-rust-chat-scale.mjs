@@ -2422,13 +2422,22 @@ export function readServedModelRecords(
           "?mode=ro",
       );
     const placeholders = agentIds.map(() => "?").join(",");
+    // Agent ids are scoped by the caller's provider profile. Typed response
+    // evidence is provider-neutral; only pre-contract rows use usageSource.
     const rows = database
       .prepare(
-        "SELECT agent AS agentId,turn AS turnId,json_extract(record,'$.model') AS model,json_extract(record,'$.responseId') AS responseId FROM analytics.analytics_usage WHERE agent IN (" +
+        "SELECT agent AS agentId,turn AS turnId," +
+          "CASE WHEN json_extract(record,'$.studioUsage.kind')='response' THEN json_extract(record,'$.studioUsage.model') ELSE json_extract(record,'$.model') END AS model," +
+          "CASE WHEN json_type(record,'$.studioUsage') IS NOT NULL THEN json_extract(record,'$.studioUsage.responseId') ELSE json_extract(record,'$.responseId') END AS responseId " +
+          "FROM analytics.analytics_usage WHERE agent IN (" +
           placeholders +
-          ") AND COALESCE(json_extract(record,'$.usageSource'),'')" +
+          ") AND CASE WHEN json_type(record,'$.studioUsage') IS NOT NULL THEN " +
+          (usageSource
+            ? "json_extract(record,'$.studioUsage.kind')='response'"
+            : "(json_extract(record,'$.studioUsage.kind')='response' OR (json_extract(record,'$.studioUsage.kind')='cumulative' AND json_extract(record,'$.studioUsage.scope')='codexThread'))") +
+          " ELSE COALESCE(json_extract(record,'$.usageSource'),'')" +
           (usageSource ? "=" : "!=") +
-          "? ORDER BY seq",
+          "? END ORDER BY seq",
       )
       .all(...agentIds, usageSource || "claudeResponse");
     const records = new Map();

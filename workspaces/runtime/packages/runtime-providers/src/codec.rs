@@ -320,85 +320,8 @@ pub enum CodecError {
     MalformedFrame(&'static str),
     #[error("protocol frame exceeds {limit} bytes")]
     FrameTooLarge { limit: usize },
-    #[error("stream ended with {buffered} bytes of an incomplete frame")]
-    TruncatedFrame { buffered: usize },
     #[error("cannot serialize protocol frame: {0}")]
     Serialization(String),
-}
-
-/// Incremental newline-delimited JSON decoder shared by both stdio clients.
-#[derive(Default)]
-pub struct LineDecoder {
-    buffer: Vec<u8>,
-}
-
-impl LineDecoder {
-    #[must_use]
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    pub fn push(&mut self, bytes: &[u8]) -> Result<Vec<Frame>, CodecError> {
-        self.buffer.extend_from_slice(bytes);
-        let mut frames = Vec::new();
-        let mut consumed = 0;
-        let mut decode_error = None;
-        while let Some(relative_end) = self.buffer[consumed..]
-            .iter()
-            .position(|byte| *byte == b'\n')
-        {
-            let end = consumed + relative_end;
-            let frame_end = end + 1;
-            if frame_payload_bytes(&self.buffer[consumed..frame_end]) > MAX_FRAME_BYTES {
-                consumed = frame_end;
-                decode_error = Some(CodecError::FrameTooLarge {
-                    limit: MAX_FRAME_BYTES,
-                });
-                break;
-            }
-            let start = consumed;
-            consumed = end + 1;
-            let mut line_end = end;
-            if line_end > start && self.buffer[line_end - 1] == b'\r' {
-                line_end -= 1;
-            }
-            match decode_frame(&self.buffer[start..line_end]) {
-                Ok(frame) => frames.push(frame),
-                Err(error) => {
-                    decode_error = Some(error);
-                    break;
-                }
-            }
-        }
-        if consumed > 0 {
-            let remaining = self.buffer.len() - consumed;
-            self.buffer.copy_within(consumed.., 0);
-            self.buffer.truncate(remaining);
-        }
-        if let Some(error) = decode_error {
-            return Err(error);
-        }
-        if frame_prefix_payload_bytes(&self.buffer) > MAX_FRAME_BYTES {
-            return Err(CodecError::FrameTooLarge {
-                limit: MAX_FRAME_BYTES,
-            });
-        }
-        Ok(frames)
-    }
-
-    pub fn finish(&mut self) -> Result<(), CodecError> {
-        if self.buffer.is_empty() {
-            Ok(())
-        } else if frame_payload_bytes(&self.buffer) > MAX_FRAME_BYTES {
-            Err(CodecError::FrameTooLarge {
-                limit: MAX_FRAME_BYTES,
-            })
-        } else {
-            Err(CodecError::TruncatedFrame {
-                buffered: self.buffer.len(),
-            })
-        }
-    }
 }
 
 fn decode_frame(line: &[u8]) -> Result<Frame, CodecError> {
@@ -452,9 +375,12 @@ impl WireObject<'_> {
             ))?;
             keep("params", params);
             let body = match (error, result) {
-                (Some(error), _) => ResponseBody::Error(error),
-                (None, result) => {
-                    ResponseBody::Result(result.unwrap_or_else(|| Value::Object(Map::new())))
+                (Some(error), None) => ResponseBody::Error(error),
+                (None, Some(result)) => ResponseBody::Result(result),
+                _ => {
+                    return Err(CodecError::MalformedFrame(
+                        "response requires exactly one of result or error",
+                    ));
                 }
             };
             return Ok(Frame::Response { id, body, fields });

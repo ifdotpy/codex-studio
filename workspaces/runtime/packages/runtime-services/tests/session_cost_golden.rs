@@ -1,9 +1,9 @@
 //! Golden session-cost answers for a mixed Codex/Claude tree.
 //!
 //! `tests/costs/session-cost-golden.json` was produced by the row-scanning
-//! implementation that the incremental analytics cost aggregate replaced
-//! (`STUDIO_WRITE_COST_GOLDEN=1` writes it). The tree has provisional and
-//! answered rows, model-less rows, a deleted agent, an agent without a record,
+//! implementation that the incremental analytics cost aggregate replaced.
+//! Typed-contract adjustments are hand-audited below, not regenerated. The tree
+//! has provisional and answered rows, model-less rows, a deleted agent, an agent without a record,
 //! an account move, Claude log responses that replace analytics rows, several
 //! models, a context tier, an unknown model and a row that changes turn and root.
 use serde_json::{Value, json};
@@ -178,7 +178,9 @@ async fn fixture(root_dir: &Path) -> (RuntimeStore, BTreeMap<String, Value>) {
             [120, 20, 0, 12],
             json!({}),
         ),
-        // Delta wins over last when it reports input and output.
+        // Delta wins over last when it reports input and output. Its unknown
+        // cache-write category keeps u5 unpriced under the typed contract;
+        // the old scanner invented zero and charged (40*1.25 + 4*10)/1e6 = $0.000090.
         usage(
             "u5",
             "lead",
@@ -265,6 +267,9 @@ async fn fixture(root_dir: &Path) -> (RuntimeStore, BTreeMap<String, Value>) {
             json!({}),
         ),
         // Claude worker: resp-c1 is replaced by its log row; resp-c2 stays.
+        // c1p has no response identity and is cumulative, never a priced response.
+        // The old scanner revived c1p after replacing c1 with its journal receipt,
+        // adding (10*3 + 1*15)/1e6 = $0.000045. Typed accounting excludes it.
         usage(
             "c1",
             "claude-worker",

@@ -99,10 +99,34 @@ pub struct PreparedSubmission {
     pub radio_authorized: bool,
 }
 
+/// The validation that refused a provider notification or delivery identity:
+/// the source site of the failed check (`file:line` in the server revision).
+/// It names the check without carrying any notification content.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct FailedCheck(&'static std::panic::Location<'static>);
+impl FailedCheck {
+    /// The check at the caller's site.
+    #[track_caller]
+    pub fn here() -> Self {
+        Self(std::panic::Location::caller())
+    }
+}
+impl std::fmt::Display for FailedCheck {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let file = self.0.file();
+        let file = file.find("src/").map_or(file, |at| &file[at..]);
+        write!(f, "{file}:{}", self.0.line())
+    }
+}
+
 #[derive(Debug, Error)]
 pub enum NotificationDispatchError {
-    #[error("invalid provider notification or delivery identity")]
-    InvalidNotification,
+    #[error("invalid provider notification or delivery identity (failed check {check})")]
+    InvalidNotification { check: FailedCheck },
+    /// Account-wide delivery state (the worker's delivery identity or the
+    /// account stream counter) failed a check; no single agent owns it.
+    #[error("invalid account delivery state (failed check {check})")]
+    InvalidAccountState { check: FailedCheck },
     #[error("notification output queue capacity reached")]
     StreamCapacity,
     #[error("invalid stored object {table}:{id}")]
@@ -123,6 +147,23 @@ pub enum NotificationDispatchError {
     Move(#[from] crate::agent_move::MoveError),
     #[error("JSON serialization failed")]
     Json(#[from] serde_json::Error),
+}
+
+impl NotificationDispatchError {
+    /// An invalid notification refused by the check at the caller's site.
+    #[track_caller]
+    pub fn invalid() -> Self {
+        Self::InvalidNotification {
+            check: FailedCheck::here(),
+        }
+    }
+    /// Invalid account-wide delivery state at the caller's site.
+    #[track_caller]
+    pub fn invalid_account() -> Self {
+        Self::InvalidAccountState {
+            check: FailedCheck::here(),
+        }
+    }
 }
 
 impl From<StoreError> for NotificationDispatchError {
@@ -389,6 +430,7 @@ pub fn dispatch_notification_with_effects(
     let mut fresh = false;
     let mut post_commit = NotificationPublicationBatch::default();
     let mut command_output_monitor_present = None;
+    let mut usage_conflict = None;
     let result = in_savepoint(transaction, || {
         let outcome = (|| {
             if !observed_at.is_finite()
@@ -400,7 +442,7 @@ pub fn dispatch_notification_with_effects(
                 || identity.generation == 0
                 || identity.cursor == 0
             {
-                return Err(NotificationDispatchError::InvalidNotification);
+                return Err(NotificationDispatchError::invalid_account());
             }
             let content_signature = notification_content_signature(agent_id, notification)?;
             let identity_signature = sha256_json(&json!({
@@ -571,7 +613,7 @@ pub fn dispatch_notification_with_effects(
                 let key = command_key(agent_id, identity, params)?;
                 let delta = params["delta"]
                     .as_str()
-                    .ok_or(NotificationDispatchError::InvalidNotification)?;
+                    .ok_or(NotificationDispatchError::invalid())?;
                 let outcome = if turn_settled(&agent, key.turn.as_deref()) {
                     DispatchOutcome::Ignored {
                         reason: TURN_ENDED_REASON.into(),
@@ -673,17 +715,17 @@ pub fn dispatch_notification_with_effects(
                                     }
                                 }
                             }
-                            _ => return Err(NotificationDispatchError::InvalidNotification),
+                            _ => return Err(NotificationDispatchError::invalid()),
                         }
                     }
                 }
                 "item/started" | "item/completed" => {
                     match params.get("item").and_then(Value::as_object) {
-                        None => return Err(NotificationDispatchError::InvalidNotification),
+                        None => return Err(NotificationDispatchError::invalid()),
                         Some(item)
                             if item.get("type").and_then(Value::as_str) != Some("agentMessage") =>
                         {
-                            return Err(NotificationDispatchError::InvalidNotification);
+                            return Err(NotificationDispatchError::invalid());
                         }
                         Some(item)
                             if item
@@ -691,13 +733,13 @@ pub fn dispatch_notification_with_effects(
                                 .and_then(Value::as_str)
                                 .is_none_or(str::is_empty) =>
                         {
-                            return Err(NotificationDispatchError::InvalidNotification);
+                            return Err(NotificationDispatchError::invalid());
                         }
                         Some(_) if stale_item => DispatchOutcome::Ignored {
                             reason: "stale-turn-item".to_owned(),
                         },
                         Some(item) if item.get("text").is_some_and(|text| !text.is_string()) => {
-                            return Err(NotificationDispatchError::InvalidNotification);
+                            return Err(NotificationDispatchError::invalid());
                         }
                         Some(item) => {
                             let item_id =
@@ -740,13 +782,46 @@ pub fn dispatch_notification_with_effects(
                     }
                 }
                 "thread/tokenUsage/updated" => {
-                    effects.capture_usage(transaction, &mut agent, params, observed_at)?;
-                    if crate::event_write::truthy(agent.get("movedFrom")) {
-                        effects.capture_move_cache(transaction, &agent, params, observed_at)?;
+                    let provider = match crate::provider_adapter::ProviderKind::of_record(&agent)
+                        .map_err(|_| NotificationDispatchError::invalid())?
+                    {
+                        crate::provider_adapter::ProviderKind::Claude => {
+                            studio_runtime_schema::usage::UsageProvider::Claude
+                        }
+                        crate::provider_adapter::ProviderKind::Codex => {
+                            studio_runtime_schema::usage::UsageProvider::Codex
+                        }
+                    };
+                    let observation =
+                        match studio_runtime_schema::usage::parse_token_usage(provider, params) {
+                            Ok(usage) => TokenUsageObservation::Typed(usage),
+                            Err(_) => TokenUsageObservation::Legacy(
+                                studio_runtime_schema::usage::parse_legacy_totals(provider, params)
+                                    .map_err(|_| NotificationDispatchError::invalid())?,
+                            ),
+                        };
+                    let mut normalized = params.clone();
+                    if let TokenUsageObservation::Typed(usage) = &observation {
+                        normalized["studioUsage"] = serde_json::to_value(usage)?;
                     }
-                    apply_token_usage(&mut agent, params, observed_at)?
+                    let acceptance =
+                        effects.capture_usage(transaction, &mut agent, &normalized, observed_at)?;
+                    if crate::event_write::truthy(agent.get("movedFrom")) {
+                        effects.capture_move_cache(
+                            transaction,
+                            &agent,
+                            &normalized,
+                            observed_at,
+                        )?;
+                    }
+                    if let crate::budget::UsageAcceptance::RejectedReplayConflict(conflict) =
+                        &acceptance
+                    {
+                        usage_conflict = Some(Box::new(conflict.clone()));
+                    }
+                    apply_token_usage(&mut agent, &observation, acceptance, observed_at)?
                 }
-                _ => return Err(NotificationDispatchError::InvalidNotification),
+                _ => return Err(NotificationDispatchError::invalid()),
             };
 
             if kind == "item/agentMessage/delta"
@@ -826,6 +901,31 @@ pub fn dispatch_notification_with_effects(
                     .retain(|effect| !matches!(effect, NotificationPostCommit::Analytics { .. }));
             }
             for effect in &mut current {
+                if let NotificationPostCommit::Analytics {
+                    usage_conflict: rejected,
+                    ledger_since,
+                    usage_unknown,
+                    ..
+                } = effect
+                {
+                    *rejected = usage_conflict.clone();
+                    *ledger_since = if kind == "thread/tokenUsage/updated" {
+                        studio_runtime_store::budget::BudgetRepository::ledger_since(
+                            transaction,
+                            agent_id,
+                        )?
+                    } else {
+                        studio_runtime_schema::usage::ledger::LedgerEpoch::Current
+                    };
+                    *usage_unknown = kind == "thread/tokenUsage/updated"
+                        && crate::analytics_capture::unknown_usage_receipt(
+                            transaction,
+                            after
+                                .or(before.as_ref())
+                                .ok_or(NotificationDispatchError::invalid())?,
+                            params,
+                        )?;
+                }
                 if let NotificationPostCommit::TokenRateAssociation(observation) = effect {
                     enrich_association(transaction, agent_id, observation)?;
                 }
@@ -872,23 +972,23 @@ pub fn recover_task_in_transaction(
             || previous["itemId"] != item["id"]
             || previous["type"] != item["type"]
         {
-            return Err(NotificationDispatchError::InvalidNotification);
+            return Err(NotificationDispatchError::invalid());
         }
         use studio_runtime_store::{Table, TaskId, TaskRecord};
         let task_id = previous["id"]
             .as_str()
-            .ok_or(NotificationDispatchError::InvalidNotification)?;
+            .ok_or(NotificationDispatchError::invalid())?;
         let current = Table::<TaskRecord>::new(tx).get(&TaskId::from(task_id))?;
         let stored_agent = NotificationDispatchRepository::agent_record(
             tx,
             agent["id"]
                 .as_str()
-                .ok_or(NotificationDispatchError::InvalidNotification)?,
+                .ok_or(NotificationDispatchError::invalid())?,
         )?;
         if current.as_ref().map(|record| record.value()) != Some(previous)
             || stored_agent.as_ref() != Some(agent)
         {
-            return Err(NotificationDispatchError::InvalidNotification);
+            return Err(NotificationDispatchError::invalid());
         }
         let snapshot = snapshot::NotificationSnapshot::from_records(
             agent.clone(),
@@ -912,7 +1012,7 @@ pub fn recover_task_in_transaction(
                 tx,
                 agent["id"]
                     .as_str()
-                    .ok_or(NotificationDispatchError::InvalidNotification)?,
+                    .ok_or(NotificationDispatchError::invalid())?,
                 &params,
                 &task,
                 at,
@@ -943,11 +1043,11 @@ impl NotificationStreamBuffer {
         in_savepoint(tx, || {
             let agent_id = agent["id"]
                 .as_str()
-                .ok_or(NotificationDispatchError::InvalidNotification)?;
+                .ok_or(NotificationDispatchError::invalid())?;
             let item_id = item["id"]
                 .as_str()
                 .filter(|id| !id.is_empty())
-                .ok_or(NotificationDispatchError::InvalidNotification)?;
+                .ok_or(NotificationDispatchError::invalid())?;
             if !at.is_finite()
                 || at < 0.0
                 || generation == 0
@@ -957,7 +1057,7 @@ impl NotificationStreamBuffer {
                 || agent["turnId"] != turn["id"]
                 || item.get("text").is_some_and(|text| !text.is_string())
             {
-                return Err(NotificationDispatchError::InvalidNotification);
+                return Err(NotificationDispatchError::invalid());
             }
             let params = json!({"threadId":agent["threadId"],"turnId":turn["id"],"item":item});
             validate_agent(
@@ -1005,12 +1105,12 @@ fn command_key(
         account: identity
             .provider_handle
             .strip_prefix("account:")
-            .ok_or(NotificationDispatchError::InvalidNotification)?
+            .ok_or(NotificationDispatchError::invalid_account())?
             .into(),
         generation: identity.generation,
         thread: params["threadId"]
             .as_str()
-            .ok_or(NotificationDispatchError::InvalidNotification)?
+            .ok_or(NotificationDispatchError::invalid())?
             .into(),
         turn: params["turnId"]
             .as_str()
@@ -1019,7 +1119,7 @@ fn command_key(
         item: params["itemId"]
             .as_str()
             .filter(|s| !s.is_empty())
-            .ok_or(NotificationDispatchError::InvalidNotification)?
+            .ok_or(NotificationDispatchError::invalid())?
             .into(),
         method: "item/commandExecution/outputDelta".into(),
     })
@@ -1070,7 +1170,7 @@ fn notification_parts(notification: &Frame) -> Result<(&str, &Value), Notificati
             frame.fields.get("params").unwrap_or(&NULL),
         ),
         Frame::Request(_) | Frame::Response { .. } => {
-            return Err(NotificationDispatchError::InvalidNotification);
+            return Err(NotificationDispatchError::invalid());
         }
     };
     Ok((kind, params))
@@ -1193,8 +1293,8 @@ fn notification_content_signature(
     agent: &str,
     notification: &Frame,
 ) -> Result<String, NotificationDispatchError> {
-    let payload = BorrowedNotification::new(notification)
-        .ok_or(NotificationDispatchError::InvalidNotification)?;
+    let payload =
+        BorrowedNotification::new(notification).ok_or(NotificationDispatchError::invalid())?;
     let bytes = serde_json::to_vec(&NotificationContentSignature {
         agent,
         notification: payload,
@@ -1226,10 +1326,10 @@ fn validate_agent(
         "item/agentMessage/delta" | "item/started" | "item/completed" | "thread/tokenUsage/updated"
     ) && notification_thread.is_none_or(str::is_empty)
     {
-        return Err(NotificationDispatchError::InvalidNotification);
+        return Err(NotificationDispatchError::invalid());
     }
     if notification_thread.is_some_and(|actual| actual != thread) {
-        return Err(NotificationDispatchError::InvalidNotification);
+        return Err(NotificationDispatchError::invalid());
     }
     let account = match agent.get("accountKey") {
         None => "default",
@@ -1237,7 +1337,7 @@ fn validate_agent(
         Some(_) => return Err(stored("runtime_agents", agent_id)),
     };
     if provider_handle != format!("account:{account}") {
-        return Err(NotificationDispatchError::InvalidNotification);
+        return Err(NotificationDispatchError::invalid());
     }
     Ok(())
 }
@@ -1307,7 +1407,7 @@ fn write_text_notification(
     let thread = params
         .get("threadId")
         .and_then(Value::as_str)
-        .ok_or(NotificationDispatchError::InvalidNotification)?;
+        .ok_or(NotificationDispatchError::invalid())?;
     let turn = params
         .get("turnId")
         .and_then(Value::as_str)
@@ -1938,26 +2038,67 @@ fn suffix(text: &str, limit: usize) -> String {
     text.chars().skip(count.saturating_sub(limit)).collect()
 }
 
+enum TokenUsageObservation {
+    Typed(studio_runtime_schema::usage::UsageObservation),
+    Legacy(studio_runtime_schema::usage::LegacyUsageTotals),
+}
+
 fn apply_token_usage(
     agent: &mut Value,
-    params: &Value,
+    observation: &TokenUsageObservation,
+    acceptance: crate::budget::UsageAcceptance,
     observed_at: f64,
 ) -> Result<DispatchOutcome, NotificationDispatchError> {
-    let Some(usage) = params.get("tokenUsage").and_then(Value::as_object) else {
-        return Err(NotificationDispatchError::InvalidNotification);
-    };
-    let tokens = usage.get("last").and_then(|last| last.get("totalTokens"));
-    let window = usage.get("modelContextWindow");
-    if tokens.is_some_and(|value| value.as_u64().is_none())
-        || window.is_some_and(|value| !value.is_null() && value.as_u64().is_none())
-    {
-        return Err(NotificationDispatchError::InvalidNotification);
+    use studio_runtime_schema::usage::UsageObservation;
+    if matches!(
+        acceptance,
+        crate::budget::UsageAcceptance::RejectedReplayConflict(_)
+    ) {
+        return Ok(DispatchOutcome::Written);
     }
-    agent["contextUsage"] = json!({
-        "tokens": tokens.cloned().unwrap_or(Value::Null),
-        "window": window.cloned().unwrap_or(Value::Null),
-        "at": observed_at,
-    });
+    let observation = match observation {
+        TokenUsageObservation::Typed(usage) => usage,
+        TokenUsageObservation::Legacy(usage) => {
+            agent["contextUsage"] = json!({"tokens":usage.last_total_tokens,"window":usage.model_context_window,"at":observed_at});
+            return Ok(DispatchOutcome::Written);
+        }
+    };
+    let (tokens, window) = match observation {
+        UsageObservation::Response {
+            tokens,
+            model_context_window,
+            parent_tool_use_id,
+            ..
+        } => {
+            if parent_tool_use_id.is_some() {
+                return Ok(DispatchOutcome::Written);
+            }
+            (Some(tokens), *model_context_window)
+        }
+        UsageObservation::Cumulative {
+            last,
+            model_context_window,
+            ..
+        } => {
+            if last.is_none() {
+                if let Some(window) = model_context_window {
+                    let tokens = agent
+                        .pointer("/contextUsage/tokens")
+                        .cloned()
+                        .unwrap_or(Value::Null);
+                    agent["contextUsage"] =
+                        json!({"tokens":tokens,"window":window,"at":observed_at});
+                }
+                return Ok(DispatchOutcome::Written);
+            }
+            (last.as_ref(), *model_context_window)
+        }
+        UsageObservation::Gap { .. } => return Ok(DispatchOutcome::Written),
+    };
+    let tokens = tokens
+        .map(|tokens| tokens.total().ok_or(NotificationDispatchError::invalid()))
+        .transpose()?;
+    agent["contextUsage"] = json!({"tokens":tokens,"window":window,"at":observed_at});
     Ok(DispatchOutcome::Written)
 }
 
@@ -2150,11 +2291,11 @@ fn in_savepoint<T>(
 fn format_utc(seconds: f64) -> Result<String, NotificationDispatchError> {
     let whole = seconds.floor();
     if whole < i64::MIN as f64 || whole > i64::MAX as f64 {
-        return Err(NotificationDispatchError::InvalidNotification);
+        return Err(NotificationDispatchError::invalid());
     }
     DateTime::<Utc>::from_timestamp(whole as i64, 0)
         .map(|time| time.to_rfc3339_opts(SecondsFormat::Secs, true))
-        .ok_or(NotificationDispatchError::InvalidNotification)
+        .ok_or(NotificationDispatchError::invalid())
 }
 
 #[cfg(test)]
@@ -2166,25 +2307,333 @@ mod tests {
     use super::{
         DispatchOutcome, NotificationStreamBuffer, PreparedSubmission, ProviderDeliveryIdentity,
         PublicationContext, SubmittedInput, notification_content_signature, notification_payload,
-        record_start_submission, record_user_submission, sha256_json,
+        record_start_submission, record_user_submission,
     };
-    use studio_runtime_providers::{Frame, LineDecoder};
+    use studio_runtime_providers::Frame;
     use studio_runtime_store::{
         AgentRecord, AgentRepository, AgentStatus, ChatMessage, ChatMessageId, MessageRepository,
         NotificationDispatchRepository, QueueEvent, QueueEventId, QueueEventRepository,
         RuntimeStore, SchedulerRepository, StoreError, TranscriptRepository,
     };
 
+    #[tokio::test]
+    async fn typed_usage_dispatch_reaches_priced_cost_groups() {
+        use super::NotificationPostCommit;
+        let root = tempfile::tempdir().unwrap();
+        let store = RuntimeStore::open(Some(root.path())).await.unwrap();
+        store.transaction_with(|tx| {
+            for (agent, provider, model) in [("claude-agent", "claude", "claude-test"), ("codex-agent", "codex", "gpt-test")] {
+                AgentRepository::put(tx, &AgentRecord::from_value(json!({
+                    "id":agent,"rootId":"root","epoch":1,"status":"running","threadId":agent,
+                    "accountKey":provider,"provider":provider,"model":model,"turnId":"turn",
+                    "inFlight":true,"autoWake":false,"created":0,"activeTools":[],"events":0
+                })).unwrap())?;
+            }
+            AgentRepository::put(tx, &AgentRecord::from_value(json!({"id":"root","rootId":"root","epoch":1,"status":"idle","accountKey":"codex","provider":"codex"})).unwrap())
+        }).await.unwrap();
+        let rates = crate::token_rate::TokenRateHub::new();
+        // The scheduler has already started this turn; seed its committed rate observation.
+        for (agent, provider) in [("claude-agent", "claude"), ("codex-agent", "codex")] {
+            rates
+                .publish_observation(NotificationPostCommit::TokenRateUsage(
+                    super::NotificationObservation {
+                        agent: Some(super::SharedJson::new(
+                            json!({"id":agent,"rootId":"root","turnId":"turn","provider":provider}),
+                        )),
+                        method: "turn/started".into(),
+                        params: super::SharedJson::new(json!({"turnId":"turn"})),
+                        delivery: ProviderDeliveryIdentity {
+                            provider_handle: format!("account:{provider}"),
+                            ..identity(1)
+                        },
+                        observed_at: 99.,
+                        provider_at: 99.,
+                    },
+                ))
+                .expect("active rate turn");
+        }
+        let response = |id, input, read, write, output| {
+            json!({"threadId":"claude-agent","turnId":"turn","studioUsage":{
+                "kind":"response","responseId":id,"turnId":"turn","model":"claude-test","evidence":"live",
+                "tokens":{"uncachedInput":input,"cacheReadInput":read,"cacheWriteInput":write,"output":output},"modelContextWindow":1000
+            }})
+        };
+        let native = json!({"inputTokens":40,"cachedInputTokens":5,"outputTokens":6,"reasoningOutputTokens":2,"totalTokens":46});
+        let frames = [
+            (
+                "claude-agent",
+                "thread/tokenUsage/updated",
+                response("first", 10, 3, 2, 4),
+            ),
+            (
+                "claude-agent",
+                "thread/tokenUsage/updated",
+                response("second", 20, 4, 1, 8),
+            ),
+            (
+                "codex-agent",
+                "thread/tokenUsage/updated",
+                json!({"threadId":"codex-agent","turnId":"turn","tokenUsage":{"total":native,"last":native,"modelContextWindow":2000}}),
+            ),
+        ];
+        for (index, (agent, method, params)) in frames.into_iter().enumerate() {
+            let result = store
+                .transaction_with(move |tx| {
+                    super::dispatch_notification_with_effects(
+                        tx,
+                        agent,
+                        &PublicationContext::default(),
+                        &NotificationStreamBuffer::default(),
+                        &ProviderDeliveryIdentity {
+                            provider_handle: format!(
+                                "account:{}",
+                                if agent == "claude-agent" {
+                                    "claude"
+                                } else {
+                                    "codex"
+                                }
+                            ),
+                            ..identity(index as u64 + 2)
+                        },
+                        &frame(&json!({"method":method,"params":params})),
+                        100. + index as f64,
+                        &crate::notification_runtime_effects::RuntimeNotificationEffects,
+                    )
+                })
+                .await
+                .expect("dispatch commits");
+            assert_eq!(result.outcome, DispatchOutcome::Written);
+            for effect in result.post_commit.effects {
+                match effect {
+                    NotificationPostCommit::Analytics { .. } => {
+                        store
+                            .analytics_transaction(move |tx, _| {
+                                crate::analytics_capture::capture_logged_effect(tx, &effect)
+                            })
+                            .await
+                            .expect("analytics projection");
+                    }
+                    NotificationPostCommit::TokenRateUsage(_) => {
+                        rates.publish_observation(effect).expect("rate projection")
+                    }
+                    _ => {}
+                }
+            }
+        }
+        rates.settled().await;
+        let rate_rows = rates.snapshot().to_value();
+        let db = store.test_reader().unwrap();
+        for (agent, spent, context, output) in
+            [("claude-agent", 52, 33, 12.), ("codex-agent", 46, 46, 6.)]
+        {
+            let row = studio_runtime_store::budget::BudgetRepository::agent(&db, agent).unwrap();
+            assert_eq!(row["tokensUsed"], spent);
+            assert_eq!(row["contextUsage"]["tokens"], context);
+            let rate = rate_rows["records"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|row| row["agentId"] == agent)
+                .expect("published rate");
+            assert_eq!(rate["outputTokens"], output);
+        }
+        let analytics = studio_runtime_store::AnalyticsRepository::new(store.root())
+            .open_read_only()
+            .unwrap();
+        let mut query = analytics
+            .prepare("SELECT record FROM analytics_usage ORDER BY agent,seq")
+            .unwrap();
+        let rows = query
+            .query_map([], |row| row.get::<_, String>(0))
+            .unwrap()
+            .map(|row| serde_json::from_str::<Value>(&row.unwrap()).unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            rows.len(),
+            3,
+            "two immutable response rows and one native cumulative"
+        );
+        let responses = rows
+            .iter()
+            .filter(|row| row["agentId"] == "claude-agent")
+            .collect::<Vec<_>>();
+        assert_eq!(responses.len(), 2);
+        assert_eq!(responses[0]["responseId"], "first");
+        assert_eq!(responses[1]["responseId"], "second");
+        assert_eq!(responses[0]["studioUsage"]["tokens"]["uncachedInput"], 10);
+        assert_eq!(responses[1]["studioUsage"]["tokens"]["output"], 8);
+        let groups = studio_runtime_store::cost_aggregate::cost_groups(
+            &analytics,
+            "root",
+            &Default::default(),
+        )
+        .unwrap();
+        assert_eq!(groups.iter().map(|group| group.count).sum::<u64>(), 2);
+        std::fs::create_dir_all(root.path().join("model-pricing")).unwrap();
+        std::fs::write(root.path().join("model-pricing/models-dev-v1.json"), json!({"version":1,"catalog":{"providers":{
+            "openai":{"models":{"gpt-test":{"cost":{"input":1,"output":2,"cache_read":0.5}}}},
+            "anthropic":{"models":{"claude-test":{"cost":{"input":1,"output":2,"cache_read":0.5,"cache_write":1}}}}
+        }}}).to_string()).unwrap();
+        let cost =
+            crate::costs::session_cost_with_account_profiles(&store, "root", &Default::default())
+                .expect("priced dispatch observations");
+        assert_eq!(cost["pricedSamples"], 2);
+        // Claude: 30 base + 7*0.5 reads + 3 writes + 12*2 output = 60.5;
+        // Codex cumulative evidence is persisted but never priced as a response.
+        assert!(
+            groups
+                .iter()
+                .all(|group| group.model.as_deref() == Some("claude-test"))
+        );
+        let codex = rows
+            .iter()
+            .find(|row| row["agentId"] == "codex-agent")
+            .expect("native cumulative row");
+        assert_eq!(codex["studioUsage"]["kind"], "cumulative");
+        assert_eq!(codex["studioUsage"]["scope"], "codexThread");
+        assert!(codex["responseId"].is_null());
+        assert!((cost["totalUSD"].as_f64().unwrap() - 60.5 / 1_000_000.).abs() < 1e-12);
+        // Native Codex response records supply the billable evidence absent from live totals.
+        let mut rollout = crate::analytics_rollout::RolloutContext::from_record(
+            json!({"threadId":"codex-agent","turnId":"turn","model":"gpt-test"}),
+        )
+        .expect("rollout context");
+        let actions = rollout.actions(&json!({"type":"token_usage_record","payload":{"response_id":"codex-response","usage":{"input_tokens":40,"cached_input_tokens":5,"output_tokens":6,"reasoning_output_tokens":2,"total_tokens":46}}}), "native-response", 105.).expect("native import");
+        let agent =
+            studio_runtime_store::budget::BudgetRepository::agent(&db, "codex-agent").unwrap();
+        for action in actions {
+            let crate::analytics_rollout::RolloutAction::Event { method, params, at } = action
+            else {
+                panic!("usage event")
+            };
+            let prepared = crate::analytics_capture::PreparedCapture::event(
+                &agent,
+                &method,
+                &params,
+                at,
+                at,
+                crate::analytics_capture::CaptureSource::Rollout,
+                studio_runtime_schema::usage::ledger::LedgerEpoch::Current,
+            )
+            .expect("recovered usage");
+            crate::analytics_capture::capture(&store, prepared)
+                .await
+                .expect("capture native response");
+        }
+        let recovered_cost =
+            crate::costs::session_cost_with_account_profiles(&store, "root", &Default::default())
+                .expect("price recovered Codex response");
+        assert_eq!(recovered_cost["pricedSamples"], 3);
+        assert!((recovered_cost["totalUSD"].as_f64().unwrap() - 110. / 1_000_000.).abs() < 1e-12);
+    }
+
+    #[tokio::test]
+    async fn typed_usage_conflict_keeps_first_charge_and_dispatches_context() {
+        let root = tempfile::tempdir().unwrap();
+        let store = RuntimeStore::open(Some(root.path())).await.unwrap();
+        store
+            .transaction_with(|tx| {
+                AgentRepository::put(
+                    tx,
+                    &AgentRecord::from_value(json!({
+                        "id":"agent","rootId":"agent","epoch":1,"status":"running",
+                        "threadId":"thread","accountKey":"default","provider":"claude",
+                        "turnId":"turn","inFlight":true,"autoWake":false,"created":0,
+                        "activeTools":[],"events":0
+                    }))
+                    .unwrap(),
+                )
+            })
+            .await
+            .unwrap();
+        for (index, output) in [2, 2, 3].into_iter().enumerate() {
+            store.transaction_with(move |tx| {
+                let notification = json!({"method":"thread/tokenUsage/updated","params":{
+                    "threadId":"thread","turnId":"turn","studioUsage":{
+                        "kind":"response","responseId":"r","turnId":"turn","model":"claude","evidence":"live",
+                        "tokens":{"uncachedInput":10,"cacheReadInput":0,"cacheWriteInput":0,"output":output},"modelContextWindow":1000
+                    }}});
+                let result = super::dispatch_notification_with_effects(tx,"agent",&PublicationContext::default(),&NotificationStreamBuffer::default(),&identity(index as u64 + 1),&frame(&notification),100. + index as f64,&crate::notification_runtime_effects::RuntimeNotificationEffects).expect("usage dispatch continues");
+                assert_eq!(result.outcome,DispatchOutcome::Written);
+                let agent = studio_runtime_store::budget::BudgetRepository::agent(tx,"agent")?;
+                assert_eq!(agent["tokensUsed"],12,"one immutable response charge");
+                assert_eq!(agent["contextUsage"]["tokens"],12,"a rejected replay preserves the accepted context usage");
+                assert_eq!(agent["contextUsage"]["at"], if index == 2 {101.} else {100. + index as f64}, "a rejected replay cannot refresh the gauge timestamp");
+                assert_eq!(agent["tokenUsageAccounting"],if index == 2 {"provisional"} else {"responseRecords"});
+                let state: String = tx.query_row("SELECT record FROM runtime_budget WHERE id='agent'",[],|row|row.get(0)).map_err(StoreError::from)?;
+                let state: Value = serde_json::from_str(&state)?;
+                assert_eq!(state["faults"].as_array().unwrap().iter().any(|fault|fault == "responseReplayConflict"),index == 2);
+                Ok::<_,super::NotificationDispatchError>(())
+            }).await.unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn typed_usage_bridge_golden_frames_reach_budget_and_context() {
+        let root = tempfile::tempdir().unwrap();
+        let store = RuntimeStore::open(Some(root.path())).await.unwrap();
+        store
+            .transaction_with(|tx| {
+                AgentRepository::put(
+                    tx,
+                    &AgentRecord::from_value(json!({
+                        "id":"agent","rootId":"agent","epoch":1,"status":"running",
+                        "threadId":"thread","accountKey":"default","provider":"claude",
+                        "turnId":"turn","inFlight":true,"autoWake":false,"created":0,
+                        "activeTools":[],"events":0
+                    }))
+                    .unwrap(),
+                )
+            })
+            .await
+            .unwrap();
+        let frames: Vec<Value> = serde_json::from_str(include_str!(
+            "../../runtime-schema/src/fixtures/claude-usage-notifications.json"
+        ))
+        .unwrap();
+        for (index, params) in frames.into_iter().enumerate() {
+            store
+                .transaction_with(move |tx| {
+                    let notification =
+                        json!({"method":"thread/tokenUsage/updated","params":params});
+                    let result = super::dispatch_notification_with_effects(
+                        tx,
+                        "agent",
+                        &PublicationContext::default(),
+                        &NotificationStreamBuffer::default(),
+                        &identity(index as u64 + 1),
+                        &frame(&notification),
+                        100. + index as f64,
+                        &crate::notification_runtime_effects::RuntimeNotificationEffects,
+                    )
+                    .expect("bridge usage dispatch");
+                    assert_eq!(result.outcome, DispatchOutcome::Written);
+                    let agent = studio_runtime_store::budget::BudgetRepository::agent(tx, "agent")?;
+                    assert_eq!(
+                        agent["tokensUsed"], 806,
+                        "response and cumulative evidence settle by max"
+                    );
+                    assert_eq!(
+                        agent["contextUsage"]["tokens"], 806,
+                        "only final response usage changes the context gauge"
+                    );
+                    assert_eq!(agent["contextUsage"]["window"], 200000);
+                    assert_eq!(
+                        agent["tokenUsageAccounting"], "responseRecords",
+                        "a later gap cannot undo the response's final evidence"
+                    );
+                    Ok::<_, super::NotificationDispatchError>(())
+                })
+                .await
+                .unwrap();
+        }
+    }
+
     #[test]
     fn borrowed_notification_signature_matches_owned_payload_with_unknown_fields() {
-        let mut decoder = LineDecoder::new();
-        let frames = decoder
-            .push(
-                b"{\"method\":\"future/notice\",\"params\":{\"nested\":[1,2]},\"futureField\":{\"keep\":true}}\n",
-            )
-            .expect("unknown notification decodes");
-        decoder.finish().expect("fixture is complete");
-        let frame = &frames[0];
+        let frame = &frame(
+            &json!({"method":"future/notice","params":{"nested":[1,2]},"futureField":{"keep":true}}),
+        );
         let payload = notification_payload(frame);
         assert_eq!(
             payload,
@@ -2196,8 +2645,7 @@ mod tests {
         );
         assert_eq!(
             notification_content_signature("agent-1", frame).expect("borrowed signature"),
-            sha256_json(&json!({"agent":"agent-1","notification":payload}))
-                .expect("owned signature")
+            "c856e9e04cfdaaee42b7540e6f9a4df35816e29c7bdf51a753fd8fe0b770a825"
         );
     }
 
@@ -2265,12 +2713,10 @@ mod tests {
     pub(super) fn frame(value: &Value) -> Frame {
         let mut bytes = serde_json::to_vec(value).expect("notification serializes");
         bytes.push(b'\n');
-        LineDecoder::new()
-            .push(&bytes)
-            .expect("notification decodes")
-            .into_iter()
-            .next()
-            .expect("one notification frame")
+        match studio_runtime_providers::decode_journal_entry(1, 1, bytes).payload {
+            studio_runtime_providers::DecodedJournalPayload::Frame(frame) => frame,
+            other => panic!("fixture must decode: {other:?}"),
+        }
     }
 
     fn identity(cursor: u64) -> ProviderDeliveryIdentity {
@@ -2419,7 +2865,7 @@ mod tests {
             let notifications = [
                 json!({"method":"item/agentMessage/delta","params":{"threadId":"thread","turnId":"turn","itemId":"answer","delta":"one "}}),
                 json!({"method":"item/agentMessage/delta","params":{"threadId":"thread","turnId":"turn","itemId":"answer","delta":"two "}}),
-                json!({"method":"thread/tokenUsage/updated","params":{"threadId":"thread","turnId":"turn","tokenUsage":{"total":{"totalTokens":9},"last":{"totalTokens":9},"modelContextWindow":1000}}}),
+                json!({"method":"thread/tokenUsage/updated","params":{"threadId":"thread","turnId":"turn","tokenUsage":{"total":{"totalTokens":9,"inputTokens":9,"cachedInputTokens":0,"outputTokens":0,"reasoningOutputTokens":0},"last":{"totalTokens":9,"inputTokens":9,"cachedInputTokens":0,"outputTokens":0,"reasoningOutputTokens":0},"modelContextWindow":1000}}}),
                 json!({"method":"item/started","params":{"threadId":"thread","turnId":"turn","item":{"id":"cmd","type":"commandExecution","command":"ls","status":"inProgress"}}}),
                 json!({"method":"item/completed","params":{"threadId":"thread","turnId":"turn","item":{"id":"cmd","type":"commandExecution","command":"ls","status":"completed","aggregatedOutput":"a","exitCode":0}}}),
             ];
@@ -2984,7 +3430,7 @@ mod tests {
                 &streams,
                 &identity(1),
                 &frame(
-                    &json!({"method":method,"params":{"threadId":"thread","tokenUsage":{"total":{"totalTokens":5},"last":{"totalTokens":5},"modelContextWindow":1000}}}),
+                    &json!({"method":method,"params":{"threadId":"thread","turnId":"turn","tokenUsage":{"total":{"totalTokens":5,"inputTokens":5,"cachedInputTokens":0,"outputTokens":0,"reasoningOutputTokens":0},"last":{"totalTokens":5,"inputTokens":5,"cachedInputTokens":0,"outputTokens":0,"reasoningOutputTokens":0},"modelContextWindow":1000}}}),
                 ),
                 1234.5,
             );
@@ -3180,7 +3626,7 @@ mod tests {
         let transaction = connection.transaction().expect("transaction begins");
         assert!(matches!(
             dispatch(&transaction, &mut streams, 1, &wrong_thread, 1.0),
-            Err(super::NotificationDispatchError::InvalidNotification)
+            Err(super::NotificationDispatchError::InvalidNotification { .. })
         ));
         transaction
             .commit()

@@ -35,6 +35,7 @@ mod notification_dispatch_corpus;
 mod payload_safety_oracle;
 mod portable_history_python_parity;
 mod process_controls;
+mod project_deletion;
 mod project_preparation;
 mod provider_binaries_differential;
 mod provider_callbacks;

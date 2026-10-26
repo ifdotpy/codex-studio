@@ -49,6 +49,28 @@ impl AgentMoveRepository {
         let row: MoveRecord = serde_json::from_value(row.clone())?;
         Table::<MoveRecord>::new(tx).put(&row)
     }
+    /// A retained move can own an agent before its redirect fields are written.
+    /// Only a definite failed move without an uncertain phase releases ownership.
+    pub fn retains_agent_ownership(
+        db: &Connection,
+        agents: &std::collections::BTreeSet<String>,
+    ) -> StoreResult<bool> {
+        let exists: bool = db.query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='runtime_agent_moves')",
+            [], |row| row.get(0),
+        )?;
+        if !exists || agents.is_empty() {
+            return Ok(false);
+        }
+        Ok(db.query_row(
+            "SELECT EXISTS(SELECT 1 FROM runtime_agent_moves \
+             WHERE (json_extract(record,'$.phase') IS NOT 'failed' OR json_type(record,'$.uncertainPhase') IS NOT NULL) \
+             AND COALESCE(json_extract(record,'$.agent'),json_extract(record,'$.descriptor.agent.id')) \
+             IN (SELECT value FROM json_each(?1)))",
+            [serde_json::to_string(agents)?], |row| row.get(0),
+        )?)
+    }
+
     pub fn pending_events(db: &Connection, agent: &str) -> StoreResult<bool> {
         Ok(db.query_row(
             "SELECT EXISTS(SELECT 1 FROM runtime_events WHERE agent=?1 AND status='pending')",

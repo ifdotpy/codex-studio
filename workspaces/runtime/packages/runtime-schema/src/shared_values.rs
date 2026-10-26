@@ -219,7 +219,11 @@ pub const PROVIDER_DISCONNECTED_TURN_ERROR: &str =
 pub const BACKEND_RESTARTED_TURN_ERROR: &str =
     "Server restarted during a turn. Review history, then send a new instruction.";
 /// Turn error after the Linux VM provider connection ended.
-pub const VM_PROVIDER_DISCONNECTED_TURN_ERROR: &str = "Linux VM provider disconnected. The turn outcome is unknown. Review the transcript before resuming.";
+pub const VM_PROVIDER_DISCONNECTED_TURN_ERROR: &str =
+    "VM provider disconnected. The turn outcome is unknown. Review the transcript before resuming.";
+/// Historical persisted VM disconnect text, accepted only for recovery compatibility.
+/// New errors use `VM_PROVIDER_DISCONNECTED_TURN_ERROR`.
+pub const LEGACY_VM_PROVIDER_DISCONNECTED_TURN_ERROR: &str = "Linux VM provider disconnected. The turn outcome is unknown. Review the transcript before resuming.";
 // Persisted input and agent errors that Studio, not the agent's work, causes. The
 // scheduler writes them, and the Studio error list classifies them.
 /// Error of input whose turn/start answer was lost: the provider may have started it.
@@ -358,6 +362,14 @@ pub const MODEL_WHITELIST_KEY_PATTERN: &str = r"^[a-z][a-z0-9_-]*:\S+$";
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn platform_neutral_vm_disconnect_retains_unknown_outcome_guidance() {
+        assert_eq!(
+            VM_PROVIDER_DISCONNECTED_TURN_ERROR,
+            "VM provider disconnected. The turn outcome is unknown. Review the transcript before resuming."
+        );
+    }
 
     fn byte_label(bytes: u64) -> String {
         const KIB: u64 = 1024;

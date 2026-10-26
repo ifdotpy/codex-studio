@@ -5,6 +5,13 @@ This repository owns the application, command tools, and the project-local
 skill specific to this application. The application requires no external skill
 repository.
 
+## Simplicity
+
+Implement only the requested behavior, with the least code. Add no state,
+branches or recovery layers beyond it; if a change needs them, ask the owner
+first. Prefer a small documented limitation to complex machinery. Code must be
+describable in a few sentences.
+
 ## Fixes and test load
 
 Each bug fix needs a failing test first and a passing `just test-fast` stated in the PR;
@@ -41,6 +48,14 @@ repository or change its license without explicit authorization.
 
 Write everything in this repository in English: code, comments, commit messages,
 pull requests, issues, and documentation.
+
+Product UI copy and visual labels must be platform-neutral. Refer to the device,
+server, project folder, virtual machine, file manager, or secure storage instead
+of naming an operating system or platform brand. This includes status and error
+messages supplied by the runtime. Preserve capability checks and technical API
+identifiers; explain an unavailable capability without implying platform support.
+Platform-specific installation and operator documentation may name the platform
+when it is required to perform the documented action.
 
 Run `just test-fast` before every pull request and merge, and state its result
 in the pull request. This short local tier selects deterministic request,

@@ -14,6 +14,7 @@ import {
   portInUse,
   resultTarget,
   signInDeadline,
+  signInErrorText,
   signInFlow,
   signInState,
   timeLeftLabel,
@@ -105,7 +106,7 @@ export default function SignInCard({
   };
   const errorBlock = error ? (
     <p className="sign-in-card-error" role="alert">
-      {error}
+      {signInErrorText(error)}
     </p>
   ) : null;
   return (

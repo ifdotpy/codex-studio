@@ -113,8 +113,8 @@ impl Script<'_> {
                 notifications.extend([
                     json!({"method":"item/completed","params":{"threadId":thread,"turnId":turn,"item":{"id":item,"type":"agentMessage","text":"done"}}}),
                     json!({"method":"thread/tokenUsage/updated","params":{"threadId":thread,"turnId":turn,"tokenUsage":{
-                        "total":{"inputTokens":20,"outputTokens":100,"totalTokens":120},
-                        "last":{"inputTokens":2,"outputTokens":10,"totalTokens":12}}}}),
+                        "total":{"inputTokens":20,"cachedInputTokens":0,"outputTokens":100,"reasoningOutputTokens":0,"totalTokens":120},
+                        "last":{"inputTokens":2,"cachedInputTokens":0,"outputTokens":10,"reasoningOutputTokens":0,"totalTokens":12}}}}),
                     json!({"method":"turn/completed","params":{"threadId":thread,"turn":{"id":turn,"status":"completed"}}}),
                 ]);
                 for notification in notifications {

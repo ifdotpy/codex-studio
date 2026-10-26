@@ -1,3 +1,7 @@
+import {
+  auditTeamDiagnostics,
+  pendingTeamInputs,
+} from "../scripts/uiTeamScaleAudit.mjs";
 import { mkdirSync, mkdtempSync, realpathSync, writeFileSync } from "node:fs";
 import { spawn, spawnSync } from "node:child_process";
 import { DatabaseSync } from "node:sqlite";
@@ -18,7 +22,7 @@ import { dirname, join, resolve } from "node:path";
 import { performance } from "node:perf_hooks";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { once } from "node:events";
+import { EventEmitter, once } from "node:events";
 import {
   DURABLE_INPUT_QUEUE_KEY,
   PARENT_NOTICE_INPUT_KIND,
@@ -732,6 +736,38 @@ describe("scale verifier readiness markers", () => {
     }
   });
 
+  it.each(["temporary", "missing"])(
+    "finds a published final marker after a %s notification",
+    async (notification) => {
+      const root = await newRoot();
+      const directory = await createReadinessMarkerDirectory(join(root, "m"));
+      const tokens = [randomUUID()];
+      let notify;
+      const watcher = new EventEmitter();
+      watcher.close = vi.fn();
+      const watch = await watchReadinessMarkers(
+        directory,
+        tokens,
+        null,
+        (_path, listener) => {
+          notify = listener;
+          return watcher;
+        },
+      );
+      try {
+        await expect(watch.next(performance.now() + 50)).rejects.toThrow(
+          /Timed out/,
+        );
+        await publish(directory, 0, `${tokens[0]}\n`);
+        if (notification === "temporary")
+          notify("rename", "worker-0.ready.tmp");
+        expect(await watch.next(performance.now() + 500)).toBe(0);
+      } finally {
+        watch.close();
+      }
+    },
+  );
+
   it("accepts a marker published before arming exactly once through the initial inspection", async () => {
     const root = await newRoot();
     const directory = await createReadinessMarkerDirectory(join(root, "m"));
@@ -1032,10 +1068,45 @@ describe("scale verifier cleanup and served-model witnesses", () => {
             usageSource: "claudeResponse",
           }),
         );
+      for (const kind of ["response", "cumulative", "gap"]) {
+        insert.run(
+          "owned",
+          kind,
+          JSON.stringify({
+            model: "stale-model",
+            responseId: kind,
+            usageSource: "claudeResponse",
+            studioUsage: {
+              kind,
+              responseId: "typed-response",
+              model: "claude-haiku-fixture",
+            },
+          }),
+        );
+      }
+      insert.run(
+        "owned",
+        "canonical",
+        JSON.stringify({
+          studioUsage: {
+            kind: "response",
+            responseId: "canonical-response",
+            model: "claude-haiku-fixture",
+          },
+        }),
+      );
       insert.run(
         "codex-owned",
         "turn-1",
         JSON.stringify({ model: "gpt-6-luna" }),
+      );
+      insert.run(
+        "codex-owned",
+        "typed-counter",
+        JSON.stringify({
+          model: "gpt-6-luna",
+          studioUsage: { kind: "cumulative", scope: "codexThread", total: {} },
+        }),
       );
     } finally {
       analytics.close();
@@ -1051,6 +1122,17 @@ describe("scale verifier cleanup and served-model witnesses", () => {
     expect(records.get("owned").map((row) => row.turnId)).toEqual([
       "first",
       "second",
+      "response",
+      "canonical",
+    ]);
+    expect(
+      records
+        .get("owned")
+        .slice(2)
+        .map((row) => [row.responseId, row.model]),
+    ).toEqual([
+      ["typed-response", "claude-haiku-fixture"],
+      ["canonical-response", "claude-haiku-fixture"],
     ]);
     expect(() =>
       assertServedModelEvidence(records.get("owned"), "owned", 2),
@@ -1059,12 +1141,15 @@ describe("scale verifier cleanup and served-model witnesses", () => {
     const codex = readServedModelRecords(
       directory,
       "workspace",
-      ["owned", "codex-owned"],
+      ["codex-owned"],
       performance.now() + 5000,
       null,
     );
     expect([...codex.keys()]).toEqual(["codex-owned"]);
-    expect(codex.get("codex-owned")[0].model).toBe("gpt-6-luna");
+    expect(codex.get("codex-owned").map((row) => row.model)).toEqual([
+      "gpt-6-luna",
+      "gpt-6-luna",
+    ]);
     expect(() =>
       readServedModelRecords(
         directory,
@@ -1452,6 +1537,35 @@ describe("scale verifier retained-input audit", () => {
         canvas
           .prepare("INSERT INTO runtime_events VALUES (?,?,?,?,?)")
           .run(...row, "secret message text");
+      // A busy foreign team displaces the own retained input from the bounded
+      // SSE projection. The authoritative runtime row must remain visible.
+      canvas.exec(
+        "CREATE TABLE sync_entities(id TEXT PRIMARY KEY,collection TEXT,status TEXT)",
+      );
+      for (let index = 0; index < 250; index += 1) {
+        canvas
+          .prepare("INSERT INTO runtime_events VALUES (?,?,?,?,?)")
+          .run(
+            `new-${index}`,
+            "foreign-agent",
+            "user",
+            "delivered",
+            "secret foreign text",
+          );
+        if (index >= 50)
+          canvas
+            .prepare("INSERT INTO sync_entities VALUES (?,?,?)")
+            .run(`new-${index}`, "event", "delivered");
+      }
+      expect(
+        canvas.prepare("SELECT count(*) AS count FROM sync_entities").get()
+          .count,
+      ).toBe(200);
+      expect(
+        canvas
+          .prepare("SELECT id FROM sync_entities WHERE id='child:worker:1'")
+          .get(),
+      ).toBeUndefined();
     } finally {
       canvas.close();
     }
@@ -1481,6 +1595,29 @@ describe("scale verifier retained-input audit", () => {
       },
     ]);
     expect(JSON.stringify(rows)).not.toContain("secret message text");
+    const pending = pendingTeamInputs(rows, ["lead", "worker"]);
+    const gauges = {
+      "/queues/durableInputPending": 13,
+      "/queues/recoveryPending": 0,
+    };
+    // Another chat drained one input while this team's retained input stayed.
+    const audit = auditTeamDiagnostics({
+      before: gauges,
+      after: { ...gauges, "/queues/durableInputPending": 12 },
+      stateDir: directory,
+      workspaceId: "workspace",
+      agentIds: ["lead", "worker"],
+      deadlineAt: performance.now() + 5000,
+    });
+    expect(audit.failures).toContainEqual({
+      kind: "teamInputsPending",
+      count: 1,
+      inputs: pending,
+    });
+    expect(audit.teamInputAudit.pending).toEqual(pending);
+    expect(pending).toEqual([
+      { id: "child:worker:1", agent: "lead", status: "pending" },
+    ]);
     expect(() =>
       readRetainedInputRows(
         directory,

@@ -49,6 +49,23 @@ fn ts_strings(lines: &mut String, constants: &[(&str, &str)]) {
     }
 }
 
+fn provider_method_policy_mjs() -> String {
+    let rules = crate::provider_method_policy::THREAD_SERIALIZATION_RULES
+        .iter()
+        .map(|rule| {
+            format!(
+                "  [{}, {}],\n",
+                json_string(rule.method),
+                rule.true_parameter
+                    .map_or_else(|| "null".into(), json_string)
+            )
+        })
+        .collect::<String>();
+    format!(
+        "// {HEADER}\nconst rules = [\n{rules}];\nexport function isThreadSerialized(method, params) {{\n  return rules.some(\n    ([name, parameter]) =>\n      name === method && (parameter === null || params[parameter] === true),\n  );\n}}\n"
+    )
+}
+
 fn shared_values_ts() -> String {
     let mut text = format!("// {HEADER}\n");
     ts_constants(
@@ -252,6 +269,10 @@ fn shared_values_ts() -> String {
             (
                 "VM_PROVIDER_DISCONNECTED_TURN_ERROR",
                 values::VM_PROVIDER_DISCONNECTED_TURN_ERROR,
+            ),
+            (
+                "LEGACY_VM_PROVIDER_DISCONNECTED_TURN_ERROR",
+                values::LEGACY_VM_PROVIDER_DISCONNECTED_TURN_ERROR,
             ),
             ("DISK_FULL_ERROR_PATTERN", values::DISK_FULL_ERROR_PATTERN),
         ],
@@ -471,6 +492,11 @@ pub fn check_schema_parity(openapi: &Value, account_transfer: &Value) -> Result<
         openapi,
         "/components/schemas/TranscriptResource/properties/tail/maximum",
         values::SYNC_TRANSCRIPT_STREAM_MAX_ITEMS as i64,
+    )?;
+    expect_number(
+        openapi,
+        "/components/schemas/ProjectDeleteRequest/properties/expected_project_seq/maximum",
+        values::MAX_SAFE_INTEGER,
     )?;
     check_delivery_parity(openapi)?;
     let modes = serde_json::json!(crate::claude_permissions::PERMISSION_MODES);
@@ -808,6 +834,10 @@ pub fn render(root: &Path, with_api_types: bool) -> Result<Vec<Rendered>, String
             .pointer_mut(&format!("/components/schemas/{name}"))
             .ok_or_else(|| format!("OpenAPI is missing Rust-owned {name}"))? = schema;
     }
+    for (name, schema) in crate::usage::schemas() {
+        openapi["components"]["schemas"][name] = schema;
+    }
+    openapi["components"]["schemas"]["UsageReconciliationResponse"]["properties"]["replayConflicts"] = serde_json::json!({"type":"array","items":{"$ref":"#/components/schemas/UsageReplayConflict"}});
     check_schema_parity(&openapi, &read_json(root, ACCOUNT_TRANSFER_SCHEMA_PATH)?)?;
     for (name, fields) in [
         (
@@ -834,6 +864,11 @@ pub fn render(root: &Path, with_api_types: bool) -> Result<Vec<Rendered>, String
     let web = |name: &str| format!("{WEB_GENERATED}/{name}");
     let scopes = crate::sync_protocol::entity_scopes_from_document(&openapi)?;
     let mut rendered = vec![
+        Rendered {
+            path: "workspaces/providers/apps/claude-bridge/provider-method-policy.generated.mjs"
+                .into(),
+            text: provider_method_policy_mjs(),
+        },
         Rendered {
             path: web("subscriptionEntities.ts"),
             text: subscription_scopes_ts(
@@ -901,12 +936,88 @@ pub fn render(root: &Path, with_api_types: bool) -> Result<Vec<Rendered>, String
             text: linux_vm_swift(),
         },
     ];
+    // Analytics embeds the same accounting owner with local schema references.
+    let usage_defs: serde_json::Value = serde_json::from_str(
+        &serde_json::to_string(&crate::usage::schemas())
+            .map_err(|error| error.to_string())?
+            .replace("#/components/schemas/", "#/$defs/"),
+    )
+    .map_err(|error| error.to_string())?;
+    for name in ["analytics-usage", "analytics-notice"] {
+        let path =
+            format!("workspaces/runtime/packages/runtime-schema/src/schemas/{name}.schema.json");
+        let mut schema = read_json(root, &path)?;
+        for (name, value) in usage_defs
+            .as_object()
+            .ok_or("usage definitions must be an object")?
+        {
+            schema["$defs"][name] = value.clone();
+        }
+        if name == "analytics-usage" {
+            for field in ["usageIdentity", "receiptKey"] {
+                schema["properties"][field] =
+                    usage_defs["UsageLedgerRow"]["properties"][field].clone();
+            }
+        }
+        rendered.push(Rendered {
+            path,
+            text: serde_json::to_string_pretty(&schema).map_err(|error| error.to_string())? + "\n",
+        });
+    }
     let draft_schema = studio_client_domain::drafts::schema().to_value();
     rendered.push(Rendered {
         path: "workspaces/runtime/packages/runtime-http/draft-payload.schema.json".into(),
         text: serde_json::to_string_pretty(&draft_schema).map_err(|error| error.to_string())?
             + "\n",
     });
+    rendered.push(Rendered {
+        path: "workspaces/runtime/packages/runtime-schema/src/schemas/persisted-budget-state.schema.json".into(),
+        text: serde_json::to_string_pretty(&crate::usage::ledger::budget_state_schema()).map_err(|error| error.to_string())? + "\n",
+    });
+    for (path, schema) in [
+        (
+            "persisted-budget-state-write",
+            crate::usage::ledger::budget_state_write_schema(),
+        ),
+        (
+            "persisted-budget-usage",
+            crate::usage::ledger::budget_usage_schema(),
+        ),
+        (
+            "budget-capture",
+            crate::usage::ledger::budget_capture_schema(),
+        ),
+    ] {
+        rendered.push(Rendered {
+            path: format!(
+                "workspaces/runtime/packages/runtime-schema/src/schemas/{path}.schema.json"
+            ),
+            text: serde_json::to_string_pretty(&schema).map_err(|error| error.to_string())? + "\n",
+        });
+    }
+    let usage_schema = schemars::schema_for!(crate::usage::UsageObservation).to_value();
+    rendered.push(Rendered {
+        path:
+            "workspaces/runtime/packages/runtime-schema/src/schemas/usage-observation.schema.json"
+                .into(),
+        text: serde_json::to_string_pretty(&usage_schema).map_err(|error| error.to_string())?
+            + "\n",
+    });
+    if with_api_types {
+        let mut usage_generator = schemars::generate::SchemaSettings::draft2020_12()
+            .for_serialize()
+            .with(|settings| settings.definitions_path = "/components/schemas".into())
+            .into_generator();
+        usage_generator.subschema_for::<crate::usage::UsageObservation>();
+        let usage_document = serde_json::json!({
+            "openapi":"3.1.0", "info":{"title":"Usage contract","version":"1"},
+            "paths":{}, "components":{"schemas":usage_generator.take_definitions(true)}
+        });
+        rendered.push(Rendered {
+            path: "workspaces/providers/apps/claude-bridge/usage-contract.generated.d.mts".into(),
+            text: api_types(root, &usage_document, "--rust-owned")?,
+        });
+    }
     if with_api_types {
         let mut generator = schemars::generate::SchemaSettings::draft2020_12()
             .for_serialize()
@@ -979,6 +1090,54 @@ mod tests {
         assert!(!validator.is_valid(
             &serde_json::json!([{"nodes":[{"sentences":[{"text":"x","index":"bad"}]}],"length":1}])
         ));
+    }
+
+    #[test]
+    fn provider_method_policy_matches_generated_bridge_for_parameter_shapes() {
+        let root = repository_root();
+        let script = r#"import { isThreadSerialized } from './workspaces/providers/apps/claude-bridge/provider-method-policy.generated.mjs';
+let input = ''; for await (const chunk of process.stdin) input += chunk;
+process.stdout.write(JSON.stringify(JSON.parse(input).map(([method, params]) => isThreadSerialized(method, params))));"#;
+        let mut cases = Vec::new();
+        for method in crate::provider_method_policy::THREAD_SERIALIZATION_RULES
+            .iter()
+            .map(|rule| rule.method)
+            .chain(["turn/interrupt", "unknown/method"])
+        {
+            for params in [
+                serde_json::json!({}),
+                serde_json::json!({"includeTurns":false}),
+                serde_json::json!({"includeTurns":true}),
+                serde_json::json!({"includeTurns":"true"}),
+                serde_json::json!({"includeTurns":null}),
+            ] {
+                cases.push((method, params));
+            }
+        }
+        let expected = cases
+            .iter()
+            .map(|(method, params)| {
+                crate::provider_method_policy::is_thread_serialized(method, params)
+            })
+            .collect::<Vec<_>>();
+        let node = std::env::var(NODE_ENVIRONMENT).unwrap_or_else(|_| "node".into());
+        let mut child = Command::new(node)
+            .args(["--input-type=module", "-e", script])
+            .current_dir(root)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()
+            .expect("Node policy witness");
+        child
+            .stdin
+            .take()
+            .expect("input pipe")
+            .write_all(&serde_json::to_vec(&cases).expect("cases serialize"))
+            .expect("write policy cases");
+        let output = child.wait_with_output().expect("policy witness exits");
+        assert!(output.status.success());
+        let actual: Vec<bool> = serde_json::from_slice(&output.stdout).expect("policy results");
+        assert_eq!(actual, expected);
     }
 
     #[test]

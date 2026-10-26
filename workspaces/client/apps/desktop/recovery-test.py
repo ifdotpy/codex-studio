@@ -390,6 +390,7 @@ class RustSelectionTest(unittest.TestCase):
         self.assertEqual(recovery.supervisor_request(self.state, recovery.SupervisorAction.FINISH_FALLBACK),
                          {"finished": True})
         thread.join(5)
+        self.assertEqual(received[0], {"protocol": 2, "stateDir": str(self.state), "operator": True})
         self.assertEqual(received[-1], {"requestId": 1, "action": "finishFallback"})
 
     def test_a_python_supervisor_blocks_the_rust_backend(self):

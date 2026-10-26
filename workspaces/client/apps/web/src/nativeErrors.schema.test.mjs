@@ -12,6 +12,15 @@ import {
 } from "./nativeErrors.ts";
 import { test } from "vitest";
 
+const expectedMessages = new Map([
+  ["cyberPolicy", "Codex refused this turn under its cybersecurity policy."],
+  ["tooManyDenials", "Codex stopped this turn after too many denied actions."],
+  [
+    "flexUnavailable",
+    "The selected model's flexible processing tier is unavailable right now.",
+  ],
+]);
+
 function assertKnownVariants(codes) {
   for (const code of codes) {
     for (const info of [code, { [code]: { httpStatusCode: 503 } }]) {
@@ -22,13 +31,7 @@ function assertKnownVariants(codes) {
       });
       assert.equal(
         view.message,
-        code === "cyberPolicy"
-          ? "Codex refused this turn under its cybersecurity policy."
-          : code === "tooManyDenials"
-            ? "Codex stopped this turn after too many denied actions."
-            : code === "flexUnavailable"
-              ? "The selected model's flexible processing tier is unavailable right now."
-              : "Native message",
+        expectedMessages.get(code) ?? "Native message",
       );
       assert.equal(view.kind, code);
       assert.ok(view.hint.length > 0);

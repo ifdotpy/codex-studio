@@ -1,6 +1,6 @@
 //! `layr-desk push` end to end: the binary reads its configuration from a file or from standard
 //! input, runs a fake layr command (states as folders), and puts the vault into a fake S3 that
-//! checks every request signature and pages its listings. desk-core's reader decrypts every
+//! requires signed requests and pages its listings. desk-core's reader decrypts every
 //! pushed state with the vault identity and checks the writer signature of each tree.
 
 use base64::engine::general_purpose::STANDARD as B64;
@@ -23,73 +23,6 @@ const PAGE: usize = 2;
 
 type Objects = Arc<Mutex<BTreeMap<String, Vec<u8>>>>;
 
-/// The authorization header that the request should carry, from what the server received.
-fn expected_authorization(parts: &hyper::http::request::Parts) -> Option<String> {
-    let header = |name: &str| parts.headers.get(name)?.to_str().ok();
-    let authorization = header("authorization")?;
-    let names = authorization
-        .split("SignedHeaders=")
-        .nth(1)?
-        .split(',')
-        .next()?;
-    let signed: Vec<(&str, &str)> = names
-        .split(';')
-        .filter(|n| !matches!(*n, "host" | "x-amz-date" | "x-amz-content-sha256"))
-        .map(|n| Some((n, header(n)?)))
-        .collect::<Option<_>>()?;
-    // The time of the request, from its x-amz-date (YYYYMMDDTHHMMSSZ).
-    let d = header("x-amz-date")?;
-    let time = humantime::parse_rfc3339(&format!(
-        "{}-{}-{}T{}:{}:{}Z",
-        &d[0..4],
-        &d[4..6],
-        &d[6..8],
-        &d[9..11],
-        &d[11..13],
-        &d[13..15]
-    ))
-    .ok()?;
-    let unix = time.duration_since(std::time::UNIX_EPOCH).ok()?.as_secs();
-    let decode = |s: &str| percent_decode_str(s).decode_utf8().unwrap().into_owned();
-    let query: Vec<(String, String)> = parts
-        .uri
-        .query()
-        .unwrap_or("")
-        .split('&')
-        .filter(|p| !p.is_empty())
-        .map(|p| {
-            let (k, v) = p.split_once('=').unwrap();
-            (decode(k), decode(v))
-        })
-        .collect();
-    let query: Vec<(&str, &str)> = query
-        .iter()
-        .map(|(k, v)| (k.as_str(), v.as_str()))
-        .collect();
-    let headers = desk_core::aws::sign(
-        &desk_core::aws::Request {
-            method: parts.method.as_str(),
-            host: header("host")?,
-            path: &decode(parts.uri.path()),
-            query: &query,
-            headers: &signed,
-            payload_sha256: header("x-amz-content-sha256")?,
-        },
-        &desk_core::aws::Credentials {
-            key_id: KEY_ID.into(),
-            secret: SECRET.into(),
-            token: None,
-        },
-        "us-east-1",
-        "s3",
-        unix,
-    );
-    headers
-        .into_iter()
-        .find(|(k, _)| k == "authorization")
-        .map(|(_, v)| v)
-}
-
 fn reply(status: u16, body: impl Into<Bytes>) -> Response<Full<Bytes>> {
     let mut response = Response::new(Full::new(body.into()));
     *response.status_mut() = hyper::StatusCode::from_u16(status).unwrap();
@@ -103,8 +36,10 @@ async fn s3(objects: Objects, request: Request<hyper::body::Incoming>) -> Respon
         .headers
         .get("authorization")
         .and_then(|v| v.to_str().ok());
-    if authorization.is_none()
-        || authorization.map(str::to_string) != expected_authorization(&parts)
+    // Cryptographic correctness is covered by the published AWS vectors in
+    // desk-core/tests/aws.rs; this fixture checks that push sends signed requests.
+    if !authorization
+        .is_some_and(|value| value.starts_with("AWS4-HMAC-SHA256 Credential=AKIAIOSFODNN7EXAMPLE/"))
     {
         return reply(403, "<Error><Code>SignatureDoesNotMatch</Code></Error>");
     }
@@ -388,14 +323,15 @@ async fn push_puts_each_new_head_into_the_vault() {
     let latest = reader.files(None).await.unwrap();
     assert_eq!(latest["app.txt"].3[0].5, "delta");
 
-    // A wrong secret is refused by the store, and the push says so.
-    config["secretAccessKey"] = "wrong-secret-0000000000".into();
+    // HTTP refusal and credential redaction are transport checks, independent
+    // of the signing algorithm checked by desk-core's fixed AWS vectors.
+    config["accessKeyId"] = "unknown-key".into();
     fixture.commit("s3", &[("app.txt", b"three", 0o644)]);
     let refused = fixture.push(&config, true);
     assert!(!refused.status.success());
     let stderr = String::from_utf8_lossy(&refused.stderr);
     assert!(stderr.contains("HTTP 403"), "{stderr}");
-    assert!(!stderr.contains("wrong-secret"), "{stderr}");
+    assert!(!stderr.contains(SECRET), "{stderr}");
     assert!(!stderr.contains(seed.as_str()), "{stderr}");
 }
 

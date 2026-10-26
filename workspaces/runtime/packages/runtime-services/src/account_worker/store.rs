@@ -667,14 +667,22 @@ pub(super) async fn claim(
                     now(),
                 )
                 .map_err(|error| WorkerError::PreparationRefused(error.to_string()))?;
-                if let Some(event) = selected.first().filter(|event| event.kind == "radio_turn") {
-                    return scheduler::claim_radio_turn_in_transaction(
+                // `select_pending` owns the radio rule: one radio turn, the exact
+                // answer to the live turn, or all ordinary rows. Nothing selected
+                // means the live turn holds the floor: wait without a hold; the
+                // agent is claimable again once that turn ends.
+                if selected.is_empty() {
+                    return Ok(None);
+                }
+                let ordinary = events.iter().filter(|e| e.kind != "radio_turn").count();
+                if selected.len() < ordinary || selected[0].kind == "radio_turn" {
+                    return scheduler::claim_selected_event_in_transaction(
                         tx,
                         &agent,
                         epoch,
                         attempt,
                         now(),
-                        &event.id.0,
+                        &selected[0].id.0,
                     )
                     .map_err(Into::into);
                 }
@@ -1080,7 +1088,7 @@ fn settle_outcome_isolated(
         retire,
     )? {
         Ok(settled) => return Ok((settled, None)),
-        Err(fault) => fault,
+        Err(fault) => fault.with_method(Some(context.method.as_str())),
     };
     Ok((
         SettledOutcome {
@@ -1582,6 +1590,51 @@ pub(super) async fn journal_batch(
             Ok::<_, WorkerError>((publication, limits_observation))
         })
         .await?;
+    let usage_notices = entries
+        .iter()
+        .filter_map(|entry| match &entry.payload {
+            JournalPayload::Frame(Frame::Notification(frame))
+                if frame.method.as_str() == "thread/tokenUsage/updated" =>
+            {
+                frame
+                    .params
+                    .clone()
+                    .map(|params| (entry.generation.0, params))
+            }
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    if !usage_notices.is_empty() {
+        let budget_account = account.to_owned();
+        let captures = store
+            .read_async("budget/journal-provenance-candidates", move |tx| {
+                let mut captures = Vec::new();
+                for (generation, params) in usage_notices {
+                    let Some(thread) = params["threadId"].as_str() else {
+                        continue;
+                    };
+                    let (_, attempt) = SchedulerRepository::find_attempt_for_thread(
+                        tx,
+                        &budget_account,
+                        generation,
+                        thread,
+                        params["turnId"].as_str(),
+                    )?;
+                    if let Some((identity, _)) = attempt {
+                        let agent = studio_runtime_store::budget::BudgetRepository::agent(
+                            tx,
+                            &identity.agent_id,
+                        )?;
+                        captures.push((agent, params));
+                    }
+                }
+                Ok::<_, StoreError>(captures)
+            })
+            .await?;
+        crate::budget_service::prepare_legacy_corrections(&store, captures)
+            .await
+            .map_err(crate::notification_dispatch::NotificationDispatchError::from)?;
+    }
     let account = account.to_owned();
     let journal_scope = journal_scope.to_owned();
     let claude_account_pin = claude_account_pin.clone();
@@ -1684,7 +1737,7 @@ pub(super) async fn journal_batch(
                     // transaction and stay. Reload the cache from them.
                     outbox = PublicationOutbox::default();
                     park_entry(tx, identity, &entry)?;
-                    faults.push(fault);
+                    faults.push(fault.with_method(journal_method(&entry)));
                     parked.push(entry);
                 }
             }
@@ -1749,6 +1802,16 @@ fn park_entry(
         "settled",
         json!({"cursor":entry.cursor.0,"digest":digest,"ready":true,"committed":true}),
     )
+}
+
+/// The provider method of one journal entry, if it is a notification or request.
+fn journal_method(entry: &JournalEntry) -> Option<&str> {
+    match &entry.payload {
+        JournalPayload::Frame(Frame::Notification(frame)) => Some(frame.method.as_str()),
+        JournalPayload::Frame(Frame::Request(frame)) => Some(frame.method.as_str()),
+        JournalPayload::Frame(Frame::UnknownMethod(frame)) => Some(frame.method.as_str()),
+        _ => None,
+    }
 }
 
 /// Fixed stage label of one journal entry, by provider method class.
@@ -1834,8 +1897,7 @@ fn journal_one(
                 .get("processId")
                 .and_then(Value::as_str)
                 .filter(|id| !id.is_empty())
-        {
-            crate::monitor_event_queue::enqueue_output_with_scope_in_transaction(
+            && let Err(error) = crate::monitor_event_queue::enqueue_output_with_scope_in_transaction(
                 tx,
                 process_id,
                 crate::monitor_event_queue::JournalEventScope {
@@ -1846,7 +1908,16 @@ fn journal_one(
                     expected_agent: expected_vm_actor.map(|(actor, _)| actor),
                 },
                 params,
-            )?;
+            )
+        {
+            // A refused delta of a running monitor belongs to its agent.
+            if matches!(
+                error,
+                crate::notification_dispatch::NotificationDispatchError::InvalidNotification { .. }
+            ) {
+                *policy.subject = crate::monitor_event_queue::output_agent(tx, process_id)?;
+            }
+            return Err(error.into());
         }
         if let Some(("account/rateLimits/updated", params)) = notice {
             if let Some(source) = publication.native_source.as_ref()
@@ -1943,6 +2014,7 @@ fn journal_one(
                         policy.faults.push(agent_fault::AgentFault {
                             agent_id: identity.agent_id.clone(),
                             stage: agent_fault::FaultStage::JournalFrame,
+                            method: Some(method.to_owned()),
                             detail,
                             hold,
                         });

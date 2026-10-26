@@ -1268,8 +1268,7 @@ async fn rust_exec_attempt_writes_the_python_receipt_form_and_never_resends() {
 
     // The same request identity now only probes; the command never repeats.
     // The first test checks this identity against the Python probe.
-    let probe_id =
-        studio_runtime_services::projects::cross_server_identity(&["exec-receipt", "fresh-exec"]);
+    let probe_id = "d941e93e-db8c-5643-844d-aae0c6888829".to_owned();
     let receipt = json!({"requestId":"fresh-exec","outcome":"applied","value":{"status":"exited"}});
     let wire = ExecWire::new(Some(
         json!({"requestId":probe_id,"outcome":"applied","value":receipt}),

@@ -103,10 +103,22 @@
     "name": "cache-fallback-usage",
     "family": "cache",
     "notification": {
+      "threadId": "native-thread",
+      "turnId": "turn-a",
       "tokenUsage": {
-        "last": {
+        "total": {
+          "inputTokens": 100,
           "cachedInputTokens": 0,
-          "inputTokens": 100
+          "outputTokens": 0,
+          "reasoningOutputTokens": 0,
+          "totalTokens": 100
+        },
+        "last": {
+          "inputTokens": 100,
+          "cachedInputTokens": 0,
+          "outputTokens": 0,
+          "reasoningOutputTokens": 0,
+          "totalTokens": 100
         }
       }
     }
@@ -115,8 +127,23 @@
     "name": "cache-boolean-not-integer",
     "family": "cache",
     "notification": {
-      "requestUsage": {
-        "cachedInputTokens": true
+      "threadId": "native-thread",
+      "turnId": "turn-a",
+      "tokenUsage": {
+        "total": {
+          "inputTokens": 100,
+          "cachedInputTokens": true,
+          "outputTokens": 0,
+          "reasoningOutputTokens": 0,
+          "totalTokens": 100
+        },
+        "last": {
+          "inputTokens": 100,
+          "cachedInputTokens": true,
+          "outputTokens": 0,
+          "reasoningOutputTokens": 0,
+          "totalTokens": 100
+        }
       }
     }
   },

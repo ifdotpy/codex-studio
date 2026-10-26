@@ -52,6 +52,10 @@ export default function CombinedServerSidebar({
   hideOldChatsThreshold: number;
 }) {
   const [marking, setMarking] = useState(new Set<string>());
+  const registeredProjectPaths = useMemo(
+    () => new Set(model.groups.keys()),
+    [model],
+  );
   const visualSession = useRef(createSidebarVisualSession());
   const services = useMemo(() => {
     const result = createMergedSidebarServices(
@@ -93,6 +97,7 @@ export default function CombinedServerSidebar({
     <Sidebar
       services={services}
       data={model.data}
+      registeredProjectPaths={registeredProjectPaths}
       opened={opened ? model.chatKey(current, opened) : null}
       selectionIdentity={JSON.stringify([
         current,
@@ -190,6 +195,12 @@ export default function CombinedServerSidebar({
       projectFolders={(path) =>
         action({ kind: "project", path }, (owner) => ({
           action: "project-folders",
+          projectId: model.wireProject(owner, path),
+        }))
+      }
+      deleteProject={(path) =>
+        action({ kind: "project", path }, (owner) => ({
+          action: "delete-project",
           projectId: model.wireProject(owner, path),
         }))
       }

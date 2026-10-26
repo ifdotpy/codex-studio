@@ -72,8 +72,8 @@ export function SignInPushSettings({ active }: { active: boolean }) {
       </p>
       {!pushSupported() && (
         <p>
-          This window cannot get push alerts. On an iPhone, add Studio to the
-          Home Screen and open it from there.
+          This window cannot get push alerts. Try adding Studio to your home
+          screen and opening it from there.
         </p>
       )}
       {state && !state.ready && (

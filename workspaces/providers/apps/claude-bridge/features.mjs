@@ -142,21 +142,6 @@ export function nativeItem(block, cwd) {
     };
   return { ...base, type: "mcpToolCall", server: "claude" };
 }
-export function usageTokens(usage) {
-  if (!usage) return null;
-  const n = (value) => (Number.isFinite(value) && value >= 0 ? value : 0);
-  const input =
-    n(usage.input_tokens) +
-    n(usage.cache_read_input_tokens) +
-    n(usage.cache_creation_input_tokens);
-  return {
-    inputTokens: input,
-    outputTokens: n(usage.output_tokens),
-    cachedInputTokens: n(usage.cache_read_input_tokens),
-    cacheWriteInputTokens: n(usage.cache_creation_input_tokens),
-    totalTokens: input + n(usage.output_tokens),
-  };
-}
 export class InputQueue {
   values = [];
   nonQueryIds = new Set();

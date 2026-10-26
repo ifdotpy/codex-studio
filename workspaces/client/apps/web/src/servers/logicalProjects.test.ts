@@ -83,6 +83,7 @@ describe("project locations", () => {
     const groups = logicalProjects(navigation);
     expect(groups).toHaveLength(1);
     expect(groups[0].owner).toBe("local");
+    expect(groups[0].deleteTarget).toBe(project.id);
     expect(groups[0].compact).toBe(false);
     expect(groups[0].locations?.map((row) => row.serverId)).toEqual([
       "local",
@@ -255,6 +256,41 @@ describe("project locations", () => {
       }),
     ).toBeNull();
   });
+});
+
+it("only registered logical projects expose a native deletion target", () => {
+  const groups = logicalProjects({
+    local: view(
+      [{ id: "saved", name: "Saved", path: "/saved" }],
+      [
+        {
+          id: "inferred",
+          name: "Inferred",
+          path: "/inferred",
+          archived: false,
+          status: "",
+          unread: false,
+        },
+        {
+          id: "other",
+          name: "Other",
+          path: "",
+          archived: false,
+          status: "",
+          unread: false,
+        },
+      ],
+    ),
+  });
+  expect(groups.find((group) => group.id === "saved")?.deleteTarget).toBe(
+    "saved",
+  );
+  expect(
+    groups.find((group) => group.path === "/inferred")?.deleteTarget,
+  ).toBeUndefined();
+  expect(
+    groups.find((group) => group.path === "")?.deleteTarget,
+  ).toBeUndefined();
 });
 
 it("keeps project mutation tokens and uncertain receipt IDs with the captured owner", async () => {

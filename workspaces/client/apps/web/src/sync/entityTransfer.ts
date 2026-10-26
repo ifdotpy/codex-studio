@@ -1,3 +1,4 @@
+import { subscriptionKey } from "./subscriptions/contracts";
 import { SYNC_PROTOCOL_VERSION, type components } from "../generated/api";
 import {
   MAX_SYNC_RESOURCE_COUNT,
@@ -285,6 +286,17 @@ export class EntityTransferAssembler {
     this.pending.clear();
     await this.storage.close();
   }
+  /** Called after queued fragment work settles; unrelated staging stays intact. */
+  async remove(resources: components["schemas"]["ResourceRef"][]) {
+    const removed = new Set(resources.map(subscriptionKey));
+    for (const [scope, pending] of this.pending) {
+      if (!removed.has(subscriptionKey(pending.frame.resource))) continue;
+      this.pending.delete(scope);
+      // Completed intervals belong to their FIFO operation until disposal.
+      if (!pending.complete)
+        await this.storage.remove(`${pending.frame.transferId}:`);
+    }
+  }
   async receive(value: unknown): Promise<StagedEntityInterval | undefined> {
     const frame = frameValue(value);
     const generation = this.generation;
@@ -298,7 +310,9 @@ export class EntityTransferAssembler {
         pending.frame.epoch !== frame.epoch ||
         pending.frame.transferId !== frame.transferId)
     ) {
-      await this.storage.remove(`${pending.frame.transferId}:`);
+      // Completed intervals belong to their FIFO operation until disposal.
+      if (!pending.complete)
+        await this.storage.remove(`${pending.frame.transferId}:`);
       this.pending.delete(scope);
       pending = undefined;
     }

@@ -19,9 +19,9 @@ impl NotificationEffects for RuntimeNotificationEffects {
         agent: &mut Value,
         params: &Value,
         at: f64,
-    ) -> Result<(), NotificationDispatchError> {
+    ) -> Result<crate::budget::UsageAcceptance, NotificationDispatchError> {
         // The dispatcher persists `agent` after this capture.
-        crate::budget_service::capture_for_persisting_caller(
+        let acceptance = crate::budget_service::capture_for_persisting_caller(
             tx,
             agent,
             params,
@@ -29,7 +29,7 @@ impl NotificationEffects for RuntimeNotificationEffects {
             CaptureSource::Live,
             at,
         )?;
-        Ok(())
+        Ok(acceptance)
     }
 
     fn capture_move_cache(
@@ -41,7 +41,7 @@ impl NotificationEffects for RuntimeNotificationEffects {
     ) -> Result<(), NotificationDispatchError> {
         let agent_id = agent["id"]
             .as_str()
-            .ok_or(NotificationDispatchError::InvalidNotification)?;
+            .ok_or(NotificationDispatchError::invalid())?;
         crate::agent_move::capture_cache(tx, agent_id, params, at)?;
         Ok(())
     }
@@ -136,6 +136,9 @@ impl NotificationEffects for RuntimeNotificationEffects {
         result.push(NotificationPostCommit::Analytics {
             observation: observation(Some(&analytics_agent)),
             budget_capture_value: captured,
+            usage_conflict: None,
+            ledger_since: Default::default(),
+            usage_unknown: false,
         });
         if matches!(
             method,
@@ -270,7 +273,7 @@ impl RuntimeNotificationPostCommitSink {
                 | NotificationPostCommit::TokenRateAssociation(_)
                 | NotificationPostCommit::TokenRateUsage(_)
         ) {
-            return Err(NotificationDispatchError::InvalidNotification);
+            return Err(NotificationDispatchError::invalid());
         }
         self.token_rates
             .publish_observation(effect.clone())

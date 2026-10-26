@@ -592,6 +592,18 @@ export function applyEntityChanges(
     state.agentSummarySeen,
     state.mergedAgents,
   );
+  if (!prior || changed.has("project")) {
+    next.runtime.projectSequences = Object.fromEntries(
+      [...state.rows.values()]
+        .filter(
+          (row) =>
+            row.collection === "project" &&
+            !row.deleted &&
+            row.entityId !== undefined,
+        )
+        .map((row) => [row.entityId!, row.seq]),
+    );
+  } else next.runtime.projectSequences = prior.runtime.projectSequences;
   changed.clear();
   state.snapshot = next;
   return next;

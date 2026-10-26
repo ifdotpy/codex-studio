@@ -436,3 +436,8 @@ the browser after the observation window is outside the measured interval. A
 completed measurement does not prove that no agents were active or that the
 server was idle; zero exit status only means the measurement completed without
 the listed errors.
+
+The limits window sends one account-cost interest when opened or when its
+selected account changes. Cost values, saved-result age, refresh state, and stale
+failure state come from streamed `accountCost` entities. Re-rendering and elapsed
+time do not send more requests; closing and reopening permits a new interest.

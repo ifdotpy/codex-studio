@@ -71,7 +71,7 @@ export function useDesktopNotifications(
           window.dispatchEvent(
             new CustomEvent("desktop-error", {
               detail: denied
-                ? "Enable Allow notifications for LAYR Studio in macOS System Settings > Notifications."
+                ? "Allow notifications for LAYR Studio in this device's notification settings."
                 : error instanceof Error
                   ? error.message
                   : "Could not show the desktop notification.",

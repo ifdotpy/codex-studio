@@ -81,7 +81,7 @@ const RESTART_RESUME_SECONDS: f64 = 1800.0;
 const RECORDS_KEPT: usize = 50;
 const DAY_SECONDS: f64 = 86_400.0;
 /// The reason of a start after a Mac restart.
-const HOST_RESTART_REASON: &str = "The Mac restarted while the VM ran";
+const HOST_RESTART_REASON: &str = "The host restarted while the VM ran";
 /// Interval of the watchdog checks, in seconds.
 pub const WATCHDOG_INTERVAL_SECONDS: u64 = 30;
 /// Wait for a failed VM to stop, in seconds: a dead kernel ignores the ACPI
@@ -352,7 +352,7 @@ fn pause(duration: Duration) {
 fn remaining(deadline: Instant, maximum: f64) -> Result<Duration, VmStartError> {
     let left = deadline.saturating_duration_since(Instant::now());
     if left.is_zero() {
-        return Err(failed("The Linux VM operation exceeded its timeout."));
+        return Err(failed("The VM operation exceeded its timeout."));
     }
     Ok(left.min(Duration::from_secs_f64(maximum)))
 }
@@ -679,10 +679,10 @@ impl VmRuntime {
         let result = self
             .guest
             .call("exec", &params, None, wait)
-            .map_err(|error| failed(format!("The Linux VM clock check failed: {error}")))?;
+            .map_err(|error| failed(format!("The VM clock check failed: {error}")))?;
         if result.get("exitCode").and_then(Value::as_i64) != Some(0) {
             return Err(failed(
-                "The Linux VM clock did not synchronize within its timeout.",
+                "The VM clock did not synchronize within its timeout.",
             ));
         }
         Ok(())
@@ -695,14 +695,14 @@ impl VmRuntime {
             .unwrap_or("no reason");
         if timed_out {
             return failed(format!(
-                "The Linux VM did not answer before its start timeout (provisioning {}).",
+                "The VM did not answer before its start timeout (provisioning {}).",
                 info.get("state")
                     .and_then(Value::as_str)
                     .unwrap_or("unknown")
             ));
         }
         failed(format!(
-            "The Linux VM provisioning failed: {cause}. Create the VM again."
+            "The VM provisioning failed: {cause}. Create the VM again."
         ))
     }
 
@@ -717,13 +717,14 @@ impl VmRuntime {
     ) -> Result<Map<String, Value>, VmStartError> {
         if !self.supported {
             return Err(VmStartError::Stays(
-                "Linux VM workspaces require macOS on Apple silicon.".into(),
+                "VM workspaces are unavailable on this server. Use a Git worktree.".into(),
             ));
         }
         let deadline = Instant::now() + Duration::from_secs_f64(timeout);
         if !self.state_dir.join(CONFIG_FILE).exists() {
             return Err(VmStartError::Stays(
-                "The Linux VM is not created. Create it with a Studio build that can provision a VM.".into(),
+                "The VM is not created. Create it with a Studio build that can provision a VM."
+                    .into(),
             ));
         }
         let mut launched: Option<Box<dyn RunningHelper>> = None;
@@ -752,7 +753,7 @@ impl VmRuntime {
                 .map_err(|error| VmStartError::Stays(error.to_string()))?;
                 if !is_executable(&self.helper) {
                     return Err(VmStartError::Stays(format!(
-                        "The signed Linux VM helper is unavailable: {}",
+                        "The signed VM helper is unavailable: {}",
                         self.helper.display()
                     )));
                 }
@@ -777,14 +778,12 @@ impl VmRuntime {
                 let mut helper = self
                     .launcher
                     .launch(&self.helper, &self.state_dir, log)
-                    .map_err(|error| {
-                        failed(format!("The Linux VM helper did not start: {error}"))
-                    })?;
+                    .map_err(|error| failed(format!("The VM helper did not start: {error}")))?;
                 let start_deadline = Instant::now() + Duration::from_secs_f64(HELPER_START_SECONDS);
                 loop {
                     if let Some(exit) = helper.exit() {
                         return Err(failed(format!(
-                            "The Linux VM helper exited ({exit}). Log: {}",
+                            "The VM helper exited ({exit}). Log: {}",
                             self.state_dir.join(HELPER_LOG).display()
                         )));
                     }
@@ -798,7 +797,7 @@ impl VmRuntime {
                     if Instant::now() >= start_deadline.min(deadline) {
                         helper.detach();
                         return Err(failed(
-                            "The Linux VM helper did not publish its control socket within 15 seconds.",
+                            "The VM helper did not publish its control socket within 15 seconds.",
                         ));
                     }
                     pause(Duration::from_millis(50));
@@ -822,7 +821,7 @@ impl VmRuntime {
         while Instant::now() < deadline {
             if let Some(exit) = launched.as_mut().and_then(|helper| helper.exit()) {
                 return Err(failed(format!(
-                    "The Linux VM helper exited ({exit}). Log: {}",
+                    "The VM helper exited ({exit}). Log: {}",
                     self.state_dir.join(HELPER_LOG).display()
                 )));
             }
@@ -833,7 +832,7 @@ impl VmRuntime {
                         .get("error")
                         .and_then(Value::as_str)
                         .unwrap_or("no reason");
-                    return Err(failed(format!("The Linux VM failed: {reason}")));
+                    return Err(failed(format!("The VM failed: {reason}")));
                 }
                 "running" | "unresponsive" => {
                     let wait = remaining(deadline, REQUEST_SECONDS)?;
@@ -1173,23 +1172,21 @@ impl VmRuntime {
             "stopped" => {}
             state => {
                 let reason = status.get("error").and_then(Value::as_str).unwrap_or(state);
-                return Err(VmStartError::Stays(format!(
-                    "The Linux VM is {state}: {reason}"
-                )));
+                return Err(VmStartError::Stays(format!("The VM is {state}: {reason}")));
             }
         }
         match self.resume().await?.as_str() {
             "restarted" | "running" => Ok(()),
-            "absent" => Err(VmStartError::Stays("The Linux VM is not created.".into())),
-            "failed" => Err(failed("The Linux VM did not start. See its helper log and the Linux VM settings.")),
+            "absent" => Err(VmStartError::Stays("The VM is not created.".into())),
+            "failed" => Err(failed("The VM did not start. See its helper log and the VM settings.")),
             "busy" => Err(VmStartError::Stays(
-                "A VM upgrade or start holds the Linux VM. Send the message again in a moment.".into(),
+                "A VM upgrade or start holds the VM. Send the message again in a moment.".into(),
             )),
             "limited" => Err(VmStartError::Stays(
-                "The Linux VM waits for its automatic restart limit. Start it with `studio-runtime-server linux-vm start`, then send the message again.".into(),
+                "The VM waits for its automatic restart limit. Start it with `studio-runtime-server linux-vm start`, then send the message again.".into(),
             )),
             _ => Err(VmStartError::Stays(
-                "The Linux VM is stopped. Start it with `studio-runtime-server linux-vm start`, then send the message again."
+                "The VM is stopped. Start it with `studio-runtime-server linux-vm start`, then send the message again."
                     .into(),
             )),
         }
@@ -1335,7 +1332,7 @@ impl VmRuntime {
             }
             if Instant::now() >= deadline {
                 return Ok(FailedStop::Unproven(
-                    "The Linux VM did not stop within its timeout.".into(),
+                    "The VM did not stop within its timeout.".into(),
                 ));
             }
             pause(Duration::from_millis(100));
@@ -1372,7 +1369,7 @@ impl VmRuntime {
             }
             pause(Duration::from_millis(100));
         }
-        Err(failed("The Linux VM did not stop within its timeout."))
+        Err(failed("The VM did not stop within its timeout."))
     }
 
     /// A person's stop (`studio-runtime-server linux-vm stop`). It does not

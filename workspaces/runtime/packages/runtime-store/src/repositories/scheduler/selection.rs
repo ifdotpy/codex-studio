@@ -560,11 +560,12 @@ impl SchedulerRepository {
         )
     }
 
-    /// Claim exactly one radio turn selected by the runtime-services policy in
-    /// this transaction. The caller must authorize the event before invoking
-    /// this entry point; this method fences its pending identity and journals
+    /// Claim exactly one event, of a `SELECTED_EVENT_KINDS` kind, selected by the
+    /// runtime-services radio policy in this transaction. The caller must
+    /// authorize the event before invoking this entry point; this method fences
+    /// its pending identity and journals
     /// the same durable attempt as the ordinary claim path.
-    pub fn claim_selected_radio_turn(
+    pub fn claim_selected_event(
         transaction: &Transaction<'_>,
         agent_id: &str,
         epoch: i64,
@@ -593,7 +594,7 @@ impl SchedulerRepository {
         attempt_created: f64,
         limit: usize,
         preparation: bool,
-        radio_event: Option<&str>,
+        single_event: Option<&str>,
     ) -> StoreResult<Option<ClaimedEvents>> {
         let Some(mut agent) = load_agent(transaction, agent_id)? else {
             return Ok(None);
@@ -658,7 +659,7 @@ impl SchedulerRepository {
         }
         // Held child results wait for their siblings; any deliverable event
         // claims the whole ordered prefix, held results included.
-        if radio_event.is_none()
+        if single_event.is_none()
             && !transaction.query_row(
                 &format!("SELECT {}", deliverable_pending("?1", "?2", "?3")),
                 params![
@@ -673,7 +674,7 @@ impl SchedulerRepository {
         }
 
         // Python gives radio turns priority over the ordinary queue prefix.
-        if radio_event.is_none()
+        if single_event.is_none()
             && transaction.query_row_cached(
                 "SELECT EXISTS(SELECT 1 FROM runtime_events WHERE agent=?1 AND epoch=?2 \
              AND status='pending' AND kind IN ('radio','radio_turn'))",
@@ -689,40 +690,14 @@ impl SchedulerRepository {
 
         let prefix = limit;
         let has_metadata = table_exists(transaction, "runtime_event_meta")?;
-        if has_metadata {
-            let radio = transaction
-                .query_row_cached(
-                    "SELECT e.id,m.record FROM runtime_events e \
-                     JOIN runtime_event_meta m ON m.id=e.id \
-                     WHERE e.agent=?1 AND e.epoch=?2 AND e.status='pending' \
-                     AND json_valid(m.record) \
-                     AND json_type(m.record,'$.radioAnswerTurnId') IS NOT NULL \
-                     AND json_type(m.record,'$.radioAnswerTurnId')!='null' \
-                     ORDER BY e.created,e.rowid LIMIT 1",
-                    params![agent_id, epoch],
-                    |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
-                )
-                .optional()?;
-            if let Some((id, raw)) = radio {
-                let value: Value = serde_json::from_str(&raw)
-                    .map_err(|_| invalid_object("runtime_event_meta", &id))?;
-                if !value.get("radioAnswerTurnId").is_some_and(Value::is_string) {
-                    return Err(invalid_object("runtime_event_meta", &id));
-                }
-                return Ok(Some(refused(
-                    &agent,
-                    format!("radio answer {id} requires radio-policy"),
-                )));
-            }
-        }
-        let sql = if let Some(_event_id) = radio_event {
+        let sql = if single_event.is_some() {
             if has_metadata {
                 "SELECT e.id,e.agent,e.kind,e.text,e.status,e.created,e.epoch,e.turn_id,e.error,m.record \
                  FROM runtime_events e LEFT JOIN runtime_event_meta m ON m.id=e.id \
-                 WHERE e.id=?1 AND e.agent=?2 AND e.epoch=?3 AND e.status='pending' AND e.kind='radio_turn'"
+                 WHERE e.id=?1 AND e.agent=?2 AND e.epoch=?3 AND e.status='pending'"
             } else {
                 "SELECT e.id,e.agent,e.kind,e.text,e.status,e.created,e.epoch,e.turn_id,e.error,NULL \
-                 FROM runtime_events e WHERE e.id=?1 AND e.agent=?2 AND e.epoch=?3 AND e.status='pending' AND e.kind='radio_turn'"
+                 FROM runtime_events e WHERE e.id=?1 AND e.agent=?2 AND e.epoch=?3 AND e.status='pending'"
             }
         } else if has_metadata {
             "SELECT e.id,e.agent,e.kind,e.text,e.status,e.created,e.epoch,e.turn_id,e.error,m.record \
@@ -735,7 +710,7 @@ impl SchedulerRepository {
              ORDER BY e.created,e.rowid LIMIT ?3"
         };
         let mut statement = transaction.prepare_cached(sql)?;
-        let joined = if let Some(event_id) = radio_event {
+        let joined = if let Some(event_id) = single_event {
             statement
                 .query_map(params![event_id, agent_id, epoch], |row| {
                     Ok((
@@ -758,7 +733,12 @@ impl SchedulerRepository {
                 .collect::<Result<Vec<_>, _>>()?
         };
         drop(statement);
-        if joined.is_empty() {
+        if joined.is_empty()
+            || (single_event.is_some()
+                && joined
+                    .iter()
+                    .any(|(event, _)| !SELECTED_EVENT_KINDS.contains(&event.kind.as_str())))
+        {
             return Ok(None);
         }
         let mut events = Vec::with_capacity(joined.len());
@@ -770,22 +750,11 @@ impl SchedulerRepository {
             events.push(event);
         }
 
-        if let Some(event) = events.iter().find(|event| {
-            metadata
-                .get(&event.id.0)
-                .and_then(|value| value.get("radioAnswerTurnId"))
-                .is_some_and(|turn| !turn.is_null())
-        }) {
-            return Ok(Some(refused(
-                &agent,
-                format!("radio answer {} requires radio-policy", event.id.0),
-            )));
-        }
         let (complaints, _work) = load_policy_records(transaction, &agent, &events)?;
         let obsolete_work = obsolete_work_review_ids(transaction, &agent, &events)?;
         let prepared =
             prepare_pending_batch(&agent, events, metadata, &complaints, &obsolete_work)?;
-        if radio_event.is_none()
+        if single_event.is_none()
             && !preparation
             && let Some((kind, dependency)) = prepared.events.iter().find_map(|event| {
                 let dependency =
@@ -802,7 +771,7 @@ impl SchedulerRepository {
                 format!("scheduler cannot claim {kind}: requires {dependency}"),
             )));
         }
-        let take_single_event = radio_event.is_some()
+        let take_single_event = single_event.is_some()
             || (preparation
                 && prepared
                     .events
@@ -814,7 +783,7 @@ impl SchedulerRepository {
             select_turn_batch(&prepared.events, &prepared.metadata, prefix, preparation)
         };
 
-        let unsupported = if radio_event.is_some() {
+        let unsupported = if single_event.is_some() {
             None
         } else if agent.extra.get("pendingSettings").is_some_and(truthy) {
             Some("pendingSettings are not supported by the Rust turn driver; apply settings first.")

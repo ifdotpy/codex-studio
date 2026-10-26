@@ -6,7 +6,7 @@ vi.mock("../servers/ServerServicesContext", () => ({
   useServerApi: () => ({ post: vi.fn() }),
 }));
 import LimitRecoveryNotice from "./LimitRecoveryNotice";
-import { localDateTime } from "../local-time";
+vi.mock("../local-time", () => ({ localDateTime: () => "Fixture reset time" }));
 import type { LimitRecovery } from "../usage/limitRecovery";
 
 const NOW = 1_800_000_000;
@@ -72,9 +72,7 @@ function hidesDetails(html: string) {
 
 test("a limit shows one line with the local reset time and a Refresh button", () => {
   const html = render({});
-  expect(html).toContain(
-    `Limit reached. Resets at ${localDateTime(new Date(RESET * 1000))}.`,
-  );
+  expect(html).toContain("Limit reached. Resets at Fixture reset time.");
   expect(html).toContain("Refresh");
   hidesDetails(html);
 });

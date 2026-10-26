@@ -189,9 +189,16 @@ const runSyncCrossTabScenario = async (
   };
   try {
     const origin = `http://127.0.0.1:${server.httpServer.address().port}`;
-    const streamLockName = `codex-sync-stream:${origin}:${workspaceId}`;
     const competingOwner = await context.newPage();
     await competingOwner.goto(`${origin}/sync-check`);
+    const streamLockName = await competingOwner.evaluate(
+      async (workspaceId) => {
+        const { resourceCoordinationNames } =
+          await import("/src/sync/resourceConnection.ts");
+        return resourceCoordinationNames(location.origin, workspaceId).lock;
+      },
+      workspaceId,
+    );
     await competingOwner.evaluate(async (name) => {
       if (!navigator.locks?.request)
         throw new Error("Web Locks are required for single-stream ownership");
@@ -321,8 +328,10 @@ const runSyncCrossTabScenario = async (
     );
     await pages[7].evaluate(async (currentWorkspace) => {
       const { API_SCHEMA_HASH } = await import("/src/generated/apiSchema.ts");
+      const { resourceCoordinationNames } =
+        await import("/src/sync/resourceConnection.ts");
       const channel = new BroadcastChannel(
-        `codex-sync-${location.origin}-${currentWorkspace}`,
+        resourceCoordinationNames(location.origin, currentWorkspace).channel,
       );
       channel.postMessage({
         kind: "resource-event",

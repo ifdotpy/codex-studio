@@ -171,7 +171,7 @@ export default function ProjectServerCards({
             }
             data={[
               { value: "layr", label: "layr" },
-              { value: "image", label: "ASIF" },
+              { value: "image", label: "Image" },
               { value: "worktree", label: "worktree" },
             ]}
           />

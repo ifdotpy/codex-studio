@@ -19,6 +19,25 @@ describes managed tools and application workflows. No external skill repository
 is required. Standard Codex CLI delegation belongs to the independent native
 agent skill, not this application skill.
 
+## Interface language and interaction
+
+The same interface serves desktop and mobile clients connected to different
+server platforms. Product labels, notices, errors, and icons do not assume an
+operating system. They name the affected server, device, project folder, virtual
+machine, file manager, or secure storage. A disk-space notice refers to the
+server whose disk needs space. Capability restrictions remain enforced, with
+neutral explanations when a feature is unavailable. Platform names belong only
+in technical setup instructions where needed, not ordinary product copy.
+
+A single click or tap on a sidebar chat opens it. Scrolling, dragging, and the
+separate row action menu do not require a preliminary selection tap. Keyboard
+activation remains available. The composer shows the lead, worker, and review
+model choices without provider logos. On narrow screens the controls must remain
+within the composer, preserve accessible role/model names, and stay operable
+without overlapping the send, stop, attachment, or microphone controls.
+Use intrinsic sizing, wrapping, and shared spacing tokens rather than fixed
+widths or offsets for individual devices.
+
 The [approved Rust migration and workspace specification](plans/rust-workspaces.md)
 defines migration boundaries and acceptance gates. Issue #37 tracks completion.
 For an existing checkout, see the [layout relocation procedure](relocating-installation.md).
@@ -85,7 +104,7 @@ instead of falling back. Each new worktree reads the file, so a change needs no
 restart. Archive and cleanup still manage worktrees under the previous root.
 
 The first layr chat imports the project once. Later chats reuse the VM main line.
-The Mac folder stays separate. Export a copy only on request.
+The host project folder stays separate. Export a copy only on request.
 See [VM chats](linux-vm-workspaces.md) and [ASIF images](workspace-images.md).
 
 ## Setup
@@ -152,7 +171,14 @@ and review; its title contains the full settings. On narrow layouts it keeps the
 wider layouts name all three roles. Click it or submit `/model` to open the role picker anchored above the composer on desktop or in a bottom sheet on phones. Escape closes the picker and returns focus to the summary.
 Accounts use a compact grid with remaining limits. Chat settings is one compact Team panel without tabs. It contains
 permissions, subagent parallelism, delegation depth, and account eligibility; zero parallelism
-uses a single agent. Account eligibility is always visible in compact provider groups with remaining limits; long names and emails are ellipsized, with full values in the account title and accessible description.
+uses a single agent. Permissions stay available during running turns and pending
+approvals. Claude applies Ask and Full live in both directions. Codex Full answers
+pending tool approvals through the normal user-approval path and automatically
+approves new callbacks while Full is saved; Ask stops automatic approvals, with
+the provider's Ask policy starting from the next turn. An approval already in
+flight can still finish just after Ask is selected, so the turn can briefly retain
+Full for a fraction of a second. Quick-create inherits settings only from a live
+previous chat; an archived chat uses the defaults for a new chat. Account eligibility is always visible in compact provider groups with remaining limits; long names and emails are ellipsized, with full values in the account title and accessible description.
 Automatic account selection prefers a free slot, project order, then fewer
 active agents. Eligibility is separate from each role's selected account.
 Project actions are available in the shared dialog footer. Hidden catalog models stay hidden. A proposed plan waits for a
@@ -328,7 +354,7 @@ For systemd user services and Windows Subsystem for Linux, see
 
 The mobile layout shows orchestrator chats, team agents, existing projects, account selection,
 and chat settings. Add the page to the iPhone home screen for a standalone window.
-The Mac remains the server. SQLite remains the authoritative store.
+The connected computer remains the server. SQLite remains the authoritative store.
 
 The former mobile setup command was removed with the Python backend and has no
 Rust replacement in this change. Preserve existing Tailscale Serve configuration.
@@ -343,11 +369,11 @@ RxDB replicates SQLite projections to IndexedDB. It keeps message identities acr
 reloads and retries. Different browser drafts remain separate and can be combined.
 A lost response does not authorize another underlying command.
 After one complete online load, the browser can cache the interface for later use
-without the Mac connection. Cached chats and drafts can open while the Mac is
+without a server connection. Cached chats and drafts can open while the server is
 unavailable. Browser storage must still contain that data.
 Text messages for existing chats enter a local queue before the composer clears.
-The queue retries the same message identity when Studio can reach the Mac again.
-New chats, new file uploads, and voice require the Mac connection.
+The queue retries the same message identity when Studio can reach the server again.
+New chats, new file uploads, and voice require the server connection.
 Return to Studio to resume sync and delivery. Delivery while iOS suspends Studio
 is not guaranteed. Keep the page open for voice.
 
@@ -374,7 +400,18 @@ agent chats in the background. It updates these saved histories before selection
 The current chat loads first. One background history loads at a time.
 This leaves connections available for messages and other active requests.
 A ready history appears immediately on selection, including its saved scroll position.
-After a network change or a return to Studio, sync replaces the old connection.
+After a network change or a return to Studio, sync restores updates when needed.
+Browser network hints do not interrupt a working server stream. A hidden tab
+pauses its updates deliberately; this pause is not reported as a lost connection.
+`No network.` takes precedence when the browser reports that it is offline.
+When it reports online, the notice distinguishes the observed failure from the
+current recovery action. An unknown cause is stated as unknown. `Reconnecting`
+means that a new live update connection is being opened. Preparation, a scheduled
+retry with its retry time, and waiting for another window have distinct notices;
+interrupted updates alone do not imply an active connection attempt. Switching chats keeps the shared connection and reconciles
+the current subscriptions. A saved message awaiting delivery confirmation has
+its own notice, so it does not imply that the connection is lost. The notice
+clears after the server acknowledges the message.
 A cached workspace cannot send drafts to a different workspace before verification.
 
 Run `pnpm --filter codex-agents-web run test:mobile` for the mobile regression suite.
@@ -395,7 +432,7 @@ ChatGPT account through its app-server. No separate API key is required.
 Voice can pass spoken tasks directly to the orchestrator. It does not wait for
 a separate Send transcript button. Normal orchestrator replies return to voice.
 End voice stops the microphone and voice connection. It does not stop the task.
-Transcripts remain on the Mac until the chat is deleted. Old courier drafts
+Transcripts remain on the server until the chat is deleted. Old courier drafts
 remain available for recovery; Studio does not automatically send them.
 `orchestration_speak` supplies additional speakable context to native voice.
 Its receipt does not confirm exact audible playback. Use chat buttons for
@@ -421,6 +458,18 @@ Use **Rename project** to change the project label. The directory path stays the
 Use **New folder** and **New subfolder** to add folders for chats.
 Use **Move to folder** in the chat menu. These folders exist only in Studio.
 A chat keeps its directory and account.
+
+The active sidebar hides unregistered directory groups that contain only archived
+chats. Use **Show archived chats** to find those chats and their directory groups.
+Registered projects remain visible even when empty.
+
+Use **Delete project…** in either project sidebar menu to delete a registered
+project, including all its chats, archived chats, workers and shared rooms.
+Confirmation stops running agents. History, cost accounting, the project folder
+and Git worktrees remain; disposable managed images and virtual machine worker lines may be
+removed. Deletion cannot be undone in Studio. Projects spanning servers are
+refused. If the result is unconfirmed, **Recover saved request** checks the same
+intention with its original identity; it does not start another deletion.
 
 Each project has one default account. Use **Project account** in the project menu
 to select it on desktop or mobile. New chats use that account. Existing chats
@@ -453,7 +502,7 @@ The main agent's model selector includes every available model from the selected
 
 The main agent has the orchestrator role. Subagents ask it for help.
 Only the main agent sends conversational messages or tasks to you.
-Native tool permissions still require your approval.
+In Ask mode, native tool permissions require your approval.
 
 Use a stable `request_id` with `orchestration_send` to recover a lost reply.
 An exact retry returns the saved receipt without another instruction.

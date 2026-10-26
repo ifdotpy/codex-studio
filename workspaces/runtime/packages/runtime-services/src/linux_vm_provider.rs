@@ -102,21 +102,21 @@ pub type Result<T> = std::result::Result<T, GuestProviderError>;
 
 #[derive(Debug, Error)]
 pub enum GuestProviderError {
-    #[error("invalid Linux VM provider identity or launch options")]
+    #[error("invalid VM provider identity or launch options")]
     Invalid,
-    #[error("Linux VM provider outcome is unknown and must be reconciled")]
+    #[error("VM provider outcome is unknown and must be reconciled")]
     Unknown,
-    #[error("Linux VM provider refused the operation")]
+    #[error("VM provider refused the operation")]
     Refused,
-    #[error("Linux VM provider response is invalid")]
+    #[error("VM provider response is invalid")]
     InvalidResponse,
-    #[error("Linux VM provider persistence failed")]
+    #[error("VM provider persistence failed")]
     Persistence(#[from] StoreError),
-    #[error("Linux VM guest request failed")]
+    #[error("VM guest request failed")]
     Guest(#[from] GuestError),
-    #[error("Linux VM provider JSON is invalid")]
+    #[error("VM provider JSON is invalid")]
     Json(#[from] serde_json::Error),
-    #[error("Linux VM provider worker task failed")]
+    #[error("VM provider worker task failed")]
     Task,
 }
 
@@ -1702,14 +1702,14 @@ mod tests {
         assert_eq!(receipt.result, "complete");
         assert!(!receipt.result.contains("private-token"));
         assert!(!receipt.signature.contains("private-token"));
-        let expected_material = serde_json::to_vec(&json!({
-            "agentId": "agent-1",
-            "accountKey": "account-1",
-            "path": ".claude/studio-accounts/key/.credentials.json",
-            "digest": digest,
-        }))
-        .unwrap();
-        assert_eq!(receipt.signature, hex_digest(&expected_material));
+        assert_eq!(
+            digest,
+            "740707bd18f54cdc7ed7de3947165486e8cc3dcf7b4d1f6c300cd5c0d641d85d"
+        );
+        assert_eq!(
+            receipt.signature,
+            "ce9eaf46470ff0819976ff38033a4601097be67230e404dfb0dddf2672a8e90f"
+        );
     }
 
     #[tokio::test]

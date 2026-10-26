@@ -98,9 +98,11 @@ const MAX_STALL_TIMER_DELAY_MS = 2_147_483_647;
 export function watchStalls(queries, studioWaits, limits, recoverStall) {
   let timer;
   let armedAt = Infinity;
+  let disposed = false;
   const eligible = (id, active) =>
     active.turn && !active.stall && active.session && !studioWaits.get(id);
   function arm() {
+    if (disposed) return;
     let nearest = Infinity;
     for (const [id, active] of queries) {
       if (!eligible(id, active)) continue;
@@ -134,6 +136,13 @@ export function watchStalls(queries, studioWaits, limits, recoverStall) {
     );
     timer.unref();
   }
+  // Shutdown keeps the query snapshot available for usage draining, but no
+  // later stream progress may rearm tool recovery.
+  arm.dispose = () => {
+    disposed = true;
+    clearTimeout(timer);
+    armedAt = Infinity;
+  };
   return arm;
 }
 
@@ -161,29 +170,4 @@ export function stallMessage(stall) {
     limit +
     "). Messages sent during the turn go to the next turn."
   );
-}
-
-// Native input ids that Claude Code wrote into its conversation history: user
-// messages, and queued messages it absorbed into a turn. `lines` is the
-// session's JSONL transcript.
-export function recordedInputIds(lines) {
-  const ids = new Set();
-  for (const line of lines) {
-    let entry;
-    try {
-      entry = JSON.parse(line);
-    } catch {
-      continue;
-    }
-    if (entry?.type === "user" && typeof entry.uuid === "string")
-      ids.add(entry.uuid);
-    const attachment = entry?.attachment;
-    if (
-      entry?.type === "attachment" &&
-      attachment?.type === "queued_command" &&
-      typeof attachment.source_uuid === "string"
-    )
-      ids.add(attachment.source_uuid);
-  }
-  return ids;
 }

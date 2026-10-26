@@ -99,7 +99,7 @@ async fn a_mac_host_opens_the_link_at_once_and_still_shows_a_card() {
     );
     assert_eq!(
         message,
-        "studio-browser: Opened the page in the browser of this Mac. Studio also shows the person a sign-in card for id.example.com, so the person can answer from another window or a phone."
+        "studio-browser: Opened the page in the browser of this computer. Studio also shows the person a sign-in card for id.example.com, so the person can answer from another window or a phone."
     );
     let item = only_item(&host);
     assert_eq!(
@@ -117,7 +117,7 @@ async fn a_link_that_studio_refuses_still_opens_in_the_browser_of_this_mac() {
     assert_eq!(opened, vec!["ftp://files.example.com/".to_owned()]);
     assert_eq!(
         message,
-        "studio-browser: Opened the page in the browser of this Mac. Studio shows no sign-in card: Only https sign-in links and loopback sign-in pages can open"
+        "studio-browser: Opened the page in the browser of this computer. Studio shows no sign-in card: Only https sign-in links and loopback sign-in pages can open"
     );
     let (code, message, _) = launch(&host, "ftp://files.example.com/", false);
     assert_eq!(
@@ -139,7 +139,7 @@ async fn without_the_mac_fast_path_the_launcher_only_queues_the_card() {
     assert!(opened.is_empty(), "{opened:?}");
     assert_eq!(
         message,
-        "studio-browser: Studio asks the person to open id.example.com. The sign-in continues in the browser on the Mac after the approval."
+        "studio-browser: Studio asks the person to open id.example.com. The sign-in continues in the browser on this computer after the approval."
     );
     assert_eq!(only_item(&host).get("localOpen"), None);
     host.service.stop().await;

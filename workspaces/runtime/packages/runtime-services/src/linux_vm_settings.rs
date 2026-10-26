@@ -32,15 +32,15 @@ pub struct VmSettings {
 pub enum SettingsError {
     #[error("{0}")]
     Invalid(String),
-    #[error("Stop the Linux VM before changing its resource limits.")]
+    #[error("Stop the VM before changing its resource limits.")]
     Running,
     #[error("VM disks cannot shrink. Keep the existing disk limit.")]
     DiskShrink,
     #[error("The VM control service is unavailable.")]
     Control(#[source] GuestError),
-    #[error("Linux VM settings could not be read or written.")]
+    #[error("VM settings could not be read or written.")]
     Io(#[source] std::io::Error),
-    #[error("Linux VM settings are invalid.")]
+    #[error("VM settings are invalid.")]
     Json(#[source] serde_json::Error),
 }
 
@@ -83,7 +83,7 @@ impl VmSettings {
             let limit = macos_memory_limit(host_memory);
             if self.memory_bytes > limit {
                 return Err(SettingsError::Invalid(format!(
-                    "VM memory must leave macOS enough memory: at most {:.1} GiB on this Mac.",
+                    "VM memory must leave the host enough memory: at most {:.1} GiB on this computer.",
                     limit as f64 / GIB as f64
                 )));
             }
@@ -138,7 +138,7 @@ fn read_macos_host_memory_bytes() -> Result<u64, SettingsError> {
             Some(status) if status.success() => break,
             Some(_) => {
                 return Err(SettingsError::Invalid(
-                    "Could not read macOS host memory.".to_owned(),
+                    "Could not read host memory.".to_owned(),
                 ));
             }
             None if std::time::Instant::now() < deadline => {
@@ -150,7 +150,7 @@ fn read_macos_host_memory_bytes() -> Result<u64, SettingsError> {
                 let _kill_result = child.kill();
                 let _wait_result = child.wait();
                 return Err(SettingsError::Invalid(
-                    "Reading macOS host memory exceeded its timeout.".to_owned(),
+                    "Reading host memory exceeded its timeout.".to_owned(),
                 ));
             }
         }
@@ -159,7 +159,7 @@ fn read_macos_host_memory_bytes() -> Result<u64, SettingsError> {
     String::from_utf8_lossy(&output.stdout)
         .trim()
         .parse::<u64>()
-        .map_err(|_| SettingsError::Invalid("Could not read macOS host memory.".to_owned()))
+        .map_err(|_| SettingsError::Invalid("Could not read host memory.".to_owned()))
 }
 
 fn host_logical_cpu_count() -> u64 {
@@ -296,6 +296,31 @@ fn allocated_bytes(metadata: &fs::Metadata) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn platform_neutral_memory_refusal_preserves_the_host_limit() {
+        let settings = VmSettings {
+            cpus: 2,
+            memory_bytes: 7 * GIB,
+            system_disk_bytes: 16 * GIB,
+            data_disk_bytes: 128 * GIB,
+        };
+        assert_eq!(
+            settings
+                .validate_for_host(4, Some(8 * GIB))
+                .expect_err("host memory must be reserved")
+                .to_string(),
+            "VM memory must leave the host enough memory: at most 4.0 GiB on this computer."
+        );
+        assert!(
+            VmSettings {
+                memory_bytes: 4 * GIB,
+                ..settings
+            }
+            .validate_for_host(4, Some(8 * GIB))
+            .is_ok()
+        );
+    }
 
     struct StoppedControl;
 

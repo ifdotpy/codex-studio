@@ -67,7 +67,9 @@ pub enum BrowserError {
     InvalidForward,
     #[error("the sign-in request is no longer open. Ask the agent to run the command again.")]
     Expired,
-    #[error("another sign-in uses port {0} on this Mac. Wait until it ends, then approve again.")]
+    #[error(
+        "another sign-in uses port {0} on this computer. Wait until it ends, then approve again."
+    )]
     PortInUse(u16),
     #[error("the sign-in forward cannot start")]
     Listener(std::io::ErrorKind),
@@ -1815,6 +1817,18 @@ mod tests {
     use std::net::TcpStream;
     use std::sync::atomic::AtomicBool;
     use tokio::sync::{Notify, Semaphore};
+
+    #[test]
+    fn platform_neutral_port_conflict_keeps_the_port_and_retry_guidance() {
+        assert_eq!(
+            BrowserError::PortInUse(1455).to_string(),
+            "another sign-in uses port 1455 on this computer. Wait until it ends, then approve again."
+        );
+        assert_eq!(
+            BrowserError::Unknown.to_string(),
+            "the sign-in redirect outcome is unknown; inspect Studio before retrying"
+        );
+    }
 
     type ExchangeCall = (String, String, Value, String, i64);
     type IdentityChange = (&'static str, fn(&mut ForwardInput));

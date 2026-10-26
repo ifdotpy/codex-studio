@@ -45,6 +45,8 @@ pub struct LifecycleEffect {
     before: Value,
     stopped: Value,
     at: f64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    owner_scope: Option<std::collections::BTreeSet<String>>,
 }
 impl LifecycleEffect {
     pub(crate) fn new(kind: LifecycleEffectKind, before: Value, stopped: Value, at: f64) -> Self {
@@ -53,7 +55,11 @@ impl LifecycleEffect {
             before,
             stopped,
             at,
+            owner_scope: None,
         }
+    }
+    pub(crate) fn owner_scope(&self) -> Option<&std::collections::BTreeSet<String>> {
+        self.owner_scope.as_ref()
     }
     pub fn kind(&self) -> LifecycleEffectKind {
         self.kind
@@ -181,4 +187,43 @@ pub fn execute_in_transaction(
     ports: &dyn LifecyclePorts,
 ) -> Result<Value, ManagementError> {
     crate::agent_management_store::execute_with_ports(tx, action, now, ports)
+}
+
+/// Project deletion limits any global lifecycle sub-policy to the selected owners.
+/// Other lifecycle callers retain their established unscoped behavior.
+pub(crate) fn execute_in_transaction_for_scope(
+    tx: &Transaction<'_>,
+    action: &Action,
+    now: f64,
+    ports: &dyn LifecyclePorts,
+    owners: &std::collections::BTreeSet<String>,
+) -> Result<Value, ManagementError> {
+    struct Scoped<'a> {
+        ports: &'a dyn LifecyclePorts,
+        owners: &'a std::collections::BTreeSet<String>,
+    }
+    impl LifecyclePorts for Scoped<'_> {
+        fn stage(
+            &self,
+            tx: &Transaction<'_>,
+            effect: &LifecycleEffect,
+        ) -> Result<(), ManagementError> {
+            let mut effect = effect.clone();
+            if effect.kind() == LifecycleEffectKind::ReleaseWork {
+                effect.owner_scope = Some(self.owners.clone());
+            }
+            self.ports.stage(tx, &effect)
+        }
+        fn stage_voice_delete(
+            &self,
+            tx: &Transaction<'_>,
+            agent: &str,
+        ) -> Result<(), ManagementError> {
+            self.ports.stage_voice_delete(tx, agent)
+        }
+        fn committed(&self) -> LifecycleCommitFuture<'_> {
+            self.ports.committed()
+        }
+    }
+    execute_in_transaction(tx, action, now, &Scoped { ports, owners })
 }

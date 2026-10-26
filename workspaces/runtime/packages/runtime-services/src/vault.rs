@@ -66,7 +66,7 @@ pub enum VaultError {
     InvalidProjectId,
     #[error("The project has a vault already")]
     AlreadyConfigured,
-    #[error("The project has no Mac folder")]
+    #[error("The project has no host folder")]
     ProjectSourceMissing,
     #[error("A vault name has up to 44 letters, digits, - and _, and is not api or assets")]
     InvalidPrefix,

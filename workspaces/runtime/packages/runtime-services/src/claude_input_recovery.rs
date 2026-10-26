@@ -153,11 +153,25 @@ mod unbounded_batch_tests {
 
     #[test]
     fn recovery_batch_capture_keeps_all_thousand_exact_inputs() {
+        let examples = [
+            (
+                "message",
+                "ab530a13e45914982b79f9b7e3fba994cfd1f3fb22f71cea1afbf02b460c6d1d",
+            ),
+            (
+                "message é",
+                "f87ae64dc5e675af78677e1160a3e1cb7e09286092b5db1c4dbd674f34cc48bc",
+            ),
+            (
+                "message\nlast",
+                "35a305d1cd111a7116fbc8ec8ae3c0298ec47331b5cf09010ed698d77dc3827d",
+            ),
+        ];
         let events: Vec<_> = (0..1000)
             .map(|index| {
                 json!({
                     "id":format!("event-{index}"),"agent":"agent","epoch":1,"kind":"user",
-                    "text":format!("message {index}"),"created":index as f64,"status":"reserved",
+                    "text":examples[index % examples.len()].0,"created":index as f64,"status":"reserved",
                     "turn_id":null,"error":null,"metadata":{}
                 })
             })
@@ -167,14 +181,9 @@ mod unbounded_batch_tests {
             .expect("batch capture");
         let saved = frozen["events"].as_array().expect("saved events");
         assert_eq!(saved.len(), events.len());
-        for (source, saved) in events.iter().zip(saved) {
+        for (index, (source, saved)) in events.iter().zip(saved).enumerate() {
             assert_eq!(saved["id"], source["id"]);
-            assert_eq!(
-                saved["textHash"],
-                json!(sha256_hex(
-                    source["text"].as_str().expect("text").as_bytes()
-                ))
-            );
+            assert_eq!(saved["textHash"], examples[index % examples.len()].1);
         }
         assert_eq!(frozen["input"], params["input"]);
         assert!(capture_input(&json!({"id":"agent"}), &[], &params, "prepared batch").is_err());

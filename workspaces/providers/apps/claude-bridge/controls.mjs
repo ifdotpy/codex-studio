@@ -1,4 +1,6 @@
 import { checkpointSourceMatches } from "./file-checkpoints.mjs";
+import { messageIndex } from "./history-index.mjs";
+import { nativeInputIds } from "./input-messages.mjs";
 import { randomUUID } from "node:crypto";
 
 // Initialization is the CLI's authoritative list after native skill policy.
@@ -33,12 +35,109 @@ export function explicitNativeCommand(text, commands) {
   return `/${row.name}${match[3] ? ` ${match[3]}` : ""}`;
 }
 
-function nativeBoundary(turn) {
-  return (
-    turn.nativeMessageId ||
-    turn.items?.find((item) => item.type === "userMessage")?.nativeId ||
-    turn.id
+// One index per immutable SDK snapshot; all turns and retained inputs reuse it.
+const indexes = new WeakMap();
+function indexFor(messages) {
+  if (!indexes.has(messages)) indexes.set(messages, messageIndex(messages));
+  return indexes.get(messages);
+}
+// /clear keeps the Studio mirror, but earlier conversations and the local
+// clear command have no boundary in the new native session.
+function currentNativeTurns(turns, nativeId) {
+  return turns.filter(
+    (turn) =>
+      !turn.nativeHistoryDetached &&
+      (!turn.nativeSessionId || turn.nativeSessionId === nativeId),
   );
+}
+// SDK SessionMessage UUIDs identify every part of one logical input. The
+// first part is the history boundary; the last can own a file checkpoint.
+function nativeParts(turn) {
+  const input = turn.items?.find((item) => item.type === "userMessage");
+  // Older forks remapped only nativeMessageId. Without a composite receipt,
+  // that SDK-verified boundary remains authoritative over the original item.
+  const ids = input?.nativeIds
+    ? nativeInputIds(input)
+    : [turn.nativeMessageId || input?.nativeId || turn.id];
+  if (!ids || (turn.nativeMessageId && !ids.includes(turn.nativeMessageId)))
+    throw new Error("The exact Claude turn boundary is unavailable");
+  return ids;
+}
+/** @param {import("@anthropic-ai/claude-agent-sdk").SessionMessage[]} messages */
+function partPositions(turn, messages) {
+  const index = indexFor(messages);
+  const positions = index.positions(nativeParts(turn));
+  if (
+    !positions ||
+    positions.some((position) => {
+      const message = messages[position];
+      return (
+        message.type !== "user" ||
+        message.parent_tool_use_id ||
+        message.parent_agent_id
+      );
+    })
+  )
+    throw new Error(
+      "The exact Claude turn boundary is unavailable after compaction or history recovery",
+    );
+  return positions;
+}
+function turnPositions(turns, messages) {
+  const positions = turns.map((turn) => partPositions(turn, messages));
+  if (
+    positions.some((parts, i) => i > 0 && parts[0] <= positions[i - 1].at(-1))
+  )
+    throw new Error(
+      "The exact Claude turn boundary is unavailable after compaction or history recovery",
+    );
+  return positions;
+}
+function remapTurn(turn, source, forkMessages) {
+  const initialIds = nativeParts(turn);
+  const first = partPositions(turn, source)[0];
+  turn.nativeMessageId = forkMessages[first].uuid;
+  const initial = turn.items?.find((item) => item.type === "userMessage");
+  for (const item of turn.items || []) {
+    if (item.type !== "userMessage") continue;
+    // A withdrawn input has a logical receipt but no native history to remap.
+    if (
+      item.delivery === "steer" &&
+      ["not_applied", "cancelled"].includes(item.deliveryStatus)
+    )
+      continue;
+    // Every retained non-initial user input needs a native identity, even
+    // legacy items without a delivery marker. Withdrawals were exempted above.
+    if (!item.nativeId && item !== initial)
+      throw new Error("Claude retained input mapping is unavailable");
+    const ids = item === initial ? initialIds : nativeInputIds(item);
+    if (!ids) throw new Error("Claude fork lost a retained input boundary");
+    const remapped = ids.map((id) => {
+      const index = indexFor(source).positions([id])?.[0] ?? -1;
+      if (index < 0 || !forkMessages[index]?.uuid)
+        throw new Error("Claude fork lost a retained input boundary");
+      return forkMessages[index].uuid;
+    });
+    item.nativeId = remapped.at(-1);
+    if (item.nativeIds) item.nativeIds = remapped;
+  }
+  // A fork remaps message IDs. Its SDK backups have not been verified.
+  delete turn.fileCheckpointMessageId;
+  delete turn.fileCheckpointSource;
+}
+// Validate every retained input against the authoritative SDK rows before
+// creating a native branch. Legacy steers without supported provenance cannot
+// be guessed from text or position; refuse the operation before any effect.
+function preflightRetained(turns, messages) {
+  try {
+    for (const turn of turns)
+      remapTurn(structuredClone(turn), messages, messages);
+  } catch (cause) {
+    throw new Error(
+      "The Claude input mapping is unavailable; no native history operation was submitted",
+      { cause },
+    );
+  }
 }
 function comparable(message) {
   return JSON.stringify({ type: message.type, message: message.message });
@@ -47,25 +146,8 @@ function comparable(message) {
 export function rollbackBoundary(turns, messages, turnId) {
   const index = turns.findIndex((turn) => turn.id === turnId);
   if (index < 0) throw new Error("The selected Claude turn does not exist");
-  const positions = turns
-    .slice(0, index + 1)
-    .map((turn) =>
-      messages.findIndex(
-        (message) =>
-          message.type === "user" &&
-          !message.parent_tool_use_id &&
-          message.uuid === nativeBoundary(turn),
-      ),
-    );
-  if (
-    positions.some(
-      (position, i) => position < 0 || (i > 0 && position <= positions[i - 1]),
-    )
-  )
-    throw new Error(
-      "The exact Claude turn boundary is unavailable after compaction or history recovery",
-    );
-  const end = positions[index];
+  const positions = turnPositions(turns.slice(0, index + 1), messages);
+  const end = positions[index][0];
   return { index, end, upToMessageId: index ? messages[end - 1]?.uuid : null };
 }
 
@@ -110,14 +192,18 @@ export async function rollbackSession(session, request, deps) {
     const messages = await deps.getSessionMessages(sourceNativeId, {
       dir: session.nativeHistoryCwd || session.cwd,
     });
-    const boundary = rollbackBoundary(session.turns, messages, turnId);
-    const fileMessageId = session.turns[boundary.index].fileCheckpointMessageId;
+    const nativeTurns = currentNativeTurns(session.turns, sourceNativeId);
+    const boundary = rollbackBoundary(nativeTurns, messages, turnId);
+    const mirrorIndex = session.turns.findIndex((turn) => turn.id === turnId);
+    const previousTurns = structuredClone(session.turns);
+    preflightRetained(nativeTurns.slice(0, boundary.index), messages);
+    const fileMessageId = session.turns[mirrorIndex].fileCheckpointMessageId;
     let filePlan;
     if (restoreFiles) {
       if (
         !fileMessageId ||
-        fileMessageId !== nativeBoundary(session.turns[boundary.index]) ||
-        !checkpointSourceMatches(session, session.turns[boundary.index])
+        fileMessageId !== nativeParts(session.turns[mirrorIndex]).at(-1) ||
+        !checkpointSourceMatches(session, session.turns[mirrorIndex])
       )
         throw new Error("This message has no SDK file checkpoint");
       const preview = await deps.rewindFiles(sourceNativeId, fileMessageId, {
@@ -149,9 +235,9 @@ export async function rollbackSession(session, request, deps) {
       status: "submitted",
       sourceNativeId,
       createdAt: new Date().toISOString(),
-      retainedCount: boundary.index,
+      retainedCount: mirrorIndex,
       sourceMessages: messages.slice(0, boundary.end),
-      previousTurns: structuredClone(session.turns),
+      previousTurns,
       upToMessageId: boundary.upToMessageId,
     };
     Object.defineProperty(session.controlRequests, requestId, {
@@ -178,7 +264,8 @@ export async function rollbackSession(session, request, deps) {
   const retained = structuredClone(
     receipt.previousTurns.slice(0, receipt.retainedCount),
   );
-  if (retained.length) {
+  const nativeRetained = currentNativeTurns(retained, receipt.sourceNativeId);
+  if (nativeRetained.length) {
     const forkMessages = await deps.getSessionMessages(receipt.targetNativeId, {
       dir: session.nativeHistoryCwd || session.cwd,
     });
@@ -192,16 +279,9 @@ export async function rollbackSession(session, request, deps) {
       throw new Error(
         "Claude fork history did not preserve the retained messages",
       );
-    for (const turn of retained) {
-      const index = source.findIndex(
-        (message) => message.uuid === nativeBoundary(turn),
-      );
-      if (index < 0 || !forkMessages[index]?.uuid)
-        throw new Error("Claude fork lost a retained turn boundary");
-      turn.nativeMessageId = forkMessages[index].uuid;
-      // A fork remaps message IDs. Its SDK backups have not been verified.
-      delete turn.fileCheckpointMessageId;
-      delete turn.fileCheckpointSource;
+    for (const turn of nativeRetained) {
+      remapTurn(turn, source, forkMessages);
+      turn.nativeSessionId = receipt.targetNativeId;
     }
   }
   if (restoreFiles && receipt.status === "rewound")
@@ -232,8 +312,8 @@ export async function rollbackSession(session, request, deps) {
     turns: receipt.previousTurns,
   });
   session.nativeId = receipt.targetNativeId;
-  session.started = retained.length > 0;
-  if (!retained.length) session.nativeHistoryCwd = session.cwd;
+  session.started = nativeRetained.length > 0;
+  if (!nativeRetained.length) session.nativeHistoryCwd = session.cwd;
   session.turns = retained;
   receipt.status = "completed";
   receipt.result = {
@@ -276,36 +356,33 @@ export async function forkAtTurn(source, params, deps) {
     const nativeId = source.nativeId || source.id;
     const dir = source.nativeHistoryCwd || source.cwd;
     const messages = await deps.getSessionMessages(nativeId, { dir });
-    let end = messages.length;
-    if (selected < source.turns.length - 1) {
-      end = messages.findIndex(
-        (message) =>
-          message.uuid === nativeBoundary(source.turns[selected + 1]),
-      );
-      if (end < 1)
-        throw new Error(
-          "The exact Claude branch boundary is unavailable after compaction or history recovery",
-        );
-    }
-    const positions = retained.map((turn) =>
-      messages.findIndex(
-        (message) =>
-          message.type === "user" &&
-          !message.parent_tool_use_id &&
-          message.uuid === nativeBoundary(turn),
-      ),
+    const nativeTurns = currentNativeTurns(source.turns, nativeId);
+    const nativeSelected = nativeTurns.findIndex(
+      (turn) => turn.id === source.turns[selected]?.id,
     );
+    if (nativeSelected < 0)
+      throw new Error(
+        "The selected Claude turn belongs to an earlier native session or a local session transition",
+      );
+    const nativeRetained = currentNativeTurns(retained, nativeId);
+    const positions = turnPositions(
+      nativeTurns.slice(0, nativeSelected + 2),
+      messages,
+    );
+    const end =
+      nativeSelected < nativeTurns.length - 1
+        ? positions[nativeSelected + 1][0]
+        : messages.length;
     if (
-      positions.some(
-        (position, i) =>
-          position < 0 ||
-          position >= end ||
-          (i > 0 && position <= positions[i - 1]),
-      )
+      end < 1 ||
+      positions
+        .slice(0, nativeRetained.length)
+        .some((parts) => parts.at(-1) >= end)
     )
       throw new Error(
         "The exact Claude branch boundary is unavailable after compaction or history recovery",
       );
+    preflightRetained(nativeRetained, messages);
     const fork = await deps.forkSession(nativeId, {
       dir,
       ...(params.lastTurnId != null
@@ -327,10 +404,9 @@ export async function forkAtTurn(source, params, deps) {
       throw new Error(
         "Claude fork history did not preserve the selected messages",
       );
-    for (let i = 0; i < retained.length; i++) {
-      retained[i].nativeMessageId = forkMessages[positions[i]].uuid;
-      delete retained[i].fileCheckpointMessageId;
-      delete retained[i].fileCheckpointSource;
+    for (const turn of nativeRetained) {
+      remapTurn(turn, messages, forkMessages);
+      turn.nativeSessionId = targetNativeId;
     }
   }
   const {
