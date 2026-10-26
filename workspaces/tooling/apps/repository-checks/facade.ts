@@ -148,6 +148,10 @@ const UNSAFE_RUST_ALLOWLIST: [string, string][] = [
     "APFS clonefile(2) for host_exec slot clones.",
   ],
   [
+    "workspaces/runtime/packages/runtime-services/src/shell_pressure/macos.rs",
+    "Apple dispatch memory-pressure source FFI and its raw callback context.",
+  ],
+  [
     "workspaces/runtime/packages/runtime-services/src/layr_native/import/filesystem_ffi.rs",
     "APFS descriptor clones and read-only filesystem case policy for native import.",
   ],
