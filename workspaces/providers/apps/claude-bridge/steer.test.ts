@@ -1,3 +1,4 @@
+import type { BridgeHarness, BridgeNoteFor } from "./testing/bridge-harness.ts";
 import {
   startBridge as startScriptedBridge,
   HANG_GUARD_MS,
@@ -95,7 +96,7 @@ const test = baseTest.extend({
   // Vitest requires destructuring here to discover fixture dependencies.
   // oxlint-disable-next-line no-empty-pattern
   startBridge: async ({}, use) => {
-    const bridges = [];
+    const bridges: BridgeHarness[] = [];
     await use(async (env = {}, sdk = FAKE_SDK, { clock = false } = {}) => {
       const bridge = await startScriptedBridge(sdk, "claude-steer-", {
         clock,
@@ -108,26 +109,29 @@ const test = baseTest.extend({
       bridges.push(bridge);
       return bridge;
     });
-    await Promise.all(bridges.map((bridge) => bridge.close()));
+    await Promise.all(bridges.map((bridge: BridgeHarness) => bridge.close()));
   },
 });
 
-const text = (value) => [{ type: "text", text: value }];
-const completed = (bridge, turn) =>
+const text = (value: string): import("./bridge-protocol.ts").BridgeInput[] => [
+  { type: "text", text: value },
+];
+const completed = (bridge: BridgeHarness, turn: string) =>
   bridge.note(
-    (n) => n.method === "turn/completed" && n.params.turn.id === turn,
+    (n): n is BridgeNoteFor<"turn/completed"> =>
+      n.method === "turn/completed" && n.params.turn.id === turn,
   );
-const acks = (bridge, id) =>
+const acks = (bridge: BridgeHarness, id: string) =>
   bridge.notes.filter(
-    (n) =>
+    (n): n is BridgeNoteFor<"item/completed"> =>
       n.method === "item/completed" &&
       n.params.item.type === "userMessage" &&
       n.params.item.clientId === id,
   );
 
-const ack = (bridge, id) => acks(bridge, id)[0];
+const ack = (bridge: BridgeHarness, id: string) => acks(bridge, id)[0];
 
-async function running(bridge, scenario) {
+async function running(bridge: BridgeHarness, scenario: string) {
   const turn = (
     await bridge.call("turn/start", {
       threadId: bridge.thread,
@@ -136,14 +140,19 @@ async function running(bridge, scenario) {
     })
   ).turn.id;
   await bridge.note(
-    (n) =>
+    (n): n is BridgeNoteFor<"item/started"> =>
       n.method === "item/started" ||
       (n.method === "turn/started" && n.params.turn.id === turn),
   );
   return turn;
 }
 
-const steer = (bridge, turn, id, value = "steer text") =>
+const steer = (
+  bridge: BridgeHarness,
+  turn: string,
+  id: string,
+  value: string = "steer text",
+) =>
   bridge.call("turn/steer", {
     threadId: bridge.thread,
     expectedTurnId: turn,
@@ -151,19 +160,20 @@ const steer = (bridge, turn, id, value = "steer text") =>
     input: text(value),
   });
 
-async function end(bridge, fail = false) {
+async function end(bridge: BridgeHarness, fail = false) {
   if (fail) await fs.writeFile(path.join(bridge.root, ".fail"), "");
   const token = String(
     (bridge.resultSequence = (bridge.resultSequence ?? 0) + 1),
   );
   const ready = bridge.note(
-    (n) => n.method === "fixture/result-ready" && n.params.token === token,
+    (n): n is BridgeNoteFor<"fixture/result-ready"> =>
+      n.method === "fixture/result-ready" && n.params.token === token,
   );
   await bridge.writeSignal(".end", token);
   await ready;
 }
 
-async function inputs(bridge) {
+async function inputs(bridge: BridgeHarness) {
   const file = path.join(bridge.root, ".inputs");
   return existsSync(file)
     ? (await fs.readFile(file, "utf8")).trim().split("\n")
@@ -247,8 +257,11 @@ test.concurrent("an interrupt before Claude reads a steer reports it unapplied",
   assert.deepEqual(await inputs(bridge), ["hold"]);
 });
 
-const read = (bridge, value) =>
-  bridge.note((n) => n.method === "fixture/input" && n.params.text === value);
+const read = (bridge: BridgeHarness, value: string) =>
+  bridge.note(
+    (n): n is BridgeNoteFor<"fixture/input"> =>
+      n.method === "fixture/input" && n.params.text === value,
+  );
 
 test.concurrent("a steer read without an echo is neither acknowledged nor reported unapplied", async ({
   startBridge,
@@ -291,7 +304,7 @@ test.concurrent("only the server's unsubscribe closes a session, never a busy on
   assert.deepEqual(await unsubscribe(), { status: "notLoaded" });
 });
 
-async function sdkInputs(bridge) {
+async function sdkInputs(bridge: BridgeHarness) {
   return (await fs.readFile(path.join(bridge.root, ".sdk-inputs"), "utf8"))
     .trim()
     .split("\n")
@@ -322,15 +335,20 @@ test.concurrent("input origin survives turn/start: mixed", async ({
   ).turn.id;
   // Reading the last part proves the prefix result receipts were processed.
   await bridge.note(
-    (n) =>
+    (n): n is BridgeNoteFor<"fixture/input"> =>
       n.method === "fixture/input" &&
-      bridge.notes.filter((note) => note.method === "fixture/input").length ===
-        input.length,
+      bridge.notes.filter(
+        (note): note is BridgeNoteFor<"fixture/input"> =>
+          note.method === "fixture/input",
+      ).length === input.length,
   );
   const messages = await sdkInputs(bridge);
   assert.equal(messages.length, input.length);
   assert.equal(
-    bridge.notes.some((n) => n.method === "turn/completed"),
+    bridge.notes.some(
+      (n): n is BridgeNoteFor<"turn/completed"> =>
+        n.method === "turn/completed",
+    ),
     false,
   );
   assert.deepEqual(
@@ -399,7 +417,10 @@ test.concurrent("input origin survives turn/steer: studio_event,human,studio_eve
   });
   await bridge.note((n) => ack(bridge, "origin-steer") === n);
   assert.equal(
-    bridge.notes.some((n) => n.method === "turn/completed"),
+    bridge.notes.some(
+      (n): n is BridgeNoteFor<"turn/completed"> =>
+        n.method === "turn/completed",
+    ),
     false,
   );
   const messages = (await sdkInputs(bridge)).slice(1);
@@ -428,7 +449,8 @@ test.concurrent("input origin survives turn/steer: studio_event,human,studio_eve
   // All input has echoed; completion now waits on real journal I/O, not a
   // grace timer. Advancing virtual deadlines can outrun that I/O under contention.
   const done = await bridge.note(
-    (note) => note.method === "turn/completed" && note.params.turn.id === turn,
+    (note): note is BridgeNoteFor<"turn/completed"> =>
+      note.method === "turn/completed" && note.params.turn.id === turn,
   );
   assert.equal(done.params.turn.status, "completed");
 });
@@ -453,7 +475,8 @@ test.concurrent("a failed split prefix closes its query without submitting the r
   assert.equal(messages[0].message.content[0].text, "prefix-fail");
 });
 
-const nativeQueued = (bridge) => marker(bridge, ".native-queued");
+const nativeQueued = (bridge: BridgeHarness) =>
+  marker(bridge, ".native-queued");
 
 test.concurrent("Stop cancels input held in Claude's native queue without closing the query", async ({
   startBridge,
@@ -607,12 +630,16 @@ for (const scenario of [
   });
 }
 
-const fixtureSignal = (bridge, name) => (n) =>
-  n.method === "fixture/signal" &&
-  n.params.name === path.join(bridge.root, name);
-const marker = (bridge, name) => bridge.note(fixtureSignal(bridge, name));
-const release = (bridge, name) => bridge.writeSignal(name);
-const turnItems = async (bridge, turn) =>
+const fixtureSignal =
+  (bridge: BridgeHarness, name: string) =>
+  (n): n is BridgeNoteFor<"fixture/signal"> =>
+    n.method === "fixture/signal" &&
+    n.params.name === path.join(bridge.root, name);
+const marker = (bridge: BridgeHarness, name: string) =>
+  bridge.note(fixtureSignal(bridge, name));
+const release = (bridge: BridgeHarness, name: string) =>
+  bridge.writeSignal(name);
+const turnItems = async (bridge: BridgeHarness, turn: string) =>
   (
     await bridge.call("thread/read", {
       threadId: bridge.thread,
@@ -681,7 +708,9 @@ test.concurrent("an echo inside the grace keeps its continuation in the same tur
   await release(bridge, ".continued");
   assert.equal((await completed(bridge, turn)).params.turn.status, "completed");
   assert.equal(
-    bridge.notes.filter((n) => n.method === "turn/started").length,
+    bridge.notes.filter(
+      (n): n is BridgeNoteFor<"turn/started"> => n.method === "turn/started",
+    ).length,
     1,
   );
 });
@@ -714,7 +743,7 @@ test.concurrent("a successful result withdraws unread steer once for original-id
   assert.deepEqual(await inputs(bridge), ["unread-result", "steer text"]);
   assert.equal(
     bridge.notes.filter(
-      (n) =>
+      (n): n is BridgeNoteFor<"turn/completed"> =>
         n.method === "turn/completed" &&
         n.params.turn.unappliedSteers?.includes("unread-steer"),
     ).length,
@@ -779,7 +808,8 @@ fsp.appendFile = async(file, data, ...args) => {
     turnId: next,
   });
   await bridge.advanceUntil(
-    (note) => note.method === "turn/completed" && note.params.turn.id === next,
+    (note): note is BridgeNoteFor<"turn/completed"> =>
+      note.method === "turn/completed" && note.params.turn.id === next,
   );
   const done = await completed(bridge, next);
   assert.equal(done.params.turn.status, "interrupted");
@@ -850,7 +880,8 @@ test.concurrent("grace closes an unconfirmed CLI before a new start can inherit 
   });
   assert.equal(
     bridge.notes.some(
-      (n) => n.method === "turn/completed" && n.params.turn.id === next,
+      (n): n is BridgeNoteFor<"turn/completed"> =>
+        n.method === "turn/completed" && n.params.turn.id === next,
     ),
     false,
   );
@@ -949,7 +980,7 @@ for (const mode of ["empty", "partial", "all"]) {
     );
     assert.equal(
       bridge.notes.filter(
-        (n) =>
+        (n): n is BridgeNoteFor<"turn/completed"> =>
           n.method === "turn/completed" &&
           n.params.turn.unappliedSteers?.includes("split-close"),
       ).length,
@@ -1069,7 +1100,10 @@ test.concurrent("a throwing CLI close still completes the turn and preserves unk
   assert.deepEqual((await bridge.call("thread/loaded/list", {})).data, []);
   assert.deepEqual(await inputs(bridge), ["success-late", "steer text"]);
   assert.equal(
-    bridge.notes.filter((n) => n.method === "turn/completed").length,
+    bridge.notes.filter(
+      (n): n is BridgeNoteFor<"turn/completed"> =>
+        n.method === "turn/completed",
+    ).length,
     1,
   );
 });
@@ -1159,7 +1193,7 @@ fsp.appendFile=async(file,data,...args)=>{
   // Resuming the generator after init proves its awaited save also settled
   // earlier echo saves. The injected failure must belong to the steer write.
   await bridge.note(
-    (note) =>
+    (note): note is BridgeNoteFor<"fixture/signal"> =>
       note.method === "fixture/signal" &&
       note.params.name === path.join(bridge.root, ".steady-to-steer"),
   );
@@ -1200,7 +1234,10 @@ test.concurrent("an old withdrawn clear receipt cannot retire its consumed redel
       input: text("/clear"),
     })
     .catch(() => null);
-  await bridge.note((note) => note.method === "fixture/consumed-clear");
+  await bridge.note(
+    (note): note is BridgeNoteFor<"fixture/consumed-clear"> =>
+      note.method === "fixture/consumed-clear",
+  );
   await redelivery;
   await bridge.restart();
   const state = await bridge.call("claude/state", { threadId: bridge.thread });
@@ -1233,7 +1270,7 @@ fsp.appendFile=async(file,data,...args)=>{
   await end(bridge);
   await completed(bridge, warm);
   await bridge.note(
-    (n) =>
+    (n): n is BridgeNoteFor<"fixture/signal"> =>
       n.method === "fixture/signal" &&
       n.params.name === path.join(bridge.root, ".result-sent"),
   );
@@ -1250,7 +1287,8 @@ fsp.appendFile=async(file,data,...args)=>{
   assert.deepEqual(await inputs(bridge), ["hold"]);
   const retried = await bridge.call("turn/start", params);
   await bridge.note(
-    (n) => n.method === "fixture/input" && n.params.text === "/clear",
+    (n): n is BridgeNoteFor<"fixture/input"> =>
+      n.method === "fixture/input" && n.params.text === "/clear",
   );
   assert.equal(retried.turn.status, "inProgress");
 });

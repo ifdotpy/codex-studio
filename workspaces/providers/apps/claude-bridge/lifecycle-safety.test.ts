@@ -1,3 +1,4 @@
+import type { BridgeNoteFor } from "./testing/bridge-harness.ts";
 import { afterEach, expect, test, vi } from "vitest";
 import fs from "node:fs/promises";
 import os from "node:os";
@@ -22,7 +23,7 @@ afterEach(async () => {
   root = undefined;
 });
 
-const message = (type, uuid) => ({
+const message = (type, uuid: string) => ({
   type,
   uuid,
   message: { content: uuid },
@@ -136,7 +137,7 @@ test.each([
     delivery: "steer",
     deliveryStatus: "submitted",
   };
-  const row = (uuid) => ({
+  const row = (uuid: string) => ({
     type: "user",
     uuid,
     parentUuid: null,
@@ -246,7 +247,7 @@ test.each(["complete", "partial initial", "partial steer", "reversed steer"])(
         },
       ],
     };
-    const row = (type, uuid, parentUuid, content) => ({
+    const row = (type, uuid: string, parentUuid: string, content) => ({
       type,
       uuid,
       parentUuid,
@@ -434,7 +435,8 @@ test.each(["direct", "timer", "success"])(
           input: [{ type: "text", text: "steer once" }],
         });
       const done = await bridge.advanceUntil(
-        (note) => note.method === "turn/completed",
+        (note): note is BridgeNoteFor<"turn/completed"> =>
+          note.method === "turn/completed",
       );
       expect(done.params.turn.status).toBe(
         mode === "success" ? "completed" : "failed",
@@ -456,7 +458,8 @@ test.each(["direct", "timer", "success"])(
         mode === "timer" ? "once\nsteer once\n" : "once\n",
       );
       const usage = bridge.notes.filter(
-        (note) => note.method === "thread/tokenUsage/updated",
+        (note): note is BridgeNoteFor<"thread/tokenUsage/updated"> =>
+          note.method === "thread/tokenUsage/updated",
       );
       expect(usage).toHaveLength(1);
       expect(usage[0].params.studioUsage).toMatchObject({
@@ -471,10 +474,16 @@ test.each(["direct", "timer", "success"])(
       });
       expect(usage[0].params.tokenUsage).toBeUndefined();
       expect(
-        bridge.notes.filter((note) => note.method === "turn/started"),
+        bridge.notes.filter(
+          (note): note is BridgeNoteFor<"turn/started"> =>
+            note.method === "turn/started",
+        ),
       ).toHaveLength(1);
       expect(
-        bridge.notes.filter((note) => note.method === "turn/completed"),
+        bridge.notes.filter(
+          (note): note is BridgeNoteFor<"turn/completed"> =>
+            note.method === "turn/completed",
+        ),
       ).toHaveLength(1);
     } finally {
       await bridge.close();
@@ -554,7 +563,7 @@ test("fork accepts the authoritative boundary of a legacy remapped turn", async 
 });
 
 test("an unresolved middle parent keeps absent steer history unknown", () => {
-  const row = (type, uuid, parentUuid) => ({
+  const row = (type, uuid: string, parentUuid: string) => ({
     type,
     uuid,
     parentUuid,
@@ -673,7 +682,8 @@ test("Stop finalizes a stuck SDK whose close throws without redelivering unknown
       turnId: started.turn.id,
     });
     const done = await bridge.advanceUntil(
-      (note) => note.method === "turn/completed",
+      (note): note is BridgeNoteFor<"turn/completed"> =>
+        note.method === "turn/completed",
     );
     expect(["failed", "interrupted"]).toContain(done.params.turn.status);
     expect(done.params.turn.error.message).toMatch(
@@ -681,7 +691,10 @@ test("Stop finalizes a stuck SDK whose close throws without redelivering unknown
     );
     expect(done.params.turn.unappliedSteers).toBeUndefined();
     expect(
-      bridge.notes.filter((note) => note.method === "turn/completed"),
+      bridge.notes.filter(
+        (note): note is BridgeNoteFor<"turn/completed"> =>
+          note.method === "turn/completed",
+      ),
     ).toHaveLength(1);
     expect((await bridge.call("thread/loaded/list", {})).data).toEqual([]);
     const saved = (
@@ -705,7 +718,7 @@ test.each([
   "sidechain duplicate",
   "non-conversation duplicate",
 ])("corrupt anchor ancestry stays unknown: %s", (kind) => {
-  const row = (type, uuid, parentUuid, extra = {}) => ({
+  const row = (type, uuid: string, parentUuid: string, extra = {}) => ({
     type,
     uuid,
     parentUuid,
@@ -890,7 +903,7 @@ test.each([false, true])(
     root = await fs.mkdtemp(path.join(os.tmpdir(), "claude-large-history-"));
     const rootId = "66666666-6666-4666-8666-666666666666";
     const resultId = "55555555-5555-4555-8555-555555555555";
-    const row = (type, uuid, parentUuid, content) => ({
+    const row = (type, uuid: string, parentUuid: string, content) => ({
       type,
       uuid,
       parentUuid,

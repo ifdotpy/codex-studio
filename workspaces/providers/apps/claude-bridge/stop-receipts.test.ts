@@ -1,3 +1,4 @@
+import type { BridgeHarness, BridgeNoteFor } from "./testing/bridge-harness.ts";
 import { waitForFile } from "./testing/file-signals.ts";
 // Preserve the Stop receipt contracts after removal of the Python bridge tests.
 import { afterEach, test } from "vitest";
@@ -7,53 +8,8 @@ import { existsSync } from "node:fs";
 import path from "node:path";
 import { startBridge } from "./testing/bridge-harness.ts";
 
-const SDK = String.raw`
-import fs from 'node:fs';
-import fsp from 'node:fs/promises';
-const wait=waitForFile;
-const append=fsp.appendFile;
-fsp.appendFile=async(file,data,...args)=>{
- const result=await append(file,data,...args);
- const root=process.cwd();
- if(fs.existsSync(root+'/.hold-save')&&String(data).includes('preparing')&&!fs.existsSync(root+'/.save-held')){
-  fs.writeFileSync(root+'/.save-held','');
-  await wait(root+'/.release-save');
- }
- return result;
-};
-export const tool=(name,description,schema,call)=>({name,description,schema,call});
-export const createSdkMcpServer=value=>({...value});
-export const forkSession=async()=>({sessionId:'22222222-2222-4222-8222-222222222222'});
-export const getSessionMessages=async()=>[];
-export function query({prompt,options}){
- const cwd=options.cwd,abort=new AbortController();
- return {
-  mcpServerStatus:async()=>[],reconnectMcpServer:async()=>{},
-  supportedModels:async()=>[{value:'default',displayName:'Default',resolvedModel:'claude-opus-5-5'}],
-  accountInfo:async()=>{
-   if(options.systemPrompt&&fs.existsSync(cwd+'/.hold-account')){
-    fs.writeFileSync(cwd+'/.account-entered','');
-    await wait(cwd+'/.release-account');
-   }
-   return {email:'test@example.test',subscriptionType:'Claude Max',apiProvider:'firstParty'};
-  },
-  initializationResult:async()=>({commands:[]}),
-  setModel:async()=>{},setPermissionMode:async()=>{},applyFlagSettings:async()=>{},stopTask:async()=>{},
-  setMcpServers:async()=>({added:[],removed:[],errors:{}}),
-  close(){abort.abort();},interrupt:async()=>({cancelled:[],still_queued:[]}),
-  async *[Symbol.asyncIterator](){
-   while(!abort.signal.aborted){
-    const input=await prompt.next();if(input.done)return;
-    fs.appendFileSync(cwd+'/.admitted',input.value.uuid+'\n');
-    yield {type:'user',isReplay:true,uuid:input.value.uuid};
-    yield {type:'system',subtype:'init'};
-    yield {type:'result',subtype:'success',usage:{input_tokens:1,output_tokens:1},result:'done'};
-   }
-  }
- };
-}
-`;
-const bridges = [];
+const SDK = new URL("./stop-receipts.fixture.mts", import.meta.url);
+const bridges: BridgeHarness[] = [];
 afterEach(async () => {
   for (const bridge of bridges.splice(0)) {
     // Release injected barriers even if an assertion fails.
@@ -67,20 +23,22 @@ async function fixture() {
   bridges.push(bridge);
   return bridge;
 }
-const start = (bridge, id) =>
+const start = (bridge: BridgeHarness, id: string) =>
   bridge.call("turn/start", {
     threadId: bridge.thread,
     clientUserMessageId: id,
     input: [{ type: "text", text: id === "blocked-save" ? "/clear" : id }],
   });
-const completed = async (bridge, id) =>
+const completed = async (bridge: BridgeHarness, id: string) =>
   (
     await bridge.note(
-      (n) => n.method === "turn/completed" && n.params.turn.id === id,
+      (n): n is BridgeNoteFor<"turn/completed"> =>
+        n.method === "turn/completed" && n.params.turn.id === id,
     )
   ).params.turn;
-const marker = (bridge, name) => waitForFile(path.join(bridge.root, name));
-const admissions = async (bridge) =>
+const marker = (bridge: BridgeHarness, name: string) =>
+  waitForFile(path.join(bridge.root, name));
+const admissions = async (bridge: BridgeHarness) =>
   existsSync(path.join(bridge.root, ".admitted"))
     ? (await fs.readFile(path.join(bridge.root, ".admitted"), "utf8"))
         .trim()
@@ -94,7 +52,7 @@ test("Stop replies before a reserved input save completes and the rejection surv
   await fs.writeFile(path.join(bridge.root, ".hold-save"), "");
   const pending = start(bridge, "blocked-save").then(
     (value) => ({ value }),
-    (error) => ({ error }),
+    (error: unknown) => ({ error }),
   );
   await marker(bridge, ".save-held");
   const receipt = await bridge.call("turn/interrupt", {
@@ -105,13 +63,14 @@ test("Stop replies before a reserved input save completes and the rejection surv
   assert.equal((await admissions(bridge)).length, 1);
   await fs.writeFile(path.join(bridge.root, ".release-save"), "");
   const result = await pending;
-  assert.match(result.error?.message ?? "", /stopped before accepting/);
+  assert.ok("error" in result && result.error instanceof Error);
+  assert.match(result.error.message, /stopped before accepting/);
   const history = await bridge.call("thread/turns/list", {
     threadId: bridge.thread,
   });
   assert.equal(
     history.data.find((turn) => turn.clientUserMessageId === "blocked-save")
-      .startOutcome,
+      ?.startOutcome,
     "not_applied",
   );
   await bridge.restart();
@@ -138,14 +97,14 @@ test("Stop preserves a rejected pre-admission receipt and permits one exact retr
   const stopped = await completed(bridge, original.turn.id);
   assert.equal(stopped.status, "interrupted");
   assert.equal(stopped.startOutcome, "not_applied");
-  assert.equal(stopped.error.data.turnStartOutcome, "not_applied");
+  assert.equal(stopped.error?.data?.turnStartOutcome, "not_applied");
   assert.deepEqual(await admissions(bridge), []);
   await fs.rm(path.join(bridge.root, ".hold-account"));
   await bridge.restart();
   const saved = await bridge.call("thread/turns/list", {
     threadId: bridge.thread,
   });
-  assert.equal(saved.data[0].startOutcome, "not_applied");
+  assert.equal(saved.data[0]?.startOutcome, "not_applied");
   const retry = await start(bridge, "before-admission");
   assert.notEqual(retry.turn.id, original.turn.id);
   assert.equal((await completed(bridge, retry.turn.id)).status, "completed");
@@ -163,7 +122,7 @@ test("Stop before initial clear admission permits a live exact retry", async () 
   await fs.writeFile(path.join(bridge.root, ".hold-save"), "");
   const pending = start(bridge, "blocked-save").then(
     (value) => ({ value }),
-    (error) => ({ error }),
+    (error: unknown) => ({ error }),
   );
   await marker(bridge, ".save-held");
   const receipt = await bridge.call("turn/interrupt", {
@@ -174,13 +133,14 @@ test("Stop before initial clear admission permits a live exact retry", async () 
   assert.equal((await admissions(bridge)).length, 1);
   await fs.writeFile(path.join(bridge.root, ".release-save"), "");
   const result = await pending;
-  assert.match(result.error?.message ?? "", /stopped before accepting/);
+  assert.ok("error" in result && result.error instanceof Error);
+  assert.match(result.error.message, /stopped before accepting/);
   const history = await bridge.call("thread/turns/list", {
     threadId: bridge.thread,
   });
   assert.equal(
     history.data.find((turn) => turn.clientUserMessageId === "blocked-save")
-      .startOutcome,
+      ?.startOutcome,
     "not_applied",
   );
   const retry = await start(bridge, "blocked-save");

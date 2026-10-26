@@ -1,3 +1,4 @@
+import type { BridgeHarness, BridgeNoteFor } from "./testing/bridge-harness.ts";
 // Idle unload through the real bridge with a scripted SDK: a settled turn's
 // thread/unsubscribe ends its CLI query, and the next turn starts a new query
 // that resumes the same native session with only the new message. The CLI's
@@ -41,12 +42,12 @@ export function query({prompt,options}){
 }
 `;
 
-const bridges = [];
+const bridges: BridgeHarness[] = [];
 afterEach(async () => {
   for (const bridge of bridges.splice(0)) await bridge.close();
 });
 
-async function turn(bridge, text) {
+async function turn(bridge: BridgeHarness, text: string) {
   const id = (
     await bridge.call("turn/start", {
       threadId: bridge.thread,
@@ -55,11 +56,12 @@ async function turn(bridge, text) {
     })
   ).turn.id;
   return bridge.note(
-    (n) => n.method === "turn/completed" && n.params.turn.id === id,
+    (n): n is BridgeNoteFor<"turn/completed"> =>
+      n.method === "turn/completed" && n.params.turn.id === id,
   );
 }
 
-async function log(bridge) {
+async function log(bridge: BridgeHarness) {
   const raw = await fs.readFile(path.join(bridge.root, ".log"), "utf8");
   return raw
     .trim()
@@ -130,8 +132,11 @@ const DIALOG_SDK = FAKE_SDK.replace(
     if(options.resume&&!asked){asked=true;log({dialog:await options.onUserDialog({dialogKind:'resume_return',toolUseID:'dialog'},{requestId:'dialog',signal:abort.signal})});}`,
 ).replace("log({query:", "let asked=false;log({query:");
 
-const askedUser = (bridge) =>
-  bridge.notes.some((note) => note.method === "item/tool/requestUserInput");
+const askedUser = (bridge: BridgeHarness) =>
+  bridge.notes.some(
+    (note): note is BridgeNoteFor<"item/tool/requestUserInput"> =>
+      note.method === "item/tool/requestUserInput",
+  );
 
 test("a resume after Studio's own unload keeps the full history without asking", async () => {
   const bridge = await startBridge(DIALOG_SDK, "claude-unload-");
@@ -168,5 +173,8 @@ test("a resume Studio did not unload still asks through the user question", asyn
     })
   ).turn.id;
   assert.ok(id);
-  await bridge.note((n) => n.method === "item/tool/requestUserInput");
+  await bridge.note(
+    (n): n is BridgeNoteFor<"item/tool/requestUserInput"> =>
+      n.method === "item/tool/requestUserInput",
+  );
 });
