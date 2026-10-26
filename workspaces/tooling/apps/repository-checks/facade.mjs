@@ -1039,14 +1039,16 @@ export async function executeRecipe(root, name, steps, options = {}) {
       } else {
         // A Cargo workspace test step runs only the crates without a passing result.
         let commands = step.commands;
+        // Only real runs consult Cargo; a test executor must not wait for the Cargo lock.
         crates =
           step.crateReuse &&
+          !options.execute &&
           crateKeys(
             root,
             JSON.parse(
               runSync(
                 "cargo",
-                ["metadata", "--format-version", "1", "--locked"],
+                ["metadata", "--format-version", "1", "--locked", "--offline"],
                 root,
                 "cargo metadata",
               ),
