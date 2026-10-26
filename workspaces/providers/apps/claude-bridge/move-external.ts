@@ -113,11 +113,6 @@ export function externalAliases(proof: ToolProof) {
     ),
   ];
 }
-// User-authored MCP files have no generated wire contract. Narrow their transport
-// fields once, retaining the complete config (including credentials) locally.
-export function parseExternalConfig(value: unknown): ExternalConfig {
-  return value as ExternalConfig;
-}
 async function localConfigs(cwd: string) {
   const configured = process.env.CLAUDE_CONFIG_DIR;
   const user = configured

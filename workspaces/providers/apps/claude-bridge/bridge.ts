@@ -1226,6 +1226,13 @@ const permissionMode = (
     : s.sandbox === "read-only"
       ? "plan"
       : "default");
+function sdkSettings(
+  value: Parameters<Query["applyFlagSettings"]>[0],
+): Options["settings"] {
+  // Decision 33: sdk.mjs:163 serializes object settings itself; the SDK accepted
+  // this flags object before migration, including values omitted by Settings.
+  return value as Options["settings"];
+}
 async function flags(
   s: Pick<Session, "model" | "claude">,
   p: Partial<BridgeTurnParams> = {},
@@ -1755,17 +1762,18 @@ async function startSession(
         ...((s.moveProof ? s.moveProof.options.effort : p.effort)
           ? { effort: (s.moveProof ? s.moveProof.options.effort : p.effort)! }
           : {}),
-        // The SDK accepted this flags object before migration; its Settings declaration omits some applyFlagSettings values.
-        settings: (await boundedPreparation(
-          () =>
-            s.moveProof
-              ? Promise.resolve(s.moveProof.options.settings)
-              : flags(s, p),
-          deadline,
-          () => {},
-          "catalog_flags",
-          startedAt,
-        )) as Options["settings"],
+        settings: sdkSettings(
+          await boundedPreparation(
+            () =>
+              s.moveProof
+                ? Promise.resolve(s.moveProof.options.settings)
+                : flags(s, p),
+            deadline,
+            () => {},
+            "catalog_flags",
+            startedAt,
+          ),
+        ),
         extraArgs: {
           ...providerOptions.extraArgs,
           "replay-user-messages": null,

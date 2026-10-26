@@ -22,8 +22,6 @@ export type MoveProof = ToolProof & {
   tools: ProofTool[];
   session: Partial<Session>;
 };
-export const isRecord = (value: unknown): value is Record<string, unknown> =>
-  value !== null && typeof value === "object" && !Array.isArray(value);
 // Native session files move without credentials or a model request.
 import fs from "node:fs/promises";
 import path from "node:path";
