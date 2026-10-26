@@ -23,13 +23,13 @@ struct Question {
     is_secret: bool,
 }
 fn fields(value: &Value) -> Result<Vec<Value>, NotificationDispatchError> {
-    let questions: Vec<Question> = serde_json::from_value(value.clone())
-        .map_err(|_| NotificationDispatchError::InvalidNotification)?;
+    let questions: Vec<Question> =
+        serde_json::from_value(value.clone()).map_err(|_| NotificationDispatchError::invalid())?;
     questions.into_iter().enumerate().map(|(index,q)| {
         let options=q.options.unwrap_or_default().into_iter().map(|option|match option {
             Value::String(label)=>Ok(json!({"label":label})),
             Value::Object(ref object) if object.get("label").is_some_and(Value::is_string)=>Ok(option),
-            _=>Err(NotificationDispatchError::InvalidNotification),
+            _=>Err(NotificationDispatchError::invalid()),
         }).collect::<Result<Vec<_>,_>>()?;
         Ok(json!({"id":index.to_string(),"question":q.title,"options":options,"multiSelect":q.multi_select,"isSecret":q.is_secret}))
     }).collect()
@@ -44,7 +44,7 @@ pub(crate) fn submit_agent_complaint(
 ) -> Result<Value, NotificationDispatchError> {
     let agent_id = agent["id"]
         .as_str()
-        .ok_or(NotificationDispatchError::InvalidNotification)?;
+        .ok_or(NotificationDispatchError::invalid())?;
     let lead_id = agent["rootId"]
         .as_str()
         .ok_or_else(|| stored("runtime_agents", agent_id))?;
@@ -56,11 +56,11 @@ pub(crate) fn submit_agent_complaint(
         .is_some_and(|value| value == &Value::Bool(true))
         || studio_runtime_store::truthy(lead.extra.get("deletedAt"))
     {
-        return Err(NotificationDispatchError::InvalidNotification);
+        return Err(NotificationDispatchError::invalid());
     }
     let text = text.trim();
     if text.is_empty() || text.chars().count() > 12_000 {
-        return Err(NotificationDispatchError::InvalidNotification);
+        return Err(NotificationDispatchError::invalid());
     }
     let complaint_id = Uuid::new_v5(
         &Uuid::NAMESPACE_URL,
@@ -132,7 +132,7 @@ pub(super) fn submit_user_message(
     at: f64,
 ) -> Result<Value, NotificationDispatchError> {
     if lead["id"] != lead["rootId"] {
-        return Err(NotificationDispatchError::InvalidNotification);
+        return Err(NotificationDispatchError::invalid());
     }
     let mut message = submit_agent_complaint(tx, lead, request_id, text, at)?;
     message["sourceType"] = json!("message");
@@ -151,7 +151,7 @@ pub(crate) fn agent_complaint_action(
 ) -> Result<Value, NotificationDispatchError> {
     let actor_id = actor["id"]
         .as_str()
-        .ok_or(NotificationDispatchError::InvalidNotification)?;
+        .ok_or(NotificationDispatchError::invalid())?;
     let root_id = actor["rootId"]
         .as_str()
         .ok_or_else(|| stored("runtime_agents", actor_id))?;
@@ -163,13 +163,13 @@ pub(crate) fn agent_complaint_action(
             .get("deletedAt")
             .is_some_and(|deleted_at| !deleted_at.is_null())
     {
-        return Err(NotificationDispatchError::InvalidNotification);
+        return Err(NotificationDispatchError::invalid());
     }
     match args["action"].as_str() {
         Some("submit") => {
             let text = args["text"]
                 .as_str()
-                .ok_or(NotificationDispatchError::InvalidNotification)?;
+                .ok_or(NotificationDispatchError::invalid())?;
             submit_agent_complaint(tx, actor, request_id, text, at)
         }
         Some("read") => {
@@ -177,7 +177,7 @@ pub(crate) fn agent_complaint_action(
                 && !args["complaint_id"].is_null()
                 && !args["complaint_id"].is_string()
             {
-                return Err(NotificationDispatchError::InvalidNotification);
+                return Err(NotificationDispatchError::invalid());
             }
             let requested = args["complaint_id"].as_str();
             let mut complaints = records::all(tx, "runtime_complaints")?;
@@ -185,7 +185,7 @@ pub(crate) fn agent_complaint_action(
                 complaint["leadId"] == root_id && requested.is_none_or(|id| complaint["id"] == id)
             });
             if requested.is_some() && complaints.is_empty() {
-                return Err(NotificationDispatchError::InvalidNotification);
+                return Err(NotificationDispatchError::invalid());
             }
             complaints.sort_by(|left, right| {
                 needs_agent_response(right)
@@ -216,28 +216,28 @@ pub(crate) fn agent_complaint_action(
         }
         Some("respond") => {
             if actor_id != root_id {
-                return Err(NotificationDispatchError::InvalidNotification);
+                return Err(NotificationDispatchError::invalid());
             }
             let id = args["complaint_id"]
                 .as_str()
-                .ok_or(NotificationDispatchError::InvalidNotification)?;
+                .ok_or(NotificationDispatchError::invalid())?;
             let raw = studio_runtime_store::QuestionsWriteRepository::complaint(tx, id)?
-                .ok_or(NotificationDispatchError::InvalidNotification)?;
+                .ok_or(NotificationDispatchError::invalid())?;
             let mut complaint: Value =
                 serde_json::from_str(&raw).map_err(|_| stored("runtime_complaints", id))?;
             if complaint["leadId"] != actor_id || complaint["recipient"] == "user" {
-                return Err(NotificationDispatchError::InvalidNotification);
+                return Err(NotificationDispatchError::invalid());
             }
             let text = args["text"]
                 .as_str()
-                .ok_or(NotificationDispatchError::InvalidNotification)?
+                .ok_or(NotificationDispatchError::invalid())?
                 .trim();
             let status = args["status"]
                 .as_str()
                 .filter(|status| matches!(*status, "in_progress" | "resolved" | "declined"))
-                .ok_or(NotificationDispatchError::InvalidNotification)?;
+                .ok_or(NotificationDispatchError::invalid())?;
             if text.is_empty() || text.chars().count() > 12_000 {
-                return Err(NotificationDispatchError::InvalidNotification);
+                return Err(NotificationDispatchError::invalid());
             }
             let responses = complaint["responses"]
                 .as_array_mut()
@@ -281,7 +281,7 @@ pub(crate) fn agent_complaint_action(
             }
             Ok(complaint)
         }
-        _ => Err(NotificationDispatchError::InvalidNotification),
+        _ => Err(NotificationDispatchError::invalid()),
     }
 }
 
@@ -363,7 +363,7 @@ fn save_complaint_projection(
 ) -> Result<(), NotificationDispatchError> {
     let id = complaint["id"]
         .as_str()
-        .ok_or(NotificationDispatchError::InvalidNotification)?;
+        .ok_or(NotificationDispatchError::invalid())?;
     let typed = ComplaintRecord::from_value(complaint.clone())?;
     Table::<ComplaintRecord>::new(tx).put(&typed)?;
     let agents = records::all(tx, "runtime_agents")?;
@@ -419,7 +419,7 @@ pub(super) fn resolved(
     use studio_runtime_store::{RecordOrder, RecordPredicate};
     let id = agent["id"]
         .as_str()
-        .ok_or(NotificationDispatchError::InvalidNotification)?
+        .ok_or(NotificationDispatchError::invalid())?
         .to_owned();
     let records = Table::<RequestRecord>::new(tx).list_matching(
         Some(RecordPredicate::JsonAgentEquals(&id)),
@@ -465,7 +465,7 @@ fn put_request(tx: &Transaction<'_>, record: &Value) -> Result<(), NotificationD
     Table::new(tx).put(&typed)?;
     let id = record["id"]
         .as_str()
-        .ok_or(NotificationDispatchError::InvalidNotification)?;
+        .ok_or(NotificationDispatchError::invalid())?;
     let view = crate::sync_views::project_persisted_record("request", record)
         .ok_or_else(|| stored("runtime_requests", id))?;
     SyncDocumentsRepository::put_entity(tx, "request", id, view, record["status"] != "pending")?;

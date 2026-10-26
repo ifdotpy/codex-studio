@@ -171,7 +171,14 @@ and review; its title contains the full settings. On narrow layouts it keeps the
 wider layouts name all three roles. Click it or submit `/model` to open the role picker anchored above the composer on desktop or in a bottom sheet on phones. Escape closes the picker and returns focus to the summary.
 Accounts use a compact grid with remaining limits. Chat settings is one compact Team panel without tabs. It contains
 permissions, subagent parallelism, delegation depth, and account eligibility; zero parallelism
-uses a single agent. Account eligibility is always visible in compact provider groups with remaining limits; long names and emails are ellipsized, with full values in the account title and accessible description.
+uses a single agent. Permissions stay available during running turns and pending
+approvals. Claude applies Ask and Full live in both directions. Codex Full answers
+pending tool approvals through the normal user-approval path and automatically
+approves new callbacks while Full is saved; Ask stops automatic approvals, with
+the provider's Ask policy starting from the next turn. An approval already in
+flight can still finish just after Ask is selected, so the turn can briefly retain
+Full for a fraction of a second. Quick-create inherits settings only from a live
+previous chat; an archived chat uses the defaults for a new chat. Account eligibility is always visible in compact provider groups with remaining limits; long names and emails are ellipsized, with full values in the account title and accessible description.
 Automatic account selection prefers a free slot, project order, then fewer
 active agents. Eligibility is separate from each role's selected account.
 Project actions are available in the shared dialog footer. Hidden catalog models stay hidden. A proposed plan waits for a
@@ -495,7 +502,7 @@ The main agent's model selector includes every available model from the selected
 
 The main agent has the orchestrator role. Subagents ask it for help.
 Only the main agent sends conversational messages or tasks to you.
-Native tool permissions still require your approval.
+In Ask mode, native tool permissions require your approval.
 
 Use a stable `request_id` with `orchestration_send` to recover a lost reply.
 An exact retry returns the saved receipt without another instruction.
