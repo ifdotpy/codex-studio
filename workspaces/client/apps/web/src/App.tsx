@@ -103,6 +103,7 @@ import {
   Menu,
   NativeSelect,
   Slider,
+  Switch,
   Tabs,
   useMantineColorScheme,
   TextInput,
@@ -3361,10 +3362,9 @@ export default function App({ active = true }: { active?: boolean }) {
                     })
                   }
                 />
-                <label className="settings-field studio-preference-toggle">
-                  <span className="settings-label">Show terminals</span>
-                  <input
-                    type="checkbox"
+                <SettingsRow label="Show terminals">
+                  <Switch
+                    aria-label="Show terminals"
                     checked={studioPreferences.showTerminals}
                     onChange={(event) =>
                       updateStudioPreferences({
@@ -3373,7 +3373,7 @@ export default function App({ active = true }: { active?: boolean }) {
                       })
                     }
                   />
-                </label>
+                </SettingsRow>
                 <SettingsRow label="Text size">
                   <div
                     className="studio-appearance-segments"

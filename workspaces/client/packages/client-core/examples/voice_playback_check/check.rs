@@ -2,6 +2,7 @@
 //! no live audio device, no sound: the engine renders offline into memory
 //! buffers using the same production node-construction function as `mac::start`.
 //! Live microphone capture and echo cancellation are not verified by this check.
+#![allow(unsafe_code)]
 use objc2::{AnyThread, rc::Retained};
 use objc2_avf_audio::{AVAudioEngine, AVAudioEngineManualRenderingMode, AVAudioFormat};
 use objc2_core_audio_types::{AudioBuffer, AudioBufferList};
@@ -19,6 +20,8 @@ fn rms(samples: &[f32]) -> f64 {
 }
 
 fn render_offline(engine: &Retained<AVAudioEngine>, frames: usize) -> Vec<f32> {
+    // SAFETY: the engine is in manual rendering mode and outlives this borrow
+    // of its render block.
     let block: &block2::DynBlock<_> = unsafe { &*engine.manualRenderingBlock() };
     let mut output = vec![0f32; frames];
     let mut list = AudioBufferList {
@@ -46,6 +49,8 @@ fn check() -> Result<(), String> {
     let playback = studio_client_core::voice_audio::Playback::new(VOICE_RATE as usize * 2);
     playback.push(&tone(VOICE_RATE, 1000.0, 1.0));
 
+    // SAFETY: a fresh allocation is initialized once with a valid rate and
+    // channel count.
     let format = unsafe {
         AVAudioFormat::initStandardFormatWithSampleRate_channels(
             AVAudioFormat::alloc(),
@@ -54,10 +59,13 @@ fn check() -> Result<(), String> {
         )
     }
     .ok_or("Playback audio format is unavailable.")?;
+    // SAFETY: AVAudioEngine has no preconditions for construction.
     let engine = unsafe { AVAudioEngine::new() };
     // Reuses the exact node the live session attaches: no voice processing,
     // no input node, no hardware device involved.
     let node = mac::make_playback_node(&playback, &format);
+    // SAFETY: the node, the mixer and the format are live objects owned by
+    // this function, and the engine is configured before it starts.
     unsafe {
         engine.attachNode(&node);
         let mixer = engine.mainMixerNode();
@@ -78,6 +86,7 @@ fn check() -> Result<(), String> {
     for _ in 0..50 {
         rendered.extend(render_offline(&engine, 480));
     }
+    // SAFETY: the engine was started above and no render call is in progress.
     unsafe { engine.stop() };
 
     if rendered.len() != 24_000 {

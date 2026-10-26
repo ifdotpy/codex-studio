@@ -468,8 +468,16 @@ for (const kind of ["system retry", "tool references", "non-input attachment"])
     expect(index?.outcome([f.ids[1]], [f.ids[1]])).toBe("delivered");
   });
 
-for (const content of [[{ type: "text", text: "Studio instruction" }], 42])
-  test(`an unknown input-shaped attachment remains unknown: ${JSON.stringify(content)}`, async () => {
+// Claude 2.1.310 writes CLI context attachments such as skill_listing.
+for (const attachment of [
+  {
+    type: "future-input",
+    content: [{ type: "text", text: "Studio instruction" }],
+  },
+  { type: "future-input", content: 42 },
+  { type: "skill_listing", content: "- skill: description", skillCount: 1 },
+])
+  test(`an unclassified attachment leaves absence unknown and delivery provable: ${attachment.type}`, async () => {
     const f = await fixture();
     const row = {
       ...f.rows[5],
@@ -477,7 +485,7 @@ for (const content of [[{ type: "text", text: "Studio instruction" }], 42])
       uuid: randomUUID(),
       parentUuid: f.ids[5],
       message: undefined,
-      attachment: { type: "future-input", content },
+      attachment,
     };
     await fs.writeFile(
       f.file,
@@ -489,7 +497,73 @@ for (const content of [[{ type: "text", text: "Studio instruction" }], 42])
     expect(index?.outcome([randomUUID()], [f.ids[1]]) ?? "unknown").toBe(
       "unknown",
     );
+    expect(index?.outcome([f.ids[1]], [f.ids[1]])).toBe("delivered");
   });
+
+test("a Claude 2.1.310 steer receipt after opaque rows in another directory is delivered", async () => {
+  const f = await fixture();
+  const opaqueId = randomUUID();
+  const steerId = randomUUID();
+  const moved = path.join(f.cwd, "src");
+  const rows = [
+    ...f.rows.slice(0, 3),
+    {
+      ...f.rows[2],
+      type: "attachment",
+      uuid: opaqueId,
+      parentUuid: f.ids[2],
+      cwd: moved,
+      message: undefined,
+      attachment: { type: "skill_listing", content: "- skill: description" },
+    },
+    {
+      ...f.rows[2],
+      type: "attachment",
+      uuid: randomUUID(),
+      parentUuid: opaqueId,
+      cwd: moved,
+      message: undefined,
+      attachment: {
+        type: "queued_command",
+        prompt: [{ type: "text", text: "steer" }],
+        source_uuid: steerId,
+        delivery_id: randomUUID(),
+        commandMode: "prompt",
+        origin: { kind: "unclassified" },
+        timestamp: new Date().toISOString(),
+        isMeta: true,
+      },
+    },
+  ];
+  await fs.writeFile(
+    f.file,
+    rows.map(JSON.stringify as (value: unknown) => string).join("\n") + "\n",
+  );
+  const index = await readHistoryIndex(f.session);
+  expect(index?.outcome([steerId], [f.ids[1]])).toBe("delivered");
+  expect(index?.outcome([randomUUID()], [f.ids[1]])).toBe("unknown");
+});
+
+test("native history controls refuse opaque records", async () => {
+  const f = await fixture();
+  const row = {
+    ...f.rows[5],
+    type: "attachment",
+    uuid: randomUUID(),
+    parentUuid: f.ids[5],
+    message: undefined,
+    attachment: { type: "skill_listing", content: "- skill: description" },
+  };
+  await fs.writeFile(
+    f.file,
+    [...f.rows, row]
+      .map(JSON.stringify as (value: unknown) => string)
+      .join("\n") + "\n",
+  );
+  await expect(verifiedHistoryIndex(f.session)).rejects.toThrow(
+    /incomplete or uncertain/,
+  );
+});
 
 test("a known output attachment with an input-shaped payload stays unknown", async () => {
   const f = await fixture();
@@ -515,6 +589,22 @@ test("a known output attachment with an input-shaped payload stays unknown", asy
   expect(index?.outcome([randomUUID()], [f.ids[1]]) ?? "unknown").toBe(
     "unknown",
   );
+  expect(index?.outcome([f.ids[1]], [f.ids[1]])).toBe("delivered");
+});
+
+// Claude records the shell's current directory on each row after a `cd`.
+test("rows recorded in another working directory keep input coverage", async () => {
+  const f = await fixture();
+  const rows = f.rows.map((row, index) =>
+    index >= 3 ? { ...row, cwd: path.join(f.cwd, "src") } : row,
+  );
+  await fs.writeFile(
+    f.file,
+    rows.map(JSON.stringify as (value: unknown) => string).join("\n") + "\n",
+  );
+  const index = await readHistoryIndex(f.session);
+  expect(index?.outcome([f.ids[4]], [f.ids[1]])).toBe("delivered");
+  expect(index?.outcome([randomUUID()], [f.ids[1]])).toBe("not_applied");
 });
 
 for (const trailing of [false, true])

@@ -84,7 +84,7 @@ for (const navigation of ["standalone", "combined"]) {
           .getByRole("tab", { name: "Appearance", exact: true })
           .click();
       };
-      const toggle = settings.getByRole("checkbox", {
+      const toggle = settings.getByRole("switch", {
         name: "Show terminals",
         exact: true,
       });

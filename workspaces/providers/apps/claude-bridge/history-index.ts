@@ -13,6 +13,7 @@ import * as sdk from "@anthropic-ai/claude-agent-sdk";
 import type { HistoryRecordKind } from "./history-records.ts";
 import { historyRecordKind } from "./history-records.ts";
 import { isDeepStrictEqual } from "node:util";
+import path from "node:path";
 import {
   readNativeHistory,
   nativeHistoryRows,
@@ -44,6 +45,8 @@ export function messageIndex(
       .map((message) => message.uuid),
   ),
   uncertainIds: ReadonlySet<string> = new Set(),
+  // False when an opaque record could be an input this index cannot see.
+  absenceProvable = true,
 ): HistoryIndex {
   const positions: Map<string, number> = new Map();
   for (const [position, message] of messages.entries())
@@ -75,7 +78,8 @@ export function messageIndex(
         return "unknown";
       const found = this.positions(ids);
       if (found && ids.every((id) => inputIds.has(id))) return "delivered";
-      return ids.every((id) => !inputIds.has(id) && !uncertainIds.has(id))
+      return absenceProvable &&
+        ids.every((id) => !inputIds.has(id) && !uncertainIds.has(id))
         ? "not_applied"
         : "unknown";
     },
@@ -87,11 +91,7 @@ export function messageIndex(
 // The raw reader is only an integrity guard: SDK parsers silently discard bad
 // records. A stable, complete, strictly recognized file is required before any
 // absence or branch can be trusted. Unknown CLI formats fail closed.
-function verifiedChain(
-  rows: sdk.SessionStoreEntry[],
-  sessionId: string,
-  cwd: string,
-) {
+function verifiedChain(rows: sdk.SessionStoreEntry[], sessionId: string) {
   const chain: ChainEntry[] = [];
   const seen = new Set();
   const ancestry = new Map<
@@ -102,6 +102,7 @@ function verifiedChain(
   let previousInput: string | null = null;
   const inputIds = new Set<string>();
   const uncertainIds = new Set<string>();
+  let absenceProvable = true;
   for (const row of rows) {
     if (
       !row ||
@@ -116,6 +117,7 @@ function verifiedChain(
       if (!nativeUuid(row.uuid) || seen.has(row.uuid)) return null;
       seen.add(row.uuid);
     }
+    if (kind === "opaque") absenceProvable = false;
     if (kind === "queue" || kind === "metadata")
       records.push({ row, kind, parentMessageId: null });
     if (kind === "queue") {
@@ -124,10 +126,12 @@ function verifiedChain(
       continue;
     }
     if (row.isSidechain === true || kind === "metadata") continue;
+    // Claude records the shell's current directory per row, which may change.
     if (
       !nativeUuid(row.uuid) ||
       row.sessionId !== sessionId ||
-      row.cwd !== cwd ||
+      typeof row.cwd !== "string" ||
+      !path.isAbsolute(row.cwd) ||
       row.isSidechain !== false
     )
       return null;
@@ -173,7 +177,12 @@ function verifiedChain(
     }
   }
   return chain.length
-    ? Object.assign(chain, { inputIds, uncertainIds, records })
+    ? Object.assign(chain, {
+        inputIds,
+        uncertainIds,
+        absenceProvable,
+        records,
+      })
     : null;
 }
 
@@ -219,7 +228,7 @@ export async function readHistoryIndex(
       });
       if (imported !== undefined) return null;
       if (!isDeepStrictEqual(entries, guarded)) return null;
-      const chain = verifiedChain(entries, sessionId, dir);
+      const chain = verifiedChain(entries, sessionId);
       if (!chain) return null;
       const visible = await api.getSessionMessages(sessionId, {
         dir,
@@ -283,6 +292,7 @@ export async function readHistoryIndex(
             })),
             chain.inputIds,
             chain.uncertainIds,
+            chain.absenceProvable,
           ),
           { records: chain.records },
         ),
@@ -298,7 +308,8 @@ export async function readHistoryIndex(
  */
 export async function verifiedHistoryIndex(session: HistorySession) {
   const index = await readHistoryIndex(session);
-  if (!index)
+  // A native effect needs full input coverage; an opaque record may be input.
+  if (!index || index.records.some(({ kind }) => kind === "opaque"))
     throw new Error(
       "The Claude history is incomplete or uncertain; no native history operation was submitted",
     );
@@ -318,11 +329,7 @@ export function inputHistoryOutcome(
   },
 ) {
   if (!Array.isArray(rows)) return "unknown";
-  const chain = verifiedChain(
-    rows as sdk.SessionStoreEntry[],
-    scope.sessionId,
-    scope.cwd,
-  );
+  const chain = verifiedChain(rows as sdk.SessionStoreEntry[], scope.sessionId);
   if (!chain) return "unknown";
   return messageIndex(
     chain.map((row) => ({
@@ -335,5 +342,6 @@ export function inputHistoryOutcome(
     })),
     chain.inputIds,
     chain.uncertainIds,
+    chain.absenceProvable,
   ).outcome(scope.inputIds, scope.anchorIds);
 }

@@ -1384,3 +1384,26 @@ async fn claude_late_ack_and_background_turn_report_each_turn_to_parent_once() {
     no_write(&mut peer).await;
     worker.shutdown().await.unwrap();
 }
+
+#[tokio::test]
+async fn private_answer_waits_while_shared_turn_holds_floor() {
+    let (state, _peer, _worker) = running_turn("codex").await;
+    let agent = state.agent.clone();
+    let epoch = state.epoch;
+    state.bridge.run(move |store| async move {
+        store.transaction_with(move |tx| {
+            let record = AgentRepository::get(tx, &AgentId::from(agent.as_str()))?.unwrap();
+            let turn = record.extra["turnId"].as_str().unwrap();
+            let thread = record.extra["threadId"].as_str().unwrap();
+            let account = record.extra["accountKey"].as_str().unwrap_or("default");
+            tx.execute("UPDATE runtime_events SET kind='followup' WHERE id=?1", [INPUT])?;
+            tx.execute("INSERT INTO runtime_events(id,agent,kind,text,status,created,epoch,turn_id) VALUES('radio-input',?1,'radio_turn','shared','delivered',1,?2,?3)", rusqlite::params![agent,epoch,turn])?;
+            let room = json!({"id":"radio:test","kind":"private","members":[agent,"peer"],"radio":{"teamId":"test","revision":1,"status":"speaking","speaker":agent,"next":[],"active":{"eventId":"radio-input","agentId":agent,"epoch":epoch,"threadId":thread,"identity":[null,1,0],"through":1},"error":null,"seen":{}}});
+            tx.execute("INSERT INTO runtime_rooms(id,record) VALUES('radio:test',?1)", [room.to_string()])?;
+            assert!(super::super::steer::claim(tx, account, &agent, epoch, "private-steer", 100.0)?.is_none(), "private answer must wait for the shared turn to end");
+            tx.execute("DELETE FROM runtime_rooms WHERE id='radio:test'", [])?;
+            assert!(super::super::steer::claim(tx, account, &agent, epoch, "private-steer", 101.0)?.is_some(), "the answer is eligible after the shared turn ends");
+            Ok::<_, WorkerError>(())
+        }).await
+    }).await.unwrap();
+}
