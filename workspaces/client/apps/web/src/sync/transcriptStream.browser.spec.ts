@@ -1,9 +1,18 @@
+import type { LegacySyncIdentityResponse } from "./syncBrowserFixture.ts";
+import type { components } from "../generated/api";
+import type { ResourceChangeEvent } from "./resourceEvents";
+import { initializeTranscript } from "./transcriptStream.browser.fixture.ts";
+import {
+  fixturePort,
+  legacyPullResponse,
+  type FixturePull,
+} from "./syncBrowserFixture.ts";
 import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { readFile } from "node:fs/promises";
+import { SYNC_STREAM_EVENT_MAX_BYTES as maxBytes } from "../generated/sharedValues";
 import {
   API_SCHEMA_HASH_HEADER,
   apiSchemaHandshakeSse,
@@ -18,24 +27,21 @@ test("an open transcript streams text without pulls and recovers incomplete inte
   browser,
 }) => {
   test.setTimeout(60_000);
-  const sharedValues = await readFile(
-    new URL("../generated/sharedValues.ts", import.meta.url),
-    "utf8",
-  );
-  const maxBytes = Number(
-    sharedValues.match(/SYNC_STREAM_EVENT_MAX_BYTES = (\d+)/)?.[1],
-  );
   assert.ok(Number.isSafeInteger(maxBytes) && maxBytes > 0);
   const workspaceId = "b".repeat(32);
-  const streams = new Set();
-  const pulls = [];
+  const streams = new Set<import("node:http").ServerResponse>();
+  const pulls: FixturePull[] = [];
   let sequence = 1;
   let revision = 0;
   let opened = 0;
   let epoch = "transcript-first";
   let text = "Before streaming";
   const item = () => ({ id: "answer", role: "assistant", text });
-  const frame = (reason, after, delta) => ({
+  const frame = (
+    reason: ResourceChangeEvent["reason"],
+    after = 0,
+    delta?: components["schemas"]["TranscriptStreamDelta"],
+  ): ResourceChangeEvent => ({
     protocol: 4,
     workspaceId,
     epoch,
@@ -53,11 +59,11 @@ test("an open transcript streams text without pulls and recovers incomplete inte
       },
     ],
   });
-  const send = (event) => {
+  const send = (event: ResourceChangeEvent) => {
     for (const response of streams)
       response.write(protocol3SseEvent("resources", event));
   };
-  const delta = () => ({
+  const delta = (): components["schemas"]["TranscriptStreamDelta"] => ({
     delta: true,
     items: [item()],
     removed: [],
@@ -76,7 +82,7 @@ test("an open transcript streams text without pulls and recovers incomplete inte
         name: "transcript-stream-fixture",
         configureServer(server) {
           server.middlewares.use((request, response, next) => {
-            const url = new URL(request.url, "http://localhost");
+            const url = new URL(request.url ?? "", "http://localhost");
             if (url.pathname === "/transcript-stream-check") {
               response.setHeader("Content-Type", "text/html");
               response.end(
@@ -105,14 +111,19 @@ test("an open transcript streams text without pulls and recovers incomplete inte
               response.setHeader("Content-Type", "application/json");
               response.setHeader(API_SCHEMA_HASH_HEADER, readApiSchemaHash());
               if (url.pathname === "/api/sync/identity") {
-                response.end(JSON.stringify({ workspaceId }));
+                response.end(
+                  JSON.stringify({
+                    workspaceId,
+                  } satisfies LegacySyncIdentityResponse),
+                );
                 return;
               }
               const scope = url.searchParams.get("scope");
+              assert.ok(scope);
               const after = Number(url.searchParams.get("after"));
               pulls.push({ scope, after });
               response.end(
-                JSON.stringify({
+                legacyPullResponse({
                   workspaceId,
                   documents: [
                     {
@@ -141,25 +152,9 @@ test("an open transcript streams text without pulls and recovers incomplete inte
     await server.listen();
     const page = await context.newPage();
     await page.goto(
-      `http://127.0.0.1:${server.httpServer.address().port}/transcript-stream-check`,
+      `http://127.0.0.1:${fixturePort(server)}/transcript-stream-check`,
     );
-    await page.evaluate(async () => {
-      const client = await import("/src/sync/client.ts");
-      window.stopTranscript = client.subscribeTranscriptProjection(
-        "transcript:open",
-        (payload) => {
-          document.querySelector("main").textContent =
-            payload?.items.map((item) => item.text).join("\n") || "";
-        },
-        (error) => {
-          if (error) throw error;
-        },
-      );
-      window.cursor = async () => {
-        const { db } = await client.syncDatabase();
-        return (await db.projections.findOne("transcript:open").exec())?.seq;
-      };
-    });
+    await page.evaluate(initializeTranscript);
     await expect(page.locator("main")).toHaveText(text);
     const settledPulls = pulls.length;
     text = "Agent streaming text";
@@ -168,7 +163,7 @@ test("an open transcript streams text without pulls and recovers incomplete inte
     send(event);
     await expect(page.locator("main")).toHaveText(text);
     await expect
-      .poll(() => page.evaluate(() => window.cursor()))
+      .poll(() => page.evaluate(() => window.syncTranscript.cursor()))
       .toBe(sequence);
     assert.equal(
       pulls.length,
@@ -191,8 +186,11 @@ test("an open transcript streams text without pulls and recovers incomplete inte
         for (const response of streams) response.end();
       } else {
         const payload = delta();
-        if (recovery === "oversize")
-          payload.items[0].text = "x".repeat(maxBytes + 1);
+        if (recovery === "oversize") {
+          const first = payload.items[0];
+          assert.ok(first);
+          first.text = "x".repeat(maxBytes + 1);
+        }
         send(frame("change", recovery === "gap" ? after + 1 : after, payload));
       }
       await expect(page.locator("main")).toHaveText(text);
@@ -201,7 +199,7 @@ test("an open transcript streams text without pulls and recovers incomplete inte
         `${recovery} requires a transcript pull`,
       );
     }
-    await page.evaluate(() => window.stopTranscript());
+    await page.evaluate(() => window.syncTranscript.stopTranscript());
   } finally {
     await context.close();
     for (const response of streams) response.end();

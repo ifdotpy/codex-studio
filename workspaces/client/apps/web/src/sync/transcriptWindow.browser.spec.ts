@@ -1,3 +1,12 @@
+import type { LegacySyncIdentityResponse } from "./syncBrowserFixture.ts";
+import type { components } from "../generated/api";
+import type { ResourceChangeEvent, ResourceRef } from "./resourceEvents";
+import {
+  fixturePort,
+  type LegacySyncPullResponse,
+  fixtureSubscriptions,
+  fixtureResources,
+} from "./syncBrowserFixture.ts";
 import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
 import {
@@ -22,19 +31,22 @@ test("a transcript window streams without pulls and older history uses one bound
     text: `History item ${index}`,
     at: index,
   }));
-  const pulls = [];
-  const pages = [];
-  const streams = new Set();
+  const pulls: (string | null)[] = [];
+  const pages: Record<string, string>[] = [];
+  const streams = new Set<import("node:http").ServerResponse>();
   let revision = 0;
   let transcriptSequence = 1;
   const snapshot = {
     items: all.slice(-SYNC_TRANSCRIPT_INITIAL_TAIL_ITEMS),
     truncated: true,
-    nextCursor: all.at(-SYNC_TRANSCRIPT_INITIAL_TAIL_ITEMS).id,
+    nextCursor: all.at(-SYNC_TRANSCRIPT_INITIAL_TAIL_ITEMS)?.id ?? null,
     nextAfterCursor: null,
     historyVersion: "window-fixture",
-  };
-  const baseline = (response, resources) => {
+  } satisfies components["schemas"]["TranscriptPageResponse"];
+  const baseline = (
+    response: import("node:http").ServerResponse,
+    resources: ResourceRef[],
+  ) => {
     const refs = resources.filter((ref) => ref.kind === "transcript");
     response.write(
       protocol3SseEvent("resources", {
@@ -50,7 +62,7 @@ test("a transcript window streams without pulls and older history uses one bound
           replyKind: "snapshot",
           transcriptSnapshot: snapshot,
         })),
-      }),
+      } satisfies ResourceChangeEvent),
     );
   };
   const server = await createFixtureViteServer({
@@ -62,8 +74,8 @@ test("a transcript window streams without pulls and older history uses one bound
         name: "transcript-window-fixture",
         configureServer(server) {
           server.middlewares.use(async (request, response, next) => {
-            const url = new URL(request.url, "http://localhost");
-            const json = (value) => {
+            const url = new URL(request.url ?? "", "http://localhost");
+            const json = (value: unknown) => {
               response.setHeader("Content-Type", "application/json");
               response.setHeader(API_SCHEMA_HASH_HEADER, readApiSchemaHash());
               response.end(JSON.stringify(value));
@@ -74,7 +86,9 @@ test("a transcript window streams without pulls and older history uses one bound
                 "<!doctype html><title>History window</title><main></main>",
               );
             } else if (url.pathname === "/api/sync/identity")
-              json({ workspaceId });
+              json({
+                workspaceId,
+              } satisfies LegacySyncIdentityResponse);
             else if (url.pathname === "/api/sync/stream") {
               response.setHeader("Content-Type", "text/event-stream");
               response.setHeader("Cache-Control", "no-cache");
@@ -84,24 +98,30 @@ test("a transcript window streams without pulls and older history uses one bound
               response.write(apiSchemaHandshakeSse());
               baseline(
                 response,
-                JSON.parse(url.searchParams.get("resources") || "[]"),
+                fixtureResources(url.searchParams.get("resources")),
               );
               streams.add(response);
               response.on("close", () => streams.delete(response));
             } else if (url.pathname === "/api/sync/subscriptions") {
               const chunks = [];
               for await (const chunk of request) chunks.push(chunk);
-              const update = JSON.parse(Buffer.concat(chunks));
+              const update = fixtureSubscriptions(
+                Buffer.concat(chunks).toString(),
+              );
               for (const stream of streams) {
                 stream.write(
-                  protocol3SseEvent("subscriptions", { gen: update.gen }),
+                  protocol3SseEvent("subscriptions", {
+                    gen: update.gen,
+                  } satisfies components["schemas"]["SyncSubscriptionAck"]),
                 );
                 baseline(
                   stream,
                   update.add.map((entry) => entry.resource),
                 );
               }
-              json({ gen: update.gen });
+              json({
+                gen: update.gen,
+              } satisfies components["schemas"]["SyncSubscriptionAck"]);
             } else if (url.pathname === "/api/sync/pull") {
               pulls.push(url.searchParams.get("scope"));
               json({
@@ -115,7 +135,7 @@ test("a transcript window streams without pulls and older history uses one bound
                   },
                 ],
                 checkpoint: { seq: transcriptSequence },
-              });
+              } satisfies LegacySyncPullResponse);
             } else if (url.pathname === "/api/transcript/page") {
               pages.push(Object.fromEntries(url.searchParams));
               const before = all.findIndex(
@@ -126,10 +146,10 @@ test("a transcript window streams without pulls and older history uses one bound
               json({
                 items: all.slice(start, before),
                 truncated: start > 0,
-                nextCursor: start ? all[start].id : null,
+                nextCursor: start ? (all[start]?.id ?? null) : null,
                 nextAfterCursor: all[before - 1]?.id || null,
                 historyVersion: "window-fixture",
-              });
+              } satisfies components["schemas"]["TranscriptPageResponse"]);
             } else next();
           });
         },
@@ -140,87 +160,17 @@ test("a transcript window streams without pulls and older history uses one bound
   try {
     await server.listen();
     const page = await context.newPage();
-    const errors = [];
+    const errors: string[] = [];
     page.on("pageerror", (error) => errors.push(error.message));
-    await page.goto(
-      `http://127.0.0.1:${server.httpServer.address().port}/window-check`,
-    );
-    await page.evaluate(
-      async ({ workspaceId }) => {
-        const { useMessages } = await import("/src/hooks.ts");
-        const { useConversationScroll, TRANSCRIPT_HISTORY_START_PX } =
-          await import("/src/components/useConversationScroll.ts");
-        const reactModule = await import("/node_modules/.vite/deps/react.js");
-        const domModule =
-          await import("/node_modules/.vite/deps/react-dom_client.js");
-        const React = reactModule.default || reactModule;
-        const { createRoot } = domModule.default || domModule;
-        function History() {
-          const history = useMessages(
-            "open",
-            "agent",
-            true,
-            "fixture",
-            workspaceId,
-          );
-          const scrolling = useConversationScroll(
-            "window-check",
-            history.loaded,
-          );
-          return React.createElement(
-            "section",
-            null,
-            React.createElement(
-              "button",
-              { onClick: history.older, disabled: !history.before },
-              "Older history",
-            ),
-            React.createElement(
-              "div",
-              {
-                id: "history-scroll",
-                ref: scrolling.scroll,
-                style: { height: "100px", overflowY: "auto" },
-                onScroll: () => {
-                  scrolling.onScroll();
-                  if (
-                    history.before &&
-                    !history.pageLoading &&
-                    scrolling.scroll.current.scrollTop <=
-                      TRANSCRIPT_HISTORY_START_PX &&
-                    scrolling.consumeHistoryScrollInput()
-                  )
-                    void history.older();
-                },
-              },
-              React.createElement(
-                "div",
-                { ref: scrolling.content },
-                history.items.map((item) =>
-                  React.createElement(
-                    "div",
-                    {
-                      key: item.id,
-                      "data-message": item.id,
-                      style: { height: "20px" },
-                    },
-                    item.text,
-                  ),
-                ),
-              ),
-            ),
-            React.createElement(
-              "output",
-              { "data-count": history.items.length },
-              history.items.map((item) => item.id).join(","),
-            ),
-          );
-        }
-        window.historyRoot = createRoot(document.querySelector("main"));
-        window.historyRoot.render(React.createElement(History));
-      },
-      { workspaceId },
-    );
+    await page.goto(`http://127.0.0.1:${fixturePort(server)}/window-check`);
+    await page.evaluate((workspaceId) => {
+      document.documentElement.dataset.workspaceId = workspaceId;
+    }, workspaceId);
+    await page.addScriptTag({
+      type: "module",
+      url: "/src/sync/transcriptWindow.browser.fixture.tsx",
+    });
+    await page.waitForFunction(() => !!window.syncWindow);
     await expect(page.locator("output")).toHaveAttribute(
       "data-count",
       String(SYNC_TRANSCRIPT_INITIAL_TAIL_ITEMS),
@@ -246,14 +196,16 @@ test("a transcript window streams without pulls and older history uses one bound
       1,
       "one user action issues exactly one page read",
     );
-    assert.equal(Number(pages[0].limit), SYNC_TRANSCRIPT_INITIAL_TAIL_ITEMS);
-    assert.equal(pages[0].before, snapshot.nextCursor);
+    assert.equal(Number(pages[0]?.limit), SYNC_TRANSCRIPT_INITIAL_TAIL_ITEMS);
+    assert.equal(pages[0]?.before, snapshot.nextCursor);
     assert.deepEqual(
-      (await page.locator("output").textContent()).split(","),
+      (await page.locator("output").textContent())?.split(","),
       all.slice(-2 * SYNC_TRANSCRIPT_INITIAL_TAIL_ITEMS).map((item) => item.id),
     );
     assert.deepEqual(pulls, []);
-    all.at(-1).text = "Recovered oversized transcript";
+    const last = all.at(-1);
+    assert.ok(last);
+    last.text = "Recovered oversized transcript";
     transcriptSequence++;
     for (const stream of streams)
       stream.write(
@@ -271,7 +223,7 @@ test("a transcript window streams without pulls and older history uses one bound
             },
           ],
           resourceVersions: [{ revision: transcriptSequence }],
-        }),
+        } satisfies ResourceChangeEvent),
       );
     await expect(
       page.getByText("Recovered oversized transcript", { exact: true }),
@@ -282,7 +234,7 @@ test("a transcript window streams without pulls and older history uses one bound
       "only the oversized interval permits one recovery pull",
     );
     assert.deepEqual(errors, []);
-    await page.evaluate(() => window.historyRoot.unmount());
+    await page.evaluate(() => window.syncWindow.historyRoot.unmount());
   } finally {
     await context.close();
     for (const response of streams) response.end();
