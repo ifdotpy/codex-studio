@@ -1,5 +1,4 @@
 import type { GetResult } from "../../src/apiTypes.ts";
-import { required } from "../teams/helpers.ts";
 import { createServer } from "vite";
 import type {} from "./claude-repair-ui.fixture.tsx";
 import { apiSchemaHeaders, test, expect } from "../playwright.ts";
@@ -63,7 +62,7 @@ test("Claude unconfirmed turn and journal repair at 320 and 1200 pixels", async 
       for (const status of ["needs_repair", "repaired"] as const) {
         reportStatus = status;
         await page.setViewportSize({ width, height: 1000 });
-        await page.goto(required(server.resolvedUrls?.local[0]) + "check");
+        await page.goto(server.resolvedUrls!.local[0]! + "check");
         await expect(
           page.getByText("Outcome unconfirmed", { exact: true }),
         ).toBeVisible();
