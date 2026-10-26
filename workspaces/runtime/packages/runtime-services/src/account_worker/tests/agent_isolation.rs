@@ -830,3 +830,44 @@ async fn a_refused_monitor_output_delta_holds_only_the_monitor_agent() {
     assert_running(&mut worker).await;
     worker.shutdown().await.unwrap();
 }
+
+/// Account-wide stream state that fails its check is no agent's fault: the
+/// worker ends as before, and no healthy agent is held for it.
+#[tokio::test]
+async fn an_exhausted_account_publication_counter_ends_the_worker_and_holds_nobody() {
+    let state = State::new().await;
+    let a = state.agent.clone();
+    state
+        .bridge
+        .run(|store| async move {
+            store
+                .transaction_with(|tx| {
+                    tx.execute(
+                        "INSERT INTO runtime_operation_receipts(id,signature,result) \
+                         VALUES('account-worker:streams:default:metadata','fixture',?1)",
+                        [format!(
+                            "{{\"entries\":[],\"closed\":[],\"publication_sequence\":{}}}",
+                            u64::MAX
+                        )],
+                    )?;
+                    Ok::<_, StoreError>(())
+                })
+                .await?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    let mut peer = Peer::new();
+    let mut worker = peer.worker(state.bridge.clone()).await;
+    let a_start = start_agent(&state, &mut peer, &worker, &a, "fake-thread-0").await;
+    peer.reply(&a_start, json!({"turn":{"id":"turn-a"}})).await;
+    peer.frame(json!({"method":"item/completed","params":{"threadId":"fake-thread-0","turnId":"turn-a","item":{"type":"agentMessage","id":"item-a","text":"done"}}}))
+        .await;
+    let ended = tokio::time::timeout(PROGRESS_DEADLINE, worker.completion())
+        .await
+        .expect("the account worker ends");
+    let error = format!("{ended:?}");
+    assert!(error.contains("InvalidAccountState"), "{error}");
+    let record = record_of(&state, &a).await;
+    assert!(record.get("nativeFailureHold").is_none(), "{record}");
+}

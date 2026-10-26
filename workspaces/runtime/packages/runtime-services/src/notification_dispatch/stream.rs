@@ -407,7 +407,7 @@ impl NotificationStreamBuffer {
         self.publication_sequence = self
             .publication_sequence
             .checked_add(1)
-            .ok_or(NotificationDispatchError::invalid())?;
+            .ok_or(NotificationDispatchError::invalid_account())?;
         let effects = std::mem::take(&mut self.post_commit)
             .into_iter()
             .map(Shared::into_owned)

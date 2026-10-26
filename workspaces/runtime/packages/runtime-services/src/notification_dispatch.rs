@@ -123,6 +123,10 @@ impl std::fmt::Display for FailedCheck {
 pub enum NotificationDispatchError {
     #[error("invalid provider notification or delivery identity (failed check {check})")]
     InvalidNotification { check: FailedCheck },
+    /// Account-wide delivery state (the worker's delivery identity or the
+    /// account stream counter) failed a check; no single agent owns it.
+    #[error("invalid account delivery state (failed check {check})")]
+    InvalidAccountState { check: FailedCheck },
     #[error("notification output queue capacity reached")]
     StreamCapacity,
     #[error("invalid stored object {table}:{id}")]
@@ -150,6 +154,13 @@ impl NotificationDispatchError {
     #[track_caller]
     pub fn invalid() -> Self {
         Self::InvalidNotification {
+            check: FailedCheck::here(),
+        }
+    }
+    /// Invalid account-wide delivery state at the caller's site.
+    #[track_caller]
+    pub fn invalid_account() -> Self {
+        Self::InvalidAccountState {
             check: FailedCheck::here(),
         }
     }
@@ -430,7 +441,7 @@ pub fn dispatch_notification_with_effects(
                 || identity.generation == 0
                 || identity.cursor == 0
             {
-                return Err(NotificationDispatchError::invalid());
+                return Err(NotificationDispatchError::invalid_account());
             }
             let content_signature = notification_content_signature(agent_id, notification)?;
             let identity_signature = sha256_json(&json!({
@@ -1063,7 +1074,7 @@ fn command_key(
         account: identity
             .provider_handle
             .strip_prefix("account:")
-            .ok_or(NotificationDispatchError::invalid())?
+            .ok_or(NotificationDispatchError::invalid_account())?
             .into(),
         generation: identity.generation,
         thread: params["threadId"]

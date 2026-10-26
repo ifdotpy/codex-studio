@@ -30,7 +30,7 @@ pub(super) fn apply(
     let account = identity
         .provider_handle
         .strip_prefix("account:")
-        .ok_or(NotificationDispatchError::invalid())?;
+        .ok_or(NotificationDispatchError::invalid_account())?;
     if method == "thread/idleCompaction/updated" {
         crate::idle_compaction::observe(tx, agent, &p["report"])?;
         persist_agent(tx, &id, agent)?;
