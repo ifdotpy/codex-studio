@@ -140,7 +140,7 @@ smoke prepares itself; `just test-browser-smoke --prepared` consumes those input
 Fast Vitest witnesses live in each package's `vitest.fast.config.*`; each package
 runs once with `--project fast`. File isolation and the existing worker bounds
 remain enabled. The selected resource-event file includes the draft ordering
-witness, so it needs no second `-t` invocation. Main, API-contract and client-helper
+witness, so it needs no second `-t` invocation. The main renderer project also checks the API contract witnesses; client-helper
 TypeScript programs remain separate. Their `--incremental` build information is
 stored outside the checkout, with a separate cache file per program and a
 checkout-specific gate cache directory.

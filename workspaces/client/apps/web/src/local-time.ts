@@ -38,9 +38,9 @@ export function serviceTimeText(text: string, reference = new Date()): string {
           );
         const day = fields(reference);
         const clock = Date.UTC(
-          +day.year,
-          +day.month - 1,
-          +day.day,
+          Number(day.year),
+          Number(day.month) - 1,
+          Number(day.day),
           (+hour % 12) + (period.toLowerCase() === "p" ? 12 : 0),
           +(minute || 0),
         );
@@ -48,12 +48,12 @@ export function serviceTimeText(text: string, reference = new Date()): string {
         for (let n = 0; n < 3; n++) {
           const part = fields(new Date(instant));
           const shown = Date.UTC(
-            +part.year,
-            +part.month - 1,
-            +part.day,
-            +part.hour,
-            +part.minute,
-            +part.second,
+            Number(part.year),
+            Number(part.month) - 1,
+            Number(part.day),
+            Number(part.hour),
+            Number(part.minute),
+            Number(part.second),
           );
           instant += clock - shown;
         }

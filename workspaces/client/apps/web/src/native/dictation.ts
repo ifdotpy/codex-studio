@@ -70,8 +70,10 @@ export function createNativeDictation(
     },
     cancelTranscription(id) {
       cancelled.add(id);
-      if (cancelled.size > 128)
-        cancelled.delete(cancelled.values().next().value!);
+      if (cancelled.size > 128) {
+        const oldest = cancelled.values().next();
+        if (!oldest.done) cancelled.delete(oldest.value);
+      }
       // The component may cancel while WAV chunks are still being uploaded.
       return running.has(id)
         ? request("desktop.cancelTranscription", { value: id })
@@ -82,8 +84,29 @@ export function createNativeDictation(
       let stop: (() => void) | undefined;
       const subscription = crypto.randomUUID();
       void (async () => {
-        stop = await listen((event: any) => {
-          if (!disposed && event?.event === subscription) callback(event.value);
+        stop = await listen((event) => {
+          if (
+            disposed ||
+            !event ||
+            typeof event !== "object" ||
+            !("event" in event) ||
+            event.event !== subscription ||
+            !("value" in event)
+          )
+            return;
+          const value = event.value;
+          if (
+            !value ||
+            typeof value !== "object" ||
+            !("id" in value) ||
+            typeof value.id !== "string" ||
+            !("completed" in value) ||
+            typeof value.completed !== "number" ||
+            !("total" in value) ||
+            typeof value.total !== "number"
+          )
+            return;
+          callback(value);
         });
         if (disposed) {
           stop();
@@ -116,15 +139,24 @@ export function createNativeDictation(
       finish = resolve;
     });
     let chunkError: unknown;
-    const stopListening = await listen((event: any) => {
-      if (event?.event !== subscription) return;
-      if (event.value?.stopped) {
+    const stopListening = await listen((event) => {
+      if (
+        !event ||
+        typeof event !== "object" ||
+        !("event" in event) ||
+        event.event !== subscription ||
+        !("value" in event)
+      )
+        return;
+      const value = event.value;
+      if (!value || typeof value !== "object") return;
+      if ("stopped" in value && value.stopped) {
         finish?.();
         return;
       }
-      if (typeof event.value?.pcm === "string") {
+      if ("pcm" in value && typeof value.pcm === "string") {
         try {
-          const raw = atob(event.value.pcm);
+          const raw = atob(value.pcm);
           if (raw.length % 2) throw new Error("Invalid microphone PCM chunk.");
           const pcm = new Int16Array(raw.length / 2);
           for (let i = 0; i < pcm.length; i++)

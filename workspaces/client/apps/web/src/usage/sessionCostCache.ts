@@ -1,5 +1,7 @@
 import { serverLocalStorage as localStorage } from "../servers/storage";
-export type SessionCostValue = Record<string, any>;
+import type { Json, JsonValue } from "../types";
+import { jsonObject } from "./accountUsage";
+export type SessionCostValue = Json;
 type Entry = { scope: string; value: SessionCostValue; storedAt: number };
 
 const prefix = "studio-session-cost:";
@@ -9,16 +11,18 @@ const maxStoredBytes = 64 * 1024;
 export const sessionCostScope = (stateDir: string, rootId: string) =>
   JSON.stringify([stateDir, rootId]);
 
-function valid(value: any, scope: string): value is Entry {
+function valid(input: JsonValue, scope: string): input is Entry {
+  const value = jsonObject(input);
+  const cost = jsonObject(value?.value);
   return (
     value?.scope === scope &&
     Number.isFinite(value?.storedAt) &&
-    value?.value?.pricingState === "ready" &&
-    value?.value?.estimated === true &&
-    (value.value.totalUSD === null || Number.isFinite(value.value.totalUSD)) &&
-    Array.isArray(value.value.unknownModels) &&
-    value.value.breakdown !== null &&
-    typeof value.value.breakdown === "object"
+    cost?.pricingState === "ready" &&
+    cost?.estimated === true &&
+    (cost.totalUSD === null || Number.isFinite(cost.totalUSD)) &&
+    Array.isArray(cost.unknownModels) &&
+    cost.breakdown !== null &&
+    typeof cost.breakdown === "object"
   );
 }
 
@@ -27,8 +31,11 @@ export function createSessionCostCache(localStorage: Storage) {
   function remember(entry: Entry) {
     entries.delete(entry.scope);
     entries.set(entry.scope, entry);
-    while (entries.size > maxEntries)
-      entries.delete(entries.keys().next().value!);
+    while (entries.size > maxEntries) {
+      const oldest = entries.keys().next();
+      if (oldest.done) break;
+      entries.delete(oldest.value);
+    }
     return entry;
   }
 
