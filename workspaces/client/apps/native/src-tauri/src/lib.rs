@@ -116,7 +116,7 @@ mod tests {
 
     // A style nonce makes the WebView ignore 'unsafe-inline' in style-src.
     // Srcdoc previews inherit that policy and lose their styles; see
-    // repository-checks/tests/native-style-policy.test.mjs.
+    // repository-checks/tests/native-style-policy.test.ts.
     #[test]
     fn bundled_documents_keep_the_configured_inline_style_policy() {
         let context = super::context();

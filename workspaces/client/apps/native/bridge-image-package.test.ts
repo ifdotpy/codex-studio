@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import { test } from "node:test";
-import { pruneBridgeImageCodecs } from "./bridge-image-package.mjs";
+import { pruneBridgeImageCodecs } from "./bridge-image-package.ts";
 
 const run = promisify(execFile);
 const repository = path.resolve(import.meta.dirname, "../../../..");

@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 // Read-only traffic sampling. Payload recording is explicit and server state is untouched.
 import http from "node:http";
+import type { components } from "../../../client/apps/web/src/generated/api.ts";
 import { createWriteStream } from "node:fs";
 import https from "node:https";
 import { createBrotliDecompress } from "node:zlib";
@@ -38,19 +39,37 @@ if (!values.url || !Number.isFinite(seconds) || seconds <= 0)
   throw new Error(
     "Usage: --url URL --seconds N [--protocol 3] [--resources JSON | --resources-file FILE] [--output FILE]",
   );
-const resources = JSON.parse(
+const resources: unknown = JSON.parse(
   values["resources-file"]
     ? await readFile(values["resources-file"], "utf8")
     : values.resources || '[{"kind":"state"},{"kind":"drafts"}]',
 );
 if (!Array.isArray(resources)) throw new Error("resources must be an array");
 const url = new URL("/api/sync/stream", values.url);
-url.searchParams.set("protocol", values.protocol);
+url.searchParams.set("protocol", values.protocol ?? protocolVersion);
 url.searchParams.set("resources", JSON.stringify(resources));
 url.searchParams.set("tokenRates", String(values["token-rates"]));
-const byteLength = (value) => Buffer.byteLength(JSON.stringify(value));
+const byteLength = (value: unknown) => Buffer.byteLength(JSON.stringify(value));
 
-function sample(acceptEncoding) {
+// Studio's generated contract owns resource events; the server validates the wire shape.
+function resourceEvent(
+  source: string,
+): components["schemas"]["ResourceChangeEvent"] {
+  return JSON.parse(source);
+}
+// Old recordings used a JSON payload string; it has no current server contract.
+function legacyEntityValue(source: string) {
+  const parsed: unknown = JSON.parse(source);
+  const value =
+    parsed && typeof parsed === "object" && "value" in parsed
+      ? parsed.value
+      : null;
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? { ...value }
+    : null;
+}
+
+function sample(acceptEncoding: string) {
   return new Promise((resolve, reject) => {
     const started = performance.now();
     const startedAt = new Date().toISOString();
@@ -63,22 +82,44 @@ function sample(acceptEncoding) {
       decodedBodyBytes: 0,
       incompleteFrameBytes: 0,
       elapsedSeconds: 0,
-      events: {},
-      resourceKinds: {},
-      entityCollections: {},
-      entityChurn: {},
-      resources: {},
+      events: {} as Record<
+        string,
+        {
+          count: number;
+          bytes: number;
+          initialCount: number;
+          initialBytes: number;
+        }
+      >,
+      resourceKinds: {} as Record<
+        string,
+        { references: number; resourceAndVersionBytes: number }
+      >,
+      entityCollections: {} as Record<string, { count: number; bytes: number }>,
+      entityChurn: {} as Record<
+        string,
+        {
+          updates: number;
+          wholeValueBytes: number;
+          changedFieldsBytes: number;
+          fields: Record<string, { changes: number; bytes: number }>;
+        }
+      >,
+      resources: {} as Record<
+        string,
+        { references: number; resourceAndVersionBytes: number }
+      >,
     };
-    const previousEntities = new Map();
+    const previousEntities = new Map<string, Record<string, unknown>>();
     const recording =
       acceptEncoding === "identity" && values.record
         ? createWriteStream(values.record, { mode: 0o600 })
         : null;
     let pending = "";
-    let response;
-    let decoder;
+    let response: http.IncomingMessage | undefined;
+    let decoder: ReturnType<typeof createBrotliDecompress> | undefined;
     let done = false;
-    const finish = (error) => {
+    const finish = (error?: Error) => {
       if (done) return;
       done = true;
       clearTimeout(deadline);
@@ -109,7 +150,7 @@ function sample(acceptEncoding) {
           );
         report.contentEncoding =
           incoming.headers["content-encoding"] || "identity";
-        incoming.on("data", (chunk) => {
+        incoming.on("data", (chunk: Buffer) => {
           report.wireBodyBytes += Buffer.byteLength(chunk);
         });
         incoming.on("error", finish);
@@ -123,11 +164,11 @@ function sample(acceptEncoding) {
           );
         body.setEncoding("utf8");
         body.on("error", finish);
-        body.on("data", (chunk) => {
+        body.on("data", (chunk: string) => {
           report.decodedBodyBytes += Buffer.byteLength(chunk);
           recording?.write(chunk);
           pending += chunk;
-          let end;
+          let end: number;
           while ((end = pending.indexOf("\n\n")) !== -1) {
             const frame = pending.slice(0, end + 2);
             pending = pending.slice(end + 2);
@@ -150,7 +191,7 @@ function sample(acceptEncoding) {
               .map((line) => line.slice(5).trimStart())
               .join("\n");
             if (!data) continue;
-            const event = JSON.parse(data);
+            const event = resourceEvent(data);
             if (event.reason === "initial") {
               stats.initialCount++;
               stats.initialBytes += Buffer.byteLength(frame);
@@ -175,16 +216,23 @@ function sample(acceptEncoding) {
                 byteLength(ref) + (version ? byteLength(version) : 0);
               for (const row of version?.entityChanges?.documents || []) {
                 const collection =
-                  row.collection || row.id?.split(":")[1] || "unknown";
+                  row.collection ||
+                  String(Reflect.get(row, "id") ?? "").split(":")[1] ||
+                  "unknown";
                 const entity = (report.entityCollections[collection] ||= {
                   count: 0,
                   bytes: 0,
                 });
                 entity.count++;
                 entity.bytes += byteLength(row);
-                const value =
-                  row.value ??
-                  (row.payload ? JSON.parse(row.payload).value : null);
+                const payload =
+                  "payload" in row &&
+                  typeof row.payload === "string" &&
+                  row.payload
+                    ? legacyEntityValue(row.payload)
+                    : null;
+                const value: Record<string, unknown> | null =
+                  ("value" in row ? { ...row.value } : null) ?? payload ?? null;
                 const key = `${collection}:${row.id}`;
                 const previous = previousEntities.get(key);
                 if (value && previous) {
@@ -196,7 +244,7 @@ function sample(acceptEncoding) {
                   });
                   churn.updates++;
                   churn.wholeValueBytes += byteLength(value);
-                  const changed = {};
+                  const changed: Record<string, unknown> = {};
                   for (const field of new Set([
                     ...Object.keys(previous),
                     ...Object.keys(value),

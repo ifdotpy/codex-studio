@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import assert from "node:assert/strict";
+import { decodeLegacyAgentDocument } from "./scaleVerifierHelpers.ts";
 import type { Page, Response, Locator } from "playwright";
 import type { components, AgentEntityDto } from "../src/generated/api.ts";
 import { mkdirSync } from "node:fs";
@@ -13,7 +14,6 @@ import {
   localClassicViewUrl,
   assertLocalClassicView,
   parseApiJson,
-  requireAgentPayload,
 } from "./verify-rust-worker-defaults.ts";
 import type { JournalBase } from "./verify-rust-worker-defaults.ts";
 
@@ -166,9 +166,8 @@ async function readServerAgent(
   const body = parseApiJson<"SyncPullResponse">(result.body);
   const document = body?.documents.find((item) => {
     if (item.id === id || item.id?.endsWith(`:${id}`)) return true;
-    if (!("payload" in item) || typeof item.payload !== "string") return false;
     try {
-      const entity = parseApiJson<"SyncEntityPayload">(item.payload);
+      const entity = decodeLegacyAgentDocument(item);
       return entity?.collection === "agent" && entity.id === id;
     } catch {
       return false;
@@ -182,7 +181,8 @@ async function readServerAgent(
     "string",
     "Sync document has no payload.",
   );
-  const entity = requireAgentPayload(document.payload);
+  const entity = decodeLegacyAgentDocument(document);
+  assert.ok(entity, "Sync payload is not an agent.");
   return { deleted: false as const, seq: document.seq, agent: entity.value };
 }
 
