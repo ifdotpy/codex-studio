@@ -401,10 +401,12 @@ export default function ServerAccountsPanel({
                               ).map((operation) => (
                                 <Menu.Item
                                   key={operation}
-                                  {...(operation === "remove" ||
-                                  operation === "disconnect"
-                                    ? { color: "red" }
-                                    : {})}
+                                  color={
+                                    operation === "remove" ||
+                                    operation === "disconnect"
+                                      ? "red"
+                                      : undefined
+                                  }
                                   onClick={() =>
                                     accountAction(server.id, {
                                       action: "account-action",

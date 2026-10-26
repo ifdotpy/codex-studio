@@ -1,33 +1,30 @@
 import fs from "node:fs";
-import { createHash } from "node:crypto";
-import assert from "node:assert/strict";
 import type {
   Options,
   SDKUserMessage,
   SDKMessage,
-  NonNullableUsage,
   Query,
   AnyZodRawShape,
   SdkMcpToolDefinition,
 } from "@anthropic-ai/claude-agent-sdk";
 import fsp from "node:fs/promises";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-const { promise: raceStarted, resolve: beginRace } =
-  Promise.withResolvers<void>();
-let releaseRace = () => {};
+let beginRace!: () => void, releaseRace!: () => void;
+const raceStarted = new Promise<void>((resolve) => (beginRace = resolve));
 const stoppedTasks = new Set();
 const originalRead = fsp.readFile.bind(fsp);
-fsp.readFile = new Proxy(originalRead, {
-  async apply(target, receiver, args: unknown[]) {
-    if (String(args[0]).endsWith("/race.png")) {
-      const { promise: held, resolve } = Promise.withResolvers<void>();
-      releaseRace = resolve;
-      beginRace();
-      await held;
-    }
-    return Reflect.apply(target, receiver, args);
-  },
-});
+// Preserve the overloads: the wrapper forwards the original arguments unchanged.
+fsp.readFile = (async (
+  file: Parameters<typeof fsp.readFile>[0],
+  ...args: [options: Parameters<typeof fsp.readFile>[1]]
+) => {
+  if (String(file).endsWith("/race.png")) {
+    const held = new Promise<void>((resolve) => (releaseRace = resolve));
+    beginRace();
+    await held;
+  }
+  return originalRead(file, ...args);
+}) as typeof fsp.readFile;
 
 const appendOriginal = fsp.appendFile.bind(fsp);
 fsp.appendFile = async (file, data, ...args) => {
@@ -166,157 +163,6 @@ type FixtureFrame =
       isReplay?: boolean;
       message?: Partial<SDKUserMessage["message"]>;
     });
-const fixtureSession = "22222222-2222-4222-8222-222222222222";
-function usage(input?: Partial<NonNullableUsage>): NonNullableUsage;
-function usage(input?: Partial<Message["usage"]>): Message["usage"];
-function usage(input?: Partial<Message["usage"]>): Message["usage"] {
-  return {
-    input_tokens: 0,
-    output_tokens: 0,
-    fallback_credit: null,
-    iterations: [],
-    speed: "standard",
-    output_tokens_details: { thinking_tokens: 0 },
-    cache_creation_input_tokens: 0,
-    cache_read_input_tokens: 0,
-    cache_creation: {
-      ephemeral_5m_input_tokens: 0,
-      ephemeral_1h_input_tokens: 0,
-    },
-    server_tool_use: { web_fetch_requests: 0, web_search_requests: 0 },
-    service_tier: "standard",
-    inference_geo: "not_available",
-    ...input,
-  };
-}
-function message(input: FixtureMessage): Message {
-  return {
-    id: "fixture-message",
-    type: "message",
-    role: "assistant",
-    model: "fixture-model",
-    stop_reason: null,
-    stop_details: null,
-    stop_sequence: null,
-    container: null,
-    diagnostics: null,
-    context_management: null,
-    ...input,
-    content: (input.content ?? []).map((block) =>
-      block.type === "text" ? { citations: [], ...block } : block,
-    ),
-    usage: usage(input.usage),
-  };
-}
-/** Required SDK fields have one fixture default; scenario fields remain explicit. */
-function sdkMessage(input: FixtureFrame): SDKMessage {
-  // The original UUID-less frames were identified by their serialized payload.
-  // Keep identical snapshots identical while supplying the SDK-required UUID.
-  const digest = createHash("sha256")
-    .update(JSON.stringify(input))
-    .digest("hex");
-  const uuid: SDKMessage["uuid"] = `${digest.slice(0, 8)}-${digest.slice(8, 12)}-4${digest.slice(13, 16)}-8${digest.slice(17, 20)}-${digest.slice(20, 32)}`;
-  const identity = { uuid, session_id: fixtureSession };
-  switch (input.type) {
-    case "assistant":
-      return {
-        ...identity,
-        parent_tool_use_id: null,
-        ...input,
-        message: message(input.message),
-      };
-    case "stream_event":
-      return {
-        ...identity,
-        parent_tool_use_id: null,
-        type: "stream_event",
-        event:
-          input.event.type === "message_start"
-            ? { ...input.event, message: message(input.event.message) }
-            : { index: 0, ...input.event },
-      };
-    case "rate_limit_event":
-      return {
-        ...identity,
-        rate_limit_info: { status: "allowed" as const },
-        ...input,
-      };
-    case "user":
-      return {
-        ...identity,
-        parent_tool_use_id: null,
-        ...input,
-        message: { role: "user", content: [], ...input.message },
-      };
-    case "system":
-      switch (input.subtype) {
-        case "init":
-          return {
-            ...identity,
-            apiKeySource: "none" as const,
-            claude_code_version: "fixture",
-            cwd: "/fixture",
-            tools: [],
-            mcp_servers: [],
-            model: "fixture-model",
-            permissionMode: "default" as const,
-            slash_commands: [],
-            output_style: "default",
-            skills: [],
-            plugins: [],
-            ...input,
-          };
-        case "local_command_output":
-          return { ...identity, content: "", ...input };
-        case "task_started":
-          return {
-            ...identity,
-            task_id: "worker-1",
-            description: "Worker",
-            ...input,
-          };
-        case "task_notification":
-          if (input.status === "killed") {
-            // @ts-expect-error The legacy protocol witness deliberately emits killed instead of the SDK's stopped status.
-            return {
-              ...identity,
-              task_id: "worker-1",
-              output_file: "",
-              summary: "",
-              ...input,
-            };
-          }
-          return {
-            ...identity,
-            task_id: "worker-1",
-            output_file: "",
-            summary: "",
-            ...input,
-            status: input.status,
-          };
-      }
-    case "result":
-      if (input.subtype === "error") {
-        // @ts-expect-error The legacy limit witness deliberately emits the pre-SDK error subtype.
-        return input;
-      }
-      return {
-        ...identity,
-        duration_ms: 0,
-        duration_api_ms: 0,
-        is_error: false,
-        num_turns: 1,
-        result: "",
-        stop_reason: null,
-        total_cost_usd: 0,
-        modelUsage: {},
-        permission_denials: [],
-        ...input,
-        usage: usage(input.usage),
-      };
-  }
-}
-
 type PromptEvent = {
   kind: "prompt";
   result: IteratorResult<SDKUserMessage, void>;
@@ -326,7 +172,15 @@ type BackgroundEvent = {
   taskId: string;
   status: "killed" | "completed";
 };
-type FixtureOptions = Omit<Options, "mcpServers"> & {
+type FixtureOptions = Omit<Options, "mcpServers" | "canUseTool"> & {
+  canUseTool?: (
+    tool: Parameters<NonNullable<Options["canUseTool"]>>[0],
+    input: Parameters<NonNullable<Options["canUseTool"]>>[1],
+    context: Omit<
+      Parameters<NonNullable<Options["canUseTool"]>>[2],
+      "requestId"
+    >,
+  ) => ReturnType<NonNullable<Options["canUseTool"]>>;
   mcpServers?: Record<string, ReturnType<typeof createSdkMcpServer>>;
 };
 export function query({
@@ -382,16 +236,12 @@ export function query({
         settings: options.settings,
       }) + "\n",
     );
-  const mcpServerStatus: Query["mcpServerStatus"] = async () => {
-    // The Rust test writes this controlled SDK status fixture before querying it.
-    const statuses: Awaited<ReturnType<Query["mcpServerStatus"]>> =
+  return {
+    // The parent Rust witness writes this controlled status document.
+    mcpServerStatus: async (): ReturnType<Query["mcpServerStatus"]> =>
       fs.existsSync(options.cwd + "/.mcp-status.json")
         ? JSON.parse(fs.readFileSync(options.cwd + "/.mcp-status.json", "utf8"))
-        : [];
-    return statuses;
-  };
-  return {
-    mcpServerStatus,
+        : [],
     reconnectMcpServer: async () => {},
     supportedModels: async () => [
       {
@@ -447,7 +297,7 @@ export function query({
         JSON.stringify(
           Object.keys(servers).map((name) => [
             name,
-            servers[name]?.tools.map((t) => t.name),
+            servers[name].tools.map((t) => t.name),
           ]),
         ) + "\n",
       );
@@ -479,16 +329,19 @@ export function query({
     interrupt: async () => {
       turnAbort?.abort();
     },
-    async *[Symbol.asyncIterator](): AsyncGenerator<SDKMessage, void, unknown> {
+    async *[Symbol.asyncIterator](): AsyncGenerator<
+      FixtureFrame,
+      void,
+      unknown
+    > {
       let transcriptPrefix: string[] = [];
-      let pendingPrompt: Promise<PromptEvent> = prompt
+      let pendingPrompt: Promise<PromptEvent> | null = prompt
         .next()
         .then((result) => ({ kind: "prompt" as const, result }));
       let pendingBackground: Promise<BackgroundEvent> | null = null;
       while (!abort.signal.aborted) {
         if (backgroundTasks.size && !pendingBackground) {
           const [taskId] = backgroundTasks.keys();
-          assert.ok(taskId);
           pendingBackground = (async () => {
             while (
               !abort.signal.aborted &&
@@ -505,117 +358,120 @@ export function query({
         }
         const event: PromptEvent | BackgroundEvent = await Promise.race(
           pendingBackground
-            ? [pendingPrompt, pendingBackground]
-            : [pendingPrompt],
+            ? [pendingPrompt!, pendingBackground]
+            : [pendingPrompt!],
         );
         if (event.kind === "background") {
           pendingBackground = null;
           backgroundTasks.delete(event.taskId);
-          yield sdkMessage({
+          yield {
             type: "system",
             subtype: "task_notification",
             task_id: event.taskId,
             status: event.status,
-          });
+          };
           continue;
         }
         const input: IteratorResult<SDKUserMessage, void> = event.result;
-
+        pendingPrompt = null;
         if (input.done) return;
         pendingPrompt = prompt
           .next()
           .then((result) => ({ kind: "prompt", result }));
         if (
           !/^[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}$/i.test(
-            input.value.uuid ?? "",
+            input.value.uuid!,
           )
         )
           throw new Error("Native input requires UUID");
-        assert.ok(input.value.uuid);
         if (options.systemPrompt)
           fs.appendFileSync(
             options.cwd + "/.sdk-inputs",
             JSON.stringify(input.value) + "\n",
           );
-        const content: SDKUserMessage["message"]["content"] =
-          input.value.message.content;
-        assert.ok(Array.isArray(content) && content[0]?.type === "text");
-        let text: string = content[0].text;
-        yield sdkMessage({
+        let text = (
+          (
+            input.value.message.content as Extract<
+              SDKUserMessage["message"]["content"],
+              unknown[]
+            >
+          )[0] as TextBlock
+        ).text;
+        yield {
           type: "user",
           isReplay: true,
           uuid: input.value.uuid,
-        });
+        };
         // SDK shouldQuery:false appends context for the next querying message;
         // its receipt must not generate or complete an assistant turn.
         if (input.value.shouldQuery === false) {
           transcriptPrefix.push(text);
-          yield sdkMessage({
+          yield {
             type: "result",
             subtype: "success",
             num_turns: 0,
             user_message_uuid: input.value.uuid,
-          });
+          };
           continue;
         }
         text = [...transcriptPrefix, text].join("\n\n");
         transcriptPrefix = [];
         turnAbort = new AbortController();
         const turnSignal = turnAbort.signal;
-        yield sdkMessage({
+        yield {
           type: "system",
           subtype: "init",
-          session_id: options.resume || options.sessionId || fixtureSession,
-        });
+          session_id: options.resume || options.sessionId,
+        };
         if (text === "steer-race") {
           await raceStarted;
-          yield sdkMessage({
+          yield {
             type: "result",
             subtype: "success",
             usage: { input_tokens: 10, output_tokens: 2 },
             result: "Before steer",
-          });
+          };
           releaseRace();
           continue;
         }
         if (text === "steer") {
-          yield sdkMessage({
+          yield {
             type: "stream_event",
             event: { type: "message_start", message: { id: "waiting" } },
-          });
-          yield sdkMessage({
+          };
+          yield {
             type: "stream_event",
             event: {
               type: "content_block_delta",
               delta: { type: "text_delta", text: "Waiting for steer" },
             },
-          });
-          const next = await pendingPrompt;
-
+          };
+          const next = await pendingPrompt!;
+          pendingPrompt = null;
           pendingPrompt = prompt
             .next()
             .then((result) => ({ kind: "prompt", result }));
           if (next.kind !== "prompt") throw new Error("Expected a steer input");
           const nextInput = next.result;
-          assert.ok(!nextInput.done);
-          assert.ok(nextInput.value.uuid);
           if (
             !/^[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}$/i.test(
-              nextInput.value?.uuid ?? "",
+              nextInput.value!.uuid!,
             )
           )
             throw new Error("Native steer requires UUID");
-          yield sdkMessage({
+          yield {
             type: "user",
             isReplay: true,
-            uuid: nextInput.value.uuid,
-          });
-          assert.ok(!nextInput.done);
-          const replacement = nextInput.value.message.content;
-          assert.ok(
-            Array.isArray(replacement) && replacement[0]?.type === "text",
-          );
-          text = replacement[0].text;
+            uuid: nextInput.value!.uuid,
+          };
+          text = (
+            (
+              nextInput.value!.message.content as Extract<
+                SDKUserMessage["message"]["content"],
+                unknown[]
+              >
+            )[0] as TextBlock
+          ).text;
           if (text !== "replacement") throw new Error("Wrong steer");
           while (
             !fs.existsSync(options.cwd + "/.release-steer") &&
@@ -624,24 +480,24 @@ export function query({
             await new Promise((r) => setTimeout(r, 5));
         }
         if (text === "plan") {
-          const decision = await options.canUseTool?.(
+          const decision = await options.canUseTool!(
             "ExitPlanMode",
             { plan: "A visible plan" },
-            { toolUseID: "plan", requestId: "plan", signal: turnSignal },
+            { toolUseID: "plan", signal: turnSignal },
           );
-          if (decision?.behavior !== "deny")
+          if (decision!.behavior !== "deny")
             throw new Error("Plan executed without a separate user turn");
         }
         if (text === "permission") {
-          const decision = await options.canUseTool?.(
+          const decision = await options.canUseTool!(
             "Bash",
             { command: "echo hello" },
-            { toolUseID: "tool-1", requestId: "tool-1", signal: turnSignal },
+            { toolUseID: "tool-1", signal: turnSignal },
           );
-          if (decision?.behavior !== "deny") throw new Error("Expected denial");
+          if (decision!.behavior !== "deny") throw new Error("Expected denial");
         }
         if (text === "question") {
-          const decision = await options.canUseTool?.(
+          const decision = await options.canUseTool!(
             "AskUserQuestion",
             {
               questions: [
@@ -652,20 +508,22 @@ export function query({
                 },
               ],
             },
-            { toolUseID: "ask", requestId: "ask", signal: turnSignal },
+            { toolUseID: "ask", signal: turnSignal },
           );
           if (
-            decision?.behavior !== "allow" ||
-            !decision.updatedInput ||
-            typeof decision.updatedInput.answers !== "object" ||
-            !decision.updatedInput.answers ||
-            !("Choose?" in decision.updatedInput.answers) ||
-            decision.updatedInput.answers["Choose?"] !== "A"
+            (
+              (
+                decision as Extract<
+                  Awaited<ReturnType<NonNullable<Options["canUseTool"]>>>,
+                  { behavior: "allow" }
+                >
+              ).updatedInput!.answers as Record<string, string>
+            )["Choose?"] !== "A"
           )
             throw new Error("Missing answer");
         }
         if (text === "question-multi") {
-          const decision = await options.canUseTool?.(
+          const decision = await options.canUseTool!(
             "AskUserQuestion",
             {
               questions: [
@@ -682,36 +540,39 @@ export function query({
             },
             {
               toolUseID: "ask-multi",
-              requestId: "ask-multi",
               signal: turnSignal,
             },
           );
           if (
-            decision?.behavior !== "allow" ||
-            !decision.updatedInput ||
-            typeof decision.updatedInput.answers !== "object" ||
-            !decision.updatedInput.answers ||
-            !("Features?" in decision.updatedInput.answers) ||
-            decision.updatedInput.answers["Features?"] !== "A, B"
+            (
+              (
+                decision as Extract<
+                  Awaited<ReturnType<NonNullable<Options["canUseTool"]>>>,
+                  { behavior: "allow" }
+                >
+              ).updatedInput!.answers as Record<string, string>
+            )["Features?"] !== "A, B"
           )
             throw new Error("Missing multi answer");
         }
         if (text === "tool") {
-          const tool = options.mcpServers?.studio?.tools[0];
-          assert.ok(tool);
+          const tool = options.mcpServers!.studio.tools[0];
           const result = await tool.call(
             { text: "hello" },
             { signal: turnSignal },
           );
           if (
-            result.content[0]?.type !== "text" ||
-            result.content[0].text !== "tool-ok"
+            (
+              result.content[0] as Extract<
+                (typeof result.content)[number],
+                { type: "text" }
+              >
+            ).text !== "tool-ok"
           )
             throw new Error("Tool result lost");
         }
         if (text === "tool-pre-aborted") {
-          const tool = options.mcpServers?.studio?.tools[0];
-          assert.ok(tool);
+          const tool = options.mcpServers!.studio.tools[0];
           const cancelled = new AbortController();
           cancelled.abort();
           await tool.call({ text: "hello" }, { signal: cancelled.signal });
@@ -720,7 +581,7 @@ export function query({
           await new Promise<void>((resolve) => {
             if (turnSignal.aborted) resolve();
             else
-              turnSignal.addEventListener("abort", () => resolve(), {
+              turnSignal.addEventListener("abort", resolve as () => void, {
                 once: true,
               });
           });
@@ -729,56 +590,56 @@ export function query({
         if (abort.signal.aborted) return;
         if (text === "fail") throw new Error("Native failure");
         if (text === "/compact")
-          yield sdkMessage({
+          yield {
             type: "system",
             subtype: "local_command_output",
             // @ts-expect-error Preserve the legacy non-UUID identity exercised by this protocol witness.
             uuid: "compact-result",
             content: "Native compact received",
-          });
+          };
         if (
           text === "background" ||
           text === "background-hold" ||
           text === "background-stop-hold"
         ) {
           backgroundTasks.set("worker-1", true);
-          yield sdkMessage({
+          yield {
             type: "system",
             subtype: "task_started",
             task_id: "worker-1",
             description: "Worker",
             task_type: "agent",
-          });
+          };
         }
         if (text === "background-stop-hold") {
           fs.writeFileSync(options.cwd + "/.background-waiting", "yes");
           await new Promise<void>((resolve) => {
             if (turnSignal.aborted) resolve();
             else
-              turnSignal.addEventListener("abort", () => resolve(), {
+              turnSignal.addEventListener("abort", resolve as () => void, {
                 once: true,
               });
           });
           if (stoppedTasks.has("worker-1")) {
             backgroundTasks.delete("worker-1");
-            yield sdkMessage({
+            yield {
               type: "system",
               subtype: "task_notification",
               task_id: "worker-1",
               status: "killed",
-            });
+            };
           }
-          yield sdkMessage({
+          yield {
             type: "result",
             subtype: "success",
             usage: { input_tokens: 1, output_tokens: 0 },
             result: "",
-          });
+          };
           continue;
         }
         if (text === "claude-limit") {
           const resetsAt = Math.floor(Date.now() / 1000) + 3600;
-          yield sdkMessage({
+          yield {
             type: "rate_limit_event",
             rate_limit_info: {
               status: "rejected",
@@ -786,8 +647,8 @@ export function query({
               resetsAt,
               utilization: 1,
             },
-          });
-          yield sdkMessage({
+          };
+          yield {
             type: "result",
             subtype: "error",
             errors: [
@@ -795,32 +656,32 @@ export function query({
                 new Date(resetsAt * 1000).toISOString() +
                 ". The turn waits.",
             ],
-          });
+          };
           continue;
         }
         if (text === "claude-offline") {
           const offline =
             "API Error: Can't reach the API server \u2014 check your internet or DNS (ENOTFOUND)";
-          yield sdkMessage({
+          yield {
             type: "assistant",
             error: "unknown",
             message: {
               id: "offline",
               content: [{ type: "text", text: offline }],
             },
-          });
-          yield sdkMessage({
+          };
+          yield {
             type: "result",
             subtype: "success",
             is_error: true,
             result: offline,
-          });
+          };
           continue;
         }
         if (text.startsWith("Continue the previous turn"))
           fs.writeFileSync(options.cwd + "/.continued", text);
         if (text === "subagent-text") {
-          yield sdkMessage({
+          yield {
             type: "assistant",
             parent_tool_use_id: "agent-tool",
             // @ts-expect-error Preserve the legacy non-UUID identity exercised by this protocol witness.
@@ -832,24 +693,24 @@ export function query({
                 { type: "text", text: "Second worker paragraph" },
               ],
             },
-          });
+          };
         }
         if (text === "snapshots") {
-          yield sdkMessage({
+          yield {
             type: "system",
             subtype: "local_command_output",
             // @ts-expect-error Preserve the legacy non-UUID identity exercised by this protocol witness.
             uuid: "command-output",
             content: "Native command output",
-          });
-          yield sdkMessage({
+          };
+          yield {
             type: "assistant",
             message: {
               id: "snapshot-only",
               content: [{ type: "text", text: "Snapshot without stream" }],
             },
-          });
-          yield sdkMessage({
+          };
+          yield {
             type: "assistant",
             message: {
               id: "native-tool",
@@ -862,8 +723,8 @@ export function query({
                 },
               ],
             },
-          });
-          yield sdkMessage({
+          };
+          yield {
             type: "user",
             message: {
               content: [
@@ -874,10 +735,10 @@ export function query({
                 },
               ],
             },
-          });
+          };
         }
         if (text === "split-blocks") {
-          yield sdkMessage({
+          yield {
             type: "assistant",
             uuid: "11111111-1111-4111-8111-111111111111",
             message: {
@@ -885,8 +746,8 @@ export function query({
               content: [{ type: "text", text: "First text block." }],
               stop_reason: null,
             },
-          });
-          yield sdkMessage({
+          };
+          yield {
             type: "assistant",
             uuid: "22222222-2222-4222-8222-222222222222",
             message: {
@@ -894,8 +755,8 @@ export function query({
               content: [{ type: "text", text: "Second text block." }],
               stop_reason: null,
             },
-          });
-          yield sdkMessage({
+          };
+          yield {
             type: "assistant",
             uuid: "22222222-2222-4222-8222-222222222222",
             message: {
@@ -903,29 +764,29 @@ export function query({
               content: [{ type: "text", text: "Second text block." }],
               stop_reason: null,
             },
-          });
-          yield sdkMessage({
+          };
+          yield {
             type: "result",
             subtype: "success",
             usage: { input_tokens: 10, output_tokens: 2 },
             result: "First text block. Second text block.",
-          });
+          };
           continue;
         }
         if (text === "rate-usage") {
-          yield sdkMessage({
+          yield {
             type: "stream_event",
             event: { type: "message_start", message: { id: "rate-1" } },
-          });
-          yield sdkMessage({
+          };
+          yield {
             type: "stream_event",
             event: {
               type: "content_block_delta",
               delta: { type: "text_delta", text: "Rate answer" },
             },
-          });
+          };
           for (const output of [6, 6, 8])
-            yield sdkMessage({
+            yield {
               type: "assistant",
               message: {
                 id: "rate-1",
@@ -938,8 +799,8 @@ export function query({
                 },
                 content: [{ type: "text", text: "Rate answer" }],
               },
-            });
-          yield sdkMessage({
+            };
+          yield {
             type: "assistant",
             message: {
               id: "rate-2",
@@ -952,30 +813,30 @@ export function query({
               },
               content: [{ type: "text", text: "Second answer" }],
             },
-          });
+          };
           outputTotal += 20;
-          yield sdkMessage({
+          yield {
             type: "result",
             subtype: "success",
             usage: { input_tokens: 3000, output_tokens: outputTotal },
             result: "Second answer",
-          });
+          };
           continue;
         }
         if (text.startsWith("split-stream")) {
-          yield sdkMessage({
+          yield {
             type: "stream_event",
             event: { type: "message_start", message: { id: "stream-blocks" } },
-          });
-          yield sdkMessage({
+          };
+          yield {
             type: "stream_event",
             event: {
               type: "content_block_delta",
               index: 0,
               delta: { type: "text_delta", text: "First stream block." },
             },
-          });
-          yield sdkMessage({
+          };
+          yield {
             type: "assistant",
             uuid: "11111111-1111-4111-8111-111111111111",
             message: {
@@ -983,16 +844,16 @@ export function query({
               content: [{ type: "text", text: "First stream block." }],
               stop_reason: null,
             },
-          });
-          yield sdkMessage({
+          };
+          yield {
             type: "stream_event",
             event: {
               type: "content_block_delta",
               index: 1,
               delta: { type: "text_delta", text: "Second stream block." },
             },
-          });
-          yield sdkMessage({
+          };
+          yield {
             type: "assistant",
             uuid: "22222222-2222-4222-8222-222222222222",
             message: {
@@ -1000,27 +861,27 @@ export function query({
               content: [{ type: "text", text: "Second stream block." }],
               stop_reason: null,
             },
-          });
-          yield sdkMessage({
+          };
+          yield {
             type: "result",
             subtype: "success",
             usage: { input_tokens: 10, output_tokens: 2 },
             result: "First stream block. Second stream block.",
-          });
+          };
           continue;
         }
-        yield sdkMessage({
+        yield {
           type: "stream_event",
           event: { type: "message_start", message: { id: "answer" } },
-        });
-        yield sdkMessage({
+        };
+        yield {
           type: "stream_event",
           event: {
             type: "content_block_delta",
             delta: { type: "text_delta", text: "Visible answer" },
           },
-        });
-        yield sdkMessage({
+        };
+        yield {
           type: "assistant",
           message: {
             id: "answer",
@@ -1033,15 +894,15 @@ export function query({
               },
             ],
           },
-        });
-        yield sdkMessage({
+        };
+        yield {
           type: "result",
           subtype: "success",
           usage: { input_tokens: 10, output_tokens: 2 },
           result: "Visible answer",
-        });
+        };
         if (text === "background") {
-          yield sdkMessage({
+          yield {
             type: "assistant",
             parent_tool_use_id: "agent-tool",
             // @ts-expect-error Preserve the legacy non-UUID identity exercised by this protocol witness.
@@ -1050,14 +911,14 @@ export function query({
               id: "late-answer",
               content: [{ type: "text", text: "Late worker text" }],
             },
-          });
-          yield sdkMessage({
+          };
+          yield {
             type: "system",
             subtype: "task_notification",
             task_id: "worker-1",
             status: "completed",
             summary: "Worker finished",
-          });
+          };
           backgroundTasks.delete("worker-1");
         }
       }

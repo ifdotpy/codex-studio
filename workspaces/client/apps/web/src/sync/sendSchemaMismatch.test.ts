@@ -1,6 +1,4 @@
-import { createRxDatabase, type RxCollection, type RxDatabase } from "rxdb";
-import { getRxStorageMemory } from "rxdb/plugins/storage-memory";
-import { SYNC_DOCUMENT_SCHEMA, type SyncDocument } from "./client";
+import type { deliver as Deliver } from "./send";
 import { afterEach, expect, it, vi } from "vitest";
 import {
   API_SCHEMA_HASH,
@@ -13,13 +11,7 @@ vi.mock("./client", async (load) => ({
   syncDatabase,
 }));
 
-let testDatabase:
-  | RxDatabase<{ outbox: RxCollection<SyncDocument> }>
-  | undefined;
-
-afterEach(async () => {
-  await testDatabase?.remove();
-  testDatabase = undefined;
+afterEach(() => {
   vi.resetModules();
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
@@ -82,23 +74,24 @@ it("keeps a locally schema-blocked deliver queued with the same id, then sends o
       created: 1,
     }),
   };
-  testDatabase = await createRxDatabase<{ outbox: RxCollection<SyncDocument> }>(
-    {
-      name: "send-" + crypto.randomUUID(),
-      storage: getRxStorageMemory(),
-      multiInstance: false,
+  // Partial RxDB document fixture: delivery only reads id/getLatest/incrementalModify.
+  const partialDoc = {
+    id: "stable-id",
+    getLatest: () => record,
+    incrementalModify: async (
+      change: (value: typeof record) => typeof record,
+    ) => {
+      Object.assign(record, change({ ...record }));
+      return record;
     },
-  );
-  const { outbox } = await testDatabase.addCollections({
-    outbox: { schema: SYNC_DOCUMENT_SCHEMA },
-  });
-  const doc = await outbox.insert({ ...record, seq: 0 });
+  };
+  const doc = partialDoc as typeof partialDoc & Parameters<typeof Deliver>[0];
   let send = await import("./send");
   expect(await send.deliver(doc)).toMatchObject({
     id: "stable-id",
     queued: true,
   });
-  expect(JSON.parse(doc.getLatest().payload)).toMatchObject({
+  expect(JSON.parse(record.payload)).toMatchObject({
     status: "queued",
     attempted: false,
     body: { id: "stable-id", text: "hello" },
@@ -118,7 +111,7 @@ it("keeps a locally schema-blocked deliver queued with the same id, then sends o
   expect(
     requests.filter((item) => item.endsWith("/api/messages")),
   ).toHaveLength(1);
-  expect(JSON.parse(doc.getLatest().payload)).toMatchObject({
+  expect(JSON.parse(record.payload)).toMatchObject({
     status: "accepted",
     body: { id: "stable-id", text: "hello" },
   });

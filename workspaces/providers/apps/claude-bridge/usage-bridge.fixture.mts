@@ -28,7 +28,7 @@ export function query({ prompt, options }: FixtureQuery) {
       process.stdout.write(
         JSON.stringify({
           method: "fixture/shutdownTiming",
-          params: { durationMs: Date.now() - (closeAt ?? Date.now()) },
+          params: { durationMs: Date.now() - closeAt! },
         }) + "\n",
       );
   });
@@ -91,7 +91,7 @@ export function query({ prompt, options }: FixtureQuery) {
           stuckClose = true;
           if (text === "shutdown-watchdog-inflight") {
             const append = fs.appendFile;
-            let release = () => {};
+            let release: () => void;
             const released = new Promise<void>(
               (resolve) => (release = resolve),
             );
@@ -326,9 +326,8 @@ export function query({ prompt, options }: FixtureQuery) {
         if (text === "steer") {
           yield stream(events[0]);
           const next = await prompt.next();
-          if (next.done) throw new Error("missing steer fixture input");
           yield result();
-          yield { type: "user", isReplay: true, uuid: next.value.uuid };
+          yield { type: "user", isReplay: true, uuid: next.value!.uuid };
           yield stream(events[1]);
           yield stream(events[2]);
           await waitForFile(options.cwd + "/.finish", { signal: abort.signal });

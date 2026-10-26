@@ -1,4 +1,8 @@
+import type { BridgeError } from "./bridge-protocol.ts";
+import type { Stats } from "node:fs";
 import type { Session, ControlReceipt } from "./session-state.ts";
+import type { ControlDependencies } from "./controls.ts";
+import type { NativeBackup } from "./file-restore.ts";
 import type { NativeFileRecord } from "./file-restore.ts";
 import type {
   Query,
@@ -18,141 +22,170 @@ import {
 } from "./file-restore.ts";
 import { rollbackSession } from "./controls.ts";
 
-async function fixture(
-  run: (fixture: Awaited<ReturnType<typeof createFixture>>) => Promise<void>,
-) {
+// Shared SDK message defaults for the initial checkpoint and later history records.
+function userMessage(
+  sessionId: string,
+  uuid: string,
+  content: string,
+): SessionMessage {
+  return {
+    type: "user",
+    uuid,
+    session_id: sessionId,
+    parent_tool_use_id: null,
+    parent_agent_id: null,
+    message: { content },
+  };
+}
+type Fixture = {
+  cwd: string;
+  config: string;
+  state: string;
+  backups: string;
+  history: string;
+  entries: Record<"a.txt" | "b.txt", NativeBackup & { backupFileName: string }>;
+  rows: NativeFileRecord[];
+  session: Session;
+  messages: SessionMessage[];
+  deps: Omit<ControlDependencies, "persist"> & {
+    persist: (session: Pick<Session, "controlRequests">) => Promise<void>;
+  };
+  request: Required<
+    Pick<
+      Parameters<typeof rollbackSession>[1],
+      "requestId" | "turnId" | "restoreFiles"
+    >
+  >;
+  receipt: (
+    status: ControlReceipt["status"],
+    filePlan: NonNullable<ControlReceipt["filePlan"]>,
+    filesRestored?: boolean,
+  ) => ControlReceipt;
+};
+async function fixture(run: (fixture: Fixture) => Promise<void>) {
   const root = await fs.realpath(
     await fs.mkdtemp(path.join(os.tmpdir(), "file-rewind-")),
   );
   try {
-    await run(await createFixture(root));
+    const cwd = path.join(root, "workspace"),
+      config = path.join(root, "config"),
+      state = path.join(root, "state");
+    const native = randomUUID(),
+      message = randomUUID();
+    await fs.mkdir(cwd);
+    await fs.mkdir(path.join(config, "projects", "fixture"), {
+      recursive: true,
+    });
+    const backups = path.join(config, "file-history", native);
+    await fs.mkdir(backups, { recursive: true });
+    const entries = {
+      "a.txt": { backupFileName: "0123456789abcdef@v1", version: 1 },
+      "b.txt": { backupFileName: "fedcba9876543210@v1", version: 1 },
+    };
+    for (const [name, entry] of Object.entries(entries)) {
+      await fs.writeFile(path.join(cwd, name), "user " + name);
+      await fs.writeFile(
+        path.join(backups, entry.backupFileName),
+        "old " + name,
+      );
+    }
+    const history = path.join(config, "projects", "fixture", native + ".jsonl");
+    const rows: NativeFileRecord[] = [
+      {
+        type: "file-history-snapshot",
+        messageId: message,
+        snapshot: { messageId: message, trackedFileBackups: entries },
+      },
+    ];
+    await fs.writeFile(
+      history,
+      rows.map((row) => JSON.stringify(row)).join("\n") + "\n",
+    );
+    const session: Session = {
+      id: native,
+      nativeId: native,
+      cwd,
+      started: true,
+      turns: [
+        {
+          id: message,
+          status: "completed",
+          items: [],
+          fileCheckpointMessageId: message,
+          fileCheckpointSource: { nativeId: native, cwd },
+        },
+      ],
+    };
+    const messages: SessionMessage[] = [userMessage(native, message, "edit")];
+    const deps = {
+      forkSession: async () => {
+        throw new Error("first-turn rollback must not fork");
+      },
+      getSessionMessages: async () => messages,
+      persist: async (
+        _session: Pick<Session, "controlRequests">,
+      ): Promise<void> => {},
+      prepareFileRestore: (
+        s: Parameters<typeof prepareFileRestore>[0],
+        m: Parameters<typeof prepareFileRestore>[1],
+        id: string,
+      ) => prepareFileRestore(s, m, id, state, config),
+      verifyFileRestore,
+      rewindFiles: async (
+        _native: string,
+        _message: string,
+        { dryRun }: NonNullable<Parameters<Query["rewindFiles"]>[1]>,
+      ): Promise<RewindFilesResult> => {
+        if (!dryRun)
+          for (const [name, entry] of Object.entries(entries))
+            await fs.copyFile(
+              path.join(backups, entry.backupFileName),
+              path.join(cwd, name),
+            );
+        return { canRewind: true, skippedLinks: 0 };
+      },
+    };
+    const receipt = (
+      status: ControlReceipt["status"],
+      filePlan: NonNullable<ControlReceipt["filePlan"]>,
+      filesRestored = false,
+    ): ControlReceipt => ({
+      kind: "rollback",
+      turnId: message,
+      sourceNativeId: native,
+      createdAt: "2026-09-01T00:00:00Z",
+      retainedCount: 0,
+      upToMessageId: null,
+      status,
+      filePlan,
+      ...(filesRestored
+        ? {
+            result: {
+              threadId: native,
+              nativeId: native,
+              removedTurns: 0,
+              filesRestored,
+            },
+          }
+        : {}),
+    });
+    await run({
+      receipt,
+      cwd,
+      config,
+      state,
+      backups,
+      entries,
+      history,
+      rows,
+      session,
+      messages,
+      deps,
+      request: { requestId: "restore", turnId: message, restoreFiles: true },
+    });
   } finally {
     await fs.rm(root, { recursive: true, force: true });
   }
-}
-async function createFixture(root: string) {
-  const cwd = path.join(root, "workspace"),
-    config = path.join(root, "config"),
-    state = path.join(root, "state");
-  const native = randomUUID(),
-    message = randomUUID();
-  await fs.mkdir(cwd);
-  await fs.mkdir(path.join(config, "projects", "fixture"), {
-    recursive: true,
-  });
-  const backups = path.join(config, "file-history", native);
-  await fs.mkdir(backups, { recursive: true });
-  const entries = {
-    "a.txt": { backupFileName: "0123456789abcdef@v1", version: 1 },
-    "b.txt": { backupFileName: "fedcba9876543210@v1", version: 1 },
-  };
-  for (const [name, entry] of Object.entries(entries)) {
-    await fs.writeFile(path.join(cwd, name), "user " + name);
-    await fs.writeFile(path.join(backups, entry.backupFileName), "old " + name);
-  }
-  const history = path.join(config, "projects", "fixture", native + ".jsonl");
-  const rows: NativeFileRecord[] = [
-    {
-      type: "file-history-snapshot",
-      messageId: message,
-      snapshot: { messageId: message, trackedFileBackups: entries },
-    },
-  ];
-  await fs.writeFile(
-    history,
-    rows.map((row) => JSON.stringify(row)).join("\n") + "\n",
-  );
-  const session: Session = {
-    id: native,
-    nativeId: native,
-    cwd,
-    started: true,
-    turns: [
-      {
-        id: message,
-        status: "completed",
-        items: [],
-        fileCheckpointMessageId: message,
-        fileCheckpointSource: { nativeId: native, cwd },
-      },
-    ],
-  };
-  const messages: SessionMessage[] = [
-    {
-      type: "user",
-      uuid: message,
-      session_id: native,
-      parent_tool_use_id: null,
-      parent_agent_id: null,
-      message: { content: "edit" },
-    },
-  ];
-  const deps = {
-    forkSession: async () => {
-      throw new Error("first-turn rollback must not fork");
-    },
-    getSessionMessages: async () => messages,
-    persist: async (
-      _session: Pick<Session, "controlRequests">,
-    ): Promise<void> => {},
-    prepareFileRestore: (
-      s: Parameters<typeof prepareFileRestore>[0],
-      m: Parameters<typeof prepareFileRestore>[1],
-      id: string,
-    ) => prepareFileRestore(s, m, id, state, config),
-    verifyFileRestore,
-    rewindFiles: async (
-      _native: string,
-      _message: string,
-      { dryRun }: NonNullable<Parameters<Query["rewindFiles"]>[1]>,
-    ): Promise<RewindFilesResult> => {
-      if (!dryRun)
-        for (const [name, entry] of Object.entries(entries))
-          await fs.copyFile(
-            path.join(backups, entry.backupFileName),
-            path.join(cwd, name),
-          );
-      return { canRewind: true, skippedLinks: 0 };
-    },
-  };
-  const receipt = (
-    status: ControlReceipt["status"],
-    filePlan: NonNullable<ControlReceipt["filePlan"]>,
-    filesRestored = false,
-  ): ControlReceipt => ({
-    kind: "rollback",
-    turnId: message,
-    sourceNativeId: native,
-    createdAt: "2026-09-01T00:00:00Z",
-    retainedCount: 0,
-    upToMessageId: null,
-    status,
-    filePlan,
-    ...(filesRestored
-      ? {
-          result: {
-            threadId: native,
-            nativeId: native,
-            removedTurns: 0,
-            filesRestored,
-          },
-        }
-      : {}),
-  });
-  return {
-    receipt,
-    cwd,
-    config,
-    state,
-    backups,
-    entries,
-    history,
-    rows,
-    session,
-    messages,
-    deps,
-    request: { requestId: "restore", turnId: message, restoreFiles: true },
-  };
 }
 
 test("partial SDK success without skipped links retains context and durable before files", async () =>
@@ -170,20 +203,19 @@ test("partial SDK success without skipped links retains context and durable befo
       /did not restore every tracked file/,
     );
     assert.equal(f.session.turns.length, 1);
-    const receipt = f.session.controlRequests?.restore;
-    assert.ok(receipt?.filePlan);
+    const receipt = f.session.controlRequests!.restore;
+
     assert.equal(receipt.status, "rewind_submitted");
-    for (const entry of receipt.filePlan.files) {
-      assert.ok(entry.backup);
+    for (const entry of receipt.filePlan!.files) {
       assert.equal(
-        await fs.readFile(entry.backup, "utf8"),
+        await fs.readFile(entry.backup!, "utf8"),
         "user " + path.basename(entry.file),
       );
     }
     assert.deepEqual(
       JSON.parse(
         await fs.readFile(
-          path.join(receipt.filePlan.directory, "manifest.json"),
+          path.join(receipt.filePlan!.directory, "manifest.json"),
           "utf8",
         ),
       ),
@@ -220,15 +252,14 @@ test("successful combined rewind verifies all file hashes and preserves original
     const result = await rollbackSession(f.session, f.request, f.deps);
     assert.equal(result.filesRestored, true);
     assert.equal(f.session.turns.length, 0);
-    assert.ok(f.session.controlRequests?.restore?.filePlan);
-    for (const entry of f.session.controlRequests.restore.filePlan.files) {
-      assert.ok(entry.backup);
+
+    for (const entry of f.session.controlRequests!.restore.filePlan!.files) {
       assert.equal(
         await fs.readFile(entry.file, "utf8"),
         "old " + path.basename(entry.file),
       );
       assert.equal(
-        await fs.readFile(entry.backup, "utf8"),
+        await fs.readFile(entry.backup!, "utf8"),
         "user " + path.basename(entry.file),
       );
     }
@@ -236,8 +267,7 @@ test("successful combined rewind verifies all file hashes and preserves original
 
 test("delta for a new file restores its absence and rejects a changed pre-restore source", async () =>
   fixture(async (f) => {
-    assert.ok(f.rows[0]?.snapshot);
-    f.rows[0].snapshot.trackedFileBackups = {};
+    f.rows[0].snapshot!.trackedFileBackups = {};
     f.rows.push({
       type: "file-history-delta",
       messageId: f.request.turnId,
@@ -256,20 +286,20 @@ test("delta for a new file restores its absence and rejects a changed pre-restor
       f.request.turnId,
     );
     assert.equal(plan.files.length, 1);
-    assert.ok(plan.files[0]?.backup);
+
     assert.equal(plan.files[0].expected, null);
     await fs.writeFile(path.join(f.cwd, "new.txt"), "changed");
     await assert.rejects(verifyFileRestore(plan, "before"), /Files changed/);
     await fs.unlink(path.join(f.cwd, "new.txt"));
     await verifyFileRestore(plan, "expected");
-    assert.equal(await fs.readFile(plan.files[0].backup, "utf8"), "new");
+    assert.equal(await fs.readFile(plan.files[0].backup!, "utf8"), "new");
   }));
 
 test("a file first tracked after the target uses its first backup", async () =>
   fixture(async (f) => {
     const later = randomUUID();
-    assert.ok(f.rows[0]?.snapshot);
-    f.rows[0].snapshot.trackedFileBackups = {};
+
+    f.rows[0].snapshot!.trackedFileBackups = {};
     f.rows.push({
       type: "file-history-snapshot",
       messageId: later,
@@ -278,14 +308,7 @@ test("a file first tracked after the target uses its first backup", async () =>
         trackedFileBackups: { "a.txt": f.entries["a.txt"] },
       },
     });
-    f.messages.push({
-      type: "user",
-      uuid: later,
-      session_id: f.session.id,
-      parent_tool_use_id: null,
-      parent_agent_id: null,
-      message: { content: "later" },
-    });
+    f.messages.push(userMessage(f.session.id, later, "later"));
     await fs.writeFile(
       f.history,
       f.rows.map((row) => JSON.stringify(row)).join("\n") + "\n",
@@ -313,27 +336,26 @@ test("a failed final descriptor save retains a durable pre-rewind copy and resum
       return rewind(native, message, options);
     };
     f.deps.persist = async (session) => {
-      if (session.controlRequests?.restore?.status === "completed")
+      if (session.controlRequests!.restore?.status === "completed")
         throw new Error("final save failed");
-      assert.ok("id" in session);
-      saved = structuredClone(f.session);
+
+      saved = structuredClone(session as Session);
     };
     await assert.rejects(
       rollbackSession(f.session, f.request, f.deps),
       /final save failed/,
     );
-    assert.ok(saved?.controlRequests?.restore?.filePlan);
-    assert.equal(saved.controlRequests.restore.status, "rewound");
-    for (const entry of saved.controlRequests.restore.filePlan.files) {
-      assert.ok(entry.backup);
+
+    assert.equal(saved!.controlRequests!.restore.status, "rewound");
+    for (const entry of saved!.controlRequests!.restore.filePlan!.files) {
       assert.equal(
-        await fs.readFile(entry.backup, "utf8"),
+        await fs.readFile(entry.backup!, "utf8"),
         "user " + path.basename(entry.file),
       );
     }
     f.deps.persist = async () => {};
     assert.equal(
-      (await rollbackSession(saved, f.request, f.deps)).filesRestored,
+      (await rollbackSession(saved!, f.request, f.deps)).filesRestored,
       true,
     );
     assert.equal(writes, 1);
@@ -362,14 +384,7 @@ test("native retention permits recent checkpoints and refuses expired checkpoint
   fixture(async (f) => {
     for (let index = 0; index < 100; index++) {
       const message = randomUUID();
-      f.messages.push({
-        type: "user",
-        uuid: message,
-        session_id: f.session.id,
-        parent_tool_use_id: null,
-        parent_agent_id: null,
-        message: { content: "later" },
-      });
+      f.messages.push(userMessage(f.session.id, message, "later"));
       f.rows.push({
         type: "file-history-snapshot",
         messageId: message,
@@ -387,7 +402,7 @@ test("native retention permits recent checkpoints and refuses expired checkpoint
     const plan = await f.deps.prepareFileRestore(
       f.session,
       f.messages,
-      f.messages.at(-1)?.uuid ?? "",
+      f.messages.at(-1)!.uuid,
     );
     assert.equal(plan.files.length, 2);
   }));
@@ -426,18 +441,23 @@ test("backup admission refuses new copies without deleting retained recovery dat
     const existing = path.join(retained, "0");
     await fs.mkdir(retained, { recursive: true });
     await fs.writeFile(existing, "unique recovery data");
-    const original = fs.lstat;
+    // This test uses the numeric-stat overload, as identity() does.
+    const statFs: {
+      lstat: (file: Parameters<typeof fs.lstat>[0]) => Promise<Stats>;
+    } = fs;
+    const original = statFs.lstat;
     const stat = vi
-      .spyOn(fs, "lstat")
+      .spyOn(statFs, "lstat")
       .mockImplementation(async (file, ...args) => {
         const value = await original(file, ...args);
         if (file !== existing) return value;
         // Model a full byte budget without allocating a large test file.
-        value.size =
-          typeof value.size === "bigint"
-            ? BigInt(MAX_BEFORE_RESTORE_BYTES)
-            : MAX_BEFORE_RESTORE_BYTES;
-        return value;
+        return {
+          ...value,
+          size: MAX_BEFORE_RESTORE_BYTES,
+          isFile: () => true,
+          isSymbolicLink: () => false,
+        };
       });
     try {
       await assert.rejects(
@@ -481,9 +501,9 @@ test("full quota releases settled copies, preserves unresolved copies and retrie
     await assert.rejects(
       rollbackSession(f.session, f.request, f.deps),
       (error) => {
-        assert.ok(error instanceof Error && "data" in error);
-        assert.match(error.message, /backup limit/);
-        assert.deepEqual(error.data, {
+        const failure = error as Error & Pick<BridgeError, "data">;
+        assert.match(failure.message, /backup limit/);
+        assert.deepEqual(failure.data, {
           fileRestoreOutcome: "not_applied",
           requestId: f.request.requestId,
           turnId: f.request.turnId,
@@ -491,11 +511,7 @@ test("full quota releases settled copies, preserves unresolved copies and retrie
         return true;
       },
     );
-    assert.equal(
-      Object.hasOwn(f.session, "controlRequests") &&
-        Reflect.get(f.session, "controlRequests")?.restore,
-      undefined,
-    );
+    assert.equal((f.session as Session).controlRequests!.restore, undefined);
     assert.equal(
       (await fileBackups(owner, null, f.state, f.deps.persist)).count,
       MAX_BEFORE_RESTORE_COPIES,
@@ -508,9 +524,9 @@ test("full quota releases settled copies, preserves unresolved copies and retrie
     );
     assert.equal(usage.released, 1);
     assert.equal(usage.count, MAX_BEFORE_RESTORE_COPIES - 1);
-    assert.ok(unresolved.files[0]?.backup);
+
     assert.equal(
-      await fs.readFile(unresolved.files[0].backup, "utf8"),
+      await fs.readFile(unresolved.files[0].backup!, "utf8"),
       "user a.txt",
     );
     assert.equal(
@@ -550,8 +566,11 @@ test("release refuses a completed receipt without durable settlement or with an 
       ).released,
       0,
     );
-    assert.ok(plan.files[0]?.backup);
-    assert.equal(await fs.readFile(plan.files[0].backup, "utf8"), "user a.txt");
+
+    assert.equal(
+      await fs.readFile(plan.files[0].backup!, "utf8"),
+      "user a.txt",
+    );
   }));
 
 test("concurrent admissions respect the count bound and refuse symbolic backup paths", async () =>
