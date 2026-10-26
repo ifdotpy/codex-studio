@@ -142,7 +142,7 @@ export function bindShellTransport(frames: Map<string, HTMLIFrameElement>) {
           send({ error: "The server connection closed." });
         } finally {
           controller.abort(new Error("the stream ended"));
-          await reader.cancel().catch(() => {});
+          await reader.cancel(controller.signal.reason).catch(() => {});
           active.delete(key);
         }
       } else {

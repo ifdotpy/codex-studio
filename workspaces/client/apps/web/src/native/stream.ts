@@ -77,7 +77,11 @@ export async function nativeEventResponse(
           );
         });
       },
-      cancel() {
+      cancel(cause) {
+        reason = `reader cancelled: ${String(cause?.message ?? cause)}`.slice(
+          0,
+          300,
+        );
         stop();
       },
     },
