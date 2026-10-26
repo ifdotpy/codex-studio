@@ -19,7 +19,7 @@ for (const size of [
       if (!(await sidebar.isVisible()))
         await page.locator("#sidebar-toggle").click();
       await expect(sidebar).toBeVisible();
-      if (size.height > size.width) {
+      if ((await sidebar.getAttribute("data-presentation")) === "drawer") {
         await expect(sidebar).toBeFocused();
         await expect(sidebar).toHaveCSS("outline-style", "none");
         await page.screenshot({
