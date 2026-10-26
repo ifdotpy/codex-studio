@@ -259,7 +259,7 @@ for (const [platform, userAgent] of mobileBrowsers) {
           insets: { top: 59, bottom: 0, left: 0, right: 0 },
         });
         await page.evaluate(() =>
-          window.mobileKeyboardSetTestViewport({
+          window.setTestViewport({
             height: 790,
             offsetTop: 12,
           }),
@@ -286,37 +286,31 @@ for (const [platform, userAgent] of mobileBrowsers) {
       );
       await composer.evaluate((element: HTMLTextAreaElement) => {
         element.setSelectionRange(8, 16);
-        element.addEventListener(
-          "blur",
-          () => window.mobileKeyboardComposerBlurCount++,
-        );
-        window.mobileKeyboardComposerTextarea = element;
-        window.mobileKeyboardComposerFocusCalls.focus = 0;
-        window.mobileKeyboardComposerFocusCalls.selection = 0;
+        element.addEventListener("blur", () => window.composerBlurCount++);
+        window.composerTextarea = element;
+        window.composerFocusCalls.focus = 0;
+        window.composerFocusCalls.selection = 0;
       });
       await page.evaluate(() =>
-        window.mobileKeyboardSetTestViewport({ height: 390, offsetTop: 54 }),
+        window.setTestViewport({ height: 390, offsetTop: 54 }),
       );
       assert.equal((await settle(390, 54)).bottomInset, "0px");
       await assertLongPromptFits(390, "keyboard-open viewport");
       await page.evaluate(() => {
-        window.mobileKeyboardRetainTestScroll(0);
+        window.retainTestScroll(0);
         const messages = document.querySelector<HTMLElement>("#messages")!;
-        window.mobileKeyboardComposerScrollBefore = {
+        window.composerScrollBefore = {
           page: window.scrollY,
           document: document.scrollingElement!.scrollTop,
           transcript: messages.scrollTop,
         };
-        window.mobileKeyboardSetTestViewport(
-          { height: 330, offsetTop: 64 },
-          "scroll",
-        );
+        window.setTestViewport({ height: 330, offsetTop: 64 }, "scroll");
         window.dispatchEvent(new Event("resize"));
       });
       await settle(330, 64, 0);
       await assertLongPromptFits(330, "language-picker viewport");
       await page.evaluate(() =>
-        window.mobileKeyboardSetTestViewport({ height: 390, offsetTop: 54 }),
+        window.setTestViewport({ height: 390, offsetTop: 54 }),
       );
       await settle(390, 54, 0);
       const composerState = await page.evaluate(() => {
@@ -324,16 +318,15 @@ for (const [platform, userAgent] of mobileBrowsers) {
           document.querySelector<HTMLTextAreaElement>("#message")!;
         const messages = document.querySelector<HTMLElement>("#messages")!;
         return {
-          sameNode: element === window.mobileKeyboardComposerTextarea,
-          focused:
-            document.activeElement === window.mobileKeyboardComposerTextarea,
-          blurCount: window.mobileKeyboardComposerBlurCount,
-          calls: { ...window.mobileKeyboardComposerFocusCalls },
+          sameNode: element === window.composerTextarea,
+          focused: document.activeElement === window.composerTextarea,
+          blurCount: window.composerBlurCount,
+          calls: { ...window.composerFocusCalls },
           value: element.value,
           selectionStart: element.selectionStart,
           selectionEnd: element.selectionEnd,
           transcriptScrollTop: messages.scrollTop,
-          scrollBefore: window.mobileKeyboardComposerScrollBefore,
+          scrollBefore: window.composerScrollBefore,
           pageScrollY: window.scrollY,
           documentScrollTop: document.scrollingElement!.scrollTop,
         };
@@ -366,7 +359,7 @@ for (const [platform, userAgent] of mobileBrowsers) {
       );
       assert.deepEqual(
         await composer.evaluate((node: HTMLTextAreaElement) => ({
-          sameNode: node === window.mobileKeyboardComposerTextarea,
+          sameNode: node === window.composerTextarea,
           focused: document.activeElement === node,
           start: node.selectionStart,
           end: node.selectionEnd,
@@ -379,20 +372,19 @@ for (const [platform, userAgent] of mobileBrowsers) {
       assert.equal(
         await composer.evaluate(
           (node) =>
-            node === window.mobileKeyboardComposerTextarea &&
-            document.activeElement === node,
+            node === window.composerTextarea && document.activeElement === node,
         ),
         true,
       );
-      await page.evaluate(() => window.mobileKeyboardComposerTextarea!.blur());
-      await page.evaluate(() => window.mobileKeyboardRetainTestScroll(0));
+      await page.evaluate(() => window.composerTextarea!.blur());
+      await page.evaluate(() => window.retainTestScroll(0));
       await page.screenshot({
         path: join(state, "keyboard-open.png"),
         clip: { x: 0, y: 54, width: 390, height: 390 },
       });
       // Pinch zoom must not collapse the application to the magnified viewport.
       await page.evaluate(() =>
-        window.mobileKeyboardSetTestViewport({
+        window.setTestViewport({
           scale: 2,
           height: 195,
           offsetTop: 140,
@@ -408,7 +400,7 @@ for (const [platform, userAgent] of mobileBrowsers) {
       assert.equal(zoomed.height, 390);
       assert.equal(zoomed.top, 54);
       await page.evaluate(() =>
-        window.mobileKeyboardSetTestViewport({
+        window.setTestViewport({
           scale: 1,
           height: 844,
           offsetTop: 0,
@@ -420,7 +412,7 @@ for (const [platform, userAgent] of mobileBrowsers) {
       );
       await page.setViewportSize({ width: 640, height: 390 });
       await page.evaluate(() => {
-        window.mobileKeyboardSetTestViewport({
+        window.setTestViewport({
           width: 640,
           height: 390,
           offsetTop: 0,
@@ -430,7 +422,7 @@ for (const [platform, userAgent] of mobileBrowsers) {
       await settle(390, 0);
       await page.setViewportSize({ width: 390, height: 844 });
       await page.evaluate(() =>
-        window.mobileKeyboardSetTestViewport({
+        window.setTestViewport({
           width: 390,
           height: 844,
           offsetTop: 0,
@@ -457,7 +449,7 @@ for (const [platform, userAgent] of mobileBrowsers) {
       );
       await page.setViewportSize({ width: 390, height: 844 });
       await page.evaluate(() =>
-        window.mobileKeyboardSetTestViewport({
+        window.setTestViewport({
           width: 390,
           height: 844,
           offsetTop: 0,
@@ -474,7 +466,7 @@ for (const [platform, userAgent] of mobileBrowsers) {
       await composer.fill("Short keyboard draft");
       assert.equal((await composer.boundingBox())!.height, twoRowHeight);
       await page.evaluate(() =>
-        window.mobileKeyboardSetTestViewport({ height: 390, offsetTop: 54 }),
+        window.setTestViewport({ height: 390, offsetTop: 54 }),
       );
       await settle(390, 54, 0);
       assert.equal((await composer.boundingBox())!.height, twoRowHeight);
@@ -483,7 +475,7 @@ for (const [platform, userAgent] of mobileBrowsers) {
         shortDraftComposerHeight,
       );
       await page.evaluate(() =>
-        window.mobileKeyboardSetTestViewport({ height: 330, offsetTop: 64 }),
+        window.setTestViewport({ height: 330, offsetTop: 64 }),
       );
       const minimumViewport = await settle(330, 64, 0);
       assert.equal((await composer.boundingBox())!.height, twoRowHeight);
@@ -504,7 +496,7 @@ for (const [platform, userAgent] of mobileBrowsers) {
       const settings = page.locator(".empty-chat-settings");
       await expect(settings).toBeVisible();
       await page.evaluate(() =>
-        window.mobileKeyboardSetTestViewport({ height: 844, offsetTop: 0 }),
+        window.setTestViewport({ height: 844, offsetTop: 0 }),
       );
       await settle(844, 0);
       const expandedSettingsHeight = (await settings.boundingBox())!.height;
@@ -512,7 +504,7 @@ for (const [platform, userAgent] of mobileBrowsers) {
       const assertEmptyKeyboard = async (height: number, top: number) => {
         await page.evaluate(
           ({ height, top }) =>
-            window.mobileKeyboardSetTestViewport({ height, offsetTop: top }),
+            window.setTestViewport({ height, offsetTop: top }),
           { height, top },
         );
         await expect
@@ -589,7 +581,7 @@ for (const [platform, userAgent] of mobileBrowsers) {
       await assertEmptyKeyboard(390, 54);
       await assertEmptyKeyboard(330, 64);
       await page.evaluate(() =>
-        window.mobileKeyboardSetTestViewport({ height: 844, offsetTop: 0 }),
+        window.setTestViewport({ height: 844, offsetTop: 0 }),
       );
       await expect
         .poll(async () => (await settings.boundingBox())!.height)

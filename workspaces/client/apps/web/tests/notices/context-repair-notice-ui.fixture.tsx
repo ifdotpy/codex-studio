@@ -8,6 +8,7 @@ export type ContextRepairSnapshot = {
 };
 declare global {
   interface Window {
+    // Browser-access-notice-ui.fixture.tsx owns applySnapshot with BrowserAccessSnapshot.
     applyContextRepairSnapshot: (snapshot: string) => void;
   }
 }

@@ -154,22 +154,20 @@ test("mobile sync cached browser", async ({ browser: _browser }) => {
     const startWatchers = () =>
       page.evaluate(async () => {
         const client = await import("/src/sync/client.ts");
-        window.mobileCachedSyncErrors = [];
-        window.mobileCachedStopState = client.subscribeStateProjection(
-          (value) => (window.mobileCachedState = value),
+        window.syncErrors = [];
+        window.stopState = client.subscribeStateProjection(
+          (value) => (window.state = value),
           (error) => {
-            if (error) window.mobileCachedSyncErrors.push(String(error));
+            if (error) window.syncErrors.push(String(error));
           },
         );
-        window.mobileCachedStopDrafts = await client.startDraftReplication(
-          (error) => {
-            if (error) window.mobileCachedSyncErrors.push(String(error));
-          },
-        );
+        window.stopDrafts = await client.startDraftReplication((error) => {
+          if (error) window.syncErrors.push(String(error));
+        });
       });
     await startWatchers();
     await page.waitForFunction(
-      () => window.mobileCachedState?.runtime?.agents?.[0]?.name === "Cached",
+      () => window.state?.runtime?.agents?.[0]?.name === "Cached",
     );
     const cachedMs = Date.now() - started;
     assert.ok(
@@ -200,9 +198,7 @@ test("mobile sync cached browser", async ({ browser: _browser }) => {
       > & { chatState: boolean },
     });
     await page.waitForFunction(() =>
-      window.mobileCachedSyncErrors.some((error) =>
-        error.includes("workspace changed"),
-      ),
+      window.syncErrors.some((error) => error.includes("workspace changed")),
     );
     assert.equal(
       pullCount,
@@ -215,13 +211,11 @@ test("mobile sync cached browser", async ({ browser: _browser }) => {
       "A different server cannot receive cached drafts",
     );
     assert.equal(
-      await page.evaluate(
-        () => window.mobileCachedState!.runtime.agents[0].name,
-      ),
+      await page.evaluate(() => window.state!.runtime.agents[0].name),
       "Cached",
     );
     assert.ok(
-      (await page.evaluate(() => window.mobileCachedSyncErrors)).some((error) =>
+      (await page.evaluate(() => window.syncErrors)).some((error) =>
         error.includes("workspace changed"),
       ),
       "A workspace identity mismatch blocks cached data access",
@@ -233,7 +227,7 @@ test("mobile sync cached browser", async ({ browser: _browser }) => {
     await startWatchers();
     await page
       .waitForFunction(
-        () => window.mobileCachedState?.runtime?.agents?.[0]?.name === "Fresh",
+        () => window.state?.runtime?.agents?.[0]?.name === "Fresh",
         null,
         {
           timeout: 10000,
@@ -253,8 +247,8 @@ test("mobile sync cached browser", async ({ browser: _browser }) => {
             ).syncDatabase();
             const rows = await db.projections.find().exec();
             return {
-              value: window.mobileCachedState,
-              errors: window.mobileCachedSyncErrors,
+              value: window.state,
+              errors: window.syncErrors,
               hidden: document.hidden,
               online: navigator.onLine,
               entities: rows

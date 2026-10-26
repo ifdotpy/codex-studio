@@ -32,6 +32,6 @@ export function installLoadingWorker() {
 
 declare global {
   interface Window {
-    mobileLoadingUiBootstrap?: string;
+    studioTestBootstrap?: string;
   }
 }

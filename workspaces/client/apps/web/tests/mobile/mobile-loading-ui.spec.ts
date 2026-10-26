@@ -379,7 +379,7 @@ test("mobile loading ui", async ({ browser: _browser }) => {
       "Offline reload does not roll back the displayed build while its worker waits",
     );
     assert.equal(
-      await page.evaluate(() => window.mobileLoadingUiBootstrap),
+      await page.evaluate(() => window.studioTestBootstrap),
       "updated",
       "The newer cached JavaScript loads under the previous worker",
     );

@@ -9,16 +9,16 @@ function readCachedEntity(
 window.mobileSyncReadCachedEntity = readCachedEntity;
 declare global {
   interface Window {
-    mobileSyncValues: { state?: Snapshot | null } & Record<string, unknown>;
-    mobileSyncStops: (() => void)[];
-    mobileSyncResumeCalls: number;
-    mobileSyncStopResume: () => void;
-    mobileSyncValue: Snapshot | null;
-    mobileSyncStopCompact: () => void;
+    values: { state?: Snapshot | null } & Record<string, unknown>;
+    stops: (() => void)[];
+    resumeCalls: number;
+    stopResume: () => void;
+    value: Snapshot | null;
+    stopCompact: () => void;
     mobileSyncReadCachedEntity: typeof readCachedEntity;
-    mobileCachedSyncErrors: string[];
-    mobileCachedStopState: () => void;
-    mobileCachedStopDrafts: () => void;
-    mobileCachedState: Snapshot | null;
+    syncErrors: string[];
+    stopState: () => void;
+    stopDrafts: () => void;
+    state: Snapshot | null;
   }
 }

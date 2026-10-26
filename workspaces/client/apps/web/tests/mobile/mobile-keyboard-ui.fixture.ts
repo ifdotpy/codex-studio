@@ -48,14 +48,14 @@ export function installMobileKeyboardUi() {
     focusCalls.selection++;
     return setSelectionRange.apply(this, args);
   };
-  window.mobileKeyboardSetTestViewport = setTestViewport;
-  window.mobileKeyboardRetainTestScroll = retainTestScroll;
-  window.mobileKeyboardComposerFocusCalls = focusCalls;
-  window.mobileKeyboardComposerBlurCount = 0;
+  window.setTestViewport = setTestViewport;
+  window.retainTestScroll = retainTestScroll;
+  window.composerFocusCalls = focusCalls;
+  window.composerBlurCount = 0;
 }
 declare global {
   interface Window {
-    mobileKeyboardSetTestViewport: (
+    setTestViewport: (
       patch: Partial<
         Pick<
           VisualViewport,
@@ -64,11 +64,11 @@ declare global {
       >,
       type?: string,
     ) => void;
-    mobileKeyboardRetainTestScroll: (value: number) => void;
-    mobileKeyboardComposerFocusCalls: { focus: number; selection: number };
-    mobileKeyboardComposerBlurCount: number;
-    mobileKeyboardComposerTextarea: HTMLTextAreaElement;
-    mobileKeyboardComposerScrollBefore: {
+    retainTestScroll: (value: number) => void;
+    composerFocusCalls: { focus: number; selection: number };
+    composerBlurCount: number;
+    composerTextarea: HTMLTextAreaElement;
+    composerScrollBefore: {
       page: number;
       document: number;
       transcript: number;
