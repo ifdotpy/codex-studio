@@ -1,6 +1,6 @@
 import type { ModelInfo, Settings } from "@anthropic-ai/claude-agent-sdk";
 
-export type ClaudeSettings = Omit<Settings, "autoCompactWindow"> &
+export type ClaudeSettings = Pick<Settings, "env"> &
   Pick<
     import("./runtime-contract.generated.ts").ClaudeSessionSettings,
     "permissionMode" | "thinking" | "autoCompactWindow"
@@ -38,7 +38,7 @@ export function requiresThinking(
 }
 
 export function thinkingFlag(
-  model: string,
+  model: string | undefined,
   models: ThinkingModel[],
   saved?: boolean | null,
   live = false,

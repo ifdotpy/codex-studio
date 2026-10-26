@@ -53,7 +53,7 @@ test("progress, results and Studio waits rearm or remove the watchdog", () => {
   vi.useFakeTimers();
   vi.setSystemTime(0);
   const clock = { startedAt: 0, timeoutMs: null };
-  const active = {
+  const active: WatchedQuery = {
     turn: { id: "turn", items: [] },
     session: { id: "session", cwd: "/fixture", turns: [] },
     lastEventAt: 0,

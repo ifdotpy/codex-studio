@@ -1,10 +1,15 @@
+import type { StudioInputMessage } from "./input-messages.ts";
 import type { Query } from "@anthropic-ai/claude-agent-sdk";
 import type { Session, Item } from "./session-state.ts";
-import type { StudioInputMessage } from "./input-messages.ts";
 import type { ActiveQuery } from "./bridge.ts";
 export type StopActive = Pick<ActiveQuery, "pendingSteers"> & {
-  input: Pick<ActiveQuery["input"], "values"> &
-    Partial<Pick<ActiveQuery["input"], "withdraw">>;
+  input: {
+    values: Pick<
+      StudioInputMessage,
+      "uuid" | "studioInputIdentity" | "studioInputBatch"
+    >[];
+    withdraw?: () => StopActive["input"]["values"];
+  };
   q?: {
     interrupt(options?: { cancelQueued: true }): ReturnType<Query["interrupt"]>;
   } | null;
@@ -50,7 +55,7 @@ export async function interruptInputQueue(
     typeof active.input.withdraw === "function"
       ? active.input.withdraw()
       : active.input.values.splice(0);
-  const locallyCancelled = new Set<StudioInputMessage["uuid"]>();
+  const locallyCancelled = new Set<string>();
   for (const input of withdrawn) {
     for (const part of input.studioInputBatch || [input]) {
       if (inputs.get(part.studioInputIdentity)?.uuids.includes(part.uuid)) {

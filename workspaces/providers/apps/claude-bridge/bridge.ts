@@ -15,7 +15,6 @@ import type {
 } from "./bridge-protocol.ts";
 import type { CanUseTool } from "@anthropic-ai/claude-agent-sdk";
 import type {
-  AccountInfo,
   Query,
   Options,
   SDKResultMessage,
@@ -37,6 +36,8 @@ type TaskMessage = Extract<SDKMessage, { subtype: `task_${string}` }>;
 function isTaskMessage(message: SDKMessage): message is TaskMessage {
   return message.type === "system" && message.subtype.startsWith("task_");
 }
+import type { CheckedAccount } from "./account-identity.ts";
+type SessionContext = Pick<Session, "cwd"> & Partial<Session>;
 type AssistantBlock = { text: string; complete: boolean; position?: number };
 type AssistantBlockState = {
   blocks: AssistantBlock[];
@@ -71,7 +72,7 @@ export interface ActiveQuery {
   readyResolve: () => void;
   readyReject: (error: unknown) => void;
   consumer?: Promise<void>;
-  accountProof?: AccountInfo;
+  accountProof?: CheckedAccount;
   accountProofQuery?: Query;
   commands?: string[];
   deferredResult?: SDKResultMessage | null;
@@ -548,7 +549,12 @@ const settings = (s: Pick<Session, "cwd"> & Partial<Session>): Options =>
       // Per-thread host declarations must reach the CLI process, not settings.json.
       ...Object.fromEntries(
         ["CLAUDE_CODE_HOST_WORKTREE", "CLAUDE_CODE_HOST_WORKTREE_FENCE"]
-          .filter((key) => typeof s.claude?.env?.[key] === "string")
+          .filter(
+            (key) =>
+              typeof (isRecord(s.claude?.env)
+                ? s.claude.env[key]
+                : undefined) === "string",
+          )
           .map((key) => [key, s.claude?.env?.[key]]),
       ),
       ...browserEnvironment(root, s.id),
@@ -594,8 +600,7 @@ async function verifiedAccount(
     startedAt,
   );
   try {
-    checkAccount(account);
-    return account;
+    return checkAccount(account);
   } catch (error) {
     if (
       ![
@@ -648,12 +653,12 @@ async function verifiedAccount(
           },
         },
       );
-    return fresh.account;
+    return checkAccount(fresh.account);
   }
 }
 async function probe<T>(
   cwd: string | null | undefined,
-  read: (q: Query, account: AccountInfo) => T | Promise<T>,
+  read: (q: Query, account: CheckedAccount) => T | Promise<T>,
   phase = "metadata",
   external = false,
 ): Promise<T> {
@@ -738,8 +743,9 @@ async function refreshLiveCatalog(live: ActiveQuery, background: boolean) {
     throw new Error("Claude query changed during metadata refresh");
   if (!Array.isArray(fresh.models))
     throw new Error("Fresh Claude model metadata is unavailable");
-  live.accountProof = fresh.account;
-  return { models: fresh.models, account: fresh.account };
+  const verified = checkAccount(fresh.account);
+  live.accountProof = verified;
+  return { models: fresh.models, account: verified };
 }
 const catalogCache = createCatalogCache({
   load: (background) =>
@@ -957,7 +963,10 @@ async function permissions(
     ? { behavior: "allow", updatedInput: input }
     : { behavior: "deny", message: "The user declined this action." };
 }
-function studioTools(s: Session, getTurn: () => Turn | null) {
+function studioTools(
+  s: Pick<Session, "dynamicTools"> & Partial<Pick<Session, "id">>,
+  getTurn: () => Turn | null,
+) {
   return createSdkMcpServer({
     name: "studio",
     version: "1.0.0",
@@ -970,6 +979,7 @@ function studioTools(s: Session, getTurn: () => Turn | null) {
         definition.description,
         schema.shape,
         async (args, extra) => {
+          if (!s.id) throw new Error("Studio tool has no session");
           const result = await request(
             "item/tool/call",
             {
@@ -997,7 +1007,7 @@ function studioTools(s: Session, getTurn: () => Turn | null) {
 }
 
 async function currentExternalProof(
-  s: Session,
+  s: Pick<Session, "cwd" | "moveProof">,
   proof: import("./move.ts").MoveProof &
     Partial<Pick<BridgeMoveProof, "externalCatalog" | "externalTransports">>,
 ) {
@@ -1044,7 +1054,7 @@ async function movedExternalConfigs(s: Session) {
   return externalConfigs.get(key);
 }
 async function proofOptions(
-  s: Session,
+  s: SessionContext,
   proof: import("./move.ts").MoveProof,
 ): Promise<BridgeMoveProof> {
   const compiled = await studioToolCatalog(
@@ -1117,15 +1127,14 @@ async function content(
     if (item.type === "text") result.push({ type: "text", text: item.text });
     else if (item.type === "localImage") {
       const ext = path.extname(item.path).toLowerCase();
-      const media_type = (
-        {
-          ".png": "image/png",
-          ".jpg": "image/jpeg",
-          ".jpeg": "image/jpeg",
-          ".gif": "image/gif",
-          ".webp": "image/webp",
-        } satisfies Record<string, string>
-      )[ext as ".png" | ".jpg" | ".jpeg" | ".gif" | ".webp"];
+      const mediaTypes: Record<string, string> = {
+        ".png": "image/png",
+        ".jpg": "image/jpeg",
+        ".jpeg": "image/jpeg",
+        ".gif": "image/gif",
+        ".webp": "image/webp",
+      };
+      const media_type = mediaTypes[ext];
       if (!media_type) throw new Error("Unsupported image format for Claude");
       // Refuse input before it reaches Claude if portable preprocessing fails.
       const image = await claudeImage(item.path);
@@ -1214,7 +1223,10 @@ function limitReached(
     "limit:" + turn.id + ":" + info.rateLimitType + ":" + info.resetsAt,
   );
 }
-const permissionMode = (s: Session, p: Partial<BridgeSessionParams> = {}) =>
+const permissionMode = (
+  s: Pick<Session, "claude" | "approvalPolicy" | "sandbox">,
+  p: Partial<BridgeSessionParams> = {},
+) =>
   s.claude?.permissionMode ||
   ((p.approvalPolicy || s.approvalPolicy) === "never"
     ? "bypassPermissions"
@@ -1222,7 +1234,7 @@ const permissionMode = (s: Session, p: Partial<BridgeSessionParams> = {}) =>
       ? "plan"
       : "default");
 async function flags(
-  s: Session,
+  s: Pick<Session, "model" | "claude">,
   p: Partial<BridgeTurnParams> = {},
   live = false,
 ): Promise<Parameters<Query["applyFlagSettings"]>[0]> {
@@ -1408,7 +1420,7 @@ async function finalizeTurn(
       active.input.values.some(
         (input) =>
           input.studioInputIdentity === turn.clientUserMessageId &&
-          input.uuid === turn.items[0].nativeId &&
+          input.uuid === turn.items[0]?.nativeId &&
           input.session_id === (s.nativeId || s.id),
       ))
   ) {
@@ -1430,7 +1442,12 @@ async function finalizeTurn(
     "Claude turn failed";
   const errorInfo =
     turn.apiErrorInfo ||
-    claudeErrorInfo(errorField(error, "error"), errorMessage);
+    claudeErrorInfo(
+      typeof errorField(error, "error") === "string"
+        ? String(errorField(error, "error"))
+        : undefined,
+      errorMessage,
+    );
   if (turn.stallError) turn.error = turn.stallError;
   else if (error || turn.status === "failed")
     turn.error = {
@@ -1672,8 +1689,8 @@ const armStallWatch = watchStalls(
   studioWaits,
   limits,
   (s, active, found) =>
-    recoverStall(s, active, found).catch((error) =>
-      lifecycleFailure(s, active, error),
+    recoverStall(s, active, found).catch(
+      (error) => s && lifecycleFailure(s, active, error),
     ),
 );
 async function startSession(
@@ -1714,15 +1731,21 @@ async function startSession(
     await guardNativeSessionStart(
       s,
       persist,
-      nativeInputAttempt(initial, initial?.items[0]),
+      nativeInputAttempt(initial ?? undefined, initial?.items[0]),
     );
+    const effort = s.moveProof ? s.moveProof.options.effort : p.effort;
     const q = query({
       prompt: prompt(),
       options: {
         ...settings(s),
         // Match Python's --no-session-persistence and --tools "" title flags.
         ...titleOptions,
-        model: s.moveProof?.options.model || p.model || s.model,
+        ...((s.moveProof?.options.model || p.model || s.model) !== undefined
+          ? {
+              model:
+                s.moveProof?.options.model || p.model || s.model || "default",
+            }
+          : {}),
         ...(s.started
           ? { resume: s.nativeId || s.id }
           : { sessionId: s.nativeId || s.id }),
@@ -1736,9 +1759,7 @@ async function startSession(
         disallowedTools: ["Agent"],
         permissionMode: mode,
         allowDangerouslySkipPermissions: true,
-        ...((s.moveProof ? s.moveProof.options.effort : p.effort)
-          ? { effort: s.moveProof ? s.moveProof.options.effort : p.effort }
-          : {}),
+        ...(effort ? { effort } : {}),
         settings: JSON.stringify(
           await boundedPreparation(
             () =>
@@ -1763,7 +1784,11 @@ async function startSession(
         },
         hooks: {
           SessionStart: [
-            { hooks: [sessionStartHook(s, () => active.turn, persist)] },
+            {
+              hooks: [
+                sessionStartHook(s, () => active.turn ?? undefined, persist),
+              ],
+            },
           ],
         },
         supportedDialogKinds: ["resume_return"],
@@ -1887,7 +1912,7 @@ async function startSession(
           s,
           m.session_id,
           "init",
-          active.turn,
+          active.turn ?? undefined,
           persist,
         );
         s.started = true;
@@ -2141,7 +2166,12 @@ async function startSession(
                   : null;
             if (text)
               finishItem(s, turn, {
-                id: (m.uuid || m.message.id) + ":" + block.type + ":" + index,
+                id:
+                  (m.uuid || errorField(m, "message")) +
+                  ":" +
+                  block.type +
+                  ":" +
+                  index,
                 type: "agentMessage",
                 phase: "commentary",
                 nativeSubagent: true,
@@ -2556,6 +2586,8 @@ async function handle(request: BridgeRequest): Promise<unknown> {
     typeof p.threadId === "string" &&
     isRecord(p) &&
     typeof p.threadId === "string" &&
+    isRecord(p) &&
+    typeof p.threadId === "string" &&
     p.threadId &&
     [
       "turn/start",
@@ -2569,6 +2601,8 @@ async function handle(request: BridgeRequest): Promise<unknown> {
   if (commandMethods.has(method))
     return commands.handle(method, isRecord(p) ? p : {});
   if (
+    isRecord(p) &&
+    typeof p.threadId === "string" &&
     p.threadId &&
     [
       "turn/start",
@@ -2606,7 +2640,7 @@ async function handle(request: BridgeRequest): Promise<unknown> {
       ...native.models,
       ...(providerOptions.customModels || [])
         .filter((m) => !native.models.some((n) => n.value === m.id))
-        .map((m) => ({
+        .map((m): ModelInfo => ({
           value: m.id,
           displayName: m.label,
           description: "Custom Claude model",
@@ -2791,10 +2825,9 @@ async function handle(request: BridgeRequest): Promise<unknown> {
         canRestoreFiles: fileRestoreReason(s, t, active) === null,
         restoreFilesUnavailableReason: fileRestoreReason(s, t, active),
         text:
-          t.items
-            .find((i) => i.type === "userMessage")
-            ?.content?.find((b) => b.type === "text")
-            ?.text?.slice(0, 160) || "Claude turn",
+          previewInput(
+            t.items.find((i) => i.type === "userMessage")?.content,
+          ) || "Claude turn",
       })),
       tasks: [...(active?.tasks.values() || [])],
       version: s.claudeVersion,
@@ -2840,7 +2873,7 @@ async function handle(request: BridgeRequest): Promise<unknown> {
       persist,
       forkSession,
       getSessionMessages: (id, options) =>
-        verifiedHistoryMessages({ id, cwd: options.dir }),
+        verifiedHistoryMessages({ id, cwd: options?.dir ?? s.cwd }),
       prepareFileRestore: (session, messages, messageId) =>
         prepareFileRestore(session, messages, messageId, root),
       verifyFileRestore,
@@ -2888,7 +2921,8 @@ async function handle(request: BridgeRequest): Promise<unknown> {
         offset + limit < values.length ? String(offset + limit) : null,
     };
   }
-  if (method === "thread/list") {
+  if (request.method === "thread/list") {
+    const p = request.params;
     const page = await sessionStore.listMetadata(p.cursor, p.limit);
     return {
       data: page.data.map((metadata) => ({
@@ -2991,7 +3025,7 @@ async function handle(request: BridgeRequest): Promise<unknown> {
     const s = await forkAtTurn(old, p, {
       forkSession,
       getSessionMessages: (id, options) =>
-        verifiedHistoryMessages({ id, cwd: options.dir }),
+        verifiedHistoryMessages({ id, cwd: options?.dir ?? old.cwd }),
       persist,
     });
     sessions.set(s.id, s);
@@ -3012,7 +3046,7 @@ async function handle(request: BridgeRequest): Promise<unknown> {
     if (p.idleCompaction) {
       const { effective: options } = await resolveSettings({
         cwd: s.cwd,
-        settingSources: settings(s).settingSources,
+        settingSources: settings(s).settingSources ?? [],
       });
       const refusal = idleRefusal(
         s,
@@ -3086,7 +3120,7 @@ async function handle(request: BridgeRequest): Promise<unknown> {
           params: {
             threadId: s.id,
             expectedTurnId: running.id,
-            clientUserMessageId: p.clientUserMessageId,
+            clientUserMessageId: p.clientUserMessageId ?? "",
             input: p.input,
           },
         });
@@ -3174,29 +3208,32 @@ async function handle(request: BridgeRequest): Promise<unknown> {
       }
     }
     if (active) {
-      await control(() => active.ready, "active_ready");
+      const live = active;
+      await control(() => live.ready, "active_ready");
+      const q = live.q;
+      if (!q) throw new Error("Claude query is closed");
       if (toolsChanged) {
         // Replace only the Studio MCP server; background tasks keep running.
         // The SDK keeps an already registered in-process server even when its
         // tools change. Remove it first so the new schema replaces it.
         await control(
-          () => active?.q?.setMcpServers(active.externalMcpServers || {}),
+          () => q.setMcpServers(live.externalMcpServers || {}),
           "mcp_remove",
         );
         await control(
           () =>
-            active.q.setMcpServers({
-              ...active.externalMcpServers,
-              studio: studioTools(s, () => active.turn),
+            q.setMcpServers({
+              ...live.externalMcpServers,
+              studio: studioTools(s, () => live.turn),
             }),
           "mcp_install",
         );
         active.toolsIdentity = toolsIdentity;
       }
       try {
-        await control(() => active.q.setModel(p.model || s.model), "model_set");
+        await control(() => q.setModel(p.model || s.model), "model_set");
         await control(
-          () => active.q.setPermissionMode(permissionMode(s, p)),
+          () => q.setPermissionMode(permissionMode(s, p)),
           "permissions_set",
         );
         active.permissionMode = permissionMode(s, p);
@@ -3204,10 +3241,7 @@ async function handle(request: BridgeRequest): Promise<unknown> {
           () => flags(s, p, true),
           "catalog_flags",
         );
-        await control(
-          () => active.q.applyFlagSettings(flagSettings),
-          "flag_settings",
-        );
+        await control(() => q.applyFlagSettings(flagSettings), "flag_settings");
       } catch (error) {
         if (!deadQuery(error) || active.turn || active.tasks.size) throw error;
         discardQuery(s.id, active);
@@ -3229,7 +3263,7 @@ async function handle(request: BridgeRequest): Promise<unknown> {
     s.model = p.model || s.model;
     if (!s.moveProof)
       s.moveTurnOptions = Object.fromEntries(
-        ["effort", "serviceTier"]
+        (["effort", "serviceTier"] as const)
           .filter((key) => p[key] !== undefined)
           .map((key) => [key, p[key]]),
       );
@@ -3319,21 +3353,25 @@ async function handle(request: BridgeRequest): Promise<unknown> {
     if (!id) throw new Error("Steer requires its original message identity");
     const previous = turn.items.find((item) => item.id === id);
     if (previous) {
-      if (["not_applied", "cancelled"].includes(previous.deliveryStatus))
+      if (
+        ["not_applied", "cancelled"].some(
+          (status) => status === previous.deliveryStatus,
+        )
+      )
         throw new Error(previous.error);
       if (JSON.stringify(previous.content) !== JSON.stringify(p.input))
         throw new Error("This message identity has different content");
       return { turnId: turn.id };
     }
     // Errors with steerNotSubmitted: the input was never handed to Claude.
-    const notSubmitted = (message) =>
+    const notSubmitted = (message: string) =>
       Object.assign(new Error(message), { steerNotSubmitted: true });
     if (finishingTurns.has(turn))
       throw notSubmitted(
         "Claude finished before this steer could be submitted",
       );
     active.pendingSteers.add(id);
-    let item;
+    let item: Item | undefined;
     try {
       const groups = await inputGroups(p.input, content);
       if (
@@ -3532,6 +3570,15 @@ function errorData(error: unknown): Record<string, unknown> {
 }
 function errorField(error: unknown, field: string): unknown {
   return isRecord(error) ? error[field] : undefined;
+}
+function previewInput(input: unknown): string | undefined {
+  if (!Array.isArray(input)) return undefined;
+  const block: unknown = input.find(
+    (value: unknown) => isRecord(value) && value.type === "text",
+  );
+  return isRecord(block) && typeof block.text === "string"
+    ? block.text.slice(0, 160)
+    : undefined;
 }
 function errorText(error: unknown): string | undefined {
   const text = errorField(error, "message");

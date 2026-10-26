@@ -9,7 +9,7 @@ async function run() {
   process.send?.("ready");
   const [message] = await reply;
   process.send?.(message);
-  process.disconnect();
+  process.disconnect?.();
 }
 run().catch((error: unknown) => {
   console.error(error);

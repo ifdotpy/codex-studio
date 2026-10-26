@@ -8,7 +8,7 @@ export type StudioInputMessage = QueuedInput<
   SDKUserMessage & {
     uuid: string;
     text_not_typed?: boolean;
-    studioInputIdentity?: string;
+    studioInputIdentity?: string | undefined;
   }
 >;
 

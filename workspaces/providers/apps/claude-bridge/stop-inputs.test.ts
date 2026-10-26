@@ -1,9 +1,13 @@
+import type { Session, Item } from "./session-state.ts";
+import { randomUUID } from "node:crypto";
+const native = randomUUID();
+const prefix = randomUUID();
 import { test } from "vitest";
 import assert from "node:assert/strict";
-import { interruptInputQueue } from "./stop-inputs.ts";
+import { interruptInputQueue, type StopActive } from "./stop-inputs.ts";
 
-function fixture(nativeIds = ["native"]) {
-  const item = {
+function fixture(nativeIds: string[] = [native]) {
+  const item: Item & { id: string } = {
     id: "studio:id",
     type: "userMessage",
     delivery: "steer",
@@ -11,26 +15,33 @@ function fixture(nativeIds = ["native"]) {
     nativeId: nativeIds.at(-1),
     nativeIds,
   };
-  const session = { turns: [{ id: "turn", items: [item] }] };
-  const active = { input: { values: [] }, pendingSteers: new Set([item.id]) };
+  const session: Session = {
+    id: "session",
+    cwd: "/fixture",
+    turns: [{ id: "turn", items: [item] }],
+  };
+  const active: StopActive = {
+    input: { values: [] },
+    pendingSteers: new Set([item.id]),
+  };
   return { item, session, active };
 }
 
 test("Stop requires cancellation of every native part of a Studio input", async () => {
-  for (const native of [
-    { cancelled: ["prefix", "native"], still_queued: [] },
-    { cancelled: ["native"], still_queued: [] },
-    { cancelled: ["prefix", "native"], still_queued: ["prefix"] },
+  for (const receipt of [
+    { cancelled: [prefix, native], still_queued: [] },
+    { cancelled: [native], still_queued: [] },
+    { cancelled: [prefix, native], still_queued: [prefix] },
   ]) {
-    const { item, session, active } = fixture(["prefix", "native"]);
+    const { item, session, active } = fixture([prefix, native]);
     active.q = {
       interrupt: async (options) => {
         assert.deepEqual(options, { cancelQueued: true });
-        return native;
+        return receipt;
       },
     };
     const complete =
-      native.cancelled.length === 2 && !native.still_queued.length;
+      receipt.cancelled.length === 2 && !receipt.still_queued.length;
     assert.deepEqual(await interruptInputQueue(session, active), {
       cancelled: complete ? [item.id] : [],
       still_queued: complete ? [] : [item.id],
@@ -40,15 +51,15 @@ test("Stop requires cancellation of every native part of a Studio input", async 
 });
 
 test("Stop withdraws the unyielded batch tail before background task control", async () => {
-  const { item, session, active } = fixture(["prefix", "native"]);
+  const { item, session, active } = fixture([prefix, native]);
   let withdrew = false;
   active.input.withdraw = () => {
     withdrew = true;
-    return [{ uuid: "native", studioInputIdentity: item.id }];
+    return [{ uuid: native, studioInputIdentity: item.id }];
   };
   active.q = {
     interrupt: async () => ({
-      cancelled: ["prefix"],
+      cancelled: [prefix],
       still_queued: ["foreign"],
     }),
   };

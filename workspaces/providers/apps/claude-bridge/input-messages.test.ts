@@ -62,7 +62,7 @@ test("a split input leaves the retry queue before its first part is yielded", as
   const wrapper = messages.at(-1);
   assert(wrapper);
   Object.defineProperty(wrapper, "studioInputBatch", { value: messages });
-  const queue = new InputQueue();
+  const queue = new InputQueue<{ uuid: string; shouldQuery?: boolean }>();
   queue.push(wrapper);
   const iterator = queue[Symbol.asyncIterator]();
   assert.equal((await iterator.next()).value, messages[0]);

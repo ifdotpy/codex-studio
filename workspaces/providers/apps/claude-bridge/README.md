@@ -13,7 +13,7 @@ are owned by this app's source and [`package.json`](package.json). Focused check
 
 ## Installation requirements
 
-The bridge needs Node.js with built-in TypeScript support enabled. The stable
+The bridge uses the [shared Node requirement](../../../../docs/typescript.md#how-typescript-runs). The stable
 [launcher](bridge.mjs) owns the supported runtime requirement and refusal message;
 it checks support before loading the bridge or the authentication-refresh helper.
 Both entrypoints run TypeScript directly without a build step. Production packages
