@@ -25,12 +25,12 @@ pub(super) fn apply(
 ) -> Result<Option<DispatchOutcome>, NotificationDispatchError> {
     let id = agent["id"]
         .as_str()
-        .ok_or(NotificationDispatchError::InvalidNotification)?
+        .ok_or(NotificationDispatchError::invalid())?
         .to_owned();
     let account = identity
         .provider_handle
         .strip_prefix("account:")
-        .ok_or(NotificationDispatchError::InvalidNotification)?;
+        .ok_or(NotificationDispatchError::invalid())?;
     if method == "thread/idleCompaction/updated" {
         crate::idle_compaction::observe(tx, agent, &p["report"])?;
         persist_agent(tx, &id, agent)?;
@@ -170,7 +170,7 @@ pub(super) fn apply(
                         .as_str()
                         .filter(|value| !value.is_empty()),
                 ) else {
-                    return Err(NotificationDispatchError::InvalidNotification);
+                    return Err(NotificationDispatchError::invalid());
                 };
                 if !crate::scheduler::settle_user_message_receipt_in_transaction(
                     tx,
@@ -285,10 +285,10 @@ pub(super) fn apply(
                 let key = p["item"]["id"]
                     .as_str()
                     .filter(|s| !s.is_empty())
-                    .ok_or(NotificationDispatchError::InvalidNotification)?;
+                    .ok_or(NotificationDispatchError::invalid())?;
                 let kind = p["item"]["type"]
                     .as_str()
-                    .ok_or(NotificationDispatchError::InvalidNotification)?;
+                    .ok_or(NotificationDispatchError::invalid())?;
                 write_item(
                     tx,
                     &id,
@@ -394,7 +394,7 @@ pub(super) fn put_task(
             .value()
             .get("id")
             .and_then(Value::as_str)
-            .ok_or(NotificationDispatchError::InvalidNotification)?;
+            .ok_or(NotificationDispatchError::invalid())?;
         let previous_raw: Option<String> = tx
             .query_row_cached(
                 "SELECT record FROM runtime_tasks WHERE id=?1",
@@ -434,11 +434,11 @@ fn write_item(
     let mut record = json!({"id":id,"role":role,"title":title,"text":text.chars().take(super::ITEM_PREVIEW_CHARS).collect::<String>(),"truncated":text.chars().count()>super::ITEM_PREVIEW_CHARS,"at":at});
     record
         .as_object_mut()
-        .ok_or(NotificationDispatchError::InvalidNotification)?
+        .ok_or(NotificationDispatchError::invalid())?
         .extend(
             metadata
                 .as_object()
-                .ok_or(NotificationDispatchError::InvalidNotification)?
+                .ok_or(NotificationDispatchError::invalid())?
                 .clone(),
         );
     NotificationDispatchRepository::put_notification_item(tx, &id, agent, &record, at, text, true)?;
@@ -586,7 +586,7 @@ pub(super) fn write_historical_item(
 ) -> Result<(), NotificationDispatchError> {
     let id = task["id"]
         .as_str()
-        .ok_or(NotificationDispatchError::InvalidNotification)?;
+        .ok_or(NotificationDispatchError::invalid())?;
     let Some((record, _)) = NotificationDispatchRepository::notification_item(tx, agent, id)?
     else {
         return Ok(());

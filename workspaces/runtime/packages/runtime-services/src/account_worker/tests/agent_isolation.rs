@@ -150,6 +150,92 @@ async fn invalid_record_of_one_agent_in_a_journal_frame_keeps_the_other_agent_wo
     worker.shutdown().await.unwrap();
 }
 
+/// A provider notification of one agent that fails a notification check (the
+/// 2026-10-26 disconnects of every agent on an account) holds only that agent,
+/// names the failed check, and keeps the other agent of the account working.
+/// Repeats of the refused frame neither end the worker nor place the hold again.
+#[tokio::test]
+async fn invalid_notification_of_one_agent_holds_it_and_keeps_the_other_agent_working() {
+    let state = State::new().await;
+    let a = state.agent.clone();
+    second_agent(&state, "agent-b", "fake-thread-1", "b-input").await;
+    let mut peer = Peer::new();
+    let mut worker = peer.worker(state.bridge.clone()).await;
+    let a_start = start_agent(&state, &mut peer, &worker, &a, "fake-thread-0").await;
+    peer.reply(&a_start, json!({"turn":{"id":"turn-a"}})).await;
+    let b_start = start_agent(&state, &mut peer, &worker, "agent-b", "fake-thread-1").await;
+
+    // Agent A's message item carries a non-text body: the dispatcher refuses it.
+    let invalid = json!({"method":"item/completed","params":{"threadId":"fake-thread-0","turnId":"turn-a","item":{"type":"agentMessage","id":"item-a","text":7}}});
+    let refused = peer.frame(invalid.clone()).await;
+    peer.acknowledged_or_worker_exits(refused, &mut worker)
+        .await;
+    let held = record_of(&state, &a).await;
+    assert_held(&held, "invalid provider notification or delivery identity");
+    let error = held["error"].as_str().unwrap_or_default();
+    assert!(
+        error.contains("failed check src/notification_dispatch"),
+        "the hold names the failed check: {error}"
+    );
+
+    // The same refused frame again: parked each time, the first hold stays.
+    for _ in 0..3 {
+        let repeat = peer.frame(invalid.clone()).await;
+        peer.acknowledged_or_worker_exits(repeat, &mut worker).await;
+    }
+    assert_eq!(record_of(&state, &a).await, held, "the hold is placed once");
+
+    // Agent B on the same account completes its turn.
+    peer.reply(&b_start, json!({"turn":{"id":"turn-b"}})).await;
+    assert_eq!(state.event_status("b-input").await, "delivered");
+    let completed = peer
+        .frame(json!({"method":"turn/completed","params":{"threadId":"fake-thread-1","turn":{"id":"turn-b","status":"completed"}}}))
+        .await;
+    peer.acknowledged_or_worker_exits(completed, &mut worker)
+        .await;
+    let b = record_of(&state, "agent-b").await;
+    assert_eq!(b["lastCompletedTurn"], "turn-b", "{b}");
+    assert_ne!(b["status"], "failed", "{b}");
+
+    assert_running(&mut worker).await;
+    worker_barrier(&worker).await;
+    assert!(peer.writes.try_recv().is_err(), "nothing is sent again");
+    worker.shutdown().await.unwrap();
+}
+
+/// Repeated refusals of a held agent's frames log once per worker, with the
+/// account, agent, provider method and failed check.
+#[test]
+fn repeated_faults_of_a_held_agent_log_once() {
+    let fault = |hold| {
+        agent_fault::AgentFault {
+            agent_id: "agent-a".into(),
+            stage: agent_fault::FaultStage::JournalFrame,
+            method: None,
+            detail: crate::notification_dispatch::NotificationDispatchError::invalid().to_string(),
+            hold,
+        }
+        .with_method(Some("item/completed"))
+    };
+    let first = fault(agent_fault::HoldResult::Placed);
+    assert_eq!(first.method.as_deref(), Some("item/completed"));
+    assert!(
+        first
+            .detail
+            .contains("failed check src/account_worker/tests/agent_isolation.rs:"),
+        "{}",
+        first.detail
+    );
+    let mut reported = BTreeSet::new();
+    assert!(first.report("default", &mut reported));
+    for _ in 0..3 {
+        assert!(!fault(agent_fault::HoldResult::AlreadyHeld).report("default", &mut reported));
+    }
+    let long = "m".repeat(1000);
+    let bounded = fault(agent_fault::HoldResult::Placed).with_method(Some(&long));
+    assert!(bounded.method.unwrap().len() < 1000);
+}
+
 #[tokio::test]
 async fn invalid_record_of_one_agent_in_a_provider_reply_retires_the_request_and_keeps_the_worker()
 {
@@ -686,6 +772,61 @@ async fn a_full_monitor_output_queue_holds_the_journal_until_it_drains() {
     let queue = queued(&state).await;
     assert_eq!(queue.len(), 1, "{queue:?}");
     assert_eq!(queue[0]["deltaBase64"], "eQ==");
+    assert_running(&mut worker).await;
+    worker.shutdown().await.unwrap();
+}
+
+/// A monitor output delta that fails its check holds the monitor's agent; the
+/// account worker keeps journaling the next provider frames.
+#[tokio::test]
+async fn a_refused_monitor_output_delta_holds_only_the_monitor_agent() {
+    let state = State::new().await;
+    let (a, epoch) = (state.agent.clone(), state.epoch);
+    second_agent(&state, "agent-b", "fake-thread-1", "b-input").await;
+    let owner = a.clone();
+    state
+        .bridge
+        .run(move |store| async move {
+            store
+                .transaction_with(move |tx| {
+                    let operation = json!({
+                        "agent": owner, "epoch": epoch, "accountKey": "default",
+                        "connectionId": "connection"
+                    });
+                    tx.execute(
+                        "INSERT INTO runtime_monitors(id,record) VALUES('monitor-a',?1)",
+                        [json!({
+                            "id": "monitor-a", "agent": owner, "epoch": epoch,
+                            "status": "running", "bytes": 0, "created": 1.0,
+                            "operation": operation
+                        })
+                        .to_string()],
+                    )?;
+                    Ok::<_, StoreError>(())
+                })
+                .await?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    let mut peer = Peer::new();
+    let mut worker = peer.worker(state.bridge.clone()).await;
+    let b_start = start_agent(&state, &mut peer, &worker, "agent-b", "fake-thread-1").await;
+    let refused = peer
+        .frame(json!({"method":"command/exec/outputDelta","params":{
+            "processId":"monitor-a","stream":"stdout","deltaBase64":"not base64!",
+            "capReached":false
+        }}))
+        .await;
+    peer.acknowledged_or_worker_exits(refused, &mut worker)
+        .await;
+    let held = record_of(&state, &a).await;
+    assert_held(&held, "failed check src/monitor_event_queue.rs:");
+
+    peer.reply(&b_start, json!({"turn":{"id":"turn-b"}})).await;
+    assert_eq!(state.event_status("b-input").await, "delivered");
+    let b = record_of(&state, "agent-b").await;
+    assert_ne!(b["status"], "failed", "{b}");
     assert_running(&mut worker).await;
     worker.shutdown().await.unwrap();
 }

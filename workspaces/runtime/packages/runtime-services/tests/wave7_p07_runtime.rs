@@ -637,7 +637,7 @@ async fn task_writer_checks_receipts_and_scope_in_the_completion_transaction() {
             next["finished"] = json!(at);
             TaskRepository::put(tx, &TaskRecord::from_value(next).expect("task"))?;
             if scenario_for_writer == "writer-failure" {
-                return Err(studio_runtime_services::notification_dispatch::NotificationDispatchError::InvalidNotification);
+                return Err(studio_runtime_services::notification_dispatch::NotificationDispatchError::invalid());
             }
             Ok(())
         };
@@ -746,7 +746,10 @@ async fn runtime_entry_applies_history_only_after_barrier_and_rechecks_notificat
             write_message: Box::new(mock_message),
         };
         let task_write = |_: &Transaction<'_>, _: &Value, _: &Value, _: &Value, _: f64| {
-            Err(studio_runtime_services::notification_dispatch::NotificationDispatchError::InvalidNotification)
+            Err(
+                studio_runtime_services::notification_dispatch::NotificationDispatchError::invalid(
+                ),
+            )
         };
         let task_completion = RuntimeTaskCompletionWriter {
             store: Arc::clone(&store),
@@ -1272,7 +1275,7 @@ async fn accepted_terminal_start_calls_canonical_messages_and_finishes_atomicall
                     .push(item.clone());
                 a["events"] = json!(a["events"].as_u64().expect("counter") + 1);
                 if failure_for_writer == "first-message" {
-                    return Err(studio_runtime_services::notification_dispatch::NotificationDispatchError::InvalidNotification);
+                    return Err(studio_runtime_services::notification_dispatch::NotificationDispatchError::invalid());
                 }
                 Ok(Some(studio_runtime_services::notification_dispatch::NotificationStreamBuffer::default()))
             };

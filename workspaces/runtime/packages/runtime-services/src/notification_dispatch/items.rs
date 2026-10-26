@@ -159,7 +159,7 @@ pub(super) fn non_text(
     let item = &params["item"];
     let kind = item["type"]
         .as_str()
-        .ok_or(NotificationDispatchError::InvalidNotification)?;
+        .ok_or(NotificationDispatchError::invalid())?;
     let started = method == "item/started" || item["status"] == "inProgress";
     let task = task_transition(agent, method, params, previous_task, false, at)?;
     let mut decision = ItemDecision {

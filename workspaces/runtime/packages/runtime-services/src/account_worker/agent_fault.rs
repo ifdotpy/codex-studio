@@ -7,7 +7,8 @@
 //! transaction rolls back to a savepoint, the agent gets a visible durable
 //! hold, and the account worker keeps serving every other agent. The frame or
 //! effect is settled, so it neither blocks the account journal nor runs
-//! again. Storage failures (SQLite, I/O, writer or commit outcome), and data
+//! again. A provider frame bound to one agent that fails a notification or
+//! delivery identity check is held the same way. Storage failures (SQLite, I/O, writer or commit outcome), and data
 //! errors that name no record or agent, stay fatal for the worker.
 use super::*;
 use rusqlite::OptionalExtension;
@@ -37,28 +38,49 @@ impl FaultStage {
     }
 }
 
+/// Longest provider method a fault log names; unit: bytes. Provider methods
+/// are short; a longer one is cut at a character boundary.
+const FAULT_METHOD_BYTES: usize = 96;
+
 /// One agent-scoped failure that was rolled back and parked.
 #[derive(Debug)]
 pub(super) struct AgentFault {
     pub agent_id: String,
     pub stage: FaultStage,
+    /// The provider method of the failing frame or request, when known.
+    pub method: Option<String>,
     pub detail: String,
     pub hold: HoldResult,
 }
 impl AgentFault {
+    /// Name the provider method of the failing frame or request, bounded.
+    pub(super) fn with_method(mut self, method: Option<&str>) -> Self {
+        self.method = method.map(|method| {
+            let mut end = method.len().min(FAULT_METHOD_BYTES);
+            while !method.is_char_boundary(end) {
+                end -= 1;
+            }
+            method[..end].to_owned()
+        });
+        self
+    }
+
     /// Log a fault when its hold is new, and otherwise once per agent and
     /// worker (`reported`). A parked frame or effect does not run again, so a
-    /// held agent's later frames do not log in a loop.
-    pub(super) fn report(&self, account: &str, reported: &mut BTreeSet<String>) {
-        if reported.insert(self.agent_id.clone()) || self.hold == HoldResult::Placed {
+    /// held agent's later frames do not log in a loop. Returns whether it logged.
+    pub(super) fn report(&self, account: &str, reported: &mut BTreeSet<String>) -> bool {
+        let log = reported.insert(self.agent_id.clone()) || self.hold == HoldResult::Placed;
+        if log {
             eprintln!(
-                "account worker {account} held agent {} after {} failed: {} ({:?})",
+                "account worker {account} held agent {} after {} failed (method {}): {} ({:?})",
                 self.agent_id,
                 self.stage.label(),
+                self.method.as_deref().unwrap_or("none"),
                 self.detail,
                 self.hold,
             );
         }
+        log
     }
 }
 
@@ -102,6 +124,26 @@ pub(super) fn data_fault(error: &WorkerError) -> Option<(String, String)> {
     (!named.1.is_empty()).then_some(named)
 }
 
+/// The record a fault of `subject` is tied to: the stored record a data error
+/// names, or the row of `subject` when a provider notification or delivery
+/// identity failed a check while it was applied for that agent. The frame is
+/// the agent's own input, so its refusal is agent-scoped. `None` for every
+/// other error, and for a refused frame bound to no agent.
+pub(super) fn fault_record(error: &WorkerError, subject: Option<&str>) -> Option<(String, String)> {
+    data_fault(error).or_else(|| {
+        matches!(
+            error,
+            WorkerError::Notification(
+                crate::notification_dispatch::NotificationDispatchError::InvalidNotification { .. }
+            )
+        )
+        .then_some(subject)
+        .flatten()
+        .filter(|agent| !agent.is_empty())
+        .map(|agent| ("runtime_agents".to_owned(), agent.to_owned()))
+    })
+}
+
 /// Run `apply` in a savepoint. The outer error is a savepoint failure; the
 /// inner one is `apply`'s error after its writes were rolled back.
 pub(super) fn in_savepoint<T>(
@@ -132,7 +174,8 @@ pub(super) fn in_savepoint<T>(
 }
 
 /// Apply one agent's part of an account transaction. `subject` is the agent
-/// that `apply` works for once it knows it. A data error rolls back `apply`,
+/// that `apply` works for once it knows it. A data error, or a provider frame
+/// of `subject` that failed a check (see [`fault_record`]), rolls back `apply`,
 /// runs `settle_failed` (the step's own settlement without its effects), and
 /// holds the agent of the failing record (see [`fault_agent`]). Every other
 /// error, and one that names no agent, is returned unchanged.
@@ -148,7 +191,7 @@ pub(super) fn isolate<T>(
         Ok(value) => return Ok(Ok(value)),
         Err(error) => error,
     };
-    let Some((scope, id)) = data_fault(&error) else {
+    let Some((scope, id)) = fault_record(&error, subject.as_deref()) else {
         return Err(error);
     };
     let Some(agent_id) = fault_agent(tx, &scope, &id, subject.as_deref())? else {
@@ -161,6 +204,7 @@ pub(super) fn isolate<T>(
     Ok(Err(AgentFault {
         agent_id,
         stage,
+        method: None,
         detail,
         hold,
     }))
@@ -248,7 +292,7 @@ fn record_agent(
 /// The visible error of a held agent.
 pub(super) fn hold_message(stage: FaultStage, detail: &str) -> String {
     format!(
-        "Held after {} failed on invalid stored data: {detail}. \
+        "Held after {} failed on invalid data: {detail}. \
          Other agents on this account keep running. Send a message to retry.",
         stage.label()
     )
@@ -388,6 +432,7 @@ pub(super) async fn hold_after(
     Ok(held.map(|(agent_id, hold)| AgentFault {
         agent_id,
         stage,
+        method: None,
         detail,
         hold,
     }))

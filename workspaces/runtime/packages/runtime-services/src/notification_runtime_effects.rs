@@ -41,7 +41,7 @@ impl NotificationEffects for RuntimeNotificationEffects {
     ) -> Result<(), NotificationDispatchError> {
         let agent_id = agent["id"]
             .as_str()
-            .ok_or(NotificationDispatchError::InvalidNotification)?;
+            .ok_or(NotificationDispatchError::invalid())?;
         crate::agent_move::capture_cache(tx, agent_id, params, at)?;
         Ok(())
     }
@@ -270,7 +270,7 @@ impl RuntimeNotificationPostCommitSink {
                 | NotificationPostCommit::TokenRateAssociation(_)
                 | NotificationPostCommit::TokenRateUsage(_)
         ) {
-            return Err(NotificationDispatchError::InvalidNotification);
+            return Err(NotificationDispatchError::invalid());
         }
         self.token_rates
             .publish_observation(effect.clone())

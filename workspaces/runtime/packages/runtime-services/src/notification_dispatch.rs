@@ -99,10 +99,30 @@ pub struct PreparedSubmission {
     pub radio_authorized: bool,
 }
 
+/// The validation that refused a provider notification or delivery identity:
+/// the source site of the failed check (`file:line` in the server revision).
+/// It names the check without carrying any notification content.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct FailedCheck(&'static std::panic::Location<'static>);
+impl FailedCheck {
+    /// The check at the caller's site.
+    #[track_caller]
+    pub fn here() -> Self {
+        Self(std::panic::Location::caller())
+    }
+}
+impl std::fmt::Display for FailedCheck {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let file = self.0.file();
+        let file = file.find("src/").map_or(file, |at| &file[at..]);
+        write!(f, "{file}:{}", self.0.line())
+    }
+}
+
 #[derive(Debug, Error)]
 pub enum NotificationDispatchError {
-    #[error("invalid provider notification or delivery identity")]
-    InvalidNotification,
+    #[error("invalid provider notification or delivery identity (failed check {check})")]
+    InvalidNotification { check: FailedCheck },
     #[error("notification output queue capacity reached")]
     StreamCapacity,
     #[error("invalid stored object {table}:{id}")]
@@ -123,6 +143,16 @@ pub enum NotificationDispatchError {
     Move(#[from] crate::agent_move::MoveError),
     #[error("JSON serialization failed")]
     Json(#[from] serde_json::Error),
+}
+
+impl NotificationDispatchError {
+    /// An invalid notification refused by the check at the caller's site.
+    #[track_caller]
+    pub fn invalid() -> Self {
+        Self::InvalidNotification {
+            check: FailedCheck::here(),
+        }
+    }
 }
 
 impl From<StoreError> for NotificationDispatchError {
@@ -400,7 +430,7 @@ pub fn dispatch_notification_with_effects(
                 || identity.generation == 0
                 || identity.cursor == 0
             {
-                return Err(NotificationDispatchError::InvalidNotification);
+                return Err(NotificationDispatchError::invalid());
             }
             let content_signature = notification_content_signature(agent_id, notification)?;
             let identity_signature = sha256_json(&json!({
@@ -571,7 +601,7 @@ pub fn dispatch_notification_with_effects(
                 let key = command_key(agent_id, identity, params)?;
                 let delta = params["delta"]
                     .as_str()
-                    .ok_or(NotificationDispatchError::InvalidNotification)?;
+                    .ok_or(NotificationDispatchError::invalid())?;
                 let outcome = if turn_settled(&agent, key.turn.as_deref()) {
                     DispatchOutcome::Ignored {
                         reason: TURN_ENDED_REASON.into(),
@@ -673,17 +703,17 @@ pub fn dispatch_notification_with_effects(
                                     }
                                 }
                             }
-                            _ => return Err(NotificationDispatchError::InvalidNotification),
+                            _ => return Err(NotificationDispatchError::invalid()),
                         }
                     }
                 }
                 "item/started" | "item/completed" => {
                     match params.get("item").and_then(Value::as_object) {
-                        None => return Err(NotificationDispatchError::InvalidNotification),
+                        None => return Err(NotificationDispatchError::invalid()),
                         Some(item)
                             if item.get("type").and_then(Value::as_str) != Some("agentMessage") =>
                         {
-                            return Err(NotificationDispatchError::InvalidNotification);
+                            return Err(NotificationDispatchError::invalid());
                         }
                         Some(item)
                             if item
@@ -691,13 +721,13 @@ pub fn dispatch_notification_with_effects(
                                 .and_then(Value::as_str)
                                 .is_none_or(str::is_empty) =>
                         {
-                            return Err(NotificationDispatchError::InvalidNotification);
+                            return Err(NotificationDispatchError::invalid());
                         }
                         Some(_) if stale_item => DispatchOutcome::Ignored {
                             reason: "stale-turn-item".to_owned(),
                         },
                         Some(item) if item.get("text").is_some_and(|text| !text.is_string()) => {
-                            return Err(NotificationDispatchError::InvalidNotification);
+                            return Err(NotificationDispatchError::invalid());
                         }
                         Some(item) => {
                             let item_id =
@@ -741,7 +771,7 @@ pub fn dispatch_notification_with_effects(
                 }
                 "thread/tokenUsage/updated" => {
                     let provider = match crate::provider_adapter::ProviderKind::of_record(&agent)
-                        .map_err(|_| NotificationDispatchError::InvalidNotification)?
+                        .map_err(|_| NotificationDispatchError::invalid())?
                     {
                         crate::provider_adapter::ProviderKind::Claude => {
                             studio_runtime_schema::usage::UsageProvider::Claude
@@ -755,7 +785,7 @@ pub fn dispatch_notification_with_effects(
                             Ok(usage) => TokenUsageObservation::Typed(usage),
                             Err(_) => TokenUsageObservation::Legacy(
                                 studio_runtime_schema::usage::parse_legacy_totals(provider, params)
-                                    .map_err(|_| NotificationDispatchError::InvalidNotification)?,
+                                    .map_err(|_| NotificationDispatchError::invalid())?,
                             ),
                         };
                     let mut normalized = params.clone();
@@ -774,7 +804,7 @@ pub fn dispatch_notification_with_effects(
                     }
                     apply_token_usage(&mut agent, &observation, acceptance, observed_at)?
                 }
-                _ => return Err(NotificationDispatchError::InvalidNotification),
+                _ => return Err(NotificationDispatchError::invalid()),
             };
 
             if kind == "item/agentMessage/delta"
@@ -900,23 +930,23 @@ pub fn recover_task_in_transaction(
             || previous["itemId"] != item["id"]
             || previous["type"] != item["type"]
         {
-            return Err(NotificationDispatchError::InvalidNotification);
+            return Err(NotificationDispatchError::invalid());
         }
         use studio_runtime_store::{Table, TaskId, TaskRecord};
         let task_id = previous["id"]
             .as_str()
-            .ok_or(NotificationDispatchError::InvalidNotification)?;
+            .ok_or(NotificationDispatchError::invalid())?;
         let current = Table::<TaskRecord>::new(tx).get(&TaskId::from(task_id))?;
         let stored_agent = NotificationDispatchRepository::agent_record(
             tx,
             agent["id"]
                 .as_str()
-                .ok_or(NotificationDispatchError::InvalidNotification)?,
+                .ok_or(NotificationDispatchError::invalid())?,
         )?;
         if current.as_ref().map(|record| record.value()) != Some(previous)
             || stored_agent.as_ref() != Some(agent)
         {
-            return Err(NotificationDispatchError::InvalidNotification);
+            return Err(NotificationDispatchError::invalid());
         }
         let snapshot = snapshot::NotificationSnapshot::from_records(
             agent.clone(),
@@ -940,7 +970,7 @@ pub fn recover_task_in_transaction(
                 tx,
                 agent["id"]
                     .as_str()
-                    .ok_or(NotificationDispatchError::InvalidNotification)?,
+                    .ok_or(NotificationDispatchError::invalid())?,
                 &params,
                 &task,
                 at,
@@ -971,11 +1001,11 @@ impl NotificationStreamBuffer {
         in_savepoint(tx, || {
             let agent_id = agent["id"]
                 .as_str()
-                .ok_or(NotificationDispatchError::InvalidNotification)?;
+                .ok_or(NotificationDispatchError::invalid())?;
             let item_id = item["id"]
                 .as_str()
                 .filter(|id| !id.is_empty())
-                .ok_or(NotificationDispatchError::InvalidNotification)?;
+                .ok_or(NotificationDispatchError::invalid())?;
             if !at.is_finite()
                 || at < 0.0
                 || generation == 0
@@ -985,7 +1015,7 @@ impl NotificationStreamBuffer {
                 || agent["turnId"] != turn["id"]
                 || item.get("text").is_some_and(|text| !text.is_string())
             {
-                return Err(NotificationDispatchError::InvalidNotification);
+                return Err(NotificationDispatchError::invalid());
             }
             let params = json!({"threadId":agent["threadId"],"turnId":turn["id"],"item":item});
             validate_agent(
@@ -1033,12 +1063,12 @@ fn command_key(
         account: identity
             .provider_handle
             .strip_prefix("account:")
-            .ok_or(NotificationDispatchError::InvalidNotification)?
+            .ok_or(NotificationDispatchError::invalid())?
             .into(),
         generation: identity.generation,
         thread: params["threadId"]
             .as_str()
-            .ok_or(NotificationDispatchError::InvalidNotification)?
+            .ok_or(NotificationDispatchError::invalid())?
             .into(),
         turn: params["turnId"]
             .as_str()
@@ -1047,7 +1077,7 @@ fn command_key(
         item: params["itemId"]
             .as_str()
             .filter(|s| !s.is_empty())
-            .ok_or(NotificationDispatchError::InvalidNotification)?
+            .ok_or(NotificationDispatchError::invalid())?
             .into(),
         method: "item/commandExecution/outputDelta".into(),
     })
@@ -1098,7 +1128,7 @@ fn notification_parts(notification: &Frame) -> Result<(&str, &Value), Notificati
             frame.fields.get("params").unwrap_or(&NULL),
         ),
         Frame::Request(_) | Frame::Response { .. } => {
-            return Err(NotificationDispatchError::InvalidNotification);
+            return Err(NotificationDispatchError::invalid());
         }
     };
     Ok((kind, params))
@@ -1221,8 +1251,8 @@ fn notification_content_signature(
     agent: &str,
     notification: &Frame,
 ) -> Result<String, NotificationDispatchError> {
-    let payload = BorrowedNotification::new(notification)
-        .ok_or(NotificationDispatchError::InvalidNotification)?;
+    let payload =
+        BorrowedNotification::new(notification).ok_or(NotificationDispatchError::invalid())?;
     let bytes = serde_json::to_vec(&NotificationContentSignature {
         agent,
         notification: payload,
@@ -1254,10 +1284,10 @@ fn validate_agent(
         "item/agentMessage/delta" | "item/started" | "item/completed" | "thread/tokenUsage/updated"
     ) && notification_thread.is_none_or(str::is_empty)
     {
-        return Err(NotificationDispatchError::InvalidNotification);
+        return Err(NotificationDispatchError::invalid());
     }
     if notification_thread.is_some_and(|actual| actual != thread) {
-        return Err(NotificationDispatchError::InvalidNotification);
+        return Err(NotificationDispatchError::invalid());
     }
     let account = match agent.get("accountKey") {
         None => "default",
@@ -1265,7 +1295,7 @@ fn validate_agent(
         Some(_) => return Err(stored("runtime_agents", agent_id)),
     };
     if provider_handle != format!("account:{account}") {
-        return Err(NotificationDispatchError::InvalidNotification);
+        return Err(NotificationDispatchError::invalid());
     }
     Ok(())
 }
@@ -1335,7 +1365,7 @@ fn write_text_notification(
     let thread = params
         .get("threadId")
         .and_then(Value::as_str)
-        .ok_or(NotificationDispatchError::InvalidNotification)?;
+        .ok_or(NotificationDispatchError::invalid())?;
     let turn = params
         .get("turnId")
         .and_then(Value::as_str)
@@ -2021,11 +2051,7 @@ fn apply_token_usage(
         UsageObservation::Gap { .. } => return Ok(DispatchOutcome::Written),
     };
     let tokens = tokens
-        .map(|tokens| {
-            tokens
-                .total()
-                .ok_or(NotificationDispatchError::InvalidNotification)
-        })
+        .map(|tokens| tokens.total().ok_or(NotificationDispatchError::invalid()))
         .transpose()?;
     agent["contextUsage"] = json!({"tokens":tokens,"window":window,"at":observed_at});
     Ok(DispatchOutcome::Written)
@@ -2220,11 +2246,11 @@ fn in_savepoint<T>(
 fn format_utc(seconds: f64) -> Result<String, NotificationDispatchError> {
     let whole = seconds.floor();
     if whole < i64::MIN as f64 || whole > i64::MAX as f64 {
-        return Err(NotificationDispatchError::InvalidNotification);
+        return Err(NotificationDispatchError::invalid());
     }
     DateTime::<Utc>::from_timestamp(whole as i64, 0)
         .map(|time| time.to_rfc3339_opts(SecondsFormat::Secs, true))
-        .ok_or(NotificationDispatchError::InvalidNotification)
+        .ok_or(NotificationDispatchError::invalid())
 }
 
 #[cfg(test)]
@@ -3558,7 +3584,7 @@ mod tests {
         let transaction = connection.transaction().expect("transaction begins");
         assert!(matches!(
             dispatch(&transaction, &mut streams, 1, &wrong_thread, 1.0),
-            Err(super::NotificationDispatchError::InvalidNotification)
+            Err(super::NotificationDispatchError::InvalidNotification { .. })
         ));
         transaction
             .commit()
