@@ -10,9 +10,6 @@ import {
   useRetainedWorktrees,
 } from "../../src/components/agents/RetainedWorktrees.tsx";
 const worker: Agent = {
-  created: 1,
-  updated: 1,
-  source: "managed",
   id: "worker",
   worktree: true,
   rootId: "lead",
@@ -25,9 +22,6 @@ const worker: Agent = {
   },
 };
 const lead: Agent = {
-  created: 1,
-  updated: 1,
-  source: "managed",
   id: "lead",
   isLead: true,
 };

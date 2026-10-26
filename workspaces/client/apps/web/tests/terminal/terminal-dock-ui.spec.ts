@@ -153,7 +153,6 @@ test("Terminal dock", async () => {
   });
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
   const agent: Agent = {
-    updated: 1,
     id: "lead",
     rootId: "lead",
     isLead: true,
@@ -175,16 +174,16 @@ test("Terminal dock", async () => {
     created: Date.now() / 1000,
     tail: "Listening on localhost:3000",
   };
-  const monitor: Monitor = {
+  const monitorFields = {
     id: "agent-monitor",
     agent: "lead",
-    kind: "monitor",
     command: "await deployment",
     status: "running",
     interactive: false,
-    created: Date.now() / 1e3,
+    created: Date.now() / 1000,
     tail: "Deployment pending",
-  };
+  } satisfies Monitor;
+  const monitor = { ...monitorFields, kind: "monitor" };
   const state: import("../playwright.ts").TestStateView = {
     token: "terminal-fixture-token",
     stateDir: root,

@@ -6,9 +6,6 @@ import { MantineProvider } from "@mantine/core";
 import "@mantine/core/styles.css";
 import Restore from "../../src/components/ClaudeCheckpointRestore.tsx";
 const agent: Agent = {
-  created: 1,
-  updated: 1,
-  source: "managed",
   id: "worker",
   provider: "claude",
   imageWorkspace: true,

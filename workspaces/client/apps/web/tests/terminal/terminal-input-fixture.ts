@@ -15,8 +15,6 @@ export function mount(shell: string) {
   );
   setToken("fixture-token");
   const agent: Agent = {
-    created: 1,
-    updated: 1,
     id: "agent",
     name: "Fixture",
     source: "managed",

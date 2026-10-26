@@ -10,8 +10,6 @@ import "@mantine/core/styles.css";
 import { Workspace } from "../../src/components/shell/Workspace.tsx";
 import { fixtureSnapshot } from "../fixtures/snapshot.ts";
 const agent: Agent = {
-  created: 1,
-  updated: 1,
   id: "agent",
   name: "Claude fixture",
   source: "managed",

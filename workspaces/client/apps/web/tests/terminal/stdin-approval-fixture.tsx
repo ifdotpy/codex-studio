@@ -7,9 +7,6 @@ import { MantineProvider } from "@mantine/core";
 import "@mantine/core/styles.css";
 import Requests from "../../src/components/questions/Requests.tsx";
 const agent: Agent = {
-  created: 1,
-  updated: 1,
-  source: "managed",
   id: "lead",
   rootId: "lead",
   name: "Lead",
