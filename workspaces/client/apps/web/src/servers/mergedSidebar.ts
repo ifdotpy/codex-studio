@@ -235,34 +235,18 @@ export function mergeSidebar(
               id,
               cwd: path,
               serverId: source.id,
-              ...(chat.rootId === undefined
-                ? {}
-                : {
-                    rootId: chat.rootId
-                      ? chatKey(source.id, chat.rootId)
-                      : chat.rootId,
-                  }),
-              ...(chat.parentId === undefined
-                ? {}
-                : {
-                    parentId: chat.parentId
-                      ? chatKey(source.id, chat.parentId)
-                      : chat.parentId,
-                  }),
-              ...(chat.sharedRoomId === undefined
-                ? {}
-                : {
-                    sharedRoomId: chat.sharedRoomId
-                      ? chatKey(source.id, chat.sharedRoomId)
-                      : chat.sharedRoomId,
-                  }),
-              ...(chat.projectFolder === undefined
-                ? {}
-                : {
-                    projectFolder: chat.projectFolder
-                      ? folderKey(source.id, chat.cwd || "", chat.projectFolder)
-                      : chat.projectFolder,
-                  }),
+              rootId: chat.rootId
+                ? chatKey(source.id, chat.rootId)
+                : chat.rootId,
+              parentId: chat.parentId
+                ? chatKey(source.id, chat.parentId)
+                : chat.parentId,
+              sharedRoomId: chat.sharedRoomId
+                ? chatKey(source.id, chat.sharedRoomId)
+                : chat.sharedRoomId,
+              projectFolder: chat.projectFolder
+                ? folderKey(source.id, chat.cwd || "", chat.projectFolder)
+                : chat.projectFolder,
             },
       );
     }
@@ -271,12 +255,7 @@ export function mergeSidebar(
     for (const project of source.sidebar.projects)
       for (const team of project.peerTeams || [])
         if (!teams.has(team.id))
-          teams.set(team.id, {
-            ...team,
-            ...(project.path === undefined
-              ? {}
-              : { projectPath: project.path }),
-          });
+          teams.set(team.id, { ...team, projectPath: project.path });
     for (const team of teams.values())
       peerTeams.push(
         single
@@ -285,14 +264,7 @@ export function mergeSidebar(
               ...team,
               id: teamKey(source.id, team.id),
               projectPath: projectKey(source.id, team.projectPath || ""),
-              ...(team.members === undefined
-                ? {}
-                : {
-                    members:
-                      team.members === null
-                        ? null
-                        : team.members.map((id) => chatKey(source.id, id)),
-                  }),
+              members: team.members?.map((id) => chatKey(source.id, id)),
             },
       );
     for (const room of source.sidebar.rooms) {
@@ -303,41 +275,22 @@ export function mergeSidebar(
           : {
               ...room,
               id,
-              ...(room.rootId === undefined
-                ? {}
-                : {
-                    rootId: room.rootId
-                      ? chatKey(source.id, room.rootId)
-                      : room.rootId,
-                  }),
-              ...(room.members === undefined
-                ? {}
-                : {
-                    members:
-                      room.members === null
-                        ? null
-                        : room.members.map((id) => chatKey(source.id, id)),
-                  }),
+              rootId: room.rootId
+                ? chatKey(source.id, room.rootId)
+                : room.rootId,
+              members: room.members?.map((id) => chatKey(source.id, id)),
               projectPath: projectKey(source.id, room.projectPath || ""),
-              ...(room.peerTeamId === undefined
-                ? {}
-                : {
-                    peerTeamId: room.peerTeamId
-                      ? teamKey(source.id, room.peerTeamId)
-                      : room.peerTeamId,
-                  }),
-              ...(room.radio === undefined
-                ? {}
-                : {
-                    radio: room.radio
-                      ? {
-                          ...room.radio,
-                          teamId: room.radio.teamId
-                            ? teamKey(source.id, room.radio.teamId)
-                            : room.radio.teamId,
-                        }
-                      : room.radio,
-                  }),
+              peerTeamId: room.peerTeamId
+                ? teamKey(source.id, room.peerTeamId)
+                : room.peerTeamId,
+              radio: room.radio
+                ? {
+                    ...room.radio,
+                    teamId: room.radio.teamId
+                      ? teamKey(source.id, room.radio.teamId)
+                      : room.radio.teamId,
+                  }
+                : room.radio,
             },
       );
     }
@@ -634,17 +587,19 @@ export function mergeSidebar(
       studioErrors:
         sources.find((source) => source.id === "local")?.sidebar.studioErrors ||
         [],
-      ...(sources.some((source) => source.sidebar.peerTeamsVersion === 1)
-        ? { peerTeamsVersion: 1 }
-        : {}),
-      ...(sources.some((source) => source.sidebar.projectOrganizationVersion)
-        ? { projectOrganizationVersion: 1 }
-        : {}),
-      ...(!single
-        ? { sidebarOrder: { revision, groups: order } }
-        : singleSource.sidebar.sidebarOrder === undefined
-          ? {}
-          : { sidebarOrder: singleSource.sidebar.sidebarOrder }),
+      peerTeamsVersion: sources.some(
+        (source) => source.sidebar.peerTeamsVersion === 1,
+      )
+        ? 1
+        : undefined,
+      projectOrganizationVersion: sources.some(
+        (source) => source.sidebar.projectOrganizationVersion,
+      )
+        ? 1
+        : undefined,
+      sidebarOrder: single
+        ? singleSource.sidebar.sidebarOrder
+        : { revision, groups: order },
     },
   };
   return {

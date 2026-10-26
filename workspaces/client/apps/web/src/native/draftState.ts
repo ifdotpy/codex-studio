@@ -1,13 +1,7 @@
 import type { DraftJournal } from "./draftJournal";
-import type { DraftVersion } from "../sync/drafts";
 
-export type DraftView = {
-  drafts: Record<string, string>;
-  conflicts: DraftVersion[];
-  workspaceId: string;
-  revision: number;
-  error?: string;
-};
+import type { DraftView } from "./host";
+export type { DraftView } from "./host";
 type Invoke = <T>(method: string, params: unknown, id?: string) => Promise<T>;
 type Edit = { id: string; changes: Record<string, string> };
 
@@ -26,11 +20,14 @@ export class NativeDraftState {
   private listeners = new Set<() => void>();
   private snapshot: DraftView & { pending: boolean; localError: string };
 
-  constructor(
-    readonly workspace: string,
-    private invoke: Invoke,
-    private journal?: DraftJournal,
-  ) {
+  readonly workspace: string;
+  private invoke: Invoke;
+  private journal: DraftJournal | undefined;
+  constructor(workspace: string, invoke: Invoke, journal?: DraftJournal) {
+    this.workspace = workspace;
+    this.invoke = invoke;
+    this.journal = journal;
+
     this.committed = {
       drafts: {},
       conflicts: [],
@@ -81,11 +78,13 @@ export class NativeDraftState {
     if (!Object.keys(changes).length) return;
     // The head may already be committed, so its content is immutable. Only
     // coalesce the unsent tail to bound typing backlog while IPC is delayed.
-    if (!this.journal && this.queue.length > 1)
-      Object.assign(this.queue[1].changes, changes);
+    const tail = this.queue[1];
+    if (!this.journal && tail) Object.assign(tail.changes, changes);
     else this.queue.push({ id: crypto.randomUUID(), changes });
     try {
-      this.journal?.save(this.queue[this.queue.length - 1]);
+      const latest = this.queue.at(-1);
+      if (!latest) throw new Error("The draft write queue is empty.");
+      this.journal?.save(latest);
     } catch (error) {
       this.failure = error instanceof Error ? error.message : String(error);
     }
@@ -125,6 +124,7 @@ export class NativeDraftState {
     try {
       while (this.queue.length) {
         const edit = this.queue[0];
+        if (!edit) break;
         this.journal?.save(edit);
         const view = await this.invoke<DraftView>(
           "drafts.edit",
