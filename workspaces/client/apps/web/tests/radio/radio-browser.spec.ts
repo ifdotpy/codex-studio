@@ -233,19 +233,9 @@ test("Radio browser", async ({
     await page.evaluate(() => (window.radioFixture.failRefresh = false));
     assert.equal(await page.locator(".radio-retry").count(), 0);
     assert.equal(requests.length, posted);
-    assert.equal(
-      required(
-        requests.findLast(
-          (
-            value,
-          ): value is Extract<
-            PostBody<"/api/peer-teams">,
-            { radio_action: "send" }
-          > => "radio_action" in value && value.radio_action === "send",
-        ),
-      ).rounds,
-      2,
-    );
+    const lastCommand1 = required(requests.at(-1));
+    assert.ok("rounds" in lastCommand1);
+    assert.equal(lastCommand1.rounds, 2);
     mode = "reject";
     await input.fill("Stale proposal");
     await page.getByRole("button", { name: "Send", exact: true }).click();
@@ -268,72 +258,26 @@ test("Radio browser", async ({
     );
     await page.getByRole("button", { name: "Reply next" }).click();
     await page.waitForFunction(() => !document.querySelector(".radio-retry"));
-    assert.equal(
-      required(requests.at(-1))?.action === "radio"
-        ? required(
-            requests.findLast(
-              (
-                value,
-              ): value is Extract<
-                PostBody<"/api/peer-teams">,
-                { action: "radio" }
-              > => value.action === "radio",
-            ),
-          ).radio_action
-        : undefined,
-      "pass",
-    );
-    assert.equal(
-      required(
-        requests.findLast(
-          (
-            value,
-          ): value is Extract<
-            PostBody<"/api/peer-teams">,
-            { radio_action: "pass" }
-          > => "radio_action" in value && value.radio_action === "pass",
-        ),
-      ).target,
-      "b",
-    );
+    const lastCommand2 = required(requests.at(-1));
+    assert.ok("radio_action" in lastCommand2);
+    assert.equal(lastCommand2.radio_action, "pass");
+    const lastCommand3 = required(requests.at(-1));
+    assert.ok("target" in lastCommand3);
+    assert.equal(lastCommand3.target, "b");
     await page.getByRole("button", { name: "Stop", exact: true }).click();
     await page.waitForFunction(() => !document.querySelector(".radio-retry"));
-    assert.equal(
-      required(requests.at(-1))?.action === "radio"
-        ? required(
-            requests.findLast(
-              (
-                value,
-              ): value is Extract<
-                PostBody<"/api/peer-teams">,
-                { action: "radio" }
-              > => value.action === "radio",
-            ),
-          ).radio_action
-        : undefined,
-      "stop",
-    );
+    const lastCommand4 = required(requests.at(-1));
+    assert.ok("radio_action" in lastCommand4);
+    assert.equal(lastCommand4.radio_action, "stop");
     assert.equal(
       await page.getByRole("button", { name: "Send", exact: true }).isEnabled(),
       true,
     );
     await page.getByRole("button", { name: "Send", exact: true }).click();
     await page.waitForFunction(() => !document.querySelector(".radio-retry"));
-    assert.equal(
-      required(requests.at(-1))?.action === "radio"
-        ? required(
-            requests.findLast(
-              (
-                value,
-              ): value is Extract<
-                PostBody<"/api/peer-teams">,
-                { action: "radio" }
-              > => value.action === "radio",
-            ),
-          ).radio_action
-        : undefined,
-      "send",
-    );
+    const lastCommand5 = required(requests.at(-1));
+    assert.ok("radio_action" in lastCommand5);
+    assert.equal(lastCommand5.radio_action, "send");
     await input.fill("New instruction");
     await page.evaluate(() =>
       window.radioFixture.setRoom({

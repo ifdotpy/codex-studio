@@ -1,3 +1,4 @@
+import type { Agent } from "../../src/types.ts";
 import React, { useState } from "react";
 import { createRoot } from "react-dom/client";
 import { useMessages } from "../../src/hooks.ts";
@@ -247,6 +248,14 @@ harness.phase = (id, phase) => {
   payloads.set(id, next);
   firstScope.resources.publish(ref, next);
 };
+function liveAgentView(
+  agent: Pick<Agent, "id" | "source" | "nativeStatus"> &
+    NonNullable<ReturnType<typeof useMessages>["liveAgent"]>,
+): Agent {
+  // Mirrors Conversation.tsx's existing cast: the generated context-usage views describe
+  // the same stored value; unifying their wire contracts is a post-migration follow-up.
+  return agent as Agent;
+}
 function Chat({ id, visible }: { id: string; visible: boolean }) {
   harness.renders[id] = (harness.renders[id] ?? 0) + 1;
   const messages = useMessages(
@@ -257,13 +266,13 @@ function Chat({ id, visible }: { id: string; visible: boolean }) {
     "fixture",
     visible,
   );
-  const agent = {
+  const base = {
     id,
     source: "managed",
     status: "running",
     nativeStatus: { phase: "retrying", message: "Provider is reconnecting" },
-    ...messages.liveAgent,
-  };
+  } satisfies Agent;
+  const agent = liveAgentView({ ...base, ...messages.liveAgent });
   return (
     <section
       hidden={!visible}

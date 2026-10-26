@@ -18,6 +18,17 @@ test("Dictation ui", async ({
     plugins: [
       {
         name: "dictation-fixture",
+        enforce: "pre",
+        resolveId(source) {
+          if (
+            source.endsWith("/dictation/capture") ||
+            source.endsWith("/dictation/capture.ts")
+          )
+            return resolve(
+              import.meta.dirname,
+              "./dictation-capture.fixture.ts",
+            );
+        },
         configureServer(server) {
           server.middlewares.use("/dictation-test", (_request, response) => {
             response.setHeader("Content-Type", "text/html");
