@@ -48,10 +48,10 @@ const Analytics = lazy(() => import("./Analytics"));
 
 import type { Account } from "./Accounts";
 export type UsageAccount = Pick<Account, "label"> & {
-  [Field in "email" | "provider" | "plan" | "accountId"]?:
-    | Account[Field]
-    | undefined;
+  [Field in "email" | "plan" | "accountId"]?: Account[Field] | undefined;
 } & {
+  // "openai" is the legacy label Usage still renders.
+  provider?: Account["provider"] | "openai" | undefined;
   key: string;
   signedOut?: boolean;
   limits: UsageLimitSnapshot | null;

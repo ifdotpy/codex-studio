@@ -1,0 +1,124 @@
+import { parsedRecord } from "./test-support.ts";
+import { present } from "./test-support.ts";
+import type { PairReceipt, Invitation } from "./server-credentials.ts";
+import { expect, test, vi } from "vitest";
+import { pairApproved } from "./approved-pair.ts";
+function fixture() {
+  const invitation: Invitation = {
+    protocol: 1,
+    label: "Remote",
+    serverId: "remote",
+    origin: "https://remote.tailnet.ts.net",
+    publicKey: "peer-key",
+    inviteId: "invite",
+    token: "secret",
+    tailscaleUser: "owner",
+    expires: 1000,
+  };
+  const peer = { ...invitation, kind: "server", status: "paired", created: 1 };
+  const state = {
+    protocol: 1,
+    identity: { serverId: "home" },
+    servers: [peer],
+  };
+  const value: Parameters<typeof pairApproved>[0]["value"] = {
+    action: "pairApproved",
+    origin: invitation.origin,
+    invitation,
+    requestId: "pair-id",
+    approval: {
+      localServerId: "home",
+      serverId: "remote",
+      generation: JSON.stringify([1, "peer-key"]),
+      inviteRequestId: "invite-id",
+    },
+  };
+  const receipt: PairReceipt = {
+    id: "remote",
+    origin: invitation.origin,
+    label: "Remote",
+    credentialId: "fixture",
+  };
+  const credentials = { pair: vi.fn(async () => receipt) };
+  const fetchRequest = vi.fn<typeof fetch>(async (input, init) => {
+    const url = String(input);
+    init = present(init);
+    expect(new URL(url).origin).toBe("http://127.0.0.1:4620");
+    expect(init.redirect).toBe("error");
+    if (url.endsWith("/api/session"))
+      return Response.json({ token: "local-secret" });
+    if (init.method === "POST") {
+      expect(new Headers(init.headers).get("X-Canvas-Token")).toBe(
+        "local-secret",
+      );
+      expect(parsedRecord(String(init.body))).toEqual({
+        action: "ui_invite",
+        serverId: "remote",
+        requestId: "invite-id",
+      });
+      return Response.json({ invitation });
+    }
+    return Response.json(state);
+  });
+  const trusted = vi.fn();
+  const run = () =>
+    pairApproved({
+      origin: "http://127.0.0.1:4620",
+      value,
+      credentials,
+      fetchRequest,
+      trusted,
+    });
+  return {
+    invitation,
+    peer,
+    state,
+    value,
+    credentials,
+    fetchRequest,
+    trusted,
+    run,
+  };
+}
+test("automatic access verifies the local peer and the saved invitation before using its exact pair ID", async () => {
+  const f = fixture();
+  expect(await f.run()).toMatchObject({ id: "remote" });
+  expect(f.credentials.pair).toHaveBeenCalledExactlyOnceWith({
+    origin: f.value.origin,
+    invitation: f.invitation,
+    requestId: "pair-id",
+  });
+  expect(f.fetchRequest).toHaveBeenCalledTimes(4);
+  expect(f.trusted).toHaveBeenCalledTimes(8);
+});
+test.each(["revoked", "origin", "key", "generation", "home", "kind"])(
+  "automatic access rejects changed %s before pairing",
+  async (change) => {
+    const f = fixture();
+    if (change === "revoked") f.peer.status = "revoked";
+    if (change === "origin") f.peer.origin = "https://other.tailnet.ts.net";
+    if (change === "key") f.peer.publicKey = "changed";
+    if (change === "generation") f.peer.created = 2;
+    if (change === "home") f.state.identity.serverId = "another-home";
+    if (change === "kind") f.peer.kind = "ui";
+    await expect(f.run()).rejects.toThrow("not approved");
+    expect(f.credentials.pair).not.toHaveBeenCalled();
+  },
+);
+test("automatic access rejects a renderer invitation that differs from its local server receipt", async () => {
+  const f = fixture();
+  f.value.invitation = { ...f.invitation, token: "another-secret" };
+  await expect(f.run()).rejects.toThrow("does not match");
+  expect(f.credentials.pair).not.toHaveBeenCalled();
+});
+test("automatic access checks revocation after the invitation returns", async () => {
+  const f = fixture();
+  const original = present(f.fetchRequest.getMockImplementation());
+  f.fetchRequest.mockImplementation(async (url, init) => {
+    const response = await original(url, init);
+    if (init?.method === "POST") f.peer.status = "revoked";
+    return response;
+  });
+  await expect(f.run()).rejects.toThrow("not approved");
+  expect(f.credentials.pair).not.toHaveBeenCalled();
+});

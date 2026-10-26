@@ -11,43 +11,12 @@ import {
 } from "./pairing";
 import { serverViewId } from "./environment";
 import type { DesktopBridge } from "../desktop";
-export type CredentialRequest = {
-  action:
-    | "pair"
-    | "pairApproved"
-    | "request"
-    | "summary"
-    | "cancel"
-    | "forget"
-    | "pairAttempt";
-  approval?: AutomaticPairApproval;
-  serverId?: string;
-  credentialId?: string;
-  origin?: string;
-  invitation?: unknown;
-  inviteId?: string;
-  requestId?: string;
-  url?: string;
-  method?: string;
-  headers?: [string, string][];
-  body?: ArrayBuffer;
-  streamId?: string;
-  frameOwner?: string;
-};
-export type CredentialResponse = {
-  status: number;
-  statusText: string;
-  headers: [string, string][];
-  body?: ArrayBuffer;
-  streamId?: string;
-};
-export type StreamChunk = {
-  serverId: string;
-  streamId: string;
-  bytes?: ArrayBuffer;
-  done?: boolean;
-  error?: string;
-};
+export type {
+  CredentialRequest,
+  CredentialResponse,
+  StreamChunk,
+} from "../../../desktop/api.ts";
+import type { CredentialResponse, StreamChunk } from "../../../desktop/api.ts";
 export class DesktopServerCredentials implements ServerCredentialAdapter {
   private bridge: DesktopBridge;
   constructor(bridge: DesktopBridge) {
@@ -56,10 +25,7 @@ export class DesktopServerCredentials implements ServerCredentialAdapter {
   async hasPairAttempt(attempt: PairAttemptIdentity): Promise<boolean> {
     const result = await this.bridge.serverCredentialAction!({
       action: "pairAttempt",
-      requestId: attempt.requestId,
-      serverId: attempt.serverId,
-      origin: attempt.origin,
-      ...(attempt.inviteId === undefined ? {} : { inviteId: attempt.inviteId }),
+      ...attempt,
     });
     if (typeof result !== "boolean")
       throw new Error("The credential state response is invalid.");
@@ -72,8 +38,7 @@ export class DesktopServerCredentials implements ServerCredentialAdapter {
     approval?: AutomaticPairApproval,
   ): Promise<StudioServer> {
     const result = await this.bridge.serverCredentialAction!({
-      action: approval ? "pairApproved" : "pair",
-      ...(approval ? { approval } : {}),
+      ...(approval ? { action: "pairApproved", approval } : { action: "pair" }),
       origin,
       invitation: parseInvitation(code, origin),
       requestId,
@@ -115,7 +80,7 @@ export class DesktopServerCredentials implements ServerCredentialAdapter {
         action: "cancel",
         serverId: server.id,
         streamId,
-        ...(serverViewId ? { frameOwner: serverViewId } : {}),
+        frameOwner: serverViewId || undefined,
       }).catch(() => {});
     };
     const abort = () => {
@@ -133,16 +98,14 @@ export class DesktopServerCredentials implements ServerCredentialAdapter {
       const result = (await this.bridge.serverCredentialAction!({
         action: "request",
         serverId: server.id,
-        ...(server.credentialId === undefined
-          ? {}
-          : { credentialId: server.credentialId }),
+        credentialId: server.credentialId,
         url: request.url,
         method: request.method,
         headers: [...request.headers],
         body: await request.clone().arrayBuffer(),
         requestId: await requestIdentity(request),
         streamId,
-        ...(serverViewId ? { frameOwner: serverViewId } : {}),
+        frameOwner: serverViewId || undefined,
       })) as CredentialResponse;
       if (request.signal.aborted) {
         cancel();
