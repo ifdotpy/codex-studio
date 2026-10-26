@@ -3,8 +3,8 @@ import { afterEach, expect, test } from "vitest";
 import { once } from "node:events";
 import fs from "node:fs/promises";
 import path from "node:path";
-import { waitForFile } from "./testing/file-signals.mjs";
-import { startBridge } from "./testing/bridge-harness.mjs";
+import { waitForFile } from "./testing/file-signals.ts";
+import { startBridge } from "./testing/bridge-harness.ts";
 const bridges: Awaited<ReturnType<typeof startBridge>>[] = [];
 afterEach(async () => {
   for (const b of bridges.splice(0)) await b.close();

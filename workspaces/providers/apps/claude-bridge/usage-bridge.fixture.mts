@@ -1,5 +1,5 @@
 // Supplied by the bridge harness so waits retain the fixture process IPC lifetime.
-declare const waitForFile: typeof import("./testing/file-signals.mjs").waitForFile;
+declare const waitForFile: typeof import("./testing/file-signals.ts").waitForFile;
 import { inputText } from "./sdk-fixtures.ts";
 import type { FixtureQuery } from "./sdk-fixtures.ts";
 export {

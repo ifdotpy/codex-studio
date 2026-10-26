@@ -170,11 +170,7 @@ export function createAccountCheck({
           ? parsed.oauthAccount
           : null;
       if (profile) {
-        if (typeof profile !== "object")
-          reject(
-            "organization_metadata",
-            "Claude Code organization metadata is unavailable. No input was submitted.",
-          );
+        if (typeof profile !== "object") reject("identity_mismatch");
         const emailAddress =
           "emailAddress" in profile ? profile.emailAddress : undefined;
         const organizationUuid =

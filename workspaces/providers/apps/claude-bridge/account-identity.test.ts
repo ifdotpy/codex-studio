@@ -9,7 +9,7 @@ import {
   createAccountCheck,
   credentialIdentity,
 } from "./account-identity.ts";
-import { startBridge } from "./testing/bridge-harness.mjs";
+import { startBridge } from "./testing/bridge-harness.ts";
 
 const roots: string[] = [];
 const bridges: Awaited<ReturnType<typeof startBridge>>[] = [];
