@@ -1,7 +1,7 @@
 import type { components } from "../../src/generated/api.ts";
 import type { PerformanceTranscriptItem as TranscriptWireItem } from "./performance-fixture.ts";
 import type { TranscriptPageResponse } from "../playwright.ts";
-import { required } from "./performance-fixture.ts";
+import { required, transcriptFixtureAgent } from "./performance-fixture.ts";
 import { build } from "esbuild";
 import { createServer, request as httpRequest } from "node:http";
 import { writeFile, appendFile, mkdir } from "node:fs/promises";
@@ -35,7 +35,8 @@ const transcript = (
   id: string | null,
   before?: string | null,
 ): TranscriptPageResponse => {
-  const agent = instance.snapshot.threads.find((a) => a.id === id) ?? null;
+  const found = instance.snapshot.threads.find((a) => a.id === id);
+  const agent = found ? transcriptFixtureAgent(found) : found;
   const all = id === "short" ? messages.slice(0, 4) : messages;
   const end = before
     ? Math.max(

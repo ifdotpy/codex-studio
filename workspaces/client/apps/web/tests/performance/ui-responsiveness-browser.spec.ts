@@ -1,7 +1,7 @@
 import { installResponsivenessFixture } from "./ui-responsiveness.fixture.ts";
 import type { Agent } from "../../src/types.ts";
 import type { PerformanceTranscriptItem as Message } from "./performance-fixture.ts";
-import { required } from "./performance-fixture.ts";
+import { required, transcriptFixtureAgent } from "./performance-fixture.ts";
 import {
   readTestState,
   readFixtureSyncContract,
@@ -68,12 +68,15 @@ test(
       );
       const b = original.threads.find((agent) => agent.name === "Release lead");
       if (!a || !b) throw new Error("Missing responsiveness fixture chats");
-      const agents: Agent[] = [a, b].map((agent) => ({
-        ...agent,
-        status: "completed",
-        inFlight: false,
-        turnId: null,
-      }));
+      const agents = [a, b].map(
+        (agent) =>
+          ({
+            ...transcriptFixtureAgent(agent),
+            status: "completed",
+            inFlight: false,
+            turnId: null,
+          }) satisfies Agent,
+      );
       const state = {
         ...original,
         threads: agents,

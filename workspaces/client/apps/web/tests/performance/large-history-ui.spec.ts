@@ -1,5 +1,5 @@
 import type { PerformanceTranscriptItem as Message } from "./performance-fixture.ts";
-import { required } from "./performance-fixture.ts";
+import { required, transcriptFixtureAgent } from "./performance-fixture.ts";
 import {
   readTestState,
   readFixtureSyncContract,
@@ -123,7 +123,7 @@ test("Large history @performance", async ({ context }) => {
   await stubEntityState(page, state, syncContract);
   const transcript = {
     items,
-    agent: lead,
+    agent: transcriptFixtureAgent(lead),
     historyVersion: "large-history-fixture",
     truncated: false,
     nextAfterCursor: null,
