@@ -28,6 +28,8 @@ export type CredentialRequest = {
   invitation?: unknown;
   inviteId?: string;
   requestId?: string;
+  /** Why the frame cancels a stream; shown in the stream log. */
+  reason?: string;
   url?: string;
   method?: string;
   headers?: [string, string][];
@@ -104,17 +106,20 @@ export class DesktopServerCredentials implements ServerCredentialAdapter {
       if (!ready) buffered.push(value);
       else apply(value);
     });
-    const cancel = () => {
+    const cancel = (reason: string) => {
       stop();
       void this.bridge.serverCredentialAction!({
         action: "cancel",
         serverId: server.id,
         streamId,
+        reason: reason.slice(0, 300),
         frameOwner: serverViewId || undefined,
       }).catch(() => {});
     };
     const abort = () => {
-      cancel();
+      cancel(
+        `frame aborted: ${String(request.signal.reason?.message ?? request.signal.reason)}`,
+      );
       receiver?.error(
         request.signal.reason || new DOMException("Aborted", "AbortError"),
       );
@@ -138,7 +143,7 @@ export class DesktopServerCredentials implements ServerCredentialAdapter {
         frameOwner: serverViewId || undefined,
       })) as CredentialResponse;
       if (request.signal.aborted) {
-        cancel();
+        cancel("frame aborted before the stream opened");
         throw request.signal.reason;
       }
       if (!result.streamId) {
@@ -159,9 +164,9 @@ export class DesktopServerCredentials implements ServerCredentialAdapter {
           ready = true;
           buffered.forEach(apply);
         },
-        cancel() {
+        cancel(reason) {
           request.signal.removeEventListener("abort", abort);
-          cancel();
+          cancel(`frame stopped reading: ${String(reason?.message ?? reason)}`);
         },
       });
       return new Response(body, {
@@ -170,7 +175,7 @@ export class DesktopServerCredentials implements ServerCredentialAdapter {
         headers: result.headers,
       });
     } catch (error) {
-      cancel();
+      cancel(`frame request failed: ${(error as Error)?.message}`);
       request.signal.removeEventListener("abort", abort);
       throw error;
     }

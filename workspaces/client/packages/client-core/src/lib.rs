@@ -29,6 +29,7 @@ pub mod server_keys;
 pub mod server_transport;
 mod sign_in;
 pub mod speech;
+pub mod stream_log;
 pub mod startup;
 pub mod store;
 pub mod sync;

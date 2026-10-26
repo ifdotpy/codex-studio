@@ -663,6 +663,7 @@ pub fn run() {
             #[cfg(feature = "native-check")]
             let directory = native_check::directory().unwrap_or(directory);
             app.manage(lock_profile(&directory)?);
+            studio_client_core::stream_log::start(&directory);
             #[cfg(desktop)]
             desktop_menu::install(app)?;
             #[cfg(all(desktop, unix))]
