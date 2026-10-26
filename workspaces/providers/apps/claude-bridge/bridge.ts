@@ -3429,13 +3429,13 @@ async function handle(request: BridgeRequest): Promise<unknown> {
     }
   }
   if (method === "turn/interrupt") {
+    const s = await session(p.threadId);
     const active = queries.get(p.threadId);
     // Match Codex: an interrupt without an active turn changes nothing.
     // Closing an idle session here would also end its background tasks.
     if (!active?.turn) throw new Error("no active turn to interrupt");
     if (p.turnId && p.turnId !== active.turn.id)
       throw new Error("The interrupt belongs to a different Claude turn");
-    const s = await session(p.threadId);
     const turn = active.turn;
     turn.interrupted = true;
     const reservingInput = active.reservingInput;
@@ -3585,6 +3585,7 @@ function readBridgeInput<M extends BridgeServerMethod = BridgeServerMethod>(
 ): BridgeRequest | BridgeResponse<BridgeServerResult<M>> {
   const value: unknown = JSON.parse(line);
   if (!isRecord(value)) throw new Error("Invalid Claude bridge message");
+  if ("method" in value && !isRecord(value.params)) value.params = {};
   // Studio and this bridge own the protocol; the envelope is checked here once.
   // Payload types come from the shared wire owner, as in the scripted child boundary.
   return value as BridgeRequest | BridgeResponse<BridgeServerResult<M>>;
@@ -3608,9 +3609,13 @@ lines.on("line", (line) => {
     }
     return;
   }
-  const params = isRecord(message.params) ? message.params : {};
+  const params = message.params;
+  if (!isRecord(params)) return;
   // Serialize session mutations, but keep interrupt and permission replies independent.
-  const key = typeof params.threadId === "string" ? params.threadId : undefined;
+  const key =
+    "threadId" in params && typeof params.threadId === "string"
+      ? params.threadId
+      : undefined;
   const ordered = key && isThreadSerialized(message.method, params);
   const before = ordered
     ? operations.get(key) || Promise.resolve()
