@@ -1,9 +1,4 @@
-import type { useSyncedDrafts } from "../../src/sync/drafts.ts";
-declare global {
-  interface Window {
-    corruptDraft_draft: ReturnType<typeof useSyncedDrafts>;
-  }
-}
+import type {} from "./draft-fixture-helpers.ts";
 import React from "react";
 import { createRoot } from "react-dom/client";
 export async function mount() {
@@ -12,7 +7,7 @@ export async function mount() {
   document.body.appendChild(node);
   createRoot(node).render(
     React.createElement(function Harness() {
-      window.corruptDraft_draft = useSyncedDrafts();
+      window.draft = useSyncedDrafts();
       return null;
     }),
   );

@@ -1,6 +1,5 @@
 import { waitForFixturePort } from "../playwright.ts";
 import { fixturePostBody, fixturePostResult } from "./http.ts";
-import assert from "node:assert/strict";
 import { test, expect, spawnFixture, rustUiFixture } from "../playwright.ts";
 import { chooseSetupValue } from "../fixtures/setup-controls.ts";
 import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
@@ -19,8 +18,7 @@ test("new chat controls are inline, save settings and keep the compact composer 
     },
   });
   let log = "";
-  assert.ok(fixture.stderr && fixture.stdout);
-  fixture.stderr.on("data", (chunk) => {
+  fixture.stderr!.on("data", (chunk) => {
     log += chunk;
   });
   try {
@@ -70,14 +68,15 @@ test("new chat controls are inline, save settings and keep the compact composer 
         const geometry = await creation
           .getByRole("listbox")
           .evaluate((node) => {
-            const dialog = node.closest('[role="dialog"]');
-            const body = node.closest(".mantine-Modal-body");
-            if (!dialog || !body) throw new Error("Missing dialog geometry");
             const root = getComputedStyle(document.documentElement);
             return {
               picker: node.getBoundingClientRect().width,
-              dialog: dialog.getBoundingClientRect().width,
-              padding: parseFloat(getComputedStyle(body).paddingInlineStart),
+              dialog: node.closest('[role="dialog"]')!.getBoundingClientRect()
+                .width,
+              padding: parseFloat(
+                getComputedStyle(node.closest(".mantine-Modal-body")!)
+                  .paddingInlineStart,
+              ),
               previous:
                 parseFloat(root.getPropertyValue("--studio-form-max")) *
                 parseFloat(root.fontSize),
@@ -196,17 +195,13 @@ test("new chat controls are inline, save settings and keep the compact composer 
     const composerBounds = await page.locator("#composer").boundingBox();
     const rowBounds = await row.boundingBox();
     const startBounds = await page.locator(".conversation-start").boundingBox();
-    assert.ok(
-      startBounds && composerBounds && rowBounds,
-      "composer bounds exist",
-    );
-    expect(Math.abs(startBounds.x - composerBounds.x)).toBeLessThanOrEqual(1);
+    expect(Math.abs(startBounds!.x - composerBounds!.x)).toBeLessThanOrEqual(1);
     expect(
-      Math.abs(startBounds.width - composerBounds.width),
+      Math.abs(startBounds!.width - composerBounds!.width),
     ).toBeLessThanOrEqual(1);
-    expect(rowBounds.y).toBeGreaterThanOrEqual(composerBounds.y);
-    expect(rowBounds.y + rowBounds.height).toBeLessThanOrEqual(
-      composerBounds.y + composerBounds.height,
+    expect(rowBounds!.y).toBeGreaterThanOrEqual(composerBounds!.y);
+    expect(rowBounds!.y + rowBounds!.height).toBeLessThanOrEqual(
+      composerBounds!.y + composerBounds!.height,
     );
     await trigger.click();
     const picker = page.locator(".execution-dropdown");

@@ -2,12 +2,11 @@ import type { Agent, Project } from "../../src/types.ts";
 import type { GetResult } from "../../src/apiTypes.ts";
 declare global {
   interface Window {
-    uxRequestRecoveryBrowserSelected: string[];
-    uxRequestRecoveryBrowserSaves: number;
-    uxRequestRecoveryBrowserFailRefresh: boolean;
+    selected: string[];
+    saves: number;
+    failRefresh: boolean;
   }
 }
-import { required } from "../teams/helpers.ts";
 
 import React from "react";
 import { createRoot } from "react-dom/client";
@@ -24,7 +23,7 @@ import {
   useAccounts,
   AccountTransferStatus,
 } from "../../src/components/Accounts.tsx";
-const mode = new URLSearchParams(location.search).get("case") || "";
+const mode = new URLSearchParams(location.search).get("case")!;
 const project: Project = {
   id: "/project",
   path: "/project",
@@ -68,13 +67,13 @@ const accounts: GetResult<"/api/accounts"> = {
   defaultAccountGroups: [],
   defaultAccountKey: "ready",
 };
-window.uxRequestRecoveryBrowserSelected = [];
-window.uxRequestRecoveryBrowserSaves = 0;
-window.uxRequestRecoveryBrowserFailRefresh = mode === "confirmed";
+window.selected = [];
+window.saves = 0;
+window.failRefresh = mode === "confirmed";
 const saved = async () => {
-  window.uxRequestRecoveryBrowserSaves++;
-  if (window.uxRequestRecoveryBrowserFailRefresh) {
-    window.uxRequestRecoveryBrowserFailRefresh = false;
+  window.saves++;
+  if (window.failRefresh) {
+    window.failRefresh = false;
     throw Error("Snapshot unavailable");
   }
 };
@@ -107,7 +106,7 @@ let body =
     <Picker
       initialPath="/project"
       onSelect={async (path) => {
-        window.uxRequestRecoveryBrowserSelected.push(path);
+        window.selected.push(path);
       }}
     />
   ) : mode === "claude" || mode === "deadline" ? (
@@ -120,7 +119,7 @@ let body =
     <MoveChatForm project={project} agent={agent} saved={saved} />
   ) : mode === "project-account" || mode === "unready" ? (
     <ProjectAccount
-      path={project.path || "/project"}
+      path={project.path!}
       project={
         mode === "unready" ? { ...project, accountKey: "expired" } : project
       }
@@ -141,6 +140,6 @@ let body =
       onAction={() => {}}
     />
   );
-createRoot(required(document.getElementById("root"))).render(
+createRoot(document.getElementById("root")!).render(
   <MantineProvider>{body}</MantineProvider>,
 );

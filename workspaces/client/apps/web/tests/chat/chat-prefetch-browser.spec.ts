@@ -31,12 +31,10 @@ test("Chat prefetch browser", async ({
           server.middlewares.use(
             "/fixture/resource-event",
             (request, response) => {
-              const url = new URL(request.url ?? "/", "http://127.0.0.1");
-              const workspace = url.searchParams.get("workspace");
-              const agentId = url.searchParams.get("agent");
+              const url = new URL(request.url!, "http://127.0.0.1");
+              const workspace = url.searchParams.get("workspace")!;
+              const agentId = url.searchParams.get("agent")!;
               const revision = Number(url.searchParams.get("revision"));
-              if (workspace === null || agentId === null)
-                throw new Error("Incomplete resource fixture request");
               const resource = {
                 kind: "transcript",
                 agentId,
@@ -144,13 +142,13 @@ test("Chat prefetch browser", async ({
       });
       await page.clock.install();
       await page.goto(`${fixtureOrigin(server)}/check`);
-      await page.waitForFunction(() => !!window.prefetchBrowser);
+      await page.waitForFunction(() => !!window.client);
       return page;
     }
     const page = await pageFor("first");
     // A scoped chat refresh must not scan unrelated durable cache entries.
     await page.evaluate(async () => {
-      const { db } = await window.prefetchBrowser.client.syncDatabase();
+      const { db } = await window.client.syncDatabase();
       const payload = JSON.stringify({
         items: [],
         padding: "unrelated transcript",
@@ -162,12 +160,12 @@ test("Chat prefetch browser", async ({
           payload,
         })),
       );
-      window.prefetchBrowser.coldReads = [];
+      window.coldReads = [];
       const storage = db.projections.storageInstance;
       const original = storage.query.bind(storage);
       storage.query = async (...args) => {
         const result = await original(...args);
-        window.prefetchBrowser.coldReads.push(
+        window.coldReads.push(
           ...result.documents
             .filter((row) => row.id.startsWith("transcript:cold-"))
             .map((row) => row.id),
@@ -178,16 +176,14 @@ test("Chat prefetch browser", async ({
     documents.set("transcript:a", doc("a", 1));
     assert.equal(
       await page.evaluate(
-        (workspace) =>
-          window.prefetchBrowser.client.prefetchTranscript(workspace, "a"),
+        (workspace) => window.client.prefetchTranscript(workspace, "a"),
         workspaceId,
       ),
       true,
     );
     assert.equal(
       await page.evaluate(
-        (workspace) =>
-          window.prefetchBrowser.cache.peekTranscript(workspace, "a")?.seq,
+        (workspace) => window.cache.peekTranscript(workspace, "a")!.seq,
         workspaceId,
       ),
       1,
@@ -220,26 +216,25 @@ test("Chat prefetch browser", async ({
     documents.set("transcript:a", doc("a", 2));
     documents.set("transcript:b", doc("b", 3));
     await page.evaluate((workspace) => {
-      window.prefetchBrowser.jobs = [
-        window.prefetchBrowser.client.prefetchTranscript(workspace, "a"),
-        window.prefetchBrowser.client.prefetchTranscript(workspace, "b"),
+      window.jobs = [
+        window.client.prefetchTranscript(workspace, "a"),
+        window.client.prefetchTranscript(workspace, "b"),
       ];
     }, workspaceId);
     await until(() => running === 1, "One background transfer can run");
     assert.equal(streams.size, 0, "Background prefetch holds no live stream");
     assert.equal(
       await page.evaluate(
-        (workspace) =>
-          window.prefetchBrowser.client.prefetchTranscript(workspace, "c"),
+        (workspace) => window.client.prefetchTranscript(workspace, "c"),
         workspaceId,
       ),
       false,
     );
     await page.evaluate(async () => {
-      window.prefetchBrowser.stops.push(
-        window.prefetchBrowser.client.subscribeTranscriptProjection(
+      window.stops.push(
+        window.client.subscribeTranscriptProjection(
           "transcript:a",
-          (value) => window.prefetchBrowser.values.push(value),
+          (value) => window.prefetchValues.push(value),
           () => {},
         ),
       );
@@ -253,21 +248,24 @@ test("Chat prefetch browser", async ({
       () => streams.size === 1,
       "Foreground opens one transcript stream",
     );
-    assert.ok(releaseA);
-    releaseA();
-    assert.ok(releaseB);
-    releaseB();
-    assert.deepEqual(
-      await page.evaluate(() => Promise.all(window.prefetchBrowser.jobs)),
-      [true, false],
+    releaseA!();
+    releaseB!();
+    assert.deepEqual(await page.evaluate(() => Promise.all(window.jobs)), [
+      true,
+      false,
+    ]);
+    await page.waitForFunction(
+      () =>
+        (
+          window.prefetchValues as (Omit<
+            (typeof window.prefetchValues)[number],
+            "items"
+          > & {
+            items: Record<string, unknown>[];
+          })[]
+        ).at(-1)?.items[0].body === "revision 2",
     );
-    await page.waitForFunction(() => {
-      const item = window.prefetchBrowser.values.at(-1)?.items[0];
-      return item && "body" in item && item.body === "revision 2";
-    });
-    await page.evaluate(() =>
-      window.prefetchBrowser.stops.splice(0).forEach((stop) => stop()),
-    );
+    await page.evaluate(() => window.stops.splice(0).forEach((stop) => stop()));
     await until(
       () => streams.size === 0,
       "Foreground release also closes its shared socket",
@@ -278,7 +276,7 @@ test("Chat prefetch browser", async ({
     );
 
     assert.deepEqual(
-      await page.evaluate(() => window.prefetchBrowser.coldReads),
+      await page.evaluate(() => window.coldReads),
       [],
       "Foreground and background refresh never read unrelated transcripts",
     );
@@ -286,7 +284,7 @@ test("Chat prefetch browser", async ({
       await page.evaluate(
         async () =>
           (await indexedDB.databases()).filter((db) =>
-            db.name?.includes("rx-replication-meta"),
+            db.name!.includes("rx-replication-meta"),
           ).length,
       ),
       0,
@@ -302,8 +300,7 @@ test("Chat prefetch browser", async ({
     });
     assert.equal(
       await page.evaluate(
-        (workspace) =>
-          window.prefetchBrowser.client.prefetchTranscript(workspace, "a"),
+        (workspace) => window.client.prefetchTranscript(workspace, "a"),
         workspaceId,
       ),
       false,
@@ -320,8 +317,7 @@ test("Chat prefetch browser", async ({
     });
     assert.equal(
       await page.evaluate(
-        (workspace) =>
-          window.prefetchBrowser.client.prefetchTranscript(workspace, "a"),
+        (workspace) => window.client.prefetchTranscript(workspace, "a"),
         workspaceId,
       ),
       false,
@@ -340,10 +336,7 @@ test("Chat prefetch browser", async ({
     assert.equal(
       await page.evaluate(async () => {
         try {
-          await window.prefetchBrowser.client.prefetchTranscript(
-            "c".repeat(32),
-            "a",
-          );
+          await window.client.prefetchTranscript("c".repeat(32), "a");
           return false;
         } catch {
           return true;
@@ -359,9 +352,7 @@ test("Chat prefetch browser", async ({
     );
     assert.equal(
       await page.evaluate(
-        () =>
-          window.prefetchBrowser.cache.peekTranscript("c".repeat(32), "a") ===
-          undefined,
+        () => window.cache.peekTranscript("c".repeat(32), "a") === undefined,
       ),
       true,
     );
@@ -377,35 +368,31 @@ test("Chat prefetch browser", async ({
       }),
     );
     await page.evaluate((workspace) => {
-      window.prefetchBrowser.race =
-        window.prefetchBrowser.client.prefetchTranscript(workspace, "race");
+      window.race = window.client.prefetchTranscript(workspace, "race");
     }, workspaceId);
     await until(() => running === 1, "The old reply is held");
     documents.set("transcript:race", doc("race", 5));
     assert.equal(
       await second.evaluate(
-        (workspace) =>
-          window.prefetchBrowser.client.prefetchTranscript(workspace, "race"),
+        (workspace) => window.client.prefetchTranscript(workspace, "race"),
         workspaceId,
       ),
       true,
       "A second tab refreshes a chat independently of the leader",
     );
-    assert.ok(releaseOld);
-    releaseOld();
-    await page.evaluate(() => window.prefetchBrowser.race);
+    releaseOld!();
+    await page.evaluate(() => window.race);
     assert.equal(
       await page.evaluate(
-        (workspace) =>
-          window.prefetchBrowser.cache.peekTranscript(workspace, "race")?.seq,
+        (workspace) => window.cache.peekTranscript(workspace, "race")!.seq,
         workspaceId,
       ),
       5,
     );
     assert.equal(
       await second.evaluate(async () => {
-        const { db } = await window.prefetchBrowser.client.syncDatabase();
-        return (await db.projections.findOne("transcript:race").exec())?.seq;
+        const { db } = await window.client.syncDatabase();
+        return (await db.projections.findOne("transcript:race").exec())!.seq;
       }),
       5,
       "Persisted state rejects the late older reply",
@@ -421,10 +408,10 @@ test("Chat prefetch browser", async ({
       }),
     );
     await page.evaluate((workspace) => {
-      window.prefetchBrowser.filtered = window.prefetchBrowser.client
+      window.filtered = window.client
         .prefetchTranscript(workspace, "filtered")
         .then((result) => {
-          window.prefetchBrowser.filteredResult = result;
+          window.filteredResult = result;
           return result;
         });
     }, workspaceId);
@@ -434,101 +421,88 @@ test("Chat prefetch browser", async ({
     );
     assert.equal(running, 1, "The pre-filter reply is held");
     await page.evaluate(async () => {
-      const { db } = await window.prefetchBrowser.client.syncDatabase();
+      const { db } = await window.client.syncDatabase();
       const storage = db.projections.storageInstance;
       const original = storage.findDocumentsById.bind(storage);
       let held = false;
-      window.prefetchBrowser.filterRead = false;
+      window.filterRead = false;
       storage.findDocumentsById = async (...args) => {
         const result = await original(...args);
         if (!held && args[0].includes("transcript:filtered")) {
           held = true;
-          window.prefetchBrowser.filterRead = true;
+          window.filterRead = true;
           await new Promise<void>((resolve) => {
-            window.prefetchBrowser.releaseFilter = resolve;
+            window.releaseFilter = resolve;
           });
           storage.findDocumentsById = original;
         }
         return result;
       };
     });
-    assert.ok(releaseFiltered);
-    releaseFiltered();
-    await page.waitForFunction(
-      () => window.prefetchBrowser.filterRead,
-      undefined,
-      { timeout: 5000 },
-    );
+    releaseFiltered!();
+    await page.waitForFunction(() => window.filterRead, undefined, {
+      timeout: 5000,
+    });
     documents.set("transcript:filtered", doc("filtered", 9));
     await second.evaluate(
-      (workspace) =>
-        window.prefetchBrowser.client.prefetchTranscript(workspace, "filtered"),
+      (workspace) => window.client.prefetchTranscript(workspace, "filtered"),
       workspaceId,
     );
     await second.evaluate(async () => {
-      window.prefetchBrowser.filteredWrites = [];
-      const { db } = await window.prefetchBrowser.client.syncDatabase();
-      window.prefetchBrowser.stopFilteredWrites = db.projections.$.subscribe(
-        (event) => {
-          if (event.documentData.id === "transcript:filtered")
-            window.prefetchBrowser.filteredWrites.push(event.documentData.seq);
-        },
-      );
+      window.filteredWrites = [];
+      const { db } = await window.client.syncDatabase();
+      window.stopFilteredWrites = db.projections.$.subscribe((event) => {
+        if (event.documentData.id === "transcript:filtered")
+          window.filteredWrites.push(event.documentData.seq);
+      });
     });
-    await page.evaluate(() => window.prefetchBrowser.releaseFilter());
-    await page.evaluate(() => window.prefetchBrowser.filtered);
+    await page.evaluate(() => window.releaseFilter());
+    await page.evaluate(() => window.filtered);
     assert.equal(
       await second.evaluate(async () => {
-        const { db } = await window.prefetchBrowser.client.syncDatabase();
-        return (await db.projections.findOne("transcript:filtered").exec())
-          ?.seq;
+        const { db } = await window.client.syncDatabase();
+        return (await db.projections.findOne("transcript:filtered").exec())!
+          .seq;
       }),
       9,
       "A newer commit after the pull filter still cannot roll back",
     );
 
     assert.equal(
-      await second.evaluate(() =>
-        window.prefetchBrowser.filteredWrites.includes(8),
-      ),
+      await second.evaluate(() => window.filteredWrites.includes(8)),
       false,
       "The late filtered reply never commits even a temporary rollback",
     );
-    await second.evaluate(() => {
-      const stop = window.prefetchBrowser.stopFilteredWrites;
-      if (!stop) throw new Error("Missing filtered write observer");
-      stop.unsubscribe();
-    });
+    await second.evaluate(() => window.stopFilteredWrites!.unsubscribe());
 
     // A tombstone can appear after an absent read but before the stale insert.
     await page.evaluate(async () => {
-      const { db } = await window.prefetchBrowser.client.syncDatabase();
+      const { db } = await window.client.syncDatabase();
       const storage = db.projections.storageInstance;
       const original = storage.findDocumentsById.bind(storage);
-      window.prefetchBrowser.absentRead = false;
+      window.absentRead = false;
       storage.findDocumentsById = async (...args) => {
         const rows = await original(...args);
         if (args[0].includes("transcript:insert-race")) {
           storage.findDocumentsById = original;
-          window.prefetchBrowser.absentRead = rows.length === 0;
+          window.absentRead = rows.length === 0;
           await new Promise<void>((resolve) => {
-            window.prefetchBrowser.releaseAbsent = resolve;
+            window.releaseAbsent = resolve;
           });
         }
         return rows;
       };
-      window.prefetchBrowser.staleInsert =
-        window.prefetchBrowser.client.persistProjection(db.projections, {
-          id: "transcript:insert-race",
-          seq: 30,
-          payload: "{}",
-          _deleted: false,
-        });
+      window.staleInsert = window.client.persistProjection(db.projections, {
+        id: "transcript:insert-race",
+        seq: 30,
+        payload: "{}",
+        _deleted: false,
+      });
     });
-    await page.waitForFunction(() => window.prefetchBrowser.absentRead);
+    await page.waitForFunction(() => window.absentRead);
     await second.evaluate(async () => {
-      const { db } = await window.prefetchBrowser.client.syncDatabase();
-      await window.prefetchBrowser.client.persistProjection(db.projections, {
+      const { db } = await window.client.syncDatabase();
+      await window.client.persistProjection(db.projections, {
         id: "transcript:insert-race",
         seq: 31,
         payload: "{}",
@@ -536,18 +510,17 @@ test("Chat prefetch browser", async ({
       });
     });
     await page.evaluate(async () => {
-      window.prefetchBrowser.releaseAbsent();
-      await window.prefetchBrowser.staleInsert;
+      window.releaseAbsent();
+      await window.staleInsert;
     });
     assert.deepEqual(
       await second.evaluate(async () => {
-        const { db } = await window.prefetchBrowser.client.syncDatabase();
+        const { db } = await window.client.syncDatabase();
         const [row] = await db.projections.storageInstance.findDocumentsById(
           ["transcript:insert-race"],
           true,
         );
-        if (!row) throw new Error("Missing insert race projection");
-        return { seq: row.seq, deleted: row._deleted };
+        return { seq: row!.seq, deleted: row!._deleted };
       }),
       { seq: 31, deleted: true },
       "A stale insert cannot auto-revive a newer tombstone",
@@ -556,36 +529,36 @@ test("Chat prefetch browser", async ({
     documents.set("transcript:active", doc("active", 10));
     assert.equal(
       await second.evaluate(
-        (workspace) =>
-          window.prefetchBrowser.client.prefetchTranscript(workspace, "active"),
+        (workspace) => window.client.prefetchTranscript(workspace, "active"),
         workspaceId,
       ),
       true,
       "The active transcript is persisted before subscribing",
     );
     await second.evaluate(async () => {
-      window.prefetchBrowser.activeValues = [];
-      window.prefetchBrowser.stopActive =
-        window.prefetchBrowser.client.subscribeTranscriptProjection(
-          "transcript:active",
-          (value) => window.prefetchBrowser.activeValues.push(value),
-          () => {},
-        );
+      window.activeValues = [];
+      window.stopActive = window.client.subscribeTranscriptProjection(
+        "transcript:active",
+        (value) => window.activeValues.push(value),
+        () => {},
+      );
     });
-    await second.waitForFunction(() => {
-      const item = window.prefetchBrowser.activeValues.at(-1)?.items[0];
-      return item && "body" in item && item.body === "revision 10";
-    });
+    await second.waitForFunction(
+      () =>
+        (
+          window.activeValues as (Omit<
+            (typeof window.activeValues)[number],
+            "items"
+          > & { items: Record<string, unknown>[] })[]
+        ).at(-1)?.items[0].body === "revision 10",
+    );
     documents.set("transcript:active", doc("active", 11, true));
     await page.evaluate(
-      (workspace) =>
-        window.prefetchBrowser.client.prefetchTranscript(workspace, "active"),
+      (workspace) => window.client.prefetchTranscript(workspace, "active"),
       workspaceId,
     );
-    await second.waitForFunction(
-      () => window.prefetchBrowser.activeValues.at(-1) === null,
-    );
-    await second.evaluate(() => window.prefetchBrowser.stopActive());
+    await second.waitForFunction(() => window.activeValues.at(-1) === null);
+    await second.evaluate(() => window.stopActive());
 
     // Preserve the deleted sequence too, including through a full page reload.
     let releaseBeforeDelete: (() => void) | undefined;
@@ -597,23 +570,19 @@ test("Chat prefetch browser", async ({
       }),
     );
     await page.evaluate((workspace) => {
-      window.prefetchBrowser.race =
-        window.prefetchBrowser.client.prefetchTranscript(workspace, "race");
+      window.race = window.client.prefetchTranscript(workspace, "race");
     }, workspaceId);
     await until(() => running === 1, "The pre-delete reply is held");
     documents.set("transcript:race", doc("race", 7, true));
     await second.evaluate(
-      (workspace) =>
-        window.prefetchBrowser.client.prefetchTranscript(workspace, "race"),
+      (workspace) => window.client.prefetchTranscript(workspace, "race"),
       workspaceId,
     );
-    assert.ok(releaseBeforeDelete);
-    releaseBeforeDelete();
-    await page.evaluate(() => window.prefetchBrowser.race);
+    releaseBeforeDelete!();
+    await page.evaluate(() => window.race);
     assert.deepEqual(
       await page.evaluate(
-        (workspace) =>
-          window.prefetchBrowser.cache.peekTranscript(workspace, "race"),
+        (workspace) => window.cache.peekTranscript(workspace, "race"),
         workspaceId,
       ),
       { payload: null, seq: 7 },
@@ -630,13 +599,10 @@ test("Chat prefetch browser", async ({
           stop();
           reject(new Error("Durable transcript hydration did not complete."));
         }, 5000);
-        stop = window.prefetchBrowser.client.subscribeTranscriptProjection(
+        stop = window.client.subscribeTranscriptProjection(
           "transcript:race",
           () => {
-            const hydrated = window.prefetchBrowser.cache.peekTranscript(
-              workspace,
-              "race",
-            );
+            const hydrated = window.cache.peekTranscript(workspace, "race");
             if (hydrated?.seq !== 7) return;
             clearTimeout(timeout);
             stop();
@@ -648,7 +614,7 @@ test("Chat prefetch browser", async ({
             reject(error);
           },
         );
-        window.prefetchBrowser.stop = stop;
+        window.stop = stop;
       });
     }, workspaceId);
     assert.deepEqual(
@@ -658,22 +624,18 @@ test("Chat prefetch browser", async ({
     );
     assert.deepEqual(
       await page.evaluate(
-        (workspace) =>
-          window.prefetchBrowser.cache.peekTranscript(workspace, "race"),
+        (workspace) => window.cache.peekTranscript(workspace, "race"),
         workspaceId,
       ),
       { payload: null, seq: 7 },
       "Reload preserves the tombstone while offline",
     );
-    await page.evaluate(() => window.prefetchBrowser.stop());
+    await page.evaluate(() => window.stop());
 
     assert.equal(
       await second.evaluate(async (workspace) => {
         try {
-          await window.prefetchBrowser.client.prefetchTranscript(
-            workspace,
-            "failure",
-          );
+          await window.client.prefetchTranscript(workspace, "failure");
           return false;
         } catch {
           return true;
@@ -687,7 +649,7 @@ test("Chat prefetch browser", async ({
       "A failed background refresh releases the socket",
     );
     await second.evaluate(async () => {
-      const { db } = await window.prefetchBrowser.client.syncDatabase();
+      const { db } = await window.client.syncDatabase();
       const storage = db.projections.storageInstance;
       const original = storage.findDocumentsById.bind(storage);
       storage.findDocumentsById = async (...args) => {
@@ -701,10 +663,7 @@ test("Chat prefetch browser", async ({
     assert.equal(
       await second.evaluate(async (workspace) => {
         try {
-          await window.prefetchBrowser.client.prefetchTranscript(
-            workspace,
-            "storage-failure",
-          );
+          await window.client.prefetchTranscript(workspace, "storage-failure");
           return false;
         } catch {
           return true;
@@ -719,8 +678,7 @@ test("Chat prefetch browser", async ({
     );
     assert.equal(
       await second.evaluate(
-        (workspace) =>
-          window.prefetchBrowser.client.prefetchTranscript(workspace, "a"),
+        (workspace) => window.client.prefetchTranscript(workspace, "a"),
         workspaceId,
       ),
       true,
@@ -730,12 +688,11 @@ test("Chat prefetch browser", async ({
     // The typed resource coordinator carries transcript invalidations through
     // the live resource stream.
     await second.evaluate(() => {
-      window.prefetchBrowser.revisionHints = [];
-      window.prefetchBrowser.stopHints =
-        window.prefetchBrowser.client.watchSyncInvalidations(
-          (version) => window.prefetchBrowser.revisionHints.push(version),
-          "transcript:a",
-        );
+      window.revisionHints = [];
+      window.stopHints = window.client.watchSyncInvalidations(
+        (version) => window.revisionHints.push(version),
+        "transcript:a",
+      );
     });
     await until(
       () => streams.size === 1,
@@ -757,22 +714,18 @@ test("Chat prefetch browser", async ({
     };
     await hint(workspaceId, "b", 7);
     assert.deepEqual(
-      await second.evaluate(() => window.prefetchBrowser.revisionHints),
+      await second.evaluate(() => window.revisionHints),
       [],
       "Unwatched transcript resources are ignored",
     );
     await hint(workspaceId, "a", 8);
-    await second.waitForFunction(
-      () => window.prefetchBrowser.revisionHints.length === 1,
-    );
+    await second.waitForFunction(() => window.revisionHints.length === 1);
     assert.equal(
-      await second.evaluate(
-        () => window.prefetchBrowser.revisionHints.at(-1)?.revision,
-      ),
+      await second.evaluate(() => window.revisionHints.at(-1)?.revision),
       8,
       "A same-workspace watched transcript invalidation is delivered",
     );
-    await second.evaluate(() => window.prefetchBrowser.stopHints());
+    await second.evaluate(() => window.stopHints());
     await until(
       () => streams.size === 0,
       "Invalidation watcher disposal releases its shared stream",
@@ -781,7 +734,7 @@ test("Chat prefetch browser", async ({
     // The memory view is bounded; evicted chats remain in IndexedDB.
     await second.evaluate((workspace) => {
       for (let i = 0; i < 64; i++)
-        window.prefetchBrowser.cache.cacheTranscriptValue(
+        window.cache.cacheTranscriptValue(
           workspace,
           `memory-${i}`,
           { items: [] },
@@ -790,8 +743,7 @@ test("Chat prefetch browser", async ({
     }, workspaceId);
     assert.equal(
       await second.evaluate(
-        (workspace) =>
-          !!window.prefetchBrowser.cache.peekTranscript(workspace, "memory-0"),
+        (workspace) => !!window.cache.peekTranscript(workspace, "memory-0"),
         workspaceId,
       ),
       true,
@@ -799,7 +751,7 @@ test("Chat prefetch browser", async ({
     );
     await second.evaluate((workspace) => {
       for (let i = 64; i < 320; i++)
-        window.prefetchBrowser.cache.cacheTranscriptValue(
+        window.cache.cacheTranscriptValue(
           workspace,
           `memory-${i}`,
           { items: [] },
@@ -809,16 +761,15 @@ test("Chat prefetch browser", async ({
     assert.equal(
       await second.evaluate(
         (workspace) =>
-          window.prefetchBrowser.cache.peekTranscript(workspace, "memory-0") ===
-          undefined,
+          window.cache.peekTranscript(workspace, "memory-0") === undefined,
         workspaceId,
       ),
       true,
     );
     assert.equal(
       await second.evaluate(async () => {
-        const { db } = await window.prefetchBrowser.client.syncDatabase();
-        return (await db.projections.findOne("transcript:a").exec())?.seq;
+        const { db } = await window.client.syncDatabase();
+        return (await db.projections.findOne("transcript:a").exec())!.seq;
       }),
       2,
       "Memory eviction retains persisted chat content",

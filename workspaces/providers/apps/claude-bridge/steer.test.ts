@@ -1,7 +1,10 @@
-import { inputText } from "./sdk-fixtures.ts";
-import type { SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
+import type { StudioInputMessage } from "./input-messages.ts";
+type BridgeHarness = BaseBridgeHarness & { resultSequence?: number };
 import type { BridgeInput } from "./bridge-protocol.ts";
-import type { BridgeHarness, BridgeNoteFor } from "./testing/bridge-harness.ts";
+import type {
+  BridgeHarness as BaseBridgeHarness,
+  BridgeNoteFor,
+} from "./testing/bridge-harness.ts";
 import {
   startBridge as startScriptedBridge,
   HANG_GUARD_MS,
@@ -98,12 +101,11 @@ const steer = (
     input: text(value),
   });
 
-const resultSequences = new WeakMap<BridgeHarness, number>();
 async function end(bridge: BridgeHarness, fail = false) {
   if (fail) await fs.writeFile(path.join(bridge.root, ".fail"), "");
-  const sequence = (resultSequences.get(bridge) ?? 0) + 1;
-  resultSequences.set(bridge, sequence);
-  const token = String(sequence);
+  const token = String(
+    (bridge.resultSequence = (bridge.resultSequence ?? 0) + 1),
+  );
   const ready = bridge.note(
     (n): n is BridgeNoteFor<"fixture/result-ready"> =>
       n.method === "fixture/result-ready" && n.params.token === token,
@@ -126,8 +128,10 @@ test.concurrent("an echoed steer is acknowledged once inside its running turn", 
   const turn = await running(bridge, "ack");
   assert.deepEqual(await steer(bridge, turn, "event-1"), { turnId: turn });
   const delivered = await bridge.note(
-    "item/completed",
-    (n) => ack(bridge, "event-1") === n,
+    (
+      n,
+    ): n is import("./testing/bridge-harness.ts").BridgeNoteFor<"item/completed"> =>
+      n.method === "item/completed" && ack(bridge, "event-1") === n,
   );
   assert.equal(delivered.params.turnId, turn);
   assert.equal(delivered.params.item.id, "event-1");
@@ -203,8 +207,7 @@ const read = (bridge: BridgeHarness, value: string) =>
   bridge.note(
     (n): n is BridgeNoteFor<"fixture/input"> =>
       n.method === "fixture/input" &&
-      "text" in n.params &&
-      n.params.text === value,
+      (n.params as { text: string }).text === value,
   );
 
 test.concurrent("a steer read without an echo is neither acknowledged nor reported unapplied", async ({
@@ -252,7 +255,7 @@ async function sdkInputs(bridge: BridgeHarness) {
   return (await fs.readFile(path.join(bridge.root, ".sdk-inputs"), "utf8"))
     .trim()
     .split("\n")
-    .map((line): SDKUserMessage => JSON.parse(line));
+    .map((line): StudioInputMessage => JSON.parse(line));
 }
 
 test.concurrent("input origin survives turn/start: mixed", async ({
@@ -289,10 +292,7 @@ test.concurrent("input origin survives turn/start: mixed", async ({
   const messages = await sdkInputs(bridge);
   assert.equal(messages.length, input.length);
   assert.equal(
-    bridge.notes.some(
-      (n): n is BridgeNoteFor<"turn/completed"> =>
-        n.method === "turn/completed",
-    ),
+    bridge.notes.some((n) => n.method === "turn/completed"),
     false,
   );
   assert.deepEqual(
@@ -300,8 +300,7 @@ test.concurrent("input origin survives turn/start: mixed", async ({
       content: message.message.content,
       origin: message.origin,
       isSynthetic: message.isSynthetic,
-      text_not_typed:
-        "text_not_typed" in message ? message.text_not_typed : undefined,
+      text_not_typed: message.text_not_typed,
       shouldQuery: message.shouldQuery,
     })),
     [
@@ -368,10 +367,7 @@ test.concurrent("input origin survives turn/steer: studio_event,human,studio_eve
   });
   await bridge.note((n) => ack(bridge, "origin-steer") === n);
   assert.equal(
-    bridge.notes.some(
-      (n): n is BridgeNoteFor<"turn/completed"> =>
-        n.method === "turn/completed",
-    ),
+    bridge.notes.some((n) => n.method === "turn/completed"),
     false,
   );
   const messages = (await sdkInputs(bridge)).slice(1);
@@ -380,8 +376,7 @@ test.concurrent("input origin survives turn/steer: studio_event,human,studio_eve
     messages.map((message) => ({
       origin: message.origin,
       isSynthetic: message.isSynthetic,
-      text_not_typed:
-        "text_not_typed" in message ? message.text_not_typed : undefined,
+      text_not_typed: message.text_not_typed,
     })),
     [
       {
@@ -424,8 +419,14 @@ test.concurrent("a failed split prefix closes its query without submitting the r
   assert.equal((await completed(bridge, turn)).params.turn.status, "failed");
   const messages = await sdkInputs(bridge);
   assert.equal(messages.length, 1);
-  assert.ok(messages[0]);
-  assert.equal(inputText(messages[0]), "prefix-fail");
+
+  assert.equal(
+    (
+      messages[0].message
+        .content as import("@modelcontextprotocol/sdk/types.js").TextContent[]
+    )[0].text,
+    "prefix-fail",
+  );
 });
 
 const nativeQueued = (bridge: BridgeHarness) =>
@@ -511,18 +512,20 @@ test.concurrent("a background task error preserves the successful queue cancella
   await assert.rejects(
     bridge.call("turn/interrupt", { threadId: bridge.thread, turnId: turn }),
     (error) => {
-      assert.ok(
-        error instanceof Error &&
-          "data" in error &&
-          error.data &&
-          typeof error.data === "object" &&
-          "interruptReceipt" in error.data,
+      assert.equal((error as Error).message, "Task stop failed");
+      assert.deepEqual(
+        (
+          error as Error & {
+            data: {
+              interruptReceipt: import("./bridge-protocol.ts").BridgeResult<"turn/interrupt">;
+            };
+          }
+        ).data.interruptReceipt,
+        {
+          cancelled: ["studio:cancel-with-task-error"],
+          still_queued: [],
+        },
       );
-      assert.equal(error.message, "Task stop failed");
-      assert.deepEqual(error.data.interruptReceipt, {
-        cancelled: ["studio:cancel-with-task-error"],
-        still_queued: [],
-      });
       return true;
     },
   );
@@ -559,7 +562,7 @@ for (const scenario of [
     await nativeQueued(bridge);
     const beforeStop = (await sdkInputs(bridge)).slice(1);
     assert.equal(beforeStop.length, scenario === "native-split-all" ? 3 : 1);
-    assert.equal(beforeStop[0]?.shouldQuery, false);
+    assert.equal(beforeStop[0].shouldQuery, false);
     const receipt = await bridge.call("turn/interrupt", {
       threadId: bridge.thread,
       turnId: turn,
@@ -588,7 +591,13 @@ for (const scenario of [
     assert.equal(existsSync(path.join(bridge.root, ".survived")), survivor);
     const afterStop = (await sdkInputs(bridge)).slice(1 + beforeStop.length);
     assert.deepEqual(
-      afterStop.map((message) => inputText(message)),
+      afterStop.map(
+        (message) =>
+          (
+            message.message
+              .content as import("@modelcontextprotocol/sdk/types.js").TextContent[]
+          )[0].text,
+      ),
       ["probe"],
     );
   });
@@ -611,8 +620,7 @@ const turnItems = async (bridge: BridgeHarness, turn: string) =>
       threadId: bridge.thread,
       includeTurns: true,
     })
-  ).thread.turns.find((t) => t.id === turn)?.items ??
-  assert.fail("Missing turn items");
+  ).thread.turns.find((t) => t.id === turn)!.items;
 
 test.concurrent("a successful result without a steer echo completes without resending unknown input", async ({
   startBridge,
@@ -626,8 +634,8 @@ test.concurrent("a successful result without a steer echo completes without rese
   assert.equal(done.params.turn.status, "completed");
   assert.equal(done.params.turn.unappliedSteers, undefined);
   assert.equal(
-    (await turnItems(bridge, turn)).find((i) => i.id === "missing-echo")
-      ?.deliveryStatus,
+    (await turnItems(bridge, turn)).find((i) => i.id === "missing-echo")!
+      .deliveryStatus,
     "submitted",
   );
   assert.deepEqual(
@@ -675,9 +683,7 @@ test.concurrent("an echo inside the grace keeps its continuation in the same tur
   await release(bridge, ".continued");
   assert.equal((await completed(bridge, turn)).params.turn.status, "completed");
   assert.equal(
-    bridge.notes.filter(
-      (n): n is BridgeNoteFor<"turn/started"> => n.method === "turn/started",
-    ).length,
+    bridge.notes.filter((n) => n.method === "turn/started").length,
     1,
   );
 });
@@ -692,8 +698,8 @@ test.concurrent("a successful result withdraws unread steer once for original-id
   const done = await completed(bridge, turn);
   assert.deepEqual(done.params.turn.unappliedSteers, ["unread-steer"]);
   assert.equal(
-    (await turnItems(bridge, turn)).find((i) => i.id === "unread-steer")
-      ?.deliveryStatus,
+    (await turnItems(bridge, turn)).find((i) => i.id === "unread-steer")!
+      .deliveryStatus,
     "not_applied",
   );
   await release(bridge, ".release");
@@ -710,9 +716,9 @@ test.concurrent("a successful result withdraws unread steer once for original-id
   assert.deepEqual(await inputs(bridge), ["unread-result", "steer text"]);
   assert.equal(
     bridge.notes.filter(
-      (n): n is BridgeNoteFor<"turn/completed"> =>
+      (n) =>
         n.method === "turn/completed" &&
-        n.params.turn.unappliedSteers?.includes("unread-steer") === true,
+        n.params.turn.unappliedSteers?.includes("unread-steer"),
     ).length,
     1,
   );
@@ -762,7 +768,7 @@ test.concurrent("Stop during a blocked final save cannot disable the next turn's
   const done = await completed(bridge, next);
   assert.equal(done.params.turn.status, "interrupted");
   assert.match(
-    done.params.turn.error?.message ?? "",
+    done.params.turn.error!.message,
     /did not end the turn after Stop/,
   );
 });
@@ -785,8 +791,8 @@ test.concurrent("grace closes an unconfirmed CLI before a new start can inherit 
   assert.ok(existsSync(path.join(bridge.root, ".closed")));
   assert.deepEqual((await bridge.call("thread/loaded/list", {})).data, []);
   assert.equal(
-    (await turnItems(bridge, old)).find((i) => i.id === "closed-unknown")
-      ?.deliveryStatus,
+    (await turnItems(bridge, old)).find((i) => i.id === "closed-unknown")!
+      .deliveryStatus,
     "submitted",
   );
   const next = await running(bridge, "probe");
@@ -799,8 +805,7 @@ test.concurrent("grace closes an unconfirmed CLI before a new start can inherit 
   });
   assert.equal(
     bridge.notes.some(
-      (n): n is BridgeNoteFor<"turn/completed"> =>
-        n.method === "turn/completed" && n.params.turn.id === next,
+      (n) => n.method === "turn/completed" && n.params.turn.id === next,
     ),
     false,
   );
@@ -850,11 +855,11 @@ for (const mode of ["empty", "partial", "all"]) {
       );
       const [file] = await fs.readdir(directory);
       await fs.appendFile(
-        path.join(directory, file ?? assert.fail("Missing history file")),
+        path.join(directory, file),
         JSON.stringify({
           type: "user",
-          uuid: item?.nativeId,
-          parentUuid: item?.nativeIds?.[0],
+          uuid: item!.nativeId,
+          parentUuid: item!.nativeIds?.[0],
           sessionId: bridge.thread,
           cwd: bridge.root,
           isSidechain: false,
@@ -869,7 +874,7 @@ for (const mode of ["empty", "partial", "all"]) {
     assert.deepEqual(
       await bridge.call("claude/settings", {
         threadId: bridge.thread,
-        // @ts-expect-error Deliberately send legacy invalid settings to verify unchanged wire passthrough.
+        // @ts-expect-error Deliberate legacy opaque settings wire fixture.
         settings,
       }),
       { settings },
@@ -879,7 +884,7 @@ for (const mode of ["empty", "partial", "all"]) {
       (i) => i.id === "split-close",
     );
     assert.equal(
-      item?.deliveryStatus,
+      item!.deliveryStatus,
       mode === "empty"
         ? "not_applied"
         : mode === "all"
@@ -892,9 +897,9 @@ for (const mode of ["empty", "partial", "all"]) {
     );
     assert.equal(
       bridge.notes.filter(
-        (n): n is BridgeNoteFor<"turn/completed"> =>
+        (n) =>
           n.method === "turn/completed" &&
-          n.params.turn.unappliedSteers?.includes("split-close") === true,
+          n.params.turn.unappliedSteers?.includes("split-close"),
       ).length,
       mode === "empty" ? 1 : 0,
     );
@@ -965,8 +970,8 @@ test.concurrent("backpressured output waits for the prior turn's final save", as
       n.params.item.text === "after final save",
   );
   assert.notEqual(answer.params.turnId, old);
-  assert.ok(answer.params.turnId);
-  await completed(bridge, answer.params.turnId);
+
+  await completed(bridge, answer.params.turnId!);
 });
 
 test.concurrent("a throwing CLI close still completes the turn and preserves unknown input", async ({
@@ -982,20 +987,17 @@ test.concurrent("a throwing CLI close still completes the turn and preserves unk
   const done = await completed(bridge, turn);
   assert.ok(existsSync(path.join(bridge.root, ".close-thrown")));
   assert.equal(done.params.turn.status, "failed");
-  assert.match(done.params.turn.error?.message ?? "", /injected close failure/);
+  assert.match(done.params.turn.error!.message, /injected close failure/);
   assert.equal(done.params.turn.unappliedSteers, undefined);
   assert.equal(
-    (await turnItems(bridge, turn)).find((i) => i.id === "close-failure")
-      ?.deliveryStatus,
+    (await turnItems(bridge, turn)).find((i) => i.id === "close-failure")!
+      .deliveryStatus,
     "submitted",
   );
   assert.deepEqual((await bridge.call("thread/loaded/list", {})).data, []);
   assert.deepEqual(await inputs(bridge), ["success-late", "steer text"]);
   assert.equal(
-    bridge.notes.filter(
-      (n): n is BridgeNoteFor<"turn/completed"> =>
-        n.method === "turn/completed",
-    ).length,
+    bridge.notes.filter((n) => n.method === "turn/completed").length,
     1,
   );
 });
@@ -1118,7 +1120,7 @@ test.concurrent("an old withdrawn clear receipt cannot retire its consumed redel
   await redelivery;
   await bridge.restart();
   const state = await bridge.call("claude/state", { threadId: bridge.thread });
-  assert.equal(state.turns.at(-1)?.status, "uncertain");
+  assert.equal(state.turns.at(-1)!.status, "uncertain");
   await assert.rejects(
     bridge.call("turn/start", {
       threadId: bridge.thread,
@@ -1156,8 +1158,7 @@ test("a rejected initial clear save permits its exact logical retry", async ({
   await bridge.note(
     (n): n is BridgeNoteFor<"fixture/input"> =>
       n.method === "fixture/input" &&
-      "text" in n.params &&
-      n.params.text === "/clear",
+      (n.params as { text: string }).text === "/clear",
   );
   assert.equal(retried.turn.status, "inProgress");
 });

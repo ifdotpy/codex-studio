@@ -1,7 +1,6 @@
 import type { ServerResponse } from "node:http";
 import type { Route } from "@playwright/test";
 import type { JsonInput } from "../../src/types.ts";
-import { required } from "../teams/helpers.ts";
 import { createServer } from "vite";
 import type {} from "./structured-operational-errors-ui.fixture.tsx";
 import {
@@ -39,10 +38,9 @@ test("Structured operational errors ui", async ({
           server.middlewares.use("/api/sync/stream", (request, response) => {
             const resources: import("../playwright.ts").ResourceRef[] =
               JSON.parse(
-                new URL(
-                  request.url || "/",
-                  "http://127.0.0.1",
-                ).searchParams.get("resources") || "[]",
+                new URL(request.url!, "http://127.0.0.1").searchParams.get(
+                  "resources",
+                ) || "[]",
               );
             const event = {
               protocol: 4,
@@ -163,10 +161,8 @@ test("Structured operational errors ui", async ({
         json: { tasks: [], monitors: [], requests: [], id: "tool" },
       });
     });
-    await page.goto(required(server.resolvedUrls?.local[0]) + "check");
-    await page.waitForFunction(
-      () => !!window.structuredOperationalErrorsUiRenderCase,
-    );
+    await page.goto(server.resolvedUrls!.local[0]! + "check");
+    await page.waitForFunction(() => !!window.renderCase);
     const value = {
       error: "Structured operation failed",
       code: "access_failed",
@@ -182,8 +178,7 @@ test("Structured operational errors ui", async ({
       "dictation",
     ]) {
       await page.evaluate(
-        ({ which, value }) =>
-          window.structuredOperationalErrorsUiRenderCase(which, value),
+        ({ which, value }) => window.renderCase(which, value),
         {
           which,
           value,
@@ -207,9 +202,7 @@ test("Structured operational errors ui", async ({
         console.error(
           which,
           await page.locator("body").innerText(),
-          await page.evaluate(
-            () => window.structuredOperationalErrorsUiCrashes,
-          ),
+          await page.evaluate(() => window.crashes),
         );
         throw error;
       }
@@ -222,7 +215,7 @@ test("Structured operational errors ui", async ({
         assert.match(await page.locator("body").innerText(), /"attempt": 7/);
       }
       assert.deepEqual(
-        await page.evaluate(() => window.structuredOperationalErrorsUiCrashes),
+        await page.evaluate(() => window.crashes),
         [],
         which + " retains the component",
       );
@@ -240,44 +233,43 @@ test("Structured operational errors ui", async ({
       );
     }
     await page.evaluate((value) => {
-      window.structuredOperationalErrorsUiTranscriptionCalls = 0;
-      if (!window.codexDesktop)
-        throw new Error("Missing fixture desktop bridge");
-      window.codexDesktop.prepareTranscription = async () => {
+      window.transcriptionCalls = 0;
+
+      window.codexDesktop!.prepareTranscription = async () => {
         throw value;
       };
-      window.codexDesktop.transcribeAudio = async () => {
-        window.structuredOperationalErrorsUiTranscriptionCalls++;
-        return { text: "Must not run", provider: "fixture", onDevice: false };
+      window.codexDesktop!.transcribeAudio = async () => {
+        window.transcriptionCalls++;
+        // Base fixture intentionally omits provider metadata that this path never consumes.
+        return { text: "Must not run" } as Awaited<
+          ReturnType<
+            NonNullable<
+              NonNullable<typeof window.codexDesktop>["transcribeAudio"]
+            >
+          >
+        >;
       };
     }, value);
     await page
       .getByRole("button", { name: "Retry transcription", exact: true })
       .click();
     const deadline = Date.now() + 5000;
-    let persisted: Awaited<
+    let persisted!: Awaited<
       ReturnType<typeof import("../../src/dictation/storage.ts").listRecordings>
-    > = [];
+    >;
     while (Date.now() < deadline) {
-      persisted = await page.evaluate(() =>
-        window.structuredOperationalErrorsUiReadRecordings(),
-      );
+      persisted = await page.evaluate(() => window.readRecordings());
       if (
         typeof persisted[0]?.error === "string" &&
-        persisted[0]?.error?.includes("E_FIXTURE")
+        persisted[0].error.includes("E_FIXTURE")
       )
         break;
       await new Promise((resolve) => setTimeout(resolve, 20));
     }
-    assert.deepEqual(JSON.parse(required(required(persisted[0]).error)), value);
-    assert.equal(required(persisted[0]).id, "recording");
-    assert.equal(required(persisted[0]).samples, 4);
-    assert.equal(
-      await page.evaluate(
-        () => window.structuredOperationalErrorsUiTranscriptionCalls,
-      ),
-      0,
-    );
+    assert.deepEqual(JSON.parse(persisted[0]!.error!), value);
+    assert.equal(persisted[0]!.id, "recording");
+    assert.equal(persisted[0]!.samples, 4);
+    assert.equal(await page.evaluate(() => window.transcriptionCalls), 0);
     await page
       .getByText("Structured operation failed", { exact: true })
       .first()
@@ -288,8 +280,7 @@ test("Structured operational errors ui", async ({
       '"quoted diagnostic"',
     ]) {
       await page.evaluate(
-        (value) =>
-          window.structuredOperationalErrorsUiRenderCase("dictation", value),
+        (value) => window.renderCase("dictation", value),
         legacy,
       );
       await page
@@ -297,10 +288,7 @@ test("Structured operational errors ui", async ({
         .click();
       await page.getByText(legacy, { exact: true }).first().waitFor();
     }
-    assert.deepEqual(
-      await page.evaluate(() => window.structuredOperationalErrorsUiCrashes),
-      [],
-    );
+    assert.deepEqual(await page.evaluate(() => window.crashes), []);
     assert.deepEqual(errors, []);
     console.log(
       "PASS: structured request/message/retry/safety/dictation diagnostics preserve render and manual actions",
