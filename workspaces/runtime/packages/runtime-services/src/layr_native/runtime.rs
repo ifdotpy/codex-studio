@@ -56,6 +56,7 @@ pub fn run(state_dir: &Path, cwd: &Path, args: &[&str]) -> Result<String> {
             .map(|(name, value)| format!("{name}={}", value.as_str().unwrap_or_default()))
             .collect();
     argv.extend(variables.iter().map(String::as_str));
+    argv.extend(["GIT_NO_LAZY_FETCH=1", "GIT_OPTIONAL_LOCKS=0"]);
     argv.extend([
         binary
             .to_str()
@@ -106,11 +107,20 @@ pub(super) fn lock(state_dir: &Path, name: &str) -> Result<File> {
     Ok(file)
 }
 
-/// Pending receipts survive process exit. A retry returns the same result or stays held.
 pub fn operation(
     state_dir: &Path,
     id: &str,
     intent: &Value,
+    effect: impl FnOnce() -> Result<Value>,
+) -> Result<Value> {
+    operation_with_preflight(state_dir, id, intent, || Ok(()), effect)
+}
+
+pub(super) fn operation_with_preflight(
+    state_dir: &Path,
+    id: &str,
+    intent: &Value,
+    preflight: impl FnOnce() -> Result<()>,
     effect: impl FnOnce() -> Result<Value>,
 ) -> Result<Value> {
     let _lock = lock(state_dir, id)?;
@@ -144,6 +154,7 @@ pub fn operation(
             _ => return Err(NativeLayrError::Unknown(path.display().to_string())),
         }
     }
+    preflight()?;
     let mut options = OpenOptions::new();
     options.create_new(true).write(true);
     #[cfg(unix)]
@@ -170,6 +181,15 @@ pub fn operation(
     outcome
 }
 
+/// A full working snapshot retains empty directories, modes, and attributes.
+pub(super) fn save_imported_tree(state: &Path, cwd: &Path, message: &str) -> Result<()> {
+    run(state, cwd, &["save", "--force", "--note", message])?;
+    let snapshot = run(state, cwd, &["rev-parse", "head@{0}"])?;
+    run(state, cwd, &["reset", "--mixed", snapshot.trim()])?;
+    run(state, cwd, &["save", "-m", message, "--allow-empty"])?;
+    Ok(())
+}
+
 pub fn project_id(record: &Value) -> Result<String> {
     if let Some(id) = record["layrProjectId"].as_str() {
         if id.len() == 64 && id.bytes().all(|b| b.is_ascii_hexdigit()) {
@@ -192,15 +212,36 @@ pub fn main_path(state_dir: &Path, project: &str) -> PathBuf {
         .join("lines/main")
 }
 
+pub(super) fn admit_git_policy(state_dir: &Path, project: &str, without_git: bool) -> Result<()> {
+    let ready_path = state_dir
+        .join(NATIVE_LAYR_DIRECTORY)
+        .join(format!("{project}.json"));
+    if without_git && ready_path.exists() {
+        let receipt: Value = serde_json::from_slice(&fs::read(&ready_path)?)
+            .map_err(|error| NativeLayrError::Refused(error.to_string()))?;
+        if receipt["withoutGit"] != true {
+            return Err(NativeLayrError::Refused("This project was already imported with Git metadata. The --without-git option cannot change an existing import.".into()));
+        }
+    }
+    Ok(())
+}
+
 pub(super) fn prepare_files(state_dir: &Path, record: &Value) -> Result<Value> {
-    super::install::ensure_binary(state_dir)?;
+    prepare_files_with_git_policy(state_dir, record, false)
+}
+
+pub(super) fn prepare_files_with_git_policy(
+    state_dir: &Path,
+    record: &Value,
+    without_git: bool,
+) -> Result<Value> {
     let project = project_id(record)?;
-    let _project_lock = lock(state_dir, &format!("project:{project}"))?;
     let main = main_path(state_dir, &project);
     let ready_path = state_dir
         .join(NATIVE_LAYR_DIRECTORY)
         .join(format!("{project}.json"));
-    if !ready_path.exists() {
+    admit_git_policy(state_dir, &project, without_git)?;
+    let plan = if !ready_path.exists() {
         let source = CanonicalPath::existing(text(record, "hostProjectPath")?)
             .map(CanonicalPath::into_path_buf)?;
         if state_dir.starts_with(&source) {
@@ -208,15 +249,41 @@ pub(super) fn prepare_files(state_dir: &Path, record: &Value) -> Result<Value> {
                 "The Studio state directory must be outside the project".into(),
             ));
         }
-        let archive = crate::vm_preparation::vm_project_archive(&source)?;
-        let staging = tempfile::tempdir_in(state_dir.join(NATIVE_LAYR_DIRECTORY))?;
-        super::import::validate(archive.file.path(), staging.path())?;
-        operation(
+        let plan = super::import::Plan::new_with_git_policy(
+            &source,
+            false,
+            &state_dir.join(NATIVE_LAYR_DIRECTORY),
+            without_git,
+        )?;
+        plan.admit()?;
+        plan.size
+            .preflight(&state_dir.join(NATIVE_LAYR_DIRECTORY))?;
+        Some((source, plan))
+    } else {
+        None
+    };
+    super::install::ensure_binary(state_dir)?;
+    let _project_lock = lock(state_dir, &format!("project:{project}"))?;
+    admit_git_policy(state_dir, &project, without_git)?;
+    if !ready_path.exists() {
+        let (source, plan) =
+            plan.ok_or_else(|| NativeLayrError::Refused("Native import readiness changed".into()))?;
+        let mut input = json!({"project":project,"source":source});
+        if without_git {
+            input["withoutGit"] = json!(true);
+        }
+        operation_with_preflight(
             state_dir,
             &format!("import:{project}"),
-            &json!({"project":project,"source":source}),
+            &input,
+            || plan.size.preflight(&state_dir.join(NATIVE_LAYR_DIRECTORY)),
             || {
-                super::import::unpack(archive.file.path(), staging.path())?;
+                let staging = tempfile::tempdir_in(state_dir.join(NATIVE_LAYR_DIRECTORY))?;
+                plan.stage(staging.path())?;
+                // Layr 0.2.2 clears the no-fetch environment. Its Git input must be private.
+                if staging.path().join(".git").is_dir() {
+                    super::import::validate_private_git(staging.path())?;
+                }
                 run(
                     state_dir,
                     state_dir,
@@ -229,7 +296,11 @@ pub(super) fn prepare_files(state_dir: &Path, record: &Value) -> Result<Value> {
                     ],
                 )?;
                 run(state_dir, &main, &["protect", "main", "--direct"])?;
-                let receipt = json!({"projectId":project,"source":source,"mainPath":main});
+                if plan.restore_directory_attributes(&main)? {
+                    save_imported_tree(state_dir, &main, "Preserve imported directory attributes")?;
+                }
+                plan.warm_caches(state_dir, &main, Path::new(""))?;
+                let receipt = json!({"projectId":project,"source":source,"mainPath":main,"withoutGit":without_git});
                 crate::atomic_file::replace(
                     &ready_path,
                     receipt.to_string().as_bytes(),
@@ -593,4 +664,36 @@ pub(crate) fn stage_turn_save(
         &AgentRecord::from_value(record).map_err(StoreError::from)?,
     )?;
     Ok(())
+}
+
+/// Pending receipts survive process exit. A retry returns the same result or stays held.
+#[cfg(test)]
+mod review_tests {
+    use super::*;
+    #[test]
+    fn review_preflight_failure_does_not_poison_receipt() {
+        let state = tempfile::tempdir().expect("fixture operation succeeds");
+        let intent = json!({"kind":"import"});
+        assert!(
+            operation_with_preflight(
+                state.path(),
+                "space",
+                &intent,
+                || Err(NativeLayrError::Refused("Insufficient free space".into())),
+                || Ok(json!("must not run"))
+            )
+            .is_err()
+        );
+        assert_eq!(
+            operation_with_preflight(
+                state.path(),
+                "space",
+                &intent,
+                || Ok(()),
+                || Ok(json!("retried"))
+            )
+            .expect("fixture operation succeeds"),
+            json!("retried")
+        );
+    }
 }

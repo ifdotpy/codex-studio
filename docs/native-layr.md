@@ -18,7 +18,7 @@ The state directory must stay outside project folders.
 The project ID is the SHA-256 of the canonical source folder path.
 Later chats for that folder reuse its main line.
 
-Studio installs Layr 0.2.1 at `<Studio state>/layr-native/bin/layr`.
+Studio installs Layr 0.2.2 at `<Studio state>/layr-native/bin/layr`.
 It never selects `~/.cargo/bin/layr` for runtime operations.
 The package build compiles the vendored source once and includes the signed executable, version, and SHA-256 manifest.
 The first native turn verifies that manifest and copies the executable into the managed binary folder.
@@ -68,15 +68,113 @@ macOS does not require this step.
 
 ## First import
 
-The first turn uses the VM code archive rules from `vm_preparation.rs`.
-The archive keeps code, Git history, and ignored files such as `.env`.
-It excludes regenerable folders, ignored data folders, and linked worktrees.
-Nested repositories keep their own Git rules.
-A Git object store outside the project causes refusal.
+The native import includes the whole project folder, including Git-ignored data and `.env` files.
+These files enter Layr history in the first main state.
+The VM archive rules remain unchanged.
 
-Studio extracts the archive into a temporary folder outside the checkout.
+Studio selects all paths and rejects case or Unicode collisions before it writes imported entries.
+It sorts path references and checks sibling names once per directory.
+The validator retains tables only for the current directory and its parents.
+It makes a staging tree outside the checkout with APFS clones on macOS or btrfs reflinks on Linux.
 It runs `layr init <project> --from <folder> --include-ignored`.
 It then permits the owner to save directly in protected main.
+No tar archive is created.
+
+Build output becomes a warm Layr cache outside history.
+The shared build-folder owner is `vm_preparation::regenerable_path`.
+It covers `node_modules`, `.venv`, `venv`, `__pycache__`, `.pytest_cache`, `.mypy_cache`, `.ruff_cache`, `.turbo`, and `.next`.
+A `target` folder becomes a cache only beside `Cargo.toml`.
+Studio omits cache content from the initial state, registers each cache, clones its files, and saves the warm caches.
+New lines receive these caches without a rebuild.
+
+Studio appends `!*` to a cloned `.layrignore` beside each ignore file and at each cache parent.
+It then adds rules that ignore the cache folders again.
+The source ignore files remain unchanged.
+This makes ignored data visible to Layr while build output remains a cache.
+
+Layr creates its own root `.git` bridge.
+Studio retains the complete source `.git` tree in `.studio-native-import/git`, including local refs and unpushed objects.
+A source that already contains `.studio-native-import` is refused.
+Nested `.git` directories enter history.
+An invalid Git marker remains plain versioned data, with all its bytes preserved.
+The `plainGitMetadata` report lists each path and the reason. Studio does not read its repository status.
+Internal submodule pointers and `core.worktree` use the cloned metadata.
+Git pointers, common directories, and object alternates inside the whole project are admitted.
+This boundary also applies when one imported worktree refers to another repository in the project.
+Stores outside the project cause refusal. The report lists their paths.
+An operator can select `native-layr migrate --without-git <project>` to import that project as a plain folder.
+This option omits only the top-level `.git`, without a backup. Nested repositories retain normal admission.
+The report and import receipt record this choice. The source folder remains unchanged.
+The option cannot change a completed import that retained Git metadata.
+
+Studio excludes registered linked worktree folders from main.
+Ordinary files and folders under `.worktrees` remain versioned data.
+The `worktreeData` report lists them.
+The migration command imports their files into separate lines.
+It includes their ignored data and warm build caches.
+The `cachePathChanges` report lists paths whose role differs between main and an imported line.
+On APFS, a line can keep versioned files at a path that is a cache in main.
+Main retains its cache. The imported line reports `not a cache: has versioned files`.
+On btrfs, this case still causes refusal because the inherited cache is a subvolume.
+It needs a future `layr cache materialize` command. Native Linux has structural checks only on this Mac.
+Use `--skip-worktree <path>` to omit an operator-selected temporary worktree. The report records the skipped path.
+The original worktree folder remains unchanged.
+
+The free-space preflight counts metadata, cross-volume copies, Git fetch output, and Git import allocations.
+Reports separate these costs as `metadataBytes`, `transientMetadataBytes`, `crossVolumeBytes`, `gitTransferBytes`, and `gitHeadBytes`.
+The metadata allowance is 2,862 bytes per entry, including directories.
+It is twice the larger measured peak per entry, rounded up to a byte.
+The APFS cache fixture has 4,096 files and 4,161 entries.
+Its net free-space delta is 3,297,280 bytes. Its peak is 4,079,616 bytes, or 980.44 bytes per entry.
+Every source and main cache clone ID matches.
+The current migration fixture has 4,096 versioned files, 4,096 cache files, and 8,517 source entries.
+A new line costs 3,092,480 bytes net and 3,960,832 bytes at peak.
+A migrated line costs 11,362,304 bytes net and 12,185,600 bytes at peak.
+These are 363.09 and 1,334.07 net bytes per entry, respectively.
+The migrated-line peak is 1,430.74 bytes per entry. The allowance is twice this value, rounded up.
+The temporary line allowance is 931 bytes per main entry, twice its measured peak per entry.
+Layr 0.2.2 uses the APFS whole-directory clone call when hard links and nested layers do not require a fallback.
+The measured fixture has neither condition. The directory clone still needs metadata for its new tree.
+The measured bytes per entry do not show a file-by-file fallback.
+The estimate charges only the part of that temporary allowance above the final line's metadata allowance.
+For a nested repository, each line also retains the other project folders from main.
+Their entries receive the same metadata allowance and appear as `inheritedEntries` and `inheritedMetadataBytes`.
+The report separates the actual main counts as `mainSize` and the original source counts as `sourceSize`.
+If native main exists, its saved main state determines each line clone cost.
+APFS thin layers are counted conservatively, including their base entries, without creating a complete tree.
+The estimate also includes the largest local saved cache tree for each cache path.
+It counts this tree even when the main working cache is empty or absent.
+Same-volume clones add no payload bytes to this estimate.
+The estimate follows the required host Layr version.
+Layr 0.2.1 requires a full HEAD allowance and an allowance for copies into existing HEAD files.
+From 0.2.2, matching regular source files can share blocks with HEAD.
+The estimate reads source blob hashes without filters or Git writes to identify files that can share blocks.
+Missing files, modified files, and symlinks require new HEAD bytes.
+A margin retains at least 64 MiB or ten percent of the estimate, whichever is larger.
+A same-volume clone failure causes refusal, without a byte-copy fallback.
+Cross-volume files require a byte copy and sufficient space before import.
+Keep the source quiet during import. Studio checks its identities before and after the clones.
+Source Git reads set `GIT_NO_LAZY_FETCH=1` and `GIT_OPTIONAL_LOCKS=0`.
+Missing partial-clone objects cause an unknown-size refusal, without fetching into the source.
+Clears use directory descriptors and refuse symlink ancestors. They unlink links without visiting their targets.
+Submodule config bytes are read through a validated descriptor and edited in a private temporary file.
+Studio writes the result through the destination directory descriptor. A replacement link cannot redirect the edit.
+Attribute copies use descriptors or no-follow link calls on APFS and btrfs.
+Full-tree snapshots preserve empty directories, directory modes, and file mode changes in each imported head.
+The source repository root mode also applies to each staged repository root.
+
+Known Layr 0.2.2 limits, pending upstream fixes for 0.2.3:
+
+- `caller_git` calls `command_as`, which clears `GIT_NO_LAZY_FETCH` and `GIT_OPTIONAL_LOCKS`.
+  Studio refuses source object links and alternates that could reconnect a staged repository to the original object store.
+- Layr `copy_entry` does not preserve symlink attributes or Linux file attributes.
+  Studio preserves them in staging, but the final Layr import can lose them.
+- The APFS thin snapshot comparison ignores attributes and change time (`ctime`).
+  A directory attribute change alone can be absent from the saved head.
+  A successful metadata fixture does not establish support for this case.
+
+Capacity checks run before the pending receipt. A shortage can retry with the same request after capacity increases.
+
 Later chats use the existing main line.
 They do not copy changes from the original folder.
 
@@ -231,8 +329,8 @@ These limits remain outside the current reviewer isolation changes.
 The migration keeps the original project and its Git worktrees.
 Each worktree becomes a native line with a stable name.
 The line replaces only its repository subtree.
-The import includes uncommitted files and ignored files such as `.env`.
-It excludes the worktree's `.git` pointer and regenerable folders.
+The import includes uncommitted files and all ignored data.
+It excludes the worktree's `.git` pointer. Build output becomes warm caches.
 Prunable worktrees are reported and skipped.
 Completed receipts make a repeated migration idempotent.
 
@@ -245,14 +343,42 @@ For a project with running WT chats:
 5. Create a new **Layr** chat for the same original project folder.
 6. Review each imported line before you run its printed merge command.
 
-Each open Git worktree becomes a separate Layr line.
+Each selected Git worktree becomes a separate Layr line.
 Existing WT chats keep their Git working directories.
 The script does not pause chats or change their workspace mode.
 Keep those chats paused after the import.
 The new chat uses native main.
 Completed receipts do not copy later edits from the old Git paths.
+Parent Git metadata comes from the first main import. Later refs and objects remain in the original Git store.
+Inspect the unpushed commit report before you retire that store.
 The report prints the command list for each project.
 After import, its merge commands pin each imported state with `--expect`.
+
+The dry run starts no backend and writes no project or store files.
+For each project it reports files, logical bytes, tracked bytes, cache bytes, estimated new bytes, and lines to create.
+The totals include main and the worktree sources.
+The report lists `.worktrees` containers, their versioned data, and any linked worktree without an admitted parent.
+If a worktree cannot be sized, `sizesComplete` is false and its refusal includes its source path.
+It lists nested repositories, their type, branch, uncommitted changes, untracked files, and unpushed commits.
+Unpushed commits are local branch or detached-HEAD commits absent from all remote-tracking refs.
+The command does not fetch remote refs.
+Each repository report explains its Git metadata and worktree treatment.
+Each worktree also has a `classification` and HEAD-specific commit counts.
+Class `a` has uncommitted or untracked files.
+Class `b` has HEAD commits absent from remote-tracking refs, local branches, or the parent repository HEAD.
+Class `c` is clean and has none of these commits.
+The `worktreeSummary` counts these classes. All worktrees remain selected by default.
+Git status does not count ignored data. Such data can differ even in a clean worktree.
+Studio also compares flagged index files by bytes to detect edits hidden by assume-unchanged or skip-worktree.
+Use `--worktrees all` to keep the default selection.
+Use `--worktrees dirty` to select uncommitted files, untracked files, and HEAD commits outside all local branches and remote-tracking refs.
+A clean worktree on a named local branch can be skipped even when its commits are not pushed.
+Each skipped entry records its HEAD commit and the reason.
+Its Git store remains in main. Its ignored files remain in the original worktree.
+If main already exists, Studio verifies that it retains each skipped HEAD commit.
+The `selectionEstimates` report shows the costs and line counts for both modes.
+Use explicit `--skip-worktree` paths for other operator exclusions.
+Refusals include external Git object paths and prevent a real import.
 
 Inspect the migration first:
 
@@ -275,7 +401,7 @@ Run the focused Rust tests:
 cargo test -j 4 -p studio-runtime-services --lib layr_native
 ```
 
-Run the real host lifecycle check with a Studio-built Layr 0.2.1 binary:
+Run the real host lifecycle check with a Studio-built Layr 0.2.2 binary:
 
 ```sh
 STUDIO_LAYR_NATIVE_TEST_BINARY=/path/to/studio-state/layr-native/bin/layr \
@@ -292,7 +418,7 @@ On Linux, run this isolated check as root on btrfs.
 Check the managed Layr entry with a real Git repository and a local bare remote:
 
 ```sh
-STUDIO_LAYR_NATIVE_TEST_BINARY=/path/to/layr-0.2.1 \
+STUDIO_LAYR_NATIVE_TEST_BINARY=/path/to/layr-0.2.2 \
   CARGO_INCREMENTAL=0 cargo test -j 4 -p studio-runtime-services --lib \
   layr_native::git_guard::tests::real_managed_layr_ \
   -- --ignored --test-threads=1
@@ -304,7 +430,7 @@ They also verify that the managed Git entry still refuses agent writes.
 Check the proxy with real Layr, Git, Cargo, and pnpm callers:
 
 ```sh
-STUDIO_LAYR_NATIVE_TEST_BINARY=/path/to/layr-0.2.1 \
+STUDIO_LAYR_NATIVE_TEST_BINARY=/path/to/layr-0.2.2 \
   CARGO_INCREMENTAL=0 cargo test -j 4 -p studio-runtime-services --lib \
   layr_native::git_guard::tests::real_managed_git_proxy_ -- --ignored
 ```
