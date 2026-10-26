@@ -1,3 +1,78 @@
+import type {
+  AccountInfo,
+  Query,
+  Options,
+  SDKResultMessage,
+  SDKTaskStartedMessage,
+  SDKTaskUpdatedMessage,
+  SDKTaskNotificationMessage,
+  SDKUserMessage,
+} from "@anthropic-ai/claude-agent-sdk";
+import type {
+  Session,
+  Turn,
+  Item,
+  Thread,
+  SessionMetadata,
+} from "./session-state.ts";
+import type { InputGroup, StudioInputMessage } from "./input-messages.ts";
+import type { ToolClock } from "./stall-watch.ts";
+
+type AssistantBlock = { text: string; complete: boolean; position?: number };
+type AssistantBlockState = {
+  blocks: AssistantBlock[];
+  streams: Map<number, AssistantBlock>;
+  frames: Set<string>;
+  text: string;
+  dirty: boolean;
+  itemTurn: Turn | null;
+  itemIndex: number;
+};
+export type BackgroundTask = Partial<
+  Omit<SDKTaskStartedMessage, "subtype"> &
+    SDKTaskUpdatedMessage["patch"] &
+    Pick<SDKTaskNotificationMessage, "output_file">
+>;
+type QueryStall = {
+  turnId: string;
+  ended: () => void;
+  closed: Promise<void> | null;
+  closeError?: unknown;
+};
+export interface ActiveQuery {
+  turn: Turn | null;
+  input: InputQueue;
+  q: Query | null;
+  tasks: Map<string, BackgroundTask>;
+  tools: Map<string, Item>;
+  pendingSteers: Set<string | undefined>;
+  assistantBlocks: Map<string, AssistantBlockState>;
+  usage: ResponseUsage;
+  idleRequestStartedAt: number;
+  lastEventAt: number;
+  toolClocks: Map<string, ToolClock>;
+  stall: QueryStall | null;
+  ready: Promise<void>;
+  readyResolve: () => void;
+  readyReject: (error: unknown) => void;
+  consumer?: Promise<void>;
+  accountProof?: AccountInfo;
+  accountProofQuery?: Query;
+  commands?: string[];
+  deferredResult?: SDKResultMessage | null;
+  resultTimer?: ReturnType<typeof setTimeout> | null;
+  stopTimer?: ReturnType<typeof setTimeout> | null;
+  finalization?: Promise<void>;
+  externalMcpServers?: Options["mcpServers"];
+  permissionMode?: Options["permissionMode"];
+  toolsIdentity?: string;
+  persistFailure?: unknown;
+  reservingInput?: boolean;
+  lastModel?: string;
+  messageId?: string;
+  idleRequest?: { id: string; at: number };
+}
+
 import { ResponseUsage, cumulativeUsage } from "./usage.mjs";
 import { isThreadSerialized } from "./provider-method-policy.generated.ts";
 import {
@@ -117,13 +192,13 @@ const externalConfigs = new Map();
 
 const providerOptions = JSON.parse(process.env.STUDIO_CLAUDE_OPTIONS || "{}");
 const STUDIO_INPUT_NAMESPACE = "8d95e191-763a-4ee2-a462-7d27f981f138";
-function nativeUserMessageId(id) {
+function nativeUserMessageId(id: string): NonNullable<SDKUserMessage["uuid"]> {
   if (
     /^[a-f0-9]{8}-[a-f0-9]{4}-[1-8][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i.test(
       id,
     )
   )
-    return id;
+    return id as NonNullable<SDKUserMessage["uuid"]>;
   const namespace = Buffer.from(
     STUDIO_INPUT_NAMESPACE.replaceAll("-", ""),
     "hex",
@@ -133,12 +208,16 @@ function nativeUserMessageId(id) {
     .update(String(id))
     .digest()
     .subarray(0, 16);
-  bytes[6] = (bytes[6] & 0x0f) | 0x50;
-  bytes[8] = (bytes[8] & 0x3f) | 0x80;
+  bytes[6] = ((bytes[6] ?? 0) & 0x0f) | 0x50;
+  bytes[8] = ((bytes[8] ?? 0) & 0x3f) | 0x80;
   const hex = bytes.toString("hex");
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
 }
-function assistantBlockState(active, messageId, kind) {
+function assistantBlockState(
+  active: ActiveQuery,
+  messageId: string,
+  kind: string,
+) {
   const key = messageId + ":" + kind;
   if (!active.assistantBlocks.has(key))
     active.assistantBlocks.set(key, {
@@ -152,10 +231,12 @@ function assistantBlockState(active, messageId, kind) {
       itemTurn: null,
       itemIndex: -1,
     });
-  return active.assistantBlocks.get(key);
+  const state = active.assistantBlocks.get(key);
+  if (!state) throw new Error("Assistant block state missing");
+  return state;
 }
-const streamingItems = new WeakSet();
-function assistantText(state) {
+const streamingItems = new WeakSet<Item>();
+function assistantText(state: AssistantBlockState) {
   if (state.dirty) {
     state.text = state.blocks
       .map((block) => block.text)
@@ -168,12 +249,12 @@ function assistantText(state) {
 // A streaming item reads its text from the block state, so a delta costs O(1)
 // and the full text is joined only when the item is saved or sent. Assigning
 // `text` (as a finished copy does) turns it back into a plain value.
-function streamText(item, state) {
+function streamText(item: Item, state: AssistantBlockState) {
   Object.defineProperty(item, "text", {
     enumerable: true,
     configurable: true,
     get: () => assistantText(state),
-    set(value) {
+    set(value: string) {
       streamingItems.delete(item);
       Object.defineProperty(item, "text", {
         value,
@@ -184,25 +265,34 @@ function streamText(item, state) {
     },
   });
 }
-let lastLimits;
+let lastLimits: ReturnType<typeof usageLimits> | undefined;
 const root = process.argv[2];
 if (!root) throw new Error("Claude bridge requires its own state directory");
 await fs.mkdir(path.join(root, "sessions"), { recursive: true, mode: 0o700 });
-const queries = new Map(),
-  pending = new Map();
-const pendingTurnReceipts = new Set();
+const queries = new Map<string, ActiveQuery>(),
+  pending = new Map<
+    string,
+    { resolve: (value: unknown) => void; reject: (error: unknown) => void }
+  >();
+const pendingTurnReceipts = new Set<string>();
 const PREPARATION_TIMEOUT_MS = 20_000;
 const PASSIVE_ACCOUNT_TIMEOUT_MS = 8_000;
 // A cold Claude process can need more than 20 seconds under launchd limits.
 // Retained query controls keep their shorter, shared deadline.
 const INITIALIZATION_TIMEOUT_MS = 60_000;
 
-async function boundedPreparation(read, deadline, onTimeout, phase, startedAt) {
+async function boundedPreparation<T>(
+  read: () => T | Promise<T>,
+  deadline: number,
+  onTimeout: () => void,
+  phase: string,
+  startedAt: number,
+): Promise<T> {
   let timer;
   try {
     return await Promise.race([
       Promise.resolve().then(read),
-      new Promise((_, reject) => {
+      new Promise<never>((_, reject) => {
         timer = setTimeout(
           () => {
             const error = Object.assign(
@@ -242,15 +332,15 @@ const sessions = sessionStore.sessions;
 // Threads Studio itself unloaded in this process. The CLI's resume_return
 // dialog (summary or full history) on their next turn is Studio's own resume,
 // not a user's return to a stale chat: it keeps the full history and never asks.
-const studioUnloaded = new Set();
-const queryHasInput = (active) =>
+const studioUnloaded = new Set<string>();
+const queryHasInput = (active: ActiveQuery) =>
   Boolean(
     active.pendingSteers.size ||
     active.reservingInput ||
     active.input.values.length ||
     active.input.pending.length,
   );
-const queryBusy = (id, active) =>
+const queryBusy = (id: string, active: ActiveQuery) =>
   Boolean(
     active.turn ||
     active.tasks.size ||
@@ -264,11 +354,11 @@ const queryBusy = (id, active) =>
 // reader bounds the bridge's memory instead of growing it.
 // UTF-16 code units of queued lines plus bytes buffered by the stream.
 const STDOUT_PENDING_BUDGET = 8 * 1024 * 1024;
-let stdoutLines = [];
+let stdoutLines: string[] = [];
 let stdoutQueued = 0;
 let stdoutScheduled = false;
 let stdoutDraining = false;
-let stdoutRoomWaiters = [];
+let stdoutRoomWaiters: (() => void)[] = [];
 const stdoutPending = () => stdoutQueued + process.stdout.writableLength;
 function flushStdout() {
   stdoutScheduled = false;
@@ -293,13 +383,13 @@ function flushStdout() {
 // Resolves once the queued output is within the budget.
 function stdoutRoom() {
   if (stdoutPending() <= STDOUT_PENDING_BUDGET) return null;
-  return new Promise((resolve) => stdoutRoomWaiters.push(resolve));
+  return new Promise<void>((resolve) => stdoutRoomWaiters.push(resolve));
 }
 // Linux pipes write synchronously, so queued lines still leave on exit.
 process.on("exit", () => {
   if (stdoutLines.length) process.stdout.write(stdoutLines.join(""));
 });
-const send = (value) => {
+const send = (value: unknown) => {
   const line = JSON.stringify(value) + "\n";
   stdoutLines.push(line);
   stdoutQueued += line.length;
@@ -308,13 +398,13 @@ const send = (value) => {
     setImmediate(flushStdout);
   }
 };
-const emit = (method, params) => send({ method, params });
+const emit = (method: string, params: unknown) => send({ method, params });
 const commands = createCommandTransport({ root, emit });
 const limits = stallLimits();
 // Outstanding Studio requests per thread. While Studio owns a wait (an
 // approval, a question, a Studio tool call), no Claude tool call can stall.
-const studioWaits = new Map();
-function studioWait(threadId) {
+const studioWaits = new Map<string, number>();
+function studioWait(threadId: string | undefined) {
   if (!threadId) return () => {};
   studioWaits.set(threadId, (studioWaits.get(threadId) || 0) + 1);
   armStallWatch();
@@ -322,7 +412,7 @@ function studioWait(threadId) {
   return () => {
     if (!open) return;
     open = false;
-    const left = studioWaits.get(threadId) - 1;
+    const left = (studioWaits.get(threadId) ?? 0) - 1;
     if (left > 0) studioWaits.set(threadId, left);
     else studioWaits.delete(threadId);
     // The tool budget starts again once Studio answers.
@@ -370,7 +460,7 @@ const DISK_FULL_TURN_NOTICE =
   "Disk is full. Studio keeps this turn in memory and saves it when free space returns.";
 const DISK_FULL_INPUT_ERROR =
   "Disk is full. Claude did not receive this input. Studio sends it when free space returns.";
-async function persistLive(s, turn) {
+async function persistLive(s: Session, turn?: Turn | null) {
   if (!(await sessionStore.persistOrDefer(s)) || !turn) return;
   const id = "disk-full:" + turn.id;
   if (turn.items.some((item) => item.id === id)) return;
@@ -388,13 +478,13 @@ async function persistLive(s, turn) {
 // Save while the SDK stream continues. The store keeps one session's saves in
 // order and joins saves that have not started, and a turn's end waits for them
 // through its own save. A failed save ends the stream at its next message.
-function persistLater(s, active) {
+function persistLater(s: Session, active: ActiveQuery) {
   persistLive(s, active.turn).catch((error) => {
     active.persistFailure ??= error;
   });
 }
 // The durable pre-input receipt could not be written, so no input reached Claude.
-function diskFullInputError(error) {
+function diskFullInputError(error: unknown) {
   return Object.assign(new Error(DISK_FULL_INPUT_ERROR, { cause: error }), {
     data: {
       turnStartOutcome: "not_applied",
@@ -403,7 +493,7 @@ function diskFullInputError(error) {
     },
   });
 }
-async function session(id) {
+async function session(id: string): Promise<Session> {
   return sessionStore.get(id);
 }
 const settings = (s) =>
@@ -454,10 +544,10 @@ const checkAccount = createAccountCheck({
   identityPath: path.join(root, "claude-account-identity"),
 });
 async function verifiedAccount(
-  q,
-  deadline,
-  onTimeout,
-  startedAt,
+  q: Query,
+  deadline: number,
+  onTimeout: () => void,
+  startedAt: number,
   phase = "account",
 ) {
   const account = await boundedPreparation(
@@ -524,14 +614,18 @@ async function verifiedAccount(
     return fresh.account;
   }
 }
-async function probe(cwd, read, phase = "metadata", external = false) {
+async function probe<T>(
+  cwd: string | null | undefined,
+  read: (q: Query, account: AccountInfo) => T | Promise<T>,
+  phase = "metadata",
+  external = false,
+): Promise<T> {
   const startedAt = Date.now();
   const deadline = startedAt + INITIALIZATION_TIMEOUT_MS;
-  let release;
-  const hold = new Promise((r) => (release = r));
+  const { promise: hold, resolve: release } = Promise.withResolvers<void>();
   // Keep an idle async iterable open until the account probe completes.
   // oxlint-disable-next-line require-yield
-  async function* prompt() {
+  async function* prompt(): AsyncGenerator<never> {
     await hold;
   }
   const controller = new AbortController();
@@ -575,7 +669,10 @@ async function probe(cwd, read, phase = "metadata", external = false) {
   }
 }
 // Refresh account metadata on the live query's own process.
-async function refreshLiveCatalog(live, background) {
+async function refreshLiveCatalog(
+  live: ActiveQuery & { q: Query; accountProof: AccountInfo },
+  background: boolean,
+) {
   const q = live.q;
   const prior = live.accountProof;
   const startedAt = Date.now();
@@ -634,7 +731,11 @@ const catalogCache = createCatalogCache({
     [...queries.values()].some((active) => active.turn || active.tasks.size),
 });
 const catalog = () => catalogCache.read();
-function wireThread(s, metadata, includeTurns = true) {
+function wireThread(
+  s: Session | null,
+  metadata: SessionMetadata,
+  includeTurns = true,
+): Thread {
   const id = s?.id || metadata.id;
   return {
     id,
@@ -648,8 +749,8 @@ function wireThread(s, metadata, includeTurns = true) {
       .digest("hex"),
     ...(includeTurns
       ? {
-          turns: s.turns,
-          ...(s.journalRepair ? { journalRepair: s.journalRepair } : {}),
+          turns: s?.turns ?? [],
+          ...(s?.journalRepair ? { journalRepair: s.journalRepair } : {}),
         }
       : { turns: [] }),
     status: { type: queries.get(id)?.turn ? "active" : "idle" },
@@ -950,7 +1051,13 @@ async function content(input) {
   }
   return result;
 }
-function turnEvent(s, turn, method, item, receiptTimes) {
+function turnEvent(
+  s: Session,
+  turn: Turn | null | undefined,
+  method: string,
+  item: Item,
+  receiptTimes?: Record<string, number>,
+) {
   emit(method, {
     threadId: s.id,
     turnId: turn?.id,
@@ -959,7 +1066,7 @@ function turnEvent(s, turn, method, item, receiptTimes) {
   });
 }
 // A submitted steer whose echo arrives after its turn ended.
-function submittedSteer(s, nativeId) {
+function submittedSteer(s: Session, nativeId: string | undefined) {
   for (const turn of s.turns.slice(-8).reverse()) {
     const item = turn.items.find(
       (i) =>
@@ -972,14 +1079,24 @@ function submittedSteer(s, nativeId) {
   }
   return null;
 }
-function finishItem(s, turn, item, receiptTimes) {
+function finishItem(
+  s: Session,
+  turn: Turn | null | undefined,
+  item: Item,
+  receiptTimes?: Record<string, number>,
+) {
   if (!turn) return;
   const i = turn.items.findIndex((old) => old.id === item.id);
   if (i < 0) turn.items.push(item);
   else turn.items[i] = item;
   turnEvent(s, turn, "item/completed", item, receiptTimes);
 }
-function notice(s, turn, text, id = randomUUID()) {
+function notice(
+  s: Session,
+  turn: Turn,
+  text: string,
+  id: string = randomUUID(),
+) {
   finishItem(s, turn, { id, type: "agentMessage", phase: "commentary", text });
 }
 // Claude refused the turn at a subscription limit. The turn error carries the
@@ -1033,13 +1150,13 @@ async function flags(s, p = {}, live = false) {
 // A turn whose end is being recorded. active.turn still names it until
 // finishTurn persists, but it accepts no more input. The value settles when
 // finishTurn has cleared the turn, or when recording its end failed.
-const finishingTurns = new WeakMap();
-function clearDeferredResult(active) {
+const finishingTurns = new WeakMap<Turn, Promise<void>>();
+function clearDeferredResult(active: ActiveQuery) {
   clearTimeout(active.resultTimer);
   active.resultTimer = null;
   active.deferredResult = null;
 }
-function clearTurnTimers(active) {
+function clearTurnTimers(active: ActiveQuery) {
   clearDeferredResult(active);
   clearTimeout(active.stopTimer);
   active.stopTimer = null;
@@ -1058,7 +1175,11 @@ function lifecycleFailure(s, active, error) {
     );
   });
 }
-function deferResult(s, active, result) {
+function deferResult(
+  s: Session,
+  active: ActiveQuery,
+  result: SDKResultMessage,
+) {
   active.deferredResult = result;
   if (active.resultTimer) return;
   const turn = active.turn;
@@ -1428,7 +1549,7 @@ const armStallWatch = watchStalls(
       lifecycleFailure(s, active, error),
     ),
 );
-async function startSession(s, active, p) {
+async function startSession(s: Session, active: ActiveQuery, p: Options) {
   const initial = active.turn;
   const startedAt = Date.now();
   const deadline = startedAt + INITIALIZATION_TIMEOUT_MS;
@@ -1445,8 +1566,7 @@ async function startSession(s, active, p) {
       s.dynamicTools,
     ]);
   const initialSource = source();
-  let admit;
-  const admitted = new Promise((r) => (admit = r));
+  const { promise: admitted, resolve: admit } = Promise.withResolvers<void>();
   let allowed = false;
   // Keep an idle async iterable open until the account probe completes.
   // oxlint-disable-next-line require-yield
@@ -2146,12 +2266,12 @@ async function startSession(s, active, p) {
   }
 }
 // The SDK reports a closed or aborted Claude process with these messages.
-function deadQuery(error) {
+function deadQuery(error: unknown) {
   return /process aborted by user|operation aborted|process exited|process terminated|transport is not ready|query (is )?closed/i.test(
     String(error?.message || error),
   );
 }
-function closeQuery(active) {
+function closeQuery(active: ActiveQuery) {
   try {
     active.q?.close();
   } catch (error) {
@@ -2160,7 +2280,7 @@ function closeQuery(active) {
   }
 }
 // One query-close accounting owner; a late SDK unwind cannot publish it twice.
-function drainUsage(threadId, active) {
+function drainUsage(threadId: string, active: ActiveQuery) {
   for (const studioUsage of active.usage.finish("queryClosed"))
     emit("thread/tokenUsage/updated", {
       threadId,
@@ -2168,7 +2288,7 @@ function drainUsage(threadId, active) {
       studioUsage,
     });
 }
-function discardQuery(threadId, active) {
+function discardQuery(threadId: string, active: ActiveQuery | undefined) {
   if (!active) return;
   drainUsage(threadId, active);
   clearTurnTimers(active);
@@ -2180,8 +2300,16 @@ function discardQuery(threadId, active) {
   }
   catalogCache.activityChanged();
 }
-function newActive(turn) {
-  const active = {
+function newActive(turn: Turn): ActiveQuery {
+  const {
+    promise: ready,
+    resolve: readyResolve,
+    reject: readyReject,
+  } = Promise.withResolvers<void>();
+  const active: ActiveQuery = {
+    ready,
+    readyResolve,
+    readyReject,
     turn,
     input: new InputQueue(),
     q: null,
@@ -2197,14 +2325,16 @@ function newActive(turn) {
     toolClocks: new Map(),
     stall: null,
   };
-  active.ready = new Promise((resolve, reject) => {
-    active.readyResolve = resolve;
-    active.readyReject = reject;
-  });
+
   active.ready.catch(() => {});
   return active;
 }
-function userMessage(s, turn, groups, id) {
+function userMessage(
+  s: Session,
+  turn: Turn,
+  groups: InputGroup[],
+  id: string,
+): StudioInputMessage {
   turn.nativeSessionId = s.nativeId || s.id;
   const item = turn.items.find((item) => item.id === id) || turn.items[0];
   guardNativeSessionInput(s, groups, newNativeInputAttempt(turn, item));
@@ -3180,7 +3310,7 @@ async function handle(method, p) {
   if (method === "skills/list") return listSkills(p?.cwds);
   throw new Error("Claude does not support " + method);
 }
-const operations = new Map();
+const operations = new Map<string, Promise<unknown>>();
 const lines = createInterface({ input: process.stdin });
 lines.on("line", (line) => {
   let message;
@@ -3234,7 +3364,7 @@ lines.on("line", (line) => {
     },
   );
 });
-let closing;
+let closing: Promise<never> | undefined;
 function shutdown() {
   if (closing) return closing;
   armStallWatch.dispose();
@@ -3245,7 +3375,7 @@ function shutdown() {
     const SHUTDOWN_DRAIN_LIMIT_MS = 2_000;
     const deadline =
       Date.now() + Math.min(limits.exitWaitMs, SHUTDOWN_DRAIN_LIMIT_MS);
-    const bounded = async (operation) => {
+    const bounded = async (operation: Promise<unknown> | undefined) => {
       let timer;
       try {
         await Promise.race([

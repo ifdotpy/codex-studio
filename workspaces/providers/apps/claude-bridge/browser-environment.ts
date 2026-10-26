@@ -4,12 +4,12 @@ import path from "node:path";
 // The file that Claude Code runs ahead of each Bash command of a session.
 export const PATH_SCRIPT = "studio-browser-path.sh";
 
-function shellQuote(text) {
+function shellQuote(text: string) {
   return "'" + text.replaceAll("'", "'\"'\"'") + "'";
 }
 
 // Write the script only when its text changes: sessions start often.
-function writePathScript(file, folder) {
+function writePathScript(file: string, folder: string) {
   const text = `PATH=${shellQuote(folder)}:"$PATH"; export PATH\n`;
   try {
     if (readFileSync(file, "utf8") === text) return;
@@ -24,7 +24,11 @@ function writePathScript(file, folder) {
 // Studio's launcher for browser links of a session (docs/vm-browser-bridge.md, "Native chats"
 // and section 6.4). The server writes studio-browser.json next to the bridge state; the bridge
 // process keeps its own environment, so its launch identity does not change.
-export function browserEnvironment(root, sessionId, environment = process.env) {
+export function browserEnvironment(
+  root: string,
+  sessionId: string,
+  environment = process.env,
+): NodeJS.ProcessEnv {
   let value;
   try {
     value = JSON.parse(
@@ -38,7 +42,7 @@ export function browserEnvironment(root, sessionId, environment = process.env) {
     typeof value?.STUDIO_BROWSER_SOCKET !== "string"
   )
     return {};
-  const result = {
+  const result: NodeJS.ProcessEnv = {
     BROWSER: value.BROWSER,
     STUDIO_BROWSER_SOCKET: value.STUDIO_BROWSER_SOCKET,
     STUDIO_BROWSER_SESSION: sessionId,

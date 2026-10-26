@@ -1,15 +1,27 @@
 import { test } from "vitest";
 import assert from "node:assert/strict";
-import { inputGroups, sdkInputMessages } from "./input-messages.mjs";
+import {
+  inputGroups,
+  sdkInputMessages,
+  type InputGroup,
+} from "./input-messages.ts";
 import { InputQueue } from "./features.ts";
 
-const convert = async (input) =>
+const convert = async (
+  input: { type: "text"; text: string; inputOrigin?: string }[],
+): Promise<InputGroup["blocks"]> =>
   input.map(({ type, text }) => ({ type, text }));
 
 test("unmarked input retains the legacy user message shape", async () => {
   const groups = await inputGroups([{ type: "text", text: "hello" }], convert);
   assert.deepEqual(
-    sdkInputMessages("session", "input", groups, (id) => id),
+    sdkInputMessages(
+      "session",
+      "input",
+      groups,
+      // @ts-expect-error The identity callback deliberately bypasses native UUID encoding.
+      (id) => id,
+    ),
     [
       {
         type: "user",
@@ -44,9 +56,11 @@ test("a split input leaves the retry queue before its first part is yielded", as
       ],
       convert,
     ),
+    // @ts-expect-error The identity callback deliberately bypasses native UUID encoding.
     (id) => id,
   );
   const wrapper = messages.at(-1);
+  assert(wrapper);
   Object.defineProperty(wrapper, "studioInputBatch", { value: messages });
   const queue = new InputQueue();
   queue.push(wrapper);

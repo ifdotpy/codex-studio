@@ -1,5 +1,5 @@
 // Studio monitors use native command execution without a Codex model session.
-import { spawn } from "node:child_process";
+import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
@@ -13,11 +13,26 @@ export const commandMethods = new Set([
   "command/exec/terminate",
 ]);
 
-function nativeError(value) {
+type NativeFailure = { message: string; code?: number; data?: unknown };
+type CommandParams = {
+  sandboxPolicy?: { type?: string };
+  permissionProfile?: unknown;
+  processId?: string;
+  [key: string]: unknown;
+};
+type CommandReply = {
+  id?: string;
+  method?: string;
+  params?: unknown;
+  result?: unknown;
+  error?: NativeFailure;
+};
+
+function nativeError(value: NativeFailure) {
   return Object.assign(new Error(value.message), value);
 }
 
-export function commandEnvironment(env, home) {
+export function commandEnvironment(env: NodeJS.ProcessEnv, home: string) {
   // Do not inherit provider credentials, config overrides, or Node preload code.
   const allowed =
     /^(HOME|USER|LOGNAME|PATH|SHELL|TMPDIR|TMP|TEMP|LANG|LC_[A-Z_]+|TERM|COLORTERM|TZ|SDKROOT|DEVELOPER_DIR|SystemRoot|WINDIR)$/;
@@ -34,19 +49,27 @@ export function createCommandTransport({
   emit,
   env = process.env,
   stderr = (data) => process.stderr.write(data),
+}: {
+  root: string;
+  emit: (method: string, params: unknown) => void;
+  env?: NodeJS.ProcessEnv;
+  stderr?: (data: string | Buffer) => unknown;
 }) {
   const home = path.join(root, "command-executor");
   const reservations = path.join(home, "requests");
-  const pending = new Map();
-  const active = new Set();
-  let child,
-    ready,
-    closed,
-    closing,
-    exited,
-    killed = false;
+  const pending = new Map<
+    string,
+    { resolve: (value: unknown) => void; reject: (error: unknown) => void }
+  >();
+  const active = new Set<string>();
+  let child: ChildProcessWithoutNullStreams | undefined;
+  let ready: Promise<void> | undefined;
+  let closed: unknown;
+  let closing: Promise<void> | undefined;
+  let exited: Promise<void> | undefined;
+  let killed = false;
 
-  function rejectPending(error) {
+  function rejectPending(error: unknown) {
     for (const waiter of pending.values()) waiter.reject(error);
     pending.clear();
   }
@@ -67,12 +90,26 @@ export function createCommandTransport({
         "SIGKILL",
       );
     } catch (error) {
-      if (error.code === "EPERM") child.kill("SIGKILL");
-      else if (error.code !== "ESRCH") stderr(String(error) + "\n");
+      if (
+        error &&
+        typeof error === "object" &&
+        "code" in error &&
+        error.code === "EPERM"
+      )
+        child.kill("SIGKILL");
+      else if (
+        !(
+          error &&
+          typeof error === "object" &&
+          "code" in error &&
+          error.code === "ESRCH"
+        )
+      )
+        stderr(String(error) + "\n");
     }
   }
 
-  function fail(error) {
+  function fail(error: unknown) {
     closed ||= error;
     rejectPending(closed);
     if (!child || child.exitCode !== null || child.signalCode !== null) return;
@@ -84,8 +121,8 @@ export function createCommandTransport({
     exited?.then(() => clearTimeout(timer));
   }
 
-  function write(value) {
-    return new Promise((resolve, reject) => {
+  function write(value: unknown) {
+    return new Promise<unknown>((resolve, reject) => {
       const timer = setTimeout(() => {
         const error = new Error(
           "Command executor input timed out; outcome unknown",
@@ -93,7 +130,7 @@ export function createCommandTransport({
         fail(error);
         reject(error);
       }, 5000);
-      const complete = (error) => {
+      const complete = (error?: Error | null) => {
         clearTimeout(timer);
         if (error) {
           fail(
@@ -103,17 +140,17 @@ export function createCommandTransport({
             ),
           );
           reject(closed);
-        } else resolve();
+        } else resolve(undefined);
       };
       try {
-        child.stdin.write(JSON.stringify(value) + "\n", complete);
+        child?.stdin.write(JSON.stringify(value) + "\n", complete);
       } catch (error) {
-        complete(error);
+        complete(error instanceof Error ? error : new Error(String(error)));
       }
     });
   }
 
-  function call(method, params) {
+  function call(method: string, params: CommandParams) {
     if (closed) return Promise.reject(closed);
     const id = "studio-command:" + randomUUID();
     return new Promise((resolve, reject) => {
@@ -143,7 +180,9 @@ export function createCommandTransport({
       },
     );
     child.stderr.on("data", stderr);
-    exited = new Promise((resolve) => child.once("exit", resolve));
+    exited = new Promise<void>((resolve) =>
+      child?.once("exit", () => resolve()),
+    );
     child.on("error", (error) =>
       fail(
         new Error("Command executor failed; outcome unknown: " + error.message),
@@ -165,7 +204,7 @@ export function createCommandTransport({
     );
     const lines = createInterface({ input: child.stdout });
     lines.on("line", (line) => {
-      let message;
+      let message: CommandReply;
       try {
         message = JSON.parse(line);
       } catch {
@@ -214,7 +253,7 @@ export function createCommandTransport({
     }
   }
 
-  async function handle(method, params = {}) {
+  async function handle(method: string, params: CommandParams = {}) {
     if (!commandMethods.has(method))
       throw new Error("Unsupported command executor method: " + method);
     if (closed || closing)
@@ -240,10 +279,13 @@ export function createCommandTransport({
     if (closed || closing)
       throw closed || new Error("Command executor is closing");
     if (method !== "command/exec") return call(method, params);
+    const processId = params.processId;
+    if (typeof processId !== "string")
+      throw new Error("Studio commands require a processId");
     // Reserve before submission. A crash or lost reply never permits a replay.
     const file = path.join(
       reservations,
-      createHash("sha256").update(params.processId).digest("hex") + ".json",
+      createHash("sha256").update(processId).digest("hex") + ".json",
     );
     try {
       const reservation = await fs.open(file, "wx", 0o600);
@@ -262,7 +304,12 @@ export function createCommandTransport({
         await directory.close();
       }
     } catch (error) {
-      if (error.code === "EEXIST")
+      if (
+        error &&
+        typeof error === "object" &&
+        "code" in error &&
+        error.code === "EEXIST"
+      )
         throw new Error(
           "This command processId was already submitted or reserved; do not replay it",
         );
@@ -273,11 +320,11 @@ export function createCommandTransport({
         closed ||
         new Error("Command executor is closing; command was not submitted")
       );
-    active.add(params.processId);
+    active.add(processId);
     try {
       return await call(method, params);
     } finally {
-      active.delete(params.processId);
+      active.delete(processId);
     }
   }
 
@@ -285,7 +332,7 @@ export function createCommandTransport({
     if (closing) return closing;
     closing = (async () => {
       if (!closed && child) {
-        let timer;
+        let timer: ReturnType<typeof setTimeout> | undefined;
         await Promise.race([
           Promise.allSettled(
             [...active].map((processId) =>
@@ -304,7 +351,7 @@ export function createCommandTransport({
       rejectPending(closed);
       if (child && child.exitCode === null && child.signalCode === null) {
         child.stdin.end();
-        let timer;
+        let timer: ReturnType<typeof setTimeout> | undefined;
         await Promise.race([
           exited,
           new Promise((resolve) => {

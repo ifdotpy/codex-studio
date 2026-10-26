@@ -1,3 +1,27 @@
+import type { Session, Turn } from "./session-state.ts";
+
+export type ToolClock = {
+  startedAt: number;
+  timeoutMs: number | null;
+  tool?: string;
+};
+export type Stall = ToolClock & {
+  id: string;
+  elapsedMs: number;
+  silentMs: number;
+};
+export type StallLimits = Pick<
+  ReturnType<typeof stallLimits>,
+  "graceMs" | "silenceMs"
+>;
+export type WatchedQuery = {
+  turn?: Turn | null;
+  stall?: unknown;
+  session?: Session;
+  toolClocks: Map<string, ToolClock>;
+  lastEventAt: number;
+};
+
 // Studio's watchdog for a Claude tool call that never returns.
 //
 // Claude Code bounds the work inside a tool (Bash moves a command to the
@@ -7,7 +31,7 @@
 // owns this limit. Waits that Studio owns (approvals, questions, Studio tool
 // calls) are never stalls: the bridge tracks them and pauses the clock.
 
-const positive = (value) => {
+const positive = (value: unknown) => {
   const number = Number(value);
   return Number.isFinite(number) && number > 0 ? number : null;
 };
@@ -19,7 +43,10 @@ const positive = (value) => {
 const CLAUDE_BASH_DEFAULT_TIMEOUT_MS = 120_000;
 const CLAUDE_BASH_MAX_TIMEOUT_MS = 600_000;
 
-export function bashTimeoutMs(input, env = process.env) {
+export function bashTimeoutMs(
+  input: { timeout?: unknown } | null | undefined,
+  env = process.env,
+) {
   const fallback =
     positive(env.BASH_DEFAULT_TIMEOUT_MS) ?? CLAUDE_BASH_DEFAULT_TIMEOUT_MS;
   const ceiling = Math.max(
@@ -30,7 +57,13 @@ export function bashTimeoutMs(input, env = process.env) {
 }
 
 // The time limit a tool declares for itself, in milliseconds, or null.
-export function declaredTimeoutMs(block, env = process.env) {
+export function declaredTimeoutMs(
+  block:
+    | { name?: string; input?: { timeout?: unknown } | null }
+    | null
+    | undefined,
+  env = process.env,
+) {
   return block?.name === "Bash" ? bashTimeoutMs(block.input, env) : null;
 }
 
@@ -67,7 +100,12 @@ export function stallLimits(env = process.env) {
 // The first stalled tool clock, or null. `clocks` maps a tool_use id to
 // { startedAt, timeoutMs }; `lastEventAt` is the time of the newest message
 // from the CLI. All times are epoch milliseconds.
-export function findStall(clocks, now, lastEventAt, limits) {
+export function findStall(
+  clocks: Map<string, ToolClock>,
+  now: number,
+  lastEventAt: number,
+  limits: StallLimits,
+) {
   for (const [id, clock] of clocks) {
     if (now >= stallDeadline(clock, lastEventAt, limits))
       return {
@@ -81,7 +119,11 @@ export function findStall(clocks, now, lastEventAt, limits) {
 }
 
 // Epoch milliseconds when both the tool budget and required silence expire.
-function stallDeadline(clock, lastEventAt, limits) {
+function stallDeadline(
+  clock: ToolClock,
+  lastEventAt: number,
+  limits: StallLimits,
+) {
   return clock.timeoutMs == null
     ? lastEventAt + limits.silenceMs
     : Math.max(
@@ -95,11 +137,20 @@ const MAX_STALL_TIMER_DELAY_MS = 2_147_483_647;
 
 // One timer for the nearest unfinished tool call; Studio-owned waits and idle
 // queries have no deadline. The bridge rearms after changing their state.
-export function watchStalls(queries, studioWaits, limits, recoverStall) {
-  let timer;
+export function watchStalls<Q extends WatchedQuery>(
+  queries: Map<string, Q>,
+  studioWaits: Map<string, number>,
+  limits: StallLimits,
+  recoverStall: (
+    session: Session | undefined,
+    active: Q,
+    stall: Stall,
+  ) => unknown,
+) {
+  let timer: ReturnType<typeof setTimeout> | undefined;
   let armedAt = Infinity;
   let disposed = false;
-  const eligible = (id, active) =>
+  const eligible = (id: string, active: Q) =>
     active.turn && !active.stall && active.session && !studioWaits.get(id);
   function arm() {
     if (disposed) return;
@@ -146,14 +197,15 @@ export function watchStalls(queries, studioWaits, limits, recoverStall) {
   return arm;
 }
 
-const count = (value, unit) => value + " " + unit + (value === 1 ? "" : "s");
+const count = (value: number, unit: string) =>
+  value + " " + unit + (value === 1 ? "" : "s");
 // A duration in milliseconds as plain text, for notices.
-export const durationText = (ms) =>
+export const durationText = (ms: number) =>
   ms >= 60_000
     ? count(Math.round(ms / 60_000), "minute")
     : count(Math.max(1, Math.round(ms / 1000)), "second");
 
-export function stallMessage(stall) {
+export function stallMessage(stall: Stall) {
   const limit =
     stall.timeoutMs == null
       ? "Claude Code sent no event for " + durationText(stall.silentMs)

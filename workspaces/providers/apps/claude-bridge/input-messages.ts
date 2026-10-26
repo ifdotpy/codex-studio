@@ -1,16 +1,33 @@
-import { HUMAN_INPUT, STUDIO_EVENT_INPUT } from "./input-origin.generated.mjs";
+import type { SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
+
+export type InputGroup = {
+  origin: typeof HUMAN_INPUT | typeof STUDIO_EVENT_INPUT;
+  blocks: Exclude<SDKUserMessage["message"]["content"], string>;
+};
+export type StudioInputMessage = SDKUserMessage & {
+  uuid: string;
+  text_not_typed?: boolean;
+  studioInputIdentity?: string;
+  studioInputBatch?: StudioInputMessage[];
+};
+
+import { HUMAN_INPUT, STUDIO_EVENT_INPUT } from "./input-origin.generated.ts";
 
 // Validate every origin before conversion or submission. An omitted field is
 // the legacy human-input contract; unknown provenance must not become human.
-export async function inputGroups(input, convert) {
-  const groups = [];
+export async function inputGroups<T extends object, B>(
+  input: T[] | null | undefined,
+  convert: (input: T[]) => Promise<B>,
+) {
+  const groups: { origin: InputGroup["origin"]; input: T[] }[] = [];
   for (const item of input || []) {
-    const origin =
-      item.inputOrigin === undefined ? HUMAN_INPUT : item.inputOrigin;
+    const suppliedOrigin = "inputOrigin" in item ? item.inputOrigin : undefined;
+    const origin = suppliedOrigin === undefined ? HUMAN_INPUT : suppliedOrigin;
     if (origin !== HUMAN_INPUT && origin !== STUDIO_EVENT_INPUT)
       throw new Error("Unsupported Claude input origin: " + origin);
     if (groups.at(-1)?.origin !== origin) groups.push({ origin, input: [] });
-    groups.at(-1).input.push(item);
+    const group = groups.at(-1);
+    if (group) group.input.push(item);
   }
   if (!groups.length) groups.push({ origin: HUMAN_INPUT, input: input || [] });
   return Promise.all(
@@ -28,10 +45,15 @@ export async function inputGroups(input, convert) {
 // meta (chunk-2jyw98bz.js:22214-22216, 22339-22363). It is not human framing.
 // text_not_typed suppresses slash, mention, and skill expansion (:9650-9652
 // in chunk-5c94ftfz.js); it does not supply authority by itself.
-export function sdkInputMessages(sessionId, identity, groups, nativeId) {
+export function sdkInputMessages(
+  sessionId: string,
+  identity: string,
+  groups: InputGroup[],
+  nativeId: (id: string) => NonNullable<SDKUserMessage["uuid"]>,
+): StudioInputMessage[] {
   return groups.map(({ origin, blocks }, index) => {
     const last = index === groups.length - 1;
-    const message = {
+    const message: StudioInputMessage = {
       type: "user",
       uuid: nativeId(last ? identity : `${identity}:part:${index}`),
       session_id: sessionId,
@@ -54,7 +76,9 @@ export function sdkInputMessages(sessionId, identity, groups, nativeId) {
 
 // Ordered native UUIDs of one logical input. The final UUID keeps the logical
 // input identity; the first UUID is its history boundary, never a checkpoint.
-export function nativeInputIds(item) {
+export function nativeInputIds(
+  item: { nativeIds?: string[]; nativeId?: string } | null | undefined,
+) {
   const ids = item?.nativeIds ?? [item?.nativeId];
   if (
     !Array.isArray(ids) ||
