@@ -232,7 +232,7 @@ test("fails when the identity is not in the keychain", () =>
 test("the unlock error names the security cause and hides the password", () => {
   const output = execFileSync(
     process.execPath,
-    [path.join(desktop, "signing-test.mjs"), "--unlock-contract"],
+    [path.join(desktop, "signing-test.ts"), "--unlock-contract"],
     { encoding: "utf8" },
   );
   assert.match(output, /^PASS: /);

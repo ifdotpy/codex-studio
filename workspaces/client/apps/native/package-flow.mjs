@@ -22,7 +22,7 @@ import {
   releaseTargetDirectory,
   releaseTargetEnvironment,
   verifyReleaseBinaries,
-} from "../desktop/release-binaries.mjs";
+} from "../desktop/release-binaries.ts";
 
 const root = path.dirname(fileURLToPath(import.meta.url));
 const repository = path.resolve(root, "../../../..");
