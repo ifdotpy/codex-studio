@@ -34,8 +34,8 @@ type PendingInput = {
   [K in "id" | "agent" | "status"]: components["schemas"]["EventEntityDto"][K];
 };
 type JsonObject = Record<string, components["schemas"]["JsonValue"]>;
-import { RETAINED_INPUT_STATUSES } from "./scaleVerifierHelpers.mjs";
-import { readRetainedInputRows } from "./verify-rust-chat-scale.mjs";
+import { RETAINED_INPUT_STATUSES } from "./scaleVerifierHelpers.ts";
+import { readRetainedInputRows } from "./verify-rust-chat-scale.ts";
 
 // Strict post-run audit of verify-ui-team-scale.ts: pure functions over the
 // lead and worker transcripts, the lead's tool requests, the backend journal,

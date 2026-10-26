@@ -50,7 +50,7 @@ export default {
       "src/apiSchema.test.ts",
       "src/chatScope.test.ts",
       "src/hooks/conversationData.test.ts",
-      "src/scaleVerifierHelpers.test.mjs",
+      "src/scaleVerifierHelpers.test.ts",
       "src/uiTeamScaleHelpers.test.ts",
       "src/uiTeamScaleAudit.test.ts",
       "src/verifyRustChatLifecycle.test.mjs",

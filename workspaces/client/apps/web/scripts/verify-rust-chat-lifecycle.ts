@@ -10,7 +10,7 @@ import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { isAbsolute, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
-import { SCALE_PROVIDER, requireScaleModel } from "./scaleVerifierHelpers.mjs";
+import { SCALE_PROVIDER, requireScaleModel } from "./scaleVerifierHelpers.ts";
 
 type ApiSchemas = components["schemas"];
 type Options = {

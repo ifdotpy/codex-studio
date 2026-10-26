@@ -113,7 +113,7 @@ export type SummaryJournal = {
   audit?: Audit;
 };
 import assert from "node:assert/strict";
-import { assertStoredScaleProfile } from "./scaleVerifierHelpers.mjs";
+import { assertStoredScaleProfile } from "./scaleVerifierHelpers.ts";
 import { auditSummaryLines } from "./uiTeamScaleAudit.ts";
 
 // Helpers of verify-ui-team-scale.ts. Every value below has one owner:
