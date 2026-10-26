@@ -1,6 +1,8 @@
 import type { BridgeError } from "./bridge-protocol.ts";
 import type { Stats } from "node:fs";
 import type { Session, ControlReceipt } from "./session-state.ts";
+import type { ControlDependencies } from "./controls.ts";
+import type { NativeBackup } from "./file-restore.ts";
 import type { NativeFileRecord } from "./file-restore.ts";
 import type {
   Query,
@@ -20,141 +22,164 @@ import {
 } from "./file-restore.ts";
 import { rollbackSession } from "./controls.ts";
 
-async function fixture(
-  run: (fixture: Awaited<ReturnType<typeof createFixture>>) => Promise<void>,
-) {
+type Fixture = {
+  cwd: string;
+  config: string;
+  state: string;
+  backups: string;
+  history: string;
+  entries: Record<"a.txt" | "b.txt", NativeBackup & { backupFileName: string }>;
+  rows: NativeFileRecord[];
+  session: Session;
+  messages: SessionMessage[];
+  deps: Omit<ControlDependencies, "persist"> & {
+    persist: (session: Pick<Session, "controlRequests">) => Promise<void>;
+  };
+  request: Required<
+    Pick<
+      Parameters<typeof rollbackSession>[1],
+      "requestId" | "turnId" | "restoreFiles"
+    >
+  >;
+  receipt: (
+    status: ControlReceipt["status"],
+    filePlan: NonNullable<ControlReceipt["filePlan"]>,
+    filesRestored?: boolean,
+  ) => ControlReceipt;
+};
+async function fixture(run: (fixture: Fixture) => Promise<void>) {
   const root = await fs.realpath(
     await fs.mkdtemp(path.join(os.tmpdir(), "file-rewind-")),
   );
   try {
-    await run(await createFixture(root));
+    const cwd = path.join(root, "workspace"),
+      config = path.join(root, "config"),
+      state = path.join(root, "state");
+    const native = randomUUID(),
+      message = randomUUID();
+    await fs.mkdir(cwd);
+    await fs.mkdir(path.join(config, "projects", "fixture"), {
+      recursive: true,
+    });
+    const backups = path.join(config, "file-history", native);
+    await fs.mkdir(backups, { recursive: true });
+    const entries = {
+      "a.txt": { backupFileName: "0123456789abcdef@v1", version: 1 },
+      "b.txt": { backupFileName: "fedcba9876543210@v1", version: 1 },
+    };
+    for (const [name, entry] of Object.entries(entries)) {
+      await fs.writeFile(path.join(cwd, name), "user " + name);
+      await fs.writeFile(
+        path.join(backups, entry.backupFileName),
+        "old " + name,
+      );
+    }
+    const history = path.join(config, "projects", "fixture", native + ".jsonl");
+    const rows: NativeFileRecord[] = [
+      {
+        type: "file-history-snapshot",
+        messageId: message,
+        snapshot: { messageId: message, trackedFileBackups: entries },
+      },
+    ];
+    await fs.writeFile(
+      history,
+      rows.map((row) => JSON.stringify(row)).join("\n") + "\n",
+    );
+    const session: Session = {
+      id: native,
+      nativeId: native,
+      cwd,
+      started: true,
+      turns: [
+        {
+          id: message,
+          status: "completed",
+          items: [],
+          fileCheckpointMessageId: message,
+          fileCheckpointSource: { nativeId: native, cwd },
+        },
+      ],
+    };
+    const messages: SessionMessage[] = [
+      {
+        type: "user",
+        uuid: message,
+        session_id: native,
+        parent_tool_use_id: null,
+        parent_agent_id: null,
+        message: { content: "edit" },
+      },
+    ];
+    const deps = {
+      forkSession: async () => {
+        throw new Error("first-turn rollback must not fork");
+      },
+      getSessionMessages: async () => messages,
+      persist: async (
+        _session: Pick<Session, "controlRequests">,
+      ): Promise<void> => {},
+      prepareFileRestore: (
+        s: Parameters<typeof prepareFileRestore>[0],
+        m: Parameters<typeof prepareFileRestore>[1],
+        id: string,
+      ) => prepareFileRestore(s, m, id, state, config),
+      verifyFileRestore,
+      rewindFiles: async (
+        _native: string,
+        _message: string,
+        { dryRun }: NonNullable<Parameters<Query["rewindFiles"]>[1]>,
+      ): Promise<RewindFilesResult> => {
+        if (!dryRun)
+          for (const [name, entry] of Object.entries(entries))
+            await fs.copyFile(
+              path.join(backups, entry.backupFileName),
+              path.join(cwd, name),
+            );
+        return { canRewind: true, skippedLinks: 0 };
+      },
+    };
+    const receipt = (
+      status: ControlReceipt["status"],
+      filePlan: NonNullable<ControlReceipt["filePlan"]>,
+      filesRestored = false,
+    ): ControlReceipt => ({
+      kind: "rollback",
+      turnId: message,
+      sourceNativeId: native,
+      createdAt: "2026-09-01T00:00:00Z",
+      retainedCount: 0,
+      upToMessageId: null,
+      status,
+      filePlan,
+      ...(filesRestored
+        ? {
+            result: {
+              threadId: native,
+              nativeId: native,
+              removedTurns: 0,
+              filesRestored,
+            },
+          }
+        : {}),
+    });
+    await run({
+      receipt,
+      cwd,
+      config,
+      state,
+      backups,
+      entries,
+      history,
+      rows,
+      session,
+      messages,
+      deps,
+      request: { requestId: "restore", turnId: message, restoreFiles: true },
+    });
   } finally {
     await fs.rm(root, { recursive: true, force: true });
   }
-}
-async function createFixture(root: string) {
-  const cwd = path.join(root, "workspace"),
-    config = path.join(root, "config"),
-    state = path.join(root, "state");
-  const native = randomUUID(),
-    message = randomUUID();
-  await fs.mkdir(cwd);
-  await fs.mkdir(path.join(config, "projects", "fixture"), {
-    recursive: true,
-  });
-  const backups = path.join(config, "file-history", native);
-  await fs.mkdir(backups, { recursive: true });
-  const entries = {
-    "a.txt": { backupFileName: "0123456789abcdef@v1", version: 1 },
-    "b.txt": { backupFileName: "fedcba9876543210@v1", version: 1 },
-  };
-  for (const [name, entry] of Object.entries(entries)) {
-    await fs.writeFile(path.join(cwd, name), "user " + name);
-    await fs.writeFile(path.join(backups, entry.backupFileName), "old " + name);
-  }
-  const history = path.join(config, "projects", "fixture", native + ".jsonl");
-  const rows: NativeFileRecord[] = [
-    {
-      type: "file-history-snapshot",
-      messageId: message,
-      snapshot: { messageId: message, trackedFileBackups: entries },
-    },
-  ];
-  await fs.writeFile(
-    history,
-    rows.map((row) => JSON.stringify(row)).join("\n") + "\n",
-  );
-  const session: Session = {
-    id: native,
-    nativeId: native,
-    cwd,
-    started: true,
-    turns: [
-      {
-        id: message,
-        status: "completed",
-        items: [],
-        fileCheckpointMessageId: message,
-        fileCheckpointSource: { nativeId: native, cwd },
-      },
-    ],
-  };
-  const messages: SessionMessage[] = [
-    {
-      type: "user",
-      uuid: message,
-      session_id: native,
-      parent_tool_use_id: null,
-      parent_agent_id: null,
-      message: { content: "edit" },
-    },
-  ];
-  const deps = {
-    forkSession: async () => {
-      throw new Error("first-turn rollback must not fork");
-    },
-    getSessionMessages: async () => messages,
-    persist: async (
-      _session: Pick<Session, "controlRequests">,
-    ): Promise<void> => {},
-    prepareFileRestore: (
-      s: Parameters<typeof prepareFileRestore>[0],
-      m: Parameters<typeof prepareFileRestore>[1],
-      id: string,
-    ) => prepareFileRestore(s, m, id, state, config),
-    verifyFileRestore,
-    rewindFiles: async (
-      _native: string,
-      _message: string,
-      { dryRun }: NonNullable<Parameters<Query["rewindFiles"]>[1]>,
-    ): Promise<RewindFilesResult> => {
-      if (!dryRun)
-        for (const [name, entry] of Object.entries(entries))
-          await fs.copyFile(
-            path.join(backups, entry.backupFileName),
-            path.join(cwd, name),
-          );
-      return { canRewind: true, skippedLinks: 0 };
-    },
-  };
-  const receipt = (
-    status: ControlReceipt["status"],
-    filePlan: NonNullable<ControlReceipt["filePlan"]>,
-    filesRestored = false,
-  ): ControlReceipt => ({
-    kind: "rollback",
-    turnId: message,
-    sourceNativeId: native,
-    createdAt: "2026-09-01T00:00:00Z",
-    retainedCount: 0,
-    upToMessageId: null,
-    status,
-    filePlan,
-    ...(filesRestored
-      ? {
-          result: {
-            threadId: native,
-            nativeId: native,
-            removedTurns: 0,
-            filesRestored,
-          },
-        }
-      : {}),
-  });
-  return {
-    receipt,
-    cwd,
-    config,
-    state,
-    backups,
-    entries,
-    history,
-    rows,
-    session,
-    messages,
-    deps,
-    request: { requestId: "restore", turnId: message, restoreFiles: true },
-  };
 }
 
 test("partial SDK success without skipped links retains context and durable before files", async () =>
@@ -494,7 +519,7 @@ test("full quota releases settled copies, preserves unresolved copies and retrie
         return true;
       },
     );
-    assert.equal((f.session as Session).controlRequests?.restore, undefined);
+    assert.equal((f.session as Session).controlRequests!.restore, undefined);
     assert.equal(
       (await fileBackups(owner, null, f.state, f.deps.persist)).count,
       MAX_BEFORE_RESTORE_COPIES,
