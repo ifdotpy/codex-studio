@@ -1,4 +1,5 @@
-import { fixtureUrl, usageFixtureServer } from "./fixture-server.ts";
+import { fixtureOrigin } from "../misc-fixture.ts";
+import { usageFixtureServer } from "./fixture-server.ts";
 // Hidden browser fixture for the production limits and organization components.
 // Screenshots stay outside the checkout.
 import type { GetResult } from "../../src/apiTypes.ts";
@@ -73,7 +74,7 @@ test("Rust model decisions and safe Claude organizations at 320 and 1200 pixels"
         } else
           await route.fulfill({ json: { items: [], accounts: [], cost: 0 } });
       });
-      await page.goto(fixtureUrl(server));
+      await page.goto(fixtureOrigin(server));
       // The chat notice is one plain line; the details stay on the limits page.
       await page
         .locator("[data-notice]")

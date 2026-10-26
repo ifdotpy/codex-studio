@@ -1,7 +1,9 @@
+import { createFixtureViteServer as createServer } from "../playwright.ts";
+import { fixtureOrigin } from "../misc-fixture.ts";
+import type {} from "./native-model-selection-browser.fixture.tsx";
 import { mkdtemp, mkdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createRequire } from "node:module";
 import { test, expect } from "../playwright.ts";
 
 // No backend: exercise the real picker with a small, deterministic catalog.
@@ -10,10 +12,8 @@ test("native model group has one Tab stop and ArrowUp wraps from the selected mo
 }) => {
   test.setTimeout(120000);
   const root = join(import.meta.dirname, "../..");
-  const require = createRequire(join(root, "package.json"));
-  const { createServer } = await import(require.resolve("vite"));
+
   const cacheDir = await mkdtemp(join(tmpdir(), "native-model-picker-"));
-  const entry = join(root, "native-model-fixture.tsx");
   const server = await createServer({
     root,
     configFile: false,
@@ -26,30 +26,16 @@ test("native model group has one Tab stop and ArrowUp wraps from the selected mo
           server.middlewares.use("/check", (_req, res) => {
             res.setHeader("Content-Type", "text/html");
             res.end(
-              '<!doctype html><meta name="viewport" content="width=device-width,initial-scale=1"><div id="root"></div><script type="module" src="/native-model-fixture.tsx"></script>',
+              '<!doctype html><meta name="viewport" content="width=device-width,initial-scale=1"><div id="root"></div><script type="module" src="/tests/models/native-model-selection-browser.fixture.tsx"></script>',
             );
           });
-        },
-        resolveId(id) {
-          if (id === "/native-model-fixture.tsx") return entry;
-        },
-        load(id) {
-          if (id !== entry) return;
-          return `import React,{useState} from 'react';
-import {createRoot} from 'react-dom/client';
-import {MantineProvider,Stack,Paper,Button} from '@mantine/core';
-import '@mantine/core/styles.css';
-import {AgentSetupPicker} from '/src/components/agents/AgentSetupPicker.tsx';
-import {ModelField} from '/src/components/models/ModelField.tsx';
-import '/src/components/agents/execution-settings.css';
-function Fixture(){const[model,onModel]=useState('sol');return <MantineProvider forceColorScheme={new URLSearchParams(location.search).get('theme')||'light'}><Paper p="sm"><Stack gap="xs"><Button id="before">Before models</Button><AgentSetupPicker role="orchestrator" roles={[]} onRole={()=>{}} provider="codex" providers={[]} onProvider={()=>{}} accounts={[]} accountKey="" onAccount={()=>{}} models={[{value:'astra',label:'Astra 6',provider:'codex',badges:['default']},{value:'unavailable',label:'Unavailable model',provider:'codex',badges:[],disabled:true,disabledReason:'Unavailable on this account'},{value:'sol',label:'Sol 6.1',provider:'codex',badges:[]},{value:'opus',label:'Opus 4.6',provider:'claude',badges:[]}]} model={model} onModel={onModel} modelLabel="Model" efforts={[]} effort="" onEffort={()=>{}} effortLabel="Reasoning" disabled={false} fastAvailable={false} fast={false} onFast={()=>{}} daybreakAvailable={false} daybreak={false} onDaybreak={()=>{}}/><Button id="after">After models</Button><ModelField presentation="select" label="Compact model" value={model} onChange={onModel} options={[{value:'__model_default__',label:'Same as main agent',provider:'codex',badges:[]},{value:'astra',label:'Astra 6',provider:'codex',description:'General coding',badges:['default','current']},{value:'unavailable',label:'Unavailable model',provider:'codex',badges:[],disabledReason:'Unavailable on this account'},{value:'opus',label:'Opus 4.6',provider:'claude',description:'Careful reasoning',badges:[]}]}/><ModelField presentation="select" label="Resolved Claude model" value="claude-opus-5-5" onChange={value=>window.compactAlias=value} options={[{value:'default',resolvedModel:'claude-opus-5-5',label:'Opus 5.5',provider:'claude',badges:['default'],description:'Provider default'},{value:'opus',resolvedModel:'claude-opus-5-5',label:'Opus 5.5',provider:'claude',badges:[],description:'Available Opus model'}]}/></Stack></Paper></MantineProvider>};createRoot(document.getElementById('root')).render(<Fixture/>);`;
         },
       },
     ],
   });
   await server.listen();
   try {
-    const url = server.resolvedUrls.local[0] + "check";
+    const url = fixtureOrigin(server) + "/check";
     await page.goto(url);
     const resolved = page.getByRole("combobox", {
       name: "Resolved Claude model",
@@ -61,7 +47,9 @@ function Fixture(){const[model,onModel]=useState('sol');return <MantineProvider 
       page.getByText("Available Opus model", { exact: true }),
     ).toBeVisible();
     await resolved.selectOption("default");
-    expect(await page.evaluate(() => window.compactAlias)).toBe("default");
+    expect(
+      await page.evaluate(() => window.nativeModelFixture.compactAlias),
+    ).toBe("default");
 
     await expect(page.locator("#model")).toBeVisible();
     if (process.env.NATIVE_MODEL_SCREENSHOTS) {

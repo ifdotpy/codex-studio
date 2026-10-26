@@ -1,14 +1,16 @@
+import { waitForFixturePort } from "../../../tests/fixture-readiness.ts";
 import {
   test,
   expect,
   rustUiFixture,
   spawnFixture as spawn,
 } from "../../../tests/playwright.ts";
+import type { Page } from "@playwright/test";
 import { mkdir, mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-async function focusGeometry(page) {
+async function focusGeometry(page: Page) {
   return page.locator(":focus").evaluate((element) => {
     const style = getComputedStyle(element);
     const rect = element.getBoundingClientRect();
@@ -29,11 +31,12 @@ async function focusGeometry(page) {
     const strip = element.closest(".fleet-strip");
     const stripStyle = strip && getComputedStyle(strip);
     const ancestors = [];
-    for (let node = element; node; node = node.parentElement)
+    for (let node: Element | null = element; node; node = node.parentElement)
       ancestors.push(node);
     const canvas = document.createElement("canvas");
     canvas.width = canvas.height = 1;
     const context = canvas.getContext("2d");
+    if (!context) throw new Error("Missing canvas context");
     context.fillStyle = "white";
     context.fillRect(0, 0, 1, 1);
     for (const node of [...ancestors].reverse()) {
@@ -45,7 +48,7 @@ async function focusGeometry(page) {
     context.fillStyle = style.outlineColor;
     context.fillRect(0, 0, 1, 1);
     const foreground = [...context.getImageData(0, 0, 1, 1).data].slice(0, 3);
-    const luminance = (rgb) =>
+    const luminance = (rgb: number[]) =>
       rgb
         .map((channel) => {
           const value = channel / 255;
@@ -54,7 +57,8 @@ async function focusGeometry(page) {
             : ((value + 0.055) / 1.055) ** 2.4;
         })
         .reduce(
-          (sum, value, index) => sum + value * [0.2126, 0.7152, 0.0722][index],
+          (sum, value, index) =>
+            sum + value * ([0.2126, 0.7152, 0.0722][index] ?? 0),
           0,
         );
     const values = [luminance(background), luminance(foreground)].sort(
@@ -71,7 +75,9 @@ async function focusGeometry(page) {
       );
     });
     return {
-      name: element.getAttribute("aria-label") || element.textContent.trim(),
+      name:
+        element.getAttribute("aria-label") ||
+        (element.textContent ?? "").trim(),
       className: element.className,
       tag: element.tagName,
       keyboard: element.matches(":focus-visible"),
@@ -92,21 +98,22 @@ async function focusGeometry(page) {
         className: node.className,
         bounds: node.getBoundingClientRect().toJSON(),
       })),
-      contrast: (values[0] + 0.05) / (values[1] + 0.05),
+      contrast: (Math.max(...values) + 0.05) / (Math.min(...values) + 0.05),
       scope: element.closest("#sidebar")
         ? "sidebar"
         : element.closest(".fleet-menu")
           ? "menu"
           : "outside",
       priority: !!element.closest(".fleet-attention"),
-      state: strip?.dataset.studioState,
+      state:
+        strip instanceof HTMLElement ? strip.dataset.studioState : undefined,
       duplicates: ancestors
         .slice(1)
         .filter((node) => node.matches(":focus-visible")).length,
     };
   });
 }
-async function checkFocus(page) {
+async function checkFocus(page: Page) {
   const geometry = await focusGeometry(page);
   expect(geometry.keyboard, geometry.name).toBe(true);
   expect(geometry.outline, geometry.name).toBe("solid");
@@ -140,17 +147,12 @@ test("sidebar keyboard focus is consistent, unclipped and visible without state 
     },
   });
   let errors = "";
-  proc.stderr.on("data", (chunk) => {
+  proc.stderr?.on("data", (chunk) => {
     errors += chunk;
   });
   try {
-    const port = await new Promise((resolve, reject) => {
-      proc.stdout.once("data", (chunk) =>
-        resolve(Number(String(chunk).trim())),
-      );
-      proc.once("exit", () => reject(new Error(errors)));
-    });
-    for (const scheme of ["light", "dark"])
+    const port = await waitForFixturePort(proc, { diagnostics: () => errors });
+    for (const scheme of ["light", "dark"] as const)
       for (const width of [1440, 390, 320]) {
         const context = await browser.newContext({
           colorScheme: scheme,

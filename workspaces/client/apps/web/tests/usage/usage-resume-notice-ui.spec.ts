@@ -1,6 +1,7 @@
+import { fixtureOrigin } from "../misc-fixture.ts";
 import type { PostBody, PostResult } from "../../src/apiTypes.ts";
 import { fixturePostBody } from "./fixture-server.ts";
-import { fixtureUrl, usageFixtureServer } from "./fixture-server.ts";
+import { usageFixtureServer } from "./fixture-server.ts";
 import assert from "node:assert/strict";
 import { test } from "../playwright.ts";
 
@@ -37,7 +38,7 @@ test("Usage resume notice", async ({ context: testContext }) => {
         } satisfies PostResult<"/api/usage-resume">,
       });
     });
-    await page.goto(fixtureUrl(server) + `?dueAt=${dueAt}`);
+    await page.goto(fixtureOrigin(server) + `?dueAt=${dueAt}`);
     const notices = page.locator(".account-limit-recovery.inline");
     await notices.first().waitFor();
     const notice = notices.filter({ hasText: "Usage limit reached" }).first();

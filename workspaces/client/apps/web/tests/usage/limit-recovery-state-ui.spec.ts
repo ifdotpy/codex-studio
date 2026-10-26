@@ -1,4 +1,5 @@
-import { fixtureUrl, usageFixtureServer } from "./fixture-server.ts";
+import { fixtureOrigin } from "../misc-fixture.ts";
+import { usageFixtureServer } from "./fixture-server.ts";
 // Current quota recovery and immutable history through real React components.
 
 import assert from "node:assert/strict";
@@ -35,7 +36,7 @@ test("Limit Recovery State Ui", async ({
             : {},
       });
     });
-    await page.goto(fixtureUrl(server) + `?now=${now}`);
+    await page.goto(fixtureOrigin(server) + `?now=${now}`);
     await page.locator(".account-limits-panel").waitFor();
     const originalError = await page.locator("#saved-error").textContent();
     const assertBanner = async (visible: boolean) => {

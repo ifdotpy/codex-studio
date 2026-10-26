@@ -1,3 +1,4 @@
+import { waitForFixturePort } from "../../../tests/fixture-readiness.ts";
 import {
   test,
   expect,
@@ -26,15 +27,12 @@ test("fresh phone entry shows the board; explicit opens, Back and resume preserv
     },
   });
   let errors = "";
-  fixture.stderr.on("data", (chunk) => {
+  fixture.stderr?.on("data", (chunk) => {
     errors += chunk;
   });
   try {
-    const port = await new Promise((resolve, reject) => {
-      fixture.stdout.once("data", (chunk) =>
-        resolve(Number(String(chunk).trim())),
-      );
-      fixture.once("exit", () => reject(new Error(errors)));
+    const port = await waitForFixturePort(fixture, {
+      diagnostics: () => errors,
     });
     const origin = `http://127.0.0.1:${port}`;
     const snapshot = await readTestState(origin);
@@ -44,7 +42,9 @@ test("fresh phone entry shows the board; explicit opens, Back and resume preserv
     const other = snapshot.runtime.agents.find(
       (agent) => agent.name === "Other project",
     );
-    for (const scheme of ["light", "dark"]) {
+    if (!lead?.name || !other?.name)
+      throw new Error("Missing named fixture leads");
+    for (const scheme of ["light", "dark"] as const) {
       for (const width of [390, 320]) {
         const context = await browser.newContext({
           viewport: { width, height: 844 },
@@ -112,6 +112,7 @@ test("fresh phone entry shows the board; explicit opens, Back and resume preserv
         const activeMenu = strip.locator("..").locator(".row-actions");
         await expect(activeMenu).toHaveCSS("opacity", "1");
         const target = await activeMenu.boundingBox();
+        if (!target) throw new Error("Missing active menu bounds");
         expect(target.width).toBeGreaterThanOrEqual(44);
         expect(target.height).toBeGreaterThanOrEqual(44);
         await strip.click();
@@ -136,7 +137,7 @@ test("fresh phone entry shows the board; explicit opens, Back and resume preserv
             window.dispatchEvent(
               new PageTransitionEvent("pageshow", { persisted: true }),
             );
-            delete document.visibilityState;
+            Reflect.deleteProperty(document, "visibilityState");
           })(),
         );
         await expect(board).toBeHidden();

@@ -1,3 +1,6 @@
+import type { Page } from "@playwright/test";
+import type { PostBody } from "../../src/api.ts";
+import { fixturePostBody } from "../misc-fixture.ts";
 import { mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import { test, expect } from "../playwright.ts";
@@ -20,9 +23,9 @@ async function setup(
   signed = false,
   provider = "codex",
 ) {
-  const creations = [];
-  const changes = [];
-  const modelReads = [];
+  const creations: PostBody<"/api/leads">[] = [];
+  const changes: PostBody<"/api/conversation">[] = [];
+  const modelReads: Record<string, string>[] = [];
   const claudeModels = [
     {
       ...models[0],
@@ -97,21 +100,23 @@ async function setup(
         return true;
       }
       if (url.pathname === "/api/conversation" && request.method === "POST") {
-        changes.push(body);
+        changes.push(fixturePostBody<"/api/conversation">(body));
         json({});
         return true;
       }
       if (url.pathname === "/api/leads") {
-        creations.push(body);
-        const row = {
+        const creation = fixturePostBody<"/api/leads">(body);
+        creations.push(creation);
+        if (!creation.id) throw new Error("Missing new chat request id");
+        const row: import("../../src/types.ts").Agent = {
           ...snapshot.threads[0],
-          id: body.id,
+          id: creation.id,
           name: "New chat",
-          cwd: body.cwd,
-          model: body.model,
-          effort: body.effort,
-          workspaceMode: body.workspaceMode,
-          executionMode: body.workspaceMode === "layr" ? "vm" : "native",
+          cwd: creation.cwd,
+          model: creation.model,
+          effort: creation.effort,
+          workspaceMode: creation.workspaceMode,
+          executionMode: creation.workspaceMode === "layr" ? "vm" : "native",
         };
         snapshot.threads.push(row);
         snapshot.runtime.agents = snapshot.threads;
@@ -123,7 +128,11 @@ async function setup(
   });
   return { server, creations, changes, modelReads };
 }
-async function openNewChat(page, server, classic = false) {
+async function openNewChat(
+  page: Page,
+  server: Awaited<ReturnType<typeof fixture>>,
+  classic = false,
+) {
   await page.goto(
     server.origin +
       (classic ? "/?studio-single=1" : "/?studio-navigation=combined"),
@@ -144,7 +153,7 @@ for (const [choice, badge] of [
   ["layr", "LAYR"],
   ["Image", "IMAGE"],
   ["worktree", "WT"],
-]) {
+] as const) {
   test(`macOS New chat ${choice} and actual model menus`, async ({ page }) => {
     const { server, creations, changes } = await setup();
     try {
@@ -201,7 +210,7 @@ for (const system of ["Linux", "Windows"]) {
         .getByRole("button", { name: "Start chat", exact: true })
         .click();
       await expect.poll(() => creations.length).toBe(1);
-      expect(creations[0].workspaceMode).toBe("worktree");
+      expect(creations[0]?.workspaceMode).toBe("worktree");
     } finally {
       await server.close();
     }
@@ -252,6 +261,7 @@ for (const width of [320, 390, 1440])
         ).toBeVisible();
         const bounds = await dialog.boundingBox();
         const viewport = page.viewportSize();
+        if (!bounds || !viewport) throw new Error("Missing workspace bounds");
         expect(bounds.x + bounds.width).toBeLessThanOrEqual(viewport.width);
         const evidence = process.env.MODELS_EVIDENCE;
         if (evidence) await mkdir(evidence, { recursive: true });
@@ -302,6 +312,7 @@ test("a paired server uses its own platform and catalog", async ({
   const remote = await setup("Linux", "Remote", true);
   try {
     const project = local.server.snapshot.runtime.projects[0];
+    if (!project?.path) throw new Error("Missing paired project");
     project.homeServerId = "local";
     project.locations = [
       { serverId: "local", projectId: project.id, path: project.path },
@@ -423,7 +434,7 @@ test("a filtered Claude lead keeps the server's Codex worker default without inj
       .getByRole("button", { name: "Start chat", exact: true })
       .click();
     await expect.poll(() => creations.length).toBe(1);
-    expect(creations[0].model).toBe("claude-opus-5-5");
+    expect(creations[0]?.model).toBe("claude-opus-5-5");
     expect(creations[0]).not.toHaveProperty("worker_defaults");
   } finally {
     await server.close();

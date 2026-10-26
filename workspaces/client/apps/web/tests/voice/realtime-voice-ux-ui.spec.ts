@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
 import type { ServerResponse } from "node:http";
-import { fixtureUrl } from "../usage/fixture-server.ts";
+import { fixtureOrigin } from "../misc-fixture.ts";
 import type {} from "./realtime-voice-ux-ui.fixture.tsx";
 import {
   createFixtureViteServer as createServer,
@@ -89,7 +89,7 @@ test("Realtime voice ux", async ({ context }, testInfo) => {
     const errors: string[] = [];
     page.on("pageerror", (e) => errors.push(e.message));
     async function reset() {
-      await page.goto(fixtureUrl(server) + "audit");
+      await page.goto(fixtureOrigin(server) + "/audit");
       await page
         .getByRole("button", { name: "Voice conversation", exact: true })
         .click();

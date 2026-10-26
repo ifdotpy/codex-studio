@@ -1,3 +1,5 @@
+import { fixturePostBody } from "../misc-fixture.ts";
+import type { PostResult } from "../../src/api.ts";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -22,7 +24,7 @@ test("App keeps confirmed deleted chats unreadable when HTTP wins before SSE", a
     { stdio: ["pipe", "pipe", "pipe"] },
   );
   let log = "";
-  child.stderr.on("data", (chunk) => {
+  child.stderr?.on("data", (chunk) => {
     log += chunk;
   });
   try {
@@ -32,13 +34,18 @@ test("App keeps confirmed deleted chats unreadable when HTTP wins before SSE", a
     const ids = state.runtime.agents
       .filter((agent) => !agent.parentId)
       .map((agent) => agent.id);
+    const firstAgent = state.runtime.agents[0];
+    if (!firstAgent) throw new Error("Missing first fixture agent");
     const project = state.runtime.projects.find(
-      (project) => project.path === state.runtime.agents[0].cwd,
+      (project) => project.path === firstAgent.cwd,
     );
+    if (!project) throw new Error("Missing fixture project");
     let deletes = 0;
     await page.route("**/api/projects/delete", async (route) => {
       deletes++;
-      const request = route.request().postDataJSON();
+      const request = fixturePostBody<"/api/projects/delete">(
+        route.request().postDataJSON(),
+      );
       // Deliberately hold the backend's entity baseline unchanged after the receipt.
       await route.fulfill({
         json: {
@@ -47,7 +54,7 @@ test("App keeps confirmed deleted chats unreadable when HTTP wins before SSE", a
           outcome: "deleted",
           deletedAgentIds: ids,
           deletedRoomIds: [],
-        },
+        } satisfies PostResult<"/api/projects/delete">,
       });
     });
     await page.setViewportSize({ width: 1440, height: 960 });

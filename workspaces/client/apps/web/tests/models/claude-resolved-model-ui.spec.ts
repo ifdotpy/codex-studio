@@ -1,3 +1,5 @@
+import { fixtureGetResult } from "../misc-fixture.ts";
+import type { GetResult } from "../../src/api.ts";
 import { mkdtemp, mkdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -12,7 +14,7 @@ import { waitForFixturePort } from "../fixture-readiness.ts";
 
 // Run the production renderer against disposable runtime state. Claude account
 // and catalog projections reproduce the real CLI's stored resolved model ID.
-for (const provider of ["claude", "codex"])
+for (const provider of ["claude", "codex"] as const)
   test(`${provider} resolved models and compact Chat settings tabs`, async ({
     page,
   }) => {
@@ -23,7 +25,7 @@ for (const provider of ["claude", "codex"])
       stdio: ["pipe", "pipe", "pipe"],
     });
     let log = "";
-    server.stderr.on("data", (chunk) => {
+    server.stderr?.on("data", (chunk) => {
       log += chunk;
     });
     try {
@@ -32,6 +34,7 @@ for (const provider of ["claude", "codex"])
       const lead = (await readTestState(origin)).runtime.agents.find(
         (agent) => agent.name === "Release lead",
       );
+      if (!lead) throw new Error("Missing release lead");
       const currentModel =
         provider === "claude" ? "claude-opus-5-5" : "gpt-6-astra";
       const selectedAlias = provider === "claude" ? "opus" : currentModel;
@@ -91,6 +94,7 @@ for (const provider of ["claude", "codex"])
         ),
         serviceTiers: [],
       }));
+      const catalog = { data: models } satisfies GetResult<"/api/models">;
       const screenshots = process.env.SETTINGS_TABS_SCREENSHOTS
         ? join(process.env.SETTINGS_TABS_SCREENSHOTS, provider)
         : await mkdtemp(join(tmpdir(), `settings-tabs-${provider}-`));
@@ -98,13 +102,14 @@ for (const provider of ["claude", "codex"])
       const measurements = [];
       await page.route("**/api/accounts", async (route) => {
         const response = await route.fetch();
-        const data = await response.json();
-        data.accounts = data.accounts.map((account) => ({
-          ...account,
-          provider,
-          label: `${provider} work`,
-          status: "ready",
-        }));
+        const data = fixtureGetResult<"/api/accounts">(await response.json());
+        for (const account of data.accounts)
+          Object.assign(account, {
+            ...account,
+            provider,
+            label: `${provider} work`,
+            status: "ready",
+          });
         await route.fulfill({ response, json: data });
       });
       await page.route("**/api/limits?**", (route) =>
@@ -128,7 +133,7 @@ for (const provider of ["claude", "codex"])
         }),
       );
       await page.route("**/api/models?**", (route) =>
-        route.fulfill({ json: { data: models } }),
+        route.fulfill({ json: catalog }),
       );
       await page.route("**/api/claude/session", (route) =>
         route.fulfill({
@@ -140,8 +145,10 @@ for (const provider of ["claude", "codex"])
       );
       await page.route("**/api/sync/pull*", async (route) => {
         const response = await route.fetch();
-        const data = await response.json();
-        for (const document of data.documents || []) {
+        const data = fixtureGetResult<"/api/sync/pull">(await response.json());
+        for (const document of "documents" in data ? data.documents : []) {
+          if (!("payload" in document))
+            throw new Error("Fixture expects legacy sync payloads");
           if (document._deleted) continue;
           const entity = JSON.parse(document.payload);
           if (entity.collection === "agent" && entity.id === lead.id) {
@@ -221,8 +228,8 @@ for (const provider of ["claude", "codex"])
       for (const [width, height] of [
         [1440, 900],
         [390, 844],
-      ])
-        for (const scheme of ["light", "dark"]) {
+      ] as const)
+        for (const scheme of ["light", "dark"] as const) {
           await page.setViewportSize({ width, height });
           await page.emulateMedia({ colorScheme: scheme });
           await expect(page.locator("html")).toHaveAttribute(
@@ -237,16 +244,20 @@ for (const provider of ["claude", "codex"])
               await expect
                 .poll(async () =>
                   roles.evaluate((node) => {
-                    const indicator = node
-                      .querySelector(".mantine-SegmentedControl-indicator")
-                      .getBoundingClientRect();
-                    const checked = node
-                      .querySelector(
-                        ".mantine-SegmentedControl-control:has(input:checked) .mantine-SegmentedControl-label",
-                      )
-                      .getBoundingClientRect();
+                    const indicatorElement = node.querySelector(
+                      ".mantine-SegmentedControl-indicator",
+                    );
+                    if (!indicatorElement)
+                      throw new Error("Missing settings indicator");
+                    const indicator = indicatorElement.getBoundingClientRect();
+                    const checkedElement = node.querySelector(
+                      ".mantine-SegmentedControl-control:has(input:checked) .mantine-SegmentedControl-label",
+                    );
+                    if (!checkedElement)
+                      throw new Error("Missing checked settings control");
+                    const checked = checkedElement.getBoundingClientRect();
                     return Math.max(
-                      ...["x", "y", "width", "height"].map((key) =>
+                      ...(["x", "y", "width", "height"] as const).map((key) =>
                         Math.abs(indicator[key] - checked[key]),
                       ),
                     );
@@ -255,6 +266,7 @@ for (const provider of ["claude", "codex"])
                 .toBeLessThan(2);
             const geometry = await dialog.evaluate((node) => {
               const body = node.querySelector(".mantine-Modal-body");
+              if (!body) throw new Error("Missing settings body");
               const tabs = [...node.querySelectorAll('[role="tab"]')].map(
                 (el) => el.getBoundingClientRect().top,
               );
@@ -320,16 +332,20 @@ for (const provider of ["claude", "codex"])
               await expect
                 .poll(async () =>
                   roles.evaluate((node) => {
-                    const indicator = node
-                      .querySelector(".mantine-SegmentedControl-indicator")
-                      .getBoundingClientRect();
-                    const checked = node
-                      .querySelector(
-                        ".mantine-SegmentedControl-control:has(input:checked) .mantine-SegmentedControl-label",
-                      )
-                      .getBoundingClientRect();
+                    const indicatorElement = node.querySelector(
+                      ".mantine-SegmentedControl-indicator",
+                    );
+                    if (!indicatorElement)
+                      throw new Error("Missing settings indicator");
+                    const indicator = indicatorElement.getBoundingClientRect();
+                    const checkedElement = node.querySelector(
+                      ".mantine-SegmentedControl-control:has(input:checked) .mantine-SegmentedControl-label",
+                    );
+                    if (!checkedElement)
+                      throw new Error("Missing checked settings control");
+                    const checked = checkedElement.getBoundingClientRect();
                     return Math.max(
-                      ...["x", "y", "width", "height"].map((key) =>
+                      ...(["x", "y", "width", "height"] as const).map((key) =>
                         Math.abs(indicator[key] - checked[key]),
                       ),
                     );

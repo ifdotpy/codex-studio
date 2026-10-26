@@ -1,9 +1,10 @@
+import { fixtureOrigin } from "../misc-fixture.ts";
 import { usageSessionCost, usageAccountCost } from "./usage-fixture.ts";
 import type { BrowserContext, TestInfo } from "@playwright/test";
 import type { ServerResponse } from "node:http";
 import type { PostBody, PostResult } from "../../src/apiTypes.ts";
 import { fixturePostBody } from "./fixture-server.ts";
-import { fixtureUrl, usageFixtureServer } from "./fixture-server.ts";
+import { usageFixtureServer } from "./fixture-server.ts";
 import assert from "node:assert/strict";
 
 import {
@@ -140,7 +141,7 @@ test("usage accounts ui", async ({ browser: _browser }) => {
     await page.clock.install();
     const errors: string[] = [];
     page.on("pageerror", (error) => errors.push(error.message));
-    await page.goto(fixtureUrl(server) + `?now=${now}`);
+    await page.goto(fixtureOrigin(server) + `?now=${now}`);
     // Notes stay in the tooltip; the footer shows only the estimate and a marker.
     await page
       .locator(".session-cost-summary")
@@ -181,7 +182,7 @@ test("usage accounts ui", async ({ browser: _browser }) => {
       ),
     );
 
-    await page.goto(fixtureUrl(server) + `?multi&now=${now}`);
+    await page.goto(fixtureOrigin(server) + `?multi&now=${now}`);
     const ownTab = page.getByRole("tab", {
       name: "own@example.test account limits",
     });
@@ -371,7 +372,7 @@ test("usage accounts ui", async ({ browser: _browser }) => {
         });
         page.on("pageerror", (error) => errors.push(error.message));
         await page.goto(
-          fixtureUrl(server) + `?geometry&scheme=${scheme}&now=${now}`,
+          fixtureOrigin(server) + `?geometry&scheme=${scheme}&now=${now}`,
         );
         assert.equal(
           await page.locator(".context-use").innerText(),

@@ -1,3 +1,4 @@
+import { fixtureOrigin } from "../../tests/misc-fixture.ts";
 // Mermaid and HTML previews under the document policy of the native host.
 // No server state, provider or live model request.
 import assert from "node:assert/strict";
@@ -27,11 +28,12 @@ async function nativeDocumentPolicy() {
     (Array.isArray(disabled) ? !disabled.includes("style-src") : !disabled) &&
     /<style[\s>]/i.test(index);
   const nonce = String(randomInt(1, 2 ** 47));
+  if (typeof security.csp !== "string") throw new Error("Missing native CSP");
   const policy = security.csp
     .split(";")
-    .map((part) => part.trim())
+    .map((part: string) => part.trim())
     .filter(Boolean)
-    .map((part) =>
+    .map((part: string) =>
       styleNonce && part.startsWith("style-src ")
         ? `${part} 'nonce-${nonce}'`
         : part,
@@ -43,40 +45,29 @@ async function nativeDocumentPolicy() {
 // The shape of a chat diagram that rendered as black boxes: two subgraphs
 // with punctuated titles, quoted labels and edge labels with <br/>, wrapped
 // lines and a dotted edge.
-const diagram = `flowchart LR
-  subgraph N["Plain mode (account: false)"]
-    direction LR
-    U1["User account in the shared hub<br/>Simple cluster"] -->|"Cluster operator<br/>applies any manifest it receives"| P1["Provider cluster<br/>namespace taken from the kubeconfig file<br/>any resource type"]
-    P1 --> H1["Hosting provider<br/>creates the cluster"]
-  end
-
-  subgraph A["Account mode (account: true) - used on staging"]
-    direction LR
-    U2["User account in the shared hub<br/>Simple cluster<br/>+ resource next to it"] -->|"sync-agent"| P2["Provider cluster<br/>copy of the resource"]
-    P2 --> H2["Hosting provider<br/>creates the cluster"]
-    C["Code check:<br/>only one resource kind<br/>from one API group"] -.-> U2
-  end`;
-const html =
-  '<style>.card{background:rgb(12, 85, 60);color:rgb(255, 255, 255)}</style><div class="card">Styled HTML preview</div>';
-const labels = (pattern) =>
-  [...diagram.matchAll(pattern)].map((match) => match[1].split("<br/>"));
+import { diagram } from "./RichPreview.browser.data.ts";
+const labels = (pattern: RegExp) =>
+  [...diagram.matchAll(pattern)].map((match) =>
+    (match[1] ?? "").split("<br/>"),
+  );
 const nodeLabels = labels(/(?<!subgraph )\b\w+\["([^"]+)"\]/g);
 const clusterLabels = labels(/subgraph \w+\["([^"]+)"\]/g).flat();
 const edgeLabels = labels(/\|"([^"]+)"\|/g);
 
-const channel = (value) => {
+const channel = (value: number) => {
   const c = value / 255;
   return c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4;
 };
-const luminance = (rgb) => {
-  const [r, g, b] = rgb
-    .match(/\d+(\.\d+)?/g)
+const luminance = (rgb: string) => {
+  const [r = 0, g = 0, b = 0] = (rgb.match(/\d+(\.\d+)?/g) ?? [])
     .slice(0, 3)
     .map(Number);
   return 0.2126 * channel(r) + 0.7152 * channel(g) + 0.0722 * channel(b);
 };
-const contrast = (a, b) => {
-  const [high, low] = [luminance(a), luminance(b)].sort((x, y) => y - x);
+const contrast = (a: string, b: string) => {
+  const [high = 0, low = 0] = [luminance(a), luminance(b)].sort(
+    (x, y) => y - x,
+  );
   return (high + 0.05) / (low + 0.05);
 };
 
@@ -85,21 +76,6 @@ test("Mermaid and HTML previews stay readable under the native host policy", asy
 }) => {
   test.setTimeout(120_000);
   const { policy, nonce } = await nativeDocumentPolicy();
-  const entry = `
-    import { createElement as e } from "react";
-    import { createRoot } from "react-dom/client";
-    import { MantineProvider } from "@mantine/core";
-    import "/src/browser-reset.css";
-    import "@mantine/core/styles.css";
-    import "/src/style.css";
-    import RichPreview from "/src/components/RichPreview.tsx";
-    const scheme = new URLSearchParams(location.search).get("scheme");
-    createRoot(document.getElementById("root")).render(
-      e(MantineProvider, { forceColorScheme: scheme },
-        e("main", { style: { width: 1200 } },
-          e(RichPreview, { kind: "mermaid", source: ${JSON.stringify(diagram)} }),
-          e(RichPreview, { kind: "html", source: ${JSON.stringify(html)} }))));
-  `;
   const server = await createFixtureViteServer({
     configFile: false,
     root: webRoot,
@@ -109,16 +85,9 @@ test("Mermaid and HTML previews stay readable under the native host policy", asy
     plugins: [
       {
         name: "rich-preview-policy-check",
-        resolveId(id) {
-          if (id === "/rich-preview-policy-entry")
-            return "\0rich-preview-policy-entry";
-        },
-        load(id) {
-          if (id === "\0rich-preview-policy-entry") return entry;
-        },
         configureServer(server) {
           server.middlewares.use((request, response, next) => {
-            if (!request.url.startsWith("/rich-preview-policy-check"))
+            if (!request.url?.startsWith("/rich-preview-policy-check"))
               return next();
             response.setHeader("Content-Type", "text/html");
             response.setHeader("Content-Security-Policy", policy);
@@ -128,7 +97,7 @@ test("Mermaid and HTML previews stay readable under the native host policy", asy
               <meta property="csp-nonce" nonce="${nonce}">
               <title>Rich preview policy check</title>
               <div id="root"></div>
-              <script type="module" src="/rich-preview-policy-entry"></script>`);
+              <script type="module" src="/src/components/RichPreview.browser.fixture.tsx"></script>`);
           });
         },
       },
@@ -136,13 +105,13 @@ test("Mermaid and HTML previews stay readable under the native host policy", asy
   });
   try {
     await server.listen();
-    const origin = server.resolvedUrls.local[0].replace(/\/$/, "");
-    for (const scheme of ["light", "dark"]) {
+    const origin = fixtureOrigin(server);
+    for (const scheme of ["light", "dark"] as const) {
       const page = await browser.newPage({
         viewport: { width: 1280, height: 1000 },
       });
-      const errors = [];
-      const styleViolations = [];
+      const errors: string[] = [];
+      const styleViolations: string[] = [];
       page.on("pageerror", (error) => errors.push(error.message));
       page.on("console", (message) => {
         if (/Content Security Policy.*style-src/s.test(message.text()))
@@ -154,23 +123,35 @@ test("Mermaid and HTML previews stay readable under the native host policy", asy
         const frame = card.frameLocator("iframe");
         await frame.locator("svg .node").first().waitFor({ state: "attached" });
         const report = await frame.locator("svg").evaluate((svg) => {
-          const color = (element) => getComputedStyle(element).color;
-          const fill = (element) => getComputedStyle(element).fill;
-          const lines = (element) =>
-            element.innerText
+          const color = (element: Element | null) => {
+            if (!element) throw new Error("Missing preview color element");
+            return getComputedStyle(element).color;
+          };
+          const fill = (element: Element | null) => {
+            if (!element) throw new Error("Missing preview fill element");
+            return getComputedStyle(element).fill;
+          };
+          const lines = (element: Element) =>
+            (element instanceof HTMLElement
+              ? element.innerText
+              : (element.textContent ?? "")
+            )
               .split("\n")
               .map((line) => line.trim())
               .filter(Boolean);
           // A label fits when its text box stays inside its foreignObject.
-          const fits = (label) => {
-            const box = label.closest("foreignObject").getBoundingClientRect();
+          const fits = (label: Element) => {
+            const parent = label.closest("foreignObject");
+            if (!parent) throw new Error("Missing preview foreign object");
+            const box = parent.getBoundingClientRect();
             const text = label.getBoundingClientRect();
             return text.width <= box.width + 1 && text.height <= box.height + 1;
           };
-          const shape = (group, selector) => {
+          const shape = (group: Element, selector: string) => {
             const label = group.querySelector(
               `${selector} foreignObject > div`,
             );
+            if (!label) throw new Error("Missing preview label");
             return {
               fill: fill(group.querySelector("rect, polygon, path")),
               color: color(label.querySelector(".nodeLabel, .edgeLabel")),
@@ -179,6 +160,7 @@ test("Mermaid and HTML previews stay readable under the native host policy", asy
             };
           };
           const view = svg.ownerDocument.defaultView;
+          if (!view) throw new Error("Missing preview window");
           return {
             // The frame is tall enough to show the whole diagram.
             overflow:

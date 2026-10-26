@@ -1,3 +1,4 @@
+import { waitForFixturePort } from "../../tests/fixture-readiness.ts";
 import {
   test,
   expect,
@@ -41,17 +42,14 @@ test("Semantic colors and coarse modal/menu targets in the actual renderer", asy
     },
   });
   let log = "";
-  proc.stderr.on("data", (chunk) => {
+  proc.stderr?.on("data", (chunk) => {
     log += chunk;
   });
-  const port = await new Promise((resolve, reject) => {
-    proc.stdout.once("data", (chunk) => resolve(Number(String(chunk).trim())));
-    proc.once("exit", () => reject(new Error(log)));
-  });
+  const port = await waitForFixturePort(proc, { diagnostics: () => log });
   const evidence = [];
   try {
     for (const width of [1440, 390])
-      for (const scheme of ["light", "dark"]) {
+      for (const scheme of ["light", "dark"] as const) {
         const context = await browser.newContext({
           viewport: { width, height: 900 },
           hasTouch: width === 390,
@@ -64,7 +62,7 @@ test("Semantic colors and coarse modal/menu targets in the actual renderer", asy
           console.error("renderer", error.message),
         );
         const prefix = `${width}-${scheme}`;
-        const auditText = async (selector) => {
+        const auditText = async (selector: string) => {
           const values = [];
           for (const element of await page.locator(selector).all()) {
             if (!(await element.isVisible())) continue;
@@ -165,6 +163,7 @@ test("Semantic colors and coarse modal/menu targets in the actual renderer", asy
           const close = page.locator(".mantine-Modal-close:visible").last();
           await expect(close).toBeVisible();
           const target = await close.boundingBox();
+          if (!target) throw new Error("Missing close button bounds");
           if (width === 390) {
             expect(target.width).toBeGreaterThanOrEqual(44);
             expect(target.height).toBeGreaterThanOrEqual(44);

@@ -1,18 +1,4 @@
-import type { ViteDevServer } from "vite";
-import type { ApiPostPath, PostBody } from "../../src/apiTypes.ts";
-
-export function fixtureUrl(server: ViteDevServer): string {
-  const url = server.resolvedUrls?.local[0];
-  if (!url) throw new Error("Fixture server has no local URL");
-  return url;
-}
-
-/** Requests come from the renderer under test, which owns these route bodies. */
-export function fixturePostBody<Path extends ApiPostPath>(
-  body: unknown,
-): PostBody<Path> {
-  return body as PostBody<Path>;
-}
+export { fixturePostBody } from "../misc-fixture.ts";
 
 export async function usageFixtureServer(
   entry: string,

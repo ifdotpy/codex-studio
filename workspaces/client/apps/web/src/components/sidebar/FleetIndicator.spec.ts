@@ -1,3 +1,4 @@
+import { waitForFixturePort } from "../../../tests/fixture-readiness.ts";
 import {
   test,
   expect,
@@ -27,15 +28,12 @@ test("fleet state indicators remain visible and animated in priority and project
     },
   });
   let errors = "";
-  proc.stderr.on("data", (chunk) => {
+  proc.stderr?.on("data", (chunk) => {
     errors += chunk;
   });
-  const port = await new Promise((resolve, reject) => {
-    proc.stdout.once("data", (chunk) => resolve(Number(String(chunk).trim())));
-    proc.once("exit", () => reject(new Error(errors)));
-  });
+  const port = await waitForFixturePort(proc, { diagnostics: () => errors });
   try {
-    for (const scheme of ["light", "dark"]) {
+    for (const scheme of ["light", "dark"] as const) {
       const context = await browser.newContext({ colorScheme: scheme });
       const page = await context.newPage();
       await page.addInitScript(
@@ -66,6 +64,7 @@ test("fleet state indicators remain visible and animated in priority and project
             (element) =>
               new Promise((resolve) => {
                 const observer = new IntersectionObserver(([entry]) => {
+                  if (!entry) throw new Error("Missing intersection entry");
                   observer.disconnect();
                   resolve(entry.intersectionRatio);
                 });
@@ -94,7 +93,11 @@ test("fleet state indicators remain visible and animated in priority and project
         await sidebar.locator("#chat-list").evaluate((element) => {
           element.scrollTop = 0;
         });
-        await page.evaluate(() => document.activeElement?.blur());
+        await page.evaluate(
+          () =>
+            document.activeElement instanceof HTMLElement &&
+            document.activeElement.blur(),
+        );
         await page.screenshot({
           path: join(evidence, `indicator-real-${scheme}-${width}.png`),
         });

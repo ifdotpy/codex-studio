@@ -192,7 +192,7 @@ not a filesystem path. Temporary native files are removed after each attempt.
 Targeted checks from the repository root:
 
 ```sh
-pnpm --filter codex-agents-web run test:browser -- dictation-ui.spec.mjs
+pnpm --filter codex-agents-web run test:browser -- dictation-ui.spec.ts
 pnpm --filter codex-agents-desktop run test
 ```
 

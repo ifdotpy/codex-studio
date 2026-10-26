@@ -1,3 +1,4 @@
+import { waitForFixturePort } from "../../tests/fixture-readiness.ts";
 import {
   test,
   expect,
@@ -16,13 +17,10 @@ test("Foundation content width and fleet geometry", async ({ page }) => {
     env: { ...process.env, FIXTURE_SEED: "report", FIXTURE_WORKER_COUNT: "2" },
   });
   let errors = "";
-  proc.stderr.on("data", (chunk) => {
+  proc.stderr?.on("data", (chunk) => {
     errors += chunk;
   });
-  const port = await new Promise((resolve, reject) => {
-    proc.stdout.once("data", (chunk) => resolve(Number(String(chunk).trim())));
-    proc.once("exit", () => reject(new Error(errors)));
-  });
+  const port = await waitForFixturePort(proc, { diagnostics: () => errors });
   try {
     await page.setViewportSize({ width: 1280, height: 960 });
     await page.goto(`http://127.0.0.1:${port}`);
@@ -42,17 +40,22 @@ test("Foundation content width and fleet geometry", async ({ page }) => {
           );
         }, ratio);
         const geometry = await page.evaluate(() => {
-          const rect = (selector) =>
-            document.querySelector(selector).getBoundingClientRect().toJSON();
+          const element = (selector: string) => {
+            const node = document.querySelector(selector);
+            if (!node) throw new Error(`Missing geometry element: ${selector}`);
+            return node;
+          };
+          const rect = (selector: string) =>
+            element(selector).getBoundingClientRect().toJSON();
           return {
             sidebar: rect("#sidebar"),
             conversation: rect("#conversation"),
             composer: rect("#composer"),
             message: rect(".message-content"),
             gutter: parseFloat(
-              getComputedStyle(
-                document.querySelector(".workspace"),
-              ).getPropertyValue("--chat-gutter"),
+              getComputedStyle(element(".workspace")).getPropertyValue(
+                "--chat-gutter",
+              ),
             ),
             scrollWidth: document.documentElement.scrollWidth,
             viewport: innerWidth,
