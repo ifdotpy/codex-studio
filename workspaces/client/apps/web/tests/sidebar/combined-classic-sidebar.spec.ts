@@ -39,11 +39,15 @@ for (const combined of [false, true]) {
         (node) => node.getBoundingClientRect().width,
       );
       const toggle = page.getByRole("button", {
-        name: combined ? "Servers and chats" : "Toggle conversations",
-        exact: true,
+        name: combined
+          ? "Servers and chats"
+          : /^(Back to chats|Toggle conversations)$/,
       });
       for (const width of [320, 360, 390, 430]) {
         await page.setViewportSize({ width, height: 844 });
+        await expect(toggle).toHaveAccessibleName(
+          combined ? "Servers and chats" : "Back to chats",
+        );
         await toggle.click();
         await expect(sidebar).toHaveAttribute("data-presentation", "drawer");
         if (width === 320)
@@ -236,11 +240,14 @@ test("the direct sidebar bounds pointer resize, cancels lost capture, and measur
     await page.reload();
     await expect(rail).toBeVisible();
     const defaultWidth = await page.evaluate(() => {
-      const style = getComputedStyle(document.documentElement);
-      return (
-        parseFloat(style.getPropertyValue("--layout-sidebar-preferred")) *
-        parseFloat(style.fontSize)
-      );
+      // Resolve the owner's length through CSS, including browser subpixel quantization.
+      const probe = document.createElement("div");
+      probe.style.cssText =
+        "position:fixed;width:var(--layout-sidebar-preferred);height:0;visibility:hidden;pointer-events:none";
+      document.body.append(probe);
+      const width = probe.getBoundingClientRect().width;
+      probe.remove();
+      return width;
     });
     await expect
       .poll(() =>
