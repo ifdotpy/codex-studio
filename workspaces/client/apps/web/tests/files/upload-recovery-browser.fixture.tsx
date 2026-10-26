@@ -59,6 +59,7 @@ export function mount() {
         notify,
       );
       const [rule, setRule] = useFormDraft("fixture-rule:" + scope, notify);
+      window.uploadRecoveryBrowserWriter = { attachments, setAttachments };
       window.uploadRecoveryBrowserFixture = {
         attachments,
         setAttachments,
