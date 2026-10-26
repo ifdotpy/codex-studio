@@ -1,14 +1,30 @@
+import type {
+  BrowserProfileSnapshot,
+  BrowserProfileDatabase,
+} from "./importBrowserProfile.ts";
 import { expect, it } from "vitest";
-import { combineBrowserProfiles } from "./combineBrowserProfiles.mjs";
+import { combineBrowserProfiles } from "./combineBrowserProfiles.ts";
 
-const profile = (owner, preferences, databases = []) => ({
+const profile = (
+  owner: string,
+  preferences: BrowserProfileSnapshot["preferences"],
+  databases: BrowserProfileDatabase[] = [],
+): { owner: string; snapshot: BrowserProfileSnapshot } => ({
   owner,
   snapshot: { version: 2, preferences, databases },
 });
-const database = (name, sha256) => ({
+const database = (name: string, sha256: string): BrowserProfileDatabase => ({
   name,
   version: 1,
-  stores: [{ name: "records", chunks: [{ sha256, bytes: 30, records: 1 }] }],
+  stores: [
+    {
+      name: "records",
+      keyPath: null,
+      autoIncrement: false,
+      indexes: [],
+      chunks: [{ sha256, bytes: 30, records: 1 }],
+    },
+  ],
 });
 
 it("combines scoped drafts and databases without losing the chunk's source owner", () => {
@@ -24,10 +40,9 @@ it("combines scoped drafts and databases without losing the chunk's source owner
     draft: "local",
     ":server:remote:draft": "remote",
   });
-  expect(result.databases.map((db) => db.stores[0].chunks[0].owner)).toEqual([
-    "root",
-    "server:remote",
-  ]);
+  expect(
+    result.databases.map((db) => db.stores[0]?.chunks?.[0]?.owner),
+  ).toEqual(["root", "server:remote"]);
   expect(source).toEqual(before);
 });
 it("rejects conflicting preferences and databases before an importer can write", () => {

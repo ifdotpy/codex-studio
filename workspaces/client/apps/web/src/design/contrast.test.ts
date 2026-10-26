@@ -1,3 +1,4 @@
+import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { expect, test } from "vitest";
 import { theme } from "../theme";
@@ -8,14 +9,16 @@ const stateSource = read("./state.css");
 const surfaceSource = read("../studio-theme.css");
 const kindDeclaration = read(
   "../components/chat-status/chatStatusModel.ts",
-).match(/export type ChatIndicatorKind =([\s\S]*?);/)![1];
-const kinds = [...kindDeclaration.matchAll(/"(\w+)"/g)].map(
-  (match) => match[1],
-);
+).match(/export type ChatIndicatorKind =([\s\S]*?);/)?.[1];
+assert.ok(kindDeclaration);
+const kinds = [...kindDeclaration.matchAll(/"(\w+)"/g)].map((match) => {
+  assert.ok(match[1]);
+  return match[1];
+});
 
 function variables(scheme: "light" | "dark") {
   const values: Record<string, string> = {};
-  for (const [palette, shades] of Object.entries(theme.colors!)) {
+  for (const [palette, shades] of Object.entries(theme.colors ?? {})) {
     if (!shades) continue;
     shades.forEach((shade, index) => {
       values[`--mantine-color-${palette}-${index}`] = shade;
@@ -23,21 +26,26 @@ function variables(scheme: "light" | "dark") {
   }
   for (const source of [surfaceSource, stateSource]) {
     for (const [, selector, body] of source.matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
+      assert.ok(selector);
+      assert.ok(body);
       if (
         !selector.includes(":root") &&
         !selector.includes(`[data-mantine-color-scheme="${scheme}"]`) &&
         !selector.trim().endsWith("[data-mantine-color-scheme]")
       )
         continue;
-      for (const [, name, value] of body.matchAll(/(--[\w-]+):\s*([^;]+);/g))
+      for (const [, name, value] of body.matchAll(/(--[\w-]+):\s*([^;]+);/g)) {
+        assert.ok(name);
+        assert.ok(value);
         values[name] = value.trim();
+      }
     }
   }
   const resolve = (name: string): string => {
     expect(values[name], `${name} must have a named token owner`).toBeDefined();
-    return values[name].replace(/var\((--[\w-]+)\)/g, (_, token) =>
-      resolve(token),
-    );
+    const value = values[name];
+    assert.ok(value);
+    return value.replace(/var\((--[\w-]+)\)/g, (_, token) => resolve(token));
   };
   return resolve;
 }
@@ -50,14 +58,16 @@ function luminance(rgb: number[]) {
       value <= 0.04045 ? value / 12.92 : ((value + 0.055) / 1.055) ** 2.4,
     )
     .reduce(
-      (sum, value, index) => sum + value * [0.2126, 0.7152, 0.0722][index],
+      (sum, value, index) =>
+        sum + value * ([0.2126, 0.7152, 0.0722][index] ?? NaN),
       0,
     );
 }
 function contrast(foreground: number[], background: number[]) {
-  const [low, high] = [luminance(foreground), luminance(background)].sort(
-    (a, b) => a - b,
-  );
+  const front = luminance(foreground),
+    back = luminance(background);
+  const low = Math.min(front, back),
+    high = Math.max(front, back);
   return (high + 0.05) / (low + 0.05);
 }
 
@@ -103,7 +113,8 @@ for (const scheme of ["light", "dark"] as const) {
             ? 0
             : Number(soft.match(/([\d.]+)%/)![1]) / 100;
         const tinted = background.map(
-          (channel, index) => channel * (1 - alpha) + foreground[index] * alpha,
+          (channel, index) =>
+            channel * (1 - alpha) + (foreground[index] ?? NaN) * alpha,
         );
         expect(
           contrast(foreground, tinted),

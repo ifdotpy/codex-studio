@@ -65,7 +65,7 @@ it("reads stored branches and pending edits without replication and reuses the e
   );
   await importLegacyDrafts(workspace, invoke);
   expect(invoke.mock.calls[0]).toEqual(invoke.mock.calls[1]);
-  expect(invoke.mock.calls[0][0]).toBe("drafts.import");
+  expect(invoke.mock.calls[0]?.[0]).toBe("drafts.import");
   expect(data.size).toBe(1);
 });
 it("does not resurrect an old snapshot after a per-session deletion", async () => {

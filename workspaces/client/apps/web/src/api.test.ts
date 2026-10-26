@@ -1,3 +1,4 @@
+import assert from "node:assert/strict";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   ApiError,
@@ -234,8 +235,10 @@ describe("OpenAPI transport facade", () => {
     const newer = refreshSession();
     await bothStarted;
     expect(resolvers).toHaveLength(2);
+    assert.ok(resolvers[1]);
     resolvers[1](Response.json({ token: "newer-token" }));
     await expect(newer).resolves.toMatchObject({ token: "newer-token" });
+    assert.ok(resolvers[0]);
     resolvers[0](Response.json({ token: "older-token" }));
     await expect(older).resolves.toMatchObject({ token: "newer-token" });
   });
@@ -256,7 +259,7 @@ describe("OpenAPI transport facade", () => {
       expect(pending).rejects.toBeInstanceOf(NetworkTimeoutError);
     // A slow answer still arrives inside the deadline.
     await vi.advanceTimersByTimeAsync(30000);
-    expect(fetch.mock.calls[0][0].signal.aborted).toBe(false);
+    expect(fetch.mock.calls[0]?.[0].signal.aborted).toBe(false);
     await vi.advanceTimersByTimeAsync(READ_DEADLINE_MS - 30000);
     await rejection;
     expect(fetch).toHaveBeenCalledTimes(1);

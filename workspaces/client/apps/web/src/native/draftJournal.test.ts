@@ -52,7 +52,7 @@ it("restores exact uncertain requests and later text after restart", async () =>
   expect(restarted.getSnapshot().pending).toBe(true);
   await restarted.retry();
   expect(invoke.mock.calls[0]).toEqual(lost.mock.calls[0]);
-  expect(invoke.mock.calls[1][2]).not.toBe(invoke.mock.calls[0][2]);
+  expect(invoke.mock.calls[1]?.[2]).not.toBe(invoke.mock.calls[0]?.[2]);
   expect(storage.length).toBe(0);
   expect(restarted.getSnapshot()).toMatchObject({
     pending: false,

@@ -28,7 +28,9 @@ it("extracts readable diagnostics and normalizes native error details", () => {
   assert.equal(displayError(error), "Local failure");
   assert.equal(JSON.parse(errorDetails(error)).cause.message, "Original cause");
   assert.equal(JSON.parse(errorDetails(error)).stack, error.stack);
-  const cyclic = { message: "Cyclic failure" };
+  const cyclic: { message: string; self?: unknown } = {
+    message: "Cyclic failure",
+  };
   cyclic.self = cyclic;
   assert.equal(displayError(cyclic), "Cyclic failure");
   assert.match(errorDetails(cyclic), /Repeated reference/);
@@ -66,7 +68,7 @@ it("stringifies primitive nested messages before checking later fields", () => {
 });
 
 it("bounds nested message lookup while preserving fallback diagnostics", () => {
-  let deep = { message: "Too deep to summarize" };
+  let deep: { message: unknown } = { message: "Too deep to summarize" };
   for (let level = 0; level < 8; level++) deep = { message: deep };
   assert.equal(displayError(deep), errorDetails(deep));
 
