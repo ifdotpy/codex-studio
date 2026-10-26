@@ -10,7 +10,7 @@ import {
   handleEntitySyncFixtureRequest,
   protocol3SseEvent,
   test,
-} from "../playwright.mjs";
+} from "../playwright.ts";
 
 test("selected Studio chat recovers after slow cursor preparation without reloading", async ({
   page,

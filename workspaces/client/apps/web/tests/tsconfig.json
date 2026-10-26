@@ -1,20 +1,22 @@
 {
+  "extends": "../../../../../tsconfig.base.json",
   "compilerOptions": {
-    "allowImportingTsExtensions": true,
     "allowJs": true,
-    "baseUrl": ".",
-    "checkJs": true,
-    "lib": ["ES2022", "DOM"],
+    "checkJs": false,
+    "lib": ["ES2023", "DOM", "DOM.Iterable"],
     "module": "ESNext",
     "moduleResolution": "Bundler",
-    "noEmit": true,
+    "types": ["node"],
+    "jsx": "react-jsx",
     "paths": {
-      "@playwright/test": ["../node_modules/@playwright/test"],
-      "playwright": ["../node_modules/playwright"]
-    },
-    "target": "ES2022",
-    "typeRoots": ["../node_modules/@types"],
-    "types": ["node"]
+      "/src/*": ["../src/*"]
+    }
   },
-  "files": ["playwright.mjs", "../src/vite-env.d.ts"]
+  "include": [
+    "**/*.ts",
+    "**/*.tsx",
+    "../src/vite-env.d.ts",
+    "../playwright*.ts",
+    "../scripts/run-browser-tests.ts"
+  ]
 }

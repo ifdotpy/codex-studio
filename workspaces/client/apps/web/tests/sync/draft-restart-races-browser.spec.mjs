@@ -1,12 +1,12 @@
 import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
-import { apiSchemaHeaders, syncIdentityFixture, test } from "../playwright.mjs";
+import { apiSchemaHeaders, syncIdentityFixture, test } from "../playwright.ts";
 
 const workspaceId = "d".repeat(32);
 
 async function createFixture(page) {
   const { createFixtureViteServer: createServer } =
-    await import("../playwright.mjs");
+    await import("../playwright.ts");
   const server = await createServer({
     configFile: false,
     optimizeDeps: { noDiscovery: true },

@@ -1,4 +1,4 @@
-import { test } from "../playwright.mjs";
+import { test } from "../playwright.ts";
 // Render the production browser notice against account-specific desktop responses.
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";

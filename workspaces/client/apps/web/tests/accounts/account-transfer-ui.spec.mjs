@@ -9,7 +9,7 @@ import {
   syncIdentityFixture,
   API_SCHEMA_HASH_HEADER,
   readApiSchemaHash,
-} from "../playwright.mjs";
+} from "../playwright.ts";
 // Production React build with isolated account fixtures. No credentials or model calls.
 import { createServer } from "node:http";
 import { readFile, mkdtemp } from "node:fs/promises";

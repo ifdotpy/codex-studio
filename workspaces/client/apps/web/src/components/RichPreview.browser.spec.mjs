@@ -5,7 +5,7 @@ import { randomInt } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { test, createFixtureViteServer } from "../../tests/playwright.mjs";
+import { test, createFixtureViteServer } from "../../tests/playwright.ts";
 
 const webRoot = fileURLToPath(new URL("../..", import.meta.url));
 

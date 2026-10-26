@@ -3,13 +3,9 @@ import { createRequire } from "node:module";
 import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { modelValue } from "../fixtures/model-picker.mjs";
-import { chooseSetupValue } from "../fixtures/setup-controls.mjs";
-import {
-  handleEntitySyncFixtureRequest,
-  test,
-  expect,
-} from "../playwright.mjs";
+import { modelValue } from "../fixtures/model-picker.ts";
+import { chooseSetupValue } from "../fixtures/setup-controls.ts";
+import { handleEntitySyncFixtureRequest, test, expect } from "../playwright.ts";
 
 test("radio create browser", async ({ page: runnerPage }) => {
   test.setTimeout(90000);

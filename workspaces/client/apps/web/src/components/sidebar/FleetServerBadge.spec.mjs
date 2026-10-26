@@ -4,7 +4,7 @@ import {
   rustUiFixture,
   spawnFixture as spawn,
   readTestState,
-} from "../../../tests/playwright.mjs";
+} from "../../../tests/playwright.ts";
 import { mkdir, mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";

@@ -4,7 +4,7 @@ import {
   syncIdentityFixture,
   syncProtocolFixture,
   test,
-} from "../playwright.mjs";
+} from "../playwright.ts";
 // Structured diagnostic fixtures through real React components. No live API writes.
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";

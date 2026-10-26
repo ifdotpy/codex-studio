@@ -9,7 +9,7 @@ import {
   spawnFixture as spawn,
   readTestState,
   rustUiFixture,
-} from "../playwright.mjs";
+} from "../playwright.ts";
 // Confirmed creation opens before the full chat projection arrives. No model calls.
 import { mkdtemp, mkdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";

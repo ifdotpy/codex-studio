@@ -10,7 +10,7 @@ import {
   expect,
   readApiSchemaHash,
   test,
-} from "../playwright.mjs";
+} from "../playwright.ts";
 
 test("workspace identity retry browser", async ({ browser }) => {
   const repo = fileURLToPath(new URL("../../../../../../", import.meta.url));

@@ -1,7 +1,7 @@
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { expect, spawnFixture, test, rustUiFixture } from "../playwright.mjs";
+import { expect, spawnFixture, test, rustUiFixture } from "../playwright.ts";
 
 test("another entry URL keeps one Studio tree after lazy modules load", async ({
   page,

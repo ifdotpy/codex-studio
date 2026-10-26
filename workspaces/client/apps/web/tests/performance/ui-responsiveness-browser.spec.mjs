@@ -6,7 +6,7 @@ import {
   test,
   spawnFixture as spawn,
   rustUiFixture,
-} from "../playwright.mjs";
+} from "../playwright.ts";
 // Production App at 4x CPU. Timings are evidence, correctness is asserted.
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";

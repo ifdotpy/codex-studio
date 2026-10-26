@@ -250,28 +250,28 @@ const BOUNDARY_ALLOWLIST = [
   {
     importer: "codex-agents-desktop",
     file: "server-access-native.ts",
-    specifier: "../web/tests/servers/multi-server-fixture.mjs",
+    specifier: "../web/tests/servers/multi-server-fixture.ts",
     reason:
       "The native desktop integration scenario reuses the renderer's local multi-server test fixture.",
   },
   {
     importer: "codex-agents-desktop",
     file: "test.ts",
-    specifier: "../web/tests/playwright.mjs",
+    specifier: "../web/tests/playwright.ts",
     reason:
       "The native desktop scenario reuses the renderer's browser test-state helper.",
   },
   {
     importer: "codex-agents-desktop",
     file: "multi-server-memory.ts",
-    specifier: "../web/tests/servers/multi-server-fixture.mjs",
+    specifier: "../web/tests/servers/multi-server-fixture.ts",
     reason:
       "A desktop integration scenario reuses the renderer's local multi-server test fixture.",
   },
   {
     importer: "codex-agents-desktop",
     file: "server-frames-native.ts",
-    specifier: "../web/tests/servers/multi-server-fixture.mjs",
+    specifier: "../web/tests/servers/multi-server-fixture.ts",
     reason:
       "A desktop integration scenario reuses the renderer's local multi-server test fixture.",
   },

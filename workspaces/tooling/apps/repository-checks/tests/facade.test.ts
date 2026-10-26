@@ -1190,7 +1190,7 @@ test("Playwright launcher clears BROWSER and removes state after success and fai
       chmodSync(witness, 0o755);
       const result = spawnSync(
         process.execPath,
-        ["workspaces/client/apps/web/scripts/run-browser-tests.mjs", "--list"],
+        ["workspaces/client/apps/web/scripts/run-browser-tests.ts", "--list"],
         {
           encoding: "utf8",
           env: {

@@ -13,7 +13,7 @@ import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { ArrowLeft, Inbox, Megaphone, Search, Users } from "lucide-react";
 import "../../../api";
 import { useMessages } from "../../../hooks";
-import type { JsonValue, Snapshot } from "../../../types";
+import type { JsonInput, Snapshot } from "../../../types";
 import StreamingText from "../../conversation/transcript/StreamingText";
 import Requests from "../../questions/Requests";
 import UserMessages from "./UserMessages";
@@ -40,7 +40,7 @@ function RoomDate({ at }: { at?: number | null | undefined }) {
   );
 }
 
-function firstQuestion(params: JsonValue | undefined): string | undefined {
+function firstQuestion(params: JsonInput | undefined): string | undefined {
   if (!params || typeof params !== "object" || Array.isArray(params))
     return undefined;
   const questions = params.questions;

@@ -8,7 +8,7 @@ import {
   test,
   expect,
   createFixtureViteServer,
-} from "../playwright.mjs";
+} from "../playwright.ts";
 
 test("Chat settings is one compact Team panel with account eligibility and no tabs", async ({
   page,
