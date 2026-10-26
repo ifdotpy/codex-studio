@@ -2014,30 +2014,10 @@ function packageImports(root: string, file: string, source: string) {
         node.moduleSpecifier &&
         ts.isStringLiteral(node.moduleSpecifier)
       ) {
-        let typeOnly = false;
-        if (ts.isImportDeclaration(node)) {
-          const clause = node.importClause;
-          typeOnly =
-            clause?.isTypeOnly === true ||
-            Boolean(
-              clause &&
-              !clause.name &&
-              clause.namedBindings &&
-              ts.isNamedImports(clause.namedBindings) &&
-              clause.namedBindings.elements.length > 0 &&
-              clause.namedBindings.elements.every((item) => item.isTypeOnly),
-            );
-        } else {
-          const clause = node.exportClause;
-          typeOnly =
-            node.isTypeOnly ||
-            Boolean(
-              clause &&
-              ts.isNamedExports(clause) &&
-              clause.elements.length > 0 &&
-              clause.elements.every((item) => item.isTypeOnly),
-            );
-        }
+        // Inline type specifiers leave an empty runtime import/export after stripping.
+        const typeOnly = ts.isImportDeclaration(node)
+          ? node.importClause?.isTypeOnly === true
+          : node.isTypeOnly;
         specs.push({ specifier: node.moduleSpecifier.text, typeOnly });
       }
       if (
