@@ -24,7 +24,7 @@ function fixture(nativeIds: string[] = ["native"]) {
 }
 
 test("Stop requires cancellation of every native part of a Studio input", async () => {
-  for (const receipt of [
+  for (const native of [
     { cancelled: ["prefix", "native"], still_queued: [] },
     { cancelled: ["native"], still_queued: [] },
     { cancelled: ["prefix", "native"], still_queued: ["prefix"] },
@@ -33,11 +33,11 @@ test("Stop requires cancellation of every native part of a Studio input", async 
     active.q = {
       interrupt: async (options) => {
         assert.deepEqual(options, { cancelQueued: true });
-        return receipt;
+        return native;
       },
     };
     const complete =
-      receipt.cancelled.length === 2 && !receipt.still_queued.length;
+      native.cancelled.length === 2 && !native.still_queued.length;
     assert.deepEqual(await interruptInputQueue(session, active), {
       cancelled: complete ? [item.id] : [],
       still_queued: complete ? [] : [item.id],
@@ -73,7 +73,7 @@ test("Stop withdraws the unyielded batch tail before background task control", a
   );
 });
 
-test("an older CLI without a receipt cannot prove native input cancelled", async () => {
+test("an older CLI without a native cannot prove native input cancelled", async () => {
   const { item, session, active } = fixture();
   active.q = { interrupt: async () => undefined };
   assert.deepEqual(await interruptInputQueue(session, active), {
