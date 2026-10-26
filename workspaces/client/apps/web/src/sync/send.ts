@@ -171,7 +171,12 @@ export function createOutbox(options: {
 
   const sendingRooms = new Set<string>();
 
-  async function deliver(doc: RxDocument<SyncDocument>): Promise<SendResult> {
+  async function deliver(
+    doc: Pick<
+      RxDocument<SyncDocument>,
+      "id" | "getLatest" | "incrementalModify"
+    >,
+  ): Promise<SendResult> {
     let value: Intention = readIntention(doc.getLatest().payload);
     if (value.status !== "queued" || !navigator.onLine)
       return intentionResult(value);

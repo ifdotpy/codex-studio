@@ -168,7 +168,7 @@ type TabResourceRecovery = {
   resources: ResourceRef[];
 };
 
-type TabMessage = (
+export type TabMessage = (
   | TabSubscriptions
   | TabEvent
   | TabTokenRates
