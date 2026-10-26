@@ -67,3 +67,23 @@ export async function checkHarness(bridge: BridgeHarness) {
   // @ts-expect-error The harness preserves required steer params.
   await bridge.call("turn/steer", { threadId: "thread", input: [] });
 }
+
+export const question = {
+  id: "claude:question",
+  method: "item/tool/requestUserInput",
+  params: {
+    threadId: "thread",
+    turnId: "turn",
+    itemId: "item",
+    questions: [
+      {
+        id: "0",
+        header: "Choice",
+        question: "Proceed?",
+        options: [{ label: "Yes", description: "Continue" }],
+        isOther: true,
+        isSecret: false,
+      },
+    ],
+  },
+} satisfies BridgeServerRequest;

@@ -96,9 +96,9 @@ import { HANG_GUARD_MS } from "./file-signals.ts";
 export { HANG_GUARD_MS };
 
 // Copies the bridge sources to a temporary folder, replaces the SDK import with
-// `fakeSdk` (module source text) and starts the bridge with one new thread.
+// the fixture module and starts the bridge with one new thread.
 export async function startBridge(
-  fakeSdk: string | URL,
+  fakeSdk: URL,
   prefix = "claude-bridge-",
   {
     env = {},
@@ -112,51 +112,39 @@ export async function startBridge(
     temporaryBase?: string;
   } = {},
 ) {
-  const fixtureModule = fakeSdk instanceof URL;
-  // SDK init always carries a native session id. Keep older scripted fixtures
-  // faithful to that declaration; an explicit session_id still takes precedence.
-  fakeSdk = (
-    fakeSdk instanceof URL ? await fs.readFile(fakeSdk, "utf8") : fakeSdk
-  ).replace(
-    /subtype:\s*(["'])init\1/g,
-    "subtype:'init',session_id:options.resume||options.sessionId",
-  );
   const root = await fs.realpath(
     await fs.mkdtemp(path.join(temporaryBase, prefix)),
   );
   for (const name of await fs.readdir(BRIDGE)) {
     if (!/\.(mjs|mts|ts)$/.test(name) || /\.test\.(mjs|mts|ts)$/.test(name))
       continue;
-    const source = await fs.readFile(path.join(BRIDGE, name), "utf8");
-    await fs.writeFile(
-      path.join(root, name),
-      source.replaceAll(
-        "@anthropic-ai/claude-agent-sdk",
-        /^history-index\.(mjs|ts)$/.test(name)
-          ? path.join(
-              BRIDGE,
-              "node_modules/@anthropic-ai/claude-agent-sdk/sdk.mjs",
-            )
-          : "./fake.mts",
-      ),
-    );
+    const destination = path.join(root, name);
+    if (name === "bridge.ts" || name === "refresh-auth.ts") {
+      const source = await fs.readFile(path.join(BRIDGE, name), "utf8");
+      await fs.writeFile(
+        destination,
+        source.replaceAll("@anthropic-ai/claude-agent-sdk", "./fake.mts"),
+      );
+    } else await fs.copyFile(path.join(BRIDGE, name), destination);
   }
+  await fs.cp(path.join(BRIDGE, "fixtures"), path.join(root, "fixtures"), {
+    recursive: true,
+  });
   await fs.mkdir(path.join(root, "testing"));
   await fs.copyFile(
     path.join(BRIDGE, "testing/file-signals.ts"),
     path.join(root, "testing/file-signals.ts"),
   );
+  const sourceFile = fileURLToPath(fakeSdk);
+  const relativeFile = path.relative(BRIDGE, sourceFile);
+  const fixtureFile =
+    relativeFile.startsWith("..") || path.isAbsolute(relativeFile)
+      ? path.basename(sourceFile)
+      : relativeFile;
+  await fs.copyFile(sourceFile, path.join(root, fixtureFile));
   await fs.writeFile(
     path.join(root, "fake.mts"),
-    (fixtureModule
-      ? ""
-      : `import { waitForFile as waitForFileSignal } from ${JSON.stringify(path.join(BRIDGE, "testing/file-signals.ts"))};\n` +
-        `const waitForFile=(file,options)=>waitForFileSignal(file,{...options,childIpc:true});\n`) +
-      (fakeSdk.includes("export const resolveSettings") ||
-      fakeSdk.includes("export function resolveSettings")
-        ? fakeSdk
-        : "export const resolveSettings=async()=>({effective:{}});\n" +
-          fakeSdk),
+    `export * from ${JSON.stringify("./" + fixtureFile.split(path.sep).join("/"))};\n`,
   );
   await fs.symlink(
     path.join(BRIDGE, "node_modules"),

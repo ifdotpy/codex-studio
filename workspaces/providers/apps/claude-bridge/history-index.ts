@@ -19,9 +19,6 @@ import {
 } from "./native-history.ts";
 
 /** One UUID lookup for a complete history snapshot, shared by controls and recovery.
- * @param {sdk.SessionMessage[]} messages
- * @param {Set<string>} [inputIds]
- * @param {Set<string>} [uncertainIds]
  */
 export function messageIndex(
   messages: sdk.SessionMessage[],
@@ -32,13 +29,11 @@ export function messageIndex(
   ),
   uncertainIds: Set<string> = new Set(),
 ) {
-  /** @type {Map<string, number>} */
   const positions: Map<string, number> = new Map();
   for (const [position, message] of messages.entries())
     positions.set(message.uuid, positions.has(message.uuid) ? -1 : position);
   return {
     messages,
-    /** @param {string[]} ids */
     positions(ids: string[]) {
       const found = ids.map((id) => positions.get(id) ?? -1);
       return found.every(
@@ -48,7 +43,6 @@ export function messageIndex(
         ? found
         : null;
     },
-    /** @param {string[] | null} ids @param {string[] | null} anchors */
     outcome(ids: string[] | null, anchors: string[] | null) {
       if (
         !ids?.length ||
@@ -77,18 +71,14 @@ export function messageIndex(
 // The raw reader is only an integrity guard: SDK parsers silently discard bad
 // records. A stable, complete, strictly recognized file is required before any
 // absence or branch can be trusted. Unknown CLI formats fail closed.
-/** @param {sdk.SessionStoreEntry[]} rows @param {string} sessionId @param {string} cwd */
 function verifiedChain(
   rows: sdk.SessionStoreEntry[],
   sessionId: string,
   cwd: string,
 ) {
-  /** @type {sdk.SessionStoreEntry[]} */
   const chain: ChainEntry[] = [];
   const seen = new Set();
-  /** @type {Map<string, string | null>} */
   const nearestInput: Map<string, string | null> = new Map();
-  /** @type {string | null} */
   let previousInput: string | null = null;
   const inputIds = new Set<string>();
   const uncertainIds = new Set<string>();
@@ -159,7 +149,6 @@ function verifiedChain(
   return chain.length ? Object.assign(chain, { inputIds, uncertainIds }) : null;
 }
 
-/** @param {HistorySession} session @param {HistoryReadOptions} [options] */
 export async function readHistoryIndex(
   session: HistorySession,
   options: HistoryReadOptions = {},
@@ -180,9 +169,7 @@ export async function readHistoryIndex(
         before.fileSize !== tail.before.size
       )
         return null;
-      /** @type {sdk.SessionStoreEntry[]} */
       const entries: sdk.SessionStoreEntry[] = [];
-      /** @type {sdk.SessionStore} */
       const store: sdk.SessionStore = {
         append: async (key, batch) => {
           if (
@@ -278,7 +265,6 @@ export async function readHistoryIndex(
 }
 
 /** Controls cannot perform a native effect from uncertain coverage.
- * @param {HistorySession} session
  */
 export async function verifiedHistoryMessages(session: HistorySession) {
   const index = await readHistoryIndex(session);
@@ -291,11 +277,9 @@ export async function verifiedHistoryMessages(session: HistorySession) {
 
 /** Pure integrity witness for SDK store entries. Production readers also require
  * pinned bytes, SDK metadata, and the typed SDK conversation chain.
- * @param {sdk.SessionStoreEntry[] | undefined | null} rows
- * @param {{sessionId: string, cwd: string, anchorIds: string[] | null, inputIds: string[] | null}} scope
  */
 export function inputHistoryOutcome(
-  rows: sdk.SessionStoreEntry[] | undefined | null,
+  rows: unknown,
   scope: {
     sessionId: string;
     cwd: string;
@@ -303,7 +287,14 @@ export function inputHistoryOutcome(
     inputIds: string[] | null;
   },
 ) {
-  if (!Array.isArray(rows)) return "unknown";
+  if (
+    !Array.isArray(rows) ||
+    !rows.every(
+      (row: unknown): row is sdk.SessionStoreEntry =>
+        object(row) && typeof row.type === "string",
+    )
+  )
+    return "unknown";
   const chain = verifiedChain(rows, scope.sessionId, scope.cwd);
   if (!chain) return "unknown";
   return messageIndex(

@@ -1,8 +1,13 @@
+export interface ForkQueryEvent {
+  id: string;
+  start?: boolean;
+  close?: boolean;
+}
 // This fixture writes and reads its own native journal rows.
 function parseNativeFixtureRow(text: string): SessionStoreEntry {
   return JSON.parse(text);
 }
-export const resolveSettings = async () => ({ effective: {} });
+export { resolveSettings } from "../sdk-fixtures.ts";
 import type {
   SessionFixtureQuery,
   SessionFixtureMessage,
@@ -53,7 +58,7 @@ export function query({ prompt, options }: SessionFixtureQuery) {
     );
     parent = row.uuid;
   };
-  const log = (event: Record<string, unknown>) =>
+  const log = (event: Omit<ForkQueryEvent, "id">) =>
     fs.appendFileSync(
       options.cwd + "/.query-log",
       JSON.stringify({ id, ...event }) + "\n",

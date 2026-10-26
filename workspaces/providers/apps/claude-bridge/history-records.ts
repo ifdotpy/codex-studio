@@ -200,7 +200,6 @@ export const object = (value: unknown): value is Record<string, unknown> =>
   !!value && typeof value === "object" && !Array.isArray(value);
 /** Tool receipts cannot carry a Studio instruction, including ToolSearch's new
  * inner block types. Do not validate their provider-owned payloads as prompts.
- * @param {import("@anthropic-ai/claude-agent-sdk").SessionStoreEntry} row
  */
 function onlyToolResults(row: SessionStoreEntry) {
   const body = row.message;
@@ -212,7 +211,6 @@ function onlyToolResults(row: SessionStoreEntry) {
   );
 }
 /** @param {import("@anthropic-ai/claude-agent-sdk").SessionStoreEntry} row
- * @returns {HistoryRecordKind | null}
  */
 export function historyRecordKind(
   row: SessionStoreEntry,

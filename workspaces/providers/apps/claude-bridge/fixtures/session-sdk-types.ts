@@ -22,3 +22,7 @@ export type SessionFixtureQuery = Omit<
   >;
   options: Options & { cwd: string };
 };
+
+export type SessionFixtureStreamEvent = NonNullable<
+  Extract<SessionFixtureMessage, { type?: "stream_event" | undefined }>["event"]
+>;

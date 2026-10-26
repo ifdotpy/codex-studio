@@ -1,3 +1,4 @@
+import { object } from "./history-records.ts";
 import type { Session, Turn } from "./session-state.ts";
 import assert from "node:assert/strict";
 import { test } from "vitest";
@@ -176,7 +177,10 @@ test("journal appends compact and recover torn records", async () =>
     assert.equal(journalBeforeCompaction.trim().split("\n").length, 2);
     turnAt(original, 0).items.push({ id: "frame-3", text: "snapshot state" });
     await store.persist(original);
-    const compacted = JSON.parse(await fs.readFile(snapshotPath, "utf8"));
+    const compacted: unknown = JSON.parse(
+      await fs.readFile(snapshotPath, "utf8"),
+    );
+    assert.ok(object(compacted));
     assert.equal(
       compacted.format,
       "studio-claude-session-v1",

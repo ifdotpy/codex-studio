@@ -1,3 +1,4 @@
+export { resolveSettings } from "./sdk-fixtures.ts";
 import { inputText } from "./sdk-fixtures.ts";
 import type { FixtureQuery } from "./sdk-fixtures.ts";
 export {
@@ -83,7 +84,11 @@ export function query({ prompt, options }: FixtureQuery) {
       if (input.done) return;
       const mode = inputText(input.value);
       yield { type: "user", isReplay: true, uuid: input.value.uuid };
-      yield { type: "system", subtype: "init" };
+      yield {
+        type: "system",
+        subtype: "init",
+        session_id: options.resume || options.sessionId,
+      };
       if (mode === "plain") {
         yield refused("refused-1", false);
         yield failed;

@@ -1,3 +1,4 @@
+import type { BridgeHarness, BridgeNoteFor } from "./testing/bridge-harness.ts";
 // A full disk (ENOSPC) at the session-store write boundary. Faults are
 // injected into node:fs/promises; no test fills a real disk.
 import { afterEach, test, vi } from "vitest";
@@ -8,9 +9,10 @@ import os from "node:os";
 import path from "node:path";
 import { createSessionStore, isDiskFull } from "./session-store.ts";
 import { startBridge } from "./testing/bridge-harness.ts";
+import type { Session } from "./session-state.ts";
 
 const sessionId = "11111111-1111-4111-8111-111111111111";
-const makeSession = () => ({
+const makeSession = (): Session => ({
   id: sessionId,
   cwd: "/tmp/work",
   turns: [
@@ -21,7 +23,7 @@ const makeSession = () => ({
     },
   ],
 });
-const withRoot = async (run) => {
+const withRoot = async (run: (root: string) => Promise<void>) => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "claude-disk-full-"));
   try {
     await run(root);
@@ -29,12 +31,12 @@ const withRoot = async (run) => {
     await fs.rm(root, { recursive: true, force: true });
   }
 };
-const diskFull = (target) =>
+const diskFull = (target: unknown) =>
   Object.assign(
     new Error("ENOSPC: no space left on device, rename '" + target + "'"),
     { code: "ENOSPC" },
   );
-const temporaryFiles = async (directory) =>
+const temporaryFiles = async (directory: string) =>
   (await fs.readdir(directory)).filter((name) => name.endsWith(".tmp"));
 
 test("disk-full detection follows error codes, causes and aggregate errors", () => {
@@ -108,8 +110,8 @@ test("a partial disk-full snapshot write removes its temporary file", async () =
 
 test("persistOrDefer saves again when space returns and rejects other errors", async () =>
   withRoot(async (root) => {
-    let onSaved;
-    const saved = new Promise((resolve) => {
+    let onSaved = () => {};
+    const saved = new Promise<void>((resolve) => {
       onSaved = resolve;
     });
     const store = createSessionStore(root, {
@@ -119,6 +121,7 @@ test("persistOrDefer saves again when space returns and rejects other errors", a
     });
     const session = makeSession();
     await store.persist(session);
+    assert.ok(session.turns[0]);
     session.turns[0].items.push({ id: "answer-1", text: "kept in memory" });
     const originalAppend = fs.appendFile;
     let full = true;
@@ -159,51 +162,9 @@ test("persistOrDefer saves again when space returns and rejects other errors", a
 // `.disk-full` exists in the bridge folder, every rename fails with ENOSPC, as
 // in the incident. Turn "fill" creates `.disk-full` after Claude starts, sends
 // an answer, waits for `.space`, removes `.disk-full`, and ends successfully.
-const FAKE_SDK = String.raw`
-import fs from 'node:fs';
-import fsp from 'node:fs/promises';
-const marker=process.cwd()+'/.disk-full';
-const rename=fsp.rename;
-fsp.rename=async(from,to)=>{
- if(fs.existsSync(marker))throw Object.assign(new Error("ENOSPC: no space left on device, rename '"+from+"' -> '"+to+"'"),{code:'ENOSPC'});
- return rename(from,to);
-};
-export const tool=(name,description,schema,call)=>({name,description,schema,call});
-export const createSdkMcpServer=value=>({...value});
-export const forkSession=async()=>({sessionId:'22222222-2222-4222-8222-222222222222'});
-export const getSessionMessages=async()=>[];
-const until=(file,signal)=>waitForFile(file,{signal}).catch(()=>{});
-const usage={input_tokens:10,output_tokens:2};
-export function query({prompt,options}){
- const abort=new AbortController(),cwd=options.cwd;
- return {
-  mcpServerStatus:async()=>[],reconnectMcpServer:async()=>{},
-  supportedModels:async()=>[{value:'default',displayName:'Default',resolvedModel:'claude-opus-5-5'}],
-  accountInfo:async()=>({email:'test@example.test',subscriptionType:'Claude Max',apiProvider:'firstParty'}),
-  initializationResult:async()=>({commands:[]}),
-  setModel:async()=>{},setPermissionMode:async()=>{},applyFlagSettings:async()=>{},stopTask:async()=>{},
-  setMcpServers:async()=>({added:[],removed:[],errors:{}}),
-  close(){abort.abort();},interrupt:async()=>abort.abort(),
-  async *[Symbol.asyncIterator](){
-   const input=await prompt.next();
-   if(input.done)return;
-   fs.appendFileSync(cwd+'/.inputs',input.value.message.content[0].text+'\n');
-   yield {type:'user',isReplay:true,uuid:input.value.uuid};
-   yield {type:'system',subtype:'init'};
-   fs.writeFileSync(marker,'');
-   yield {type:'stream_event',event:{type:'message_start',message:{id:'message-1'}}};
-   yield {type:'assistant',uuid:'a-1',message:{id:'message-1',model:'claude-opus-5-5',usage,content:[{type:'text',text:'still working'}]}};
-   await until(cwd+'/.space',abort.signal);
-   if(abort.signal.aborted)return;
-   fs.rmSync(marker,{force:true});
-   yield {type:'result',subtype:'success',usage,result:'done'};
-   await new Promise(resolve=>abort.signal.addEventListener('abort',resolve,{once:true}));
-  }
- };
-}
-`;
+const FAKE_SDK = new URL("./disk-full.fixture.mts", import.meta.url);
 
-const bridges = [];
+const bridges: BridgeHarness[] = [];
 afterEach(async () => {
   for (const bridge of bridges.splice(0)) await bridge.close();
 });
@@ -220,16 +181,19 @@ test("a disk-full session save does not fail the running turn and loses nothing"
     })
   ).turn.id;
   const held = await bridge.note(
-    (n) =>
+    (n): n is BridgeNoteFor<"item/completed"> =>
       n.method === "item/completed" && n.params.item.id === "disk-full:" + turn,
   );
+  assert.ok(held.params.item.text);
   assert.match(held.params.item.text, /^Disk is full\./);
   assert.equal(held.params.item.studioNotice, true);
   // Saves run beside the stream and keep failing while the disk is full, so
   // a temporary file may exist now by design. The turn's end waits for its
   // saves; only then does a leaked temporary file show (checked below).
   await fs.writeFile(path.join(bridge.root, ".space"), "");
-  const completed = await bridge.note((n) => n.method === "turn/completed");
+  const completed = await bridge.note(
+    (n): n is BridgeNoteFor<"turn/completed"> => n.method === "turn/completed",
+  );
   assert.equal(completed.params.turn.id, turn);
   assert.equal(completed.params.turn.status, "completed");
   assert.equal(completed.params.turn.error, undefined);
@@ -237,6 +201,7 @@ test("a disk-full session save does not fail the running turn and loses nothing"
     path.join(bridge.root, "state"),
   ).readAll(bridge.thread);
   const savedTurn = saved.session.turns.find((item) => item.id === turn);
+  assert.ok(savedTurn);
   assert.equal(savedTurn.status, "completed");
   assert.ok(
     savedTurn.items.some((item) => item.text === "still working"),
