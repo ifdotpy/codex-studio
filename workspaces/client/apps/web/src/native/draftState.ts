@@ -20,9 +20,9 @@ export class NativeDraftState {
   private listeners = new Set<() => void>();
   private snapshot: DraftView & { pending: boolean; localError: string };
 
-  readonly workspace: string;
-  private invoke: Invoke;
-  private journal: DraftJournal | undefined;
+  declare readonly workspace: string;
+  declare private invoke: Invoke;
+  declare private journal: DraftJournal | undefined;
   constructor(workspace: string, invoke: Invoke, journal?: DraftJournal) {
     this.workspace = workspace;
     this.invoke = invoke;
@@ -78,13 +78,11 @@ export class NativeDraftState {
     if (!Object.keys(changes).length) return;
     // The head may already be committed, so its content is immutable. Only
     // coalesce the unsent tail to bound typing backlog while IPC is delayed.
-    const tail = this.queue[1];
-    if (!this.journal && tail) Object.assign(tail.changes, changes);
+    if (!this.journal && this.queue.length > 1)
+      Object.assign(this.queue[1].changes, changes);
     else this.queue.push({ id: crypto.randomUUID(), changes });
     try {
-      const latest = this.queue.at(-1);
-      if (!latest) throw new Error("The draft write queue is empty.");
-      this.journal?.save(latest);
+      this.journal?.save(this.queue[this.queue.length - 1]);
     } catch (error) {
       this.failure = error instanceof Error ? error.message : String(error);
     }
@@ -124,7 +122,6 @@ export class NativeDraftState {
     try {
       while (this.queue.length) {
         const edit = this.queue[0];
-        if (!edit) break;
         this.journal?.save(edit);
         const view = await this.invoke<DraftView>(
           "drafts.edit",

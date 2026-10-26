@@ -105,12 +105,13 @@ function updateStatus(
   let availableBackendBuild;
   try {
     availableBackendBuild = backendBuild(resources, env);
-  } catch (caughterror) {
-    if (!(caughterror instanceof Error)) throw caughterror;
-    const error: NodeJS.ErrnoException = caughterror;
+  } catch (error) {
     console.error(
       "Cannot compute the installed backend identity:",
-      ("stderr" in error ? String(error.stderr).trim() : "") || error.message,
+      (error as import("node:child_process").ExecFileException).stderr
+        ?.toString()
+        .trim() ||
+        (error as import("node:child_process").ExecFileException).message,
     );
     return { availableBackendBuild: null, updateRequired: null };
   }
@@ -175,27 +176,25 @@ async function identity(
       });
       try {
         data = await response.json();
-      } catch (caughterror) {
-        if (!(caughterror instanceof Error)) throw caughterror;
-        const error: NodeJS.ErrnoException = caughterror;
-        if (signal.aborted) throw error;
+      } catch (error) {
+        if (signal.aborted) throw error as NodeJS.ErrnoException;
         throw new Error(
           "Port is occupied by an incompatible server. Update or stop that server first.",
         );
       }
       break;
-    } catch (caughterror) {
-      if (!(caughterror instanceof Error)) throw caughterror;
-      const error: NodeJS.ErrnoException = caughterror;
-      const cause = error.cause;
+    } catch (error) {
       const refused =
-        !!cause &&
-        typeof cause === "object" &&
-        "code" in cause &&
-        cause.code === "ECONNREFUSED";
+        (
+          (error as NodeJS.ErrnoException).cause as
+            | NodeJS.ErrnoException
+            | undefined
+        )?.code === "ECONNREFUSED";
       if (refused && !uncertain) return null;
       if (!signal.aborted && !refused)
-        throw new Error(`Cannot verify the local backend: ${error.message}`);
+        throw new Error(
+          `Cannot verify the local backend: ${(error as NodeJS.ErrnoException).message}`,
+        );
       // A timeout does not prove that the port or state directory is available.
       uncertain = true;
       const remaining = deadline - performance.now();
@@ -258,10 +257,9 @@ async function ensureBackend({
     )
       throw new Error("The saved supervisor setting is invalid.");
     persistedSupervisorMode = saved.supervisorEnabled === true;
-  } catch (caughterror) {
-    if (!(caughterror instanceof Error)) throw caughterror;
-    const error: NodeJS.ErrnoException = caughterror;
-    if (error.code !== "ENOENT") throw error;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT")
+      throw error as NodeJS.ErrnoException;
   }
   const supervisorMode =
     env.CODEX_AGENTS_SUPERVISOR_MODE === undefined

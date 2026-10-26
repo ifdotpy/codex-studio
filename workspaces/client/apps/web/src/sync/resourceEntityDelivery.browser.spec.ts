@@ -54,7 +54,7 @@ test("state stream persists records across tabs without pulls and repairs missin
   const frame = (
     reason: ResourceChangeEvent["reason"],
     documents?: LegacyAgentChange[],
-    after = 0,
+    after?: number,
     reset = false,
   ): LegacyEntityFrame => ({
     protocol: 4,
@@ -69,7 +69,7 @@ test("state stream persists records across tabs without pulls and repairs missin
         ...(documents
           ? {
               entitySequences: documents.map((row) => row.seq),
-              entityChanges: { after, through: sequence, documents },
+              entityChanges: { after: after!, through: sequence, documents },
             }
           : {}),
         ...(reset ? { entitySequenceReset: true } : {}),
@@ -93,7 +93,7 @@ test("state stream persists records across tabs without pulls and repairs missin
         name: "resource-entity-delivery-fixture",
         configureServer(server) {
           server.middlewares.use((request, response, next) => {
-            const url = new URL(request.url ?? "", "http://localhost");
+            const url = new URL(request.url!, "http://localhost");
             if (url.pathname === "/entity-delivery-check") {
               response.setHeader("Content-Type", "text/html");
               response.end(
@@ -166,22 +166,19 @@ test("state stream persists records across tabs without pulls and repairs missin
   const waitForAgent = (page: Page, id: string, name: string) =>
     page.waitForFunction(
       ({ id, name }) =>
-        window.syncDelivery.snapshot?.runtime.agents.find(
-          (agent) => agent.id === id,
-        )?.name === name,
+        window.snapshot?.runtime.agents.find((agent) => agent.id === id)
+          ?.name === name,
       { id, name },
     );
   const waitForCheckpoint = (page: Page, seq: number) =>
-    expect
-      .poll(() => page.evaluate(() => window.syncDelivery.checkpoint()))
-      .toBe(seq);
+    expect.poll(() => page.evaluate(() => window.checkpoint())).toBe(seq);
   const settle = () => new Promise((resolve) => setTimeout(resolve, 150));
   try {
     await server.listen();
     const page = await openPage();
     await waitForAgent(page, "lead", "Initial lead");
     await waitForCheckpoint(page, 2);
-    await page.waitForFunction(() => window.syncDelivery.connection === "live");
+    await page.waitForFunction(() => window.connection === "live");
     await settle();
     const initialPulls = pulls.length;
     assert.ok(
@@ -202,7 +199,7 @@ test("state stream persists records across tabs without pulls and repairs missin
     send(frame("change", [put("removed", "", true)], 3));
     await page.waitForFunction(
       () =>
-        !window.syncDelivery.snapshot?.runtime.agents.some(
+        !window.snapshot?.runtime.agents.some(
           (agent) => agent.id === "removed",
         ),
     );
@@ -216,9 +213,7 @@ test("state stream persists records across tabs without pulls and repairs missin
 
     const follower = await openPage();
     await waitForAgent(follower, "lead", "Stream update");
-    await follower.waitForFunction(
-      () => window.syncDelivery.connection === "live",
-    );
+    await follower.waitForFunction(() => window.connection === "live");
     await expect.poll(() => streams.size).toBe(1);
     await settle();
     const beforePeerUpdate = pulls.length;
@@ -294,10 +289,7 @@ test("state stream persists records across tabs without pulls and repairs missin
     assert.ok(pulls.every((pull) => pull.scope === "state:entities:v1"));
     assert.deepEqual(errors, []);
     for (const tab of pages)
-      assert.deepEqual(
-        await tab.evaluate(() => window.syncDelivery.syncErrors),
-        [],
-      );
+      assert.deepEqual(await tab.evaluate(() => window.syncErrors), []);
   } finally {
     try {
       await context.close();

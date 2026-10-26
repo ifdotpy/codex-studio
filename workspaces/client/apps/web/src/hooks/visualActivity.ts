@@ -22,10 +22,10 @@ function insideClosedDetails(element: HTMLElement) {
 }
 
 class VisualActivityTracker {
+  private document: Document;
   private entries = new Map<HTMLElement, Entry>();
   private observer: IntersectionObserver | undefined;
 
-  private document: Document;
   constructor(document: Document) {
     this.document = document;
   }

@@ -1,40 +1,23 @@
 import { expect, it, vi } from "vitest";
 import { createDataObserver } from "./data";
+import type { ResourceRef } from "./contracts";
 import type { ResourceVersion } from "../resourceEvents";
-import type { createSyncClient } from "../client";
 import type { ObserveSubscriptionData } from "./module";
-import { createSubscriptionStore } from "./store";
-import type { components } from "../../generated/api";
-
-const roomView = {
-  messages: [
-    {
-      id: "new",
-      seq: 2,
-      created: 1,
-      deliveries: {},
-      room: "team",
-      sender: "lead",
-      senderName: "Lead",
-      text: "New message",
-    },
-  ],
-  room: { id: "team" },
-} satisfies components["schemas"]["ChatRead"];
-const sync = () => ({
-  subscribeTranscriptProjection: vi.fn<
-    ReturnType<typeof createSyncClient>["subscribeTranscriptProjection"]
-  >(() => () => {}),
-});
+// Partial sync fixtures: these cases never enter the transcript observer path.
+type SyncFixture = ReturnType<Parameters<typeof createDataObserver>[0]>;
 
 it.each([
   [{ kind: "processes", agentId: "lead" }, "processes", { processes: [] }],
   [
     { kind: "complaint", complaintId: "message" },
     "complaint",
-    { id: "message", text: "Reply", responses: [], version: 1 },
+    { id: "message", text: "Reply" },
   ],
-  [{ kind: "room", roomId: "team" }, "room", roomView],
+  [
+    { kind: "room", roomId: "team" },
+    "room",
+    { messages: [{ id: "new", seq: 2 }] },
+  ],
   [
     { kind: "terminal-output", terminalId: "shell" },
     "terminalOutput",
@@ -55,12 +38,16 @@ it.each([
     };
     const accept = vi.fn();
     const dispose = createDataObserver(
-      sync,
+      () => ({ get }) as { get: typeof get } & SyncFixture,
       events,
       undefined,
       get,
-    )(ref, accept, vi.fn());
-    receive({ epoch: "server", revision: 1, viewSnapshot: { [field]: value } });
+    )(ref as ResourceRef, accept, vi.fn());
+    receive({
+      epoch: "server",
+      revision: 1,
+      viewSnapshot: { [field]: value } as ResourceVersion["viewSnapshot"],
+    });
     await vi.waitFor(() => expect(accept).toHaveBeenCalledTimes(1));
     receive({ epoch: "server", revision: 2, viewSnapshot: { [field]: value } });
     await vi.waitFor(() => expect(accept).toHaveBeenCalledTimes(2));
@@ -92,7 +79,7 @@ it("an oversized view recovers once and subsequent complete frames resume zero-r
   const read = vi.fn(async () => ({ processes: [] }));
   const accept = vi.fn();
   const stop = createDataObserver(
-    sync,
+    () => ({}) as SyncFixture,
     events,
     undefined,
     read,
@@ -112,7 +99,7 @@ it("an oversized view recovers once and subsequent complete frames resume zero-r
 
 it("work baselines and updates use the entity observer even when view recovery exists", async () => {
   let receive: (version?: ResourceVersion) => void = () => {};
-  let publish = () => {};
+  let publish: (data: unknown) => void = () => {};
   const stopEvents = vi.fn();
   const stopEntities = vi.fn();
   const events = {
@@ -122,61 +109,30 @@ it("work baselines and updates use the entity observer even when view recovery e
     },
     watchResourceConnection: () => () => {},
   };
-  const values = createSubscriptionStore(events);
-  const observed = vi.fn();
-  const observe: ObserveSubscriptionData = (ref, accept) => {
-    observed(ref);
-    publish = () => accept(values.getSnapshot(ref).data);
+  const observe = vi.fn((_ref: ResourceRef, accept: typeof publish) => {
+    publish = accept;
     return stopEntities;
-  };
+  });
   const recover = vi.fn();
   const accept = vi.fn();
   const ref = { kind: "work", agentId: "lead" } as const;
   const dispose = createDataObserver(
-    sync,
+    () => ({}) as SyncFixture,
     events,
-    observe,
+    observe as ObserveSubscriptionData,
     recover,
   )(ref, accept, vi.fn());
-  expect(observed).toHaveBeenCalledOnce();
-  const first = {
-    items: [
-      {
-        id: "assignment",
-        title: "Before",
-        rootId: "lead",
-        created: 1,
-        updated: 1,
-        version: 1,
-        status: "ready" as const,
-      },
-    ],
-    tasks: [],
-  };
-  values.publish(ref, first);
-  publish();
+  expect(observe).toHaveBeenCalledOnce();
+  const first = { items: [{ id: "assignment", title: "Before" }], tasks: [] };
+  publish(first);
   receive({
     epoch: "server",
     revision: 1,
     cursor: { workspaceId: "w", seq: 1 },
     replyKind: "snapshot",
   });
-  const next = {
-    items: [
-      {
-        id: "assignment",
-        title: "After",
-        rootId: "lead",
-        created: 1,
-        updated: 2,
-        version: 2,
-        status: "ready" as const,
-      },
-    ],
-    tasks: [],
-  };
-  values.publish(ref, next);
-  publish();
+  const next = { items: [{ id: "assignment", title: "After" }], tasks: [] };
+  publish(next);
   receive({
     epoch: "server",
     revision: 2,

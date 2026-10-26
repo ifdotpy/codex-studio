@@ -10,7 +10,7 @@ interface ChainEntry extends sdk.SessionStoreEntry {
   type: "user" | "assistant";
 }
 import * as sdk from "@anthropic-ai/claude-agent-sdk";
-import { historyRecordKind, object } from "./history-records.ts";
+import { historyRecordKind } from "./history-records.ts";
 import { isDeepStrictEqual } from "node:util";
 import {
   readNativeHistory,
@@ -129,13 +129,11 @@ function verifiedChain(
     nearestInput.set(row.uuid, kind === "input" ? row.uuid : ancestor);
     if (kind === "input") previousInput = row.uuid;
     if (row.type === "user" || row.type === "assistant") {
-      chain.push({ ...row, type: row.type, uuid: row.uuid });
+      chain.push(row as ChainEntry);
       if (kind === "input") inputIds.add(row.uuid);
     }
     if (row.type === "attachment" && kind === "input") {
-      const attachment = row.attachment;
-      if (!object(attachment) || !nativeUuid(attachment.source_uuid))
-        return null;
+      const attachment = row.attachment as { source_uuid: string };
       inputIds.add(attachment.source_uuid);
       chain.push({
         ...row,
@@ -287,15 +285,12 @@ export function inputHistoryOutcome(
     inputIds: string[] | null;
   },
 ) {
-  if (
-    !Array.isArray(rows) ||
-    !rows.every(
-      (row: unknown): row is sdk.SessionStoreEntry =>
-        object(row) && typeof row.type === "string",
-    )
-  )
-    return "unknown";
-  const chain = verifiedChain(rows, scope.sessionId, scope.cwd);
+  if (!Array.isArray(rows)) return "unknown";
+  const chain = verifiedChain(
+    rows as sdk.SessionStoreEntry[],
+    scope.sessionId,
+    scope.cwd,
+  );
   if (!chain) return "unknown";
   return messageIndex(
     chain.map((row) => ({

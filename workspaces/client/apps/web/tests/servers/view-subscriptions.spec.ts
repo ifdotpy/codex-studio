@@ -1,4 +1,3 @@
-import assert from "node:assert/strict";
 import type { ResourceRef } from "../playwright.ts";
 import { remoteNetwork } from "./browser-fixture.ts";
 import { fixtureOrigin } from "./browser-fixture.ts";
@@ -20,7 +19,7 @@ test("hidden server screens release chat details and prefetch while keeping list
   const remote = await fixture("Remote", true, { resourceBaseline: true });
   for (const server of [local, remote] as const) {
     const lead = server.snapshot.threads[0];
-    assert.ok(lead);
+
     server.setChats([
       lead,
       {
@@ -50,7 +49,9 @@ test("hidden server screens release chat details and prefetch while keeping list
     resources(server).some(
       (resource) =>
         resource.kind === kind &&
-        (!agentId || ("agentId" in resource && resource.agentId === agentId)),
+        (!agentId ||
+          (resource as Extract<ResourceRef, { agentId: string }>).agentId ===
+            agentId),
     );
   try {
     await remoteNetwork(context, remote);

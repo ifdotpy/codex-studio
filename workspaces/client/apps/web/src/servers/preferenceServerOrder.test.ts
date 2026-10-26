@@ -1,4 +1,3 @@
-import assert from "node:assert/strict";
 import { describe, expect, it, vi } from "vitest";
 import type { StudioServer } from "./registry";
 const state = vi.hoisted(() => ({
@@ -20,7 +19,6 @@ describe("server preference order", () => {
       "local",
       "new",
     ]);
-    assert.ok(servers[0] != null);
     expect(servers[0].id).toBe("local");
   });
 });

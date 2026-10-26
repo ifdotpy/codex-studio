@@ -1,6 +1,4 @@
-import { createRxDatabase, type RxCollection, type RxDatabase } from "rxdb";
-import { getRxStorageMemory } from "rxdb/plugins/storage-memory";
-import { SYNC_DOCUMENT_SCHEMA, type SyncDocument } from "./client";
+import type { deliver as Deliver } from "./send";
 import assert from "node:assert/strict";
 import { afterEach, it, vi } from "vitest";
 import { ApiError, ApiSchemaMismatchError } from "../api";
@@ -27,13 +25,7 @@ import {
   retainQueuedSchemaMismatch,
 } from "./send.ts";
 
-let testDatabase:
-  | RxDatabase<{ outbox: RxCollection<SyncDocument> }>
-  | undefined;
-
-afterEach(async () => {
-  await testDatabase?.remove();
-  testDatabase = undefined;
+afterEach(() => {
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
   syncDatabase.mockReset();
@@ -140,7 +132,7 @@ it("deliver keeps a marked-426 message queued without changing its identity", as
   syncGet.mockResolvedValue({ workspaceId: "workspace-one" });
   refreshSession.mockResolvedValue({ token: "session-token" });
   syncPost.mockRejectedValue(new ApiSchemaMismatchError(true));
-  const record = {
+  let record = {
     id: "stable-message-id",
     payload: JSON.stringify({
       body: {
@@ -154,20 +146,18 @@ it("deliver keeps a marked-426 message queued without changing its identity", as
       created: 1,
     }),
   };
-  testDatabase = await createRxDatabase<{ outbox: RxCollection<SyncDocument> }>(
-    {
-      name: "send-" + crypto.randomUUID(),
-      storage: getRxStorageMemory(),
-      multiInstance: false,
-    },
-  );
-  const { outbox } = await testDatabase.addCollections({
-    outbox: { schema: SYNC_DOCUMENT_SCHEMA },
-  });
-  const doc = await outbox.insert({ ...record, seq: 0 });
+  // Partial RxDB document fixture: delivery only reads id/getLatest/incrementalModify.
+  const partialDoc = {
+    id: record.id,
+    getLatest: () => record,
+    incrementalModify: async (
+      modify: (value: typeof record) => typeof record,
+    ) => (record = modify(record)),
+  };
+  const doc = partialDoc as typeof partialDoc & Parameters<typeof Deliver>[0];
 
   const result = await deliver(doc);
-  const stored = JSON.parse(doc.getLatest().payload);
+  const stored = JSON.parse(record.payload);
   assert.equal(result.queued, true);
   assert.equal(stored.status, "queued");
   assert.equal(stored.body.id, "stable-message-id");
@@ -182,7 +172,7 @@ it("deliver preserves the existing failure behavior for an unmarked 426", async 
   syncGet.mockResolvedValue({ workspaceId: "workspace-one" });
   refreshSession.mockResolvedValue({ token: "session-token" });
   syncPost.mockRejectedValue(new ApiError("Unsupported protocol", 426));
-  const record = {
+  let record = {
     id: "stable-message-id",
     payload: JSON.stringify({
       body: {
@@ -196,21 +186,16 @@ it("deliver preserves the existing failure behavior for an unmarked 426", async 
       created: 1,
     }),
   };
-  testDatabase = await createRxDatabase<{ outbox: RxCollection<SyncDocument> }>(
-    {
-      name: "send-" + crypto.randomUUID(),
-      storage: getRxStorageMemory(),
-      multiInstance: false,
-    },
-  );
-  const { outbox } = await testDatabase.addCollections({
-    outbox: { schema: SYNC_DOCUMENT_SCHEMA },
-  });
-  const doc = await outbox.insert({ ...record, seq: 0 });
+  // Partial RxDB document fixture: delivery only reads id/getLatest/incrementalModify.
+  const partialDoc = {
+    id: record.id,
+    getLatest: () => record,
+    incrementalModify: async (
+      modify: (value: typeof record) => typeof record,
+    ) => (record = modify(record)),
+  };
+  const doc = partialDoc as typeof partialDoc & Parameters<typeof Deliver>[0];
   await assert.rejects(deliver(doc), { status: 426 });
-  assert.equal(JSON.parse(doc.getLatest().payload).status, "failed");
-  assert.equal(
-    JSON.parse(doc.getLatest().payload).body.id,
-    "stable-message-id",
-  );
+  assert.equal(JSON.parse(record.payload).status, "failed");
+  assert.equal(JSON.parse(record.payload).body.id, "stable-message-id");
 });

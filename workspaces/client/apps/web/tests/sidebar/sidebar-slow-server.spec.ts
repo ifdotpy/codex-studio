@@ -1,5 +1,3 @@
-import { requiredFixtureValue } from "../servers/browser-fixture.ts";
-import assert from "node:assert/strict";
 import type {
   HeldRequest,
   Hold,
@@ -7,7 +5,7 @@ import type {
 } from "./sidebar-parity-fixture.ts";
 declare global {
   interface Window {
-    sidebarSlowHistory: string[];
+    studioTestHistory: string[];
   }
 }
 import type { BrowserContext, Page, Locator } from "playwright";
@@ -56,9 +54,9 @@ function changeOtherChats(fixture: SidebarParityFixture) {
   changes++;
   for (const server of [fixture.local, fixture.remote] as const) {
     const row = server.snapshot.threads.find((chat) => chat.id === "root-a");
-    assert.ok(row);
-    row.tail = `Unrelated change ${changes}`;
-    row.updated = Date.now() / 1000;
+
+    row!.tail = `Unrelated change ${changes}`;
+    row!.updated = Date.now() / 1000;
     server.complete(`unrelated-${changes}`);
   }
 }
@@ -87,7 +85,7 @@ async function recordExpanded(page: Page, text: string) {
       if (history.at(-1) !== value) history.push(value);
     };
     tick();
-    window.sidebarSlowHistory = history;
+    window.studioTestHistory = history;
     setInterval(tick, 20);
   }, text);
 }
@@ -104,12 +102,12 @@ async function recordProjectOrder(page: Page) {
       if (history.at(-1) !== value) history.push(value);
     };
     tick();
-    window.sidebarSlowHistory = history;
+    window.studioTestHistory = history;
     setInterval(tick, 20);
   });
 }
 
-const history = (page: Page) => page.evaluate(() => window.sidebarSlowHistory);
+const history = (page: Page) => page.evaluate(() => window.studioTestHistory);
 
 for (const delay of delays) {
   test(`a folder collapse never moves back while the server answers after ${delay} ms`, async ({
@@ -185,12 +183,10 @@ for (const delay of delays) {
       folders: [],
       peerTeams: [],
     });
-    requiredFixtureValue(
-      requiredFixtureValue(
-        requiredFixtureValue(fixture.local.snapshot.runtime.sidebarOrder)
-          .groups,
-      ).projects,
-    ).push("/same/other");
+
+    fixture.local.snapshot.runtime.sidebarOrder!.groups!.projects!.push(
+      "/same/other",
+    );
     try {
       const sidebar = await fixture.open(page);
       const otherProject = sidebar.locator(".project-tree-toggle", {
@@ -212,11 +208,7 @@ for (const delay of delays) {
       await keepChanging(page, fixture, Date.now() + delay + 3000);
       await expect
         .poll(
-          () =>
-            requiredFixtureValue(
-              requiredFixtureValue(fixture.local.snapshot.runtime.sidebarOrder)
-                .groups,
-            ).projects,
+          () => fixture.local.snapshot.runtime.sidebarOrder!.groups!.projects,
           { timeout: 2 * delay + 10000 },
         )
         .toEqual(["/same/other", sourcePath("local")]);
@@ -424,9 +416,7 @@ test("a lost chat creation answer still keeps its request for a retry", async ({
       (call) => call.path === "/api/leads",
     );
     expect(requests).toHaveLength(2);
-    expect(requiredFixtureValue(requests[1]).body).toEqual(
-      requiredFixtureValue(requests[0]).body,
-    );
+    expect(requests[1]!.body).toEqual(requests[0]!.body);
   } finally {
     await fixture.close();
   }
