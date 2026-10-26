@@ -923,7 +923,7 @@ async fn a_claude_sign_in_repair_reaches_the_client() {
         &store,
         chat(
             json!({"provider":"claude","accountKey":"claude-account","status":"failed",
-            "error":{"message":"OAuth session expired"}}),
+            "autoWake":true,"error":{"message":"OAuth session expired"}}),
         ),
     )
     .await;
