@@ -1,15 +1,11 @@
 import type { Agent } from "../../src/types.ts";
 import type { components } from "../../src/generated/api.ts";
+import type { AddressInfo } from "node:net";
 import type { ViteDevServer } from "vite";
 export function fixtureOrigin(server: ViteDevServer) {
-  const address = server.httpServer?.address();
-  if (!address || typeof address === "string")
-    throw new Error("Missing fixture server port");
-  return "http://127.0.0.1:" + address.port;
-}
-export function required<T>(value: T | null | undefined): T {
-  if (value == null) throw new Error("Missing performance fixture value");
-  return value;
+  return (
+    "http://127.0.0.1:" + (server.httpServer!.address() as AddressInfo).port
+  );
 }
 
 export type PerformanceTranscriptItem = Pick<
