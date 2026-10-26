@@ -4,13 +4,15 @@ export type InputGroup = {
   origin: typeof HUMAN_INPUT | typeof STUDIO_EVENT_INPUT;
   blocks: Exclude<SDKUserMessage["message"]["content"], string>;
 };
-export type StudioInputMessage = SDKUserMessage & {
-  uuid: string;
-  text_not_typed?: boolean;
-  studioInputIdentity?: string;
-  studioInputBatch?: StudioInputMessage[];
-};
+export type StudioInputMessage = QueuedInput<
+  SDKUserMessage & {
+    uuid: string;
+    text_not_typed?: boolean;
+    studioInputIdentity?: string;
+  }
+>;
 
+import type { QueuedInput } from "./features.ts";
 import { HUMAN_INPUT, STUDIO_EVENT_INPUT } from "./input-origin.generated.ts";
 
 // Validate every origin before conversion or submission. An omitted field is
@@ -83,7 +85,7 @@ export function nativeInputIds(
   if (
     !Array.isArray(ids) ||
     !ids.length ||
-    ids.some((id) => typeof id !== "string" || !id) ||
+    !ids.every((id): id is string => typeof id === "string" && !!id) ||
     new Set(ids).size !== ids.length ||
     (item?.nativeId && ids.at(-1) !== item.nativeId)
   )

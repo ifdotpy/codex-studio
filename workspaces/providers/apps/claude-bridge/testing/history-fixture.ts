@@ -3,7 +3,7 @@ import type {
   SessionStore,
 } from "@anthropic-ai/claude-agent-sdk";
 // SDK-shaped reads for in-memory filesystem fault injection. Installed SDK
-// coverage lives in history-index.test.mjs and cli-history-witness.ts.
+// coverage lives in history-index.test.ts and cli-history-witness.ts.
 export function fixtureSessionApi(
   rows: SessionStoreEntry[],
   {

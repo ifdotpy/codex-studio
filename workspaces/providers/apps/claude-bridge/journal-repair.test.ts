@@ -3,7 +3,7 @@ import { test } from "vitest";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { createSessionStore } from "./session-store.mjs";
+import { createSessionStore } from "./session-store.ts";
 import { startBridge } from "./testing/bridge-harness.ts";
 
 const id = "11111111-1111-4111-8111-111111111111";

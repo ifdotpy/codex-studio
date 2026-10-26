@@ -64,19 +64,19 @@ unknown outcome and is never automatically resent. Before completing a turn
 with such input, the bridge closes the CLI and reconciles its final native
 history. A split input is delivered only if every part is recorded; no recorded
 parts proves it unapplied, while partial or unavailable evidence stays unknown.
-The [history index](history-index.mjs) owns input identity for stall recovery,
+The [history index](history-index.ts) owns input identity for stall recovery,
 restart, fork, and rollback. It reads the current native session through SDK
 metadata and conversation APIs, and the SDK's typed transcript-store import.
 The import preserves hidden service parts that the conversation API omits;
 each part keeps its original SDK UUID and prompt framing. A pinned complete
 file read guards against the SDK silently skipping malformed or unknown rows.
-The [record schemas](history-records.mjs) strictly validate input-bearing prompt,
+The [record schemas](history-records.ts) strictly validate input-bearing prompt,
 queue-operation and queued-command payloads, including every known queue field.
 Assistant/system/progress/summary records, tool-result-only user messages and
 non-input attachments receive basic identity checks; their evolving payloads do
 not change input presence. Unknown top-level record types remain unknown.
 Missing sessions, unsupported structures, torn or changed files, broken ancestry,
-and files outside the [reader's coverage](native-history.mjs) remain unknown.
+and files outside the [reader's coverage](native-history.ts) remain unknown.
 Only complete authoritative absence permits redelivery. Each snapshot builds
 one UUID index that all retained inputs reuse.
 The bridge shows an uncertainty notice
@@ -157,7 +157,7 @@ Recovery also accepts an initial input receipt or marks a steer delivered only
 when all its native UUIDs appear in order on the proven transcript chain. Partial
 or unproven inputs keep their ambiguous receipts, including after another restart.
 Input receipts use the same verified SDK history index as stall recovery.
-Reply reconstruction stays in [restart reconciliation](restart-reconcile.mjs). The mirror journal still discards a torn final record.
+Reply reconstruction stays in [restart reconciliation](restart-reconcile.ts). The mirror journal still discards a torn final record.
 
 A malformed complete journal row requires native transcript evidence before
 repair. Automatic repair supports complete text histories with exact message

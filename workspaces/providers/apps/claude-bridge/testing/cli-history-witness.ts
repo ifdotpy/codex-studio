@@ -8,10 +8,7 @@ import http from "node:http";
 import { randomUUID, createHash } from "node:crypto";
 import { query, getSessionMessages } from "@anthropic-ai/claude-agent-sdk";
 import { inputGroups, sdkInputMessages } from "../input-messages.ts";
-import {
-  readHistoryIndex,
-  verifiedHistoryMessages,
-} from "../history-index.mjs";
+import { readHistoryIndex, verifiedHistoryMessages } from "../history-index.ts";
 import { forkAtTurn, rollbackSession } from "../controls.ts";
 import { forkSession } from "@anthropic-ai/claude-agent-sdk";
 import { InputQueue } from "../features.ts";
@@ -20,7 +17,7 @@ import {
   guardNativeSessionInput,
   guardNativeSessionStart,
   sessionStartHook,
-} from "../session-identity.mjs";
+} from "../session-identity.ts";
 
 const base = path.join(os.homedir(), ".cache/codex-studio/pivot1-v5-history");
 await fs.mkdir(base, { recursive: true });

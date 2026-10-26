@@ -1,8 +1,8 @@
 // @ts-check
 import { randomUUID } from "node:crypto";
-import { readHistoryIndex } from "./history-index.mjs";
+import { readHistoryIndex } from "./history-index.ts";
 import { HUMAN_INPUT } from "./input-origin.generated.ts";
-import { nativeUuid } from "./native-history.mjs";
+import { nativeUuid } from "./native-history.ts";
 
 /** @typedef {"init" | import("@anthropic-ai/claude-agent-sdk").SessionStartHookInput["source"]} TransitionSource */
 /** @typedef {{inputId: string, turnId: string, attemptId: string}} NativeInputAttempt */
@@ -217,7 +217,7 @@ export async function persistNativeSession(
 /** Resolve only a target whose complete SDK history proves its identity.
  * A target-less intent cannot be guessed from project/session names.
  * @param {NativeSession} session
- * @param {import("./history-index.mjs").HistoryReadOptions} [options]
+ * @param {import("./history-index.ts").HistoryReadOptions} [options]
  */
 export async function reconcileNativeSession(session, options) {
   const pending = session.pendingNativeSession;

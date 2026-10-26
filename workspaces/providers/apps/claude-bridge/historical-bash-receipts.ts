@@ -8,7 +8,7 @@ import {
   nativeHistoryRows,
   NATIVE_HISTORY_TAIL_BYTES,
   nativeUuid as uuid,
-} from "./native-history.mjs";
+} from "./native-history.ts";
 export const HISTORICAL_BASH_TAIL_BYTES = NATIVE_HISTORY_TAIL_BYTES;
 const MAX_ITEMS = 64;
 const object = (value) =>
