@@ -42,7 +42,7 @@ export const canonicalJson = (value: unknown) =>
       ? Object.fromEntries(
           Object.keys(entry)
             .sort()
-            .map((name) => [name, Reflect.get(entry, name)]),
+            .map((name) => [name, (entry as Record<string, unknown>)[name]]),
         )
       : entry,
   );

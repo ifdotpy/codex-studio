@@ -39,7 +39,7 @@ type Status = Pick<McpServerStatus, "name"> & {
   config?: McpServerStatus["config"];
 };
 export type CatalogDependencies = {
-  localConfigs?: (cwd: string) => Promise<Record<string, unknown>>;
+  localConfigs?: (cwd: string) => Promise<Record<string, ExternalConfig>>;
   listTools?: (config: ExternalConfig) => Promise<Partial<Tool>[]>;
   proxyToken?: () => Promise<string>;
   transports?: Record<string, LocalConfig>;
@@ -210,7 +210,7 @@ async function readExternalServer(
   timer.unref();
   let transport;
   try {
-    if (config.type === "stdio" || config.type === undefined) {
+    if (config.type === "stdio" || !config.type) {
       transport = new StdioClientTransport({
         command: config.command,
         args: config.args || [],
@@ -306,8 +306,15 @@ export function transportIdentity(
       ? ["type", "id"]
       : ["type", "command", "args", "url"]
     )
-      .filter((key) => Reflect.get(config, key) !== undefined)
-      .map((key) => [key, Reflect.get(config, key)]),
+      .filter(
+        (key) =>
+          (config as ExternalConfig & Record<string, unknown>)[key] !==
+          undefined,
+      )
+      .map((key) => [
+        key,
+        (config as ExternalConfig & Record<string, unknown>)[key],
+      ]),
   );
 }
 
@@ -320,20 +327,17 @@ const credentialFree = (config: ExternalConfig): config is LocalConfig =>
 // the same server on the target.
 function movedConfig(
   server: ExternalServer,
-  own: unknown,
+  own: ExternalConfig | undefined,
   source: ExternalConfig | undefined,
 ) {
-  if (own) {
-    const config = parseExternalConfig(own);
-    if (hash(transportIdentity(config)) === server.configHash) return config;
-  }
+  if (own && hash(transportIdentity(own)) === server.configHash) return own;
   if (
     source &&
     credentialFree(source) &&
     hash(transportIdentity(source)) === server.configHash
   )
     return transportIdentity(source);
-  return own ? parseExternalConfig(own) : undefined;
+  return own;
 }
 export async function externalCatalog(
   statuses: Status[],
@@ -353,9 +357,8 @@ export async function externalCatalog(
         statuses.map((entry) => entry.name),
         [alias],
       );
-    const value =
+    const config =
       row.config.type === "claudeai-proxy" ? row.config : local[row.name];
-    const config = value ? parseExternalConfig(value) : undefined;
     if (!config) throw externalRefusal(aliases, [row.name], [row.name]);
     // Keep auth headers and process environment local. Compare the transport
     // identity and the actual ordered tools, rather than credential values.
@@ -510,9 +513,7 @@ export async function targetExternalCatalog(
           id: server.proxyId!,
           url: "https://mcp-proxy.anthropic.com/v1/mcp/" + server.proxyId,
         }
-      : configured[server.name]
-        ? parseExternalConfig(configured[server.name])
-        : undefined,
+      : configured[server.name],
   }));
   const result = await externalCatalog(
     statuses,
