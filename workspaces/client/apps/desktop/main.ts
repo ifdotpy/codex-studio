@@ -613,7 +613,7 @@ async function nativeAction(
           if (
             url.origin !== backend.origin ||
             !url.pathname.startsWith("/api/") ||
-            !["GET", "POST", "HEAD"].includes(value.method)
+            !["GET", "POST", "HEAD"].includes(value.method!)
           )
             throw new Error("The request does not belong to this server.");
           response = await fetch(url, {

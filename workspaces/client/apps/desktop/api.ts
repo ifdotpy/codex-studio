@@ -14,7 +14,7 @@ export type ServerRequest = {
   serverId: string;
   credentialId?: string | undefined;
   url: string;
-  method: string;
+  method?: string | undefined;
   headers?: [string, string][] | undefined;
   body?: ArrayBuffer | undefined;
   requestId?: string | undefined;
