@@ -549,11 +549,7 @@ try {
     await page
       .frames()
       .at(1)
-      ?.evaluate(() => {
-        const bridge = window.codexDesktop;
-        if (!bridge) throw new Error("The desktop bridge is unavailable.");
-        return typeof bridge;
-      }),
+      ?.evaluate(() => typeof window.codexDesktop),
     "undefined",
   );
   assert.equal(
@@ -563,8 +559,11 @@ try {
   await desktop.evaluate(async ({ BrowserWindow, app }) => {
     const main = BrowserWindow.getAllWindows()[0];
     if (!main) throw new Error("Hidden window is unavailable.");
-    const { nativeAction } = await import(`${app.getAppPath()}/main.ts`);
+    const { nativeAction }: typeof import("./main.ts") = await import(
+      `${app.getAppPath()}/main.ts`
+    );
     const frame = main.webContents.mainFrame.frames[0];
+    if (!frame) throw new Error("The preview frame is unavailable.");
     try {
       await nativeAction(
         { sender: main.webContents, senderFrame: frame },
