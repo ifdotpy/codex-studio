@@ -221,6 +221,23 @@ class StartupDeliveryTests(unittest.TestCase):
             send.assert_not_called()
         self.assertEqual(self.journal.read_bytes(), before)
 
+    def test_a_pointer_without_a_pending_publication_does_not_hold_the_backend_restart(self):
+        # deliver_server wrote the pointer, then publish_pending failed: no pending file, no receipt.
+        fcntl.flock(self.lease, fcntl.LOCK_UN)
+        self.alive = False
+        self.record['phase'] = 'publishing'
+        updates.write_json(self.journal, self.record)
+        (self.state / updates.RECEIPT_FILE).unlink()
+        self.assertFalse((self.state / updates.PENDING_FILE).exists())
+        with self.subTest(case='no active local delivery'):
+            self.run_once(launch=True)
+            self.assertEqual([call[0] for call in self.calls], ['spawn'])
+        self.calls.clear()
+        with self.subTest(case='local delivery still active'), (self.state / 'delivery.lock').open('a+') as lease:
+            fcntl.flock(lease, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            self.run_once(launch=True)
+            self.assertEqual(self.calls, [], 'a pointer under an active delivery still waits')
+
     def test_artifact_state_receipt_generation_and_lease_mismatches_hold(self):
         targets = [
             (delivery.server_path(self.installed), b'changed-new'),

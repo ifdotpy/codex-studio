@@ -783,6 +783,14 @@ def startup_delivery_tick(config, state):
                     else:
                         verify_startup_backend(config, state, installed, proof, record["handles"], swapped=False)
                     return "install-pending", "startup delivery waits for its existing install owner"
+                if record.get("phase") == delivery.PHASES["publishing"]:
+                    try:
+                        # deliver_server publishes the pointer and the pending file under this lease.
+                        with delivery.delivery_lease(state):
+                            if updates.read_pending(state) is None:
+                                return False, None  # Publication failed: the installed app keeps running.
+                    except delivery.DeliveryError:
+                        pass  # An active local delivery decides the next step.
                 return True, "startup delivery waits for its exact installed receipt"
             if (updates.read_build(installed) != request["build"]
                     or delivery.bundle_hash(installed) != request["bundleHash"]
