@@ -51624,8 +51624,6 @@
         "properties": {
           "syncProtocol": {
             "const": 2,
-            "maximum": 2,
-            "minimum": 2,
             "title": "Syncprotocol",
             "type": "integer"
           },
