@@ -224,7 +224,7 @@ export default function Conversation(p: {
   visible?: boolean;
   projectName?: string | undefined;
   recentChats?: RecentProjectChat[] | undefined;
-  syncWorkspaceId?: string;
+  syncWorkspaceId?: string | undefined;
   agent?: Agent | undefined;
   lead?: Agent | undefined;
   room?: Room | undefined;

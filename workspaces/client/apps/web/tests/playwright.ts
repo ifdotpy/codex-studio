@@ -36,7 +36,8 @@ import {
   writeFileSync,
 } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
-import type { Json, JsonInput, JsonInputOf } from "../src/apiTypes.ts";
+import type { ResourceProgress } from "../src/sync/subscriptions/contracts.ts";
+import type { Json, JsonInputOf } from "../src/apiTypes.ts";
 import type { OpenAPI3 } from "openapi-typescript";
 import { fixtureStateDirectory as rustFixtureStateDirectory } from "./fixtures/rust-ui-fixture.ts";
 import { readResourceBaselines } from "./fixtures/resource-baselines.ts";
@@ -50,6 +51,7 @@ import {
   unregisterFixtureProcessGroup,
 } from "./fixture-process-group.ts";
 import {
+  parseWorkerSelection,
   persistWorkerMemorySample,
   sampleProcessTreeMemory,
 } from "../playwright-workers.ts";
@@ -623,9 +625,9 @@ const sharedFixtures: import("@playwright/test").Fixtures<
       } finally {
         clearInterval(memorySampler);
         sampleMemory();
-        let workerMemorySelection: { workerMemoryRunId?: string } = {};
+        let workerMemorySelection: ReturnType<typeof parseWorkerSelection> = {};
         try {
-          workerMemorySelection = JSON.parse(
+          workerMemorySelection = parseWorkerSelection(
             process.env.CODEX_PLAYWRIGHT_WORKER_SELECTION || "{}",
           );
         } catch {
@@ -1183,7 +1185,10 @@ export type TestStateView = {
   runtime: TestRuntimeView;
   threads: TestAgent[];
 };
-export type EntityFixtureState = Omit<TestStateView, "token" | "threads">;
+export type EntityFixtureState = Omit<
+  TestStateView,
+  "token" | "threads" | "runtime"
+> & { runtime: Partial<TestRuntimeView> };
 
 export type JsonObject = Json;
 export type EntityEnvelope = {
@@ -1203,11 +1208,11 @@ export type EntityPullFixtureOptions = {
   maxSeq?: number;
   generation?: number;
   priorityId?: string | undefined;
-  tombstones?: SyncEntity[];
+  tombstones?: FixtureSyncEntity[];
   transcript?: TranscriptPageResponse;
   transcriptSeq?: number;
   drafts?: import("../src/generated/api.ts").components["schemas"]["SyncDocument"][];
-  documents?: SyncEntity[];
+  documents?: FixtureSyncEntity[];
 };
 
 const ENTITY_PAGE_SIZE: number = 500;
@@ -1465,33 +1470,45 @@ const snapshotOnlyAgentKeys: Set<string> = new Set([
   "worktreeWarning",
 ]);
 
-function pickJsonKeys(
-  value: Partial<JsonObject>,
-  keys: Iterable<string>,
-): JsonObject {
-  const source = value;
+function hasKey<T extends object>(value: T, key: PropertyKey): key is keyof T {
+  return Object.hasOwn(value, key);
+}
 
-  const picked: JsonObject = {};
-  for (const key of keys) {
-    const jsonKey = String(key);
-    const item = source[jsonKey];
-    if (Object.hasOwn(source, jsonKey) && item !== undefined)
-      picked[jsonKey] = item;
+function pickJsonKeys<T extends object>(
+  value: T,
+  keys: Iterable<string>,
+): Partial<T> {
+  const picked = { ...value };
+  const allowed = new Set(keys);
+  for (const key of Object.keys(picked)) {
+    if (!allowed.has(key) || Reflect.get(picked, key) === undefined)
+      Reflect.deleteProperty(picked, key);
   }
   return picked;
 }
 
 /**
- * The fixture projection selects fields by collection. The real-server parity
- * witness validates these dynamically projected DTOs against the schema owner.
+ * Fixture inputs allow optional undefined values before JSON serialization;
+ * generated payloads retain the collection/value discriminant through projection.
  */
-function generatedSyncEntity(document: JsonObject): SyncEntity {
-  return document as SyncEntity;
+type FixtureSyncEntity = JsonInputOf<SyncEntity>;
+type FixtureSyncResponse = JsonInputOf<
+  SyncPullResponse | SyncPullResetResponse
+>;
+type FixtureSyncPage = JsonInputOf<
+  | Omit<SyncPullResponse, "workspaceId">
+  | Omit<SyncPullResetResponse, "workspaceId">
+>;
+type ProjectedFixtureEntity = JsonInputOf<
+  import("../src/generated/api.ts").components["schemas"]["SyncEntityPayload"]
+>;
+function generatedSyncEntity(document: FixtureSyncEntity): FixtureSyncEntity {
+  return document;
 }
 
 function generatedSyncPullResponse(
-  response: SyncPullResponse | SyncPullResetResponse,
-): SyncPullResponse | SyncPullResetResponse {
+  response: FixtureSyncResponse,
+): FixtureSyncResponse {
   return response;
 }
 
@@ -1501,195 +1518,332 @@ function generatedSyncPullResponse(
  */
 function entityValuesFromSnapshot(
   snapshot: EntityFixtureState,
-): { collection: string; id: string; value: JsonInput }[] {
+): ProjectedFixtureEntity[] {
   const runtime = snapshot.runtime;
 
-  const values: { collection: string; id: string; value: JsonInput }[] = [];
+  const values: ProjectedFixtureEntity[] = [];
 
-  const append = (
-    collection: string,
-    rows: JsonObject[] | null | undefined,
-    project: (row: JsonObject) => JsonInput = (row) => row,
+  const append = <Row extends { id: string }>(
+    rows: Row[] | null | undefined,
+    project: (row: Row) => ProjectedFixtureEntity,
   ) => {
-    for (const row of rows ?? []) {
-      if (typeof row.id !== "string") continue;
-      values.push({ collection, id: row.id, value: project(row) });
-    }
+    for (const row of rows ?? [])
+      if (typeof row.id === "string") values.push(project(row));
   };
-  append("project", runtime.projects, (row) =>
-    pickJsonKeys(row, [
-      "homeServerId",
-      "locations",
-      "locationsRevision",
-      "projectAliases",
-      "id",
-      "path",
-      "name",
-      "created",
-      "updated",
-      "accountKey",
-      "accountRevision",
-      "accountKeys",
-      "organizationRevision",
-      "peerTeamsRevision",
-      "folders",
-      "peerTeams",
-      "workerBaseRef",
-      "workerBaseRevision",
-      "workerEnvironment",
-      "workerEnvironmentRevision",
-      "layrReadiness",
-      "layrSync",
-      "vault",
-    ]),
-  );
-  append("request", runtime.requests);
-  append("event", runtime.events, (row) =>
-    pickJsonKeys(row, ["id", "agent", "kind", "status", "created", "error"]),
-  );
-  append("room", runtime.rooms, (row) =>
-    pickJsonKeys(row, [
-      "id",
-      "name",
-      "kind",
-      "members",
-      "rootId",
-      "updated",
-      "userHidden",
-      "projectPath",
-      "radio",
-      "peerTeamId",
-      "peerTeamName",
-      "lastMessage",
-      "peerLabel",
-      "localMembers",
-    ]),
-  );
-  append(
-    runtime.viewScopedAgents ? "agentSummary" : "agent",
-    runtime.agents,
-    (row) => {
-      if (runtime.viewScopedAgents) {
-        return pickJsonKeys(
-          row,
-          fixtureEntityPropertyNames("AgentSummaryEntityDto"),
-        );
-      }
-      const entity = { ...row };
-      for (const key of snapshotOnlyAgentKeys) delete entity[key];
-      const agentNestedAllowLists = {
-        activity: ["phase", "at", "tools"],
-        nativeStatus: ["phase", "error", "message", "turnId", "at"],
-        nativeSafetyBuffering: [
-          "turnId",
-          "threadId",
-          "accountKey",
-          "connectionId",
-          "at",
-          "dismissed",
-          "responseStarted",
-          "showBufferingUi",
-          "fasterModel",
-        ],
-        nativeSafetyRetry: [
-          "id",
-          "stage",
-          "model",
-          "turnId",
-          "created",
-          "updated",
-          "epoch",
-          "accountKey",
-          "error",
-          "newThreadId",
-          "acceptedTurnId",
-          "requestId",
-          "rpcMethod",
-        ],
-        nativeTurnError: ["turnId", "error"],
-        nativeThreadBlock: ["threadId", "error"],
-        connectionCheck: [
-          "epoch",
-          "accountKey",
-          "threadId",
-          "turnId",
-          "at",
-          "previousError",
-          "nativeState",
-          "restartTurnStatus",
-          "readError",
-        ],
-        readState: ["threadId", "turnId", "read", "revision"],
-        startAttempt: ["prepareError", "responseError", "retiredEvents"],
-      };
-      for (const [key, allowed] of Object.entries(agentNestedAllowLists)) {
-        if (isJsonObject(entity[key]))
-          entity[key] = pickJsonKeys(entity[key], allowed);
-      }
-      if (isJsonObject(entity.nativeRelease))
-        entity.nativeRelease = pickJsonKeys(entity.nativeRelease, [
-          "phase",
-          "resetPending",
-        ]);
-      return entity;
+  append(runtime.projects, (row) => ({
+    collection: "project",
+    id: row.id,
+    value: {
+      ...pickJsonKeys(row, [
+        "homeServerId",
+        "locations",
+        "locationsRevision",
+        "projectAliases",
+        "id",
+        "path",
+        "name",
+        "created",
+        "updated",
+        "accountKey",
+        "accountRevision",
+        "accountKeys",
+        "organizationRevision",
+        "peerTeamsRevision",
+        "folders",
+        "peerTeams",
+        "workerBaseRef",
+        "workerBaseRevision",
+        "workerEnvironment",
+        "workerEnvironmentRevision",
+        "layrReadiness",
+        "layrSync",
+        "vault",
+      ]),
+      id: row.id,
     },
-  );
-  append("task", runtime.tasks);
-  append("monitor", runtime.monitors);
-  append("complaint", runtime.complaints, (row) => {
+  }));
+  append(runtime.requests, (row) => ({
+    collection: "request",
+    id: row.id,
+    value: row,
+  }));
+  append(runtime.events, (row) => ({
+    collection: "event",
+    id: row.id,
+    value: {
+      ...pickJsonKeys(row, [
+        "id",
+        "agent",
+        "kind",
+        "status",
+        "created",
+        "error",
+      ]),
+      id: row.id,
+    },
+  }));
+  append(runtime.rooms, (row) => ({
+    collection: "room",
+    id: row.id,
+    value: {
+      ...pickJsonKeys(row, [
+        "id",
+        "name",
+        "kind",
+        "members",
+        "rootId",
+        "updated",
+        "userHidden",
+        "projectPath",
+        "radio",
+        "peerTeamId",
+        "peerTeamName",
+        "lastMessage",
+        "peerLabel",
+        "localMembers",
+      ]),
+      id: row.id,
+    },
+  }));
+  append(runtime.agents, (row) => {
+    if (runtime.viewScopedAgents) {
+      return {
+        collection: "agentSummary",
+        id: row.id,
+        value: {
+          ...pickJsonKeys(
+            row,
+            fixtureEntityPropertyNames("AgentSummaryEntityDto"),
+          ),
+          id: row.id,
+        },
+      };
+    }
     const entity = { ...row };
-    delete entity.needsResponse;
-    return entity;
+    for (const key of snapshotOnlyAgentKeys)
+      Reflect.deleteProperty(entity, key);
+    const agentNestedAllowLists = {
+      activity: ["phase", "at", "tools"],
+      nativeStatus: ["phase", "error", "message", "turnId", "at"],
+      nativeSafetyBuffering: [
+        "turnId",
+        "threadId",
+        "accountKey",
+        "connectionId",
+        "at",
+        "dismissed",
+        "responseStarted",
+        "showBufferingUi",
+        "fasterModel",
+      ],
+      nativeSafetyRetry: [
+        "id",
+        "stage",
+        "model",
+        "turnId",
+        "created",
+        "updated",
+        "epoch",
+        "accountKey",
+        "error",
+        "newThreadId",
+        "acceptedTurnId",
+        "requestId",
+        "rpcMethod",
+      ],
+      nativeTurnError: ["turnId", "error"],
+      nativeThreadBlock: ["threadId", "error"],
+      connectionCheck: [
+        "epoch",
+        "accountKey",
+        "threadId",
+        "turnId",
+        "at",
+        "previousError",
+        "nativeState",
+        "restartTurnStatus",
+        "readError",
+      ],
+      readState: ["threadId", "turnId", "read", "revision"],
+      startAttempt: ["prepareError", "responseError", "retiredEvents"],
+    };
+    if (isJsonObject(entity.activity))
+      entity.activity = pickJsonKeys(
+        entity.activity,
+        agentNestedAllowLists.activity,
+      );
+    if (isJsonObject(entity.nativeStatus))
+      entity.nativeStatus = pickJsonKeys(
+        entity.nativeStatus,
+        agentNestedAllowLists.nativeStatus,
+      );
+    if (isJsonObject(entity.nativeSafetyBuffering))
+      entity.nativeSafetyBuffering = pickJsonKeys(
+        entity.nativeSafetyBuffering,
+        agentNestedAllowLists.nativeSafetyBuffering,
+      );
+    if (isJsonObject(entity.nativeSafetyRetry))
+      entity.nativeSafetyRetry = pickJsonKeys(
+        entity.nativeSafetyRetry,
+        agentNestedAllowLists.nativeSafetyRetry,
+      );
+    if (isJsonObject(entity.nativeTurnError))
+      entity.nativeTurnError = pickJsonKeys(
+        entity.nativeTurnError,
+        agentNestedAllowLists.nativeTurnError,
+      );
+    if (isJsonObject(entity.nativeThreadBlock))
+      entity.nativeThreadBlock = pickJsonKeys(
+        entity.nativeThreadBlock,
+        agentNestedAllowLists.nativeThreadBlock,
+      );
+    if (isJsonObject(entity.connectionCheck))
+      entity.connectionCheck = {
+        ...pickJsonKeys(
+          entity.connectionCheck,
+          agentNestedAllowLists.connectionCheck,
+        ),
+        at: entity.connectionCheck.at,
+      };
+    if (isJsonObject(entity.startAttempt))
+      entity.startAttempt = pickJsonKeys(
+        entity.startAttempt,
+        agentNestedAllowLists.startAttempt,
+      );
+    if (isJsonObject(entity.readState)) {
+      const { threadId, turnId, read, revision } = entity.readState;
+      entity.readState = {
+        ...pickJsonKeys(entity.readState, agentNestedAllowLists.readState),
+        threadId,
+        turnId,
+        read,
+        revision,
+      };
+    }
+
+    if (isJsonObject(entity.nativeRelease))
+      entity.nativeRelease = pickJsonKeys(entity.nativeRelease, [
+        "phase",
+        "resetPending",
+      ]);
+    return { collection: "agent", id: row.id, value: entity };
   });
-  append("peerTeam", runtime.peerTeams);
-  append("rule", runtime.rules);
-  append("work", runtime.work);
-  append("workDetail", runtime.workDetails, (row) => ({
-    ...row,
-    results: [],
-    decisions: [],
-    releases: [],
+  append(runtime.tasks, (row) => ({
+    collection: "task",
+    id: row.id,
+    value: row,
+  }));
+  append(runtime.monitors, (row) => ({
+    collection: "monitor",
+    id: row.id,
+    value: row,
+  }));
+  append(runtime.complaints, (row) => ({
+    collection: "complaint",
+    id: row.id,
+    value: ((row) => {
+      const entity = { ...row };
+      Reflect.deleteProperty(entity, "needsResponse");
+      return entity;
+    })(row),
+  }));
+  append(runtime.peerTeams, (row) => ({
+    collection: "peerTeam",
+    id: row.id,
+    value: row,
+  }));
+  append(runtime.rules, (row) => ({
+    collection: "rule",
+    id: row.id,
+    value: row,
+  }));
+  append(runtime.work, (row) => ({
+    collection: "work",
+    id: row.id,
+    value: row,
+  }));
+  append(runtime.workDetails, (row) => ({
+    collection: "workDetail",
+    id: row.id,
+    value: {
+      ...row,
+      results: [],
+      decisions: [],
+      releases: [],
+    },
   }));
   for (const task of runtime.workDetails ?? []) {
-    for (const [field, collection] of [
-      ["results", "workResult"],
-      ["decisions", "workDecision"],
-      ["releases", "workRelease"],
-    ] as const) {
-      const history = task[field];
-      if (!Array.isArray(history)) continue;
-      for (const [index, value] of history.entries()) {
-        const id = `${task.id}:${index}`;
-        values.push({
-          collection,
-          id,
-          value: { id, taskId: task.id, rootId: task.rootId, index, value },
-        });
-      }
+    for (const [index, value] of (task.results ?? []).entries()) {
+      const id = `${task.id}:${index}`;
+      values.push({
+        collection: "workResult",
+        id,
+        value: { id, taskId: task.id, rootId: task.rootId, index, value },
+      });
+    }
+    for (const [index, value] of (task.decisions ?? []).entries()) {
+      const id = `${task.id}:${index}`;
+      values.push({
+        collection: "workDecision",
+        id,
+        value: { id, taskId: task.id, rootId: task.rootId, index, value },
+      });
+    }
+    for (const [index, value] of (task.releases ?? []).entries()) {
+      const id = `${task.id}:${index}`;
+      values.push({
+        collection: "workRelease",
+        id,
+        value: { id, taskId: task.id, rootId: task.rootId, index, value },
+      });
     }
   }
-  append("agentDetail", runtime.agentDetails, (row) =>
-    pickJsonKeys(row, fixtureEntityPropertyNames("AgentDetailEntityDto")),
-  );
-  append("studioError", runtime.studioErrors);
-  append("chat", snapshot.chats);
-  append("edge", snapshot.edges);
-  for (const [field, collection] of [
-    ["accountsSummary", "accounts"],
-    ["desktop", "desktop"],
-  ] as const) {
-    if (isJsonObject(runtime[field]))
-      values.push({ collection, id: "current", value: runtime[field] });
-  }
-  for (const [field, collection] of [
-    ["accountCostsByAccount", "accountCost"],
-    ["sessionCostsByAgent", "sessionCost"],
-  ] as const) {
-    if (isJsonObject(runtime[field]))
-      for (const [id, value] of Object.entries(runtime[field]))
-        if (isJsonObject(value)) values.push({ collection, id, value });
-  }
-  append("terminal", runtime.terminals);
+  append(runtime.agentDetails, (row) => ({
+    collection: "agentDetail",
+    id: row.id,
+    value: {
+      ...pickJsonKeys(row, fixtureEntityPropertyNames("AgentDetailEntityDto")),
+      id: row.id,
+    },
+  }));
+  append(runtime.studioErrors, (row) => ({
+    collection: "studioError",
+    id: row.id,
+    value: row,
+  }));
+  append(snapshot.chats, (row) => ({
+    collection: "chat",
+    id: row.id,
+    value: row,
+  }));
+  append(snapshot.edges, (row) => ({
+    collection: "edge",
+    id: row.id,
+    value: row,
+  }));
+  if (isJsonObject(runtime.accountsSummary))
+    values.push({
+      collection: "accounts",
+      id: "current",
+      value: runtime.accountsSummary,
+    });
+  if (isJsonObject(runtime.desktop))
+    values.push({
+      collection: "desktop",
+      id: "current",
+      value: runtime.desktop,
+    });
+  for (const [id, value] of Object.entries(runtime.accountCostsByAccount ?? {}))
+    if (isJsonObject(value))
+      values.push({ collection: "accountCost", id, value });
+  for (const [id, value] of Object.entries(runtime.sessionCostsByAgent ?? {}))
+    if (isJsonObject(value))
+      values.push({ collection: "sessionCost", id, value });
+  append(runtime.terminals, (row) => ({
+    collection: "terminal",
+    id: row.id,
+    value: row,
+  }));
   if (isJsonObject(runtime.queuesByAgent)) {
     for (const [id, value] of Object.entries(runtime.queuesByAgent))
       if (isJsonObject(value)) values.push({ collection: "queue", id, value });
@@ -1705,7 +1859,7 @@ function entityValuesFromSnapshot(
 
   const workspaceSource = {
     ...runtime,
-    ...(snapshot.stateDir === undefined ? {} : { stateDir: snapshot.stateDir }),
+    stateDir: snapshot.stateDir,
   };
   values.push({
     collection: "workspace",
@@ -1785,7 +1939,7 @@ export async function readFixtureSyncContract(
 }
 
 export type MutableEntityPullState = {
-  documents: Map<string, SyncEntity>;
+  documents: Map<string, FixtureSyncEntity>;
   maxSeq: number;
 };
 
@@ -1867,7 +2021,7 @@ function reconcileMutableEntityPullState(
  */
 export function updateEntitySyncFixture(
   snapshot: EntityFixtureState,
-): SyncEntity[] {
+): FixtureSyncEntity[] {
   let pullState = nodeEntityPullStates.get(snapshot);
   if (!pullState) {
     pullState = createMutableEntityPullState();
@@ -1885,10 +2039,9 @@ export function updateEntitySyncFixture(
  * current client and leaves the entity-pull fixture at the same state.
  * Mutate the snapshot before calling this helper.
  */
-export function entityMutationFixtureResponse(
-  snapshot: EntityFixtureState,
-  response: Record<string, unknown>,
-): Record<string, unknown> {
+export function entityMutationFixtureResponse<
+  T extends Record<string, unknown>,
+>(snapshot: EntityFixtureState, response: T) {
   return {
     ...response,
     _syncEntities: updateEntitySyncFixture(snapshot),
@@ -1924,23 +2077,12 @@ export function handleEntitySyncFixtureRequest(
     workspaceId: string;
     unixSocket?: boolean;
     versionedResources?: boolean;
-    epoch?: string;
+    epoch?: string | undefined;
     onPull?: () => void;
-    subscriptionUpdate?: import("../src/generated/api.ts").components["schemas"]["SyncSubscriptionRequest"];
-    progress?: (
-      resource: ResourceRef,
-    ) =>
-      | (
-          | Pick<
-              import("../src/generated/api.ts").components["schemas"]["AuthProgressEvent"],
-              "resource" | "value"
-            >
-          | Pick<
-              import("../src/generated/api.ts").components["schemas"]["VaultReadinessEvent"],
-              "resource" | "value"
-            >
-        )
+    subscriptionUpdate?:
+      | import("../src/generated/api.ts").components["schemas"]["SyncSubscriptionRequest"]
       | undefined;
+    progress?: (resource: ResourceRef) => ResourceProgress | undefined;
     onStreamReady?: (
       notify: (
         resources: ResourceRef[],
@@ -2041,7 +2183,7 @@ export function handleEntitySyncFixtureRequest(
     const withResourceVersions = (
       resources: ResourceRef[],
       advance = false,
-    ): ResourceChangeEvent["resourceVersions"] => {
+    ): JsonInputOf<ResourceChangeEvent["resourceVersions"]> => {
       const changed = updateEntitySyncFixture(fixture.snapshot);
       const current = nodeEntityPullStates.get(fixture.snapshot);
       return resources.map((resource) => {
@@ -2097,23 +2239,17 @@ export function handleEntitySyncFixtureRequest(
               },
             };
         }
-        const scope = (
-          resource.kind in SUBSCRIPTION_ENTITY_SCOPES
-            ? Reflect.get(SUBSCRIPTION_ENTITY_SCOPES, resource.kind)
-            : undefined
-        ) as
-          | {
-              collections: readonly string[];
-              idField?: string | null;
-              agentField?: string | null;
-            }
-          | undefined;
+        const scope = hasKey(SUBSCRIPTION_ENTITY_SCOPES, resource.kind)
+          ? SUBSCRIPTION_ENTITY_SCOPES[resource.kind]
+          : undefined;
         const selector: Record<string, unknown> = resource;
         if (resource.kind !== "state" && scope && current) {
           const documents = [...current.documents.values()].filter(
             (document) =>
               document.op === "upsert" &&
-              scope.collections.includes(document.collection) &&
+              scope.collections.some(
+                (collection) => collection === document.collection,
+              ) &&
               (!scope.idField || document.id === selector[scope.idField]) &&
               (!scope.agentField ||
                 ("rootId" in document.value &&
@@ -2145,12 +2281,13 @@ export function handleEntitySyncFixtureRequest(
 
     const writeFrame = (
       name: string,
-      value:
+      value: JsonInputOf<
         | ResourceChangeEvent
         | ResourceHeartbeatEvent
         | ResourceTokenRatesEvent
         | import("../src/generated/api.ts").components["schemas"]["SyncSubscriptionAck"]
-        | import("../src/generated/api.ts").components["schemas"]["ResourceProgressEvent"],
+        | import("../src/generated/api.ts").components["schemas"]["ResourceProgressEvent"]
+      >,
     ) => {
       eventId += 1;
       response.write(
@@ -2178,7 +2315,7 @@ export function handleEntitySyncFixtureRequest(
       }
     };
 
-    const initial: ResourceChangeEvent = {
+    const initial: JsonInputOf<ResourceChangeEvent> = {
       epoch,
       protocol: RESOURCE_STREAM_PROTOCOL,
       reason: "initial",
@@ -2251,7 +2388,7 @@ export function handleEntitySyncFixtureRequest(
     const cleanup = fixture.onStreamReady?.((resources, reason = "change") => {
       if (response.destroyed) return;
 
-      const changed: ResourceChangeEvent = {
+      const changed: JsonInputOf<ResourceChangeEvent> = {
         epoch,
         protocol: RESOURCE_STREAM_PROTOCOL,
         reason,
@@ -2287,9 +2424,7 @@ export function handleEntitySyncFixtureRequest(
 export function entityPullFixture(
   snapshot: EntityFixtureState,
   optionsOrAfter: number | EntityPullFixtureOptions = {},
-):
-  | Omit<SyncPullResponse, "workspaceId">
-  | Omit<SyncPullResetResponse, "workspaceId"> {
+): FixtureSyncPage {
   const options =
     typeof optionsOrAfter === "number"
       ? { after: optionsOrAfter }
@@ -2483,9 +2618,7 @@ export function entityPullFixtureForRequest(
   snapshot: EntityFixtureState,
   requestUrl: string | URL,
   overrides: EntityPullFixtureOptions = {},
-):
-  | Omit<SyncPullResponse, "workspaceId">
-  | Omit<SyncPullResetResponse, "workspaceId"> {
+): FixtureSyncPage {
   const validation = validateSyncPullRequest(requestUrl);
   if (validation.ok === false) {
     const error = new Error(String(validation.body.error));
