@@ -47,7 +47,10 @@ export const canonicalJson = (value: unknown) =>
       : entry,
   );
 
-export const movePrompt = { snapshot: true, excludeDynamicSections: true };
+export const movePrompt = {
+  snapshot: true,
+  excludeDynamicSections: true,
+} as const;
 
 const completeTool = (entry: unknown): entry is ProofTool => {
   if (!isRecord(entry)) return false;
