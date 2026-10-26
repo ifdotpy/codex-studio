@@ -27,7 +27,6 @@ window.emitAudio = () => {
 window.captureStopped = 0;
 window.failStop = false;
 const root = document.getElementById("root")!;
-import { desktopBridgeFixture } from "../desktop-bridge-fixture.ts";
 import type { DesktopBridge } from "../../src/desktop.ts";
 import React, { useState } from "react";
 import { createRoot } from "react-dom/client";
@@ -36,7 +35,8 @@ import "@mantine/core/styles.css";
 import "../../src/studio-theme.css";
 import { theme } from "../../src/theme.ts";
 import { Dictation } from "../../src/components/Dictation.tsx";
-window.codexDesktop = desktopBridgeFixture({
+// Base bridge fixture supplies only the five methods used by dictation.
+const bridgeFixture = {
   requestMicrophone: async () => true,
   prepareTranscription: async () => "permit",
   onTranscriptionProgress: (callback) => {
@@ -65,7 +65,19 @@ window.codexDesktop = desktopBridgeFixture({
       onDevice: true,
     };
   },
-});
+} satisfies Pick<
+  DesktopBridge,
+  | "requestMicrophone"
+  | "prepareTranscription"
+  | "onTranscriptionProgress"
+  | "cancelTranscription"
+  | "transcribeAudio"
+>;
+// The base document omits platform and unrelated desktop capabilities.
+function partialBridge(value: unknown): DesktopBridge {
+  return value as DesktopBridge;
+}
+window.codexDesktop = partialBridge(bridgeFixture);
 function App() {
   const [chat, setChat] = useState("first"),
     [draft, setDraft] = useState("Original draft");

@@ -7,15 +7,13 @@ import {
 } from "../../tests/misc-fixture.ts";
 declare global {
   interface Window {
-    projectDeleteFixture: {
-      posts: { path: string; body: PostBody<"/api/projects/delete"> }[];
-      finished: string[][];
-      suspended: string[];
-      fail: boolean;
-      retire: () => void;
-      notice?: string;
-      owner?: string;
-    };
+    posts: { path: string; body: PostBody<"/api/projects/delete"> }[];
+    finished: string[][];
+    suspended: string[];
+    fail: boolean;
+    retire: () => void;
+    notice: string | undefined;
+    owner: string | undefined;
   }
 }
 const rootElement = document.getElementById("root");
@@ -79,13 +77,11 @@ const partialInitial: ProjectDeleteFixtureSnapshot = {
 };
 const initial = partialInitial as Snapshot;
 
-window.projectDeleteFixture = {
-  posts: [],
-  finished: [],
-  suspended: [],
-  fail: false,
-  retire: () => {},
-};
+window.posts = [];
+window.finished = [];
+window.suspended = [];
+window.fail = false;
+window.retire = () => {};
 const store = new Map<string, string>();
 const backend: SidebarBackend = {
   ownerId: "owner",
@@ -103,8 +99,8 @@ const backend: SidebarBackend = {
   subscribePreference: () => () => {},
   post: async (path, body) => {
     const request = fixturePostBody<"/api/projects/delete">(body);
-    window.projectDeleteFixture.posts.push({ path, body: request });
-    if (window.projectDeleteFixture.fail) throw new TypeError("response lost");
+    window.posts.push({ path, body: request });
+    if (window.fail) throw new TypeError("response lost");
     const response = {
       id: request.id,
       request_id: request.request_id,
@@ -133,7 +129,7 @@ function Fixture() {
       : initial,
   );
   const [, setScope] = useState<ReadonlySet<string>>(new Set());
-  window.projectDeleteFixture.retire = () =>
+  window.retire = () =>
     setData({
       ...initial,
       threads: [],
@@ -145,16 +141,16 @@ function Fixture() {
     workspaceId: "workspace",
     services,
     onSuspend: (scope) => {
-      window.projectDeleteFixture.suspended = [...scope];
+      window.suspended = [...scope];
       setScope(scope);
     },
     onResume: () => setScope(new Set()),
     onFinish: (ids) => {
-      window.projectDeleteFixture.finished.push(ids);
+      window.finished.push(ids);
       setScope(new Set());
     },
     notify: (message) => {
-      window.projectDeleteFixture.notice = message;
+      window.notice = message;
     },
   });
   const logical = location.search.includes("logical");
@@ -188,7 +184,7 @@ function Fixture() {
           query: "",
           hideOldChatsThreshold: 20,
           send: (owner, command) => {
-            window.projectDeleteFixture.owner = owner;
+            window.owner = owner;
             if (command.action === "delete-project")
               deletion.open(command.projectId);
           },

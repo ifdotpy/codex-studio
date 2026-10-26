@@ -37,11 +37,11 @@ type VoiceHarness = {
   emit: (event: { type: string; item?: { id: string } }) => void;
   resourceChange: () => Promise<Response>;
   render: (id: string) => void;
-  disconnect: () => void;
 };
 declare global {
   interface Window {
-    voiceCalls: VoiceHarness["calls"];
+    pc: FixturePeer;
+    calls: VoiceHarness["calls"];
     order: VoiceHarness["order"];
     stops: VoiceHarness["stops"];
     records: VoiceHarness["records"];
@@ -60,7 +60,6 @@ declare global {
     emit: VoiceHarness["emit"];
     resourceChange: VoiceHarness["resourceChange"];
     render: VoiceHarness["render"];
-    disconnect: VoiceHarness["disconnect"];
   }
 }
 type FixtureTrack = VoiceHarness["track"];
@@ -89,7 +88,7 @@ type FixtureWindow = Omit<Window, "RTCPeerConnection" | "codexDesktop"> & {
       >
     ) => Promise<void>;
   };
-  pc?: FixturePeer;
+  pc: FixturePeer;
   dc?: FixtureChannel;
 };
 function voiceWindow(value: unknown): FixtureWindow {
@@ -98,13 +97,12 @@ function voiceWindow(value: unknown): FixtureWindow {
 const fixtureWindow = voiceWindow(window);
 const nativeFetch = window.fetch.bind(window);
 const root = createRoot(fixtureRoot());
-window.voiceCalls = [];
+window.calls = [];
 window.order = [];
 window.stops = 0;
 window.records = [];
 window.pending = false;
 window.voiceError = "";
-window.track = undefined!;
 window.emit = function (event) {
   fixtureWindow.dc!.onmessage!({ data: JSON.stringify(event) });
 };
@@ -116,10 +114,6 @@ window.render = (id) =>
       <RealtimeVoice agentId={id} notify={() => {}} />
     </MantineProvider>,
   );
-window.disconnect = function () {
-  fixtureWindow.pc!.connectionState = "disconnected";
-  fixtureWindow.pc!.onconnectionstatechange!();
-};
 watchVoiceTransport(
   (state) => {
     window.voiceTransport = state;
@@ -208,7 +202,7 @@ window.fetch = async (input, opts) => {
     .split("/")
     .at(-1)!;
   const payload = voiceBody(body as string);
-  window.voiceCalls.push([action, payload]);
+  window.calls.push([action, payload]);
   let data: unknown = {};
   if (action === "identity")
     data = {

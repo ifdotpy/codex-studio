@@ -49,12 +49,6 @@ test("Model Catalog Entity Browser", async ({ page }) => {
         supportedReasoningEfforts: [],
       });
       window.modelGets = 0;
-      window.mountCatalog = () => {
-        throw new Error("Catalog not mounted");
-      };
-      window.publishModelSnapshot = () => {
-        throw new Error("Catalog not mounted");
-      };
       window.modelSnapshot = {
         entitiesComplete: true,
         runtime: {

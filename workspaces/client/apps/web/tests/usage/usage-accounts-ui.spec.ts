@@ -2,7 +2,7 @@ import { fixtureOrigin } from "../misc-fixture.ts";
 import { usageSessionCost, usageAccountCost } from "./usage-fixture.ts";
 import type { BrowserContext, TestInfo } from "@playwright/test";
 import type { ServerResponse } from "node:http";
-import type { PostBody, PostResult } from "../../src/apiTypes.ts";
+import type { PostBody } from "../../src/apiTypes.ts";
 import { fixturePostBody } from "./fixture-server.ts";
 import { usageFixtureServer } from "./fixture-server.ts";
 import assert from "node:assert/strict";
@@ -113,16 +113,7 @@ test("usage accounts ui", async ({ browser: _browser }) => {
             captured.reset = fixturePostBody<"/api/limits/reset">(
               JSON.parse(body),
             );
-            res.end(
-              JSON.stringify({
-                outcome: "reset",
-                account_id: captured.reset.account_id,
-                account_key: captured.reset.account_key ?? "team",
-                credit_id: captured.reset.credit_id,
-                request_id: captured.reset.request_id,
-                limits: { accountKey: "team" },
-              } satisfies PostResult<"/api/limits/reset">),
-            );
+            res.end(JSON.stringify({ outcome: "reset" }));
           });
           return;
         }
@@ -246,8 +237,7 @@ test("usage accounts ui", async ({ browser: _browser }) => {
     const resetStatus = page.getByText("Reset applied.", { exact: true });
     await resetStatus.waitFor();
     assert.equal(await resetStatus.textContent(), "Reset applied.");
-    const reset = captured.reset;
-    assert.ok(reset, "reset request reached the fixture server");
+    const reset = captured.reset!;
     assert.equal(reset.account_id, "team-account");
     assert.equal(reset.credit_id, "team-credit");
     const ownTile = page.getByRole("tab", {
@@ -457,10 +447,8 @@ test("usage accounts ui", async ({ browser: _browser }) => {
           .waitFor();
         await page.waitForFunction(
           () =>
-            getComputedStyle(
-              document.querySelector(".account-limits-popover") ??
-                document.body,
-            ).opacity === "1",
+            getComputedStyle(document.querySelector(".account-limits-popover")!)
+              .opacity === "1",
         );
         await page.evaluate(
           () =>

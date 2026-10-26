@@ -1,5 +1,5 @@
 import type {} from "./agent-phase-browser.fixture2.tsx";
-import type { Snapshot } from "../../src/types.ts";
+import type { PhaseSnapshot } from "./agent-phase-browser.fixture2.tsx";
 import { fixtureOrigin } from "../misc-fixture.ts";
 import type {} from "./agent-phase-browser.fixture.tsx";
 // Component check with an isolated Vite server. No backend or model calls.
@@ -162,16 +162,7 @@ test("agent phase browser", async ({ page: runnerPage }) => {
     const change = async (kind: string, count = 1) => {
       await page.evaluate(
         ({ kind, count }) => {
-          const runtime: Snapshot["runtime"] = {
-            studioErrors: [],
-            agents: [],
-            rooms: [],
-            complaints: [],
-            rules: [],
-            projects: [],
-            peerTeams: [],
-            events: [],
-            work: [],
+          const runtime: PhaseSnapshot["runtime"] = {
             tasks: [],
             monitors: [],
             requests: [],
@@ -296,11 +287,7 @@ test("agent phase browser", async ({ page: runnerPage }) => {
       await phase.evaluate((node) =>
         node
           .getAnimations({ subtree: true })
-          .map((animation) =>
-            animation instanceof CSSAnimation
-              ? animation.animationName
-              : undefined,
-          ),
+          .map((animation) => (animation as CSSAnimation).animationName),
       ),
       [],
     );

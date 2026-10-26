@@ -56,29 +56,18 @@ for (const width of [320, 1200]) {
       });
       await dialog.getByRole("button", { name: "Start subagent" }).click();
       await expect
-        .poll(() => page.evaluate(() => window.workerLaunchFixture.submitted))
+        .poll(() => page.evaluate(() => window.submitted))
         .toMatchObject({ parent: "lead-id", profile_id: "profile-id" });
       expect(
-        await page.evaluate(
-          () => "permission_mode" in window.workerLaunchFixture.submitted!,
-        ),
+        await page.evaluate(() => "permission_mode" in window.submitted!),
       ).toBe(false);
       await selector.selectOption("acceptEdits");
       await dialog.getByRole("button", { name: "Start subagent" }).click();
       await expect
-        .poll(() =>
-          page.evaluate(
-            () => window.workerLaunchFixture.submitted?.permission_mode,
-          ),
-        )
+        .poll(() => page.evaluate(() => window.submitted?.permission_mode))
         .toBe("acceptEdits");
       await page.evaluate(() =>
-        window.workerLaunchFixture.launch(
-          "bypassPermissions",
-          "claude",
-          true,
-          true,
-        ),
+        window.launch("bypassPermissions", "claude", true, true),
       );
       await expect(
         dialog.getByText("Lead mode: bypassPermissions"),
@@ -88,19 +77,13 @@ for (const width of [320, 1200]) {
       await task.fill("Review the project.");
       await dialog.getByRole("button", { name: "Start subagent" }).click();
       await expect
-        .poll(() =>
-          page.evaluate(
-            () => window.workerLaunchFixture.submitted?.permission_mode,
-          ),
-        )
+        .poll(() => page.evaluate(() => window.submitted?.permission_mode))
         .toBe("plan");
       await page.screenshot({
         path: testInfo.outputPath(`worker-launch-reviewer-${width}.png`),
         fullPage: true,
       });
-      await page.evaluate(() =>
-        window.workerLaunchFixture.launch("auto", "codex"),
-      );
+      await page.evaluate(() => window.launch("auto", "codex"));
       await expect(
         dialog.getByText(
           "Codex sandbox: workspace-write. Approval policy: on-request. These settings follow the lead.",
@@ -110,9 +93,7 @@ for (const width of [320, 1200]) {
       await task.fill("Read the project.");
       await dialog.getByRole("button", { name: "Start subagent" }).click();
       expect(
-        await page.evaluate(
-          () => "permission_mode" in window.workerLaunchFixture.submitted!,
-        ),
+        await page.evaluate(() => "permission_mode" in window.submitted!),
       ).toBe(false);
       await page.screenshot({
         path: testInfo.outputPath(`worker-launch-codex-${width}.png`),

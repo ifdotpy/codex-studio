@@ -17,7 +17,7 @@ import "../../src/appearance.css";
 import { theme } from "../../src/theme.ts";
 declare global {
   interface Window {
-    refreshLimits: () => void;
+    refreshFixture: () => void;
     signedInAccount: string | undefined;
   }
 }
@@ -61,7 +61,7 @@ function Fixture() {
   const [screen, setScreen] = useState("limits");
   const [at, setAt] = useState(now);
   const [limitsOpen, setLimitsOpen] = useState(false);
-  window.refreshLimits = () => setAt(Date.now() / 1000);
+  window.refreshFixture = () => setAt(Date.now() / 1000);
   const limits = {
     accountKey: "claude",
     at,
@@ -110,7 +110,7 @@ function Fixture() {
               <NativeError
                 agent={agent}
                 limits={limits}
-                refreshLimits={() => window.refreshLimits()}
+                refreshLimits={() => window.refreshFixture()}
               />
             </div>
             <div
@@ -128,13 +128,13 @@ function Fixture() {
                     label: "Research",
                     limits,
                     loading: false,
-                    reload: async () => window.refreshLimits(),
+                    reload: async () => window.refreshFixture(),
                   },
                 ]}
                 accountLabel="Research"
                 opened={limitsOpen}
                 onChange={setLimitsOpen}
-                reload={async () => window.refreshLimits()}
+                reload={async () => window.refreshFixture()}
               />
             </div>
           </>

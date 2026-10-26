@@ -148,11 +148,10 @@ test("Rust model decisions and safe Claude organizations at 320 and 1200 pixels"
       const panelBox = await page
         .locator(".account-limits-popover")
         .boundingBox();
-      assert.ok(panelBox);
       assert.ok(
-        panelBox.x >= 0 &&
-          panelBox.y >= 0 &&
-          panelBox.x + panelBox.width <= width,
+        panelBox!.x >= 0 &&
+          panelBox!.y >= 0 &&
+          panelBox!.x + panelBox!.width <= width,
       );
       await page.screenshot({
         path: resolve(output, `limits-rejected-${width}.png`),
@@ -165,7 +164,7 @@ test("Rust model decisions and safe Claude organizations at 320 and 1200 pixels"
       ] as const) {
         mode = value;
         await page.clock.fastForward(1000);
-        await page.evaluate(() => window.refreshLimits());
+        await page.evaluate(() => window.refreshFixture());
         await page
           .getByText(label, { exact: true })
           .first()

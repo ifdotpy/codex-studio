@@ -1,18 +1,16 @@
 declare global {
   interface Window {
-    visualActivityFixture: {
-      commits: Record<string, number>;
-      rateInterests: Set<
-        Parameters<Parameters<typeof configureTokenRateStream>[0]>[0]
-      >;
-      rate: (id: string, value: number) => void;
-      workerRate: (value: number) => void;
-      unmount: () => void;
-      visualMetrics: { ticks: number; observers: number };
-      activeVisualTimers: () => number;
-      testingHidden: boolean;
-      setTestingHidden: (hidden: boolean) => void;
-    };
+    commits: Record<string, number>;
+    rateInterests: Set<
+      Parameters<Parameters<typeof configureTokenRateStream>[0]>[0]
+    >;
+    rate: (id: string, value: number) => void;
+    workerRate: (value: number) => void;
+    unmount: () => void;
+    visualMetrics: { ticks: number; observers: number };
+    activeVisualTimers: () => number;
+    testingHidden: boolean;
+    setTestingHidden: (hidden: boolean) => void;
   }
 }
 
@@ -28,14 +26,14 @@ import {
 import "../visual-activity.css";
 import "../components/team-navigation.css";
 const e = React.createElement;
-window.visualActivityFixture.commits = {};
-window.visualActivityFixture.rateInterests = new Set();
+window.commits = {};
+window.rateInterests = new Set();
 configureTokenRateStream((listener) => {
-  window.visualActivityFixture.rateInterests.add(listener);
-  return () => window.visualActivityFixture.rateInterests.delete(listener);
+  window.rateInterests.add(listener);
+  return () => window.rateInterests.delete(listener);
 });
 const records = new Map<string, import("../usage/tokenRate.ts").TokenRate>();
-window.visualActivityFixture.rate = (id, value) => {
+window.rate = (id, value) => {
   records.set(id, {
     agentId: id,
     rootId: id === "worker" ? "team" : id,
@@ -47,18 +45,14 @@ window.visualActivityFixture.rate = (id, value) => {
   });
   receiveWorkspaceTokenRates({ records: [...records.values()] });
 };
-window.visualActivityFixture.workerRate = (value) =>
-  window.visualActivityFixture.rate("worker", value);
-for (const id of ["near", "far", "closed"])
-  window.visualActivityFixture.rate(id, 20);
+window.workerRate = (value) => window.rate("worker", value);
+for (const id of ["near", "far", "closed"]) window.rate(id, 20);
 const card = (id: string, reason = true) =>
   e(
     React.Profiler,
     {
       id,
-      onRender: () =>
-        (window.visualActivityFixture.commits[id] =
-          (window.visualActivityFixture.commits[id] || 0) + 1),
+      onRender: () => (window.commits[id] = (window.commits[id] || 0) + 1),
     },
     e(
       "div",
@@ -105,4 +99,4 @@ root.render(
     card("far"),
   ),
 );
-window.visualActivityFixture.unmount = () => root.unmount();
+window.unmount = () => root.unmount();

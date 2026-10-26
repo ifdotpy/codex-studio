@@ -1,4 +1,5 @@
 import { createFixtureViteServer as createServer } from "../playwright.ts";
+import type { Room } from "../../src/types.ts";
 import type { PostBody } from "../../src/api.ts";
 import { fixturePostBody } from "../misc-fixture.ts";
 import { fixtureOrigin } from "../misc-fixture.ts";
@@ -37,7 +38,7 @@ test("Radio browser", async ({
             streams.add(res);
             res.on("close", () => streams.delete(res));
             const resources = JSON.parse(
-              new URL(req.url ?? "/", "http://localhost").searchParams.get(
+              new URL(req.url!, "http://localhost").searchParams.get(
                 "resources",
               ) || "[]",
             );
@@ -172,9 +173,24 @@ test("Radio browser", async ({
     await page.waitForFunction(() => !document.querySelector(".radio-retry"));
     assert.equal(requests.length, 2);
     assert.deepEqual(requests[0], requests[1]);
-    assert.ok(requests[0] && "rounds" in requests[0]);
-    assert.equal(requests[0].rounds, 1);
-    assert.equal(requests[0].target, "both");
+    assert.equal(
+      (
+        requests[0] as Extract<
+          PostBody<"/api/peer-teams">,
+          { radio_action: "send" }
+        >
+      ).rounds,
+      1,
+    );
+    assert.equal(
+      (
+        requests[0] as Extract<
+          PostBody<"/api/peer-teams">,
+          { radio_action: "send" }
+        >
+      ).target,
+      "both",
+    );
     mode = "held";
     await page.evaluate(() => {
       window.holdRefresh = true;
@@ -188,8 +204,7 @@ test("Radio browser", async ({
     assert.equal(await input.isDisabled(), true);
     assert.equal(await page.evaluate(() => window.refreshCalls), 0);
     const acceptedPosts = requests.length;
-    assert.ok(releaseResponse, "The fixture captured the held response");
-    releaseResponse();
+    releaseResponse!();
     await expect(input).toBeEnabled({ timeout: 2000 });
     assert.equal(await input.inputValue(), "");
     await expect.poll(() => transcriptReads).toBeGreaterThan(beforeTranscript);
@@ -209,8 +224,7 @@ test("Radio browser", async ({
     assert.equal(
       await page.evaluate(() =>
         JSON.parse(
-          localStorage.getItem("studio-radio-command:radio-test:radio:t") ??
-            "null",
+          localStorage.getItem("studio-radio-command:radio-test:radio:t")!,
         ),
       ),
       null,
@@ -261,26 +275,50 @@ test("Radio browser", async ({
     );
     await page.getByRole("button", { name: "Reply next" }).click();
     await page.waitForFunction(() => !document.querySelector(".radio-retry"));
-    const lastCommand2 = requests.at(-1)!;
-    assert.ok("radio_action" in lastCommand2);
-    assert.equal(lastCommand2.radio_action, "pass");
-    const lastCommand3 = requests.at(-1)!;
-    assert.ok("target" in lastCommand3);
-    assert.equal(lastCommand3.target, "b");
+    assert.equal(
+      (
+        requests.at(-1)! as Extract<
+          PostBody<"/api/peer-teams">,
+          { radio_action: "pass" }
+        >
+      ).radio_action,
+      "pass",
+    );
+    assert.equal(
+      (
+        requests.at(-1)! as Extract<
+          PostBody<"/api/peer-teams">,
+          { radio_action: "pass" }
+        >
+      ).target,
+      "b",
+    );
     await page.getByRole("button", { name: "Stop", exact: true }).click();
     await page.waitForFunction(() => !document.querySelector(".radio-retry"));
-    const lastCommand4 = requests.at(-1)!;
-    assert.ok("radio_action" in lastCommand4);
-    assert.equal(lastCommand4.radio_action, "stop");
+    assert.equal(
+      (
+        requests.at(-1)! as Extract<
+          PostBody<"/api/peer-teams">,
+          { radio_action: "stop" }
+        >
+      ).radio_action,
+      "stop",
+    );
     assert.equal(
       await page.getByRole("button", { name: "Send", exact: true }).isEnabled(),
       true,
     );
     await page.getByRole("button", { name: "Send", exact: true }).click();
     await page.waitForFunction(() => !document.querySelector(".radio-retry"));
-    const lastCommand5 = requests.at(-1)!;
-    assert.ok("radio_action" in lastCommand5);
-    assert.equal(lastCommand5.radio_action, "send");
+    assert.equal(
+      (
+        requests.at(-1)! as Extract<
+          PostBody<"/api/peer-teams">,
+          { radio_action: "send" }
+        >
+      ).radio_action,
+      "send",
+    );
     await input.fill("New instruction");
     await page.evaluate(() =>
       window.setRoom({
@@ -304,14 +342,7 @@ test("Radio browser", async ({
         radio: {
           ...window.currentRoom.radio!,
           status: "blocked",
-          active: {
-            eventId: "e",
-            agentId: "a",
-            epoch: 0,
-            identity: [null, null, 0],
-            threadId: null,
-            through: 0,
-          },
+          active: radioActive(),
           speaker: "a",
         },
       }),
@@ -333,14 +364,7 @@ test("Radio browser", async ({
           ...window.currentRoom.radio!,
           status: "speaking",
           error: null,
-          active: {
-            eventId: "e",
-            agentId: "a",
-            epoch: 0,
-            identity: [null, null, 0],
-            threadId: null,
-            through: 0,
-          },
+          active: radioActive(),
           speaker: "a",
         },
       }),
@@ -365,8 +389,7 @@ test("Radio browser", async ({
           .evaluate(
             (e) =>
               e.getBoundingClientRect().bottom <=
-              (document.getElementById("root")?.getBoundingClientRect()
-                .bottom ?? 0),
+              document.getElementById("root")!.getBoundingClientRect().bottom,
           ),
         true,
       );
@@ -392,3 +415,10 @@ test("Radio browser", async ({
     await rm(cacheDir, { recursive: true, force: true });
   }
 });
+
+// The two base speaking/blocked fixtures omit the remaining active-turn metadata.
+function radioActive() {
+  return { eventId: "e", agentId: "a" } as NonNullable<
+    NonNullable<Room["radio"]>["active"]
+  >;
+}

@@ -78,14 +78,14 @@ function Fixture() {
     nativeLimitErrorAt: snapshot.episode ?? agent.nativeLimitErrorAt,
   };
   // Base one-off Usage fixture omits stateDir; preserve that partial prop surface.
-  const usageProps = {
+  const usageProps = partialUsageProps({
     agent: currentAgent,
     limits: snapshot.limits,
     reload: action,
     opened: true,
     onChange: action,
     limitsLoading: false,
-  } as React.ComponentProps<typeof Usage>;
+  });
   return (
     <MantineProvider>
       <main data-case={snapshot.label}>
@@ -109,3 +109,8 @@ function Fixture() {
   );
 }
 createRoot(fixtureRoot()).render(<Fixture />);
+
+// The one-off base fixture omits Usage.stateDir.
+function partialUsageProps(value: unknown): React.ComponentProps<typeof Usage> {
+  return value as React.ComponentProps<typeof Usage>;
+}

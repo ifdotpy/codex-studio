@@ -7,7 +7,6 @@ import {
   chatWaitState,
   chatIndicators,
 } from "../../src/components/chat-status/chatStatusModel.ts";
-import { snapshotFixture } from "../../src/snapshotFixture.ts";
 import type {
   Agent,
   BackgroundTask,
@@ -23,7 +22,7 @@ declare global {
     worker: (index: number) => Agent;
     command: (index: number) => BackgroundTask;
     monitor: (index: number) => Monitor;
-    setData: (value: Pick<Snapshot, "threads" | "runtime">) => void;
+    setData: (value: PhaseSnapshot) => void;
   }
 }
 const lead = {
@@ -59,13 +58,22 @@ window.monitor = (i) => ({
   status: "running",
   epoch: 2,
 });
-const initial = snapshotFixture([lead, window.worker(1), window.worker(2)]);
+export type PhaseSnapshot = Pick<Snapshot, "threads"> & {
+  runtime: Pick<Snapshot["runtime"], "requests" | "tasks" | "monitors">;
+};
+const initial: PhaseSnapshot = {
+  threads: [lead, window.worker(1), window.worker(2)],
+  runtime: { requests: [], tasks: [], monitors: [] },
+};
+// The one-off waiting-state fixture omits unrelated snapshot fields and runtime collections.
+function phaseSnapshot(value: unknown): Snapshot {
+  return value as Snapshot;
+}
 function Fixture() {
-  const [data, setData] =
-    useState<Pick<Snapshot, "threads" | "runtime">>(initial);
+  const [data, setData] = useState<PhaseSnapshot>(initial);
   window.setData = (value) => flushSync(() => setData(value));
   const agent = data.threads[0]!;
-  const full = { ...initial, ...data };
+  const full = phaseSnapshot(data);
   const wait = chatWaitState(full, agent);
   const indicator = chatIndicators(full).get(agent.id);
   return (

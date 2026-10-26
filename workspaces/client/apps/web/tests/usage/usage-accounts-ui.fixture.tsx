@@ -10,19 +10,13 @@ import { createRoot } from "react-dom/client";
 import { MantineProvider } from "@mantine/core";
 import "@mantine/core/styles.css";
 import type { UsageAccount } from "../../src/components/Usage.tsx";
-import { createServerServices } from "../../src/servers/serverServices.ts";
+import type { ServerServices } from "../../src/servers/serverServices.ts";
 import { snapshotFixture } from "../../src/snapshotFixture.ts";
 import Usage from "../../src/components/Usage.tsx";
 import { ServerServicesProvider } from "../../src/servers/ServerServicesContext.tsx";
 import * as sync from "../../src/sync/client.ts";
-const baseServices = createServerServices({
-  id: "local",
-  label: "Fixture",
-  origin: location.origin,
-});
-const services = {
-  ...baseServices,
-  owner: { id: "fixture", label: "Fixture", origin: location.origin },
+const services = partialUsageServices({
+  owner: { id: "fixture", origin: location.origin, credentialId: null },
   sync: {
     ...sync,
     subscribeStateProjection(
@@ -41,7 +35,11 @@ const services = {
       return () => {};
     },
   },
-};
+});
+// Base usage services omit unrelated capabilities and the owner label.
+function partialUsageServices(value: unknown): ServerServices {
+  return value as ServerServices;
+}
 import { accountLimitFixtures } from "../../src/components/AccountLimits.fixtures.ts";
 import { theme } from "../../src/theme.ts";
 const now = Number(new URLSearchParams(location.search).get("now"));

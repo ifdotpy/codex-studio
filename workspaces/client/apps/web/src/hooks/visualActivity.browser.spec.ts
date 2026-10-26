@@ -38,23 +38,12 @@ test("hidden visual rows stop timers and rate renders and resume current values"
   const errors: string[] = [];
   page.on("pageerror", (error) => errors.push(error.message));
   await page.addInitScript(() => {
-    window.visualActivityFixture = {
-      commits: {},
-      rateInterests: new Set(),
-      rate: () => {},
-      workerRate: () => {},
-      unmount: () => {},
-      visualMetrics: { ticks: 0, observers: 0 },
-      activeVisualTimers: () => 0,
-      testingHidden: false,
-      setTestingHidden: () => {},
-    };
     const timers = new Map<number, boolean>();
     const timerWindow: Window = window;
-    const interval = timerWindow.setInterval.bind(timerWindow);
-    const clear = timerWindow.clearInterval.bind(timerWindow);
-    window.visualActivityFixture.visualMetrics = { ticks: 0, observers: 0 };
-    window.visualActivityFixture.activeVisualTimers = () => timers.size;
+    const interval = window.setInterval;
+    const clear = window.clearInterval;
+    window.visualMetrics = { ticks: 0, observers: 0 };
+    window.activeVisualTimers = () => timers.size;
     timerWindow.setInterval = (
       callback: (...args: unknown[]) => void,
       delay?: number,
@@ -62,7 +51,7 @@ test("hidden visual rows stop timers and rate renders and resume current values"
     ) => {
       if (delay !== 1000) return interval(callback, delay, ...args);
       const id = interval(() => {
-        window.visualActivityFixture.visualMetrics.ticks++;
+        window.visualMetrics.ticks++;
         callback(...args);
       }, delay);
       timers.set(id, true);
@@ -74,25 +63,25 @@ test("hidden visual rows stop timers and rate renders and resume current values"
     };
     const Observer = window.IntersectionObserver;
     window.IntersectionObserver = class extends Observer {
-      active: boolean;
+      declare active: boolean;
       constructor(...args: ConstructorParameters<typeof Observer>) {
         super(...args);
-        window.visualActivityFixture.visualMetrics.observers++;
+        window.visualMetrics.observers++;
         this.active = true;
       }
       disconnect() {
-        if (this.active) window.visualActivityFixture.visualMetrics.observers--;
+        if (this.active) window.visualMetrics.observers--;
         this.active = false;
         super.disconnect();
       }
     };
-    window.visualActivityFixture.testingHidden = false;
+    window.testingHidden = false;
     Object.defineProperty(document, "hidden", {
       configurable: true,
-      get: () => window.visualActivityFixture.testingHidden,
+      get: () => window.testingHidden,
     });
-    window.visualActivityFixture.setTestingHidden = (hidden) => {
-      window.visualActivityFixture.testingHidden = hidden;
+    window.setTestingHidden = (hidden) => {
+      window.testingHidden = hidden;
       document.dispatchEvent(new Event("visibilitychange"));
     };
   });
@@ -112,20 +101,10 @@ test("hidden visual rows stop timers and rate renders and resume current values"
       "false",
     );
     await expect
-      .poll(() =>
-        page.evaluate(() => window.visualActivityFixture.activeVisualTimers()),
-      )
+      .poll(() => page.evaluate(() => window.activeVisualTimers()))
       .toBe(1);
-    expect(
-      await page.evaluate(
-        () => window.visualActivityFixture.visualMetrics.observers,
-      ),
-    ).toBe(1);
-    expect(
-      await page.evaluate(
-        () => window.visualActivityFixture.rateInterests.size,
-      ),
-    ).toBe(2);
+    expect(await page.evaluate(() => window.visualMetrics.observers)).toBe(1);
+    expect(await page.evaluate(() => window.rateInterests.size)).toBe(2);
     expect(
       await page
         .locator("#far .chat-status svg")
@@ -137,24 +116,18 @@ test("hidden visual rows stop timers and rate renders and resume current values"
         .evaluate((node) => getComputedStyle(node).animationPlayState),
     ).toBe("running");
     await page.evaluate(() => {
-      window.visualActivityFixture.commits = {};
+      window.commits = {};
       for (let i = 0; i < 100; i++) {
-        window.visualActivityFixture.rate("far", 30 + i);
-        window.visualActivityFixture.rate("closed", 30 + i);
+        window.rate("far", 30 + i);
+        window.rate("closed", 30 + i);
       }
-      window.visualActivityFixture.rate("empty", 42);
+      window.rate("empty", 42);
     });
     await expect(page.locator("#empty .token-rate")).toHaveText("42 tok/s");
-    expect(
-      await page.evaluate(() => window.visualActivityFixture.commits.far || 0),
-    ).toBe(0);
-    expect(
-      await page.evaluate(
-        () => window.visualActivityFixture.commits.closed || 0,
-      ),
-    ).toBe(0);
+    expect(await page.evaluate(() => window.commits.far || 0)).toBe(0);
+    expect(await page.evaluate(() => window.commits.closed || 0)).toBe(0);
     expect(await page.locator("#team .token-rate").boundingBox()).toBeNull();
-    await page.evaluate(() => window.visualActivityFixture.workerRate(43));
+    await page.evaluate(() => window.workerRate(43));
     await expect(page.locator("#team .token-rate")).toHaveText("43 tok/s");
     await expect(page.locator("#team .token-rate")).toHaveAttribute(
       "data-visual-active",
@@ -162,50 +135,28 @@ test("hidden visual rows stop timers and rate renders and resume current values"
     );
     await page.locator("#fold summary").click();
     await expect(page.locator("#closed .token-rate")).toHaveText("129 tok/s");
-    expect(
-      await page.evaluate(
-        () => window.visualActivityFixture.rateInterests.size,
-      ),
-    ).toBe(3);
+    expect(await page.evaluate(() => window.rateInterests.size)).toBe(3);
     await expect
-      .poll(() =>
-        page.evaluate(() => window.visualActivityFixture.activeVisualTimers()),
-      )
+      .poll(() => page.evaluate(() => window.activeVisualTimers()))
       .toBe(2);
-    await page.evaluate(() =>
-      window.visualActivityFixture.setTestingHidden(true),
-    );
+    await page.evaluate(() => window.setTestingHidden(true));
     await expect
-      .poll(() =>
-        page.evaluate(() => window.visualActivityFixture.activeVisualTimers()),
-      )
+      .poll(() => page.evaluate(() => window.activeVisualTimers()))
       .toBe(0);
-    expect(
-      await page.evaluate(
-        () => window.visualActivityFixture.rateInterests.size,
-      ),
-    ).toBe(0);
-    const ticks = await page.evaluate(
-      () => window.visualActivityFixture.visualMetrics.ticks,
-    );
+    expect(await page.evaluate(() => window.rateInterests.size)).toBe(0);
+    const ticks = await page.evaluate(() => window.visualMetrics.ticks);
     await page.waitForTimeout(1200);
-    expect(
-      await page.evaluate(
-        () => window.visualActivityFixture.visualMetrics.ticks,
-      ),
-    ).toBe(ticks);
+    expect(await page.evaluate(() => window.visualMetrics.ticks)).toBe(ticks);
     await page.evaluate(() => {
-      window.visualActivityFixture.rate("near", 88);
-      window.visualActivityFixture.setTestingHidden(false);
+      window.rate("near", 88);
+      window.setTestingHidden(false);
     });
     await expect(page.locator("#near .token-rate")).toHaveAttribute(
       "data-rate",
       "88",
     );
     await expect
-      .poll(() =>
-        page.evaluate(() => window.visualActivityFixture.activeVisualTimers()),
-      )
+      .poll(() => page.evaluate(() => window.activeVisualTimers()))
       .toBe(2);
     await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
     await expect(page.locator("#far .token-rate")).toHaveAttribute(
@@ -213,15 +164,9 @@ test("hidden visual rows stop timers and rate renders and resume current values"
       "true",
     );
     await expect(page.locator("#far .token-rate")).toHaveText("129 tok/s");
-    expect(
-      await page.evaluate(
-        () => window.visualActivityFixture.rateInterests.size,
-      ),
-    ).toBe(1);
+    expect(await page.evaluate(() => window.rateInterests.size)).toBe(1);
     await expect
-      .poll(() =>
-        page.evaluate(() => window.visualActivityFixture.activeVisualTimers()),
-      )
+      .poll(() => page.evaluate(() => window.activeVisualTimers()))
       .toBe(1);
     await expect
       .poll(async () => {
@@ -229,50 +174,31 @@ test("hidden visual rows stop timers and rate renders and resume current values"
         return Number.parseInt(text!) >= 4;
       })
       .toBe(true);
-    await page.evaluate(() => window.visualActivityFixture.unmount());
-    expect(
-      await page.evaluate(() =>
-        window.visualActivityFixture.activeVisualTimers(),
-      ),
-    ).toBe(0);
-    expect(
-      await page.evaluate(
-        () => window.visualActivityFixture.rateInterests.size,
-      ),
-    ).toBe(0);
-    expect(
-      await page.evaluate(
-        () => window.visualActivityFixture.visualMetrics.observers,
-      ),
-    ).toBe(0);
+    await page.evaluate(() => window.unmount());
+    expect(await page.evaluate(() => window.activeVisualTimers())).toBe(0);
+    expect(await page.evaluate(() => window.rateInterests.size)).toBe(0);
+    expect(await page.evaluate(() => window.visualMetrics.observers)).toBe(0);
     // Without an observer, keep visible-tab updates active after hide/resume.
     // There is no scroll observer to reactivate an offscreen row in this mode.
     await page.addInitScript(() => {
-      delete (window as { IntersectionObserver?: typeof IntersectionObserver })
-        .IntersectionObserver;
+      (
+        window as { IntersectionObserver?: typeof IntersectionObserver }
+      ).IntersectionObserver = undefined;
     });
     await page.reload();
     await expect
-      .poll(() =>
-        page.evaluate(() => window.visualActivityFixture.activeVisualTimers()),
-      )
+      .poll(() => page.evaluate(() => window.activeVisualTimers()))
       .toBe(2);
-    await page.evaluate(() =>
-      window.visualActivityFixture.setTestingHidden(true),
-    );
+    await page.evaluate(() => window.setTestingHidden(true));
     await expect
-      .poll(() =>
-        page.evaluate(() => window.visualActivityFixture.activeVisualTimers()),
-      )
+      .poll(() => page.evaluate(() => window.activeVisualTimers()))
       .toBe(0);
     await page.evaluate(() => {
-      window.visualActivityFixture.rate("far", 91);
-      window.visualActivityFixture.setTestingHidden(false);
+      window.rate("far", 91);
+      window.setTestingHidden(false);
     });
     await expect
-      .poll(() =>
-        page.evaluate(() => window.visualActivityFixture.activeVisualTimers()),
-      )
+      .poll(() => page.evaluate(() => window.activeVisualTimers()))
       .toBe(2);
     await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
     await expect(page.locator("#far .token-rate")).toHaveAttribute(
@@ -282,16 +208,10 @@ test("hidden visual rows stop timers and rate renders and resume current values"
     await expect(page.locator("#far .token-rate")).toHaveText("91 tok/s");
     await page.locator("#fold summary").click();
     await expect
-      .poll(() =>
-        page.evaluate(() => window.visualActivityFixture.activeVisualTimers()),
-      )
+      .poll(() => page.evaluate(() => window.activeVisualTimers()))
       .toBe(3);
-    await page.evaluate(() => window.visualActivityFixture.unmount());
-    expect(
-      await page.evaluate(() =>
-        window.visualActivityFixture.activeVisualTimers(),
-      ),
-    ).toBe(0);
+    await page.evaluate(() => window.unmount());
+    expect(await page.evaluate(() => window.activeVisualTimers())).toBe(0);
     expect(errors).toEqual([]);
   } finally {
     await page.close();

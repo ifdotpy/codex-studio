@@ -78,11 +78,14 @@ test("Limit Recovery State Ui", async ({
             agentId: identity.agentId || "lumina",
           },
         };
-      await page.evaluate((snapshot) => window.applyLimitSnapshot(snapshot), {
-        label,
-        limits,
-        ...identity,
-      } satisfies LimitSnapshot);
+      await page.evaluate<void, unknown>(
+        (snapshot) => window.applyLimitSnapshot(snapshot as LimitSnapshot),
+        {
+          label,
+          limits,
+          ...identity,
+        } satisfies LimitSnapshot,
+      );
       await page.locator(`main[data-case="${label}"]`).waitFor();
       await assertBanner(visible);
     };
