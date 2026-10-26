@@ -1,5 +1,5 @@
 import type { ViteDevServer } from "vite";
-import { expect } from "../playwright.ts";
+export { assert as fixtureAssert } from "../chat/assertions.ts";
 
 /** Vite binds an ephemeral TCP port for every isolated sync fixture. */
 export function fixtureOrigin(server: ViteDevServer, host = "127.0.0.1") {
@@ -7,25 +7,6 @@ export function fixtureOrigin(server: ViteDevServer, host = "127.0.0.1") {
     server.httpServer!.address() as import("node:net").AddressInfo;
   return `http://${host}:${address.port}`;
 }
-
-/** Preserve the existing Playwright assertion messages across sync specs. */
-export const fixtureAssert = {
-  equal: (actual: unknown, expected: unknown, message?: string) =>
-    expect(actual, message).toBe(expected),
-  notEqual: (actual: unknown, expected: unknown, message?: string) =>
-    expect(actual, message).not.toBe(expected),
-  deepEqual: (actual: unknown, expected: unknown, message?: string) =>
-    expect(actual, message).toEqual(expected),
-  ok: (actual: unknown, message?: string) =>
-    expect(actual, message).toBeTruthy(),
-  match: (actual: string, expected: RegExp, message?: string) =>
-    expect(actual, message).toMatch(expected),
-  doesNotMatch: (actual: string, expected: RegExp, message?: string) =>
-    expect(actual, message).not.toMatch(expected),
-  fail: (message: string): never => {
-    throw new Error(message);
-  },
-};
 
 /** Fixture JSON comes from the renderer under test; the generated route owns its shape. */
 export function fixturePostBody<

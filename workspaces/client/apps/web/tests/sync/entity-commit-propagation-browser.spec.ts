@@ -416,7 +416,7 @@ test("committed entities propagate between renderer tabs @sync", async ({
                 "state"
               )
                 continue;
-              const document = version.entityChanges!.documents.find(
+              const document = version.entityChanges?.documents.find(
                 (row) =>
                   `entity:${row.collection}:${row.id}` === documentId &&
                   row.seq === seq,
@@ -719,7 +719,7 @@ test("committed entities propagate between renderer tabs @sync", async ({
                 (version.entityChanges?.through as number) < seq
               )
                 continue;
-              const document = version.entityChanges!.documents.find(
+              const document = version.entityChanges?.documents.find(
                 (row) =>
                   row.collection === "agent" &&
                   row.id === leadId &&
