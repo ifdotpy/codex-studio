@@ -40,33 +40,35 @@ function fixture() {
     credentialId: "fixture",
   };
   const credentials = { pair: vi.fn(async () => receipt) };
-  const fetchRequest = vi.fn<typeof fetch>(async (input, init) => {
-    const url = String(input);
-    init = init!;
-    expect(new URL(url).origin).toBe("http://127.0.0.1:4620");
-    expect(init.redirect).toBe("error");
-    if (url.endsWith("/api/session"))
-      return Response.json({ token: "local-secret" });
-    if (init.method === "POST") {
-      expect(new Headers(init.headers).get("X-Canvas-Token")).toBe(
-        "local-secret",
-      );
-      expect(parsedRecord(String(init.body))).toEqual({
-        action: "ui_invite",
-        serverId: "remote",
-        requestId: "invite-id",
-      });
-      return Response.json({ invitation });
-    }
-    return Response.json(state);
-  });
+  const fetchRequest = vi.fn(
+    async (
+      url: string,
+      init: RequestInit & { headers: Record<string, string>; body?: string },
+    ) => {
+      expect(new URL(url).origin).toBe("http://127.0.0.1:4620");
+      expect(init.redirect).toBe("error");
+      if (url.endsWith("/api/session"))
+        return Response.json({ token: "local-secret" });
+      if (init.method === "POST") {
+        expect(init.headers["X-Canvas-Token"]).toBe("local-secret");
+        expect(parsedRecord(init.body!)).toEqual({
+          action: "ui_invite",
+          serverId: "remote",
+          requestId: "invite-id",
+        });
+        return Response.json({ invitation });
+      }
+      return Response.json(state);
+    },
+  );
   const trusted = vi.fn();
   const run = () =>
     pairApproved({
       origin: "http://127.0.0.1:4620",
       value,
       credentials,
-      fetchRequest,
+      // The mock receives the string URL and object headers built by pairApproved.
+      fetchRequest: fetchRequest as typeof fetch,
       trusted,
     });
   return {
@@ -116,7 +118,7 @@ test("automatic access checks revocation after the invitation returns", async ()
   const original = f.fetchRequest.getMockImplementation()!;
   f.fetchRequest.mockImplementation(async (url, init) => {
     const response = await original(url, init);
-    if (init?.method === "POST") f.peer.status = "revoked";
+    if (init.method === "POST") f.peer.status = "revoked";
     return response;
   });
   await expect(f.run()).rejects.toThrow("not approved");

@@ -208,11 +208,9 @@ test.skipIf(!supervisorBinary)(
       const opened = record(await nextMessage());
       assert.equal(opened.requestId, 1);
       assert.equal(opened.error, undefined);
-      const activeChildPid = status(state).handles[0]!.pid;
-      assert(typeof activeChildPid === "number");
-      childPid = activeChildPid;
+      childPid = status(state).handles[0].pid!;
       assert.equal(initialHealth.handles.length, 0);
-      assert.equal(record(status(state).handles[0]!).pid, childPid);
+      assert.equal(status(state).handles[0].pid, childPid);
 
       const files = recoveryPaths({ CODEX_AGENTS_STATE_DIR: state }, fixture);
       const registered = new Set([
@@ -331,9 +329,9 @@ test.skipIf(!supervisorBinary)(
       await new Promise((resolve) => recoveryProcess!.once("exit", resolve));
       recoveryProcess = null;
 
-      const app = Object.assign(new EventEmitter(), {
-        getPath: () => path.join(fixture, "profile"),
-      });
+      const app = new EventEmitter() as EventEmitter &
+        Parameters<typeof trackDesktopRecovery>[0]["app"];
+      app.getPath = () => path.join(fixture, "profile");
       const desktop = trackDesktopRecovery({
         app,
         env: { CODEX_AGENTS_STATE_DIR: state },

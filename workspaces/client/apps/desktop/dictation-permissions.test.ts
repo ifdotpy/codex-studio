@@ -51,33 +51,38 @@ test("main and preload require a trusted local microphone gesture", async () => 
       isPackaged: false,
     },
     BrowserWindow: class {
-      on() {}
-      isDestroyed() {
-        return false;
-      }
-      webContents = {
-        mainFrame: { url: origin + "/" },
+      declare on: () => void;
+      declare isDestroyed: () => boolean;
+      declare webContents: {
+        mainFrame: Pick<Electron.WebFrameMain, "url">;
         session: {
           setPermissionRequestHandler(
-            fn: PermissionHandler<
-              NonNullable<Parameters<Session["setPermissionRequestHandler"]>[0]>
-            >,
-          ) {
-            handlers.request = fn;
-          },
+            fn: NonNullable<typeof handlers.request>,
+          ): void;
           setPermissionCheckHandler(
-            fn: PermissionHandler<
-              NonNullable<Parameters<Session["setPermissionCheckHandler"]>[0]>
-            >,
-          ) {
-            handlers.check = fn;
-          },
-        },
-        on() {},
-        setWindowOpenHandler() {},
+            fn: NonNullable<typeof handlers.check>,
+          ): void;
+        };
+        on(): void;
+        setWindowOpenHandler(): void;
       };
       constructor() {
         window = Object.assign(this);
+        this.on = () => {};
+        this.isDestroyed = () => false;
+        this.webContents = {
+          mainFrame: { url: origin + "/" },
+          session: {
+            setPermissionRequestHandler(fn) {
+              handlers.request = fn;
+            },
+            setPermissionCheckHandler(fn) {
+              handlers.check = fn;
+            },
+          },
+          on() {},
+          setWindowOpenHandler() {},
+        };
       }
       async loadURL() {}
       showInactive() {}

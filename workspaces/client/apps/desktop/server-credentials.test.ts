@@ -147,8 +147,8 @@ ${crypto.createHash("sha256").update(text).digest("hex")}`;
       serverId: server.id,
       credentialId: server.credentialId,
       url: invitation.origin + "/api/search?q=a%20b",
-      method: "GET",
-      headers: [["X-Canvas-Token", "local-only"]],
+
+      headers: { "X-Canvas-Token": "local-only" },
       requestId: "read-once",
     });
     // The shell summary sends no request ID. The signed bytes and the header
@@ -157,7 +157,6 @@ ${crypto.createHash("sha256").update(text).digest("hex")}`;
       serverId: server.id,
       credentialId: server.credentialId,
       url: invitation.origin + "/api/ui-summary",
-      method: "GET",
     });
     expect(calls.at(-1)!.headers["x-studio-request-id"]).toMatch(
       /^[0-9a-f-]{36}$/,
@@ -168,7 +167,7 @@ ${crypto.createHash("sha256").update(text).digest("hex")}`;
         credentialId: server.credentialId,
         url: invitation.origin + "/api/answer",
         method: "POST",
-        body: new TextEncoder().encode("{}").buffer,
+        body: new TextEncoder().encode("{}"),
       }),
     ).rejects.toThrow("needs a request ID");
     await expect(
@@ -176,7 +175,7 @@ ${crypto.createHash("sha256").update(text).digest("hex")}`;
         serverId: server.id,
         credentialId: server.credentialId,
         url: "https://other.tailnet.ts.net/api/session",
-        method: "GET",
+
         requestId: "read-other",
       }),
     ).rejects.toThrow("does not belong");
@@ -185,7 +184,7 @@ ${crypto.createHash("sha256").update(text).digest("hex")}`;
         serverId: server.id,
         credentialId: server.credentialId,
         url: "https://computer.tailnet.ts.net/api/session",
-        method: "GET",
+
         requestId: "read-other-port",
       }),
     ).rejects.toThrow("does not belong");
@@ -357,7 +356,7 @@ test("an unpaired profile never reads the system key store", async () => {
         serverId: "missing",
         credentialId: "missing",
         url: "https://computer.tailnet.ts.net/api/session",
-        method: "GET",
+
         requestId: "read",
       }),
     ).rejects.toThrow("The server key is unavailable");

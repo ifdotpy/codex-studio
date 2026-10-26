@@ -88,7 +88,7 @@ async function serve(
     await run(`http://127.0.0.1:${(server.address() as AddressInfo).port}`);
   } finally {
     server.closeAllConnections();
-    await new Promise<void>((resolve) => server.close(() => resolve()));
+    await new Promise<Error | undefined>((resolve) => server.close(resolve));
   }
 }
 
@@ -271,7 +271,9 @@ test.each([true, false])(
       portServer.listen(0, "127.0.0.1", resolve),
     );
     const port = (portServer.address() as AddressInfo).port;
-    await new Promise<void>((resolve) => portServer.close(() => resolve()));
+    await new Promise<Error | undefined>((resolve) =>
+      portServer.close(resolve),
+    );
     const saved = {
       version: 1,
       stateDir: canonicalState,

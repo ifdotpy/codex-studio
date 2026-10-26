@@ -1,12 +1,8 @@
+import type { DesktopBridge } from "./api.ts";
 import type { SavedRecovery } from "./recovery.ts";
 import type { components } from "../web/src/generated/api.ts";
 import { readFileSync } from "node:fs";
 import { stripTypeScriptTypes } from "node:module";
-import assert from "node:assert/strict";
-export function present<T>(value: T | null | undefined): T {
-  assert(value !== undefined && value !== null);
-  return value;
-}
 // Trusted VM replies and test-owned JSON documents retain their base behavior.
 // This single indexed view supplies the fields that each witness inspects.
 export function record(value: unknown): Record<string, unknown> {
@@ -21,11 +17,7 @@ export function nodeFixture(name: string) {
   return `#!${process.execPath}\n${stripTypeScriptTypes(readFileSync(new URL(`./fixtures/${name}.mts`, import.meta.url), "utf8"))}`;
 }
 export function parsedRecord(source: string): Record<string, unknown> {
-  const value: unknown = JSON.parse(source);
-  return record(value);
-}
-export function array(value: unknown): unknown[] {
-  return value as unknown[];
+  return JSON.parse(source);
 }
 
 // Recovery fixtures read back the configuration emitted by configureRecovery.
@@ -47,3 +39,13 @@ export function parseLaunchAgentJSON(source: string): Record<
 } {
   return JSON.parse(source);
 }
+
+// Preload witnesses replace IPC with an echo; retain bridge-owned parameters.
+export type PreloadProbe<Reply> = {
+  [K in keyof DesktopBridge]: NonNullable<DesktopBridge[K]> extends (
+    ...args: infer Args
+  ) => Promise<unknown>
+    ? (...args: Args) => Promise<Reply>
+    : DesktopBridge[K];
+};
+export type ProbeRequest = Pick<import("./main.ts").NativeRequest, "method">;

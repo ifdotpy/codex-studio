@@ -1,3 +1,5 @@
+import { parsedRecord, nodeFixture, record } from "./test-support.ts";
+import type { PreloadProbe, ProbeRequest } from "./test-support.ts";
 import type { NativeFrame } from "./main.ts";
 type FixtureFrame = Pick<NativeFrame, "url"> &
   Partial<Omit<NativeFrame, "url" | "frames" | "parent">> & {
@@ -5,9 +7,6 @@ type FixtureFrame = Pick<NativeFrame, "url"> &
     frames?: FixtureFrame[];
   };
 import type { WebContents } from "electron";
-import { parsedRecord } from "./test-support.ts";
-import { nodeFixture } from "./test-support.ts";
-import { record } from "./test-support.ts";
 import type { RawNativeAction } from "./test-support.ts";
 import type { DesktopBridge } from "./api.ts";
 import type { NotificationConstructorOptions } from "electron";
@@ -29,7 +28,7 @@ test("desktop native settings, notification and speech boundaries work with fixt
   async function fixture() {
     let window!: Window;
     let notification!: Notice;
-    let handler: RawNativeAction | undefined;
+    let handler!: RawNativeAction;
     let ready!: () => void;
     const display = {
       id: 1,
@@ -54,7 +53,7 @@ test("desktop native settings, notification and speech boundaries work with fixt
           mainFrame: {
             url: "http://localhost:1234/",
             send: (...args: Parameters<WebContents["send"]>) =>
-              this.webContents.send(...args),
+              window.webContents.send(...args),
           },
           session: {
             setPermissionRequestHandler() {},
@@ -65,7 +64,7 @@ test("desktop native settings, notification and speech boundaries work with fixt
           getURL: () => "http://localhost:1234/",
           send: (...args: Parameters<WebContents["send"]>) => {
             events.push(args);
-            this.webContents.emit("sent", ...args);
+            window.webContents.emit("sent", ...args);
           },
         });
       }
@@ -187,15 +186,14 @@ test("desktop native settings, notification and speech boundaries work with fixt
       console: { log: ready, error: console.error },
     });
     await started;
-    const action = handler!;
     const event = {
       sender: window.webContents,
       senderFrame: window.webContents.mainFrame,
     };
     return {
       invoke: (method: string, value?: unknown) =>
-        action(event, { method, value }),
-      handler: action,
+        handler(event, { method, value }),
+      handler,
       event,
       events,
       intervals,
@@ -482,7 +480,8 @@ test("desktop native settings, notification and speech boundaries work with fixt
       new URL("./preload.cjs", import.meta.url),
       "utf8",
     );
-    let api: DesktopBridge | undefined;
+    let api!: PreloadProbe<[string, ProbeRequest]> &
+      Partial<Record<"getNotifications" | "setNotifications", never>>;
     const ipc = Object.assign(new EventEmitter(), {
       invoke: async (...args: unknown[]) => args,
     });
@@ -503,23 +502,25 @@ test("desktop native settings, notification and speech boundaries work with fixt
       performance: { now: () => 10 },
       require: () => ({
         contextBridge: {
-          exposeInMainWorld: (_name: string, value: DesktopBridge) => {
+          exposeInMainWorld: (
+            _name: string,
+            value: PreloadProbe<[string, ProbeRequest]>,
+          ) => {
             api = value;
           },
         },
         ipcRenderer: ipc,
       }),
     });
-    assert(api);
     const updateCall = await api.getBackendUpdate!();
-    assert.equal(record(updateCall)["0"], "codex-desktop");
-    assert.equal(record(record(updateCall)["1"]).method, "getBackendUpdate");
-    assert.equal(Reflect.get(api, "getNotifications"), undefined);
-    assert.equal(Reflect.get(api, "setNotifications"), undefined);
+    assert.equal(updateCall[0], "codex-desktop");
+    assert.equal(updateCall[1].method, "getBackendUpdate");
+    assert.equal(api.getNotifications, undefined);
+    assert.equal(api.setNotifications, undefined);
     listeners.click!({ isTrusted: true });
     const cancelCall = await api.cancelTranscription("a");
-    assert.equal(record(cancelCall)["0"], "codex-desktop");
-    assert.equal(record(record(cancelCall)["1"]).method, "cancelTranscription");
+    assert.equal(cancelCall[0], "codex-desktop");
+    assert.equal(cancelCall[1].method, "cancelTranscription");
     const received: Parameters<
       Parameters<DesktopBridge["onNavigate"]>[0]
     >[0][] = [];

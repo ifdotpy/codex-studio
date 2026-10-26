@@ -1,6 +1,9 @@
+import {
+  parseRecoveryJSON,
+  parseLaunchAgentJSON,
+  parsedRecord,
+} from "./test-support.ts";
 import type { AddressInfo } from "node:net";
-import { parseRecoveryJSON, parseLaunchAgentJSON } from "./test-support.ts";
-import { parsedRecord } from "./test-support.ts";
 import type { RecoveryRun } from "./recovery.ts";
 import { trackDesktopRecovery } from "./recovery.ts";
 import assert from "node:assert/strict";
@@ -647,9 +650,9 @@ test("a graceful desktop exit always withdraws open intent", async () => {
   for (const shutdown of [false, true]) {
     const data = fixture();
     try {
-      const app = Object.assign(new EventEmitter(), {
-        getPath: () => path.join(data.root, "profile"),
-      });
+      const app = new EventEmitter() as InstanceType<typeof EventEmitter> &
+        Parameters<typeof trackDesktopRecovery>[0]["app"];
+      app.getPath = () => path.join(data.root, "profile");
       const powerMonitor = new EventEmitter();
       const { filename } = trackDesktopRecovery({
         app,
@@ -882,9 +885,9 @@ test("explicit Quit and window close withdraw intent after a cancelled shutdown"
   for (const action of ["closeExplicitly", "windowClosing"] as const) {
     const data = fixture();
     try {
-      const app = Object.assign(new EventEmitter(), {
-        getPath: () => path.join(data.root, "profile"),
-      });
+      const app = new EventEmitter() as InstanceType<typeof EventEmitter> &
+        Parameters<typeof trackDesktopRecovery>[0]["app"];
+      app.getPath = () => path.join(data.root, "profile");
       const powerMonitor = new EventEmitter();
       const tracker = trackDesktopRecovery({
         app,
@@ -916,9 +919,9 @@ test("recovery refuses when no interpreter runs recover_backend.py and writes no
         checkInterpreter: async () => {
           throw new Error("ImportError: cannot import name 'StrEnum'");
         },
-        run: async (...args) => {
-          calls.push(args);
-        },
+        // This rejection witness does not inspect the array-push return value.
+        run: (async (...args: Parameters<RecoveryRun>) =>
+          calls.push(args)) as RecoveryRun,
       }),
       /needs Python 3\.11 or newer to run recover_backend\.py/,
     );

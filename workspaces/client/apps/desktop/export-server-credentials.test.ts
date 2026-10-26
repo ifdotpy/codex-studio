@@ -23,7 +23,7 @@ test("credential migration uses stdin and leaves the encrypted source intact", a
       },
     };
     await assert.rejects(
-      exportServerCredentials({ profile, destination: undefined, safeStorage }),
+      exportServerCredentials({ profile, safeStorage }),
       /destination/,
     );
     const executable = path.join(profile, "importer");

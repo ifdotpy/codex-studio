@@ -1,6 +1,6 @@
+import type { PreloadProbe, ProbeRequest } from "./test-support.ts";
 import type { RawNativeAction } from "./test-support.ts";
 import { record } from "./test-support.ts";
-import type { DesktopBridge } from "./api.ts";
 import type { SaveDialogOptions, SaveDialogReturnValue } from "electron";
 import type { components } from "../web/src/generated/api.ts";
 import { mainTestSource, mainDependency } from "./main-test-source.ts";
@@ -306,7 +306,7 @@ test("main and preload enforce safe native file action boundaries", async () => 
     download(origin + "/export").item.emit("done", {}, "interrupted");
     assert.equal(calls.filter((row) => row[0] === "error").length, errors + 1);
 
-    let bridge: DesktopBridge | undefined;
+    let bridge: PreloadProbe<ProbeRequest> | undefined;
     const listeners: Record<string, (event: Pick<Event, "isTrusted">) => void> =
       {};
     const ipc = {
@@ -319,7 +319,10 @@ test("main and preload enforce safe native file action boundaries", async () => 
     vm.runInNewContext(preload, {
       require: () => ({
         contextBridge: {
-          exposeInMainWorld: (_name: string, value: DesktopBridge) => {
+          exposeInMainWorld: (
+            _name: string,
+            value: PreloadProbe<ProbeRequest>,
+          ) => {
             bridge = value;
           },
         },
@@ -346,7 +349,7 @@ test("main and preload enforce safe native file action boundaries", async () => 
     );
     listeners.click!({ isTrusted: true });
     assert.equal(
-      record(await bridge!.saveFile!({ name: "x", data })).method,
+      (await bridge!.saveFile!({ name: "x", data })).method,
       "saveFile",
     );
     await assert.rejects(
@@ -355,7 +358,7 @@ test("main and preload enforce safe native file action boundaries", async () => 
     );
     listeners.keydown!({ isTrusted: true });
     assert.equal(
-      record(await bridge!.fileAction!({ action: "preview", target })).method,
+      (await bridge!.fileAction!({ action: "preview", target })).method,
       "fileAction",
     );
     console.log(
