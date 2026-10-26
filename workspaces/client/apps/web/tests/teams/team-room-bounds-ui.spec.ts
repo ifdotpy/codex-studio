@@ -1,5 +1,7 @@
+import type {} from "./team-room-bounds-ui.fixture.tsx";
+import { required } from "./helpers.ts";
+import { createFixtureViteServer as createServer } from "../playwright.ts";
 import assert from "node:assert/strict";
-import { createRequire } from "node:module";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -15,10 +17,7 @@ import {
 
 test("team room bounds ui", async ({ page: runnerPage }) => {
   const root = resolve(import.meta.dirname, "../../");
-  const require = createRequire(join(root, "package.json"));
-  const { createServer } = await import(require.resolve("vite"));
   const cacheDir = await mkdtemp(join(tmpdir(), "studio-room-bounds-"));
-  const entry = join(root, "team-room-bounds-fixture.tsx");
   const workspaceId = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
   const identity = syncIdentityFixture(workspaceId);
   const room = {
@@ -39,25 +38,9 @@ test("team room bounds ui", async ({ page: runnerPage }) => {
           vite.middlewares.use("/check", (_req, res) => {
             res.setHeader("Content-Type", "text/html");
             res.end(
-              '<html><body><div id="root"></div><script type="module" src="/team-room-bounds-fixture.tsx"></script></body></html>',
+              '<html><body><div id="root"></div><script type="module" src="/tests/teams/team-room-bounds-ui.fixture.tsx"></script></body></html>',
             );
           });
-        },
-        resolveId(id) {
-          if (id === "/team-room-bounds-fixture.tsx") return entry;
-        },
-        load(id) {
-          if (id !== entry) return;
-          return `
-  import React from 'react'; import {createRoot} from 'react-dom/client'; import {MantineProvider} from '@mantine/core';
-  import '@mantine/core/styles.css'; import TeamChats from '/src/components/shell/messages/TeamChats.tsx'; import '/src/style.css'; import '/src/workspace-layout.css'; import '/src/appearance.css'; import {theme} from '/src/theme.ts';
-  const lead={id:'lead',name:'Lead',rootId:'lead',isLead:true,source:'managed',created:1,updated:1};
-  const worker={id:'worker',name:'Worker',rootId:'lead',isLead:false,source:'managed',created:1,updated:1};
-  const room={id:'private:lead:worker',kind:'private',members:['lead','worker'],name:'Worker',updated:1,lastMessage:{seq:1391,text:'room message 1391',created:1,sender:'worker'}};
-  const data={stateDir:'room-fixture',threads:[lead,worker],runtime:{rooms:[room],requests:[],complaints:[],projects:[],peerTeams:[]}};
-  const app=createRoot(document.getElementById('root'));
-  window.showCurrent=()=>app.render(<MantineProvider theme={theme} defaultColorScheme='dark'><TeamChats data={data} leadId='lead' refresh={async()=>{}} notify={()=>{}}/></MantineProvider>);
-  window.showCurrent();`;
         },
       },
     ],
@@ -67,9 +50,9 @@ test("team room bounds ui", async ({ page: runnerPage }) => {
     const page = runnerPage;
     await page.setViewportSize({ width: 900, height: 620 });
     page.setDefaultTimeout(10000);
-    const errors = [];
+    const errors: string[] = [];
     page.on("pageerror", (error) => errors.push(error.message));
-    const requests = [];
+    const requests: { before: number | null; after: number | null }[] = [];
     await page.route("**/api/sync/identity", (route) =>
       route.fulfill({
         json: identity,
@@ -139,9 +122,7 @@ test("team room bounds ui", async ({ page: runnerPage }) => {
         },
       });
     });
-    await page.goto(
-      `http://127.0.0.1:${server.httpServer.address().port}/check`,
-    );
+    await page.goto(`${required(server.resolvedUrls?.local[0])}check`);
     await page.locator('[data-room="private:lead:worker"]').click();
     const start = Date.now();
     await page
@@ -154,7 +135,7 @@ test("team room bounds ui", async ({ page: runnerPage }) => {
     await page.getByRole("button", { name: "Earlier messages" }).click();
     await page.waitForFunction(
       () =>
-        document.querySelector(".unified-message-scroll")?.dataset
+        document.querySelector<HTMLElement>(".unified-message-scroll")?.dataset
           .roomRetained === "240",
     );
     const retained = await scroll.getAttribute("data-room-retained");
@@ -168,7 +149,7 @@ test("team room bounds ui", async ({ page: runnerPage }) => {
     await page.getByRole("button", { name: "Later messages" }).click();
     await page.waitForFunction(
       () =>
-        document.querySelector(".unified-message-scroll")?.dataset
+        document.querySelector<HTMLElement>(".unified-message-scroll")?.dataset
           .roomRetained === "240",
     );
     assert.ok(requests.some((request) => request.before !== null));

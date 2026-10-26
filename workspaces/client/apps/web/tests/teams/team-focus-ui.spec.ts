@@ -1,3 +1,5 @@
+import { required } from "./helpers.ts";
+import { waitForFixturePort } from "../playwright.ts";
 import {
   test,
   expect,
@@ -20,15 +22,12 @@ for (const width of [1024, 390]) {
     const fixture = spawnFixture(process.execPath, [rustUiFixture, state], {
       stdio: ["ignore", "pipe", "pipe"],
     });
-    const port = await new Promise((resolve, reject) => {
-      fixture.stdout.once("data", (chunk) =>
-        resolve(Number(String(chunk).trim())),
-      );
-      fixture.once("exit", () => reject(new Error("Fixture exited")));
-    });
+    const port = await waitForFixturePort(fixture);
     const origin = `http://127.0.0.1:${port}`;
     const snapshot = await readTestState(origin);
-    const lead = snapshot.threads.find((a) => a.name === "Release lead");
+    const lead = required(
+      snapshot.threads.find((a) => a.name === "Release lead"),
+    );
     lead.overview = {
       result: "Lead report",
       resultTruncated: true,
@@ -47,6 +46,7 @@ for (const width of [1024, 390]) {
           {
             monitorId: "focus-command",
             stage: "Check focus",
+            lastOutputLine: "",
             startedAt: Date.now() / 1000,
           },
         ];
@@ -69,10 +69,10 @@ for (const width of [1024, 390]) {
     const dialog = page.getByRole("dialog", { name: "Team", exact: true });
     await expect(dialog).toBeVisible();
     const close = dialog.getByRole("button", { name: "Close team" });
-    const cycle = async (key, expectedWorkers) => {
+    const cycle = async (key: string, expectedWorkers: number) => {
       await close.focus();
       let wrapped = false;
-      const seen = new Set();
+      const seen = new Set<string | null | undefined>();
       const visitedWorkers = new Set();
       for (let step = 0; step < 100; step++) {
         await page.keyboard.press(key);

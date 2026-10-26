@@ -50,7 +50,7 @@
   "workspaces/client/apps/web/tests/sync/entity-fixture-contract.browser.spec.mjs": [
     "stateDir: \"/tmp/fixture\","
   ],
-  "workspaces/client/apps/web/tests/terminal/current-command-history-ui.spec.mjs": [
+  "workspaces/client/apps/web/tests/terminal/current-command-history-ui.spec.ts": [
     "text: JSON.stringify({ type: \"imageView\", path: \"/tmp/image.png\" }),"
   ],
   "workspaces/client/packages/client-core/src/file_links.rs": [
