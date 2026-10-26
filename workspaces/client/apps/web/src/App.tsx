@@ -87,7 +87,10 @@ import {
   shouldReplaceLimitsSnapshot,
 } from "./usage/accountUsage";
 import type { AccountLimitsSnapshot } from "./usage/accountUsage";
-import { useMobileViewport } from "./hooks/mobileViewport";
+import {
+  useMobileViewport,
+  focusSelectedComposer,
+} from "./hooks/mobileViewport";
 import { roomLeadIds, messageAttentionCount } from "./chatScope";
 import { nativeThreadError } from "./nativeErrors";
 
@@ -2373,7 +2376,7 @@ export default function App({ active = true }: { active?: boolean }) {
         setStudioSettingsOpen(true);
       } else if (command.action === "focus") {
         window.focus();
-        document.getElementById("message")?.focus();
+        focusSelectedComposer(document.getElementById("message"));
         window.dispatchEvent(new Event("focus"));
       } else if (command.action === "notifications") {
         setNavigationTarget({

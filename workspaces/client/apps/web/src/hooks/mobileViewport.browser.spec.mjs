@@ -38,8 +38,8 @@ test("wide touch viewport keeps the root and portals inside all safe edges", asy
           React.createElement('header',null,'Header'),
           React.createElement('div',{style:{flex:1}},'Conversation'),
           React.createElement('footer',null,'Composer')),
-        React.createElement(Drawer,{opened:portal==='drawer',onClose:()=>setPortal(''),position:'right',size:'100%',title:'Drawer'},React.createElement('button',null,'Drawer footer')),
-        React.createElement(Modal,{opened:portal==='modal',onClose:()=>setPortal(''),fullScreen:true,title:'Modal'},React.createElement('button',null,'Modal footer')));
+        React.createElement(Drawer,{opened:portal==='drawer',onClose:()=>setPortal(''),position:'right',size:'100%',title:'Drawer'},React.createElement('textarea',{'aria-label':'Portal note'})),
+        React.createElement(Modal,{opened:portal==='modal',onClose:()=>setPortal(''),fullScreen:true,title:'Modal'},React.createElement('textarea',{'aria-label':'Portal note'})));
     }
     const root=createRoot(document.querySelector('#root'));
     root.render(React.createElement(Surface));
@@ -148,6 +148,7 @@ test("wide touch viewport keeps the root and portals inside all safe edges", asy
       await expect
         .poll(() => bounds(selector))
         .toMatchObject({ left: 0, top: 0, right: 867, bottom: 635 });
+      await page.locator(`${selector} textarea`).focus();
       await page.evaluate(() =>
         window.resizeViewport({ height: 350, offsetTop: 20 }),
       );

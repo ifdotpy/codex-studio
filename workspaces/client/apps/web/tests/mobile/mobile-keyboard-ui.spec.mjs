@@ -61,6 +61,35 @@ for (const [platform, userAgent] of mobileBrowsers) {
       }, leadId);
       const page = await context.newPage();
       await page.addInitScript(() => {
+        let primary = true,
+          anyTouch = true;
+        const media = window.matchMedia.bind(window);
+        const pointers = new Map();
+        window.matchMedia = (query) => {
+          if (
+            query !== "(pointer: coarse)" &&
+            query !== "(any-pointer: coarse)"
+          )
+            return media(query);
+          if (!pointers.has(query)) {
+            const m = media(query);
+            Object.defineProperty(m, "matches", {
+              get: () => (query === "(pointer: coarse)" ? primary : anyTouch),
+            });
+            pointers.set(query, m);
+          }
+          return pointers.get(query);
+        };
+        Object.defineProperty(navigator, "maxTouchPoints", {
+          configurable: true,
+          get: () => (anyTouch ? 5 : 0),
+        });
+        window.setTestPointer = (coarse, touch) => {
+          primary = coarse;
+          anyTouch = touch;
+          for (const m of pointers.values())
+            m.dispatchEvent(new Event("change"));
+        };
         const viewport = new EventTarget();
         Object.assign(viewport, {
           width: 390,
@@ -437,17 +466,40 @@ for (const [platform, userAgent] of mobileBrowsers) {
         window.setTestViewport({ width: 390, height: 844, offsetTop: 0 }),
       );
       await settle(844, 0);
-      // A wider window keeps touch viewport support without changing the draft.
+      // Desktop and fine-primary touch laptops keep their normal document layout.
       await page.setViewportSize({ width: 1440, height: 960 });
-      await page.evaluate(() =>
-        window.setTestViewport({ width: 1440, height: 960, offsetTop: 0 }),
-      );
-      await page.waitForFunction(
-        () =>
-          document.documentElement.style.getPropertyValue(
-            "--mobile-viewport-height",
-          ) === "960px",
-      );
+      for (const touch of [false, true]) {
+        await page.evaluate((touch) => {
+          window.setTestPointer(false, touch);
+          window.setTestViewport({ width: 1440, height: 960, offsetTop: 0 });
+        }, touch);
+        await expect
+          .poll(() =>
+            page.evaluate(() =>
+              document.documentElement.hasAttribute("data-viewport-surface"),
+            ),
+          )
+          .toBe(false);
+        assert.equal(
+          await page.evaluate(() =>
+            document.documentElement.style.getPropertyValue(
+              "--mobile-viewport-height",
+            ),
+          ),
+          "",
+          "Desktop must regain its normal document layout",
+        );
+        await expect
+          .poll(() =>
+            page.evaluate(() =>
+              document.documentElement.hasAttribute(
+                "data-viewport-short-landscape",
+              ),
+            ),
+          )
+          .toBe(false);
+      }
+      await page.evaluate(() => window.setTestPointer(true, true));
       await page.setViewportSize({ width: 390, height: 844 });
       await page.evaluate(() =>
         window.setTestViewport({ width: 390, height: 844, offsetTop: 0 }),

@@ -9,3 +9,8 @@ export function hasTouchCapability(
 ) {
   return anyCoarsePointer || maxTouchPoints > 0;
 }
+
+/** Owner of primary touch input for mobile layout and keyboard gestures. */
+export function primaryTouchPointerMedia() {
+  return window.matchMedia("(pointer: coarse)");
+}

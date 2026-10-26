@@ -1,6 +1,24 @@
-import { hasTouchCapability, touchPointerMedia } from "./touchCapability";
+import {
+  hasTouchCapability,
+  touchPointerMedia,
+  primaryTouchPointerMedia,
+} from "./touchCapability";
 import { useEffect } from "react";
 import { layoutValues } from "../layout/layout-contract.generated";
+
+const selectedComposers = new WeakSet<HTMLTextAreaElement>();
+
+/** Mark automatic chat selection so its first touch can open the software keyboard. */
+export function focusSelectedComposer(target: HTMLElement | null) {
+  if (!target) return;
+  if (
+    target instanceof HTMLTextAreaElement &&
+    primaryTouchPointerMedia().matches
+  ) {
+    selectedComposers.add(target);
+    target.focus({ preventScroll: true });
+  } else target.focus();
+}
 
 const fullFrames = new WeakMap<Document, { height: number; width: number }>();
 
@@ -11,12 +29,16 @@ export function useMobileViewport(active: boolean, compact = false) {
     const viewport = window.visualViewport;
     const root = document.documentElement;
     const coarsePointer = touchPointerMedia();
+    const primaryPointer = primaryTouchPointerMedia();
     let frame = 0;
     let focusFrame = 0;
     let focusDeadline = 0;
     let hadComposerFocus = false;
     let composerClosing = false;
     let sampledGeometry = "";
+    let stableFrames = 0;
+    let focusedComposer: HTMLTextAreaElement | null = null;
+    let touchListeners = false;
     let interceptedTextarea: HTMLTextAreaElement | null = null;
     const previousFrame = fullFrames.get(document);
     let fullHeight = previousFrame?.height || 0;
@@ -49,10 +71,11 @@ export function useMobileViewport(active: boolean, compact = false) {
     const update = () => {
       cancelAnimationFrame(frame);
       frame = 0;
-      if (
-        !compact &&
-        !hasTouchCapability(coarsePointer.matches, navigator.maxTouchPoints)
-      ) {
+      if (hasTouchCapability(coarsePointer.matches, navigator.maxTouchPoints))
+        root.setAttribute("data-touch-input", "");
+      else root.removeAttribute("data-touch-input");
+      syncTouchListeners();
+      if (!compact && !primaryPointer.matches) {
         clear();
         return;
       }
@@ -75,14 +98,21 @@ export function useMobileViewport(active: boolean, compact = false) {
       root.setAttribute("data-viewport-surface", "");
       const width = viewport?.width || window.innerWidth;
       const sameWidth = !fullWidth || width === fullWidth;
+      const editable = document.activeElement as HTMLElement | null;
+      const hasEditableFocus =
+        !!editable &&
+        (editable.matches?.("input, textarea") || editable.isContentEditable);
       const keyboard =
         !!viewport &&
+        primaryPointer.matches &&
+        (hasEditableFocus || composerClosing) &&
         Math.max(
           layoutHeight - height,
           sameWidth ? fullHeight - height : 0,
           top,
         ) > layoutValues.keyboard.occlusionMin;
       if (!keyboard || !sameWidth) {
+        composerClosing = false;
         fullHeight = height;
         fullWidth = width;
         fullFrames.set(document, { height: fullHeight, width: fullWidth });
@@ -95,7 +125,7 @@ export function useMobileViewport(active: boolean, compact = false) {
       else root.removeAttribute("data-viewport-keyboard");
       const overlay =
         keyboard &&
-        hasTouchCapability(coarsePointer.matches, navigator.maxTouchPoints) &&
+        primaryPointer.matches &&
         width > fullHeight &&
         fullHeight < layoutValues.header.shortLandscapeMaxHeight;
       const surfaceHeight = overlay ? fullHeight : height;
@@ -103,7 +133,7 @@ export function useMobileViewport(active: boolean, compact = false) {
         root.setAttribute("data-viewport-keyboard-compact", "");
       else root.removeAttribute("data-viewport-keyboard-compact");
       if (
-        hasTouchCapability(coarsePointer.matches, navigator.maxTouchPoints) &&
+        primaryPointer.matches &&
         width > fullHeight &&
         fullHeight < layoutValues.header.shortLandscapeMaxHeight
       )
@@ -207,7 +237,13 @@ export function useMobileViewport(active: boolean, compact = false) {
     content.observe(root, { childList: true, subtree: true });
     const sampleNativePan = (time: number) => {
       focusFrame = 0;
-      if (time > focusDeadline) return;
+      if (
+        time > focusDeadline ||
+        (hadComposerFocus &&
+          (!focusedComposer?.isConnected ||
+            document.activeElement !== focusedComposer))
+      )
+        return;
       const geometry = [
         viewport?.height,
         viewport?.width,
@@ -220,22 +256,20 @@ export function useMobileViewport(active: boolean, compact = false) {
       ].join("|");
       if (geometry !== sampledGeometry) {
         sampledGeometry = geometry;
+        stableFrames = 0;
+        focusDeadline = time + layoutValues.keyboard.focusSampleWindow;
         update();
-      }
+      } else if (++stableFrames >= layoutValues.keyboard.stableSampleFrames)
+        return;
       focusFrame = requestAnimationFrame(sampleNativePan);
     };
-    const startFocusSampling = (focused: boolean) => {
-      if (
-        !viewport ||
-        (!compact &&
-          !hasTouchCapability(coarsePointer.matches, navigator.maxTouchPoints))
-      )
-        return;
+    const startFocusSampling = () => {
+      if (!viewport || !primaryPointer.matches) return;
       cancelAnimationFrame(focusFrame);
       sampledGeometry = "";
-      focusDeadline = focused
-        ? Infinity
-        : performance.now() + layoutValues.keyboard.focusSampleWindow;
+      stableFrames = 0;
+      focusDeadline =
+        performance.now() + layoutValues.keyboard.focusSampleWindow;
       focusFrame = requestAnimationFrame(sampleNativePan);
     };
     const sampleAfterFocus = () => {
@@ -245,16 +279,17 @@ export function useMobileViewport(active: boolean, compact = false) {
         !target.matches("#composer textarea")
       )
         return;
+      focusedComposer = target;
       hadComposerFocus = true;
       composerClosing = false;
-      startFocusSampling(true);
+      startFocusSampling();
     };
     const recoverAfterBlur = () => {
       if (hadComposerFocus) {
         hadComposerFocus = false;
-        composerClosing = true;
+        composerClosing = root.hasAttribute("data-viewport-keyboard");
         resetComposer();
-        startFocusSampling(false);
+        startFocusSampling();
       }
       if (!keyboardRecoveryPending || recoveryFrames.size) return;
       const next = (remaining: number) => {
@@ -276,11 +311,7 @@ export function useMobileViewport(active: boolean, compact = false) {
       next(1);
     };
     const focusWithoutNativePan = (event: Event) => {
-      if (
-        !viewport ||
-        !hasTouchCapability(coarsePointer.matches, navigator.maxTouchPoints)
-      )
-        return;
+      if (!viewport || !primaryPointer.matches) return;
       if (
         event.type === "pointerdown" &&
         (event as PointerEvent).pointerType === "mouse"
@@ -295,13 +326,15 @@ export function useMobileViewport(active: boolean, compact = false) {
       const focused = document.activeElement === target;
       if (
         focused &&
-        root.hasAttribute("data-viewport-keyboard") &&
-        interceptedTextarea !== target
+        interceptedTextarea !== target &&
+        (root.hasAttribute("data-viewport-keyboard") ||
+          !selectedComposers.has(target))
       )
         return;
       event.preventDefault();
       if (interceptedTextarea !== target) {
         interceptedTextarea = target;
+        selectedComposers.delete(target);
         if (focused) target.blur();
         target.focus({ preventScroll: true });
       }
@@ -309,32 +342,47 @@ export function useMobileViewport(active: boolean, compact = false) {
     const endGesture = () => {
       interceptedTextarea = null;
     };
-    document.addEventListener("pointerdown", focusWithoutNativePan, {
-      capture: true,
-      passive: false,
-    });
-    document.addEventListener("touchstart", focusWithoutNativePan, {
-      capture: true,
-      passive: false,
-    });
     const gestureEndEvents = [
       "pointerup",
       "pointercancel",
       "touchend",
       "touchcancel",
     ];
-    for (const type of gestureEndEvents)
-      document.addEventListener(type, endGesture, true);
+    const syncTouchListeners = () => {
+      const needed = !!viewport && primaryPointer.matches;
+      if (needed === touchListeners) return;
+      touchListeners = needed;
+      for (const type of ["pointerdown", "touchstart"]) {
+        if (needed)
+          document.addEventListener(type, focusWithoutNativePan, {
+            capture: true,
+            passive: false,
+          });
+        else
+          document.removeEventListener(type, focusWithoutNativePan, {
+            capture: true,
+          });
+      }
+      for (const type of gestureEndEvents) {
+        if (needed) document.addEventListener(type, endGesture, true);
+        else document.removeEventListener(type, endGesture, true);
+      }
+    };
+    const viewportChanged = () => {
+      update();
+      if (hadComposerFocus || composerClosing) startFocusSampling();
+    };
     document.addEventListener("focusin", sampleAfterFocus);
     document.addEventListener("focusout", recoverAfterBlur);
     update();
     sampleAfterFocus();
     coarsePointer.addEventListener("change", schedule);
-    viewport?.addEventListener("resize", update);
-    viewport?.addEventListener("scroll", update);
-    window.addEventListener("resize", update);
-    window.addEventListener("orientationchange", update);
-    window.addEventListener("scroll", update);
+    primaryPointer.addEventListener("change", viewportChanged);
+    viewport?.addEventListener("resize", viewportChanged);
+    viewport?.addEventListener("scroll", viewportChanged);
+    window.addEventListener("resize", viewportChanged);
+    window.addEventListener("orientationchange", viewportChanged);
+    window.addEventListener("scroll", viewportChanged);
     return () => {
       cancelAnimationFrame(frame);
       cancelAnimationFrame(focusFrame);
@@ -352,11 +400,13 @@ export function useMobileViewport(active: boolean, compact = false) {
       composerResize.disconnect();
       content.disconnect();
       coarsePointer.removeEventListener("change", schedule);
-      viewport?.removeEventListener("resize", update);
-      viewport?.removeEventListener("scroll", update);
-      window.removeEventListener("resize", update);
-      window.removeEventListener("orientationchange", update);
-      window.removeEventListener("scroll", update);
+      primaryPointer.removeEventListener("change", viewportChanged);
+      root.removeAttribute("data-touch-input");
+      viewport?.removeEventListener("resize", viewportChanged);
+      viewport?.removeEventListener("scroll", viewportChanged);
+      window.removeEventListener("resize", viewportChanged);
+      window.removeEventListener("orientationchange", viewportChanged);
+      window.removeEventListener("scroll", viewportChanged);
       clear();
     };
   }, [active, compact]);

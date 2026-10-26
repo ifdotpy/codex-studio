@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import { useMobileViewport } from "./mobileViewport";
+import { useMobileViewport, focusSelectedComposer } from "./mobileViewport";
 
 const effect = vi.hoisted(() => ({
   run: undefined as undefined | (() => void | (() => void)),
@@ -17,6 +17,7 @@ class Viewport extends EventTarget {
   scale = 1;
 }
 class Textarea {
+  isConnected = true;
   focus = vi.fn((_options?: FocusOptions) => {
     documentMock.activeElement = this;
   });
@@ -24,7 +25,7 @@ class Textarea {
     documentMock.activeElement = null;
   });
   matches(selector: string) {
-    return selector === "#composer textarea";
+    return selector === "#composer textarea" || selector === "input, textarea";
   }
 }
 let viewport: Viewport;
@@ -55,12 +56,14 @@ let documentMock: EventTarget & {
   getElementById: ReturnType<typeof vi.fn>;
 };
 let queries: EventTarget & { matches: boolean };
+let primaryQueries: EventTarget & { matches: boolean };
 let frames: Map<number, FrameRequestCallback>;
 let cleanup: void | (() => void);
 
 beforeEach(() => {
   viewport = new Viewport();
   queries = Object.assign(new EventTarget(), { matches: true });
+  primaryQueries = Object.assign(new EventTarget(), { matches: true });
   const style = new Map<string, string>();
   const attributes = new Set<string>();
   root = {
@@ -102,7 +105,9 @@ beforeEach(() => {
     innerHeight: 669,
     scrollX: 0,
     scrollY: 0,
-    matchMedia: vi.fn(() => queries),
+    matchMedia: vi.fn((query: string) =>
+      query === "(pointer: coarse)" ? primaryQueries : queries,
+    ),
     scrollTo: vi.fn(),
   });
   frames = new Map();
@@ -141,6 +146,7 @@ function resize(patch: Partial<Viewport>, event = "resize") {
 }
 
 it("tracks a wide touch viewport with the keyboard already open", () => {
+  documentMock.activeElement = new Textarea();
   viewport.height = 350;
   mount();
   expect(root.style.get("--mobile-viewport-height")).toBe("669px");
@@ -177,6 +183,7 @@ it("pins the Duo keyboard before the viewport event returns", () => {
   );
 });
 it("marks short keyboard space below 400px and restores passive status at the boundary", () => {
+  documentMock.activeElement = new Textarea();
   viewport.height = 399;
   mount();
   expect(root.setAttribute).toHaveBeenCalledWith(
@@ -218,7 +225,7 @@ it("uses the short touch landscape boundary without changing portrait or tall la
   );
 });
 it("does not use the compact header for a short non-touch document", () => {
-  queries.matches = false;
+  queries.matches = primaryQueries.matches = false;
   viewport.height = windowMock.innerHeight = root.clientHeight = 585;
   mount(true, true);
   expect(root.setAttribute).not.toHaveBeenCalledWith(
@@ -227,20 +234,21 @@ it("does not use the compact header for a short non-touch document", () => {
   );
 });
 it("does not constrain an ordinary desktop document", () => {
-  queries.matches = false;
+  queries.matches = primaryQueries.matches = false;
   mount();
   expect(root.style.size).toBe(0);
 });
 it("retains compact support without touch capability", () => {
-  queries.matches = false;
+  queries.matches = primaryQueries.matches = false;
   mount(true, true);
   expect(root.style.get("--mobile-viewport-height")).toBe("669px");
 });
-it("tracks touch hardware when a fine pointer is primary", () => {
-  queries.matches = false;
+it("keeps a fine-primary touch document unpinned", () => {
+  queries.matches = primaryQueries.matches = false;
   vi.stubGlobal("navigator", { maxTouchPoints: 5 });
   mount();
-  expect(root.style.get("--mobile-viewport-height")).toBe("669px");
+  expect(root.style.size).toBe(0);
+  expect(root.hasAttribute("data-touch-input")).toBe(true);
 });
 it("updates toolbar, keyboard, offset, and rotation geometry without focus changes", () => {
   mount();
@@ -306,13 +314,13 @@ it("does not observe an inactive App", () => {
   expect(root.style.size).toBe(0);
 });
 it("responds when pointer capability changes", () => {
-  queries.matches = false;
+  queries.matches = primaryQueries.matches = false;
   mount();
-  queries.matches = true;
+  queries.matches = primaryQueries.matches = true;
   queries.dispatchEvent(new Event("change"));
   flush();
   expect(root.style.get("--mobile-viewport-height")).toBe("669px");
-  queries.matches = false;
+  queries.matches = primaryQueries.matches = false;
   queries.dispatchEvent(new Event("change"));
   flush();
   expect(root.style.size).toBe(0);
@@ -433,6 +441,8 @@ it("finds the first raw keyboard height loss after a long focus delay", () => {
   flush(1000);
   viewport.height = 337;
   windowMock.innerHeight = 669;
+  clock.mockReturnValue(1519);
+  viewport.dispatchEvent(new Event("resize"));
   flush(1519);
   expect(root.style.get("--mobile-viewport-height")).toBe("669px");
   expect(root.setAttribute).toHaveBeenCalledWith("data-viewport-keyboard", "");
@@ -462,22 +472,75 @@ it("uses preventScroll for the first composer touch without a debug flag", () =>
 it("refocuses a closed-keyboard textarea but leaves open-keyboard selection native", () => {
   mount();
   const textarea = new Textarea();
-  documentMock.activeElement = textarea;
+  focusSelectedComposer(textarea as unknown as HTMLTextAreaElement);
+  textarea.focus.mockClear();
   expect(gesture(textarea).defaultPrevented).toBe(true);
   expect(textarea.blur).toHaveBeenCalledTimes(1);
   expect(textarea.focus).toHaveBeenCalledTimes(1);
   gesture(textarea, "pointerup");
+  expect(gesture(textarea).defaultPrevented).toBe(false);
   root.setAttribute("data-viewport-keyboard", "");
   expect(gesture(textarea).defaultPrevented).toBe(false);
   expect(textarea.focus).toHaveBeenCalledTimes(1);
 });
 it("leaves desktop focus native and removes interception on owner cleanup", () => {
-  queries.matches = false;
+  queries.matches = primaryQueries.matches = false;
   mount();
   const textarea = new Textarea();
   expect(gesture(textarea).defaultPrevented).toBe(false);
-  queries.matches = true;
+  queries.matches = primaryQueries.matches = true;
   cleanup?.();
   cleanup = undefined;
   expect(gesture(textarea).defaultPrevented).toBe(false);
+});
+
+it("keeps hardware-keyboard caret taps native on a coarse touch device", () => {
+  mount();
+  const textarea = new Textarea();
+  documentMock.activeElement = textarea;
+  expect(gesture(textarea).defaultPrevented).toBe(false);
+  expect(textarea.blur).not.toHaveBeenCalled();
+  expect(textarea.focus).not.toHaveBeenCalled();
+});
+it("keeps a fine-primary touch laptop in its normal layout without touch interception", () => {
+  primaryQueries.matches = false;
+  vi.stubGlobal("navigator", { maxTouchPoints: 5 });
+  const listeners = vi.spyOn(documentMock, "addEventListener");
+  mount();
+  expect(listeners.mock.calls.some(([name]) => name === "touchstart")).toBe(
+    false,
+  );
+  const textarea = new Textarea();
+  expect(gesture(textarea).defaultPrevented).toBe(false);
+  expect(root.hasAttribute("data-viewport-surface")).toBe(false);
+  expect(root.hasAttribute("data-viewport-short-landscape")).toBe(false);
+  expect(root.style.size).toBe(0);
+});
+it("refreshes a same-width desktop resize without a keyboard", () => {
+  queries.matches = primaryQueries.matches = false;
+  viewport.width = 600;
+  mount(true, true);
+  windowMock.innerHeight = root.clientHeight = 400;
+  resize({ height: 400 });
+  expect(root.hasAttribute("data-viewport-keyboard")).toBe(false);
+  expect(root.style.get("--mobile-viewport-height")).toBe("400px");
+});
+it("stops sampling after stable focus and restarts for a viewport event", () => {
+  mount();
+  documentMock.activeElement = new Textarea();
+  documentMock.dispatchEvent(new Event("focusin"));
+  for (let i = 0; i < 30; i++) flush(i * 16);
+  expect(frames.size).toBe(0);
+  viewport.height = 337;
+  viewport.dispatchEvent(new Event("resize"));
+  expect(frames.size).toBeGreaterThan(0);
+});
+it("stops sampling if the focused composer is detached", () => {
+  mount();
+  const textarea = new Textarea();
+  documentMock.activeElement = textarea;
+  documentMock.dispatchEvent(new Event("focusin"));
+  Object.assign(textarea, { isConnected: false });
+  flush(16);
+  expect(frames.size).toBe(0);
 });

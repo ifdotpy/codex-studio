@@ -744,6 +744,11 @@
       "value": 600,
       "unit": "ms",
       "purpose": "Raw geometry sampling time after composer blur; focused composers continue sampling until blur"
+    },
+    "keyboard.stableSampleFrames": {
+      "value": 12,
+      "unit": "frames",
+      "purpose": "Consecutive unchanged viewport samples before keyboard frame sampling stops"
     }
   },
   "queries": {

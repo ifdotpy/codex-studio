@@ -16,6 +16,7 @@ for (const [name, steps] of Object.entries({
   "silent native pan": keyboardSequences["device final"],
   "product target": keyboardSequences["zero offset"],
   "close on blur": keyboardSequences["zero offset"],
+  "fine primary touch laptop": keyboardSequences["zero offset"],
 }))
   test(`keyboard frame stays pinned: ${name}`, async ({ browser }) => {
     const server = await createFixtureViteServer({
@@ -59,7 +60,16 @@ for (const [name, steps] of Object.entries({
     try {
       await server.listen();
       await page.addInitScript(
-        ({ visualOrigin }) => {
+        ({ visualOrigin, finePrimary }) => {
+          if (finePrimary) {
+            const media = window.matchMedia.bind(window);
+            window.matchMedia = (query) => {
+              const m = media(query);
+              if (query === "(pointer: coarse)")
+                Object.defineProperty(m, "matches", { value: false });
+              return m;
+            };
+          }
           const viewport = Object.assign(new EventTarget(), {
             width: 867,
             height: 669,
@@ -135,7 +145,10 @@ for (const [name, steps] of Object.entries({
             };
           };
         },
-        { visualOrigin: name === "visual origin" || name === "device final" },
+        {
+          visualOrigin: name === "visual origin" || name === "device final",
+          finePrimary: name === "fine primary touch laptop",
+        },
       );
       const cdp = await page.context().newCDPSession(page);
       await cdp.send("Emulation.setSafeAreaInsetsOverride", {
@@ -144,6 +157,24 @@ for (const [name, steps] of Object.entries({
       await page.goto(
         `http://127.0.0.1:${server.httpServer.address().port}/sequence-check`,
       );
+      if (name === "fine primary touch laptop") {
+        await expect(page.locator("#message")).toBeVisible();
+        await expect(page.locator("html")).not.toHaveAttribute(
+          "data-viewport-surface",
+        );
+        await page.locator("#message").focus();
+        const result = await page.evaluate(() =>
+          window.stepKeyboard({ height: 323, innerHeight: 323 }),
+        );
+        await expect(page.locator("html")).not.toHaveAttribute(
+          "data-viewport-short-landscape",
+        );
+        await expect(page.locator("html")).not.toHaveAttribute(
+          "data-viewport-keyboard",
+        );
+        expect(result.sidebar.y).toBe(0);
+        return;
+      }
       await expect(page.locator("html")).toHaveAttribute(
         "data-viewport-surface",
         "",

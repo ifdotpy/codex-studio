@@ -821,6 +821,12 @@ export const layoutTokens = {
     purpose:
       "Raw geometry sampling time after composer blur; focused composers continue sampling until blur",
   },
+  "keyboard.stableSampleFrames": {
+    value: 12,
+    unit: "frames",
+    purpose:
+      "Consecutive unchanged viewport samples before keyboard frame sampling stops",
+  },
 } as const;
 export const layoutValues = {
   navigation: {
@@ -887,6 +893,7 @@ export const layoutValues = {
     motionDuration: 400,
     motionTargetTolerance: 0.1,
     focusSampleWindow: 600,
+    stableSampleFrames: 12,
   },
   viewport: {
     zoomTolerance: 0.01,
