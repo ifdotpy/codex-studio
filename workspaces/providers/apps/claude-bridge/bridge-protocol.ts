@@ -14,10 +14,7 @@ import type {
   Query,
   SlashCommand,
 } from "@anthropic-ai/claude-agent-sdk";
-import type {
-  AskUserQuestionInput,
-  TodoWriteInput,
-} from "@anthropic-ai/claude-agent-sdk/sdk-tools";
+import type { AskUserQuestionInput } from "@anthropic-ai/claude-agent-sdk/sdk-tools";
 import type {
   Item,
   Session,
@@ -204,13 +201,27 @@ export type BridgeMoveProof = MoveProof & {
     | "saved_snapshot_and_current_ordered_mcp_catalogs"
     | "saved_snapshot_and_identical_studio_options";
 };
-export type BridgeMoveSession = Session & {
-  moveProof: Omit<BridgeMoveProof, "session">;
+export type BridgeStoredMoveProof = Omit<BridgeMoveProof, "session">;
+export type BridgeMoveSession = Omit<Session, "moveProof"> & {
+  moveProof: BridgeStoredMoveProof;
   dynamicToolsJson: string;
 };
+// Legacy mirror items can lack an id. Writers retain undefined and JSON
+// serializes those array entries as null; neither path invents an identity.
+export type BridgeInputReceiptIdentity = Item["id"] | null;
 export interface BridgeInterruptReceipt {
-  cancelled: string[];
-  still_queued: string[];
+  cancelled: BridgeInputReceiptIdentity[];
+  still_queued: BridgeInputReceiptIdentity[];
+}
+export interface BridgeQueuedInput {
+  id?: Item["id"];
+  status: "queued";
+}
+// TodoWrite's unvalidated SDK tool input is forwarded unchanged. The Rust
+// notification consumer stores these fields as raw JSON plan steps.
+export interface BridgePlanStep {
+  step?: unknown;
+  status?: unknown;
 }
 export type BridgeRepairReport = Omit<
   JournalRepairReport,
@@ -397,8 +408,8 @@ export interface BridgeMethods {
   ];
   "thread/queue/list": [
     BridgeThreadParams,
-    BridgePage<{ id: string; status: "queued" }> & {
-      items: { id: string; status: "queued" }[];
+    BridgePage<BridgeQueuedInput> & {
+      items: BridgeQueuedInput[];
     },
   ];
   "thread/commandExecution/background": [
@@ -460,7 +471,7 @@ export interface BridgeNotifications {
     turn: Pick<
       Turn,
       "id" | "status" | "error" | "startOutcome" | "clientUserMessageId"
-    > & { unappliedSteers?: string[] | undefined };
+    > & { unappliedSteers?: BridgeInputReceiptIdentity[] | undefined };
   };
   "thread/tokenUsage/updated": BridgeThreadParams & {
     turnId?: string | null | undefined;
@@ -482,10 +493,7 @@ export interface BridgeNotifications {
   };
   "turn/plan/updated": BridgeThreadParams & {
     turnId: string;
-    plan: {
-      step: TodoWriteInput["todos"][number]["content"];
-      status: TodoWriteInput["todos"][number]["status"];
-    }[];
+    plan: BridgePlanStep[];
   };
   "serverRequest/resolved": BridgeThreadParams & {
     requestId?: BridgeRpcId | undefined;
