@@ -6,6 +6,13 @@ export type paths = Record<string, never>;
 export type webhooks = Record<string, never>;
 export interface components {
   schemas: {
+    CommandError: {
+      code: string;
+      details?: unknown | undefined;
+      message: string;
+      /** Format: uint16 */
+      status?: number | null | undefined;
+    };
     DraftVersion: {
       alternatives?: string[] | undefined;
       device: string;
@@ -52,6 +59,17 @@ export interface components {
       length: number;
       nodes: components["schemas"]["MarkdownNode"][];
     };
+    Request: {
+      id: string;
+      method: string;
+      /** @default null */
+      params: unknown;
+    };
+    Response: {
+      error?: components["schemas"]["CommandError"] | null | undefined;
+      id: string;
+      result?: unknown | undefined;
+    };
   };
   responses: never;
   parameters: never;
@@ -62,9 +80,12 @@ export interface components {
 export type $defs = Record<string, never>;
 export type operations = Record<string, never>;
 
+export type CommandError = components["schemas"]["CommandError"];
 export type DraftVersion = components["schemas"]["DraftVersion"];
 export type MarkdownBlock = components["schemas"]["MarkdownBlock"];
 export type MarkdownKind = components["schemas"]["MarkdownKind"];
 export type MarkdownNode = components["schemas"]["MarkdownNode"];
 export type MarkdownSentence = components["schemas"]["MarkdownSentence"];
 export type MarkdownTree = components["schemas"]["MarkdownTree"];
+export type Request = components["schemas"]["Request"];
+export type Response = components["schemas"]["Response"];

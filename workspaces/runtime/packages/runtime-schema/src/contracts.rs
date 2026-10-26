@@ -1011,6 +1011,8 @@ pub fn render(root: &Path, with_api_types: bool) -> Result<Vec<Rendered>, String
             .for_serialize()
             .with(|settings| settings.definitions_path = "/components/schemas".into())
             .into_generator();
+        generator.subschema_for::<studio_client_domain::protocol::Request>();
+        generator.subschema_for::<studio_client_domain::protocol::Response>();
         generator.subschema_for::<studio_client_domain::drafts::DraftVersion>();
         generator.subschema_for::<studio_client_domain::markdown::MarkdownBlock>();
         let document = serde_json::json!({
