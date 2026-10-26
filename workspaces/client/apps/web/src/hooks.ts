@@ -28,7 +28,8 @@ import {
   isProjectionDatabaseClosedError,
   PROJECTION_DATABASE_RELOAD_MESSAGE,
 } from "./sync/entityCacheStorage";
-import "./sync/transcriptCache";
+import type { CachedTranscript } from "./sync/transcriptCache";
+type TranscriptSnapshot = NonNullable<CachedTranscript["payload"]>;
 import { ReadRecoveryBudget, retryableReadError } from "./sync/readRetry";
 import { agentChatMessages } from "./hooks/agentChatMessages";
 import { drainRoomUpdates } from "./hooks/roomUpdates";
@@ -500,7 +501,7 @@ type TranscriptPage = {
   after: string | null;
   focused: boolean;
   version?: string | undefined;
-  latest?: TranscriptPageData | undefined;
+  latest?: TranscriptSnapshot | undefined;
 };
 
 type RoomPage = {
@@ -619,7 +620,7 @@ export function useMessages(
     source: typeof watchResourceConnection;
     value: MessageConnection | null;
   }>({ source: watchResourceConnection, value: null });
-  const latest = useRef<{ scope: string; data: TranscriptPageData } | null>(
+  const latest = useRef<{ scope: string; data: TranscriptSnapshot } | null>(
     null,
   );
   const pageAttempt = useRef(0);
@@ -639,7 +640,7 @@ export function useMessages(
     expanded = useRef(false);
   active.current = scope;
   const accept = useCallback(
-    (d: TranscriptPageData, seq?: number) => {
+    (d: TranscriptSnapshot, seq?: number) => {
       revision.current++;
       setLoadedId(scope);
       setLiveAgent(d.agent || null);

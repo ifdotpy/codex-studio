@@ -1,3 +1,4 @@
+import assert from "node:assert/strict";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { Snapshot } from "../types";
 import type { ServerNavigation } from "./navigation";
@@ -145,10 +146,12 @@ it("publishes a real scoped snapshot and republishes after a saved preference ed
   );
   mount();
   expect(navigationMessages()).toHaveLength(1);
-  const [initial, origin] = navigationMessages()[0];
+  const firstMessage = navigationMessages()[0];
+  assert.ok(firstMessage);
+  const [initial, origin] = firstMessage;
   expect(origin).toBe("https://parent.example");
   expect(initial.serverId).toBe("remote");
-  expect(initial.navigation.sidebar?.threads[0].name).toBe("Real chat");
+  expect(initial.navigation.sidebar?.threads[0]?.name).toBe("Real chat");
   expect(initial.navigation.sidebar?.compact).toEqual({});
   expect(initial.navigation.sidebar?.unread).toEqual(["lead"]);
   expect(JSON.stringify(initial.navigation.sidebar)).not.toContain(
@@ -273,8 +276,10 @@ it("keeps navigation without sidebar data until a snapshot is available", () => 
     }),
   );
   expect(navigationMessages()).toHaveLength(1);
-  expect(navigationMessages()[0][0].navigation).toMatchObject({ ready: false });
-  expect(navigationMessages()[0][0].navigation).not.toHaveProperty("sidebar");
+  expect(navigationMessages()[0]?.[0].navigation).toMatchObject({
+    ready: false,
+  });
+  expect(navigationMessages()[0]?.[0].navigation).not.toHaveProperty("sidebar");
 });
 
 it("executes sidebar requests only from the bound parent and replies with the same identity", async () => {
@@ -301,6 +306,7 @@ it("executes sidebar requests only from the bound parent and replies with the sa
   message(request);
   await Promise.resolve();
   expect(execute).toHaveBeenCalledOnce();
+  assert.ok(execute.mock.calls[0] != null);
   expect(execute.mock.calls[0][0]).toEqual(request.value);
   expect(surface.parent.postMessage).toHaveBeenLastCalledWith(
     {

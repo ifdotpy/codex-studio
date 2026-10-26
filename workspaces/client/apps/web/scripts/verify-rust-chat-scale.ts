@@ -84,12 +84,8 @@ type ReplyEntry = NonNullable<
 >;
 type AttemptEvidence = Pick<
   Schema["ExecutionAttempt"],
-  "id" | "accountKey" | "events"
-> & {
-  requestTicket?: unknown;
-  connectionGeneration?: unknown;
-  runAccountKey?: unknown;
-};
+  "id" | "accountKey" | "events" | "requestTicket" | "connectionGeneration"
+> & { runAccountKey?: Schema["ExecutionAttempt"]["accountKey"] };
 export type RetainedInputRows = RetainedInput[];
 type TeamChild = {
   id: string;
@@ -414,7 +410,7 @@ type EvidenceEvent = {
   exchange: number;
   error?: string;
   missing?: boolean;
-  timing?: { enqueuedAt?: number | undefined };
+  timing?: { enqueuedAt?: unknown };
   attempts?: AttemptEvidence[];
 };
 
@@ -531,6 +527,7 @@ function saveJournal(path: string, value: Journal) {
 
 async function readJournal(path: string): Promise<Journal | null> {
   try {
+    // This verifier reads the versioned ownership journal it wrote itself.
     return JSON.parse(await readFile(path, "utf8"));
   } catch (error) {
     if (errorCode(error) === "ENOENT") return null;
@@ -2272,7 +2269,10 @@ async function createClient(
     await saveJournal(journalPath, journal);
     let result;
     try {
-      result = await request(method, path, body);
+      result = await request<
+        | Schema["AgentResponse"]
+        | Schema["studio_api__work__models__MessageReceipt"]
+      >(method, path, body);
     } catch (error) {
       intent.state =
         typeof error === "object" &&
@@ -3085,10 +3085,13 @@ export function runEventEvidenceQuery(
           typeof row.status === "string" &&
           (row.error === null || typeof row.error === "string"),
       );
-      const metadata: { timing?: { enqueuedAt?: number } } = row.record
-        ? JSON.parse(row.record)
-        : {};
-      const timing = metadata?.timing;
+      const metadata: unknown = row.record ? JSON.parse(row.record) : {};
+      const timing =
+        typeof metadata === "object" &&
+        metadata !== null &&
+        "timing" in metadata
+          ? metadata.timing
+          : undefined;
       const attempts = database
         .prepare(
           "SELECT a.id,json_extract(a.record,'$.requestTicket') AS requestTicket,json_extract(a.record,'$.connectionGeneration') AS connectionGeneration,json_extract(a.record,'$.accountKey') AS accountKey,json_extract(a.record,'$.events') AS events,r.account AS runAccountKey FROM runtime_execution_inputs i JOIN runtime_execution_runs r ON r.id=i.run JOIN runtime_execution_attempts a ON a.run=i.run WHERE i.event=? AND r.agent=? ORDER BY a.id",
@@ -3099,13 +3102,17 @@ export function runEventEvidenceQuery(
             typeof attempt.id === "string" &&
               (attempt.accountKey === null ||
                 typeof attempt.accountKey === "string") &&
-              (attempt.events === null || typeof attempt.events === "string"),
+              (attempt.events === null || typeof attempt.events === "string") &&
+              (attempt.requestTicket === null ||
+                typeof attempt.requestTicket === "string") &&
+              (attempt.connectionGeneration === null ||
+                typeof attempt.connectionGeneration === "number") &&
+              (attempt.runAccountKey === null ||
+                typeof attempt.runAccountKey === "string"),
           );
           return {
             id: attempt.id,
-            ...(attempt.accountKey === null
-              ? {}
-              : { accountKey: attempt.accountKey }),
+            accountKey: attempt.accountKey,
             requestTicket: attempt.requestTicket,
             connectionGeneration: attempt.connectionGeneration,
             runAccountKey: attempt.runAccountKey,
@@ -3120,7 +3127,9 @@ export function runEventEvidenceQuery(
         exchange: item.exchange,
         error: (row.error || "").slice(0, 500),
         timing:
-          timing && Object.hasOwn(timing, "enqueuedAt")
+          typeof timing === "object" &&
+          timing !== null &&
+          "enqueuedAt" in timing
             ? { enqueuedAt: timing.enqueuedAt }
             : {},
         attempts,

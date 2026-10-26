@@ -1,18 +1,26 @@
 import { expect, it, vi } from "vitest";
 import { createDataObserver } from "./data";
-import type { ResourceRef } from "./contracts";
+import type { ResourceVersion } from "../resourceEvents";
+import type { createSyncClient } from "../client";
+import type { ObserveSubscriptionData } from "./module";
+import { createSubscriptionStore } from "./store";
+const sync = () => ({
+  subscribeTranscriptProjection: vi.fn<
+    ReturnType<typeof createSyncClient>["subscribeTranscriptProjection"]
+  >(() => () => {}),
+});
 
 it.each([
   [{ kind: "processes", agentId: "lead" }, "processes", { processes: [] }],
   [
     { kind: "complaint", complaintId: "message" },
     "complaint",
-    { id: "message", text: "Reply" },
+    { id: "message", text: "Reply", responses: [], version: 1 },
   ],
   [
     { kind: "room", roomId: "team" },
     "room",
-    { messages: [{ id: "new", seq: 2 }] },
+    { messages: [], room: { id: "team" } },
   ],
   [
     { kind: "terminal-output", terminalId: "shell" },
@@ -23,7 +31,7 @@ it.each([
   "%j consumes initial and live values with zero reads",
   async (ref, field, value) => {
     const get = vi.fn();
-    let receive: (version: any) => void = () => {};
+    let receive: (version?: ResourceVersion) => void = () => {};
     const stop = vi.fn();
     const events = {
       watchResourceConnection: () => () => {},
@@ -34,11 +42,11 @@ it.each([
     };
     const accept = vi.fn();
     const dispose = createDataObserver(
-      () => ({ get }) as any,
-      events as any,
+      sync,
+      events,
       undefined,
       get,
-    )(ref as ResourceRef, accept, vi.fn());
+    )(ref, accept, vi.fn());
     receive({ epoch: "server", revision: 1, viewSnapshot: { [field]: value } });
     await vi.waitFor(() => expect(accept).toHaveBeenCalledTimes(1));
     receive({ epoch: "server", revision: 2, viewSnapshot: { [field]: value } });
@@ -60,7 +68,7 @@ it.each([
 );
 
 it("an oversized view recovers once and subsequent complete frames resume zero-read delivery", async () => {
-  let receive: (version: any) => void = () => {};
+  let receive: (version?: ResourceVersion) => void = () => {};
   const events = {
     watchResourceChanges: (_ref: unknown, accept: typeof receive) => {
       receive = accept;
@@ -71,7 +79,7 @@ it("an oversized view recovers once and subsequent complete frames resume zero-r
   const read = vi.fn(async () => ({ processes: [] }));
   const accept = vi.fn();
   const stop = createDataObserver(
-    () => ({}) as any,
+    sync,
     events,
     undefined,
     read,
@@ -90,8 +98,8 @@ it("an oversized view recovers once and subsequent complete frames resume zero-r
 });
 
 it("work baselines and updates use the entity observer even when view recovery exists", async () => {
-  let receive: (version: any) => void = () => {};
-  let publish: (data: any) => void = () => {};
+  let receive: (version?: ResourceVersion) => void = () => {};
+  let publish = () => {};
   const stopEvents = vi.fn();
   const stopEntities = vi.fn();
   const events = {
@@ -101,30 +109,61 @@ it("work baselines and updates use the entity observer even when view recovery e
     },
     watchResourceConnection: () => () => {},
   };
-  const observe = vi.fn((_ref, accept) => {
-    publish = accept;
+  const values = createSubscriptionStore(events);
+  const observed = vi.fn();
+  const observe: ObserveSubscriptionData = (ref, accept) => {
+    observed(ref);
+    publish = () => accept(values.getSnapshot(ref).data);
     return stopEntities;
-  });
+  };
   const recover = vi.fn();
   const accept = vi.fn();
   const ref = { kind: "work", agentId: "lead" } as const;
   const dispose = createDataObserver(
-    () => ({}) as any,
+    sync,
     events,
     observe,
     recover,
   )(ref, accept, vi.fn());
-  expect(observe).toHaveBeenCalledOnce();
-  const first = { items: [{ id: "assignment", title: "Before" }], tasks: [] };
-  publish(first);
+  expect(observed).toHaveBeenCalledOnce();
+  const first = {
+    items: [
+      {
+        id: "assignment",
+        title: "Before",
+        rootId: "lead",
+        created: 1,
+        updated: 1,
+        version: 1,
+        status: "ready" as const,
+      },
+    ],
+    tasks: [],
+  };
+  values.publish(ref, first);
+  publish();
   receive({
     epoch: "server",
     revision: 1,
     cursor: { workspaceId: "w", seq: 1 },
     replyKind: "snapshot",
   });
-  const next = { items: [{ id: "assignment", title: "After" }], tasks: [] };
-  publish(next);
+  const next = {
+    items: [
+      {
+        id: "assignment",
+        title: "After",
+        rootId: "lead",
+        created: 1,
+        updated: 2,
+        version: 2,
+        status: "ready" as const,
+      },
+    ],
+    tasks: [],
+  };
+  values.publish(ref, next);
+  publish();
   receive({
     epoch: "server",
     revision: 2,

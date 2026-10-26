@@ -1,3 +1,4 @@
+import assert from "node:assert/strict";
 import { describe, expect, it } from "vitest";
 import {
   ApiError,
@@ -104,6 +105,8 @@ describe("unavailable project actions", () => {
   it("name a home server that no connected server reports", () => {
     const { sources } = fixture();
     // The home server lost its identity; the alias names an ID that no source reports.
+    assert.ok(sources[1] != null);
+    assert.ok(sources[1].sidebar.projects[0] != null);
     sources[1].sidebar.projects[0].projectAliases = [
       { serverId: "lost-identity", projectId: "project-id", name: "Home" },
     ];
@@ -302,6 +305,7 @@ describe("owner sidebar services", () => {
       model.folderKey("remote", "/remote", "folder"),
     );
     expect(a.requests).toEqual([]);
+    assert.ok(b.requests[0] != null);
     expect(b.requests[0].body).toEqual({ id: "same", pinned: true });
   });
 
@@ -333,6 +337,8 @@ describe("owner sidebar services", () => {
         .owner(target)
         .post("/api/projects", body),
     ).rejects.toThrow("Lost response");
+    assert.ok(sources[1] != null);
+    assert.ok(sources[1].sidebar.projects[0] != null);
     sources[1].sidebar.projects[0].organizationRevision = 20;
     const next = createMergedSidebarServices(
       mergeSidebar(sources, 11, true),
@@ -342,6 +348,8 @@ describe("owner sidebar services", () => {
     );
     b.fail();
     await next.owner(target).post("/api/projects", body);
+    assert.ok(b.requests[1] != null);
+    assert.ok(b.requests[0] != null);
     expect(b.requests[1].body).toEqual(b.requests[0].body);
     expect(b.requests[1].body).toMatchObject({
       path: "/remote",
@@ -366,9 +374,11 @@ describe("owner sidebar services", () => {
       {},
     );
     const group = itemGroup(model.projectKey("local", "/local"));
+    const previous = model.order[group];
+    assert.ok(previous);
     const order = {
       ...model.order,
-      [group]: [...model.order[group]].reverse(),
+      [group]: [...previous].reverse(),
     };
     const result = await services
       .owner({ kind: "order", group })
@@ -378,6 +388,7 @@ describe("owner sidebar services", () => {
         expected_revision: 10,
         request_id: "reorder",
       });
+    assert.ok(a.requests[0] != null);
     expect(a.requests[0].body).toMatchObject({ expected_revision: 2 });
     expect(result).toMatchObject({ revision: 11 });
     expect(
@@ -404,8 +415,10 @@ describe("owner sidebar services", () => {
       () => true,
       {},
     );
+    assert.ok(model.order.projects);
     const projectOrder = [...model.order.projects].reverse();
     const groups = { ...model.order, projects: projectOrder };
+    assert.ok(model.sources[0] != null);
     a.response({
       revision: 3,
       groups: { ...model.sources[0].sidebar.sidebarOrder!.groups },
@@ -449,6 +462,7 @@ describe("owner sidebar services", () => {
 
   it("refuses offline posts and unavailable canonical metadata without another owner", async () => {
     const { sources } = fixture();
+    assert.ok(sources[1]);
     const model = mergeSidebar([sources[1]], 1, true);
     const b = backend("remote");
     const services = createMergedSidebarServices(
@@ -464,6 +478,7 @@ describe("owner sidebar services", () => {
         .owner({ kind: "chat", id })
         .post("/api/organization", { id, pinned: true }),
     ).rejects.toThrow("offline");
+    assert.ok(model.data.runtime.projects[0] != null);
     const path = model.data.runtime.projects[0].path!;
     await expect(
       services.owner({ kind: "project", path }).post("/api/projects", {
@@ -505,6 +520,8 @@ describe("owner sidebar services", () => {
 
   it("reports layr readiness only from servers whose own project data has it", () => {
     const { sources } = fixture();
+    assert.ok(sources[0] != null);
+    assert.ok(sources[0].sidebar.projects[0] != null);
     sources[0].sidebar.projects[0].layrReadiness = { state: "ready" };
     const model = mergeSidebar(sources, 10, true);
     const path = model.projectKey("local", "/local");
@@ -521,6 +538,8 @@ describe("owner sidebar services", () => {
     expect(services.layrReadiness(path)).toEqual([
       { server: "LOC", ownerId: "local", readiness: { state: "ready" } },
     ]);
+    assert.ok(sources[1] != null);
+    assert.ok(sources[1].sidebar.projects[0] != null);
     sources[1].sidebar.projects[0].layrReadiness = {
       state: "failed",
       error: "VM stopped",
@@ -558,6 +577,8 @@ describe("owner sidebar services", () => {
       deletes: 0,
       reason: null,
     };
+    assert.ok(sources[1] != null);
+    assert.ok(sources[1].sidebar.projects[0] != null);
     sources[1].sidebar.projects[0].layrSync = sync;
     const model = mergeSidebar(sources, 10, true);
     const path = model.projectKey("local", "/local");
