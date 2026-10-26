@@ -5,7 +5,8 @@
   if (window.__studioNativeViewport) return;
   const eventName = "studio-native-viewport";
   const sides = ["top", "right", "bottom", "left"];
-  const state = { insets: null, keyboard: null };
+  const state = { insets: null, keyboard: null, hinge: null };
+  const hingeStates = ["closed", "partial", "open", "unknown"];
   const finite = (value) =>
     typeof value === "number" && Number.isFinite(value) && value >= 0;
   const receive = (update) => {
@@ -26,6 +27,18 @@
       Number.isInteger(keyboard.curve)
     )
       state.keyboard = Object.freeze({ ...keyboard });
+    const { hinge } = update;
+    if (hinge && hingeStates.includes(hinge.status)) {
+      // UIHingeInteraction (iOS 27.1). UIHinge.angle is in radians (the
+      // device reports pi when fully open); null when UIKit reports no hinge.
+      const angle = Number.isFinite(hinge.angle) ? hinge.angle : null;
+      const degrees = angle === null ? null : (angle * 180) / Math.PI;
+      state.hinge = Object.freeze({ status: hinge.status, angle, degrees });
+      const root = document.documentElement;
+      root.setAttribute("data-native-hinge", hinge.status);
+      if (degrees === null) root.style.removeProperty("--native-hinge-angle");
+      else root.style.setProperty("--native-hinge-angle", `${degrees}deg`);
+    }
     window.dispatchEvent(
       new CustomEvent(eventName, { detail: Object.freeze({ ...state }) }),
     );
