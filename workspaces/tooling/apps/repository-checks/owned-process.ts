@@ -3,7 +3,7 @@ import { appendFileSync } from "node:fs";
 import {
   GATE_COMMAND_TIMEOUT_MS,
   PROCESS_STOP_GRACE_MS,
-} from "./gate-config.mjs";
+} from "./gate-config.ts";
 
 // Every command owns a new Unix process group, including nested pnpm/Cargo children.
 // Never signal the caller's group, and reap owned children before reporting terminal state.
