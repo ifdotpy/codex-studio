@@ -2558,7 +2558,7 @@ mod voice_composition_tests {
             account_home: String::new(),
             shared_home: String::new(),
             filesystem_inputs: None,
-            claude_account_pin: serde_json::Value::Null,
+            claude_account_pin: json!({"provider":studio_runtime_schema::ProviderKind::Codex}),
             account_driver: None,
             account_session: None,
             guest_rpc: None,

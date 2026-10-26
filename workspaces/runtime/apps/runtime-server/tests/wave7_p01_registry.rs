@@ -288,6 +288,11 @@ impl AccountLauncher for Scripted {
                 ready_notice: self.ready_notice.clone(),
                 initialize_holds: self.initialize_holds.clone(),
             });
+            let mut resources =
+                PreparationResources::bundled(String::new(), ModelCatalogService::new()).unwrap();
+            // HostLauncher supplies the account pin for every provider.
+            resources.claude_account_pin =
+                json!({"provider":studio_runtime_schema::ProviderKind::Codex});
             Ok(AccountLaunch {
                 factory,
                 options: OpenOptions {
@@ -308,11 +313,7 @@ impl AccountLauncher for Scripted {
                     request_id_prefix: None,
                     recovered: vec![],
                 },
-                resources: PreparationResources::bundled(
-                    String::new(),
-                    ModelCatalogService::new(),
-                )
-                .unwrap(),
+                resources,
                 publication_sink: Arc::new(
                     studio_runtime_services::notification_runtime_effects::UnavailablePostCommitSink,
                 ),

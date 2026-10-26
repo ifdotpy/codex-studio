@@ -2563,7 +2563,7 @@ mod exit_logging_tests {
                     "INSERT INTO runtime_agents(id,record) VALUES (?1,?2)",
                     rusqlite::params![
                         format!("empty-{index:02}"),
-                        serde_json::json!({"authResumeProofPending":{}}).to_string()
+                        serde_json::json!({"provider":studio_runtime_schema::ProviderKind::Codex,"authResumeProofPending":{}}).to_string()
                     ],
                 )
                 .expect("empty proof row");
@@ -2572,7 +2572,7 @@ mod exit_logging_tests {
             .execute(
                 "INSERT INTO runtime_agents(id,record) VALUES ('real-proof',?1)",
                 [
-                    serde_json::json!({"authResumeProofPending":{"requestId":"stable-request"}})
+                    serde_json::json!({"provider":studio_runtime_schema::ProviderKind::Codex,"authResumeProofPending":{"requestId":"stable-request"}})
                         .to_string(),
                 ],
             )
@@ -2605,7 +2605,7 @@ mod exit_logging_tests {
                     "INSERT INTO runtime_agents(id,record) VALUES (?1,?2)",
                     rusqlite::params![
                         agent,
-                        serde_json::json!({"usageResume":{"id":"new-current-id"}}).to_string()
+                        serde_json::json!({"provider":studio_runtime_schema::ProviderKind::Codex,"usageResume":{"id":"new-current-id"}}).to_string()
                     ],
                 )
                 .expect("owner row");
@@ -2623,7 +2623,7 @@ mod exit_logging_tests {
         connection
             .execute(
                 "INSERT INTO runtime_agents(id,record) VALUES ('real-proof',?1)",
-                [serde_json::json!({"authResumeProofPending":{"account":{"proofAt":1.0,"afterId":""}}}).to_string()],
+                [serde_json::json!({"provider":studio_runtime_schema::ProviderKind::Codex,"authResumeProofPending":{"account":{"proofAt":1.0,"afterId":""}}}).to_string()],
             )
             .expect("pending proof owner");
 
