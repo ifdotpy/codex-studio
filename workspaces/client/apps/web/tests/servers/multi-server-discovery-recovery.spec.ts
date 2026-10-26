@@ -52,6 +52,7 @@ test("revoke cancels an automatic invitation whose reply is still in flight", as
     );
     await page.route(local.origin + "/api/multi-server", async (route) => {
       if (
+        route.request().method() !== "POST" ||
         fixturePostBody<"/api/multi-server">(route.request().postDataJSON())
           .action !== "ui_invite"
       )
