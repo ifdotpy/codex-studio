@@ -1,6 +1,5 @@
 #!/usr/bin/env node
 import assert from "node:assert/strict";
-import { chromium } from "playwright";
 import type { Page, Response, Locator } from "playwright";
 import type { components, AgentEntityDto } from "../src/generated/api.ts";
 import { mkdirSync } from "node:fs";
@@ -520,6 +519,7 @@ async function main() {
 
   mkdirSync(evidenceDir, { recursive: true, mode: 0o700 });
   mkdirSync(profileDir, { recursive: true, mode: 0o700 });
+  const { chromium } = await import("playwright");
   const executablePath =
     options.values.chromium ||
     process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE ||
