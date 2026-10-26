@@ -79,8 +79,10 @@ async fn write_terminal(
     Ok(axum::Json(serde_json::json!({"ok":true})))
 }
 
-#[tokio::main]
+// This fixture tests asynchronous HTTP and SQLite ownership, not runtime thread count.
+#[tokio::main(flavor = "current_thread")]
 async fn main() {
+    let started = std::time::Instant::now();
     // Vitest owns the directory so even forced fixture cleanup removes state.
     let directory = std::path::PathBuf::from(std::env::args_os().nth(1).expect("state directory"));
     let store = Arc::new(RuntimeStore::open(Some(&directory)).await.expect("store"));
@@ -107,6 +109,7 @@ async fn main() {
             Ok::<_, StoreError>(())
         }).await.expect("large existing work source");
     }
+    eprintln!("draft fixture: store ready after {:?}", started.elapsed());
     let fixture: serde_json::Value = serde_json::from_str(include_str!(
         "../../../../client/contracts/draft-replication.json"
     ))
@@ -159,6 +162,7 @@ async fn main() {
                 .with_state(store),
         );
     }
+    eprintln!("draft fixture: HTTP ready after {:?}", started.elapsed());
     println!(
         "{}",
         serde_json::json!({"port": address.port(), "workspaceId": workspace_id})

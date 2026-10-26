@@ -1,6 +1,7 @@
 import { randomUUID } from "../uuid";
 import { audioFrameMethod, bindAudioFrames } from "./audioFrames";
 import { preferenceScope } from "./preferenceState";
+import { nativeSignInMethods } from "./signInProtocol";
 
 const REQUEST = "studio-native-frame-request";
 const RESPONSE = "studio-native-frame-response";
@@ -130,12 +131,13 @@ export function bindNativeFrames(
     )
       return reply({ error: "This save does not belong to this server view." });
     const audioMethod = audioFrameMethod(method, params);
+    const signInMethod = Object.values(nativeSignInMethods).includes(method);
     if (
       !audioMethod &&
       !saveMethod &&
       method !== "markdown.parse" &&
       method !== "desktop.openExternal" &&
-      method !== "desktop.openSignIn" &&
+      !signInMethod &&
       method !== "browser.preferences" &&
       method !== "browser.profile" &&
       method !== "browser.profileChunk" &&
@@ -145,7 +147,7 @@ export function bindNativeFrames(
         error: "This native service is not available to server views.",
       });
     if (
-      method === "desktop.openSignIn" &&
+      method === nativeSignInMethods.open &&
       params?.value?.forward !== undefined &&
       (owner === "local" || params.value.forward?.server !== owner)
     )
@@ -182,7 +184,7 @@ export function bindNativeFrames(
                 )
               : await invoke(
                   method,
-                  method === "desktop.openSignIn"
+                  signInMethod
                     ? { value: params?.value, signInOwner: owner }
                     : params,
                   id,

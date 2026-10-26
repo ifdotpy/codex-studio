@@ -12,7 +12,13 @@ use std::{
     time::{Duration, Instant},
 };
 
+/// Native method owners for one gesture-bound sign-in flow. Unit: IPC method name.
+pub const SIGN_IN_PREPARE_METHOD: &str = "desktop.prepareSignIn";
+pub const SIGN_IN_OPEN_METHOD: &str = "desktop.openSignIn";
+pub const SIGN_IN_CANCEL_METHOD: &str = "desktop.cancelSignIn";
+
 const ACTION_WINDOW: Duration = Duration::from_millis(1200);
+const EXTERNAL_LINK_PURPOSE: u32 = 4;
 const DENIED: &str = "Use a desktop button or keyboard action.";
 #[derive(Default)]
 struct Permissions {
@@ -59,7 +65,9 @@ fn purpose(method: &str) -> Option<u32> {
         "desktop.pickDirectory" => 1,
         "desktop.pickFiles" | "desktop.pickAttachments" => 2,
         "desktop.revealPath" => 3,
-        "desktop.openExternal" | "desktop.openSignIn" => 4,
+        "desktop.openExternal"
+        | crate::desktop::SIGN_IN_OPEN_METHOD
+        | crate::desktop::SIGN_IN_PREPARE_METHOD => EXTERNAL_LINK_PURPOSE,
         "desktop.saveBegin"
         | "desktop.savePreview"
         | "desktop.saveTerminal"
@@ -80,6 +88,18 @@ pub fn gesture_for_method(method: &str) -> u64 {
     purpose(method)
         .map(|value| studio_core_gesture_v1(value))
         .unwrap_or(0)
+}
+
+/// The native host calls this on its UI thread immediately after it issues the permit.
+/// Only the opaque intent is returned; the gesture token stays in the native host.
+pub fn prepare_sign_in_intent(params: &Value) -> Result<Value, String> {
+    let now = Instant::now();
+    let token = params.get("permit").and_then(Value::as_u64).ok_or(DENIED)?;
+    permissions()
+        .lock()
+        .map_err(|_| DENIED)?
+        .consume(token, EXTERNAL_LINK_PURPOSE, now)?;
+    crate::sign_in::prepare(params, now)
 }
 
 /// Called synchronously by the Attar native adapter on the UI thread.
@@ -143,7 +163,7 @@ pub extern "C" fn studio_core_gesture_v1(purpose: u32) -> u64 {
     .unwrap_or(0)
 }
 
-fn external_url(value: &Value) -> Result<String, String> {
+pub(crate) fn external_url(value: &Value) -> Result<String, String> {
     let value = value
         .as_str()
         .filter(|v| !v.is_empty() && v.len() <= 4096 && !v.contains('\0'))
@@ -206,7 +226,8 @@ async fn prepare_sign_in(
         }
         if response.result.as_ref().and_then(|v| v["status"].as_str()) != Some("forwarding") {
             return Err(
-                "This Mac did not confirm the sign-in port. The request was not repeated.".into(),
+                "This device did not confirm the sign-in port. The request was not repeated."
+                    .into(),
             );
         }
     }
@@ -231,18 +252,30 @@ pub async fn dispatch(
             let (name, bytes) = crate::file_save::finish(&request.params["value"])?;
             return save_snapshot(name, std::sync::Arc::new(bytes)).await;
         }
-        let action = purpose(&request.method).ok_or("This native action is not available.")?;
-        let token = request
-            .params
-            .get("permit")
-            .and_then(Value::as_u64)
-            .ok_or(DENIED)?;
-        permissions()
-            .lock()
-            .map_err(|_| DENIED)?
-            .consume(token, action, Instant::now())?;
         let mut value = request.params.get("value").cloned().unwrap_or(Value::Null);
-        if request.method == "desktop.openSignIn" && value.is_object() {
+        if request.method == crate::desktop::SIGN_IN_PREPARE_METHOD {
+            return prepare_sign_in_intent(&request.params);
+        }
+        if request.method == crate::desktop::SIGN_IN_CANCEL_METHOD {
+            return crate::sign_in::cancel(&request.params, Instant::now());
+        }
+        if request.method == crate::desktop::SIGN_IN_OPEN_METHOD
+            && value.get("preparation").is_some()
+        {
+            crate::sign_in::consume(&request.params, Instant::now())?;
+        } else {
+            let action = purpose(&request.method).ok_or("This native action is not available.")?;
+            let token = request
+                .params
+                .get("permit")
+                .and_then(Value::as_u64)
+                .ok_or(DENIED)?;
+            permissions()
+                .lock()
+                .map_err(|_| DENIED)?
+                .consume(token, action, Instant::now())?;
+        }
+        if request.method == crate::desktop::SIGN_IN_OPEN_METHOD && value.is_object() {
             value = prepare_sign_in(
                 &value,
                 request.params["signInOwner"].as_str(),
@@ -523,7 +556,7 @@ mod mac {
                     "desktop.saveChoose" => save_choose(&value),
                     "desktop.copyText" => copy_text(&value),
                     "desktop.revealPath" => reveal(&value),
-                    "desktop.openExternal" | "desktop.openSignIn" => {
+                    "desktop.openExternal" | crate::desktop::SIGN_IN_OPEN_METHOD => {
                         let address = match external_url(&value) {
                             Ok(value) => value,
                             Err(error) => {
@@ -534,7 +567,7 @@ mod mac {
                         let url = NSURL::URLWithString(&NSString::from_str(&address))
                             .expect("validated URL");
                         let config = NSWorkspaceOpenConfiguration::configuration();
-                        config.setActivates(method == "desktop.openSignIn");
+                        config.setActivates(method == crate::desktop::SIGN_IN_OPEN_METHOD);
                         let reply = Mutex::new(Some(reply));
                         let complete = block2::RcBlock::new(
                             move |_app: *mut objc2_app_kit::NSRunningApplication,
@@ -656,6 +689,90 @@ mod mac {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    async fn sign_in_preparation_consumes_the_gesture_and_returns_only_an_opaque_intent() {
+        let now = Instant::now();
+        let token = 0x5151_1212;
+        assert_eq!(
+            permissions()
+                .lock()
+                .unwrap()
+                .issue((921, 211), 4, token, now, Duration::ZERO),
+            token
+        );
+        let request = Request {
+            id: "prepare-sign-in-test".into(),
+            method: crate::desktop::SIGN_IN_PREPARE_METHOD.into(),
+            params: serde_json::json!({
+                "permit":token,
+                "_nativeWindow":"main",
+                "value":{"url":"https://example.com/authorize", "requestId":"card-1"}
+            }),
+        };
+        let response = dispatch(request, None, None, None).await;
+        assert!(response.error.is_none(), "{:?}", response.error);
+        let preparation = response.result.unwrap();
+        assert!(preparation.as_str().is_some_and(|id| id.len() >= 32));
+        assert_ne!(preparation, serde_json::json!(token));
+        assert!(
+            permissions()
+                .lock()
+                .unwrap()
+                .consume(token, 4, now)
+                .is_err()
+        );
+        let canceled = dispatch(
+            Request {
+                id: "cancel-sign-in-test".into(),
+                method: crate::desktop::SIGN_IN_CANCEL_METHOD.into(),
+                params: serde_json::json!({"_nativeWindow":"main","value":{"preparation":preparation,"requestId":"card-1"}}),
+            },
+            None,
+            None,
+            None,
+        ).await;
+        assert_eq!(canceled.result, Some(Value::Bool(true)));
+    }
+    #[tokio::test]
+    async fn prepared_sign_in_refuses_forgery_and_consumes_before_forward_failure() {
+        let mut params = serde_json::json!({"_nativeWindow":"main","value":{"url":"https://example.com/authorize","requestId":"forward-failure"}});
+        params["value"]["preparation"] = crate::sign_in::prepare(&params, Instant::now()).unwrap();
+        // An invalid forward fails before network or browser access.
+        params["value"]["forward"] = serde_json::json!({"server":"other"});
+        let make_request = |params| Request {
+            id: "prepared-forward-failure".into(),
+            method: crate::desktop::SIGN_IN_OPEN_METHOD.into(),
+            params,
+        };
+        let first = dispatch(make_request(params.clone()), None, None, None).await;
+        assert_eq!(
+            first.error.unwrap().message,
+            "This sign-in belongs to another server view."
+        );
+        let replay = dispatch(make_request(params.clone()), None, None, None).await;
+        assert!(
+            replay
+                .error
+                .unwrap()
+                .message
+                .starts_with("Use the sign-in button again.")
+        );
+        for invalid in [
+            Value::Null,
+            serde_json::json!(123),
+            serde_json::json!("forged"),
+        ] {
+            params["value"]["preparation"] = invalid;
+            let response = dispatch(make_request(params.clone()), None, None, None).await;
+            assert!(
+                response
+                    .error
+                    .unwrap()
+                    .message
+                    .starts_with("Use the sign-in button again.")
+            );
+        }
+    }
     fn forward() -> Value {
         serde_json::json!({"server":"remote", "bridgeId":"a".repeat(32), "host":"127.0.0.1", "port":49152, "path":"/callback", "expiresAt":1900000000, "token":"secret"})
     }
@@ -750,7 +867,7 @@ mod tests {
             "desktop.pickDirectory",
             "desktop.pickAttachments",
             "desktop.openExternal",
-            "desktop.openSignIn",
+            crate::desktop::SIGN_IN_OPEN_METHOD,
             "desktop.revealPath",
             "desktop.copyText",
             "desktop.showVaultKeys",

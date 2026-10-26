@@ -70796,6 +70796,16 @@
         "operationId": "models_api_models_get",
         "parameters": [
           {
+            "description": "Require current provider metadata before an account choice. Display reads can return the last known catalog.",
+            "in": "query",
+            "name": "fresh",
+            "required": false,
+            "schema": {
+              "const": "1",
+              "type": "string"
+            }
+          },
+          {
             "in": "query",
             "name": "account_key",
             "required": false,

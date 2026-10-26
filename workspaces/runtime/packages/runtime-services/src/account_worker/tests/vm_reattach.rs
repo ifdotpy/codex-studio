@@ -2,16 +2,22 @@
 use super::*;
 use crate::linux_vm_guest::{GuestError, GuestRpc};
 
+type InfoChange = (Arc<RuntimeStore>, String, String, Value);
+
 #[derive(Default)]
 struct ExistingGuest {
     inner: VmTurnGuest,
     infos: AtomicUsize,
     info_override: std::sync::Mutex<Option<Value>>,
-    info_change: std::sync::Mutex<Option<(Arc<RuntimeStore>, String, String, Value)>>,
+    info_change: std::sync::Mutex<Option<InfoChange>>,
     credential_copies_at_turn_start: std::sync::Mutex<Vec<usize>>,
     new_turns: AtomicUsize,
 }
 impl GuestRpc for ExistingGuest {
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "The guest RPC fixture runs on a dedicated blocking pool thread"
+    )]
     fn stream(
         &self,
         method: &str,
@@ -175,10 +181,11 @@ async fn vm_existing_reattach_refuses_unproved_native_identity_and_authority_rac
             1,
             "{change}"
         );
-        let native = guest.inner.state.lock().unwrap();
-        assert!(native.writes.is_empty() && native.stops.is_empty());
-        assert_eq!(native.acknowledged, 0);
-        drop(native);
+        {
+            let native = guest.inner.state.lock().unwrap();
+            assert!(native.writes.is_empty() && native.stops.is_empty());
+            assert_eq!(native.acknowledged, 0);
+        }
         worker.shutdown().await.unwrap();
     }
     let (state, guest) = existing_actor(false).await;
@@ -191,10 +198,11 @@ async fn vm_existing_reattach_refuses_unproved_native_identity_and_authority_rac
     let (_peer, mut worker) = existing_worker(&state, guest.clone()).await;
     worker_barrier(&worker).await;
     assert_eq!(guest.infos.load(std::sync::atomic::Ordering::SeqCst), 1);
-    let native = guest.inner.state.lock().unwrap();
-    assert!(native.writes.is_empty());
-    assert_eq!(native.acknowledged, 0);
-    drop(native);
+    {
+        let native = guest.inner.state.lock().unwrap();
+        assert!(native.writes.is_empty());
+        assert_eq!(native.acknowledged, 0);
+    }
     worker.shutdown().await.unwrap();
 }
 
@@ -281,10 +289,11 @@ async fn vm_existing_reattach_resumes_credential_maintenance_only_after_normal_i
         maintenance.count.load(std::sync::atomic::Ordering::SeqCst),
         1
     );
-    let native = guest.inner.state.lock().unwrap();
-    assert_eq!(native.starts, 1);
-    assert!(native.writes.is_empty());
-    drop(native);
+    {
+        let native = guest.inner.state.lock().unwrap();
+        assert_eq!(native.starts, 1);
+        assert!(native.writes.is_empty());
+    }
     worker.shutdown().await.unwrap();
 }
 
@@ -631,12 +640,13 @@ async fn vm_existing_reattach_on_demand_read_reuses_the_existing_actor_connectio
     assert!(matches!(receipt.result, RequestResult::Reply(_)));
     let repeated = port.request(request).await.unwrap();
     assert!(repeated.replayed);
-    let native = guest.inner.state.lock().unwrap();
-    assert_eq!(native.starts, 1);
-    assert_eq!(native.writes.len(), 1);
-    assert_eq!(native.writes[0]["method"], "thread/read");
-    assert!(native.stops.is_empty());
-    drop(native);
+    {
+        let native = guest.inner.state.lock().unwrap();
+        assert_eq!(native.starts, 1);
+        assert_eq!(native.writes.len(), 1);
+        assert_eq!(native.writes[0]["method"], "thread/read");
+        assert!(native.stops.is_empty());
+    }
     worker.shutdown().await.unwrap();
 }
 
@@ -805,17 +815,18 @@ async fn vm_existing_reattach_restores_the_journal_without_launch_or_input_repla
         }
         assert_eq!(state.event_status("input").await, "delivered");
         assert_eq!(resolver_calls.load(std::sync::atomic::Ordering::SeqCst), 0);
-        let native = guest.inner.state.lock().unwrap();
-        assert_eq!(
-            native.starts, 1,
-            "only the fixture's original process was started"
-        );
-        assert!(
-            native.writes.is_empty(),
-            "reattach must not send initialize, initialized, turn/start, or other provider messages"
-        );
-        assert!(native.stops.is_empty());
-        drop(native);
+        {
+            let native = guest.inner.state.lock().unwrap();
+            assert_eq!(
+                native.starts, 1,
+                "only the fixture's original process was started"
+            );
+            assert!(
+                native.writes.is_empty(),
+                "reattach must not send initialize, initialized, turn/start, or other provider messages"
+            );
+            assert!(native.stops.is_empty());
+        }
         worker.shutdown().await.unwrap();
     }
 }

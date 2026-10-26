@@ -1072,6 +1072,71 @@ async fn retained_environment_ignores_only_the_backend_build_identity() {
     }
 }
 
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[tokio::test]
+async fn retained_environment_ignores_only_launcher_activation_metadata() {
+    let mut base = launch_environment();
+    for (key, value) in [
+        ("CODEX_HOME", "fixture-codex-home"),
+        ("CLAUDE_CONFIG_DIR", "fixture-claude-config"),
+        ("STUDIO_CLAUDE_ACCOUNT", "fixture-account"),
+        ("STUDIO_CLAUDE_CREDENTIAL_IDENTITY", "claude:a@example.test"),
+        ("OPENAI_API_KEY", "fixture-api-key"),
+    ] {
+        base.insert(key.into(), value.into());
+    }
+    let metadata = ["LaunchInstanceID", "SECURITYSESSIONID"];
+    let states = [None, Some("old-launch"), Some("new-launch")];
+    for keys in [&metadata[..1], &metadata[1..], &metadata[..]] {
+        for current in states {
+            for previous in states {
+                let mut requested = base.clone();
+                let mut original = base.clone();
+                for key in keys {
+                    if let Some(value) = current {
+                        requested.insert((*key).into(), value.into());
+                    }
+                    if let Some(value) = previous {
+                        original.insert((*key).into(), value.into());
+                    }
+                }
+                let clean = clean_environment(&requested);
+                let (read, reads) = scripted_records(vec![Ok(original.clone())]);
+                let shutdown = Shutdown::default();
+                let settled = settled_environment(
+                    &mut shutdown.subscribe(),
+                    &Arc::new(Semaphore::new(1)),
+                    &clean,
+                    &RetainedLaunchValues::default(),
+                    Duration::ZERO,
+                    read,
+                )
+                .await
+                .unwrap_or_else(|error| panic!("launcher metadata {keys:?}: {error:?}"));
+                assert_eq!(settled, original, "the original launch stays unchanged");
+                assert_eq!(reads.load(std::sync::atomic::Ordering::SeqCst), 1);
+                for key in [
+                    "HOME",
+                    "CODEX_HOME",
+                    "CLAUDE_CONFIG_DIR",
+                    "STUDIO_CLAUDE_ACCOUNT",
+                    "STUDIO_CLAUDE_CREDENTIAL_IDENTITY",
+                    "OPENAI_API_KEY",
+                    "UNCLASSIFIED_VARIABLE",
+                ] {
+                    let mut foreign = original.clone();
+                    foreign.insert(key.into(), "changed".into());
+                    assert!(
+                        verify_environment(&foreign, &clean, &RetainedLaunchValues::default())
+                            .is_err(),
+                        "launcher metadata must not admit another {key}"
+                    );
+                }
+            }
+        }
+    }
+}
+
 /// A reader that returns `records` in order, then the last one again.
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 fn scripted_records(

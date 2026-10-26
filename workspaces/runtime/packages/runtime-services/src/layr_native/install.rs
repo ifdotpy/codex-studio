@@ -7,6 +7,7 @@ use std::{
     path::{Path, PathBuf},
     time::{Duration, Instant},
 };
+use studio_runtime_store::path_identity::CanonicalPath;
 
 /// Manifest beside the packaged host executable. Its version uses LAYR_VERSION.
 pub(super) const SHIPPED_MANIFEST_NAME: &str = "layr-manifest.json";
@@ -16,7 +17,7 @@ const INSTALL_LOCK_TIMEOUT: Duration = Duration::from_secs(60);
 const VERSION_CHECK_TIMEOUT: Duration = Duration::from_secs(10);
 
 pub fn ensure_binary(state_dir: &Path) -> Result<(), NativeLayrError> {
-    let executable = fs::canonicalize(std::env::current_exe()?)?;
+    let executable = CanonicalPath::existing(std::env::current_exe()?)?.into_path_buf();
     let shipped = shipped_binary_near(&executable);
     ensure_binary_with(state_dir, shipped.as_deref(), INSTALL_LOCK_TIMEOUT, || {
         install_unlocked(state_dir, &source_directory()?)
@@ -49,7 +50,9 @@ fn ensure_binary_with(
 
 /// Explicit developer installation. Packaged callers must use ensure_binary.
 pub fn install(state_dir: &Path, source: &Path) -> Result<(), NativeLayrError> {
-    if shipped_binary_near(&fs::canonicalize(std::env::current_exe()?)?).is_some() {
+    if shipped_binary_near(&CanonicalPath::existing(std::env::current_exe()?)?.into_path_buf())
+        .is_some()
+    {
         return Err(NativeLayrError::Refused(
             "A packaged application must use its bundled Layr executable".into(),
         ));
@@ -58,6 +61,10 @@ pub fn install(state_dir: &Path, source: &Path) -> Result<(), NativeLayrError> {
     install_unlocked(state_dir, source)
 }
 
+#[allow(
+    clippy::disallowed_methods,
+    reason = "The installer runs on the workspace blocking pool or the synchronous operator CLI"
+)]
 fn install_lock(state_dir: &Path, timeout: Duration) -> Result<File, NativeLayrError> {
     let directory = state_dir.join(NATIVE_LAYR_DIRECTORY).join("locks");
     fs::create_dir_all(&directory)?;
@@ -297,23 +304,24 @@ mod tests {
 
     fn fixture(root: &Path, version: &str) -> std::path::PathBuf {
         let bin = root.join("package/workspace/bin");
-        fs::create_dir_all(&bin).unwrap();
+        fs::create_dir_all(&bin).expect("fixture operation succeeds");
         let binary = bin.join("layr");
         fs::write(
             &binary,
             format!("#!/bin/sh\nprintf '%s\\n' 'layr version {version}'\n"),
         )
-        .unwrap();
-        fs::set_permissions(&binary, fs::Permissions::from_mode(0o755)).unwrap();
+        .expect("fixture operation succeeds");
+        fs::set_permissions(&binary, fs::Permissions::from_mode(0o755))
+            .expect("fixture operation succeeds");
         let manifest = serde_json::json!({
             "version": LAYR_VERSION,
-            "sha256": studio_runtime_store::sha256_hex(&fs::read(&binary).unwrap()),
+            "sha256": studio_runtime_store::sha256_hex(&fs::read(&binary).expect("fixture operation succeeds")),
         });
         fs::write(
             bin.join(SHIPPED_MANIFEST_NAME),
-            serde_json::to_vec(&manifest).unwrap(),
+            serde_json::to_vec(&manifest).expect("fixture operation succeeds"),
         )
-        .unwrap();
+        .expect("fixture operation succeeds");
         binary
     }
 
@@ -325,7 +333,7 @@ mod tests {
 
     #[test]
     fn native_layr_shipped_binary_installs_and_retries_without_cargo() {
-        let root = tempfile::tempdir().unwrap();
+        let root = tempfile::tempdir().expect("temporary install fixture");
         let shipped = fixture(root.path(), LAYR_VERSION);
         let state = root.path().join("state");
         for _ in 0..2 {
@@ -333,11 +341,12 @@ mod tests {
                 .expect("The shipped binary must bypass the Cargo fallback");
         }
         assert_eq!(
-            fs::read(super::super::git_guard::executable_path(&state)).unwrap(),
-            fs::read(&shipped).unwrap()
+            fs::read(super::super::git_guard::executable_path(&state))
+                .expect("fixture operation succeeds"),
+            fs::read(&shipped).expect("fixture operation succeeds")
         );
         assert_eq!(
-            super::super::run(&state, &state, &["--version"]).unwrap(),
+            super::super::run(&state, &state, &["--version"]).expect("fixture operation succeeds"),
             format!("layr version {LAYR_VERSION}")
         );
         assert!(!state.join(NATIVE_LAYR_DIRECTORY).join("build").exists());
@@ -345,43 +354,50 @@ mod tests {
 
     #[test]
     fn native_layr_modified_installed_binary_is_replaced_without_execution() {
-        let root = tempfile::tempdir().unwrap();
+        let root = tempfile::tempdir().expect("temporary install fixture");
         let shipped = fixture(root.path(), LAYR_VERSION);
         let state = root.path().join("state");
-        ensure_binary_with(&state, Some(&shipped), INSTALL_LOCK_TIMEOUT, no_cargo).unwrap();
+        ensure_binary_with(&state, Some(&shipped), INSTALL_LOCK_TIMEOUT, no_cargo)
+            .expect("fixture operation succeeds");
         let installed = super::super::git_guard::executable_path(&state);
         let marker = root.path().join("modified-binary-executed");
         fs::write(
             &installed,
             format!("#!/bin/sh\ntouch '{}'\n", marker.display()),
         )
-        .unwrap();
-        ensure_binary_with(&state, Some(&shipped), INSTALL_LOCK_TIMEOUT, no_cargo).unwrap();
-        assert_eq!(fs::read(installed).unwrap(), fs::read(shipped).unwrap());
+        .expect("fixture operation succeeds");
+        ensure_binary_with(&state, Some(&shipped), INSTALL_LOCK_TIMEOUT, no_cargo)
+            .expect("fixture operation succeeds");
+        assert_eq!(
+            fs::read(installed).expect("fixture operation succeeds"),
+            fs::read(shipped).expect("fixture operation succeeds")
+        );
         assert!(!marker.exists());
     }
 
     #[test]
     fn native_layr_missing_bundle_files_refuse_even_with_a_cached_binary() {
-        let root = tempfile::tempdir().unwrap();
+        let root = tempfile::tempdir().expect("temporary install fixture");
         let shipped = fixture(root.path(), LAYR_VERSION);
         let state = root.path().join("state");
-        ensure_binary_with(&state, Some(&shipped), INSTALL_LOCK_TIMEOUT, no_cargo).unwrap();
-        fs::remove_file(&shipped).unwrap();
+        ensure_binary_with(&state, Some(&shipped), INSTALL_LOCK_TIMEOUT, no_cargo)
+            .expect("fixture operation succeeds");
+        fs::remove_file(&shipped).expect("fixture operation succeeds");
         let error = ensure_binary_with(&state, Some(&shipped), INSTALL_LOCK_TIMEOUT, no_cargo)
-            .unwrap_err()
+            .expect_err("installation must refuse the fixture")
             .to_string();
         assert!(error.contains("packaged Layr executable"), "{error}");
-        fs::remove_file(shipped.with_file_name(SHIPPED_MANIFEST_NAME)).unwrap();
+        fs::remove_file(shipped.with_file_name(SHIPPED_MANIFEST_NAME))
+            .expect("fixture operation succeeds");
         let error = ensure_binary_with(&state, Some(&shipped), INSTALL_LOCK_TIMEOUT, no_cargo)
-            .unwrap_err()
+            .expect_err("installation must refuse the fixture")
             .to_string();
         assert!(error.contains("packaged Layr manifest"), "{error}");
     }
 
     #[test]
     fn native_layr_package_detection_survives_missing_binary_and_manifest() {
-        let root = tempfile::tempdir().unwrap();
+        let root = tempfile::tempdir().expect("temporary install fixture");
         let contents = root.path().join("Studio.app/Contents");
         let expected = contents.join("Resources/workspace/bin/layr");
         for host in [
@@ -396,13 +412,14 @@ mod tests {
                 INSTALL_LOCK_TIMEOUT,
                 no_cargo,
             )
-            .unwrap_err()
+            .expect_err("installation must refuse the fixture")
             .to_string();
             assert!(error.contains("packaged Layr manifest"), "{error}");
         }
         let resources = root.path().join("resources");
-        fs::create_dir_all(resources.join("workspace")).unwrap();
-        fs::write(resources.join("workspace/studio-install.json"), "{}").unwrap();
+        fs::create_dir_all(resources.join("workspace")).expect("fixture operation succeeds");
+        fs::write(resources.join("workspace/studio-install.json"), "{}")
+            .expect("fixture operation succeeds");
         assert_eq!(
             shipped_binary_near(&resources.join("bin/studio-runtime-server")),
             Some(resources.join("workspace/bin/layr"))
@@ -419,17 +436,17 @@ mod tests {
 
     #[test]
     fn native_layr_shipped_hash_mismatch_is_refused_before_execution() {
-        let root = tempfile::tempdir().unwrap();
+        let root = tempfile::tempdir().expect("temporary install fixture");
         let shipped = fixture(root.path(), LAYR_VERSION);
         let marker = root.path().join("executed");
         fs::write(
             &shipped,
             format!("#!/bin/sh\ntouch '{}'\n", marker.display()),
         )
-        .unwrap();
+        .expect("fixture operation succeeds");
         let state = root.path().join("state");
         let error = ensure_binary_with(&state, Some(&shipped), INSTALL_LOCK_TIMEOUT, no_cargo)
-            .unwrap_err()
+            .expect_err("installation must refuse the fixture")
             .to_string();
         assert!(error.contains("hash mismatch"), "{error}");
         assert!(!marker.exists());
@@ -438,32 +455,32 @@ mod tests {
 
     #[test]
     fn native_layr_shipped_version_mismatch_preserves_previous_executable() {
-        let root = tempfile::tempdir().unwrap();
+        let root = tempfile::tempdir().expect("temporary install fixture");
         let shipped = fixture(root.path(), "0.0.0");
         let state = root.path().join("state");
         let installed = super::super::git_guard::executable_path(&state);
-        fs::create_dir_all(installed.parent().unwrap()).unwrap();
-        fs::write(&installed, b"previous executable").unwrap();
+        fs::create_dir_all(installed.parent().expect("managed binary parent"))
+            .expect("fixture operation succeeds");
+        fs::write(&installed, b"previous executable").expect("fixture operation succeeds");
         let error = ensure_binary_with(&state, Some(&shipped), INSTALL_LOCK_TIMEOUT, no_cargo)
-            .unwrap_err()
+            .expect_err("installation must refuse the fixture")
             .to_string();
         assert!(error.contains("Expected Layr"), "{error}");
-        assert_eq!(fs::read(installed).unwrap(), b"previous executable");
+        assert_eq!(
+            fs::read(installed).expect("fixture operation succeeds"),
+            b"previous executable"
+        );
     }
 
     #[test]
     fn native_layr_install_lock_timeout_is_visible() {
-        let root = tempfile::tempdir().unwrap();
+        let root = tempfile::tempdir().expect("temporary install fixture");
         let state = root.path().join("state");
-        let held = super::super::runtime::lock(&state, "install-binary").unwrap();
-        let release = std::thread::spawn(move || {
-            std::thread::sleep(Duration::from_millis(100));
-            drop(held);
-        });
+        let _held = super::super::runtime::lock(&state, "install-binary")
+            .expect("fixture install lock is available");
         let error = ensure_binary_with(&state, None, Duration::from_millis(5), no_cargo)
-            .unwrap_err()
+            .expect_err("installation must refuse the fixture")
             .to_string();
-        release.join().unwrap();
         assert!(error.contains("Timed out"), "{error}");
         assert!(error.contains("install-binary"), "{error}");
         assert!(error.contains("5 ms"), "{error}");

@@ -242,31 +242,32 @@ async fn acknowledged_monitor_input_returns_without_entity_envelope() {
     assert_eq!(status, 200, "acknowledged input should succeed: {response}");
     assert!(response.get("_syncEntities").is_none());
     assert!(response.get("_syncEntitiesAfter").is_none());
-    let submitted = port.submitted.lock().expect("submitted effects");
-    assert_eq!(
-        submitted.len(),
-        1,
-        "one HTTP input submits one native effect"
-    );
-    let studio_runtime_services::monitor_policy::Effect::Native {
-        identity,
-        method,
-        params,
-    } = &submitted[0]
-    else {
-        panic!("input must submit a native effect");
-    };
-    assert!(identity.starts_with(&format!("monitor-input:{id}:")));
-    assert_eq!(*method, "command/exec/write");
-    assert_eq!(
-        params,
-        &json!({
-            "processId": id,
-            "deltaBase64": "Zml4dHVyZSBpbnB1dA==",
-            "closeStdin": false
-        })
-    );
-    drop(submitted);
+    {
+        let submitted = port.submitted.lock().expect("submitted effects");
+        assert_eq!(
+            submitted.len(),
+            1,
+            "one HTTP input submits one native effect"
+        );
+        let studio_runtime_services::monitor_policy::Effect::Native {
+            identity,
+            method,
+            params,
+        } = &submitted[0]
+        else {
+            panic!("input must submit a native effect");
+        };
+        assert!(identity.starts_with(&format!("monitor-input:{id}:")));
+        assert_eq!(*method, "command/exec/write");
+        assert_eq!(
+            params,
+            &json!({
+                "processId": id,
+                "deltaBase64": "Zml4dHVyZSBpbnB1dA==",
+                "closeStdin": false
+            })
+        );
+    }
 
     let saved = MonitorsRepository::get(&store.test_reader().expect("read monitor"), id)
         .expect("read monitor record")

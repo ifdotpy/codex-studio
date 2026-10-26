@@ -7,7 +7,13 @@ import {
   useSyncExternalStore,
   type ContextType,
 } from "react";
-import { ApiError, get, errorText, type GetResult } from "../../api";
+import {
+  ApiError,
+  get,
+  errorText,
+  type GetOptions,
+  type GetResult,
+} from "../../api";
 import { serverResourceScope } from "../../servers/registry";
 import type { Snapshot } from "../../types";
 import { subscribeStateProjection } from "../../sync/client";
@@ -124,7 +130,7 @@ type ModelCatalogSource = {
   scope: string;
   cacheOwner?: object;
   read: (options: {
-    query?: { account_key?: string; workers?: "1"; retry?: "1" };
+    query?: GetOptions<"/api/models">["query"];
     signal?: AbortSignal;
   }) => Promise<GetResult<"/api/models">>;
   subscribeState: (
@@ -381,40 +387,20 @@ function subscribeModelCatalog(
   };
 }
 
-/** One read of an account's subagent models, parsed like useWorkerModels. */
+/** Fresh metadata for an account choice, not the display's stale fallback. */
 export async function readWorkerModels(
   reader: ContextType<typeof ModelCatalogReader>,
   accountKey: string,
   workers = false,
 ): Promise<WorkerModelInfo[]> {
-  return new Promise((resolve, reject) => {
-    let stop: (() => void) | undefined;
-    let settled = false;
-    const unsubscribe = reader.subscribeState(
-      (snapshot) => {
-        if (settled || !snapshot.entitiesComplete) return;
-        settled = true;
-        const models = projectedModelRows(
-          snapshot,
-          accountKey,
-          workers,
-        ).flatMap((row) => {
-          const parsed = modelInfo(row);
-          return parsed ? [parsed] : [];
-        });
-        resolve(models);
-        stop?.();
-      },
-      (error) => {
-        if (settled || error === null) return;
-        settled = true;
-        reject(error);
-        stop?.();
-      },
-    );
-    if (settled) unsubscribe();
-    else stop = unsubscribe;
+  const data = await reader.read({
+    query: {
+      account_key: accountKey,
+      workers: workers ? "1" : undefined,
+      fresh: "1",
+    },
   });
+  return modelRows(data);
 }
 
 export function useWorkerModels(

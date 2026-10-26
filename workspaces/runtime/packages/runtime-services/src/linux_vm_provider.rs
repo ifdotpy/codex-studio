@@ -204,7 +204,7 @@ pub struct GuestProviderTaskFactory {
 
 enum GuestProviderSource {
     Launch(String),
-    Existing(GuestProviderSession),
+    Existing(Box<GuestProviderSession>),
 }
 
 impl GuestProviderTaskFactory {
@@ -234,7 +234,7 @@ impl GuestProviderTaskFactory {
             store,
             guest,
             identity,
-            source: GuestProviderSource::Existing(session),
+            source: GuestProviderSource::Existing(Box::new(session)),
         })
     }
 }
@@ -258,7 +258,7 @@ impl ProviderTaskFactory for GuestProviderTaskFactory {
             }
             let existing_only = matches!(&self.source, GuestProviderSource::Existing(_));
             let session = match &self.source {
-                GuestProviderSource::Existing(session) => session.clone(),
+                GuestProviderSource::Existing(session) => session.as_ref().clone(),
                 GuestProviderSource::Launch(profile) => GuestProviderSession::open(
                     self.store.clone(),
                     self.guest.clone(),
@@ -677,7 +677,7 @@ impl GuestProviderSession {
         } else {
             // An existing reservation means dispatch may have happened before a
             // crash or lost response. Reconcile through the read-only info lane.
-            let info = call_guest(
+            call_guest(
                 guest.clone(),
                 "provider.rpc",
                 json!({"handle": identity.handle, "action": "info"}),
@@ -691,8 +691,7 @@ impl GuestProviderSession {
                 } else {
                     error.into()
                 }
-            })?;
-            info
+            })?
         };
         // A known start can retain stdout and exit events after its process ends.
         // An uncertain start still needs running proof before it becomes Started.

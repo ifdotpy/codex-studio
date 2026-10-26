@@ -57,7 +57,7 @@ describe("openSignInPage", () => {
     vi.stubGlobal("window", { codexDesktop: { openSignIn, openExternal } });
     expect(canForwardSignIn()).toBe(false);
     await expect(openSignInPage(LINK, forward)).rejects.toThrow(
-      "Update LAYR Studio on this computer",
+      "Update LAYR Studio on this device",
     );
     expect(openSignIn).toHaveBeenCalledTimes(1);
     expect(openExternal).not.toHaveBeenCalled();

@@ -807,6 +807,10 @@ print(json.dumps({'stdin':value(limit.comparators[0]),'command':command,'wait':w
         let runtime = tokio::runtime::Handle::current();
         let hook_store = store.clone();
         *guest.after_write.lock().expect("hook") = Some(Box::new(move || {
+            #[allow(
+                clippy::disallowed_methods,
+                reason = "The guest copy hook runs on its dedicated blocking pool thread"
+            )]
             runtime
                 .block_on(hook_store.transaction_with(|tx| {
                     let mut record = studio_runtime_store::AgentRepository::get(
