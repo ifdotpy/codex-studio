@@ -1,6 +1,6 @@
 import { serverStorageName } from "../servers/environment";
 import { serverLocalStorage as localStorage } from "../servers/storage";
-import { syncGet, syncPost, refreshSession } from "../api";
+import { syncGet, syncPost, refreshSession, type GetResult } from "../api";
 import { writeLocalDraft } from "./localDraft";
 import { syncDatabase } from "./client";
 import type { Attachment } from "../components/ComposerAttachments";
@@ -21,9 +21,28 @@ export type PendingUpload = {
   created: number;
   asset?: Attachment;
 };
+export type PendingUploadContent = {
+  bytes?: ArrayBuffer | undefined;
+  file?: Blob | undefined;
+};
+
 export const UPLOAD_DATABASE_NAME = "codex-studio-uploads";
+export type UploadOptions = {
+  databaseName: string;
+  storage: typeof localStorage;
+  syncGet: (
+    path: "/api/sync/identity",
+  ) => Promise<GetResult<"/api/sync/identity">>;
+  syncPost: typeof syncPost<"/api/assets">;
+  refreshSession: typeof refreshSession;
+  writeLocalDraft: typeof writeLocalDraft;
+  syncDatabase: () => Promise<
+    Pick<Awaited<ReturnType<typeof syncDatabase>>, "workspaceId">
+  >;
+};
+
 export function createUploads(
-  options = {
+  options: UploadOptions = {
     databaseName: serverStorageName(UPLOAD_DATABASE_NAME),
     storage: localStorage,
     syncGet,
@@ -271,9 +290,11 @@ export function createUploads(
       if (uploadCancelled(row.id)) return null;
       if (current.asset) return current.asset;
       const session = await refreshSession();
-      const content = await transaction<
-        { bytes?: ArrayBuffer; file?: Blob } | undefined
-      >("readonly", (store) => store.get(row.id), ["contents"]);
+      const content = await transaction<PendingUploadContent | undefined>(
+        "readonly",
+        (store) => store.get(row.id),
+        ["contents"],
+      );
       if (!content || uploadCancelled(row.id)) return null;
       const bytes = content.bytes || (await content.file?.arrayBuffer());
       if (!bytes) throw new Error("The saved file bytes are unavailable.");
