@@ -399,6 +399,13 @@ pub fn configure(window: &WebviewWindow) {
         scroll.setContentInsetAdjustmentBehavior(UIScrollViewContentInsetAdjustmentBehavior::Never);
         // The page root is fixed; inner scrollers are separate child views.
         scroll.setScrollEnabled(false);
+        // The shell page never zooms: no pinch here, and ios_viewport.js
+        // limits the viewport scale (double tap, focus auto-zoom).
+        scroll.setMinimumZoomScale(1.0);
+        scroll.setMaximumZoomScale(1.0);
+        if let Some(pinch) = scroll.pinchGestureRecognizer() {
+            pinch.setEnabled(false);
+        }
         if let Some(parent) = webview.superview() {
             webview.setFrame(parent.bounds());
         }

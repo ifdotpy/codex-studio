@@ -39,6 +39,34 @@
       receive,
     }),
   });
+  // The shell page never zooms (pinch, double tap, focus auto-zoom). Only
+  // this shell injects the limit; Safari and the PWA keep page zoom.
+  const lockZoom = () => {
+    let meta = document.querySelector('meta[name="viewport"]');
+    if (!meta) {
+      if (!document.head) return;
+      meta = document.createElement("meta");
+      meta.name = "viewport";
+      document.head.append(meta);
+    }
+    const kept = (meta.content || "")
+      .split(",")
+      .map((part) => part.trim())
+      .filter(
+        (part) =>
+          part && !/^(maximum-scale|minimum-scale|user-scalable)\b/.test(part),
+      );
+    const content = [
+      ...kept,
+      "minimum-scale=1",
+      "maximum-scale=1",
+      "user-scalable=no",
+    ].join(", ");
+    if (meta.content !== content) meta.content = content;
+  };
+  if (document.readyState === "loading")
+    document.addEventListener("DOMContentLoaded", lockZoom, { once: true });
+  else lockZoom();
   // The shell answers each request with the current UIKit geometry.
   const request = () =>
     window.webkit?.messageHandlers?.studioNativeViewport?.postMessage("sync");
