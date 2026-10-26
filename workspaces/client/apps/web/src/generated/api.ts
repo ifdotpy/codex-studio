@@ -13186,6 +13186,11 @@ export interface components {
        * @default null
        */
       claudeRetryOf?: null | string | undefined;
+      /** @default null */
+      connectionGeneration?:
+        | components["schemas"]["StartAttemptRecordResponse"]["connectionGeneration"]
+        | null
+        | undefined;
       /**
        * Connectionid
        * @default null
@@ -13248,6 +13253,11 @@ export interface components {
        * @default null
        */
       prepareError?: null | string | undefined;
+      /** @default null */
+      requestTicket?:
+        | components["schemas"]["StartAttemptRecordResponse"]["requestTicket"]
+        | null
+        | undefined;
       /**
        * Responseerror
        * @default null
@@ -22442,6 +22452,8 @@ export interface components {
        * @default null
        */
       claudeRetryOf?: string | undefined;
+      /** @description Provider connection generation persisted before submission; dimensionless. */
+      connectionGeneration?: number | undefined;
       /**
        * Connectionid
        * @default null
@@ -22493,6 +22505,8 @@ export interface components {
        */
       observedTurnId?: string | undefined;
       prepareError?: components["schemas"]["JsonValue"] | undefined;
+      /** @description Provider request ticket persisted before submission; dimensionless. */
+      requestTicket?: string | undefined;
       responseError?: components["schemas"]["JsonValue"] | undefined;
       /**
        * Retiredevents
@@ -39648,6 +39662,7 @@ export type WorkspaceEntityDto = components["schemas"]["WorkspaceEntityDto"];
 export type SyncEntityPayload = components["schemas"]["SyncEntityPayload"];
 
 export const SYNC_PROTOCOL_VERSION = 4 as const;
+export const SYNC_IDENTITY_PROTOCOL_VERSION = 2 as const;
 export const SYNC_ENTITY_SCOPE = "state:entities:v1" as const;
 export const TOKEN_RATE_MAX_ENTRIES = 4096 as const;
 export const TOKEN_RATE_IDENTIFIER_MAX_CODEPOINTS = 200 as const;
