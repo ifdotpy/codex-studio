@@ -2042,10 +2042,13 @@ describe("scale verifier cleanup before ownership", () => {
     "cleans up a failure %s without requiring an unowned identity",
     async (failurePoint) => {
       type CleanupClient = Parameters<typeof cleanupOwned>[0];
+      const unexpectedHttp = vi.fn((): never => {
+        throw new Error("Cleanup with no owned agents must not call HTTP.");
+      });
       const client = {
         setDeadline: vi.fn<CleanupClient["setDeadline"]>(),
-        get: vi.fn<CleanupClient["get"]>(),
-        request: vi.fn<CleanupClient["request"]>(),
+        get: unexpectedHttp,
+        request: unexpectedHttp,
         agentSnapshot: vi.fn<CleanupClient["agentSnapshot"]>(),
       } satisfies CleanupClient;
       const journal = emptyJournal();
