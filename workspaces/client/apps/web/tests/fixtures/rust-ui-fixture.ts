@@ -644,10 +644,10 @@ async function main() {
         };
     if (!hook) throw new Error(`Unknown fixture hook ${message.method}`);
     try {
-      const result = await hook(message);
+      await hook(message);
       if (message.id !== undefined)
         process.stdout.write(
-          JSON.stringify({ id: message.id, ok: true, ...result }) + "\n",
+          JSON.stringify({ id: message.id, ok: true }) + "\n",
         );
     } catch (error) {
       if (message.id === undefined) throw error;
