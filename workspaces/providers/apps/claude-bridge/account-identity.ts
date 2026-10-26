@@ -1,6 +1,7 @@
 // Wire format owner: runtime-services/src/account_driver/claude_identity.rs.
 // account-identity.test.ts checks the shared identity fixtures in both languages.
 import fs from "node:fs";
+import type { JsonValue } from "./runtime-contract.generated.ts";
 import type { AccountInfo } from "@anthropic-ai/claude-agent-sdk";
 import path from "node:path";
 import os from "node:os";
@@ -27,11 +28,9 @@ function tuple(
     const value: unknown = JSON.parse(identity.slice(prefix.length));
     return Array.isArray(value) &&
       value.length === 3 &&
-      typeof value[0] === "string" &&
       text(value[0]) &&
-      (value[1] === null || (typeof value[1] === "string" && text(value[1]))) &&
-      (value[2] === null || (typeof value[2] === "string" && text(value[2])))
-      ? [value[0], value[1], value[2]]
+      value.slice(1).every((part: unknown) => part === null || text(part))
+      ? (value as [string, string | null, string | null])
       : null;
   } catch {
     return null;
@@ -51,6 +50,14 @@ export function acceptsIdentity(expected: string, observed: string) {
       .every((part, index) => part === null || part === next[index + 1])
   );
 }
+export type AccountValidationError = Error & {
+  claudeAccountValidationFailed: boolean;
+  data: {
+    turnStartOutcome: string;
+    claudePreparationFailure: string;
+    claudeAccountFailure: string;
+  };
+};
 function reject(
   reason: string,
   message = "Claude Code account identity changed. Restore the original login.",
@@ -62,16 +69,22 @@ function reject(
       claudePreparationFailure: "account_validation",
       claudeAccountFailure: reason,
     },
-  });
+  }) satisfies AccountValidationError;
 }
 function readOptional(file: string) {
   try {
     return fs.readFileSync(file, "utf8");
   } catch (error) {
-    if (error instanceof Error && "code" in error && error.code === "ENOENT")
-      return null;
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
     throw error;
   }
+}
+// The native CLI owns this untrusted JSON document; the existing identity checks below
+// read its fields through an indexed view without adding validation behavior.
+function readNativeAccount(
+  document: string,
+): Record<string, Record<string, JsonValue>> {
+  return JSON.parse(document);
 }
 export function createAccountCheck({
   expectedEmail,
@@ -83,14 +96,23 @@ export function createAccountCheck({
     ".claude.json",
   ),
 }: {
-  expectedEmail?: string | undefined;
-  expectedIdentity?: string | undefined;
+  expectedEmail?: string;
+  expectedIdentity?: string;
   identityPath?: string;
   requireSubscription?: boolean;
   nativePath?: string;
 }) {
   let pinned = expectedIdentity;
-  return function checkAccount<Account>(account: Account) {
+  // The SDK account boundary preserves its existing checks and identity enrichment.
+  return function checkAccount<Account>(
+    account: Account &
+      Partial<
+        Record<
+          keyof AccountInfo | "organizationUuid" | "accountUuid" | "orgId",
+          unknown
+        >
+      >,
+  ) {
     if (!expectedEmail)
       reject(
         "expected_identity",
@@ -101,11 +123,7 @@ export function createAccountCheck({
         "account_metadata",
         "Claude Code account metadata is missing. No input was submitted.",
       );
-    if (
-      !("email" in account) ||
-      typeof account.email !== "string" ||
-      !account.email.trim()
-    )
+    if (typeof account.email !== "string" || !account.email.trim())
       reject(
         "email_metadata",
         "Claude Code email metadata is missing. No input was submitted.",
@@ -119,11 +137,7 @@ export function createAccountCheck({
           account.email +
           ". Restore the original login.",
       );
-    if (
-      !("apiProvider" in account) ||
-      typeof account.apiProvider !== "string" ||
-      !account.apiProvider
-    )
+    if (typeof account.apiProvider !== "string" || !account.apiProvider)
       reject(
         "provider_metadata",
         "Claude Code API provider metadata is missing. No input was submitted.",
@@ -137,57 +151,37 @@ export function createAccountCheck({
       );
     if (
       requireSubscription &&
-      (!("subscriptionType" in account) ||
-        typeof account.subscriptionType !== "string" ||
+      (typeof account.subscriptionType !== "string" ||
         !account.subscriptionType.trim())
     )
       reject(
         "subscription_metadata",
         "Claude Code subscription metadata is missing. No input was submitted.",
       );
-    if (
-      "apiKeySource" in account &&
-      account.apiKeySource &&
-      account.apiKeySource !== "none"
-    )
+    if (account.apiKeySource && account.apiKeySource !== "none")
       reject(
         "api_key_source",
         "Claude Code uses an API key instead of the configured subscription. Restore the original login.",
       );
 
     // SDK releases can omit UUIDs. The organization display name is not an ID.
-    let organization =
-      text(
-        "organizationUuid" in account ? account.organizationUuid : undefined,
-      ) || text("orgId" in account ? account.orgId : undefined);
-    let uuid = text("accountUuid" in account ? account.accountUuid : undefined);
+    let organization = text(account.organizationUuid) || text(account.orgId);
+    let uuid = text(account.accountUuid);
     try {
       const native = readOptional(nativePath);
-      const parsed: unknown = native === null ? null : JSON.parse(native);
       const profile =
-        parsed !== null &&
-        typeof parsed === "object" &&
-        "oauthAccount" in parsed
-          ? parsed.oauthAccount
-          : null;
+        native === null ? null : readNativeAccount(native).oauthAccount;
       if (profile) {
-        if (typeof profile !== "object") reject("identity_mismatch");
-        const emailAddress =
-          "emailAddress" in profile ? profile.emailAddress : undefined;
-        const organizationUuid =
-          "organizationUuid" in profile ? profile.organizationUuid : undefined;
-        const accountUuid =
-          "accountUuid" in profile ? profile.accountUuid : undefined;
         if (
-          emailAddress !== account.email ||
+          profile.emailAddress !== account.email ||
           (organization &&
-            text(organizationUuid) &&
-            organization !== organizationUuid) ||
-          (uuid && text(accountUuid) && uuid !== accountUuid)
+            text(profile.organizationUuid) &&
+            organization !== profile.organizationUuid) ||
+          (uuid && text(profile.accountUuid) && uuid !== profile.accountUuid)
         )
           reject("identity_mismatch");
-        organization ||= text(organizationUuid);
-        uuid ||= text(accountUuid);
+        organization ||= text(profile.organizationUuid);
+        uuid ||= text(profile.accountUuid);
       }
       const observed = credentialIdentity(account.email, organization, uuid);
       if (identityPath) {
@@ -233,11 +227,7 @@ export function createAccountCheck({
         _credentialIdentity: observed,
       });
     } catch (error) {
-      if (
-        error instanceof Error &&
-        "claudeAccountValidationFailed" in error &&
-        error.claudeAccountValidationFailed
-      )
+      if ((error as AccountValidationError).claudeAccountValidationFailed)
         throw error;
       reject(
         "organization_metadata",

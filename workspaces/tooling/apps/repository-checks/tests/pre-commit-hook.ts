@@ -30,12 +30,14 @@ function command(
   program: string,
   args: string[],
   cwd: string,
-  options: import("node:child_process").SpawnSyncOptionsWithStringEncoding = {
-    encoding: "utf8",
-  },
+  options: Omit<
+    import("node:child_process").SpawnSyncOptionsWithStringEncoding,
+    "encoding"
+  > = {},
 ) {
   const result = spawnSync(program, args, {
     cwd,
+    encoding: "utf8",
     ...options,
   });
   if (result.error) throw result.error;

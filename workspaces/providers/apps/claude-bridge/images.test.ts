@@ -194,7 +194,7 @@ function codecFixture({
         info.height = h;
         return chain;
       },
-      jpeg(value: JpegOptions = {}) {
+      jpeg(value: JpegOptions) {
         info.format = "jpeg";
         options = value;
         return chain;
@@ -265,7 +265,7 @@ test("the byte budget uses a bounded search and retains its best quality within 
     height: 100,
     size: IMAGE_BYTE_BUDGET + 1,
     encode: ({ quality }) => ({
-      size: (quality ?? 0) <= 30 ? 100 : IMAGE_BYTE_BUDGET + 1,
+      size: quality! <= 30 ? 100 : IMAGE_BYTE_BUDGET + 1,
     }),
   });
   assert.equal(
@@ -330,24 +330,14 @@ test("refuses a failed encode instead of returning the original", async () => {
 });
 
 test("refuses missing dimensions", async () => {
+  // Encoding methods are omitted: the invalid metadata must refuse before encoding.
+  const codec: (bytes: Buffer) => Pick<ImagePipeline, "metadata"> = () => ({
+    metadata: async () => ({ format: "png" }),
+  });
   await assert.rejects(
     prepareClaudeImage(
       Buffer.from("header without dimensions"),
-      async () => () => ({
-        metadata: async () => ({ format: "png" }),
-        resize() {
-          assert.fail("invalid dimensions must not resize");
-        },
-        jpeg() {
-          assert.fail("invalid dimensions must not encode");
-        },
-        png() {
-          assert.fail("invalid dimensions must not encode");
-        },
-        toBuffer() {
-          assert.fail("invalid dimensions must not encode");
-        },
-      }),
+      async () => codec as ImageCodec,
     ),
     /Cannot send image.*dimensions cannot be verified/,
   );
@@ -380,10 +370,7 @@ for (const format of ["gif", "webp"] as const) {
           .extract({ left: 0, top: 0, width: 1, height: 1 })
           .raw()
           .toBuffer();
-        assert.ok(
-          (pixel[0] ?? 0) > 240 && (pixel[2] ?? 255) < 10,
-          "the first frame is red",
-        );
+        assert.ok(pixel[0] > 240 && pixel[2] < 10, "the first frame is red");
       }
     });
   }

@@ -1,4 +1,3 @@
-import { assert } from "vitest";
 import { storageKeys } from "../storageKeys";
 import { scopedStorage } from "../servers/storage";
 import { maxPreferenceKeyBytes } from "./preferenceLimits";
@@ -99,15 +98,7 @@ it("replays an uncertain head with its exact ID before a later edit after restar
     ([method]) => method === "preferences.raw_set",
   );
   expect(writes).toHaveLength(3);
-  assert(writes[0] !== undefined);
-  assert(writes[0][2] !== undefined);
-  assert(writes[1] !== undefined);
-  assert(writes[1][2] !== undefined);
   expect(writes[0][2]).toBe(writes[1][2]);
-  assert(writes[2] !== undefined);
-  assert(writes[2][2] !== undefined);
-  assert(writes[0] !== undefined);
-  assert(writes[0][2] !== undefined);
   expect(writes[2][2]).not.toBe(writes[0][2]);
   expect(error).toHaveBeenCalledOnce();
 });
@@ -289,10 +280,6 @@ it("does not enqueue an unchanged native value or discard its uncertain receipt"
     ([method]) => method === "preferences.raw_set",
   );
   expect(writes).toHaveLength(2);
-  assert(writes[0] !== undefined);
-  assert(writes[0][2] !== undefined);
-  assert(writes[1] !== undefined);
-  assert(writes[1][2] !== undefined);
   expect(writes[0][2]).toBe(writes[1][2]);
   storage.setItem("theme", "light");
   await storage.flush();
