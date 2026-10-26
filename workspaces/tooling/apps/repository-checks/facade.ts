@@ -229,7 +229,7 @@ const BOUNDARY_ALLOWLIST = [
   {
     importer: "codex-studio-tooling",
     file: "workspaces/tooling/apps/repository-checks/tests/scale-verifier-teardown.test.ts",
-    specifier: "../../../../client/apps/web/scripts/uiTeamScaleAudit.mjs",
+    specifier: "../../../../client/apps/web/scripts/uiTeamScaleAudit.ts",
     reason:
       "The offline teardown witness consumes the audit concurrency helper through its owning implementation.",
   },

@@ -4,7 +4,7 @@ import { EventEmitter } from "node:events";
 import test from "node:test";
 import type { TestContext } from "node:test";
 import type { FixtureMessage } from "./fixtures/scale-verifier-child.ts";
-import { mapLimited } from "../../../../client/apps/web/scripts/uiTeamScaleAudit.mjs";
+import { mapLimited } from "../../../../client/apps/web/scripts/uiTeamScaleAudit.ts";
 import { fileURLToPath } from "node:url";
 
 // A separate process receives real POSIX signals. Every gate is acknowledged
