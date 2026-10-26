@@ -88,7 +88,7 @@ type EditDraft = {
   revision: string;
   key: string;
   updated: number;
-  ancestors?: Array<{ key: string; revision: string }>;
+  ancestors?: Array<{ key: string; revision: string }> | undefined;
 };
 type Drafts = { active: string | null; entries: Record<string, EditDraft> };
 const dragType = "application/x-studio-queued-message";

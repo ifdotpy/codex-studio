@@ -203,7 +203,7 @@ function AccountTile({
   selected: boolean;
   disabled: boolean;
   onSelect: () => void;
-  multiple?: boolean;
+  multiple?: boolean | undefined;
   readOnly?: boolean;
 }) {
   const { remaining } = useAccountLimitView(account, { signedInOnly: false });
@@ -255,12 +255,12 @@ type AccountTilesProps = {
   showLabel?: boolean;
   visibleLabel?: string;
   accounts: Account[];
-  disabled?: boolean;
-  automatic?: boolean;
+  disabled?: boolean | undefined;
+  automatic?: boolean | undefined;
   provider?: string;
   providers?: string[];
   onProvider?: (provider: string) => void;
-  accountDisabled?: (account: Account) => boolean;
+  accountDisabled?: ((account: Account) => boolean) | undefined;
 } & (
   | { multiple?: false; value: string; onChange: (value: string) => void }
   | { multiple: true; value: string[]; onChange: (value: string[]) => void }
@@ -307,7 +307,7 @@ export function AccountTiles(p: AccountTilesProps) {
           fullWidth
           aria-label={`${p.label} provider`}
           value={provider}
-          disabled={p.disabled}
+          disabled={!!p.disabled}
           onChange={(value) => {
             setLocalProvider(value);
             p.onProvider?.(value);
