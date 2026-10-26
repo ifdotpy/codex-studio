@@ -10,6 +10,8 @@ pub mod desktop;
 pub mod federation_limits;
 pub mod idle_compaction;
 pub mod multi_server_protocol;
+pub mod pricing;
+pub mod provider_diagnostics;
 pub mod provider_input;
 pub mod provider_method_policy;
 pub mod shared_values;
