@@ -225,7 +225,7 @@ def valid_operation(value):
         return False
 
 
-def read_private_json(path):
+def read_private_bytes(path):
     """Read one bounded owner file without following a link or accepting another user's write."""
     descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
     with os.fdopen(descriptor, 'rb') as stream:
@@ -233,17 +233,21 @@ def read_private_json(path):
         if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid()
                 or info.st_mode & 0o022 or info.st_size > DELIVERY_RECORD_MAX_BYTES):
             raise DeliveryError('The delivery owner file is not a bounded, protected regular file')
-        def unique(pairs):
-            result = {}
-            for key, value in pairs:
-                if key in result:
-                    raise DeliveryError('The delivery owner file contains a duplicate field')
-                result[key] = value
-            return result
         body = stream.read(DELIVERY_RECORD_MAX_BYTES + 1)
         if len(body) > DELIVERY_RECORD_MAX_BYTES:
             raise DeliveryError('The delivery owner file exceeds its byte limit')
-        return json.loads(body, object_pairs_hook=unique)
+        return body
+
+
+def read_private_json(path):
+    def unique(pairs):
+        result = {}
+        for key, value in pairs:
+            if key in result:
+                raise DeliveryError('The delivery owner file contains a duplicate field')
+            result[key] = value
+        return result
+    return json.loads(read_private_bytes(path), object_pairs_hook=unique)
 
 
 def sync_directory(path):

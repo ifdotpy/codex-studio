@@ -121,24 +121,25 @@ def startup_backend_birth(pid):
     return None if info is None else f'{info.start_seconds}:{info.start_microseconds}'
 
 
-def _startup_open_files(output, state):
+def _startup_open_files(output, state, *, text_name='studio-runtime-server'):
     if len(output.encode()) > MAX_LAUNCH_BYTES:
         raise ValueError('Native process file data exceeds its limit')
     opened, texts, record = {}, [], {}
+    state_files = {str(state / name):name for name in STARTUP_STATE_FILES} if state is not None else {}
     def consume():
         if not all(key in record for key in ('f', 'D', 'i', 'n')):
             return
-        if (not (record['f'] == 'txt' and Path(record['n']).name == 'studio-runtime-server')
-                and record['n'] not in {str(state / name) for name in STARTUP_STATE_FILES}):
+        if (not (record['f'] == 'txt' and Path(record['n']).name == text_name)
+                and record['n'] not in state_files):
             return
         identity = {'device': int(record['D'], 16), 'inode': int(record['i'])}
-        if record['f'] == 'txt' and Path(record['n']).name == 'studio-runtime-server':
+        if record['f'] == 'txt' and Path(record['n']).name == text_name:
             texts.append(identity)
-        for name in STARTUP_STATE_FILES:
-            if record['n'] == str(state / name):
-                if name in opened and opened[name] != identity:
-                    raise ValueError('Native state file identity is ambiguous')
-                opened[name] = identity
+        name = state_files.get(record['n'])
+        if name is not None:
+            if name in opened and opened[name] != identity:
+                raise ValueError('Native state file identity is ambiguous')
+            opened[name] = identity
     for line in output.splitlines():
         if not line:
             continue
@@ -150,11 +151,7 @@ def _startup_open_files(output, state):
     return opened, texts
 
 
-def startup_backend_facts(pid, state):
-    """Fixed startup-delivery facts only. Raw launch data and credentials never leave this owner."""
-    before = startup_backend_birth(pid)
-    if before is None:
-        raise RuntimeError('The pinned startup backend has ended')
+def _darwin_executable_path(pid):
     import ctypes
     library = ctypes.CDLL('/usr/lib/libproc.dylib', use_errno=True)
     library.proc_pidpath.argtypes = [ctypes.c_int, ctypes.c_void_p, ctypes.c_uint32]
@@ -162,6 +159,31 @@ def startup_backend_facts(pid, state):
     path = ctypes.create_string_buffer(4096)  # PROC_PIDPATHINFO_MAXSIZE from libproc.h.
     if library.proc_pidpath(pid, path, len(path)) <= 0:
         raise RuntimeError('Cannot read the startup backend executable')
+    return os.fsdecode(path.value)
+
+
+def recovery_interpreter_facts(pid):
+    """Kernel interpreter image and birth only. No launch environment enters this proof."""
+    before = startup_backend_birth(pid)
+    if before is None:
+        raise RuntimeError('The recovery interpreter ended during observation')
+    executable = _darwin_executable_path(pid)
+    output = subprocess.check_output(
+        ['/usr/sbin/lsof', '-nP', '-a', '-p', str(pid), '-d', 'txt', '-FfDin'],
+        text=True, stderr=subprocess.DEVNULL, timeout=2,
+    )
+    _, texts = _startup_open_files(output, None, text_name=Path(executable).name)
+    if startup_backend_birth(pid) != before:
+        raise RuntimeError('The recovery interpreter changed during observation')
+    return {'pid':pid, 'uid':os.geteuid(), 'birth':before, 'executable':executable, 'textFiles':texts}
+
+
+def startup_backend_facts(pid, state):
+    """Fixed startup-delivery facts only. Raw launch data and credentials never leave this owner."""
+    before = startup_backend_birth(pid)
+    if before is None:
+        raise RuntimeError('The pinned startup backend has ended')
+    executable = _darwin_executable_path(pid)
     command, environment = _split_darwin_launch(_darwin_launch_data(pid))
     output = subprocess.check_output(
         ['/usr/sbin/lsof', '-nP', '-a', '-p', str(pid), '-FfDin'],
@@ -171,5 +193,5 @@ def startup_backend_facts(pid, state):
     if startup_backend_birth(pid) != before:
         raise RuntimeError('The startup backend changed during observation')
     return {'pid': pid, 'uid': os.geteuid(), 'birth': before,
-            'executable': os.fsdecode(path.value), 'argv': command,
+            'executable': executable, 'argv': command,
             'environment': environment, 'openFiles': opened, 'textFiles': texts}
