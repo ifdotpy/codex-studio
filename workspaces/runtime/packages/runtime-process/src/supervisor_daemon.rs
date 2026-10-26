@@ -587,7 +587,7 @@ impl Supervisor {
     fn recover(&self) -> Result<()> {
         let mut recovery = json!({"degraded":false,"fallbackReady":false,"blocked":null});
         for row in self.journal.handles(true)? {
-            let (outcome, detail) = if let (Some(expected), Some(pgid)) =
+            let (outcome, detail): (&str, String) = if let (Some(expected), Some(pgid)) =
                 (&row.start_time, row.pgid)
             {
                 let live_leader = inspect_start(row.pid, expected)?.0 == StartMatch::Exact;
@@ -599,15 +599,12 @@ impl Supervisor {
                 match stop_verified(row.pid, pgid, expected) {
                     Ok(outcome) => (
                         outcome.journal_outcome(),
-                        "verified process group terminated",
+                        "verified process group terminated".into(),
                     ),
-                    Err(_) => {
-                        recovery["blocked"] =
-                            json!("Could not terminate verified child process group");
-                        (
-                            "termination-failed",
-                            "Could not terminate verified child process group",
-                        )
+                    Err(error) => {
+                        let blocked = "Could not terminate verified child process group";
+                        recovery["blocked"] = json!(blocked);
+                        ("termination-failed", format!("{blocked}: {error}"))
                     }
                 }
             } else {
@@ -615,11 +612,11 @@ impl Supervisor {
                     json!("A native child is missing its recorded PID and start time");
                 (
                     "missing-identity",
-                    "Native child PID and start time were not recorded",
+                    "Native child PID and start time were not recorded".into(),
                 )
             };
             self.journal
-                .recovered(&self.saved(&row.id)?, outcome, detail, now()?)?;
+                .recovered(&self.saved(&row.id)?, outcome, &detail, now()?)?;
         }
         recovery["fallbackReady"] =
             json!(recovery["degraded"] == true && recovery["blocked"].is_null());

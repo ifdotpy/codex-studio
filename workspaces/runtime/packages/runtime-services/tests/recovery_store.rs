@@ -455,7 +455,10 @@ fn frozen_cases(corpus: Corpus) -> Vec<serde_json::Value> {
     // Adapt their agent input and expected agent output, leaving receipts intact.
     for case in &mut cases {
         case["agent"]["provider"] = json!(studio_runtime_schema::ProviderKind::Codex);
-        if let Some(history) = case["agent"]["accountHistory"].as_array_mut() {
+        if let Some(history) = case["agent"]
+            .get_mut("accountHistory")
+            .and_then(serde_json::Value::as_array_mut)
+        {
             for entry in history {
                 entry["provider"] = json!(studio_runtime_schema::ProviderKind::Codex);
             }

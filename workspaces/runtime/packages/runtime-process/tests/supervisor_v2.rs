@@ -267,7 +267,17 @@ fn restart_recovery_stops_term_ignoring_group_after_leader_exit() {
     fixture.supervisor = Some(SupervisorProcess::start(&fixture.state));
     let mut client = connect_client(&fixture.state);
     let health = client.health(HealthRequest::default()).unwrap();
-    assert!(health.recovery.blocked.is_none());
+    let row = studio_runtime_store::supervisor_journal::SupervisorJournal::open(&fixture.state.0)
+        .unwrap()
+        .handle(&fixture.handle.0)
+        .unwrap()
+        .unwrap();
+    assert!(
+        health.recovery.blocked.is_none(),
+        "{health:?}; recovery detail: {:?}; stderr: {}",
+        row.closed_reason,
+        fs::read_to_string(fixture.state.0.join("supervisor-stderr.log")).unwrap()
+    );
     assert!(health.handles.is_empty());
     assert!(
         !fixture.member_is_live(),
@@ -304,6 +314,13 @@ fn restart_recovery_with_gone_leader_preserves_unresolved_group() {
     assert_eq!(row.snapshot.generation(), fixture.opened.generation.0);
     assert!(row.closed_at.is_none());
     assert!(!row.recovery_proof);
+    assert_eq!(
+        row.closed_reason.as_deref(),
+        Some(
+            "Could not terminate verified child process group: Child leader identity is unavailable while process group members remain"
+        ),
+        "recovery must retain the exact refusal without granting close proof"
+    );
 }
 
 /// This ignored test is an executable fixture run only by the disposable
