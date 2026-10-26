@@ -11,6 +11,7 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use studio_runtime_schema::ProviderKind;
+use studio_runtime_schema::usage::{ledger::UsageLedgerRow, parse_analytics_usage_row};
 use studio_runtime_services::costs::session_cost_with_account_profiles;
 use studio_runtime_store::analytics_capture::{AnalyticsCaptureRepository, CaptureTable};
 use studio_runtime_store::{RuntimeStore, StoreError};
@@ -46,12 +47,24 @@ fn usage(
     let counts = json!({"inputTokens":tokens[0],"cachedInputTokens":tokens[1],
         "cacheWriteInputTokens":tokens[2],"outputTokens":tokens[3],
         "totalTokens":tokens[0] + tokens[3]});
-    let mut record = json!({"provider":provider,"id":id,"agentId":agent,"rootId":root,"threadId":format!("thread-{agent}"),
+    let mut record = json!({"id":id,"agentId":agent,"rootId":root,"threadId":format!("thread-{agent}"),
         "turnId":turn,"at":at,"accountKey":account,"model":model,"responseId":response,
         "last":counts,"total":counts});
     if let (Some(record), Some(extra)) = (record.as_object_mut(), extra.as_object()) {
         record.extend(extra.clone());
     }
+    // Preserve the legacy token conventions before the row loses its owner.
+    // Typed evidence lets orphan facts remain priceable without provider inference.
+    let observation = parse_analytics_usage_row(provider, &record).expect("fixture usage");
+    let ledger = UsageLedgerRow::capture(agent, record["threadId"].as_str(), observation);
+    record.as_object_mut().expect("usage row").extend(
+        serde_json::to_value(ledger)
+            .expect("typed fixture usage")
+            .as_object()
+            .expect("ledger fields")
+            .clone(),
+    );
+    UsageLedgerRow::from_typed_analytics(&record).expect("fixture receipt identity");
     record
 }
 
