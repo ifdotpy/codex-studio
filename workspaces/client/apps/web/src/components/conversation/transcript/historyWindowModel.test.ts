@@ -11,6 +11,11 @@ import {
 } from "./historyWindowModel";
 import type { HistoryGroup } from "../../turnHistoryModel";
 
+function historyItems(items: Message[]): HistoryGroup["items"] {
+  const [first, ...rest] = items;
+  return [required(first), ...rest];
+}
+
 describe("history windows", () => {
   it("keeps small native groups unchanged", () => {
     const rows: HistoryGroup[] = [
@@ -27,7 +32,7 @@ describe("history windows", () => {
     }));
     const group: HistoryGroup = {
       id: "m0",
-      items,
+      items: historyItems(items),
       outcome: "failed",
       result: required(items.at(-1)),
     };
@@ -50,7 +55,7 @@ describe("history windows", () => {
     }));
     const group: HistoryGroup = {
       id: "m0",
-      items,
+      items: historyItems(items),
       outcome: "failed",
       result: required(items.at(-1)),
     };
@@ -60,7 +65,7 @@ describe("history windows", () => {
       id: `prefix${index}`,
     }));
     const prepended = windowHistoryRows(
-      [{ ...group, id: "prefix0", items: [...prefix, ...items] }],
+      [{ ...group, id: "prefix0", items: historyItems([...prefix, ...items]) }],
       initial,
     );
     for (const old of initial)
@@ -79,7 +84,7 @@ describe("history windows", () => {
       [
         {
           ...group,
-          items: [...prefix, ...items, ...suffix],
+          items: historyItems([...prefix, ...items, ...suffix]),
           result: required(suffix.at(-1)),
         },
       ],
@@ -98,7 +103,7 @@ describe("history windows", () => {
       (item) => item.id !== "m0" && !required(initial[1]).items.includes(item),
     );
     const pruned = windowHistoryRows(
-      [{ ...group, id: required(removed[0]).id, items: removed }],
+      [{ ...group, id: required(removed[0]).id, items: historyItems(removed) }],
       initial,
     );
     expect(required(pruned[0]).id).toBe("m0");
