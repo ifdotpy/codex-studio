@@ -8,9 +8,9 @@ import type { ApiGetPath, GetResult, PostBody } from "../../src/apiTypes.ts";
 type JsonValue = components["schemas"]["JsonValue"];
 /** Indexed view of the legacy fixture documents, including fields no longer emitted. */
 export type FixtureObject = { [key: string]: JsonValue | undefined };
-export type FixtureEntity = SyncEntity &
+export type FixtureEntity = Omit<SyncEntity, "value"> &
   components["schemas"]["SyncDocument"] &
-  FixtureObject;
+  FixtureObject & { value: FixtureObject };
 type FixtureReply = FixtureObject & {
   id: string;
   ok: boolean;

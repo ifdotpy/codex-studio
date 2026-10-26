@@ -14,8 +14,8 @@ import type {
 } from "../../src/sync/subscriptions/contracts.ts";
 import { fixtureElement } from "./browser-helpers.ts";
 
-const reads = { facts: 0, auth: 0, jobs: 0 };
-const selectors: ResourceRef[] = [];
+const reads = (window.reads = { facts: 0, auth: 0, jobs: 0 });
+const selectors: ResourceRef[] = (window.selectors = []);
 const listeners = new Map<string, (version?: ResourceVersion) => void>();
 const resources = {
   watchResourceChanges(
@@ -101,13 +101,16 @@ const account = {
   provider: "claude",
   status: "signedOut",
 } as React.ComponentProps<typeof ClaudeSignIn>["account"];
-const progress = (progress: ResourceProgress) =>
-  listeners.get(JSON.stringify(progress.resource))?.({
+// The spec supplies the correlated resource/value pair at this fixture boundary.
+const progress = (window.progress = (
+  resource: ResourceProgress["resource"],
+  value: ResourceProgress["value"],
+) =>
+  listeners.get(JSON.stringify(resource))?.({
     epoch: "fixture",
     revision: 1,
-    progress,
-  });
-window.transientProgressFixture = { reads, selectors, progress, ready: false };
+    progress: { resource, value } as ResourceProgress,
+  }));
 createRoot(fixtureElement("root")).render(
   <MantineProvider>
     <ServerServicesProvider services={services as ServerServices}>
@@ -118,7 +121,7 @@ createRoot(fixtureElement("root")).render(
           backend={backend}
           onClose={() => {}}
           onDone={() => {
-            window.transientProgressFixture.ready = true;
+            window.ready = true;
           }}
         />
       ) : (
@@ -136,11 +139,9 @@ createRoot(fixtureElement("root")).render(
 );
 declare global {
   interface Window {
-    transientProgressFixture: {
-      reads: typeof reads;
-      selectors: typeof selectors;
-      progress: typeof progress;
-      ready: boolean;
-    };
+    reads: typeof reads;
+    selectors: typeof selectors;
+    progress: typeof progress;
+    ready?: boolean;
   }
 }
