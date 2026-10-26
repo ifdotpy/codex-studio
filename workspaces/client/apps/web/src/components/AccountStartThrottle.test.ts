@@ -2,8 +2,9 @@ import { expect, test } from "vitest";
 import { THROTTLE_FIELDS, accountThrottle } from "./AccountStartThrottle";
 import type { Account } from "./Accounts";
 import * as shared from "../generated/sharedValues";
+import type { ProviderKind } from "../generated/providerKind.ts";
 
-const account = (provider: "codex" | "claude", startThrottle?: object) =>
+const account = (provider: ProviderKind, startThrottle?: object) =>
   ({ id: provider, provider, startThrottle }) as unknown as Account;
 
 test("an account without settings shows its provider's generated defaults", () => {

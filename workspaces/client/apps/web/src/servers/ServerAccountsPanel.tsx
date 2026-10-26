@@ -32,6 +32,12 @@ import {
 } from "./ServerAccountLimits";
 import { AccountCapacityView, type Account } from "../components/Accounts";
 import { accountLimitView, ProviderMark } from "../components/AccountTiles";
+import { ACCOUNT_SIGN_IN_HINTS } from "../components/AccountAddDialog.tsx";
+import {
+  PROVIDER_KINDS,
+  PROVIDER_LABELS,
+  type ProviderKind,
+} from "../generated/providerKind.ts";
 import type { ServerServices } from "./serverServices";
 
 type AccountAction = Extract<ServerCommand, { action: "account-action" }>;
@@ -88,7 +94,7 @@ export default function ServerAccountsPanel({
     servicesFor,
   );
   const [adding, setAdding] = useState(false);
-  const [provider, setProvider] = useState<"codex" | "claude" | "">("");
+  const [provider, setProvider] = useState<ProviderKind | "">("");
   const [serverId, setServerId] = useState(servers[0]?.id || "local");
   const [label, setLabel] = useState("");
   const [email, setEmail] = useState("");
@@ -270,9 +276,7 @@ export default function ServerAccountsPanel({
                       <span className="account-identity">
                         <span
                           role="img"
-                          aria-label={
-                            row.provider === "claude" ? "Claude" : "Codex"
-                          }
+                          aria-label={PROVIDER_LABELS[row.provider]}
                         >
                           <ProviderMark provider={row.provider} />
                         </span>
@@ -473,24 +477,18 @@ export default function ServerAccountsPanel({
             role="group"
             aria-label="Account type"
           >
-            <button
-              type="button"
-              className={`account-provider-choice${provider === "codex" ? " selected" : ""}`}
-              aria-pressed={provider === "codex"}
-              onClick={() => setProvider("codex")}
-            >
-              <strong>Codex</strong>
-              <span>ChatGPT subscription, one-time code</span>
-            </button>
-            <button
-              type="button"
-              className={`account-provider-choice${provider === "claude" ? " selected" : ""}`}
-              aria-pressed={provider === "claude"}
-              onClick={() => setProvider("claude")}
-            >
-              <strong>Claude</strong>
-              <span>Claude subscription, link + paste code</span>
-            </button>
+            {PROVIDER_KINDS.map((kind) => (
+              <button
+                key={kind}
+                type="button"
+                className={`account-provider-choice${provider === kind ? " selected" : ""}`}
+                aria-pressed={provider === kind}
+                onClick={() => setProvider(kind)}
+              >
+                <strong>{PROVIDER_LABELS[kind]}</strong>
+                <span>{ACCOUNT_SIGN_IN_HINTS[kind]}</span>
+              </button>
+            ))}
           </div>
           <Select
             label="Server"
@@ -527,9 +525,7 @@ export default function ServerAccountsPanel({
                   provider,
                   email: email.trim() || null,
                   label:
-                    label.trim() ||
-                    email.trim() ||
-                    (provider === "claude" ? "Claude Code" : "Codex"),
+                    label.trim() || email.trim() || PROVIDER_LABELS[provider],
                   serverLabel: selected.label,
                   forceAdd: true,
                 });

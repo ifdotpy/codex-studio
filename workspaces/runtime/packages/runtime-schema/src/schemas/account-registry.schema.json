@@ -25,6 +25,12 @@
           ],
           "title": "Credentialidentity"
         },
+        "_organizationName": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "accountId": {
           "anyOf": [
             {
@@ -113,6 +119,9 @@
           "title": "Label",
           "type": "string"
         },
+        "organizationMismatch": {
+          "$ref": "#/$defs/ClaudeOrganizationMismatch"
+        },
         "plan": {
           "anyOf": [
             {
@@ -127,8 +136,7 @@
         "provider": {
           "anyOf": [
             {
-              "enum": ["codex", "claude"],
-              "type": "string"
+              "$ref": "#/$defs/ProviderKind"
             },
             {
               "type": "null"
@@ -161,15 +169,15 @@
           ],
           "title": "Status",
           "type": "string"
-        },
-        "_organizationName": {
-          "type": ["string", "null"]
-        },
-        "organizationMismatch": {
-          "$ref": "#/$defs/ClaudeOrganizationMismatch"
         }
       },
-      "required": ["id", "home", "label", "source", "status"],
+      "required": [
+        "id",
+        "home",
+        "label",
+        "source",
+        "status"
+      ],
       "title": "AccountRecord",
       "type": "object"
     },
@@ -202,7 +210,11 @@
           "x-safe-integer": "unsigned"
         }
       },
-      "required": ["burst", "pauseSeconds", "maxRunningTurns"],
+      "required": [
+        "burst",
+        "pauseSeconds",
+        "maxRunningTurns"
+      ],
       "title": "AccountStartThrottle",
       "type": "object"
     },
@@ -220,7 +232,10 @@
           "type": "string"
         }
       },
-      "required": ["id", "label"],
+      "required": [
+        "id",
+        "label"
+      ],
       "title": "ClaudeCustomModelRecord",
       "type": "object"
     },
@@ -290,6 +305,41 @@
         }
       },
       "title": "ClaudeOptionsRecord",
+      "type": "object"
+    },
+    "ClaudeOrganization": {
+      "additionalProperties": false,
+      "properties": {
+        "idSuffix": {
+          "type": "string"
+        },
+        "name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "name",
+        "idSuffix"
+      ],
+      "type": "object"
+    },
+    "ClaudeOrganizationMismatch": {
+      "additionalProperties": false,
+      "properties": {
+        "expected": {
+          "$ref": "#/$defs/ClaudeOrganization"
+        },
+        "observed": {
+          "$ref": "#/$defs/ClaudeOrganization"
+        }
+      },
+      "required": [
+        "expected",
+        "observed"
+      ],
       "type": "object"
     },
     "CodexLoginReceiptRecord": {
@@ -463,7 +513,11 @@
           "title": "Verificationurl"
         }
       },
-      "required": ["requestId", "accountKey", "status"],
+      "required": [
+        "requestId",
+        "accountKey",
+        "status"
+      ],
       "title": "CodexLoginReceiptRecord",
       "type": "object"
     },
@@ -479,7 +533,10 @@
           "type": "number"
         }
       },
-      "required": ["accountKey", "deletedAt"],
+      "required": [
+        "accountKey",
+        "deletedAt"
+      ],
       "title": "DeleteReceiptRecord",
       "type": "object"
     },
@@ -496,35 +553,21 @@
           "type": "string"
         }
       },
-      "required": ["accountKey", "label"],
+      "required": [
+        "accountKey",
+        "label"
+      ],
       "title": "NameReceiptRecord",
       "type": "object"
     },
-    "ClaudeOrganization": {
-      "additionalProperties": false,
-      "properties": {
-        "idSuffix": {
-          "type": "string"
-        },
-        "name": {
-          "type": ["string", "null"]
-        }
-      },
-      "required": ["name", "idSuffix"],
-      "type": "object"
-    },
-    "ClaudeOrganizationMismatch": {
-      "additionalProperties": false,
-      "properties": {
-        "expected": {
-          "$ref": "#/$defs/ClaudeOrganization"
-        },
-        "observed": {
-          "$ref": "#/$defs/ClaudeOrganization"
-        }
-      },
-      "required": ["expected", "observed"],
-      "type": "object"
+    "ProviderKind": {
+      "description": "The provider that owns an account and every agent on it.",
+      "enum": [
+        "codex",
+        "claude"
+      ],
+      "title": "ProviderKind",
+      "type": "string"
     }
   },
   "additionalProperties": false,
@@ -571,7 +614,11 @@
       "type": "integer"
     }
   },
-  "required": ["version", "defaultAccountKey", "accounts"],
+  "required": [
+    "version",
+    "defaultAccountKey",
+    "accounts"
+  ],
   "title": "AccountRegistryRecord",
   "type": "object"
 }

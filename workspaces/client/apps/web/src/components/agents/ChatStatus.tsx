@@ -1,4 +1,5 @@
 import { CircleAlert } from "lucide-react";
+import { providerLabel } from "../../generated/providerKind.ts";
 import type { ChatIndicator } from "../chat-status/chatStatusModel";
 import "./chat-status.css";
 import "./provider-activity.css";
@@ -18,7 +19,7 @@ export default function ChatStatus({
     return null;
   const kind = status.kind;
   const modelLabel = model
-    ? `${provider === "claude" ? "Claude" : "Codex"} · ${model}`
+    ? `${providerLabel(provider || "codex")} · ${model}`
     : "";
   const label = [status?.label, modelLabel].filter(Boolean).join(" · ");
   return (

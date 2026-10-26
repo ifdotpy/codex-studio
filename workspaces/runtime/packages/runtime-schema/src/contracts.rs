@@ -311,6 +311,64 @@ fn delivery_moment_ts() -> String {
     text
 }
 
+fn provider_kind_schema() -> Value {
+    let mut schema = schemars::schema_for!(crate::provider_kind::ProviderKind).to_value();
+    schema
+        .as_object_mut()
+        .expect("provider schema object")
+        .remove("$schema");
+    schema
+}
+
+fn provider_kind_ts() -> String {
+    let schema = provider_kind_schema();
+    let values = schema["enum"]
+        .as_array()
+        .expect("ProviderKind is a closed enum");
+    let values = values
+        .iter()
+        .map(Value::to_string)
+        .collect::<Vec<_>>()
+        .join(", ");
+    let mut text = format!(
+        "// {HEADER}\nexport const PROVIDER_KINDS = [{values}] as const;\nexport type ProviderKind = (typeof PROVIDER_KINDS)[number];\n\nexport const PROVIDER_LABELS: Record<ProviderKind, string> = {{\n"
+    );
+    for provider in crate::provider_kind::ProviderKind::ALL {
+        writeln!(
+            text,
+            "  {}: {},",
+            provider.key(),
+            json_string(provider.label())
+        )
+        .expect("String write");
+    }
+    text.push_str("};\n\nexport function isProviderKind(value: unknown): value is ProviderKind {\n  return PROVIDER_KINDS.some((provider) => provider === value);\n}\n\nexport function providerLabel(value: string): string {\n  return isProviderKind(value) ? PROVIDER_LABELS[value] : value;\n}\n");
+    text
+}
+
+// Only closed Studio provider identities belong here. Remote strings and native
+// provider-specific const schemas retain their own contracts.
+const PROVIDER_OPENAPI_SITES: &[&str] = &[
+    "/components/schemas/AgentProvider",
+    "/components/schemas/Account/properties/provider",
+    "/components/schemas/AccountTransferLeftOnSourceRecordResponse/properties/provider/anyOf/0",
+    "/components/schemas/AgentRecordResponse/properties/provider",
+    "/components/schemas/LazyAccountTransferSourceRecordResponse/properties/provider",
+    "/components/schemas/SummaryAccount/properties/provider",
+];
+
+const PROVIDER_PERSISTED_SITES: &[(&str, &str)] = &[
+    (
+        "account-registry",
+        "/$defs/AccountRecord/properties/provider/anyOf/0",
+    ),
+    (
+        "persisted-continuation-snapshot",
+        "/$defs/ContinuationAgent/properties/provider/anyOf/0",
+    ),
+    ("persisted-transfer-agent-record", "/properties/provider"),
+];
+
 fn api_schema_ts(schema_hash: &str) -> String {
     let mut text = format!(
         "export const API_SCHEMA_HASH =\n  {};\n",
@@ -890,6 +948,13 @@ pub fn render(root: &Path, with_api_types: bool) -> Result<Vec<Rendered>, String
     for (name, schema) in crate::usage::schemas() {
         openapi["components"]["schemas"][name] = schema;
     }
+    openapi["components"]["schemas"]["ProviderKind"] = provider_kind_schema();
+    for pointer in PROVIDER_OPENAPI_SITES {
+        *openapi
+            .pointer_mut(pointer)
+            .ok_or_else(|| format!("missing provider schema {pointer}"))? =
+            serde_json::json!({"$ref":"#/components/schemas/ProviderKind"});
+    }
     openapi["components"]["schemas"]["DesktopResponse"]["properties"]["backendKind"] =
         serde_json::json!({"type":"string", "const":crate::desktop::BACKEND_KIND});
     openapi["components"]["schemas"]["AnalyticsUsageRecord"]["properties"]["studioUsage"] =
@@ -929,6 +994,10 @@ pub fn render(root: &Path, with_api_types: bool) -> Result<Vec<Rendered>, String
     let web = |name: &str| format!("{WEB_GENERATED}/{name}");
     let scopes = crate::sync_protocol::entity_scopes_from_document(&openapi)?;
     let mut rendered = vec![
+        Rendered {
+            path: web("providerKind.ts"),
+            text: provider_kind_ts(),
+        },
         Rendered {
             path: "workspaces/providers/apps/claude-bridge/provider-method-policy.generated.ts"
                 .into(),
@@ -1001,6 +1070,20 @@ pub fn render(root: &Path, with_api_types: bool) -> Result<Vec<Rendered>, String
             text: linux_vm_swift(),
         },
     ];
+    for (name, pointer) in PROVIDER_PERSISTED_SITES {
+        let path =
+            format!("workspaces/runtime/packages/runtime-schema/src/schemas/{name}.schema.json");
+        let mut schema = read_json(root, &path)?;
+        *schema
+            .pointer_mut(pointer)
+            .ok_or_else(|| format!("{path}: missing provider schema {pointer}"))? =
+            serde_json::json!({"$ref":"#/$defs/ProviderKind"});
+        schema["$defs"]["ProviderKind"] = provider_kind_schema();
+        rendered.push(Rendered {
+            path,
+            text: serde_json::to_string_pretty(&schema).map_err(|error| error.to_string())? + "\n",
+        });
+    }
     // Analytics embeds the same accounting owner with local schema references.
     let usage_defs: serde_json::Value = serde_json::from_str(
         &serde_json::to_string(&crate::usage::schemas())

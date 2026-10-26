@@ -1,4 +1,12 @@
 import { expect, it } from "vitest";
+import { readFileSync } from "node:fs";
+import {
+  PROVIDER_KINDS,
+  PROVIDER_LABELS,
+  isProviderKind,
+  providerLabel,
+  type ProviderKind,
+} from "./generated/providerKind.ts";
 import { serializePrimitiveParam } from "openapi-fetch";
 import { post } from "./api";
 import type { LocalQueueItem, QueueItem } from "./components/MessageQueue";
@@ -277,9 +285,43 @@ it("serializes a typed query scalar using OpenAPI's default encoding", () => {
 // Every public account identifies its provider, including legacy Codex profiles.
 type AccountProvider =
   paths["/api/accounts"]["get"]["responses"][200]["content"]["application/json"]["accounts"][number]["provider"];
-const accountProvider: Assert<Equal<AccountProvider, "codex" | "claude">> =
-  true;
+const accountProvider: Assert<Equal<AccountProvider, ProviderKind>> = true;
 void accountProvider;
+
+const agentProvider: Assert<
+  Equal<components["schemas"]["AgentProvider"], ProviderKind>
+> = true;
+void agentProvider;
+
+it("generated provider identities agree with the OpenAPI owner and reject unknown values", () => {
+  const openapi = JSON.parse(
+    readFileSync(
+      new URL(
+        "../../../../runtime/packages/runtime-http/openapi.json",
+        import.meta.url,
+      ),
+      "utf8",
+    ),
+  );
+  expect(PROVIDER_KINDS).toEqual(openapi.components.schemas.ProviderKind.enum);
+  expect(Object.keys(PROVIDER_LABELS)).toEqual(PROVIDER_KINDS);
+  for (const provider of PROVIDER_KINDS) {
+    expect(isProviderKind(provider)).toBe(true);
+    expect(providerLabel(provider)).toBe(PROVIDER_LABELS[provider]);
+  }
+  for (const value of [
+    "future-provider",
+    "",
+    "Codex",
+    null,
+    undefined,
+    {},
+    1,
+  ]) {
+    expect(isProviderKind(value)).toBe(false);
+  }
+  expect(providerLabel("future-provider")).toBe("future-provider");
+});
 
 // Draft wire properties come from the Rust owner, including required updated.
 type DraftContract = import("./generated/rustOwned").DraftVersion;

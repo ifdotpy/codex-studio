@@ -1,5 +1,6 @@
 import { serverLocalStorage } from "../servers/storage";
 import type { Account } from "./Accounts";
+import type { ProviderKind } from "../generated/providerKind.ts";
 
 export type AccountDeleteTarget = Pick<
   Account,
@@ -7,7 +8,7 @@ export type AccountDeleteTarget = Pick<
 >;
 
 export type ExternalAccountIdentity = {
-  provider: "codex" | "claude";
+  provider: ProviderKind;
   email: string | null;
   label: string;
 };
@@ -65,8 +66,7 @@ export function accountForExternalCommand<T extends AccountDeleteTarget>(
 ) {
   return accounts.find(
     (candidate) =>
-      (candidate.provider === "claude" ? "claude" : "codex") ===
-        identity.provider &&
+      candidate.provider === identity.provider &&
       (identity.email
         ? candidate.email?.toLocaleLowerCase() ===
           identity.email.toLocaleLowerCase()

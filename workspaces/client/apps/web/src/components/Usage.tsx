@@ -1,4 +1,5 @@
 import { useSubscription } from "../sync/subscriptions";
+import { isProviderKind, providerLabel } from "../generated/providerKind.ts";
 import Disclosure from "./ui/Disclosure";
 import { useServerApi } from "../servers/ServerServicesContext";
 import { localDateTime, localTime } from "../local-time";
@@ -51,7 +52,7 @@ export type UsageAccount = Pick<Account, "label"> & {
   [Field in "email" | "plan" | "accountId"]?: Account[Field] | undefined;
 } & {
   // "openai" is the legacy label Usage still renders.
-  provider?: Account["provider"] | "openai" | undefined;
+  provider?: Account["provider"] | undefined;
   key: string;
   signedOut?: boolean;
   limits: UsageLimitSnapshot | null;
@@ -71,8 +72,7 @@ const displayAccountName = (account?: UsageAccount) =>
         label: account?.label === account?.key ? "" : account?.label || "",
         email: account?.email,
       });
-const accountProvider = (account?: UsageAccount) =>
-  account?.provider === "claude" ? "claude" : "codex";
+const accountProvider = (account?: UsageAccount) => account?.provider || "";
 
 type UsageLimitSnapshot = AccountLimitsSnapshot | Json;
 
@@ -160,16 +160,14 @@ export function readBuckets(
         id,
         name:
           (typeof data.limitName === "string" && data.limitName) ||
-          (id === "codex" ? "Codex" : id === "claude" ? "Claude" : id),
+          providerLabel(id),
         data,
         windows,
       };
     })
     .sort((a, b) => {
       const rank = (bucket: LimitBucket) =>
-        ["codex", "claude"].includes(bucket.id) ||
-        (typeof bucket.data.limitId === "string" &&
-          ["codex", "claude"].includes(bucket.data.limitId))
+        isProviderKind(bucket.id) || isProviderKind(bucket.data.limitId)
           ? 0
           : /spark/i.test(bucket.name)
             ? 2
@@ -627,14 +625,7 @@ export default function Usage({
               item.signedOut,
             );
             const current = item.key === fallbackKey;
-            const provider =
-              item.provider === "claude"
-                ? "Claude"
-                : item.provider &&
-                    item.provider !== "codex" &&
-                    item.provider !== "openai"
-                  ? item.provider
-                  : "Codex";
+            const provider = providerLabel(accountProvider(item));
             const label = humanAccountLabel(item);
             const details = [
               `${label} (${provider})${current ? ", current chat account" : ""}`,

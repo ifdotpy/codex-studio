@@ -1478,12 +1478,7 @@
             "title": "Plan"
           },
           "provider": {
-            "enum": [
-              "codex",
-              "claude"
-            ],
-            "title": "Provider",
-            "type": "string"
+            "$ref": "#/components/schemas/ProviderKind"
           },
           "source": {
             "title": "Source",
@@ -2686,11 +2681,7 @@
           "provider": {
             "anyOf": [
               {
-                "enum": [
-                  "codex",
-                  "claude"
-                ],
-                "type": "string"
+                "$ref": "#/components/schemas/ProviderKind"
               },
               {
                 "type": "null"
@@ -6665,12 +6656,7 @@
         "type": "object"
       },
       "AgentProvider": {
-        "enum": [
-          "codex",
-          "claude"
-        ],
-        "title": "AgentProvider",
-        "type": "string"
+        "$ref": "#/components/schemas/ProviderKind"
       },
       "AgentRecordResponse": {
         "additionalProperties": {
@@ -7863,13 +7849,7 @@
             "type": "string"
           },
           "provider": {
-            "default": null,
-            "enum": [
-              "codex",
-              "claude"
-            ],
-            "title": "Provider",
-            "type": "string"
+            "$ref": "#/components/schemas/ProviderKind"
           },
           "queueMutationRevision": {
             "default": null,
@@ -29024,13 +29004,7 @@
             "title": "Pendingsettingsaccountkey"
           },
           "provider": {
-            "default": null,
-            "enum": [
-              "codex",
-              "claude"
-            ],
-            "title": "Provider",
-            "type": "string"
+            "$ref": "#/components/schemas/ProviderKind"
           },
           "status": {
             "default": null,
@@ -38922,6 +38896,15 @@
         ],
         "title": "ProjectWriteRequest",
         "type": "object"
+      },
+      "ProviderKind": {
+        "description": "The provider that owns an account and every agent on it.",
+        "enum": [
+          "codex",
+          "claude"
+        ],
+        "title": "ProviderKind",
+        "type": "string"
       },
       "ProviderModel": {
         "additionalProperties": {
@@ -49757,12 +49740,7 @@
             "title": "Plan"
           },
           "provider": {
-            "enum": [
-              "codex",
-              "claude"
-            ],
-            "title": "Provider",
-            "type": "string"
+            "$ref": "#/components/schemas/ProviderKind"
           },
           "status": {
             "title": "Status",

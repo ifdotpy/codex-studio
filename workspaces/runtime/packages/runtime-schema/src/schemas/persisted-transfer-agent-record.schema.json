@@ -39,9 +39,21 @@
           "title": "Sourcethreadid"
         }
       },
-      "required": ["id", "sourceAccountKey"],
+      "required": [
+        "id",
+        "sourceAccountKey"
+      ],
       "title": "LazyTransferRecord",
       "type": "object"
+    },
+    "ProviderKind": {
+      "description": "The provider that owns an account and every agent on it.",
+      "enum": [
+        "codex",
+        "claude"
+      ],
+      "title": "ProviderKind",
+      "type": "string"
     }
   },
   "additionalProperties": {
@@ -159,9 +171,7 @@
       "type": "integer"
     },
     "provider": {
-      "enum": ["codex", "claude"],
-      "title": "Provider",
-      "type": "string"
+      "$ref": "#/$defs/ProviderKind"
     },
     "rootId": {
       "maxLength": 200,
@@ -216,7 +226,12 @@
       "title": "Workerdefaults"
     }
   },
-  "required": ["id", "rootId", "epoch", "status"],
+  "required": [
+    "id",
+    "rootId",
+    "epoch",
+    "status"
+  ],
   "title": "PersistedTransferAgentRecord",
   "type": "object"
 }
