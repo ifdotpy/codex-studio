@@ -2,7 +2,6 @@
   "extends": "../../../../../tsconfig.base.json",
   "compilerOptions": {
     "allowJs": true,
-    "lib": ["ES2024", "DOM", "DOM.Iterable"],
     "types": ["node"]
   },
   "include": ["**/*.ts"]

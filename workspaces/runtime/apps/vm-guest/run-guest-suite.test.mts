@@ -1,4 +1,4 @@
-// The leak check of the guest suite runner (run-guest-suite.mjs): it finds the processes
+// The leak check of the guest suite runner (run-guest-suite.mts): it finds the processes
 // that name the run's folder or work in it, stops them, and leaves other processes alone.
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
@@ -8,24 +8,26 @@ import path from "node:path";
 import { once } from "node:events";
 import { fileURLToPath } from "node:url";
 import { test } from "node:test";
+import type { Socket } from "node:net";
 import { createServer } from "node:net";
-import { stopSuiteProcesses, suiteProcesses } from "./run-guest-suite.mjs";
+import { stopSuiteProcesses, suiteProcesses } from "./run-guest-suite.mts";
 
 const WAIT = "process.stdin.resume(); process.send('ready')";
 
-async function start(args, cwd) {
+async function start(args: string[], cwd: string) {
   const child = spawn(process.execPath, args, {
     cwd,
     detached: true,
     stdio: ["pipe", "ignore", "ignore", "ipc"],
   });
-  child.exited = once(child, "exit");
+  const exited = once(child, "exit");
+  assert.ok(child.pid);
   await once(child, "message");
   child.disconnect();
-  return child;
+  return Object.assign(child, { exited, pid: child.pid });
 }
 
-function alive(pid) {
+function alive(pid: number) {
   try {
     process.kill(pid, 0);
     return true;
@@ -52,6 +54,7 @@ test(
       start(["-e", WAIT], outside),
     ]);
     const [named, working, stubborn, other] = children.map(({ pid }) => pid);
+    assert.ok(named && working && stubborn && other);
     try {
       const found = suiteProcesses(folder).map(({ pid }) => pid);
       for (const pid of [named, working, stubborn])
@@ -85,7 +88,7 @@ test(
 
 test("cases within one module overlap and keep ordered output, failures and skips", async (t) => {
   const folder = mkdtempSync(path.join(os.tmpdir(), "guest-modules-"));
-  const peers = [];
+  const peers: Socket[] = [];
   const barrier = createServer((peer) => {
     peers.push(peer);
     if (peers.length === 2) peers.forEach((socket) => socket.end("ready"));
@@ -97,12 +100,14 @@ test("cases within one module overlap and keep ordered output, failures and skip
     barrier.close();
     rmSync(folder, { recursive: true, force: true });
   });
+  const address = barrier.address();
+  assert.ok(address && typeof address !== "string");
   writeFileSync(
     path.join(folder, "test_a.py"),
     `import os,socket,sys,unittest
 class A(unittest.TestCase):
  def setUp(self):
-  with socket.create_connection(('127.0.0.1',${barrier.address().port}),timeout=5) as peer:
+  with socket.create_connection(('127.0.0.1',${address.port}),timeout=5) as peer:
    self.assertEqual(peer.recv(5),b'ready')
  def test_fail(self): self.fail('case failure')
  @unittest.skip('fixture')

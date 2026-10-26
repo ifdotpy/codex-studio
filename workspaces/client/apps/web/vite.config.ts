@@ -1,3 +1,7 @@
+import type {
+  ShellManifest,
+  RendererManifest,
+} from "./scripts/build-manifests.ts";
 import { defineConfig } from "vite";
 import { readFile } from "node:fs/promises";
 import { createHash } from "node:crypto";
@@ -54,7 +58,7 @@ export default defineConfig({
             version: 1,
             build,
             apiSchema: API_SCHEMA_HASH,
-          }),
+          } satisfies RendererManifest),
         });
         const initial = new Set<string>([
           "/",
@@ -70,8 +74,10 @@ export default defineConfig({
         };
         for (const match of String(html.source).matchAll(
           /(?:src|href)="\.\/([^"?#]+)"/g,
-        ))
-          visit(match[1]);
+        )) {
+          const name = match[1];
+          if (name) visit(name);
+        }
         // The shared Rust parser must be available on the first offline load.
         for (const name of Object.keys(bundle)) {
           if (name.endsWith(".wasm")) visit(name);
@@ -87,7 +93,7 @@ export default defineConfig({
         this.emitFile({
           type: "asset",
           fileName: "studio-sw.js",
-          source: `self.STUDIO_SHELL = ${JSON.stringify({ build, initial: [...initial], allowed })};\n${worker}`,
+          source: `self.STUDIO_SHELL = ${JSON.stringify({ build, initial: [...initial], allowed } satisfies ShellManifest)};\n${worker}`,
         });
       },
     },
