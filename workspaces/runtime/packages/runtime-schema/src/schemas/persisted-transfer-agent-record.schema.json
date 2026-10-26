@@ -230,7 +230,8 @@
     "id",
     "rootId",
     "epoch",
-    "status"
+    "status",
+    "provider"
   ],
   "title": "PersistedTransferAgentRecord",
   "type": "object"

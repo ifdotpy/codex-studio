@@ -432,15 +432,7 @@
           "title": "Parentid"
         },
         "provider": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/ProviderKind"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "title": "Provider"
+          "$ref": "#/$defs/ProviderKind"
         },
         "rootId": {
           "maxLength": 4096,
@@ -522,7 +514,8 @@
         "id",
         "rootId",
         "epoch",
-        "status"
+        "status",
+        "provider"
       ],
       "title": "ContinuationAgent",
       "type": "object"

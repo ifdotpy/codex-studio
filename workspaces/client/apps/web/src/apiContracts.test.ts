@@ -323,6 +323,30 @@ it("generated provider identities agree with the OpenAPI owner and reject unknow
   expect(providerLabel("future-provider")).toBe("future-provider");
 });
 
+it("persisted provider identities require the generated closed contract", () => {
+  for (const [name, definition] of [
+    ["account-registry", "AccountRecord"],
+    ["persisted-continuation-snapshot", "ContinuationAgent"],
+    ["persisted-transfer-agent-record", null],
+  ]) {
+    const schema = JSON.parse(
+      readFileSync(
+        new URL(
+          `../../../../runtime/packages/runtime-schema/src/schemas/${name}.schema.json`,
+          import.meta.url,
+        ),
+        "utf8",
+      ),
+    );
+    const record = definition ? schema.$defs[definition] : schema;
+    expect(record.required).toContain("provider");
+    expect(record.properties.provider).toEqual({
+      $ref: "#/$defs/ProviderKind",
+    });
+    expect(schema.$defs.ProviderKind.enum).toEqual(PROVIDER_KINDS);
+  }
+});
+
 // Draft wire properties come from the Rust owner, including required updated.
 type DraftContract = import("./generated/rustOwned").DraftVersion;
 const draftContract: DraftContract = {

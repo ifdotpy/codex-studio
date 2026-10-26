@@ -357,16 +357,13 @@ const PROVIDER_OPENAPI_SITES: &[&str] = &[
     "/components/schemas/SummaryAccount/properties/provider",
 ];
 
-const PROVIDER_PERSISTED_SITES: &[(&str, &str)] = &[
-    (
-        "account-registry",
-        "/$defs/AccountRecord/properties/provider/anyOf/0",
-    ),
+const PROVIDER_PERSISTED_RECORDS: &[(&str, &str)] = &[
+    ("account-registry", "/$defs/AccountRecord"),
     (
         "persisted-continuation-snapshot",
-        "/$defs/ContinuationAgent/properties/provider/anyOf/0",
+        "/$defs/ContinuationAgent",
     ),
-    ("persisted-transfer-agent-record", "/properties/provider"),
+    ("persisted-transfer-agent-record", ""),
 ];
 
 fn api_schema_ts(schema_hash: &str) -> String {
@@ -1070,14 +1067,20 @@ pub fn render(root: &Path, with_api_types: bool) -> Result<Vec<Rendered>, String
             text: linux_vm_swift(),
         },
     ];
-    for (name, pointer) in PROVIDER_PERSISTED_SITES {
+    for (name, pointer) in PROVIDER_PERSISTED_RECORDS {
         let path =
             format!("workspaces/runtime/packages/runtime-schema/src/schemas/{name}.schema.json");
         let mut schema = read_json(root, &path)?;
-        *schema
+        let record = schema
             .pointer_mut(pointer)
-            .ok_or_else(|| format!("{path}: missing provider schema {pointer}"))? =
-            serde_json::json!({"$ref":"#/$defs/ProviderKind"});
+            .ok_or_else(|| format!("{path}: missing provider record {pointer}"))?;
+        record["properties"]["provider"] = serde_json::json!({"$ref":"#/$defs/ProviderKind"});
+        let required = record["required"]
+            .as_array_mut()
+            .ok_or_else(|| format!("{path}: missing required record fields {pointer}"))?;
+        if !required.iter().any(|field| field == "provider") {
+            required.push(serde_json::json!("provider"));
+        }
         schema["$defs"]["ProviderKind"] = provider_kind_schema();
         rendered.push(Rendered {
             path,
@@ -1269,6 +1272,43 @@ pub fn repository_root() -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn persisted_provider_identity_requires_a_known_provider() {
+        for (name, pointer) in PROVIDER_PERSISTED_RECORDS {
+            let path = format!(
+                "workspaces/runtime/packages/runtime-schema/src/schemas/{name}.schema.json"
+            );
+            let schema = read_json(&repository_root(), &path).expect("persisted schema");
+            let record = schema.pointer(pointer).expect("persisted record schema");
+            let contract = serde_json::json!({"$defs":schema["$defs"],"allOf":[record]});
+            let validator = jsonschema::validator_for(&contract).expect("record schema compiles");
+            let mut record = if *name == "account-registry" {
+                serde_json::json!({"id":"account","home":"/account","label":"Account","source":"fixture","status":"ready"})
+            } else {
+                serde_json::json!({"id":"agent","rootId":"agent","epoch":0,"status":"idle"})
+            };
+            assert!(
+                !validator.is_valid(&record),
+                "{name} must reject missing provider"
+            );
+            for provider in crate::provider_kind::ProviderKind::ALL {
+                record["provider"] = serde_json::json!(provider);
+                assert!(validator.is_valid(&record), "{name}: {provider}");
+            }
+            for invalid in [
+                serde_json::Value::Null,
+                serde_json::json!("future-provider"),
+            ] {
+                record["provider"] = invalid;
+                assert!(
+                    !validator.is_valid(&record),
+                    "{name} must reject {}",
+                    record["provider"]
+                );
+            }
+        }
+    }
 
     #[test]
     fn bridge_wire_preserves_omission_and_explicit_model_null() {

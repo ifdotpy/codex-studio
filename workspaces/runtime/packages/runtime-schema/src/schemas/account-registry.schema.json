@@ -134,15 +134,7 @@
           "title": "Plan"
         },
         "provider": {
-          "anyOf": [
-            {
-              "$ref": "#/$defs/ProviderKind"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "title": "Provider"
+          "$ref": "#/$defs/ProviderKind"
         },
         "source": {
           "title": "Source",
@@ -176,7 +168,8 @@
         "home",
         "label",
         "source",
-        "status"
+        "status",
+        "provider"
       ],
       "title": "AccountRecord",
       "type": "object"
