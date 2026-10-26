@@ -407,8 +407,7 @@ try {
         app.__testOpen = file;
         return "";
       };
-      const main = BrowserWindow.getAllWindows()[0];
-      main!.previewFile = (file) => {
+      BrowserWindow.getAllWindows()[0].previewFile = (file) => {
         app.__testPreview = file;
       };
     },
