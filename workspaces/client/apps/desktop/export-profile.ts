@@ -207,15 +207,20 @@ async function main() {
         void transferFailed.catch(() => {});
         window.webContents.debugger.on(
           "message",
-          async (_event, method, params, sessionId) => {
+          async (_event, method, params: unknown, sessionId) => {
             if (
               method !== "Runtime.bindingCalled" ||
+              !params ||
+              typeof params !== "object" ||
+              !("name" in params) ||
               params.name !== "studioExportChunk"
             )
               return;
             let requestId: number | undefined;
             let result: ChunkReply;
             try {
+              if (!("payload" in params) || typeof params.payload !== "string")
+                throw new Error("Invalid migration chunk.");
               if (Buffer.byteLength(params.payload) > 64 * 1024 * 1024 + 1024)
                 throw new Error("Migration chunk is too large.");
               const payload: unknown = JSON.parse(params.payload);
@@ -278,14 +283,22 @@ async function main() {
                 "Runtime.evaluate",
                 {
                   expression: `window.__studioExportReplies.get(${JSON.stringify(requestId)})?.(${JSON.stringify(result)})`,
-                  contextId: params.executionContextId,
+                  contextId:
+                    "executionContextId" in params
+                      ? params.executionContextId
+                      : undefined,
                 },
                 // Electron reports the root session as an empty string, but
                 // sendCommand accepts only an omitted id for that session.
                 sessionId || undefined,
               )
-              .then((response) => {
-                if (response.exceptionDetails)
+              .then((response: unknown) => {
+                if (
+                  response &&
+                  typeof response === "object" &&
+                  "exceptionDetails" in response &&
+                  response.exceptionDetails
+                )
                   throw new Error(
                     "The profile reader rejected a chunk acknowledgement.",
                   );
