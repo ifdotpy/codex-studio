@@ -982,9 +982,13 @@ pub fn render(root: &Path, with_api_types: bool) -> Result<Vec<Rendered>, String
             .into_generator();
         generator.subschema_for::<crate::provider_input::ToolDefinition>();
         generator.subschema_for::<crate::idle_compaction::CacheReport>();
+        let mut schemas = generator.take_definitions(true);
+        for name in ["RateLimitBucketDto", "RateLimitWindowDto", "JsonValue"] {
+            schemas.insert(name.into(), openapi["components"]["schemas"][name].clone());
+        }
         let document = serde_json::json!({
             "openapi":"3.1.0", "info":{"title":"Bridge runtime contracts","version":"1"},
-            "paths":{}, "components":{"schemas":generator.take_definitions(true)}
+            "paths":{}, "components":{"schemas":schemas}
         });
         rendered.push(Rendered {
             path: "workspaces/providers/apps/claude-bridge/runtime-contract.generated.ts".into(),
@@ -1026,6 +1030,8 @@ pub fn render(root: &Path, with_api_types: bool) -> Result<Vec<Rendered>, String
             .for_serialize()
             .with(|settings| settings.definitions_path = "/components/schemas".into())
             .into_generator();
+        generator.subschema_for::<crate::supervisor_contract::HealthResult>();
+        generator.subschema_for::<crate::supervisor_contract::SupervisorHandshakeV2Result>();
         generator.subschema_for::<crate::provider_diagnostics::StdinTimingDiagnostic>();
         generator.subschema_for::<crate::provider_diagnostics::ReplyTimingDiagnostic>();
         generator.subschema_for::<studio_client_domain::protocol::Request>();
