@@ -22,7 +22,7 @@ import type {
   ControlReceipt,
   JournalRepairReport,
 } from "./session-state.ts";
-import type { UsageObservation } from "./usage-contract.generated.mjs";
+import type { UsageObservation } from "./usage-contract.generated.ts";
 import type {
   CacheReport,
   ToolDefinition,
@@ -30,7 +30,7 @@ import type {
 import type {
   HUMAN_INPUT,
   STUDIO_EVENT_INPUT,
-} from "./input-origin.generated.mjs";
+} from "./input-origin.generated.ts";
 import type { MoveProof } from "./move.ts";
 import type { ExternalServer, CatalogDependencies } from "./move-external.ts";
 
