@@ -48,14 +48,20 @@ function Harness() {
     createdAt: "2026-09-10",
   }));
   // The preview fixture's no-op add callback omits its Promise result.
-  const attachmentProps = {
+  type AttachmentProps = ComponentProps<typeof ComposerAttachments>;
+  type PreviewAttachmentProps = Omit<AttachmentProps, "add"> & {
+    add: (
+      ...files: Parameters<AttachmentProps["add"]>
+    ) => ReturnType<AttachmentProps["add"]> | void;
+  };
+  const attachmentProps: PreviewAttachmentProps = {
     notify: () => {},
     assets: [asset],
     uploading: false,
     disabled: false,
     add: () => {},
     remove: () => {},
-  } as ComponentProps<typeof ComposerAttachments>;
+  };
   return (
     <MantineProvider forceColorScheme={theme}>
       <main>
@@ -75,7 +81,7 @@ function Harness() {
             onJump={() => {}}
           />
         </div>
-        <ComposerAttachments {...attachmentProps} />
+        <ComposerAttachments {...(attachmentProps as AttachmentProps)} />
         <MessageAttachments assets={[asset]} notify={() => {}} />
       </main>
     </MantineProvider>
