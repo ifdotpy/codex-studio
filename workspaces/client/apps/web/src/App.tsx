@@ -717,6 +717,11 @@ export default function App({ active = true }: { active?: boolean }) {
     },
   });
   const panePath = rowLayout.panePath;
+  const sidebarExpanded = panePath
+    ? !!panePath.panes.sidebar
+    : sidebarCompact
+      ? sidebar
+      : !sidebarCollapsed;
   paneActive.current = !!panePath;
   paneNavigation.current = {
     panel: panePath?.panelKind ?? null,
@@ -2867,7 +2872,7 @@ export default function App({ active = true }: { active?: boolean }) {
         sidebar={{
           id: "sidebar-toggle",
           label: sidebarCompact ? "Back to chats" : "Toggle conversations",
-          expanded: sidebarCompact ? sidebar : !sidebarCollapsed,
+          expanded: sidebarExpanded,
           onClick: toggleSidebar,
         }}
         messages={{
@@ -2908,7 +2913,7 @@ export default function App({ active = true }: { active?: boolean }) {
                   variant="subtle"
                   size="compact-xs"
                   aria-label="Back to chats"
-                  aria-expanded={sidebar}
+                  aria-expanded={sidebarExpanded}
                   onClick={toggleSidebar}
                   leftSection={<ArrowLeft size={18} />}
                 >
@@ -2918,7 +2923,7 @@ export default function App({ active = true }: { active?: boolean }) {
                 <ActionIcon
                   id="sidebar-toggle"
                   aria-label="Toggle conversations"
-                  aria-expanded={sidebarCompact ? sidebar : !sidebarCollapsed}
+                  aria-expanded={sidebarExpanded}
                   onClick={toggleSidebar}
                 >
                   <PanelLeft size={18} />

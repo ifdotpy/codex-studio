@@ -41,7 +41,9 @@ for (const paired of [false, true]) {
         ).toBeVisible();
         if (width === 951) {
           await expect(
-            page.locator('#sidebar[data-presentation="inline"]'),
+            page.locator(
+              `#sidebar[data-presentation="${paired ? "inline" : "path"}"]`,
+            ),
           ).toBeVisible();
           const rail = page.getByRole("navigation", {
             name: "Conversation actions",

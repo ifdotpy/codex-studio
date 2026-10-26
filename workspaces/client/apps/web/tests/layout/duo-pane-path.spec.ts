@@ -466,9 +466,10 @@ test("Picking a chat from the native closed sidebar returns to the conversation"
     });
     await page.setViewportSize({ width: 390, height: 844 });
     await expect(page.locator(".workspace")).toBeVisible();
-    await page
-      .getByRole("button", { name: "Toggle conversations", exact: true })
-      .click();
+    const toggle = page.locator(".workspace #sidebar-toggle");
+    await expect(toggle).toHaveAttribute("aria-expanded", "false");
+    await toggle.click();
+    await expect(toggle).toHaveAttribute("aria-expanded", "true");
     await expect(page.locator("#sidebar")).toBeVisible();
     await expect(page.locator(".workspace")).toBeHidden();
     await page
@@ -479,6 +480,7 @@ test("Picking a chat from the native closed sidebar returns to the conversation"
       .first()
       .click();
     await expect(page.locator("#sidebar")).toBeHidden();
+    await expect(toggle).toHaveAttribute("aria-expanded", "false");
     await expect(page.locator(".workspace")).toBeVisible();
     await expect(page.locator("#message")).toHaveValue(
       "Keep the closed-display draft",
