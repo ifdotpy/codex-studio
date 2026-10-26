@@ -23,6 +23,15 @@ import type {
 
 // Fixture events share the transport but are not part of the production protocol.
 export interface BridgeFixtureNotifications {
+  "fixture/mode": {
+    mode: import("@anthropic-ai/claude-agent-sdk").PermissionMode;
+  };
+  "fixture/options": {
+    allowed: boolean;
+    mode: import("@anthropic-ai/claude-agent-sdk").PermissionMode;
+  };
+  "fixture/permission": import("@anthropic-ai/claude-agent-sdk").PermissionResult;
+  "fixture/second-permission": import("@anthropic-ai/claude-agent-sdk").PermissionResult;
   "fixture/input": { text: string } | SDKUserMessage["message"];
   "fixture/signal": { name: string };
   "fixture/result-ready": { token: string };

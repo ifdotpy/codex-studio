@@ -33,7 +33,7 @@ const complaint = {
   needsUserResponse: true,
   created: 1,
 } satisfies Complaint;
-const request = {
+const request: Request = {
   id: "question",
   agent: "lead",
   method: "item/tool/requestUserInput",

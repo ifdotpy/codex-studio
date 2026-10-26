@@ -51,7 +51,7 @@ async fn seed(store: &RuntimeStore, tables: Tables) {
         .transaction(move |tx| {
             for (id, record, output, offset) in tables.user_terminals {
                 tx.execute(
-                    "INSERT INTO user_terminals VALUES(?1,?2,?3,?4)",
+                    "INSERT INTO user_terminals(id,record,output,offset) VALUES(?1,?2,?3,?4)",
                     rusqlite::params![id, record, output, offset],
                 )?;
             }
@@ -86,7 +86,13 @@ async fn seed(store: &RuntimeStore, tables: Tables) {
 }
 
 fn python_table_rows(connection: &rusqlite::Connection, table: &str) -> Vec<Vec<Value>> {
-    let sql = format!("SELECT * FROM \"{table}\" ORDER BY rowid");
+    // The Python oracle predates the Rust-owned output_generation column.
+    let columns = if table == "user_terminals" {
+        "id,record,output,offset"
+    } else {
+        "*"
+    };
+    let sql = format!("SELECT {columns} FROM \"{table}\" ORDER BY rowid");
     let mut statement = connection
         .prepare(&sql)
         .expect("prepare Python-written table");
