@@ -348,10 +348,13 @@ mod tests {
         Command::new("kill")
             .args(["-0", pid])
             .stderr(Stdio::null())
-            .status()
+            .spawn()
+            .and_then(|mut probe| probe.wait())
             .is_ok_and(|status| status.success())
     }
 
+    // A plain test thread, not a Tokio worker, waits here.
+    #[allow(clippy::disallowed_methods)]
     fn wait_until(mut done: impl FnMut() -> bool) -> bool {
         let deadline = Instant::now() + Duration::from_secs(5);
         while Instant::now() < deadline {
@@ -376,11 +379,8 @@ mod tests {
             ),
         )
         .expect("fake tool");
-        Command::new("chmod")
-            .arg("+x")
-            .arg(&tool)
-            .status()
-            .expect("chmod");
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&tool, std::fs::Permissions::from_mode(0o755)).expect("chmod");
         let running = run(&tool, &["-R".into(), "name=a b".into()]).expect("started");
         assert!(wait_until(
             || std::fs::read_to_string(&pid_file).is_ok_and(|pid| !pid.trim().is_empty())
