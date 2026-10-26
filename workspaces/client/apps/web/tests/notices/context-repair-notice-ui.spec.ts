@@ -59,8 +59,6 @@ test("Context repair notice ui", async ({
     const agent: Agent = {
       id: "fixture",
       name: "Fixture",
-      // @ts-expect-error Legacy source value is deliberately preserved by this presentation fixture.
-      source: "native",
       status: "queued",
       model: "gpt-6-astra",
       created: 1,
