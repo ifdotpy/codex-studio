@@ -49,9 +49,7 @@ declare global {
   interface Window {
     syncHttpConnectionBudgetBrowserFixturePrefetchTranscript: typeof import("../../src/sync/client.ts").prefetchTranscript;
     syncHttpConnectionBudgetBrowserFixtureDurableSend: typeof import("../../src/sync/send.ts").durableSend;
-    syncHttpConnectionBudgetBrowserFixtureSnapshot: ReturnType<
-      typeof import("../../src/hooks.ts").useSnapshot
-    >;
+    syncHttpConnectionBudgetBrowserFixtureSnapshot: import("./browser-helpers.ts").FixtureSnapshot;
     syncHttpConnectionBudgetBrowserFixtureMount: (selected: string) => void;
     syncHttpConnectionBudgetBrowserFixtureRefresh: Promise<unknown>;
     syncHttpConnectionBudgetBrowserFixtureWarm: Promise<unknown>;

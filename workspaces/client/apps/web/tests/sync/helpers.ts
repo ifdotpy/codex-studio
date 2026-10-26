@@ -3,9 +3,8 @@ import { expect } from "../playwright.ts";
 
 /** Vite binds an ephemeral TCP port for every isolated sync fixture. */
 export function fixtureOrigin(server: ViteDevServer, host = "127.0.0.1") {
-  const address = server.httpServer?.address();
-  if (!address || typeof address === "string")
-    throw new Error("Sync fixture TCP address unavailable");
+  const address =
+    server.httpServer!.address() as import("node:net").AddressInfo;
   return `http://${host}:${address.port}`;
 }
 
@@ -54,13 +53,9 @@ export async function readDraftDocuments(origin: string) {
   const response = await fetch(
     `${origin}/api/sync/pull?scope=drafts&after=0&limit=100`,
   );
-  const page: import("../playwright.ts").SyncPullResponse =
+  const page: { documents: import("../../src/sync/client.ts").SyncDocument[] } =
     await response.json();
-  return page.documents.map((document) => {
-    if (!("payload" in document))
-      throw new Error("Draft pull returned an entity");
-    return document;
-  });
+  return page.documents;
 }
 
 /** Existing pull fixtures omit the default generation and storage tombstone flag. */
