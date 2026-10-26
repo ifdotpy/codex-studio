@@ -23,6 +23,8 @@ import type {
 
 // Fixture events share the transport but are not part of the production protocol.
 export interface BridgeFixtureNotifications {
+  "fixture/callback": { value?: unknown; error?: string; decodes: number };
+  "fixture/clockVisits": { phase: string; visits: number; at: number };
   "fixture/mode": {
     mode: import("@anthropic-ai/claude-agent-sdk").PermissionMode;
   };
@@ -72,9 +74,7 @@ function hasMethod<M extends BridgeNote["method"]>(
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
-function parseBridgeMessage<M extends BridgeMethod>(
-  value: unknown,
-): BridgeNote | BridgeResponse<BridgeResult<M>> {
+function parseBridgeMessage(value: unknown): BridgeNote | BridgeResponse {
   if (!isRecord(value)) throw new Error("Invalid bridge message envelope");
   const validId = typeof value.id === "string" || typeof value.id === "number";
   if (typeof value.method === "string") {
@@ -82,24 +82,24 @@ function parseBridgeMessage<M extends BridgeMethod>(
       throw new Error("Invalid bridge notification envelope");
   } else if (
     !validId ||
-    (!("result" in value) &&
-      !(
-        isRecord(value.error) &&
-        typeof value.error.message === "string" &&
-        typeof value.error.code === "number"
-      ))
+    "result" in value === "error" in value ||
+    ("error" in value &&
+      (!isRecord(value.error) ||
+        typeof value.error.message !== "string" ||
+        typeof value.error.code !== "number"))
   ) {
     throw new Error("Invalid bridge response envelope");
   }
   // The child is the copied program under test and its scripted SDK fixture.
   // Their payloads use the TypeScript protocol owner; this boundary checks the
   // envelope and trusts those controlled producers for the payload fields.
-  return value as BridgeNote | BridgeResponse<BridgeResult<M>>;
+  return value as BridgeNote | BridgeResponse;
 }
 
-// Maximum simulated wait and per-step advancement, both in milliseconds.
-const VIRTUAL_NOTIFICATION_BUDGET_MS = 10_000;
+// Virtual milliseconds per clock step.
 const VIRTUAL_STEP_MS = 10;
+// Longest real wait for a new bridge line between two clock steps.
+const REAL_STEP_WAIT_MS = 10;
 const BRIDGE = path.join(path.dirname(fileURLToPath(import.meta.url)), "..");
 import { HANG_GUARD_MS } from "./file-signals.ts";
 export { HANG_GUARD_MS };
@@ -189,11 +189,13 @@ export async function startBridge(
   // One exit observation per launched child, registered at spawn so cleanup can
   // never miss an exit that already happened (including a signal exit).
   let exited: Promise<void>;
+  // Closed stdio means every bridge line has been read.
+  let closed: Promise<void>;
   let stderr = "";
   const notes: BridgeNote[] = [];
   const waiting = new Map<
     BridgeRpcId,
-    { resolve: (value: unknown) => void; reject: (error: Error) => void }
+    { resolve: (value: BridgeResponse) => void; reject: (error: Error) => void }
   >();
   const notifications = new Set<() => void>();
   const attach = () => {
@@ -201,6 +203,9 @@ export async function startBridge(
     const attached = child;
     exited = new Promise<void>((resolve) =>
       attached.once("exit", () => resolve()),
+    );
+    closed = new Promise<void>((resolve) =>
+      attached.once("close", () => resolve()),
     );
     child.stderr?.on("data", (chunk) => (stderr += chunk));
     child.once("close", () => {
@@ -214,7 +219,7 @@ export async function startBridge(
         const value: unknown = JSON.parse(line);
         const message = parseBridgeMessage(value);
         if ("method" in message) notes.push(message);
-        else waiting.get(message.id)?.resolve(value);
+        else waiting.get(message.id)?.resolve(message);
         for (const notify of notifications) notify();
       },
     );
@@ -241,17 +246,39 @@ export async function startBridge(
         ? methodOrPredicate
         : (entry: BridgeNote) =>
             hasMethod(entry, methodOrPredicate) && (!filter || filter(entry));
-    // Drive virtual time while disk and RPC work completes; no wall-clock polls.
-    for (
-      let elapsed = 0;
-      elapsed < VIRTUAL_NOTIFICATION_BUDGET_MS;
-      elapsed += VIRTUAL_STEP_MS
-    ) {
+    // Drive virtual time while real disk and RPC work completes. That work
+    // takes real time, so the deadline is real time, not a step count, and
+    // each step waits for a new bridge line or a short real interval.
+    const deadline = performance.now() + HANG_GUARD_MS;
+    for (;;) {
       const found = notes.find(predicate);
       if (found) return found;
+      if (childExited()) {
+        // An exited bridge cannot produce the notification. Read its last
+        // lines, then fail at once instead of at the deadline.
+        await waitReal(closed, deadline - performance.now());
+        const last = notes.find(predicate);
+        if (last) return last;
+        throw new Error(
+          `notification missing: bridge exited (code ${child.exitCode}, signal ${child.signalCode})\n` +
+            stderr,
+        );
+      }
+      if (performance.now() >= deadline)
+        throw new Error("notification missing after deadline\n" + stderr);
       await bridge.advanceTime(VIRTUAL_STEP_MS);
+      const line = new Promise<void>((resolve) => {
+        const done = () => {
+          notifications.delete(done);
+          resolve();
+        };
+        notifications.add(done);
+      });
+      await waitReal(line, REAL_STEP_WAIT_MS);
     }
-    throw new Error("notification missing after virtual deadline\n" + stderr);
+  }
+  function childExited() {
+    return child.exitCode !== null || child.signalCode !== null;
   }
   function note<N extends BridgeNote>(
     predicate: (note: BridgeNote) => note is N,
@@ -317,10 +344,10 @@ export async function startBridge(
       });
     },
     async advanceTime(ms: number) {
-      if (child.exitCode !== null) return;
+      if (childExited()) return;
       const controller = new AbortController();
       const timer = setTimeout(
-        () => controller.abort(new Error("virtual clock hung")),
+        () => controller.abort(new Error("virtual clock hung\n" + stderr)),
         HANG_GUARD_MS,
       );
       try {
@@ -347,16 +374,15 @@ export async function startBridge(
       try {
         const result = await new Promise<BridgeResult<M>>((resolve, reject) => {
           waiting.set(id, {
-            resolve(value) {
-              const message = parseBridgeMessage<M>(value);
-              if ("method" in message) return;
+            resolve(message) {
               if ("error" in message)
                 reject(
                   Object.assign(new Error(message.error.message), {
                     data: message.error.data,
                   }),
                 );
-              else resolve(message.result);
+              // The decoded id selects this call's result contract.
+              else resolve(message.result as BridgeResult<M>);
             },
             reject,
           });
@@ -416,7 +442,7 @@ export async function startBridge(
       // Bounded shutdown timers run on the virtual clock; advance it until exit.
       // A clock that can no longer be driven cannot finish the child: reap it.
       if (clock)
-        while (child.exitCode === null && child.signalCode === null)
+        while (!childExited())
           try {
             await bridge.advanceTime(VIRTUAL_STEP_MS);
           } catch {
@@ -439,3 +465,16 @@ export async function startBridge(
 }
 
 export type BridgeHarness = Awaited<ReturnType<typeof startBridge>>;
+
+// Resolves when the promise settles or after ms of real time.
+async function waitReal(promise: Promise<void>, ms: number) {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    await Promise.race([
+      promise,
+      new Promise<void>((resolve) => (timer = setTimeout(resolve, ms))),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
+}

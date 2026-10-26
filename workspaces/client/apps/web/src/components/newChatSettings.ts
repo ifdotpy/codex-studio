@@ -191,7 +191,11 @@ export function isNewChatSettings(value: unknown): value is NewChatSettings {
   return (
     review === undefined ||
     (record(review) &&
-      Object.keys(review).length === 2 &&
+      Object.keys(review).every((key) =>
+        ["model", "effort", "fast_mode"].includes(key),
+      ) &&
+      (review.fast_mode === undefined ||
+        typeof review.fast_mode === "boolean") &&
       nullableName(review.model) &&
       nullableName(review.effort))
   );

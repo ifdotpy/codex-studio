@@ -4,6 +4,7 @@ import { MantineProvider } from "@mantine/core";
 import { beforeEach, expect, test, vi } from "vitest";
 import { ExecutionSettings } from "./ExecutionSettings";
 import type { AgentSetupPickerProps } from "./AgentSetupPicker";
+import type { Agent } from "../../types";
 
 const choices = vi.hoisted(() => ({
   pickers: [] as AgentSetupPickerProps[],
@@ -12,6 +13,8 @@ const choices = vi.hoisted(() => ({
   read: vi.fn(),
   post: vi.fn(),
 }));
+
+const capability = vi.hoisted(() => ({ priority: false }));
 
 vi.mock("react", async (load) => {
   const actual = await load<typeof import("react")>();
@@ -68,6 +71,11 @@ vi.mock("./WorkerModelPicker", async (load) => ({
         serviceTiers: [],
         supportedReasoningEfforts: [{ reasoningEffort: "medium" }],
       },
+      {
+        model: "gpt-6-astra",
+        serviceTiers: capability.priority ? [{ id: "priority" }] : [],
+        supportedReasoningEfforts: [],
+      },
     ],
     loading: false,
     error: "",
@@ -97,6 +105,52 @@ vi.mock("../models/modelWhitelist", async (load) => ({
   ...(await load<typeof import("../models/modelWhitelist")>()),
   useModelWhitelist: () => null,
 }));
+
+for (const initialRole of ["orchestrator", "worker", "review"] as const) {
+  for (const priority of [true, false]) {
+    test(`${initialRole} Fast mode follows the selected model capability (${priority})`, () => {
+      capability.priority = priority;
+      const agent: Agent = {
+        id: "fast-picker",
+        isLead: true,
+        source: "managed",
+        status: "idle",
+        model: "gpt-6-astra",
+        workerDefaults: { model: "gpt-6-astra", effort: null, fastMode: false },
+        reviewDefaults: { model: "gpt-6-astra", effort: null },
+      };
+      const markup = renderToStaticMarkup(
+        createElement(
+          MantineProvider,
+          null,
+          createElement(ExecutionSettings, {
+            presentation: "panel",
+            initialRole,
+            agent,
+            catalog: {
+              models: [
+                {
+                  model: "gpt-6-astra",
+                  serviceTiers: priority ? [{ id: "priority" }] : [],
+                  supportedReasoningEfforts: [],
+                },
+              ],
+              loading: false,
+              error: "",
+              retry: () => {},
+            },
+            refresh: async () => {},
+          }),
+        ),
+      );
+      expect(markup.includes('aria-label="Fast mode"')).toBe(priority);
+      if (initialRole === "review") {
+        expect(markup).not.toContain('aria-label="Daybreak"');
+        expect(markup).toContain("review tasks use Workers");
+      }
+    });
+  }
+}
 
 for (const isLead of [true, false]) {
   test(`the ${isLead ? "lead" : "worker"} panel always renders every role`, () => {

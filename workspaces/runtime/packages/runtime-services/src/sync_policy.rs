@@ -2396,6 +2396,11 @@ fn valid_appearance(name: &str, value: &Value) -> bool {
         "contentWidth" => value.as_i64().is_some_and(|n| (60..=100).contains(&n)),
         "sidebarShortcut" => value.as_str().is_some_and(|s| s.chars().count() <= 32),
         "showMessageAvatars" | "checkProviderUpdates" => value.is_boolean(),
+        "showTerminals" => studio_runtime_schema::validate(
+            "AppearancePreferences",
+            &json!({ "showTerminals": value }),
+        )
+        .unwrap_or(false),
         "hideOldChatsThreshold" => value.as_i64().is_some_and(|n| (1..=50).contains(&n)),
         _ => false,
     }
@@ -3735,6 +3740,23 @@ mod tests {
         assert!(parse_preferences(&json!({
             "[\"codex-studio-preferences-v1\",\"theme\"]": {"value":"blue","timestamp":1,"writer":"a"}
         }), PreferenceScope::User).is_err());
+        let key = r#"["codex-studio-preferences-v1","showTerminals"]"#;
+        for value in [json!(true), json!(false)] {
+            let fields = Value::Object(preference_field(key, value.clone(), 1));
+            let parsed = parse_preferences(&fields, PreferenceScope::User)
+                .expect("terminal visibility is a user preference");
+            assert_eq!(parsed[key]["value"], value);
+            assert!(parse_preferences(&fields, PreferenceScope::Server).is_err());
+        }
+        for value in [Value::Null, json!("false"), json!(0)] {
+            assert!(
+                parse_preferences(
+                    &Value::Object(preference_field(key, value, 1)),
+                    PreferenceScope::User,
+                )
+                .is_err()
+            );
+        }
         assert!(parse_preferences(&json!({
             "[\"codex-project-tree:/state\",\"/repo\"]": {"value":true,"timestamp":1,"writer":"a"}
         }), PreferenceScope::User).is_err());

@@ -40,7 +40,7 @@ test("a file created after the watch starts is found without a watch event", asy
   }
 });
 
-test("a file whose watch event is missed is found by the bounded re-check", async () => {
+test("a file whose watch event is missed is found by the stat poll", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "claude-file-signals-"));
   try {
     const file = path.join(root, "signal");

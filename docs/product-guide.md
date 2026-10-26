@@ -212,6 +212,10 @@ own switch. Account transfers preserve the mode only when the destination
 supports it; a provider change clears it. Native `review/start` cannot select
 Daybreak, so use a review task in the chat when this mode is required.
 
+Lead, Workers, and Review each expose Fast mode when the selected model supports
+it. Review settings save their own Fast choice. Without that choice, native
+reviews inherit the invoking agent's Fast mode and review tasks inherit Workers.
+
 Subagent defaults also has a review model and reasoning setting. A native review
 uses the call's model and effort first, then the team review default, then the
 caller's model and effort. Studio sets the reviewer thread's `review_model`, so
@@ -468,6 +472,7 @@ Registered projects remain visible even when empty.
 
 Use **Delete project…** in either project sidebar menu to delete a registered
 project, including all its chats, archived chats, workers and shared rooms.
+The action is also available for older registered projects identified by their folder path.
 Confirmation stops running agents. History, cost accounting, the project folder
 and Git worktrees remain; disposable managed images and virtual machine worker lines may be
 removed. Deletion cannot be undone in Studio. Projects spanning servers are
@@ -516,6 +521,7 @@ Messages replace the separate Inbox, Agent chats, and Complaint book screens.
 The main conversation and its draft stay open.
 You can close a reply and return to its draft.
 Requests for user action appear as messages. Reply in the same conversation.
+Opening a question or confirmation edits its existing card in place.
 Saved user tasks retain their original dates and replies as messages.
 Each message shows its send date and time. There is no separate user task board.
 
@@ -534,11 +540,15 @@ resuming work removes the derived notice. Deliberately stopped or parked workers
 keep their lifecycle status.
 **Back to main agent** returns to the main agent.
 The sidebar and Team panel can collapse at any window width.
+The sidebar has one close control on both desktop and mobile layouts.
 
 **Studio settings** is available without opening a chat. Its Accounts tab opens
 the same account manager as the chat menu: add accounts, view saved accounts,
 remove them, and choose the application default. Its Appearance and Hotkeys tabs group per-browser appearance,
 text size, transcript width, message author icons, and sidebar shortcut preferences.
+In **Appearance**, **Show terminals** hides or shows the Terminals section.
+Terminals are visible by default. The choice syncs with Studio preferences and
+survives reloads; hiding the section leaves terminal sessions running.
 
 The **Models** tab controls which models appear in this server's pickers. Its
 compact grid fills the available width and wraps to fewer columns on phones.

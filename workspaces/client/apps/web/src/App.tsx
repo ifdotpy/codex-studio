@@ -3191,7 +3191,7 @@ export default function App({ active = true }: { active?: boolean }) {
             teamPanel
           ) : null)}
       </div>
-      {!mobileClient && (
+      {!mobileClient && studioPreferences.showTerminals && (
         <Suspense fallback={null}>
           <TerminalDock data={data} agent={agent || lead} notify={notify} />
         </Suspense>
@@ -3356,6 +3356,19 @@ export default function App({ active = true }: { active?: boolean }) {
                     })
                   }
                 />
+                <label className="settings-field studio-preference-toggle">
+                  <span className="settings-label">Show terminals</span>
+                  <input
+                    type="checkbox"
+                    checked={studioPreferences.showTerminals}
+                    onChange={(event) =>
+                      updateStudioPreferences({
+                        ...studioPreferences,
+                        showTerminals: event.currentTarget.checked,
+                      })
+                    }
+                  />
+                </label>
                 <SettingsRow label="Text size">
                   <div
                     className="studio-appearance-segments"

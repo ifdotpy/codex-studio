@@ -65,7 +65,7 @@ type SettingsValue = {
   daybreak_enabled: boolean;
   delegation_depth: number;
 };
-type ReviewSettings = NonNullable<Agent["reviewDefaults"]>;
+type ReviewSettings = NonNullable<ConversationBody["review_defaults"]>;
 type SettingsAgent = Pick<
   Agent,
   | "accountKey"
@@ -164,6 +164,13 @@ export const settingsFor = (
     delegation_depth: 1,
   };
 };
+const reviewSettingsFor = (agent: Agent): ReviewSettings => ({
+  model: agent.reviewDefaults?.model ?? null,
+  effort: agent.reviewDefaults?.effort ?? null,
+  ...(agent.reviewDefaults?.fastMode !== undefined
+    ? { fast_mode: agent.reviewDefaults.fastMode }
+    : {}),
+});
 const sameSettings = (left: SettingsValue, right: SettingsValue) =>
   left.account_key === right.account_key &&
   left.model === right.model &&
@@ -243,7 +250,8 @@ type SettingsReceipt = { version: object; value: Agent };
 const sameRoleSettings = (left: Agent, right: Agent, role: SetupRole) =>
   role === "review"
     ? left.reviewDefaults?.model === right.reviewDefaults?.model &&
-      left.reviewDefaults?.effort === right.reviewDefaults?.effort
+      left.reviewDefaults?.effort === right.reviewDefaults?.effort &&
+      left.reviewDefaults?.fastMode === right.reviewDefaults?.fastMode
     : sameSettings(
         settingsFor(left, role === "worker"),
         settingsFor(right, role === "worker"),
@@ -568,10 +576,7 @@ function ScopedExecutionSettings({
       : "Subagent";
   const queued = queuedFor(agent);
   const stored = settingsFor(agent, teamDefaults);
-  const reviewStored = {
-    model: agent.reviewDefaults?.model ?? null,
-    effort: agent.reviewDefaults?.effort ?? null,
-  };
+  const reviewStored = reviewSettingsFor(agent);
   const reviewCurrent = reviewPending?.values || reviewStored;
   const current = pending?.values || stored;
   const refreshConfirmed = (
@@ -693,7 +698,13 @@ function ScopedExecutionSettings({
         JSON.stringify(reviewPending.baseline) !== JSON.stringify(reviewStored))
     )
       setReviewPending(null);
-  }, [saving, reviewPending, reviewStored.model, reviewStored.effort]);
+  }, [
+    saving,
+    reviewPending,
+    reviewStored.model,
+    reviewStored.effort,
+    reviewStored.fast_mode,
+  ]);
   const selectedModel = current.model || agent.model || "";
   const info = infoFor(catalog, selectedModel);
   const selectedProvider = teamDefaults ? info?.provider : agent.provider;
@@ -754,6 +765,7 @@ function ScopedExecutionSettings({
       supportsDaybreakMode(row, false),
   );
   const reviewInfo = modelForValue(reviewModels, reviewCurrent.model);
+  const reviewFast = reviewCurrent.fast_mode ?? !!agent.fastMode;
   const reviewOptions: ModelOption[] = [
     {
       value: DEFAULT,
@@ -1199,7 +1211,12 @@ function ScopedExecutionSettings({
   const changeReview = async (patch: Partial<ReviewSettings>) => {
     if (disabled || saveLock.current) return;
     const next = { ...reviewCurrent, ...patch };
-    if ("model" in patch) next.effort = null;
+    if ("model" in patch) {
+      next.effort = null;
+      const nextInfo = modelForValue(reviewModels, next.model || agent.model);
+      if (!fastTier(nextInfo) && (next.fast_mode ?? agent.fastMode))
+        next.fast_mode = false;
+    }
     if (onDraftChange) {
       onDraftChange({ review_defaults: next });
       return;
@@ -1233,10 +1250,7 @@ function ScopedExecutionSettings({
       if (!mounted.current) return;
       if (accepted)
         setReviewPending({
-          values: {
-            model: canonical.reviewDefaults?.model ?? null,
-            effort: canonical.reviewDefaults?.effort ?? null,
-          },
+          values: reviewSettingsFor(canonical),
           baseline: reviewStored,
         });
       setStatus({ kind: "saved", text: "" });
@@ -1487,9 +1501,19 @@ function ScopedExecutionSettings({
         }}
         effortDisabled={role !== "review" && !modeSupported}
         disabled={disabled || catalog.loading || !!catalog.error}
-        fastAvailable={!inheritedUnavailable && !!fastTier(info)}
-        fast={current.fast_mode}
-        onFast={() => void change({ fast_mode: !current.fast_mode })}
+        fastAvailable={
+          !inheritedUnavailable &&
+          !!fastTier(
+            role === "review"
+              ? modelForValue(reviewModels, reviewCurrent.model || agent.model)
+              : info,
+          )
+        }
+        fast={role === "review" ? reviewFast : current.fast_mode}
+        onFast={() => {
+          if (role === "review") void changeReview({ fast_mode: !reviewFast });
+          else void change({ fast_mode: !current.fast_mode });
+        }}
         daybreakAvailable={
           !inheritedUnavailable &&
           selectedProvider !== "claude" &&
@@ -1498,6 +1522,12 @@ function ScopedExecutionSettings({
         daybreak={daybreakEnabled}
         onDaybreak={() => void change({ daybreak_enabled: !daybreakEnabled })}
       />
+      {role === "review" && reviewCurrent.fast_mode === undefined && (
+        <p className="notice">
+          Native reviews use this agent’s Fast setting; review tasks use
+          Workers. Choose Fast here to override both.
+        </p>
+      )}
       {role === "worker" &&
         teamDefaults &&
         !readOnlyReason &&
@@ -1678,6 +1708,10 @@ function ScopedExecutionSettings({
         ? current
         : settingsFor(agent, true);
   const summaryReview = role === "review" ? reviewCurrent : reviewStored;
+  const summaryFast =
+    summaryRole === "review"
+      ? (summaryReview.fast_mode ?? mainSettings.fast_mode)
+      : summary.fast_mode;
   // Native reviews inherit the invoking Codex actor, which may be a child of this lead.
   const inheritedReview = summaryRole === "review" && !summaryReview.model;
   const summaryModel =
@@ -1742,6 +1776,7 @@ function ScopedExecutionSettings({
       {!inheritedReview && summaryEffort && (
         <span className="execution-effort">{title(summaryEffort)}</span>
       )}
+      {summaryFast && <span className="execution-effort">Fast</span>}
       {summaryAccountName && (
         <span className="execution-account">{summaryAccountName}</span>
       )}
@@ -1771,6 +1806,7 @@ function ScopedExecutionSettings({
           : displayModel(summaryCatalog, summaryModel),
         !inheritedReview && summaryEffort ? title(summaryEffort) : "",
         !inheritedReview ? title(summaryProvider) : "",
+        summaryFast ? "Fast" : "",
         summaryRole !== "review"
           ? setupAccountName(
               accounts.find((account) => account.id === summaryAccount),

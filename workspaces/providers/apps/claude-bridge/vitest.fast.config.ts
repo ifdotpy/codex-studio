@@ -28,6 +28,7 @@ export default {
       "stall-watch.test.ts",
       // SDK UUID coverage, composite history controls and authoritative session transitions.
       "history-index.test.ts",
+      "controls.test.ts",
       "history-recovery.test.ts",
       "session-identity.test.ts",
       // Proven unread/cancelled transition inputs must release their guards.

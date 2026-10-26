@@ -1128,6 +1128,8 @@ pub fn render(root: &Path, with_api_types: bool) -> Result<Vec<Rendered>, String
             .with(|settings| settings.definitions_path = "/components/schemas".into())
             .into_generator();
         generator.subschema_for::<crate::provider_input::ToolDefinition>();
+        generator.subschema_for::<crate::provider_input::ClaudeBridgeSessionWire>();
+        generator.subschema_for::<crate::provider_input::ClaudeBridgeTurnWire>();
         generator.subschema_for::<crate::idle_compaction::CacheReport>();
         let mut schemas = generator.take_definitions(true);
         for name in [
@@ -1238,6 +1240,41 @@ pub fn repository_root() -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn bridge_wire_preserves_omission_and_explicit_model_null() {
+        use crate::provider_input::{ClaudeBridgeSessionWire, ClaudeBridgeTurnWire};
+        let mut generator = schemars::generate::SchemaSettings::draft2020_12()
+            .for_serialize()
+            .into_generator();
+        let session = generator.subschema_for::<ClaudeBridgeSessionWire>();
+        let model = generator.subschema_for::<ClaudeBridgeTurnWire>();
+        let definitions = generator.take_definitions(true);
+        let schema = |value| serde_json::json!({"$defs":definitions,"allOf":[value]});
+        let session_schema = schema(session);
+        let model_schema = schema(model);
+        let session = jsonschema::validator_for(&session_schema).expect("session schema");
+        let model = jsonschema::validator_for(&model_schema).expect("model schema");
+        for value in [
+            serde_json::json!(ClaudeBridgeSessionWire { user_mcp: None }),
+            serde_json::json!(ClaudeBridgeSessionWire {
+                user_mcp: Some(false)
+            }),
+        ] {
+            assert!(session.is_valid(&value), "{value}");
+        }
+        assert!(!session.is_valid(&serde_json::json!({"userMcp":null})));
+        for value in [
+            serde_json::json!(ClaudeBridgeTurnWire { model: None }),
+            serde_json::json!(ClaudeBridgeTurnWire { model: Some(None) }),
+            serde_json::json!(ClaudeBridgeTurnWire {
+                model: Some(Some("model".into()))
+            }),
+        ] {
+            assert!(model.is_valid(&value), "{value}");
+        }
+        assert!(!model.is_valid(&serde_json::json!({"model":false})));
+    }
 
     #[test]
     fn backend_kind_parity_rejects_drift_in_every_packaged_validator() {

@@ -2294,6 +2294,24 @@ async fn managed_reviewer_defaults_reach_public_spawn_tool() {
     let configured = json!({"model":"gpt-6-astra","effort":"high"});
     let cases = [
         (
+            "fast-disabled",
+            json!({}),
+            json!({"model":"gpt-6-astra","effort":"high","fastMode":false}),
+            "gpt-6-astra",
+            Some("high"),
+            true,
+            "codex",
+        ),
+        (
+            "fast-enabled",
+            json!({}),
+            json!({"model":"gpt-6-astra","effort":"high","fastMode":true}),
+            "gpt-6-astra",
+            Some("high"),
+            true,
+            "codex",
+        ),
+        (
             "configured",
             json!({}),
             configured.clone(),
@@ -2466,6 +2484,7 @@ async fn managed_reviewer_defaults_reach_public_spawn_tool() {
         ),
     ];
     for (label, options, defaults, model, effort, native_parity, expected_provider) in cases {
+        let review_fast = defaults.get("fastMode").and_then(Value::as_bool);
         let actor_id = context.agent.clone();
         let cwd = project.path().to_owned();
         store
@@ -2565,12 +2584,13 @@ async fn managed_reviewer_defaults_reach_public_spawn_tool() {
             assert_eq!(child["provider"], expected_provider, "{label}/{tool}");
             assert_eq!(child["accountKey"], "default", "{label}/{tool}");
             if tool == "orchestration_spawn" {
-                assert_eq!(child["fastMode"], true, "{label}");
+                assert_eq!(child["fastMode"], review_fast.unwrap_or(true), "{label}");
                 if options["profile_id"].is_string() {
                     assert_eq!(child["profileId"], options["profile_id"]);
                     assert_eq!(child["profileInstructions"], "review profile");
                 }
             } else {
+                assert_eq!(child["fastMode"], review_fast.unwrap_or(false), "{label}");
                 assert_eq!(result["reviewModel"], model);
                 assert_eq!(result["reviewEffort"], effort.unwrap_or("low"));
             }

@@ -154,6 +154,7 @@ export default function TerminalDock({
     return () => {
       delete root.dataset.terminalDock;
       delete root.dataset.terminalShell;
+      root.style.removeProperty("--terminal-dock-height");
     };
   }, [opened]);
   useEffect(() => {

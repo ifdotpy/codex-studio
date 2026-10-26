@@ -122,8 +122,22 @@ async fn apply_move_case(
     } else {
         let agent = text(&case["agent"], "id").to_owned();
         let notification = case["notification"].clone();
+        use studio_runtime_schema::usage::{UsageProvider, parse_token_usage};
+        let provider = if case["agent"]["provider"] == "claude" {
+            UsageProvider::Claude
+        } else {
+            UsageProvider::Codex
+        };
+        let usage = parse_token_usage(provider, &notification).map_err(|_| {
+            agent_move::MoveError::InvalidStored {
+                object: "tokenUsage",
+                pointer: "/usage".into(),
+            }
+        })?;
         store
-            .transaction_with(move |tx| agent_move::capture_cache(tx, &agent, &notification, now))
+            .transaction_with(move |tx| {
+                agent_move::capture_cache(tx, &agent, &notification, &usage, now)
+            })
             .await
     }
 }
@@ -353,13 +367,7 @@ async fn python_location_and_move_corpus_through_consumers() {
                 );
             }
             "cache" => {
-                let agent = text(&case["agent"], "id").to_owned();
-                let notification = case["notification"].clone();
-                let result = store
-                    .transaction_with(move |tx| {
-                        agent_move::capture_cache(tx, &agent, &notification, now)
-                    })
-                    .await;
+                let result = apply_move_case(&store, text(case, "name"), case, now).await;
                 if case["name"] == "cache-boolean-not-integer" {
                     assert!(
                         result.is_err(),

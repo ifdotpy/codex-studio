@@ -32,6 +32,7 @@ export default function HistoryWindow({
   storageKey,
   rememberScroll,
   hasRecentScrollInput,
+  requiredRows,
 }: {
   rows: HistoryGroup[];
   scrollContainer?: RefObject<HTMLDivElement | null> | undefined;
@@ -39,6 +40,8 @@ export default function HistoryWindow({
   storageKey: string;
   rememberScroll?: (() => void) | undefined;
   hasRecentScrollInput?: (() => boolean) | undefined;
+  /** Rows with pending user input must remain reachable while history is virtualized. */
+  requiredRows?: string[];
 }) {
   const { save, saved } = useServerApi();
 
@@ -78,11 +81,13 @@ export default function HistoryWindow({
     (rows.length > HISTORY_WINDOW_THRESHOLD ||
       rows.reduce((count, row) => count + row.items.length, 0) > 256);
   const indices = useMemo(() => {
-    return historyWindowIndices(rows, visible, pinned, [
-      requested,
-      viewportAnchor.current?.id,
-    ]);
-  }, [rows, visible, pinned, requested]);
+    return historyWindowIndices(
+      rows,
+      visible,
+      [...pinned, ...(requiredRows || [])],
+      [requested, viewportAnchor.current?.id],
+    );
+  }, [rows, visible, pinned, requested, requiredRows]);
   const rowsById = useMemo(
     () => new Map(rows.map((row) => [row.id, row])),
     [rows],

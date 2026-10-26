@@ -10,7 +10,7 @@ import {
 for (const width of [320, 1200]) {
   test(`project deletion menu and confirmation at ${width}px`, async ({
     browser,
-  }) => {
+  }, testInfo) => {
     const server = await createFixtureViteServer({
       configFile: false,
       root: fileURLToPath(new URL("../..", import.meta.url)),
@@ -40,8 +40,27 @@ for (const width of [320, 1200]) {
     try {
       await server.listen();
       const url = `${fixtureOrigin(server)}/project-delete-fixture`;
-      for (const variant of ["", "?archive", "?empty", "?logical"]) {
+      for (const variant of [
+        "",
+        "?archive",
+        "?empty",
+        "?logical",
+        "?logical&legacy",
+      ]) {
         await page.goto(url + variant);
+        if (!variant.includes("logical")) {
+          await expect(page.locator("#sidebar")).toBeVisible();
+          await expect(
+            page.getByRole("button", {
+              name: "Close conversations",
+              exact: true,
+            }),
+          ).toHaveCount(width === 320 ? 1 : 0);
+          if (!variant)
+            await page.screenshot({
+              path: testInfo.outputPath("sidebar-controls.png"),
+            });
+        }
         if (variant === "?archive") {
           await page
             .getByRole("button", { name: "Project list options" })
@@ -57,6 +76,10 @@ for (const width of [320, 1200]) {
         await page.keyboard.press("Enter");
         const item = page.getByRole("menuitem", { name: "Delete project…" });
         await expect(item).toBeVisible();
+        if (variant.includes("legacy"))
+          await page.screenshot({
+            path: testInfo.outputPath("registered-project-menu.png"),
+          });
         if (width === 320)
           expect((await item.boundingBox())?.height).toBeGreaterThanOrEqual(44);
         await item.focus();
@@ -118,7 +141,7 @@ for (const width of [320, 1200]) {
         );
         expect(posts).toHaveLength(2);
         expect(posts[1]).toEqual(posts[0]);
-        if (variant === "?logical")
+        if (variant.includes("logical"))
           expect(
             await page.evaluate(() => window.projectDeleteFixture.owner),
           ).toBe("owner");

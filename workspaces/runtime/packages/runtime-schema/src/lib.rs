@@ -718,6 +718,7 @@ fn prepare_schemas() -> SchemaResult<CompiledSchemas> {
         "DevicePairRequest",
         "AgentRecordResponse",
         "AgentRequest",
+        "AppearancePreferences",
         "AnnotationReceipt",
         "CheckpointSummary",
         "CheckpointsResponse",

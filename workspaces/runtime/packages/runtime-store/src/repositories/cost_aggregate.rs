@@ -17,7 +17,7 @@
 //!
 //! A model-bearing row depends on its turn and duplicate response identities, so
 //! a write refreshes those scopes; a model-less row depends on its whole
-//! agent, so an agent with model-less rows is refreshed whole.
+//! agent, so an agent with eligible model-less rows is refreshed whole.
 //!
 //! Pricing is not stored: a reader prices the few groups with the current
 //! catalog, so a catalog change needs no invalidation.
@@ -49,11 +49,20 @@ CREATE TABLE analytics_cost_groups (
 /// Indexes of the aggregate, built after the backfill loaded its rows.
 const INDEXES: &str = "
 CREATE INDEX analytics_cost_rows_scope ON analytics_cost_rows(root, agent, thread, turn);
-CREATE INDEX analytics_cost_rows_unmodeled ON analytics_cost_rows(root, agent) WHERE model IS NULL;
 CREATE INDEX analytics_cost_rows_response ON analytics_cost_rows(root, thread, response)
     WHERE response IS NOT NULL;
 CREATE INDEX analytics_cost_groups_key ON analytics_cost_groups(
     root, model, account, input, cached, cache_write, output, uncached);
+";
+
+/// Seek response counterparts and eligible model-less facts within one root/agent scope.
+/// Install after compatibility columns exist; retire the broader model-less index once.
+const SCOPE_INDEXES: &str = "
+CREATE INDEX IF NOT EXISTS analytics_cost_rows_agent_response
+    ON analytics_cost_rows(root,agent,response) WHERE response IS NOT NULL;
+CREATE INDEX IF NOT EXISTS analytics_cost_rows_eligible_unmodeled
+    ON analytics_cost_rows(root,agent) WHERE model IS NULL AND eligible IS NOT 0;
+DROP INDEX IF EXISTS analytics_cost_rows_unmodeled;
 ";
 
 const ROW_COLUMNS: &str = "id,agent,thread,turn,seq,at,model,account_key,response,\
@@ -62,19 +71,15 @@ const ROW_COLUMNS: &str = "id,agent,thread,turn,seq,at,model,account_key,respons
 /// The account key of a usage row or agent record without `accountKey`.
 pub const DEFAULT_ACCOUNT: &str = "default";
 
-/// Batched receipt lookup through current/history agent scopes and the existing usage index.
-/// Parameters: serialized receipt tuples and the default account owner.
+/// Batched receipt lookup through selected current/history scopes and the existing usage index.
+/// Parameters: serialized receipt tuples and selected (agent, account, thread) tuples.
 const JOURNAL_RECEIPT_SQL: &str = "
 WITH receipts AS MATERIALIZED (
  SELECT json_extract(value,'$[0]') account,json_extract(value,'$[1]') thread,
         json_extract(value,'$[2]') response FROM json_each(?1)
 ), scopes AS MATERIALIZED (
- SELECT id agent,COALESCE(json_extract(record,'$.accountKey'),?2) account,
-        json_extract(record,'$.threadId') thread FROM analytics_agents
- UNION
- SELECT a.id,COALESCE(json_extract(h.value,'$.accountKey'),?2),
-        json_extract(h.value,'$.threadId')
- FROM analytics_agents a,json_each(a.record,'$.accountHistory') h
+ SELECT json_extract(value,'$[0]') agent,json_extract(value,'$[1]') account,
+        json_extract(value,'$[2]') thread FROM json_each(?2)
 )
 SELECT r.account,r.thread,r.response,u.record
 FROM receipts r JOIN scopes s ON s.account=r.account AND s.thread=r.thread
@@ -332,10 +337,12 @@ pub fn reconciliation_usage_window(
     Ok(window)
 }
 
-/// Preserve final live/recovered responses; only missing or legacy evidence accepts journal recovery.
+/// Preserve final live/recovered responses in the selected members' current/history scopes;
+/// only missing or legacy evidence accepts journal recovery. Read members in the same transaction.
 pub fn partition_journal_receipts(
     db: &Connection,
     receipts: &BTreeSet<CostReceipt>,
+    members: &[(String, CostMember)],
 ) -> StoreResult<JournalPartition> {
     let mut result = JournalPartition {
         accepted: receipts.clone(),
@@ -344,9 +351,25 @@ pub fn partition_journal_receipts(
     if receipts.is_empty() {
         return Ok(result);
     }
+    let scopes = members
+        .iter()
+        .flat_map(|(agent, member)| {
+            let current =
+                std::iter::once((member.account_key.as_deref(), member.thread_id.as_deref()));
+            let history = member
+                .account_history
+                .iter()
+                .flatten()
+                .map(|entry| (entry.account_key.as_deref(), entry.thread_id.as_deref()));
+            current.chain(history).filter_map(move |(account, thread)| {
+                Some((agent.as_str(), account.unwrap_or(DEFAULT_ACCOUNT), thread?))
+            })
+        })
+        .collect::<BTreeSet<_>>();
     let encoded = serde_json::to_string(receipts)?;
+    let scopes = serde_json::to_string(&scopes)?;
     let mut statement = db.prepare_cached(JOURNAL_RECEIPT_SQL)?;
-    let mut rows = statement.query(params![encoded, DEFAULT_ACCOUNT])?;
+    let mut rows = statement.query(params![encoded, scopes])?;
     while let Some(row) = rows.next()? {
         let value: serde_json::Value = serde_json::from_str(&row.get::<_, String>(3)?)?;
         match parse_analytics_usage_row(UsageProvider::Claude, &value) {
@@ -626,6 +649,7 @@ pub fn install(db: &Connection) -> StoreResult<()> {
             }
         }
     }
+    db.execute_batch(SCOPE_INDEXES)?;
     Ok(())
 }
 
@@ -835,7 +859,7 @@ fn scope_rows(
     agent: &str,
     turns: &TurnScopes,
 ) -> rusqlite::Result<Vec<CostRow>> {
-    let unmodeled: bool = db.query_row_cached("SELECT EXISTS(SELECT 1 FROM analytics_cost_rows WHERE root=?1 AND agent=?2 AND model IS NULL)",params![root,agent],|row|row.get(0))?;
+    let unmodeled: bool = db.query_row_cached("SELECT EXISTS(SELECT 1 FROM analytics_cost_rows WHERE root=?1 AND agent=?2 AND model IS NULL AND eligible IS NOT 0)",params![root,agent],|row|row.get(0))?;
     if unmodeled {
         return db
             .prepare_cached(&format!(
@@ -940,6 +964,7 @@ pub(crate) fn apply_usage_write(
         }
         db.execute_cached("DELETE FROM analytics_cost_rows WHERE id=?1", [id])?;
     }
+    let mut scopes = BTreeMap::<(String, String), TurnScopes>::new();
     if let Some(root) = &root {
         let row = cost_row(
             id.to_owned(),
@@ -952,27 +977,30 @@ pub(crate) fn apply_usage_write(
             observation.as_ref(),
         );
         insert_row(db, root, &row)?;
-        refresh_scope(
-            db,
-            root,
-            &row.agent,
-            &TurnScopes::from([(row.thread, row.turn, row.response)]),
-        )?;
+        scopes
+            .entry((root.clone(), row.agent))
+            .or_default()
+            .insert((row.thread, row.turn, row.response));
     }
     if let Some((previous_root, previous)) = previous {
-        let turns = TurnScopes::from([(previous.thread, previous.turn, previous.response)]);
-        refresh_scope(db, &previous_root, &previous.agent, &turns)?;
+        scopes
+            .entry((previous_root, previous.agent))
+            .or_default()
+            .insert((previous.thread, previous.turn, previous.response));
+    }
+    for ((root, agent), turns) in scopes {
+        refresh_scope(db, &root, &agent, &turns)?;
     }
     Ok(())
 }
 
 /// The counted groups of `root` in summation order, without the analytics rows
-/// that `receipts` replace (each removal re-applies the counting rules to the
-/// rows it affects).
+/// that the accepted journal partition replaces (each removal re-applies the
+/// counting rules to the rows it affects). Reuse the same partition to filter journal costs.
 pub fn cost_groups(
     db: &Connection,
     root: &str,
-    receipts: &BTreeSet<CostReceipt>,
+    partition: &JournalPartition,
 ) -> Result<Vec<CostGroup>, StoreError> {
     let mut groups = db
         .prepare_cached(
@@ -997,8 +1025,7 @@ pub fn cost_groups(
         .collect::<Result<BTreeMap<_, _>, _>>()?;
     let mut replaced = HashSet::new();
     let mut scopes = BTreeMap::<String, TurnScopes>::new();
-    let accepted = partition_journal_receipts(db, receipts)?.accepted;
-    for (account, thread, response) in &accepted {
+    for (account, thread, response) in &partition.accepted {
         let mut statement = db.prepare_cached(&format!(
             "SELECT {ROW_COLUMNS} FROM analytics_cost_rows
              WHERE root=?1 AND thread=?2 AND response=?3 AND account_key=?4"
@@ -1054,6 +1081,176 @@ mod tests {
     use serde_json::json;
     use std::path::Path;
 
+    fn scope_fixture(size: usize) -> Connection {
+        use serde::Deserialize;
+        let db = Connection::open_in_memory().expect("cost facts");
+        db.execute_batch(super::TABLES).expect("tables");
+        db.execute_batch(super::INDEXES).expect("indexes");
+        db.execute_batch(super::SCOPE_INDEXES)
+            .expect("scope indexes");
+        let value = json!({"model":"m"});
+        let fields = super::UsageCostFields::deserialize(&value).expect("fields");
+        for index in 0..size {
+            let mut row = super::cost_row(
+                index.to_string(),
+                "agent".into(),
+                Some("thread".into()),
+                Some(index.to_string()),
+                index as i64,
+                index as f64,
+                &fields,
+                None,
+            );
+            row.eligible = Some(true);
+            row.response = Some(format!("r{index}"));
+            super::insert_row(&db, "root", &row).expect("fact");
+        }
+        db
+    }
+
+    #[test]
+    fn typed_usage_scope_ignores_ineligible_unmodeled_history() {
+        let db = scope_fixture(8);
+        db.execute(
+            "UPDATE analytics_cost_rows SET model=NULL,eligible=0 WHERE id='7'",
+            [],
+        )
+        .expect("non-response observation");
+        let turns =
+            super::TurnScopes::from([(Some("thread".into()), Some("0".into()), Some("r0".into()))]);
+        let rows = super::scope_rows(&db, "root", "agent", &turns).expect("affected facts");
+        assert_eq!(
+            rows.len(),
+            1,
+            "an ineligible observation cannot widen a response refresh"
+        );
+        db.execute(
+            "UPDATE analytics_cost_rows SET eligible=NULL WHERE id='7'",
+            [],
+        )
+        .expect("migrated row");
+        let migrated =
+            super::scope_rows(&db, "root", "agent", &turns).expect("legacy model inference");
+        assert_eq!(
+            migrated.len(),
+            8,
+            "migrated model-less rows still depend on the agent history"
+        );
+        let kept = super::contributions(&migrated, |_| true);
+        let unmodeled = migrated
+            .iter()
+            .position(|row| row.id == "7")
+            .expect("migrated row");
+        assert_eq!(kept[unmodeled], Some(Some("m".into())));
+    }
+
+    #[test]
+    fn typed_usage_scope_seeks_turn_and_cross_thread_response() {
+        use std::sync::{
+            Arc,
+            atomic::{AtomicU64, Ordering},
+        };
+        let mut measured = Vec::new();
+        for size in [4, 8, 16] {
+            let db = scope_fixture(size);
+            db.execute("UPDATE analytics_cost_rows SET thread='old',turn='old',response='r0',final_evidence=1 WHERE id='1'", [])
+                .expect("cross-thread counterpart");
+            db.execute(
+                "UPDATE analytics_cost_rows SET model=NULL,eligible=0 WHERE seq>=2",
+                [],
+            )
+            .expect("unrelated cumulative observations");
+            let calls = Arc::new(AtomicU64::new(0));
+            let counter = Arc::clone(&calls);
+            db.progress_handler(
+                1,
+                Some(move || {
+                    counter.fetch_add(1, Ordering::Relaxed);
+                    false
+                }),
+            )
+            .expect("VM counter");
+            let turns = super::TurnScopes::from([(Some("thread".into()), Some("0".into()), None)]);
+            let rows = super::scope_rows(&db, "root", "agent", &turns).expect("closed scope");
+            db.progress_handler(1, None::<fn() -> bool>)
+                .expect("remove counter");
+            assert_eq!(
+                rows.len(),
+                2,
+                "turn selection closes over cross-thread response counterparts"
+            );
+            assert_eq!(
+                super::contributions(&rows, |_| true),
+                vec![None, Some(Some("m".into()))]
+            );
+            measured.push(calls.load(Ordering::Relaxed));
+        }
+        assert_eq!(
+            measured[0], measured[2],
+            "unrelated turns must not add SQLite VM work: {measured:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn typed_usage_scope_refreshes_an_unchanged_identity_once() {
+        thread_local! { static SCOPES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
+        let temp = tempfile::tempdir().expect("state");
+        let store = RuntimeStore::open(Some(temp.path())).await.expect("store");
+        store.analytics_transaction::<_, StoreError>(|tx, _| {
+            let mut record = json!({"id":"response","agentId":"agent","rootId":"root","threadId":"thread","turnId":"turn","at":1,
+                "last":{},"total":{},"studioUsage":{"kind":"response","responseId":"response","model":"m","evidence":"legacy",
+                    "tokens":{"uncachedInput":10,"cacheReadInput":0,"cacheWriteInput":0,"output":2}}});
+            AnalyticsCaptureRepository::write(tx, CaptureTable::Usage, &record)?;
+            SCOPES.set(0);
+            tx.trace_v2(rusqlite::trace::TraceEventCodes::SQLITE_TRACE_STMT, Some(|event| {
+                if let rusqlite::trace::TraceEvent::Stmt(_, sql) = event
+                    && sql.contains("WITH affected AS") {
+                    SCOPES.set(SCOPES.get() + 1);
+                }
+            }));
+            record["studioUsage"]["evidence"] = json!("live");
+            AnalyticsCaptureRepository::write(tx, CaptureTable::Usage, &record)?;
+            tx.trace_v2(rusqlite::trace::TraceEventCodes::empty(), None);
+            assert_eq!(SCOPES.get(), 1, "the same old/new scope must be recomputed once");
+            assert_eq!(super::cost_groups(tx, "root", &Default::default())?.iter().map(|group| group.count).sum::<u64>(), 1);
+            Ok(())
+        }).await.expect("coalesced refresh");
+    }
+
+    #[tokio::test]
+    async fn typed_usage_receipt_lookup_excludes_unrelated_agents() {
+        let temp = tempfile::tempdir().expect("state");
+        let store = RuntimeStore::open(Some(temp.path())).await.expect("store");
+        store.analytics_transaction::<_, StoreError>(|tx, _| {
+            let member = json!({"accountKey":"new","threadId":"new-thread","accountHistory":[{"accountKey":"acct","threadId":"thread"}]});
+            tx.execute("INSERT INTO analytics_agents(id,record) VALUES('agent',?1)", [member.to_string()])?;
+            tx.execute("INSERT INTO analytics_agents(id,record) VALUES('unrelated',?1)", [json!({"accountHistory":["invalid history outside the selected tree"]}).to_string()])?;
+            AnalyticsCaptureRepository::write(tx, CaptureTable::Usage, &json!({
+                "id":"final","agentId":"agent","rootId":"root","threadId":"thread","at":1,
+                "responseId":"final","accountKey":"acct","last":{},"total":{},
+                "studioUsage":{"kind":"response","responseId":"final","model":"m","evidence":"live",
+                    "tokens":{"uncachedInput":10,"cacheReadInput":0,"cacheWriteInput":0,"output":2}}
+            }))?;
+            let receipts = ["final", "missing"].map(|id| ("acct".to_owned(), "thread".to_owned(), id.to_owned())).into();
+            let members = [("agent".to_owned(), serde_json::from_value(member)?)];
+            let partition = super::partition_journal_receipts(tx, &receipts, &members)?;
+            assert_eq!(partition.accepted.len(), 1);
+            assert_eq!(partition.superseded.len(), 1, "historical account scope preserves final authority");
+            Ok(())
+        }).await.expect("selected receipt lookup must not decode unrelated agent records");
+    }
+
+    fn receipt_members() -> [(String, super::CostMember); 1] {
+        [(
+            "agent".to_owned(),
+            super::CostMember {
+                account_key: Some("acct".into()),
+                thread_id: Some("thread".into()),
+                ..Default::default()
+            },
+        )]
+    }
+
     #[tokio::test]
     async fn typed_usage_receipt_scope_batches_modeled_turns_without_repeated_agent_scans() {
         use std::collections::BTreeSet;
@@ -1102,9 +1299,12 @@ mod tests {
                     tx.execute("INSERT INTO analytics_agents(id,record) VALUES(?1,?2)",
                         rusqlite::params![agent, json!({"id":agent,"accountKey":account,"threadId":"thread"}).to_string()])?;
                 }
-                let groups = super::cost_groups(tx, "root", &BTreeSet::from([
-                    ("acct".to_owned(), "thread".to_owned(), "r-0".to_owned())
-                ]))?;
+                let groups = super::cost_groups(tx, "root", &JournalPartition {
+                    accepted: BTreeSet::from([
+                        ("acct".to_owned(), "thread".to_owned(), "r-0".to_owned())
+                    ]),
+                    superseded: BTreeSet::new(),
+                })?;
                 assert_eq!(groups.len(), 2);
                 let own = groups.iter().find(|group| group.account_key == "acct").expect("own account");
                 let foreign = groups.iter().find(|group| group.account_key == "foreign").expect("other account");
@@ -1116,7 +1316,7 @@ mod tests {
                     output_tokens: Some(1.0),
                 });
                 assert_eq!(foreign.tokens.input_tokens, Some(20.0));
-                let other_root = super::cost_groups(tx, "other-root", &BTreeSet::new())?;
+                let other_root = super::cost_groups(tx, "other-root", &Default::default())?;
                 assert_eq!(other_root.len(), 1);
                 assert_eq!(other_root[0].count, 1);
                 assert_eq!(other_root[0].tokens.input_tokens, Some(30.0));
@@ -1371,6 +1571,10 @@ mod tests {
                         .any(|line| line.contains("SCAN analytics_usage")),
                     "no repeated usage-record scans: {details:?}"
                 );
+                assert!(
+                    !details.iter().any(|line| line.contains("analytics_agents")),
+                    "receipt lookup consumes selected members without expanding all agents: {details:?}"
+                );
                 for (sql, index) in [
                     (
                         crate::repositories::analytics_capture::CAPTURE_RECORD_BY_ID_SQL
@@ -1413,6 +1617,7 @@ mod tests {
         db.execute_batch("CREATE TABLE analytics_usage(seq INTEGER PRIMARY KEY,id TEXT UNIQUE,agent TEXT,root TEXT,thread TEXT,turn TEXT,at REAL,record TEXT);
             CREATE TABLE analytics_cost_rows(id TEXT PRIMARY KEY,root TEXT NOT NULL,agent TEXT NOT NULL,thread TEXT,turn TEXT,seq INTEGER NOT NULL,at REAL NOT NULL,model TEXT,account_key TEXT,response TEXT,input REAL,cached REAL,cache_write REAL,output REAL,uncached INTEGER NOT NULL,counted INTEGER NOT NULL,counted_model TEXT);
             CREATE TABLE analytics_cost_groups(root TEXT NOT NULL,model TEXT,account TEXT NOT NULL,input REAL,cached REAL,cache_write REAL,output REAL,uncached INTEGER NOT NULL,count INTEGER NOT NULL);
+            CREATE INDEX analytics_cost_rows_unmodeled ON analytics_cost_rows(root,agent) WHERE model IS NULL;
             WITH RECURSIVE n(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM n WHERE x<512)
             INSERT INTO analytics_usage SELECT x,CAST(x AS TEXT),'agent',NULL,'thread','turn',1,'{}' FROM n;
             INSERT INTO analytics_cost_rows VALUES('legacy','root','agent','thread','turn',1,1,'m','acct',NULL,10,0,0,2,0,1,'m');
@@ -1426,6 +1631,13 @@ mod tests {
         }))
         .expect("usage-read guard");
         super::install(&db).expect("bounded additive migration does not inspect usage records");
+        let scope_indexes: Vec<String> = db.prepare("SELECT name FROM sqlite_master WHERE type='index' AND name IN ('analytics_cost_rows_unmodeled','analytics_cost_rows_eligible_unmodeled') ORDER BY name")
+            .expect("index migration").query_map([], |row| row.get(0)).expect("index names")
+            .collect::<Result<_, _>>().expect("indexes");
+        assert_eq!(
+            scope_indexes,
+            vec!["analytics_cost_rows_eligible_unmodeled"]
+        );
         let groups = super::cost_groups(&db, "root", &Default::default()).expect("legacy groups");
         assert_eq!(groups.len(), 1);
         assert_eq!(groups[0].tokens.input_tokens, Some(10.0));
@@ -1485,7 +1697,7 @@ mod tests {
             assert_eq!(rows[0].tokens.as_ref().expect("known tokens").output, 2);
             assert_eq!(super::recorded_responses(tx, &agents)?.len(), 2);
             let receipts = ["legacy", "final", "missing"].map(|id| ("acct".to_owned(), "thread".to_owned(), id.to_owned())).into();
-            let partition = super::partition_journal_receipts(tx, &receipts)?;
+            let partition = super::partition_journal_receipts(tx, &receipts, &receipt_members())?;
             assert_eq!(partition.accepted.len(), 2);
             assert_eq!(partition.superseded.len(), 1);
             assert!(partition.superseded.contains(&("acct".to_owned(),"thread".to_owned(),"final".to_owned())));
@@ -1522,6 +1734,7 @@ mod tests {
 
     #[tokio::test]
     async fn typed_usage_journal_replaces_legacy_but_preserves_final_response() {
+        thread_local! { static PARTITIONS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
         let temp = tempfile::tempdir().expect("temporary state");
         let store = RuntimeStore::open(Some(temp.path())).await.expect("store");
         store.analytics_transaction::<_, StoreError>(|tx, _| {
@@ -1540,7 +1753,17 @@ mod tests {
                 AnalyticsCaptureRepository::write(tx, CaptureTable::Usage, &row)?;
             }
             let receipts = ["legacy", "final"].map(|id| ("acct".to_owned(), "thread".to_owned(), id.to_owned())).into();
-            let groups = super::cost_groups(tx, "root", &receipts)?;
+            PARTITIONS.set(0);
+            tx.trace_v2(rusqlite::trace::TraceEventCodes::SQLITE_TRACE_STMT, Some(|event| {
+                if let rusqlite::trace::TraceEvent::Stmt(_, sql) = event
+                    && sql.contains("WITH receipts AS MATERIALIZED") {
+                    PARTITIONS.set(PARTITIONS.get() + 1);
+                }
+            }));
+            let partition = super::partition_journal_receipts(tx, &receipts, &receipt_members())?;
+            let groups = super::cost_groups(tx, "root", &partition)?;
+            tx.trace_v2(rusqlite::trace::TraceEventCodes::empty(), None);
+            assert_eq!(PARTITIONS.get(), 1, "one receipt partition supplies both journal filtering and grouped costs");
             assert_eq!(groups.iter().map(|group| group.count).sum::<u64>(), 1,
                 "journal evidence replaces provisional legacy only; the final response remains counted");
             Ok(())

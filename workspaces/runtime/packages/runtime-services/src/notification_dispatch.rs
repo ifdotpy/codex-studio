@@ -884,17 +884,10 @@ pub fn dispatch_notification_with_effects(
                                     .map_err(|_| NotificationDispatchError::invalid())?,
                             ),
                         };
-                    let mut normalized = params.clone();
-                    if let TokenUsageObservation::Typed(usage) = &observation {
-                        normalized["studioUsage"] = serde_json::to_value(usage)?;
-                    }
-                    if crate::event_write::truthy(agent.get("movedFrom")) {
-                        effects.capture_move_cache(
-                            transaction,
-                            &agent,
-                            &normalized,
-                            observed_at,
-                        )?;
+                    if let TokenUsageObservation::Typed(usage) = &observation
+                        && crate::event_write::truthy(agent.get("movedFrom"))
+                    {
+                        effects.capture_move_cache(transaction, &agent, params, usage, observed_at)?;
                     }
                     apply_token_usage(&mut agent, &observation, observed_at)?
                 }

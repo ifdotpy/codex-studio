@@ -21,6 +21,31 @@ fn corpus() -> &'static Value {
         serde_json::from_str(data).expect("frozen native corpus")
     })
 }
+
+#[test]
+fn review_fast_mode_uses_optional_team_default_before_actor() {
+    let case = &corpus()["reviews"][0];
+    for actor_fast in [true, false] {
+        for default_fast in [Some(true), Some(false), None] {
+            let mut actor = case["actor"].clone();
+            actor["fastMode"] = json!(actor_fast);
+            let mut root = actor.clone();
+            root["reviewDefaults"] = json!({"model":null,"effort":null});
+            if let Some(fast) = default_fast {
+                root["reviewDefaults"]["fastMode"] = json!(fast);
+            }
+            let plan = ReviewPlan::from_records(
+                actor,
+                root,
+                case["args"].clone(),
+                "fast-review".into(),
+                case["directory"].as_str().expect("directory").into(),
+            )
+            .expect("review plan");
+            assert_eq!(plan.spec()["fast_mode"], default_fast.unwrap_or(actor_fast));
+        }
+    }
+}
 struct Gate;
 impl Admission for Gate {
     fn check(&self, _: &Transaction<'_>, _: &Value, _: Action) -> Result<()> {

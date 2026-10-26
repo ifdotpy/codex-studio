@@ -1346,11 +1346,11 @@ function SidebarContents(p: SidebarProps & { services: SidebarServices }) {
             <Settings size={18} />
           </ActionIcon>
         )}
-        {
+        {compact && (
           <ActionIcon aria-label="Close conversations" onClick={closeSidebar}>
             <X size={20} />
           </ActionIcon>
-        }
+        )}
       </div>
       {p.notice && (
         <p role="alert" className="notice">

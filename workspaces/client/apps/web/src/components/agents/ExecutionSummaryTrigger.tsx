@@ -80,21 +80,33 @@ export function ExecutionSummaryTrigger({
       role: "lead",
       label: agent.isLead ? "Lead" : "Agent",
       value: lead,
+      fast: main.fast_mode,
     },
     ...(root.isLead
       ? [
-          { role: "worker", label: "Workers", value: worker },
-          { role: "review", label: "Review", value: review },
+          {
+            role: "worker",
+            label: "Workers",
+            value: worker,
+            fast: defaults.fast_mode,
+          },
+          {
+            role: "review",
+            label: "Review",
+            value: review,
+            fast: root.reviewDefaults?.fastMode ?? main.fast_mode,
+          },
         ]
       : []),
   ];
   const full =
     "Execution settings: " +
     entries
-      .map(({ label, value }) =>
-        value
-          ? `${label} ${value.name} ${value.effort} (${value.provider})`.trim()
-          : `${label} same as caller`,
+      .map(
+        ({ label, value, fast }) =>
+          (value
+            ? `${label} ${value.name} ${value.effort} (${value.provider})`.trim()
+            : `${label} same as caller`) + (fast ? " Fast" : ""),
       )
       .join("; ");
   return (
@@ -109,7 +121,7 @@ export function ExecutionSummaryTrigger({
       {...buttonProps}
     >
       <span className="execution-summary-segments" aria-hidden="true">
-        {entries.map(({ role, label, value }) => (
+        {entries.map(({ role, label, value, fast }) => (
           <span
             className="execution-summary-segment"
             data-role={role}
@@ -121,6 +133,7 @@ export function ExecutionSummaryTrigger({
             ) : (
               <span className="execution-inherited-label">Same as caller</span>
             )}
+            {fast && <span className="execution-effort">Fast</span>}
           </span>
         ))}
       </span>

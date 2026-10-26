@@ -533,7 +533,7 @@ pub(crate) async fn spawn_agents(
             .or_else(|| {
                 review_settings
                     .as_ref()
-                    .and_then(|(model, _)| model.as_str())
+                    .and_then(|(model, _, _)| model.as_str())
             })
             .or_else(|| defaults.get("model").and_then(Value::as_str))
             .or_else(|| root_value.get("model").and_then(Value::as_str))
@@ -620,7 +620,7 @@ pub(crate) async fn spawn_agents(
                 studio_runtime_store::ReasoningEffort::Max => "max",
                 studio_runtime_store::ReasoningEffort::Ultra => "ultra",
             })
-        } else if let Some((_, effort)) = &review_settings {
+        } else if let Some((_, effort, _)) = &review_settings {
             effort.as_str()
         } else {
             defaults.get("effort").and_then(Value::as_str)
@@ -628,6 +628,7 @@ pub(crate) async fn spawn_agents(
         let fast_mode = spec
             .get("fast_mode")
             .and_then(Value::as_bool)
+            .or_else(|| review_settings.as_ref().and_then(|(_, _, fast)| *fast))
             .or_else(|| defaults.get("fastMode").and_then(Value::as_bool))
             .unwrap_or(false);
         let daybreak = spec

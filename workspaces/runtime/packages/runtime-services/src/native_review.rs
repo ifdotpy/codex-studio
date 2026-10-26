@@ -81,7 +81,11 @@ pub fn worker_id(key: &str) -> String {
 /// Model and reasoning fallback for both managed reviewer spawns and native reviews.
 /// Explicit effort (including null) wins. A different explicit model uses its
 /// native effort; an omitted model uses the team's review default, then the caller.
-pub(crate) fn execution_settings(actor: &Value, root: &Value, args: &Value) -> (Value, Value) {
+pub(crate) fn execution_settings(
+    actor: &Value,
+    root: &Value,
+    args: &Value,
+) -> (Value, Value, Option<bool>) {
     let defaults = &root["reviewDefaults"];
     let model = args
         .get("model")
@@ -98,7 +102,11 @@ pub(crate) fn execution_settings(actor: &Value, root: &Value, args: &Value) -> (
     } else {
         Value::Null
     };
-    (model, effort)
+    (
+        model,
+        effort,
+        defaults.get("fastMode").and_then(Value::as_bool),
+    )
 }
 
 pub struct ReviewPlan {
@@ -137,7 +145,10 @@ impl ReviewPlan {
             return Err(NativeError::Invalid("review.identity"));
         }
         let target = target(&args)?;
-        let (model, effort) = execution_settings(&actor, &root, &args);
+        let (model, effort, fast_mode) = execution_settings(&actor, &root, &args);
+        let fast_mode = fast_mode
+            .or_else(|| actor.get("fastMode").and_then(Value::as_bool))
+            .unwrap_or(false);
         let requested = ["model", "effort"]
             .into_iter()
             .filter_map(|k| args.get(k).map(|v| (k.to_owned(), v.clone())))
@@ -148,7 +159,7 @@ impl ReviewPlan {
         );
         let spec = json!({"id":worker_id(&key),"name":"Review","cwd":directory,"role":"reviewer",
             "prompt":prompt.chars().take(MAX_PROMPT).collect::<String>(),"model":model,"effort":effort,
-            "fast_mode":actor.get("fastMode").unwrap_or(&json!(false)),"daybreak_enabled":false});
+            "fast_mode":fast_mode,"daybreak_enabled":false});
         Ok(Self {
             actor,
             root,

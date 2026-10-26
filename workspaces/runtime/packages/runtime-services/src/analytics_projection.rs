@@ -36,7 +36,8 @@ const PROJECTION_REFUSED: &str = "invalidInput";
 /// effect that remains to be published: `AnalyticsCaptured` or
 /// `AnalyticsStreamCaptured` for token rates without another state reset, or `None`
 /// when the agent identity is stale (nothing is captured or published, as
-/// before). Any other effect passes through unchanged.
+/// before). Rejected usage is logged for diagnostics without a rate publication.
+/// Any other effect passes through unchanged.
 pub(crate) fn log_effect(
     canvas: &Connection,
     mut effect: NotificationPostCommit,
@@ -60,15 +61,19 @@ pub(crate) fn log_effect(
         }
     }
     Repo::append_projection(canvas, &serde_json::to_string(&effect)?)?;
-    Ok(Some(match effect {
+    Ok(match effect {
+        NotificationPostCommit::Analytics {
+            usage_conflict: Some(_),
+            ..
+        } => None,
         NotificationPostCommit::Analytics { observation, .. } => {
-            NotificationPostCommit::AnalyticsCaptured(observation)
+            Some(NotificationPostCommit::AnalyticsCaptured(observation))
         }
         NotificationPostCommit::AnalyticsStream { observation, .. } => {
-            NotificationPostCommit::AnalyticsStreamCaptured(observation)
+            Some(NotificationPostCommit::AnalyticsStreamCaptured(observation))
         }
-        other => other,
-    }))
+        other => Some(other),
+    })
 }
 
 /// The outcome of one analytics transaction of a pass.
