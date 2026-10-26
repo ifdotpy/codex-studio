@@ -1,24 +1,26 @@
+import assert from "node:assert/strict";
 import { afterEach, expect, it, vi } from "vitest";
-import { createRxDatabase, type RxDatabase, type RxStorage } from "rxdb";
+import { createRxDatabase, type RxDatabase, type RxCollection } from "rxdb";
 import { getRxStorageMemory } from "rxdb/plugins/storage-memory";
 import { createOutbox } from "./send";
+import {
+  createApiScope,
+  type PostBody,
+  type GetResult,
+  type PostResult,
+} from "../api";
+import { SYNC_PROTOCOL_VERSION } from "../generated/api";
+import { createMutationJournal } from "../servers/mutationIdentity";
+import {
+  API_SCHEMA_HASH,
+  API_SCHEMA_HASH_HEADER,
+} from "../generated/apiSchema";
+import { SYNC_DOCUMENT_SCHEMA, type SyncDocument } from "./client";
 
 // A full disk rejects one IndexedDB write. Later sends, removals and
 // cancellations on the same page must still settle with their exact request.
 const WORKSPACE_ID = "0123456789abcdef0123456789abcdef";
 const SETTLE_DEADLINE_MS = 2_000;
-
-const schema = {
-  version: 0,
-  primaryKey: "id",
-  type: "object",
-  properties: {
-    id: { type: "string", maxLength: 300 },
-    payload: { type: "string" },
-    seq: { type: "integer", minimum: 0, maximum: 1e15, multipleOf: 1 },
-  },
-  required: ["id", "payload", "seq"],
-} as const;
 
 class MemoryStorage implements Storage {
   private values = new Map<string, string>();
@@ -46,7 +48,7 @@ class MemoryStorage implements Storage {
 function storageWithOneFailedWrite() {
   const memory = getRxStorageMemory();
   const state = { failNextIncrementalWrite: false };
-  const storage: RxStorage<any, any> = {
+  const storage: typeof memory = {
     ...memory,
     async createStorageInstance(params) {
       const instance = await memory.createStorageInstance(params);
@@ -87,7 +89,12 @@ const message = (id: string) => ({
   delivery: "current_turn" as const,
 });
 
-let database: RxDatabase | undefined;
+let database:
+  | RxDatabase<{
+      outbox: RxCollection<SyncDocument>;
+      projections: RxCollection<SyncDocument>;
+    }>
+  | undefined;
 
 afterEach(async () => {
   vi.unstubAllGlobals();
@@ -97,32 +104,61 @@ afterEach(async () => {
 
 it("sends, removes and cancels after one outbox write failed", async () => {
   vi.stubGlobal("navigator", { onLine: true });
-  const { storage, state } = storageWithOneFailedWrite();
-  database = await createRxDatabase({
+  const { storage: rxStorage, state } = storageWithOneFailedWrite();
+  database = await createRxDatabase<{
+    outbox: RxCollection<SyncDocument>;
+    projections: RxCollection<SyncDocument>;
+  }>({
     name: `outbox-write-failure-${crypto.randomUUID()}`,
-    storage,
+    storage: rxStorage,
     multiInstance: false,
   });
-  await database.addCollections({ outbox: { schema } });
+  await database.addCollections({
+    outbox: { schema: SYNC_DOCUMENT_SCHEMA },
+    projections: { schema: SYNC_DOCUMENT_SCHEMA },
+  });
   const db = database;
-  const syncPost = vi.fn(async (_path: string, body: { id: string }) => ({
-    id: body.id,
-    status: "delivered",
-  }));
-  const outbox = createOutbox({
-    api: {
-      isApiSchemaMismatch: () => false,
-      onApiSchemaMismatch: () => () => {},
-      syncGet: (async () => ({ workspaceId: WORKSPACE_ID })) as any,
-      syncPost: syncPost as any,
-      refreshSession: (async () => ({ token: "session" })) as any,
+  const storage = new MemoryStorage();
+  const syncPost =
+    vi.fn<(path: string, body: PostBody<"/api/messages">) => void>();
+  const api = createApiScope({
+    origin: "http://studio.test",
+    localStorage: storage,
+    sessionStorage: storage,
+    beginMutation: createMutationJournal("test", storage),
+    beginActivity: () => () => {},
+    fetch: async (request) => {
+      const path = new URL(request.url).pathname;
+      let value: unknown;
+      if (path === "/api/sync/identity")
+        value = {
+          workspaceId: WORKSPACE_ID,
+          syncProtocol: SYNC_PROTOCOL_VERSION,
+        } satisfies GetResult<"/api/sync/identity">;
+      else if (path === "/api/session")
+        value = { token: "session" } satisfies GetResult<"/api/session">;
+      else if (path === "/api/messages") {
+        // This API instance wrote the request using the generated message contract.
+        const body: PostBody<"/api/messages"> = await request.json();
+        syncPost(path, body);
+        value = {
+          id: body.id,
+          status: "delivered",
+        } satisfies PostResult<"/api/messages">;
+      } else throw new Error("Unexpected route: " + path);
+      return Response.json(value, {
+        headers: { [API_SCHEMA_HASH_HEADER]: API_SCHEMA_HASH },
+      });
     },
-    syncDatabase: (async () => ({
+  });
+  const outbox = createOutbox({
+    api,
+    syncDatabase: async () => ({
       db,
       workspaceId: WORKSPACE_ID,
       verifyWorkspace: async () => {},
-    })) as any,
-    storage: new MemoryStorage(),
+    }),
+    storage,
   });
 
   // An earlier delivered message is acknowledged while the disk is full.
@@ -143,6 +179,7 @@ it("sends, removes and cancels after one outbox write failed", async () => {
   ).toHaveLength(1);
 
   // A message that never left the device can still be removed or cancelled.
+  assert.ok(db.outbox != null);
   for (const id of ["removed", "cancelled"])
     await db.outbox.insert({
       id,
@@ -161,8 +198,12 @@ it("sends, removes and cancels after one outbox write failed", async () => {
   const cancelled = await db.outbox.findOne("cancelled").exec();
   expect(JSON.parse(cancelled!.payload).status).toBe("cancelled");
   expect(
-    syncPost.mock.calls.some(([, body]) =>
-      ["removed", "cancelled"].includes(body.id),
+    syncPost.mock.calls.some(
+      ([, body]) =>
+        body !== null &&
+        typeof body === "object" &&
+        "id" in body &&
+        ["removed", "cancelled"].includes(body.id),
     ),
   ).toBe(false);
 });
