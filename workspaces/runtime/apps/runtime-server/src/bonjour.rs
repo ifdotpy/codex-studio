@@ -238,8 +238,21 @@ pub struct Advertiser {
     _watcher: RecommendedWatcher,
 }
 
+impl Drop for Advertiser {
+    fn drop(&mut self) {
+        // Closing the tool's stdin withdraws the record.
+        drop(
+            self.running
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .take(),
+        );
+    }
+}
+
+#[cfg(test)]
 impl Advertiser {
-    pub fn is_running(&self) -> bool {
+    fn is_running(&self) -> bool {
         self.running
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
