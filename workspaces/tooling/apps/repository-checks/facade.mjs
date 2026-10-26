@@ -60,6 +60,10 @@ const UNSAFE_RUST_ALLOWLIST = [
     "Single-instance flock on the native shell lock file.",
   ],
   [
+    "workspaces/client/apps/native/src-tauri/src/ios_discovery.rs",
+    "Network.framework Bonjour browser of the iOS shell.",
+  ],
+  [
     "workspaces/client/apps/native/src-tauri/src/ios_shell.rs",
     "UIKit and WebKit bindings of the iOS shell.",
   ],
