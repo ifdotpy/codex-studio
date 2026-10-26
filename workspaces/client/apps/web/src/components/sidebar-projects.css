@@ -512,3 +512,38 @@
     transparent
   );
 }
+
+/* A narrow sidebar header (the iPhone Duo) cannot fit the brand and four
+   touch targets in one row: the brand and the close button share the first
+   row, the other actions take the second, and the notice count sits beside
+   its icon instead of over it. */
+.sidebar-header {
+  container: sidebar-header / inline-size;
+}
+@container sidebar-header (max-width: 240px) {
+  .sidebar-header > .brand {
+    flex: 1 1
+      calc(
+        100% - var(--studio-touch-target, 2.75rem) - var(--mantine-spacing-xs)
+      );
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+  }
+  .sidebar-header > [aria-label="Close conversations"] {
+    order: 1;
+  }
+  .sidebar-header > :not(.brand, [aria-label="Close conversations"]) {
+    order: 2;
+  }
+  .sidebar-header .sidebar-warnings-target:has(.conversation-warning-count) {
+    margin-inline-end: 2rem;
+  }
+  .sidebar-header .conversation-warning-count {
+    inset-block-start: 50%;
+    inset-inline-start: calc(100% - 0.375rem);
+    inset-inline-end: auto;
+    inline-size: max-content;
+    transform: translateY(-50%);
+  }
+}
