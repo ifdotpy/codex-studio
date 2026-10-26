@@ -229,8 +229,9 @@ def stage(source, commit, installed, receipts, *, observe, run=updates.run_tool,
             return previous
         if receipt.get('id') == operation and receipt.get('outcome') in ('failed', 'obsolete'):
             raise DeliveryError('The recovery owner reports delivery ' + str(receipt['outcome']))
-        resume_publication = (recovered is not None and previous.get('phase') == PHASES['publishing']
-                              and previous.get('installerDispatch') is None)
+        # A failed startup publication has no pending file; the lease check below still fences a live delivery.
+        resume_publication = (previous.get('phase') == PHASES['publishing'] and previous.get('installerDispatch') is None
+                              and (recovered is not None or (startup is not None and pending is None)))
         if previous.get('phase') in (PHASES['publishing'], PHASES['submitted']) and not resume_publication:
             raise DeliveryError('The delivery outcome is unknown; keep this request and inspect the recovery receipt')
     if pending_path.exists() or pending_path.is_symlink():

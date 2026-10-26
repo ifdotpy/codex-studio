@@ -238,6 +238,35 @@ class StartupDeliveryTests(unittest.TestCase):
             self.run_once(launch=True)
             self.assertEqual(self.calls, [], 'a pointer under an active delivery still waits')
 
+    def leftover_startup_publication(self, source):
+        # publish_pending failed after the pointer was written: pointer and publishing record remain.
+        with patch.object(delivery, 'publish_pending', side_effect=OSError('no space left')):
+            with self.assertRaises(OSError):
+                self.stage(source)
+        self.assertTrue(self.intent.exists())
+        self.assertEqual(updates.read_json(self.journal)['phase'], 'publishing')
+        self.assertFalse((self.state / updates.PENDING_FILE).exists())
+
+    def test_a_leftover_startup_publication_resumes_on_the_next_stage(self):
+        source = self.prepare_uninstalled_delivery()
+        self.leftover_startup_publication(source)
+        result = self.stage(source)
+        self.assertEqual(result['phase'], 'submitted')
+        self.assertEqual(updates.read_pending(self.state)['id'], result['id'])
+
+    def test_a_startup_publication_with_a_pending_file_or_active_delivery_still_refuses(self):
+        source = self.prepare_uninstalled_delivery()
+        self.leftover_startup_publication(source)
+        foreign = {'id': str(uuid.uuid4()), 'app': str(source), 'build': self.new, 'from': 'local-delivery'}
+        delivery.publish_pending(self.state, foreign)
+        with self.assertRaisesRegex(delivery.DeliveryError, 'outcome is unknown|Another update'):
+            self.stage(source)
+        (self.state / updates.PENDING_FILE).unlink()
+        with (self.state / 'delivery.lock').open('a+') as lease:
+            fcntl.flock(lease, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            with self.assertRaisesRegex(delivery.DeliveryError, 'Another local delivery is active'):
+                self.stage(source)
+
     def test_artifact_state_receipt_generation_and_lease_mismatches_hold(self):
         targets = [
             (delivery.server_path(self.installed), b'changed-new'),
