@@ -36,10 +36,12 @@ async function start(text: string) {
 test("a limit that refuses a turn Claude started itself reports the provider reset", async () => {
   const { bridge, turn } = await start("work");
   const first = await bridge.note(
+    "turn/completed",
     (n) => n.method === "turn/completed" && n.params.turn.id === turn,
   );
   assert.equal(first.params.turn.status, "completed");
   const own = await bridge.note(
+    "turn/completed",
     (n) => n.method === "turn/completed" && n.params.turn.id !== turn,
   );
   assert.equal(own.params.turn.status, "failed");
@@ -49,12 +51,14 @@ test("a limit that refuses a turn Claude started itself reports the provider res
     resetsAt: RESET,
   });
   const shown = await bridge.note(
+    "item/completed",
     (n) =>
       n.method === "item/completed" &&
       n.params.turnId === own.params.turn.id &&
       n.params.item.id ===
         "limit:" + own.params.turn.id + ":five_hour:" + RESET,
   );
+  assert.ok(shown.params.item.text !== undefined);
   assert.match(
     shown.params.item.text,
     new RegExp(
@@ -67,6 +71,7 @@ test("a limit that refuses a turn Claude started itself reports the provider res
 test("a limit without rate-limit details still reports a usage wait", async () => {
   const { bridge, turn } = await start("plain");
   const done = await bridge.note(
+    "turn/completed",
     (n) => n.method === "turn/completed" && n.params.turn.id === turn,
   );
   assert.equal(done.params.turn.status, "failed");

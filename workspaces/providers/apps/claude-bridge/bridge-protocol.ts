@@ -11,7 +11,7 @@ import type {
   SDKBackgroundTasksChangedMessage,
   SDKRateLimitInfo,
   SDKControlGetUsageResponse,
-  Settings,
+  Query,
   SlashCommand,
 } from "@anthropic-ai/claude-agent-sdk";
 import type {
@@ -90,6 +90,7 @@ export type BridgeSessionParams = Partial<
   >
 > & { cwd?: string | undefined; dynamicTools?: ToolDefinition[] | undefined };
 export interface BridgeTurnParams extends BridgeThreadParams {
+  dynamicTools?: ToolDefinition[] | undefined;
   input: BridgeInput[];
   clientUserMessageId?: string | undefined;
   model?: Options["model"] | undefined;
@@ -183,7 +184,7 @@ export type BridgeMoveProof = MoveProof & {
     strictMcpConfig: true;
     model: Session["model"];
     permissionMode: Options["permissionMode"];
-    settings: Settings;
+    settings: Parameters<Query["applyFlagSettings"]>[0];
     effort: Options["effort"] | null;
     systemPrompt: {
       type: "preset";
