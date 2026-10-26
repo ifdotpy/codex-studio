@@ -1,26 +1,27 @@
 // `just signing-check`: prove the package signing setup works in seconds, before
-// a long build. It loads the same configuration as signing.mjs, unlocks the
+// a long build. It loads the same configuration as signing.ts, unlocks the
 // keychain the same way and looks up the identity. It prints the keychain path
 // and the certificate fingerprint. It never prints the password or key material.
+import { validateSigningConfiguration } from "./signing-settings.ts";
 import { readFileSync, statSync } from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
-import { signingConfigPath, signingIdentity, validate } from "./signing.mjs";
+import { signingConfigPath, signingIdentity } from "./signing.ts";
 
 export const signingSetupDocument =
   "workspaces/client/apps/native/README.md#signing-setup";
 
 class CheckFailure extends Error {}
 
-function statFile(file, label) {
+function statFile(file: string, label: string) {
   let stat;
   try {
     stat = statSync(file);
   } catch (error) {
     throw new CheckFailure(
-      error.code === "ENOENT"
+      error instanceof Error && "code" in error && error.code === "ENOENT"
         ? `${label} ${file} does not exist.`
-        : `${label} ${file} is not readable: ${error.code}.`,
+        : `${label} ${file} is not readable: ${error instanceof Error && "code" in error ? error.code : undefined}.`,
     );
   }
   if (!stat.isFile()) throw new CheckFailure(`${label} ${file} is not a file.`);
@@ -28,7 +29,7 @@ function statFile(file, label) {
 }
 
 // Group and other must have no access to a file that names or holds a secret.
-function requirePrivate(file, label) {
+function requirePrivate(file: string, label: string) {
   const mode = statFile(file, label).mode & 0o777;
   if (mode & 0o077)
     throw new CheckFailure(
@@ -36,7 +37,7 @@ function requirePrivate(file, label) {
     );
 }
 
-function loadSettings(env) {
+function loadSettings(env: NodeJS.ProcessEnv) {
   if (env.CODEX_STUDIO_SIGNING_IDENTITY)
     return {
       source: "the CODEX_STUDIO_SIGNING_IDENTITY environment variable",
@@ -47,12 +48,12 @@ function loadSettings(env) {
     };
   const file = signingConfigPath();
   requirePrivate(file, "Signing configuration");
-  let settings;
+  let settings: unknown;
   try {
     settings = JSON.parse(readFileSync(file, "utf8"));
   } catch (error) {
     throw new CheckFailure(
-      `Signing configuration ${file} is not valid JSON: ${error.message}`,
+      `Signing configuration ${file} is not valid JSON: ${error instanceof Error ? error.message : String(error)}`,
     );
   }
   if (!settings || typeof settings !== "object" || Array.isArray(settings))
@@ -63,25 +64,12 @@ function loadSettings(env) {
 // Return { keychain, identity } or throw a CheckFailure with the exact reason.
 export function checkSigning(env = process.env) {
   const { source, settings } = loadSettings(env);
-  for (const key of ["identity", "keychain", "passwordFile"])
-    if (settings[key] !== undefined && typeof settings[key] !== "string")
-      throw new CheckFailure(`"${key}" in ${source} must be a string.`);
-  try {
-    validate(settings.identity);
-  } catch {
-    throw new CheckFailure(
-      `"identity" in ${source} must be a 40 character hexadecimal certificate fingerprint.`,
-    );
-  }
-  if (settings.passwordFile && !settings.keychain)
-    throw new CheckFailure(
-      `"passwordFile" in ${source} needs a "keychain" path.`,
-    );
-  if (settings.keychain) statFile(settings.keychain, "Keychain file");
-  if (settings.keychain && settings.passwordFile)
-    requirePrivate(settings.passwordFile, "Password file");
+  validateSigningConfiguration(settings, source);
+  const { keychain, passwordFile } = settings;
+  if (keychain) statFile(keychain, "Keychain file");
+  if (keychain && passwordFile) requirePrivate(passwordFile, "Password file");
   // Unlock and identity lookup are the same code the build runs.
-  return { keychain: settings.keychain, identity: signingIdentity(env) };
+  return { keychain: keychain, identity: signingIdentity(env) };
 }
 
 export function signingCheckReport(env = process.env) {
@@ -94,7 +82,7 @@ export function signingCheckReport(env = process.env) {
   } catch (error) {
     return {
       ok: false,
-      line: `FAIL: ${error.message}\nSee ${signingSetupDocument}`,
+      line: `FAIL: ${error instanceof Error ? error.message : String(error)}\nSee ${signingSetupDocument}`,
     };
   }
 }
