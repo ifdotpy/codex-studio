@@ -382,7 +382,7 @@ mod tests {
         let mut db = crate::fresh_state::test_canvas();
         db.execute_batch("ALTER TABLE user_terminals DROP COLUMN output_generation")
             .expect("legacy schema");
-        let record = serde_json::json!({"id":"terminal","agent":"a","title":"Terminal","cwd":"/tmp","status":"running","created":1});
+        let record = serde_json::json!({"id":"terminal","agent":"a","title":"Terminal","cwd":std::env::temp_dir(),"status":"running","created":1});
         db.execute(
             "INSERT INTO user_terminals(id,record,output,offset) VALUES('terminal',?1,'a🙂',0)",
             [record.to_string()],

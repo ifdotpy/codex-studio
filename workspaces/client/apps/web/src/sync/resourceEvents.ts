@@ -673,9 +673,13 @@ export function createResourceEvents(options: ResourceEventsOptions) {
       lastEpoch = event.epoch;
       lastRevision = undefined;
       lastHeartbeatRevision = undefined;
-      lastTokenEpoch = undefined;
-      lastTokenRevision = undefined;
-      lastTokenEvent = undefined;
+      // Token frames may arrive while this resource frame awaits persistence.
+      // Its delayed dispatch must retain an already received same-epoch snapshot.
+      if (lastTokenEpoch !== event.epoch) {
+        lastTokenEpoch = undefined;
+        lastTokenRevision = undefined;
+        lastTokenEvent = undefined;
+      }
       resourceValues.clear();
       progressValues.clear();
       deliveredEntitySequenceBatches.clear();

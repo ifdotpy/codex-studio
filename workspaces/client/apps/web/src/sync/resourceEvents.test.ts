@@ -15,6 +15,7 @@ vi.mock("../servers/eventSource", () => ({
 vi.mock("./client", () => ({
   syncDatabase,
   readSubscriptionCursor: vi.fn(async () => undefined),
+  persistResourceEntityChanges: vi.fn(async () => {}),
 }));
 vi.mock("../usage/tokenRate", async (original) => ({
   ...(await original<typeof import("../usage/tokenRate")>()),
@@ -327,6 +328,7 @@ describe("shared resource event transport", () => {
     listener.mockClear();
     emit(1, "change");
     emit(2, "change");
+    await vi.advanceTimersByTimeAsync(0);
     expect(
       listener.mock.calls.map(([version]) => version.draftChanges.through),
     ).toEqual([1, 2]);

@@ -972,9 +972,8 @@ export function createSyncClient(options: SyncClientOptions) {
               snapshot.terminalOutput &&
               entry.replyKind === "delta" &&
               (previous?.workspaceId !== workspaceId ||
-                entry.cursor.terminalGeneration === undefined ||
-                entry.cursor.terminalGeneration !==
-                  previous.terminalGeneration ||
+                cursor.terminalGeneration === undefined ||
+                cursor.terminalGeneration !== previous.terminalGeneration ||
                 entry.terminalBaseOffset === undefined ||
                 entry.terminalBaseOffset !==
                   previous.viewSnapshot?.terminalOutput?.offset)
