@@ -1,3 +1,4 @@
+import { hiddenElectronArguments } from "./hidden-electron.ts";
 import assert from "node:assert/strict";
 import type { ElectronApplication } from "playwright-core";
 import { _electron as electron } from "playwright-core";
@@ -20,9 +21,7 @@ try {
       ...(executablePath ? [] : [root]),
       "--hidden",
       "--ui-only",
-      ...(process.platform === "linux" && !process.env.DISPLAY
-        ? ["--ozone-platform=headless"]
-        : []),
+      ...hiddenElectronArguments,
     ],
     env: {
       ...process.env,

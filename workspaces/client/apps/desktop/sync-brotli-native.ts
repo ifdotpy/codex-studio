@@ -1,3 +1,4 @@
+import { hiddenElectronArguments } from "./hidden-electron.ts";
 import type {} from "./sync-brotli-fixture.ts";
 import assert from "node:assert/strict";
 import type { ElectronApplication } from "playwright-core";
@@ -112,9 +113,7 @@ try {
     args: [
       fileURLToPath(new URL("./sync-brotli-fixture.ts", import.meta.url)),
       path.join(folder, "profile"),
-      ...(process.platform === "linux" && !process.env.DISPLAY
-        ? ["--ozone-platform=headless"]
-        : []),
+      ...hiddenElectronArguments,
     ],
   });
   assert.equal(

@@ -1,3 +1,4 @@
+import { hiddenElectronArguments } from "./hidden-electron.ts";
 import type { ProfileRestoreFixture } from "./profile-export-fixture.ts";
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
@@ -13,7 +14,7 @@ import {
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { createRequire } from "node:module";
-import type { BrowserProfileArchive } from "./export-profile.ts";
+import type { BrowserProfileArchive } from "../web/src/native/importBrowserProfile.ts";
 import type { BrowserProfileRecord } from "../web/src/native/importBrowserProfile.ts";
 const electron: unknown = createRequire(import.meta.url)("electron");
 assert.ok(typeof electron === "string");
@@ -44,18 +45,26 @@ await writeFile(
     },
   }),
 );
-await run(electron, [entry, "seed", manifest], { timeout: 90000 });
+await run(electron, [entry, "seed", manifest, ...hiddenElectronArguments], {
+  timeout: 90000,
+});
 const exporter = path.join(import.meta.dirname, "export-profile.ts");
 const heldProfile = await open(path.join(profile, "Preferences"), "r");
 try {
   await assert.rejects(
-    run(electron, [exporter, manifest], { timeout: 90000 }),
+    run(electron, [exporter, manifest, ...hiddenElectronArguments], {
+      timeout: 90000,
+    }),
     /Close the desktop/,
   );
 } finally {
   await heldProfile.close();
 }
-const exported = await run(electron, [exporter, manifest], { timeout: 90000 });
+const exported = await run(
+  electron,
+  [exporter, manifest, ...hiddenElectronArguments],
+  { timeout: 90000 },
+);
 assert.match(
   exported.stdout,
   /"result":"PASS"/,
@@ -149,7 +158,9 @@ assert.deepEqual(value.file, [
 assert.deepEqual(value.optional, ["undefined"]);
 assert.equal((await stat(output)).mode & 0o777, 0o600);
 await assert.rejects(
-  run(electron, [exporter, manifest], { timeout: 90000 }),
+  run(electron, [exporter, manifest, ...hiddenElectronArguments], {
+    timeout: 90000,
+  }),
   /EEXIST/,
 );
 assert.equal(await readFile(output, "utf8"), JSON.stringify(archive));
@@ -164,7 +175,11 @@ await writeFile(
     materialized,
   } satisfies ProfileRestoreFixture),
 );
-await run(electron, [entry, "restore", restoreDocument], { timeout: 90000 });
+await run(
+  electron,
+  [entry, "restore", restoreDocument, ...hiddenElectronArguments],
+  { timeout: 90000 },
+);
 console.log(
   JSON.stringify({
     result: "PASS",
