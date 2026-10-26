@@ -1,5 +1,5 @@
 import { test, expect } from "../playwright.ts";
-import { detectTextClipping } from "./text-clipping.mjs";
+import { detectTextClipping } from "./text-clipping.ts";
 
 test("text audit detects clipping and covered controls", async ({ page }) => {
   await page.setContent(`

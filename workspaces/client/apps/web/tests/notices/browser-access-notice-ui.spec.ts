@@ -1,7 +1,9 @@
+import { fixtureServerOrigin } from "../mobile/browser-fixture.ts";
+import { createFixtureViteServer as createServer } from "../playwright.ts";
+import type { BrowserAccessSnapshot } from "./browser-access-notice-ui.fixture.tsx";
 import { test } from "../playwright.ts";
 // Render the production browser notice against account-specific desktop responses.
 import assert from "node:assert/strict";
-import { createRequire } from "node:module";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -13,30 +15,9 @@ test("Browser access notice ui", async ({
   context: runnerContext,
 }) => {
   const repo = fileURLToPath(new URL("../../../../../../", import.meta.url));
-  const require = createRequire(
-    join(repo, "workspaces/client/apps/web/package.json"),
-  );
-  const { createServer } = await import(require.resolve("vite"));
+
   const cache = await mkdtemp(join(tmpdir(), "browser-access-notice-vite-"));
   const screenshot = join(tmpdir(), "codex-browser-access-notice.png");
-  const entry = join(
-    repo,
-    "workspaces/client/apps/web/__browser-access-notice-fixture.jsx",
-  );
-  const source = `
-  import React, {useState} from 'react';
-  import {createRoot} from 'react-dom/client';
-  import {MantineProvider} from '@mantine/core';
-  import '@mantine/core/styles.css';
-  import BrowserAccessNotice from '/src/components/BrowserAccessNotice.tsx';
-  function Fixture(){
-    const [snapshot,setSnapshot]=useState({accountKey:'default',active:true});
-    window.applySnapshot=setSnapshot;
-    return <MantineProvider><main data-account={snapshot.accountKey}>
-      <h2>Conversation</h2><BrowserAccessNotice {...snapshot}/>
-    </main></MantineProvider>;
-  }
-  createRoot(document.getElementById('root')).render(<Fixture/>);`;
   const server = await createServer({
     configFile: false,
     cacheDir: cache,
@@ -45,18 +26,12 @@ test("Browser access notice ui", async ({
     plugins: [
       {
         name: "browser-access-notice-fixture",
-        resolveId(id) {
-          if (id === "/__browser-access-notice-fixture.jsx") return entry;
-        },
-        load(id) {
-          if (id === entry) return source;
-        },
         configureServer(vite) {
           vite.middlewares.use((req, res, next) => {
             if (req.url !== "/") return next();
             res.setHeader("Content-Type", "text/html");
             res.end(
-              '<div id="root"></div><script type="module" src="/__browser-access-notice-fixture.jsx"></script>',
+              '<div id="root"></div><script type="module" src="/tests/notices/browser-access-notice-ui.fixture.tsx"></script>',
             );
           });
         },
@@ -67,9 +42,9 @@ test("Browser access notice ui", async ({
     await server.listen();
     const page = runnerPage;
     await page.setViewportSize({ width: 900, height: 520 });
-    const errors = [];
+    const errors: string[] = [];
     page.on("pageerror", (error) => errors.push(error.message));
-    const requests = [];
+    const requests: (string | null)[] = [];
     await page.route("**/api/desktop?**", async (route) => {
       const url = new URL(route.request().url());
       const key = url.searchParams.get("account_key");
@@ -84,19 +59,27 @@ test("Browser access notice ui", async ({
           : { enabled: true, reason: null };
       await route.fulfill({ json: { browser: browserStatus } });
     });
-    await page.goto(server.resolvedUrls.local[0]);
+    await page.goto(fixtureServerOrigin(server));
     await page.waitForFunction(
-      () => typeof window.applySnapshot === "function",
+      () => typeof window.applyBrowserAccessSnapshot === "function",
     );
     const notice = page.getByRole("status");
-    const set = async (snapshot) => {
-      await page.evaluate((value) => window.applySnapshot(value), snapshot);
+    const set = async (snapshot: BrowserAccessSnapshot) => {
+      await page.evaluate(
+        (value) => window.applyBrowserAccessSnapshot(value),
+        snapshot,
+      );
     };
     await set({ accountKey: "disabled", active: true });
     await notice.waitFor();
     const details = notice.locator("details");
     await details.locator("summary").click();
-    assert.equal(await details.evaluate((element) => element.open), true);
+    assert.equal(
+      await details.evaluate(
+        (element) => element instanceof HTMLDetailsElement && element.open,
+      ),
+      true,
+    );
     assert.match(
       await details.innerText(),
       /The Chrome plugin is disabled in this account's Codex configuration/,

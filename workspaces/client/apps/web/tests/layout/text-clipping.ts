@@ -1,7 +1,39 @@
+type ClippingAncestor = Pick<
+  CSSStyleDeclaration,
+  "display" | "overflowX" | "overflowY"
+> &
+  Pick<DOMRect, "x" | "y" | "width" | "height"> & {
+    selector: string;
+    clientWidth: number;
+    clientHeight: number;
+  };
+type ClippingDetails = Partial<{
+  intentional: boolean;
+  justification: string;
+  clippingAncestors: ClippingAncestor[];
+  clientHeight: number;
+  scrollHeight: number;
+  lineHeight: string;
+  cover: string;
+}>;
+export type ClippingFinding = ClippingDetails & {
+  scene: string;
+  profile: string;
+  selector: string;
+  text: string;
+  rect: Pick<DOMRect, "x" | "y" | "width" | "height">;
+  reason: string;
+};
 // Serializable browser function. Call page.evaluate(detectTextClipping, {scene, profile}).
-export function detectTextClipping({ scene, profile }) {
-  const findings = [];
-  const path = (el) => {
+export function detectTextClipping({
+  scene,
+  profile,
+}: {
+  scene: string;
+  profile: string;
+}) {
+  const findings: ClippingFinding[] = [];
+  const path = (el: Element | null) => {
     const parts = [];
     while (el && el !== document.body) {
       if (el.id) {
@@ -19,7 +51,7 @@ export function detectTextClipping({ scene, profile }) {
     }
     return parts.join(" > ");
   };
-  const visible = (el) => {
+  const visible = (el: Element) => {
     if (el.closest(".sr-only,.mantine-VisuallyHidden-root")) return false;
     const s = getComputedStyle(el),
       r = el.getBoundingClientRect();
@@ -47,10 +79,12 @@ export function detectTextClipping({ scene, profile }) {
       r.left < innerWidth
     );
   };
-  const hasFullText = (el, text) => {
-    for (let a = el; a; a = a.parentElement) {
+  const hasFullText = (el: Element, text: string) => {
+    for (let a: Element | null = el; a; a = a.parentElement) {
       if (
-        [a.title, a.getAttribute("aria-label")].some((x) => x?.includes(text))
+        [a.getAttribute("title"), a.getAttribute("aria-label")].some((x) =>
+          x?.includes(text),
+        )
       )
         return true;
       const refs = (a.getAttribute("aria-describedby") || "").split(/\s+/);
@@ -63,7 +97,12 @@ export function detectTextClipping({ scene, profile }) {
     }
     return false;
   };
-  const add = (el, text, reason, details = {}) => {
+  const add = (
+    el: Element,
+    text: string,
+    reason: string,
+    details: ClippingDetails = {},
+  ) => {
     const r = el.getBoundingClientRect();
     findings.push({
       scene,
@@ -82,7 +121,7 @@ export function detectTextClipping({ scene, profile }) {
     )
       continue;
     const nodes = Array.from(el.childNodes).filter(
-      (n) => n.nodeType === Node.TEXT_NODE && n.textContent.trim(),
+      (n) => n.nodeType === Node.TEXT_NODE && n.textContent?.trim(),
     );
     if (!nodes.length) continue;
     const text = nodes.map((n) => n.textContent.trim()).join(" "),
@@ -93,10 +132,10 @@ export function detectTextClipping({ scene, profile }) {
       return Array.from(range.getClientRects());
     });
     // Scroll containers expose their content through scrolling. Hidden/clip ancestors cannot.
-    const reasons = new Set();
+    const reasons = new Set<string>();
     let visibleTextRects = ranges;
     let horizontalResolved = false;
-    const clippingAncestors = [];
+    const clippingAncestors: ClippingAncestor[] = [];
     for (let a = el; a; a = a.parentElement) {
       const previousReasons = reasons.size;
       const cs = getComputedStyle(a),
@@ -190,7 +229,7 @@ export function detectTextClipping({ scene, profile }) {
         lineHeight: s.lineHeight,
       });
     const control = el.closest('button,label,[role="button"]');
-    if (control && ranges.length) {
+    if (control && ranges[0]) {
       const t = ranges[0],
         x = t.left + t.width / 2,
         y = t.top + t.height / 2;
