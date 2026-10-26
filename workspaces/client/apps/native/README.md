@@ -126,21 +126,36 @@ keyboard closes. Code: `src-tauri/src/ios_shell.rs`, `ios_viewport.js`,
 
 ### Viewport API
 
-The shell owns three names. Their web owner is
+The shell owns the names below. Their web owner is
 `apps/web/src/native/nativeViewport.ts`.
 
-| Name                                              | Kind                      | Meaning                                                                  |
-| ------------------------------------------------- | ------------------------- | ------------------------------------------------------------------------ |
-| `--native-safe-top`, `-right`, `-bottom`, `-left` | CSS lengths on `<html>`   | UIKit `safeAreaInsets` of the web view, in CSS px                        |
-| `studio-native-viewport`                          | `CustomEvent` on `window` | `detail` = `{ insets, keyboard, hinge }`                                 |
-| `window.__studioNativeViewport`                   | object, `version: 1`      | current `state`, read when the page starts                               |
-| `data-native-hinge`                               | attribute on `<html>`     | `closed`, `partial`, `open` or `unknown` (iOS 27.1 `UIHingeInteraction`) |
+| Name                                               | Kind                      | Meaning                                                                  |
+| -------------------------------------------------- | ------------------------- | ------------------------------------------------------------------------ |
+| `--native-safe-top`, `-right`, `-bottom`, `-left`  | CSS lengths on `<html>`   | UIKit `safeAreaInsets` of the web view, in CSS px                        |
+| `studio-native-viewport`                           | `CustomEvent` on `window` | `detail` = `{ insets, keyboard, hinge, statusColumn, hingeBand }`        |
+| `window.__studioNativeViewport`                    | object, `version: 1`      | current `state`, read when the page starts                               |
+| `data-native-hinge`                                | attribute on `<html>`     | `closed`, `partial`, `open` or `unknown` (iOS 27.1 `UIHingeInteraction`) |
+| `--native-status-column-bottom`, `-left`           | CSS lengths on `<html>`   | edges of the system status column in the strip; absent without one       |
+| `--native-hinge-left`, `-top`, `-width`, `-height` | CSS lengths on `<html>`   | the hinge band (division region); absent without one                     |
 
 - `insets`: `{ top, right, bottom, left }` in CSS px.
 - `hinge`: `{ status, angle }` from `UIHingeInteraction` (iOS 27.1 and later;
   absent on older systems). `angle` is `UIHinge.angle` in radians (π when
   fully open on the iPhone Duo); `degrees` is the same angle, also set as
   `--native-hinge-angle` (for example `180deg`) on `<html>`.
+- `statusColumn`: `{ x, y, width, height }` in CSS px, or null. It is the
+  union of the active iOS 27.1 occlusion regions
+  (`UIView reservedRegionsOfKind:`) that overlap the top, left or right
+  strip: the clock and Wi-Fi, and any call, recording or hotspot pill. On the
+  Duo simulator (landscape) it is `[867, 0, 84, 124]`. A call makes it
+  longer. The edge rail starts below it.
+- `hingeBand`: `{ x, y, width, height, active }` in CSS px, or null: the
+  first division region (the hinge, margins included). Duo simulator
+  (landscape): `[455.5, 0, 40, 669]`, `active: false`.
+- UIKit has no change notification for reserved regions. The shell checks
+  them on the status bar frame and app activation notifications, and every
+  0.25 s (one check costs about 35 µs), and pushes the state when they
+  change. It logs `studio-shell regions (<trigger>): …` to stderr.
 - `keyboard`: `{ overlap, duration, curve }`. `overlap` is the keyboard height
   over the web view bottom in CSS px (0 when it closes). `duration` is in ms.
   `curve` is the `UIViewAnimationCurve` value (7 for the keyboard).

@@ -63,6 +63,41 @@ pub fn reported(geometry: &Geometry) -> Insets {
     }
 }
 
+/// A rectangle in web view coordinates (CSS px).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Rect {
+    pub x: f64,
+    pub y: f64,
+    pub width: f64,
+    pub height: f64,
+}
+
+/// The system status column (clock, Wi-Fi, call and recording pills): the
+/// union of the active occlusion regions (iOS 27.1 UIViewReservedRegion)
+/// that overlap a reported top, left or right strip. Its size follows the
+/// status content, so a call pill makes it longer. None without such a region.
+pub fn status_column(insets: &Insets, width: f64, occlusions: &[Rect]) -> Option<Rect> {
+    occlusions
+        .iter()
+        .filter(|r| r.width > 0.0 && r.height > 0.0)
+        .filter(|r| {
+            (insets.top > 0.0 && r.y < insets.top)
+                || (insets.left > 0.0 && r.x < insets.left)
+                || (insets.right > 0.0 && r.x + r.width > width - insets.right)
+        })
+        .copied()
+        .reduce(|a, b| {
+            let x = a.x.min(b.x);
+            let y = a.y.min(b.y);
+            Rect {
+                x,
+                y,
+                width: (a.x + a.width).max(b.x + b.width) - x,
+                height: (a.y + a.height).max(b.y + b.height) - y,
+            }
+        })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -136,5 +171,63 @@ mod tests {
         let mut short = duo_272(LANDSCAPE_LEFT);
         short.safe.top = 59.0;
         assert_eq!(reported(&short), short.safe);
+    }
+
+    fn rect(x: f64, y: f64, width: f64, height: f64) -> Rect {
+        Rect {
+            x,
+            y,
+            width,
+            height,
+        }
+    }
+
+    #[test]
+    fn status_column_is_the_active_occlusion_in_the_side_strip() {
+        // Duo simulator, iOS 27.2, landscapeLeft: the status column region
+        // in the right strip; a region in the page area does not count.
+        let strip = insets(0.0, 82.0, 34.0, 0.0);
+        let column = rect(867.0, 0.0, 84.0, 124.0);
+        assert_eq!(
+            status_column(&strip, 951.0, &[rect(677.3, 21.0, 58.0, 37.0), column]),
+            Some(column)
+        );
+        let left = insets(0.0, 0.0, 34.0, 82.0);
+        assert_eq!(
+            status_column(&left, 951.0, &[rect(0.0, 0.0, 84.0, 124.0)]),
+            Some(rect(0.0, 0.0, 84.0, 124.0))
+        );
+        assert_eq!(status_column(&strip, 951.0, &[]), None);
+    }
+
+    #[test]
+    fn a_call_pill_region_extends_the_status_column() {
+        let strip = insets(0.0, 82.0, 34.0, 0.0);
+        assert_eq!(
+            status_column(
+                &strip,
+                951.0,
+                &[
+                    rect(867.0, 0.0, 84.0, 124.0),
+                    rect(871.0, 120.0, 76.0, 70.0)
+                ]
+            ),
+            Some(rect(867.0, 0.0, 84.0, 190.0))
+        );
+    }
+
+    #[test]
+    fn status_column_in_the_portrait_top_strip() {
+        let top = insets(82.0, 0.0, 34.0, 0.0);
+        assert_eq!(
+            status_column(&top, 669.0, &[rect(540.0, 0.0, 129.0, 82.0)]),
+            Some(rect(540.0, 0.0, 129.0, 82.0))
+        );
+        // No strip: nothing is a status column.
+        let none = insets(0.0, 0.0, 34.0, 0.0);
+        assert_eq!(
+            status_column(&none, 669.0, &[rect(540.0, 0.0, 129.0, 82.0)]),
+            None
+        );
     }
 }

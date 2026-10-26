@@ -28,12 +28,32 @@ export interface NativeHinge {
   degrees: number | null;
 }
 
+/** A rectangle in page CSS px (the web view fills the window). */
+export interface NativeRect {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
 export interface NativeViewportState {
   /** UIKit safe area insets of the web view, in CSS px. */
   insets: { top: number; right: number; bottom: number; left: number } | null;
   keyboard: NativeKeyboard | null;
   /** Absent before the first hinge update and on systems without the API. */
   hinge?: NativeHinge | null;
+  /**
+   * The system status column (clock, Wi-Fi and any call or recording pill)
+   * from the iOS 27.1 occlusion regions in the strip; null without one. Also
+   * --native-status-column-bottom and --native-status-column-left on <html>.
+   */
+  statusColumn?: NativeRect | null;
+  /**
+   * The iOS 27.1 division region (the hinge band, margins included) and its
+   * active flag; null without one. Also --native-hinge-left, -top, -width
+   * and -height on <html>.
+   */
+  hingeBand?: (NativeRect & { active: boolean }) | null;
 }
 
 type NativeViewportHost = { version: number; state: NativeViewportState };

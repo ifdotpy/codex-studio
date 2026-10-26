@@ -3,7 +3,7 @@
 //! UIKit safe-area insets and keyboard animations into the page through
 //! `ios_viewport.js`; see README.md "iOS shell".
 
-use crate::ios_insets::{Geometry, Insets, reported};
+use crate::ios_insets::{Geometry, Insets, Rect, reported, status_column};
 use crate::ios_server::{BUILD_DEFAULT, choose, saved_value, valid_server};
 use objc2::rc::{Retained, Weak};
 use objc2::runtime::{AnyObject, NSObject, NSObjectProtocol, ProtocolObject};
@@ -48,6 +48,10 @@ thread_local! {
     static KEYBOARD: Cell<Option<Keyboard>> = const { Cell::new(None) };
     // Last UIHingeInteraction update: UIHingeStatus raw value and UIHinge.angle.
     static HINGE: Cell<Option<(isize, f64)>> = const { Cell::new(None) };
+    // Last status column and hinge band sent to the page; checks push only
+    // on change.
+    static STATUS_COLUMN: Cell<Option<Rect>> = const { Cell::new(None) };
+    static HINGE_BAND: Cell<Option<(Rect, bool)>> = const { Cell::new(None) };
     // Diagnostic only: the last UIKit end frame and its conversions.
     static KEYBOARD_FRAMES: std::cell::RefCell<serde_json::Value> = const { std::cell::RefCell::new(serde_json::Value::Null) };
 }
@@ -249,7 +253,11 @@ fn reported_insets(webview: &UIView) -> (Geometry, Insets) {
 
 /// Send the current insets, and a keyboard state when one is known.
 fn push(webview: &UIView, keyboard: Option<Keyboard>) {
-    let (_, insets) = reported_insets(webview);
+    let (geometry, insets) = reported_insets(webview);
+    let column = current_status_column(webview, &insets, geometry.window.0);
+    let band = current_hinge_band(webview);
+    STATUS_COLUMN.set(column);
+    HINGE_BAND.set(band);
     let mut state = serde_json::json!({
         "insets": {
             "top": insets.top, "right": insets.right,
@@ -263,6 +271,14 @@ fn push(webview: &UIView, keyboard: Option<Keyboard>) {
             "curve": keyboard.curve,
         });
     }
+    // Always present (null without a region), so the page drops an old value.
+    state["statusColumn"] = column.map_or(
+        serde_json::Value::Null,
+        |r| serde_json::json!({ "x": r.x, "y": r.y, "width": r.width, "height": r.height }),
+    );
+    state["hingeBand"] = band.map_or(serde_json::Value::Null, |(r, active)| {
+        serde_json::json!({ "x": r.x, "y": r.y, "width": r.width, "height": r.height, "active": active })
+    });
     if let Some((status, angle)) = HINGE.get() {
         state["hinge"] = serde_json::json!({ "status": hinge_status(status), "angle": angle });
     }
@@ -294,6 +310,11 @@ fn diagnose(webview: &UIView, tag: &str) {
     let frame = webview.frame();
     let (raw, insets) = reported_insets(webview);
     let offset = scroll.contentOffset();
+    // Cost of one status column and hinge band check, for the poll interval.
+    let start = std::time::Instant::now();
+    let _ = reserved_regions(webview, "occlusion");
+    let _ = reserved_regions(webview, "division");
+    let region_micros = start.elapsed().as_micros() as u64;
     let native = serde_json::json!({
         "frame": [frame.origin.x, frame.origin.y, frame.size.width, frame.size.height],
         "uikitSafe": [raw.safe.top, raw.safe.right, raw.safe.bottom, raw.safe.left],
@@ -306,6 +327,13 @@ fn diagnose(webview: &UIView, tag: &str) {
         "statusBar": status_bar_frame(webview).map(|r| [r.origin.x, r.origin.y, r.size.width, r.size.height]),
         "windowBounds": [raw.window.0, raw.window.1],
         "interfaceOrientation": raw.orientation,
+        "reservedRegions": {
+            "occlusion": reserved_regions(webview, "occlusion").iter().map(Region::json).collect::<Vec<_>>(),
+            "division": reserved_regions(webview, "division").iter().map(Region::json).collect::<Vec<_>>(),
+        },
+        "statusColumn": STATUS_COLUMN.get().map(|r| [r.x, r.y, r.width, r.height]),
+        "hingeBand": HINGE_BAND.get().map(|(r, active)| serde_json::json!({ "frame": [r.x, r.y, r.width, r.height], "active": active })),
+        "regionQueryMicros": region_micros,
     });
     let script = NSString::from_str(include_str!("ios_diag.js"));
     let path = std::path::PathBuf::from(std::env::var("HOME").unwrap_or_default())
@@ -470,6 +498,7 @@ pub fn configure(window: &WebviewWindow) {
         push(&webview, KEYBOARD.get());
         install_server_switch(mtm, &webview, &main_window);
         install_hinge(&webview);
+        watch_status_column(&webview);
         if diagnostics() {
             let target = Weak::from(&*webview);
             let block = block2::RcBlock::new(move |_timer: NonNull<objc2_foundation::NSTimer>| {
@@ -622,3 +651,155 @@ fn install_hinge(webview: &UIView) {
         let _: () = msg_send![&*host, addInteraction: &*interaction];
     }
 }
+
+/// One iOS 27.1 reserved region, in web view coordinates (CSS px).
+struct Region {
+    frame: Rect,
+    /// UIEdgeInsets: top, right, bottom, left.
+    margins: [f64; 4],
+    active: bool,
+    id: Option<String>,
+}
+
+impl Region {
+    fn json(&self) -> serde_json::Value {
+        let Rect {
+            x,
+            y,
+            width,
+            height,
+        } = self.frame;
+        serde_json::json!({
+            "frame": [x, y, width, height],
+            "margins": self.margins,
+            "active": self.active,
+            "id": self.id,
+        })
+    }
+}
+
+/// iOS 27.1 reserved regions of one kind ("occlusion" or "division"),
+/// inactive ones included. Looked up at run time, so older systems return none.
+fn reserved_regions(webview: &UIView, kind: &str) -> Vec<Region> {
+    let Some(class) = objc2::runtime::AnyClass::get(c"UIViewReservedRegionKind") else {
+        return Vec::new();
+    };
+    let responds: bool = unsafe {
+        msg_send![webview, respondsToSelector: objc2::sel!(reservedRegionsOfKind:options:)]
+    };
+    if !responds {
+        return Vec::new();
+    }
+    unsafe {
+        let kind_value: Option<Retained<AnyObject>> = match kind {
+            "division" => msg_send![class, divisionRegionKind],
+            _ => msg_send![class, occlusionRegionKind],
+        };
+        let Some(kind_value) = kind_value else {
+            return Vec::new();
+        };
+        // UIViewReservedRegionQueryOptionsIncludeInactive
+        let regions: Retained<AnyObject> =
+            msg_send![webview, reservedRegionsOfKind: &*kind_value, options: 1usize];
+        let count: usize = msg_send![&*regions, count];
+        (0..count)
+            .map(|index| {
+                let region: Retained<AnyObject> = msg_send![&*regions, objectAtIndex: index];
+                let frame: CGRect = msg_send![&*region, frame];
+                let margins: objc2_ui_kit::UIEdgeInsets = msg_send![&*region, margins];
+                let active: bool = msg_send![&*region, isActive];
+                let identifier: Option<Retained<AnyObject>> = msg_send![&*region, identifier];
+                Region {
+                    frame: Rect {
+                        x: frame.origin.x,
+                        y: frame.origin.y,
+                        width: frame.size.width,
+                        height: frame.size.height,
+                    },
+                    margins: [margins.top, margins.right, margins.bottom, margins.left],
+                    active,
+                    id: identifier.map(|id| {
+                        let text: Retained<NSString> = msg_send![&*id, description];
+                        text.to_string()
+                    }),
+                }
+            })
+            .collect()
+    }
+}
+
+/// The status column in the reported strip, from the active occlusion regions.
+fn current_status_column(webview: &UIView, insets: &Insets, width: f64) -> Option<Rect> {
+    let active: Vec<Rect> = reserved_regions(webview, "occlusion")
+        .into_iter()
+        .filter(|region| region.active)
+        .map(|region| region.frame)
+        .collect();
+    status_column(insets, width, &active)
+}
+
+/// The hinge band: the first division region (iOS 27.1), with its active
+/// flag. The frame includes the region margins.
+fn current_hinge_band(webview: &UIView) -> Option<(Rect, bool)> {
+    reserved_regions(webview, "division")
+        .into_iter()
+        .next()
+        .map(|region| (region.frame, region.active))
+}
+
+/// Push when the status column or the hinge band changed since the last push.
+fn check_regions(webview: &UIView, trigger: &str) {
+    let (geometry, insets) = reported_insets(webview);
+    let column = current_status_column(webview, &insets, geometry.window.0);
+    let band = current_hinge_band(webview);
+    if column != STATUS_COLUMN.get() || band != HINGE_BAND.get() {
+        eprintln!("studio-shell regions ({trigger}): status column {column:?} hinge band {band:?}");
+        push(webview, KEYBOARD.get());
+        diagnose(webview, "regions");
+    }
+}
+
+/// UIKit has no change notification for reserved regions. The status bar
+/// frame and app activation notifications trigger a check at once; a 0.25 s
+/// poll is the backstop (a call, screen recording or
+/// hotspot pill moves the clock and Wi-Fi without a safe area change).
+fn watch_status_column(webview: &UIView) {
+    let center = NSNotificationCenter::defaultCenter();
+    let main = NSOperationQueue::mainQueue();
+    for name in [
+        "UIApplicationDidChangeStatusBarFrameNotification",
+        "UIApplicationDidBecomeActiveNotification",
+    ] {
+        let target = Weak::from(webview);
+        let block = block2::RcBlock::new(move |_notification: NonNull<NSNotification>| {
+            if let Some(webview) = target.load() {
+                check_regions(&webview, name);
+            }
+        });
+        // The observer token lives for the app lifetime.
+        std::mem::forget(unsafe {
+            center.addObserverForName_object_queue_usingBlock(
+                Some(&NSString::from_str(name)),
+                None,
+                Some(&main),
+                &block,
+            )
+        });
+    }
+    let target = Weak::from(webview);
+    let block = block2::RcBlock::new(move |_timer: NonNull<objc2_foundation::NSTimer>| {
+        if let Some(webview) = target.load() {
+            check_regions(&webview, "poll");
+        }
+    });
+    let _ = unsafe {
+        objc2_foundation::NSTimer::scheduledTimerWithTimeInterval_repeats_block(
+            STATUS_POLL_SECONDS,
+            true,
+            &block,
+        )
+    };
+}
+
+/// Backstop interval of the reserved region check.
+const STATUS_POLL_SECONDS: f64 = 0.25;
