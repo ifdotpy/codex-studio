@@ -1,4 +1,4 @@
-import { readNativeHistory, nativeUuid } from "./native-history.mjs";
+import { readNativeHistory, nativeUuid } from "./native-history.ts";
 
 export function validJournalRecord(record) {
   return (

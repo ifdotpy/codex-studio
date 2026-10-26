@@ -1,6 +1,6 @@
 // @ts-check
 import { z } from "zod";
-import { nativeUuid } from "./native-history.mjs";
+import { nativeUuid } from "./native-history.ts";
 
 // H2 strictness follows input provenance, not the CLI's evolving output formats.
 // SDK SessionStoreEntry is opaque JSON. Input-bearing headers and known payload

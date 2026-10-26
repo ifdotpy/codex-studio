@@ -1,12 +1,9 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
-import { reconcileNativeSession } from "./session-identity.mjs";
-import { reconcileRestartTurns } from "./restart-reconcile.mjs";
-import {
-  validJournalRecord,
-  nativeConfirmsJournal,
-} from "./journal-repair.mjs";
+import { reconcileNativeSession } from "./session-identity.ts";
+import { reconcileRestartTurns } from "./restart-reconcile.ts";
+import { validJournalRecord, nativeConfirmsJournal } from "./journal-repair.ts";
 
 const FORMAT = "studio-claude-session-v1";
 // Maximum bytes read from a saved repair marker. Never read journal or transcript text here.

@@ -1,6 +1,6 @@
 import { nativeInputIds } from "./input-messages.ts";
-import { nativeUuid } from "./native-history.mjs";
-import { readHistoryIndex } from "./history-index.mjs";
+import { nativeUuid } from "./native-history.ts";
+import { readHistoryIndex } from "./history-index.ts";
 
 // A native user UUID binds the mirror turn to one transcript chain. Text and
 // timestamps alone cannot distinguish an earlier reply or a different branch.

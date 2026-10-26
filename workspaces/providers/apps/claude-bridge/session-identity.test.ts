@@ -190,7 +190,7 @@ fsp.appendFile=async(file,data,...args)=>{
 
 test("a rejected write-ahead save blocks live resume with an unknown transition", async () => {
   const { sessionStartHook, assertNativeSessionReady } =
-    await import("./session-identity.mjs");
+    await import("./session-identity.ts");
   const session = {
     id: "11111111-1111-4111-8111-111111111111",
     cwd: "/fixture",
@@ -222,7 +222,7 @@ test("a rejected write-ahead save blocks live resume with an unknown transition"
 });
 
 test("another new-session source durably saves target and identity before hook return", async () => {
-  const { sessionStartHook } = await import("./session-identity.mjs");
+  const { sessionStartHook } = await import("./session-identity.ts");
   const OLD = "11111111-1111-4111-8111-111111111111";
   const session = { id: OLD, nativeId: OLD, cwd: "/fixture", turns: [] };
   const snapshots = [];
@@ -253,9 +253,9 @@ for (const deliveryStatus of ["not_applied", "cancelled"])
   for (const match of ["exact", "input", "turn", "attempt"])
     test(`saved ${deliveryStatus} receipt retires only its matching transition guard: ${match}`, async () => {
       const { randomUUID } = await import("node:crypto");
-      const { createSessionStore } = await import("./session-store.mjs");
+      const { createSessionStore } = await import("./session-store.ts");
       const { assertNativeSessionReady } =
-        await import("./session-identity.mjs");
+        await import("./session-identity.ts");
       const base = path.join(
         os.homedir(),
         ".cache/codex-studio/pivot1-v5-history",
