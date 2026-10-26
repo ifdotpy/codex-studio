@@ -36,6 +36,9 @@ vi.mock("../hooks", () => ({
 vi.mock("./useMessageReceipts", () => ({
   useMessageReceipts: () => new Map(),
 }));
+vi.mock("./questions/useQuestionCards", () => ({
+  useQuestionCards: () => () => undefined,
+}));
 vi.mock("./removedMessages", () => ({
   useRemovedMessages: () => ({ restored: [], hidden: () => false }),
 }));

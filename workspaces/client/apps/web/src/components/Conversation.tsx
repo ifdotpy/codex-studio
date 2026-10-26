@@ -92,7 +92,8 @@ import PromptComposer, {
 } from "./prompt-composer/PromptComposer";
 import PromptInput from "./prompt-composer/PromptInput";
 import { reportPromptComposerRender } from "./prompt-composer/renderProbe";
-import Requests from "./questions/Requests";
+import Requests, { RequestCard } from "./questions/Requests";
+import { useQuestionCards } from "./questions/useQuestionCards";
 import MessageDate from "./conversation/transcript/MessageDate";
 import ClaudeRepairNotice from "./ClaudeRepairNotice";
 import TurnHistory from "./conversation/transcript/TurnHistory";
@@ -124,7 +125,10 @@ import ConversationStart, {
 import "./chat-controls.css";
 import "./conversation/empty-chat-settings.css";
 import { copyText } from "../clipboard/clipboard";
-import { isPendingQuestionRequest } from "./questions/questionCardModel";
+import {
+  isPendingQuestionRequest,
+  transcriptRequests,
+} from "./questions/questionCardModel";
 
 function isJsonObject(value: unknown): value is Json {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -1065,11 +1069,22 @@ export default function Conversation(p: {
     () => pendingQuestionList,
     [pendingQuestionKey],
   );
-  const requests = (runtime?.requests || []).filter(
-    (r) =>
-      !r.agent ||
-      r.agent === p.id ||
-      (!mobileClient && team.some((a) => a.id === r.agent)),
+  const requests = useMemo(
+    () =>
+      (runtime?.requests || []).filter(
+        (r) =>
+          !r.agent ||
+          r.agent === p.id ||
+          (!mobileClient && team.some((a) => a.id === r.agent)),
+      ),
+    [
+      runtime?.requests,
+      p.id,
+      mobileClient,
+      p.data.threads,
+      agent?.rootId,
+      p.room?.rootId,
+    ],
   );
   const first = p.room?.members?.[0] || items.find((m) => m.sender)?.sender;
   const canSend =
@@ -1135,6 +1150,26 @@ export default function Conversation(p: {
           })),
       ].filter((message) => !removed.hidden(message)),
     [items, queue, sending, p.id, removed.hidden],
+  );
+  const questionCards = useQuestionCards(
+    managed && !p.room ? agent?.id : undefined,
+    p.data.stateDir,
+    transcriptItems,
+    pendingQuestions,
+  );
+  const inlineRequests = useMemo(
+    () =>
+      transcriptRequests(
+        managed && !p.room ? transcriptItems : [],
+        requests,
+        questionCards,
+      ),
+    [managed, p.room, transcriptItems, requests, questionCards],
+  );
+  const inlineRequestIds = new Set(
+    [...inlineRequests.values()].flatMap((request) =>
+      request ? [request.id] : [],
+    ),
   );
   const [removingSending, setRemovingSending] = useState(false);
   const removeSending = useMessageAction(async (messages: Message[]) => {
@@ -1426,13 +1461,40 @@ export default function Conversation(p: {
           }
           agentId={managed ? agent?.id : undefined}
           onJump={jumpToPrompt}
-          requests={pendingQuestions}
+          questionCards={questionCards}
+          requestCards={
+            new Map(
+              [...inlineRequests].map(([messageId, request]) => [
+                messageId,
+                request && (
+                  <RequestCard
+                    key={request.id}
+                    request={request}
+                    messageId={messageId}
+                    showDates={!!p.room}
+                    scope={p.data.stateDir}
+                    agents={p.data.threads}
+                    refresh={p.refresh}
+                    notify={p.notify}
+                    onAnswerOpen={() => setFollow(false)}
+                    onAnswerPosition={revealRequest}
+                  />
+                ),
+              ]),
+            )
+          }
         />
       </>
     ),
     [
       items,
       pendingQuestions,
+      questionCards,
+      requests,
+      inlineRequests,
+      p.refresh,
+      revealRequest,
+      setFollow,
       agent,
       managed,
       p.room,
@@ -1725,7 +1787,9 @@ export default function Conversation(p: {
             showDates={!!p.room}
             scope={p.data.stateDir}
             allRequests={runtime?.requests || []}
-            requests={requests}
+            requests={requests.filter(
+              (request) => !inlineRequestIds.has(request.id),
+            )}
             agents={p.data.threads}
             refresh={p.refresh}
             notify={p.notify}

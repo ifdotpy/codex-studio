@@ -1,4 +1,4 @@
-#requests .request-card {
+.request-card {
   display: block;
   background: var(--surface);
   border: 1px solid var(--line);
