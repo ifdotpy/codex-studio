@@ -1,5 +1,15 @@
 import { onResume } from "./resume";
 import { API_SCHEMA_HASH } from "../generated/apiSchema";
+import { hasNativeClient } from "../native/client";
+
+/**
+ * Whether the sync transport treats the page as hidden. The desktop app keeps
+ * its stream while its window is in the background: a reopen on every window
+ * switch replays the initial sync through the native bridge.
+ */
+export function pageHidden() {
+  return document.hidden && !hasNativeClient();
+}
 
 /** Browser peer health protocol version; incompatible renderers own separate leases. */
 export const RESOURCE_COORDINATION_VERSION = 2;
@@ -129,7 +139,7 @@ export function onResourceConnectionLifecycle(actions: {
 }) {
   const stopResume = onResume(actions.resume);
   const visibility = () => {
-    if (document.hidden) actions.pause();
+    if (pageHidden()) actions.pause();
   };
   window.addEventListener("offline", actions.offline);
   document.addEventListener("visibilitychange", visibility);

@@ -1635,6 +1635,22 @@ it("connection: hidden pause is local and real resume events coalesce once", asy
   expect(status.mock.lastCall?.[0]).toBe("connecting");
 });
 
+it("connection: the desktop app keeps its stream while its window is hidden", async () => {
+  const f = await fixture();
+  const status = vi.fn();
+  f.transport.watchResourceConnection(status);
+  vi.stubGlobal("location", {
+    origin: "http://studio.test",
+    protocol: "studio-view:",
+  });
+  Object.assign(document, { hidden: true });
+  document.dispatchEvent(new Event("visibilitychange"));
+  await vi.advanceTimersByTimeAsync(100);
+  expect(f.source.closed).toBe(false);
+  expect(f.sources).toHaveLength(1);
+  expect(status.mock.calls.map(([value]) => value)).not.toContain("paused");
+});
+
 it("connection: hidden follower ignores live peer frames and visible follower recovers from paused owner", async () => {
   const f = await fixture(true);
   const status = vi.fn();
