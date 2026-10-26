@@ -89,7 +89,7 @@ test("chat reconnect follows transport across hidden conversations", async ({
       beforeRepeatedStatus,
     );
     expect(await page.evaluate(() => window.connectionListeners())).toBe(2);
-    expect(await page.evaluate(() => window.reads)).toEqual([]);
+    expect(await page.evaluate(() => window.agentPhaseReads)).toEqual([]);
     expect(requests).toEqual([]);
     expect(errors).toEqual([]);
   } finally {

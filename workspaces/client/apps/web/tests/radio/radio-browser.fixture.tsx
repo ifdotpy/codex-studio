@@ -6,8 +6,8 @@ declare global {
     radioOpened: string | null;
     refreshCalls: number;
     holdRefresh: boolean;
-    releaseRefresh: () => void | undefined;
-    rejectRefresh: (reason: Error) => void | undefined;
+    releaseRefresh: () => void;
+    rejectRefresh: (reason: Error) => void;
     failRefresh: boolean;
     notifications: string[];
   }

@@ -25,7 +25,8 @@ type ConnectionListener = Parameters<
 >[0];
 declare global {
   interface Window {
-    reads: unknown[][];
+    // Renamed from reads: sync/transient-progress-browser.fixture.tsx declares window.reads as read counters.
+    agentPhaseReads: unknown[][];
     chatRenders: Record<string, number>;
     setConnection: (
       value: "offline" | "connecting" | "live",
@@ -37,7 +38,7 @@ declare global {
     selectServer: (other: boolean) => void;
   }
 }
-window.reads = [];
+window.agentPhaseReads = [];
 window.chatRenders = { first: 0, second: 0 };
 window.connectionListeners = () => 0;
 
@@ -120,7 +121,7 @@ function scope(ownerId: string, hold = false) {
   const options: ResourceEventsOptions = {
     api: {
       get: (...args: unknown[]) => {
-        window.reads.push(args);
+        window.agentPhaseReads.push(args);
         throw new Error("Unexpected transport read");
       },
       post: async (path, body) => {
@@ -198,7 +199,7 @@ function scope(ownerId: string, hold = false) {
     resources,
     api: {
       syncGet: (...args: unknown[]) => {
-        window.reads.push(args);
+        window.agentPhaseReads.push(args);
         throw new Error("Unexpected read");
       },
     },
