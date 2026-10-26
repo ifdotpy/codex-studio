@@ -1260,7 +1260,7 @@ export function createSyncClient(options: SyncClientOptions) {
         _rev: "",
       };
       const result = await collection.storageInstance.bulkWrite(
-        [{ ...(previous ? { previous } : {}), document }],
+        [{ previous, document }],
         "studio-projection-pull",
       );
       const failure = result.error[0];
@@ -1296,7 +1296,7 @@ export function createSyncClient(options: SyncClientOptions) {
           _meta: { lwt: 1 },
           _rev: "",
         };
-        writes.push({ ...(previous ? { previous } : {}), document });
+        writes.push({ previous, document });
       }
       if (!writes.length) return;
       if (!isCurrent()) return;
@@ -1358,7 +1358,7 @@ export function createSyncClient(options: SyncClientOptions) {
       deleted = false,
       previous?: RxDocumentData<SyncDocument>,
     ) => ({
-      ...(previous ? { previous } : {}),
+      previous,
       document: {
         id,
         payload,
@@ -1547,13 +1547,7 @@ export function createSyncClient(options: SyncClientOptions) {
         if (delta.order) {
           for (const item of changedItems) available.add(item.id);
           let start = delta.order.length;
-          while (start > 0) {
-            const key = delta.order[start - 1];
-            if (key === undefined)
-              throw new Error("The transcript order item is missing.");
-            if (!available.has(key)) break;
-            start--;
-          }
+          while (start > 0 && available.has(delta.order[start - 1])) start--;
           windowOrder = delta.order.slice(start);
           windowTruncated = start > 0;
         } else {
@@ -1624,19 +1618,16 @@ export function createSyncClient(options: SyncClientOptions) {
         if (!isCurrent()) return;
         await writeProjectionRows(
           collection,
-          rows.map((row) => {
-            const previous = byId.get(row.id);
-            return {
-              ...(previous ? { previous } : {}),
-              document: {
-                ...row,
-                _deleted: row._deleted === true,
-                _attachments: {},
-                _meta: { lwt: 1 },
-                _rev: "",
-              },
-            };
-          }),
+          rows.map((row) => ({
+            previous: byId.get(row.id),
+            document: {
+              ...row,
+              _deleted: row._deleted === true,
+              _attachments: {},
+              _meta: { lwt: 1 },
+              _rev: "",
+            },
+          })),
         );
       } else if (rows.length)
         await persistProjectionBatch(collection, rows, isCurrent);

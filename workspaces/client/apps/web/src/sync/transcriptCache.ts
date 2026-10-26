@@ -150,34 +150,24 @@ export function createTranscriptCache() {
       indexes.delete(itemId);
       oldItems[index] = null;
     }
-    let items: (TranscriptItem | null)[] = oldItems;
+    let items = oldItems as TranscriptItem[];
     if (order) {
       items = order
         .map((itemId) => {
           const index = indexes.get(itemId);
           return index === undefined ? undefined : oldItems[index];
         })
-        .filter(
-          (item): item is TranscriptItem => item !== null && item !== undefined,
-        );
+        .filter(Boolean) as TranscriptItem[];
     } else if (removed.length) {
-      items = oldItems.filter(
-        (item): item is TranscriptItem => item !== null && item !== undefined,
-      );
+      items = oldItems.filter(Boolean) as TranscriptItem[];
     }
     if (items !== oldItems || removed.length) {
       indexes.clear();
-      items.forEach((item, index) => {
-        if (item) indexes.set(item.id, index);
-      });
+      items.forEach((item, index) => indexes.set(item.id, index));
     }
     entry.value = {
       seq,
-      payload: {
-        ...entry.value.payload,
-        ...payload,
-        items: items.filter((item): item is TranscriptItem => item !== null),
-      },
+      payload: { ...entry.value.payload, ...payload, items },
     };
     if (entry.size < 0) entry.size = 0;
     size += entry.size - oldSize;
