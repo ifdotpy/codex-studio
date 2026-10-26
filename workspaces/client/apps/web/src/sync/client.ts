@@ -182,6 +182,24 @@ export type SyncClientOptions = {
   >;
   databaseSuffix: string;
 };
+/** Local draft/outbox cache schema; the document sequence is a server-owned integer. */
+export const SYNC_DOCUMENT_SCHEMA = {
+  version: 0,
+  primaryKey: "id",
+  type: "object",
+  properties: {
+    id: { type: "string", maxLength: 300 },
+    payload: { type: "string" },
+    seq: {
+      type: "integer",
+      minimum: 0,
+      maximum: MAX_SAFE_INTEGER,
+      multipleOf: 1,
+    },
+  },
+  required: ["id", "payload", "seq"],
+} as const;
+
 export function createSyncClient(options: SyncClientOptions) {
   const {
     syncGet,
@@ -220,22 +238,7 @@ export function createSyncClient(options: SyncClientOptions) {
     }
   }
 
-  const schema = {
-    version: 0,
-    primaryKey: "id",
-    type: "object",
-    properties: {
-      id: { type: "string", maxLength: 300 },
-      payload: { type: "string" },
-      seq: {
-        type: "integer",
-        minimum: 0,
-        maximum: MAX_SAFE_INTEGER,
-        multipleOf: 1,
-      },
-    },
-    required: ["id", "payload", "seq"],
-  } as const;
+  const schema = SYNC_DOCUMENT_SCHEMA;
 
   let pending: ReturnType<typeof open> | undefined;
 
