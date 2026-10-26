@@ -164,7 +164,9 @@ export function fixtureAgentEntity(
 ) {
   return documents
     .filter(
-      (document): document is Extract<FixtureEntity, { op: "upsert" }> =>
+      (
+        document: (typeof documents)[number] & { op?: unknown },
+      ): document is Extract<FixtureEntity, { op: "upsert" }> =>
         document.op === "upsert",
     )
     .find(
