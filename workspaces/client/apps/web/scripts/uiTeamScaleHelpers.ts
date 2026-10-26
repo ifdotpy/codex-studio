@@ -1,8 +1,122 @@
+import type {
+  components,
+  AgentEntityDto,
+  AgentSummaryEntityDto,
+  AgentDetailEntityDto,
+  EventEntityDto,
+} from "../src/generated/api.ts";
+import type { Locator } from "playwright";
+import type { Audit } from "./uiTeamScaleAudit.ts";
+
+export type ObservedAgent = Omit<AgentEntityDto, "deletedAt"> & {
+  deleted?: boolean;
+  deletedAt?: AgentEntityDto["deletedAt"] | boolean;
+};
+export type SpawnTimeline = {
+  id: string;
+  name: string | null;
+  firstSeenAtMs: number;
+  startedAtMs: number | null;
+  completedAtMs: number | null;
+  token: string | null;
+  accountKey: string | null;
+  status: AgentEntityDto["status"];
+  error: AgentEntityDto["error"];
+};
+export type CriteriaMetrics = {
+  uiAllVisibleMs: number | null;
+  started: number;
+  replied: number;
+  leadReportedAtMs: number | null;
+  sqliteLockErrorDelta: number | null;
+  maxFrameGapMs: number | null;
+  maxEchoMs: number | null;
+  apiP95Ms: number | null | undefined;
+};
+export type TeamOptions = {
+  workers: number;
+  lead: string;
+  worker: string;
+  workerWorkspace: string;
+  origin: string;
+  journalUnit: string;
+  keep: boolean;
+  help: boolean;
+  project?: string;
+  evidenceDir?: string;
+};
+export type RoleSettings = {
+  profile: { provider: string; fastMode: boolean };
+  accountKey: string;
+  uiModel: string;
+  uiModelValues?: string[];
+  effort: string;
+  model: string;
+};
+// Recursive locator view: only operations used by this dialog driver are
+// required of its fixture; argument and result types stay owned by Playwright.
+export type DialogControl = Pick<
+  Locator,
+  "getAttribute" | "count" | "setChecked" | "click" | "waitFor"
+> & {
+  getByRole(...args: Parameters<Locator["getByRole"]>): DialogControl;
+  locator(
+    ...args: Parameters<Locator["locator"]>
+  ): Pick<DialogControl, "click">;
+  and(locator: Pick<DialogControl, "click">): DialogControl;
+  first(): DialogControl;
+};
+export type FrameArgs =
+  | [name: "resources", frame: components["schemas"]["ResourceChangeEvent"]]
+  | [
+      name: "entity-transfer",
+      frame: components["schemas"]["ResourceEntityTransferEvent"],
+    ]
+  | [name: "api-schema", frame: components["schemas"]["ApiSchemaEvent"]];
+export type FrameReceiver = (...args: FrameArgs) => void;
+type EntityStream = { close(): Promise<void> };
+export type EntitySubscriber = (
+  resource: components["schemas"]["ResourceRef"],
+  receive: FrameReceiver,
+  failed: (error: unknown) => void,
+) => Promise<EntityStream>;
+export type TeamSummaryMetrics = Partial<CriteriaMetrics> &
+  Partial<
+    Record<
+      | "uiFirstVisibleMs"
+      | "backendFirstVisibleMs"
+      | "backendAllVisibleMs"
+      | "throttleEvents"
+      | "throttledAgents"
+      | "throttleWaitMs"
+      | "longTaskCount"
+      | "longestLongTaskMs"
+      | "apiRequestCount"
+      | "diagnosticsP95Ms"
+      | "sqliteWriteWaitDelta"
+      | "backendCpuPercentPeak"
+      | "backendRssMiBPeak"
+      | "providerCpuPercentPeak"
+      | "providerRssMiBPeak",
+      number | null | undefined
+    >
+  > & {
+    spawnBatches?: ReturnType<typeof spawnBatchTimings>;
+    accountDistribution?: Record<string, number>;
+  };
+export type SummaryJournal = {
+  runTag: string;
+  result: { passed: boolean; failures: string[] };
+  options: Pick<TeamOptions, "workers"> & Partial<TeamOptions>;
+  metrics: TeamSummaryMetrics;
+  cleanup?: { state: string };
+  audit?: Audit;
+};
 import assert from "node:assert/strict";
 import { assertStoredScaleProfile } from "./scaleVerifierHelpers.mjs";
-import { auditSummaryLines } from "./uiTeamScaleAudit.mjs";
+import { auditSummaryLines } from "./uiTeamScaleAudit.ts";
 
-// Helpers of verify-ui-team-scale.mjs. Every value below has one owner:
+// Helpers of verify-ui-team-scale.ts. Every value below has one owner:
 // this module for the verifier's own pacing and limits, the runtime for the
 // spawn batch size (`orchestration_spawn`, docs/orchestration.md).
 
@@ -49,9 +163,20 @@ export const WORKER_PROFILE_NAMES = Object.freeze([
 
 // Consume current resources and multipart entity-transfer frames. The server's
 // sync protocol and renderer resourceEvents.ts own these wire envelopes.
-export function createEntityFrameReader(accept) {
-  const transfers = new Map();
-  const receive = (name, frame) => {
+export function createEntityFrameReader(
+  accept: (documents: components["schemas"]["SyncEntity"][]) => void,
+) {
+  const transfers = new Map<
+    string,
+    {
+      pageIndex: number;
+      parts: string[];
+      documents: components["schemas"]["SyncEntity"][];
+      through: number | null;
+      partCount?: number;
+    }
+  >();
+  const receive = (...[name, frame]: FrameArgs) => {
     if (name === "resources") {
       for (const version of frame.resourceVersions) {
         if (version.entityChanges) accept(version.entityChanges.documents);
@@ -86,7 +211,9 @@ export function createEntityFrameReader(accept) {
       );
       transfer.parts.push(frame.data);
       if (transfer.parts.length === frame.partCount) {
-        const page = JSON.parse(transfer.parts.join(""));
+        const page: components["schemas"]["EntityChangeBatch"] = JSON.parse(
+          transfer.parts.join(""),
+        );
         if (transfer.through !== null)
           assert.equal(
             page.after,
@@ -125,6 +252,17 @@ export async function openEntityStream({
   timeoutMs,
   receive,
   failed,
+}: {
+  origin: string;
+  token: string;
+  protocol: Pick<
+    components["schemas"]["SyncProtocolResponse"],
+    "streamEndpoint" | "protocolVersion"
+  >;
+  resource: components["schemas"]["ResourceRef"];
+  timeoutMs: number;
+  receive: FrameReceiver;
+  failed: (error: unknown) => void;
 }) {
   const controller = new AbortController();
   const timer = setTimeout(
@@ -151,28 +289,44 @@ export async function openEntityStream({
   } finally {
     clearTimeout(timer);
   }
+  const body = response.body;
+  assert.ok(body);
   const done = (async () => {
     const decoder = new TextDecoder();
     let buffer = "";
-    for await (const chunk of response.body) {
-      buffer += decoder
-        .decode(chunk, { stream: true })
-        .replaceAll("\r\n", "\n");
-      let end;
-      while ((end = buffer.indexOf("\n\n")) >= 0) {
-        const block = buffer.slice(0, end);
-        buffer = buffer.slice(end + 2);
-        const lines = block.split("\n");
-        const name = lines
-          .find((line) => line.startsWith("event:"))
-          ?.slice(6)
-          .trim();
-        const data = lines
-          .filter((line) => line.startsWith("data:"))
-          .map((line) => line.slice(5).trimStart())
-          .join("\n");
-        if (name && data) receive(name, JSON.parse(data));
+    const reader = body.getReader();
+    try {
+      while (true) {
+        const { value: chunk, done } = await reader.read();
+        if (done) break;
+        buffer += decoder
+          .decode(chunk, { stream: true })
+          .replaceAll("\r\n", "\n");
+        let end;
+        while ((end = buffer.indexOf("\n\n")) >= 0) {
+          const block = buffer.slice(0, end);
+          buffer = buffer.slice(end + 2);
+          const lines = block.split("\n");
+          const name = lines
+            .find((line) => line.startsWith("event:"))
+            ?.slice(6)
+            .trim();
+          const data = lines
+            .filter((line) => line.startsWith("data:"))
+            .map((line) => line.slice(5).trimStart())
+            .join("\n");
+          if (name === "resources" && data) receive(name, JSON.parse(data));
+          else if (name === "entity-transfer" && data)
+            receive(name, JSON.parse(data));
+          else if (name === "api-schema" && data)
+            receive(name, JSON.parse(data));
+        }
       }
+    } catch (error) {
+      await reader.cancel(error).catch(() => {});
+      throw error;
+    } finally {
+      reader.releaseLock();
     }
     if (!controller.signal.aborted)
       throw new Error("Sync stream ended before teardown.");
@@ -190,23 +344,29 @@ export async function openEntityStream({
 // Global state publishes agentSummary; open-chat fields come from each owned
 // agentDetail subscription. Merge them like entityProjection.ts, with summary
 // identity/status fields authoritative. No server data is polled.
-export function createEntityReader(subscribe, onAgent, onEvent = () => {}) {
-  const summaries = new Map();
-  const details = new Map();
-  const streams = new Map();
-  const pending = new Set();
-  const frameReaders = new Set();
-  let rootId = null;
-  let failure = null;
+export function createEntityReader(
+  subscribe: EntitySubscriber,
+  onAgent: (agent: ObservedAgent) => void,
+  onEvent: (
+    event: EventEntityDto | { id: string; deleted: true },
+  ) => void = () => {},
+) {
+  const summaries = new Map<string, AgentSummaryEntityDto>();
+  const details = new Map<string, AgentDetailEntityDto>();
+  const streams = new Map<string, Promise<EntityStream>>();
+  const pending = new Set<Promise<EntityStream>>();
+  const frameReaders = new Set<ReturnType<typeof createEntityFrameReader>>();
+  let rootId: string | null = null;
+  let failure: unknown = null;
   let closed = false;
-  const owned = (value) =>
+  const owned = (value: Pick<AgentEntityDto, "id" | "rootId">) =>
     rootId !== null && (value.id === rootId || value.rootId === rootId);
-  const emit = (id) => {
+  const emit = (id: string) => {
     const summary = summaries.get(id);
     if (summary && owned(summary))
       onAgent({ ...details.get(id), ...summary, deleted: false });
   };
-  const start = (resource) => {
+  const start = (resource: components["schemas"]["ResourceRef"]) => {
     const key = JSON.stringify(resource);
     if (closed || streams.has(key)) return;
     const receive = createEntityFrameReader((documents) => {
@@ -263,7 +423,7 @@ export function createEntityReader(subscribe, onAgent, onEvent = () => {}) {
     if (failure) throw failure;
     for (const reader of frameReaders) reader.assertComplete();
   };
-  pull.watch = (id) => {
+  pull.watch = (id: string) => {
     rootId = id;
     start({ kind: "agentDetail", agentId: id });
     for (const summary of summaries.values())
@@ -293,6 +453,10 @@ export function cleanupVerified({
   remaining,
   leakedProviderPids,
   leakedProcesses,
+}: {
+  remaining: number | null;
+  leakedProviderPids: number[];
+  leakedProcesses: { pid: number }[];
 }) {
   return (
     remaining === 0 &&
@@ -302,7 +466,15 @@ export function cleanupVerified({
 }
 
 // Serialized into headless Chromium by page.evaluate; keep this self-contained.
-export function readTeamUiCounts(document = globalThis.document) {
+export function readTeamUiCounts(
+  document: {
+    querySelector(selector: string): {
+      textContent?: string | null;
+      getAttribute?: Element["getAttribute"];
+    } | null;
+    querySelectorAll(selector: string): { length: number };
+  } = globalThis.document,
+) {
   const completedCollapsed = !!document.querySelector(
     '#team .worker-group [aria-expanded="false"]',
   );
@@ -321,15 +493,20 @@ export function readTeamUiCounts(document = globalThis.document) {
         : 0),
     sidebarChats: document.querySelectorAll("#sidebar [data-chat]").length,
     teamPanelClosed:
-      document.querySelector("#team-toggle")?.getAttribute("aria-expanded") ===
-      "false",
+      document
+        .querySelector("#team-toggle")
+        ?.getAttribute?.("aria-expanded") === "false",
   };
 }
 
 // The New chat draft is an inline role picker. Keep every action inside its
 // dialog: Escape would close the whole draft, and settings popovers belong to
 // existing chats. Radio labels are clicked because native inputs are styled.
-async function chooseSegment(dialog, label, name) {
+async function chooseSegment(
+  dialog: Pick<DialogControl, "getByRole" | "locator">,
+  label: string,
+  name: string,
+) {
   const group = dialog.getByRole("radiogroup", { name: label, exact: true });
   const radio = group.getByRole("radio", { name, exact: true });
   const id = await radio.getAttribute("id");
@@ -342,20 +519,27 @@ async function chooseSegment(dialog, label, name) {
 // Alias deduplication can retain a recommended default instead of the short
 // alias. Accept it only when the authoritative catalog resolves it to the
 // same approved model; never select an account's unverified default.
-export function approvedModelUiValues(catalog, candidate) {
+export function approvedModelUiValues(
+  catalog: Pick<components["schemas"]["ModelCatalogResponse"], "data">,
+  candidate: components["schemas"]["ProviderModel"],
+) {
   const identity = candidate.resolvedModel ?? candidate.model;
   return [
     ...new Set(
-      catalog.data
+      (catalog.data ?? [])
         .filter((row) => (row.resolvedModel ?? row.model) === identity)
         .map((row) => row.model),
     ),
   ];
 }
 
-export function approvedStoredModel(value, role) {
+export function approvedStoredModel(
+  value: string | null | undefined,
+  role: Pick<RoleSettings, "model"> & { uiModelValues: string[] },
+) {
   assert.ok(
-    value === role.model || role.uiModelValues.includes(value),
+    value === role.model ||
+      (typeof value === "string" && role.uiModelValues.includes(value)),
     `Stored model ${value} does not resolve to the approved ${role.model}.`,
   );
   return role.model;
@@ -363,7 +547,17 @@ export function approvedStoredModel(value, role) {
 
 // Shared by the actual post-create path and its regression witness. The
 // backend stores aliases; all other profile fields remain exact assertions.
-export function assertCreatedTeamProfiles(entity, lead, worker) {
+export function assertCreatedTeamProfiles(
+  entity: Pick<
+    AgentEntityDto,
+    "id" | "model" | "accountKey" | "workerDefaults" | "effort" | "fastMode"
+  >,
+  lead: Pick<RoleSettings, "model" | "effort" | "accountKey"> & {
+    profile: Pick<RoleSettings["profile"], "fastMode">;
+    uiModelValues: string[];
+  },
+  worker: Pick<RoleSettings, "model" | "effort"> & { uiModelValues: string[] },
+) {
   assertStoredScaleProfile(
     entity
       ? { ...entity, model: approvedStoredModel(entity.model, lead) }
@@ -392,11 +586,15 @@ export function assertCreatedTeamProfiles(entity, lead, worker) {
   );
 }
 
-export async function configureNewChat(dialog, lead, worker) {
+export async function configureNewChat(
+  dialog: Pick<DialogControl, "getByRole" | "locator">,
+  lead: Omit<RoleSettings, "model">,
+  worker: Omit<RoleSettings, "model">,
+) {
   for (const [role, prefix, accountLabel, settings] of [
     ["Lead", "Main agent", "Main agent account", lead],
     ["Workers", "Default subagent", "Subagent account", worker],
-  ]) {
+  ] as const) {
     await chooseSegment(dialog, "Agent role", role);
     await chooseSegment(
       dialog,
@@ -431,14 +629,14 @@ export async function configureNewChat(dialog, lead, worker) {
     await chooseSegment(
       dialog,
       `${prefix} reasoning`,
-      settings.effort[0].toUpperCase() + settings.effort.slice(1),
+      settings.effort.charAt(0).toUpperCase() + settings.effort.slice(1),
     );
     const fast = dialog.getByRole("switch", { name: "Fast mode", exact: true });
     if (await fast.count()) await fast.setChecked(settings.profile.fastMode);
   }
 }
 
-export function stageDeadlineMs(workers, accounts = 1) {
+export function stageDeadlineMs(workers: number, accounts = 1) {
   const waves = Math.ceil(workers / (ACCOUNT_CONCURRENT_REQUESTS * accounts));
   return (
     STAGE_DEADLINE_BASE_MS +
@@ -447,7 +645,7 @@ export function stageDeadlineMs(workers, accounts = 1) {
   );
 }
 
-export function percentile(values, fraction) {
+export function percentile(values: number[], fraction: number) {
   if (!values.length) return null;
   const sorted = [...values].sort((a, b) => a - b);
   return sorted[
@@ -455,11 +653,11 @@ export function percentile(values, fraction) {
   ];
 }
 
-export function workerToken(runTag, index) {
+export function workerToken(runTag: string, index: number) {
   return `${runTag}_W${String(index).padStart(4, "0")}`;
 }
 
-export function leadDoneToken(runTag) {
+export function leadDoneToken(runTag: string) {
   return `${runTag}_ALL_REPLIED`;
 }
 
@@ -467,7 +665,7 @@ export function leadDoneToken(runTag) {
 // a list so that the prompt stays short; it spawns the workers in parallel
 // batches inside one turn.
 // The spawn calls of a team: call `call` creates workers `from`..`to` (1-based).
-export function spawnCalls(workers) {
+export function spawnCalls(workers: number) {
   return Array.from(
     { length: Math.ceil(workers / SPAWN_BATCH_MAX) },
     (_, i) => ({
@@ -478,7 +676,15 @@ export function spawnCalls(workers) {
   );
 }
 
-export function buildLeadPrompt({ workers, runTag, workspace }) {
+export function buildLeadPrompt({
+  workers,
+  runTag,
+  workspace,
+}: {
+  workers: number;
+  runTag: string;
+  workspace: string;
+}) {
   const calls = spawnCalls(workers);
   const plan = calls
     .map(({ call, from, to }) => `call ${call}: agents ${from} to ${to}`)
@@ -496,7 +702,7 @@ export function buildLeadPrompt({ workers, runTag, workspace }) {
 
 // The agent number at the end of a worker name: the lead chooses names such
 // as "7" or "acceptance-0007"; null when the name ends in no number.
-function workerNumber(name) {
+function workerNumber(name: string | null | undefined) {
   const digits = /(\d+)\s*$/.exec(name ?? "");
   return digits ? Number(digits[1]) : null;
 }
@@ -504,15 +710,22 @@ function workerNumber(name) {
 // Per spawn call (agents numbered by their names): how many workers exist and
 // when the first and last appeared, started and replied (milliseconds since the
 // prompt, null when not observed).
-export function spawnBatchTimings(rows, workers) {
-  const earliest = (values) => (values.length ? Math.min(...values) : null);
-  const latest = (values) => (values.length ? Math.max(...values) : null);
+export function spawnBatchTimings(
+  rows: (Pick<SpawnTimeline, "name" | "startedAtMs" | "completedAtMs"> & {
+    firstSeenAtMs: number | null;
+  })[],
+  workers: number,
+) {
+  const earliest = (values: number[]) =>
+    values.length ? Math.min(...values) : null;
+  const latest = (values: number[]) =>
+    values.length ? Math.max(...values) : null;
   return spawnCalls(workers).map(({ call, from, to }) => {
     const members = rows.filter((row) => {
       const number = workerNumber(row.name);
       return number !== null && number >= from && number <= to;
     });
-    const seen = (key) =>
+    const seen = (key: "firstSeenAtMs" | "startedAtMs" | "completedAtMs") =>
       members.map((row) => row[key]).filter((value) => value !== null);
     return {
       call,
@@ -530,30 +743,45 @@ export function spawnBatchTimings(rows, workers) {
 
 // Tracks the agents of one team from entity documents. `observe` takes the
 // stored agent value and the sample time (milliseconds since the prompt).
-export function createTeamTracker(leadId, runTag, workers) {
-  const expected = new Map();
+export function createTeamTracker(
+  leadId: string,
+  runTag: string,
+  workers: number,
+) {
+  const expected = new Map<string, number>();
   for (let index = 1; index <= workers; index += 1)
     expected.set(workerToken(runTag, index), index);
-  const byId = new Map();
+  const byId = new Map<string, SpawnTimeline>();
   // Provider retry state per team member (the lead included).
-  const retries = new Map();
+  const retries = new Map<
+    string,
+    { sinceMs: number | null; events: Set<number>; waitMs: number }
+  >();
   // Times at which the lead's last answer turned into the final report; a
   // report before the last worker reply is a false one.
-  const leadReports = [];
+  const leadReports: number[] = [];
   let leadShowsReport = false;
-  const text = (value) =>
+  const text = (value: Pick<AgentEntityDto, "lastAnswer" | "overview">) =>
     `${value.lastAnswer ?? ""}\n${value.overview?.result ?? ""}`;
   return {
-    observe(value, atMs) {
+    observe(value: Omit<AgentEntityDto, "deletedAt">, atMs: number) {
       if (value.id === leadId || value.rootId === leadId) {
-        const retry = retries.get(value.id) ?? {
+        const retry: {
+          sinceMs: number | null;
+          events: Set<number>;
+          waitMs: number;
+        } = retries.get(value.id) ?? {
           sinceMs: null,
           events: new Set(),
           waitMs: 0,
         };
         retries.set(value.id, retry);
         const status = value.nativeStatus;
-        if (status?.phase === "retrying") {
+        if (
+          status &&
+          typeof status === "object" &&
+          status.phase === "retrying"
+        ) {
           retry.events.add(status.at ?? atMs);
           retry.sinceMs ??= atMs;
         } else if (retry.sinceMs !== null) {
@@ -570,7 +798,7 @@ export function createTeamTracker(leadId, runTag, workers) {
         return;
       }
       if (value.rootId !== leadId) return;
-      const row = byId.get(value.id) ?? {
+      const row: SpawnTimeline = byId.get(value.id) ?? {
         id: value.id,
         name: value.name ?? null,
         firstSeenAtMs: atMs,
@@ -600,7 +828,7 @@ export function createTeamTracker(leadId, runTag, workers) {
     workers: () => [...byId.values()],
     // Provider throttling seen as retry events: a lower bound, since several
     // events between two samples count once. Waits still open end at `endMs`.
-    throttling(endMs) {
+    throttling(endMs: number) {
       let waitMs = 0;
       let events = 0;
       let agents = 0;
@@ -643,7 +871,7 @@ export function createTeamTracker(leadId, runTag, workers) {
             ...rows.reduce((counts, row) => {
               const key = row.accountKey ?? "unknown";
               return counts.set(key, (counts.get(key) ?? 0) + 1);
-            }, new Map()),
+            }, new Map<string, number>()),
           ].sort(([a], [b]) => (a < b ? -1 : 1)),
         ),
       };
@@ -652,33 +880,60 @@ export function createTeamTracker(leadId, runTag, workers) {
 }
 
 // First sample time at which `count(sample)` reached `target`, or null.
-export function firstReachedMs(samples, count, target) {
+export function firstReachedMs<T extends { atMs: number }>(
+  samples: T[],
+  count: (sample: T) => number,
+  target: number,
+) {
   const hit = samples.find((sample) => count(sample) >= target);
   return hit ? hit.atMs : null;
 }
 
 // CPU milliseconds used between two samples by a set of processes. `previous`
 // maps pid to cumulative CPU; a process new in `current` counts in full.
-export function cpuDeltaMs(previous, current) {
+export function cpuDeltaMs(
+  previous: Map<number, number>,
+  current: { pid: number; cpuMs: number }[],
+) {
   let total = 0;
   for (const { pid, cpuMs } of current)
     total += Math.max(0, cpuMs - (previous.get(pid) ?? 0));
   return total;
 }
 
-export function cpuPercent(deltaCpuMs, deltaWallMs) {
+export function cpuPercent(deltaCpuMs: number, deltaWallMs: number) {
   return deltaWallMs > 0
     ? Math.round((deltaCpuMs * PERCENT * 10) / deltaWallMs) / 10
     : null;
 }
 
 // Terminal SQLite lock errors counted by the backend (diagnostics snapshot).
-export function sqliteLockErrors(diagnostics) {
+export function sqliteLockErrors(
+  diagnostics:
+    | {
+        [K in "sqliteContention"]?: Partial<
+          Pick<components["schemas"]["DiagnosticsResponse"][K], "lockError">
+        >;
+      }
+    | null
+    | undefined,
+) {
   const count = diagnostics?.sqliteContention?.lockError?.lockErrors;
-  return Number.isSafeInteger(count) && count >= 0 ? count : null;
+  return typeof count === "number" && Number.isSafeInteger(count) && count >= 0
+    ? count
+    : null;
 }
 
-export function sqliteWriteWaits(diagnostics) {
+export function sqliteWriteWaits(
+  diagnostics:
+    | {
+        [K in "sqliteContention"]?: Partial<
+          Pick<components["schemas"]["DiagnosticsResponse"][K], "lockError">
+        >;
+      }
+    | null
+    | undefined,
+) {
   const lock = diagnostics?.sqliteContention?.lockError;
   return {
     count: lock?.writeWaits ?? null,
@@ -688,8 +943,8 @@ export function sqliteWriteWaits(diagnostics) {
 
 // Pass/fail decision. `metrics` holds only measured values; null means "not
 // observed", which fails closed.
-export function evaluateCriteria(metrics, workers) {
-  const checks = [
+export function evaluateCriteria(metrics: CriteriaMetrics, workers: number) {
+  const checks: [string, boolean][] = [
     ["allAgentsVisibleInUi", metrics.uiAllVisibleMs !== null],
     ["allWorkerTurnsStarted", metrics.started === workers],
     ["allAgentsReplied", metrics.replied === workers],
@@ -706,7 +961,9 @@ export function evaluateCriteria(metrics, workers) {
     ],
     [
       `apiP95Under${API_P95_LIMIT_MS}ms`,
-      metrics.apiP95Ms !== null && metrics.apiP95Ms <= API_P95_LIMIT_MS,
+      metrics.apiP95Ms !== null &&
+        metrics.apiP95Ms !== undefined &&
+        metrics.apiP95Ms <= API_P95_LIMIT_MS,
     ],
   ];
   return {
@@ -716,7 +973,7 @@ export function evaluateCriteria(metrics, workers) {
   };
 }
 
-export const USAGE = `Usage: node verify-ui-team-scale.mjs [options]
+export const USAGE = `Usage: node verify-ui-team-scale.ts [options]
   --workers N          subagents to spawn, 1..${WORKERS_MAX} (default 3)
   --lead PROFILE       ${LEAD_PROFILE_NAMES.join(" | ")} (default codex-luna)
   --worker PROFILE     ${WORKER_PROFILE_NAMES.join(" | ")} (default codex-luna)
@@ -728,8 +985,8 @@ export const USAGE = `Usage: node verify-ui-team-scale.mjs [options]
   --keep               skip the cleanup so the chat can be inspected
 Live run against a real backend: announce it. Headless Chromium only.`;
 
-export function parseArgs(argv, defaults) {
-  const options = {
+export function parseArgs(argv: string[], defaults: Partial<TeamOptions>) {
+  const options: TeamOptions = {
     workers: 3,
     lead: "codex-luna",
     worker: "codex-luna",
@@ -740,7 +997,7 @@ export function parseArgs(argv, defaults) {
     help: false,
     ...defaults,
   };
-  const value = (index, name) => {
+  const value = (index: number, name: string) => {
     const next = argv[index + 1];
     assert.ok(
       next !== undefined && !next.startsWith("--"),
@@ -782,10 +1039,10 @@ export function parseArgs(argv, defaults) {
   return options;
 }
 
-export function summaryText(journal) {
+export function summaryText(journal: SummaryJournal) {
   const r = journal.result;
   const m = journal.metrics;
-  const line = (label, value) => `${label.padEnd(34)}${value}`;
+  const line = (label: string, value: unknown) => `${label.padEnd(34)}${value}`;
   return [
     `UI team scale run ${journal.runTag}: ${r.passed ? "PASSED" : "FAILED"}`,
     line(
@@ -858,6 +1115,6 @@ export function summaryText(journal) {
   ].join("\n");
 }
 
-function sec(ms) {
+function sec(ms: number | null | undefined) {
   return ms === null || ms === undefined ? "n/a" : (ms / 1000).toFixed(1);
 }

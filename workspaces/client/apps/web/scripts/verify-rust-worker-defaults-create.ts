@@ -42,8 +42,8 @@ function argsFrom(argv) {
 function usage() {
   return [
     "Usage:",
-    "  node scripts/verify-rust-worker-defaults-create.mjs --url HTTPS_URL --project PROJECT_PATH --lead-account ACCOUNT_KEY [--worker-account ACCOUNT_KEY] --evidence-dir DIR --chromium PATH",
-    "  node scripts/verify-rust-worker-defaults-create.mjs --url HTTPS_URL --project PROJECT_PATH --lead-account ACCOUNT_KEY [--worker-account ACCOUNT_KEY] --evidence-dir DIR --resume --chromium PATH",
+    "  node scripts/verify-rust-worker-defaults-create.ts --url HTTPS_URL --project PROJECT_PATH --lead-account ACCOUNT_KEY [--worker-account ACCOUNT_KEY] --evidence-dir DIR --chromium PATH",
+    "  node scripts/verify-rust-worker-defaults-create.ts --url HTTPS_URL --project PROJECT_PATH --lead-account ACCOUNT_KEY [--worker-account ACCOUNT_KEY] --evidence-dir DIR --resume --chromium PATH",
     "",
     "Creates one empty chat through the UI, verifies its defaults, then deletes only that journal-owned chat through the UI.",
     "Resume is readback-only and never repeats create, settings, prompt, or delete writes.",

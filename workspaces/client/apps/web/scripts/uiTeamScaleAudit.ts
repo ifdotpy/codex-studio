@@ -1,7 +1,43 @@
+import type { TranscriptWireItem } from "../src/apiTypes.ts";
+import type { components, AgentEntityDto } from "../src/generated/api.ts";
+import type { SpawnTimeline } from "./uiTeamScaleHelpers.ts";
+
+// Audits also consume historical sparse transcript rows; every field comes from
+// the generated transcript contract, including provider extension fields.
+export type AuditInput = Pick<
+  NonNullable<TranscriptWireItem["inputs"]>[number],
+  "id" | "kind" | "at" | "text"
+> &
+  Partial<Pick<components["schemas"]["TranscriptInput"], "turnId">>;
+export type AuditItem = Partial<
+  Pick<
+    TranscriptWireItem,
+    | "id"
+    | "role"
+    | "at"
+    | "turnId"
+    | "turnStatus"
+    | "toolStatus"
+    | "text"
+    | "title"
+    | "phase"
+  >
+> & { inputs?: AuditInput[] | null };
+export type AuditEntry = { kind: string; [field: string]: unknown };
+export type Audit = {
+  failures: AuditEntry[];
+  anomalies: AuditEntry[];
+  queueGauges?: ReturnType<typeof auditDiagnostics>["queueGauges"];
+};
+export type Counters = Record<string, number | null>;
+type PendingInput = {
+  [K in "id" | "agent" | "status"]: components["schemas"]["EventEntityDto"][K];
+};
+type JsonObject = Record<string, components["schemas"]["JsonValue"]>;
 import { RETAINED_INPUT_STATUSES } from "./scaleVerifierHelpers.mjs";
 import { readRetainedInputRows } from "./verify-rust-chat-scale.mjs";
 
-// Strict post-run audit of verify-ui-team-scale.mjs: pure functions over the
+// Strict post-run audit of verify-ui-team-scale.ts: pure functions over the
 // lead and worker transcripts, the lead's tool requests, the backend journal,
 // diagnostics snapshots and the observed worker timeline. Each check returns
 // failures (the run fails) and anomalies (recorded, the run may still pass).
@@ -61,16 +97,18 @@ export const DIAGNOSTICS_QUEUE_GAUGE_PATHS = Object.freeze([
   "/queues/recoveryPending",
 ]);
 
-export function pointer(value, path) {
+export function pointer(value: unknown, path: string): number | null {
   let current = value;
   for (const key of path.split("/").slice(1)) {
     if (current === null || typeof current !== "object") return null;
-    current = current[key];
+    current = (current as Record<string, unknown>)[key];
   }
-  return Number.isFinite(current) ? current : null;
+  return typeof current === "number" && Number.isFinite(current)
+    ? current
+    : null;
 }
 
-export function diagnosticsCounters(diagnostics) {
+export function diagnosticsCounters(diagnostics: unknown) {
   return Object.fromEntries(
     [...DIAGNOSTICS_ZERO_DELTA_PATHS, ...DIAGNOSTICS_QUEUE_GAUGE_PATHS].map(
       (path) => [path, pointer(diagnostics, path)],
@@ -80,22 +118,26 @@ export function diagnosticsCounters(diagnostics) {
 
 // The fenced snapshot publishes the same durable input status as diagnostics.
 // Keep only identities and status; never retain another chat's input content.
-export function pendingTeamInputs(events, agentIds) {
-  const owned = new Set(agentIds);
+export function pendingTeamInputs(events: PendingInput[], agentIds: string[]) {
+  const owned = new Set<string | null | undefined>(agentIds);
   return events
     .filter(
       (event) =>
         owned.has(event.agent) &&
-        RETAINED_INPUT_STATUSES.includes(event.status),
+        RETAINED_INPUT_STATUSES.includes(event.status ?? ""),
     )
     .map(({ id, agent, status }) => ({ id, agent, status }));
 }
 
 // Shared gauges cannot attribute growth. Only the complete snapshot of owned
 // pending inputs decides this audit, regardless of activity in other chats.
-export function auditDiagnostics(before, after, pendingInputs = []) {
-  const failures = [];
-  const anomalies = [];
+export function auditDiagnostics(
+  before: Counters | undefined,
+  after: Counters | undefined,
+  pendingInputs: PendingInput[] = [],
+) {
+  const failures: AuditEntry[] = [];
+  const anomalies: AuditEntry[] = [];
   for (const path of DIAGNOSTICS_ZERO_DELTA_PATHS) {
     const from = before?.[path] ?? null;
     const to = after?.[path] ?? null;
@@ -131,6 +173,13 @@ export function auditTeamDiagnostics({
   workspaceId,
   agentIds,
   deadlineAt,
+}: {
+  before: Counters | undefined;
+  after: Counters | undefined;
+  stateDir: string;
+  workspaceId: string;
+  agentIds: string[];
+  deadlineAt: number;
 }) {
   const pending = pendingTeamInputs(
     readRetainedInputRows(stateDir, workspaceId, deadlineAt),
@@ -145,16 +194,19 @@ export function auditTeamDiagnostics({
   };
 }
 
-function parseJson(text) {
+function parseJson(text: string | null | undefined): JsonObject | null {
   try {
-    return JSON.parse(text);
+    const value: unknown = JSON.parse(text ?? "");
+    return value !== null && typeof value === "object" && !Array.isArray(value)
+      ? (value as JsonObject)
+      : null;
   } catch {
     return null;
   }
 }
 
 // Tool calls of a transcript: one per output item that carries a tool status.
-export function toolCalls(items) {
+export function toolCalls(items: AuditItem[]) {
   return items
     .filter(
       (item) => item.role === "output" && typeof item.toolStatus === "string",
@@ -165,8 +217,12 @@ export function toolCalls(items) {
         callId: body.id ?? item.id,
         tool: body.tool ?? body.type ?? item.title ?? null,
         status: item.toolStatus,
-        message: (body.contentItems ?? [])
-          .map((part) => part.text ?? "")
+        message: (Array.isArray(body.contentItems) ? body.contentItems : [])
+          .map((part) =>
+            part && typeof part === "object" && !Array.isArray(part)
+              ? (part.text ?? "")
+              : "",
+          )
           .join(" | ")
           .slice(0, 300),
         turnId: item.turnId ?? null,
@@ -174,23 +230,23 @@ export function toolCalls(items) {
     });
 }
 
-function turnsOf(items) {
+function turnsOf(items: AuditItem[]) {
   return new Set(
     items
       .map((item) => item.turnId)
-      .filter((turn) => typeof turn === "string" && turn),
+      .filter((turn): turn is string => typeof turn === "string" && !!turn),
   );
 }
 
-function badTurns(items) {
+function badTurns(items: AuditItem[]) {
   const found = new Map();
   for (const item of items)
-    if (BAD_TURN_STATUSES.has(item.turnStatus) && item.turnId)
+    if (BAD_TURN_STATUSES.has(item.turnStatus ?? "") && item.turnId)
       found.set(item.turnId, item.turnStatus);
   return [...found].map(([turnId, status]) => ({ turnId, status }));
 }
 
-function inputsOf(items) {
+function inputsOf(items: AuditItem[]) {
   return items
     .filter((item) => item.role === "user")
     .flatMap((item) =>
@@ -198,7 +254,7 @@ function inputsOf(items) {
     );
 }
 
-function repeated(values) {
+function repeated<T>(values: T[]) {
   const counts = new Map();
   for (const value of values) counts.set(value, (counts.get(value) ?? 0) + 1);
   return [...counts].filter(([, count]) => count > 1).map(([value]) => value);
@@ -206,11 +262,11 @@ function repeated(values) {
 
 // One worker: one task turn plus any unique lead-message turns. Delivery
 // duplication, unexplained turns, failed turns and unanswered tools still fail.
-export function auditWorker(id, items, leadId) {
-  const failures = [];
-  const anomalies = [];
+export function auditWorker(id: string, items: AuditItem[], leadId?: string) {
+  const failures: AuditEntry[] = [];
+  const anomalies: AuditEntry[] = [];
   const turns = turnsOf(items);
-  const triggeringInputs = new Map();
+  const triggeringInputs = new Map<string, AuditInput[]>();
   for (const [index, item] of items.entries()) {
     if (item.role !== "user") continue;
     // Older transcript rows omit turnId on the user item; the following
@@ -222,7 +278,7 @@ export function auditWorker(id, items, leadId) {
     ).find((next) => next.turnId)?.turnId;
     for (const input of item.inputs || []) {
       const turn = input.turnId || item.turnId || nextTurn;
-      if (turn)
+      if (typeof turn === "string" && turn)
         triggeringInputs.set(turn, [
           ...(triggeringInputs.get(turn) || []),
           input,
@@ -232,7 +288,7 @@ export function auditWorker(id, items, leadId) {
   const duplicateIds = new Set(
     repeated(inputsOf(items).map((input) => input.id)),
   );
-  const leadTurns = new Set();
+  const leadTurns = new Set<string | null | undefined>();
   for (const turnId of [...turns].slice(1)) {
     const inputs = triggeringInputs.get(turnId) || [];
     if (
@@ -253,7 +309,7 @@ export function auditWorker(id, items, leadId) {
           agent: id,
           turnId,
           input: input.id,
-          text: parseJson(input.text).text ?? input.text,
+          text: parseJson(input.text)?.text ?? input.text,
         });
     }
   }
@@ -271,7 +327,7 @@ export function auditWorker(id, items, leadId) {
   if (!inputs.some((entry) => entry.kind === "user"))
     failures.push({ kind: "workerTaskNotDelivered", agent: id });
   for (const call of toolCalls(items)) {
-    if (!TOOL_ITEM_RESULT_STATUSES.has(call.status))
+    if (!TOOL_ITEM_RESULT_STATUSES.has(call.status ?? ""))
       failures.push({ kind: "toolCallWithoutResult", agent: id, ...call });
     else if (call.status !== "completed")
       anomalies.push({ kind: "workerToolCallFailed", agent: id, ...call });
@@ -280,8 +336,10 @@ export function auditWorker(id, items, leadId) {
 }
 
 // Entity state at the end of the run: an error or a turn that did not complete.
-export function auditWorkerEntity(entity) {
-  const failures = [];
+export function auditWorkerEntity(
+  entity: Pick<AgentEntityDto, "id" | "error" | "lastCompletedTurnStatus">,
+) {
+  const failures: AuditEntry[] = [];
   if (entity.error)
     failures.push({
       kind: "workerError",
@@ -303,15 +361,19 @@ export function auditWorkerEntity(entity) {
 // The lead: no failed turn, every worker's child_result delivered exactly
 // once and completed, every tool call answered; interim placeholder answers,
 // failed tool calls, repeated final reports and long input waits are recorded.
-export function auditLead(items, workerIds, doneToken) {
-  const failures = [];
-  const anomalies = [];
+export function auditLead(
+  items: AuditItem[],
+  workerIds: string[],
+  doneToken: string,
+) {
+  const failures: AuditEntry[] = [];
+  const anomalies: AuditEntry[] = [];
   for (const turn of badTurns(items))
     failures.push({ kind: "failedLeadTurn", ...turn });
   const inputs = inputsOf(items);
   for (const input of repeated(inputs.map((entry) => entry.id)))
     failures.push({ kind: "duplicateDelivery", agent: "lead", input });
-  const delivered = new Map();
+  const delivered = new Map<components["schemas"]["JsonValue"], number>();
   for (const input of inputs.filter((entry) => entry.kind === "child_result")) {
     const result = parseJson(input.text ?? "");
     const agent = result?.agent_id ?? null;
@@ -333,11 +395,13 @@ export function auditLead(items, workerIds, doneToken) {
       count: missing.length,
       agents: missing.slice(0, 20),
     });
-  const unknown = [...delivered.keys()].filter((id) => !workerIds.includes(id));
+  const unknown = [...delivered.keys()].filter(
+    (id) => !(typeof id === "string" && workerIds.includes(id)),
+  );
   if (unknown.length)
     failures.push({ kind: "childResultFromUnknownAgent", agents: unknown });
   for (const call of toolCalls(items)) {
-    if (!TOOL_ITEM_RESULT_STATUSES.has(call.status))
+    if (!TOOL_ITEM_RESULT_STATUSES.has(call.status ?? ""))
       failures.push({ kind: "toolCallWithoutResult", agent: "lead", ...call });
     else if (call.status !== "completed")
       anomalies.push({ kind: "leadToolCallFailed", ...call });
@@ -361,7 +425,12 @@ export function auditLead(items, workerIds, doneToken) {
     anomalies.push({ kind: "leadRepeatedFinalReport", count: reports.length });
   let maxWaitMs = 0;
   for (const input of inputs)
-    if (Number.isFinite(input.at) && Number.isFinite(input.itemAt))
+    if (
+      typeof input.at === "number" &&
+      typeof input.itemAt === "number" &&
+      Number.isFinite(input.at) &&
+      Number.isFinite(input.itemAt)
+    )
       maxWaitMs = Math.max(maxWaitMs, (input.itemAt - input.at) * 1000);
   maxWaitMs = Math.round(maxWaitMs);
   if (maxWaitMs > LEAD_INPUT_WAIT_ANOMALY_MS)
@@ -378,9 +447,12 @@ export function auditLead(items, workerIds, doneToken) {
 // Durable tool requests of the lead against what the model was told: a
 // request still without a result fails, and so does a request applied by the
 // runtime while the model received a failure.
-export function auditToolRequests(requests, calls) {
-  const failures = [];
-  const anomalies = [];
+export function auditToolRequests(
+  requests: Partial<components["schemas"]["ToolRequestRecordResponse"]>[],
+  calls: ReturnType<typeof toolCalls>,
+) {
+  const failures: AuditEntry[] = [];
+  const anomalies: AuditEntry[] = [];
   const byCall = new Map(calls.map((call) => [call.callId, call]));
   for (const request of requests) {
     const base = {
@@ -389,11 +461,11 @@ export function auditToolRequests(requests, calls) {
       stage: request.stage,
       outcome: request.outcome ?? null,
     };
-    if (UNRESOLVED_REQUEST_STAGES.has(request.stage))
+    if (UNRESOLVED_REQUEST_STAGES.has(request.stage ?? ""))
       failures.push({ kind: "toolRequestWithoutResult", ...base });
-    else if (ABANDONED_REQUEST_STAGES.has(request.stage))
+    else if (ABANDONED_REQUEST_STAGES.has(request.stage ?? ""))
       anomalies.push({ kind: "toolRequestAbandoned", ...base });
-    const call = byCall.get(request.callId);
+    const call = byCall.get(request.callId ?? undefined);
     if (
       call &&
       request.stage === "completed" &&
@@ -411,7 +483,15 @@ export function auditToolRequests(requests, calls) {
 }
 
 // journalctl --grep uses status 1 for an empty result as well as failures.
-export function auditJournalResult(result, unit) {
+export function auditJournalResult(
+  result: {
+    status: number | null;
+    stdout: string;
+    stderr: string;
+    error?: Error;
+  },
+  unit: string,
+) {
   if (
     result.status === 0 ||
     (result.status === 1 &&
@@ -438,8 +518,11 @@ export function auditJournalResult(result, unit) {
 // Journal lines of the run window ("<iso time> <host> <unit>[pid]: text").
 // ERROR and panic lines fail the run; other suspicious lines are grouped by
 // message class as anomalies.
-export function auditJournal(lines) {
-  const classes = new Map();
+export function auditJournal(lines: string[]) {
+  const classes = new Map<
+    string,
+    { severity: string; message: string; count: number; examples: string[] }
+  >();
   for (const line of lines) {
     if (!line || JOURNAL_TRACE.test(line)) continue;
     const message = line.replace(/^\S+\s+\S+\s+[^:]+:\s*/, "");
@@ -477,14 +560,31 @@ export function auditJournal(lines) {
 
 // Per account, workers that started later than a worker first seen after them
 // (beyond the tolerance). Rows: {accountKey, firstSeenAtMs, startedAtMs}.
-export function startOrderInversions(rows) {
-  const byAccount = new Map();
+export function startOrderInversions(
+  rows: Pick<SpawnTimeline, "accountKey" | "firstSeenAtMs" | "startedAtMs">[],
+) {
+  const byAccount = new Map<
+    string,
+    Array<
+      Pick<SpawnTimeline, "accountKey"> & {
+        firstSeenAtMs: number;
+        startedAtMs: number;
+      }
+    >
+  >();
   for (const row of rows) {
     if (row.startedAtMs === null || row.firstSeenAtMs === null) continue;
     const key = row.accountKey ?? "unknown";
-    byAccount.set(key, [...(byAccount.get(key) ?? []), row]);
+    byAccount.set(key, [
+      ...(byAccount.get(key) ?? []),
+      {
+        ...row,
+        firstSeenAtMs: row.firstSeenAtMs,
+        startedAtMs: row.startedAtMs,
+      },
+    ]);
   }
-  const anomalies = [];
+  const anomalies: AuditEntry[] = [];
   for (const [accountKey, list] of byAccount) {
     list.sort((a, b) => a.firstSeenAtMs - b.firstSeenAtMs);
     let count = 0;
@@ -515,7 +615,10 @@ export function startOrderInversions(rows) {
 }
 
 // A lead final report earlier than the last worker reply is a false report.
-export function auditLeadReport(leadReports, lastReplyMs) {
+export function auditLeadReport(
+  leadReports: number[],
+  lastReplyMs: number | null,
+) {
   if (!leadReports.length || lastReplyMs === null) return [];
   const early = leadReports.filter((atMs) => atMs < lastReplyMs);
   return early.length
@@ -530,14 +633,19 @@ export function auditLeadReport(leadReports, lastReplyMs) {
 }
 
 // Runs `task` over `values` with at most `limit` in flight.
-export async function mapLimited(values, limit, task) {
-  const results = Array.from({ length: values.length });
-  let next = 0;
+export async function mapLimited<T, R>(
+  values: T[],
+  limit: number,
+  task: (value: T, index: number) => Promise<R>,
+): Promise<R[]> {
+  const results: R[] = [];
+  const entries = values.entries();
   const lane = async () => {
-    while (next < values.length) {
-      const index = next;
-      next += 1;
-      results[index] = await task(values[index], index);
+    for (;;) {
+      const entry = entries.next();
+      if (entry.done) return;
+      const [index, value] = entry.value;
+      results[index] = await task(value, index);
     }
   };
   // An early rejected lane must not let teardown delete the team while other
@@ -550,7 +658,7 @@ export async function mapLimited(values, limit, task) {
   return results;
 }
 
-export function mergeAudits(parts) {
+export function mergeAudits(parts: Partial<Audit>[]) {
   return {
     failures: parts.flatMap((part) => part.failures ?? []),
     anomalies: parts.flatMap((part) => part.anomalies ?? []),
@@ -558,15 +666,15 @@ export function mergeAudits(parts) {
 }
 
 // Summary lines: failure kinds with counts, then anomaly kinds.
-export function auditSummaryLines(audit) {
-  const tally = (list) => {
+export function auditSummaryLines(audit: Audit) {
+  const tally = (list: AuditEntry[]) => {
     const counts = new Map();
     for (const entry of list)
       counts.set(entry.kind, (counts.get(entry.kind) ?? 0) + 1);
     return [...counts].map(([kind, count]) => `${kind}×${count}`).join(", ");
   };
   // The first entry of each anomaly kind, then the rest, up to the limit.
-  const kinds = new Set();
+  const kinds = new Set<string>();
   const firsts = audit.anomalies.filter(
     (entry) => !kinds.has(entry.kind) && kinds.add(entry.kind),
   );
@@ -580,7 +688,7 @@ export function auditSummaryLines(audit) {
   ];
 }
 
-function describe(entry) {
+function describe(entry: AuditEntry) {
   const { kind, examples, ...rest } = entry;
   void examples;
   return `${kind} ${JSON.stringify(rest).slice(0, 240)}`;

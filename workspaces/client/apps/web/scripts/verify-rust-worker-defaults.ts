@@ -39,8 +39,8 @@ function parseArgs(argv) {
 function usage() {
   return [
     "Usage:",
-    "  node scripts/verify-rust-worker-defaults.mjs --url HTTPS_URL --chat-id CHAT_UUID --lead-account ACCOUNT_KEY --evidence-dir DIR --chromium PATH",
-    "  node scripts/verify-rust-worker-defaults.mjs --url HTTPS_URL --chat-id CHAT_UUID --lead-account ACCOUNT_KEY --evidence-dir DIR --resume --chromium PATH",
+    "  node scripts/verify-rust-worker-defaults.ts --url HTTPS_URL --chat-id CHAT_UUID --lead-account ACCOUNT_KEY --evidence-dir DIR --chromium PATH",
+    "  node scripts/verify-rust-worker-defaults.ts --url HTTPS_URL --chat-id CHAT_UUID --lead-account ACCOUNT_KEY --evidence-dir DIR --resume --chromium PATH",
     "",
     "A new run saves worker defaults through the UI once. Resume is readback-only and never repeats a POST.",
     "--profile-dir DIR defaults to EVIDENCE_DIR/profile; PLAYWRIGHT_CHROMIUM_EXECUTABLE is also accepted.",
