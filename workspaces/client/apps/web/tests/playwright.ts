@@ -558,16 +558,15 @@ const sharedFixtures: import("@playwright/test").Fixtures<
     async ({ playwright, browserName }, use, workerInfo) => {
       const browserType = playwright[browserName];
       const launch = browserType.launch;
-      const processTreeBreakdown: ReturnType<
-        typeof sampleProcessTreeMemory
-      >["processes"] = [];
       const memoryPeak = {
         rssBytes: 0,
         pssBytes: 0,
         processTreeRssBytes: 0,
         processTreePssBytes: 0,
         processTreeProcessCount: 0,
-        processTreeBreakdown,
+        processTreeBreakdown: [] as ReturnType<
+          typeof sampleProcessTreeMemory
+        >["processes"],
         samples: 0,
       };
       const sampleMemory = () => {
@@ -679,7 +678,7 @@ const sharedFixtures: import("@playwright/test").Fixtures<
         },
       );
       let diagnostics = "";
-      child.stderr!.on("data", (chunk) => {
+      child.stderr?.on("data", (chunk) => {
         diagnostics += chunk;
       });
       try {
@@ -948,7 +947,7 @@ function spawnScopedFixture(
     }
   });
   let scratchFailure = "";
-  child.stderr!.on("data", (chunk) => {
+  child.stderr?.on("data", (chunk) => {
     const text = String(chunk);
     if (
       /ENOSPC|EDQUOT|No space left on device|disk quota exceeded|database or disk is full/i.test(
@@ -981,10 +980,7 @@ function spawnScopedFixture(
       file: testInfo.file,
       workerIndex: testInfo.workerIndex,
       path: fixtureStateDirectory,
-      bytes:
-        fixtureStateDirectory === undefined
-          ? 0
-          : directoryBytes(fixtureStateDirectory),
+      bytes: directoryBytes(fixtureStateDirectory!),
     });
   if (sampleScratch) {
     recordScratchSize();

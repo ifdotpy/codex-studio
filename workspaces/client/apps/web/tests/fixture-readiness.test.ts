@@ -5,7 +5,7 @@ import test from "node:test";
 import { waitForFixturePort } from "./fixture-readiness.ts";
 
 class FakeChild extends EventEmitter {
-  stdout: PassThrough;
+  declare stdout: PassThrough;
   constructor() {
     super();
     this.stdout = new PassThrough();
