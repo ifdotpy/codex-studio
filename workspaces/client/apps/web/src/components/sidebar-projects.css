@@ -470,3 +470,32 @@
     pointer-events: auto;
   }
 }
+
+/* A narrow list (the iPhone Duo sidebar) cannot fit the label beside four
+   touch targets; the label takes its own row instead of sitting under them. */
+.chat-scroll {
+  container: chat-list / inline-size;
+}
+@container chat-list (max-width: 280px) {
+  .projects-heading {
+    flex-wrap: wrap;
+    row-gap: 0;
+  }
+  .projects-heading-label {
+    flex-basis: 100%;
+  }
+  .projects-heading-label + * {
+    margin-inline-start: auto;
+  }
+}
+
+/* The list end fades instead of showing a cut text row; the end padding
+   lets the last row scroll clear of the fade. */
+.chat-scroll {
+  padding-block-end: var(--mantine-spacing-md);
+  mask-image: linear-gradient(
+    to bottom,
+    #000 calc(100% - var(--mantine-spacing-md)),
+    transparent
+  );
+}
