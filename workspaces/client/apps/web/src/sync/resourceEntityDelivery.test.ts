@@ -1,5 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { ResourceEntityDelivery } from "./resourceEntityDelivery";
+import {
+  MAX_PENDING_FRAMES,
+  PERSIST_DEADLINE_MS,
+  ResourceEntityDelivery,
+} from "./resourceEntityDelivery";
 import type { ResourceChangeEvent } from "./resourceEvents";
 
 function frame(
@@ -80,7 +84,7 @@ describe("bounded stream entity delivery", () => {
     const failed = vi.fn();
     const delivery = new ResourceEntityDelivery(persist, dispatch, failed);
     delivery.receive(frame(1));
-    await vi.advanceTimersByTimeAsync(1000);
+    await vi.advanceTimersByTimeAsync(PERSIST_DEADLINE_MS);
     expect(failed).toHaveBeenCalledOnce();
     expect(dispatch).not.toHaveBeenCalled();
     delivery.receive(frame(2));
@@ -161,7 +165,7 @@ describe("bounded stream entity delivery", () => {
         await vi.advanceTimersByTimeAsync(0);
         expect(failed).not.toHaveBeenCalled();
       } else {
-        await vi.advanceTimersByTimeAsync(1000);
+        await vi.advanceTimersByTimeAsync(PERSIST_DEADLINE_MS);
         expect(failed).toHaveBeenCalledOnce();
         expect(dispatch).not.toHaveBeenCalled();
         expect(delivery.requiresSnapshot(resource)).toBe(true);
@@ -277,12 +281,12 @@ describe("bounded stream entity delivery", () => {
     });
     const dispatch = vi.fn();
     const delivery = new ResourceEntityDelivery(persist, dispatch);
-    for (let revision = 1; revision <= 10; revision++)
+    for (let revision = 1; revision <= MAX_PENDING_FRAMES + 2; revision++)
       delivery.receive(frame(revision));
     expect(persist).toHaveBeenCalledTimes(1);
     expect(current()).toBe(false);
     expect(dispatch.mock.calls.map(([event]) => event.revision)).toEqual(
-      Array.from({ length: 10 }, (_, index) => index + 1),
+      Array.from({ length: MAX_PENDING_FRAMES + 2 }, (_, index) => index + 1),
     );
     finish();
     await vi.advanceTimersByTimeAsync(0);
@@ -327,7 +331,7 @@ describe("bounded stream entity delivery", () => {
     });
     const dispatch = vi.fn();
     new ResourceEntityDelivery(persist, dispatch).receive(frame(1));
-    await vi.advanceTimersByTimeAsync(1000);
+    await vi.advanceTimersByTimeAsync(PERSIST_DEADLINE_MS);
     expect(current()).toBe(false);
     expect(dispatch).toHaveBeenCalledExactlyOnceWith(frame(1));
   });
@@ -463,10 +467,10 @@ describe("bounded stream entity delivery", () => {
     const dispatch = vi.fn();
     const delivery = new ResourceEntityDelivery(persist, dispatch);
     delivery.receive(frame(1));
-    await vi.advanceTimersByTimeAsync(1000);
+    await vi.advanceTimersByTimeAsync(PERSIST_DEADLINE_MS);
     for (let revision = 2; revision <= 20; revision++) {
       delivery.receive(frame(revision));
-      await vi.advanceTimersByTimeAsync(1000);
+      await vi.advanceTimersByTimeAsync(PERSIST_DEADLINE_MS);
     }
     expect(persist).toHaveBeenCalledTimes(1);
     expect(dispatch).toHaveBeenCalledTimes(20);

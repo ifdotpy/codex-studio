@@ -841,9 +841,10 @@ it.each([
   },
 );
 
-it.each(["overflow", "inline removal", "staged removal"])(
+it.each(["overflow", "startup burst", "inline removal", "staged removal"])(
   "the actual Work adapter recovers a still-active interval discarded by %s",
   async (cause) => {
+    const { MAX_PENDING_FRAMES } = await import("./resourceEntityDelivery");
     const f = await setup();
     vi.stubGlobal("location", { origin: "http://studio.test" });
     vi.stubGlobal("BroadcastChannel", undefined);
@@ -863,7 +864,7 @@ it.each(["overflow", "inline removal", "staged removal"])(
     const ref = { kind: "work", agentId: "lead" } as const;
     const stop = subscriptions.subscribe(ref, () => {}, { graceMs: 0 });
     const others = Array.from(
-      { length: 10 },
+      { length: MAX_PENDING_FRAMES + 2 },
       (_, index) =>
         ({ kind: "agentDetail", agentId: `other-${index}` }) as const,
     );
@@ -961,8 +962,13 @@ it.each(["overflow", "inline removal", "staged removal"])(
       else source.emit("resources", frame);
       await started.promise;
       expect(held).toHaveBeenCalledOnce();
-      if (cause === "overflow") {
-        for (const [index, other] of others.entries())
+      if (cause === "overflow" || cause === "startup burst") {
+        // A startup burst sends one frame per subscribed resource while the
+        // first write still waits; it must fit without a reconnect.
+        for (const [index, other] of (cause === "overflow"
+          ? others
+          : others.slice(0, 20)
+        ).entries())
           source.emit("resources", {
             protocol: frame.protocol,
             workspaceId: f.workspaceId,
@@ -980,6 +986,14 @@ it.each(["overflow", "inline removal", "staged removal"])(
               },
             ],
           });
+        if (cause === "startup burst") {
+          finish();
+          await held.mock.results[0].value;
+          for (let i = 0; i < 20; i++) await vi.advanceTimersByTimeAsync(500);
+          expect(source.closed).toBe(false);
+          expect(mocks.sources).toHaveLength(1);
+          return;
+        }
       } else {
         stopOthers[0]();
         // Removing another subscription keeps the stream. The still-active

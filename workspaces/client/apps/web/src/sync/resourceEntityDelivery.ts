@@ -1,8 +1,14 @@
 import type { ResourceChangeEvent } from "./subscriptions/events";
 import { subscriptionKey } from "./subscriptions/contracts";
 
-const MAX_PENDING_FRAMES = 8;
-const PERSIST_DEADLINE_MS = 1000;
+/** Frames that may wait while one frame is written, in frames. A startup
+ * burst sends one frame per subscribed resource; each inline frame is at most
+ * one SSE event (SYNC_STREAM_EVENT_MAX_BYTES), so the queue stays bounded. */
+export const MAX_PENDING_FRAMES = 128;
+/** Time one frame may take to reach storage, in milliseconds. WebKit storage
+ * can take seconds for a startup snapshot; a short limit blocked storage and
+ * discarded every later frame. */
+export const PERSIST_DEADLINE_MS = 10_000;
 
 function revokeCursorProof(event: ResourceChangeEvent) {
   for (const entry of event.resourceVersions ?? []) {
@@ -115,11 +121,18 @@ export class ResourceEntityDelivery {
     ];
     this.current = undefined;
     this.pending = [];
-    if (recover && this.recoverDiscarded(discarded)) return;
+    if (
+      recover &&
+      this.recoverDiscarded(discarded, "a subscription was removed")
+    )
+      return;
     for (const event of discarded) this.dispatch(this.revoke(event));
   }
 
-  private recoverDiscarded(frames: ResourceChangeEvent[]): boolean {
+  private recoverDiscarded(
+    frames: ResourceChangeEvent[],
+    cause: string,
+  ): boolean {
     const typed = frames.filter((frame) =>
       frame.resourceVersions?.some(
         (entry) =>
@@ -142,7 +155,7 @@ export class ResourceEntityDelivery {
       this.failed(
         { ...typed[0], resources },
         new Error(
-          "Subscribed entity interval was discarded before application",
+          `Subscribed entity interval was discarded before application: ${cause}`,
         ),
       ) !== false
     );
@@ -249,6 +262,13 @@ export class ResourceEntityDelivery {
       this.pending.length >= MAX_PENDING_FRAMES
     ) {
       this.generation++;
+      const cause = this.storageBlocked
+        ? "storage is blocked"
+        : this.pending.length >= MAX_PENDING_FRAMES
+          ? "too many frames wait"
+          : !hasChanges
+            ? "the frame has no changes"
+            : "the frame has no initial snapshot";
       // Preserve all resource hints when data delivery falls back to pull.
       // A frame can also contain transcript, panel or queue invalidations.
       const discarded = [
@@ -259,7 +279,7 @@ export class ResourceEntityDelivery {
       this.current = undefined;
       this.pending = [];
       this.epoch = event.epoch;
-      if (!this.recoverDiscarded(discarded))
+      if (!this.recoverDiscarded(discarded, cause))
         for (const frame of discarded) this.dispatch(this.revoke(frame));
       return;
     }
@@ -328,7 +348,7 @@ export class ResourceEntityDelivery {
         if (expired) {
           const discarded = this.pending;
           this.pending = [];
-          if (!this.recoverDiscarded(discarded))
+          if (!this.recoverDiscarded(discarded, "a write passed its deadline"))
             for (const pending of discarded)
               this.dispatch(this.revoke(pending));
           break;
