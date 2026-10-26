@@ -74,6 +74,14 @@ test("the production Vite build compresses final outputs without changing shell 
     });
     const dist = join(root, "dist");
     const files = await readdir(dist, { recursive: true });
+    const entry = files.find((name) => /^assets\/index-[^/]+\.js$/.test(name));
+    assert.ok(entry, "Vite emits the fixture entry chunk");
+    assert.ok(
+      (await readFile(join(dist, entry), "utf8")).includes(
+        "compress me ".repeat(300),
+      ),
+      "the entry keeps the upstream 3300-character literal for precompression",
+    );
     for (const name of files.filter(
       (name) =>
         /\.(js|css|wasm|svg|html|json|webmanifest)$/.test(name) &&
