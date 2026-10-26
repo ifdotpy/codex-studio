@@ -248,7 +248,7 @@ pub fn answer_async_question<V: Fn(&Value) -> bool>(
         ));
     }
     let text = event_write::python_strip(text);
-    let consumed = crate::radio_runtime::route_question_answer(
+    let route = crate::radio_runtime::route_question_answer(
         transaction,
         prepared,
         &record,
@@ -256,10 +256,12 @@ pub fn answer_async_question<V: Fn(&Value) -> bool>(
         None,
         now,
     )?;
-    let event_inserted = if consumed {
-        false
-    } else {
-        let turn_id = record.get("turnId").and_then(Value::as_str);
+    let followup_turn = match route {
+        crate::radio_runtime::QuestionAnswerRoute::ConsumedByRadio => None,
+        crate::radio_runtime::QuestionAnswerRoute::OrdinaryFollowup => Some(None),
+        crate::radio_runtime::QuestionAnswerRoute::RadioFollowup { turn_id } => Some(Some(turn_id)),
+    };
+    let event_inserted = if let Some(turn_id) = followup_turn {
         let accepted = coordination::send_system_followup_with_radio_answer(
             transaction,
             SystemFollowup {
@@ -269,7 +271,7 @@ pub fn answer_async_question<V: Fn(&Value) -> bool>(
                 delivery: studio_runtime_schema::delivery::DeliveryMoment::CurrentTurn,
                 now,
             },
-            turn_id,
+            turn_id.as_deref(),
             admission,
         )?;
         crate::radio_runtime::record_question_answer_followup(
@@ -280,6 +282,8 @@ pub fn answer_async_question<V: Fn(&Value) -> bool>(
             now,
         )?;
         accepted.event_inserted
+    } else {
+        false
     };
 
     record["status"] = json!("answered");
