@@ -1,7 +1,5 @@
 import assert from "node:assert/strict";
-import type { TabMessage, OutgoingMessage } from "./resourceEvents";
-type PostedMessage = OutgoingMessage &
-  Pick<TabMessage, "workspaceId" | "tabId" | "apiSchemaHash" | "health">;
+import type { OutgoingTabMessage } from "./resourceEvents";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   API_SCHEMA_HASH,
@@ -108,14 +106,14 @@ class Source {
 class Channel {
   static instances: Channel[] = [];
   onmessage: ((event: MessageEvent) => void) | null = null;
-  messages: PostedMessage[] = [];
+  messages: OutgoingTabMessage[] = [];
   readonly name: string;
   constructor(name: string) {
     this.name = name;
 
     Channel.instances.push(this);
   }
-  postMessage(value: PostedMessage) {
+  postMessage(value: OutgoingTabMessage) {
     this.messages.push(value);
   }
   close() {}

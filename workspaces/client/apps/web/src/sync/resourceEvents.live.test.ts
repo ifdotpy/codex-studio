@@ -1,8 +1,6 @@
 import assert from "node:assert/strict";
 import type { createSyncClient } from "./client";
-import type { TabMessage, OutgoingMessage } from "./resourceEvents";
-type PostedMessage = OutgoingMessage &
-  Pick<TabMessage, "workspaceId" | "tabId" | "apiSchemaHash" | "health">;
+import type { OutgoingTabMessage } from "./resourceEvents";
 import { afterEach, expect, it, vi } from "vitest";
 import { createResourceEvents } from "./resourceEvents";
 import {
@@ -126,7 +124,7 @@ async function fixture(
   });
   vi.stubGlobal("location", { origin: "http://studio.test" });
   let deliverPeer: ((event: MessageEvent) => void) | undefined;
-  const posted: PostedMessage[] = [];
+  const posted: OutgoingTabMessage[] = [];
   vi.stubGlobal(
     "BroadcastChannel",
     follower || peerOwner
@@ -136,7 +134,7 @@ async function fixture(
             channelNames.push(name);
             deliverPeer = (event) => this.onmessage?.(event);
           }
-          postMessage(message: PostedMessage) {
+          postMessage(message: OutgoingTabMessage) {
             posted.push(structuredClone(message));
           }
           close() {}
