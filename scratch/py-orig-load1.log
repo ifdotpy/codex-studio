@@ -1,0 +1,2301 @@
+=== run 1 failed
+E
+======================================================================
+ERROR: test_disconnect_does_not_stop_exec (test_service.GuestTests.test_disconnect_does_not_stop_exec)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/opt/homebrew/Cellar/python@3.15/3.15.0/Frameworks/Python.framework/Versions/3.15/lib/python3.15/asyncio/runners.py", line 128, in run
+    return self._loop.run_until_complete(task)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^
+  File "/opt/homebrew/Cellar/python@3.15/3.15.0/Frameworks/Python.framework/Versions/3.15/lib/python3.15/asyncio/base_events.py", line 724, in run_until_complete
+    return future.result()
+           ~~~~~~~~~~~~~^^
+  File "/Users/igor/Projects/codex-agents-flaky/workspaces/runtime/apps/vm-guest/test_service.py", line 207, in test_disconnect_does_not_stop_exec
+    result = await self.call("exec", params, "lost-exec")
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/igor/Projects/codex-agents-flaky/workspaces/runtime/apps/vm-guest/test_service.py", line 140, in call
+    raise GuestError(response["error"]["code"], response["error"]["message"])
+common.GuestError: The process supervisor failed to start
+
+----------------------------------------------------------------------
+Ran 1 test in 0.670s
+
+FAILED (errors=1)
+=== run 2 failed
+E
+======================================================================
+ERROR: test_disconnect_does_not_stop_exec (test_service.GuestTests.test_disconnect_does_not_stop_exec)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/opt/homebrew/Cellar/python@3.15/3.15.0/Frameworks/Python.framework/Versions/3.15/lib/python3.15/asyncio/runners.py", line 128, in run
+    return self._loop.run_until_complete(task)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^
+  File "/opt/homebrew/Cellar/python@3.15/3.15.0/Frameworks/Python.framework/Versions/3.15/lib/python3.15/asyncio/base_events.py", line 724, in run_until_complete
+    return future.result()
+           ~~~~~~~~~~~~~^^
+  File "/Users/igor/Projects/codex-agents-flaky/workspaces/runtime/apps/vm-guest/test_service.py", line 207, in test_disconnect_does_not_stop_exec
+    result = await self.call("exec", params, "lost-exec")
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/igor/Projects/codex-agents-flaky/workspaces/runtime/apps/vm-guest/test_service.py", line 140, in call
+    raise GuestError(response["error"]["code"], response["error"]["message"])
+common.GuestError: The process supervisor failed to start
+
+----------------------------------------------------------------------
+Ran 1 test in 0.663s
+
+FAILED (errors=1)
+=== run 3 failed
+E
+======================================================================
+ERROR: test_disconnect_does_not_stop_exec (test_service.GuestTests.test_disconnect_does_not_stop_exec)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/opt/homebrew/Cellar/python@3.15/3.15.0/Frameworks/Python.framework/Versions/3.15/lib/python3.15/asyncio/runners.py", line 128, in run
+    return self._loop.run_until_complete(task)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^
+  File "/opt/homebrew/Cellar/python@3.15/3.15.0/Frameworks/Python.framework/Versions/3.15/lib/python3.15/asyncio/base_events.py", line 724, in run_until_complete
+    return future.result()
+           ~~~~~~~~~~~~~^^
+  File "/Users/igor/Projects/codex-agents-flaky/workspaces/runtime/apps/vm-guest/test_service.py", line 207, in test_disconnect_does_not_stop_exec
+    result = await self.call("exec", params, "lost-exec")
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/igor/Projects/codex-agents-flaky/workspaces/runtime/apps/vm-guest/test_service.py", line 140, in call
+    raise GuestError(response["error"]["code"], response["error"]["message"])
+common.GuestError: The process supervisor failed to start
+
+----------------------------------------------------------------------
+Ran 1 test in 0.656s
+
+FAILED (errors=1)
+=== run 4 failed
+E
+======================================================================
+ERROR: test_disconnect_does_not_stop_exec (test_service.GuestTests.test_disconnect_does_not_stop_exec)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/opt/homebrew/Cellar/python@3.15/3.15.0/Frameworks/Python.framework/Versions/3.15/lib/python3.15/asyncio/runners.py", line 128, in run
+    return self._loop.run_until_complete(task)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^
+  File "/opt/homebrew/Cellar/python@3.15/3.15.0/Frameworks/Python.framework/Versions/3.15/lib/python3.15/asyncio/base_events.py", line 724, in run_until_complete
+    return future.result()
+           ~~~~~~~~~~~~~^^
+  File "/Users/igor/Projects/codex-agents-flaky/workspaces/runtime/apps/vm-guest/test_service.py", line 207, in test_disconnect_does_not_stop_exec
+    result = await self.call("exec", params, "lost-exec")
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/igor/Projects/codex-agents-flaky/workspaces/runtime/apps/vm-guest/test_service.py", line 140, in call
+    raise GuestError(response["error"]["code"], response["error"]["message"])
+common.GuestError: The process supervisor failed to start
+
+----------------------------------------------------------------------
+Ran 1 test in 0.659s
+
+FAILED (errors=1)
+=== run 5 failed
+E
+======================================================================
+ERROR: test_disconnect_does_not_stop_exec (test_service.GuestTests.test_disconnect_does_not_stop_exec)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/opt/homebrew/Cellar/python@3.15/3.15.0/Frameworks/Python.framework/Versions/3.15/lib/python3.15/asyncio/runners.py", line 128, in run
+    return self._loop.run_until_complete(task)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^
+  File "/opt/homebrew/Cellar/python@3.15/3.15.0/Frameworks/Python.framework/Versions/3.15/lib/python3.15/asyncio/base_events.py", line 724, in run_until_complete
+    return future.result()
+           ~~~~~~~~~~~~~^^
+  File "/Users/igor/Projects/codex-agents-flaky/workspaces/runtime/apps/vm-guest/test_service.py", line 207, in test_disconnect_does_not_stop_exec
+    result = await self.call("exec", params, "lost-exec")
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/igor/Projects/codex-agents-flaky/workspaces/runtime/apps/vm-guest/test_service.py", line 140, in call
+    raise GuestError(response["error"]["code"], response["error"]["message"])
+common.GuestError: The process supervisor failed to start
+
+----------------------------------------------------------------------
+Ran 1 test in 0.658s
+
+FAILED (errors=1)
+=== run 6 failed
+E
+======================================================================
+ERROR: test_disconnect_does_not_stop_exec (test_service.GuestTests.test_disconnect_does_not_stop_exec)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/opt/homebrew/Cellar/python@3.15/3.15.0/Frameworks/Python.framework/Versions/3.15/lib/python3.15/asyncio/runners.py", line 128, in run
+    return self._loop.run_until_complete(task)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^
+  File "/opt/homebrew/Cellar/python@3.15/3.15.0/Frameworks/Python.framework/Versions/3.15/lib/python3.15/asyncio/base_events.py", line 724, in run_until_complete
+    return future.result()
+           ~~~~~~~~~~~~~^^
+  File "/Users/igor/Projects/codex-agents-flaky/workspaces/runtime/apps/vm-guest/test_service.py", line 207, in test_disconnect_does_not_stop_exec
+    result = await self.call("exec", params, "lost-exec")
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/igor/Projects/codex-agents-flaky/workspaces/runtime/apps/vm-guest/test_service.py", line 140, in call
+    raise GuestError(response["error"]["code"], response["error"]["message"])
+common.GuestError: The process supervisor failed to start
+
+----------------------------------------------------------------------
+Ran 1 test in 0.657s
+
+FAILED (errors=1)
+=== run 7 failed
+E
+======================================================================
+ERROR: test_disconnect_does_not_stop_exec (test_service.GuestTests.test_disconnect_does_not_stop_exec)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/opt/homebrew/Cellar/python@3.15/3.15.0/Frameworks/Python.framework/Versions/3.15/lib/python3.15/asyncio/runners.py", line 128, in run
+    return self._loop.run_until_complete(task)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^
+  File "/opt/homebrew/Cellar/python@3.15/3.15.0/Frameworks/Python.framework/Versions/3.15/lib/python3.15/asyncio/base_events.py", line 724, in run_until_complete
+    return future.result()
+           ~~~~~~~~~~~~~^^
+  File "/Users/igor/Projects/codex-agents-flaky/workspaces/runtime/apps/vm-guest/test_service.py", line 207, in test_disconnect_does_not_stop_exec
+    result = await self.call("exec", params, "lost-exec")
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/igor/Projects/codex-agents-flaky/workspaces/runtime/apps/vm-guest/test_service.py", line 140, in call
+    raise GuestError(response["error"]["code"], response["error"]["message"])
+common.GuestError: The process supervisor failed to start
+
+----------------------------------------------------------------------
+Ran 1 test in 0.657s
+
+FAILED (errors=1)
+=== run 8 failed
+E
+======================================================================
+ERROR: test_disconnect_does_not_stop_exec (test_service.GuestTests.test_disconnect_does_not_stop_exec)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/opt/homebrew/Cellar/python@3.15/3.15.0/Frameworks/Python.framework/Versions/3.15/lib/python3.15/asyncio/runners.py", line 128, in run
+    return self._loop.run_until_complete(task)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^
+  File "/opt/homebrew/Cellar/python@3.15/3.15.0/Frameworks/Python.framework/Versions/3.15/lib/python3.15/asyncio/base_events.py", line 724, in run_until_complete
+    return future.result()
+           ~~~~~~~~~~~~~^^
+  File "/Users/igor/Projects/codex-agents-flaky/workspaces/runtime/apps/vm-guest/test_service.py", line 207, in test_disconnect_does_not_stop_exec
+    result = await self.call("exec", params, "lost-exec")
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/igor/Projects/codex-agents-flaky/workspaces/runtime/apps/vm-guest/test_service.py", line 140, in call
+    raise GuestError(response["error"]["code"], response["error"]["message"])
+common.GuestError: The process supervisor failed to start
+
+----------------------------------------------------------------------
+Ran 1 test in 0.656s
+
+FAILED (errors=1)
+=== run 9 failed
+E
+======================================================================
+ERROR: test_disconnect_does_not_stop_exec (test_service.GuestTests.test_disconnect_does_not_stop_exec)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/opt/homebrew/Cellar/python@3.15/3.15.0/Frameworks/Python.framework/Versions/3.15/lib/python3.15/asyncio/runners.py", line 128, in run
+    return self._loop.run_until_complete(task)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^
+  File "/opt/homebrew/Cellar/python@3.15/3.15.0/Frameworks/Python.framework/Versions/3.15/lib/python3.15/asyncio/base_events.py", line 724, in run_until_complete
+    return future.result()
+           ~~~~~~~~~~~~~^^
+  File "/Users/igor/Projects/codex-agents-flaky/workspaces/runtime/apps/vm-guest/test_service.py", line 207, in test_disconnect_does_not_stop_exec
+    result = await self.call("exec", params, "lost-exec")
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/igor/Projects/codex-agents-flaky/workspaces/runtime/apps/vm-guest/test_service.py", line 140, in call
+    raise GuestError(response["error"]["code"], response["error"]["message"])
+common.GuestError: The process supervisor failed to start
+
+----------------------------------------------------------------------
+Ran 1 test in 0.656s
+
+FAILED (errors=1)
+=== run 10 failed
+E
+======================================================================
+ERROR: test_disconnect_does_not_stop_exec (test_service.GuestTests.test_disconnect_does_not_stop_exec)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/opt/homebrew/Cellar/python@3.15/3.15.0/Frameworks/Python.framework/Versions/3.15/lib/python3.15/asyncio/runners.py", line 128, in run
+    return self._loop.run_until_complete(task)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^
+  File "/opt/homebrew/Cellar/python@3.15/3.15.0/Frameworks/Python.framework/Versions/3.15/lib/python3.15/asyncio/base_events.py", line 724, in run_until_complete
+    return future.result()
+           ~~~~~~~~~~~~~^^
+  File "/Users/igor/Projects/codex-agents-flaky/workspaces/runtime/apps/vm-guest/test_service.py", line 207, in test_disconnect_does_not_stop_exec
+    result = await self.call("exec", params, "lost-exec")
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/igor/Projects/codex-agents-flaky/workspaces/runtime/apps/vm-guest/test_service.py", line 140, in call
+    raise GuestError(response["error"]["code"], response["error"]["message"])
+common.GuestError: The process supervisor failed to start
+
+----------------------------------------------------------------------
+Ran 1 test in 0.656s
+
+FAILED (errors=1)
+=== run 11 failed
+E
+======================================================================
+ERROR: test_disconnect_does_not_stop_exec (test_service.GuestTests.test_disconnect_does_not_stop_exec)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/opt/homebrew/Cellar/python@3.15/3.15.0/Frameworks/Python.framework/Versions/3.15/lib/python3.15/asyncio/runners.py", line 128, in run
+    return self._loop.run_until_complete(task)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^
+  File "/opt/homebrew/Cellar/python@3.15/3.15.0/Frameworks/Python.framework/Versions/3.15/lib/python3.15/asyncio/base_events.py", line 724, in run_until_complete
+    return future.result()
+           ~~~~~~~~~~~~~^^
+  File "/Users/igor/Projects/codex-agents-flaky/workspaces/runtime/apps/vm-guest/test_service.py", line 207, in test_disconnect_does_not_stop_exec
+    result = await self.call("exec", params, "lost-exec")
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/igor/Projects/codex-agents-flaky/workspaces/runtime/apps/vm-guest/test_service.py", line 140, in call
+    raise GuestError(response["error"]["code"], response["error"]["message"])
+common.GuestError: The process supervisor failed to start
+
+----------------------------------------------------------------------
+Ran 1 test in 0.659s
+
+FAILED (errors=1)
+=== run 12 failed
+E
+======================================================================
+ERROR: test_disconnect_does_not_stop_exec (test_service.GuestTests.test_disconnect_does_not_stop_exec)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/opt/homebrew/Cellar/python@3.15/3.15.0/Frameworks/Python.framework/Versions/3.15/lib/python3.15/asyncio/runners.py", line 128, in run
+    return self._loop.run_until_complete(task)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^
+  File "/opt/homebrew/Cellar/python@3.15/3.15.0/Frameworks/Python.framework/Versions/3.15/lib/python3.15/asyncio/base_events.py", line 724, in run_until_complete
+    return future.result()
+           ~~~~~~~~~~~~~^^
+  File "/Users/igor/Projects/codex-agents-flaky/workspaces/runtime/apps/vm-guest/test_service.py", line 207, in test_disconnect_does_not_stop_exec
+    result = await self.call("exec", params, "lost-exec")
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/igor/Projects/codex-agents-flaky/workspaces/runtime/apps/vm-guest/test_service.py", line 140, in call
+    raise GuestError(response["error"]["code"], response["error"]["message"])
+common.GuestError: The process supervisor failed to start
+
+----------------------------------------------------------------------
+Ran 1 test in 0.661s
+
+FAILED (errors=1)
+=== run 13 failed
+E
+======================================================================
+ERROR: test_disconnect_does_not_stop_exec (test_service.GuestTests.test_disconnect_does_not_stop_exec)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/opt/homebrew/Cellar/python@3.15/3.15.0/Frameworks/Python.framework/Versions/3.15/lib/python3.15/asyncio/runners.py", line 128, in run
+    return self._loop.run_until_complete(task)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^
+  File "/opt/homebrew/Cellar/python@3.15/3.15.0/Frameworks/Python.framework/Versions/3.15/lib/python3.15/asyncio/base_events.py", line 724, in run_until_complete
+    return future.result()
+           ~~~~~~~~~~~~~^^
+  File "/Users/igor/Projects/codex-agents-flaky/workspaces/runtime/apps/vm-guest/test_service.py", line 207, in test_disconnect_does_not_stop_exec
+    result = await self.call("exec", params, "lost-exec")
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/igor/Projects/codex-agents-flaky/workspaces/runtime/apps/vm-guest/test_service.py", line 140, in call
+    raise GuestError(response["error"]["code"], response["error"]["message"])
+common.GuestError: The process supervisor failed to start
+
+----------------------------------------------------------------------
+Ran 1 test in 0.658s
+
+FAILED (errors=1)
+=== run 14 failed
+E
+======================================================================
+ERROR: test_disconnect_does_not_stop_exec (test_service.GuestTests.test_disconnect_does_not_stop_exec)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/opt/homebrew/Cellar/python@3.15/3.15.0/Frameworks/Python.framework/Versions/3.15/lib/python3.15/asyncio/runners.py", line 128, in run
+    return self._loop.run_until_complete(task)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^
+  File "/opt/homebrew/Cellar/python@3.15/3.15.0/Frameworks/Python.framework/Versions/3.15/lib/python3.15/asyncio/base_events.py", line 724, in run_until_complete
+    return future.result()
+           ~~~~~~~~~~~~~^^
+  File "/Users/igor/Projects/codex-agents-flaky/workspaces/runtime/apps/vm-guest/test_service.py", line 207, in test_disconnect_does_not_stop_exec
+    result = await self.call("exec", params, "lost-exec")
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/igor/Projects/codex-agents-flaky/workspaces/runtime/apps/vm-guest/test_service.py", line 140, in call
+    raise GuestError(response["error"]["code"], response["error"]["message"])
+common.GuestError: The process supervisor failed to start
+
+----------------------------------------------------------------------
+Ran 1 test in 0.692s
+
+FAILED (errors=1)
+=== run 15 failed
+E
+======================================================================
+ERROR: test_disconnect_does_not_stop_exec (test_service.GuestTests.test_disconnect_does_not_stop_exec)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/opt/homebrew/Cellar/python@3.15/3.15.0/Frameworks/Python.framework/Versions/3.15/lib/python3.15/asyncio/runners.py", line 128, in run
+    return self._loop.run_until_complete(task)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^
+  File "/opt/homebrew/Cellar/python@3.15/3.15.0/Frameworks/Python.framework/Versions/3.15/lib/python3.15/asyncio/base_events.py", line 724, in run_until_complete
+    return future.result()
+           ~~~~~~~~~~~~~^^
+  File "/Users/igor/Projects/codex-agents-flaky/workspaces/runtime/apps/vm-guest/test_service.py", line 207, in test_disconnect_does_not_stop_exec
+    result = await self.call("exec", params, "lost-exec")
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/igor/Projects/codex-agents-flaky/workspaces/runtime/apps/vm-guest/test_service.py", line 140, in call
+    raise GuestError(response["error"]["code"], response["error"]["message"])
+common.GuestError: The process supervisor failed to start
+
+----------------------------------------------------------------------
+Ran 1 test in 0.688s
+
+FAILED (errors=1)
+=== run 16 failed
+E
+======================================================================
+ERROR: test_disconnect_does_not_stop_exec (test_service.GuestTests.test_disconnect_does_not_stop_exec)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/opt/homebrew/Cellar/python@3.15/3.15.0/Frameworks/Python.framework/Versions/3.15/lib/python3.15/asyncio/runners.py", line 128, in run
+    return self._loop.run_until_complete(task)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^
+  File "/opt/homebrew/Cellar/python@3.15/3.15.0/Frameworks/Python.framework/Versions/3.15/lib/python3.15/asyncio/base_events.py", line 724, in run_until_complete
+    return future.result()
+           ~~~~~~~~~~~~~^^
+  File "/Users/igor/Projects/codex-agents-flaky/workspaces/runtime/apps/vm-guest/test_service.py", line 207, in test_disconnect_does_not_stop_exec
+    result = await self.call("exec", params, "lost-exec")
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/igor/Projects/codex-agents-flaky/workspaces/runtime/apps/vm-guest/test_service.py", line 140, in call
+    raise GuestError(response["error"]["code"], response["error"]["message"])
+common.GuestError: The process supervisor failed to start
+
+----------------------------------------------------------------------
+Ran 1 test in 0.690s
+
+FAILED (errors=1)
+=== run 17 failed
+E
+======================================================================
+ERROR: test_disconnect_does_not_stop_exec (test_service.GuestTests.test_disconnect_does_not_stop_exec)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/opt/homebrew/Cellar/python@3.15/3.15.0/Frameworks/Python.framework/Versions/3.15/lib/python3.15/asyncio/runners.py", line 128, in run
+    return self._loop.run_until_complete(task)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^
+  File "/opt/homebrew/Cellar/python@3.15/3.15.0/Frameworks/Python.framework/Versions/3.15/lib/python3.15/asyncio/base_events.py", line 724, in run_until_complete
+    return future.result()
+           ~~~~~~~~~~~~~^^
+  File "/Users/igor/Projects/codex-agents-flaky/workspaces/runtime/apps/vm-guest/test_service.py", line 207, in test_disconnect_does_not_stop_exec
+    result = await self.call("exec", params, "lost-exec")
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/igor/Projects/codex-agents-flaky/workspaces/runtime/apps/vm-guest/test_service.py", line 140, in call
+    raise GuestError(response["error"]["code"], response["error"]["message"])
+common.GuestError: The process supervisor failed to start
+
+----------------------------------------------------------------------
+Ran 1 test in 0.661s
+
+FAILED (errors=1)
+=== run 18 failed
+E
+======================================================================
+ERROR: test_disconnect_does_not_stop_exec (test_service.GuestTests.test_disconnect_does_not_stop_exec)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/opt/homebrew/Cellar/python@3.15/3.15.0/Frameworks/Python.framework/Versions/3.15/lib/python3.15/asyncio/runners.py", line 128, in run
+    return self._loop.run_until_complete(task)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^
+  File "/opt/homebrew/Cellar/python@3.15/3.15.0/Frameworks/Python.framework/Versions/3.15/lib/python3.15/asyncio/base_events.py", line 724, in run_until_complete
+    return future.result()
+           ~~~~~~~~~~~~~^^
+  File "/Users/igor/Projects/codex-agents-flaky/workspaces/runtime/apps/vm-guest/test_service.py", line 207, in test_disconnect_does_not_stop_exec
+    result = await self.call("exec", params, "lost-exec")
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/igor/Projects/codex-agents-flaky/workspaces/runtime/apps/vm-guest/test_service.py", line 140, in call
+    raise GuestError(response["error"]["code"], response["error"]["message"])
+common.GuestError: The process supervisor failed to start
+
+----------------------------------------------------------------------
+Ran 1 test in 0.661s
+
+FAILED (errors=1)
+=== run 19 failed
+E
+======================================================================
+ERROR: test_disconnect_does_not_stop_exec (test_service.GuestTests.test_disconnect_does_not_stop_exec)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/opt/homebrew/Cellar/python@3.15/3.15.0/Frameworks/Python.framework/Versions/3.15/lib/python3.15/asyncio/runners.py", line 128, in run
+    return self._loop.run_until_complete(task)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^
+  File "/opt/homebrew/Cellar/python@3.15/3.15.0/Frameworks/Python.framework/Versions/3.15/lib/python3.15/asyncio/base_events.py", line 724, in run_until_complete
+    return future.result()
+           ~~~~~~~~~~~~~^^
+  File "/Users/igor/Projects/codex-agents-flaky/workspaces/runtime/apps/vm-guest/test_service.py", line 207, in test_disconnect_does_not_stop_exec
+    result = await self.call("exec", params, "lost-exec")
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/igor/Projects/codex-agents-flaky/workspaces/runtime/apps/vm-guest/test_service.py", line 140, in call
+    raise GuestError(response["error"]["code"], response["error"]["message"])
+common.GuestError: The process supervisor failed to start
+
+----------------------------------------------------------------------
+Ran 1 test in 0.689s
+
+FAILED (errors=1)
+=== run 20 failed
+E
+======================================================================
+ERROR: test_disconnect_does_not_stop_exec (test_service.GuestTests.test_disconnect_does_not_stop_exec)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/opt/homebrew/Cellar/python@3.15/3.15.0/Frameworks/Python.framework/Versions/3.15/lib/python3.15/asyncio/runners.py", line 128, in run
+    return self._loop.run_until_complete(task)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^
+  File "/opt/homebrew/Cellar/python@3.15/3.15.0/Frameworks/Python.framework/Versions/3.15/lib/python3.15/asyncio/base_events.py", line 724, in run_until_complete
+    return future.result()
+           ~~~~~~~~~~~~~^^
+  File "/Users/igor/Projects/codex-agents-flaky/workspaces/runtime/apps/vm-guest/test_service.py", line 207, in test_disconnect_does_not_stop_exec
+    result = await self.call("exec", params, "lost-exec")
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/igor/Projects/codex-agents-flaky/workspaces/runtime/apps/vm-guest/test_service.py", line 140, in call
+    raise GuestError(response["error"]["code"], response["error"]["message"])
+common.GuestError: The process supervisor failed to start
+
+----------------------------------------------------------------------
+Ran 1 test in 0.691s
+
+FAILED (errors=1)
+=== run 21 failed
+E
+======================================================================
+ERROR: test_disconnect_does_not_stop_exec (test_service.GuestTests.test_disconnect_does_not_stop_exec)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/opt/homebrew/Cellar/python@3.15/3.15.0/Frameworks/Python.framework/Versions/3.15/lib/python3.15/asyncio/runners.py", line 128, in run
+    return self._loop.run_until_complete(task)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^
+  File "/opt/homebrew/Cellar/python@3.15/3.15.0/Frameworks/Python.framework/Versions/3.15/lib/python3.15/asyncio/base_events.py", line 724, in run_until_complete
+    return future.result()
+           ~~~~~~~~~~~~~^^
+  File "/Users/igor/Projects/codex-agents-flaky/workspaces/runtime/apps/vm-guest/test_service.py", line 207, in test_disconnect_does_not_stop_exec
+    result = await self.call("exec", params, "lost-exec")
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/igor/Projects/codex-agents-flaky/workspaces/runtime/apps/vm-guest/test_service.py", line 140, in call
+    raise GuestError(response["error"]["code"], response["error"]["message"])
+common.GuestError: The process supervisor failed to start
+
+----------------------------------------------------------------------
+Ran 1 test in 0.694s
+
+FAILED (errors=1)
+=== run 22 failed
+E
+======================================================================
+ERROR: test_disconnect_does_not_stop_exec (test_service.GuestTests.test_disconnect_does_not_stop_exec)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/opt/homebrew/Cellar/python@3.15/3.15.0/Frameworks/Python.framework/Versions/3.15/lib/python3.15/asyncio/runners.py", line 128, in run
+    return self._loop.run_until_complete(task)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^
+  File "/opt/homebrew/Cellar/python@3.15/3.15.0/Frameworks/Python.framework/Versions/3.15/lib/python3.15/asyncio/base_events.py", line 724, in run_until_complete
+    return future.result()
+           ~~~~~~~~~~~~~^^
+  File "/Users/igor/Projects/codex-agents-flaky/workspaces/runtime/apps/vm-guest/test_service.py", line 207, in test_disconnect_does_not_stop_exec
+    result = await self.call("exec", params, "lost-exec")
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/igor/Projects/codex-agents-flaky/workspaces/runtime/apps/vm-guest/test_service.py", line 140, in call
+    raise GuestError(response["error"]["code"], response["error"]["message"])
+common.GuestError: The process supervisor failed to start
+
+----------------------------------------------------------------------
+Ran 1 test in 0.686s
+
+FAILED (errors=1)
+=== run 23 failed
+E
+======================================================================
+ERROR: test_disconnect_does_not_stop_exec (test_service.GuestTests.test_disconnect_does_not_stop_exec)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/opt/homebrew/Cellar/python@3.15/3.15.0/Frameworks/Python.framework/Versions/3.15/lib/python3.15/asyncio/runners.py", line 128, in run
+    return self._loop.run_until_complete(task)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^
+  File "/opt/homebrew/Cellar/python@3.15/3.15.0/Frameworks/Python.framework/Versions/3.15/lib/python3.15/asyncio/base_events.py", line 724, in run_until_complete
+    return future.result()
+           ~~~~~~~~~~~~~^^
+  File "/Users/igor/Projects/codex-agents-flaky/workspaces/runtime/apps/vm-guest/test_service.py", line 207, in test_disconnect_does_not_stop_exec
+    result = await self.call("exec", params, "lost-exec")
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/igor/Projects/codex-agents-flaky/workspaces/runtime/apps/vm-guest/test_service.py", line 140, in call
+    raise GuestError(response["error"]["code"], response["error"]["message"])
+common.GuestError: The process supervisor failed to start
+
+----------------------------------------------------------------------
+Ran 1 test in 0.684s
+
+FAILED (errors=1)
+=== run 24 failed
+E
+======================================================================
+ERROR: test_disconnect_does_not_stop_exec (test_service.GuestTests.test_disconnect_does_not_stop_exec)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/opt/homebrew/Cellar/python@3.15/3.15.0/Frameworks/Python.framework/Versions/3.15/lib/python3.15/asyncio/runners.py", line 128, in run
+    return self._loop.run_until_complete(task)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^
+  File "/opt/homebrew/Cellar/python@3.15/3.15.0/Frameworks/Python.framework/Versions/3.15/lib/python3.15/asyncio/base_events.py", line 724, in run_until_complete
+    return future.result()
+           ~~~~~~~~~~~~~^^
+  File "/Users/igor/Projects/codex-agents-flaky/workspaces/runtime/apps/vm-guest/test_service.py", line 207, in test_disconnect_does_not_stop_exec
+    result = await self.call("exec", params, "lost-exec")
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/igor/Projects/codex-agents-flaky/workspaces/runtime/apps/vm-guest/test_service.py", line 140, in call
+    raise GuestError(response["error"]["code"], response["error"]["message"])
+common.GuestError: The process supervisor failed to start
+
+----------------------------------------------------------------------
+Ran 1 test in 0.696s
+
+FAILED (errors=1)
+=== run 25 failed
+E
+======================================================================
+ERROR: test_disconnect_does_not_stop_exec (test_service.GuestTests.test_disconnect_does_not_stop_exec)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/opt/homebrew/Cellar/python@3.15/3.15.0/Frameworks/Python.framework/Versions/3.15/lib/python3.15/asyncio/runners.py", line 128, in run
+    return self._loop.run_until_complete(task)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^
+  File "/opt/homebrew/Cellar/python@3.15/3.15.0/Frameworks/Python.framework/Versions/3.15/lib/python3.15/asyncio/base_events.py", line 724, in run_until_complete
+    return future.result()
+           ~~~~~~~~~~~~~^^
+  File "/Users/igor/Projects/codex-agents-flaky/workspaces/runtime/apps/vm-guest/test_service.py", line 207, in test_disconnect_does_not_stop_exec
+    result = await self.call("exec", params, "lost-exec")
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/igor/Projects/codex-agents-flaky/workspaces/runtime/apps/vm-guest/test_service.py", line 140, in call
+    raise GuestError(response["error"]["code"], response["error"]["message"])
+common.GuestError: The process supervisor failed to start
+
+----------------------------------------------------------------------
+Ran 1 test in 0.695s
+
+FAILED (errors=1)
+=== run 26 failed
+E
+======================================================================
+ERROR: test_disconnect_does_not_stop_exec (test_service.GuestTests.test_disconnect_does_not_stop_exec)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/opt/homebrew/Cellar/python@3.15/3.15.0/Frameworks/Python.framework/Versions/3.15/lib/python3.15/asyncio/runners.py", line 128, in run
+    return self._loop.run_until_complete(task)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^
+  File "/opt/homebrew/Cellar/python@3.15/3.15.0/Frameworks/Python.framework/Versions/3.15/lib/python3.15/asyncio/base_events.py", line 724, in run_until_complete
+    return future.result()
+           ~~~~~~~~~~~~~^^
+  File "/Users/igor/Projects/codex-agents-flaky/workspaces/runtime/apps/vm-guest/test_service.py", line 207, in test_disconnect_does_not_stop_exec
+    result = await self.call("exec", params, "lost-exec")
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/igor/Projects/codex-agents-flaky/workspaces/runtime/apps/vm-guest/test_service.py", line 140, in call
+    raise GuestError(response["error"]["code"], response["error"]["message"])
+common.GuestError: The process supervisor failed to start
+
+----------------------------------------------------------------------
+Ran 1 test in 0.697s
+
+FAILED (errors=1)
+=== run 27 failed
+E
+======================================================================
+ERROR: test_disconnect_does_not_stop_exec (test_service.GuestTests.test_disconnect_does_not_stop_exec)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/opt/homebrew/Cellar/python@3.15/3.15.0/Frameworks/Python.framework/Versions/3.15/lib/python3.15/asyncio/runners.py", line 128, in run
+    return self._loop.run_until_complete(task)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^
+  File "/opt/homebrew/Cellar/python@3.15/3.15.0/Frameworks/Python.framework/Versions/3.15/lib/python3.15/asyncio/base_events.py", line 724, in run_until_complete
+    return future.result()
+           ~~~~~~~~~~~~~^^
+  File "/Users/igor/Projects/codex-agents-flaky/workspaces/runtime/apps/vm-guest/test_service.py", line 207, in test_disconnect_does_not_stop_exec
+    result = await self.call("exec", params, "lost-exec")
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/igor/Projects/codex-agents-flaky/workspaces/runtime/apps/vm-guest/test_service.py", line 140, in call
+    raise GuestError(response["error"]["code"], response["error"]["message"])
+common.GuestError: The process supervisor failed to start
+
+----------------------------------------------------------------------
+Ran 1 test in 0.732s
+
+FAILED (errors=1)
+=== run 28 failed
+E
+======================================================================
+ERROR: test_disconnect_does_not_stop_exec (test_service.GuestTests.test_disconnect_does_not_stop_exec)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/opt/homebrew/Cellar/python@3.15/3.15.0/Frameworks/Python.framework/Versions/3.15/lib/python3.15/asyncio/runners.py", line 128, in run
+    return self._loop.run_until_complete(task)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^
+  File "/opt/homebrew/Cellar/python@3.15/3.15.0/Frameworks/Python.framework/Versions/3.15/lib/python3.15/asyncio/base_events.py", line 724, in run_until_complete
+    return future.result()
+           ~~~~~~~~~~~~~^^
+  File "/Users/igor/Projects/codex-agents-flaky/workspaces/runtime/apps/vm-guest/test_service.py", line 207, in test_disconnect_does_not_stop_exec
+    result = await self.call("exec", params, "lost-exec")
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/igor/Projects/codex-agents-flaky/workspaces/runtime/apps/vm-guest/test_service.py", line 140, in call
+    raise GuestError(response["error"]["code"], response["error"]["message"])
+common.GuestError: The process supervisor failed to start
+
+----------------------------------------------------------------------
+Ran 1 test in 0.694s
+
+FAILED (errors=1)
+=== run 29 failed
+E
+======================================================================
+ERROR: test_disconnect_does_not_stop_exec (test_service.GuestTests.test_disconnect_does_not_stop_exec)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/opt/homebrew/Cellar/python@3.15/3.15.0/Frameworks/Python.framework/Versions/3.15/lib/python3.15/asyncio/runners.py", line 128, in run
+    return self._loop.run_until_complete(task)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^
+  File "/opt/homebrew/Cellar/python@3.15/3.15.0/Frameworks/Python.framework/Versions/3.15/lib/python3.15/asyncio/base_events.py", line 724, in run_until_complete
+    return future.result()
+           ~~~~~~~~~~~~~^^
+  File "/Users/igor/Projects/codex-agents-flaky/workspaces/runtime/apps/vm-guest/test_service.py", line 207, in test_disconnect_does_not_stop_exec
+    result = await self.call("exec", params, "lost-exec")
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/igor/Projects/codex-agents-flaky/workspaces/runtime/apps/vm-guest/test_service.py", line 140, in call
+    raise GuestError(response["error"]["code"], response["error"]["message"])
+common.GuestError: The process supervisor failed to start
+
+----------------------------------------------------------------------
+Ran 1 test in 0.717s
+
+FAILED (errors=1)
+=== run 30 failed
+E
+======================================================================
+ERROR: test_disconnect_does_not_stop_exec (test_service.GuestTests.test_disconnect_does_not_stop_exec)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/opt/homebrew/Cellar/python@3.15/3.15.0/Frameworks/Python.framework/Versions/3.15/lib/python3.15/asyncio/runners.py", line 128, in run
+    return self._loop.run_until_complete(task)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^
+  File "/opt/homebrew/Cellar/python@3.15/3.15.0/Frameworks/Python.framework/Versions/3.15/lib/python3.15/asyncio/base_events.py", line 724, in run_until_complete
+    return future.result()
+           ~~~~~~~~~~~~~^^
+  File "/Users/igor/Projects/codex-agents-flaky/workspaces/runtime/apps/vm-guest/test_service.py", line 207, in test_disconnect_does_not_stop_exec
+    result = await self.call("exec", params, "lost-exec")
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/igor/Projects/codex-agents-flaky/workspaces/runtime/apps/vm-guest/test_service.py", line 140, in call
+    raise GuestError(response["error"]["code"], response["error"]["message"])
+common.GuestError: The process supervisor failed to start
+
+----------------------------------------------------------------------
+Ran 1 test in 0.693s
+
+FAILED (errors=1)
+=== run 31 failed
+E
+======================================================================
+ERROR: test_disconnect_does_not_stop_exec (test_service.GuestTests.test_disconnect_does_not_stop_exec)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/opt/homebrew/Cellar/python@3.15/3.15.0/Frameworks/Python.framework/Versions/3.15/lib/python3.15/asyncio/runners.py", line 128, in run
+    return self._loop.run_until_complete(task)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^
+  File "/opt/homebrew/Cellar/python@3.15/3.15.0/Frameworks/Python.framework/Versions/3.15/lib/python3.15/asyncio/base_events.py", line 724, in run_until_complete
+    return future.result()
+           ~~~~~~~~~~~~~^^
+  File "/Users/igor/Projects/codex-agents-flaky/workspaces/runtime/apps/vm-guest/test_service.py", line 207, in test_disconnect_does_not_stop_exec
+    result = await self.call("exec", params, "lost-exec")
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/igor/Projects/codex-agents-flaky/workspaces/runtime/apps/vm-guest/test_service.py", line 140, in call
+    raise GuestError(response["error"]["code"], response["error"]["message"])
+common.GuestError: The process supervisor failed to start
+
+----------------------------------------------------------------------
+Ran 1 test in 0.694s
+
+FAILED (errors=1)
+=== run 32 failed
+E
+======================================================================
+ERROR: test_disconnect_does_not_stop_exec (test_service.GuestTests.test_disconnect_does_not_stop_exec)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/opt/homebrew/Cellar/python@3.15/3.15.0/Frameworks/Python.framework/Versions/3.15/lib/python3.15/asyncio/runners.py", line 128, in run
+    return self._loop.run_until_complete(task)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^
+  File "/opt/homebrew/Cellar/python@3.15/3.15.0/Frameworks/Python.framework/Versions/3.15/lib/python3.15/asyncio/base_events.py", line 724, in run_until_complete
+    return future.result()
+           ~~~~~~~~~~~~~^^
+  File "/Users/igor/Projects/codex-agents-flaky/workspaces/runtime/apps/vm-guest/test_service.py", line 207, in test_disconnect_does_not_stop_exec
+    result = await self.call("exec", params, "lost-exec")
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/igor/Projects/codex-agents-flaky/workspaces/runtime/apps/vm-guest/test_service.py", line 140, in call
+    raise GuestError(response["error"]["code"], response["error"]["message"])
+common.GuestError: The process supervisor failed to start
+
+----------------------------------------------------------------------
+Ran 1 test in 0.696s
+
+FAILED (errors=1)
+=== run 33 failed
+E
+======================================================================
+ERROR: test_disconnect_does_not_stop_exec (test_service.GuestTests.test_disconnect_does_not_stop_exec)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/opt/homebrew/Cellar/python@3.15/3.15.0/Frameworks/Python.framework/Versions/3.15/lib/python3.15/asyncio/runners.py", line 128, in run
+    return self._loop.run_until_complete(task)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^
+  File "/opt/homebrew/Cellar/python@3.15/3.15.0/Frameworks/Python.framework/Versions/3.15/lib/python3.15/asyncio/base_events.py", line 724, in run_until_complete
+    return future.result()
+           ~~~~~~~~~~~~~^^
+  File "/Users/igor/Projects/codex-agents-flaky/workspaces/runtime/apps/vm-guest/test_service.py", line 207, in test_disconnect_does_not_stop_exec
+    result = await self.call("exec", params, "lost-exec")
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/igor/Projects/codex-agents-flaky/workspaces/runtime/apps/vm-guest/test_service.py", line 140, in call
+    raise GuestError(response["error"]["code"], response["error"]["message"])
+common.GuestError: The process supervisor failed to start
+
+----------------------------------------------------------------------
+Ran 1 test in 0.693s
+
+FAILED (errors=1)
+=== run 34 failed
+E
+======================================================================
+ERROR: test_disconnect_does_not_stop_exec (test_service.GuestTests.test_disconnect_does_not_stop_exec)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/opt/homebrew/Cellar/python@3.15/3.15.0/Frameworks/Python.framework/Versions/3.15/lib/python3.15/asyncio/runners.py", line 128, in run
+    return self._loop.run_until_complete(task)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^
+  File "/opt/homebrew/Cellar/python@3.15/3.15.0/Frameworks/Python.framework/Versions/3.15/lib/python3.15/asyncio/base_events.py", line 724, in run_until_complete
+    return future.result()
+           ~~~~~~~~~~~~~^^
+  File "/Users/igor/Projects/codex-agents-flaky/workspaces/runtime/apps/vm-guest/test_service.py", line 207, in test_disconnect_does_not_stop_exec
+    result = await self.call("exec", params, "lost-exec")
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/igor/Projects/codex-agents-flaky/workspaces/runtime/apps/vm-guest/test_service.py", line 140, in call
+    raise GuestError(response["error"]["code"], response["error"]["message"])
+common.GuestError: The process supervisor failed to start
+
+----------------------------------------------------------------------
+Ran 1 test in 0.686s
+
+FAILED (errors=1)
+=== run 35 failed
+E
+======================================================================
+ERROR: test_disconnect_does_not_stop_exec (test_service.GuestTests.test_disconnect_does_not_stop_exec)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/opt/homebrew/Cellar/python@3.15/3.15.0/Frameworks/Python.framework/Versions/3.15/lib/python3.15/asyncio/runners.py", line 128, in run
+    return self._loop.run_until_complete(task)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^
+  File "/opt/homebrew/Cellar/python@3.15/3.15.0/Frameworks/Python.framework/Versions/3.15/lib/python3.15/asyncio/base_events.py", line 724, in run_until_complete
+    return future.result()
+           ~~~~~~~~~~~~~^^
+  File "/Users/igor/Projects/codex-agents-flaky/workspaces/runtime/apps/vm-guest/test_service.py", line 207, in test_disconnect_does_not_stop_exec
+    result = await self.call("exec", params, "lost-exec")
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/igor/Projects/codex-agents-flaky/workspaces/runtime/apps/vm-guest/test_service.py", line 140, in call
+    raise GuestError(response["error"]["code"], response["error"]["message"])
+common.GuestError: The process supervisor failed to start
+
+----------------------------------------------------------------------
+Ran 1 test in 0.659s
+
+FAILED (errors=1)
+=== run 36 failed
+E
+======================================================================
+ERROR: test_disconnect_does_not_stop_exec (test_service.GuestTests.test_disconnect_does_not_stop_exec)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/opt/homebrew/Cellar/python@3.15/3.15.0/Frameworks/Python.framework/Versions/3.15/lib/python3.15/asyncio/runners.py", line 128, in run
+    return self._loop.run_until_complete(task)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^
+  File "/opt/homebrew/Cellar/python@3.15/3.15.0/Frameworks/Python.framework/Versions/3.15/lib/python3.15/asyncio/base_events.py", line 724, in run_until_complete
+    return future.result()
+           ~~~~~~~~~~~~~^^
+  File "/Users/igor/Projects/codex-agents-flaky/workspaces/runtime/apps/vm-guest/test_service.py", line 207, in test_disconnect_does_not_stop_exec
+    result = await self.call("exec", params, "lost-exec")
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/igor/Projects/codex-agents-flaky/workspaces/runtime/apps/vm-guest/test_service.py", line 140, in call
+    raise GuestError(response["error"]["code"], response["error"]["message"])
+common.GuestError: The process supervisor failed to start
+
+----------------------------------------------------------------------
+Ran 1 test in 0.654s
+
+FAILED (errors=1)
+=== run 37 failed
+E
+======================================================================
+ERROR: test_disconnect_does_not_stop_exec (test_service.GuestTests.test_disconnect_does_not_stop_exec)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/opt/homebrew/Cellar/python@3.15/3.15.0/Frameworks/Python.framework/Versions/3.15/lib/python3.15/asyncio/runners.py", line 128, in run
+    return self._loop.run_until_complete(task)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^
+  File "/opt/homebrew/Cellar/python@3.15/3.15.0/Frameworks/Python.framework/Versions/3.15/lib/python3.15/asyncio/base_events.py", line 724, in run_until_complete
+    return future.result()
+           ~~~~~~~~~~~~~^^
+  File "/Users/igor/Projects/codex-agents-flaky/workspaces/runtime/apps/vm-guest/test_service.py", line 207, in test_disconnect_does_not_stop_exec
+    result = await self.call("exec", params, "lost-exec")
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/igor/Projects/codex-agents-flaky/workspaces/runtime/apps/vm-guest/test_service.py", line 140, in call
+    raise GuestError(response["error"]["code"], response["error"]["message"])
+common.GuestError: The process supervisor failed to start
+
+----------------------------------------------------------------------
+Ran 1 test in 0.659s
+
+FAILED (errors=1)
+=== run 38 failed
+E
+======================================================================
+ERROR: test_disconnect_does_not_stop_exec (test_service.GuestTests.test_disconnect_does_not_stop_exec)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/opt/homebrew/Cellar/python@3.15/3.15.0/Frameworks/Python.framework/Versions/3.15/lib/python3.15/asyncio/runners.py", line 128, in run
+    return self._loop.run_until_complete(task)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^
+  File "/opt/homebrew/Cellar/python@3.15/3.15.0/Frameworks/Python.framework/Versions/3.15/lib/python3.15/asyncio/base_events.py", line 724, in run_until_complete
+    return future.result()
+           ~~~~~~~~~~~~~^^
+  File "/Users/igor/Projects/codex-agents-flaky/workspaces/runtime/apps/vm-guest/test_service.py", line 207, in test_disconnect_does_not_stop_exec
+    result = await self.call("exec", params, "lost-exec")
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/igor/Projects/codex-agents-flaky/workspaces/runtime/apps/vm-guest/test_service.py", line 140, in call
+    raise GuestError(response["error"]["code"], response["error"]["message"])
+common.GuestError: The process supervisor failed to start
+
+----------------------------------------------------------------------
+Ran 1 test in 0.655s
+
+FAILED (errors=1)
+=== run 39 failed
+E
+======================================================================
+ERROR: test_disconnect_does_not_stop_exec (test_service.GuestTests.test_disconnect_does_not_stop_exec)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/opt/homebrew/Cellar/python@3.15/3.15.0/Frameworks/Python.framework/Versions/3.15/lib/python3.15/asyncio/runners.py", line 128, in run
+    return self._loop.run_until_complete(task)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^
+  File "/opt/homebrew/Cellar/python@3.15/3.15.0/Frameworks/Python.framework/Versions/3.15/lib/python3.15/asyncio/base_events.py", line 724, in run_until_complete
+    return future.result()
+           ~~~~~~~~~~~~~^^
+  File "/Users/igor/Projects/codex-agents-flaky/workspaces/runtime/apps/vm-guest/test_service.py", line 207, in test_disconnect_does_not_stop_exec
+    result = await self.call("exec", params, "lost-exec")
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/igor/Projects/codex-agents-flaky/workspaces/runtime/apps/vm-guest/test_service.py", line 140, in call
+    raise GuestError(response["error"]["code"], response["error"]["message"])
+common.GuestError: The process supervisor failed to start
+
+----------------------------------------------------------------------
+Ran 1 test in 0.658s
+
+FAILED (errors=1)
+=== run 40 failed
+E
+======================================================================
+ERROR: test_disconnect_does_not_stop_exec (test_service.GuestTests.test_disconnect_does_not_stop_exec)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/opt/homebrew/Cellar/python@3.15/3.15.0/Frameworks/Python.framework/Versions/3.15/lib/python3.15/asyncio/runners.py", line 128, in run
+    return self._loop.run_until_complete(task)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^
+  File "/opt/homebrew/Cellar/python@3.15/3.15.0/Frameworks/Python.framework/Versions/3.15/lib/python3.15/asyncio/base_events.py", line 724, in run_until_complete
+    return future.result()
+           ~~~~~~~~~~~~~^^
+  File "/Users/igor/Projects/codex-agents-flaky/workspaces/runtime/apps/vm-guest/test_service.py", line 207, in test_disconnect_does_not_stop_exec
+    result = await self.call("exec", params, "lost-exec")
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/igor/Projects/codex-agents-flaky/workspaces/runtime/apps/vm-guest/test_service.py", line 140, in call
+    raise GuestError(response["error"]["code"], response["error"]["message"])
+common.GuestError: The process supervisor failed to start
+
+----------------------------------------------------------------------
+Ran 1 test in 0.661s
+
+FAILED (errors=1)
+=== run 41 failed
+E
+======================================================================
+ERROR: test_disconnect_does_not_stop_exec (test_service.GuestTests.test_disconnect_does_not_stop_exec)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/opt/homebrew/Cellar/python@3.15/3.15.0/Frameworks/Python.framework/Versions/3.15/lib/python3.15/asyncio/runners.py", line 128, in run
+    return self._loop.run_until_complete(task)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^
+  File "/opt/homebrew/Cellar/python@3.15/3.15.0/Frameworks/Python.framework/Versions/3.15/lib/python3.15/asyncio/base_events.py", line 724, in run_until_complete
+    return future.result()
+           ~~~~~~~~~~~~~^^
+  File "/Users/igor/Projects/codex-agents-flaky/workspaces/runtime/apps/vm-guest/test_service.py", line 207, in test_disconnect_does_not_stop_exec
+    result = await self.call("exec", params, "lost-exec")
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/igor/Projects/codex-agents-flaky/workspaces/runtime/apps/vm-guest/test_service.py", line 140, in call
+    raise GuestError(response["error"]["code"], response["error"]["message"])
+common.GuestError: The process supervisor failed to start
+
+----------------------------------------------------------------------
+Ran 1 test in 0.657s
+
+FAILED (errors=1)
+=== run 42 failed
+E
+======================================================================
+ERROR: test_disconnect_does_not_stop_exec (test_service.GuestTests.test_disconnect_does_not_stop_exec)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/opt/homebrew/Cellar/python@3.15/3.15.0/Frameworks/Python.framework/Versions/3.15/lib/python3.15/asyncio/runners.py", line 128, in run
+    return self._loop.run_until_complete(task)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^
+  File "/opt/homebrew/Cellar/python@3.15/3.15.0/Frameworks/Python.framework/Versions/3.15/lib/python3.15/asyncio/base_events.py", line 724, in run_until_complete
+    return future.result()
+           ~~~~~~~~~~~~~^^
+  File "/Users/igor/Projects/codex-agents-flaky/workspaces/runtime/apps/vm-guest/test_service.py", line 207, in test_disconnect_does_not_stop_exec
+    result = await self.call("exec", params, "lost-exec")
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/igor/Projects/codex-agents-flaky/workspaces/runtime/apps/vm-guest/test_service.py", line 140, in call
+    raise GuestError(response["error"]["code"], response["error"]["message"])
+common.GuestError: The process supervisor failed to start
+
+----------------------------------------------------------------------
+Ran 1 test in 0.659s
+
+FAILED (errors=1)
+=== run 43 failed
+E
+======================================================================
+ERROR: test_disconnect_does_not_stop_exec (test_service.GuestTests.test_disconnect_does_not_stop_exec)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/opt/homebrew/Cellar/python@3.15/3.15.0/Frameworks/Python.framework/Versions/3.15/lib/python3.15/asyncio/runners.py", line 128, in run
+    return self._loop.run_until_complete(task)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^
+  File "/opt/homebrew/Cellar/python@3.15/3.15.0/Frameworks/Python.framework/Versions/3.15/lib/python3.15/asyncio/base_events.py", line 724, in run_until_complete
+    return future.result()
+           ~~~~~~~~~~~~~^^
+  File "/Users/igor/Projects/codex-agents-flaky/workspaces/runtime/apps/vm-guest/test_service.py", line 207, in test_disconnect_does_not_stop_exec
+    result = await self.call("exec", params, "lost-exec")
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/igor/Projects/codex-agents-flaky/workspaces/runtime/apps/vm-guest/test_service.py", line 140, in call
+    raise GuestError(response["error"]["code"], response["error"]["message"])
+common.GuestError: The process supervisor failed to start
+
+----------------------------------------------------------------------
+Ran 1 test in 0.659s
+
+FAILED (errors=1)
+=== run 44 failed
+E
+======================================================================
+ERROR: test_disconnect_does_not_stop_exec (test_service.GuestTests.test_disconnect_does_not_stop_exec)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/opt/homebrew/Cellar/python@3.15/3.15.0/Frameworks/Python.framework/Versions/3.15/lib/python3.15/asyncio/runners.py", line 128, in run
+    return self._loop.run_until_complete(task)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^
+  File "/opt/homebrew/Cellar/python@3.15/3.15.0/Frameworks/Python.framework/Versions/3.15/lib/python3.15/asyncio/base_events.py", line 724, in run_until_complete
+    return future.result()
+           ~~~~~~~~~~~~~^^
+  File "/Users/igor/Projects/codex-agents-flaky/workspaces/runtime/apps/vm-guest/test_service.py", line 207, in test_disconnect_does_not_stop_exec
+    result = await self.call("exec", params, "lost-exec")
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/igor/Projects/codex-agents-flaky/workspaces/runtime/apps/vm-guest/test_service.py", line 140, in call
+    raise GuestError(response["error"]["code"], response["error"]["message"])
+common.GuestError: The process supervisor failed to start
+
+----------------------------------------------------------------------
+Ran 1 test in 0.657s
+
+FAILED (errors=1)
+=== run 45 failed
+E
+======================================================================
+ERROR: test_disconnect_does_not_stop_exec (test_service.GuestTests.test_disconnect_does_not_stop_exec)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/opt/homebrew/Cellar/python@3.15/3.15.0/Frameworks/Python.framework/Versions/3.15/lib/python3.15/asyncio/runners.py", line 128, in run
+    return self._loop.run_until_complete(task)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^
+  File "/opt/homebrew/Cellar/python@3.15/3.15.0/Frameworks/Python.framework/Versions/3.15/lib/python3.15/asyncio/base_events.py", line 724, in run_until_complete
+    return future.result()
+           ~~~~~~~~~~~~~^^
+  File "/Users/igor/Projects/codex-agents-flaky/workspaces/runtime/apps/vm-guest/test_service.py", line 207, in test_disconnect_does_not_stop_exec
+    result = await self.call("exec", params, "lost-exec")
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/igor/Projects/codex-agents-flaky/workspaces/runtime/apps/vm-guest/test_service.py", line 140, in call
+    raise GuestError(response["error"]["code"], response["error"]["message"])
+common.GuestError: The process supervisor failed to start
+
+----------------------------------------------------------------------
+Ran 1 test in 0.664s
+
+FAILED (errors=1)
+=== run 46 failed
+E
+======================================================================
+ERROR: test_disconnect_does_not_stop_exec (test_service.GuestTests.test_disconnect_does_not_stop_exec)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/opt/homebrew/Cellar/python@3.15/3.15.0/Frameworks/Python.framework/Versions/3.15/lib/python3.15/asyncio/runners.py", line 128, in run
+    return self._loop.run_until_complete(task)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^
+  File "/opt/homebrew/Cellar/python@3.15/3.15.0/Frameworks/Python.framework/Versions/3.15/lib/python3.15/asyncio/base_events.py", line 724, in run_until_complete
+    return future.result()
+           ~~~~~~~~~~~~~^^
+  File "/Users/igor/Projects/codex-agents-flaky/workspaces/runtime/apps/vm-guest/test_service.py", line 207, in test_disconnect_does_not_stop_exec
+    result = await self.call("exec", params, "lost-exec")
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/igor/Projects/codex-agents-flaky/workspaces/runtime/apps/vm-guest/test_service.py", line 140, in call
+    raise GuestError(response["error"]["code"], response["error"]["message"])
+common.GuestError: The process supervisor failed to start
+
+----------------------------------------------------------------------
+Ran 1 test in 0.657s
+
+FAILED (errors=1)
+=== run 47 failed
+E
+======================================================================
+ERROR: test_disconnect_does_not_stop_exec (test_service.GuestTests.test_disconnect_does_not_stop_exec)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/opt/homebrew/Cellar/python@3.15/3.15.0/Frameworks/Python.framework/Versions/3.15/lib/python3.15/asyncio/runners.py", line 128, in run
+    return self._loop.run_until_complete(task)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^
+  File "/opt/homebrew/Cellar/python@3.15/3.15.0/Frameworks/Python.framework/Versions/3.15/lib/python3.15/asyncio/base_events.py", line 724, in run_until_complete
+    return future.result()
+           ~~~~~~~~~~~~~^^
+  File "/Users/igor/Projects/codex-agents-flaky/workspaces/runtime/apps/vm-guest/test_service.py", line 207, in test_disconnect_does_not_stop_exec
+    result = await self.call("exec", params, "lost-exec")
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/igor/Projects/codex-agents-flaky/workspaces/runtime/apps/vm-guest/test_service.py", line 140, in call
+    raise GuestError(response["error"]["code"], response["error"]["message"])
+common.GuestError: The process supervisor failed to start
+
+----------------------------------------------------------------------
+Ran 1 test in 0.656s
+
+FAILED (errors=1)
+=== run 48 failed
+E
+======================================================================
+ERROR: test_disconnect_does_not_stop_exec (test_service.GuestTests.test_disconnect_does_not_stop_exec)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/opt/homebrew/Cellar/python@3.15/3.15.0/Frameworks/Python.framework/Versions/3.15/lib/python3.15/asyncio/runners.py", line 128, in run
+    return self._loop.run_until_complete(task)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^
+  File "/opt/homebrew/Cellar/python@3.15/3.15.0/Frameworks/Python.framework/Versions/3.15/lib/python3.15/asyncio/base_events.py", line 724, in run_until_complete
+    return future.result()
+           ~~~~~~~~~~~~~^^
+  File "/Users/igor/Projects/codex-agents-flaky/workspaces/runtime/apps/vm-guest/test_service.py", line 207, in test_disconnect_does_not_stop_exec
+    result = await self.call("exec", params, "lost-exec")
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/igor/Projects/codex-agents-flaky/workspaces/runtime/apps/vm-guest/test_service.py", line 140, in call
+    raise GuestError(response["error"]["code"], response["error"]["message"])
+common.GuestError: The process supervisor failed to start
+
+----------------------------------------------------------------------
+Ran 1 test in 0.659s
+
+FAILED (errors=1)
+=== run 49 failed
+E
+======================================================================
+ERROR: test_disconnect_does_not_stop_exec (test_service.GuestTests.test_disconnect_does_not_stop_exec)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/opt/homebrew/Cellar/python@3.15/3.15.0/Frameworks/Python.framework/Versions/3.15/lib/python3.15/asyncio/runners.py", line 128, in run
+    return self._loop.run_until_complete(task)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^
+  File "/opt/homebrew/Cellar/python@3.15/3.15.0/Frameworks/Python.framework/Versions/3.15/lib/python3.15/asyncio/base_events.py", line 724, in run_until_complete
+    return future.result()
+           ~~~~~~~~~~~~~^^
+  File "/Users/igor/Projects/codex-agents-flaky/workspaces/runtime/apps/vm-guest/test_service.py", line 207, in test_disconnect_does_not_stop_exec
+    result = await self.call("exec", params, "lost-exec")
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/igor/Projects/codex-agents-flaky/workspaces/runtime/apps/vm-guest/test_service.py", line 140, in call
+    raise GuestError(response["error"]["code"], response["error"]["message"])
+common.GuestError: The process supervisor failed to start
+
+----------------------------------------------------------------------
+Ran 1 test in 0.659s
+
+FAILED (errors=1)
+=== run 50 failed
+E
+======================================================================
+ERROR: test_disconnect_does_not_stop_exec (test_service.GuestTests.test_disconnect_does_not_stop_exec)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/opt/homebrew/Cellar/python@3.15/3.15.0/Frameworks/Python.framework/Versions/3.15/lib/python3.15/asyncio/runners.py", line 128, in run
+    return self._loop.run_until_complete(task)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^
+  File "/opt/homebrew/Cellar/python@3.15/3.15.0/Frameworks/Python.framework/Versions/3.15/lib/python3.15/asyncio/base_events.py", line 724, in run_until_complete
+    return future.result()
+           ~~~~~~~~~~~~~^^
+  File "/Users/igor/Projects/codex-agents-flaky/workspaces/runtime/apps/vm-guest/test_service.py", line 207, in test_disconnect_does_not_stop_exec
+    result = await self.call("exec", params, "lost-exec")
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/igor/Projects/codex-agents-flaky/workspaces/runtime/apps/vm-guest/test_service.py", line 140, in call
+    raise GuestError(response["error"]["code"], response["error"]["message"])
+common.GuestError: The process supervisor failed to start
+
+----------------------------------------------------------------------
+Ran 1 test in 0.660s
+
+FAILED (errors=1)
+=== run 51 failed
+E
+======================================================================
+ERROR: test_disconnect_does_not_stop_exec (test_service.GuestTests.test_disconnect_does_not_stop_exec)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/opt/homebrew/Cellar/python@3.15/3.15.0/Frameworks/Python.framework/Versions/3.15/lib/python3.15/asyncio/runners.py", line 128, in run
+    return self._loop.run_until_complete(task)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^
+  File "/opt/homebrew/Cellar/python@3.15/3.15.0/Frameworks/Python.framework/Versions/3.15/lib/python3.15/asyncio/base_events.py", line 724, in run_until_complete
+    return future.result()
+           ~~~~~~~~~~~~~^^
+  File "/Users/igor/Projects/codex-agents-flaky/workspaces/runtime/apps/vm-guest/test_service.py", line 207, in test_disconnect_does_not_stop_exec
+    result = await self.call("exec", params, "lost-exec")
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/igor/Projects/codex-agents-flaky/workspaces/runtime/apps/vm-guest/test_service.py", line 140, in call
+    raise GuestError(response["error"]["code"], response["error"]["message"])
+common.GuestError: The process supervisor failed to start
+
+----------------------------------------------------------------------
+Ran 1 test in 0.659s
+
+FAILED (errors=1)
+=== run 52 failed
+E
+======================================================================
+ERROR: test_disconnect_does_not_stop_exec (test_service.GuestTests.test_disconnect_does_not_stop_exec)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/opt/homebrew/Cellar/python@3.15/3.15.0/Frameworks/Python.framework/Versions/3.15/lib/python3.15/asyncio/runners.py", line 128, in run
+    return self._loop.run_until_complete(task)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^
+  File "/opt/homebrew/Cellar/python@3.15/3.15.0/Frameworks/Python.framework/Versions/3.15/lib/python3.15/asyncio/base_events.py", line 724, in run_until_complete
+    return future.result()
+           ~~~~~~~~~~~~~^^
+  File "/Users/igor/Projects/codex-agents-flaky/workspaces/runtime/apps/vm-guest/test_service.py", line 207, in test_disconnect_does_not_stop_exec
+    result = await self.call("exec", params, "lost-exec")
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/igor/Projects/codex-agents-flaky/workspaces/runtime/apps/vm-guest/test_service.py", line 140, in call
+    raise GuestError(response["error"]["code"], response["error"]["message"])
+common.GuestError: The process supervisor failed to start
+
+----------------------------------------------------------------------
+Ran 1 test in 0.688s
+
+FAILED (errors=1)
+=== run 53 failed
+E
+======================================================================
+ERROR: test_disconnect_does_not_stop_exec (test_service.GuestTests.test_disconnect_does_not_stop_exec)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/opt/homebrew/Cellar/python@3.15/3.15.0/Frameworks/Python.framework/Versions/3.15/lib/python3.15/asyncio/runners.py", line 128, in run
+    return self._loop.run_until_complete(task)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^
+  File "/opt/homebrew/Cellar/python@3.15/3.15.0/Frameworks/Python.framework/Versions/3.15/lib/python3.15/asyncio/base_events.py", line 724, in run_until_complete
+    return future.result()
+           ~~~~~~~~~~~~~^^
+  File "/Users/igor/Projects/codex-agents-flaky/workspaces/runtime/apps/vm-guest/test_service.py", line 207, in test_disconnect_does_not_stop_exec
+    result = await self.call("exec", params, "lost-exec")
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/igor/Projects/codex-agents-flaky/workspaces/runtime/apps/vm-guest/test_service.py", line 140, in call
+    raise GuestError(response["error"]["code"], response["error"]["message"])
+common.GuestError: The process supervisor failed to start
+
+----------------------------------------------------------------------
+Ran 1 test in 0.694s
+
+FAILED (errors=1)
+=== run 54 failed
+E
+======================================================================
+ERROR: test_disconnect_does_not_stop_exec (test_service.GuestTests.test_disconnect_does_not_stop_exec)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/opt/homebrew/Cellar/python@3.15/3.15.0/Frameworks/Python.framework/Versions/3.15/lib/python3.15/asyncio/runners.py", line 128, in run
+    return self._loop.run_until_complete(task)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^
+  File "/opt/homebrew/Cellar/python@3.15/3.15.0/Frameworks/Python.framework/Versions/3.15/lib/python3.15/asyncio/base_events.py", line 724, in run_until_complete
+    return future.result()
+           ~~~~~~~~~~~~~^^
+  File "/Users/igor/Projects/codex-agents-flaky/workspaces/runtime/apps/vm-guest/test_service.py", line 207, in test_disconnect_does_not_stop_exec
+    result = await self.call("exec", params, "lost-exec")
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/igor/Projects/codex-agents-flaky/workspaces/runtime/apps/vm-guest/test_service.py", line 140, in call
+    raise GuestError(response["error"]["code"], response["error"]["message"])
+common.GuestError: The process supervisor failed to start
+
+----------------------------------------------------------------------
+Ran 1 test in 0.686s
+
+FAILED (errors=1)
+=== run 55 failed
+E
+======================================================================
+ERROR: test_disconnect_does_not_stop_exec (test_service.GuestTests.test_disconnect_does_not_stop_exec)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/opt/homebrew/Cellar/python@3.15/3.15.0/Frameworks/Python.framework/Versions/3.15/lib/python3.15/asyncio/runners.py", line 128, in run
+    return self._loop.run_until_complete(task)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^
+  File "/opt/homebrew/Cellar/python@3.15/3.15.0/Frameworks/Python.framework/Versions/3.15/lib/python3.15/asyncio/base_events.py", line 724, in run_until_complete
+    return future.result()
+           ~~~~~~~~~~~~~^^
+  File "/Users/igor/Projects/codex-agents-flaky/workspaces/runtime/apps/vm-guest/test_service.py", line 207, in test_disconnect_does_not_stop_exec
+    result = await self.call("exec", params, "lost-exec")
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/igor/Projects/codex-agents-flaky/workspaces/runtime/apps/vm-guest/test_service.py", line 140, in call
+    raise GuestError(response["error"]["code"], response["error"]["message"])
+common.GuestError: The process supervisor failed to start
+
+----------------------------------------------------------------------
+Ran 1 test in 0.696s
+
+FAILED (errors=1)
+=== run 56 failed
+E
+======================================================================
+ERROR: test_disconnect_does_not_stop_exec (test_service.GuestTests.test_disconnect_does_not_stop_exec)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/opt/homebrew/Cellar/python@3.15/3.15.0/Frameworks/Python.framework/Versions/3.15/lib/python3.15/asyncio/runners.py", line 128, in run
+    return self._loop.run_until_complete(task)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^
+  File "/opt/homebrew/Cellar/python@3.15/3.15.0/Frameworks/Python.framework/Versions/3.15/lib/python3.15/asyncio/base_events.py", line 724, in run_until_complete
+    return future.result()
+           ~~~~~~~~~~~~~^^
+  File "/Users/igor/Projects/codex-agents-flaky/workspaces/runtime/apps/vm-guest/test_service.py", line 207, in test_disconnect_does_not_stop_exec
+    result = await self.call("exec", params, "lost-exec")
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/igor/Projects/codex-agents-flaky/workspaces/runtime/apps/vm-guest/test_service.py", line 140, in call
+    raise GuestError(response["error"]["code"], response["error"]["message"])
+common.GuestError: The process supervisor failed to start
+
+----------------------------------------------------------------------
+Ran 1 test in 0.696s
+
+FAILED (errors=1)
+=== run 57 failed
+E
+======================================================================
+ERROR: test_disconnect_does_not_stop_exec (test_service.GuestTests.test_disconnect_does_not_stop_exec)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/opt/homebrew/Cellar/python@3.15/3.15.0/Frameworks/Python.framework/Versions/3.15/lib/python3.15/asyncio/runners.py", line 128, in run
+    return self._loop.run_until_complete(task)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^
+  File "/opt/homebrew/Cellar/python@3.15/3.15.0/Frameworks/Python.framework/Versions/3.15/lib/python3.15/asyncio/base_events.py", line 724, in run_until_complete
+    return future.result()
+           ~~~~~~~~~~~~~^^
+  File "/Users/igor/Projects/codex-agents-flaky/workspaces/runtime/apps/vm-guest/test_service.py", line 207, in test_disconnect_does_not_stop_exec
+    result = await self.call("exec", params, "lost-exec")
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/igor/Projects/codex-agents-flaky/workspaces/runtime/apps/vm-guest/test_service.py", line 140, in call
+    raise GuestError(response["error"]["code"], response["error"]["message"])
+common.GuestError: The process supervisor failed to start
+
+----------------------------------------------------------------------
+Ran 1 test in 0.703s
+
+FAILED (errors=1)
+=== run 58 failed
+E
+======================================================================
+ERROR: test_disconnect_does_not_stop_exec (test_service.GuestTests.test_disconnect_does_not_stop_exec)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/opt/homebrew/Cellar/python@3.15/3.15.0/Frameworks/Python.framework/Versions/3.15/lib/python3.15/asyncio/runners.py", line 128, in run
+    return self._loop.run_until_complete(task)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^
+  File "/opt/homebrew/Cellar/python@3.15/3.15.0/Frameworks/Python.framework/Versions/3.15/lib/python3.15/asyncio/base_events.py", line 724, in run_until_complete
+    return future.result()
+           ~~~~~~~~~~~~~^^
+  File "/Users/igor/Projects/codex-agents-flaky/workspaces/runtime/apps/vm-guest/test_service.py", line 207, in test_disconnect_does_not_stop_exec
+    result = await self.call("exec", params, "lost-exec")
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/igor/Projects/codex-agents-flaky/workspaces/runtime/apps/vm-guest/test_service.py", line 140, in call
+    raise GuestError(response["error"]["code"], response["error"]["message"])
+common.GuestError: The process supervisor failed to start
+
+----------------------------------------------------------------------
+Ran 1 test in 0.700s
+
+FAILED (errors=1)
+=== run 59 failed
+E
+======================================================================
+ERROR: test_disconnect_does_not_stop_exec (test_service.GuestTests.test_disconnect_does_not_stop_exec)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/opt/homebrew/Cellar/python@3.15/3.15.0/Frameworks/Python.framework/Versions/3.15/lib/python3.15/asyncio/runners.py", line 128, in run
+    return self._loop.run_until_complete(task)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^
+  File "/opt/homebrew/Cellar/python@3.15/3.15.0/Frameworks/Python.framework/Versions/3.15/lib/python3.15/asyncio/base_events.py", line 724, in run_until_complete
+    return future.result()
+           ~~~~~~~~~~~~~^^
+  File "/Users/igor/Projects/codex-agents-flaky/workspaces/runtime/apps/vm-guest/test_service.py", line 207, in test_disconnect_does_not_stop_exec
+    result = await self.call("exec", params, "lost-exec")
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/igor/Projects/codex-agents-flaky/workspaces/runtime/apps/vm-guest/test_service.py", line 140, in call
+    raise GuestError(response["error"]["code"], response["error"]["message"])
+common.GuestError: The process supervisor failed to start
+
+----------------------------------------------------------------------
+Ran 1 test in 0.661s
+
+FAILED (errors=1)
+=== run 60 failed
+E
+======================================================================
+ERROR: test_disconnect_does_not_stop_exec (test_service.GuestTests.test_disconnect_does_not_stop_exec)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/opt/homebrew/Cellar/python@3.15/3.15.0/Frameworks/Python.framework/Versions/3.15/lib/python3.15/asyncio/runners.py", line 128, in run
+    return self._loop.run_until_complete(task)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^
+  File "/opt/homebrew/Cellar/python@3.15/3.15.0/Frameworks/Python.framework/Versions/3.15/lib/python3.15/asyncio/base_events.py", line 724, in run_until_complete
+    return future.result()
+           ~~~~~~~~~~~~~^^
+  File "/Users/igor/Projects/codex-agents-flaky/workspaces/runtime/apps/vm-guest/test_service.py", line 207, in test_disconnect_does_not_stop_exec
+    result = await self.call("exec", params, "lost-exec")
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/igor/Projects/codex-agents-flaky/workspaces/runtime/apps/vm-guest/test_service.py", line 140, in call
+    raise GuestError(response["error"]["code"], response["error"]["message"])
+common.GuestError: The process supervisor failed to start
+
+----------------------------------------------------------------------
+Ran 1 test in 0.657s
+
+FAILED (errors=1)
+=== run 61 failed
+E
+======================================================================
+ERROR: test_disconnect_does_not_stop_exec (test_service.GuestTests.test_disconnect_does_not_stop_exec)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/opt/homebrew/Cellar/python@3.15/3.15.0/Frameworks/Python.framework/Versions/3.15/lib/python3.15/asyncio/runners.py", line 128, in run
+    return self._loop.run_until_complete(task)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^
+  File "/opt/homebrew/Cellar/python@3.15/3.15.0/Frameworks/Python.framework/Versions/3.15/lib/python3.15/asyncio/base_events.py", line 724, in run_until_complete
+    return future.result()
+           ~~~~~~~~~~~~~^^
+  File "/Users/igor/Projects/codex-agents-flaky/workspaces/runtime/apps/vm-guest/test_service.py", line 207, in test_disconnect_does_not_stop_exec
+    result = await self.call("exec", params, "lost-exec")
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/igor/Projects/codex-agents-flaky/workspaces/runtime/apps/vm-guest/test_service.py", line 140, in call
+    raise GuestError(response["error"]["code"], response["error"]["message"])
+common.GuestError: The process supervisor failed to start
+
+----------------------------------------------------------------------
+Ran 1 test in 0.655s
+
+FAILED (errors=1)
+=== run 62 failed
+E
+======================================================================
+ERROR: test_disconnect_does_not_stop_exec (test_service.GuestTests.test_disconnect_does_not_stop_exec)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/opt/homebrew/Cellar/python@3.15/3.15.0/Frameworks/Python.framework/Versions/3.15/lib/python3.15/asyncio/runners.py", line 128, in run
+    return self._loop.run_until_complete(task)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^
+  File "/opt/homebrew/Cellar/python@3.15/3.15.0/Frameworks/Python.framework/Versions/3.15/lib/python3.15/asyncio/base_events.py", line 724, in run_until_complete
+    return future.result()
+           ~~~~~~~~~~~~~^^
+  File "/Users/igor/Projects/codex-agents-flaky/workspaces/runtime/apps/vm-guest/test_service.py", line 207, in test_disconnect_does_not_stop_exec
+    result = await self.call("exec", params, "lost-exec")
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/igor/Projects/codex-agents-flaky/workspaces/runtime/apps/vm-guest/test_service.py", line 140, in call
+    raise GuestError(response["error"]["code"], response["error"]["message"])
+common.GuestError: The process supervisor failed to start
+
+----------------------------------------------------------------------
+Ran 1 test in 0.628s
+
+FAILED (errors=1)
+=== run 63 failed
+E
+======================================================================
+ERROR: test_disconnect_does_not_stop_exec (test_service.GuestTests.test_disconnect_does_not_stop_exec)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/opt/homebrew/Cellar/python@3.15/3.15.0/Frameworks/Python.framework/Versions/3.15/lib/python3.15/asyncio/runners.py", line 128, in run
+    return self._loop.run_until_complete(task)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^
+  File "/opt/homebrew/Cellar/python@3.15/3.15.0/Frameworks/Python.framework/Versions/3.15/lib/python3.15/asyncio/base_events.py", line 724, in run_until_complete
+    return future.result()
+           ~~~~~~~~~~~~~^^
+  File "/Users/igor/Projects/codex-agents-flaky/workspaces/runtime/apps/vm-guest/test_service.py", line 207, in test_disconnect_does_not_stop_exec
+    result = await self.call("exec", params, "lost-exec")
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/igor/Projects/codex-agents-flaky/workspaces/runtime/apps/vm-guest/test_service.py", line 140, in call
+    raise GuestError(response["error"]["code"], response["error"]["message"])
+common.GuestError: The process supervisor failed to start
+
+----------------------------------------------------------------------
+Ran 1 test in 0.658s
+
+FAILED (errors=1)
+=== run 64 failed
+E
+======================================================================
+ERROR: test_disconnect_does_not_stop_exec (test_service.GuestTests.test_disconnect_does_not_stop_exec)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/opt/homebrew/Cellar/python@3.15/3.15.0/Frameworks/Python.framework/Versions/3.15/lib/python3.15/asyncio/runners.py", line 128, in run
+    return self._loop.run_until_complete(task)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^
+  File "/opt/homebrew/Cellar/python@3.15/3.15.0/Frameworks/Python.framework/Versions/3.15/lib/python3.15/asyncio/base_events.py", line 724, in run_until_complete
+    return future.result()
+           ~~~~~~~~~~~~~^^
+  File "/Users/igor/Projects/codex-agents-flaky/workspaces/runtime/apps/vm-guest/test_service.py", line 207, in test_disconnect_does_not_stop_exec
+    result = await self.call("exec", params, "lost-exec")
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/igor/Projects/codex-agents-flaky/workspaces/runtime/apps/vm-guest/test_service.py", line 140, in call
+    raise GuestError(response["error"]["code"], response["error"]["message"])
+common.GuestError: The process supervisor failed to start
+
+----------------------------------------------------------------------
+Ran 1 test in 0.658s
+
+FAILED (errors=1)
+=== run 65 failed
+E
+======================================================================
+ERROR: test_disconnect_does_not_stop_exec (test_service.GuestTests.test_disconnect_does_not_stop_exec)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/opt/homebrew/Cellar/python@3.15/3.15.0/Frameworks/Python.framework/Versions/3.15/lib/python3.15/asyncio/runners.py", line 128, in run
+    return self._loop.run_until_complete(task)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^
+  File "/opt/homebrew/Cellar/python@3.15/3.15.0/Frameworks/Python.framework/Versions/3.15/lib/python3.15/asyncio/base_events.py", line 724, in run_until_complete
+    return future.result()
+           ~~~~~~~~~~~~~^^
+  File "/Users/igor/Projects/codex-agents-flaky/workspaces/runtime/apps/vm-guest/test_service.py", line 207, in test_disconnect_does_not_stop_exec
+    result = await self.call("exec", params, "lost-exec")
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/igor/Projects/codex-agents-flaky/workspaces/runtime/apps/vm-guest/test_service.py", line 140, in call
+    raise GuestError(response["error"]["code"], response["error"]["message"])
+common.GuestError: The process supervisor failed to start
+
+----------------------------------------------------------------------
+Ran 1 test in 0.659s
+
+FAILED (errors=1)
+=== run 66 failed
+E
+======================================================================
+ERROR: test_disconnect_does_not_stop_exec (test_service.GuestTests.test_disconnect_does_not_stop_exec)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/opt/homebrew/Cellar/python@3.15/3.15.0/Frameworks/Python.framework/Versions/3.15/lib/python3.15/asyncio/runners.py", line 128, in run
+    return self._loop.run_until_complete(task)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^
+  File "/opt/homebrew/Cellar/python@3.15/3.15.0/Frameworks/Python.framework/Versions/3.15/lib/python3.15/asyncio/base_events.py", line 724, in run_until_complete
+    return future.result()
+           ~~~~~~~~~~~~~^^
+  File "/Users/igor/Projects/codex-agents-flaky/workspaces/runtime/apps/vm-guest/test_service.py", line 207, in test_disconnect_does_not_stop_exec
+    result = await self.call("exec", params, "lost-exec")
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/igor/Projects/codex-agents-flaky/workspaces/runtime/apps/vm-guest/test_service.py", line 140, in call
+    raise GuestError(response["error"]["code"], response["error"]["message"])
+common.GuestError: The process supervisor failed to start
+
+----------------------------------------------------------------------
+Ran 1 test in 0.630s
+
+FAILED (errors=1)
+=== run 67 failed
+E
+======================================================================
+ERROR: test_disconnect_does_not_stop_exec (test_service.GuestTests.test_disconnect_does_not_stop_exec)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/opt/homebrew/Cellar/python@3.15/3.15.0/Frameworks/Python.framework/Versions/3.15/lib/python3.15/asyncio/runners.py", line 128, in run
+    return self._loop.run_until_complete(task)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^
+  File "/opt/homebrew/Cellar/python@3.15/3.15.0/Frameworks/Python.framework/Versions/3.15/lib/python3.15/asyncio/base_events.py", line 724, in run_until_complete
+    return future.result()
+           ~~~~~~~~~~~~~^^
+  File "/Users/igor/Projects/codex-agents-flaky/workspaces/runtime/apps/vm-guest/test_service.py", line 207, in test_disconnect_does_not_stop_exec
+    result = await self.call("exec", params, "lost-exec")
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/igor/Projects/codex-agents-flaky/workspaces/runtime/apps/vm-guest/test_service.py", line 140, in call
+    raise GuestError(response["error"]["code"], response["error"]["message"])
+common.GuestError: The process supervisor failed to start
+
+----------------------------------------------------------------------
+Ran 1 test in 0.655s
+
+FAILED (errors=1)
+=== run 68 failed
+E
+======================================================================
+ERROR: test_disconnect_does_not_stop_exec (test_service.GuestTests.test_disconnect_does_not_stop_exec)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/opt/homebrew/Cellar/python@3.15/3.15.0/Frameworks/Python.framework/Versions/3.15/lib/python3.15/asyncio/runners.py", line 128, in run
+    return self._loop.run_until_complete(task)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^
+  File "/opt/homebrew/Cellar/python@3.15/3.15.0/Frameworks/Python.framework/Versions/3.15/lib/python3.15/asyncio/base_events.py", line 724, in run_until_complete
+    return future.result()
+           ~~~~~~~~~~~~~^^
+  File "/Users/igor/Projects/codex-agents-flaky/workspaces/runtime/apps/vm-guest/test_service.py", line 207, in test_disconnect_does_not_stop_exec
+    result = await self.call("exec", params, "lost-exec")
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/igor/Projects/codex-agents-flaky/workspaces/runtime/apps/vm-guest/test_service.py", line 140, in call
+    raise GuestError(response["error"]["code"], response["error"]["message"])
+common.GuestError: The process supervisor failed to start
+
+----------------------------------------------------------------------
+Ran 1 test in 0.656s
+
+FAILED (errors=1)
+=== run 69 failed
+E
+======================================================================
+ERROR: test_disconnect_does_not_stop_exec (test_service.GuestTests.test_disconnect_does_not_stop_exec)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/opt/homebrew/Cellar/python@3.15/3.15.0/Frameworks/Python.framework/Versions/3.15/lib/python3.15/asyncio/runners.py", line 128, in run
+    return self._loop.run_until_complete(task)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^
+  File "/opt/homebrew/Cellar/python@3.15/3.15.0/Frameworks/Python.framework/Versions/3.15/lib/python3.15/asyncio/base_events.py", line 724, in run_until_complete
+    return future.result()
+           ~~~~~~~~~~~~~^^
+  File "/Users/igor/Projects/codex-agents-flaky/workspaces/runtime/apps/vm-guest/test_service.py", line 207, in test_disconnect_does_not_stop_exec
+    result = await self.call("exec", params, "lost-exec")
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/igor/Projects/codex-agents-flaky/workspaces/runtime/apps/vm-guest/test_service.py", line 140, in call
+    raise GuestError(response["error"]["code"], response["error"]["message"])
+common.GuestError: The process supervisor failed to start
+
+----------------------------------------------------------------------
+Ran 1 test in 0.656s
+
+FAILED (errors=1)
+=== run 70 failed
+E
+======================================================================
+ERROR: test_disconnect_does_not_stop_exec (test_service.GuestTests.test_disconnect_does_not_stop_exec)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/opt/homebrew/Cellar/python@3.15/3.15.0/Frameworks/Python.framework/Versions/3.15/lib/python3.15/asyncio/runners.py", line 128, in run
+    return self._loop.run_until_complete(task)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^
+  File "/opt/homebrew/Cellar/python@3.15/3.15.0/Frameworks/Python.framework/Versions/3.15/lib/python3.15/asyncio/base_events.py", line 724, in run_until_complete
+    return future.result()
+           ~~~~~~~~~~~~~^^
+  File "/Users/igor/Projects/codex-agents-flaky/workspaces/runtime/apps/vm-guest/test_service.py", line 207, in test_disconnect_does_not_stop_exec
+    result = await self.call("exec", params, "lost-exec")
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/igor/Projects/codex-agents-flaky/workspaces/runtime/apps/vm-guest/test_service.py", line 140, in call
+    raise GuestError(response["error"]["code"], response["error"]["message"])
+common.GuestError: The process supervisor failed to start
+
+----------------------------------------------------------------------
+Ran 1 test in 0.663s
+
+FAILED (errors=1)
+=== run 71 failed
+E
+======================================================================
+ERROR: test_disconnect_does_not_stop_exec (test_service.GuestTests.test_disconnect_does_not_stop_exec)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/opt/homebrew/Cellar/python@3.15/3.15.0/Frameworks/Python.framework/Versions/3.15/lib/python3.15/asyncio/runners.py", line 128, in run
+    return self._loop.run_until_complete(task)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^
+  File "/opt/homebrew/Cellar/python@3.15/3.15.0/Frameworks/Python.framework/Versions/3.15/lib/python3.15/asyncio/base_events.py", line 724, in run_until_complete
+    return future.result()
+           ~~~~~~~~~~~~~^^
+  File "/Users/igor/Projects/codex-agents-flaky/workspaces/runtime/apps/vm-guest/test_service.py", line 207, in test_disconnect_does_not_stop_exec
+    result = await self.call("exec", params, "lost-exec")
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/igor/Projects/codex-agents-flaky/workspaces/runtime/apps/vm-guest/test_service.py", line 140, in call
+    raise GuestError(response["error"]["code"], response["error"]["message"])
+common.GuestError: The process supervisor failed to start
+
+----------------------------------------------------------------------
+Ran 1 test in 0.657s
+
+FAILED (errors=1)
+=== run 72 failed
+E
+======================================================================
+ERROR: test_disconnect_does_not_stop_exec (test_service.GuestTests.test_disconnect_does_not_stop_exec)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/opt/homebrew/Cellar/python@3.15/3.15.0/Frameworks/Python.framework/Versions/3.15/lib/python3.15/asyncio/runners.py", line 128, in run
+    return self._loop.run_until_complete(task)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^
+  File "/opt/homebrew/Cellar/python@3.15/3.15.0/Frameworks/Python.framework/Versions/3.15/lib/python3.15/asyncio/base_events.py", line 724, in run_until_complete
+    return future.result()
+           ~~~~~~~~~~~~~^^
+  File "/Users/igor/Projects/codex-agents-flaky/workspaces/runtime/apps/vm-guest/test_service.py", line 207, in test_disconnect_does_not_stop_exec
+    result = await self.call("exec", params, "lost-exec")
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/igor/Projects/codex-agents-flaky/workspaces/runtime/apps/vm-guest/test_service.py", line 140, in call
+    raise GuestError(response["error"]["code"], response["error"]["message"])
+common.GuestError: The process supervisor failed to start
+
+----------------------------------------------------------------------
+Ran 1 test in 0.655s
+
+FAILED (errors=1)
+=== run 73 failed
+E
+======================================================================
+ERROR: test_disconnect_does_not_stop_exec (test_service.GuestTests.test_disconnect_does_not_stop_exec)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/opt/homebrew/Cellar/python@3.15/3.15.0/Frameworks/Python.framework/Versions/3.15/lib/python3.15/asyncio/runners.py", line 128, in run
+    return self._loop.run_until_complete(task)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^
+  File "/opt/homebrew/Cellar/python@3.15/3.15.0/Frameworks/Python.framework/Versions/3.15/lib/python3.15/asyncio/base_events.py", line 724, in run_until_complete
+    return future.result()
+           ~~~~~~~~~~~~~^^
+  File "/Users/igor/Projects/codex-agents-flaky/workspaces/runtime/apps/vm-guest/test_service.py", line 207, in test_disconnect_does_not_stop_exec
+    result = await self.call("exec", params, "lost-exec")
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/igor/Projects/codex-agents-flaky/workspaces/runtime/apps/vm-guest/test_service.py", line 140, in call
+    raise GuestError(response["error"]["code"], response["error"]["message"])
+common.GuestError: The process supervisor failed to start
+
+----------------------------------------------------------------------
+Ran 1 test in 0.653s
+
+FAILED (errors=1)
+=== run 74 failed
+E
+======================================================================
+ERROR: test_disconnect_does_not_stop_exec (test_service.GuestTests.test_disconnect_does_not_stop_exec)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/opt/homebrew/Cellar/python@3.15/3.15.0/Frameworks/Python.framework/Versions/3.15/lib/python3.15/asyncio/runners.py", line 128, in run
+    return self._loop.run_until_complete(task)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^
+  File "/opt/homebrew/Cellar/python@3.15/3.15.0/Frameworks/Python.framework/Versions/3.15/lib/python3.15/asyncio/base_events.py", line 724, in run_until_complete
+    return future.result()
+           ~~~~~~~~~~~~~^^
+  File "/Users/igor/Projects/codex-agents-flaky/workspaces/runtime/apps/vm-guest/test_service.py", line 207, in test_disconnect_does_not_stop_exec
+    result = await self.call("exec", params, "lost-exec")
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/igor/Projects/codex-agents-flaky/workspaces/runtime/apps/vm-guest/test_service.py", line 140, in call
+    raise GuestError(response["error"]["code"], response["error"]["message"])
+common.GuestError: The process supervisor failed to start
+
+----------------------------------------------------------------------
+Ran 1 test in 0.657s
+
+FAILED (errors=1)
+=== run 75 failed
+E
+======================================================================
+ERROR: test_disconnect_does_not_stop_exec (test_service.GuestTests.test_disconnect_does_not_stop_exec)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/opt/homebrew/Cellar/python@3.15/3.15.0/Frameworks/Python.framework/Versions/3.15/lib/python3.15/asyncio/runners.py", line 128, in run
+    return self._loop.run_until_complete(task)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^
+  File "/opt/homebrew/Cellar/python@3.15/3.15.0/Frameworks/Python.framework/Versions/3.15/lib/python3.15/asyncio/base_events.py", line 724, in run_until_complete
+    return future.result()
+           ~~~~~~~~~~~~~^^
+  File "/Users/igor/Projects/codex-agents-flaky/workspaces/runtime/apps/vm-guest/test_service.py", line 207, in test_disconnect_does_not_stop_exec
+    result = await self.call("exec", params, "lost-exec")
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/igor/Projects/codex-agents-flaky/workspaces/runtime/apps/vm-guest/test_service.py", line 140, in call
+    raise GuestError(response["error"]["code"], response["error"]["message"])
+common.GuestError: The process supervisor failed to start
+
+----------------------------------------------------------------------
+Ran 1 test in 0.662s
+
+FAILED (errors=1)
+=== run 76 failed
+E
+======================================================================
+ERROR: test_disconnect_does_not_stop_exec (test_service.GuestTests.test_disconnect_does_not_stop_exec)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/opt/homebrew/Cellar/python@3.15/3.15.0/Frameworks/Python.framework/Versions/3.15/lib/python3.15/asyncio/runners.py", line 128, in run
+    return self._loop.run_until_complete(task)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^
+  File "/opt/homebrew/Cellar/python@3.15/3.15.0/Frameworks/Python.framework/Versions/3.15/lib/python3.15/asyncio/base_events.py", line 724, in run_until_complete
+    return future.result()
+           ~~~~~~~~~~~~~^^
+  File "/Users/igor/Projects/codex-agents-flaky/workspaces/runtime/apps/vm-guest/test_service.py", line 207, in test_disconnect_does_not_stop_exec
+    result = await self.call("exec", params, "lost-exec")
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/igor/Projects/codex-agents-flaky/workspaces/runtime/apps/vm-guest/test_service.py", line 140, in call
+    raise GuestError(response["error"]["code"], response["error"]["message"])
+common.GuestError: The process supervisor failed to start
+
+----------------------------------------------------------------------
+Ran 1 test in 0.656s
+
+FAILED (errors=1)
+=== run 77 failed
+E
+======================================================================
+ERROR: test_disconnect_does_not_stop_exec (test_service.GuestTests.test_disconnect_does_not_stop_exec)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/opt/homebrew/Cellar/python@3.15/3.15.0/Frameworks/Python.framework/Versions/3.15/lib/python3.15/asyncio/runners.py", line 128, in run
+    return self._loop.run_until_complete(task)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^
+  File "/opt/homebrew/Cellar/python@3.15/3.15.0/Frameworks/Python.framework/Versions/3.15/lib/python3.15/asyncio/base_events.py", line 724, in run_until_complete
+    return future.result()
+           ~~~~~~~~~~~~~^^
+  File "/Users/igor/Projects/codex-agents-flaky/workspaces/runtime/apps/vm-guest/test_service.py", line 207, in test_disconnect_does_not_stop_exec
+    result = await self.call("exec", params, "lost-exec")
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/igor/Projects/codex-agents-flaky/workspaces/runtime/apps/vm-guest/test_service.py", line 140, in call
+    raise GuestError(response["error"]["code"], response["error"]["message"])
+common.GuestError: The process supervisor failed to start
+
+----------------------------------------------------------------------
+Ran 1 test in 0.655s
+
+FAILED (errors=1)
+=== run 78 failed
+E
+======================================================================
+ERROR: test_disconnect_does_not_stop_exec (test_service.GuestTests.test_disconnect_does_not_stop_exec)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/opt/homebrew/Cellar/python@3.15/3.15.0/Frameworks/Python.framework/Versions/3.15/lib/python3.15/asyncio/runners.py", line 128, in run
+    return self._loop.run_until_complete(task)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^
+  File "/opt/homebrew/Cellar/python@3.15/3.15.0/Frameworks/Python.framework/Versions/3.15/lib/python3.15/asyncio/base_events.py", line 724, in run_until_complete
+    return future.result()
+           ~~~~~~~~~~~~~^^
+  File "/Users/igor/Projects/codex-agents-flaky/workspaces/runtime/apps/vm-guest/test_service.py", line 207, in test_disconnect_does_not_stop_exec
+    result = await self.call("exec", params, "lost-exec")
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/igor/Projects/codex-agents-flaky/workspaces/runtime/apps/vm-guest/test_service.py", line 140, in call
+    raise GuestError(response["error"]["code"], response["error"]["message"])
+common.GuestError: The process supervisor failed to start
+
+----------------------------------------------------------------------
+Ran 1 test in 0.657s
+
+FAILED (errors=1)
+=== run 79 failed
+E
+======================================================================
+ERROR: test_disconnect_does_not_stop_exec (test_service.GuestTests.test_disconnect_does_not_stop_exec)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/opt/homebrew/Cellar/python@3.15/3.15.0/Frameworks/Python.framework/Versions/3.15/lib/python3.15/asyncio/runners.py", line 128, in run
+    return self._loop.run_until_complete(task)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^
+  File "/opt/homebrew/Cellar/python@3.15/3.15.0/Frameworks/Python.framework/Versions/3.15/lib/python3.15/asyncio/base_events.py", line 724, in run_until_complete
+    return future.result()
+           ~~~~~~~~~~~~~^^
+  File "/Users/igor/Projects/codex-agents-flaky/workspaces/runtime/apps/vm-guest/test_service.py", line 207, in test_disconnect_does_not_stop_exec
+    result = await self.call("exec", params, "lost-exec")
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/igor/Projects/codex-agents-flaky/workspaces/runtime/apps/vm-guest/test_service.py", line 140, in call
+    raise GuestError(response["error"]["code"], response["error"]["message"])
+common.GuestError: The process supervisor failed to start
+
+----------------------------------------------------------------------
+Ran 1 test in 0.655s
+
+FAILED (errors=1)
+=== run 80 failed
+E
+======================================================================
+ERROR: test_disconnect_does_not_stop_exec (test_service.GuestTests.test_disconnect_does_not_stop_exec)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/opt/homebrew/Cellar/python@3.15/3.15.0/Frameworks/Python.framework/Versions/3.15/lib/python3.15/asyncio/runners.py", line 128, in run
+    return self._loop.run_until_complete(task)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^
+  File "/opt/homebrew/Cellar/python@3.15/3.15.0/Frameworks/Python.framework/Versions/3.15/lib/python3.15/asyncio/base_events.py", line 724, in run_until_complete
+    return future.result()
+           ~~~~~~~~~~~~~^^
+  File "/Users/igor/Projects/codex-agents-flaky/workspaces/runtime/apps/vm-guest/test_service.py", line 207, in test_disconnect_does_not_stop_exec
+    result = await self.call("exec", params, "lost-exec")
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/igor/Projects/codex-agents-flaky/workspaces/runtime/apps/vm-guest/test_service.py", line 140, in call
+    raise GuestError(response["error"]["code"], response["error"]["message"])
+common.GuestError: The process supervisor failed to start
+
+----------------------------------------------------------------------
+Ran 1 test in 0.657s
+
+FAILED (errors=1)
+=== run 81 failed
+E
+======================================================================
+ERROR: test_disconnect_does_not_stop_exec (test_service.GuestTests.test_disconnect_does_not_stop_exec)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/opt/homebrew/Cellar/python@3.15/3.15.0/Frameworks/Python.framework/Versions/3.15/lib/python3.15/asyncio/runners.py", line 128, in run
+    return self._loop.run_until_complete(task)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^
+  File "/opt/homebrew/Cellar/python@3.15/3.15.0/Frameworks/Python.framework/Versions/3.15/lib/python3.15/asyncio/base_events.py", line 724, in run_until_complete
+    return future.result()
+           ~~~~~~~~~~~~~^^
+  File "/Users/igor/Projects/codex-agents-flaky/workspaces/runtime/apps/vm-guest/test_service.py", line 207, in test_disconnect_does_not_stop_exec
+    result = await self.call("exec", params, "lost-exec")
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/igor/Projects/codex-agents-flaky/workspaces/runtime/apps/vm-guest/test_service.py", line 140, in call
+    raise GuestError(response["error"]["code"], response["error"]["message"])
+common.GuestError: The process supervisor failed to start
+
+----------------------------------------------------------------------
+Ran 1 test in 0.659s
+
+FAILED (errors=1)
+=== run 82 failed
+E
+======================================================================
+ERROR: test_disconnect_does_not_stop_exec (test_service.GuestTests.test_disconnect_does_not_stop_exec)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/opt/homebrew/Cellar/python@3.15/3.15.0/Frameworks/Python.framework/Versions/3.15/lib/python3.15/asyncio/runners.py", line 128, in run
+    return self._loop.run_until_complete(task)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^
+  File "/opt/homebrew/Cellar/python@3.15/3.15.0/Frameworks/Python.framework/Versions/3.15/lib/python3.15/asyncio/base_events.py", line 724, in run_until_complete
+    return future.result()
+           ~~~~~~~~~~~~~^^
+  File "/Users/igor/Projects/codex-agents-flaky/workspaces/runtime/apps/vm-guest/test_service.py", line 207, in test_disconnect_does_not_stop_exec
+    result = await self.call("exec", params, "lost-exec")
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/igor/Projects/codex-agents-flaky/workspaces/runtime/apps/vm-guest/test_service.py", line 140, in call
+    raise GuestError(response["error"]["code"], response["error"]["message"])
+common.GuestError: The process supervisor failed to start
+
+----------------------------------------------------------------------
+Ran 1 test in 0.669s
+
+FAILED (errors=1)
+=== run 83 failed
+E
+======================================================================
+ERROR: test_disconnect_does_not_stop_exec (test_service.GuestTests.test_disconnect_does_not_stop_exec)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/opt/homebrew/Cellar/python@3.15/3.15.0/Frameworks/Python.framework/Versions/3.15/lib/python3.15/asyncio/runners.py", line 128, in run
+    return self._loop.run_until_complete(task)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^
+  File "/opt/homebrew/Cellar/python@3.15/3.15.0/Frameworks/Python.framework/Versions/3.15/lib/python3.15/asyncio/base_events.py", line 724, in run_until_complete
+    return future.result()
+           ~~~~~~~~~~~~~^^
+  File "/Users/igor/Projects/codex-agents-flaky/workspaces/runtime/apps/vm-guest/test_service.py", line 207, in test_disconnect_does_not_stop_exec
+    result = await self.call("exec", params, "lost-exec")
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/igor/Projects/codex-agents-flaky/workspaces/runtime/apps/vm-guest/test_service.py", line 140, in call
+    raise GuestError(response["error"]["code"], response["error"]["message"])
+common.GuestError: The process supervisor failed to start
+
+----------------------------------------------------------------------
+Ran 1 test in 0.654s
+
+FAILED (errors=1)
+=== run 84 failed
+E
+======================================================================
+ERROR: test_disconnect_does_not_stop_exec (test_service.GuestTests.test_disconnect_does_not_stop_exec)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/opt/homebrew/Cellar/python@3.15/3.15.0/Frameworks/Python.framework/Versions/3.15/lib/python3.15/asyncio/runners.py", line 128, in run
+    return self._loop.run_until_complete(task)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^
+  File "/opt/homebrew/Cellar/python@3.15/3.15.0/Frameworks/Python.framework/Versions/3.15/lib/python3.15/asyncio/base_events.py", line 724, in run_until_complete
+    return future.result()
+           ~~~~~~~~~~~~~^^
+  File "/Users/igor/Projects/codex-agents-flaky/workspaces/runtime/apps/vm-guest/test_service.py", line 207, in test_disconnect_does_not_stop_exec
+    result = await self.call("exec", params, "lost-exec")
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/igor/Projects/codex-agents-flaky/workspaces/runtime/apps/vm-guest/test_service.py", line 140, in call
+    raise GuestError(response["error"]["code"], response["error"]["message"])
+common.GuestError: The process supervisor failed to start
+
+----------------------------------------------------------------------
+Ran 1 test in 0.660s
+
+FAILED (errors=1)
+=== run 85 failed
+E
+======================================================================
+ERROR: test_disconnect_does_not_stop_exec (test_service.GuestTests.test_disconnect_does_not_stop_exec)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/opt/homebrew/Cellar/python@3.15/3.15.0/Frameworks/Python.framework/Versions/3.15/lib/python3.15/asyncio/runners.py", line 128, in run
+    return self._loop.run_until_complete(task)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^
+  File "/opt/homebrew/Cellar/python@3.15/3.15.0/Frameworks/Python.framework/Versions/3.15/lib/python3.15/asyncio/base_events.py", line 724, in run_until_complete
+    return future.result()
+           ~~~~~~~~~~~~~^^
+  File "/Users/igor/Projects/codex-agents-flaky/workspaces/runtime/apps/vm-guest/test_service.py", line 207, in test_disconnect_does_not_stop_exec
+    result = await self.call("exec", params, "lost-exec")
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/igor/Projects/codex-agents-flaky/workspaces/runtime/apps/vm-guest/test_service.py", line 140, in call
+    raise GuestError(response["error"]["code"], response["error"]["message"])
+common.GuestError: The process supervisor failed to start
+
+----------------------------------------------------------------------
+Ran 1 test in 0.654s
+
+FAILED (errors=1)
+=== run 86 failed
+E
+======================================================================
+ERROR: test_disconnect_does_not_stop_exec (test_service.GuestTests.test_disconnect_does_not_stop_exec)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/opt/homebrew/Cellar/python@3.15/3.15.0/Frameworks/Python.framework/Versions/3.15/lib/python3.15/asyncio/runners.py", line 128, in run
+    return self._loop.run_until_complete(task)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^
+  File "/opt/homebrew/Cellar/python@3.15/3.15.0/Frameworks/Python.framework/Versions/3.15/lib/python3.15/asyncio/base_events.py", line 724, in run_until_complete
+    return future.result()
+           ~~~~~~~~~~~~~^^
+  File "/Users/igor/Projects/codex-agents-flaky/workspaces/runtime/apps/vm-guest/test_service.py", line 207, in test_disconnect_does_not_stop_exec
+    result = await self.call("exec", params, "lost-exec")
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/igor/Projects/codex-agents-flaky/workspaces/runtime/apps/vm-guest/test_service.py", line 140, in call
+    raise GuestError(response["error"]["code"], response["error"]["message"])
+common.GuestError: The process supervisor failed to start
+
+----------------------------------------------------------------------
+Ran 1 test in 0.655s
+
+FAILED (errors=1)
+=== run 87 failed
+E
+======================================================================
+ERROR: test_disconnect_does_not_stop_exec (test_service.GuestTests.test_disconnect_does_not_stop_exec)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/opt/homebrew/Cellar/python@3.15/3.15.0/Frameworks/Python.framework/Versions/3.15/lib/python3.15/asyncio/runners.py", line 128, in run
+    return self._loop.run_until_complete(task)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^
+  File "/opt/homebrew/Cellar/python@3.15/3.15.0/Frameworks/Python.framework/Versions/3.15/lib/python3.15/asyncio/base_events.py", line 724, in run_until_complete
+    return future.result()
+           ~~~~~~~~~~~~~^^
+  File "/Users/igor/Projects/codex-agents-flaky/workspaces/runtime/apps/vm-guest/test_service.py", line 207, in test_disconnect_does_not_stop_exec
+    result = await self.call("exec", params, "lost-exec")
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/igor/Projects/codex-agents-flaky/workspaces/runtime/apps/vm-guest/test_service.py", line 140, in call
+    raise GuestError(response["error"]["code"], response["error"]["message"])
+common.GuestError: The process supervisor failed to start
+
+----------------------------------------------------------------------
+Ran 1 test in 0.660s
+
+FAILED (errors=1)
+=== run 88 failed
+E
+======================================================================
+ERROR: test_disconnect_does_not_stop_exec (test_service.GuestTests.test_disconnect_does_not_stop_exec)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/opt/homebrew/Cellar/python@3.15/3.15.0/Frameworks/Python.framework/Versions/3.15/lib/python3.15/asyncio/runners.py", line 128, in run
+    return self._loop.run_until_complete(task)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^
+  File "/opt/homebrew/Cellar/python@3.15/3.15.0/Frameworks/Python.framework/Versions/3.15/lib/python3.15/asyncio/base_events.py", line 724, in run_until_complete
+    return future.result()
+           ~~~~~~~~~~~~~^^
+  File "/Users/igor/Projects/codex-agents-flaky/workspaces/runtime/apps/vm-guest/test_service.py", line 207, in test_disconnect_does_not_stop_exec
+    result = await self.call("exec", params, "lost-exec")
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/igor/Projects/codex-agents-flaky/workspaces/runtime/apps/vm-guest/test_service.py", line 140, in call
+    raise GuestError(response["error"]["code"], response["error"]["message"])
+common.GuestError: The process supervisor failed to start
+
+----------------------------------------------------------------------
+Ran 1 test in 0.662s
+
+FAILED (errors=1)
+=== run 89 failed
+E
+======================================================================
+ERROR: test_disconnect_does_not_stop_exec (test_service.GuestTests.test_disconnect_does_not_stop_exec)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/opt/homebrew/Cellar/python@3.15/3.15.0/Frameworks/Python.framework/Versions/3.15/lib/python3.15/asyncio/runners.py", line 128, in run
+    return self._loop.run_until_complete(task)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^
+  File "/opt/homebrew/Cellar/python@3.15/3.15.0/Frameworks/Python.framework/Versions/3.15/lib/python3.15/asyncio/base_events.py", line 724, in run_until_complete
+    return future.result()
+           ~~~~~~~~~~~~~^^
+  File "/Users/igor/Projects/codex-agents-flaky/workspaces/runtime/apps/vm-guest/test_service.py", line 207, in test_disconnect_does_not_stop_exec
+    result = await self.call("exec", params, "lost-exec")
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/igor/Projects/codex-agents-flaky/workspaces/runtime/apps/vm-guest/test_service.py", line 140, in call
+    raise GuestError(response["error"]["code"], response["error"]["message"])
+common.GuestError: The process supervisor failed to start
+
+----------------------------------------------------------------------
+Ran 1 test in 0.661s
+
+FAILED (errors=1)
+=== run 90 failed
+E
+======================================================================
+ERROR: test_disconnect_does_not_stop_exec (test_service.GuestTests.test_disconnect_does_not_stop_exec)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/opt/homebrew/Cellar/python@3.15/3.15.0/Frameworks/Python.framework/Versions/3.15/lib/python3.15/asyncio/runners.py", line 128, in run
+    return self._loop.run_until_complete(task)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^
+  File "/opt/homebrew/Cellar/python@3.15/3.15.0/Frameworks/Python.framework/Versions/3.15/lib/python3.15/asyncio/base_events.py", line 724, in run_until_complete
+    return future.result()
+           ~~~~~~~~~~~~~^^
+  File "/Users/igor/Projects/codex-agents-flaky/workspaces/runtime/apps/vm-guest/test_service.py", line 207, in test_disconnect_does_not_stop_exec
+    result = await self.call("exec", params, "lost-exec")
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/igor/Projects/codex-agents-flaky/workspaces/runtime/apps/vm-guest/test_service.py", line 140, in call
+    raise GuestError(response["error"]["code"], response["error"]["message"])
+common.GuestError: The process supervisor failed to start
+
+----------------------------------------------------------------------
+Ran 1 test in 0.661s
+
+FAILED (errors=1)
+=== run 91 failed
+E
+======================================================================
+ERROR: test_disconnect_does_not_stop_exec (test_service.GuestTests.test_disconnect_does_not_stop_exec)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/opt/homebrew/Cellar/python@3.15/3.15.0/Frameworks/Python.framework/Versions/3.15/lib/python3.15/asyncio/runners.py", line 128, in run
+    return self._loop.run_until_complete(task)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^
+  File "/opt/homebrew/Cellar/python@3.15/3.15.0/Frameworks/Python.framework/Versions/3.15/lib/python3.15/asyncio/base_events.py", line 724, in run_until_complete
+    return future.result()
+           ~~~~~~~~~~~~~^^
+  File "/Users/igor/Projects/codex-agents-flaky/workspaces/runtime/apps/vm-guest/test_service.py", line 207, in test_disconnect_does_not_stop_exec
+    result = await self.call("exec", params, "lost-exec")
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/igor/Projects/codex-agents-flaky/workspaces/runtime/apps/vm-guest/test_service.py", line 140, in call
+    raise GuestError(response["error"]["code"], response["error"]["message"])
+common.GuestError: The process supervisor failed to start
+
+----------------------------------------------------------------------
+Ran 1 test in 0.661s
+
+FAILED (errors=1)
+=== run 92 failed
+E
+======================================================================
+ERROR: test_disconnect_does_not_stop_exec (test_service.GuestTests.test_disconnect_does_not_stop_exec)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/opt/homebrew/Cellar/python@3.15/3.15.0/Frameworks/Python.framework/Versions/3.15/lib/python3.15/asyncio/runners.py", line 128, in run
+    return self._loop.run_until_complete(task)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^
+  File "/opt/homebrew/Cellar/python@3.15/3.15.0/Frameworks/Python.framework/Versions/3.15/lib/python3.15/asyncio/base_events.py", line 724, in run_until_complete
+    return future.result()
+           ~~~~~~~~~~~~~^^
+  File "/Users/igor/Projects/codex-agents-flaky/workspaces/runtime/apps/vm-guest/test_service.py", line 207, in test_disconnect_does_not_stop_exec
+    result = await self.call("exec", params, "lost-exec")
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/igor/Projects/codex-agents-flaky/workspaces/runtime/apps/vm-guest/test_service.py", line 140, in call
+    raise GuestError(response["error"]["code"], response["error"]["message"])
+common.GuestError: The process supervisor failed to start
+
+----------------------------------------------------------------------
+Ran 1 test in 0.658s
+
+FAILED (errors=1)
+=== run 93 failed
+E
+======================================================================
+ERROR: test_disconnect_does_not_stop_exec (test_service.GuestTests.test_disconnect_does_not_stop_exec)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/opt/homebrew/Cellar/python@3.15/3.15.0/Frameworks/Python.framework/Versions/3.15/lib/python3.15/asyncio/runners.py", line 128, in run
+    return self._loop.run_until_complete(task)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^
+  File "/opt/homebrew/Cellar/python@3.15/3.15.0/Frameworks/Python.framework/Versions/3.15/lib/python3.15/asyncio/base_events.py", line 724, in run_until_complete
+    return future.result()
+           ~~~~~~~~~~~~~^^
+  File "/Users/igor/Projects/codex-agents-flaky/workspaces/runtime/apps/vm-guest/test_service.py", line 207, in test_disconnect_does_not_stop_exec
+    result = await self.call("exec", params, "lost-exec")
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/igor/Projects/codex-agents-flaky/workspaces/runtime/apps/vm-guest/test_service.py", line 140, in call
+    raise GuestError(response["error"]["code"], response["error"]["message"])
+common.GuestError: The process supervisor failed to start
+
+----------------------------------------------------------------------
+Ran 1 test in 0.666s
+
+FAILED (errors=1)
+=== run 94 failed
+E
+======================================================================
+ERROR: test_disconnect_does_not_stop_exec (test_service.GuestTests.test_disconnect_does_not_stop_exec)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/opt/homebrew/Cellar/python@3.15/3.15.0/Frameworks/Python.framework/Versions/3.15/lib/python3.15/asyncio/runners.py", line 128, in run
+    return self._loop.run_until_complete(task)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^
+  File "/opt/homebrew/Cellar/python@3.15/3.15.0/Frameworks/Python.framework/Versions/3.15/lib/python3.15/asyncio/base_events.py", line 724, in run_until_complete
+    return future.result()
+           ~~~~~~~~~~~~~^^
+  File "/Users/igor/Projects/codex-agents-flaky/workspaces/runtime/apps/vm-guest/test_service.py", line 207, in test_disconnect_does_not_stop_exec
+    result = await self.call("exec", params, "lost-exec")
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/igor/Projects/codex-agents-flaky/workspaces/runtime/apps/vm-guest/test_service.py", line 140, in call
+    raise GuestError(response["error"]["code"], response["error"]["message"])
+common.GuestError: The process supervisor failed to start
+
+----------------------------------------------------------------------
+Ran 1 test in 0.696s
+
+FAILED (errors=1)
+=== run 95 failed
+E
+======================================================================
+ERROR: test_disconnect_does_not_stop_exec (test_service.GuestTests.test_disconnect_does_not_stop_exec)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/opt/homebrew/Cellar/python@3.15/3.15.0/Frameworks/Python.framework/Versions/3.15/lib/python3.15/asyncio/runners.py", line 128, in run
+    return self._loop.run_until_complete(task)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^
+  File "/opt/homebrew/Cellar/python@3.15/3.15.0/Frameworks/Python.framework/Versions/3.15/lib/python3.15/asyncio/base_events.py", line 724, in run_until_complete
+    return future.result()
+           ~~~~~~~~~~~~~^^
+  File "/Users/igor/Projects/codex-agents-flaky/workspaces/runtime/apps/vm-guest/test_service.py", line 207, in test_disconnect_does_not_stop_exec
+    result = await self.call("exec", params, "lost-exec")
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/igor/Projects/codex-agents-flaky/workspaces/runtime/apps/vm-guest/test_service.py", line 140, in call
+    raise GuestError(response["error"]["code"], response["error"]["message"])
+common.GuestError: The process supervisor failed to start
+
+----------------------------------------------------------------------
+Ran 1 test in 0.724s
+
+FAILED (errors=1)
+=== run 96 failed
+E
+======================================================================
+ERROR: test_disconnect_does_not_stop_exec (test_service.GuestTests.test_disconnect_does_not_stop_exec)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/opt/homebrew/Cellar/python@3.15/3.15.0/Frameworks/Python.framework/Versions/3.15/lib/python3.15/asyncio/runners.py", line 128, in run
+    return self._loop.run_until_complete(task)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^
+  File "/opt/homebrew/Cellar/python@3.15/3.15.0/Frameworks/Python.framework/Versions/3.15/lib/python3.15/asyncio/base_events.py", line 724, in run_until_complete
+    return future.result()
+           ~~~~~~~~~~~~~^^
+  File "/Users/igor/Projects/codex-agents-flaky/workspaces/runtime/apps/vm-guest/test_service.py", line 207, in test_disconnect_does_not_stop_exec
+    result = await self.call("exec", params, "lost-exec")
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/igor/Projects/codex-agents-flaky/workspaces/runtime/apps/vm-guest/test_service.py", line 140, in call
+    raise GuestError(response["error"]["code"], response["error"]["message"])
+common.GuestError: The process supervisor failed to start
+
+----------------------------------------------------------------------
+Ran 1 test in 0.691s
+
+FAILED (errors=1)
+=== run 97 failed
+E
+======================================================================
+ERROR: test_disconnect_does_not_stop_exec (test_service.GuestTests.test_disconnect_does_not_stop_exec)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/opt/homebrew/Cellar/python@3.15/3.15.0/Frameworks/Python.framework/Versions/3.15/lib/python3.15/asyncio/runners.py", line 128, in run
+    return self._loop.run_until_complete(task)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^
+  File "/opt/homebrew/Cellar/python@3.15/3.15.0/Frameworks/Python.framework/Versions/3.15/lib/python3.15/asyncio/base_events.py", line 724, in run_until_complete
+    return future.result()
+           ~~~~~~~~~~~~~^^
+  File "/Users/igor/Projects/codex-agents-flaky/workspaces/runtime/apps/vm-guest/test_service.py", line 207, in test_disconnect_does_not_stop_exec
+    result = await self.call("exec", params, "lost-exec")
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/igor/Projects/codex-agents-flaky/workspaces/runtime/apps/vm-guest/test_service.py", line 140, in call
+    raise GuestError(response["error"]["code"], response["error"]["message"])
+common.GuestError: The process supervisor failed to start
+
+----------------------------------------------------------------------
+Ran 1 test in 0.699s
+
+FAILED (errors=1)
+=== run 98 failed
+E
+======================================================================
+ERROR: test_disconnect_does_not_stop_exec (test_service.GuestTests.test_disconnect_does_not_stop_exec)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/opt/homebrew/Cellar/python@3.15/3.15.0/Frameworks/Python.framework/Versions/3.15/lib/python3.15/asyncio/runners.py", line 128, in run
+    return self._loop.run_until_complete(task)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^
+  File "/opt/homebrew/Cellar/python@3.15/3.15.0/Frameworks/Python.framework/Versions/3.15/lib/python3.15/asyncio/base_events.py", line 724, in run_until_complete
+    return future.result()
+           ~~~~~~~~~~~~~^^
+  File "/Users/igor/Projects/codex-agents-flaky/workspaces/runtime/apps/vm-guest/test_service.py", line 207, in test_disconnect_does_not_stop_exec
+    result = await self.call("exec", params, "lost-exec")
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/igor/Projects/codex-agents-flaky/workspaces/runtime/apps/vm-guest/test_service.py", line 140, in call
+    raise GuestError(response["error"]["code"], response["error"]["message"])
+common.GuestError: The process supervisor failed to start
+
+----------------------------------------------------------------------
+Ran 1 test in 0.686s
+
+FAILED (errors=1)
+=== run 99 failed
+E
+======================================================================
+ERROR: test_disconnect_does_not_stop_exec (test_service.GuestTests.test_disconnect_does_not_stop_exec)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/opt/homebrew/Cellar/python@3.15/3.15.0/Frameworks/Python.framework/Versions/3.15/lib/python3.15/asyncio/runners.py", line 128, in run
+    return self._loop.run_until_complete(task)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^
+  File "/opt/homebrew/Cellar/python@3.15/3.15.0/Frameworks/Python.framework/Versions/3.15/lib/python3.15/asyncio/base_events.py", line 724, in run_until_complete
+    return future.result()
+           ~~~~~~~~~~~~~^^
+  File "/Users/igor/Projects/codex-agents-flaky/workspaces/runtime/apps/vm-guest/test_service.py", line 207, in test_disconnect_does_not_stop_exec
+    result = await self.call("exec", params, "lost-exec")
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/igor/Projects/codex-agents-flaky/workspaces/runtime/apps/vm-guest/test_service.py", line 140, in call
+    raise GuestError(response["error"]["code"], response["error"]["message"])
+common.GuestError: The process supervisor failed to start
+
+----------------------------------------------------------------------
+Ran 1 test in 0.687s
+
+FAILED (errors=1)
+=== run 100 failed
+E
+======================================================================
+ERROR: test_disconnect_does_not_stop_exec (test_service.GuestTests.test_disconnect_does_not_stop_exec)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/opt/homebrew/Cellar/python@3.15/3.15.0/Frameworks/Python.framework/Versions/3.15/lib/python3.15/asyncio/runners.py", line 128, in run
+    return self._loop.run_until_complete(task)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^
+  File "/opt/homebrew/Cellar/python@3.15/3.15.0/Frameworks/Python.framework/Versions/3.15/lib/python3.15/asyncio/base_events.py", line 724, in run_until_complete
+    return future.result()
+           ~~~~~~~~~~~~~^^
+  File "/Users/igor/Projects/codex-agents-flaky/workspaces/runtime/apps/vm-guest/test_service.py", line 207, in test_disconnect_does_not_stop_exec
+    result = await self.call("exec", params, "lost-exec")
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/igor/Projects/codex-agents-flaky/workspaces/runtime/apps/vm-guest/test_service.py", line 140, in call
+    raise GuestError(response["error"]["code"], response["error"]["message"])
+common.GuestError: The process supervisor failed to start
+
+----------------------------------------------------------------------
+Ran 1 test in 0.694s
+
+FAILED (errors=1)
+runs=100 pass=0 fail=100

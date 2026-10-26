@@ -1,0 +1,3 @@
+   Compiling studio-runtime-services v0.1.0 (/Users/igor/Projects/codex-agents-flaky/workspaces/runtime/packages/runtime-services)
+    Finished `test` profile [unoptimized] target(s) in 44.27s
+  Executable tests/integration.rs (target/debug/deps/integration-921b04ac6c78b937)
