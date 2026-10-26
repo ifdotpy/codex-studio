@@ -606,10 +606,11 @@ it("applies split reconnect data beside passive hints without repeating its dura
   errors.mockRestore();
 });
 
-it("applies an open chat's reconnect order while its entity snapshots persist", async () => {
-  // Frame order of a live reconnect with one lead chat open (Duo device loop):
-  // chat entity snapshots, cursorless drafts and multi-server hints, then a
-  // staged state transfer. Earlier delivery discarded the pending snapshots.
+it("regression guard: the Duo device reconnect order applies while chat snapshots persist", async () => {
+  // Captured live reconnect order with one lead chat open: chat entity
+  // snapshots, cursorless drafts and multi-server hints, then a staged state
+  // transfer. The discard delivery on integ/layr-studio failed this order every
+  // 1 to 2 s; main's ordered delivery (faccb7f00) applies it. This test keeps it so.
   const f = await fixture();
   const agentId = "lead-chat";
   const chat = [
@@ -695,22 +696,20 @@ it("applies an open chat's reconnect order while its entity snapshots persist", 
   errors.mockRestore();
 });
 
-it("a repeated identical application failure backs off and reopens without cursors", async () => {
+async function failedStreamFixture() {
   const f = await fixture();
+  // Without jitter each retry waits exactly its backoff ceiling.
   vi.spyOn(Math, "random").mockReturnValue(0.5);
-  const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+  vi.spyOn(console, "error").mockImplementation(() => {});
   f.readCursor.mockResolvedValue({ workspaceId: "workspace", seq: 1 });
-  f.persist.mockRejectedValue(new Error("Fixture storage rejects the write"));
-  const opened: number[] = [];
-  const sinceOf = (url: string) =>
-    JSON.parse(
-      new URL(url, "http://studio.test").searchParams.get("since")!,
-    ) as unknown[];
-  const fail = (source: Source, revision: number) =>
+  let revision = 1;
+  let epoch = "epoch";
+  const emit = (source: Source) => {
+    revision++;
     source.emit("resources", {
       protocol: SYNC_PROTOCOL_VERSION,
       workspaceId: "workspace",
-      epoch: "epoch",
+      epoch,
       revision,
       reason: "reconnect",
       resources: [{ kind: "state" }],
@@ -723,24 +722,132 @@ it("a repeated identical application failure backs off and reopens without curso
         },
       ],
     });
-  fail(f.source, 2);
-  for (let attempt = 0; attempt < 4; attempt++) {
-    const count = f.sources.length;
-    while (f.sources.length === count) await vi.advanceTimersByTimeAsync(100);
-    opened.push(Date.now());
-    const replacement = f.sources.at(-1)!;
-    replacement.emit("api-schema", { hash: API_SCHEMA_HASH });
-    fail(replacement, 3 + attempt);
+  };
+  const apply = async (source: Source, nextEpoch = epoch) => {
+    epoch = nextEpoch;
+    emit(source);
     await vi.advanceTimersByTimeAsync(0);
+  };
+  const fail = async (source: Source, message = "Fixture storage failed") => {
+    f.persist.mockRejectedValueOnce(new Error(message));
+    emit(source);
+    await vi.advanceTimersByTimeAsync(0);
+  };
+  const reopen = async () => {
+    const count = f.sources.length;
+    const started = Date.now();
+    while (f.sources.length === count) await vi.advanceTimersByTimeAsync(100);
+    const source = f.sources.at(-1)!;
+    source.emit("api-schema", { hash: API_SCHEMA_HASH });
+    const since = JSON.parse(
+      new URL(f.urls.at(-1)!, "http://studio.test").searchParams.get("since")!,
+    ) as unknown[];
+    return { source, delay: Date.now() - started, cursors: since.length };
+  };
+  return { f, apply, fail, reopen };
+}
+
+it("failed streams back off and reopen without cursors whatever the error", async () => {
+  const { f, fail, reopen } = await failedStreamFixture();
+  await fail(f.source, "first error");
+  const first = await reopen();
+  await fail(first.source, "second error");
+  const second = await reopen();
+  await fail(second.source, "first error");
+  const third = await reopen();
+  expect([first.delay, second.delay, third.delay]).toEqual([500, 1000, 2000]);
+  // The first retry resumes from the durable cursor; repeats get a full baseline.
+  expect([first.cursors, second.cursors, third.cursors]).toEqual([1, 0, 0]);
+});
+
+it("failed stream backoff stops at the 15 s cap", async () => {
+  const { f, fail, reopen } = await failedStreamFixture();
+  let source = f.source;
+  const delays: number[] = [];
+  for (let attempt = 0; attempt < 8; attempt++) {
+    await fail(source);
+    const next = await reopen();
+    delays.push(next.delay);
+    source = next.source;
   }
-  // The first retry resumes from the durable cursor; the identical second
-  // failure requests a full baseline instead of the same failing interval.
-  expect(sinceOf(f.urls[1]!)).toHaveLength(1);
-  expect(sinceOf(f.urls[2]!)).toEqual([]);
-  const gaps = opened.slice(1).map((at, index) => at - opened[index]!);
-  for (const [index, gap] of gaps.entries())
-    if (index) expect(gap).toBeGreaterThan(gaps[index - 1]!);
-  errors.mockRestore();
+  expect(delays).toEqual([500, 1000, 2000, 4000, 8000, 15_000, 15_000, 15_000]);
+});
+
+it("snapshots applied before a later failure do not reset the backoff", async () => {
+  const { f, apply, fail, reopen } = await failedStreamFixture();
+  let source = f.source;
+  const delays: number[] = [];
+  for (let attempt = 0; attempt < 3; attempt++) {
+    await apply(source);
+    await fail(source);
+    const next = await reopen();
+    delays.push(next.delay);
+    source = next.source;
+  }
+  expect(delays).toEqual([500, 1000, 2000]);
+});
+
+it("the first applied frame clears the full baseline but not the backoff", async () => {
+  const { f, apply, fail, reopen } = await failedStreamFixture();
+  await fail(f.source);
+  const first = await reopen();
+  await fail(first.source);
+  const baseline = await reopen();
+  expect(baseline.cursors).toBe(0);
+  await apply(baseline.source);
+  baseline.source.onerror?.();
+  const next = await reopen();
+  expect(next.cursors).toBe(1);
+  expect(next.delay).toBe(1000);
+});
+
+it("a server heartbeat clears the failed stream streak", async () => {
+  const { f, fail, reopen } = await failedStreamFixture();
+  await fail(f.source);
+  const first = await reopen();
+  await fail(first.source);
+  const second = await reopen();
+  second.source.emit("heartbeat", {
+    protocol: SYNC_PROTOCOL_VERSION,
+    workspaceId: "workspace",
+    epoch: "epoch",
+    revision: 100,
+  });
+  await fail(second.source);
+  const next = await reopen();
+  expect([next.delay, next.cursors]).toEqual([500, 1]);
+});
+
+it("a new server epoch clears the failed stream streak", async () => {
+  const { f, apply, fail, reopen } = await failedStreamFixture();
+  await fail(f.source);
+  const first = await reopen();
+  await fail(first.source);
+  const second = await reopen();
+  await apply(second.source, "new-epoch");
+  await fail(second.source);
+  const next = await reopen();
+  expect([next.delay, next.cursors]).toEqual([500, 1]);
+});
+
+it("a coordinator stop clears the failed stream streak", async () => {
+  const { f, fail, reopen } = await failedStreamFixture();
+  await fail(f.source);
+  const first = await reopen();
+  await fail(first.source);
+  f.stopState();
+  await vi.advanceTimersByTimeAsync(5_000);
+  const opened = f.sources.length;
+  f.transport.watchResourceChanges({ kind: "state" }, vi.fn());
+  await vi.advanceTimersByTimeAsync(50);
+  expect(f.sources.length).toBe(opened + 1);
+  const restarted = f.sources.at(-1)!;
+  restarted.emit("session", { sessionId: "session-two" });
+  restarted.emit("api-schema", { hash: API_SCHEMA_HASH });
+  await fail(restarted);
+  const next = await reopen();
+  // A kept streak would make this the third failed stream: no cursors.
+  expect(next.cursors).toBe(1);
 });
 
 it("delivers subscribed auth progress without sending its URL to the entity persister", async () => {

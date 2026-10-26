@@ -339,8 +339,15 @@ export function createResourceEvents(options: ResourceEventsOptions) {
 
   let retryCount = 0;
 
-  // Same local failure on consecutive streams. Cleared by a server heartbeat.
-  let repeatedFailure: { signature: string; count: number } | undefined;
+  // Consecutive streams that ended in a local frame application failure, of
+  // any kind. It is the backoff floor. A server heartbeat, a new epoch or a
+  // coordinator stop clears it; frames applied before a failure do not.
+  let failedStreams = 0;
+  let failedSource: ServerEventSource | undefined;
+  // From the second failed stream, the next stream opens without cursors.
+  // The first frame applied on that stream clears it.
+  let fullBaseline = false;
+  let fullBaselineSource: ServerEventSource | undefined;
 
   let preHandshakeFailures = 0;
 
@@ -658,6 +665,8 @@ export function createResourceEvents(options: ResourceEventsOptions) {
     }
     const epochChanged = lastEpoch !== event.epoch;
     if (epochChanged) {
+      // A new server epoch is a new history; the first epoch is not a change.
+      if (lastEpoch !== undefined) clearFailedStreams();
       lastEpoch = event.epoch;
       lastRevision = undefined;
       lastHeartbeatRevision = undefined;
@@ -903,6 +912,7 @@ export function createResourceEvents(options: ResourceEventsOptions) {
         }
       }
       retryCount = 0;
+      if (source && source === fullBaselineSource) fullBaseline = false;
     } catch (error) {
       frameFailed(error, "local-state-error");
     }
@@ -1216,7 +1226,7 @@ export function createResourceEvents(options: ResourceEventsOptions) {
     }
     if (fromPeer) return;
     lastHeartbeatRevision = heartbeat.revision;
-    repeatedFailure = undefined;
+    clearFailedStreams();
     refreshHeartbeatTimeout();
     confirmConnectionActivity();
     if (owner) broadcast({ kind: "leader-heartbeat" });
@@ -1238,15 +1248,19 @@ export function createResourceEvents(options: ResourceEventsOptions) {
   ) {
     if (error !== undefined)
       console.error("Sync stream frame could not be applied", error);
-    const signature = `${failure}:${error instanceof Error ? error.message : String(error)}`;
-    repeatedFailure =
-      repeatedFailure?.signature === signature
-        ? { signature, count: repeatedFailure.count + 1 }
-        : { signature, count: 1 };
-    // Frames applied before this failure reset the backoff. A repeat must
-    // slow down instead of reopening the same failing stream at the base delay.
-    retryCount = Math.max(retryCount, repeatedFailure.count - 1);
+    if (source && source !== failedSource) {
+      failedSource = source;
+      failedStreams++;
+      if (failedStreams > 1) fullBaseline = true;
+    }
     reconnectNow(failure);
+  }
+
+  function clearFailedStreams() {
+    failedStreams = 0;
+    failedSource = undefined;
+    fullBaseline = false;
+    fullBaselineSource = undefined;
   }
 
   function refreshHeartbeatTimeout() {
@@ -1521,6 +1535,8 @@ export function createResourceEvents(options: ResourceEventsOptions) {
   }
 
   function retryDelay() {
+    // Applied frames reset retryCount; failed streams keep the backoff growing.
+    retryCount = Math.max(retryCount, failedStreams - 1);
     const ceiling = Math.min(BASE_RETRY_MS * 2 ** retryCount, MAX_RETRY_MS);
     retryCount++;
     return Math.max(100, Math.round(ceiling * (0.5 + Math.random())));
@@ -1698,11 +1714,9 @@ export function createResourceEvents(options: ResourceEventsOptions) {
       > = {
         protocol: String(SYNC_PROTOCOL_VERSION),
         resources: JSON.stringify(currentResources),
-        // A repeated identical failure gets a full baseline, not the same interval.
+        // Repeated failures get a full baseline, not the same interval again.
         since: JSON.stringify(
-          (repeatedFailure?.count ?? 0) > 1
-            ? []
-            : since.filter((entry) => entry.since),
+          fullBaseline ? [] : since.filter((entry) => entry.since),
         ),
         tokenRates: currentTokenRates,
         reconnect: reconnecting,
@@ -1723,6 +1737,7 @@ export function createResourceEvents(options: ResourceEventsOptions) {
       }
       reconnecting = false;
       source = connected;
+      fullBaselineSource = fullBaseline ? connected : undefined;
       openingSource = undefined;
       notifyConnectionListeners();
       if (source !== connected) return;
@@ -2211,6 +2226,7 @@ export function createResourceEvents(options: ResourceEventsOptions) {
     peerHealth.clear();
     coordinatorReady = false;
     workspaceId = undefined;
+    clearFailedStreams();
     lastEpoch = undefined;
     lastRevision = undefined;
     lastHeartbeatRevision = undefined;
