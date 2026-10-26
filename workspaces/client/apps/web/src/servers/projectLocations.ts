@@ -103,7 +103,7 @@ export async function saveProjectLocation(
     action: "add_location" | "remove_location";
     project: string;
     server: string;
-    path?: string;
+    path?: string | undefined;
     request_id: string;
   },
   services: ProjectMutationServices = {

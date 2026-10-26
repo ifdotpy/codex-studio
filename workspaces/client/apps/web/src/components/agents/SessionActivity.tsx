@@ -3,16 +3,8 @@ import { useEffect, useState } from "react";
 import "./session-activity.css";
 import { useVisualActivity } from "../../hooks/useVisualActivity";
 
-export type SessionActivityItem = {
-  id: string;
-  kind: "task" | "monitor" | "agent";
-  agentId: string;
-  agentName: string;
-  label: string;
-  command?: string;
-  created?: number;
-  status: string;
-};
+export type { ChatActivity as SessionActivityItem } from "../chat-status/chatStatusModel";
+import type { ChatActivity as SessionActivityItem } from "../chat-status/chatStatusModel";
 
 function elapsed(created: number | undefined, now: number) {
   if (created === undefined || !Number.isFinite(created)) return "";

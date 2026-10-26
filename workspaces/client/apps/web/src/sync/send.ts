@@ -145,6 +145,14 @@ export function retainQueuedSchemaMismatch(
 
 const removalFence = (workspaceId: string, id: string) =>
   `studio-removed-send:${JSON.stringify([workspaceId, id])}`;
+type SyncDatabaseHandle = Awaited<ReturnType<typeof syncDatabase>>;
+type OutboxDatabaseHandle = Pick<
+  SyncDatabaseHandle,
+  "workspaceId" | "verifyWorkspace"
+> & {
+  db: Pick<SyncDatabaseHandle["db"], "outbox" | "projections">;
+};
+
 export function createOutbox(options: {
   api: Pick<
     import("../api").ServerApi,
@@ -154,7 +162,7 @@ export function createOutbox(options: {
     | "syncPost"
     | "refreshSession"
   >;
-  syncDatabase: typeof syncDatabase;
+  syncDatabase: () => Promise<OutboxDatabaseHandle>;
   storage: Storage;
 }) {
   const {

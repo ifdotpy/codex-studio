@@ -2,7 +2,11 @@ import { useSubscription } from "../sync/subscriptions";
 import Disclosure from "./ui/Disclosure";
 import { useServerApi } from "../servers/ServerServicesContext";
 import { localDateTime, localTime } from "../local-time";
-import { accountLimits } from "../usage/accountUsage";
+import {
+  accountLimits,
+  jsonObject,
+  type AccountLimitsSnapshot,
+} from "../usage/accountUsage";
 import { weeklyRunway } from "../usage/weeklyRunway";
 import {
   lazy,
@@ -20,7 +24,7 @@ import {
   RefreshCw,
   CircleDollarSign,
 } from "lucide-react";
-import type { Agent, Json, JsonValue } from "../types";
+import type { Agent, Json, Snapshot } from "../types";
 import { errorText, type GetResult } from "../api";
 import { useServerSessionCosts } from "../servers/ServerServicesContext";
 import { useRecoveredLimit } from "./useRecoveredLimit";
@@ -42,18 +46,15 @@ import {
 import { accountDisplayName } from "../accountName";
 const Analytics = lazy(() => import("./Analytics"));
 
-export type UsageAccount = {
-  key: string;
-  label: string;
-  email?: string | null;
-  provider?: string;
-  plan?: string | null;
-  accountId?: string | null;
-  signedOut?: boolean;
-  limits: Json | null;
-  loading: boolean;
-  reload: (force?: boolean) => void | Promise<void>;
-};
+import type { Account } from "./Accounts";
+export type UsageAccount = Pick<Account, "label"> &
+  Partial<Pick<Account, "email" | "provider" | "plan" | "accountId">> & {
+    key: string;
+    signedOut?: boolean;
+    limits: UsageLimitSnapshot | null;
+    loading: boolean;
+    reload: (force?: boolean) => void | Promise<void>;
+  };
 
 const humanAccountLabel = (account?: UsageAccount) =>
   account?.email ||
@@ -70,6 +71,8 @@ const displayAccountName = (account?: UsageAccount) =>
 const accountProvider = (account?: UsageAccount) =>
   account?.provider === "claude" ? "claude" : "codex";
 
+type UsageLimitSnapshot = AccountLimitsSnapshot | Json;
+
 type LimitWindow = {
   label: string;
   remaining: number | null;
@@ -79,7 +82,7 @@ type LimitWindow = {
 type LimitBucket = {
   id: string;
   name: string;
-  data: Json;
+  data: NonNullable<ReturnType<typeof jsonObject>>;
   windows: LimitWindow[];
 };
 type AvailableReset = {
@@ -91,8 +94,6 @@ type AvailableReset = {
 };
 const number = (value: unknown): value is number =>
   typeof value === "number" && Number.isFinite(value);
-const jsonObject = (value: JsonValue | null | undefined): Json | null =>
-  value && typeof value === "object" && !Array.isArray(value) ? value : null;
 const percentage = (value: unknown) =>
   number(value) && value >= 0 && value <= 100 ? value : null;
 export const formatPercent = (value: number) =>
@@ -103,7 +104,10 @@ const duration = (minutes: unknown, fallback: string) => {
   if (minutes % 60 === 0) return `${minutes / 60}h`;
   return `${minutes}m`;
 };
-export function readBuckets(limits: Json | null, now: number): LimitBucket[] {
+export function readBuckets(
+  limits: UsageLimitSnapshot | null,
+  now: number,
+): LimitBucket[] {
   const responseData = jsonObject(limits?.data);
   const reported = jsonObject(responseData?.rateLimitsByLimitId);
   const rateLimits = jsonObject(responseData?.rateLimits);
@@ -200,7 +204,7 @@ export default function Usage({
 }: {
   agent: Agent;
   stateDir: string;
-  limits: Json | null;
+  limits: UsageLimitSnapshot | null;
   accountLabel?: string | undefined;
   reload: () => void | Promise<void>;
   opened?: boolean;
@@ -220,7 +224,7 @@ export default function Usage({
     onChange?.(value);
   };
   const fallbackKey = agent.accountKey || "default";
-  const usageAccounts = accounts.length
+  const usageAccounts: UsageAccount[] = accounts.length
     ? accounts
     : [
         {
@@ -387,7 +391,9 @@ export default function Usage({
   const costScope = JSON.stringify([stateDir, rootId]);
   const [sessionCostState, setSessionCostState] = useState<{
     scope: string;
-    value: Json | null;
+    value:
+      | ReturnType<typeof peekSessionCost>
+      | NonNullable<Snapshot["runtime"]["sessionCostsByAgent"]>[string];
     updating: boolean;
   }>(() => ({
     scope: costScope,
