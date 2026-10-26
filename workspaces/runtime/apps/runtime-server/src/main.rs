@@ -1,6 +1,8 @@
 #[cfg(unix)]
 use studio_runtime_server::account_registry;
 #[cfg(unix)]
+mod bonjour;
+#[cfg(unix)]
 mod claude_login;
 #[cfg(unix)]
 mod history_runtime;
@@ -413,9 +415,13 @@ async fn run(shutdown_requested: Sender<()>) -> Result<(), Box<dyn std::error::E
     let credentials =
         Arc::new(studio_runtime_services::federation_credentials::Credentials::default());
     #[cfg(unix)]
-    {
-        credentials.identity(Arc::clone(&store), None).await?;
-    }
+    let server_label = credentials
+        .identity(Arc::clone(&store), None)
+        .await?
+        .get("label")
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_owned)
+        .unwrap_or_default();
     studio_runtime_services::workspace_operations_effects::startup_recovery(&store).await?;
     studio_runtime_services::monitor_runtime::recover_on_startup(&store, startup_recovery_time)
         .await?;
@@ -1261,6 +1267,14 @@ async fn run(shutdown_requested: Sender<()>) -> Result<(), Box<dyn std::error::E
             }
         }
     });
+    // Withdrawn when this guard drops at the end of serving.
+    #[cfg(unix)]
+    let _bonjour = bonjour::start(
+        public_origin.as_deref(),
+        remote_access.bonjour_enabled(),
+        &server_label,
+        studio_runtime_http::api_schema_hash(),
+    );
     startup_trace("readiness-output-started");
     println!("Codex Canvas: http://{}:{}", address.ip(), address.port());
     #[cfg(unix)]

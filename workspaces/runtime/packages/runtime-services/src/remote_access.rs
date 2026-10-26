@@ -4,11 +4,13 @@
 //! An operator override in `PUBLIC_ORIGIN_ENVIRONMENT` always wins. Without
 //! it, `REMOTE_ACCESS_FILE` in the state directory enables Serve access and
 //! names its exact origin. The file is read again for each call, so an owner
-//! can disable access without a restart.
+//! can disable access without a restart. The same file holds the Bonjour
+//! off switch (`REMOTE_ACCESS_BONJOUR_KEY`).
 
 use crate::remote_transport::validate_federation_origin;
 use serde_json::Value;
 use std::path::{Path, PathBuf};
+use studio_runtime_schema::bonjour_protocol::REMOTE_ACCESS_BONJOUR_KEY;
 use studio_runtime_schema::multi_server_protocol::{PUBLIC_ORIGIN_ENVIRONMENT, REMOTE_ACCESS_FILE};
 
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
@@ -52,6 +54,17 @@ impl RemoteAccess {
             return None;
         }
         validate_federation_origin(value.get("origin")?.as_str()?).ok()
+    }
+
+    /// `false` only when the remote access file sets the Bonjour key to
+    /// `false`. A missing file or key leaves the advertisement on; it still
+    /// needs an origin.
+    pub fn bonjour_enabled(&self) -> bool {
+        let value: Option<Value> = std::fs::read(&self.path)
+            .ok()
+            .and_then(|bytes| serde_json::from_slice(&bytes).ok());
+        value.and_then(|value| value.get(REMOTE_ACCESS_BONJOUR_KEY).cloned())
+            != Some(Value::Bool(false))
     }
 
     /// The startup origin while the current configuration still names it.
@@ -135,6 +148,28 @@ mod tests {
                 .expect_err("an invalid override is refused"),
             InvalidPublicOrigin
         );
+    }
+
+    #[test]
+    fn only_an_explicit_false_turns_bonjour_off() {
+        let root = tempfile::tempdir().expect("state root");
+        let access =
+            RemoteAccess::new(root.path(), Some("https://other.example.ts.net")).expect("valid");
+        assert!(access.bonjour_enabled(), "a missing file leaves it on");
+        for (value, enabled) in [
+            (
+                r#"{"enabled":true,"origin":"https://studio.example.ts.net"}"#,
+                true,
+            ),
+            (r#"{"enabled":true,"bonjour":true}"#, true),
+            (r#"{"enabled":true,"bonjour":"false"}"#, true),
+            ("not json", true),
+            (r#"{"enabled":true,"bonjour":false}"#, false),
+            (r#"{"enabled":false,"bonjour":false}"#, false),
+        ] {
+            write(root.path(), value);
+            assert_eq!(access.bonjour_enabled(), enabled, "{value}");
+        }
     }
 
     #[test]
