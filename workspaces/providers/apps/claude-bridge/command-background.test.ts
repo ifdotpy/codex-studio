@@ -128,7 +128,8 @@ test("task events set the control only for a running foreground shell", () => {
     task_type: "local_bash",
     tool_use_id: "toolu-2",
     is_backgrounded: false,
-  };
+  } satisfies Parameters<typeof foregroundCommandUpdate>[1] &
+    Parameters<typeof foregroundCommandUpdate>[2];
   assert.equal(foregroundCommandUpdate(active, started, started), item);
   assert.equal(item.canMoveToBackground, true);
   // An unchanged flag publishes nothing.
@@ -138,7 +139,7 @@ test("task events set the control only for a running foreground shell", () => {
   const moved = {
     subtype: "task_updated",
     patch: { is_backgrounded: true },
-  };
+  } satisfies Parameters<typeof foregroundCommandUpdate>[2];
   assert.equal(
     foregroundCommandUpdate(active, { ...started, ...moved }, moved),
     item,
@@ -163,7 +164,7 @@ test("an SDK without the control fails visibly", async () => {
     Pick<import("@anthropic-ai/claude-agent-sdk").Query, "backgroundTasks">
   > = {};
   const active = {
-    turn: { id: "turn" },
+    turn: { id: "turn", items: [] },
     q,
     tools: new Map([
       [
