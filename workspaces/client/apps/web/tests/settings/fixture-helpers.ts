@@ -47,13 +47,10 @@ type WithAbsentFields<T, All = T> = T extends unknown
   ? T & Partial<Record<Exclude<UnionKeys<All>, keyof T>, never>>
   : never;
 
-export function fixturePostBody<
+// The renderer under test writes string bodies using the generated route contract.
+// This one typed parser view covers both that input and its authored JSON document.
+export const fixturePostBody = JSON.parse as <
   Path extends import("../../src/apiTypes.ts").ApiPostPath,
 >(
   body: BodyInit | null | undefined,
-): WithAbsentFields<import("../../src/apiTypes.ts").PostBody<Path>> {
-  // The renderer under test wrote this request using the generated route contract.
-  return JSON.parse(body as string) as WithAbsentFields<
-    import("../../src/apiTypes.ts").PostBody<Path>
-  >;
-}
+) => WithAbsentFields<import("../../src/apiTypes.ts").PostBody<Path>>;
