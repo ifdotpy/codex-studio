@@ -76,13 +76,16 @@ pub fn store_causes(error: &studio_runtime_store::StoreError) -> Vec<Cause> {
         StoreError::StateDirectory(error) => Some(Cause::Io {
             os_code: error.raw_os_error(),
         }),
-        StoreError::Sqlite(error) | StoreError::CommitOutcomeUnknown(error) => match error {
-            rusqlite::Error::SqliteFailure(error, _) => Some(Cause::Sqlite {
-                primary_code: error.extended_code & SQLITE_PRIMARY_CODE_MASK,
-                extended_code: error.extended_code,
-            }),
-            _ => None,
-        },
+        StoreError::Sqlite(error) | StoreError::CommitOutcomeUnknown(error) => {
+            if let rusqlite::Error::SqliteFailure(error, _) = error {
+                Some(Cause::Sqlite {
+                    primary_code: error.extended_code & SQLITE_PRIMARY_CODE_MASK,
+                    extended_code: error.extended_code,
+                })
+            } else {
+                None
+            }
+        }
         StoreError::AlreadyOwned
         | StoreError::MissingDatabase(_)
         | StoreError::UnsafeStateDirectory
