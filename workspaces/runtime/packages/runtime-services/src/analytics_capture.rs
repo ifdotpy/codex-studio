@@ -64,6 +64,7 @@ pub struct PreparedCapture {
     usage: Option<UsageObservation>,
     legacy_usage: Option<LegacyUsageTotals>,
     rejected_usage: Option<studio_runtime_schema::usage::ledger::UsageReplayConflict>,
+    ledger_since: Option<f64>,
 }
 impl PreparedCapture {
     pub fn event(
@@ -166,6 +167,7 @@ impl PreparedCapture {
             usage,
             legacy_usage,
             rejected_usage: None,
+            ledger_since: None,
         })
     }
     pub(crate) fn apply_budget_conflicts(
@@ -243,6 +245,19 @@ impl PreparedCapture {
         }
         Ok(result)
     }
+    fn legacy_counter_era(&self) -> bool {
+        (matches!(self.usage, Some(UsageObservation::Cumulative { .. }))
+            || self
+                .legacy_usage
+                .as_ref()
+                .is_some_and(|legacy| legacy.response_id.is_none()))
+            && studio_runtime_schema::usage::ledger::legacy_era(
+                self.ledger_since,
+                self.at,
+                self.params["_analyticsTimestampSource"] == "fileModifiedEstimate",
+            )
+    }
+
     pub fn agent(&self) -> &Value {
         &self.agent
     }
@@ -438,6 +453,14 @@ impl CaptureSnapshot {
         if let Some(observation) = &prepared.usage {
             let id = usage_key(&meta, observation);
             rows.usage = Repo::read(db, CaptureTable::Usage, &id)?;
+            if rows.usage.is_none() && prepared.legacy_counter_era() {
+                let old_id = hash(&json!([
+                    meta["agentId"],
+                    meta["threadId"],
+                    fingerprint(observation)
+                ]));
+                rows.usage = Repo::read(db, CaptureTable::Usage, &old_id)?;
+            }
             if let UsageObservation::Response { response_id, .. }
             | UsageObservation::Gap { response_id, .. } = observation
             {
@@ -470,6 +493,13 @@ impl CaptureSnapshot {
                 CaptureTable::Usage,
                 &legacy_usage_key(&meta, legacy, &prepared.params),
             )?;
+            if rows.usage.is_none() && prepared.legacy_counter_era() {
+                rows.usage = Repo::read(
+                    db,
+                    CaptureTable::Usage,
+                    &old_legacy_usage_key(&meta, legacy, &prepared.params),
+                )?;
+            }
         }
         if prepared.method == "analytics/rateLimits" {
             rows.last_limit = Repo::last_limit(db, &meta["accountKey"])?;
@@ -487,6 +517,7 @@ pub struct ResponseRateAssociation {
 }
 #[derive(Default)]
 pub struct CaptureDecision {
+    pub unknown_usage: Option<Value>,
     pub usage_conflict: Option<studio_runtime_schema::usage::ledger::UsageReplayConflict>,
     pub rows: Vec<(CaptureTable, Value)>,
     pub notifications: Vec<Value>,
@@ -497,6 +528,15 @@ pub struct CaptureDecision {
 }
 impl CaptureDecision {
     pub fn apply(&self, tx: &Transaction<'_>) -> Result<(), CaptureError> {
+        if let Some(unknown) = &self.unknown_usage {
+            tx.execute_cached(
+                "INSERT INTO analytics_meta(key,value) VALUES (?1,?2) ON CONFLICT(key) DO NOTHING",
+                params![
+                    format!("unknownUsageReceipt:{}", text(&unknown["observationKey"])),
+                    unknown.to_string()
+                ],
+            )?;
+        }
         if self.response_replay_conflict {
             record_capture_errors(
                 tx,
@@ -536,11 +576,15 @@ impl CaptureDecision {
 }
 pub async fn capture(
     store: &RuntimeStore,
-    prepared: PreparedCapture,
+    mut prepared: PreparedCapture,
 ) -> Result<CaptureDecision, CaptureError> {
     store
         .analytics_transaction(move |tx, canvas| {
             check_identity(canvas, prepared.agent())?;
+            prepared.ledger_since = studio_runtime_store::budget::BudgetRepository::ledger_since(
+                canvas,
+                text(&prepared.agent["id"]),
+            )?;
             let decision = decide(CaptureSnapshot::load(tx, std::sync::Arc::new(prepared))?)?;
             decision.apply(tx)?;
             Ok(decision)
@@ -581,6 +625,9 @@ pub(crate) fn capture_logged_effect(
     } = effect
     {
         prepared.rejected_usage = Some((**conflict).clone());
+    }
+    if let Effect::Analytics { ledger_since, .. } = effect {
+        prepared.ledger_since = *ledger_since;
     }
     let prepared = std::sync::Arc::new(prepared);
     let mut decision = decide(CaptureSnapshot::load(tx, std::sync::Arc::clone(&prepared))?)?;
@@ -941,6 +988,7 @@ pub fn decide(snapshot: CaptureSnapshot) -> Result<CaptureDecision, CaptureError
             usage: q.usage.clone(),
             legacy_usage: q.legacy_usage.clone(),
             rejected_usage: q.rejected_usage.clone(),
+            ledger_since: q.ledger_since,
         };
         let recursive = decide(CaptureSnapshot::from_records(
             std::sync::Arc::new(next),
@@ -1317,11 +1365,12 @@ fn usage_key(meta: &Value, observation: &UsageObservation) -> String {
                 hash(&json!([agent, response_id]))
             }
         }
-        UsageIdentity::Cumulative { .. } => hash(&json!([
-            meta["agentId"],
-            meta["threadId"],
-            fingerprint(observation)
-        ])),
+        UsageIdentity::Cumulative { .. } => UsageLedgerRow::capture(
+            text(&meta["agentId"]),
+            meta["threadId"].as_str(),
+            observation.clone(),
+        )
+        .observation_key(),
     }
 }
 /// Compatibility presentation for existing analytics charts; accounting uses studioUsage.
@@ -1331,6 +1380,16 @@ pub(crate) fn analytics_tokens(tokens: &UsageTokens) -> Value {
         "outputTokens":tokens.output,"reasoningOutputTokens":tokens.reasoning_output,"totalTokens":tokens.total()})
 }
 fn legacy_usage_key(meta: &Value, legacy: &LegacyUsageTotals, params: &Value) -> String {
+    if legacy.response_id.is_none() {
+        return studio_runtime_schema::usage::ledger::legacy_counter_observation_key(
+            text(&meta["agentId"]),
+            meta["threadId"].as_str(),
+            legacy,
+        );
+    }
+    old_legacy_usage_key(meta, legacy, params)
+}
+fn old_legacy_usage_key(meta: &Value, legacy: &LegacyUsageTotals, params: &Value) -> String {
     if let Some(response) = &legacy.response_id {
         return hash(&json!([meta["agentId"], response]));
     }
@@ -1359,6 +1418,12 @@ fn usage(q: &PreparedCapture, meta: &mut Value, rows: &CaptureRows, out: &mut Ca
     let Some(mut observation) = q.usage.clone() else {
         if let Some(legacy) = &q.legacy_usage {
             if rows.usage.is_some() {
+                return;
+            }
+            if q.legacy_counter_era() {
+                out.unknown_usage = Some(
+                    json!({"identity":UsageIdentity::Cumulative {agent:text(&meta["agentId"]).into(),thread_id:meta["threadId"].as_str().map(str::to_owned),scope:legacy.scope},"observationKey":legacy_usage_key(meta,legacy,&q.params),"fault":studio_runtime_schema::usage::ledger::UNKNOWN_USAGE_RECEIPT}),
+                );
                 return;
             }
             let mut last = json!({});
@@ -1408,6 +1473,17 @@ fn usage(q: &PreparedCapture, meta: &mut Value, rows: &CaptureRows, out: &mut Ca
         });
     }
     let existing = rows.exact_response.as_ref().or(rows.usage.as_ref());
+    if existing.is_none() && q.legacy_counter_era() {
+        let ledger = UsageLedgerRow::capture(
+            text(&meta["agentId"]),
+            meta["threadId"].as_str(),
+            observation,
+        );
+        out.unknown_usage = Some(
+            json!({"identity":ledger.usage_identity,"observationKey":ledger.observation_key(),"fault":studio_runtime_schema::usage::ledger::UNKNOWN_USAGE_RECEIPT}),
+        );
+        return;
+    }
     if let Some(previous) = existing
         && let Ok(old) = UsageLedgerRow::from_analytics(usage_provider(&q.agent), previous)
     {
@@ -1537,8 +1613,13 @@ pub async fn capture_batch(
     store
         .analytics_transaction(move |tx, canvas| {
             let mut effects = Vec::new();
-            for prepared in prepared {
+            for mut prepared in prepared {
                 check_identity(canvas, prepared.agent())?;
+                prepared.ledger_since =
+                    studio_runtime_store::budget::BudgetRepository::ledger_since(
+                        canvas,
+                        text(&prepared.agent["id"]),
+                    )?;
                 let decision = decide(CaptureSnapshot::load(tx, std::sync::Arc::new(prepared))?)?;
                 decision.apply(tx)?;
                 if let Some(effect) = decision.response_rate {

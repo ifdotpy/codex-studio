@@ -237,7 +237,7 @@ fn capture_into(
         if let Some(row) = &decision.usage {
             BudgetRepository::insert_usage(tx, row)?;
         }
-        if decision.changed {
+        if decision.changed || snapshot.initialized() {
             save_state(
                 tx,
                 snapshot.agent_id(),
@@ -368,15 +368,7 @@ async fn prepare_legacy_counter_ownership(
                         Parsed::Cumulative { turn_id, .. } => turn_id.as_deref(),
                         _ => None,
                     };
-                    let identity = studio_runtime_schema::usage::ledger::UsageIdentity::new(
-                        id,
-                        params["threadId"]
-                            .as_str()
-                            .or_else(|| agent["threadId"].as_str()),
-                        &observation,
-                    );
-                    studio_runtime_schema::usage::ledger::receipt_aliases(
-                        &identity,
+                    studio_runtime_schema::usage::ledger::legacy_receipt_keys(
                         id,
                         agent["accountKey"].as_str().unwrap_or("default"),
                         turn,

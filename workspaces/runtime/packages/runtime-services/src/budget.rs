@@ -60,6 +60,13 @@ fn add(a: u64, b: u64) -> Result<u64, BudgetError> {
 #[serde(rename_all = "camelCase")]
 pub struct BudgetState {
     cutoff: f64,
+    /// Missing before v5; null for a v5-created ledger, otherwise its migration time in Unix seconds.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_ledger_epoch"
+    )]
+    ledger_since: Option<Option<f64>>,
     floor: u64,
     spent: u64,
     before: u64,
@@ -90,6 +97,12 @@ pub struct BudgetState {
     #[serde(flatten)]
     extra: BTreeMap<String, Value>,
 }
+fn deserialize_ledger_epoch<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<Option<f64>>, D::Error> {
+    Option::<f64>::deserialize(deserializer).map(Some)
+}
+
 impl BudgetState {
     fn fault(&mut self, fault: &str) {
         if !self.faults.iter().any(|f| f == fault) {
@@ -243,7 +256,8 @@ impl BudgetSnapshot {
             }
         }
         let floor = durable.tokens_used.unwrap_or(0);
-        let initialized = state.is_none();
+        let initialized =
+            state.is_none() || state.is_some_and(|value| value.get("ledgerSince").is_none());
         let legacy_unknown = state
             .map(needs_legacy_gap_coverage)
             .transpose()?
@@ -252,6 +266,7 @@ impl BudgetSnapshot {
             Some(value) => decode(value, "runtime_budget")?,
             None => BudgetState {
                 cutoff: now,
+                ledger_since: Some(None),
                 floor,
                 spent: floor,
                 before: 0,
@@ -274,6 +289,9 @@ impl BudgetSnapshot {
                 extra: BTreeMap::new(),
             },
         };
+        if state.ledger_since.is_none() {
+            state.ledger_since = Some(Some(now));
+        }
         if legacy_unknown {
             state.gap_coverage = studio_runtime_schema::usage::ledger::GapCoverage::LegacyUnknown;
         }
@@ -330,7 +348,9 @@ pub struct UsageObservation {
     key: String,
     legacy_keys: Vec<String>,
     unresolved_receipt: bool,
-    scoped_capture_key: Option<String>,
+    canonical_capture_key: Option<String>,
+    legacy_era: bool,
+    accounting_key: Option<String>,
     exact: bool,
     amount: Option<u64>,
     counter: Option<u64>,
@@ -404,6 +424,7 @@ impl UsageObservation {
             Ok(ParsedUsage::Cumulative { last, .. }) => last.clone(),
             _ => None,
         };
+        let mut scalar_counter = None;
         let (exact, amount, counter, response, turn, identity_usage, gap) = match parsed {
             Ok(ref observation) => {
                 let identity_usage =
@@ -461,6 +482,9 @@ impl UsageObservation {
             Err(_) => {
                 let legacy = parse_legacy_totals(snapshot.provider, params)
                     .map_err(|_| invalid("tokenUsage"))?;
+                if legacy.response_id.is_none() {
+                    scalar_counter = Some(legacy.clone());
+                }
                 (
                     legacy.response_id.is_some(),
                     Some(legacy.last_total_tokens.unwrap_or(legacy.total_tokens)),
@@ -508,11 +532,35 @@ impl UsageObservation {
             typed.map(|observation| UsageLedgerRow::capture(&a.id, thread.as_deref(), observation))
         });
         let unresolved_receipt = ledger.as_ref().is_some_and(|row| row.receipt_key.is_none());
+        let scalar_key = scalar_counter.as_ref().map(|legacy| {
+            studio_runtime_schema::usage::ledger::legacy_counter_observation_key(
+                &a.id,
+                thread.as_deref(),
+                legacy,
+            )
+        });
+        let accounting_key = ledger
+            .as_ref()
+            .map(UsageLedgerRow::observation_key)
+            .or_else(|| scalar_key.clone());
         let key = match &ledger {
             Some(row) => row.receipt_key.clone().unwrap_or_default(),
-            None => sha256_hex(python_json_with_separators(&identity, ",", ":").as_bytes()),
+            None => scalar_key.clone().unwrap_or_else(|| {
+                sha256_hex(python_json_with_separators(&identity, ",", ":").as_bytes())
+            }),
         };
-        let legacy_keys = ledger
+        let estimated = params
+            .get("_analyticsTimestampSource")
+            .and_then(Value::as_str)
+            == Some("fileModifiedEstimate")
+            || params.get("timestampSource").and_then(Value::as_str)
+                == Some("fileModifiedEstimate");
+        let legacy_era = studio_runtime_schema::usage::ledger::legacy_era(
+            snapshot.state.ledger_since.flatten(),
+            at,
+            estimated,
+        );
+        let mut legacy_keys = ledger
             .as_ref()
             .map(|row| {
                 if restoring {
@@ -521,8 +569,7 @@ impl UsageObservation {
                         &row.studio_usage,
                     )
                 } else {
-                    studio_runtime_schema::usage::ledger::receipt_aliases(
-                        &row.usage_identity,
+                    studio_runtime_schema::usage::ledger::legacy_receipt_keys(
                         &a.id,
                         &a.account_key,
                         identity_turn.as_deref(),
@@ -531,12 +578,19 @@ impl UsageObservation {
                     )
                 }
             })
+            .filter(|_| legacy_era)
             .unwrap_or_default();
-        let scoped_capture_key = if !restoring
-            && matches!(
-                ledger.as_ref().map(|row| &row.studio_usage),
-                Some(studio_runtime_schema::usage::UsageObservation::Cumulative { .. })
-            ) {
+        if legacy_era && scalar_counter.is_some() {
+            legacy_keys.push(sha256_hex(
+                python_json_with_separators(&identity, ",", ":").as_bytes(),
+            ));
+        }
+        let canonical_capture_key = if !restoring
+            && (scalar_key.is_some()
+                || matches!(
+                    ledger.as_ref().map(|row| &row.studio_usage),
+                    Some(studio_runtime_schema::usage::UsageObservation::Cumulative { .. })
+                )) {
             Some(key.clone())
         } else {
             None
@@ -561,7 +615,9 @@ impl UsageObservation {
             key,
             legacy_keys,
             unresolved_receipt,
-            scoped_capture_key,
+            canonical_capture_key,
+            legacy_era,
+            accounting_key,
             ledger,
             identity,
             exact,
@@ -573,10 +629,7 @@ impl UsageObservation {
             thread,
             gap,
             informational,
-            estimated: params
-                .get("_analyticsTimestampSource")
-                .and_then(Value::as_str)
-                == Some("fileModifiedEstimate"),
+            estimated,
             at,
             source,
         })
@@ -591,7 +644,7 @@ impl UsageObservation {
             self.identity,
             studio_runtime_schema::usage::ledger::UsageIdentity::Cumulative { .. }
         ) && row.details.is_none()
-            && self.scoped_capture_key.as_deref() != Some(row.id.as_str())
+            && self.canonical_capture_key.as_deref() != Some(row.id.as_str())
     }
     pub(crate) fn accepts_receipt(&self, row: &UsageRow) -> bool {
         !self.needs_receipt_ownership(row)
@@ -666,7 +719,7 @@ pub fn capture(
             changed: false,
         });
     }
-    let observation_key = p.ledger.as_ref().map(UsageLedgerRow::observation_key);
+    let observation_key = p.accounting_key.clone();
     if previous.is_some() && !p.unresolved_receipt {
         if let Some(key) = &observation_key {
             state.unknown_receipts.retain(|unknown| unknown != key);
@@ -678,6 +731,7 @@ pub fn capture(
         }
     }
     if p.unresolved_receipt
+        || p.legacy_era && !p.exact && !p.gap && previous.is_none()
         || observation_key
             .as_ref()
             .is_some_and(|key| state.unknown_receipts.contains(key))
@@ -1241,7 +1295,9 @@ mod typed_usage_tests {
     #[test]
     fn native_live_and_imported_notices_recognize_pre_upgrade_receipt_keys() {
         let agent = json!({"id":"a","provider":"codex","accountKey":"default","threadId":"t","turnId":"u","created":0});
-        let snapshot = BudgetSnapshot::from_records(&agent, &agent, None, 100.).expect("snapshot");
+        let mut snapshot =
+            BudgetSnapshot::from_records(&agent, &agent, None, 100.).expect("snapshot");
+        snapshot.state.ledger_since = Some(Some(102.));
         let total = json!({"inputTokens":20,"cachedInputTokens":5,"cacheWriteInputTokens":0,"outputTokens":4,"reasoningOutputTokens":1,"totalTokens":24});
         let last = json!({"inputTokens":5,"cachedInputTokens":1,"cacheWriteInputTokens":0,"outputTokens":1,"reasoningOutputTokens":0,"totalTokens":6});
         let params = json!({"threadId":"t","turnId":"u","tokenUsage":{"total":total,"last":last}});
@@ -1271,10 +1327,14 @@ mod typed_usage_tests {
                 .expect("old aggregate");
         let old_identity = json!(["a","default","notice","u",{"totalTokens":20},{"totalTokens":5}]);
         let old_key = sha256_hex(python_json_with_separators(&old_identity, ",", ":").as_bytes());
-        assert_eq!(
+        assert_ne!(
             observation.key(),
             old_key,
-            "pre-upgrade committed history receipts must be found on replay"
+            "v5 scalar compatibility keys use stable accounting identity"
+        );
+        assert!(
+            !observation.receipt_candidates().any(|key| key == old_key),
+            "a v5-created state never applies old aliases"
         );
     }
 

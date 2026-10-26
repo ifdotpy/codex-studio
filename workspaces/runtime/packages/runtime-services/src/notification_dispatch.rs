@@ -862,6 +862,7 @@ pub fn dispatch_notification_with_effects(
             for effect in &mut current {
                 if let NotificationPostCommit::Analytics {
                     usage_conflict: rejected,
+                    ledger_since: None,
                     ..
                 } = effect
                 {

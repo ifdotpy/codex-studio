@@ -49,6 +49,12 @@ pub struct BudgetUsageDetails {
 
 pub struct BudgetRepository;
 impl BudgetRepository {
+    /// Migration epoch in Unix seconds; null means this ledger was created under v5.
+    pub fn ledger_since(db: &Connection, agent: &str) -> StoreResult<Option<f64>> {
+        Ok(Table::<BudgetRecord>::new(db)
+            .get(&agent.into())?
+            .and_then(|record| record.0["ledgerSince"].as_f64()))
+    }
     pub fn agent(db: &Connection, id: &str) -> StoreResult<Value> {
         Table::<AgentRecord>::new(db)
             .get(&id.into())?

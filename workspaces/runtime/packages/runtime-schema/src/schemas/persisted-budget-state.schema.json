@@ -104,6 +104,18 @@
         }
       ],
       "title": "Thread"
+    },
+    "ledgerSince": {
+      "description": "Server Unix seconds of the pre-v5 ledger migration; null for ledgers created under v5.",
+      "anyOf": [
+        {
+          "type": "number",
+          "minimum": 0
+        },
+        {
+          "type": "null"
+        }
+      ]
     }
   },
   "required": [

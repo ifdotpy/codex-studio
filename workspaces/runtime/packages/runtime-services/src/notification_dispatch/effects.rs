@@ -155,6 +155,9 @@ pub enum NotificationPostCommit {
         budget_capture_value: Option<u64>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         usage_conflict: Option<Box<studio_runtime_schema::usage::ledger::UsageReplayConflict>>,
+        /// Budget migration epoch bound when this effect is durably logged.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        ledger_since: Option<f64>,
     },
     AnalyticsStream {
         observation: NotificationObservation,

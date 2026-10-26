@@ -123,14 +123,22 @@ never stored the original categories, analytics remains unknown rather than
 creating a typed response from a total alone. Existing cost groups retain their interpretation and price until new
 evidence updates their scope. No startup rebuild of analytics is required.
 
-New cumulative receipts include the thread and counter scope. Supported older
-receipt spellings remain aliases and are reused only after a unique match in
-the budget receipt table with proven thread and scope ownership. Missing or
-ambiguous ownership remains visibly unknown. New analytics rows cannot establish
-ownership of an old scalar alias without an explicit first-receipt link.
-Restoring an old counter without a recoverable key adds no debit and marks
-accounting unknown. That guard uses accounting scope, turn, total and last
-counts; context capacity, model lists and provider cost estimates cannot change it.
+New cumulative receipts use only accounting identity: agent, thread, scope,
+turn, total and last token counts. Budget and analytics share that identity, so
+metadata enrichment and account changes replay the first accounting row.
+A pre-v5 budget state lazily receives `ledgerSince`, the server migration time
+in Unix seconds, once. This reads and writes one budget row; there is no rebuild
+or backfill. A state created under v5 stores null and has no legacy era.
+Counters before that epoch, and counters with file-modified estimates in a
+migrated ledger, may only replay matching receipts. Supported pre-v5 aliases
+require proven thread and scope ownership. A miss records `unknownUsageReceipt`
+with the stable observation fingerprint: spent, historical notices and notice
+spent do not increase, and accounting remains provisional. Analytics likewise
+checks the old fingerprint id and records an unmatched observation without a
+second accounting row. This deliberately leaves previously unrecorded legacy
+usage unknown. Observations after the epoch use only the canonical key; legacy
+aliases do not apply. Context capacity, model lists and provider cost estimates
+cannot change the accounting identity.
 Old gap coverage remains explicitly unknown when no authoritative complete
 old-era inventory exists. A bounded search can establish known pre-ledger gap
 identities, but available rows alone cannot prove that no other gap was erased.

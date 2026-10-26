@@ -174,23 +174,31 @@ pub fn legacy_receipt_keys(
     ))]
 }
 
-/// Recognize pre-v5 keys and the first scoped-v5 spelling without creating a new debit.
-pub fn receipt_aliases(
-    identity: &UsageIdentity,
+/// Stable identity for the total-only compatibility reader; it never invents categories.
+pub fn legacy_counter_observation_key(
     agent: &str,
-    account: &str,
-    turn: Option<&str>,
-    params: &Value,
-    observation: &UsageObservation,
-) -> Vec<String> {
-    let mut keys = legacy_receipt_keys(agent, account, turn, params, observation);
-    if matches!(observation, UsageObservation::Cumulative { .. }) {
-        keys.push(receipt_hash(&json!([
-            identity,
-            legacy_counter_preimage(agent, account, turn, params, observation)
-        ])));
-    }
-    keys
+    thread: Option<&str>,
+    legacy: &super::LegacyUsageTotals,
+) -> String {
+    let identity = UsageIdentity::Cumulative {
+        agent: agent.into(),
+        thread_id: thread.map(str::to_owned),
+        scope: legacy.scope,
+    };
+    receipt_hash(&json!([
+        identity,
+        [
+            legacy.turn_id,
+            legacy.total_tokens,
+            legacy.last_total_tokens
+        ]
+    ]))
+}
+
+/// Whether accounting evidence belongs to a migrated ledger's legacy era.
+/// Epoch and observation time are server/provider Unix seconds respectively.
+pub fn legacy_era(ledger_since: Option<f64>, at: f64, estimated: bool) -> bool {
+    ledger_since.is_some_and(|since| estimated || at < since)
 }
 
 /// Recover supported old counter spellings from persisted typed facts, never by
@@ -222,14 +230,9 @@ pub fn legacy_analytics_receipt_keys(row: &Value, observation: &UsageObservation
             ]),
             json!([agent, account, "notice", turn, observation]),
         ] {
-            let identity = UsageIdentity::new(agent, row["threadId"].as_str(), observation);
-            for key in [
-                receipt_hash(&preimage),
-                receipt_hash(&json!([identity, preimage])),
-            ] {
-                if !keys.contains(&key) {
-                    keys.push(key);
-                }
+            let key = receipt_hash(&preimage);
+            if !keys.contains(&key) {
+                keys.push(key);
             }
         }
     }
