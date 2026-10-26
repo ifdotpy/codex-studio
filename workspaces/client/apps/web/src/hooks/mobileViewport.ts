@@ -36,7 +36,8 @@ export function useMobileViewport(active: boolean, compact = false) {
     let hadComposerFocus = false;
     let composerClosing = false;
     let sampledGeometry = "";
-    let stableFrames = 0;
+    let stableSince = 0;
+    let minimumWatchUntil = 0;
     let focusedComposer: HTMLTextAreaElement | null = null;
     let touchListeners = false;
     let interceptedTextarea: HTMLTextAreaElement | null = null;
@@ -237,8 +238,10 @@ export function useMobileViewport(active: boolean, compact = false) {
     content.observe(root, { childList: true, subtree: true });
     const sampleNativePan = (time: number) => {
       focusFrame = 0;
+      const keyboardActive =
+        hadComposerFocus && root.hasAttribute("data-viewport-keyboard");
       if (
-        time > focusDeadline ||
+        (time > focusDeadline && !keyboardActive) ||
         (hadComposerFocus &&
           (!focusedComposer?.isConnected ||
             document.activeElement !== focusedComposer))
@@ -256,10 +259,17 @@ export function useMobileViewport(active: boolean, compact = false) {
       ].join("|");
       if (geometry !== sampledGeometry) {
         sampledGeometry = geometry;
-        stableFrames = 0;
-        focusDeadline = time + layoutValues.keyboard.focusSampleWindow;
+        stableSince = time;
+        focusDeadline = Math.max(
+          minimumWatchUntil,
+          time + layoutValues.keyboard.focusSampleWindow,
+        );
         update();
-      } else if (++stableFrames >= layoutValues.keyboard.stableSampleFrames)
+      } else if (
+        !keyboardActive &&
+        time >= minimumWatchUntil &&
+        time - stableSince >= layoutValues.keyboard.stableSampleDuration
+      )
         return;
       focusFrame = requestAnimationFrame(sampleNativePan);
     };
@@ -267,9 +277,15 @@ export function useMobileViewport(active: boolean, compact = false) {
       if (!viewport || !primaryPointer.matches) return;
       cancelAnimationFrame(focusFrame);
       sampledGeometry = "";
-      stableFrames = 0;
-      focusDeadline =
-        performance.now() + layoutValues.keyboard.focusSampleWindow;
+      const now = performance.now();
+      stableSince = now;
+      minimumWatchUntil = hadComposerFocus
+        ? now + layoutValues.keyboard.focusOpenGrace
+        : now;
+      focusDeadline = Math.max(
+        minimumWatchUntil,
+        now + layoutValues.keyboard.focusSampleWindow,
+      );
       focusFrame = requestAnimationFrame(sampleNativePan);
     };
     const sampleAfterFocus = () => {
@@ -352,6 +368,7 @@ export function useMobileViewport(active: boolean, compact = false) {
       const needed = !!viewport && primaryPointer.matches;
       if (needed === touchListeners) return;
       touchListeners = needed;
+      if (!needed) interceptedTextarea = null;
       for (const type of ["pointerdown", "touchstart"]) {
         if (needed)
           document.addEventListener(type, focusWithoutNativePan, {

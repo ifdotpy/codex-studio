@@ -149,5 +149,6 @@
   --layout-keyboard-motion-duration: 400ms;
   --layout-keyboard-motion-target-tolerance: 0.1px;
   --layout-keyboard-focus-sample-window: 600ms;
-  --layout-keyboard-stable-sample-frames: 12;
+  --layout-keyboard-stable-sample-duration: 300ms;
+  --layout-keyboard-focus-open-grace: 2000ms;
 }

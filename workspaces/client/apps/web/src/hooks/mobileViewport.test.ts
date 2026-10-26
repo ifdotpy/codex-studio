@@ -441,17 +441,17 @@ it("finds the first raw keyboard height loss after a long focus delay", () => {
   flush(1000);
   viewport.height = 337;
   windowMock.innerHeight = 669;
-  clock.mockReturnValue(1519);
-  viewport.dispatchEvent(new Event("resize"));
   flush(1519);
   expect(root.style.get("--mobile-viewport-height")).toBe("669px");
   expect(root.setAttribute).toHaveBeenCalledWith("data-viewport-keyboard", "");
   expect(frames.size).toBeGreaterThan(0);
-  clock.mockReturnValue(1600);
+  flush(10000);
+  expect(frames.size).toBeGreaterThan(0);
+  clock.mockReturnValue(10100);
   documentMock.activeElement = null;
   documentMock.dispatchEvent(new Event("focusout"));
-  flush(2201);
-  flush(2202);
+  flush(10701);
+  flush(10702);
   expect(frames.size).toBe(0);
 });
 
@@ -526,10 +526,11 @@ it("refreshes a same-width desktop resize without a keyboard", () => {
   expect(root.style.get("--mobile-viewport-height")).toBe("400px");
 });
 it("stops sampling after stable focus and restarts for a viewport event", () => {
+  vi.spyOn(performance, "now").mockReturnValue(0);
   mount();
   documentMock.activeElement = new Textarea();
   documentMock.dispatchEvent(new Event("focusin"));
-  for (let i = 0; i < 30; i++) flush(i * 16);
+  for (let i = 0; i < 170; i++) flush(i * 16);
   expect(frames.size).toBe(0);
   viewport.height = 337;
   viewport.dispatchEvent(new Event("resize"));
@@ -543,4 +544,35 @@ it("stops sampling if the focused composer is detached", () => {
   Object.assign(textarea, { isConnected: false });
   flush(16);
   expect(frames.size).toBe(0);
+});
+
+it("does not call a same-width coarse-pointer resize a keyboard without editable focus", () => {
+  mount();
+  windowMock.innerHeight = root.clientHeight = 400;
+  resize({ height: 400 });
+  expect(root.hasAttribute("data-viewport-keyboard")).toBe(false);
+  expect(root.style.get("--mobile-viewport-height")).toBe("400px");
+});
+it("uses wall time rather than refresh rate to stop stable blur sampling", () => {
+  vi.spyOn(performance, "now").mockReturnValue(0);
+  mount();
+  documentMock.activeElement = new Textarea();
+  documentMock.dispatchEvent(new Event("focusin"));
+  documentMock.activeElement = null;
+  documentMock.dispatchEvent(new Event("focusout"));
+  for (let i = 0; i <= 15; i++) flush(i * 8);
+  expect(frames.size).toBeGreaterThan(0);
+  flush(300);
+  expect(frames.size).toBe(0);
+});
+it("clears an unfinished gesture when primary-touch listeners detach", () => {
+  mount();
+  const textarea = new Textarea();
+  expect(gesture(textarea).defaultPrevented).toBe(true);
+  primaryQueries.matches = false;
+  primaryQueries.dispatchEvent(new Event("change"));
+  primaryQueries.matches = true;
+  primaryQueries.dispatchEvent(new Event("change"));
+  expect(gesture(textarea).defaultPrevented).toBe(false);
+  expect(textarea.focus).toHaveBeenCalledTimes(1);
 });

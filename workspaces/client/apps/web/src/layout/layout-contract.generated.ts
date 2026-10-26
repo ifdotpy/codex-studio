@@ -821,11 +821,17 @@ export const layoutTokens = {
     purpose:
       "Raw geometry sampling time after composer blur; focused composers continue sampling until blur",
   },
-  "keyboard.stableSampleFrames": {
-    value: 12,
-    unit: "frames",
+  "keyboard.stableSampleDuration": {
+    value: 300,
+    unit: "ms",
     purpose:
-      "Consecutive unchanged viewport samples before keyboard frame sampling stops",
+      "Unchanged viewport duration before an inactive keyboard sampler stops",
+  },
+  "keyboard.focusOpenGrace": {
+    value: 2000,
+    unit: "ms",
+    purpose:
+      "Initial composer focus watch interval for a delayed silent keyboard height change",
   },
 } as const;
 export const layoutValues = {
@@ -893,7 +899,8 @@ export const layoutValues = {
     motionDuration: 400,
     motionTargetTolerance: 0.1,
     focusSampleWindow: 600,
-    stableSampleFrames: 12,
+    stableSampleDuration: 300,
+    focusOpenGrace: 2000,
   },
   viewport: {
     zoomTolerance: 0.01,

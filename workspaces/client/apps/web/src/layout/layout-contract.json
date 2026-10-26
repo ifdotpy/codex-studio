@@ -745,10 +745,15 @@
       "unit": "ms",
       "purpose": "Raw geometry sampling time after composer blur; focused composers continue sampling until blur"
     },
-    "keyboard.stableSampleFrames": {
-      "value": 12,
-      "unit": "frames",
-      "purpose": "Consecutive unchanged viewport samples before keyboard frame sampling stops"
+    "keyboard.stableSampleDuration": {
+      "value": 300,
+      "unit": "ms",
+      "purpose": "Unchanged viewport duration before an inactive keyboard sampler stops"
+    },
+    "keyboard.focusOpenGrace": {
+      "value": 2000,
+      "unit": "ms",
+      "purpose": "Initial composer focus watch interval for a delayed silent keyboard height change"
     }
   },
   "queries": {
