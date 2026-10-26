@@ -9,10 +9,7 @@ const bridges: Awaited<ReturnType<typeof startBridge>>[] = [];
 afterEach(async () => {
   for (const b of bridges.splice(0)) await b.close();
 });
-const sdk = await fs.readFile(
-  new URL("./usage-bridge.fixture.mts", import.meta.url),
-  "utf8",
-);
+const sdk = new URL("./usage-bridge.fixture.mts", import.meta.url);
 async function setup(thread = {}, env = {}) {
   const b = await startBridge(sdk, "claude-usage-", { thread, env });
   bridges.push(b);

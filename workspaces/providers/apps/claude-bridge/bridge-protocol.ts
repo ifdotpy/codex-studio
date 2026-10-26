@@ -338,10 +338,11 @@ export interface BridgeMethods {
   ];
   "thread/loaded/list": [unknown, BridgePage<string>];
   "thread/fork": [
-    BridgeThreadParams & {
-      lastTurnId?: string | null | undefined;
-      excludeTurns?: boolean | undefined;
-    },
+    BridgeThreadParams &
+      BridgeSessionParams & {
+        lastTurnId?: string | null | undefined;
+        excludeTurns?: boolean | undefined;
+      },
     BridgeThreadResult,
   ];
   "thread/compact/start": [

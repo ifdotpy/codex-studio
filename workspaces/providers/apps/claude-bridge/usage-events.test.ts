@@ -1,4 +1,3 @@
-import fs from "node:fs/promises";
 import { afterEach, test } from "vitest";
 import assert from "node:assert/strict";
 import { startBridge } from "./testing/bridge-harness.ts";
@@ -7,10 +6,7 @@ const bridges: Awaited<ReturnType<typeof startBridge>>[] = [];
 afterEach(async () => {
   for (const bridge of bridges.splice(0)) await bridge.close();
 });
-const sdk = await fs.readFile(
-  new URL("./usage-events.fixture.mts", import.meta.url),
-  "utf8",
-);
+const sdk = new URL("./usage-events.fixture.mts", import.meta.url);
 async function run(events: readonly unknown[], model = "sonnet") {
   const bridge = await startBridge(sdk, "claude-usage-", {
     env: { STUDIO_FIXTURE_EVENTS: JSON.stringify(events) },

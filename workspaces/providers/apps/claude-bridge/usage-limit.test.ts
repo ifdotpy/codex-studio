@@ -1,4 +1,3 @@
-import fs from "node:fs/promises";
 // A Claude subscription limit through the real bridge with a scripted SDK. No
 // model calls. The messages follow what Claude Code writes to its stream when a
 // request is refused at the limit: a rate_limit_event, then a synthetic
@@ -14,10 +13,7 @@ const LIMIT_TEXT = "You've hit your session limit · resets 3:40am (UTC)";
 // a background task notification) and the limit refuses its first request. The
 // rate_limit_event comes before that turn exists. Input "plain": the turn the
 // input started is refused, and the message has no rate_limit_info.
-const FAKE_SDK = await fs.readFile(
-  new URL("./usage-limit.fixture.mts", import.meta.url),
-  "utf8",
-);
+const FAKE_SDK = new URL("./usage-limit.fixture.mts", import.meta.url);
 
 const bridges: Awaited<ReturnType<typeof startBridge>>[] = [];
 afterEach(async () => {
