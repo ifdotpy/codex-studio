@@ -1,4 +1,4 @@
-import { ResponseUsage, cumulativeUsage } from "./usage.mjs";
+import { ResponseUsage, cumulativeUsage } from "./usage.ts";
 import { isThreadSerialized } from "./provider-method-policy.generated.ts";
 import {
   cacheReport,
@@ -9,13 +9,13 @@ import {
   prepareFileRestore,
   verifyFileRestore,
   fileBackups,
-} from "./file-restore.mjs";
+} from "./file-restore.ts";
 import {
   fileCheckpointOptions,
   fileRestoreReason,
   rewindSessionFiles,
-} from "./file-checkpoints.mjs";
-import { createAccountCheck } from "./account-identity.mjs";
+} from "./file-checkpoints.ts";
+import { createAccountCheck } from "./account-identity.ts";
 import { readHistoryIndex, verifiedHistoryMessages } from "./history-index.ts";
 import {
   persistNativeSession,
@@ -51,13 +51,13 @@ import {
   claudeErrorInfo,
   providerNotice,
   limitApplies,
-} from "./features.mjs";
+} from "./features.ts";
 import {
   commandCatalog,
   explicitNativeCommand,
   rollbackSession,
   forkAtTurn,
-} from "./controls.mjs";
+} from "./controls.ts";
 import { z } from "zod";
 import { createHash, randomUUID } from "node:crypto";
 import { createInterface } from "node:readline";
@@ -72,10 +72,10 @@ import {
   ephemeralSessionOptions,
   isDiskFull,
 } from "./session-store.ts";
-import { claudeImage } from "./images.mjs";
-import { listSkills } from "./skills.mjs";
+import { claudeImage } from "./images.ts";
+import { listSkills } from "./skills.ts";
 import { reconcileHistoricalBash } from "./historical-bash-receipts.ts";
-import { createCatalogCache, loadCatalog } from "./catalog-cache.mjs";
+import { createCatalogCache, loadCatalog } from "./catalog-cache.ts";
 import {
   declaredTimeoutMs,
   durationText,
@@ -102,7 +102,7 @@ import {
   verifyToolProof,
   studioToolCatalog,
   exactTurnTools,
-} from "./move.mjs";
+} from "./move.ts";
 
 import {
   externalAliases,
@@ -111,7 +111,7 @@ import {
   externalRefusal,
   serverAlias,
   canonicalJson,
-} from "./move-external.mjs";
+} from "./move-external.ts";
 
 const externalConfigs = new Map();
 

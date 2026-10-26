@@ -49,3 +49,21 @@ export const malformedUsage: BridgeNotification<"thread/tokenUsage/updated"> = {
     studioUsage: { kind: "gap", responseId: "response", reason: "invented" },
   },
 };
+
+import type { BridgeHarness } from "./testing/bridge-harness.ts";
+export async function checkHarness(bridge: BridgeHarness) {
+  const result = await bridge.call("turn/start", start.params);
+  result.turn.id satisfies string;
+  const completed = await bridge.note(
+    "turn/completed",
+    (note) => note.params.turn.id === result.turn.id,
+  );
+  completed.params.turn.id satisfies string;
+  const usage = await bridge.note(
+    (note) => note.method === "thread/tokenUsage/updated",
+  );
+  if (usage.params.studioUsage.kind === "gap")
+    usage.params.studioUsage.reason satisfies string;
+  // @ts-expect-error The harness preserves required steer params.
+  await bridge.call("turn/steer", { threadId: "thread", input: [] });
+}

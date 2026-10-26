@@ -1,3 +1,6 @@
+import { fileURLToPath } from "node:url";
+import type { ExternalConfig, ExternalServer } from "./move-external.ts";
+import type { Tool } from "@modelcontextprotocol/sdk/types.js";
 import { test } from "vitest";
 import assert from "node:assert/strict";
 import fs from "node:fs/promises";
@@ -10,18 +13,17 @@ import {
   targetExternalCatalog,
   listExternalTools,
   readExternalInstructions,
-} from "./move-external.mjs";
+} from "./move-external.ts";
 
-const statuses = [
-  {
-    name: "anarlog",
-    status: "connected",
-    source: "user",
-    config: { type: "stdio", command: "node", args: ["catalog.mjs"] },
-  },
-];
+const status = {
+  name: "anarlog",
+  status: "connected",
+  source: "user",
+  config: { type: "stdio", command: "node", args: ["catalog.mjs"] },
+} satisfies Parameters<typeof externalCatalog>[0][number];
+const statuses = [status];
 const config = {
-  ...statuses[0].config,
+  ...status.config,
   env: { PRIVATE_TOKEN: "credential-secret" },
 };
 const tools = [
@@ -31,7 +33,7 @@ const tools = [
     inputSchema: { type: "object", properties: { cwd: { type: "string" } } },
   },
   { name: "second", inputSchema: { type: "object" } },
-];
+] satisfies Tool[];
 const dependencies = {
   localConfigs: async () => ({ anarlog: config }),
   listTools: async () => tools,
@@ -60,17 +62,29 @@ test("external proof lists only current server aliases and never transfers crede
   });
   assert.equal(called, 1);
   assert.deepEqual(
-    result.catalogs[0].tools.map((tool) => tool.name),
+    result.catalogs[0]?.tools.map((tool) => tool.name),
     ["mcp__anarlog__first", "mcp__anarlog__second"],
   );
   assert.ok(!JSON.stringify(result.catalogs).includes("credential-secret"));
-  assert.equal(result.configs.anarlog.env.PRIVATE_TOKEN, "credential-secret");
+  assert.ok(result.configs.anarlog && "env" in result.configs.anarlog);
+  assert.equal(result.configs.anarlog.env?.PRIVATE_TOKEN, "credential-secret");
   verifyExternalCatalog(result.catalogs, structuredClone(result.catalogs));
   for (const mutate of [
-    (catalog) => catalog[0].tools.reverse(),
-    (catalog) => (catalog[0].tools[0].description = "Changed"),
-    (catalog) => (catalog[0].tools[0].input_schema.type = "array"),
-    (catalog) => (catalog[0].tools = []),
+    (catalog: ExternalServer[]) => catalog[0]?.tools.reverse(),
+    (catalog: ExternalServer[]) => {
+      const tool = catalog[0]?.tools[0];
+      assert.ok(tool);
+      tool.description = "Changed";
+    },
+    (catalog: ExternalServer[]) => {
+      const schema = catalog[0]?.tools[0]?.input_schema;
+      assert.ok(schema);
+      schema.type = "array";
+    },
+    (catalog: ExternalServer[]) => {
+      assert.ok(catalog[0]);
+      catalog[0].tools = [];
+    },
   ]) {
     const target = structuredClone(result.catalogs);
     mutate(target);
@@ -82,7 +96,7 @@ test("external proof lists only current server aliases and never transfers crede
 });
 
 test("external server failure and missing schemas return only safe names", async () => {
-  for (const state of [[], [{ ...statuses[0], status: "needs-auth" }]])
+  for (const state of [[], [{ ...status, status: "needs-auth" }]])
     await assert.rejects(
       externalCatalog(state, "/target", ["anarlog"], dependencies),
       /anarlog/,
@@ -98,26 +112,28 @@ test("external server failure and missing schemas return only safe names", async
         ...dependencies,
         listTools: listing,
       }),
-      (error) =>
-        !JSON.stringify(error.data).includes("credential-secret") &&
-        !error.message.includes("credential-secret"),
+      (error) => {
+        assert.ok(error instanceof Error && "data" in error);
+        return (
+          !JSON.stringify(error.data).includes("credential-secret") &&
+          !error.message.includes("credential-secret")
+        );
+      },
     );
 });
 
 test("stdio proof sends initialize and tools/list without tool calls or model input", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "claude-mcp-list-"));
-  const script = path.join(root, "server.mjs");
-  const log = path.join(root, "requests.jsonl");
-  await fs.writeFile(
-    script,
-    `import fs from 'node:fs';import {createInterface} from 'node:readline';for await(const line of createInterface({input:process.stdin})){const r=JSON.parse(line);fs.appendFileSync(${JSON.stringify(log)},r.method+'\\n');if(!('id'in r))continue;const result=r.method==='initialize'?{protocolVersion:r.params.protocolVersion,capabilities:{tools:{}},serverInfo:{name:'fixture',version:'1'}}:r.method==='tools/list'?{tools:${JSON.stringify(tools)}}:{};process.stdout.write(JSON.stringify({jsonrpc:'2.0',id:r.id,result})+'\\n');}`,
+  const script = fileURLToPath(
+    new URL("./move-external.fixture.ts", import.meta.url),
   );
+  const log = path.join(root, "requests.jsonl");
   try {
     assert.deepEqual(
       await listExternalTools({
         type: "stdio",
         command: process.execPath,
-        args: [script],
+        args: [script, log, "catalog", JSON.stringify(tools)],
       }),
       tools,
     );
@@ -135,18 +151,16 @@ test("Codex instruction proof initializes without listing resources or calling t
   const root = await fs.mkdtemp(
     path.join(os.tmpdir(), "codex-mcp-instructions-"),
   );
-  const script = path.join(root, "server.mjs");
-  const log = path.join(root, "requests");
-  await fs.writeFile(
-    script,
-    `import fs from 'node:fs';import {createInterface} from 'node:readline';for await(const line of createInterface({input:process.stdin})){const r=JSON.parse(line);fs.appendFileSync(${JSON.stringify(log)},r.method+'\\n');if(!('id'in r))continue;process.stdout.write(JSON.stringify({jsonrpc:'2.0',id:r.id,result:{protocolVersion:r.params.protocolVersion,capabilities:{tools:{}},serverInfo:{name:'fixture',version:'1'},instructions:'Private instructions'}})+'\\n');}`,
+  const script = fileURLToPath(
+    new URL("./move-external.fixture.ts", import.meta.url),
   );
+  const log = path.join(root, "requests");
   try {
     assert.equal(
       await readExternalInstructions({
         type: "stdio",
         command: process.execPath,
-        args: [script],
+        args: [script, log, "instructions"],
       }),
       "Private instructions",
     );
@@ -198,6 +212,7 @@ test("without the connector token the account's connector catalog stands; local 
   const local = (
     await externalCatalog(statuses, "/source", ["anarlog"], dependencies)
   ).catalogs[0];
+  assert.ok(local);
   let read = 0;
   const result = await targetExternalCatalog("/target", [docs, local], {
     ...dependencies,
@@ -231,13 +246,17 @@ test("without the connector token the account's connector catalog stands; local 
 });
 
 test("a move carries a credential-free MCP transport and the target starts the same server", async () => {
-  const transport = { type: "stdio", command: "node", args: ["catalog.mjs"] };
+  const transport = {
+    type: "stdio",
+    command: "node",
+    args: ["catalog.mjs"],
+  } satisfies ExternalConfig;
   const source = await externalCatalog(statuses, "/source", ["anarlog"], {
     localConfigs: async () => ({ anarlog: { ...transport, env: {} } }),
     listTools: async () => tools,
   });
   assert.deepEqual(source.transports, { anarlog: transport });
-  let started;
+  let started: ExternalConfig | undefined;
   const target = await targetExternalCatalog("/target", source.catalogs, {
     localConfigs: async () => ({}),
     transports: structuredClone(source.transports),
@@ -271,7 +290,11 @@ test("a server with credentials sends no transport, and only the proved transpor
     !JSON.stringify(withSecret.transports).includes("credential-secret"),
   );
   // A carried transport that differs from the proved one is not started.
-  const other = { type: "stdio", command: "node", args: ["other.mjs"] };
+  const other = {
+    type: "stdio",
+    command: "node",
+    args: ["other.mjs"],
+  } satisfies ExternalConfig;
   let started = 0;
   await assert.rejects(
     targetExternalCatalog("/target", withSecret.catalogs, {

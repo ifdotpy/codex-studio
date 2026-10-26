@@ -1,3 +1,29 @@
+import type { Session } from "./session-state.ts";
+import type { McpSdkServerConfigWithInstance } from "@anthropic-ai/claude-agent-sdk";
+export type ProofTool = {
+  name: string;
+  description?: string;
+  input_schema?: Record<string, unknown> | undefined;
+  schema?: Record<string, unknown>;
+  [key: string]: unknown;
+};
+export type ToolProof = {
+  tools?: ProofTool[];
+  inlineTools?: boolean;
+  surfacedExternal?: boolean;
+  deferredTools?: ProofTool[];
+  activeDeferredNames?: string[];
+  deferredBuiltinNames?: string[];
+  compiledTools?: ProofTool[];
+  compiledToolsJson?: string;
+};
+export type MoveProof = ToolProof & {
+  snapshotHash: string;
+  tools: ProofTool[];
+  session: Partial<Session>;
+};
+export const isRecord = (value: unknown): value is Record<string, unknown> =>
+  value !== null && typeof value === "object" && !Array.isArray(value);
 // Native session files move without credentials or a model request.
 import fs from "node:fs/promises";
 import path from "node:path";
@@ -8,16 +34,33 @@ import { createRequire } from "node:module";
 import { createHash } from "node:crypto";
 const require = createRequire(import.meta.url);
 const run = promisify(execFile);
+// The paired channel signs canonical JSON, so a catalog from the source arrives with sorted
+// object keys; catalogs and option hashes compare in this canonical form.
+export const canonicalJson = (value: unknown) =>
+  JSON.stringify(value, (_key, entry: unknown) =>
+    entry && typeof entry === "object" && !Array.isArray(entry)
+      ? Object.fromEntries(
+          Object.keys(entry)
+            .sort()
+            .map((name) => [name, Reflect.get(entry, name)]),
+        )
+      : entry,
+  );
+
 export const movePrompt = { snapshot: true, excludeDynamicSections: true };
 
-const toolSchema = (entry) => entry?.input_schema ?? entry?.schema;
-const completeTool = (entry) =>
-  typeof entry?.name === "string" &&
-  entry.name.length > 0 &&
-  toolSchema(entry) !== null &&
-  typeof toolSchema(entry) === "object" &&
-  !Array.isArray(toolSchema(entry));
-const normalizeTool = ({ schema, ...entry }) => ({
+const completeTool = (entry: unknown): entry is ProofTool => {
+  if (!isRecord(entry)) return false;
+  const schema = entry.input_schema ?? entry.schema;
+  return (
+    typeof entry.name === "string" &&
+    entry.name.length > 0 &&
+    schema !== null &&
+    typeof schema === "object" &&
+    !Array.isArray(schema)
+  );
+};
+const normalizeTool = ({ schema, ...entry }: ProofTool) => ({
   ...entry,
   input_schema: entry.input_schema ?? schema,
 });
@@ -25,19 +68,14 @@ const normalizeTool = ({ schema, ...entry }) => ({
 // The paired channel signs canonical JSON and so sorts object keys, while the order of a tool
 // schema's properties is part of the prompt. A move carries the source's tool lists as exact
 // JSON text too; the target reads that text, after checking it against the sorted copy.
-const canonicalJson = (value) =>
-  JSON.stringify(value, (key, entry) =>
-    entry && typeof entry === "object" && !Array.isArray(entry)
-      ? Object.fromEntries(
-          Object.keys(entry)
-            .sort()
-            .map((name) => [name, entry[name]]),
-        )
-      : entry,
-  );
-export function exactList(sorted, text, what) {
+// Exact-list text is written by this bridge with JSON.stringify before a signed move.
+// Its sorted counterpart is checked below before it is used as the same type.
+function parseExactList<T>(text: string): T {
+  return JSON.parse(text);
+}
+export function exactList<T>(sorted: T, text: unknown, what: string): T {
   if (typeof text !== "string") return sorted;
-  const exact = JSON.parse(text);
+  const exact = parseExactList<T>(text);
   if (sorted !== undefined && canonicalJson(exact) !== canonicalJson(sorted))
     throw new Error(`The exact ${what} differ from the moved copy`);
   return exact;
@@ -45,13 +83,18 @@ export function exactList(sorted, text, what) {
 /** The server keeps records with sorted keys, so later turns of a moved session bring its
  * tools in another key order, and a schema compiled from them lists `required` in another
  * order. Equal content keeps the exact moved order; changed content stays as sent. */
-export function exactTurnTools(session, tools) {
+export function exactTurnTools<T>(
+  session: Pick<Session, "dynamicToolsJson">,
+  tools: T,
+): T {
   if (typeof session?.dynamicToolsJson !== "string" || !Array.isArray(tools))
     return tools;
-  const exact = JSON.parse(session.dynamicToolsJson);
+  const exact = parseExactList<T>(session.dynamicToolsJson);
   return canonicalJson(exact) === canonicalJson(tools) ? exact : tools;
 }
-export function exactSession(session) {
+export function exactSession<
+  T extends Pick<Session, "dynamicToolsJson" | "dynamicTools">,
+>(session: T): T {
   if (typeof session?.dynamicToolsJson !== "string") return session;
   return {
     ...session,
@@ -62,7 +105,9 @@ export function exactSession(session) {
     ),
   };
 }
-export function exactProof(proof) {
+export function exactProof<
+  T extends Pick<ToolProof, "compiledToolsJson" | "compiledTools">,
+>(proof: T): T {
   if (typeof proof?.compiledToolsJson !== "string") return proof;
   return {
     ...proof,
@@ -74,18 +119,35 @@ export function exactProof(proof) {
   };
 }
 
-export async function savedPromptProof(file, session) {
+export async function savedPromptProof(
+  file: string,
+  session: Pick<
+    Session,
+    | "id"
+    | "nativeId"
+    | "dynamicTools"
+    | "model"
+    | "developerInstructions"
+    | "approvalPolicy"
+    | "sandbox"
+    | "claude"
+    | "moveTurnOptions"
+  >,
+) {
   const bytes = await fs.readFile(file);
   if (bytes.length > 256 * 1024 * 1024 || bytes.at(-1) !== 10)
     throw new Error("The complete native snapshot history is unavailable");
-  let snapshot;
-  const deferred = new Map();
-  const activeNames = new Set();
+  let snapshot: Record<string, unknown> | undefined;
+  const deferred = new Map<string, ProofTool>();
+  const activeNames = new Set<string>();
   // Every name a delta announced since the last compaction. Connectors drop and add their
   // names around each turn, so the active set at one moment differs from the next.
-  const announced = new Set();
+  const announced = new Set<string>();
   for (const line of bytes.toString("utf8").trimEnd().split("\n")) {
-    const row = JSON.parse(line);
+    const row: unknown = JSON.parse(line);
+    if (!isRecord(row))
+      throw new Error("The complete native snapshot history is unavailable");
+    const attachment = isRecord(row.attachment) ? row.attachment : undefined;
     if (row.sessionId && row.sessionId !== (session.nativeId || session.id))
       throw new Error("The native snapshot session identity differs");
     if (row.type === "system" && row.subtype === "compact_boundary") {
@@ -94,15 +156,15 @@ export async function savedPromptProof(file, session) {
       activeNames.clear();
       announced.clear();
     }
-    if (row.type === "attachment" && row.attachment?.type === "prompt_snapshot")
-      snapshot = row.attachment;
+    if (row.type === "attachment" && attachment?.type === "prompt_snapshot")
+      snapshot = attachment;
     if (
       row.type === "attachment" &&
-      row.attachment?.type === "deferred_tools_record"
+      attachment?.type === "deferred_tools_record"
     ) {
-      if (!Array.isArray(row.attachment.entries))
+      if (!Array.isArray(attachment.entries))
         throw new Error("The saved deferred tool schemas are incomplete");
-      for (const entry of row.attachment.entries) {
+      for (const entry of attachment.entries) {
         if (!completeTool(entry))
           throw new Error("The saved deferred tool schemas are incomplete");
         deferred.set(entry.name, entry);
@@ -111,31 +173,29 @@ export async function savedPromptProof(file, session) {
     }
     if (
       row.type === "attachment" &&
-      row.attachment?.type === "deferred_tools_delta"
+      attachment?.type === "deferred_tools_delta"
     ) {
       // Newer CLIs put the definitions that a delta surfaces into the delta itself; an
       // entry with sameAs repeats a definition that an earlier delta gave.
-      const surfaced = row.attachment.surfacedDefinitions;
+      const surfaced: unknown = attachment.surfacedDefinitions;
       if (surfaced !== undefined && !Array.isArray(surfaced))
         throw new Error("The saved deferred tool schemas are incomplete");
-      for (const entry of surfaced || []) {
-        if (entry?.definition === undefined) continue;
+      for (const entry of (surfaced || []) as unknown[]) {
+        if (!isRecord(entry) || entry.definition === undefined) continue;
         if (!completeTool(entry.definition))
           throw new Error("The saved deferred tool schemas are incomplete");
         deferred.set(entry.definition.name, entry.definition);
       }
-      for (const key of ["removedNames", "addedNames"])
+      for (const key of ["removedNames", "addedNames"] as const)
         if (
-          row.attachment[key] !== undefined &&
-          (!Array.isArray(row.attachment[key]) ||
-            !row.attachment[key].every(
-              (name) => typeof name === "string" && name,
-            ))
+          attachment[key] !== undefined &&
+          (!Array.isArray(attachment[key]) ||
+            !attachment[key].every((name) => typeof name === "string" && name))
         )
           throw new Error("The saved deferred tool names are incomplete");
-      for (const name of row.attachment.removedNames || [])
+      for (const name of (attachment.removedNames || []) as string[])
         activeNames.delete(name);
-      for (const name of row.attachment.addedNames || []) {
+      for (const name of (attachment.addedNames || []) as string[]) {
         activeNames.add(name);
         announced.add(name);
       }
@@ -176,15 +236,17 @@ export async function savedPromptProof(file, session) {
       : {}),
     session: {
       ...Object.fromEntries(
-        [
-          "model",
-          "dynamicTools",
-          "developerInstructions",
-          "approvalPolicy",
-          "sandbox",
-          "claude",
-          "moveTurnOptions",
-        ]
+        (
+          [
+            "model",
+            "dynamicTools",
+            "developerInstructions",
+            "approvalPolicy",
+            "sandbox",
+            "claude",
+            "moveTurnOptions",
+          ] as const
+        )
           .filter((key) => session[key] !== undefined)
           .map((key) => [key, structuredClone(session[key])]),
       ),
@@ -195,15 +257,26 @@ export async function savedPromptProof(file, session) {
   };
 }
 
-export function verifyToolProof(proof, studio, offered) {
-  const safeNames = (entries) =>
+export function verifyToolProof(
+  proof: ToolProof & { tools: ProofTool[] },
+  studio: ProofTool[],
+  offered?: string[],
+) {
+  const safeNames = (entries: ProofTool[]) =>
     entries.map((entry) =>
       /^[A-Za-z0-9_.:+ -]{1,128}$/.test(entry.name)
         ? entry.name
         : "<unavailable>",
     );
-  const names = (entries) => safeNames(entries).join(", ") || "(none)";
-  const refusal = (message, kind, source, target = [], changed = []) =>
+  const names = (entries: ProofTool[]) =>
+    safeNames(entries).join(", ") || "(none)";
+  const refusal = (
+    message: string,
+    kind: string,
+    source: ProofTool[],
+    target: ProofTool[] = [],
+    changed: ProofTool[] = [],
+  ) =>
     Object.assign(new Error(message), {
       data: {
         moveRefusal: {
@@ -242,24 +315,12 @@ export function verifyToolProof(proof, studio, offered) {
     );
   // A source catalog that crossed the paired channel has its object keys sorted (the channel
   // signs canonical JSON), so definitions compare by content, with the tool order kept.
-  const canonical = (value) =>
-    Array.isArray(value)
-      ? value.map(canonical)
-      : value && typeof value === "object"
-        ? Object.fromEntries(
-            Object.keys(value)
-              .sort()
-              .map((key) => [key, canonical(value[key])]),
-          )
-        : value;
-  const shape = (entry) =>
-    JSON.stringify(
-      canonical({
-        name: entry.name,
-        description: entry.description || "",
-        input_schema: entry.input_schema,
-      }),
-    );
+  const shape = (entry: ProofTool) =>
+    canonicalJson({
+      name: entry.name,
+      description: entry.description || "",
+      input_schema: entry.input_schema,
+    });
   if (JSON.stringify(mcp.map(shape)) !== JSON.stringify(studio.map(shape))) {
     const before = new Map(mcp.map((entry) => [entry.name, shape(entry)]));
     const after = new Map(studio.map((entry) => [entry.name, shape(entry)]));
@@ -295,7 +356,10 @@ export function verifyToolProof(proof, studio, offered) {
   return builtin.map((entry) => entry.name);
 }
 
-export async function studioToolCatalog(server, expectedToolCount) {
+export async function studioToolCatalog(
+  server: McpSdkServerConfigWithInstance,
+  expectedToolCount?: number,
+) {
   const { Client } = await import("@modelcontextprotocol/sdk/client/index.js");
   const { InMemoryTransport } =
     await import("@modelcontextprotocol/sdk/inMemory.js");
@@ -311,7 +375,8 @@ export async function studioToolCatalog(server, expectedToolCount) {
     } catch (error) {
       // The SDK advertises tools for an empty server but registers no handler.
       // Only Studio's known empty definition list permits this exact rejection.
-      if (expectedToolCount === 0 && error.code === -32601) return [];
+      if (expectedToolCount === 0 && isRecord(error) && error.code === -32601)
+        return [];
       throw error;
     }
     if (result.nextCursor)
@@ -327,13 +392,14 @@ export async function studioToolCatalog(server, expectedToolCount) {
   }
 }
 
-export async function moveIdentity(executable) {
+export async function moveIdentity(executable: string) {
   const { stdout } = await run(executable, ["auth", "status", "--json"], {
     timeout: 10000,
     maxBuffer: 4096,
   });
-  const account = JSON.parse(stdout);
+  const account: unknown = JSON.parse(stdout);
   if (
+    !isRecord(account) ||
     !account.loggedIn ||
     account.authMethod !== "claude.ai" ||
     typeof account.email !== "string" ||
@@ -347,14 +413,14 @@ export async function moveIdentity(executable) {
   return { email: account.email, organizationId: account.orgId };
 }
 
-export async function moveVersions(executable) {
+export async function moveVersions(executable: string) {
   const { stdout } = await run(executable, ["--version"], {
     timeout: 10000,
     maxBuffer: 4096,
   });
   const cli = stdout.trim().match(/^([\d.]+)/)?.[1];
   if (!cli) throw new Error("The Claude CLI version is unavailable");
-  const sdk = JSON.parse(
+  const sdkPackage: unknown = JSON.parse(
     await fs.readFile(
       path.join(
         path.dirname(require.resolve("@anthropic-ai/claude-agent-sdk")),
@@ -362,14 +428,16 @@ export async function moveVersions(executable) {
       ),
       "utf8",
     ),
-  ).version;
-  return { cli, sdk };
+  );
+  if (!isRecord(sdkPackage) || typeof sdkPackage.version !== "string")
+    throw new Error("The Claude SDK version is unavailable");
+  return { cli, sdk: sdkPackage.version };
 }
 export async function nativeFile(
-  sessionId,
+  sessionId: string,
   configDir = process.env.CLAUDE_CONFIG_DIR ||
     path.join(os.homedir(), ".claude"),
-  cwd,
+  cwd?: string,
 ) {
   if (!/^[a-f0-9-]{36}$/i.test(sessionId))
     throw new Error("Invalid Claude session identity");
@@ -382,7 +450,7 @@ export async function nativeFile(
       const stat = await fs.lstat(file);
       if (stat.isFile() && !stat.isSymbolicLink()) found.push(file);
     } catch (error) {
-      if (error.code !== "ENOENT") throw error;
+      if (!isRecord(error) || error.code !== "ENOENT") throw error;
     }
   }
   const current = cwd && nativeDestination(sessionId, cwd, configDir);
@@ -391,11 +459,16 @@ export async function nativeFile(
     throw new Error(
       "The complete Claude native history is missing or ambiguous",
     );
-  return found[0];
+  const [only] = found;
+  if (only === undefined)
+    throw new Error(
+      "The complete Claude native history is missing or ambiguous",
+    );
+  return only;
 }
 export function nativeDestination(
-  sessionId,
-  cwd,
+  sessionId: string,
+  cwd: string,
   configDir = process.env.CLAUDE_CONFIG_DIR ||
     path.join(os.homedir(), ".claude"),
 ) {
@@ -409,8 +482,8 @@ export function nativeDestination(
   );
 }
 export async function publishNative(
-  source,
-  destination,
+  source: string,
+  destination: string,
   allowExtension = false,
 ) {
   const bytes = await fs.readFile(source);
@@ -429,7 +502,7 @@ export async function publishNative(
     )
       throw new Error("The destination Claude history has different bytes");
   } catch (error) {
-    if (error.code !== "ENOENT") throw error;
+    if (!isRecord(error) || error.code !== "ENOENT") throw error;
   }
   const temporary = destination + ".move-" + process.pid;
   const handle = await fs.open(temporary, "wx", 0o600);

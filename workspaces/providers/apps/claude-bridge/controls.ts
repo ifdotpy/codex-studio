@@ -1,11 +1,48 @@
-import { checkpointSourceMatches } from "./file-checkpoints.mjs";
+import assert from "node:assert/strict";
+import type {
+  SessionMessage,
+  SlashCommand,
+  ForkSessionOptions,
+  ForkSessionResult,
+  GetSessionMessagesOptions,
+  RewindFilesResult,
+} from "@anthropic-ai/claude-agent-sdk";
+import type { Session, Turn, FileRestorePlan } from "./session-state.ts";
+export interface ControlDependencies {
+  persist(session: Session): Promise<unknown>;
+  getSessionMessages(
+    id: string,
+    options?: GetSessionMessagesOptions,
+  ): Promise<SessionMessage[]>;
+  forkSession(
+    id: string,
+    options: ForkSessionOptions,
+  ): Promise<ForkSessionResult>;
+  rewindFiles(
+    id: string,
+    messageId: string,
+    options: { dryRun: boolean },
+  ): Promise<RewindFilesResult>;
+  prepareFileRestore(
+    session: Session,
+    messages: SessionMessage[],
+    messageId: string,
+  ): Promise<FileRestorePlan>;
+  verifyFileRestore(
+    plan: FileRestorePlan,
+    stage: "expected" | "before",
+  ): Promise<void>;
+  randomUUID?: () => string;
+}
+type Command = Pick<SlashCommand, "name"> & Partial<SlashCommand>;
+import { checkpointSourceMatches } from "./file-checkpoints.ts";
 import { messageIndex } from "./history-index.ts";
 import { nativeInputIds } from "./input-messages.ts";
 import { randomUUID } from "node:crypto";
 
 // Initialization is the CLI's authoritative list after native skill policy.
-export function commandCatalog(commands = []) {
-  const named = new Map();
+export function commandCatalog(commands: readonly Command[] = []) {
+  const named = new Map<string, SlashCommand & { aliases: string[] }>();
   for (const row of commands) {
     if (!row || !/^[\w:.-]+$/.test(row.name || "")) continue;
     if (!named.has(row.name) || row.builtin)
@@ -23,27 +60,37 @@ export function commandCatalog(commands = []) {
 }
 
 // Only an explicit command is transformed. Never extract commands from prose.
-export function explicitNativeCommand(text, commands) {
+export function explicitNativeCommand(
+  text: unknown,
+  commands: readonly Command[],
+) {
   if (typeof text !== "string" || /[\r\n\0]/.test(text)) return null;
   const match = /^([/$])([\w:.-]+)(?:[ \t]+(.*))?$/.exec(text.trim());
   if (!match) return null;
   const catalog = commandCatalog(commands);
   const row =
     catalog.find((row) => row.name === match[2]) ||
-    catalog.find((row) => row.aliases.includes(match[2]));
+    catalog.find((row) => row.aliases.includes(match[2] ?? ""));
   if (!row || (match[1] === "$" && row.builtin)) return null;
   return `/${row.name}${match[3] ? ` ${match[3]}` : ""}`;
 }
 
 // One index per immutable SDK snapshot; all turns and retained inputs reuse it.
-const indexes = new WeakMap();
-function indexFor(messages) {
-  if (!indexes.has(messages)) indexes.set(messages, messageIndex(messages));
-  return indexes.get(messages);
+const indexes = new WeakMap<
+  SessionMessage[],
+  ReturnType<typeof messageIndex>
+>();
+function indexFor(messages: SessionMessage[]) {
+  let index = indexes.get(messages);
+  if (!index) {
+    index = messageIndex(messages);
+    indexes.set(messages, index);
+  }
+  return index;
 }
 // /clear keeps the Studio mirror, but earlier conversations and the local
 // clear command have no boundary in the new native session.
-function currentNativeTurns(turns, nativeId) {
+function currentNativeTurns(turns: Turn[], nativeId: string) {
   return turns.filter(
     (turn) =>
       !turn.nativeHistoryDetached &&
@@ -52,7 +99,7 @@ function currentNativeTurns(turns, nativeId) {
 }
 // SDK SessionMessage UUIDs identify every part of one logical input. The
 // first part is the history boundary; the last can own a file checkpoint.
-function nativeParts(turn) {
+function nativeParts(turn: Turn) {
   const input = turn.items?.find((item) => item.type === "userMessage");
   // Older forks remapped only nativeMessageId. Without a composite receipt,
   // that SDK-verified boundary remains authoritative over the original item.
@@ -63,8 +110,7 @@ function nativeParts(turn) {
     throw new Error("The exact Claude turn boundary is unavailable");
   return ids;
 }
-/** @param {import("@anthropic-ai/claude-agent-sdk").SessionMessage[]} messages */
-function partPositions(turn, messages) {
+function partPositions(turn: Turn, messages: SessionMessage[]) {
   const index = indexFor(messages);
   const positions = index.positions(nativeParts(turn));
   if (
@@ -72,7 +118,7 @@ function partPositions(turn, messages) {
     positions.some((position) => {
       const message = messages[position];
       return (
-        message.type !== "user" ||
+        message?.type !== "user" ||
         message.parent_tool_use_id ||
         message.parent_agent_id
       );
@@ -83,27 +129,36 @@ function partPositions(turn, messages) {
     );
   return positions;
 }
-function turnPositions(turns, messages) {
+function turnPositions(turns: Turn[], messages: SessionMessage[]) {
   const positions = turns.map((turn) => partPositions(turn, messages));
   if (
-    positions.some((parts, i) => i > 0 && parts[0] <= positions[i - 1].at(-1))
+    positions.some(
+      (parts, i) =>
+        i > 0 && (parts[0] ?? -1) <= (positions[i - 1]?.at(-1) ?? -1),
+    )
   )
     throw new Error(
       "The exact Claude turn boundary is unavailable after compaction or history recovery",
     );
   return positions;
 }
-function remapTurn(turn, source, forkMessages) {
+function remapTurn(
+  turn: Turn,
+  source: SessionMessage[],
+  forkMessages: SessionMessage[],
+) {
   const initialIds = nativeParts(turn);
   const first = partPositions(turn, source)[0];
-  turn.nativeMessageId = forkMessages[first].uuid;
+  const forkFirst = first === undefined ? undefined : forkMessages[first];
+  assert.ok(forkFirst, "The exact Claude turn boundary is unavailable");
+  turn.nativeMessageId = forkFirst.uuid;
   const initial = turn.items?.find((item) => item.type === "userMessage");
   for (const item of turn.items || []) {
     if (item.type !== "userMessage") continue;
     // A withdrawn input has a logical receipt but no native history to remap.
     if (
       item.delivery === "steer" &&
-      ["not_applied", "cancelled"].includes(item.deliveryStatus)
+      ["not_applied", "cancelled"].includes(item.deliveryStatus ?? "")
     )
       continue;
     // Every retained non-initial user input needs a native identity, even
@@ -116,9 +171,13 @@ function remapTurn(turn, source, forkMessages) {
       const index = indexFor(source).positions([id])?.[0] ?? -1;
       if (index < 0 || !forkMessages[index]?.uuid)
         throw new Error("Claude fork lost a retained input boundary");
-      return forkMessages[index].uuid;
+      const message = forkMessages[index];
+      assert.ok(message);
+      return message.uuid;
     });
-    item.nativeId = remapped.at(-1);
+    const last = remapped.at(-1);
+    assert.ok(last);
+    item.nativeId = last;
     if (item.nativeIds) item.nativeIds = remapped;
   }
   // A fork remaps message IDs. Its SDK backups have not been verified.
@@ -128,7 +187,7 @@ function remapTurn(turn, source, forkMessages) {
 // Validate every retained input against the authoritative SDK rows before
 // creating a native branch. Legacy steers without supported provenance cannot
 // be guessed from text or position; refuse the operation before any effect.
-function preflightRetained(turns, messages) {
+function preflightRetained(turns: Turn[], messages: SessionMessage[]) {
   try {
     for (const turn of turns)
       remapTurn(structuredClone(turn), messages, messages);
@@ -139,21 +198,34 @@ function preflightRetained(turns, messages) {
     );
   }
 }
-function comparable(message) {
-  return JSON.stringify({ type: message.type, message: message.message });
+function comparable(message: SessionMessage | undefined) {
+  return JSON.stringify({ type: message?.type, message: message?.message });
 }
 
-export function rollbackBoundary(turns, messages, turnId) {
+export function rollbackBoundary(
+  turns: Turn[],
+  messages: SessionMessage[],
+  turnId: string,
+) {
   const index = turns.findIndex((turn) => turn.id === turnId);
   if (index < 0) throw new Error("The selected Claude turn does not exist");
   const positions = turnPositions(turns.slice(0, index + 1), messages);
-  const end = positions[index][0];
-  return { index, end, upToMessageId: index ? messages[end - 1]?.uuid : null };
+  const end = positions[index]?.[0];
+  assert.ok(end !== undefined);
+  return {
+    index,
+    end,
+    upToMessageId: index ? (messages[end - 1]?.uuid ?? null) : null,
+  };
 }
 
 // Caller must serialize session mutations and close its idle SDK query first.
 // persist must atomically save the whole descriptor. Never retry an unknown fork.
-export async function rollbackSession(session, request, deps) {
+export async function rollbackSession(
+  session: Session,
+  request: { requestId: string; turnId: string; restoreFiles?: boolean },
+  deps: ControlDependencies,
+) {
   const { requestId, turnId } = request;
   const restoreFiles = request.restoreFiles === true;
   if (typeof requestId !== "string" || !requestId.trim())
@@ -172,10 +244,11 @@ export async function rollbackSession(session, request, deps) {
   )
     throw new Error("This request identity has different content");
   if (receipt?.status === "completed") {
+    assert.ok(receipt.result);
     await deps.persist(session);
     return receipt.result;
   }
-  if (["submitted", "rewind_submitted"].includes(receipt?.status))
+  if (["submitted", "rewind_submitted"].includes(receipt?.status ?? ""))
     throw new Error(
       "The Claude history operation outcome is unknown; this request cannot repeat it",
     );
@@ -197,13 +270,15 @@ export async function rollbackSession(session, request, deps) {
     const mirrorIndex = session.turns.findIndex((turn) => turn.id === turnId);
     const previousTurns = structuredClone(session.turns);
     preflightRetained(nativeTurns.slice(0, boundary.index), messages);
-    const fileMessageId = session.turns[mirrorIndex].fileCheckpointMessageId;
+    const selectedTurn = session.turns[mirrorIndex];
+    assert.ok(selectedTurn);
+    const fileMessageId = selectedTurn.fileCheckpointMessageId;
     let filePlan;
     if (restoreFiles) {
       if (
         !fileMessageId ||
-        fileMessageId !== nativeParts(session.turns[mirrorIndex]).at(-1) ||
-        !checkpointSourceMatches(session, session.turns[mirrorIndex])
+        fileMessageId !== nativeParts(selectedTurn).at(-1) ||
+        !checkpointSourceMatches(session, selectedTurn)
       )
         throw new Error("This message has no SDK file checkpoint");
       const preview = await deps.rewindFiles(sourceNativeId, fileMessageId, {
@@ -221,17 +296,22 @@ export async function rollbackSession(session, request, deps) {
         );
       } catch (error) {
         // This phase has no native fork or file effects and no durable receipt.
-        throw Object.assign(new Error(error.message, { cause: error }), {
-          data: { fileRestoreOutcome: "not_applied", requestId, turnId },
-        });
+        throw Object.assign(
+          new Error(error instanceof Error ? error.message : String(error), {
+            cause: error,
+          }),
+          {
+            data: { fileRestoreOutcome: "not_applied", requestId, turnId },
+          },
+        );
       }
     }
     receipt = {
-      ...(restoreFiles ? { filePlan } : {}),
+      ...(filePlan === undefined ? {} : { filePlan }),
       kind: "rollback",
       turnId,
       restoreFiles,
-      fileMessageId,
+      ...(fileMessageId === undefined ? {} : { fileMessageId }),
       status: "submitted",
       sourceNativeId,
       createdAt: new Date().toISOString(),
@@ -250,7 +330,9 @@ export async function rollbackSession(session, request, deps) {
     const result = boundary.index
       ? await deps.forkSession(sourceNativeId, {
           dir: session.nativeHistoryCwd || session.cwd,
-          upToMessageId: boundary.upToMessageId,
+          ...(boundary.upToMessageId === null
+            ? {}
+            : { upToMessageId: boundary.upToMessageId }),
         })
       : { sessionId: (deps.randomUUID || randomUUID)() };
     if (!result?.sessionId || result.sessionId === sourceNativeId)
@@ -261,6 +343,8 @@ export async function rollbackSession(session, request, deps) {
   }
   if (!["forked", "rewound"].includes(receipt.status))
     throw new Error("Unsupported Claude rollback receipt");
+  assert.ok(receipt.previousTurns);
+  assert.ok(receipt.targetNativeId);
   const retained = structuredClone(
     receipt.previousTurns.slice(0, receipt.retainedCount),
   );
@@ -270,6 +354,7 @@ export async function rollbackSession(session, request, deps) {
       dir: session.nativeHistoryCwd || session.cwd,
     });
     const source = receipt.sourceMessages;
+    assert.ok(source);
     if (
       source.length !== forkMessages.length ||
       source.some(
@@ -284,9 +369,13 @@ export async function rollbackSession(session, request, deps) {
       turn.nativeSessionId = receipt.targetNativeId;
     }
   }
-  if (restoreFiles && receipt.status === "rewound")
+  if (restoreFiles && receipt.status === "rewound") {
+    assert.ok(receipt.filePlan);
     await deps.verifyFileRestore(receipt.filePlan, "expected");
+  }
   if (restoreFiles && receipt.status !== "rewound") {
+    assert.ok(receipt.filePlan);
+    assert.ok(receipt.fileMessageId);
     await deps.verifyFileRestore(receipt.filePlan, "before");
     receipt.status = "rewind_submitted";
     await deps.persist(session);
@@ -295,7 +384,7 @@ export async function rollbackSession(session, request, deps) {
       receipt.fileMessageId,
       { dryRun: false },
     );
-    if (!result?.canRewind || result.skippedLinks > 0)
+    if (!result?.canRewind || (result.skippedLinks ?? 0) > 0)
       throw new Error(
         result?.error ||
           "Claude could not restore every tracked file; inspect workspace recovery",
@@ -321,7 +410,12 @@ export async function rollbackSession(session, request, deps) {
     nativeId: session.nativeId,
     removedTurns: receipt.previousTurns.length - retained.length,
     ...(restoreFiles
-      ? { filesRestored: true, fileResult: receipt.fileResult }
+      ? {
+          filesRestored: true,
+          ...(receipt.fileResult === undefined
+            ? {}
+            : { fileResult: receipt.fileResult }),
+        }
       : {}),
   };
   delete receipt.sourceMessages;
@@ -331,7 +425,11 @@ export async function rollbackSession(session, request, deps) {
 }
 
 // The Runtime workspace operation owns submission identity and unknown outcomes.
-export async function forkAtTurn(source, params, deps) {
+export async function forkAtTurn(
+  source: Session,
+  params: Partial<Session> & { threadId?: string; lastTurnId?: string | null },
+  deps: ControlDependencies,
+) {
   // Native reads can wait while the source receives more output. Keep the
   // branch descriptor and its boundary independent of those later changes.
   source = structuredClone(source);
@@ -344,9 +442,9 @@ export async function forkAtTurn(source, params, deps) {
   const retained = source.turns.slice(0, selected + 1);
   if (
     retained.some((turn) =>
-      ["inProgress", "uncertain"].includes(turn.status),
+      ["inProgress", "uncertain"].includes(turn.status ?? ""),
     ) ||
-    (selected >= 0 && source.turns[selected].status !== "completed")
+    (selected >= 0 && source.turns[selected]?.status !== "completed")
   )
     throw new Error("Select a completed Claude turn before branching");
   let targetNativeId;
@@ -371,13 +469,13 @@ export async function forkAtTurn(source, params, deps) {
     );
     const end =
       nativeSelected < nativeTurns.length - 1
-        ? positions[nativeSelected + 1][0]
+        ? (positions[nativeSelected + 1]?.[0] ?? -1)
         : messages.length;
     if (
       end < 1 ||
       positions
         .slice(0, nativeRetained.length)
-        .some((parts) => parts.at(-1) >= end)
+        .some((parts) => (parts.at(-1) ?? -1) >= end)
     )
       throw new Error(
         "The exact Claude branch boundary is unavailable after compaction or history recovery",
@@ -386,7 +484,7 @@ export async function forkAtTurn(source, params, deps) {
     const fork = await deps.forkSession(nativeId, {
       dir,
       ...(params.lastTurnId != null
-        ? { upToMessageId: messages[end - 1]?.uuid }
+        ? { upToMessageId: messages[end - 1]?.uuid ?? "" }
         : {}),
     });
     targetNativeId = fork?.sessionId;

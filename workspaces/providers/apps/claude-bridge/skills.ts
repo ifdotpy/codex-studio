@@ -1,17 +1,18 @@
+import { isRecord } from "./move.ts";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 const exec = promisify(execFile);
-
+type DiscoveryError = { message: string };
 // Claude Code reads skills from the project, the user config directory and
 // installed plugins. Studio lists the same roots for the composer.
 function configDir() {
   return process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), ".claude");
 }
 
-function unquote(value) {
+function unquote(value: string) {
   const text = value.trim();
   if (
     text.length >= 2 &&
@@ -22,33 +23,43 @@ function unquote(value) {
   return text;
 }
 
-export function frontmatter(source) {
+export function frontmatter(source: string) {
   const match = /^---\r?\n([\s\S]*?)\r?\n---/.exec(source);
   if (!match) return {};
-  const fields = {};
-  const lines = match[1].split(/\r?\n/);
+  const fields: Record<string, string> = {};
+  const lines = (match[1] ?? "").split(/\r?\n/);
   for (let i = 0; i < lines.length; i++) {
-    const field = /^([A-Za-z_-]+):\s*(.*)$/.exec(lines[i]);
+    const field = /^([A-Za-z_-]+):\s*(.*)$/.exec(lines[i] ?? "");
     if (!field) continue;
-    let value = field[2];
+    let value = field[2] ?? "";
     if (/^[>|][-+]?$/.test(value.trim())) {
       const block = [];
-      while (i + 1 < lines.length && /^\s+\S/.test(lines[i + 1]))
-        block.push(lines[++i].trim());
+      while (i + 1 < lines.length && /^\s+\S/.test(lines[i + 1] ?? ""))
+        block.push((lines[++i] ?? "").trim());
       value = block.join(" ");
     }
-    fields[field[1]] = unquote(value);
+    fields[field[1] ?? ""] = unquote(value);
   }
   return fields;
 }
 
-async function skillsIn(root, prefix, errors, enabled = true) {
+async function skillsIn(
+  root: string,
+  prefix: string,
+  errors: DiscoveryError[],
+  enabled = true,
+) {
   let entries;
   try {
     entries = await fs.readdir(root, { withFileTypes: true });
   } catch (error) {
-    if (error.code !== "ENOENT" && error.code !== "ENOTDIR")
-      errors.push({ message: `${root}: ${error.message}` });
+    if (
+      !isRecord(error) ||
+      (error.code !== "ENOENT" && error.code !== "ENOTDIR")
+    )
+      errors.push({
+        message: `${root}: ${error instanceof Error ? error.message : String(error)}`,
+      });
     return [];
   }
   const result = [];
@@ -59,8 +70,13 @@ async function skillsIn(root, prefix, errors, enabled = true) {
     try {
       source = await fs.readFile(file, "utf8");
     } catch (error) {
-      if (error.code !== "ENOENT" && error.code !== "ENOTDIR")
-        errors.push({ message: `${file}: ${error.message}` });
+      if (
+        !isRecord(error) ||
+        (error.code !== "ENOENT" && error.code !== "ENOTDIR")
+      )
+        errors.push({
+          message: `${file}: ${error instanceof Error ? error.message : String(error)}`,
+        });
       continue;
     }
     const fields = frontmatter(source);
@@ -75,26 +91,23 @@ async function skillsIn(root, prefix, errors, enabled = true) {
   return result.sort((a, b) => a.name.localeCompare(b.name));
 }
 
-async function readSettings(file, errors) {
+async function readSettings(file: string, errors: DiscoveryError[]) {
   try {
-    const value = JSON.parse(await fs.readFile(file, "utf8"));
-    if (!value || typeof value !== "object" || Array.isArray(value))
-      throw new Error("Settings must contain an object");
-    if (
-      value.enabledPlugins != null &&
-      (typeof value.enabledPlugins !== "object" ||
-        Array.isArray(value.enabledPlugins))
-    )
+    const value: unknown = JSON.parse(await fs.readFile(file, "utf8"));
+    if (!isRecord(value)) throw new Error("Settings must contain an object");
+    if (value.enabledPlugins != null && !isRecord(value.enabledPlugins))
       throw new Error("enabledPlugins must contain an object");
     return value;
   } catch (error) {
-    if (error.code !== "ENOENT")
-      errors.push({ message: `${file}: ${error.message}` });
+    if (!isRecord(error) || error.code !== "ENOENT")
+      errors.push({
+        message: `${file}: ${error instanceof Error ? error.message : String(error)}`,
+      });
     return {};
   }
 }
 
-async function projectIdentity(cwd) {
+async function projectIdentity(cwd: string) {
   try {
     const { stdout } = await exec(
       "git",
@@ -109,7 +122,10 @@ async function projectIdentity(cwd) {
       { timeout: 5000 },
     );
     const [root, common] = stdout.trim().split("\n");
-    return { root, common: await fs.realpath(common) };
+    return {
+      root: root ?? path.resolve(cwd),
+      common: await fs.realpath(common ?? ""),
+    };
   } catch {
     return { root: path.resolve(cwd), common: null };
   }
@@ -126,7 +142,7 @@ function managedDirectory() {
   return "/etc/claude-code";
 }
 
-async function pluginRoots(cwd, errors) {
+async function pluginRoots(cwd: string, errors: DiscoveryError[]) {
   const installed = await readSettings(
     path.join(configDir(), "plugins", "installed_plugins.json"),
     errors,
@@ -147,10 +163,12 @@ async function pluginRoots(cwd, errors) {
         .map((name) => path.join(managed, "managed-settings.d", name)),
     );
   } catch (error) {
-    if (error.code !== "ENOENT")
-      errors.push({ message: `${managed}: ${error.message}` });
+    if (!isRecord(error) || error.code !== "ENOENT")
+      errors.push({
+        message: `${managed}: ${error instanceof Error ? error.message : String(error)}`,
+      });
   }
-  const enabled = {};
+  const enabled: Record<string, unknown> = {};
   let validSettings = errors.length === 0;
   for (const file of files) {
     const before = errors.length;
@@ -159,11 +177,17 @@ async function pluginRoots(cwd, errors) {
     Object.assign(enabled, settings.enabledPlugins || {});
   }
   const roots = [];
-  for (const [key, installs] of Object.entries(installed.plugins || {})) {
+  for (const [key, installs] of Object.entries(
+    isRecord(installed.plugins) ? installed.plugins : {},
+  )) {
     // Legacy registries contain one user installation without an explicit scope.
-    const candidates = Array.isArray(installs) ? installs : [installs];
+    const candidates: unknown[] = Array.isArray(installs)
+      ? installs
+      : [installs];
     for (const install of candidates) {
-      if (!install?.installPath) continue;
+      if (!isRecord(install) || !install.installPath) continue;
+      if (typeof install.installPath !== "string")
+        throw new TypeError("Invalid plugin installation path");
       let matches =
         install.scope === "user" ||
         install.scope === "managed" ||
@@ -178,7 +202,7 @@ async function pluginRoots(cwd, errors) {
       if (!matches) continue;
       roots.push({
         root: path.join(install.installPath, "skills"),
-        prefix: key.split("@")[0],
+        prefix: key.split("@")[0] ?? "",
         enabled: validSettings && enabled[key] === true,
       });
       break;
@@ -187,10 +211,10 @@ async function pluginRoots(cwd, errors) {
   return roots;
 }
 
-export async function listSkills(cwds) {
+export async function listSkills(cwds: string[] | undefined) {
   const data = [];
   for (const cwd of cwds || []) {
-    const errors = [];
+    const errors: DiscoveryError[] = [];
     const roots = [];
     // Project skills from the folder and its parents, nearest first.
     let dir = path.resolve(cwd);

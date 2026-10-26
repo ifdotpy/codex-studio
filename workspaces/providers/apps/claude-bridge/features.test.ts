@@ -1,3 +1,4 @@
+import type { RateLimitInfo } from "./features.ts";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "vitest";
@@ -9,7 +10,7 @@ import {
   claudeErrorInfo,
   overageAllowed,
   limitApplies,
-} from "./features.mjs";
+} from "./features.ts";
 
 test("subscription windows use percentages and seconds", () => {
   const raw = {
@@ -23,15 +24,17 @@ test("subscription windows use percentages and seconds", () => {
     },
   };
   const actual = usageLimits(raw);
+  assert.ok(actual.rateLimits.primary);
   assert.equal(actual.rateLimits.primary.usedPercent, 11);
   assert.equal(
     actual.rateLimits.primary.resetsAt,
     Date.parse(raw.rate_limits.five_hour.resets_at) / 1000,
   );
   assert.equal(actual.rateLimits.primary.windowDurationMins, 300);
+  assert.ok(actual.rateLimits.secondary);
   assert.equal(actual.rateLimits.secondary.windowDurationMins, 10080);
   assert.equal(
-    actual.rateLimitsByLimitId["claude-fable"].secondary.usedPercent,
+    actual.rateLimitsByLimitId["claude-fable"]?.secondary?.usedPercent,
     7,
   );
   assert.deepEqual(actual.extraUsage, { is_enabled: true });
@@ -45,6 +48,7 @@ test("invalid or absent utilization never becomes zero usage", () => {
     rate_limits_available: true,
     rate_limits: { five_hour: { utilization: null, resets_at: "invalid" } },
   });
+  assert.ok(actual.rateLimits.primary);
   assert.equal(actual.rateLimits.primary.usedPercent, null);
   assert.equal(actual.rateLimits.primary.resetsAt, null);
   assert.ok(actual.rateLimits.secondary == null);
@@ -62,6 +66,9 @@ test("native events use fractional utilization without mutating cached windows",
     utilization: 0.25,
     resetsAt: 123,
   });
+  assert.ok(updated?.rateLimits?.primary);
+  assert.ok(updated.rateLimits.secondary);
+  assert.ok(initial.rateLimits.primary);
   assert.equal(updated.rateLimits.primary.usedPercent, 25);
   assert.equal(updated.rateLimits.primary.resetsAt, 123);
   assert.equal(initial.rateLimits.primary.usedPercent, 11);
@@ -80,7 +87,7 @@ test("native tools preserve commands and file edits", () => {
     { id: "bash", name: "Bash", input: { command: "pwd" } },
     "/work",
   );
-  assert.equal(command.type, "commandExecution");
+  assert.ok(command.type === "commandExecution");
   assert.equal(command.command, "pwd");
   assert.equal(command.cwd, "/work");
   const edit = nativeItem(
@@ -95,8 +102,11 @@ test("native tools preserve commands and file edits", () => {
     },
     "/work",
   );
-  assert.equal(edit.type, "fileChange");
+  assert.ok(edit.type === "fileChange");
+  assert.ok(edit.changes[0]);
+  assert.equal(typeof edit.changes[0].diff, "string");
   assert.equal(edit.changes[0].path, "/work/a");
+  assert.ok(typeof edit.changes[0].diff === "string");
   assert.match(edit.changes[0].diff, /before/);
   assert.equal(
     nativeItem(
@@ -126,7 +136,7 @@ test("AskUserQuestion starts as the stored question item contract", () => {
   assert.deepEqual(started, { ...fields, status: "inProgress" });
 });
 test("persistent queue preserves order and close releases an idle consumer", async () => {
-  const queue = new InputQueue(),
+  const queue = new InputQueue<string>(),
     iterator = queue[Symbol.asyncIterator]();
   const pending = iterator.next();
   queue.push("one");
@@ -149,8 +159,9 @@ test("rate limit events retain overage permission without utilization", () => {
     status: "rejected",
     overageStatus: "allowed",
     resetsAt: 1234,
-  };
+  } satisfies RateLimitInfo;
   const next = limitEvent(current, info);
+  assert.ok(next?.rateLimits?.primary);
   assert.deepEqual(next.rateLimits.claudeRateLimit, info);
   assert.equal(next.rateLimits.primary.usedPercent, 100);
   assert.equal(current.rateLimits.claudeRateLimit, undefined);
@@ -164,6 +175,7 @@ test("overage permission is replaced and unknown limit resets remain visible", (
     utilization: 1,
     resetsAt: 100,
   });
+  assert.ok(allowed?.claudeRateLimit);
   assert.equal(overageAllowed(allowed.claudeRateLimit), true);
   const rejected = limitEvent(allowed, {
     rateLimitType: "five_hour",
@@ -172,15 +184,17 @@ test("overage permission is replaced and unknown limit resets remain visible", (
     isUsingOverage: true,
     resetsAt: 200,
   });
+  assert.ok(rejected?.claudeRateLimit);
   assert.equal(overageAllowed(rejected.claudeRateLimit), false);
   const unknown = limitEvent(allowed, {
     rateLimitType: "future_scope",
     status: "rejected",
     resetsAt: 900,
   });
+  assert.ok(unknown?.claudeRateLimit);
   assert.equal(overageAllowed(unknown.claudeRateLimit), false);
   assert.equal(
-    unknown.rateLimitsByLimitId["claude-unknown-limit"].secondary.resetsAt,
+    unknown.rateLimitsByLimitId?.["claude-unknown-limit"]?.secondary?.resetsAt,
     900,
   );
   const overage = limitEvent(allowed, {
@@ -188,6 +202,7 @@ test("overage permission is replaced and unknown limit resets remain visible", (
     status: "rejected",
     overageStatus: "allowed_warning",
   });
+  assert.ok(overage?.claudeRateLimit);
   assert.equal(overageAllowed(overage.claudeRateLimit), true);
 });
 

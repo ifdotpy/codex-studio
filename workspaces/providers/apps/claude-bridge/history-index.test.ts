@@ -7,7 +7,7 @@ import path from "node:path";
 import { randomUUID } from "node:crypto";
 import * as sdk from "@anthropic-ai/claude-agent-sdk";
 import { readHistoryIndex, verifiedHistoryMessages } from "./history-index.ts";
-import { forkAtTurn, rollbackSession } from "./controls.mjs";
+import { forkAtTurn, rollbackSession } from "./controls.ts";
 
 function at<T>(values: readonly T[], index: number): T {
   const value = values[index];

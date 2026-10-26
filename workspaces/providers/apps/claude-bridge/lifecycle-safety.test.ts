@@ -2,7 +2,7 @@ import { afterEach, expect, test, vi } from "vitest";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { rollbackBoundary, forkAtTurn, rollbackSession } from "./controls.mjs";
+import { rollbackBoundary, forkAtTurn, rollbackSession } from "./controls.ts";
 import { nativeInputIds } from "./input-messages.ts";
 import { inputHistoryOutcome } from "./history-index.ts";
 import { readNativeHistory } from "./native-history.ts";

@@ -17,8 +17,8 @@ import {
   exactSession,
   exactProof,
   exactTurnTools,
-} from "./move.mjs";
-import { externalAliases } from "./move-external.mjs";
+} from "./move.ts";
+import { externalAliases } from "./move-external.ts";
 
 test("move exports only its native session, preserves bytes and refuses conflicts", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "claude-move-"));
@@ -121,7 +121,7 @@ test("saved snapshots require a complete prompt and ordered schemas for the nati
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "claude-snapshot-"));
   const file = path.join(root, "native.jsonl");
   const session = { id: randomUUID(), model: "default", dynamicTools: [] };
-  const row = (attachment) =>
+  const row = (attachment: unknown) =>
     JSON.stringify({ type: "attachment", sessionId: session.id, attachment }) +
     "\n";
   try {
@@ -196,6 +196,10 @@ test("tool refusal reports names and changed schemas without private values", ()
   assert.throws(
     () => verifyToolProof({ tools: source }, target),
     (error) => {
+      assert.ok(error instanceof Error);
+      assert.ok(
+        "data" in error && error.data && typeof error.data === "object",
+      );
       for (const name of [
         "mcp__studio__old",
         "mcp__studio__new",
@@ -207,12 +211,15 @@ test("tool refusal reports names and changed schemas without private values", ()
       );
       assert.ok(!error.message.includes("source-secret"));
       assert.ok(!error.message.includes("target-secret"));
-      assert.deepEqual(error.data.moveRefusal, {
-        kind: "studio_tools",
-        sourceNames: source.map((entry) => entry.name),
-        targetNames: target.map((entry) => entry.name),
-        changedNames: ["mcp__studio__same"],
-      });
+      assert.deepEqual(
+        "moveRefusal" in error.data ? error.data.moveRefusal : undefined,
+        {
+          kind: "studio_tools",
+          sourceNames: source.map((entry) => entry.name),
+          targetNames: target.map((entry) => entry.name),
+          changedNames: ["mcp__studio__same"],
+        },
+      );
       assert.ok(!JSON.stringify(error.data).includes("source-secret"));
       return true;
     },
@@ -228,8 +235,20 @@ test("tool refusal reports names and changed schemas without private values", ()
         [],
       ),
     (error) => {
+      assert.ok(error instanceof Error);
+      assert.ok(
+        "data" in error && error.data && typeof error.data === "object",
+      );
       assert.ok(!error.message.includes("name-secret"));
-      assert.deepEqual(error.data.moveRefusal.sourceNames, ["<unavailable>"]);
+      assert.deepEqual(
+        "moveRefusal" in error.data &&
+          error.data.moveRefusal &&
+          typeof error.data.moveRefusal === "object" &&
+          "sourceNames" in error.data.moveRefusal
+          ? error.data.moveRefusal.sourceNames
+          : undefined,
+        ["<unavailable>"],
+      );
       return true;
     },
   );
@@ -266,13 +285,24 @@ test("Studio proof reads the compiled ordered MCP schemas without model input", 
     catalog.map((entry) => entry.name),
     ["mcp__studio__one", "mcp__studio__two"],
   );
-  assert.equal(catalog[0].input_schema.properties.cwd.type, "string");
+  const schema = catalog[0]?.input_schema;
+  assert.ok(schema);
+  assert.ok(schema.properties && typeof schema.properties === "object");
+  const cwd = Reflect.get(schema.properties, "cwd");
+  assert.ok(cwd && typeof cwd === "object" && "type" in cwd);
+  assert.equal(cwd.type, "string");
   assert.throws(
     () => verifyToolProof({ tools: catalog }, [...catalog].reverse()),
     /order/,
   );
   const changed = structuredClone(catalog);
-  changed[0].input_schema.properties.cwd.type = "number";
+  const changedProperties = changed[0]?.input_schema?.properties;
+  assert.ok(changedProperties && typeof changedProperties === "object");
+  const changedCwd: unknown = Reflect.get(changedProperties, "cwd");
+  assert.ok(
+    changedCwd && typeof changedCwd === "object" && "type" in changedCwd,
+  );
+  changedCwd.type = "number";
   assert.throws(() => verifyToolProof({ tools: catalog }, changed), /schemas/);
 });
 
@@ -283,7 +313,7 @@ test("native prompt snapshots use schema and keep deferred records separate", as
   );
   const file = path.join(root, "native.jsonl");
   const session = { id: randomUUID(), model: "default", dynamicTools: [] };
-  const row = (attachment) =>
+  const row = (attachment: unknown) =>
     JSON.stringify({ type: "attachment", sessionId: session.id, attachment }) +
     "\n";
   const snapshot = {
@@ -402,7 +432,7 @@ test("an inline snapshot whose MCP tools are all deferred gets the deferred proo
   );
   const file = path.join(root, "native.jsonl");
   const session = { id: randomUUID(), model: "default", dynamicTools: [] };
-  const row = (attachment) =>
+  const row = (attachment: unknown) =>
     JSON.stringify({ type: "attachment", sessionId: session.id, attachment }) +
     "\n";
   const schema = { type: "object", properties: {} };
@@ -449,7 +479,7 @@ test("an inline snapshot whose MCP tools are all deferred gets the deferred proo
     assert.equal(proof.inlineTools, false);
     assert.equal(proof.surfacedExternal, true);
     assert.deepEqual(
-      proof.deferredTools.map((t) => t.name).sort(),
+      proof.deferredTools?.map((t) => t.name).sort(),
       [docs.name, studio.name].sort(),
     );
     // Only servers whose definitions the history holds need a catalog on the target.
@@ -554,7 +584,7 @@ test("a move restores the exact tool order that the paired channel sorted", () =
     },
   ];
   // What the canonical JSON of the channel delivers.
-  const sorted = (value) =>
+  const sorted = (value: unknown) =>
     JSON.parse(
       JSON.stringify(value, (key, entry) =>
         entry && typeof entry === "object" && !Array.isArray(entry)
@@ -580,7 +610,7 @@ test("a move restores the exact tool order that the paired channel sorted", () =
     {
       name: "mcp__studio__orchestration_teleport",
       description: "Move",
-      input_schema: original[0].inputSchema,
+      input_schema: original[0]?.inputSchema,
     },
   ];
   const proof = sorted({
@@ -612,7 +642,7 @@ test("builtin tools stay the same while connectors drop and add their names arou
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "claude-flicker-"));
   const file = path.join(root, "native.jsonl");
   const session = { id: randomUUID(), model: "default", dynamicTools: [] };
-  const row = (attachment) =>
+  const row = (attachment: unknown) =>
     JSON.stringify({ type: "attachment", sessionId: session.id, attachment }) +
     "\n";
   const schema = { type: "object" };
@@ -665,23 +695,31 @@ test("later turns of a moved session keep the exact tool order the server sorted
     await import("@anthropic-ai/claude-agent-sdk");
   const { z } = await import("zod");
   // The bridge's Studio server compiles each definition from its JSON schema.
-  const compile = (definitions) =>
+  const compile = (
+    definitions: {
+      name: string;
+      description: string;
+      inputSchema: Parameters<typeof z.fromJSONSchema>[0];
+    }[],
+  ) =>
     studioToolCatalog(
       createSdkMcpServer({
         name: "studio",
         version: "1",
-        tools: definitions.map((definition) =>
-          tool(
+        tools: definitions.map((definition) => {
+          const schema = z.fromJSONSchema(definition.inputSchema);
+          assert.ok(schema instanceof z.ZodObject);
+          return tool(
             definition.name,
             definition.description,
-            z.fromJSONSchema(definition.inputSchema).shape,
+            schema.shape,
             async () => ({ content: [] }),
-          ),
-        ),
+          );
+        }),
       }),
       definitions.length,
     );
-  const source = [
+  const source: Parameters<typeof compile>[0] = [
     {
       name: "orchestration_move",
       description: "Move",
@@ -708,8 +746,8 @@ test("later turns of a moved session keep the exact tool order the server sorted
   );
   const proof = await compile(source);
   assert.notDeepEqual(
-    (await compile(sorted))[0].input_schema.required,
-    proof[0].input_schema.required,
+    (await compile(sorted))[0]?.input_schema?.required,
+    proof[0]?.input_schema?.required,
   );
   assert.deepEqual(await compile(exactTurnTools(session, sorted)), proof);
   verifyToolProof(

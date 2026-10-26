@@ -1,5 +1,14 @@
+import type {
+  Options,
+  Query,
+  SDKUserMessage,
+  query as sdkQuery,
+} from "@anthropic-ai/claude-agent-sdk";
+import type { Session, Turn } from "./session-state.ts";
 // Native SDK checkpoints cover edits made through Claude's file tools.
-export function fileCheckpointOptions(options) {
+export function fileCheckpointOptions<T extends Pick<Options, "env">>(
+  options: T,
+) {
   return {
     ...options,
     enableFileCheckpointing: true,
@@ -7,14 +16,24 @@ export function fileCheckpointOptions(options) {
   };
 }
 
-export function checkpointSourceMatches(session, turn) {
+export function checkpointSourceMatches(
+  session: Pick<Session, "id" | "nativeId" | "cwd">,
+  turn: Pick<Turn, "fileCheckpointSource">,
+) {
   return (
     turn.fileCheckpointSource?.nativeId === (session.nativeId || session.id) &&
     turn.fileCheckpointSource?.cwd === session.cwd
   );
 }
 
-export function fileRestoreReason(session, turn, active) {
+export function fileRestoreReason(
+  session: Pick<
+    Session,
+    "id" | "nativeId" | "cwd" | "turns" | "controlRequests"
+  >,
+  turn: Pick<Turn, "fileCheckpointSource" | "fileCheckpointMessageId">,
+  active?: { turn?: unknown; tasks?: { size: number } },
+) {
   if (
     active?.turn ||
     active?.tasks?.size ||
@@ -36,17 +55,18 @@ export function fileRestoreReason(session, turn, active) {
 
 // No prompt enters this query. It resumes only to call the SDK control method.
 export async function rewindSessionFiles(
-  query,
-  options,
-  nativeId,
-  messageId,
-  rewindOptions,
+  query: (
+    ...args: Parameters<typeof sdkQuery>
+  ) => Pick<Query, "rewindFiles" | "close">,
+  options: Options,
+  nativeId: string,
+  messageId: string,
+  rewindOptions: Parameters<Query["rewindFiles"]>[1],
 ) {
-  let release;
-  const held = new Promise((resolve) => (release = resolve));
-  // oxlint-disable-next-line require-yield
-  async function* prompt() {
+  const { promise: held, resolve: release } = Promise.withResolvers<void>();
+  async function* prompt(): AsyncGenerator<SDKUserMessage> {
     await held;
+    yield* [];
   }
   const abortController = new AbortController();
   const timer = setTimeout(() => abortController.abort(), 20_000);

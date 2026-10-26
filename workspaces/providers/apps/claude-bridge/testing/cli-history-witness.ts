@@ -9,9 +9,9 @@ import { randomUUID, createHash } from "node:crypto";
 import { query, getSessionMessages } from "@anthropic-ai/claude-agent-sdk";
 import { inputGroups, sdkInputMessages } from "../input-messages.ts";
 import { readHistoryIndex, verifiedHistoryMessages } from "../history-index.ts";
-import { forkAtTurn, rollbackSession } from "../controls.mjs";
+import { forkAtTurn, rollbackSession } from "../controls.ts";
 import { forkSession } from "@anthropic-ai/claude-agent-sdk";
-import { InputQueue } from "../features.mjs";
+import { InputQueue } from "../features.ts";
 import {
   persistNativeSession,
   guardNativeSessionInput,

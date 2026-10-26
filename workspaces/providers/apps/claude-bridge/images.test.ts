@@ -1,3 +1,5 @@
+import type { ImageCodec, ImageMetadata, ImagePipeline } from "./images.ts";
+import type { JpegOptions, PngOptions } from "sharp";
 import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import os from "node:os";
@@ -11,10 +13,14 @@ import {
   MAX_IMAGE_BYTES,
   MAX_IMAGE_BASE64_BYTES,
   IMAGE_BYTE_BUDGET,
-} from "./images.mjs";
+} from "./images.ts";
 
 // Real codecs produce the fixtures. No host image command is installed or used.
-async function fixture(format, width = 32, height = 16) {
+async function fixture(
+  format: "png" | "jpeg" | "gif" | "webp",
+  width = 32,
+  height = 16,
+) {
   return sharp({
     create: { width, height, channels: 4, background: "#2080c080" },
   })
@@ -22,7 +28,11 @@ async function fixture(format, width = 32, height = 16) {
     .toBuffer();
 }
 
-async function withImage(bytes, format, run) {
+async function withImage<T>(
+  bytes: Buffer,
+  format: string,
+  run: (file: string) => Promise<T>,
+) {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), "claude-images-"));
   const file = path.join(directory, "input." + format);
   try {
@@ -33,11 +43,11 @@ async function withImage(bytes, format, run) {
   }
 }
 
-for (const format of ["png", "jpeg", "gif", "webp"]) {
+for (const format of ["png", "jpeg", "gif", "webp"] as const) {
   test(`${format}: small image bytes remain unchanged`, async () => {
     const bytes = await fixture(format);
     await withImage(bytes, format, async (file) => {
-      const image = await claudeImage(file, "image/" + format);
+      const image = await claudeImage(file);
       assert.deepEqual(image, { bytes, mediaType: "image/" + format });
     });
   });
@@ -45,7 +55,7 @@ for (const format of ["png", "jpeg", "gif", "webp"]) {
   test(`${format}: dimensions above the API limit are reduced`, async () => {
     const bytes = await fixture(format, 2200, 1100);
     await withImage(bytes, format, async (file) => {
-      const image = await claudeImage(file, "image/" + format);
+      const image = await claudeImage(file);
       const actual = await sharp(image.bytes).metadata();
       assert.equal(actual.width, 2000);
       assert.equal(actual.height, 1000);
@@ -62,7 +72,7 @@ for (const format of ["png", "jpeg", "gif", "webp"]) {
 for (const bytes of [Buffer.alloc(0), Buffer.from("damaged image")]) {
   test(`refuses an unreadable image (${bytes.length} bytes)`, async () => {
     await withImage(bytes, "png", async (file) => {
-      await assert.rejects(claudeImage(file, "image/png"), /Cannot send image/);
+      await assert.rejects(claudeImage(file), /Cannot send image/);
     });
   });
 }
@@ -87,7 +97,7 @@ for (const side of [MAX_IMAGE_SIDE - 1, MAX_IMAGE_SIDE, MAX_IMAGE_SIDE + 1]) {
   }
 }
 
-for (const format of ["png", "jpeg", "gif", "webp"]) {
+for (const format of ["png", "jpeg", "gif", "webp"] as const) {
   for (const length of [
     IMAGE_BYTE_BUDGET,
     MAX_IMAGE_BYTES,
@@ -117,10 +127,7 @@ for (const format of ["png", "jpeg", "gif", "webp"]) {
 
 test("reads the actual format instead of trusting the extension", async () => {
   await withImage(await fixture("webp"), "png", async (file) => {
-    assert.equal(
-      (await claudeImage(file, "image/png")).mediaType,
-      "image/webp",
-    );
+    assert.equal((await claudeImage(file)).mediaType, "image/webp");
   });
 });
 
@@ -162,26 +169,37 @@ function codecFixture({
   height = 1250,
   size = MAX_IMAGE_BYTES + 1,
   encode,
+}: {
+  format?: NonNullable<ImageMetadata["format"]>;
+  width?: number;
+  height?: number;
+  size?: number;
+  encode: (
+    call: ImageMetadata & JpegOptions & PngOptions,
+    count: number,
+  ) => { size: number; metadata?: Partial<ImageMetadata> };
 }) {
   const bytes = Buffer.alloc(size);
-  const metadata = new WeakMap([[bytes, { format, width, height }]]);
-  const calls = [];
-  const codec = (input) => {
+  const metadata = new WeakMap<Buffer, ImageMetadata>([
+    [bytes, { format, width, height }],
+  ]);
+  const calls: (ImageMetadata & JpegOptions & PngOptions)[] = [];
+  const codec: ImageCodec = (input) => {
     let info = { ...metadata.get(input) },
-      options = {};
-    const chain = {
+      options: JpegOptions & PngOptions = {};
+    const chain: ImagePipeline = {
       metadata: async () => ({ ...info }),
-      resize(w, h) {
+      resize(w: number, h: number) {
         info.width = w;
         info.height = h;
         return chain;
       },
-      jpeg(value) {
+      jpeg(value: JpegOptions = {}) {
         info.format = "jpeg";
         options = value;
         return chain;
       },
-      png(value = {}) {
+      png(value: PngOptions = {}) {
         info.format = "png";
         options = value;
         return chain;
@@ -247,7 +265,7 @@ test("the byte budget uses a bounded search and retains its best quality within 
     height: 100,
     size: IMAGE_BYTE_BUDGET + 1,
     encode: ({ quality }) => ({
-      size: quality <= 30 ? 100 : IMAGE_BYTE_BUDGET + 1,
+      size: (quality ?? 0) <= 30 ? 100 : IMAGE_BYTE_BUDGET + 1,
     }),
   });
   assert.equal(
@@ -317,13 +335,25 @@ test("refuses missing dimensions", async () => {
       Buffer.from("header without dimensions"),
       async () => () => ({
         metadata: async () => ({ format: "png" }),
+        resize() {
+          assert.fail("invalid dimensions must not resize");
+        },
+        jpeg() {
+          assert.fail("invalid dimensions must not encode");
+        },
+        png() {
+          assert.fail("invalid dimensions must not encode");
+        },
+        toBuffer() {
+          assert.fail("invalid dimensions must not encode");
+        },
       }),
     ),
     /Cannot send image.*dimensions cannot be verified/,
   );
 });
 
-for (const format of ["gif", "webp"]) {
+for (const format of ["gif", "webp"] as const) {
   for (const width of [32, MAX_IMAGE_SIDE + 1]) {
     test(`${format}: animation at width ${width} preserves or selects the first frame`, async () => {
       const height = 10;
@@ -350,7 +380,10 @@ for (const format of ["gif", "webp"]) {
           .extract({ left: 0, top: 0, width: 1, height: 1 })
           .raw()
           .toBuffer();
-        assert.ok(pixel[0] > 240 && pixel[2] < 10, "the first frame is red");
+        assert.ok(
+          (pixel[0] ?? 0) > 240 && (pixel[2] ?? 255) < 10,
+          "the first frame is red",
+        );
       }
     });
   }
