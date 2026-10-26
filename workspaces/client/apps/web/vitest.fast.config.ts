@@ -40,6 +40,7 @@ export default {
       "src/usage/tokenRate.test.ts",
       "src/components/StudioErrors.test.ts",
       "src/components/SidebarWarnings.test.ts",
+      "src/components/Sidebar.controls.test.ts",
       "src/components/ConversationWarnings.test.ts",
       "src/components/Conversation.connection.test.ts",
       "src/components/Conversation.limits.test.ts",
