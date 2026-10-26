@@ -94,9 +94,6 @@
   "workspaces/runtime/apps/runtime-server/src/io_runtime.rs": [
     "\"cwd\": \"/tmp\","
   ],
-  "workspaces/runtime/apps/runtime-server/src/provider_ports.rs": [
-    "let state = PathBuf::from(\"/tmp/studio-supervisor-test\");"
-  ],
   "workspaces/runtime/apps/runtime-server/tests/wave7_p01_registry.rs": [
     "\"/var/tmp\".into(),"
   ],

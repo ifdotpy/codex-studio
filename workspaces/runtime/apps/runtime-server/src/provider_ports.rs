@@ -1030,7 +1030,7 @@ mod tests {
 
     #[test]
     fn supervisor_health_accepts_current_protocol_and_preserves_exact_handles() {
-        let state = PathBuf::from("/tmp/studio-supervisor-test");
+        let state = std::env::temp_dir().join("studio-supervisor-test");
         let status = supervisor_health_status(&state);
         let expected = serde_json::to_value(status.clone()).expect("health document");
         assert_eq!(super::supervisor_health_payload(status, &state), expected);
@@ -1038,7 +1038,7 @@ mod tests {
 
     #[test]
     fn supervisor_health_rejects_incompatible_or_degraded_status() {
-        let state = PathBuf::from("/tmp/studio-supervisor-test");
+        let state = std::env::temp_dir().join("studio-supervisor-test");
         let status = supervisor_health_status(&state);
         for protocol in [
             studio_runtime_process::SUPERVISOR_PROTOCOL_V2 - 1,
