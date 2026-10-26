@@ -40,9 +40,10 @@ it("combines scoped drafts and databases without losing the chunk's source owner
     draft: "local",
     ":server:remote:draft": "remote",
   });
-  expect(
-    result.databases.map((db) => db.stores[0]?.chunks?.[0]?.owner),
-  ).toEqual(["root", "server:remote"]);
+  expect(result.databases.map((db) => db.stores[0].chunks![0].owner)).toEqual([
+    "root",
+    "server:remote",
+  ]);
   expect(source).toEqual(before);
 });
 it("rejects conflicting preferences and databases before an importer can write", () => {

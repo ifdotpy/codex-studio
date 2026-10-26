@@ -18,9 +18,11 @@ import {
   createFixtureViteServer,
   expect,
   readApiSchemaHash,
-  protocol3SseEvent as sse,
   test,
 } from "../../tests/playwright.ts";
+
+const sse = (name: string, value: unknown) =>
+  `event: ${name}\ndata: ${JSON.stringify(value)}\n\n`;
 
 test("switching chats changes subscriptions on one EventSource", async ({
   browser,
@@ -65,7 +67,7 @@ test("switching chats changes subscriptions on one EventSource", async ({
         name: "live-subscriptions-fixture",
         configureServer(server) {
           server.middlewares.use(async (request, response, next) => {
-            const url = new URL(request.url ?? "", "http://localhost");
+            const url = new URL(request.url!, "http://localhost");
             if (url.pathname === "/live-subscriptions-check") {
               response.setHeader("Content-Type", "text/html");
               response.end(
@@ -157,20 +159,17 @@ test("switching chats changes subscriptions on one EventSource", async ({
     await page.locator("#two").click();
     await expect(page.locator("output")).toHaveText("two");
     await page.evaluate(() => {
-      const one = document.querySelector<HTMLButtonElement>("#one");
-      const two = document.querySelector<HTMLButtonElement>("#two");
-      if (!one || !two) throw new Error("Missing subscription buttons");
       for (let i = 0; i < 10; i++) {
-        one.click();
-        two.click();
+        document.querySelector<HTMLButtonElement>("#one")!.click();
+        document.querySelector<HTMLButtonElement>("#two")!.click();
       }
-      one.click();
+      document.querySelector<HTMLButtonElement>("#one")!.click();
     });
     await expect(page.locator("output")).toHaveText("one");
     assert.equal(opened, 1);
     assert.equal(updates.length, 2);
-    assert.deepEqual(updates[0]?.add, [{ kind: "transcript", agentId: "two" }]);
-    assert.deepEqual(updates[0]?.remove, [
+    assert.deepEqual(updates[0].add, [{ kind: "transcript", agentId: "two" }]);
+    assert.deepEqual(updates[0].remove, [
       { kind: "transcript", agentId: "one" },
     ]);
     console.log(
@@ -202,7 +201,7 @@ test("switching chats changes subscriptions on one EventSource", async ({
           hypotheticalReopenBytes + hypotheticalReopenRequestBytes,
       }),
     );
-    await page.evaluate(() => window.syncSubscriptions.transport.dispose());
+    await page.evaluate(() => window.transport.dispose());
   } finally {
     await context.close();
     for (const { response } of sessions.values()) response.end();

@@ -1,3 +1,4 @@
+import type { NativeEvent } from "./host";
 // The shell owns every native audio identity. A server view cannot observe,
 // stop, or transcribe another view's recording, even with a copied token.
 type Invoke = (
@@ -5,8 +6,22 @@ type Invoke = (
   params: unknown,
   id?: string,
 ) => Promise<unknown>;
+// Native audio input views retain the host protocol's existing checks.
+type AudioParameters = Record<string, unknown> &
+  Record<
+    | "topic"
+    | "subscription"
+    | "session"
+    | "capture"
+    | "permit"
+    | "transfer"
+    | "value"
+    | "id",
+    string
+  >;
+type NativeAudioEvent = NativeEvent<{ id: string }>;
 type Listen = (callback: (value: unknown) => void) => Promise<() => void>;
-type AudioEvent = { event: string; value: unknown };
+type AudioEvent = NativeEvent;
 type Caller =
   | { frame: HTMLIFrameElement; origin: string; live: () => boolean }
   | {
@@ -17,8 +32,8 @@ type Caller =
 type Subscription = {
   caller: Caller;
   logical: string;
-  capture?: string | undefined;
-  voice?: string | undefined;
+  capture?: string;
+  voice?: string;
 };
 export const audioFrameMethod = (method: string, params: unknown) =>
   [
@@ -38,11 +53,9 @@ export const audioFrameMethod = (method: string, params: unknown) =>
     "audio.unsubscribe",
   ].includes(method) ||
   (method === "view.subscribe" &&
-    !!params &&
-    typeof params === "object" &&
-    "topic" in params &&
-    typeof params.topic === "string" &&
-    ["microphone", "transcription", "voice"].includes(params.topic));
+    ["microphone", "transcription", "voice"].includes(
+      (params as AudioParameters)?.topic,
+    ));
 
 export function bindAudioFrames(invoke: Invoke, listen?: Listen) {
   const permits = new Map<string, Caller>();
@@ -102,31 +115,14 @@ export function bindAudioFrames(invoke: Invoke, listen?: Listen) {
     });
   async function subscribeEvents() {
     if (!listen) throw new Error("Native audio events are unavailable.");
-    listening ??= listen((value) => {
-      if (
-        !value ||
-        typeof value !== "object" ||
-        !("event" in value) ||
-        typeof value.event !== "string" ||
-        !("value" in value)
-      )
-        return;
-      const row = subscriptions.get(value.event);
+    listening ??= listen((input) => {
+      const value = input as NativeAudioEvent;
+      const row = subscriptions.get(value?.event);
       if (!row || !row.caller.live() || closed) return;
       if (
         !row.capture &&
         !row.voice &&
-        !same(
-          running.get(
-            value.value &&
-              typeof value.value === "object" &&
-              "id" in value.value &&
-              typeof value.value.id === "string"
-              ? value.value.id
-              : "",
-          ),
-          row.caller,
-        )
+        !same(running.get(value?.value?.id), row.caller)
       )
         return;
       const event = { event: row.logical, value: value.value };
@@ -185,15 +181,7 @@ export function bindAudioFrames(invoke: Invoke, listen?: Listen) {
       id: string,
       caller: Caller,
     ): Promise<unknown> {
-      if (!input || typeof input !== "object")
-        throw new Error("Invalid audio parameters.");
-      const params = input as Record<string, unknown>;
-      const text = (key: string): string => {
-        const value = params[key];
-        if (typeof value !== "string")
-          throw new Error("Invalid audio identity.");
-        return value;
-      };
+      const params = input as AudioParameters;
       prune();
       if (closed || !caller.live()) throw new Error("The server view closed.");
       if (method === "desktop.requestMicrophone") {
@@ -242,8 +230,9 @@ export function bindAudioFrames(invoke: Invoke, listen?: Listen) {
             typeof (params.topic === "voice"
               ? params.session
               : params.capture) !== "string" ||
-            !text(params.topic === "voice" ? "session" : "capture") ||
-            text(params.topic === "voice" ? "session" : "capture").length > 128
+            !(params.topic === "voice" ? params.session : params.capture) ||
+            (params.topic === "voice" ? params.session : params.capture)
+              .length > 128
           )
             throw new Error("Invalid capture.");
         }
@@ -251,8 +240,8 @@ export function bindAudioFrames(invoke: Invoke, listen?: Listen) {
         subscriptions.set(nativeId, {
           caller,
           logical: params.subscription,
-          capture: params.topic === "microphone" ? text("capture") : undefined,
-          voice: params.topic === "voice" ? text("session") : undefined,
+          capture: params.topic === "microphone" ? params.capture : undefined,
+          voice: params.topic === "voice" ? params.session : undefined,
         });
         try {
           const result = await invoke(
@@ -302,7 +291,7 @@ export function bindAudioFrames(invoke: Invoke, listen?: Listen) {
         if (!entry) throw new Error("Unknown voice session.");
         if (method === "voice.create") {
           owns(microphone?.caller, caller);
-          if (!microphone || microphone.expires <= Date.now() || capture)
+          if (microphone!.expires <= Date.now() || capture)
             throw new Error("Use the Voice button again.");
           capture = { caller, id: entry[0], voice: true };
         } else if (method !== "voice.close") {
@@ -338,7 +327,7 @@ export function bindAudioFrames(invoke: Invoke, listen?: Listen) {
         if (!entry) throw new Error("Unknown microphone capture.");
         if (method === "media.captureStart") {
           owns(microphone?.caller, caller);
-          if (!microphone || microphone.expires <= Date.now() || capture)
+          if (microphone!.expires <= Date.now() || capture)
             throw new Error("Use the Record button again.");
           capture = { caller, id: entry[0] };
         } else owns(capture?.caller, caller);
@@ -358,7 +347,7 @@ export function bindAudioFrames(invoke: Invoke, listen?: Listen) {
         }
       }
       if (method === "speech.uploadBegin") {
-        owns(permits.get(text("permit")), caller);
+        owns(permits.get(params.permit), caller);
         const result = (await invoke(
           method,
           { permit: params.permit, size: params.size },
@@ -369,21 +358,20 @@ export function bindAudioFrames(invoke: Invoke, listen?: Listen) {
         return result;
       }
       if (method === "speech.uploadChunk" || method === "speech.uploadCancel") {
-        owns(uploads.get(text("transfer")), caller);
+        owns(uploads.get(params.transfer), caller);
         try {
           return await invoke(method, params, id);
         } finally {
-          if (method === "speech.uploadCancel")
-            uploads.delete(text("transfer"));
+          if (method === "speech.uploadCancel") uploads.delete(params.transfer);
         }
       }
       if (method === "desktop.cancelTranscription") {
-        owns(running.get(text("value")), caller);
+        owns(running.get(params.value), caller);
         return invoke(method, { value: params.value }, id);
       }
       if (method === "speech.transcribe") {
-        owns(uploads.get(text("transfer")), caller);
-        owns(permits.get(text("permit")), caller);
+        owns(uploads.get(params.transfer), caller);
+        owns(permits.get(params.permit), caller);
         if (
           typeof params.id !== "string" ||
           !params.id ||
@@ -391,7 +379,7 @@ export function bindAudioFrames(invoke: Invoke, listen?: Listen) {
           running.has(params.id)
         )
           throw new Error("Invalid transcription attempt.");
-        permits.delete(text("permit"));
+        permits.delete(params.permit);
         running.set(params.id, caller);
         try {
           return await invoke(
@@ -406,7 +394,7 @@ export function bindAudioFrames(invoke: Invoke, listen?: Listen) {
           );
         } finally {
           running.delete(params.id);
-          uploads.delete(text("transfer"));
+          uploads.delete(params.transfer);
           quiet("speech.uploadCancel", { transfer: params.transfer });
         }
       }

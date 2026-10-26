@@ -69,8 +69,6 @@ const card = (id: string, reason = true) =>
         e(ReasoningDuration, {
           item: {
             id: "reason:" + id,
-            role: "assistant",
-            text: "",
             reasoningMs: 3000,
             reasoningSince: 100,
             reasoningObservedAt: 100,
@@ -78,9 +76,7 @@ const card = (id: string, reason = true) =>
         }),
     ),
   );
-const element = document.querySelector("#root");
-if (!element) throw new Error("Missing visual fixture root");
-const root = createRoot(element);
+const root = createRoot(document.querySelector("#root")!);
 root.render(
   e(
     React.StrictMode,

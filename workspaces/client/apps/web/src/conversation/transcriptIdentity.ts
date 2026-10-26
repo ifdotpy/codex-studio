@@ -22,10 +22,10 @@ function equalJson(a: unknown, b: unknown, depth = 0): boolean {
 
 // Full projections replace the wire payload. Unchanged rows in this same chat
 // can retain their render caches without hiding updates, removals, or reordering.
-export function retainTranscriptItems(
-  previous: Message[],
-  incoming: Message[],
-): Message[] {
+export function retainTranscriptItems<Row extends Pick<Message, "id">>(
+  previous: Row[],
+  incoming: Row[],
+): Row[] {
   const byId = new Map(previous.map((item) => [item.id, item]));
   const next = incoming.map((item) => {
     const prior = byId.get(item.id);

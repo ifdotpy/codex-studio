@@ -66,6 +66,7 @@ import {
   sqliteWriteWaits,
   stageDeadlineMs,
   summaryText,
+  type SummaryJournal,
 } from "./uiTeamScaleHelpers.ts";
 import {
   AUDIT_FETCH_CONCURRENCY,
@@ -265,7 +266,7 @@ function createApi(
         response.ok,
         `${method} ${path} returned HTTP ${response.status}: ${text.slice(0, 300)}`,
       );
-      return parseVerifierApi<T>(text || "null");
+      return (text ? parseVerifierApi<T>(text) : null) as T;
     } finally {
       record.elapsedMs = Math.round(performance.now() - startedAt);
     }
@@ -388,16 +389,11 @@ const PROBE_SOURCE = ({ frameGapRecordMs }: { frameGapRecordMs: number }) => {
 // rather than silently changing which identity this verifier claims to observe.
 function legacySubmittedAgent(
   request: Pick<Request, "postDataJSON">,
-): string | null {
-  const body = readVerifierRequest<unknown>(request);
-  if (
-    body &&
-    typeof body === "object" &&
-    "agent" in body &&
-    typeof body.agent === "string"
-  )
-    return body.agent;
-  return null;
+): string | null | undefined {
+  const body = readVerifierRequest<{ agent?: Schemas["JsonValue"] } | null>(
+    request,
+  );
+  return body?.agent as string | null | undefined;
 }
 
 async function resolveRole(
@@ -406,22 +402,17 @@ async function resolveRole(
   profile: ReturnType<typeof scaleProfile>,
 ) {
   const accountKeys: string[] = scaleAccountKeys(accounts, profile);
-  const accountKey = accountKeys[0];
-  assert.ok(accountKey);
   const catalog = await api<Schemas["ModelCatalogResponse"]>(
     "GET",
-    `/api/models?account_key=${encodeURIComponent(accountKey)}`,
+    `/api/models?account_key=${encodeURIComponent(accountKeys[0])}`,
   );
   const candidate = requireScaleModel(catalog, profile);
-  assert.ok(typeof candidate.model === "string");
-  const model = candidate.resolvedModel ?? candidate.model;
-  assert.ok(typeof model === "string");
   return {
     profile,
-    accountKey,
-    uiModel: candidate.model,
+    accountKey: accountKeys[0],
+    uiModel: candidate.model!,
     uiModelValues: approvedModelUiValues(catalog, candidate),
-    model,
+    model: (candidate.resolvedModel ?? candidate.model) as string,
     effort: profile.effort,
   };
 }
@@ -472,7 +463,6 @@ async function main({ setCleanup, setRemaining }: ScaleVerifierLifecycle) {
   const api = createApi(options.origin, session.token, journal);
   const desktop = await api<Schemas["DesktopResponse"]>("GET", "/api/desktop");
   const backendPid = desktop.pid;
-  assert.ok(typeof backendPid === "number");
   assert.ok(
     Number.isSafeInteger(backendPid),
     "Backend did not report its pid.",
@@ -517,12 +507,12 @@ async function main({ setCleanup, setRemaining }: ScaleVerifierLifecycle) {
   const agents = new Map<string, ObservedAgent>();
 
   let leadId: string | null = null;
-  const teamTracker: { current: TeamTracker | null } = { current: null };
+  let tracker: TeamTracker | null = null;
   const pending: [ObservedAgent, number][] = [];
   const onAgent = (value: ObservedAgent) => {
     agents.set(value.id, value);
     if (value.deleted) return;
-    if (teamTracker.current) teamTracker.current.observe(value, runMs());
+    if (tracker) tracker.observe(value, runMs());
     else pending.push([value, runMs()]);
   };
   const protocol = await api<Schemas["SyncProtocolResponse"]>(
@@ -589,15 +579,13 @@ async function main({ setCleanup, setRemaining }: ScaleVerifierLifecycle) {
           since: journal.startedAt,
           leadId,
           runTag,
-          workerIds: (teamTracker.current?.workers() ?? []).map(
-            (row) => row.id,
-          ),
+          workerIds: (tracker?.workers() ?? []).map((row) => row.id),
           entities: agents,
           timeline: journal.workerTimeline ?? [],
           rel: (ms: number | null) =>
             ms === null || promptSentAtMs === null ? null : ms - promptSentAtMs,
-          tracker: teamTracker.current,
-          throttling: teamTracker.current?.throttling(runMs()) ?? { events: 0 },
+          tracker,
+          throttling: tracker?.throttling(runMs()) ?? { events: 0 },
           diagnostics: {
             before: journal.diagnostics.countersBefore,
             after: journal.diagnostics.countersAfter,
@@ -615,7 +603,7 @@ async function main({ setCleanup, setRemaining }: ScaleVerifierLifecycle) {
         failures: [
           {
             kind: "auditFailed",
-            error: String(error instanceof Error ? error.stack : error),
+            error: String((error as Error)?.stack ?? error),
           },
         ],
         anomalies: [],
@@ -647,18 +635,8 @@ async function main({ setCleanup, setRemaining }: ScaleVerifierLifecycle) {
       await save();
       const summaryPath = join(runDir, "summary.txt");
       if (journal.metrics) {
-        assert.ok(journal.result);
-        await writeFile(
-          summaryPath,
-          summaryText({
-            ...journal,
-            result: journal.result,
-            metrics: journal.metrics,
-          }),
-        );
-        process.stdout.write(
-          `\n${summaryText({ ...journal, result: journal.result, metrics: journal.metrics })}`,
-        );
+        await writeFile(summaryPath, summaryText(journal as SummaryJournal));
+        process.stdout.write(`\n${summaryText(journal as SummaryJournal)}`);
       }
       const cleanupOk =
         journal.cleanup.state === OWNED_CLEANUP_VERIFIED_STATE ||
@@ -736,7 +714,9 @@ async function main({ setCleanup, setRemaining }: ScaleVerifierLifecycle) {
         try {
           await pull();
           const uiStart = performance.now();
-          const ui = await page.evaluate(readTeamUiCounts, undefined);
+          const ui = await page.evaluate(
+            readTeamUiCounts as () => ReturnType<typeof readTeamUiCounts>,
+          );
           const uiRoundtripMs = Math.round(performance.now() - uiStart);
           if (ui.teamPanelClosed)
             await page
@@ -750,8 +730,8 @@ async function main({ setCleanup, setRemaining }: ScaleVerifierLifecycle) {
               sampleProviderProcesses(table, backendPid, name).perProcess,
           );
           const wallMs = performance.now() - previousCpu.at;
-          const workersSeen = teamTracker.current
-            ? teamTracker.current.summary()
+          const workersSeen = tracker
+            ? (tracker as TeamTracker).summary()
             : null;
           if (
             promptSentAtMs !== null &&
@@ -817,10 +797,7 @@ async function main({ setCleanup, setRemaining }: ScaleVerifierLifecycle) {
         } catch (error) {
           journal.samples.push({
             atMs: runMs(),
-            error: String(error instanceof Error ? error.message : error).slice(
-              0,
-              300,
-            ),
+            error: String((error as Error)?.message ?? error).slice(0, 300),
           });
         }
         await sleep(
@@ -881,9 +858,8 @@ async function main({ setCleanup, setRemaining }: ScaleVerifierLifecycle) {
       .locator(`[data-chat="${leadId}"][aria-current="true"]`)
       .waitFor();
     journal.chatOpenMs = Math.round(performance.now() - startClickAt);
-    teamTracker.current = createTeamTracker(leadId, runTag, options.workers);
-    for (const [value, at] of pending.splice(0))
-      teamTracker.current.observe(value, at);
+    tracker = createTeamTracker(leadId, runTag, options.workers);
+    for (const [value, at] of pending.splice(0)) tracker.observe(value, at);
     process.stdout.write(
       `Lead chat ${leadId} opened in ${journal.chatOpenMs} ms\n`,
     );
@@ -901,11 +877,10 @@ async function main({ setCleanup, setRemaining }: ScaleVerifierLifecycle) {
       await sleep(POLL_MS);
       leadEntity = agents.get(leadId);
     }
-    assert.ok(leadEntity);
-    assertCreatedTeamProfiles(leadEntity, lead, workerRole);
+    assertCreatedTeamProfiles(leadEntity!, lead, workerRole);
 
     // The team limit is a user setting; raise it in the UI when it is too low.
-    if (!((leadEntity.concurrency ?? NaN) >= options.workers)) {
+    if (!(leadEntity!.concurrency! >= options.workers)) {
       await page
         .getByRole("button", { name: "Chat settings", exact: true })
         .click();
@@ -914,7 +889,7 @@ async function main({ setCleanup, setRemaining }: ScaleVerifierLifecycle) {
       await field.blur();
       for (
         let waited = 0;
-        !((agents.get(leadId)?.concurrency ?? NaN) >= options.workers);
+        !((agents.get(leadId)?.concurrency as number) >= options.workers);
         waited += POLL_MS
       ) {
         checkAborted();
@@ -955,7 +930,7 @@ async function main({ setCleanup, setRemaining }: ScaleVerifierLifecycle) {
     let lastLine = "";
     for (;;) {
       checkAborted();
-      const summary = teamTracker.current.summary();
+      const summary = tracker.summary();
       const line = `visible ${summary.visible}/${options.workers} started ${summary.started} replied ${summary.replied} lead ${summary.leadReportedAtMs === null ? "waiting" : "reported"}`;
       if (line !== lastLine)
         process.stdout.write(
@@ -982,10 +957,7 @@ async function main({ setCleanup, setRemaining }: ScaleVerifierLifecycle) {
     journal.pageErrors = pageErrors;
   } catch (error) {
     runError = error;
-    journal.error = String(error instanceof Error ? error.stack : error).slice(
-      0,
-      2000,
-    );
+    journal.error = String((error as Error)?.stack ?? error).slice(0, 2000);
     process.stderr.write(`Run failed: ${journal.error}\n`);
   } finally {
     samplerRunning = false;
@@ -997,9 +969,11 @@ async function main({ setCleanup, setRemaining }: ScaleVerifierLifecycle) {
 
   // Measurements.
   try {
-    const probePage = browser.contexts()[0]?.pages()[0];
-    const probe = probePage
-      ? await probePage.evaluate(() => window.__uiProbe)
+    const probe = browser.contexts()[0]?.pages()[0]
+      ? await browser
+          .contexts()[0]
+          .pages()[0]
+          .evaluate(() => window.__uiProbe)
       : null;
     const rawDiagnosticsAfter = await api<Schemas["DiagnosticsResponse"]>(
       "GET",
@@ -1009,14 +983,13 @@ async function main({ setCleanup, setRemaining }: ScaleVerifierLifecycle) {
     journal.diagnostics.after = diagnosticsAfter;
     journal.diagnostics.countersAfter =
       diagnosticsCounters(rawDiagnosticsAfter);
-    const summary = teamTracker.current?.summary() ?? {
+    const summary = tracker?.summary() ?? {
       started: 0,
       replied: 0,
       leadReportedAtMs: null,
       missingTokens: [],
-      accountDistribution: {},
     };
-    const throttling = teamTracker.current?.throttling(runMs()) ?? {
+    const throttling = tracker?.throttling(runMs()) ?? {
       events: 0,
       agents: 0,
       waitMs: 0,
@@ -1052,7 +1025,7 @@ async function main({ setCleanup, setRemaining }: ScaleVerifierLifecycle) {
     const diagnosticsApiMs = apiRows
       .filter((row) => row.path === DIAGNOSTICS_PATH)
       .map((row) => row.elapsedMs);
-    const workerRows = teamTracker.current?.workers() ?? [];
+    const workerRows = tracker?.workers() ?? [];
     const workerTimeline = workerRows.map((row) => ({
       ...row,
       startedAfterPromptMs: rel(row.startedAtMs),
@@ -1064,7 +1037,7 @@ async function main({ setCleanup, setRemaining }: ScaleVerifierLifecycle) {
     const afterPrompt = good.filter(
       (sample) => promptSentAtMs !== null && sample.atMs >= promptSentAtMs,
     );
-    const metrics = {
+    journal.metrics = {
       uiFirstVisibleMs: rel(
         firstReachedMs(afterPrompt, (s) => s.ui.teamCount, 1),
       ),
@@ -1082,7 +1055,9 @@ async function main({ setCleanup, setRemaining }: ScaleVerifierLifecycle) {
       ),
       started: summary.started,
       replied: summary.replied,
-      accountDistribution: summary.accountDistribution ?? {},
+      accountDistribution:
+        (summary as Partial<ReturnType<TeamTracker["summary"]>>)
+          .accountDistribution ?? {},
       spawnBatches: spawnBatchTimings(
         workerTimeline.map((row) => ({
           ...row,
@@ -1137,7 +1112,7 @@ async function main({ setCleanup, setRemaining }: ScaleVerifierLifecycle) {
       sqliteLockErrorDelta:
         diagnosticsAfter.lockErrors !== null &&
         diagnosticsBefore.lockErrors !== null
-          ? diagnosticsAfter.lockErrors - diagnosticsBefore.lockErrors
+          ? diagnosticsAfter.lockErrors! - diagnosticsBefore.lockErrors!
           : null,
       sqliteWriteWaitDelta:
         waitsBefore !== null && diagnosticsAfter.writeWaits !== null
@@ -1163,20 +1138,17 @@ async function main({ setCleanup, setRemaining }: ScaleVerifierLifecycle) {
           upstreamLimit: showsUpstreamLimit(row.error),
         })),
     };
-    journal.metrics = metrics;
     journal.uiProbe = probe;
     journal.workerTimeline = workerTimeline;
     journal.result = runError
       ? { passed: false, failures: ["runFailed"], checks: {} }
-      : evaluateCriteria(metrics, options.workers);
+      : evaluateCriteria(journal.metrics, options.workers);
     if (journal.deadlineReached) journal.result.failures.push("stageDeadline");
     journal.result.passed &&= !journal.deadlineReached;
   } catch (error) {
     journal.result = {
       passed: false,
-      failures: [
-        `measurementFailed: ${error instanceof Error ? error.message : error}`,
-      ],
+      failures: [`measurementFailed: ${(error as Error)?.message}`],
       checks: {},
     };
     runError ??= error;
@@ -1264,13 +1236,13 @@ async function auditRun({
   parts.push(...workers);
   parts.push({
     failures: workerIds.flatMap((id) =>
-      entities.get(id) ? auditWorkerEntity(entities.get(id) ?? { id }) : [],
+      entities.has(id) ? auditWorkerEntity(entities.get(id)!) : [],
     ),
   });
   const summary = tracker?.summary();
   parts.push({
     failures: auditLeadReport(
-      (tracker?.leadReports() ?? []).map(rel).filter((ms) => ms !== null),
+      (tracker?.leadReports() ?? []).map(rel as (value: number) => number),
       rel(summary?.lastReplyMs ?? null),
     ),
   });
@@ -1382,9 +1354,7 @@ async function cleanup({
   const ownedIdentity = new Set([leadId]);
   try {
     await pull().catch((error) => {
-      state.observationError = String(
-        error instanceof Error ? error.message : error,
-      );
+      state.observationError = String((error as Error)?.message ?? error);
     });
     state.ownedAgents = owned().length;
     for (const agent of owned()) {
@@ -1397,7 +1367,7 @@ async function cleanup({
       await api("POST", "/api/conversation/delete", { id: leadId });
       state.deleteRequest = "confirmed";
     } catch (error) {
-      state.deleteRequest = `unknown: ${String(error instanceof Error ? error.message : error).slice(0, 200)}`;
+      state.deleteRequest = `unknown: ${String((error as Error)?.message ?? error).slice(0, 200)}`;
     }
     for (;;) {
       await pull();
@@ -1430,9 +1400,7 @@ async function cleanup({
         pull.assertComplete();
       } catch (error) {
         complete = false;
-        state.observationError = String(
-          error instanceof Error ? error.message : error,
-        );
+        state.observationError = String((error as Error)?.message ?? error);
       }
       if (complete && cleanupVerified(state)) {
         state.state = OWNED_CLEANUP_VERIFIED_STATE;
@@ -1445,7 +1413,7 @@ async function cleanup({
       await sleep(POLL_MS * 4);
     }
   } catch (error) {
-    state.state = `FAILED: ${String(error instanceof Error ? error.message : error).slice(0, 300)}`;
+    state.state = `FAILED: ${String((error as Error)?.message ?? error).slice(0, 300)}`;
   }
   state.elapsedMs = Math.round(performance.now() - startedAt);
   process.stdout.write(
@@ -1459,6 +1427,6 @@ runScaleVerifier(main, {
     aborted = true;
   },
 }).catch((error) => {
-  process.stderr.write(`${error instanceof Error ? error.stack : error}\n`);
+  process.stderr.write(`${(error as Error)?.stack ?? error}\n`);
   process.exitCode = 1;
 });
