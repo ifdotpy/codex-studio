@@ -38,8 +38,13 @@ import type {
 import type { InputGroup, StudioInputMessage } from "./input-messages.ts";
 import type { Limits } from "./features.ts";
 import {
+  handledSdkMessages,
+  handledSdkSystemMessages,
+} from "./sdk-message-policy.ts";
+import {
   claudeTurnStatus,
   isClaudeResultLifecycle,
+  parseClaudeResultLifecycle,
 } from "./provider-lifecycle.ts";
 import type { Stall, ToolClock } from "./stall-watch.ts";
 
@@ -48,7 +53,13 @@ type BridgeFailure = Error &
 
 type TaskMessage = Extract<SDKMessage, { subtype: `task_${string}` }>;
 function isTaskMessage(message: SDKMessage): message is TaskMessage {
-  return message.type === "system" && message.subtype.startsWith("task_");
+  return (
+    message.type === "system" &&
+    (message.subtype === "task_started" ||
+      message.subtype === "task_updated" ||
+      message.subtype === "task_notification" ||
+      message.subtype === "task_progress")
+  );
 }
 import type { CheckedAccount } from "./account-identity.ts";
 type SessionContext = Pick<Session, "cwd"> & Partial<Session>;
@@ -1467,7 +1478,11 @@ async function finalizeTurn(
   }
   if (turn.startOutcome === "not_applied")
     cancelNativeSessionInput(s, nativeInputAttempt(turn, turn.items[0]));
-  const status = claudeTurnStatus(result, turn.interrupted, error);
+  const status = claudeTurnStatus(
+    parseClaudeResultLifecycle(result),
+    turn.interrupted,
+    error,
+  );
   turn.status = status;
   armStallWatch();
   const errorMessage =
@@ -1995,6 +2010,7 @@ async function startSession(
       if (queries.get(s.id) !== active) break;
       active.lastEventAt = Date.now();
       if (active.toolClocks.size) armStallWatch();
+      if (handledSdkMessages[m.type] === false) continue;
       if (m.type === "system" && m.subtype === "init") {
         await persistNativeSession(
           s,
@@ -2101,6 +2117,7 @@ async function startSession(
         continue;
       }
       if (m.type === "system") {
+        if (handledSdkSystemMessages[m.subtype] === false) continue;
         if (
           m.subtype === "status" &&
           m.status === "requesting" &&
@@ -2474,9 +2491,10 @@ async function startSession(
           active.toolClocks.set(b.id, {
             tool: b.name,
             startedAt: Date.now(),
-            timeoutMs: declaredTimeoutMs(
-              b as typeof b & { input: Record<string, unknown> },
-            ),
+            timeoutMs: declaredTimeoutMs({
+              name: b.name,
+              input: item.arguments,
+            }),
           });
           armStallWatch();
           turn.items.push(item);
@@ -2494,12 +2512,9 @@ async function startSession(
         }
         persistLater(s, active);
       } else if (m.type === "user" && Array.isArray(m.message?.content)) {
-        for (const b of (
-          m.message.content as Exclude<
-            SDKUserMessage["message"]["content"],
-            string
-          >
-        ).filter((b) => b.type === "tool_result")) {
+        for (const b of m.message.content.filter(
+          (b) => b.type === "tool_result",
+        )) {
           active.toolClocks.delete(b.tool_use_id);
           armStallWatch();
           const old = active.tools.get(b.tool_use_id);

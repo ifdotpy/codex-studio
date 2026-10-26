@@ -12,18 +12,30 @@ const resultOutcomes = {
 
 // Validate only the lifecycle fields we consume, without claiming that this
 // checks the full SDK result or changing its immutable native payload.
-export function isClaudeResultLifecycle(
+export function parseClaudeResultLifecycle(
   value: unknown,
-): value is ClaudeResultLifecycle {
-  return (
+): ClaudeResultLifecycle | null {
+  if (
     value !== null &&
     typeof value === "object" &&
     "is_error" in value &&
     typeof value.is_error === "boolean" &&
     "subtype" in value &&
     typeof value.subtype === "string" &&
-    Object.hasOwn(resultOutcomes, value.subtype)
-  );
+    isResultSubtype(value.subtype)
+  )
+    return { subtype: value.subtype, is_error: value.is_error };
+  return null;
+}
+
+function isResultSubtype(value: string): value is SDKResultMessage["subtype"] {
+  return Object.hasOwn(resultOutcomes, value);
+}
+
+export function isClaudeResultLifecycle(
+  value: unknown,
+): value is ClaudeResultLifecycle {
+  return parseClaudeResultLifecycle(value) !== null;
 }
 
 // The SDK success subtype can still report an error. Stop retains precedence

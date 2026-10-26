@@ -14,6 +14,18 @@ type TaskEvent =
   | Pick<SDKTaskNotificationMessage, "subtype">
   | Pick<SDKTaskProgressMessage, "subtype">;
 
+const terminalTaskPatch = {
+  pending: false,
+  running: false,
+  completed: true,
+  failed: true,
+  killed: true,
+  paused: false,
+} satisfies Record<
+  NonNullable<SDKTaskUpdatedMessage["patch"]["status"]>,
+  boolean
+>;
+
 // Move a running Claude Bash call to the background (the Ctrl+B control).
 //
 // Claude Code registers a foreground Bash call as a `local_bash` task about two
@@ -43,16 +55,15 @@ export function foregroundCommandUpdate(
   if (message.subtype === "task_started")
     available = message.is_backgrounded === false;
   if (
-    (message as Extract<TaskEvent, { patch: unknown }>).patch
-      ?.is_backgrounded === true
+    message.subtype === "task_updated" &&
+    message.patch.is_backgrounded === true
   )
     available = false;
   if (
     message.subtype === "task_notification" ||
-    ["completed", "failed", "killed"].includes(
-      (message as Extract<TaskEvent, { patch: unknown }>).patch
-        ?.status as string,
-    )
+    (message.subtype === "task_updated" &&
+      message.patch.status !== undefined &&
+      terminalTaskPatch[message.patch.status])
   )
     available = false;
   if (available === (item.canMoveToBackground === true)) return null;
@@ -68,19 +79,20 @@ export function backgroundedCommandFields(
   FreshCommandItem,
   "canMoveToBackground" | "backgroundTaskId" | "backgroundedByUser"
 > | null {
-  const taskId =
-    toolUseResult &&
-    typeof toolUseResult === "object" &&
-    "backgroundTaskId" in toolUseResult
-      ? toolUseResult.backgroundTaskId
-      : undefined;
+  if (
+    !toolUseResult ||
+    typeof toolUseResult !== "object" ||
+    !("backgroundTaskId" in toolUseResult)
+  )
+    return null;
+  const taskId = toolUseResult.backgroundTaskId;
   if (typeof taskId !== "string" || !taskId) return null;
   return {
     canMoveToBackground: false,
     backgroundTaskId: taskId,
     backgroundedByUser:
-      (toolUseResult as { backgroundedByUser?: boolean }).backgroundedByUser ===
-      true,
+      "backgroundedByUser" in toolUseResult &&
+      toolUseResult.backgroundedByUser === true,
   };
 }
 
