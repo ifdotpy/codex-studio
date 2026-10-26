@@ -341,9 +341,7 @@ function setupDialog({ fast = true, selectedAccount = "other" } = {}) {
       getAttribute: async () =>
         kind === "radio" ? (name as string) : selectedAccount,
       count: async () => (fast ? 1 : 0),
-      setChecked: async (checked) => {
-        actions.push(`Fast mode ${checked}`);
-      },
+      setChecked: async (checked) => actions.push(`Fast mode ${checked}`),
       click: async () => {
         if (kind === "button") {
           expect(name).toEqual(/^Select account /);
@@ -469,7 +467,7 @@ type UpsertArgs =
       id: string,
       value: Omit<Schemas["EventEntityDto"], "id">,
     ];
-const upsert = (...[collection, id, value]: UpsertArgs): Upsert =>
+const upsert: (...args: UpsertArgs) => Upsert = (collection, id, value) =>
   ({ collection, id, seq: 3, op: "upsert", value: { id, ...value } }) as Upsert;
 
 it("merges current summary/detail streams for owned agents and observes input events and deletions", async () => {

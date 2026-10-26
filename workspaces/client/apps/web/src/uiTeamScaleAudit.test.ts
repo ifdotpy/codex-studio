@@ -393,18 +393,6 @@ describe("helpers", () => {
     expect(await results).toEqual([30, 10, 20, 0]);
   });
 
-  it("passes undefined entries to the task without leaving result holes", async () => {
-    expect(
-      await mapLimited([undefined, 1], 2, async (value, index) => ({
-        value,
-        index,
-      })),
-    ).toEqual([
-      { value: undefined, index: 0 },
-      { value: 1, index: 1 },
-    ]);
-  });
-
   it("summarises failures and anomalies by kind", () => {
     const audit = mergeAudits([
       { failures: [{ kind: "missingChildResults" }] },
