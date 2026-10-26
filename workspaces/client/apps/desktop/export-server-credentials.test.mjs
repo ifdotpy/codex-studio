@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, writeFile, readFile, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { exportServerCredentials } from "./export-server-credentials.mjs";
+import { exportServerCredentials } from "./export-server-credentials.ts";
 
 test("credential migration uses stdin and leaves the encrypted source intact", async () => {
   const profile = await mkdtemp(path.join(os.tmpdir(), "studio-keys-"));

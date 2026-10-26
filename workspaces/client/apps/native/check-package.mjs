@@ -6,11 +6,11 @@ import path from "node:path";
 import {
   runtimeBinaries,
   runtimeBinaryName,
-} from "../desktop/runtime-binaries.mjs";
+} from "../desktop/runtime-binaries.ts";
 import {
   missingPythonModules,
   pythonEntryPoints,
-} from "../desktop/python-resources.mjs";
+} from "../desktop/python-resources.ts";
 
 const application = process.argv[2];
 if (!application) throw new Error("Supply the packaged .app path.");

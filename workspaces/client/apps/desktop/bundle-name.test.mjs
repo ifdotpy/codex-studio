@@ -4,7 +4,7 @@ import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { setBundleDisplayName } from "./bundle-name.mjs";
+import { setBundleDisplayName } from "./bundle-name.ts";
 
 const read = (file) =>
   JSON.parse(

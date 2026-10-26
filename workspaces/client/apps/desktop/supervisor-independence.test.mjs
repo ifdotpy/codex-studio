@@ -19,7 +19,7 @@ import path from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { createRequire } from "node:module";
-import { pythonResources } from "./python-resources.mjs";
+import { pythonResources } from "./python-resources.ts";
 
 const root = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),

@@ -1,5 +1,6 @@
 // Hidden product-renderer measurement. Test keys never enter the OS key store.
 import assert from "node:assert/strict";
+import type { ElectronApplication } from "playwright-core";
 import { _electron as electron } from "playwright-core";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -12,8 +13,8 @@ const servers = await Promise.all([
   fixture("Third", true),
   fixture("Fourth", true),
 ]);
-let desktop;
-function memory(pid) {
+let desktop: ElectronApplication | null = null;
+function memory(pid: number | undefined) {
   const rows = execFileSync("ps", ["-axo", "pid=,ppid=,rss=,args="], {
     encoding: "utf8",
   })
@@ -26,11 +27,11 @@ function memory(pid) {
           pid: Number(parts[1]),
           parent: Number(parts[2]),
           bytes: Number(parts[3]) * 1024,
-          args: parts[4],
+          args: parts[4] ?? "",
         }
       );
     })
-    .filter(Boolean);
+    .filter((row) => row !== null);
   const descendants = new Set([pid]);
   let changed = true;
   while (changed) {
@@ -98,21 +99,34 @@ try {
   page.setDefaultTimeout(15000);
   assert.equal(
     await desktop.evaluate(({ BrowserWindow }) =>
-      BrowserWindow.getAllWindows()[0].isVisible(),
+      BrowserWindow.getAllWindows().at(0)?.isVisible(),
     ),
     false,
   );
-  const pair = async (server) => {
+  const pair = async (server: (typeof servers)[number]) => {
     await page.locator("body").click({ position: { x: 1, y: 1 }, force: true });
     await page.evaluate(
       async ({ invitation }) => {
-        const server = await window.codexDesktop.serverCredentialAction({
+        const bridge = window.codexDesktop;
+        if (!bridge) throw new Error("The desktop bridge is unavailable.");
+        if (!bridge.serverCredentialAction)
+          throw new Error(
+            "The desktop serverCredentialAction method is unavailable.",
+          );
+        const server = await bridge.serverCredentialAction({
           action: "pair",
           origin: invitation.origin,
           invitation,
           requestId: crypto.randomUUID(),
         });
-        const rows = JSON.parse(
+        if (
+          !server ||
+          typeof server !== "object" ||
+          !("id" in server) ||
+          typeof server.id !== "string"
+        )
+          throw new Error("Pairing receipt is unavailable.");
+        const rows: unknown[] = JSON.parse(
           localStorage.getItem("studio-paired-servers-v1") || "[]",
         );
         localStorage.setItem(
@@ -121,7 +135,9 @@ try {
         );
         localStorage.setItem("studio-selected-server", server.id);
         dispatchEvent(new Event("studio-server-registry"));
-        document.querySelector('button[aria-label="Close"]')?.click();
+        document
+          .querySelector<HTMLButtonElement>('button[aria-label="Close"]')
+          ?.click();
       },
       { invitation: server.invitation },
     );
@@ -130,11 +146,13 @@ try {
       .waitFor();
   };
   const measurements = [];
-  await pair(servers[0]);
-  await pair(servers[1]);
+  const [first, second, third] = servers;
+  assert.ok(first && second && third);
+  await pair(first);
+  await pair(second);
   await page.clock.install();
   for (const count of [2, 3]) {
-    if (count === 3) await pair(servers[2]);
+    if (count === 3) await pair(third);
     await page.reload();
     for (const server of servers.slice(0, count))
       await page
@@ -155,7 +173,9 @@ try {
       await desktop.evaluate(
         ({ BrowserWindow }) =>
           Object.keys(
-            BrowserWindow.getAllWindows()[0].webContents.session.serviceWorkers.getAllRunning(),
+            BrowserWindow.getAllWindows()
+              .at(0)
+              ?.webContents.session.serviceWorkers.getAllRunning(),
           ).length,
       ),
       0,
@@ -202,6 +222,7 @@ try {
 } finally {
   if (desktop) {
     const pid = desktop.process().pid;
+    assert.ok(pid);
     const watchdog = setTimeout(() => {
       try {
         process.kill(process.platform === "win32" ? pid : -pid, "SIGKILL");

@@ -7,7 +7,7 @@ import {
   missingPythonModules,
   pythonEntryPoints,
   pythonResources,
-} from "./python-resources.mjs";
+} from "./python-resources.ts";
 
 const source = path.dirname(fileURLToPath(import.meta.url));
 const directories = [];

@@ -132,7 +132,7 @@ const BOUNDARY_ALLOWLIST = [
   },
   {
     importer: "codex-agents-desktop",
-    file: "server-access-native.mjs",
+    file: "server-access-native.ts",
     specifier: "../web/tests/servers/multi-server-fixture.mjs",
     reason:
       "The native desktop integration scenario reuses the renderer's local multi-server test fixture.",
@@ -146,14 +146,14 @@ const BOUNDARY_ALLOWLIST = [
   },
   {
     importer: "codex-agents-desktop",
-    file: "multi-server-memory.mjs",
+    file: "multi-server-memory.ts",
     specifier: "../web/tests/servers/multi-server-fixture.mjs",
     reason:
       "A desktop integration scenario reuses the renderer's local multi-server test fixture.",
   },
   {
     importer: "codex-agents-desktop",
-    file: "server-frames-native.mjs",
+    file: "server-frames-native.ts",
     specifier: "../web/tests/servers/multi-server-fixture.mjs",
     reason:
       "A desktop integration scenario reuses the renderer's local multi-server test fixture.",
@@ -174,14 +174,14 @@ const BOUNDARY_ALLOWLIST = [
   },
   {
     importer: "codex-agents-desktop",
-    file: "profile-export-test.mjs",
+    file: "profile-export-test.ts",
     specifier: "../web/src/native/importBrowserProfile.mjs",
     reason:
       "The profile export scenario checks its output with the renderer's own browser profile import code.",
   },
   {
     importer: "codex-agents-desktop",
-    file: "profile-export-test.mjs",
+    file: "profile-export-test.ts",
     specifier: "../web/src/native/combineBrowserProfiles.mjs",
     reason:
       "The profile export scenario checks its output with the renderer's own browser profile import code.",

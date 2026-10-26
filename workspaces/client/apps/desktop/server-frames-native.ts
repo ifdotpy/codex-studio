@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import type { ElectronApplication } from "playwright-core";
 import { _electron as electron } from "playwright-core";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -10,7 +11,7 @@ import { fixture } from "../web/tests/servers/multi-server-fixture.mjs";
 const root = path.dirname(fileURLToPath(import.meta.url));
 const folder = await mkdtemp(path.join(tmpdir(), "studio-native-frames-"));
 const remote = await fixture("Remote", true);
-let desktop;
+let desktop: ElectronApplication | null = null;
 try {
   const executablePath = process.env.CODEX_FRAMES_EXECUTABLE;
   desktop = await electron.launch({
@@ -49,19 +50,32 @@ try {
   page.setDefaultTimeout(15000);
   assert.equal(
     await desktop.evaluate(({ BrowserWindow }) =>
-      BrowserWindow.getAllWindows()[0].isVisible(),
+      BrowserWindow.getAllWindows().at(0)?.isVisible(),
     ),
     false,
   );
   await page.waitForFunction(() => !!window.codexDesktop);
   await page.locator("body").click({ position: { x: 1, y: 1 }, force: true });
   await page.evaluate(async (invitation) => {
-    const server = await window.codexDesktop.serverCredentialAction({
+    const bridge = window.codexDesktop;
+    if (!bridge) throw new Error("The desktop bridge is unavailable.");
+    if (!bridge.serverCredentialAction)
+      throw new Error(
+        "The desktop serverCredentialAction method is unavailable.",
+      );
+    const server = await bridge.serverCredentialAction({
       action: "pair",
       origin: invitation.origin,
       invitation,
       requestId: crypto.randomUUID(),
     });
+    if (
+      !server ||
+      typeof server !== "object" ||
+      !("id" in server) ||
+      typeof server.id !== "string"
+    )
+      throw new Error("Pairing receipt is unavailable.");
     localStorage.setItem("studio-paired-servers-v1", JSON.stringify([server]));
     localStorage.setItem("studio-selected-server", server.id);
   }, remote.invitation);
@@ -97,6 +111,7 @@ try {
     .getByRole("button", { name: "Hide terminals", exact: true })
     .click();
   const frameURL = await page.locator("iframe").getAttribute("src");
+  assert.ok(frameURL);
   assert.equal(
     new URL(frameURL).searchParams.get("studio-navigation"),
     "classic",
@@ -122,13 +137,14 @@ try {
 } finally {
   if (desktop) {
     const pid = desktop.process().pid;
+    assert.ok(pid);
     let watchdog;
     const testChildren = await desktop
       .evaluate(({ app }) => app.getAppMetrics().map(({ pid }) => pid))
       .catch(() => []);
     await Promise.race([
       desktop.close().catch(() => {}),
-      new Promise((resolve) => {
+      new Promise<void>((resolve) => {
         watchdog = setTimeout(() => {
           try {
             process.kill(pid, "SIGKILL");
