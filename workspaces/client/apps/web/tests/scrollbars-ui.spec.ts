@@ -40,12 +40,11 @@ test("native panes and Mantine share scrollbar styling in both themes", async ({
   const javascript = bundle.outputFiles.find((file) =>
     file.path.endsWith(".js"),
   );
-  if (!css || !javascript) throw new Error("Missing scrollbar fixture bundle");
   await page.addStyleTag({
-    content: css.text,
+    content: css!.text,
   });
   await page.addScriptTag({
-    content: javascript.text,
+    content: javascript!.text,
   });
   const viewport = page.locator(".mantine-ScrollArea-viewport");
   const verticalTrack = page.locator(
@@ -129,10 +128,9 @@ test("native panes and Mantine share scrollbar styling in both themes", async ({
     )
     .toBeGreaterThan(0);
   const box = await thumb.boundingBox();
-  if (!box) throw new Error("Scrollbar thumb has no bounding box");
-  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+  await page.mouse.move(box!.x + box!.width / 2, box!.y + box!.height / 2);
   await page.mouse.down();
-  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2 + 60);
+  await page.mouse.move(box!.x + box!.width / 2, box!.y + box!.height / 2 + 60);
   await page.mouse.up();
   await expect
     .poll(() => viewport.evaluate((element) => element.scrollTop))
