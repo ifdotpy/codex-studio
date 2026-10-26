@@ -1027,7 +1027,7 @@ export function gateSteps(root: string, name: string): GateStep[] {
         }),
       ),
       nodeTest("layout-contract", "layout contract witnesses", [
-        "workspaces/client/apps/web/scripts/check-layout-contract.test.mjs",
+        "workspaces/client/apps/web/scripts/check-layout-contract.test.ts",
       ]),
       nodeTest("retained-helpers", "retained Python helper boundaries", [
         "workspaces/client/apps/desktop/retained-helper-witness.test.ts",

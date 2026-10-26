@@ -1,3 +1,4 @@
+import { visibleBounds } from "../mobile/mobile-ui-fixture.ts";
 import { required, fixturePostBody } from "../teams/helpers.ts";
 import {
   readTestState,
@@ -461,8 +462,11 @@ test("Terminal dock transport", async () => {
     // A server view in the combined window has no sidebar: the closed dock is a full-width bar,
     // and the page ends above it, so the bar never covers the usage line.
     const frameGeometry = await page.evaluate(async () => {
-      const sidebar = document.querySelector("#sidebar");
-      if (!sidebar) throw new Error("Missing sidebar");
+      const sidebar =
+        document.querySelector<HTMLElement>("#sidebar") ??
+        (() => {
+          throw new Error("Missing fixture element");
+        })();
       const parent = sidebar.parentNode;
       if (!parent) throw new Error("Missing sidebar parent");
       const next = sidebar.nextSibling;
@@ -550,16 +554,17 @@ test("Terminal dock transport", async () => {
     const largeResize = () =>
       writes
         .filter(
-          (write) =>
+          (write): write is Extract<Write, { path: "/api/terminals/resize" }> =>
             write.path === "/api/terminals/resize" &&
             write.body.id === created.body.id,
         )
         .at(-1);
     await page.waitForFunction(
-      () => document.querySelector(".xterm-screen")?.clientHeight > 0,
+      () => (document.querySelector(".xterm-screen")?.clientHeight ?? 0) > 0,
     );
     await page.waitForTimeout(200);
     const largeRows = largeResize()?.body.rows;
+    assert.ok(typeof largeRows === "number");
     const resizeStart = writes.length;
     const preferredHeight = await page.evaluate(() =>
       localStorage.getItem("codex.terminal.height"),
@@ -568,12 +573,20 @@ test("Terminal dock transport", async () => {
     await page.waitForTimeout(300);
     const short = await dock.evaluate((node) => ({
       dock: node.getBoundingClientRect().toJSON(),
-      composer: document
-        .querySelector("#composer")
+      composer: (
+        document.querySelector("#composer") ??
+        (() => {
+          throw new Error("Missing fixture element");
+        })()
+      )
         .getBoundingClientRect()
         .toJSON(),
-      header: document
-        .querySelector(".workspace-header")
+      header: (
+        document.querySelector(".workspace-header") ??
+        (() => {
+          throw new Error("Missing fixture element");
+        })()
+      )
         .getBoundingClientRect()
         .toJSON(),
       reserved: Number.parseFloat(
@@ -602,6 +615,7 @@ test("Terminal dock transport", async () => {
           (write) =>
             write.path === "/api/terminals/resize" &&
             write.body.id === created.body.id &&
+            typeof write.body.rows === "number" &&
             write.body.rows < largeRows,
         ),
       "The existing resize request changes this terminal grid",
@@ -626,9 +640,9 @@ test("Terminal dock transport", async () => {
     await page.setViewportSize({ width: 1440, height: 980 });
     await page.waitForTimeout(200);
     const resizer = dock.getByRole("separator");
-    const dragStart = await dock.boundingBox();
+    const dragStart = await visibleBounds(dock);
     const beginDrag = async () => {
-      const box = await resizer.boundingBox();
+      const box = await visibleBounds(resizer);
       await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
       await page.mouse.down();
       await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2 - 40);
@@ -636,8 +650,12 @@ test("Terminal dock transport", async () => {
     await beginDrag();
     await page.waitForFunction(
       (height) =>
-        document.querySelector(".terminal-dock").getBoundingClientRect()
-          .height > height,
+        (
+          document.querySelector(".terminal-dock") ??
+          (() => {
+            throw new Error("Missing fixture element");
+          })()
+        ).getBoundingClientRect().height > height,
       dragStart.height,
     );
     assert.equal(
@@ -649,8 +667,12 @@ test("Terminal dock transport", async () => {
     await page.mouse.up();
     await page.waitForFunction(
       (height) =>
-        document.querySelector(".terminal-dock").getBoundingClientRect()
-          .height === height,
+        (
+          document.querySelector(".terminal-dock") ??
+          (() => {
+            throw new Error("Missing fixture element");
+          })()
+        ).getBoundingClientRect().height === height,
       dragStart.height,
     );
     assert.equal(
@@ -731,7 +753,7 @@ test("Terminal dock transport", async () => {
       "A cancelled or invalid history never downloads a partial file",
     );
     historyMode = "ready";
-    const screen = required(await dock.locator(".xterm-screen").boundingBox());
+    const screen = await visibleBounds(dock.locator(".xterm-screen"));
     await page.mouse.move(screen.x + 1, screen.y + 7);
     await page.mouse.down();
     await page.mouse.move(screen.x + 145, screen.y + 7, { steps: 8 });
@@ -770,10 +792,10 @@ test("Terminal dock transport", async () => {
     await dock
       .getByRole("button", { name: "Release logs", exact: true })
       .waitFor();
-    const before = required(await dock.boundingBox());
+    const before = required(await visibleBounds(dock));
     await dock.getByRole("separator").focus();
     await page.keyboard.press("ArrowUp");
-    const after = required(await dock.boundingBox());
+    const after = required(await visibleBounds(dock));
     assert.ok(after.height > before.height);
     await dock
       .getByRole("button", { name: "Hide terminals", exact: true })
@@ -784,8 +806,12 @@ test("Terminal dock transport", async () => {
     await page.waitForFunction(
       (expected) =>
         Math.abs(
-          document.querySelector(".terminal-dock").getBoundingClientRect()
-            .height - expected,
+          (
+            document.querySelector(".terminal-dock") ??
+            (() => {
+              throw new Error("Missing fixture element");
+            })()
+          ).getBoundingClientRect().height - expected,
         ) < 0.1,
       layoutValues.terminal.closedBar * 20,
     );
@@ -820,7 +846,11 @@ test("Terminal dock transport", async () => {
       button.scrollIntoView({ block: "center", inline: "center" }),
     );
     await page.waitForFunction(() => {
-      const button = document.querySelector(".terminal-dock-error button");
+      const button =
+        document.querySelector<HTMLElement>(".terminal-dock-error button") ??
+        (() => {
+          throw new Error("Missing fixture element");
+        })();
       if (!button) return false;
       const rect = button.getBoundingClientRect();
       const target = document.elementFromPoint(

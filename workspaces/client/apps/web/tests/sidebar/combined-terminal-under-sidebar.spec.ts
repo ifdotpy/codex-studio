@@ -1,3 +1,4 @@
+import { visibleBounds } from "../mobile/mobile-ui-fixture.ts";
 import { test, expect } from "../playwright.ts";
 import { sidebarParityFixture } from "./sidebar-parity-fixture.ts";
 
@@ -76,8 +77,12 @@ test("the combined window keeps the closed terminal bar under the sidebar and op
       .toMatchObject({ left: 0, width: 1440 });
     const open = await dock.evaluate((node) => ({
       dock: node.getBoundingClientRect().toJSON(),
-      workspace: document
-        .querySelector(".workspace")!
+      workspace: (
+        document.querySelector(".workspace") ??
+        (() => {
+          throw new Error("Missing fixture workspace");
+        })()
+      )
         .getBoundingClientRect()
         .toJSON(),
       width: innerWidth,
@@ -106,19 +111,35 @@ test("the combined window keeps the closed terminal bar under the sidebar and op
     await expect
       .poll(async () => {
         return page.evaluate(() => {
-          const dock = document
-            .querySelector(".terminal-dock")
-            .getBoundingClientRect();
-          const sidebar = document
-            .querySelector(".multi-server-shell > #sidebar")
-            .getBoundingClientRect();
-          const composer = document
-            .querySelector("#composer")
-            .getBoundingClientRect();
-          const header = document
-            .querySelector(".workspace-header")
-            .getBoundingClientRect();
-          const shell = document.querySelector(".multi-server-shell");
+          const dock = (
+            document.querySelector(".terminal-dock") ??
+            (() => {
+              throw new Error("Missing fixture element");
+            })()
+          ).getBoundingClientRect();
+          const sidebar = (
+            document.querySelector(".multi-server-shell > #sidebar") ??
+            (() => {
+              throw new Error("Missing fixture element");
+            })()
+          ).getBoundingClientRect();
+          const composer = (
+            document.querySelector("#composer") ??
+            (() => {
+              throw new Error("Missing fixture element");
+            })()
+          ).getBoundingClientRect();
+          const header = (
+            document.querySelector(".workspace-header") ??
+            (() => {
+              throw new Error("Missing fixture element");
+            })()
+          ).getBoundingClientRect();
+          const shell =
+            document.querySelector<HTMLElement>(".multi-server-shell") ??
+            (() => {
+              throw new Error("Missing fixture element");
+            })();
           return (
             Math.abs(sidebar.bottom - dock.top) <= 1 &&
             Math.abs(
@@ -139,7 +160,7 @@ test("the combined window keeps the closed terminal bar under the sidebar and op
     const preference = await page.evaluate(() =>
       localStorage.getItem("codex.terminal.height"),
     );
-    const handle = await dock.getByRole("separator").boundingBox();
+    const handle = await visibleBounds(dock.getByRole("separator"));
     await page.mouse.move(
       handle.x + handle.width / 2,
       handle.y + handle.height / 2,

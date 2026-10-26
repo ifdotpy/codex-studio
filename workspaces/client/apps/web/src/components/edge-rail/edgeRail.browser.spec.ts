@@ -1,9 +1,11 @@
+import { fixtureOrigin } from "../../../tests/misc-fixture.ts";
+import { visibleBounds } from "../../../tests/mobile/mobile-ui-fixture.ts";
 import { fileURLToPath } from "node:url";
 import {
   test,
   expect,
   createFixtureViteServer,
-} from "../../../tests/playwright.mjs";
+} from "../../../tests/playwright.ts";
 
 for (const capability of [
   { name: "primary touch", primary: true, any: true, points: 5 },
@@ -30,41 +32,13 @@ for (const capability of [
       plugins: [
         {
           name: "edge-rail-fixture",
-          resolveId(id) {
-            if (id === "/rail-entry") return "\0rail-entry";
-          },
-          load(id) {
-            if (id !== "\0rail-entry") return;
-            return `
-          import React from 'react';
-          import {createRoot} from 'react-dom/client';
-          import {MantineProvider,Menu} from '@mantine/core';
-          import {EdgeRail} from '/src/components/edge-rail/EdgeRail.tsx';
-          import {useEdgeRail} from '/src/components/edge-rail/useEdgeRail.ts';
-          import {theme} from '/src/theme.ts';
-          import '@mantine/core/styles.css';
-          import '/src/layout/layout-contract.generated.css';
-          const e=React.createElement;
-          function Fixture(){
-            const geometry=useEdgeRail();
-            const [last,setLast]=React.useState('None');
-            return e(MantineProvider,{theme},
-              e('main',null,e('h1',null,'Conversation title'),e('output',{id:'last-action'},last)),
-              e(EdgeRail,{geometry,
-                sidebar:{expanded:true,onClick:()=>setLast('Toggle conversations')},
-                messages:{count:3,onClick:()=>setLast('Messages')},
-                menu:e(Menu.Item,{onClick:()=>setLast('Existing action')},'Existing action')}));
-          }
-          createRoot(document.querySelector('#root')).render(e(Fixture));
-        `;
-          },
           configureServer(server) {
             server.middlewares.use((request, response, next) => {
               if (request.url !== "/rail-check") return next();
               response.setHeader("Content-Type", "text/html");
               response.end(`<!doctype html><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
             <title>Edge rail fixture</title><style>*{box-sizing:border-box}body{margin:0}#root{display:flex;height:100dvh;padding:0 84px 34px 0}main{flex:1;min-width:0;height:100%;background:#eee}</style>
-            <div id="root"></div><script type="module" src="/rail-entry"></script>`);
+            <div id="root"></div><script type="module" src="/src/components/edge-rail/edgeRail.fixture.tsx"></script>`);
             });
           },
         },
@@ -92,18 +66,16 @@ for (const capability of [
         value: capability.points,
       });
     }, capability);
-    const errors = [];
+    const errors: string[] = [];
     page.on("pageerror", (error) => errors.push(error.message));
     try {
       await server.listen();
-      await page.goto(
-        `http://127.0.0.1:${server.httpServer.address().port}/rail-check`,
-      );
+      await page.goto(`${fixtureOrigin(server)}/rail-check`);
       const rail = page.getByRole("navigation", {
         name: "Conversation actions",
       });
       await expect(rail).toBeVisible();
-      expect(await rail.boundingBox()).toEqual({
+      expect(await visibleBounds(rail)).toEqual({
         x: 867,
         y: 112,
         width: 84,
@@ -115,7 +87,7 @@ for (const capability of [
       });
       for (const label of ["Toggle conversations", "Messages, 3 need you"]) {
         const button = rail.getByRole("button", { name: label, exact: true });
-        const rect = await button.boundingBox();
+        const rect = await visibleBounds(button);
         expect(rect.width).toBeGreaterThanOrEqual(44);
         expect(rect.height).toBeGreaterThanOrEqual(44);
         expect(rect.y + rect.height).toBeLessThanOrEqual(635);
@@ -129,22 +101,26 @@ for (const capability of [
         .click();
       const item = page.getByRole("menuitem", { name: "Existing action" });
       await expect(item).toBeVisible();
-      expect((await item.boundingBox()).x).toBeLessThan(867);
+      expect((await visibleBounds(item)).x).toBeLessThan(867);
       await item.click();
       await expect(page.locator("#last-action")).toHaveText("Existing action");
 
       await page.evaluate(() => {
-        const root = document.querySelector("#root");
+        const root =
+          document.querySelector<HTMLElement>("#root") ??
+          (() => {
+            throw new Error("Missing fixture element");
+          })();
         root.style.paddingRight = "0px";
         root.style.paddingLeft = "84px";
       });
       await expect(rail).toHaveAttribute("data-side", "left");
-      expect((await rail.boundingBox()).x).toBe(0);
+      expect((await visibleBounds(rail)).x).toBe(0);
       await rail
         .getByRole("button", { name: "Chat actions", exact: true })
         .click();
       await expect(item).toBeVisible();
-      expect((await item.boundingBox()).x).toBeGreaterThanOrEqual(44);
+      expect((await visibleBounds(item)).x).toBeGreaterThanOrEqual(44);
       await expect(page.getByRole("menu")).toHaveCSS("opacity", "1");
       await page.screenshot({
         path: test.info().outputPath("edge-rail-left-menu.png"),
@@ -154,12 +130,16 @@ for (const capability of [
       await expect(item).toHaveCount(0);
 
       await page.evaluate(() => {
-        const root = document.querySelector("#root");
+        const root =
+          document.querySelector<HTMLElement>("#root") ??
+          (() => {
+            throw new Error("Missing fixture element");
+          })();
         root.style.height = "240px";
         root.style.paddingBottom = "0px";
       });
       await expect
-        .poll(async () => (await rail.boundingBox()).height)
+        .poll(async () => (await visibleBounds(rail)).height)
         .toBe(128);
       await rail
         .getByRole("button", { name: "Chat actions", exact: true })
@@ -173,7 +153,12 @@ for (const capability of [
         await rail.evaluate((node) => node.scrollHeight > node.clientHeight),
       ).toBe(true);
       await page.evaluate(() => {
-        document.querySelector("#root").style.paddingLeft = "43.99px";
+        (
+          document.querySelector<HTMLElement>("#root") ??
+          (() => {
+            throw new Error("Missing fixture element");
+          })()
+        ).style.paddingLeft = "43.99px";
       });
       await expect(rail).toHaveCount(0);
       expect(errors).toEqual([]);

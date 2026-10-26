@@ -1,14 +1,16 @@
+import type { KeyboardPatch } from "../../tests/layout/keyboardSequences.ts";
+import { fixtureOrigin } from "../../tests/misc-fixture.ts";
 import { fileURLToPath } from "node:url";
 import {
   test,
   expect,
   createFixtureViteServer,
-} from "../../tests/playwright.mjs";
+} from "../../tests/playwright.ts";
 
 import {
   keyboardSequences,
   keyboardCycleFrames,
-} from "../../tests/layout/keyboardSequences.mjs";
+} from "../../tests/layout/keyboardSequences.ts";
 
 for (const [name, steps] of Object.entries({
   ...keyboardSequences,
@@ -26,20 +28,12 @@ for (const [name, steps] of Object.entries({
       plugins: [
         {
           name: "keyboard-sequence-fixture",
-          resolveId(id) {
-            if (id === "/sequence-entry") return "\0sequence-entry";
-          },
-          load(id) {
-            if (id !== "\0sequence-entry") return;
-            return `import React from 'react';import {createRoot} from 'react-dom/client';import {useMobileViewport} from '/src/hooks/mobileViewport.ts';import '/src/hooks/viewport-surface.css';import '/src/layout/layout-contract.generated.css';
- const e=React.createElement;function Fixture(){useMobileViewport(true);return e(React.Fragment,null,e('aside',{id:'sidebar',style:{width:226,height:'100%',flex:'none'}},'Chats'),e('section',{style:{height:'100%',flex:1,display:'flex',flexDirection:'column'}},e('header',{style:{height:44,flex:'none'}},'Header'),e('main',{id:'conversation',style:{display:'flex',flex:1,minHeight:0,flexDirection:'column'}},e('div',{id:'messages',style:{flex:1,minHeight:0,overflow:'auto'}},'Transcript '.repeat(100)),e('form',{id:'composer',style:{height:${["device final", "product target"].includes(name) ? 91 : 120},flex:'none',margin:0,marginBottom:${name === "product target" ? 24 : 0}}},e('textarea',{id:'message',defaultValue:'Draft'})))));}createRoot(document.querySelector('#root')).render(e(Fixture));`;
-          },
           configureServer(s) {
             s.middlewares.use((req, res, next) => {
               if (req.url !== "/sequence-check") return next();
               res.setHeader("Content-Type", "text/html");
               res.end(
-                '<!doctype html><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><style>*{box-sizing:border-box}body{margin:0}#root{display:flex;flex-direction:row}#composer{background:white}textarea{font-size:16px}</style><div id="root"></div><script type="module" src="/sequence-entry"></script>',
+                '<!doctype html><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><style>*{box-sizing:border-box}body{margin:0}#root{display:flex;flex-direction:row}#composer{background:white}textarea{font-size:16px}</style><div id="root"></div><script type="module" src="/src/hooks/mobileViewport.sequence.fixture.tsx"></script>',
               );
             });
           },
@@ -60,7 +54,8 @@ for (const [name, steps] of Object.entries({
     try {
       await server.listen();
       await page.addInitScript(
-        ({ visualOrigin, finePrimary }) => {
+        ({ visualOrigin, finePrimary, name }) => {
+          window.sequenceCase = name;
           if (finePrimary) {
             const media = window.matchMedia.bind(window);
             window.matchMedia = (query) => {
@@ -112,17 +107,26 @@ for (const [name, steps] of Object.entries({
               viewport.dispatchEvent(new Event("scroll"));
               window.dispatchEvent(new Event("scroll"));
             }
-            const root = document
-                .querySelector("#root")
-                .getBoundingClientRect(),
-              composer = document
-                .querySelector("#composer")
-                .getBoundingClientRect();
+            const root = (
+                document.querySelector("#root") ??
+                (() => {
+                  throw new Error("Missing fixture element");
+                })()
+              ).getBoundingClientRect(),
+              composer = (
+                document.querySelector("#composer") ??
+                (() => {
+                  throw new Error("Missing fixture element");
+                })()
+              ).getBoundingClientRect();
             const visibleTop = visualOrigin ? 0 : viewport.offsetTop;
-            const screenRect = (selector) => {
-              const r = document
-                .querySelector(selector)
-                .getBoundingClientRect();
+            const screenRect = (selector: string) => {
+              const r = (
+                document.querySelector(selector) ??
+                (() => {
+                  throw new Error("Missing fixture element");
+                })()
+              ).getBoundingClientRect();
               return {
                 x: r.x,
                 y: r.y - visibleTop,
@@ -148,15 +152,14 @@ for (const [name, steps] of Object.entries({
         {
           visualOrigin: name === "visual origin" || name === "device final",
           finePrimary: name === "fine primary touch laptop",
+          name,
         },
       );
       const cdp = await page.context().newCDPSession(page);
       await cdp.send("Emulation.setSafeAreaInsetsOverride", {
         insets: { top: 0, right: 0, bottom: 34, left: 0 },
       });
-      await page.goto(
-        `http://127.0.0.1:${server.httpServer.address().port}/sequence-check`,
-      );
+      await page.goto(`${fixtureOrigin(server)}/sequence-check`);
       if (name === "fine primary touch laptop") {
         await expect(page.locator("#message")).toBeVisible();
         await expect(page.locator("html")).not.toHaveAttribute(
@@ -213,7 +216,11 @@ for (const [name, steps] of Object.entries({
       }
       if (name === "product target") {
         const result = await page.evaluate(() => {
-          const composer = document.querySelector("#composer");
+          const composer =
+            document.querySelector<HTMLElement>("#composer") ??
+            (() => {
+              throw new Error("Missing fixture element");
+            })();
           window.stepKeyboard({ height: 337, innerHeight: 669 });
           const animation = composer.getAnimations()[0];
           animation.pause();
@@ -248,10 +255,19 @@ for (const [name, steps] of Object.entries({
       }
       if (name === "close on blur") {
         const targets = await page.evaluate(() => {
-          const composer = document.querySelector("#composer");
+          const composer =
+            document.querySelector<HTMLElement>("#composer") ??
+            (() => {
+              throw new Error("Missing fixture element");
+            })();
           window.stepKeyboard({ height: 337, innerHeight: 669 });
           composer.getAnimations().forEach((a) => a.finish());
-          document.querySelector("#message").blur();
+          (
+            document.querySelector<HTMLTextAreaElement>("#message") ??
+            (() => {
+              throw new Error("Missing fixture element");
+            })()
+          ).blur();
           const immediate = composer.style.getPropertyValue(
             "--keyboard-composer-shift",
           );
@@ -282,7 +298,7 @@ for (const [name, steps] of Object.entries({
           "0s, 0.4s",
         );
         const captures = await page.evaluate(async () => {
-          const capture = (patch) => {
+          const capture = (patch: KeyboardPatch) => {
             window.stepKeyboard(patch);
             document.body.getBoundingClientRect();
             const animations = document.getAnimations();
@@ -290,10 +306,13 @@ for (const [name, steps] of Object.entries({
             const rows = [];
             for (const ms of [0, 100, 200, 300, 400]) {
               animations.forEach((a) => (a.currentTime = ms));
-              const rect = (selector) => {
-                const r = document
-                  .querySelector(selector)
-                  .getBoundingClientRect();
+              const rect = (selector: string) => {
+                const r = (
+                  document.querySelector(selector) ??
+                  (() => {
+                    throw new Error("Missing fixture element");
+                  })()
+                ).getBoundingClientRect();
                 return { top: r.top, bottom: r.bottom, height: r.height };
               };
               rows.push({
@@ -302,8 +321,12 @@ for (const [name, steps] of Object.entries({
                 header: rect("header"),
                 composer: rect("#composer"),
                 padding: parseFloat(
-                  getComputedStyle(document.querySelector("#messages"))
-                    .paddingBottom,
+                  getComputedStyle(
+                    document.querySelector<HTMLTextAreaElement>("#messages") ??
+                      (() => {
+                        throw new Error("Missing fixture element");
+                      })(),
+                  ).paddingBottom,
                 ),
               });
               if (ms === 200) {

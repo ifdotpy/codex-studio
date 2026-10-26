@@ -9,15 +9,15 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { scanSource, checkConsumers } from "./check-layout-contract.mjs";
+import { scanSource, checkConsumers } from "./check-layout-contract.ts";
 import {
   readLayoutContract,
   validateContract,
   generateLayoutContract,
   renderContract,
-} from "./generate-layout-contract.mjs";
+} from "./generate-layout-contract.ts";
 const contract = readLayoutContract();
-const check = (path, source) =>
+const check = (path: string, source: string) =>
   checkConsumers(contract, new Map([[path, source]]), {
     requireAllLegacy: false,
   });

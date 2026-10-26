@@ -1,4 +1,29 @@
-export const keyboardSequences = {
+export type KeyboardPatch = Partial<
+  Pick<VisualViewport, "width" | "height" | "offsetTop" | "pageTop" | "scale">
+> & { innerHeight?: number; scrollY?: number };
+export type KeyboardScreenRect = Pick<DOMRect, "x" | "y" | "width" | "height">;
+export type KeyboardFrame = {
+  sidebar: KeyboardScreenRect;
+  header: KeyboardScreenRect;
+  offsetTop: number;
+  pageTop: number;
+  scrollY: number;
+  top: number;
+  rootHeight: number;
+  composerTop: number;
+  composerBottom: number;
+  visibleTop: number;
+  visibleHeight: number;
+};
+declare global {
+  interface Window {
+    sequenceCase: string;
+    stepKeyboard: (patch: KeyboardPatch, dispatch?: boolean) => KeyboardFrame;
+    keyboardVisualOrigin: boolean;
+    resizeDuoViewport: (patch: KeyboardPatch) => void;
+  }
+}
+export const keyboardSequences: Record<string, KeyboardPatch[]> = {
   "shrink then pan": [
     { height: 323, innerHeight: 323 },
     { offsetTop: 346, pageTop: 346, scrollY: 346 },
@@ -46,7 +71,7 @@ export const keyboardSequences = {
     },
   ],
 };
-export const keyboardCycleFrames = (steps) => [
+export const keyboardCycleFrames = (steps: KeyboardPatch[]) => [
   ...steps,
   { height: 669, innerHeight: 669 },
   { pageTop: 0, offsetTop: 0, scrollY: 0 },

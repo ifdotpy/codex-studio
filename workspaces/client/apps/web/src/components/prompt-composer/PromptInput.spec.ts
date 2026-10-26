@@ -167,7 +167,7 @@ test("touch inputs keep the focus zoom font floor across layout widths", async (
             </div>`,
         }),
       );
-      await page.goto(`${fixtureOrigin(server)}touch-input-test`);
+      await page.goto(`${fixtureOrigin(server)}/touch-input-test`);
       await page.evaluate(async () => {
         await import("/node_modules/@mantine/core/styles.css");
         await import("/src/style.css");

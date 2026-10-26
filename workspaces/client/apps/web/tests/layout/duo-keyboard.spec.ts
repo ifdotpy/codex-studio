@@ -1,14 +1,13 @@
-import { test, expect, entityPullFixtureForRequest } from "../playwright.mjs";
-import { fixtureWorkspaceId } from "../servers/multi-server-fixture.mjs";
+import type { KeyboardPatch } from "./keyboardSequences.ts";
+import { visibleBounds } from "../mobile/mobile-ui-fixture.ts";
+import { test, expect, entityPullFixtureForRequest } from "../playwright.ts";
+import { fixtureWorkspaceId } from "../servers/multi-server-fixture.ts";
 import {
   sidebarParityFixture,
   scope,
-} from "../sidebar/sidebar-parity-fixture.mjs";
+} from "../sidebar/sidebar-parity-fixture.ts";
 
-import {
-  keyboardSequences,
-  keyboardCycleFrames,
-} from "./keyboardSequences.mjs";
+import { keyboardSequences, keyboardCycleFrames } from "./keyboardSequences.ts";
 
 test.use({ hasTouch: true, reducedMotion: "reduce" });
 for (const count of [1, 8]) {
@@ -107,9 +106,7 @@ for (const count of [1, 8]) {
           workspaceId: fixtureWorkspaceId("Local"),
           ...entityPullFixtureForRequest(fixture.local.snapshot, url, {
             transcript: {
-              agent: fixture.local.snapshot.threads.find(
-                (a) => a.id === "overlap",
-              ),
+              agent: { id: "overlap", status: "completed", inFlight: false },
               items: Array.from({ length: 20 }, (_, i) => ({
                 id: `line-${i}`,
                 role: "assistant",
@@ -144,7 +141,7 @@ for (const count of [1, 8]) {
       await expect
         .poll(
           async () =>
-            (await page.locator(".workspace-header").boundingBox()).height,
+            (await visibleBounds(page.locator(".workspace-header"))).height,
         )
         .toBe(44);
       await expect(page.locator(".workspace > .session-activity")).toHaveCount(
@@ -157,14 +154,22 @@ for (const count of [1, 8]) {
         count,
       );
       await page.locator("#message").fill("Keep this draft");
-      const fullSidebarHeight = (await page.locator("#sidebar").boundingBox())
+      const fullSidebarHeight = (await visibleBounds(page.locator("#sidebar")))
         .height;
       if (count === 1) {
         await page.emulateMedia({ reducedMotion: "no-preference" });
         const motion = await page.evaluate(async () => {
-          const sidebar = document.querySelector("#sidebar");
+          const sidebar =
+            document.querySelector<HTMLElement>("#sidebar") ??
+            (() => {
+              throw new Error("Missing fixture element");
+            })();
           const baseline = sidebar.getBoundingClientRect().toJSON();
-          const messages = document.querySelector("#messages");
+          const messages =
+            document.querySelector<HTMLElement>("#messages") ??
+            (() => {
+              throw new Error("Missing fixture element");
+            })();
           messages.scrollTop = messages.scrollHeight;
           await new Promise(requestAnimationFrame);
           window.resizeDuoViewport({
@@ -177,7 +182,12 @@ for (const count of [1, 8]) {
           document.body.getBoundingClientRect();
           const animations = document
             .getAnimations()
-            .filter((a) => a.effect?.target?.matches?.("#composer,#messages"));
+            .filter(
+              (a) =>
+                a.effect instanceof KeyframeEffect &&
+                a.effect.target instanceof Element &&
+                a.effect.target.matches("#composer,#messages"),
+            );
           animations.forEach((a) => a.pause());
           const frames = [];
           for (const ms of [0, 100, 200, 300, 400]) {
@@ -187,12 +197,18 @@ for (const count of [1, 8]) {
             frames.push({
               ms,
               sidebar: sidebar.getBoundingClientRect().toJSON(),
-              composerTop: document
-                .querySelector("#composer")
-                .getBoundingClientRect().top,
-              lastBottom: messages
-                .querySelector(".message:last-child")
-                .getBoundingClientRect().bottom,
+              composerTop: (
+                document.querySelector("#composer") ??
+                (() => {
+                  throw new Error("Missing fixture element");
+                })()
+              ).getBoundingClientRect().top,
+              lastBottom: (
+                messages.querySelector(".message:last-child") ??
+                (() => {
+                  throw new Error("Missing last fixture message");
+                })()
+              ).getBoundingClientRect().bottom,
               padding: parseFloat(getComputedStyle(messages).paddingBottom),
             });
           }
@@ -234,25 +250,39 @@ for (const count of [1, 8]) {
             .locator("#root")
             .evaluate(
               (n) =>
-                n.getBoundingClientRect().top - window.visualViewport.offsetTop,
+                n.getBoundingClientRect().top -
+                (window.visualViewport?.offsetTop ?? 0),
             ),
         )
         .toBe(0);
       await expect(page.locator("#root")).toHaveCSS("padding-bottom", "34px");
       const bounds = await page.evaluate(() => {
-        const rect = (node) => {
+        const rect = (node: Element | null) => {
+          if (!node) throw new Error("Missing fixture element");
           const r = node.getBoundingClientRect();
           return {
-            top: r.top - window.visualViewport.offsetTop,
-            bottom: r.bottom - window.visualViewport.offsetTop,
+            top: r.top - (window.visualViewport?.offsetTop ?? 0),
+            bottom: r.bottom - (window.visualViewport?.offsetTop ?? 0),
             left: r.left,
             right: r.right,
             height: r.height,
           };
         };
-        const composer = document.querySelector("#composer");
-        const messages = document.querySelector("#messages");
-        const sidebar = document.querySelector("#sidebar");
+        const composer =
+          document.querySelector<HTMLElement>("#composer") ??
+          (() => {
+            throw new Error("Missing fixture element");
+          })();
+        const messages =
+          document.querySelector<HTMLElement>("#messages") ??
+          (() => {
+            throw new Error("Missing fixture element");
+          })();
+        const sidebar =
+          document.querySelector<HTMLElement>("#sidebar") ??
+          (() => {
+            throw new Error("Missing fixture element");
+          })();
         return {
           composer: rect(composer),
           messages: rect(messages),
@@ -293,10 +323,9 @@ for (const count of [1, 8]) {
       );
       await expect
         .poll(async () => {
-          const b = await page
-            .locator("#messages .message")
-            .last()
-            .boundingBox();
+          const b = await visibleBounds(
+            page.locator("#messages .message").last(),
+          );
           return b.y + b.height - 346;
         })
         .toBeLessThanOrEqual(bounds.composer.top);
@@ -313,10 +342,9 @@ for (const count of [1, 8]) {
         await list.evaluate((n) => {
           n.scrollLeft = n.scrollWidth;
         });
-        const last = await list
-          .locator(".attachment-chip")
-          .last()
-          .boundingBox();
+        const last = await visibleBounds(
+          list.locator(".attachment-chip").last(),
+        );
         expect(last.x + last.width).toBeLessThanOrEqual(bounds.composer.right);
       }
       await page.evaluate(() =>
@@ -339,19 +367,27 @@ for (const count of [1, 8]) {
         await page.evaluate((name) => {
           window.keyboardVisualOrigin =
             name === "visual origin" || name === "device final";
-          document.querySelector("#root").style.transform =
+          (
+            document.querySelector<HTMLElement>("#root") ??
+            (() => {
+              throw new Error("Missing fixture element");
+            })()
+          ).style.transform =
             name === "transformed root" ? "translateZ(0)" : "";
         }, name);
-        const capture = (patch) =>
+        const capture = (patch: KeyboardPatch) =>
           page.evaluate((patch) => {
             window.resizeDuoViewport(patch);
             const visibleTop = window.keyboardVisualOrigin
               ? 0
-              : window.visualViewport.offsetTop;
-            const rect = (selector) => {
-              const r = document
-                .querySelector(selector)
-                .getBoundingClientRect();
+              : (window.visualViewport?.offsetTop ?? 0);
+            const rect = (selector: string) => {
+              const r = (
+                document.querySelector(selector) ??
+                (() => {
+                  throw new Error("Missing fixture element");
+                })()
+              ).getBoundingClientRect();
               return {
                 x: r.x,
                 y: r.y - visibleTop,
@@ -363,7 +399,7 @@ for (const count of [1, 8]) {
               sidebar: rect("#sidebar"),
               header: rect(".workspace-header"),
               composer: rect("#composer"),
-              visibleHeight: window.visualViewport.height,
+              visibleHeight: window.visualViewport?.height ?? 0,
             };
           }, patch);
         const stable = await capture({});
@@ -384,7 +420,12 @@ for (const count of [1, 8]) {
       }
       await page.evaluate(() => {
         window.keyboardVisualOrigin = false;
-        document.querySelector("#root").style.transform = "";
+        (
+          document.querySelector<HTMLElement>("#root") ??
+          (() => {
+            throw new Error("Missing fixture element");
+          })()
+        ).style.transform = "";
       });
       await test.info().attach("actual-app-keyboard-frames", {
         body: JSON.stringify(frameRecords, null, 2),
@@ -451,7 +492,7 @@ for (const count of [1, 8]) {
       expect(overflow).toBeLessThanOrEqual(1);
       for (const target of await header.getByRole("button").all()) {
         if (!(await target.isVisible())) continue;
-        const b = await target.boundingBox();
+        const b = await visibleBounds(target);
         expect(b.x).toBeGreaterThanOrEqual(0);
         expect(b.x + b.width).toBeLessThanOrEqual(951);
       }

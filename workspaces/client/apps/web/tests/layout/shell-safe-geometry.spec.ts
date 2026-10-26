@@ -1,4 +1,4 @@
-import { test, expect } from "../playwright.mjs";
+import { test, expect } from "../playwright.ts";
 import { readFileSync } from "node:fs";
 const css = [
   "layout/layout-contract.generated.css",
@@ -26,7 +26,7 @@ test("combined shell reserves terminal height inside the safe content rectangle"
   await cdp.send("Emulation.setSafeAreaInsetsOverride", {
     insets: { top: 0, right: 84, bottom: 34, left: 0 },
   });
-  const rect = (selector) =>
+  const rect = (selector: string) =>
     page.locator(selector).evaluate((node) => {
       const r = node.getBoundingClientRect();
       return {

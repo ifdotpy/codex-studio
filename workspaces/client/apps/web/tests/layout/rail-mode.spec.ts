@@ -1,5 +1,6 @@
-import { test, expect } from "../playwright.mjs";
-import { sidebarParityFixture } from "../sidebar/sidebar-parity-fixture.mjs";
+import { visibleBounds } from "../mobile/mobile-ui-fixture.ts";
+import { test, expect } from "../playwright.ts";
+import { sidebarParityFixture } from "../sidebar/sidebar-parity-fixture.ts";
 
 test.use({ hasTouch: true });
 for (const check of [
@@ -13,7 +14,7 @@ for (const check of [
     page,
     context,
   }) => {
-    const errors = [];
+    const errors: string[] = [];
     page.on("console", (msg) => {
       if (msg.type() === "error" && msg.text().includes("Studio display error"))
         errors.push(msg.text());
@@ -118,7 +119,7 @@ for (const check of [
           exact: true,
         });
         await expect(outline).toBeFocused();
-        const menuBounds = await page.getByRole("menu").boundingBox();
+        const menuBounds = await visibleBounds(page.getByRole("menu"));
         expect(menuBounds.x + menuBounds.width).toBeLessThanOrEqual(867.5);
         expect(menuBounds.y + menuBounds.height).toBeLessThanOrEqual(635.5);
         await page.keyboard.press("Enter");
@@ -166,6 +167,7 @@ for (const check of [
           canvas.width = image.width;
           canvas.height = image.height;
           const ctx = canvas.getContext("2d");
+          if (!ctx) throw new Error("Missing fixture canvas context");
           ctx.drawImage(image, 0, 0);
           return [
             [850, 300],
@@ -186,7 +188,7 @@ for (const check of [
         )
         .all()) {
         if (!(await target.isVisible())) continue;
-        const r = await target.boundingBox();
+        const r = await visibleBounds(target);
         if (!r || !r.width || !r.height) continue;
         expect(r.x + r.width).toBeLessThanOrEqual(867.5);
         expect(r.y + r.height).toBeLessThanOrEqual(635.5);
@@ -215,8 +217,8 @@ for (const check of [
           while (nodes.nextNode()) {
             const node = nodes.currentNode;
             if (
-              !node.textContent.trim() ||
-              node.parentElement.closest('[aria-hidden="true"],script,style')
+              !node.textContent?.trim() ||
+              node.parentElement?.closest('[aria-hidden="true"],script,style')
             )
               continue;
             const range = document.createRange();

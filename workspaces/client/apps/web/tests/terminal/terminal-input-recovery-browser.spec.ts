@@ -438,11 +438,13 @@ test("terminal-input-recovery-browser", async ({ page: fixturePage }) => {
       .getByRole("button", { name: "Show terminals", exact: true })
       .click();
     await page.waitForFunction(
-      () => window.currentTerminal.input && !window.currentTerminal.disposed,
+      () =>
+        window.terminalInputRecoveryCurrentTerminal.input &&
+        !window.terminalInputRecoveryCurrentTerminal.disposed,
     );
     await accepted("after-toggle", true);
     assert.equal(
-      posts.find((post) => post.text === "after-toggle").id,
+      required(posts.find((post) => post.text === "after-toggle")).id,
       "shell-b",
     );
     await reply("after-toggle");

@@ -1,6 +1,7 @@
-import { test, expect } from "../playwright.mjs";
-import { sidebarParityFixture } from "../sidebar/sidebar-parity-fixture.mjs";
-import { detectTextClipping } from "./text-clipping.mjs";
+import { visibleBounds } from "../mobile/mobile-ui-fixture.ts";
+import { test, expect } from "../playwright.ts";
+import { sidebarParityFixture } from "../sidebar/sidebar-parity-fixture.ts";
+import { detectTextClipping } from "./text-clipping.ts";
 
 test.use({ hasTouch: true });
 
@@ -54,29 +55,29 @@ for (const paired of [false, true]) {
                 .evaluate((node) => node.getBoundingClientRect().right),
             )
             .toBeLessThanOrEqual(867);
-          const bounds = await rail.boundingBox();
+          const bounds = await visibleBounds(rail);
           expect(bounds.x).toBe(867);
           expect(bounds.y).toBeGreaterThanOrEqual(112);
           expect(bounds.y + bounds.height).toBeLessThanOrEqual(635);
           const band = page.locator(".viewport-bottom-band");
           await expect(band).toHaveCSS("height", "34px");
           await expect(page.locator(".usage-passive-band")).toBeVisible();
-          const bandBounds = await band.boundingBox();
+          const bandBounds = await visibleBounds(band);
           expect(bandBounds.y).toBe(635);
           expect(bandBounds.y + bandBounds.height).toBe(669);
           for (const target of await page
             .locator("#usage-footer button")
             .all()) {
-            const box = await target.boundingBox();
+            const box = await visibleBounds(target);
             if (box) expect(box.y + box.height).toBeLessThanOrEqual(635);
           }
           console.log("Duo bottom band", {
             paired,
             oldEmptyBand: 34,
             newEmptyBand: 0,
-            passive: await page.locator(".usage-passive-band").boundingBox(),
+            passive: await visibleBounds(page.locator(".usage-passive-band")),
           });
-          const composer = await page.locator("#composer").boundingBox();
+          const composer = await visibleBounds(page.locator("#composer"));
           expect(composer.y + composer.height).toBeLessThanOrEqual(635);
           await page.screenshot({
             path: test.info().outputPath("duo-safe-layout.png"),
@@ -110,11 +111,13 @@ for (const paired of [false, true]) {
       await expect(
         page.locator(".conversation-header-tools-menu"),
       ).toHaveAttribute("data-compact", "yes");
-      await page.locator("#conversation-title").evaluate((title) => {
-        title.textContent =
-          "A long conversation title with several words for the large text check";
-        title.title = title.textContent;
-      });
+      await page
+        .locator("#conversation-title")
+        .evaluate((title: HTMLElement) => {
+          title.textContent =
+            "A long conversation title with several words for the large text check";
+          title.title = title.textContent;
+        });
       const findings = await page.evaluate(detectTextClipping, {
         scene: "large text header",
         profile: "20px",

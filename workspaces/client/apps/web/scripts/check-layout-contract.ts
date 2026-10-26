@@ -1,3 +1,7 @@
+import type {
+  LayoutContract,
+  LegacyConsumer,
+} from "./generate-layout-contract.ts";
 import { readdirSync, readFileSync } from "node:fs";
 import { resolve, relative } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -6,9 +10,14 @@ import {
   readLayoutContract,
   validateContract,
   generateLayoutContract,
-} from "./generate-layout-contract.mjs";
-const normalize = (text) => text.replace(/\s+/g, " ").trim();
-const annotation = (source, index, kind) => {
+} from "./generate-layout-contract.ts";
+type SourceEntry = Pick<LegacyConsumer, "path" | "kind" | "signature"> & {
+  key: string | undefined;
+  operator: string | undefined;
+  index: number;
+};
+const normalize = (text: string) => text.replace(/\s+/g, " ").trim();
+const annotation = (source: string, index: number, kind: string) => {
   const prefix = source.slice(Math.max(0, index - 150), index);
   return prefix.match(
     new RegExp(
@@ -16,21 +25,30 @@ const annotation = (source, index, kind) => {
     ),
   );
 };
-export function scanSource(path, source, contract = readLayoutContract()) {
-  const entries = [];
-  const add = (kind, match, key, operator) =>
+export function scanSource(
+  path: string,
+  source: string,
+  contract = readLayoutContract(),
+) {
+  const entries: SourceEntry[] = [];
+  const add = (
+    kind: string,
+    match: RegExpMatchArray,
+    key?: string,
+    operator?: string,
+  ) =>
     entries.push({
       path,
       kind,
       signature: normalize(match[0]),
       key,
       operator,
-      index: match.index,
+      index: match.index ?? 0,
     });
   if (path.endsWith(".css")) {
     for (const match of source.matchAll(/@(media|container)\s+([^{}]+)\{/g)) {
       if (!/\bwidth\b/.test(match[2])) continue;
-      const note = annotation(source, match.index, "query");
+      const note = annotation(source, match.index ?? 0, "query");
       add("query", match, note?.[1], note?.[2]);
     }
   } else {
@@ -50,7 +68,7 @@ export function scanSource(path, source, contract = readLayoutContract()) {
   for (const match of source.matchAll(
     /(?:z-index\s*:|zIndex\s*[:=]\s*\{?)\s*(-?\d+)/g,
   )) {
-    const note = annotation(source, match.index, "layer");
+    const note = annotation(source, match.index ?? 0, "layer");
     add("layer", match, note?.[1]);
   }
   if (path.endsWith(".css")) {
@@ -69,8 +87,8 @@ export function scanSource(path, source, contract = readLayoutContract()) {
   return entries;
 }
 export function sourceFiles(root = webRoot) {
-  const result = new Map();
-  function walk(directory) {
+  const result = new Map<string, string>();
+  function walk(directory: string) {
     for (const file of readdirSync(directory, { withFileTypes: true })) {
       const path = resolve(directory, file.name);
       if (file.isDirectory()) walk(path);
@@ -85,16 +103,17 @@ export function sourceFiles(root = webRoot) {
   return result;
 }
 export function checkConsumers(
-  contract,
-  files,
+  contract: LayoutContract,
+  files: Map<string, string>,
   { requireAllLegacy = true } = {},
 ) {
   validateContract(contract);
-  const errors = [];
-  const counts = new Map();
-  const identity = (entry) =>
-    JSON.stringify([entry.path, entry.kind, entry.signature]);
-  const legacy = new Map();
+  const errors: string[] = [];
+  const counts = new Map<string, number>();
+  const identity = (
+    entry: Pick<LegacyConsumer, "path" | "kind" | "signature">,
+  ) => JSON.stringify([entry.path, entry.kind, entry.signature]);
+  const legacy = new Map<string, LegacyConsumer>();
   for (const entry of contract.legacyConsumers) {
     const id = identity(entry);
     if (legacy.has(id) || !entry.purpose || !entry.plannedOwner || !entry.key)

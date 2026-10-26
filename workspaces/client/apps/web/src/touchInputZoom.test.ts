@@ -4,7 +4,19 @@ import { fileURLToPath } from "node:url";
 import { beforeAll, expect, test } from "vitest";
 import { preprocessCSS, resolveConfig } from "vite";
 
-const styles = new Map();
+type FontDeclaration = {
+  property: string;
+  value: string;
+  important: boolean;
+  selectors: string[];
+  media: string | null;
+};
+const styles = new Map<string, FontDeclaration[]>();
+function declarationsFor(file: string) {
+  const value = styles.get(file);
+  if (!value) throw new Error(`Missing parsed stylesheet ${file}`);
+  return value;
+}
 
 beforeAll(async () => {
   // Use Vite's CSS parser, including the media rule that owns each declaration.
@@ -17,7 +29,7 @@ beforeAll(async () => {
     "components/agents/subagent-concurrency-control.css",
     "components/questions/sign-in-card.css",
   ]) {
-    const declarations = [];
+    const declarations: FontDeclaration[] = [];
     const config = await resolveConfig(
       {
         configFile: false,
@@ -33,9 +45,9 @@ beforeAll(async () => {
                       property: declaration.prop,
                       value: declaration.value,
                       important: Boolean(declaration.important),
-                      selectors: rule.selectors ?? [],
+                      selectors: rule?.type === "rule" ? rule.selectors : [],
                       media:
-                        rule.parent.type === "atrule"
+                        rule?.parent?.type === "atrule"
                           ? rule.parent.params
                           : null,
                     });
@@ -57,25 +69,21 @@ beforeAll(async () => {
   }
 });
 
-function touchFontRules(file) {
-  return styles
-    .get(file)
-    .filter(
-      ({ property, media }) =>
-        property === "font-size" &&
-        media
-          ?.split(",")
-          .some((condition) => condition.trim() === "(any-pointer: coarse)"),
-    );
+function touchFontRules(file: string) {
+  return declarationsFor(file).filter(
+    ({ property, media }) =>
+      property === "font-size" &&
+      media
+        ?.split(",")
+        .some((condition) => condition.trim() === "(any-pointer: coarse)"),
+  );
 }
 
 test("the touch input font floor has one owner in CSS pixels", () => {
   expect(
-    styles
-      .get("studio-theme.css")
-      .filter(
-        ({ property }) => property === "--studio-touch-input-min-font-size",
-      ),
+    declarationsFor("studio-theme.css").filter(
+      ({ property }) => property === "--studio-touch-input-min-font-size",
+    ),
   ).toMatchObject([{ value: "16px", selectors: [":root"] }]);
 });
 
@@ -109,6 +117,7 @@ test("wide touch screens preserve larger composer and sidebar preferences", () =
       value.includes(`var(${preference})`),
     );
     expect(rule, preference).toBeDefined();
+    if (!rule) throw new Error(`Missing font preference ${preference}`);
     expect(rule.important).toBe(true);
     expect(rule.value.replace(/\s+/g, "")).toContain(
       "max(var(--studio-touch-input-min-font-size),",
@@ -126,12 +135,10 @@ test("component input font floors consume the shared owner", () => {
     ],
     ["components/questions/sign-in-card.css", ".sign-in-card-paste input"],
   ]) {
-    const rules = styles
-      .get(file)
-      .filter(
-        ({ property, selectors }) =>
-          property === "font-size" && selectors.includes(selector),
-      );
+    const rules = declarationsFor(file).filter(
+      ({ property, selectors }) =>
+        property === "font-size" && selectors.includes(selector),
+    );
     expect(rules, file).toHaveLength(1);
     expect(rules[0].value).toContain("var(--studio-touch-input-min-font-size)");
   }
@@ -142,6 +149,8 @@ test("the viewport permits user zoom", async () => {
     new URL("../index.html", import.meta.url),
     "utf8",
   );
-  const viewport = html.match(/name="viewport"\s+content="([^"]+)"/)[1];
+  const match = html.match(/name="viewport"\s+content="([^"]+)"/);
+  if (!match) throw new Error("Missing viewport metadata");
+  const viewport = match[1];
   expect(viewport).not.toMatch(/maximum-scale|user-scalable\s*=\s*no/);
 });

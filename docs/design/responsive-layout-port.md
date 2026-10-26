@@ -135,7 +135,7 @@ This file owns responsive boundaries, shared dimensions, ratios, layer values,
 and the names that state their purpose. Each entry has `value`, `unit`, and `purpose`.
 The contract belongs to the web renderer. It does not belong in the server HTTP schema.
 
-Proposed generator: `workspaces/client/apps/web/scripts/generate-layout-contract.mjs`.
+Proposed generator: `workspaces/client/apps/web/scripts/generate-layout-contract.ts`.
 Its write mode emits `src/layout/layout-contract.generated.ts` and
 `src/layout/layout-contract.generated.css`. Its check mode detects stale output.
 TypeScript exports retain literal types. CSS output contains custom properties.
@@ -228,7 +228,7 @@ Layout state does not alter requests, permissions, terminal identities, or outbo
 
 ### Parity check
 
-Proposed check: `workspaces/client/apps/web/scripts/check-layout-contract.mjs`.
+Proposed check: `workspaces/client/apps/web/scripts/check-layout-contract.ts`.
 The central integration owner adds it to the existing contract-check path and fast tier.
 The check needs no browser and no provider.
 

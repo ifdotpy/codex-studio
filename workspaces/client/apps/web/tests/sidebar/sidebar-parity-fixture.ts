@@ -323,9 +323,10 @@ export async function sidebarParityFixture(
         for (const kind of ["user", "server"] as const)
           next.push({
             op: "upsert",
+            seq: 0,
             collection: "uiPreferences",
             id: kind,
-            value: { scope: kind, fields: preferences[owner][kind] },
+            value: { fields: preferences[owner][kind] },
           });
         const identity = (value: FixtureEntity) =>
           `${value.collection}:${value.id}`;

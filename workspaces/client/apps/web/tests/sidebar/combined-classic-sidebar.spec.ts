@@ -1,3 +1,4 @@
+import { visibleBounds } from "../mobile/mobile-ui-fixture.ts";
 import type { TestRuntimeView } from "../playwright.ts";
 import type { TestAgent } from "../playwright.ts";
 import type { ProjectEntityDto } from "../../src/generated/api.ts";
@@ -61,14 +62,15 @@ for (const combined of [false, true]) {
         );
         await page.evaluate(() => {
           window.__sidebarReturnedFocus = false;
-          const listener = (event) => {
+          const listener = (event: FocusEvent) => {
             const trigger = document.querySelector(
               "#sidebar-toggle, .server-mobile-toggle",
             );
             if (
+              event.target instanceof Node &&
               trigger?.contains(event.target) &&
-              document.querySelector("#sidebar")?.getBoundingClientRect()
-                .width > 0
+              (document.querySelector("#sidebar")?.getBoundingClientRect()
+                .width ?? 0) > 0
             )
               window.__sidebarReturnedFocus = true;
           };
@@ -145,8 +147,8 @@ test("the direct sidebar bounds pointer resize, cancels lost capture, and measur
     const rail = sidebar.getByRole("separator", {
       name: "Conversation sidebar width",
     });
-    const drag = async (x) => {
-      const box = await rail.boundingBox();
+    const drag = async (x: number) => {
+      const box = await visibleBounds(rail);
       await page.mouse.move(box.x + box.width / 2, box.y + 80);
       await page.mouse.down();
       await page.mouse.move(x, box.y + 80);
@@ -176,7 +178,7 @@ test("the direct sidebar bounds pointer resize, cancels lost capture, and measur
         key.startsWith("studio-sidebar-width:"),
       ),
     );
-    const box = await rail.boundingBox();
+    const box = await visibleBounds(rail);
     await page.mouse.move(box.x + box.width / 2, box.y + 80);
     await page.mouse.down();
     await page.mouse.move(500, box.y + 80);
@@ -214,10 +216,10 @@ test("the direct sidebar bounds pointer resize, cancels lost capture, and measur
     });
     await expect
       .poll(async () => {
-        const side = await sidebar.boundingBox();
-        const bar = await page
-          .locator(".terminal-dock:not(.is-open)")
-          .boundingBox();
+        const side = await visibleBounds(sidebar);
+        const bar = await visibleBounds(
+          page.locator(".terminal-dock:not(.is-open)"),
+        );
         return Math.round(side.width) - Math.round(bar.width);
       })
       .toBe(0);
@@ -227,10 +229,10 @@ test("the direct sidebar bounds pointer resize, cancels lost capture, and measur
       ),
     );
     expect(keys).toHaveLength(0);
-    await page.evaluate(
-      (key) => localStorage.setItem(key, "invalid JSON"),
-      storedKey,
-    );
+    await page.evaluate((key) => {
+      if (!key) throw new Error("Missing sidebar preference key");
+      localStorage.setItem(key, "invalid JSON");
+    }, storedKey);
     await page.reload();
     await expect(rail).toBeVisible();
     const defaultWidth = await page.evaluate(() => {
@@ -283,15 +285,15 @@ test("the combined sidebar resizes, cancels, resets, and reports its effective w
       .toBeLessThan(preferred);
     const bar = page.locator(".shell-terminal-bar");
     await expect
-      .poll(async () => Math.round((await bar.boundingBox()).width))
-      .toBe(Math.round((await sidebar.boundingBox()).width));
+      .poll(async () => Math.round((await visibleBounds(bar)).width))
+      .toBe(Math.round((await visibleBounds(sidebar)).width));
     await page.setViewportSize({ width: 1440, height: 900 });
     await expect
       .poll(() =>
         sidebar.evaluate((node) => node.getBoundingClientRect().width),
       )
       .toBe(preferred);
-    const box = await rail.boundingBox();
+    const box = await visibleBounds(rail);
     await page.mouse.move(box.x + box.width / 2, box.y + 80);
     await page.mouse.down();
     await page.mouse.move(box.x + 150, box.y + 80);
@@ -766,8 +768,8 @@ for (const [theme, viewport] of [
       await expect(heading.locator(".project-layr-sync")).toHaveCount(0);
       // The chip starts where the project name starts.
       {
-        const name = await projectName.locator("span").first().boundingBox();
-        const chip = await layrChip.boundingBox();
+        const name = await visibleBounds(projectName.locator("span").first());
+        const chip = await visibleBounds(layrChip);
         expect(Math.abs((chip?.x ?? 0) - (name?.x ?? 0))).toBeLessThanOrEqual(
           1,
         );
@@ -791,8 +793,8 @@ for (const [theme, viewport] of [
         await page.mouse.click(viewport.width - 20, viewport.height / 2);
         await expect(chipMenu).toHaveCount(0);
       }
-      const nameBox = await projectName.locator("span").first().boundingBox();
-      const chipBox = await layrChip.boundingBox();
+      const nameBox = await visibleBounds(projectName.locator("span").first());
+      const chipBox = await visibleBounds(layrChip);
       expect(
         chipBox && nameBox && chipBox.y >= nameBox.y + nameBox.height - 1,
       ).toBe(true);
@@ -1108,3 +1110,9 @@ test("offline folder expansion does not change the saved source state after reco
     await local.close();
   }
 });
+
+declare global {
+  interface Window {
+    __sidebarReturnedFocus: boolean;
+  }
+}

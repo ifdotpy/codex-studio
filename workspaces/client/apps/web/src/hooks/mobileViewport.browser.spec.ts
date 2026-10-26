@@ -1,3 +1,4 @@
+import { fixtureOrigin } from "../../tests/misc-fixture.ts";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -6,7 +7,7 @@ import {
   test,
   expect,
   createFixtureViteServer,
-} from "../../tests/playwright.mjs";
+} from "../../tests/playwright.ts";
 
 test("wide touch viewport keeps the root and portals inside all safe edges", async ({
   browser,
@@ -17,34 +18,6 @@ test("wide touch viewport keeps the root and portals inside all safe edges", asy
     "The inset fixture requires Chromium emulation.",
   );
   const cacheDir = await mkdtemp(join(tmpdir(), "studio-viewport-surface-"));
-  const entry = `
-    import React from 'react';
-    import {createRoot} from 'react-dom/client';
-    import {MantineProvider, Drawer, Modal} from '@mantine/core';
-    import '@mantine/core/styles.css';
-    import '/src/style.css';
-    import '/src/hooks/viewport-surface.css';
-    import {useMobileViewport} from '/src/hooks/mobileViewport.ts';
-    function ViewportOwner({active}) { useMobileViewport(active, false); return null; }
-    function Surface(){
-      const [owner,setOwner]=React.useState(1);
-      window.selectViewportOwner=setOwner;
-      const [portal,setPortal]=React.useState('');
-      window.openPortal=setPortal;
-      return React.createElement(MantineProvider,null,
-        React.createElement(ViewportOwner,{active:owner===1}),
-        React.createElement(ViewportOwner,{active:owner===2}),
-        React.createElement('main',{id:'viewport-content',style:{flex:1,minWidth:0,minHeight:0,display:'flex',flexDirection:'column'}},
-          React.createElement('header',null,'Header'),
-          React.createElement('div',{style:{flex:1}},'Conversation'),
-          React.createElement('footer',null,'Composer')),
-        React.createElement(Drawer,{opened:portal==='drawer',onClose:()=>setPortal(''),position:'right',size:'100%',title:'Drawer'},React.createElement('textarea',{'aria-label':'Portal note'})),
-        React.createElement(Modal,{opened:portal==='modal',onClose:()=>setPortal(''),fullScreen:true,title:'Modal'},React.createElement('textarea',{'aria-label':'Portal note'})));
-    }
-    const root=createRoot(document.querySelector('#root'));
-    root.render(React.createElement(Surface));
-    window.unmountSurface=()=>root.unmount();
-  `;
   const server = await createFixtureViteServer({
     configFile: false,
     cacheDir,
@@ -53,18 +26,12 @@ test("wide touch viewport keeps the root and portals inside all safe edges", asy
     plugins: [
       {
         name: "viewport-surface-fixture",
-        resolveId(id) {
-          if (id === "/viewport-entry") return "\0viewport-entry";
-        },
-        load(id) {
-          if (id === "\0viewport-entry") return entry;
-        },
         configureServer(server) {
           server.middlewares.use((request, response, next) => {
             if (request.url !== "/viewport-check") return next();
             response.setHeader("Content-Type", "text/html");
             response.end(
-              '<!doctype html><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover"><div id="root"></div><script type="module" src="/viewport-entry"></script>',
+              '<!doctype html><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover"><div id="root"></div><script type="module" src="/src/hooks/mobileViewport.fixture.tsx"></script>',
             );
           });
         },
@@ -75,7 +42,7 @@ test("wide touch viewport keeps the root and portals inside all safe edges", asy
     viewport: { width: 951, height: 669 },
     hasTouch: true,
   });
-  const errors = [];
+  const errors: string[] = [];
   page.on("pageerror", (error) => errors.push(error.message));
   await page.addInitScript(() => {
     const viewport = Object.assign(new EventTarget(), {
@@ -111,11 +78,9 @@ test("wide touch viewport keeps the root and portals inside all safe edges", asy
     await cdp.send("Emulation.setSafeAreaInsetsOverride", {
       insets: { top: 0, right: 84, bottom: 34, left: 0 },
     });
-    await page.goto(
-      `http://127.0.0.1:${server.httpServer.address().port}/viewport-check`,
-    );
+    await page.goto(`${fixtureOrigin(server)}/viewport-check`);
     await expect(page.locator("#viewport-content")).toBeVisible();
-    const bounds = (selector) =>
+    const bounds = (selector: string) =>
       page.locator(selector).evaluate((node) => {
         const rect = node.getBoundingClientRect();
         return {
