@@ -49,7 +49,7 @@ import {
   CHAT_INDICATOR_URGENCY,
   type ChatIndicatorKind,
 } from "../chat-status/chatStatusModel";
-import type { Agent, JsonValue, Monitor, Request, Snapshot } from "../../types";
+import type { Agent, JsonInput, Monitor, Request, Snapshot } from "../../types";
 import { copyText } from "../../clipboard/clipboard";
 import {
   activeTask,
@@ -126,8 +126,8 @@ export function monitorTask(
 }
 
 function isJsonObject(
-  value: JsonValue | null | undefined,
-): value is Record<string, JsonValue> {
+  value: JsonInput | null | undefined,
+): value is Record<string, JsonInput> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
