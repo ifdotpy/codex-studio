@@ -234,7 +234,7 @@ test("Chat prefetch browser", async ({
       window.stops.push(
         window.client.subscribeTranscriptProjection(
           "transcript:a",
-          (value) => window.values.push(value),
+          (value) => window.prefetchValues.push(value),
           () => {},
         ),
       );
@@ -257,7 +257,10 @@ test("Chat prefetch browser", async ({
     await page.waitForFunction(
       () =>
         (
-          window.values as (Omit<(typeof window.values)[number], "items"> & {
+          window.prefetchValues as (Omit<
+            (typeof window.prefetchValues)[number],
+            "items"
+          > & {
             items: Record<string, unknown>[];
           })[]
         ).at(-1)?.items[0].body === "revision 2",

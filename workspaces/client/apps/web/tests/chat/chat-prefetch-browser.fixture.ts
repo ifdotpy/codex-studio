@@ -10,7 +10,7 @@ type Harness = {
   client: typeof client;
   cache: typeof cache;
   stops: (() => void)[];
-  values: Payload[];
+  prefetchValues: Payload[];
   activeValues: Payload[];
   coldReads: string[];
   jobs: Promise<boolean>[];
@@ -35,4 +35,4 @@ declare global {
 window.client = client;
 window.cache = cache;
 window.stops = [];
-window.values = [];
+window.prefetchValues = [];
