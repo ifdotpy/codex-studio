@@ -1063,7 +1063,7 @@ test("check-affected adds Cargo workspace dependents from cargo metadata", () =>
 // no compiler, generated files, or installed host CLI can affect these cases.
 test("WASM preparation locates only the pinned CLI and builds before binding", () => {
   const root = mkdtempSync(path.join(os.tmpdir(), "studio-wasm-preparation-"));
-  const script = "workspaces/client/apps/web/scripts/build-client-wasm.mjs";
+  const script = "workspaces/client/apps/web/scripts/build-client-wasm.ts";
   const manifest = "workspaces/client/packages/client-wasm/Cargo.toml";
   const version = readFileSync(manifest, "utf8").match(
     /^wasm-bindgen\s*=\s*"=([^"\s]+)"/m,
