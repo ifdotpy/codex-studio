@@ -145,7 +145,7 @@ fixtureWindow.RTCPeerConnection = class {
     });
   }
   async createOffer() {
-    return { sdp: "v=0\\noffer" };
+    return { sdp: "v=0\noffer" };
   }
   async setLocalDescription() {}
   async setRemoteDescription(sdp: RTCSessionDescriptionInit) {
