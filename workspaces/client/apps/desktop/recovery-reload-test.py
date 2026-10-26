@@ -1,4 +1,5 @@
 """The recovery agent exits when an install replaced its files, so launchd runs the new code."""
+import ast
 import json
 from pathlib import Path
 import selectors
@@ -24,8 +25,24 @@ class RecoveryReload(unittest.TestCase):
             root = Path(temporary)
             app = root / "Resources"
             app.mkdir()
-            shutil.copy(HERE / "recover_backend.py", app / "recover_backend.py")
-            shutil.copy(HERE / "install_update.py", app / "install_update.py")
+            # Start from the maintained startup resource contract, then copy its local import closure.
+            contract = json.loads((HERE / 'delivery-contract.json').read_text())
+            pending, copied = list(contract['startupResources']), set()
+            while pending:
+                name = pending.pop()
+                if name in copied:
+                    continue
+                copied.add(name)
+                shutil.copy(HERE / name, app / name)
+                if not name.endswith('.py'):
+                    continue
+                for node in ast.walk(ast.parse((HERE / name).read_text())):
+                    modules = ([entry.name for entry in node.names] if isinstance(node, ast.Import)
+                               else [node.module] if isinstance(node, ast.ImportFrom) and node.module else [])
+                    for module in modules:
+                        local = module.split('.')[0] + '.py'
+                        if (HERE / local).is_file():
+                            pending.append(local)
             state = root / "state"
             state.mkdir()
             config = state / "background-recovery.json"

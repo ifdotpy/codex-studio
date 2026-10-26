@@ -52,6 +52,10 @@ const UNSAFE_RUST_ALLOWLIST = [
     "APFS descriptor clones and read-only filesystem case policy for native import.",
   ],
   [
+    "workspaces/runtime/packages/runtime-services/src/layr_native/failed_import/flags_ffi.rs",
+    "Descriptor-bound deletion flag cleanup for a failed private import.",
+  ],
+  [
     "workspaces/runtime/packages/runtime-services/src/diagnostics/allocator.rs",
     "Opt-in GNU allocator summary through a bounded private diagnostic buffer.",
   ],

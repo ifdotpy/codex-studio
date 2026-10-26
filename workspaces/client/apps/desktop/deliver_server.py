@@ -2,14 +2,11 @@
 from __future__ import annotations
 
 import argparse
-from contextlib import closing
-import fcntl
-import hashlib
+from contextlib import nullcontext
 import json
 import os
 from pathlib import Path
 import sqlite3
-import stat
 import sys
 import tempfile
 import time
@@ -22,9 +19,13 @@ if sys.version_info < (3, 11):
     raise SystemExit('Mac delivery needs Python 3.11 or newer, as the recovery helper does')
 import desktop_updates as updates
 import recover_backend as recovery
+import desktop_delivery
 
 # Shared owner of the receipt filename and phases consumed by the Node command router.
-CONTRACT = json.loads(Path(__file__).with_name('delivery-contract.json').read_text())
+from desktop_delivery import (
+    CONTRACT, DeliveryError, bundle_hash, file_hash, journal_path,
+    read_delivery_record, read_handles, server_path,
+)
 PHASES = CONTRACT['phases']
 # Maximum wait for the existing recovery owner and its replacement backend, in seconds.
 INSTALL_WAIT_SECONDS = 900
@@ -33,35 +34,19 @@ POLL_SECONDS = 2
 # Timeout for one loopback backend observation, in seconds.
 HTTP_SECONDS = 10
 # State-owned request journals survive cache loss and installer stage cleanup.
-JOURNAL_DIRECTORY = 'local-deliveries'
-
-
-class DeliveryError(Exception):
-    """The delivery is refused, failed, or cannot yet be proved complete."""
+JOURNAL_DIRECTORY = CONTRACT['journalDirectory']
 
 
 class DeliveryPending(DeliveryError):
     """The receipt exists, but its replacement backend is not ready yet."""
 
 
-def sync_directory(path):
-    descriptor = os.open(path, os.O_RDONLY)
-    try:
-        os.fsync(descriptor)
-    finally:
-        os.close(descriptor)
+sync_directory = desktop_delivery.sync_directory
 
 
 def write_receipt(path, record):
     updates.write_json(path, record)
     sync_directory(path.parent)
-
-
-def journal_path(state, operation):
-    folder = state / JOURNAL_DIRECTORY
-    if folder.is_symlink():
-        raise DeliveryError('The delivery journal directory must not be a symlink')
-    return folder / (operation + '.json')
 
 
 def save_record(state, record_path, record):
@@ -82,92 +67,23 @@ def validate_receipt_directory(receipts, source, installed, state=None):
         raise DeliveryError('The receipt directory must be outside bundles, runtime state, and the checkout')
 
 
-def read_delivery_record(path):
-    if not path.exists() and not path.is_symlink():
-        return None
-    if path.is_symlink():
-        raise DeliveryError('The delivery receipt must not be a symlink')
-    record = updates.read_json(path)
-    if not isinstance(record, dict):
-        raise DeliveryError('The saved delivery receipt is unreadable')
-    request, handles = record.get('request'), record.get('handles')
-    if (record.get('phase') not in ('validated', *PHASES.values())
-            or type(record.get('beforePid')) is not int or record['beforePid'] <= 0
-            or not isinstance(request, dict) or not isinstance(handles, dict)
-            or not isinstance(record.get('id'), str)):
-        raise DeliveryError('The saved delivery receipt has an invalid phase or record')
-    build = updates.valid_build(request.get('build'))
-    if (not build or request.get('commit') != build['commit']
-            or any(not isinstance(request.get(key), str) or not Path(request[key]).is_absolute()
-                   for key in ('stateDir', 'installed'))
-            or any(not isinstance(request.get(key), str) or len(request[key]) != 64
-                   or any(char not in '0123456789abcdef' for char in request[key])
-                   for key in ('bundleHash', 'backendHash'))
-            or any(not isinstance(key, str) or not isinstance(value, list) or len(value) != 2
-                   or any(type(number) is not int or number <= 0 for number in value)
-                   for key, value in handles.items())):
-        raise DeliveryError('The saved delivery receipt has invalid request fields')
-    operation = str(uuid.uuid5(uuid.NAMESPACE_URL,
-                              'studio-delivery:' + request['stateDir'] + ':' + request['commit']))
-    if record['id'] != operation:
-        raise DeliveryError('The saved delivery receipt has an invalid request identity')
-    return record
-
-
-def file_hash(path):
-    digest = hashlib.sha256()
-    with path.open('rb') as stream:
-        for block in iter(lambda: stream.read(1024 * 1024), b''):
-            digest.update(block)
-    return digest.hexdigest()
-
-
-def bundle_hash(app):
-    """Bind a retry to every sealed file, path, mode, and symlink of its source bundle."""
-    digest = hashlib.sha256()
-    for path in sorted(app.rglob('*')):
-        mode = path.lstat().st_mode
-        digest.update(json.dumps([str(path.relative_to(app)), stat.S_IMODE(mode)],
-                                 ensure_ascii=True).encode())
-        if stat.S_ISLNK(mode):
-            digest.update(b'link:' + os.fsencode(os.readlink(path)))
-        elif stat.S_ISREG(mode):
-            digest.update(b'file:' + file_hash(path).encode())
-        elif stat.S_ISDIR(mode):
-            digest.update(b'directory:')
-        else:
-            raise DeliveryError('The bundle contains an unsupported file type')
-        digest.update(b'\0')
-    return digest.hexdigest()
-
-
-def server_path(app):
-    return app / 'Contents/Resources/workspace/bin/studio-runtime-server'
-
-
-def read_handles(state):
-    database = state / 'supervisor.sqlite3'
-    with closing(sqlite3.connect(database.as_uri() + '?mode=ro', uri=True, timeout=5)) as connection:
-        rows = connection.execute(
-            'SELECT id, pid, generation FROM handles WHERE closed_at IS NULL ORDER BY id').fetchall()
-    if any(not isinstance(key, str) or type(pid) is not int or pid <= 0
-           or type(generation) is not int or generation <= 0 for key, pid, generation in rows):
-        raise DeliveryError('An unresolved provider reservation prevents delivery')
-    return {key: [pid, generation] for key, pid, generation in rows}
-
-
-def observe_desktop(url):
+def delivery_port(url):
     parsed = urlparse(url)
     if (parsed.scheme != 'http' or parsed.hostname not in ('127.0.0.1', 'localhost', '::1')
             or parsed.username or parsed.password or parsed.path not in ('', '/')
             or parsed.query or parsed.fragment):
         raise DeliveryError('The delivery URL must be a loopback HTTP origin')
+    return parsed.port or 80
+
+
+def observe_desktop(url):
+    port = delivery_port(url)
     opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), recovery.NoRedirect())
     with opener.open(url.rstrip('/') + '/api/desktop', timeout=HTTP_SECONDS) as response:
         data = json.load(response)
     if not isinstance(data, dict):
         raise DeliveryError('The desktop response is not an object')
-    data['_deliveryPort'] = parsed.port or 80
+    data['_deliveryPort'] = port
     return data
 
 
@@ -229,7 +145,8 @@ def publish_pending(state, pending):
         temporary.unlink(missing_ok=True)
 
 
-def stage(source, commit, installed, receipts, *, observe, run=updates.run_tool, dry_run=False):
+def stage(source, commit, installed, receipts, *, observe, run=updates.run_tool, dry_run=False,
+          starting_pid=None, recover_installed=None, state=None, port=None):
     source, installed, receipts = Path(source), Path(installed), Path(receipts)
     if source.is_symlink() or installed.is_symlink():
         raise DeliveryError('The source and installed apps must not be symlinks')
@@ -241,12 +158,46 @@ def stage(source, commit, installed, receipts, *, observe, run=updates.run_tool,
     if not build or build['commit'] != commit:
         raise DeliveryError('The package does not match the requested commit')
     updates.verify_app(source, installed, build, run)
-    identity = observe()
-    state = check_backend(identity, installed)
+    startup = None
+    recovered = None
+    if recover_installed is not None:
+        if starting_pid is not None or state is None:
+            raise DeliveryError('Installed-delivery recovery requires a canonical state and no backend PID')
+        desktop_delivery.require_startup_target(source, installed_recovery=True)
+        state = Path(state)
+        config = recovery.startup_delivery_config(state, installed)
+        if port is not None and port != config['port']:
+            raise DeliveryError('The delivery URL differs from the configured recovery port')
+        recovered, prior = recovery.capture_installed_delivery(config, state, installed, recover_installed, run=run)
+        handles = prior['handles']
+        if build['builtAt'] <= recovered['previousBuild']['builtAt']:
+            raise DeliveryError('Installed-delivery recovery requires a newer replacement package')
+    elif starting_pid is not None:
+        desktop_delivery.require_startup_target(source)
+        if type(starting_pid) is not int or starting_pid < 2 or state is None:
+            raise DeliveryError('Startup delivery requires a pinned PID and canonical state')
+        state = Path(state)
+        config = recovery.startup_delivery_config(state, installed)
+        if port is not None and port != config['port']:
+            raise DeliveryError('The delivery URL differs from the configured startup backend port')
+        handles = read_handles(state)
+        startup = recovery.capture_startup_backend(config, state, installed, starting_pid, handles, run=run)
+        if build['builtAt'] <= startup['previousBuild']['builtAt']:
+            raise DeliveryError('Startup delivery requires a newer replacement package')
+        identity = None
+    else:
+        if state is not None:
+            raise DeliveryError('A state argument requires the explicit startup backend PID')
+        identity = observe()
+        state = check_backend(identity, installed)
     validate_receipt_directory(receipts, source, installed, state)
     request = {'commit': commit, 'build': build, 'bundleHash': bundle_hash(source),
                'backendHash': file_hash(server_path(source)), 'stateDir': str(state),
                'installed': str(installed)}
+    if startup is not None:
+        request['startupBackend'] = startup
+    if recovered is not None:
+        request['installedDelivery'] = recovered
     operation = str(uuid.uuid5(uuid.NAMESPACE_URL, 'studio-delivery:' + str(state) + ':' + commit))
     owner_receipt = updates.read_json(state / updates.RECEIPT_FILE) or {}
     if owner_receipt.get('id') == operation and owner_receipt.get('outcome') in ('failed', 'obsolete'):
@@ -276,22 +227,33 @@ def stage(source, commit, installed, receipts, *, observe, run=updates.run_tool,
             raise DeliveryError('The delivery outcome is unknown; keep this request and inspect the recovery receipt')
     if pending_path.exists() or pending_path.is_symlink():
         raise DeliveryError('Another update is pending; inspect its receipt before delivery')
-    handles = read_handles(state)
-    record = previous or {'id': operation, 'request': request, 'beforePid': identity['pid'],
+    if startup is None and recovered is None:
+        handles = read_handles(state)
+    elif read_handles(state) != handles:
+        raise DeliveryError('The startup provider snapshot changed during preflight')
+    proof = startup or recovered
+    if proof is not None:
+        if recovery.startup_supervisor_handles(state, handles) != proof['supervisorHandles']:
+            raise DeliveryError('The startup supervisor changed during delivery preflight')
+        pointer = state / desktop_delivery.STARTUP_INTENT_FILE
+        if pointer.exists() or pointer.is_symlink():
+            intent = desktop_delivery.read_private_json(pointer)
+            if intent != {'version': desktop_delivery.STARTUP_INTENT_VERSION, 'id': operation,
+                          'requestHash': desktop_delivery.request_hash(request)}:
+                raise DeliveryError('Another startup delivery intent is unresolved')
+    record = previous or {'id': operation, 'request': request,
+                          'beforePid': starting_pid if startup is not None else prior['beforePid'] if recovered is not None else identity['pid'],
                           'handles': handles, 'phase': 'validated'}
     if dry_run:
         return {**record, 'phase': 'dry_run'}
-    if (updates.read_build(installed) == build
+    if (proof is None and updates.read_build(installed) == build
             and identity.get('backendBuild') == request['backendHash']
             and bundle_hash(installed) == request['bundleHash']):
         return {**record, 'phase': 'already_installed'}
     receipts.mkdir(parents=True, exist_ok=True, mode=0o700)
     # This lease serializes local delivery commands. The pending link also protects other writers.
-    with (state / 'delivery.lock').open('a+') as lease:
-        try:
-            fcntl.flock(lease, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError as error:
-            raise DeliveryError('Another local delivery is active') from error
+    with desktop_delivery.delivery_lease(state), \
+            recovery.installed_delivery_admission(state) if recovered is not None else nullcontext():
         if pending_path.exists() or pending_path.is_symlink():
             raise DeliveryError('Another update is pending')
         # Recheck the cache inside the lease. Never replace a receipt saved by another invocation.
@@ -324,6 +286,14 @@ def stage(source, commit, installed, receipts, *, observe, run=updates.run_tool,
             raise DeliveryError('The staged package differs from the verified request')
         record = {**record, 'phase': PHASES['publishing'], 'app': str(staged)}
         save_record(state, record_path, record)
+        if startup is not None:
+            # The legacy installer ignores this typed intent and keeps its existing swap path.
+            # Only the replacement recovery owner can consume it after an installed receipt.
+            recovery.verify_startup_backend(config, state, installed, startup, handles, swapped=False)
+            desktop_delivery.publish_startup_intent(state, record)
+        if recovered is not None:
+            recovery.verify_installed_admission(config, state, installed, recovered, handles)
+            desktop_delivery.publish_startup_intent(state, record)
         pending = {'id': operation, 'app': str(staged), 'build': build, 'from': 'local-delivery'}
         try:
             publish_pending(state, pending)
@@ -345,13 +315,24 @@ def verify_completion(record, installed, observe):
             or bundle_hash(installed) != request['bundleHash']):
         raise DeliveryError('The installed bundle does not match the delivery receipt')
     if (identity.get('backendBuild') != request['backendHash']
-            or identity.get('pid') == record['beforePid']):
+            or ('installedDelivery' not in request and identity.get('pid') == record['beforePid'])):
         raise DeliveryPending('The running backend does not yet match the installed receipt')
     if check_backend(identity, installed) != state:
         raise DeliveryError('The running backend uses another state directory')
     after = read_handles(state)
     if any(after.get(key) != value for key, value in record['handles'].items()):
         raise DeliveryError('A retained provider changed its PID or generation; inspect its state before recovery')
+    if any(key in request for key in ('startupBackend', 'installedDelivery')):
+        durable = read_delivery_record(journal_path(state, record['id']))
+        if (not durable or durable['request'] != request
+                or durable.get('startupRecovery') != {'phase': 'stopped'}):
+            raise DeliveryPending('The startup recovery owner has not confirmed the original backend ended')
+        record = durable
+        if 'installedDelivery' in request:
+            proof = request['installedDelivery']
+            config = recovery.startup_delivery_config(state, installed)
+            recovery.installed_delivery_origin(config, state, installed, proof, record['handles'], swapped=True)
+            recovery.verify_startup_state_files(state, proof, request['backendHash'])
     return {**record, 'phase': PHASES['installed'], 'afterPid': identity['pid']}
 
 
@@ -369,18 +350,24 @@ def wait_for_completion(record, installed, receipts, observe):
                 pass  # The receipt can precede backend startup; keep observing the same request.
             else:
                 save_record(state, receipts / CONTRACT['receiptFile'], result)
+                if any(key in result['request'] for key in ('startupBackend', 'installedDelivery')):
+                    desktop_delivery.clear_startup_intent(state, result)
                 return result
         time.sleep(POLL_SECONDS)
     raise DeliveryError('The delivery result is unknown after the wait; retry with the same package and receipts')
 
 
-def resume_saved(source, commit, installed, receipts, observe):
+def resume_saved(source, commit, installed, receipts, observe, *, starting_pid=None, recover_installed=None, state=None):
     """Observe an existing submission without another preflight, copy, or pending write."""
     validate_receipt_directory(receipts.resolve(), source, installed)
     saved = read_delivery_record(receipts / CONTRACT['receiptFile'])
     if not saved or saved.get('phase') not in PHASES.values():
         return None
     request = saved.get('request', {})
+    if ((starting_pid is not None and request.get('startupBackend', {}).get('pid') != starting_pid)
+            or (recover_installed is not None and request.get('installedDelivery', {}).get('priorId') != recover_installed)
+            or (state is not None and request.get('stateDir') != str(state))):
+        raise DeliveryError('The saved startup delivery names another PID or state')
     validate_receipt_directory(receipts.resolve(), source, installed, Path(request['stateDir']))
     durable = read_delivery_record(journal_path(Path(request['stateDir']), saved['id']))
     if durable:
@@ -402,13 +389,26 @@ def main():
     parser.add_argument('--receipts', type=Path, required=True)
     parser.add_argument('--url', required=True)
     parser.add_argument('--dry-run', action='store_true')
+    parser.add_argument('--starting-backend-pid', type=int)
+    parser.add_argument('--recover-installed-delivery')
+    parser.add_argument('--state', type=Path)
     args = parser.parse_args()
+    if args.starting_backend_pid is not None and args.recover_installed_delivery is not None:
+        parser.error('Select one delivery recovery proof kind')
+    if (args.starting_backend_pid is None and args.recover_installed_delivery is None) != (args.state is None):
+        parser.error('Provide one explicit delivery recovery proof and --state together')
+    if args.starting_backend_pid is not None and args.starting_backend_pid < 2:
+        parser.error('--starting-backend-pid must name an existing non-system process')
     observe = lambda: observe_desktop(args.url)
+    port = delivery_port(args.url)
     record = None if args.dry_run else resume_saved(
-        args.app, args.commit, args.installed, args.receipts, observe)
+        args.app, args.commit, args.installed, args.receipts, observe,
+        starting_pid=args.starting_backend_pid, recover_installed=args.recover_installed_delivery, state=args.state)
     if record is None:
         record = stage(args.app, args.commit, args.installed, args.receipts,
-                       observe=observe, dry_run=args.dry_run)
+                       observe=observe, dry_run=args.dry_run,
+                       starting_pid=args.starting_backend_pid, recover_installed=args.recover_installed_delivery,
+                       state=args.state, port=port)
     if not args.dry_run and record['phase'] not in (PHASES['installed'], 'already_installed'):
         record = wait_for_completion(record, args.installed.resolve(), args.receipts.resolve(), observe)
     print(json.dumps({'id': record['id'], 'commit': args.commit, 'phase': record['phase'],
@@ -418,5 +418,5 @@ def main():
 if __name__ == '__main__':
     try:
         main()
-    except (OSError, ValueError, sqlite3.Error, updates.UpdateError, DeliveryError) as error:
+    except (OSError, ValueError, sqlite3.Error, updates.UpdateError, RuntimeError) as error:
         raise SystemExit(str(error)) from None

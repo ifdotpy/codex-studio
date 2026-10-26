@@ -1,6 +1,10 @@
 //! Discard only an explicitly failed import's private project before a fresh import.
 use super::{NATIVE_LAYR_DIRECTORY, NativeLayrError, private_tree::Directory, store_path};
 use std::path::Path;
+#[cfg(target_os = "macos")]
+mod flags_ffi;
+#[cfg(target_os = "macos")]
+use flags_ffi::unseal;
 
 type Result<T> = std::result::Result<T, NativeLayrError>;
 
@@ -80,24 +84,6 @@ fn remove_contents(fd: &std::os::fd::OwnedFd) -> std::io::Result<()> {
             let child = openat(fd, name, flags, Mode::empty())?;
             unseal(&child)?;
             unlinkat(fd, name, AtFlags::empty())?;
-        }
-    }
-    Ok(())
-}
-
-#[cfg(target_os = "macos")]
-#[allow(
-    unsafe_code,
-    reason = "Clear deletion flags only through a pinned private entry descriptor"
-)]
-fn unseal(fd: &std::os::fd::OwnedFd) -> std::io::Result<()> {
-    use std::os::fd::AsRawFd;
-    let stat = rustix::fs::fstat(fd)?;
-    let flags = stat.st_flags & !(libc::UF_IMMUTABLE | libc::UF_APPEND);
-    if flags != stat.st_flags {
-        // SAFETY: fd is live and was opened without following links in the private project.
-        if unsafe { libc::fchflags(fd.as_raw_fd(), flags) } != 0 {
-            return Err(std::io::Error::last_os_error());
         }
     }
     Ok(())

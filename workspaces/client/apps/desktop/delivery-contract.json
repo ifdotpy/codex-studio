@@ -4,5 +4,15 @@
     "publishing": "publishing",
     "submitted": "submitted",
     "installed": "installed"
-  }
+  },
+  "journalDirectory": "local-deliveries",
+  "startupIntentFile": "startup-delivery.json",
+  "startupIntentVersion": 1,
+  "installedRecoveryVersion": 1,
+  "startupResources": [
+    "recover_backend.py",
+    "desktop_delivery.py",
+    "desktop_process.py",
+    "delivery-contract.json"
+  ]
 }

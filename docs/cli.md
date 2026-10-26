@@ -40,6 +40,73 @@ The command keeps partial copies and uncertain receipts for inspection.
 The state directory keeps a separate journal for each request in `local-deliveries`.
 Loss of the receipt cache does not permit another install request.
 
+### A backend that cannot finish startup
+
+On macOS, a backend can own its listener and state lease before HTTP becomes available.
+Use the explicit startup option only with a prepared package and the existing canonical state path:
+
+```sh
+just deliver-server COMMIT --app '/absolute/package/Codex Studio.app' \
+  --starting-backend-pid PID --state /canonical/state/path --dry-run
+just deliver-server COMMIT --app '/absolute/package/Codex Studio.app' \
+  --starting-backend-pid PID --state /canonical/state/path
+```
+
+The usual signature, canary, and exact-commit checks still apply.
+The target package must declare the startup protocol and contain its required recovery resources.
+This option records a typed process proof. It does not create an HTTP identity.
+The proof binds the kernel birth, executable file identity and hash, launch arguments,
+state files, occupied runtime lease, supervisor mode, and retained provider identities.
+The process reader returns only the fixed state and supervisor environment fields.
+It does not return credentials.
+
+The existing installer owns the bundle swap. Its legacy HTTP check can leave the backend running.
+The replacement recovery helper reads the durable startup intent before its HTTP check.
+It requires the exact installed receipt and bundle, then verifies the pinned old process again.
+Only that backend receives SIGTERM. The supervisor and its provider processes remain outside this stop.
+The normal recovery loop starts the replacement after the pinned process exits and releases its lease and listener.
+If another existing startup owner starts the exact target first, recovery requires its real HTTP identity and unchanged retained proof.
+It then records the old process as ended. It sends no signal to that replacement.
+The LaunchAgent uses `KeepAlive` and `AbandonProcessGroup`, so the helper can restart without adopting a new install owner.
+
+A mismatch preserves the journal and blocks the stop and replacement.
+A crash after `stop-requested` leaves the signal outcome unknown. Recovery does not repeat the signal.
+It can continue when the exact old process has ended and the state is free.
+Retry delivery with the same package, commit, state, PID, and receipt directory.
+Completion still requires a real HTTP identity for the replacement and unchanged retained provider PIDs and generations.
+
+### An installed delivery whose backend exits before HTTP
+
+Use this separate proof when the installer finished, but its backend cannot serve HTTP:
+
+```sh
+just deliver-server COMMIT --app '/absolute/package/Codex Studio.app' \
+  --recover-installed-delivery PRIOR_UUID --state /canonical/state/path --dry-run
+just deliver-server COMMIT --app '/absolute/package/Codex Studio.app' \
+  --recover-installed-delivery PRIOR_UUID --state /canonical/state/path
+```
+
+The prior state journal and installed receipt must identify the exact current bundle.
+The prior journal can remain `submitted`. This option does not report that delivery as complete.
+The new signed package must be newer and declare the installed-delivery recovery capability.
+The proof binds fixed launch scope, state file identities, and the original retained supervisor handles.
+It stores no backend PID as a signal target and copies no environment or provider launch record.
+The prior journal remains unchanged.
+
+Publication uses the existing delivery, installer, maintenance, and runtime leases.
+A legacy helper can already have passed its lease probe before publication acquires the runtime lease.
+Such a launch attempt must fail its authoritative runtime lease before any database write.
+This option does not guarantee zero launch attempts.
+
+The existing installer owns the swap. The new recovery helper sends no signal through this proof.
+It waits for every previous-image backend of this canonical state to end.
+It preserves backend processes for other states and the exact read-only `state-check` command.
+An unknown process observation blocks recovery.
+A target process that already exists must supply its exact real HTTP identity or end before another launch.
+Only the normal recovery loop starts a replacement after the state becomes free.
+Final delivery success requires real HTTP and unchanged retained handles.
+Retry the same new package, commit, prior UUID, state, and receipt directory after an uncertain response.
+
 ## Install commands
 
 From the repository root, with the pinned Rust toolchain and Node.js available:
