@@ -146,10 +146,13 @@ async fn auth_repair_regression_post_login_allows_only_fresh_safe_continuation()
         release: release_rx,
     });
     complete_probe(&f, &login).await;
-    tokio::task::spawn_blocking(move || reached_rx.recv())
-        .await
-        .expect("gate thread")
-        .expect("actor reached the Ready save");
+    studio_runtime_process::blocking_pool::spawn_blocking(
+        "runtime-services/tests/claude_login_actor",
+        move || reached_rx.recv(),
+    )
+    .await
+    .expect("gate thread")
+    .expect("actor reached the Ready save");
     release_tx.send(()).expect("release the Ready save");
     // Ready is published before the chat repair. Wait for the repair result.
     let ready = f
