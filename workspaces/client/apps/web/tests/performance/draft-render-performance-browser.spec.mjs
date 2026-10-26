@@ -6,7 +6,7 @@ import {
   readApiSchemaHash,
   test,
   expect,
-} from "../playwright.mjs";
+} from "../playwright.ts";
 
 test("Draft Render Performance Browser @performance", async ({
   browser: testBrowser,

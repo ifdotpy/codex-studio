@@ -51,7 +51,7 @@ x64 servers.
 
 Run `node testing/image-codec-witness.ts` inside a deployed production bridge
 to verify the codecs without a model request. Run
-`node --test workspaces/client/apps/native/bridge-image-package.test.mjs` from
+`node --test workspaces/client/apps/native/bridge-image-package.test.ts` from
 the repository root to verify the Mac prune and its native codec load.
 
 ## Steer completion and Stop

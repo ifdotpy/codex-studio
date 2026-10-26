@@ -1,6 +1,6 @@
 import { join } from "node:path";
 import { mkdir, writeFile } from "node:fs/promises";
-import { createFixtureViteServer, test, expect } from "../playwright.mjs";
+import { createFixtureViteServer, test, expect } from "../playwright.ts";
 
 // Use the composer's real trigger, settings caller, toolbar controls and CSS.
 // Only the catalog is a fixture; opening and switching roles use production UI.

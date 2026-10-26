@@ -214,9 +214,9 @@ export default function UserMessages({
   data: Snapshot;
   target?: "user" | "lead";
   hideEmpty?: boolean;
-  focusId?: string;
+  focusId?: string | undefined;
   onlyComplaintId?: string;
-  focusRequestId?: string;
+  focusRequestId?: string | undefined;
   refresh: () => Promise<void>;
   notify: (s: string) => void;
 }) {
@@ -272,7 +272,7 @@ export function UserMessage({
   message: Complaint;
   data: Snapshot;
   focused: boolean;
-  focusRequestId?: string;
+  focusRequestId?: string | undefined;
   requests: Map<string, UserComplaintResponse>;
   pendingKey: string;
   refresh: () => Promise<void>;

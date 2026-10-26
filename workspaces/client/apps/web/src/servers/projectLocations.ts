@@ -3,32 +3,27 @@ import { serverLocalStorage } from "./storage";
 import type { ResourceConnectionState } from "../sync/subscriptions/events";
 import { readServers, type StudioServer } from "./registry";
 
-export type ProjectLocation = {
-  serverId: string;
-  path: string;
-  projectId: string;
-  requestedPath?: string | null;
-  gitOrigin?: string | null;
-  gitHead?: string | null;
-};
+import type { components } from "../generated/api";
+export type ProjectLocation = components["schemas"]["ProjectLocation"];
 export type LocationProject = {
   id: string;
   path: string;
   name: string;
-  homeServerId?: string | null;
-  compact?: boolean;
-  locations?: ProjectLocation[] | null;
+  homeServerId?: string | null | undefined;
+  compact?: boolean | undefined;
+  locations?: ProjectLocation[] | null | undefined;
   projectAliases?:
     | { serverId: string; projectId: string; name: string }[]
-    | null;
+    | null
+    | undefined;
 };
 export type ProjectServerChoice = {
   id: string;
   label: string;
   disabled?: boolean;
   serverId?: string;
-  system?: string;
-  connection?: StudioServer;
+  system?: string | undefined;
+  connection?: StudioServer | undefined;
 };
 export function projectServerChoices(
   servers: StudioServer[],
@@ -108,7 +103,7 @@ export async function saveProjectLocation(
     action: "add_location" | "remove_location";
     project: string;
     server: string;
-    path?: string;
+    path?: string | undefined;
     request_id: string;
   },
   services: ProjectMutationServices = {

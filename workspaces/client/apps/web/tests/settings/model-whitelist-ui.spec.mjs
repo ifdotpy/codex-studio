@@ -1,5 +1,5 @@
-import { test, expect, spawnFixture, rustUiFixture } from "../playwright.mjs";
-import { waitForFixturePort } from "../fixture-readiness.mjs";
+import { test, expect, spawnFixture, rustUiFixture } from "../playwright.ts";
+import { waitForFixturePort } from "../fixture-readiness.ts";
 import { mkdtemp, mkdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";

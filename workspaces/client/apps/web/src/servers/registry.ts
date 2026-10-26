@@ -12,7 +12,7 @@ export type StudioServer = {
   origin: string;
   credentialId?: string;
   workspaceId?: string;
-  alias?: string;
+  alias?: string | undefined;
 };
 export function serverResourceScope(server?: Pick<StudioServer, "id">) {
   return !server || server.id === "current" ? "local" : server.id;

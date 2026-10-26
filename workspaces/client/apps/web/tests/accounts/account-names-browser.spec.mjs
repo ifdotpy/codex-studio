@@ -1,5 +1,5 @@
 import { join } from "node:path";
-import { test, expect, createFixtureViteServer } from "../playwright.mjs";
+import { test, expect, createFixtureViteServer } from "../playwright.ts";
 
 async function fixture(page) {
   page.on("pageerror", (error) =>

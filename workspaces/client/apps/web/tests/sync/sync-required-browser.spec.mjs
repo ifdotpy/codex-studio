@@ -8,11 +8,11 @@ import {
   installApiSchemaFixtureHeaders,
   test,
   expect,
-} from "../playwright.mjs";
+} from "../playwright.ts";
 
 test("sync required browser", async ({ page: runnerPage }) => {
   const { createFixtureViteServer: createServer } =
-    await import("../playwright.mjs");
+    await import("../playwright.ts");
   const server = await createServer({
     configFile: false,
     root: fileURLToPath(new URL("../../../web", import.meta.url)),
@@ -179,7 +179,7 @@ test("draft bootstrap retries pause and recover on explicit activity", async ({
 }) => {
   test.setTimeout(120_000);
   const { createFixtureViteServer: createServer } =
-    await import("../playwright.mjs");
+    await import("../playwright.ts");
   const workspaceId = "c".repeat(32);
   let identityStatus = 503;
   let identityRequests = 0;

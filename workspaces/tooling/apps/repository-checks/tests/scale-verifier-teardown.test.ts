@@ -4,11 +4,11 @@ import { EventEmitter } from "node:events";
 import test from "node:test";
 
 const teardownUrl = new URL(
-  "../../../../client/apps/web/scripts/scaleVerifierTeardown.mjs",
+  "../../../../client/apps/web/scripts/scaleVerifierTeardown.ts",
   import.meta.url,
 ).href;
 const auditUrl = new URL(
-  "../../../../client/apps/web/scripts/uiTeamScaleAudit.mjs",
+  "../../../../client/apps/web/scripts/uiTeamScaleAudit.ts",
   import.meta.url,
 ).href;
 

@@ -1,3 +1,4 @@
+import assert from "node:assert/strict";
 import { describe, expect, it } from "vitest";
 import {
   mergePreferenceFields,
@@ -51,6 +52,9 @@ describe("UI preference fields", () => {
     });
     const migrated = migratePreferenceFields(local, prior, "user", "device");
     expect(migrated[key]).toEqual(prior[key]);
+    assert.ok(
+      migrated['["codex-studio-preferences-v1","mainFontSize"]'] != null,
+    );
     expect(
       migrated['["codex-studio-preferences-v1","mainFontSize"]'].value,
     ).toBe(18);
@@ -97,6 +101,8 @@ it("bounds per-item fields and keeps Appearance and server intent", () => {
   const result = prunePreferenceFields(fields);
   expect(Object.keys(result)).toHaveLength(3002);
   expect(result['["codex-worker-disclosures","0"]']).toBeUndefined();
+  assert.ok(result['["codex-worker-disclosures","3099"]'] != null);
   expect(result['["codex-worker-disclosures","3099"]'].value).toBe(true);
+  assert.ok(result['["codex-studio-preferences-v1","theme"]'] != null);
   expect(result['["codex-studio-preferences-v1","theme"]'].value).toBe("dark");
 });

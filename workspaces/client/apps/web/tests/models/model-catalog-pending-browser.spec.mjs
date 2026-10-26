@@ -6,7 +6,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { apiSchemaHeaders, expect, test } from "../playwright.mjs";
+import { apiSchemaHeaders, expect, test } from "../playwright.ts";
 
 test("Model Catalog Entity Browser", async ({ page }) => {
   const root = fileURLToPath(new URL("../../../../../../", import.meta.url));

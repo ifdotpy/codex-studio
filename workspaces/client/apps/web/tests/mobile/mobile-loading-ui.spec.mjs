@@ -1,4 +1,4 @@
-import { spawnFixture as spawn, test, rustUiFixture } from "../playwright.mjs";
+import { spawnFixture as spawn, test, rustUiFixture } from "../playwright.ts";
 // Real production renderer, service worker, browser cache and isolated backend.
 import assert from "node:assert/strict";
 import { createServer, request as httpRequest } from "node:http";

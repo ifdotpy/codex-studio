@@ -4,7 +4,7 @@ import {
   expect,
   createFixtureViteServer,
   apiSchemaHeaders,
-} from "../playwright.mjs";
+} from "../playwright.ts";
 
 // Real settings and transcript notice components, with an isolated API fixture.
 test("Claude idle compaction settings and notice at 320 and 1200 pixels", async ({

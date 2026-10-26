@@ -4,7 +4,7 @@ import {
   syncIdentityFixture,
   syncProtocolFixture,
   test,
-} from "../playwright.mjs";
+} from "../playwright.ts";
 // Actual HTTP connection capacity with two renderer windows and slow history.
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";

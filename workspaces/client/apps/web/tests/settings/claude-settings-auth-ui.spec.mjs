@@ -11,7 +11,7 @@ import {
   syncIdentityFixture,
   syncProtocolFixture,
   test,
-} from "../playwright.mjs";
+} from "../playwright.ts";
 
 const browserContextsByTest = new WeakMap();
 test.beforeEach(async ({ browser }, testInfo) => {

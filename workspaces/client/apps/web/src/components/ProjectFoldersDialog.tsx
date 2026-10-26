@@ -15,7 +15,7 @@ export default function ProjectFoldersDialog({
   saved,
 }: {
   project: LocationProject;
-  initialServer?: string;
+  initialServer?: string | undefined;
   saved: () => Promise<void>;
 }) {
   const { get } = useServerApi();

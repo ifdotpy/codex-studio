@@ -1063,7 +1063,7 @@ test("check-affected adds Cargo workspace dependents from cargo metadata", () =>
 // no compiler, generated files, or installed host CLI can affect these cases.
 test("WASM preparation locates only the pinned CLI and builds before binding", () => {
   const root = mkdtempSync(path.join(os.tmpdir(), "studio-wasm-preparation-"));
-  const script = "workspaces/client/apps/web/scripts/build-client-wasm.mjs";
+  const script = "workspaces/client/apps/web/scripts/build-client-wasm.ts";
   const manifest = "workspaces/client/packages/client-wasm/Cargo.toml";
   const version = readFileSync(manifest, "utf8").match(
     /^wasm-bindgen\s*=\s*"=([^"\s]+)"/m,
@@ -1162,7 +1162,7 @@ test("Playwright launcher clears BROWSER and removes state after success and fai
       chmodSync(witness, 0o755);
       const result = spawnSync(
         process.execPath,
-        ["workspaces/client/apps/web/scripts/run-browser-tests.mjs", "--list"],
+        ["workspaces/client/apps/web/scripts/run-browser-tests.ts", "--list"],
         {
           encoding: "utf8",
           env: {
@@ -1372,5 +1372,16 @@ test("short profile commands retain native nextest summary and zero-test guards"
       "   Summary [ 0.001s] 0 tests run: 0 passed",
     ).executed,
     0,
+  );
+});
+
+test("native startup check stays within temporary-state coverage", async () => {
+  const { testSource } = await import("../test-temp-state.ts");
+  assert.equal(
+    testSource(
+      "workspaces/client/apps/native/check-package-start.ts",
+      "fixture source",
+    ),
+    "fixture source",
   );
 });

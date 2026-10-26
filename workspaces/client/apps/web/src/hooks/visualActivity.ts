@@ -25,7 +25,10 @@ class VisualActivityTracker {
   private entries = new Map<HTMLElement, Entry>();
   private observer: IntersectionObserver | undefined;
 
-  constructor(private document: Document) {}
+  private document: Document;
+  constructor(document: Document) {
+    this.document = document;
+  }
 
   private inViewport(element: HTMLElement) {
     const view = this.document.defaultView;

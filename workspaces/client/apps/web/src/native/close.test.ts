@@ -1,3 +1,4 @@
+import { assert } from "vitest";
 import { afterEach, expect, it, vi } from "vitest";
 import { bindNativeCloseFrames, initializeNativeClose } from "./close";
 import { guardNativeClose } from "./closeState";
@@ -86,6 +87,7 @@ it("keeps the window editable and reports a failed save", async () => {
       id: 1,
       ready: false,
     });
+    assert(harness.append.mock.calls[0] !== undefined);
     expect(harness.append.mock.calls[0][0].textContent).toContain("disk full");
   } finally {
     unguard();
@@ -104,6 +106,7 @@ it("requires an acknowledgement from the exact live server frame", async () => {
   const unbind = bindNativeCloseFrames(frames);
   try {
     const closing = harness.close();
+    assert(source.postMessage.mock.calls[0] !== undefined);
     const { id } = source.postMessage.mock.calls[0][0];
     const event = {
       source,
@@ -151,6 +154,7 @@ it("reload preserves the save barrier and reports a rejected save", async () => 
       ready: false,
     });
     expect(harness.root.inert).toBe(false);
+    assert(harness.append.mock.calls[0] !== undefined);
     expect(harness.append.mock.calls[0][0].textContent).toContain(
       "Reload was cancelled",
     );
@@ -163,6 +167,7 @@ it("shows desktop configuration failures without freezing the editor", async () 
   const harness = await setup();
   harness.desktopError("The active server prevents this change.");
   expect(harness.root.inert).toBe(false);
+  assert(harness.append.mock.calls[0] !== undefined);
   const alert = harness.append.mock.calls[0][0];
   expect(alert.role).toBe("alert");
   expect(alert.textContent).toBe("The active server prevents this change.");

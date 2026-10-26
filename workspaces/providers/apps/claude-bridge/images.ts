@@ -1,3 +1,4 @@
+import type { SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
 import type { Metadata, ResizeOptions, PngOptions, JpegOptions } from "sharp";
 import fs from "node:fs/promises";
 import path from "node:path";
@@ -11,7 +12,15 @@ export const IMAGE_BYTE_BUDGET = 512_000;
 const JPEG_QUALITIES = [80, 60, 40, 20];
 const BYTE_BUDGET_PASSES = 5;
 const FINAL_IMAGE_WIDTH = 1000;
-const MEDIA_TYPES = new Map<string, string>([
+type ImageBlock = Extract<
+  Exclude<SDKUserMessage["message"]["content"], string>[number],
+  { type: "image" }
+>;
+type ImageMediaType = Extract<
+  ImageBlock["source"],
+  { type: "base64" }
+>["media_type"];
+const MEDIA_TYPES = new Map<string, ImageMediaType>([
   ["jpeg", "image/jpeg"],
   ["png", "image/png"],
   ["gif", "image/gif"],

@@ -112,7 +112,7 @@ function nativeParts(turn: Turn) {
 }
 function partPositions(turn: Turn, messages: SessionMessage[]) {
   const index = indexFor(messages);
-  const positions = index.positions(nativeParts(turn));
+  const positions: number[] | null = index.positions(nativeParts(turn));
   if (
     !positions ||
     positions.some((position) => {
@@ -223,7 +223,11 @@ export function rollbackBoundary(
 // persist must atomically save the whole descriptor. Never retry an unknown fork.
 export async function rollbackSession(
   session: Session,
-  request: { requestId: string; turnId: string; restoreFiles?: boolean },
+  request: {
+    requestId: string;
+    turnId: string;
+    restoreFiles?: boolean | undefined;
+  },
   deps: ControlDependencies,
 ) {
   const { requestId, turnId } = request;
@@ -427,7 +431,10 @@ export async function rollbackSession(
 // The Runtime workspace operation owns submission identity and unknown outcomes.
 export async function forkAtTurn(
   source: Session,
-  params: Partial<Session> & { threadId?: string; lastTurnId?: string | null },
+  params: Partial<Session> & {
+    threadId?: string | undefined;
+    lastTurnId?: string | null | undefined;
+  },
   deps: ControlDependencies,
 ) {
   // Native reads can wait while the source receives more output. Keep the

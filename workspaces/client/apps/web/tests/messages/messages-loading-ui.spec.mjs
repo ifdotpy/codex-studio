@@ -8,7 +8,7 @@ import {
   test,
   spawnFixture as spawn,
   rustUiFixture,
-} from "../playwright.mjs";
+} from "../playwright.ts";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { mkdtemp, writeFile } from "node:fs/promises";

@@ -97,7 +97,7 @@ const fastTier = (info?: WorkerModelInfo) =>
   info?.serviceTiers?.find((tier) => tier.id === "priority");
 
 type SettingsProps = {
-  presentation?: "menu" | "panel";
+  presentation?: "menu" | "panel" | undefined;
   renderTrigger?: (props: {
     agent: Agent;
     opened: boolean;
@@ -105,7 +105,7 @@ type SettingsProps = {
     onClick: () => void;
   }) => ReactElement;
   agent: Agent;
-  lead?: Agent;
+  lead?: Agent | undefined;
   catalog: Catalog;
   accounts?: Account[];
   team?: Array<Pick<Agent, "id" | "rootId" | "deletedAt" | "accountKey">>;
@@ -447,7 +447,7 @@ function ScopedExecutionSettings({
 }: ControllerProps & {
   beginSettingsSave: (role: SetupRole) => (agent: Agent) => boolean;
   teamDefaults: boolean;
-  readOnlyReason?: string;
+  readOnlyReason?: string | undefined;
   inheritedUnavailable: boolean;
   roleSwitchId: string;
   role: SetupRole;
@@ -1843,7 +1843,7 @@ function ExecutionMenu({
 }: {
   opened: boolean;
   setOpened: (value: boolean) => void;
-  accountModalOpen?: boolean;
+  accountModalOpen?: boolean | undefined;
   label: string;
   trigger: ReactElement;
   children: ReactNode;

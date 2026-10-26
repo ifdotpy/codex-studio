@@ -1,7 +1,7 @@
 import { mkdir } from "node:fs/promises";
 import { join } from "node:path";
-import { test, expect } from "../playwright.mjs";
-import { fixture } from "../servers/multi-server-fixture.mjs";
+import { test, expect } from "../playwright.ts";
+import { fixture } from "../servers/multi-server-fixture.ts";
 
 const models = ["gpt-6-astra", "gpt-6-luna", "gpt-5.6-sol"].map((model) => ({
   model,

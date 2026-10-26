@@ -1,5 +1,5 @@
 // Full React client and shared RxDB, isolated server. No live agent requests.
-import { FIXTURE_OPTIMIZE_DEPS } from "../playwright.mjs";
+import { FIXTURE_OPTIMIZE_DEPS } from "../playwright.ts";
 import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -12,14 +12,14 @@ import {
   expect,
   spawnFixture as spawn,
   rustUiFixture,
-} from "../playwright.mjs";
+} from "../playwright.ts";
 
 test("outbox-controls-ui", async ({ browser: fixtureBrowser }) => {
   test.setTimeout(45_000);
   const repo = fileURLToPath(new URL("../../../../../../", import.meta.url));
 
   const { createFixtureViteServer: createServer } =
-    await import("../playwright.mjs");
+    await import("../playwright.ts");
   const evidence = await mkdtemp(join(tmpdir(), "studio-outbox-controls-"));
   const fixture = spawn(process.execPath, [rustUiFixture, evidence], {
     stdio: ["ignore", "pipe", "pipe"],
