@@ -1920,7 +1920,7 @@ mod child_result_coalesce_tests {
             .expect("wake page reads")
             .values()
             .flatten()
-            .any(|(id, _, _)| id == "lead")
+            .any(|candidate| candidate.agent_id == "lead")
     }
 
     fn release_at(store: &RuntimeStore, now: f64) -> Option<f64> {

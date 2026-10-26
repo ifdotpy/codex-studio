@@ -47,6 +47,7 @@ pub mod retained_frame;
 mod steer;
 mod stopped_turns;
 pub(crate) mod store;
+pub use store::hold_invalid_agent_record;
 mod submission;
 mod turn_preparation;
 

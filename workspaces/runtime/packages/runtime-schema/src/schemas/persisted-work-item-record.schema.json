@@ -6,6 +6,11 @@
     "$ref": "#/$defs/JsonValue"
   },
   "properties": {
+    "dependencies": {
+      "$ref": "https://codex-studio.invalid/openapi.json#/components/schemas/WorkItem/properties/dependencies"
+    },
+    "results": { "type": "array", "items": { "type": "object" } },
+    "decisions": { "type": "array", "items": { "type": "object" } },
     "id": {
       "title": "Id",
       "type": "string"
@@ -40,15 +45,7 @@
       "title": "Rootid"
     },
     "status": {
-      "anyOf": [
-        {
-          "type": "string"
-        },
-        {
-          "type": "null"
-        }
-      ],
-      "title": "Status"
+      "$ref": "https://codex-studio.invalid/openapi.json#/components/schemas/WorkItem/properties/status"
     },
     "title": {
       "anyOf": [
@@ -68,7 +65,7 @@
       "type": "integer"
     }
   },
-  "required": ["id"],
+  "required": ["id", "status"],
   "title": "PersistedWorkItemRecord",
   "type": "object"
 }

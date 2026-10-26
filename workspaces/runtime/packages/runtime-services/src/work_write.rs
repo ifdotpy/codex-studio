@@ -19,7 +19,8 @@ use rusqlite::OptionalExtension;
 use serde_json::{Value, json};
 use studio_runtime_store::{
     AgentId, AgentRecord, AgentRepository, Connection, EventWriteRepository,
-    ReviewerArchiveRepository, RuntimeStore, Transaction, WorkItemsRepository,
+    ReviewerArchiveRepository, RuntimeStore, Transaction, WorkItemRecord, WorkItemsRepository,
+    WorkStatus,
 };
 
 use crate::event_write::{self, EventWriteError as Error};
@@ -1072,7 +1073,7 @@ pub async fn prepare_vm_submission(
         if !matches!(work["status"].as_str(), Some("running" | "ready" | "blocked" | "review")) {
             return Err(Error::InvalidRequest("This result is already accepted").into());
         }
-        if !blocked_by(&work, &dependency_statuses(tx, &work)?).is_empty() {
+        if !blocked_by(&work, &dependency_statuses(tx, &work)?)?.is_empty() {
             return Err(Error::InvalidRequest("Dependencies have not been accepted").into());
         }
         let owner_id = work["owner"].as_str().unwrap_or(&agent.id.0);
@@ -1269,8 +1270,8 @@ pub async fn prepare_vm_accept(
                 let dependent = WorkItemsRepository::work_record(tx, &row.id)?
                     .ok_or_else(|| invalid("runtime_work", &row.id))?;
                 let mut dependent_statuses = dependency_statuses(tx, &dependent)?;
-                dependent_statuses.insert(task_id.clone(), "accepted".to_owned());
-                if blocked_by(&dependent, &dependent_statuses).is_empty()
+                dependent_statuses.insert(task_id.clone(), WorkStatus::Accepted);
+                if blocked_by(&dependent, &dependent_statuses)?.is_empty()
                     && let Some(dependent_owner) = dependent["owner"].as_str()
                 {
                     let recipient = AgentRepository::get(tx, &AgentId::from(dependent_owner))?
@@ -2016,26 +2017,18 @@ fn continuation_work_pending(agent: &AgentRecord) -> bool {
 
 struct WorkSnapshot<'a> {
     record: &'a Value,
-    dependency_statuses: &'a BTreeMap<String, String>,
+    dependency_statuses: &'a BTreeMap<String, WorkStatus>,
 }
 
 fn decide_claim(snapshot: WorkSnapshot<'_>, claimant: &str, now: f64) -> Result<Value, Error> {
     let record = snapshot.record;
-    let id = record["id"]
-        .as_str()
-        .ok_or_else(|| invalid("runtime_work", "<invalid>"))?;
-    let status = record["status"]
-        .as_str()
-        .ok_or_else(|| invalid("runtime_work", id))?;
-    if !matches!(status, "ready" | "running")
-        || !blocked_by(record, snapshot.dependency_statuses).is_empty()
+    let checked = WorkItemRecord::checked(record.clone())?;
+    if !matches!(checked.status(), WorkStatus::Ready | WorkStatus::Running)
+        || !checked.blocked_by(snapshot.dependency_statuses).is_empty()
     {
         return Err(Error::InvalidRequest("This work item is not ready"));
     }
-    if record["owner"]
-        .as_str()
-        .is_some_and(|owner| owner != claimant)
-    {
+    if checked.owner().is_some_and(|owner| owner != claimant) {
         return Err(Error::InvalidRequest("Another agent owns this work item"));
     }
     let mut updated = record.clone();
@@ -2063,7 +2056,7 @@ fn decide_submit(
     ) {
         return Err(Error::InvalidRequest("This result is already accepted"));
     }
-    if !blocked_by(record, snapshot.dependency_statuses).is_empty() {
+    if !blocked_by(record, snapshot.dependency_statuses)?.is_empty() {
         return Err(Error::InvalidRequest("Dependencies have not been accepted"));
     }
     let title = record["title"]
@@ -2198,15 +2191,11 @@ fn advance(record: &mut Value, now: f64) -> Result<(), Error> {
     Ok(())
 }
 
-fn blocked_by(record: &Value, statuses: &BTreeMap<String, String>) -> Vec<String> {
-    record["dependencies"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .filter_map(Value::as_str)
-        .filter(|dependency| statuses.get(*dependency).map(String::as_str) != Some("accepted"))
-        .map(str::to_owned)
-        .collect()
+fn blocked_by(
+    record: &Value,
+    statuses: &BTreeMap<String, WorkStatus>,
+) -> Result<Vec<String>, Error> {
+    Ok(WorkItemRecord::checked(record.clone())?.blocked_by(statuses))
 }
 
 fn result_path(state_dir: &Path, task_id: &str, result_id: &str) -> Result<PathBuf, Error> {
@@ -2631,7 +2620,7 @@ fn submit(
     ) {
         return Err(Error::InvalidRequest("This result is already accepted").into());
     }
-    if !blocked_by(&work, &dependency_statuses(tx, &work)?).is_empty() {
+    if !blocked_by(&work, &dependency_statuses(tx, &work)?)?.is_empty() {
         return Err(Error::InvalidRequest("Dependencies have not been accepted").into());
     }
     if let Some((counter_id, failed, errors)) = result_refusal(tx, &work, &submitter, &input)? {
@@ -2962,8 +2951,8 @@ fn accept(
         let dependent = WorkItemsRepository::work_record(tx, &row.id)?
             .ok_or_else(|| invalid("runtime_work", &row.id))?;
         let mut dep_statuses = dependency_statuses(tx, &dependent)?;
-        dep_statuses.insert(input.task_id.clone(), "accepted".to_owned());
-        if !blocked_by(&dependent, &dep_statuses).is_empty() {
+        dep_statuses.insert(input.task_id.clone(), WorkStatus::Accepted);
+        if !blocked_by(&dependent, &dep_statuses)?.is_empty() {
             continue;
         }
         let Some(owner_id) = dependent["owner"].as_str() else {
@@ -3061,29 +3050,19 @@ fn load_work(
 }
 
 fn dependency_statuses(
-    tx: &Transaction<'_>,
+    tx: &Connection,
     work: &Value,
-) -> Result<BTreeMap<String, String>, Error> {
-    let id = work["id"]
-        .as_str()
-        .ok_or_else(|| invalid("runtime_work", "<invalid>"))?;
-    let status = work["status"]
-        .as_str()
-        .ok_or_else(|| invalid("runtime_work", id))?;
-    let mut statuses = BTreeMap::from([(id.to_owned(), status.to_owned())]);
-    for dependency in work["dependencies"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .filter_map(Value::as_str)
-    {
+) -> studio_runtime_store::StoreResult<BTreeMap<String, WorkStatus>> {
+    let checked = WorkItemRecord::checked(work.clone())?;
+    let mut statuses = BTreeMap::from([(checked.id().0.clone(), checked.status())]);
+    for dependency in checked.dependencies() {
         if let Some(value) = WorkItemsRepository::work_record(tx, dependency)?
             && value["rootId"] == work["rootId"]
         {
-            let status = value["status"]
-                .as_str()
-                .ok_or_else(|| invalid("runtime_work", dependency))?;
-            statuses.insert(dependency.to_owned(), status.to_owned());
+            statuses.insert(
+                dependency.to_owned(),
+                WorkItemRecord::checked(value)?.status(),
+            );
         }
     }
     Ok(statuses)
@@ -3114,29 +3093,13 @@ pub fn work_item_view(
     connection: &Connection,
     work: &Value,
 ) -> studio_runtime_store::StoreResult<Value> {
-    let mut statuses = BTreeMap::new();
-    if let (Some(id), Some(status)) = (work["id"].as_str(), work["status"].as_str()) {
-        statuses.insert(id.to_owned(), status.to_owned());
-    }
-    for dependency in work["dependencies"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .filter_map(Value::as_str)
-    {
-        if let Some(value) = WorkItemsRepository::work_record(connection, dependency)?
-            && value["rootId"] == work["rootId"]
-            && let (Some(id), Some(status)) = (value["id"].as_str(), value["status"].as_str())
-        {
-            statuses.insert(id.to_owned(), status.to_owned());
-        }
-    }
-    Ok(crate::work_policy::work_item_view(work, &statuses))
+    let statuses = dependency_statuses(connection, work)?;
+    crate::work_policy::work_item_view(work, &statuses)
 }
 
 fn single_view(tx: &Transaction<'_>, work: &Value) -> Result<Value, Error> {
     let statuses = dependency_statuses(tx, work)?;
-    Ok(crate::work_policy::work_item_view(work, &statuses))
+    Ok(crate::work_policy::work_item_view(work, &statuses)?)
 }
 
 fn validate_dependencies(
@@ -3182,12 +3145,8 @@ fn dependency_visit(
         return Err(Error::InvalidRequest("Dependency is outside this team"));
     }
     active.push(task.to_owned());
-    for dependency in item["dependencies"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .filter_map(Value::as_str)
-    {
+    let checked = WorkItemRecord::checked(item)?;
+    for dependency in checked.dependencies() {
         dependency_visit(tx, root, dependency, active, visited)?;
     }
     active.pop();

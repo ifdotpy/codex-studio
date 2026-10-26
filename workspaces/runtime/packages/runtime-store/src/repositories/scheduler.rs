@@ -11,7 +11,37 @@ use crate::{
     EventWriteRepository, ExecutionHistoryRepository, QueueEvent, StoreError, StoreResult,
 };
 
-pub type AccountWakePage = BTreeMap<String, Vec<(String, i64, Option<String>)>>;
+pub type AccountWakePage = BTreeMap<String, Vec<WakeCandidate>>;
+
+/// Mirrors AgentRecordResponse.workspaceMode in OpenAPI; the projection parity
+/// witness checks this closed set against that owner.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkspaceMode {
+    Layr,
+    Image,
+    Worktree,
+    Shared,
+}
+
+/// A selected row keeps its identity even when its mode is invalid, so registry
+/// isolation can hold that row without discarding the rest of the bounded page.
+#[derive(Clone, Debug)]
+pub struct WakeCandidate {
+    pub agent_id: String,
+    pub epoch: i64,
+    pub workspace_mode: Result<Option<WorkspaceMode>, std::sync::Arc<StoreError>>,
+}
+
+impl WakeCandidate {
+    pub fn ready(agent_id: String, epoch: i64, workspace_mode: Option<WorkspaceMode>) -> Self {
+        Self {
+            agent_id,
+            epoch,
+            workspace_mode: Ok(workspace_mode),
+        }
+    }
+}
 
 /// Persisted turn errors for a provider disconnect, a backend restart, and an
 /// unknown Linux VM provider outcome, owned by runtime-schema shared values.

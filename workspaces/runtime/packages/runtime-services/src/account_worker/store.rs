@@ -703,7 +703,7 @@ pub(super) async fn claim(
 /// Persist a visible fail-closed state for one malformed agent without decoding
 /// it through the typed repository. The original invalid field is retained for
 /// repair, while this agent can no longer be selected for provider work.
-pub(super) async fn hold_invalid_agent_record(
+pub async fn hold_invalid_agent_record(
     store: &RuntimeStore,
     agent_id: &str,
     expected_pointer: &str,

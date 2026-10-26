@@ -19,6 +19,7 @@ use studio_runtime_services::monitor_runtime_wiring::MonitorRuntime;
 enum WorkCommitError {
     Store,
     Write(WorkWriteError),
+    RefusedClaim(studio_runtime_store::StoreError),
     Rules(studio_runtime_services::rules_tick::RulesTickError),
 }
 
@@ -100,7 +101,13 @@ impl studio_runtime_services::provider_callbacks::WorkActionPort for ManagedWork
                 // Client errors mean no task mutation. Schema refusal receipts and
                 // counters may already be committed; replay uses the same request id.
                 // Other errors may follow a task commit and remain uncertain.
-                Err(error) if error.status().is_client_error() => {
+                Err(error)
+                    if error.status().is_client_error()
+                        || matches!(
+                            error.outcome(),
+                            Some(crate::generated::ErrorResponseOutcome::NotApplied)
+                        ) =>
+                {
                     WorkActionOutcome::Refused(error.message().to_owned())
                 }
                 Err(error) => WorkActionOutcome::Unknown(format!(
@@ -503,7 +510,7 @@ async fn commit(
     let ((result, checks, rule_now), _) = store
         .transaction_with_post_commit(
             move |tx| -> Result<_, WorkCommitError> {
-                let result = if let Some(actor_id) = actor_id.as_deref() {
+                let write = |command| if let Some(actor_id) = actor_id.as_deref() {
                     work_write::write_action_as_agent(
                         tx,
                         &agent,
@@ -511,9 +518,20 @@ async fn commit(
                         request_id.as_deref(),
                         &signature,
                         command,
-                    )?
+                    )
                 } else {
-                    work_write::write(tx, &agent, request_id.as_deref(), &signature, command)?
+                    work_write::write(tx, &agent, request_id.as_deref(), &signature, command)
+                };
+                let result = match command {
+                    // Claim has no preparation outside this transaction. A
+                    // located record refusal here proves no effect; submit and
+                    // accept retain uncertainty about earlier preparation.
+                    WorkWrite::Claim(input) => write(WorkWrite::Claim(input)).map_err(|error| match error {
+                        WorkWriteError::Event(studio_runtime_services::event_write::EventWriteError::Store(error @ studio_runtime_store::StoreError::InvalidSyncObjectField { .. }))
+                        | WorkWriteError::Store(error @ studio_runtime_store::StoreError::InvalidSyncObjectField { .. }) => WorkCommitError::RefusedClaim(error),
+                        error => WorkCommitError::Write(error),
+                    })?,
+                    command => write(command)?,
                 };
                 let mut checks = Vec::new();
                 let mut rule_now = 0.0;
@@ -936,6 +954,7 @@ fn outcome_status_is_terminal(work: &Value) -> bool {
 fn commit_error(error: WorkCommitError) -> ApiError {
     match error {
         WorkCommitError::Store => ApiError::internal(),
+        WorkCommitError::RefusedClaim(error) => ApiError::stored(error).with_not_applied(),
         WorkCommitError::Write(error) => write_error(error),
         WorkCommitError::Rules(
             studio_runtime_services::rules_tick::RulesTickError::MonitorUnavailable,
@@ -951,7 +970,7 @@ pub(super) fn write_error(error: WorkWriteError) -> ApiError {
     match error {
         WorkWriteError::Event(error) => work_items::write_error(error),
         WorkWriteError::PreparationWorker => ApiError::internal(),
-        WorkWriteError::Store(_) => ApiError::internal(),
+        WorkWriteError::Store(error) => ApiError::stored(error),
         WorkWriteError::NotImplemented(dependency) => ApiError::new(
             StatusCode::NOT_IMPLEMENTED,
             format!("Not implemented: requires {dependency}"),
@@ -1102,6 +1121,135 @@ mod managed_work_port_tests {
 
     fn schema() -> Value {
         json!({"type":"object","properties":{"count":{"type":"integer"}},"required":["count"],"additionalProperties":false})
+    }
+
+    #[tokio::test]
+    async fn stored_work_boundary_missing_status_returns_error_without_panic() {
+        let (state, store, _directory) = state().await;
+        store
+            .transaction(|tx| {
+                tx.execute(
+                    "INSERT INTO runtime_work(id,record) VALUES('missing-status',?1)",
+                    [json!({"id":"missing-status","rootId":"lead","owner":"worker"}).to_string()],
+                )?;
+                Ok(())
+            })
+            .await
+            .expect("existing missing status fixture");
+        let error = super::work_items::work_for_agent(state, "lead".into())
+            .await
+            .expect_err("missing status returns a located error");
+        assert!(error.message().contains("runtime_work"), "{error:?}");
+    }
+
+    #[tokio::test]
+    async fn stored_work_boundary_refuses_corrupt_claims_and_reads_without_writes() {
+        for (field, corrupt) in [
+            ("dependencies", Some(json!({"0":"prerequisite"}))),
+            ("dependencies", Some(json!(7))),
+            ("dependencies", Some(json!(["prerequisite", 7]))),
+            ("dependencies", Some(Value::Null)),
+            ("status", None),
+            ("status", Some(Value::Null)),
+        ] {
+            let (state, store, _directory) = state().await;
+            let port = managed_work_port(state.clone(), None);
+            store.transaction(|tx| {
+                studio_runtime_store::WorkItemsRepository::put_work(tx,"prerequisite",&json!({"id":"prerequisite","rootId":"lead","title":"Unaccepted prerequisite","status":"ready","owner":null,"dependencies":[],"results":[],"decisions":[],"version":1,"created":1,"updated":1}))?;
+                Ok(())
+            }).await.expect("real unaccepted prerequisite");
+            let created = written(
+                port.act(
+                    "lead",
+                    &json!({"action":"create","title":"Stored boundary","owner":"worker","dependencies":["prerequisite"]}),
+                    "boundary-create",
+                )
+                .await,
+            );
+            let id = created["id"].as_str().expect("task id").to_owned();
+            let mut corrupt_record = created.clone();
+            if let Some(value) = corrupt {
+                corrupt_record[field] = value;
+            } else {
+                corrupt_record
+                    .as_object_mut()
+                    .expect("work object")
+                    .remove(field);
+            }
+            // Simulate existing stored corruption without going through a fresh writer.
+            let corrupt_id = id.clone();
+            store
+                .transaction(move |tx| {
+                    tx.execute(
+                        "UPDATE runtime_work SET record=?1 WHERE id=?2",
+                        rusqlite::params![corrupt_record.to_string(), corrupt_id],
+                    )?;
+                    Ok(())
+                })
+                .await
+                .expect("corrupt fixture");
+            let connection = store.test_reader().expect("fixture connection");
+            let snapshot = || {
+                [
+                    "SELECT id,record FROM runtime_work ORDER BY id",
+                    "SELECT id,json_array(signature,result) FROM runtime_operation_receipts ORDER BY id",
+                    "SELECT id,json_array(agent,kind,text,status,created,epoch,turn_id,error) FROM runtime_events ORDER BY id",
+                ]
+                .into_iter()
+                .map(|sql| {
+                    connection
+                        .prepare(sql)
+                        .expect("snapshot statement")
+                        .query_map([], |row| {
+                            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                        })
+                        .expect("snapshot query")
+                        .collect::<rusqlite::Result<Vec<_>>>()
+                        .expect("snapshot rows")
+                })
+                .collect::<Vec<_>>()
+            };
+            let before = snapshot();
+            let claim = json!({"action":"claim","agent":"worker","task_id":id,"version":created["version"],"id":"boundary-http-claim"});
+            let error = super::perform(state.clone(), None, claim.clone(), None)
+                .await
+                .expect_err("HTTP claim refuses malformed stored work");
+            assert!(error.message().contains("runtime_work"), "{error:?}");
+            let outcome = port.act("worker", &claim, "boundary-native-claim").await;
+            assert!(
+                matches!(outcome, WorkActionOutcome::Refused(_)),
+                "{outcome:?}"
+            );
+            for (actor, action, extra) in [
+                (
+                    "worker",
+                    "submit",
+                    json!({"result":"proof","checks":"fixture","revision":"fixture","files":[]}),
+                ),
+                ("lead", "accept", json!({"result":"review"})),
+            ] {
+                let mut args = extra;
+                args["action"] = json!(action);
+                args["task_id"] = json!(id);
+                args["version"] = created["version"].clone();
+                let outcome = port
+                    .act(actor, &args, &format!("boundary-native-{action}"))
+                    .await;
+                assert!(
+                    matches!(outcome, WorkActionOutcome::Unknown(_)),
+                    "{action}: {outcome:?}"
+                );
+            }
+            let error = super::work_items::work_for_agent(state, "lead".into())
+                .await
+                .expect_err("HTTP read returns a located error without panic");
+            assert!(error.message().contains("runtime_work"), "{error:?}");
+            assert_eq!(
+                snapshot(),
+                before,
+                "refusal preserves exact records, versions and receipts for {field}"
+            );
+        }
     }
 
     fn refused(outcome: WorkActionOutcome) -> String {
@@ -1318,7 +1466,7 @@ mod managed_work_port_tests {
 
     #[tokio::test]
     async fn the_tool_port_runs_the_work_route_owner_with_the_tool_request_identity() {
-        let (state, _store, _directory) = state().await;
+        let (state, store, _directory) = state().await;
         let port = managed_work_port(state, None);
         let created = written(
             port.act(
@@ -1329,10 +1477,16 @@ mod managed_work_port_tests {
             .await,
         );
         let task = created["id"].as_str().expect("task id").to_owned();
+        let extension_task = task.clone();
+        store.transaction(move |tx| {
+            tx.execute("UPDATE runtime_work SET record=json_set(record,'$.retainedExtension',json('{\"proof\":[7,null]}')) WHERE id=?1", [extension_task])?;
+            Ok(())
+        }).await.expect("stored extension");
         let claim = json!({"action":"claim","task_id":task,"version":created["version"]});
         let claimed = written(port.act("worker", &claim, "tool-claim").await);
         assert_eq!(claimed["owner"], "worker");
         assert_eq!(claimed["status"], "running");
+        assert_eq!(claimed["retainedExtension"], json!({"proof":[7,null]}));
         // The same tool request replays its receipt instead of acting again.
         assert_eq!(
             written(port.act("worker", &claim, "tool-claim").await),

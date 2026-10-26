@@ -174,6 +174,45 @@ static ACCOUNT_WAKE_PENDING_AGENTS_SQL: LazyLock<String> =
     LazyLock::new(account_wake_pending_agents_query);
 static CHILD_RESULT_RELEASE_SQL: LazyLock<String> = LazyLock::new(child_result_release_query);
 
+fn wake_candidate(
+    connection: &Connection,
+    row: &rusqlite::Row<'_>,
+) -> rusqlite::Result<WakeCandidate> {
+    let agent_id: String = row.get(0)?;
+    let epoch = row.get(1)?;
+    let raw: rusqlite::types::Value = row.get(2)?;
+    let mode = match raw {
+        rusqlite::types::Value::Null => Some(None),
+        rusqlite::types::Value::Text(value) => {
+            serde_json::from_value::<WorkspaceMode>(Value::String(value))
+                .ok()
+                .map(Some)
+        }
+        rusqlite::types::Value::Integer(_)
+        | rusqlite::types::Value::Real(_)
+        | rusqlite::types::Value::Blob(_) => None,
+    };
+    let workspace_mode = match mode {
+        Some(mode) => Ok(mode),
+        None => {
+            // The actual agent reader owns the located diagnostic, including
+            // its safe shape facts. It runs only for a malformed projection.
+            let error = match AgentRepository::get(connection, &AgentId::from(agent_id.as_str())) {
+                Err(error) => error,
+                Ok(_) => StoreError::RecordContract(
+                    "workspaceMode projection disagrees with its OpenAPI owner".into(),
+                ),
+            };
+            Err(std::sync::Arc::new(error))
+        }
+    };
+    Ok(WakeCandidate {
+        agent_id,
+        epoch,
+        workspace_mode,
+    })
+}
+
 fn validate_account_wake_targets(connection: &Connection, held_after: f64) -> StoreResult<()> {
     if let Some(id) = connection
         .query_row_cached(
@@ -290,22 +329,21 @@ impl SchedulerRepository {
         let mut result = BTreeMap::new();
         for account in selected_accounts {
             let after = after_agents.get(&account).map(String::as_str).unwrap_or("");
-            let mut read_agents =
-                |after: &str| -> rusqlite::Result<Vec<(String, i64, Option<String>)>> {
-                    agent_statement
-                        .query_map(
-                            rusqlite::params![
-                                account,
-                                after,
-                                crate::INVALID_AGENT_HOLD_RECEIPT_PREFIX,
-                                crate::INVALID_AGENT_HOLD_RECEIPT_SIGNATURE,
-                                agent_limit as i64,
-                                held_after
-                            ],
-                            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-                        )?
-                        .collect()
-                };
+            let mut read_agents = |after: &str| -> rusqlite::Result<Vec<WakeCandidate>> {
+                agent_statement
+                    .query_map(
+                        rusqlite::params![
+                            account,
+                            after,
+                            crate::INVALID_AGENT_HOLD_RECEIPT_PREFIX,
+                            crate::INVALID_AGENT_HOLD_RECEIPT_SIGNATURE,
+                            agent_limit as i64,
+                            held_after
+                        ],
+                        |row| wake_candidate(connection, row),
+                    )?
+                    .collect()
+            };
             let mut agents = read_agents(after)?;
             if agents.is_empty() && !after.is_empty() {
                 agents = read_agents("")?;
@@ -349,7 +387,7 @@ impl SchedulerRepository {
                         agent_limit as i64,
                         held_after
                     ],
-                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                    |row| wake_candidate(connection, row),
                 )?
                 .collect::<rusqlite::Result<Vec<_>>>()?;
             result.insert(account.to_owned(), agents);
@@ -390,22 +428,21 @@ impl SchedulerRepository {
         let mut result = BTreeMap::new();
         for account in accounts {
             let after = after_agents.get(&account).map(String::as_str).unwrap_or("");
-            let mut read_agents =
-                |after: &str| -> rusqlite::Result<Vec<(String, i64, Option<String>)>> {
-                    agent_statement
-                        .query_map(
-                            rusqlite::params![
-                                account,
-                                after,
-                                crate::INVALID_AGENT_HOLD_RECEIPT_PREFIX,
-                                crate::INVALID_AGENT_HOLD_RECEIPT_SIGNATURE,
-                                agent_limit as i64,
-                                held_after
-                            ],
-                            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-                        )?
-                        .collect()
-                };
+            let mut read_agents = |after: &str| -> rusqlite::Result<Vec<WakeCandidate>> {
+                agent_statement
+                    .query_map(
+                        rusqlite::params![
+                            account,
+                            after,
+                            crate::INVALID_AGENT_HOLD_RECEIPT_PREFIX,
+                            crate::INVALID_AGENT_HOLD_RECEIPT_SIGNATURE,
+                            agent_limit as i64,
+                            held_after
+                        ],
+                        |row| wake_candidate(connection, row),
+                    )?
+                    .collect()
+            };
             let mut agents = read_agents(after)?;
             if agents.is_empty() && !after.is_empty() {
                 agents = read_agents("")?;
@@ -424,7 +461,7 @@ impl SchedulerRepository {
         after_agent: &str,
         agent_limit: usize,
         now: f64,
-    ) -> StoreResult<Vec<(String, i64, Option<String>)>> {
+    ) -> StoreResult<Vec<WakeCandidate>> {
         let held_after = child_result_held_after(connection, now)?;
         validate_account_wake_targets(connection, held_after)?;
         let mut statement = connection.prepare_cached(&ACCOUNT_WAKE_PENDING_AGENTS_SQL)?;
@@ -438,7 +475,7 @@ impl SchedulerRepository {
                     agent_limit as i64,
                     held_after
                 ],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                |row| wake_candidate(connection, row),
             )?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(rows)
@@ -1705,6 +1742,45 @@ mod account_wake_index_tests {
     use serde_json::json;
     use std::collections::BTreeMap;
 
+    #[test]
+    fn stored_wake_boundary_mode_projection_matches_openapi_owner() {
+        use super::WorkspaceMode;
+        let openapi: serde_json::Value =
+            serde_json::from_str(include_str!("../../../../runtime-http/openapi.json"))
+                .expect("OpenAPI owner");
+        let mut owned =
+            openapi["components"]["schemas"]["AgentRecordResponse"]["properties"]["workspaceMode"]
+                ["anyOf"][0]["enum"]
+                .as_array()
+                .expect("mode owner")
+                .clone();
+        let mut typed = [
+            WorkspaceMode::Layr,
+            WorkspaceMode::Image,
+            WorkspaceMode::Worktree,
+            WorkspaceMode::Shared,
+        ]
+        .map(|mode| serde_json::to_value(mode).expect("mode encodes"))
+        .to_vec();
+        owned.sort_by_key(serde_json::Value::to_string);
+        typed.sort_by_key(serde_json::Value::to_string);
+        assert_eq!(
+            typed, owned,
+            "WorkspaceMode must mirror AgentRecordResponse.workspaceMode OpenAPI owner"
+        );
+        let schema: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../../runtime-schema/src/schemas/persisted-agent-record.schema.json"
+        ))
+        .expect("persisted schema");
+        assert_eq!(
+            schema["properties"]["workspaceMode"]["$ref"],
+            json!(format!(
+                "{}#/components/schemas/AgentRecordResponse/properties/workspaceMode",
+                studio_runtime_schema::OPENAPI_URI
+            ))
+        );
+    }
+
     fn old_schema() -> Connection {
         let connection = Connection::open_in_memory().expect("memory database opens");
         connection
@@ -1777,7 +1853,9 @@ mod account_wake_index_tests {
         let agents =
             SchedulerRepository::account_wake_agents_after(&connection, "default", "", 10, 0.0)
                 .expect("ordinary queued retry is selected");
-        assert_eq!(agents, vec![("queued-retry".to_owned(), 1, None)]);
+        assert_eq!(agents.len(), 1);
+        assert_eq!(agents[0].agent_id, "queued-retry");
+        assert_eq!(agents[0].epoch, 1);
     }
 
     #[test]
@@ -1841,7 +1919,8 @@ mod account_wake_index_tests {
             0.0,
         )
         .expect("account cursor advances to recovery account");
-        assert_eq!(page, BTreeMap::from([("account-b".to_owned(), vec![])]));
+        assert_eq!(page.len(), 1);
+        assert!(page["account-b"].is_empty());
 
         let wrapped = SchedulerRepository::account_wake_page(
             &connection,
@@ -1852,26 +1931,26 @@ mod account_wake_index_tests {
             0.0,
         )
         .expect("account cursor wraps");
-        assert_eq!(
-            wrapped,
-            BTreeMap::from([("account-a".to_owned(), vec![("aaa".to_owned(), 1, None)])])
-        );
+        assert_eq!(wrapped.len(), 1);
+        assert_eq!(wrapped["account-a"].len(), 1);
+        assert_eq!(wrapped["account-a"][0].agent_id, "aaa");
+        assert_eq!(wrapped["account-a"][0].epoch, 1);
 
         let mut after_agent = BTreeMap::new();
         after_agent.insert("account-a".to_owned(), "aaa".to_owned());
         let next_agent =
             SchedulerRepository::account_wake_page(&connection, "", &after_agent, 1, 1, 0.0)
                 .expect("agent cursor advances");
-        assert_eq!(next_agent["account-a"], vec![("zzz".to_owned(), 2, None)]);
+        assert_eq!(next_agent["account-a"].len(), 1);
+        assert_eq!(next_agent["account-a"][0].agent_id, "zzz");
+        assert_eq!(next_agent["account-a"][0].epoch, 2);
 
         after_agent.insert("account-a".to_owned(), "zzz".to_owned());
         let wrapped_agent =
             SchedulerRepository::account_wake_page(&connection, "", &after_agent, 1, 1, 0.0)
                 .expect("agent cursor wraps");
-        assert_eq!(
-            wrapped_agent["account-a"],
-            vec![("aaa".to_owned(), 1, None)]
-        );
+        assert_eq!(wrapped_agent["account-a"].len(), 1);
+        assert_eq!(wrapped_agent["account-a"][0].agent_id, "aaa");
 
         let no_wrap =
             SchedulerRepository::account_wake_agents_after(&connection, "account-a", "zzz", 1, 0.0)
@@ -1898,13 +1977,10 @@ mod account_wake_index_tests {
         let page =
             SchedulerRepository::account_wake_page(&connection, "", &BTreeMap::new(), 8, 8, 0.0)
                 .expect("wake page");
-        assert_eq!(
-            page,
-            BTreeMap::from([(
-                "default".to_owned(),
-                vec![("pending-review".to_owned(), 0, None)]
-            )])
-        );
+        assert_eq!(page.len(), 1);
+        assert_eq!(page["default"].len(), 1);
+        assert_eq!(page["default"][0].agent_id, "pending-review");
+        assert_eq!(page["default"][0].epoch, 0);
     }
 
     #[test]
@@ -1938,13 +2014,13 @@ mod account_wake_index_tests {
         let next = SchedulerRepository::account_wake_agents_after(
             &connection,
             "account-middle",
-            &first.last().expect("first page has a final row").0,
+            &first.last().expect("first page has a final row").agent_id,
             32,
             0.0,
         )
         .expect("strict continuation page is selected");
         assert_eq!(next.len(), 1);
-        assert_eq!(next[0].0, "agent-032");
+        assert_eq!(next[0].agent_id, "agent-032");
         assert!(
             SchedulerRepository::account_wake_agents_after(
                 &connection,
@@ -2021,7 +2097,9 @@ mod account_wake_index_tests {
         let released =
             SchedulerRepository::account_wake_agents_after(&connection, "account-000", "", 32, 0.0)
                 .expect("released account is queried directly despite global cursor progress");
-        assert_eq!(released, vec![("agent-000".to_owned(), 1, None)]);
+        assert_eq!(released.len(), 1);
+        assert_eq!(released[0].agent_id, "agent-000");
+        assert_eq!(released[0].epoch, 1);
     }
 
     #[test]
