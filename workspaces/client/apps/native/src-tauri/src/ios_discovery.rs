@@ -1,25 +1,18 @@
 //! Bonjour search of the iOS shell: a Network.framework browser for the
-//! Studio service type. The start page lists the servers it finds; on the
-//! first launch, one server opens directly. See README.md "iOS shell" and
-//! `ios_server::choose` for the order.
+//! Studio service type. It runs only while the start page is shown
+//! (`ios_server::discovery_on`), and the page lists what it finds. A found
+//! server opens only after a tap; see README.md "iOS shell".
 
 use crate::ios_server::{
-    BROWSER_FAILED, BROWSER_READY, BROWSER_WAITING, BUILD_DEFAULT, DNS_POLICY_DENIED, Discovered,
-    ERROR_DOMAIN_DNS, bonjour, choose, discovered, permission_denied,
+    BROWSER_FAILED, BROWSER_READY, BROWSER_WAITING, DNS_POLICY_DENIED, Discovered,
+    ERROR_DOMAIN_DNS, bonjour, discovered, discovery_on, entries, permission_denied,
 };
 use block2::{DynBlock, RcBlock};
 use std::collections::BTreeMap;
 use std::ffi::{CStr, CString, c_char, c_void};
 use std::sync::Mutex;
-use std::time::Duration;
-use tauri::WebviewWindow;
+use tauri::{Manager, Url, Webview};
 
-/// Time, after the search starts, before an empty search counts as settled
-/// and the build default can open.
-const SEARCH_WINDOW: Duration = Duration::from_secs(3);
-/// Quiet time after the last result change before the results count as
-/// settled, so that one batch of results is complete.
-const SETTLE: Duration = Duration::from_millis(800);
 /// Test hook: `denied` reports Local Network access as off without a browser
 /// (the simulator does not ask for that permission); `off` does not search.
 const TEST_ENV: &str = "STUDIO_SHELL_DISCOVERY";
@@ -51,6 +44,7 @@ unsafe extern "C" {
         handler: &DynBlock<dyn Fn(u32, NwObject)>,
     );
     fn nw_browser_start(browser: NwObject);
+    fn nw_browser_cancel(browser: NwObject);
     fn nw_browse_result_copy_endpoint(result: NwObject) -> NwObject;
     fn nw_browse_result_copy_txt_record_object(result: NwObject) -> NwObject;
     fn nw_endpoint_get_bonjour_service_name(endpoint: NwObject) -> *const c_char;
@@ -72,23 +66,23 @@ struct Search {
     /// Results by Bonjour service instance name.
     servers: BTreeMap<String, Discovered>,
     denied: bool,
-    settled: bool,
-    /// The first-launch rule (open one found server, else the build
-    /// default) still applies: no address was known at launch, and the
-    /// person has not chosen one.
-    auto_open: bool,
-    /// Changes with each result batch, so an older settle timer does nothing.
+    /// The running browser (`nw_browser_t`), or 0.
+    browser: usize,
+    /// True from the start of a search to its stop, also for the test hook.
+    active: bool,
+    /// Changes at each start and stop, so a callback of an old browser does
+    /// nothing.
     generation: u64,
-    window: Option<WebviewWindow>,
+    page: Option<Webview>,
 }
 
 static SEARCH: Mutex<Search> = Mutex::new(Search {
     servers: BTreeMap::new(),
     denied: false,
-    settled: false,
-    auto_open: false,
+    browser: 0,
+    active: false,
     generation: 0,
-    window: None,
+    page: None,
 });
 
 fn search() -> std::sync::MutexGuard<'static, Search> {
@@ -97,61 +91,89 @@ fn search() -> std::sync::MutexGuard<'static, Search> {
         .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
-/// The servers found now, by name.
-pub fn servers() -> Vec<Discovered> {
-    let mut servers: Vec<_> = search().servers.values().cloned().collect();
-    servers.sort_by(|a, b| a.name.cmp(&b.name).then(a.url.as_str().cmp(b.url.as_str())));
-    servers
-}
-
-/// Stop the first-launch rule: the person chose a server or a page loaded.
-pub fn stop_auto_open() {
-    search().auto_open = false;
-}
-
-/// Start the search. `auto_open` is true when no address was known at launch.
-pub fn start(window: &WebviewWindow, auto_open: bool) {
-    {
-        let mut search = search();
-        search.auto_open = auto_open;
-        search.window = Some(window.clone());
+/// Start the search when the start page loads; stop it when another page
+/// loads.
+pub fn page_loaded(page: &Webview, url: &Url) {
+    if discovery_on(url) {
+        start(page);
+        push();
+    } else {
+        stop();
     }
+}
+
+fn start(page: &Webview) {
+    let generation = {
+        let mut search = search();
+        search.page = Some(page.clone());
+        if search.active {
+            return;
+        }
+        search.active = true;
+        search.generation += 1;
+        search.servers.clear();
+        search.denied = false;
+        search.generation
+    };
     match std::env::var(TEST_ENV).as_deref() {
-        Ok("off") => return,
+        Ok("off") => {}
         Ok("denied") => {
             eprintln!("studio-shell discovery: test hook reports Local Network access off");
-            state_changed(BROWSER_WAITING, Some((ERROR_DOMAIN_DNS, DNS_POLICY_DENIED)));
+            state_changed(
+                generation,
+                BROWSER_WAITING,
+                Some((ERROR_DOMAIN_DNS, DNS_POLICY_DENIED)),
+            );
         }
-        _ => browse(),
+        _ => browse(generation),
     }
-    std::thread::spawn(|| {
-        std::thread::sleep(SEARCH_WINDOW);
-        settle(None);
-    });
 }
 
-fn browse() {
+fn stop() {
+    let browser = {
+        let mut search = search();
+        if !search.active {
+            return;
+        }
+        search.active = false;
+        search.generation += 1;
+        search.servers.clear();
+        search.denied = false;
+        search.page = None;
+        std::mem::take(&mut search.browser)
+    };
+    if browser != 0 {
+        // SAFETY: the pointer is the browser that `browse` created and kept.
+        unsafe {
+            nw_browser_cancel(browser as NwObject);
+            nw_release(browser as NwObject);
+        }
+    }
+    eprintln!("studio-shell discovery: stopped");
+}
+
+fn browse(generation: u64) {
     let service_type = CString::new(bonjour::SERVICE_TYPE).expect("service type");
     let domain = CString::new("local.").expect("domain");
-    let results = RcBlock::new(|old: NwObject, new: NwObject, batch_complete: CBool| {
+    let results = RcBlock::new(move |old: NwObject, new: NwObject, batch_complete: CBool| {
         // SAFETY: the browser passes valid results (or null) for this call.
-        unsafe { result_changed(old, new) };
+        unsafe { result_changed(generation, old, new) };
         if batch_complete != 0 {
-            changed();
+            push();
         }
     });
-    let state = RcBlock::new(|state: u32, error: NwObject| {
+    let state = RcBlock::new(move |state: u32, error: NwObject| {
         let error = (!error.is_null()).then(|| unsafe {
             (
                 nw_error_get_error_domain(error),
                 nw_error_get_error_code(error),
             )
         });
-        state_changed(state, error);
+        state_changed(generation, state, error);
     });
     // SAFETY: Network.framework C API on the main queue. The browser copies
-    // the blocks and lives for the app lifetime (it is never released).
-    unsafe {
+    // the blocks. `stop` cancels and releases it.
+    let browser = unsafe {
         let descriptor =
             nw_browse_descriptor_create_bonjour_service(service_type.as_ptr(), domain.as_ptr());
         nw_browse_descriptor_set_include_txt_record(descriptor, true);
@@ -161,7 +183,9 @@ fn browse() {
         nw_browser_set_browse_results_changed_handler(browser, &results);
         nw_browser_set_state_changed_handler(browser, &state);
         nw_browser_start(browser);
-    }
+        browser
+    };
+    search().browser = browser as usize;
     eprintln!("studio-shell discovery: browsing {}", bonjour::SERVICE_TYPE);
 }
 
@@ -211,7 +235,7 @@ unsafe fn read_result(result: NwObject) -> Option<(String, BTreeMap<String, Stri
 
 /// # Safety
 /// `old` and `new` are valid browse results or null.
-unsafe fn result_changed(old: NwObject, new: NwObject) {
+unsafe fn result_changed(generation: u64, old: NwObject, new: NwObject) {
     let removed = (!old.is_null())
         .then(|| unsafe { read_result(old) })
         .flatten();
@@ -219,6 +243,9 @@ unsafe fn result_changed(old: NwObject, new: NwObject) {
         .then(|| unsafe { read_result(new) })
         .flatten();
     let mut search = search();
+    if search.generation != generation {
+        return;
+    }
     if let Some((name, _)) = &removed {
         search.servers.remove(name);
     }
@@ -238,93 +265,56 @@ unsafe fn result_changed(old: NwObject, new: NwObject) {
     }
 }
 
-fn state_changed(state: u32, error: Option<(u32, i32)>) {
+fn state_changed(generation: u64, state: u32, error: Option<(u32, i32)>) {
     let denied = error.is_some_and(|(domain, code)| permission_denied(domain, code));
     eprintln!("studio-shell discovery: state {state} error {error:?}");
-    let failed = {
+    {
         let mut search = search();
+        if search.generation != generation {
+            return;
+        }
         match state {
             BROWSER_READY => search.denied = false,
             BROWSER_WAITING | BROWSER_FAILED => search.denied = denied,
             _ => {}
         }
-        search.denied || state == BROWSER_FAILED
-    };
-    // Nothing comes while access is off; do not wait for the search window.
-    if failed {
-        settle(None);
-    } else {
-        push();
     }
-}
-
-/// A result batch is complete: show it, then settle after a quiet time.
-fn changed() {
-    let generation = {
-        let mut search = search();
-        search.generation += 1;
-        search.generation
-    };
     push();
-    std::thread::spawn(move || {
-        std::thread::sleep(SETTLE);
-        settle(Some(generation));
-    });
-}
-
-/// Mark the search settled and apply the first-launch rule. `generation`
-/// is the result batch of a settle timer; a later batch cancels that timer.
-fn settle(generation: Option<u64>) {
-    let (window, target) = {
-        let mut search = search();
-        if generation.is_some_and(|generation| generation != search.generation) {
-            return;
-        }
-        search.settled = true;
-        let servers: Vec<_> = search.servers.values().cloned().collect();
-        let target = if search.auto_open {
-            choose(None, None, &servers, true, BUILD_DEFAULT)
-        } else {
-            None
-        };
-        // After a choice is shown, the person picks; a later change does not
-        // open a server without them.
-        if target.is_some() || servers.len() > 1 {
-            search.auto_open = false;
-        }
-        (search.window.clone(), target)
-    };
-    push();
-    if let (Some(window), Some(url)) = (window, target) {
-        eprintln!("studio-shell discovery: opening {url}");
-        let _ = window.navigate(url);
-        crate::ios_shell::watch_first_load(&window);
-    }
 }
 
 /// The state that the start page shows, as JSON.
-pub fn page_state() -> String {
-    let (denied, settled) = {
+fn page_state(saved: Option<&str>) -> String {
+    let (servers, denied) = {
         let search = search();
-        (search.denied, search.settled)
+        (
+            search.servers.values().cloned().collect::<Vec<_>>(),
+            search.denied,
+        )
     };
-    let servers: Vec<_> = servers()
+    let rows: Vec<_> = entries(&servers, saved)
         .into_iter()
-        .map(|server| serde_json::json!({ "name": server.name, "url": server.url.as_str() }))
+        .map(|entry| {
+            serde_json::json!({
+                "name": entry.name,
+                "url": entry.url.as_str(),
+                "otherNetwork": entry.other_network,
+            })
+        })
         .collect();
-    serde_json::json!({ "servers": servers, "denied": denied, "settled": settled }).to_string()
+    serde_json::json!({ "servers": rows, "denied": denied }).to_string()
 }
 
 /// Send the state to the start page. Other pages do not define the receiver,
 /// and the script checks the scheme.
-pub fn push() {
-    let Some(window) = search().window.clone() else {
+fn push() {
+    let Some(page) = search().page.clone() else {
         return;
     };
+    let saved = crate::ios_shell::saved_server(page.app_handle());
     let script = format!(
         "location.protocol==='{}:'&&window.__studioShellDiscovery&&window.__studioShellDiscovery({})",
-        crate::ios_shell::START_SCHEME,
-        page_state()
+        crate::ios_server::START_SCHEME,
+        page_state(saved.as_deref().map(str::trim))
     );
-    let _ = window.eval(script);
+    let _ = page.eval(script);
 }

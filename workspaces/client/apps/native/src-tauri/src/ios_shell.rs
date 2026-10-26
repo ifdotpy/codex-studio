@@ -4,7 +4,8 @@
 //! `ios_viewport.js`; see README.md "iOS shell".
 
 use crate::ios_insets::{Geometry, Insets, reported};
-use crate::ios_server::{BUILD_DEFAULT, choose, saved_value, valid_server};
+pub use crate::ios_server::START_SCHEME;
+use crate::ios_server::{BUILD_DEFAULT, Connect, Source, choose, connect, save_after_load};
 use objc2::rc::{Retained, Weak};
 use objc2::runtime::{AnyObject, NSObject, NSObjectProtocol, ProtocolObject};
 use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send};
@@ -32,8 +33,6 @@ use tauri::{Manager, WebviewWindow};
 const MESSAGE_HANDLER: &str = "studioNativeViewport";
 /// Saved server URL in the app configuration directory.
 const SERVER_FILE: &str = "server-url.txt";
-/// Custom scheme of the bundled first-launch page.
-pub const START_SCHEME: &str = "studio-shell";
 
 /// Keyboard state in CSS px and ms. `curve` is the UIViewAnimationCurve value.
 #[derive(Clone, Copy)]
@@ -72,22 +71,23 @@ static SERVER_LOADED: AtomicBool = AtomicBool::new(false);
 /// The main window, for the start page gesture.
 static MAIN_WINDOW: OnceLock<WebviewWindow> = OnceLock::new();
 
-/// The page to load at launch: the launch value or the saved address. With
-/// neither, the start page opens and `ios_discovery` applies the rest of the
-/// order (one found server, then the build default); see ios_server::choose.
+/// The address that the launch value or the build default opened. Only its
+/// load saves it; see ios_server::save_after_load.
+static OPENED: OnceLock<tauri::Url> = OnceLock::new();
+
+/// The page to load at launch; see ios_server::choose for the order. With
+/// none, the start page opens.
 pub fn server_url(app: &tauri::App) -> Option<tauri::Url> {
     let launch = std::env::var("STUDIO_SERVER_URL").ok();
     let saved = saved_server(app.handle());
-    choose(
-        launch.as_deref(),
-        saved.as_deref(),
-        &[],
-        false,
-        BUILD_DEFAULT,
-    )
+    let (url, source) = choose(launch.as_deref(), saved.as_deref(), &[], BUILD_DEFAULT)?;
+    if source != Source::Saved {
+        let _ = OPENED.set(url.clone());
+    }
+    Some(url)
 }
 
-fn saved_server(app: &tauri::AppHandle) -> Option<String> {
+pub(crate) fn saved_server(app: &tauri::AppHandle) -> Option<String> {
     std::fs::read_to_string(app.path().app_config_dir().ok()?.join(SERVER_FILE)).ok()
 }
 
@@ -152,12 +152,21 @@ pub fn start_page(
     if field("token").as_deref() != Some(token) {
         return html(403, "Open this page from the app start screen.".into());
     }
-    crate::ios_discovery::stop_auto_open();
-    let Some(url) = field("url").and_then(|v| valid_server(v.trim())) else {
-        return html(
-            400,
-            "Use an https:// server address. <a href=\"/\">Back</a>".into(),
-        );
+    let saved = saved_server(ctx.app_handle());
+    let url = match connect(
+        &field("url").unwrap_or_default(),
+        field("found").as_deref() == Some("1"),
+        field("confirm").as_deref() == Some("1"),
+        saved.as_deref().map(str::trim),
+    ) {
+        Connect::Open(url) => url,
+        Connect::Confirm(url) => return html(200, confirm_page(&url, token)),
+        Connect::Invalid => {
+            return html(
+                400,
+                "Use an https:// server address. <a href=\"/\">Back</a>".into(),
+            );
+        }
     };
     let saved = ctx
         .app_handle()
@@ -178,6 +187,28 @@ pub fn start_page(
     html(
         200,
         format!("<!doctype html><script>location.replace({target})</script>"),
+    )
+}
+
+/// The confirm step for a found server on another tailnet than the saved
+/// address. It shows the full host.
+fn confirm_page(url: &tauri::Url, token: &str) -> String {
+    let mut open: tauri::Url = format!("{START_SCHEME}://localhost/connect")
+        .parse()
+        .expect("connect URL");
+    open.query_pairs_mut()
+        .append_pair("url", url.as_str())
+        .append_pair("token", token)
+        .append_pair("found", "1")
+        .append_pair("confirm", "1");
+    let host = escape(url.host_str().unwrap_or_default());
+    format!(
+        "<!doctype html><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\
+         <style>body{{font:17px -apple-system,system-ui,sans-serif;margin:24px;display:grid;gap:16px}}\
+         a{{padding:10px 12px;border-radius:10px;border:1px solid currentColor;text-align:center}}</style>\
+         <h1>Other network</h1><p><strong>{host}</strong> is not on the tailnet of your saved server. \
+         Open it only if you know this server.</p><a href=\"{}\">Open {host}</a><a href=\"/\">Back</a>",
+        escape(open.as_str())
     )
 }
 
@@ -497,15 +528,16 @@ pub fn configure(window: &WebviewWindow) {
 
 /// Resend the geometry after each page load; the receiver is new per document.
 pub fn page_loaded(window: &tauri::Webview, url: &tauri::Url) {
-    // The start page receiver is new per document.
-    if url.scheme() == START_SCHEME {
-        crate::ios_discovery::push();
-    }
-    // Remember the server after each successful load, so the home screen
-    // icon opens it next time.
-    if let Some(value) = saved_value(url) {
+    // The search runs only while the start page is shown; its receiver is
+    // new per document.
+    crate::ios_discovery::page_loaded(window, url);
+    if crate::ios_server::saved_value(url).is_some() {
         SERVER_LOADED.store(true, Ordering::SeqCst);
-        crate::ios_discovery::stop_auto_open();
+    }
+    // Remember the server that the launch value or the build default opened,
+    // so the home screen icon opens it next time. Other origins do not
+    // change the saved address.
+    if let Some(value) = save_after_load(url, OPENED.get()) {
         let app = window.app_handle();
         if saved_server(app).as_deref().map(str::trim) != Some(value.as_str()) {
             if let Ok(dir) = app.path().app_config_dir() {
@@ -562,7 +594,6 @@ define_class!(
             let state: isize = unsafe { msg_send![recognizer, state] };
             // UIGestureRecognizerStateBegan
             if state == 1 {
-                crate::ios_discovery::stop_auto_open();
                 if let Some(window) = MAIN_WINDOW.get() {
                     let _ = window.navigate(start_url(false));
                 }

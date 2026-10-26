@@ -45,6 +45,11 @@
         color: inherit;
         text-decoration: none;
       }
+      li a em {
+        font-size: 15px;
+        font-style: normal;
+        font-weight: 600;
+      }
       li a span {
         opacity: 0.7;
         font-size: 15px;
@@ -93,18 +98,28 @@
       </form>
     </main>
     <script>
-      // ios_discovery::push sends { servers: [{ name, url }], denied, settled }.
+      // ios_discovery::push sends { servers: [{ name, url, otherNetwork }], denied }.
+      // A row opens only after a tap; another tailnet asks for a confirm tap.
       window.__studioShellDiscovery = (state) => {
         const items = state.servers.map((server) => {
           const link = document.createElement("a");
           link.href =
             "/connect?" +
-            new URLSearchParams({ url: server.url, token: "{{token}}" });
+            new URLSearchParams({
+              url: server.url,
+              token: "{{token}}",
+              found: "1",
+            });
           const name = document.createElement("strong");
           name.textContent = server.name;
           const url = document.createElement("span");
           url.textContent = server.url;
           link.append(name, url);
+          if (server.otherNetwork) {
+            const mark = document.createElement("em");
+            mark.textContent = "Other network";
+            link.append(mark);
+          }
           const item = document.createElement("li");
           item.append(link);
           return item;
@@ -115,9 +130,7 @@
           ? "Local Network access is off, so the app cannot find Studio on this network. To turn it on, open Settings > Privacy & Security > Local Network. You can also type the address."
           : items.length
             ? ""
-            : state.settled
-              ? "No Studio server found on this network."
-              : "Looking for Studio on this network.";
+            : "Looking for Studio on this network.";
       };
     </script>
   </body>

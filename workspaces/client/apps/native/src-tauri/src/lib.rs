@@ -669,7 +669,6 @@ pub fn run() {
             #[cfg(target_os = "ios")]
             {
                 ios_shell::configure(&window);
-                ios_discovery::start(&window, server.is_none());
                 if server.is_some() {
                     ios_shell::watch_first_load(&window);
                 }
