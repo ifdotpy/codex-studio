@@ -113,7 +113,15 @@ test("claude login ui", async ({ page: runnerPage }) => {
           logins: [],
           supportsDelete: false,
           supportsDisconnect: false,
-        } satisfies components["schemas"]["AccountsResponse"],
+          // Preserve the legacy signed_out spelling used by this fixture.
+        } satisfies Omit<
+          components["schemas"]["AccountsResponse"],
+          "accounts"
+        > & {
+          accounts: (Omit<components["schemas"]["Account"], "status"> & {
+            status: "signed_out";
+          })[];
+        },
       });
     });
     const open = async () => {
