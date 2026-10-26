@@ -7,7 +7,7 @@ import {
   expect,
   createFixtureViteServer,
   FIXTURE_OPTIMIZE_DEPS,
-} from "../playwright.mjs";
+} from "../playwright.ts";
 
 test("upload owners retain distinct bytes and reject a late cancelled attachment", async ({
   page,

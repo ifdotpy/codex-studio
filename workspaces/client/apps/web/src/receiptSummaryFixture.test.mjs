@@ -1,6 +1,6 @@
 import { afterEach, expect, it, vi } from "vitest";
-import { readEntities } from "../tests/fixtures/rust-ui-fixture.mjs";
-import { readResourceBaselines } from "../tests/fixtures/resource-baselines.mjs";
+import { readEntities } from "../tests/fixtures/rust-ui-fixture.ts";
+import { readResourceBaselines } from "../tests/fixtures/resource-baselines.ts";
 
 afterEach(() => vi.unstubAllGlobals());
 it("reads scoped fixture baselines from fragmented SSE and closes the stream", async () => {

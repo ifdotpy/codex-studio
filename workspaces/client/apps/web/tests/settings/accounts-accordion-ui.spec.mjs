@@ -1,5 +1,5 @@
-import { test, expect } from "../playwright.mjs";
-import { fixture } from "../servers/multi-server-fixture.mjs";
+import { test, expect } from "../playwright.ts";
+import { fixture } from "../servers/multi-server-fixture.ts";
 import { accountLimitFixtures } from "../../src/components/AccountLimits.fixtures.ts";
 
 async function keyboardCycle(page, region) {

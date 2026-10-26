@@ -1,9 +1,52 @@
+import type { IncomingMessage, ServerResponse } from "node:http";
+import type { components, AgentEntityDto } from "../../src/generated/api.ts";
+import type { PostBody, ApiPostPath } from "../../src/apiTypes.ts";
+import type { ResourceRef, TestStateView } from "../playwright.ts";
+import type { PreferenceFields } from "../../src/sync/uiPreferenceMerge.ts";
+
+type Account = components["schemas"]["Account"];
+type FixtureAccount = Pick<Account, "id" | "label" | "provider" | "status"> &
+  Partial<Account>;
+type Invitation = components["schemas"]["AccessInvitation"];
+type Peer = Pick<
+  components["schemas"]["DiscoveredServer"],
+  | "id"
+  | "clientId"
+  | "serverId"
+  | "kind"
+  | "label"
+  | "origin"
+  | "publicKey"
+  | "tailscaleUser"
+  | "status"
+  | "reachability"
+  | "created"
+  | "lastSeen"
+  | "autoPair"
+> & { invitation: Invitation };
+type SyncFixture = Parameters<typeof handleEntitySyncFixtureRequest>[2];
+export type MultiServerFixtureOptions = {
+  workspaceId?: string;
+  accounts?: FixtureAccount[];
+  dist?: string;
+  entityFrames?: boolean;
+  resourceBaseline?: boolean;
+  progress?: SyncFixture["progress"];
+  handle?: (context: {
+    request: IncomingMessage;
+    url: URL;
+    body: Record<string, unknown>;
+    json: (value: unknown, status?: number) => void;
+    snapshot: TestStateView;
+  }) => boolean | void;
+};
+
 import assert from "node:assert/strict";
 import {
   handleEntitySyncFixtureRequest,
   API_SCHEMA_HASH_HEADER,
   readApiSchemaHash,
-} from "../playwright.mjs";
+} from "../playwright.ts";
 import { createServer } from "node:http";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
@@ -14,13 +57,16 @@ import {
   prunePreferenceFields,
 } from "../../src/sync/uiPreferenceMerge.ts";
 const root = fileURLToPath(new URL("../../../../../../", import.meta.url));
-export function fixtureWorkspaceId(label) {
+export function fixtureWorkspaceId(label: string) {
   return crypto.createHash("sha256").update(label).digest("hex").slice(0, 32);
 }
 export async function fixture(
-  label,
+  label: string,
   signed = false,
-  accountRowsOrOptions = null,
+  accountRowsOrOptions:
+    | FixtureAccount[]
+    | MultiServerFixtureOptions
+    | null = null,
 ) {
   const options = Array.isArray(accountRowsOrOptions)
     ? {}
@@ -45,18 +91,28 @@ export async function fixture(
     publicKey,
     tailscaleUser: "owner",
     expires: Math.floor(Date.now() / 1000) + 900,
-  };
-  const clients = new Map();
-  const accessClients = [
-    { clientId: "old-ui", label: "Old UI", status: "paired" },
-  ];
-  const writes = [];
-  const accountWrites = [];
-  const accountLogins = new Map();
+  } satisfies Invitation;
+  const clients = new Map<string, string>();
+  const accessClients: Pick<
+    components["schemas"]["AccessClient"],
+    "clientId" | "label" | "status"
+  >[] = [{ clientId: "old-ui", label: "Old UI", status: "paired" }];
+  const writes: Record<string, unknown>[] = [];
+  const accountWrites: Record<string, unknown>[] = [];
+  const accountLogins = new Map<
+    string,
+    components["schemas"]["CodexLoginReceipt"]
+  >();
   // Claude login receipts have their own server store and are not Codex logins.
-  const claudeLogins = new Map();
-  const claudeProgress = new Map();
-  const savedAccounts = accountRows || [
+  const claudeLogins = new Map<
+    string,
+    components["schemas"]["ClaudeLoginResponse"]
+  >();
+  const claudeProgress = new Map<
+    string,
+    components["schemas"]["AuthProgressEvent"]["value"]
+  >();
+  const savedAccounts: FixtureAccount[] = accountRows || [
     {
       id: "default",
       label: "Fixture",
@@ -64,18 +120,21 @@ export async function fixture(
       status: "ready",
     },
   ];
-  const accessRequests = [];
-  const aliases = { local: "LOC", [serverId]: "LOC" };
-  let discoveredPeers = [];
+  const accessRequests: Record<string, unknown>[] = [];
+  const aliases: Record<string, string> = { local: "LOC", [serverId]: "LOC" };
+  let discoveredPeers: Peer[] = [];
   let autoPair = true;
   let staleSettingsReceipts = false;
-  const pairs = [];
-  const streams = new Set();
-  const subscriptions = new Map();
-  const nonces = new Set();
-  const notify = [];
-  const preferences = { user: {}, server: {} };
-  const agent = {
+  const pairs: string[] = [];
+  const streams = new Set<ServerResponse>();
+  const subscriptions = new Map<ServerResponse, ResourceRef[]>();
+  const nonces = new Set<string | undefined>();
+  const notify: Parameters<NonNullable<SyncFixture["onStreamReady"]>>[0][] = [];
+  const preferences: Record<"user" | "server", PreferenceFields> = {
+    user: {},
+    server: {},
+  };
+  const agent: AgentEntityDto = {
     id: "overlap",
     name: `${label} chat`,
     isLead: true,
@@ -91,7 +150,7 @@ export async function fixture(
     archived: false,
     deletedAt: null,
   };
-  const snapshot = {
+  const snapshot: TestStateView = {
     token: "local-only",
     stateDir: "/same/state",
     chats: [],
@@ -123,7 +182,6 @@ export async function fixture(
         accounts: savedAccounts.map((account) => ({
           home: "/fixture",
           source: "fixture",
-          label: account.id,
           ...account,
         })),
         archivedAccounts: [],
@@ -149,13 +207,13 @@ export async function fixture(
       response.end();
       return;
     }
-    if (offline && request.url.startsWith("/api/")) {
+    if (offline && request.url?.startsWith("/api/")) {
       response.writeHead(503);
       response.end("{}");
       return;
     }
-    const url = new URL(request.url, "http://fixture.invalid");
-    const json = (value, status = 200) => {
+    const url = new URL(request.url ?? "/", "http://fixture.invalid");
+    const json = (value: unknown, status = 200) => {
       response.writeHead(status, {
         "Content-Type": "application/json",
         [API_SCHEMA_HASH_HEADER]: readApiSchemaHash(),
@@ -164,12 +222,24 @@ export async function fixture(
     };
     let bytes = Buffer.alloc(0);
     for await (const chunk of request) bytes = Buffer.concat([bytes, chunk]);
-    const body = bytes.length ? JSON.parse(bytes.toString()) : {};
+    // The renderer sends generated Studio request bodies; keep decoding in one boundary.
+    const body: Record<string, unknown> = bytes.length
+      ? JSON.parse(bytes.toString())
+      : {};
+    const bodyFor = <P extends ApiPostPath>(_path: P): PostBody<P> =>
+      JSON.parse(bytes.length ? bytes.toString() : "{}");
     if (signed && url.pathname.startsWith("/api/")) {
-      const h = request.headers;
+      const h = Object.fromEntries(
+        Object.entries(request.headers).map(([key, value]) => {
+          if (Array.isArray(value))
+            throw new Error("Repeated fixture signature header: " + key);
+          return [key, value];
+        }),
+      );
       const ownKey = url.pathname.endsWith("/pair")
         ? body.publicKey
-        : clients.get(h["x-studio-client"]);
+        : clients.get(h["x-studio-client"] ?? "");
+      assert.ok(ownKey === undefined || typeof ownKey === "string");
       const canonical = [
         "studio-multi-server-v1",
         request.method,
@@ -227,6 +297,7 @@ export async function fixture(
       return;
     }
     if (url.pathname === "/api/multi-server/v1/pair") {
+      const body = bodyFor("/api/multi-server/v1/pair");
       pairs.push(bytes.toString());
       clients.set(body.clientId, body.publicKey);
       json({ ...invitation, clientId: body.clientId, paired: true });
@@ -248,9 +319,10 @@ export async function fixture(
       return;
     }
     if (url.pathname === "/api/sync/preferences" && request.method === "POST") {
+      const body = bodyFor("/api/sync/preferences");
       assert.ok(body.scope === "user" || body.scope === "server");
       preferences[body.scope] = prunePreferenceFields(
-        mergePreferenceFields(preferences[body.scope], body.fields),
+        mergePreferenceFields(preferences[body.scope], body.fields ?? {}),
       );
       json({ fields: preferences[body.scope] });
       return;
@@ -259,19 +331,16 @@ export async function fixture(
       handleEntitySyncFixtureRequest(request, response, {
         snapshot,
         workspaceId,
-        subscriptionUpdate: body,
+        subscriptionUpdate: bodyFor("/api/sync/subscriptions"),
         progress: (resource) =>
           resource.kind === "auth-progress"
             ? {
                 resource,
                 value: claudeProgress.has(resource.requestId)
-                  ? claudeProgress.get(resource.requestId)
+                  ? (claudeProgress.get(resource.requestId) ?? null)
                   : claudeLogins.get(resource.requestId) || null,
               }
             : options.progress?.(resource),
-        initialResources: options.resourceBaseline
-          ? JSON.parse(url.searchParams.get("resources") || "[]")
-          : undefined,
         versionedResources: !!options.entityFrames,
         onStreamReady: (send, resources) => {
           subscriptions.set(response, resources);
@@ -307,9 +376,10 @@ export async function fixture(
             archived: !!chat.archived,
             status: chat.status || "",
             unread: chat.id === agent.id ? unread : false,
-            serverId: chat.serverId || null,
-            projectId: chat.projectId || null,
-            projectServerId: chat.projectServerId || null,
+            serverId: ("serverId" in chat ? chat.serverId : null) || null,
+            projectId: ("projectId" in chat ? chat.projectId : null) || null,
+            projectServerId:
+              ("projectServerId" in chat ? chat.projectServerId : null) || null,
             provider: chat.provider || null,
             updated: chat.updated || null,
             created: chat.created || null,
@@ -348,6 +418,7 @@ export async function fixture(
       return;
     }
     if (url.pathname === "/api/multi-server") {
+      const body = bodyFor("/api/multi-server");
       if (request.method === "POST") accessRequests.push(body);
       if (
         ["ui_invite", "discover", "settings", "alias", "name"].includes(
@@ -400,7 +471,11 @@ export async function fixture(
           (row) => row.clientId === body.clientId,
         );
         if (peer) peer.status = "revoked";
-        else accessClients[0].status = "revoked";
+        else {
+          const first = accessClients[0];
+          assert.ok(first);
+          first.status = "revoked";
+        }
       }
       if (body.action === "unrevoke") {
         const peer = discoveredPeers.find(
@@ -452,8 +527,9 @@ export async function fixture(
       return;
     }
     if (url.pathname === "/api/accounts/claude/add") {
+      const body = bodyFor("/api/accounts/claude/add");
       const id = body.login_id;
-      const receipt = {
+      const receipt: components["schemas"]["ClaudeLoginResponse"] = {
         requestId: id,
         accountKey: id,
         status: "pending",
@@ -464,7 +540,9 @@ export async function fixture(
       return;
     }
     if (url.pathname === "/api/accounts/claude/login") {
-      const receipt = claudeLogins.get(url.searchParams.get("request_id"));
+      const receipt = claudeLogins.get(
+        url.searchParams.get("request_id") ?? "",
+      );
       json(
         receipt || { error: "Unknown Claude sign-in request" },
         receipt ? 200 : 404,
@@ -472,8 +550,10 @@ export async function fixture(
       return;
     }
     if (url.pathname === "/api/accounts/claude/login/code") {
+      const body = bodyFor("/api/accounts/claude/login/code");
       const previous = claudeLogins.get(body.login_id);
-      const receipt = {
+      assert.ok(previous);
+      const receipt: components["schemas"]["ClaudeLoginResponse"] = {
         ...previous,
         status: "ready",
         email: previous?.email || "new@example.test",
@@ -484,8 +564,8 @@ export async function fixture(
         id: body.login_id,
         label: "New Claude",
         provider: "claude",
-        email: receipt.email,
-        plan: receipt.plan,
+        email: receipt.email ?? null,
+        plan: receipt.plan ?? null,
         status: "ready",
         isDefault: false,
       });
@@ -493,23 +573,29 @@ export async function fixture(
       return;
     }
     if (url.pathname === "/api/accounts/claude/login/cancel") {
+      const body = bodyFor("/api/accounts/claude/login/cancel");
       const previous = claudeLogins.get(body.login_id);
-      const receipt = { ...previous, status: "cancelled" };
+      assert.ok(previous);
+      const receipt = {
+        ...previous,
+        status: "cancelled",
+      } satisfies components["schemas"]["ClaudeLoginResponse"];
       claudeLogins.set(body.login_id, receipt);
       json(receipt);
       return;
     }
     if (url.pathname === "/api/accounts/login") {
+      const body = bodyFor("/api/accounts/login");
       const id = body.login_id;
       const account = savedAccounts.find((row) => row.id === body.account_key);
-      const receipt = account
+      const receipt: components["schemas"]["CodexLoginReceipt"] = account
         ? {
             requestId: id,
             accountKey: account.id,
             resolvedAccountKey: account.id,
             reauthAccountKey: account.id,
             status: "ready",
-            email: account.email,
+            email: account.email ?? null,
           }
         : {
             requestId: id,
@@ -525,13 +611,19 @@ export async function fixture(
       return;
     }
     if (url.pathname === "/api/accounts/login/cancel") {
+      const body = bodyFor("/api/accounts/login/cancel");
       const previous = accountLogins.get(body.login_id);
-      const receipt = { ...previous, status: "cancelled" };
+      assert.ok(previous);
+      const receipt = {
+        ...previous,
+        status: "cancelled",
+      } satisfies components["schemas"]["CodexLoginReceipt"];
       accountLogins.set(body.login_id, receipt);
       json(receipt);
       return;
     }
     if (url.pathname === "/api/accounts/reconnect") {
+      const body = bodyFor("/api/accounts/reconnect");
       const account = savedAccounts.find((row) => row.id === body.account_key);
       if (account) {
         account.disconnected = false;
@@ -624,9 +716,12 @@ export async function fixture(
   // keep-alive sockets without an idle limit; Node's default expiry (5 s plus
   // a 1 s buffer) can close one just as a reload reuses it (ECONNRESET).
   server.keepAliveTimeout = 0;
-  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const address = server.address();
+  if (!address || typeof address === "string")
+    throw new Error("Missing fixture TCP address");
   return {
-    origin: `http://127.0.0.1:${server.address().port}`,
+    origin: `http://127.0.0.1:${address.port}`,
     invitation,
     snapshot,
     subscriptions,
@@ -635,26 +730,33 @@ export async function fixture(
     accounts() {
       return savedAccounts;
     },
-    setClaudeProgress(requestId, value) {
+    setClaudeProgress(
+      requestId: string,
+      value: components["schemas"]["AuthProgressEvent"]["value"],
+    ) {
       claudeProgress.set(requestId, value);
       notify.forEach((send) => send([{ kind: "auth-progress", requestId }]));
     },
     pairs,
-    publishRename(agentId, requestId) {
+    publishRename(agentId: string, requestId: string) {
       notify.forEach((send) =>
         send([{ kind: "rename-progress", agentId, requestId }]),
       );
     },
     accessRequests,
     aliases,
-    setChats(rows) {
+    setChats(rows: AgentEntityDto[]) {
       snapshot.threads = rows;
       snapshot.runtime.agents = rows;
     },
-    staleSettingsReceipts(value) {
+    staleSettingsReceipts(value: boolean) {
       staleSettingsReceipts = value;
     },
-    discoverPeer(peer, status = "paired", reachability) {
+    discoverPeer(
+      peer: { invitation: Invitation },
+      status: Peer["status"] = "paired",
+      reachability?: Peer["reachability"],
+    ) {
       const value = peer.invitation;
       discoveredPeers = [
         ...discoveredPeers.filter((row) => row.serverId !== value.serverId),
@@ -668,7 +770,7 @@ export async function fixture(
           publicKey: value.publicKey,
           tailscaleUser: value.tailscaleUser,
           status,
-          reachability,
+          ...(reachability === undefined ? {} : { reachability }),
           created: 1,
           lastSeen: Math.floor(Date.now() / 1000),
           autoPair: true,
@@ -686,7 +788,7 @@ export async function fixture(
       });
       notify.forEach((send) => send([{ kind: "state" }]));
     },
-    publishState(resources = [{ kind: "state" }]) {
+    publishState(resources: ResourceRef[] = [{ kind: "state" }]) {
       notify.forEach((send) => send(resources));
     },
     mismatchSchema() {
@@ -697,14 +799,14 @@ export async function fixture(
             '","mismatch":true}\n\n',
         );
     },
-    offline(value) {
+    offline(value: boolean) {
       offline = value;
       if (value) for (const stream of streams) stream.destroy();
     },
     async close() {
       for (const stream of streams) stream.destroy();
-      await new Promise((resolve) => {
-        server.close(resolve);
+      await new Promise<void>((resolve) => {
+        server.close(() => resolve());
         server.closeAllConnections();
       });
     },

@@ -7,7 +7,7 @@ import {
   waitForFixturePort,
   test,
   rustUiFixture,
-} from "../playwright.mjs";
+} from "../playwright.ts";
 // Production renderer, isolated fixture, and controlled delivery acknowledgements.
 import assert from "node:assert/strict";
 import { mkdtemp } from "node:fs/promises";

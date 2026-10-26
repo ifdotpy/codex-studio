@@ -5,7 +5,7 @@ import { createRequire } from "node:module";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve, join } from "node:path";
-import { test, expect } from "../playwright.mjs";
+import { test, expect } from "../playwright.ts";
 
 test("disconnect recovery ui", async ({ page: runnerPage }) => {
   const root = resolve(import.meta.dirname, "../../");

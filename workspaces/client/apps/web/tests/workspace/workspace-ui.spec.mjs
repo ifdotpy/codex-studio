@@ -4,7 +4,7 @@ import {
   spawnFixture as spawn,
   test,
   rustUiFixture,
-} from "../playwright.mjs";
+} from "../playwright.ts";
 // Exercise workspace actions through the real runtime and HTTP server.
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";

@@ -8,12 +8,12 @@ import {
   syncProtocolFixture,
   test,
   expect,
-} from "../playwright.mjs";
+} from "../playwright.ts";
 
 test("sync-read-retry-browser", async ({ page: fixturePage }) => {
   test.setTimeout(120_000);
   const { createFixtureViteServer: createServer } =
-    await import("../playwright.mjs");
+    await import("../playwright.ts");
   const workspaceId = "e".repeat(32);
   const attempts = new Map();
   const streams = new Set();

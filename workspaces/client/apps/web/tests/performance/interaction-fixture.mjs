@@ -3,8 +3,8 @@ import { writeFile, readFile, appendFile, mkdir } from "node:fs/promises";
 import {
   fixture,
   fixtureWorkspaceId,
-} from "../servers/multi-server-fixture.mjs";
-import { entityPullFixtureForRequest } from "../playwright.mjs";
+} from "../servers/multi-server-fixture.ts";
+import { entityPullFixtureForRequest } from "../playwright.ts";
 // Manual, bounded interaction benchmark. All writes stay in a disposable output directory.
 const dir = process.argv[2];
 if (!dir?.startsWith("/"))

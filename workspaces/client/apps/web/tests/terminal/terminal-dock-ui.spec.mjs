@@ -9,7 +9,7 @@ import {
   API_SCHEMA_HASH_HEADER,
   readApiSchemaHash,
   rustUiFixture,
-} from "../playwright.mjs";
+} from "../playwright.ts";
 import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
 import { createServer } from "node:http";

@@ -1,4 +1,4 @@
-import { test, expect } from "../playwright.mjs";
+import { test, expect } from "../playwright.ts";
 import { DEFAULT_SUBSCRIPTION_GRACE_MS } from "../../src/sync/subscriptions/contracts.ts";
 
 test("chat list uses summaries and detail interest follows the visible chat", async ({

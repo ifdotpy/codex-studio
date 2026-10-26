@@ -3,7 +3,7 @@ import {
   expect,
   rustUiFixture,
   spawnFixture as spawn,
-} from "../../tests/playwright.mjs";
+} from "../../tests/playwright.ts";
 import { computedContrast } from "./computedContrast.ts";
 import { mkdtemp, mkdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";

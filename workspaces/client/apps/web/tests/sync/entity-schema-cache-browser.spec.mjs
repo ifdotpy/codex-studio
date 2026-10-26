@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import { extname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createServer } from "node:http";
-import { readResourceBaselines } from "../fixtures/resource-baselines.mjs";
+import { readResourceBaselines } from "../fixtures/resource-baselines.ts";
 
 import {
   API_SCHEMA_HASH_HEADER,
@@ -18,7 +18,7 @@ import {
   rustUiFixture,
   test,
   expect,
-} from "../playwright.mjs";
+} from "../playwright.ts";
 
 const leadChat = (page) =>
   page.locator('[data-chat][title="Release lead"]').first();

@@ -4,7 +4,7 @@ import { createRequire } from "node:module";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { test, browserExecutablePath } from "../playwright.mjs";
+import { test, browserExecutablePath } from "../playwright.ts";
 
 test("Scroll restart", async () => {
   test.setTimeout(180_000);

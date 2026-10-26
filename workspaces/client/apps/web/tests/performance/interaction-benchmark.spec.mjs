@@ -1,4 +1,4 @@
-import { test, expect, spawnFixture } from "../playwright.mjs";
+import { test, expect, spawnFixture } from "../playwright.ts";
 import { mkdtemp, writeFile, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";

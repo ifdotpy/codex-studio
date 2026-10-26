@@ -1,14 +1,14 @@
 import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
 
-import { test } from "../playwright.mjs";
+import { test } from "../playwright.ts";
 
 test("legacy transcript rows refetch online and stay hidden offline", async ({
   browser,
 }) => {
   test.setTimeout(120_000);
   const { createFixtureViteServer: createServer } =
-    await import("../playwright.mjs");
+    await import("../playwright.ts");
   const server = await createServer({
     configFile: false,
     optimizeDeps: {

@@ -6,7 +6,7 @@ import {
   test,
   createFixtureViteServer,
   expect,
-} from "../playwright.mjs";
+} from "../playwright.ts";
 // Replicated state uses the current credential endpoint and reports failures.
 import { fileURLToPath } from "node:url";
 test("Session Poll Browser", async ({
