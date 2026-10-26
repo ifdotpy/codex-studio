@@ -1,3 +1,5 @@
+import type { JsonInputOf } from "../apiTypes.ts";
+import type { components } from "../generated/api.ts";
 import type { UsageAccount } from "./Usage";
 
 const now = Math.floor(Date.now() / 1000);
@@ -6,7 +8,10 @@ const limitWindow = (remaining: number, minutes: number, reset: number) => ({
   windowDurationMins: minutes,
   resetsAt: now + reset,
 });
-export const accountLimitFixtures = [
+export const accountLimitFixtures: (Omit<UsageAccount, "limits"> & {
+  provider: components["schemas"]["Account"]["provider"];
+  limits: JsonInputOf<components["schemas"]["AccountRateLimitsDto"]>;
+})[] = [
   {
     key: "codex-main",
     label: "Codex",
@@ -132,4 +137,4 @@ export const accountLimitFixtures = [
       },
     },
   },
-] satisfies UsageAccount[];
+];
