@@ -187,9 +187,11 @@ function Fixture() {
   return (
     <MantineProvider
       theme={theme}
-      {...(scheme === "light" || scheme === "dark"
-        ? { forceColorScheme: scheme }
-        : {})}
+      forceColorScheme={
+        (scheme || undefined) as React.ComponentProps<
+          typeof MantineProvider
+        >["forceColorScheme"]
+      }
     >
       <div
         style={

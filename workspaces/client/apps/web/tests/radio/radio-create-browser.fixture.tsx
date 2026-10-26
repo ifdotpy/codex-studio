@@ -1,6 +1,8 @@
 declare global {
   interface Window {
+    // fixture stores scroll handlers in tests/performance/scroll-restart.fixture.tsx.
     radioCreateSnapshot: Snapshot;
+    // opened is SessionActivityItem[] in tests/chat/session-activity-browser.fixture.tsx.
     radioOpened: string | null;
     reopen: () => void;
     failRefresh: boolean;
@@ -22,12 +24,23 @@ import "../../src/style.css";
 import "../../src/appearance.css";
 import "../../src/workspace-layout.css";
 import { theme } from "../../src/theme.ts";
-const accounts: React.ComponentProps<typeof SharedChatCreate>["accounts"] = {
-  archivedAccounts: [],
-  defaultAccountGroups: [],
-  logins: [],
-  supportsDelete: false,
-  supportsDisconnect: false,
+type SharedAccounts = NonNullable<
+  React.ComponentProps<typeof SharedChatCreate>["accounts"]
+>;
+type RadioAccount = Pick<
+  SharedAccounts["accounts"][number],
+  "id" | "label" | "email" | "provider" | "status"
+>;
+// Base accounts omit archivedAccounts, defaultAccountGroups, logins, supportsDelete,
+// supportsDisconnect, and each account's home/source.
+function partialRadioAccounts(
+  value: Pick<SharedAccounts, "defaultAccountKey"> & {
+    accounts: RadioAccount[];
+  },
+): SharedAccounts {
+  return value as SharedAccounts;
+}
+const accounts = partialRadioAccounts({
   defaultAccountKey: "codex",
   accounts: [
     {
@@ -36,8 +49,6 @@ const accounts: React.ComponentProps<typeof SharedChatCreate>["accounts"] = {
       email: "personal@example.com",
       provider: "codex",
       status: "ready",
-      home: "/fixture",
-      source: "fixture",
     },
     {
       id: "claude",
@@ -45,28 +56,16 @@ const accounts: React.ComponentProps<typeof SharedChatCreate>["accounts"] = {
       email: "work@example.com",
       provider: "claude",
       status: "ready",
-      home: "/fixture",
-      source: "fixture",
     },
-    ...Array.from(
-      { length: 5 },
-      (
-        _,
-        i,
-      ): NonNullable<
-        React.ComponentProps<typeof SharedChatCreate>["accounts"]
-      >["accounts"][number] => ({
-        id: "extra" + i,
-        label: "Account " + (i + 3),
-        email: "account" + i + "@example.com",
-        provider: i < 3 ? "codex" : "claude",
-        status: "ready",
-        home: "/fixture",
-        source: "fixture",
-      }),
-    ),
+    ...Array.from({ length: 5 }, (_, i): RadioAccount => ({
+      id: "extra" + i,
+      label: "Account " + (i + 3),
+      email: "account" + i + "@example.com",
+      provider: i < 3 ? "codex" : "claude",
+      status: "ready",
+    })),
   ],
-};
+});
 const initial: Snapshot = {
   ...snapshotFixture(),
   stateDir: "create-test",

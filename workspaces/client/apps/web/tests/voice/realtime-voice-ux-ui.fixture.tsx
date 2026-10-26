@@ -41,8 +41,10 @@ type VoiceHarness = {
 declare global {
   interface Window {
     pc: FixturePeer;
+    // calls is a request array in tests/chat/chat-read-client-browser.fixture.tsx.
     voiceCalls: VoiceHarness["calls"];
     order: VoiceHarness["order"];
+    // stops is an unsubscribe array in tests/mobile/mobile-sync.fixture.ts.
     voiceStops: VoiceHarness["stops"];
     records: VoiceHarness["records"];
     pending: VoiceHarness["pending"];

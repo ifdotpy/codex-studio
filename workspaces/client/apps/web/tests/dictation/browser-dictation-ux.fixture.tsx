@@ -8,6 +8,7 @@ import "../../src/components/realtime-voice.css";
 
 declare global {
   interface Window {
+    // calls is a request array in tests/chat/chat-read-client-browser.fixture.tsx.
     dictationCalls: string[];
     speech: Recognition | undefined;
     SpeechRecognition?: (new () => Recognition) | undefined;

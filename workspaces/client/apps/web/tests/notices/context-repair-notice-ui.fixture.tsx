@@ -9,7 +9,7 @@ export type ContextRepairSnapshot = {
 declare global {
   interface Window {
     // Browser-access-notice-ui.fixture.tsx owns applySnapshot with BrowserAccessSnapshot.
-    applyContextRepairSnapshot: (snapshot: string) => void;
+    applyContextRepairSnapshot: (snapshot: ContextRepairSnapshot) => void;
   }
 }
 
@@ -20,11 +20,7 @@ import "@mantine/core/styles.css";
 import { NativeError } from "../../src/components/NativeNotice.tsx";
 function Fixture() {
   const [snapshot, setSnapshot] = useState<ContextRepairSnapshot | null>(null);
-  // The spec writes this snapshot; serialization avoids recursive Playwright type expansion.
-  window.applyContextRepairSnapshot = (serialized) => {
-    const snapshot: ContextRepairSnapshot = JSON.parse(serialized);
-    setSnapshot(snapshot);
-  };
+  window.applyContextRepairSnapshot = setSnapshot;
   return (
     <MantineProvider>
       <main data-case={snapshot?.label}>

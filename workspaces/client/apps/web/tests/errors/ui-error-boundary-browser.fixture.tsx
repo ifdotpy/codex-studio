@@ -1,5 +1,6 @@
 declare global {
   interface Window {
+    // fixture stores scroll handlers in tests/performance/scroll-restart.fixture.tsx.
     uiErrorBoundaryFixture: {
       setBad: React.Dispatch<React.SetStateAction<boolean>>;
       setScope: React.Dispatch<React.SetStateAction<string>>;

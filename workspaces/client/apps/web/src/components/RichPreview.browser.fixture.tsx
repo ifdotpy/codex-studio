@@ -7,10 +7,9 @@ import "../browser-reset.css";
 import "@mantine/core/styles.css";
 import "../style.css";
 import RichPreview from "../components/RichPreview.tsx";
-const scheme =
-  new URLSearchParams(location.search).get("scheme") === "dark"
-    ? "dark"
-    : "light";
+const scheme = new URLSearchParams(location.search).get(
+  "scheme",
+) as import("react").ComponentProps<typeof MantineProvider>["forceColorScheme"];
 const root = document.getElementById("root");
 createRoot(root!).render(
   e(

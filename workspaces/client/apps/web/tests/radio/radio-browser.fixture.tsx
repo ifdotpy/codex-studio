@@ -3,6 +3,7 @@ declare global {
     radio: () => NonNullable<Room["radio"]>;
     setRoom: React.Dispatch<React.SetStateAction<Room>>;
     currentRoom: Room;
+    // opened is SessionActivityItem[] in tests/chat/session-activity-browser.fixture.tsx.
     radioOpened: string | null;
     refreshCalls: number;
     holdRefresh: boolean;
