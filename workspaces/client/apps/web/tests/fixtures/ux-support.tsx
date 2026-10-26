@@ -4,10 +4,10 @@ import { MantineProvider } from "@mantine/core";
 import "@mantine/core/styles.css";
 import "../../src/studio-theme.css";
 import "../../src/appearance.css";
-import TerminalDock from "../../src/components/TerminalDock";
-import BackgroundTasks from "../../src/components/shell/BackgroundTasks";
-import DraftVersions from "../../src/components/DraftVersions";
-import type { Agent, BackgroundTask } from "../../src/types";
+import TerminalDock from "../../src/components/TerminalDock.tsx";
+import BackgroundTasks from "../../src/components/shell/BackgroundTasks.tsx";
+import DraftVersions from "../../src/components/DraftVersions.tsx";
+import type { Agent, BackgroundTask } from "../../src/types.ts";
 import { fixtureSnapshot } from "./snapshot.ts";
 
 declare global {

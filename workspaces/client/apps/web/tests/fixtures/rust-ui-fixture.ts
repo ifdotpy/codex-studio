@@ -25,6 +25,7 @@
 //   FIXTURE_AGENT_STEPS           JSON object: seeded agent name -> provider
 //                                 steps its first turn runs
 //   FIXTURE_SCRIPT                JSON array of provider scripts (prompt, steps)
+import type { ApiPostPath, PostBody, PostResult } from "../../src/apiTypes.ts";
 import type {
   components,
   AgentSummaryEntityDto,
@@ -61,33 +62,27 @@ import {
 type SyncEntity = components["schemas"]["SyncEntity"];
 type SyncPullResponse = components["schemas"]["SyncPullResponse"];
 type SyncPullResetResponse = components["schemas"]["SyncPullResetResponse"];
-type FixtureHookMessage = {
-  id?: string;
+type FixtureHookReceipt = { id?: string };
+/** Provider notifications need a thread, but no scripted steps. */
+export type FixtureNotificationHook = FixtureHookReceipt & {
   method: string;
   params: Record<string, unknown> & { threadId: string };
-  parent?: string;
-  agent?: string;
-  steps: FixtureStep[];
 };
-
-/** Provider notifications need a thread, but do not carry a scripted step list. */
-export type FixtureNotificationHook = Pick<
-  FixtureHookMessage,
-  "id" | "method" | "params"
->;
-export type FixtureCreateWorkerHook = Pick<FixtureHookMessage, "id"> & {
+export type FixtureCreateWorkerHook = FixtureHookReceipt & {
   method: "fixture/create-worker";
-  parent: NonNullable<FixtureHookMessage["parent"]>;
+  parent: string;
   params: components["schemas"]["CreateAgentRequest"];
 };
-export type FixtureProviderHook = Pick<FixtureHookMessage, "id" | "steps"> & {
+export type FixtureProviderHook = FixtureHookReceipt & {
   method: "fixture/provider";
-  agent: NonNullable<FixtureHookMessage["agent"]>;
+  agent: string;
+  steps: FixtureStep[];
 };
 export type FixtureHookInput =
   | FixtureNotificationHook
   | FixtureCreateWorkerHook
   | FixtureProviderHook;
+type FixtureHookMessage = FixtureHookInput;
 
 // Hook messages are sent by this fixture’s test caller; narrow their envelope once.
 function parseHookMessage(text: string): FixtureHookMessage {
@@ -289,10 +284,10 @@ export async function startRustBackend(
   }
   const origin = `http://127.0.0.1:${port}`;
   const { token } = await (await fetch(`${origin}/api/session`)).json();
-  const post = async (
-    path: string,
-    body: unknown,
-  ): Promise<components["schemas"]["AgentResponse"]> => {
+  const post = async <P extends ApiPostPath>(
+    path: P,
+    body: PostBody<P>,
+  ): Promise<PostResult<P>> => {
     // The provider catalog loads in the background; admission reports a transient error until it lands.
     const retryUntil = Date.now() + CATALOG_WAIT_MS;
     for (;;) {
@@ -631,6 +626,8 @@ async function main() {
   const hooks: Record<string, (message: FixtureHookMessage) => Promise<void>> =
     {
       "fixture/create-worker": async (message) => {
+        if (!("parent" in message))
+          throw new Error("Worker fixture hook needs its parent");
         await backend.post("/api/agents", {
           cwd,
           ...message.params,
@@ -638,6 +635,8 @@ async function main() {
         });
       },
       "fixture/provider": async (message) => {
+        if (!("steps" in message))
+          throw new Error("Provider fixture hook needs its steps");
         const agent = (await readAgents(backend.origin)).find(
           (candidate) => candidate.id === message.agent,
         );
@@ -654,6 +653,12 @@ async function main() {
     const hook = message.method.startsWith("fixture/")
       ? hooks[message.method]
       : async () => {
+          if (
+            !("params" in message) ||
+            !("threadId" in message.params) ||
+            typeof message.params.threadId !== "string"
+          )
+            throw new Error("Provider notification needs its thread");
           const { threadId } = message.params;
           const steps = [
             { notify: { method: message.method, params: message.params } },

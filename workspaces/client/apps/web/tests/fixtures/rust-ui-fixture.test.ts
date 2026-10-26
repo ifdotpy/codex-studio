@@ -1,27 +1,42 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
+import {
+  chmod,
+  copyFile,
+  mkdir,
+  mkdtemp,
+  rm,
+  symlink,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { once } from "node:events";
 import { delimiter, join } from "node:path";
 import test from "node:test";
+import type { BackendStartupMode } from "./backend-startup.child.mts";
 import { startRustBackend } from "./rust-ui-fixture.ts";
 
 async function withBackendScript(
-  body: string,
+  mode: BackendStartupMode,
   check: (state: string) => Promise<void>,
 ) {
   const root = await mkdtemp(join(tmpdir(), "rust-startup-exit-"));
-  const binary = join(root, "backend");
+  const binary = join(root, "backend.mts");
   const previous = process.env.CODEX_STUDIO_RUNTIME_SERVER;
+  const previousMode = process.env.FIXTURE_BACKEND_MODE;
   try {
-    await writeFile(binary, `#!${process.execPath}\n${body}\n`, {
-      mode: 0o700,
-    });
+    await copyFile(
+      new URL("./backend-startup.child.mts", import.meta.url),
+      binary,
+    );
+    await chmod(binary, 0o700);
+    process.env.FIXTURE_BACKEND_MODE = mode;
     process.env.CODEX_STUDIO_RUNTIME_SERVER = binary;
     await check(join(root, "state"));
   } finally {
     if (previous === undefined) delete process.env.CODEX_STUDIO_RUNTIME_SERVER;
     else process.env.CODEX_STUDIO_RUNTIME_SERVER = previous;
+    if (previousMode === undefined) delete process.env.FIXTURE_BACKEND_MODE;
+    else process.env.FIXTURE_BACKEND_MODE = previousMode;
     await rm(root, { recursive: true, force: true });
   }
 }
@@ -30,7 +45,7 @@ test(
   "backend startup preserves a failing exit code",
   { timeout: 5000 },
   async () => {
-    await withBackendScript("process.exit(7);", async (state) => {
+    await withBackendScript("exit", async (state) => {
       await assert.rejects(
         startRustBackend(state),
         /studio-runtime-server fixture exited.*code 7/,
@@ -43,15 +58,12 @@ test(
   "backend startup reports a signal instead of waiting for readiness timeout",
   { timeout: 5000, skip: process.platform === "win32" },
   async () => {
-    await withBackendScript(
-      'process.kill(process.pid, "SIGTERM");',
-      async (state) => {
-        await assert.rejects(
-          startRustBackend(state),
-          /studio-runtime-server fixture exited.*signal SIGTERM/,
-        );
-      },
-    );
+    await withBackendScript("signal", async (state) => {
+      await assert.rejects(
+        startRustBackend(state),
+        /studio-runtime-server fixture exited.*signal SIGTERM/,
+      );
+    });
   },
 );
 
@@ -65,26 +77,18 @@ test(
     const previous = process.env.PATH;
     try {
       await mkdir(host, { recursive: true });
-      await writeFile(join(host, "codex"), "#!/bin/sh\nexit 0\n", {
+      await writeFile(join(host, "codex"), "", {
         mode: 0o700,
       });
       await symlink(process.execPath, join(host, "node"));
       process.env.PATH = [host, "/usr/bin", "/bin"].join(delimiter);
       // Exit 0 only when node starts through env and no PATH folder has codex.
-      await withBackendScript(
-        `const { existsSync } = require("node:fs");
-const { join } = require("node:path");
-const entries = process.env.PATH.split(${JSON.stringify(delimiter)});
-const hidden = entries.every((entry) => !existsSync(join(entry, "codex")));
-const node = require("node:child_process").spawnSync("/usr/bin/env", ["node", "-e", ""]);
-process.exit(hidden && node.status === 0 ? 0 : 9);`,
-        async (state) => {
-          await assert.rejects(
-            startRustBackend(state),
-            /studio-runtime-server fixture exited.*code 0/,
-          );
-        },
-      );
+      await withBackendScript("path", async (state) => {
+        await assert.rejects(
+          startRustBackend(state),
+          /studio-runtime-server fixture exited.*code 0/,
+        );
+      });
     } finally {
       process.env.PATH = previous;
       await rm(host, { recursive: true, force: true });
@@ -96,28 +100,16 @@ test(
   "backend startup uses the bound port announcement without HTTP polling",
   { timeout: 5000 },
   async () => {
-    await withBackendScript(
-      `
-const assert = require("node:assert/strict");
-assert.deepEqual(process.argv.slice(2), ["--port", "0"]);
-const server = require("node:http").createServer((request, response) => {
-  response.setHeader("Content-Type", "application/json");
-  response.end(JSON.stringify({ token: "fixture-token" }));
-});
-server.listen(0, "127.0.0.1", () => {
-  console.log("Codex Canvas: http://127.0.0.1:" + server.address().port);
-});`,
-      async (state) => {
-        const backend = await startRustBackend(state);
-        try {
-          assert.equal(backend.origin, `http://127.0.0.1:${backend.port}`);
-          assert.equal(backend.token, "fixture-token");
-        } finally {
-          const closed = once(backend.child, "close");
-          backend.child.kill();
-          await closed;
-        }
-      },
-    );
+    await withBackendScript("http", async (state) => {
+      const backend = await startRustBackend(state);
+      try {
+        assert.equal(backend.origin, `http://127.0.0.1:${backend.port}`);
+        assert.equal(backend.token, "fixture-token");
+      } finally {
+        const closed = once(backend.child, "close");
+        backend.child.kill();
+        await closed;
+      }
+    });
   },
 );

@@ -5,6 +5,7 @@ import { mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 
 import {
   fixtureProcessGroupExists,
@@ -19,11 +20,10 @@ test("stopping a fixture process group reaps its descendant processes", async ()
   const child = spawn(
     process.execPath,
     [
-      "-e",
-      `const { spawn } = require("node:child_process");
-       const grandchild = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" });
-       process.stdout.write(String(grandchild.pid));
-       setInterval(() => {}, 1000);`,
+      fileURLToPath(
+        new URL("./fixture-process-group.child.ts", import.meta.url),
+      ),
+      "parent",
     ],
     { detached: true, stdio: ["ignore", "pipe", "ignore"] },
   );
@@ -78,11 +78,10 @@ test("reaper stops fixture descendants after the direct process exits", async ()
   const child = spawn(
     process.execPath,
     [
-      "-e",
-      `const { spawn } = require("node:child_process");
-       const grandchild = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" });
-       grandchild.unref();
-       process.stdout.write(String(grandchild.pid));`,
+      fileURLToPath(
+        new URL("./fixture-process-group.child.ts", import.meta.url),
+      ),
+      "orphan",
     ],
     { detached: true, stdio: ["ignore", "pipe", "ignore"] },
   );

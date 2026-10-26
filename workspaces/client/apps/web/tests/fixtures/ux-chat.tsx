@@ -3,12 +3,12 @@ import { createRoot } from "react-dom/client";
 import { MantineProvider } from "@mantine/core";
 import "@mantine/core/styles.css";
 import "../../src/style.css";
-import Conversation from "../../src/components/Conversation";
-import { ChatWaitSource } from "../../src/hooks/conversationData";
+import Conversation from "../../src/components/Conversation.tsx";
+import { ChatWaitSource } from "../../src/hooks/conversationData.ts";
 
-import type { Agent } from "../../src/types";
-import type { components } from "../../src/generated/api";
-import type { OutgoingMessage } from "../../src/sync/send";
+import type { Agent } from "../../src/types.ts";
+import type { components } from "../../src/generated/api.ts";
+import type { OutgoingMessage } from "../../src/sync/send.ts";
 import { fixtureSnapshot } from "./snapshot.ts";
 
 /** JSON body authored by this fixture, excluding the local persistence callback. */
@@ -126,9 +126,7 @@ function Fixture() {
         )}
         <Conversation
           id={id}
-          {...(window.__uxChatSyncIdentity
-            ? { syncWorkspaceId: window.__uxChatSyncIdentity.workspaceId }
-            : {})}
+          syncWorkspaceId={window.__uxChatSyncIdentity?.workspaceId}
           agent={agent}
           data={{
             stateDir: data.stateDir,
@@ -197,7 +195,7 @@ function Fixture() {
             branchSelections.current.push(target);
             setId(target);
           }}
-          {...(jumpTarget ? { jumpTarget } : {})}
+          jumpTarget={jumpTarget}
           onJumpHandled={() => setJumpTarget(undefined)}
         />
       </main>

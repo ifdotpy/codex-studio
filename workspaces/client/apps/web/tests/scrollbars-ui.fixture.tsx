@@ -2,7 +2,7 @@ import React from "react";
 import { createRoot } from "react-dom/client";
 import { createPortal } from "react-dom";
 import { MantineProvider, ScrollArea } from "@mantine/core";
-import { theme } from "../src/theme";
+import { theme } from "../src/theme.ts";
 import "@mantine/core/styles.css";
 import "../src/style.css";
 import "../src/components/sidebar-projects.css";

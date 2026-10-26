@@ -1,4 +1,4 @@
-import type { Agent, BackgroundTask, Snapshot } from "../../src/types";
+import type { Agent, BackgroundTask, Snapshot } from "../../src/types.ts";
 
 /** A complete renderer snapshot for isolated component fixtures. */
 export function fixtureSnapshot(agents: Agent[], tasks: BackgroundTask[] = []) {
