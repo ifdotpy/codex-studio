@@ -54,10 +54,6 @@ test("Ux request recovery browser", async ({
     stateDir: "fixture",
     runtime: {
       ...fixtureSnapshot([]).runtime,
-      nativeNotices: [],
-      sidebarOrder: { groups: null, revision: 0 },
-      rateLimits: null,
-      rateLimitsByAccount: {},
     },
   };
   try {

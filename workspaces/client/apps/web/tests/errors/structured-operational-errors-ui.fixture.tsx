@@ -32,7 +32,7 @@ const agent: Agent = {
   turnId: "turn",
   inFlight: true,
 };
-const snapshot = fixtureSnapshot([agent]);
+const snapshot = { ...fixtureSnapshot([agent]), stateDir: "fixture" };
 const noop = () => {};
 const refresh = async () => {};
 let renderId = 0;

@@ -165,10 +165,6 @@ test("Background controls", async ({ context }, testInfo) => {
     chats: [],
     runtime: {
       ...fixtureSnapshot([agent]).runtime,
-      nativeNotices: [],
-      sidebarOrder: { groups: null, revision: 0 },
-      rateLimits: null,
-      rateLimitsByAccount: {},
       agents: [agent],
       rooms: [],
       complaints: [],
@@ -531,7 +527,7 @@ test("Background controls", async ({ context }, testInfo) => {
       () =>
         document.querySelector<HTMLTextAreaElement>(
           '[aria-label="Terminal input"]',
-        )?.value === "",
+        )!.value === "",
     );
     assert.deepEqual(writes.at(-1), {
       path: "/api/monitor/input",

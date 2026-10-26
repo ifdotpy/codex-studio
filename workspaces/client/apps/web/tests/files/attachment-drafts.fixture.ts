@@ -1,10 +1,10 @@
 import type { useAttachmentDrafts } from "../../src/components/useAttachmentDrafts.ts";
 /** The renderer under test wrote this local document with useAttachmentDrafts. */
-export function readStoredAttachments(): ReturnType<
-  typeof useAttachmentDrafts
->[0] {
+export function readStoredAttachments(
+  empty: "{}" | null = "{}",
+): ReturnType<typeof useAttachmentDrafts>[0] {
   return JSON.parse(
-    localStorage.getItem("codex-agent-attachments:fixture") || "{}",
+    (localStorage.getItem("codex-agent-attachments:fixture") || empty)!,
   );
 }
 declare global {

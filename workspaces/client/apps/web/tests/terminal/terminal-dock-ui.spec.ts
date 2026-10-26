@@ -259,8 +259,8 @@ test("Terminal dock", async () => {
       let body: TerminalBody = {};
       if (request.method() === "POST") {
         body = fixtureTerminalBody(route);
-        writes.push({ path, body });
         assert.equal(request.headers()["x-canvas-token"], state.token);
+        writes.push({ path, body });
       }
       let value: unknown = {};
       if (path === "/api/sync/identity" || path === "/api/sync/stream")

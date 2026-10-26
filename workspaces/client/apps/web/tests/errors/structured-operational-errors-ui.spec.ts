@@ -259,7 +259,11 @@ test("Structured operational errors ui", async ({
     >;
     while (Date.now() < deadline) {
       persisted = await page.evaluate(() => window.readRecordings());
-      if (persisted[0].error!.includes("E_FIXTURE")) break;
+      if (
+        typeof persisted[0]?.error === "string" &&
+        persisted[0].error.includes("E_FIXTURE")
+      )
+        break;
       await new Promise((resolve) => setTimeout(resolve, 20));
     }
     assert.deepEqual(JSON.parse(persisted[0]!.error!), value);

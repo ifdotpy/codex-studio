@@ -210,10 +210,16 @@ test("Background Current Browser", async ({
         typeof import("../../src/components/shell/BackgroundTasks.tsx").default
       >["initialFocus"],
     ) => {
-      await page.evaluate(
-        ({ serialized, leadId, focus }) =>
-          window.renderFixture(serialized, leadId, focus),
-        { serialized: JSON.stringify(data), leadId, focus },
+      await page.evaluate<void, unknown>(
+        (value) => {
+          const args = value as {
+            data: Parameters<Window["renderFixture"]>[0];
+            leadId: string;
+            focus: Parameters<Window["renderFixture"]>[2];
+          };
+          window.renderFixture(args.data, args.leadId, args.focus);
+        },
+        { data, leadId, focus },
       );
     };
     const rows = () => page.locator("[data-task]");

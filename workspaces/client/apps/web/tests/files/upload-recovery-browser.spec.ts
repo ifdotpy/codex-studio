@@ -524,7 +524,7 @@ test("upload recovery browser", async ({ browser }) => {
     }
     const shared = await page.evaluate(() =>
       window
-        .uploadRecoveryBrowserReadStoredAttachments()
+        .uploadRecoveryBrowserReadStoredAttachments(null)
         .lead!.map(
           (
             asset: import("../../src/components/ComposerAttachments.tsx").Attachment,
@@ -612,7 +612,7 @@ async function setupAttachmentWriters(browser: Browser) {
         () =>
           window
             .uploadRecoveryBrowserReadStoredAttachments()
-            .lead!.map(
+            .lead?.map(
               (
                 asset: import("../../src/components/ComposerAttachments.tsx").Attachment,
               ) => asset.id,

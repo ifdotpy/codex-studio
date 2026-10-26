@@ -2,7 +2,7 @@ import type { Snapshot } from "../../src/types.ts";
 type Focus = React.ComponentProps<typeof BackgroundTasks>["initialFocus"];
 declare global {
   interface Window {
-    renderFixture: (serialized: string, leadId?: string, focus?: Focus) => void;
+    renderFixture: (data: Snapshot, leadId?: string, focus?: Focus) => void;
     refreshCalls: number;
     holdRefresh: boolean;
     resolveRefresh: () => void;
@@ -18,9 +18,7 @@ import "@mantine/core/styles.css";
 import "../../src/style.css";
 import BackgroundTasks from "../../src/components/shell/BackgroundTasks.tsx";
 const root = createRoot(document.getElementById("root")!);
-window.renderFixture = (serialized, leadId = "lead", initialFocus) => {
-  // The test serialized this fixture snapshot from its typed owner.
-  const data: Snapshot = JSON.parse(serialized);
+window.renderFixture = (data, leadId = "lead", initialFocus) => {
   root.render(
     React.createElement(
       MantineProvider,

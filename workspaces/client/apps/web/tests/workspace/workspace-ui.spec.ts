@@ -56,7 +56,7 @@ test("workspace ui", async ({ page: testPage }) => {
   let log = "";
   let page!: Page;
   proc.stderr!.on("data", (d) => (log += d));
-  const poll = async (fn: () => boolean | Promise<boolean>, label: string) => {
+  const poll = async (fn: () => unknown, label: string) => {
     for (let i = 0; i < 180; i++) {
       if (await fn()) return;
       await new Promise((r) => setTimeout(r, 50));
@@ -484,7 +484,7 @@ test("workspace ui", async ({ page: testPage }) => {
       async () =>
         (
           await get("/api/changes", "?agent=" + lead.id + "&scope=chat")
-        ).diff?.includes("Verified report") === true,
+        ).diff?.includes("Verified report"),
       "chat diff recorded",
     );
     await section("Changes");
