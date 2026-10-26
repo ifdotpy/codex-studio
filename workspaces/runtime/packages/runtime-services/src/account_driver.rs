@@ -2815,6 +2815,10 @@ fn default_registry_bytes(codex_home: &Path) -> Result<Vec<u8>, AccountDriverErr
     let optional = |value: Option<&String>| value.map_or_else(|| "null".to_owned(), |v| text(v));
     let mut row = vec![
         ("id", text("default")),
+        (
+            "provider",
+            text(studio_runtime_schema::ProviderKind::Codex.key()),
+        ),
         ("home", text(home)),
         ("label", text("Codex")),
         ("source", text("Codex CLI")),
@@ -2852,7 +2856,10 @@ fn default_registry_bytes(codex_home: &Path) -> Result<Vec<u8>, AccountDriverErr
         ]),
     }
     let document = python_object(&[
-        ("version", "1".to_owned()),
+        (
+            "version",
+            studio_runtime_schema::shared_values::ACCOUNT_REGISTRY_FORMAT_VERSION.to_string(),
+        ),
         ("defaultAccountKey", text("default")),
         (
             "accounts",
@@ -3052,6 +3059,39 @@ fn read_registry(path: &Path) -> Result<Vec<u8>, AccountDriverError> {
     Ok(bytes)
 }
 
+/// Upgrade 2026-10-26 identity leaves once at startup, before strict consumers.
+/// Keep until supported states and restorable backups have crossed this format,
+/// or the older upgrade path is explicitly retired. Atomic replacement retains
+/// the existing unconfirmed-directory-durability outcome; startup can be retried.
+pub fn migrate_provider_identity_2026_10_26(
+    path: &Path,
+    bytes: Vec<u8>,
+) -> Result<Vec<u8>, AccountDriverError> {
+    if bytes.len() > studio_runtime_store::account_state::MAX_PERSISTED_DOCUMENT_BYTES
+        || !studio_runtime_store::account_state::persisted_document_within_bounds(&bytes)
+    {
+        return Err(AccountDriverError::InvalidRegistry);
+    }
+    let mut value: Value =
+        serde_json::from_slice(&bytes).map_err(|_| AccountDriverError::InvalidRegistry)?;
+    let changed = studio_runtime_store::provider_identity::migrate_registry_2026_10_26(&mut value)
+        .map_err(|_| AccountDriverError::InvalidRegistry)?;
+    if !changed {
+        decode_registry(&bytes).map_err(|_| AccountDriverError::InvalidRegistry)?;
+        return Ok(bytes);
+    }
+    let order = RegistryOrder::deserialize(&mut serde_json::Deserializer::from_slice(&bytes))
+        .map_err(|_| AccountDriverError::InvalidRegistry)?;
+    let encoded =
+        encode_registry(&value, &order).map_err(|_| AccountDriverError::InvalidRegistry)?;
+    decode_registry(&encoded).map_err(|_| AccountDriverError::InvalidRegistry)?;
+    match atomic_replace(path, &encoded) {
+        Ok(()) => Ok(encoded),
+        Err(ReplaceError::NotReplaced) => Err(AccountDriverError::WriteRegistry),
+        Err(ReplaceError::ReplacedNotDurable) => Err(AccountDriverError::DurabilityUnconfirmed),
+    }
+}
+
 enum ReplaceError {
     NotReplaced,
     ReplacedNotDurable,
@@ -3119,6 +3159,91 @@ fn base64url_decode(value: &str) -> Option<Vec<u8>> {
 mod tests {
     use super::*;
     const PLACEHOLDER_KEY: &str = "placeholder-secret-do-not-persist";
+
+    #[test]
+    fn migration_2026_10_26_registry_precedes_strict_policy_and_driver() {
+        let fixture = TestDir::new();
+        let path = fixture.path.join("registry.json");
+        let bytes = br#"{"version":1,"defaultAccountKey":"default","accounts":{"z":{"id":"z","provider":"claude","home":"/fixture/z","label":"Z","source":"fixture","status":"ready"},"default":{"id":"default","provider":null,"home":"/fixture/default","label":"Default","source":"fixture","status":"signedOut"}},"logins":{},"deleteReceipts":{}}"#.to_vec();
+        fs::write(&path, &bytes).expect("legacy registry");
+        assert!(
+            decode_registry(&bytes).is_err(),
+            "ordinary policy has no legacy fallback"
+        );
+        let migrated = migrate_provider_identity_2026_10_26(&path, bytes).expect("dated migration");
+        assert_eq!(
+            serde_json::from_slice::<Value>(&migrated).expect("current registry")["version"],
+            studio_runtime_schema::shared_values::ACCOUNT_REGISTRY_FORMAT_VERSION
+        );
+        let (_, order) = decode_registry(&migrated).expect("strict policy");
+        assert_eq!(order.accounts, ["z", "default"], "account order preserved");
+        let driver = AccountDriver::open_with_reader(
+            &path,
+            FakeReader(metadata(AuthStatus::SignedOut, None, None)),
+        )
+        .expect("strict driver");
+        assert_eq!(
+            driver.internal_record("default").expect("default")["provider"],
+            "codex"
+        );
+        assert_eq!(
+            driver.internal_record("z").expect("z")["provider"],
+            "claude"
+        );
+        assert_eq!(fs::read(&path).expect("persisted"), migrated);
+        assert_eq!(
+            migrate_provider_identity_2026_10_26(&path, migrated.clone()).expect("repeat"),
+            migrated
+        );
+    }
+
+    #[test]
+    fn migration_2026_10_26_registry_failure_preserves_original_bytes() {
+        let fixture = TestDir::new();
+        let path = fixture.path.join("registry.json");
+        for provider in [
+            serde_json::json!("unknown"),
+            serde_json::json!(1),
+            serde_json::json!({}),
+        ] {
+            let mut value: Value =
+                serde_json::from_slice(&registry(&fixture.path)).expect("registry");
+            value["accounts"]["default"]["provider"] = provider;
+            let bytes = serde_json::to_vec(&value).expect("bytes");
+            fs::write(&path, &bytes).expect("invalid registry");
+            assert!(migrate_provider_identity_2026_10_26(&path, bytes.clone()).is_err());
+            assert_eq!(fs::read(&path).expect("preserved source"), bytes);
+        }
+        for field in [None, Some(Value::Null)] {
+            let mut value: Value =
+                serde_json::from_slice(&registry(&fixture.path)).expect("current registry");
+            match field {
+                None => {
+                    value["accounts"]["default"]
+                        .as_object_mut()
+                        .expect("account")
+                        .remove("provider");
+                }
+                Some(field) => value["accounts"]["default"]["provider"] = field,
+            }
+            let bytes = serde_json::to_vec(&value).expect("bytes");
+            fs::write(&path, &bytes).expect("corrupt current registry");
+            assert!(migrate_provider_identity_2026_10_26(&path, bytes.clone()).is_err());
+            assert_eq!(fs::read(&path).expect("unchanged current bytes"), bytes);
+        }
+        let mut explicit_legacy: Value =
+            serde_json::from_slice(&registry(&fixture.path)).expect("registry");
+        explicit_legacy["version"] = Value::from(1);
+        let upgraded = migrate_provider_identity_2026_10_26(
+            &path,
+            serde_json::to_vec(&explicit_legacy).expect("bytes"),
+        )
+        .expect("explicit legacy still crosses version cutoff");
+        assert_eq!(
+            serde_json::from_slice::<Value>(&upgraded).expect("current")["version"],
+            studio_runtime_schema::shared_values::ACCOUNT_REGISTRY_FORMAT_VERSION
+        );
+    }
 
     #[cfg(unix)]
     #[test]
@@ -3388,10 +3513,10 @@ exit 0
 
     fn registry(home: &Path) -> Vec<u8> {
         serde_json::to_vec(&serde_json::json!({
-            "version": 1,
+            "version": studio_runtime_schema::shared_values::ACCOUNT_REGISTRY_FORMAT_VERSION,
             "defaultAccountKey": "default",
             "accounts": {"default": {
-                "id": "default", "home": home, "label": "Codex", "source": "Codex CLI", "status": "signedOut"
+                "id": "default", "provider":"codex", "home": home, "label": "Codex", "source": "Codex CLI", "status": "signedOut"
             }},
             "logins": {}, "deleteReceipts": {}
         }))

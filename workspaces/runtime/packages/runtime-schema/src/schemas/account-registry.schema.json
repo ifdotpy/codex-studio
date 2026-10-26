@@ -602,7 +602,7 @@
       "type": "boolean"
     },
     "version": {
-      "const": 1,
+      "const": 2,
       "title": "Version",
       "type": "integer"
     }

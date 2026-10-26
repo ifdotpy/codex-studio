@@ -1,10 +1,8 @@
 //! Single owner of provider identity.
 //!
 //! Stored account and agent records name their provider with [`ProviderKind::key`].
-//! Python-written Codex records omit the field; that legacy representation is read
-//! as Codex here and nowhere else. Any other value is a visible error, never a
-//! silent default. (State files are not rewritten at startup: the restart-parity
-//! corpora require reopening a state to leave its rows byte-identical.)
+//! Ordinary readers require an explicit known identity. Historical missing/null
+//! identities are handled only by the dated 2026-10-26 startup migration.
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -68,11 +66,11 @@ impl ProviderKind {
         Self::of_record(record).ok().map(Self::key)
     }
 
-    /// Parse a stored `provider` field value; absent or null is the legacy Codex form.
+    /// Parse an explicit stored `provider` field value.
     pub fn of_field(field: Option<&Value>) -> Result<Self, UnknownProvider> {
         match field {
             Some(Value::String(value)) => value.parse(),
-            Some(Value::Null) | None => Ok(Self::Codex),
+            None => Err(UnknownProvider(None)),
             Some(other) => Err(UnknownProvider(Some(other.to_string()))),
         }
     }
@@ -180,6 +178,16 @@ mod tests {
     }
 
     #[test]
+    fn ordinary_readers_require_explicit_provider_identity() {
+        for record in [json!({}), json!({"provider":null})] {
+            assert!(ProviderKind::of_record(&record).is_err(), "{record}");
+            assert_eq!(ProviderKind::key_of(&record), None);
+        }
+        assert!(ProviderKind::of_field(None).is_err());
+        assert!(ProviderKind::of_field(Some(&json!(null))).is_err());
+    }
+
+    #[test]
     fn parses_only_known_providers() {
         for kind in ProviderKind::ALL {
             assert_eq!(kind.key().parse::<ProviderKind>(), Ok(kind));
@@ -195,11 +203,6 @@ mod tests {
         assert_eq!(
             "gemini".parse::<ProviderKind>(),
             Err(UnknownProvider(Some("gemini".into())))
-        );
-        assert_eq!(ProviderKind::of_record(&json!({})), Ok(ProviderKind::Codex));
-        assert_eq!(
-            ProviderKind::of_record(&json!({"provider": null})),
-            Ok(ProviderKind::Codex)
         );
         assert_eq!(
             ProviderKind::of_record(&json!({"provider": ""})),

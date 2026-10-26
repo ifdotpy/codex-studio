@@ -2020,7 +2020,7 @@ fn has_image_workspace_recovery(
             AND json_extract(a.record,'$.deletedAt') IS NULL
             AND COALESCE(json_extract(a.record,'$.remoteWorker'),0)=0
             AND COALESCE(json_extract(a.record,'$.remoteAnchor'),0)=0
-            AND ((COALESCE(json_extract(a.record,'$.provider'),'codex')='codex'
+            AND ((json_extract(a.record,'$.provider')='codex'
                   AND json_extract(a.record,'$.startAttempt.submitted')=1
                   AND json_extract(a.record,'$.startAttempt.connectionGeneration') IS NOT NULL
                   AND json_extract(a.record,'$.status') IN ('starting','running','waiting','paused','interrupted'))

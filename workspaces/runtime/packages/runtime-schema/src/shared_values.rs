@@ -2,6 +2,9 @@
 //! VM guest copies are rendered from it by `studio-contracts`
 //! (`pnpm run contracts:generate`), and `pnpm run contracts:check` rejects drift.
 
+/// Account registry storage format requiring explicit provider identity; version number.
+pub const ACCOUNT_REGISTRY_FORMAT_VERSION: u32 = 2;
+
 // Command monitor output matching and bounded observation. Byte limits count UTF-8.
 /// Patterns one output monitor may watch.
 pub const MONITOR_OUTPUT_MAX_PATTERNS: usize = 16;

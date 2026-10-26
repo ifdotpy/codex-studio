@@ -257,7 +257,7 @@ pub fn prepare(transaction: &Transaction<'_>) -> StoreResult<()> {
 /// Tables that `runtime_agents` triggers advance on every record change. The
 /// 2026-10-20 move changes no agent's content, so it restores them: no change
 /// journal entry, transcript revision or sync projection follows from it.
-const MIGRATION_PRESERVED_TABLES: [&str; 4] = [
+pub(crate) const MIGRATION_PRESERVED_TABLES: [&str; 4] = [
     "runtime_agent_record_generation",
     "runtime_scheduler_agent_change_state",
     "runtime_scheduler_agent_changes",

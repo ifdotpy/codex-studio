@@ -1082,6 +1082,10 @@ pub fn render(root: &Path, with_api_types: bool) -> Result<Vec<Rendered>, String
             required.push(serde_json::json!("provider"));
         }
         schema["$defs"]["ProviderKind"] = provider_kind_schema();
+        if *name == "account-registry" {
+            schema["properties"]["version"]["const"] =
+                serde_json::json!(values::ACCOUNT_REGISTRY_FORMAT_VERSION);
+        }
         rendered.push(Rendered {
             path,
             text: serde_json::to_string_pretty(&schema).map_err(|error| error.to_string())? + "\n",

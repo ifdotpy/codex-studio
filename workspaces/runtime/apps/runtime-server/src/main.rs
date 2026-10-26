@@ -221,7 +221,12 @@ fn startup_registry(
             let mut bytes = Vec::new();
             file.take((account_state::MAX_PERSISTED_DOCUMENT_BYTES + 1) as u64)
                 .read_to_end(&mut bytes)?;
-            Some(bytes)
+            Some(
+                studio_runtime_services::account_driver::migrate_provider_identity_2026_10_26(
+                    &registry_path,
+                    bytes,
+                )?,
+            )
         }
         None => None,
     };
@@ -2878,5 +2883,24 @@ mod startup_registry_tests {
         );
         drop(store);
         drop(supervisor);
+    }
+
+    #[tokio::test]
+    async fn startup_registry_migrates_version_one_before_policy_reads() {
+        let state = tempfile::tempdir().expect("state directory");
+        let codex = tempfile::tempdir().expect("profile directory");
+        let store = RuntimeStore::open(Some(state.path())).await.expect("store");
+        let state_root = studio_runtime_store::path_identity::CanonicalPath::existing(store.root())
+            .expect("state root");
+        fs::create_dir_all(state_root.join("accounts")).expect("accounts directory");
+        let path = state_root.join("accounts/registry.json");
+        fs::write(&path, br#"{"version":1,"defaultAccountKey":"default","accounts":{"default":{"id":"default","home":"/fixture","label":"Default","source":"fixture","status":"signedOut"}},"logins":{}}"#).expect("legacy registry");
+        let registry =
+            startup_registry(&state_root, codex.path()).expect("dated startup migration");
+        let bytes = registry.bytes.expect("migrated bytes");
+        let policy =
+            AccountPolicyState::from_startup(Some(&bytes), []).expect("strict startup policy");
+        assert_eq!(policy.accounts().accounts[0]["provider"], "codex");
+        assert_eq!(fs::read(path).expect("durable registry"), bytes);
     }
 }

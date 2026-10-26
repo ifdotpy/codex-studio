@@ -1575,7 +1575,7 @@ fn settings_snapshot(agent: &Value) -> Value {
             result[field] = value.clone();
         }
     }
-    result["provider"] = agent.get("provider").cloned().unwrap_or(json!("codex"));
+    result["provider"] = agent["provider"].clone();
     result
 }
 
