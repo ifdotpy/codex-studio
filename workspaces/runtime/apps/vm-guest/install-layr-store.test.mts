@@ -312,3 +312,18 @@ test(
     );
   },
 );
+
+test("an unchanged source cannot activate a different pending update", async (t) => {
+  const f = fixture(t);
+  assert.equal((await f.run({ defer: true })).status, 0);
+  const pending = JSON.parse(f.read(`${f.state}/layr-install-pending.json`));
+  pending.sourceIdentity = "f".repeat(64);
+  f.write(`${f.state}/layr-install-pending.json`, JSON.stringify(pending));
+  f.write("/usr/local/bin/layr", f.read("/usr/local/bin/layr.next"));
+  f.write(`${f.store}/report.json`, JSON.stringify(compatible));
+  f.write(`${f.state}/layr-build`, f.identity + "\n");
+  const result = await f.run({ defer: true });
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /different Layr install is pending/);
+  assert(!f.read("systemctl.log").includes("stop codex-studio-layr.service"));
+});

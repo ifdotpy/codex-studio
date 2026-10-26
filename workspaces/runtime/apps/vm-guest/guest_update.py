@@ -380,14 +380,14 @@ def layr_stage(binary: Path, active: Path, root: Path, state: Path, source_ident
     sha(source_identity)
     report = layr_report(binary, root)
     layr_permit(report)
-    if binary == active and layr_ready(report):
-        return
     next_binary = active.with_name(active.name + ".next")
     pending_path = state / "layr-install-pending.json"
     intent = {"sourceIdentity": source_identity, "binarySha256": file_sha(binary)}
     if pending_path.exists():
         require(json.loads(pending_path.read_text()) == intent,
                 "A different Layr install is pending. Complete its activation before another update")
+    elif binary == active and layr_ready(report):
+        return
     layr_copy(binary, next_binary)
     atomic_json(pending_path, intent)
 
