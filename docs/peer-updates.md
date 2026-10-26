@@ -6,7 +6,7 @@ hashes stay equal ("Other version" does not stay on the server card).
 
 ## Build stamp
 
-`package.mjs` writes `Contents/Resources/studio-build.json`:
+`package.ts` writes `Contents/Resources/studio-build.json`:
 
 ```json
 {
