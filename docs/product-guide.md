@@ -210,8 +210,8 @@ supports it; a provider change clears it. Native `review/start` cannot select
 Daybreak, so use a review task in the chat when this mode is required.
 
 Lead, Workers, and Review each expose Fast mode when the selected model supports
-it. Review settings save their own Fast choice; older settings without that
-choice keep inheriting the invoking agent's Fast mode.
+it. Review settings save their own Fast choice. Without that choice, native
+reviews inherit the invoking agent's Fast mode and review tasks inherit Workers.
 
 Subagent defaults also has a review model and reasoning setting. A native review
 uses the call's model and effort first, then the team review default, then the
