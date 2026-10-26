@@ -4,7 +4,7 @@
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 8px;
+  gap: var(--layout-edge-rail-button-gap);
   overflow-x: hidden;
   overflow-y: auto;
   overscroll-behavior: contain;

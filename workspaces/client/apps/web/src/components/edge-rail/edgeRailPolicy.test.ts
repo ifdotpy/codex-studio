@@ -159,4 +159,39 @@ describe("top strip rail (iPhone Duo portrait)", () => {
       )?.side,
     ).toBe("right");
   });
+
+  test("ends the row at the measured status column left edge", () => {
+    expect(
+      edgeRailGeometry(
+        { ...portrait, statusColumn: { bottom: 82, left: 420 } },
+        top,
+      )?.height,
+    ).toBe(420);
+  });
+});
+
+describe("measured status column", () => {
+  test("starts a side rail at the status column bottom, which a call moves down", () => {
+    expect(
+      edgeRailGeometry(
+        { ...duo, statusColumn: { bottom: 124, left: 867 } },
+        metrics,
+      ),
+    ).toMatchObject({ top: 124, height: 669 - 124 - 34 });
+    expect(
+      edgeRailGeometry(
+        { ...duo, statusColumn: { bottom: 190, left: 867 } },
+        metrics,
+      ),
+    ).toMatchObject({ top: 190, height: 669 - 190 - 34 });
+  });
+
+  test("falls back to the contract reserve without a valid measurement", () => {
+    expect(
+      edgeRailGeometry(
+        { ...duo, statusColumn: { bottom: Number.NaN, left: 867 } },
+        metrics,
+      )?.top,
+    ).toBe(112);
+  });
 });

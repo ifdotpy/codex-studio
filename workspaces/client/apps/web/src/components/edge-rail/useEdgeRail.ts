@@ -26,6 +26,17 @@ type RootStyle = Pick<
 > &
   Partial<Pick<CSSStyleDeclaration, "width" | "getPropertyValue">>;
 
+/** The native shell's status column edges (nativeViewport.ts), when set. */
+function statusColumn(style: RootStyle) {
+  const read = (name: string) =>
+    Number.parseFloat(style.getPropertyValue?.(name) ?? "");
+  const bottom = read("--native-status-column-bottom");
+  const left = read("--native-status-column-left");
+  return Number.isFinite(bottom) && Number.isFinite(left)
+    ? { statusColumn: { bottom, left } }
+    : {};
+}
+
 /** Read resolved CSS lengths. The viewport owner supplies all compensation. */
 export function readEdgeRailViewport(
   style: RootStyle,
@@ -45,6 +56,7 @@ export function readEdgeRailViewport(
           ),
         }
       : {}),
+    ...statusColumn(style),
     insets: {
       top: Number.parseFloat(style.paddingTop),
       right: Number.parseFloat(style.paddingRight),

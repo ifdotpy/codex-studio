@@ -787,6 +787,12 @@ export const layoutTokens = {
     purpose:
       "Space between the rail chat actions menu and the inner edge of the side strip",
   },
+  "edgeRail.buttonGap": {
+    value: 8,
+    unit: "px",
+    purpose:
+      "Space between rail buttons; the rail moves buttons that do not fit into the chat actions menu",
+  },
   "edgeRail.buttonSize": {
     value: 48,
     unit: "px",
@@ -1039,6 +1045,7 @@ export const layoutValues = {
     statusColumnCenter: 48,
     topStatusReserve: 136,
     menuGap: 8,
+    buttonGap: 8,
     buttonSize: 48,
   },
   legacy_main_App: {

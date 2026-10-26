@@ -20,6 +20,14 @@ interface RailAction {
   expanded?: boolean;
 }
 
+interface RailEntry {
+  key: string;
+  label: string;
+  icon: ReactNode;
+  action: RailAction;
+  badge?: ReactNode;
+}
+
 export interface EdgeRailProps {
   geometry: EdgeRailGeometry | null;
   sidebar: RailAction & { label?: string };
@@ -82,14 +90,9 @@ export function EdgeRail({
         ),
       );
   };
-  function button(
-    label: string,
-    icon: ReactNode,
-    action: RailAction,
-    badge?: ReactNode,
-  ) {
+  function button({ key, label, icon, action, badge }: RailEntry) {
     return (
-      <Tooltip label={label} position={position} withinPortal>
+      <Tooltip key={key} label={label} position={position} withinPortal>
         <ActionIcon
           id={action.id}
           className="edge-rail-button"
@@ -109,6 +112,41 @@ export function EdgeRail({
       </Tooltip>
     );
   }
+  const entries: RailEntry[] = [
+    {
+      key: "sidebar",
+      label: sidebar.label || "Toggle conversations",
+      icon: <TextAlignStart size={20} />,
+      action: sidebar,
+    },
+  ];
+  if (team)
+    entries.push({
+      key: "team",
+      label: `Team, ${team.active} of ${team.total} working`,
+      icon: <Users size={20} />,
+      action: team,
+      badge: `${team.active}/${team.total}`,
+    });
+  if (messages && messages.count > 0)
+    entries.push({
+      key: "messages",
+      label: `Messages, ${messages.count} need you`,
+      icon: <MessageSquare size={20} />,
+      action: messages,
+      badge: messages.count,
+    });
+  // A short rail (a call pill lengthens the status column) keeps the first
+  // buttons and the menu; the other buttons become the first menu items.
+  const gap = layoutValues.edgeRail.buttonGap;
+  const fits = Math.floor(
+    (geometry.height + gap) / (geometry.targetSize + gap),
+  );
+  const shown =
+    menu != null && entries.length + 1 > fits
+      ? Math.max(0, fits - 1)
+      : entries.length;
+  const overflow = entries.slice(shown);
   const rail = (
     <nav
       ref={railRef}
@@ -141,28 +179,7 @@ export function EdgeRail({
             } as CSSProperties)
       }
     >
-      {button(
-        sidebar.label || "Toggle conversations",
-        <TextAlignStart size={20} />,
-        sidebar,
-      )}
-      {team &&
-        button(
-          `Team, ${team.active} of ${team.total} working`,
-          <Users size={20} />,
-          team,
-          `${team.active}/${team.total}`,
-        )}
-      {messages &&
-        messages.count > 0 &&
-        button(
-          messages.count > 0
-            ? `Messages, ${messages.count} need you`
-            : "Messages",
-          <MessageSquare size={20} />,
-          messages,
-          messages.count > 0 ? messages.count : undefined,
-        )}
+      {entries.slice(0, shown).map(button)}
       {menu != null && (
         <Menu
           withInitialFocusPlaceholder={false}
@@ -199,6 +216,18 @@ export function EdgeRail({
               overflowY: "auto",
             }}
           >
+            {overflow.map(({ key, label, icon, action, badge }) => (
+              <Menu.Item
+                key={key}
+                leftSection={icon}
+                rightSection={badge}
+                disabled={action.disabled}
+                onClick={action.onClick}
+              >
+                {label}
+              </Menu.Item>
+            ))}
+            {overflow.length > 0 && menu != null && <Menu.Divider />}
             {menu}
           </Menu.Dropdown>
         </Menu>
