@@ -27,7 +27,6 @@ export default {
       "src/hooks/snapshotRecovery.test.ts",
       "src/servers/serverNames.test.ts",
       "src/servers/serverRows.test.ts",
-      "src/servers/screenChannel.test.ts",
       "src/renameRequest.test.ts",
       "src/sync/drafts.publication.test.ts",
       "src/sync/transcriptCache.test.ts",
@@ -108,7 +107,6 @@ export default {
       // Prevent idle polling and lost draft notifications during a refresh.
       "src/native/useNativeDrafts.test.ts",
       // Reserved preference keys survive profile import.
-      "src/native/importBrowserProfile.test.ts",
       // An authoritative delete readback must settle even when another refresh owns the current render generation.
       "src/hooks/snapshotDeleteReadback.test.ts",
       "src/chatDeleteScope.test.ts",

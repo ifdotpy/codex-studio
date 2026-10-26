@@ -584,7 +584,7 @@ export function AccountTransferStatus({
             <Button
               size="compact-xs"
               variant="subtle"
-              disabled={!!pending}
+              disabled={pending}
               onClick={() => onAction("retry")}
             >
               Retry

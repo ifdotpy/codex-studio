@@ -1,4 +1,3 @@
-import { required } from "./performance-fixture.ts";
 import type { Message } from "../../src/types.ts";
 import React, { useState, useMemo } from "react";
 import { createRoot } from "react-dom/client";
@@ -67,7 +66,7 @@ const setDraft = (value: string) => {
   draft = value;
   listeners.forEach((fn) => fn());
 };
-window.historyWindowRenderedMessages = 0;
+window.renderedMessages = 0;
 function PreviewMessage({ m }: { m: Message }) {
   const [open, setOpen] = useState(false);
   return (
@@ -98,10 +97,10 @@ function Harness() {
   const [sent, setSent] = useState("");
   const [enabled, setEnabled] = useState(true);
   const sc = useConversationScroll("window-browser-fixture", true);
-  window.historyWindowPrepend = () =>
+  window.prepend = () =>
     flushSync(() => setItems((old) => [...make(-50, 50), ...old]));
-  window.historyWindowLatest = () => sc.setFollow(true);
-  window.historyWindowOptimistic = (many: boolean) =>
+  window.latest = () => sc.setFollow(true);
+  window.optimistic = (many: boolean) =>
     flushSync(() => {
       setEnabled(true);
       setItems([
@@ -114,12 +113,12 @@ function Harness() {
         },
       ]);
     });
-  window.historyWindowLegacy = (many) =>
+  window.legacy = (many) =>
     flushSync(() => {
       setEnabled(false);
       setItems(make(0, many ? 1000 : 1));
     });
-  window.historyWindowAck = () =>
+  window.ack = () =>
     flushSync(() =>
       setItems((old) =>
         old.map((item) =>
@@ -129,7 +128,7 @@ function Harness() {
         ),
       ),
     );
-  window.historyWindowPrependSameTurn = () =>
+  window.prependSameTurn = () =>
     flushSync(() =>
       setItems((old) => {
         const next: Message[] = [
@@ -151,8 +150,8 @@ function Harness() {
         return next;
       }),
     );
-  window.historyWindowSmall = () => flushSync(() => setItems(make(0, 1)));
-  window.historyWindowLargeTurn = () =>
+  window.small = () => flushSync(() => setItems(make(0, 1)));
+  window.largeTurn = () =>
     flushSync(() =>
       setItems(
         Array.from({ length: 3000 }, (_, i) => ({
@@ -169,7 +168,7 @@ function Harness() {
         })),
       ),
     );
-  window.historyWindowAppendStream = () =>
+  window.appendStream = () =>
     flushSync(() =>
       setItems((old) => [
         ...old,
@@ -182,14 +181,12 @@ function Harness() {
         },
       ]),
     );
-  window.historyWindowJump = async (id: string) => {
+  window.jump = async (id: string) => {
     sc.setFollow(false);
-    if (!sc.scroll.current) throw new Error("Missing scroll container");
     for (let i = 0; i < 30; i++) {
-      revealHistoryMessage(sc.scroll.current, id);
+      revealHistoryMessage(sc.scroll.current!, id);
       const target: HTMLElement | undefined = Array.from(
-        sc.scroll.current?.querySelectorAll<HTMLElement>("[data-message]") ??
-          [],
+        sc.scroll.current!.querySelectorAll<HTMLElement>("[data-message]"),
       ).find(
         (node) =>
           node.dataset.message === id || node.dataset.sourceMessage === id,
@@ -200,10 +197,11 @@ function Harness() {
           parent && parent !== sc.scroll.current;
           parent = parent.parentElement
         )
-          if (parent instanceof HTMLDetailsElement) parent.open = true;
-        sc.scroll.current.scrollTop +=
+          if (parent.tagName === "DETAILS")
+            (parent as HTMLDetailsElement).open = true;
+        sc.scroll.current!.scrollTop +=
           target.getBoundingClientRect().top -
-          sc.scroll.current.getBoundingClientRect().top -
+          sc.scroll.current!.getBoundingClientRect().top -
           16;
         sc.remember();
         return;
@@ -214,7 +212,8 @@ function Harness() {
           parent && parent !== sc.scroll.current;
           parent = parent.parentElement
         )
-          if (parent instanceof HTMLDetailsElement) parent.open = true;
+          if (parent.tagName === "DETAILS")
+            (parent as HTMLDetailsElement).open = true;
       await new Promise((resolve) => requestAnimationFrame(resolve));
     }
     throw Error("Jump did not find " + id);
@@ -228,14 +227,21 @@ function Harness() {
         scrollContainer={sc.scroll}
         rememberScroll={sc.remember}
         currentTurn="live"
-        onJump={window.historyWindowJump}
+        onJump={window.jump}
         renderMessage={(m) => {
-          window.historyWindowRenderedMessages++;
+          window.renderedMessages++;
           if (m.id === "a500" || m.clientMessageId === "request")
             return <PreviewMessage m={m} />;
           return (
             <article data-message={m.id} className="message">
-              <StreamingText text={m.text} streaming={!!m.streaming} />
+              <StreamingText
+                text={m.text}
+                streaming={
+                  m.streaming as React.ComponentProps<
+                    typeof StreamingText
+                  >["streaming"]
+                }
+              />
               {m.id === "a500" && (
                 <img
                   alt="Saved attachment"
@@ -288,7 +294,7 @@ function Harness() {
     </MantineProvider>
   );
 }
-createRoot(required(document.getElementById("root"))).render(<Harness />);
+createRoot(document.getElementById("root")!).render(<Harness />);
 function readSavedHistory(): Message[] {
   // The fixture is the only writer of this saved history document.
   const saved: Message[] | null = JSON.parse(
@@ -298,18 +304,18 @@ function readSavedHistory(): Message[] {
 }
 declare global {
   interface Window {
-    historyWindowRenderedMessages: number;
-    historyWindowPrepend: () => void;
-    historyWindowLatest: () => void;
-    historyWindowOptimistic: (many: boolean) => void;
-    historyWindowLegacy: (many: boolean) => void;
-    historyWindowAck: () => void;
-    historyWindowPrependSameTurn: () => void;
-    historyWindowSmall: () => void;
-    historyWindowLargeTurn: () => void;
-    historyWindowAppendStream: () => void;
-    historyWindowJump: (id: string) => Promise<void>;
-    historyWindowSameTurnNode: Element;
-    historyWindowOptimisticNode: Element;
+    renderedMessages: number;
+    prepend: () => void;
+    latest: () => void;
+    optimistic: (many: boolean) => void;
+    legacy: (many: boolean) => void;
+    ack: () => void;
+    prependSameTurn: () => void;
+    small: () => void;
+    largeTurn: () => void;
+    appendStream: () => void;
+    jump: (id: string) => Promise<void>;
+    sameTurnNode: Element;
+    optimisticNode: Element;
   }
 }

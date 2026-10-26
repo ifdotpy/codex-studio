@@ -5,7 +5,6 @@ import { isAbsolute, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createHash } from "node:crypto";
 import type { InlineConfig } from "vite";
-import { required } from "./performance-fixture.ts";
 import { build, loadConfigFromFile, mergeConfig } from "vite";
 
 const root = fileURLToPath(new URL("../../", import.meta.url));
@@ -79,12 +78,12 @@ for (const [stage, label] of labels.entries()) {
   const sources = new Map(
     files.map((path) => [
       join(root, path),
-      required((changed.has(path) ? current : before).get(path)),
+      (changed.has(path) ? current : before).get(path)!,
     ]),
   );
   const dist = join(output, label);
   await build(
-    mergeConfig(required(loaded).config, {
+    mergeConfig(loaded!.config, {
       configFile: false,
       root,
       build: { outDir: dist, emptyOutDir: false },
@@ -93,7 +92,7 @@ for (const [stage, label] of labels.entries()) {
           name: "interaction-variant",
           enforce: "pre",
           transform(_code, id) {
-            const code = sources.get(id.split("?")[0] ?? id);
+            const code = sources.get(id.split("?")[0]);
             if (code !== undefined) return { code, map: null };
           },
         },

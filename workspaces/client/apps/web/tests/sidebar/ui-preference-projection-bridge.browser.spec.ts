@@ -64,7 +64,7 @@ for (const entry of ["/?studio-server=local", "/"] as const) {
       expect(
         requests.streams.filter((url) => {
           const resources = subscribedResources(url);
-          return resources.length === 1 && resources[0]?.kind === "state";
+          return resources.length === 1 && resources[0].kind === "state";
         }),
       ).toHaveLength(0);
     } finally {
@@ -150,7 +150,7 @@ test("paired screen preference writes keep their server API and storage", async 
             (post) =>
               post.origin === origin &&
               post.body.scope === "server" &&
-              post.body.fields?.[field]?.value === value,
+              post.body.fields![field]?.value === value,
           ),
         )
         .toBe(true);
@@ -159,7 +159,7 @@ test("paired screen preference writes keep their server API and storage", async 
           (post) =>
             post.origin !== origin &&
             post.body.scope === "server" &&
-            post.body.fields?.[field]?.value === value,
+            post.body.fields![field]?.value === value,
         ),
       ).toBe(false);
     }

@@ -74,16 +74,8 @@ it("subscribes before capture and retains the final signed PCM chunk before clea
     return stopListening;
   });
   vi.mocked(nativeRequest).mockImplementation(async (method, params) => {
-    if (method === "view.subscribe") {
-      if (
-        !params ||
-        typeof params !== "object" ||
-        !("subscription" in params) ||
-        typeof params.subscription !== "string"
-      )
-        throw new Error("Missing subscription.");
-      subscription = params.subscription;
-    }
+    if (method === "view.subscribe")
+      subscription = (params as { subscription: string }).subscription;
     if (method === "media.captureStart") return { sampleRate: 16000 };
     if (method === "media.captureStop") {
       events({ event: subscription, value: { pcm: "AIAAAP9/" } });

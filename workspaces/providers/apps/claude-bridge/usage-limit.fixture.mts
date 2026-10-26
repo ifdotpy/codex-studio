@@ -1,3 +1,5 @@
+export const RESET = 1_900_000_000;
+export const LIMIT_TEXT = "You've hit your session limit · resets 3:40am (UTC)";
 export { resolveSettings } from "./sdk-fixtures.ts";
 import { inputText } from "./sdk-fixtures.ts";
 import type { FixtureQuery } from "./sdk-fixtures.ts";
@@ -11,7 +13,7 @@ const usage = { input_tokens: 10, output_tokens: 2 };
 const none = { input_tokens: 0, output_tokens: 0 };
 const info = {
   status: "rejected",
-  resetsAt: 1900000000,
+  resetsAt: RESET,
   rateLimitType: "five_hour",
   overageStatus: "rejected",
   overageDisabledReason: "org_level_disabled",
@@ -31,7 +33,7 @@ const refused = (id: string, details: boolean) => ({
     content: [
       {
         type: "text",
-        text: "You've hit your session limit · resets 3:40am (UTC)",
+        text: LIMIT_TEXT,
       },
     ],
   },
@@ -50,7 +52,7 @@ const failed = {
   subtype: "success",
   is_error: true,
   usage: none,
-  result: "You've hit your session limit · resets 3:40am (UTC)",
+  result: LIMIT_TEXT,
 };
 export function query({ prompt, options }: FixtureQuery) {
   const abort = new AbortController();

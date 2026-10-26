@@ -1,4 +1,3 @@
-import assert from "node:assert/strict";
 import type { BrowserContext, Page } from "playwright";
 import type { ViteDevServer } from "vite";
 import type { ApiPostPath, PostBody } from "../../src/apiTypes.ts";
@@ -12,19 +11,37 @@ export type FixtureAccount = NonNullable<
   MultiServerFixtureOptions["accounts"]
 >[number];
 
+type NamedFields<T> = {
+  [
+    K in keyof T as string extends K ? never : number extends K ? never : K
+  ]: T[K];
+};
+type UnionKeys<T> = T extends unknown ? keyof NamedFields<T> : never;
+type UnionField<T, K extends PropertyKey> = T extends unknown
+  ? K extends keyof NamedFields<T>
+    ? NamedFields<T>[K]
+    : never
+  : never;
+type RequestView<T, U = T> = T extends unknown
+  ? T & {
+      [K in Exclude<UnionKeys<U>, keyof T>]?: UnionField<U, K>;
+    }
+  : never;
+export type FixtureRequestFields<Path extends ApiPostPath = ApiPostPath> = {
+  [K in UnionKeys<PostBody<Path>>]?: UnionField<PostBody<Path>, K>;
+};
+
 /** Requests come from the renderer under test, typed by the generated contract. */
-export function fixturePostBody<Path extends ApiPostPath>(
-  body: unknown,
-): PostBody<Path> {
-  return body as PostBody<Path>;
+export function fixturePostBody<
+  Path extends ApiPostPath,
+  Body extends PostBody<Path> = PostBody<Path>,
+>(body: unknown): RequestView<Body> {
+  return body as RequestView<Body>;
 }
 
 export function fixtureOrigin(server: ViteDevServer): string {
-  const address = server.httpServer?.address();
-  assert.ok(
-    address && typeof address !== "string",
-    "Fixture must listen on a TCP port",
-  );
+  const address =
+    server.httpServer!.address() as import("node:net").AddressInfo;
   return `http://127.0.0.1:${address.port}`;
 }
 
@@ -68,13 +85,6 @@ export function fixtureBarrier() {
   const promise = new Promise<void>((resolve) => {
     barrier.resolve = resolve;
   });
-  assert.ok(barrier.resolve);
-  return { promise, resolve: barrier.resolve };
-}
 
-/** Preserve the fixture's failure on a missing row without non-null assertions. */
-export function requiredFixtureValue<T>(value: T): NonNullable<T> {
-  if (value === null || value === undefined)
-    throw new Error("Missing fixture value");
-  return value;
+  return { promise, resolve: barrier.resolve! };
 }

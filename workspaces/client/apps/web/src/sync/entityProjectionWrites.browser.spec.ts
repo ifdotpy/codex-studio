@@ -90,7 +90,7 @@ for (const writerTab of [0, 1]) {
           name: "entity-projection-reset-race",
           configureServer(server) {
             server.middlewares.use((request, response, next) => {
-              const url = new URL(request.url ?? "", "http://localhost");
+              const url = new URL(request.url!, "http://localhost");
               if (url.pathname === "/projection-reset-check") {
                 response.setHeader("Content-Type", "text/html");
                 response.end(
@@ -168,9 +168,9 @@ for (const writerTab of [0, 1]) {
       await page.evaluate(initializeWrites);
       await page.waitForFunction(
         () =>
-          window.syncWrites.snapshot?.runtime.agents.some(
+          window.snapshot?.runtime.agents.some(
             (agent) => agent.id === "lead",
-          ) && window.syncWrites.connection === "live",
+          ) && window.connection === "live",
       );
       return page;
     };
@@ -180,24 +180,21 @@ for (const writerTab of [0, 1]) {
       if (writerTab) await openPage();
       await expect.poll(() => streams.size).toBe(1);
       const writer = pages[writerTab];
-      assert.ok(writer);
       await writer.evaluate(() => {
-        const db = window.syncWrites.db;
-        if (!db) throw new Error("Missing writer fixture database");
-        const storage = db.projections.storageInstance;
+        const storage = window.db.projections.storageInstance;
         const original = storage.bulkWrite.bind(storage);
         storage.bulkWrite = async (writes, ...rest) => {
           if (
-            !window.syncWrites.writeStarted &&
+            !window.writeStarted &&
             writes.some(
               (entry) =>
                 entry.document.id === "entity:agent:ghost" &&
                 entry.document.seq === 3,
             )
           ) {
-            window.syncWrites.writeStarted = true;
+            window.writeStarted = true;
             await new Promise<void>(
-              (resolve) => (window.syncWrites.releaseWrite = resolve),
+              (resolve) => (window.releaseWrite = resolve),
             );
           }
           return original(writes, ...rest);
@@ -210,11 +207,11 @@ for (const writerTab of [0, 1]) {
         documents: [row("ghost", "Already deleted", 3)],
       });
       if (writerTab) {
-        await writer.evaluate(persistAcceptedWrite, JSON.stringify(accepted));
+        await writer.evaluate<void, unknown>(persistAcceptedWrite, accepted);
       } else {
         send(accepted);
       }
-      await writer.waitForFunction(() => window.syncWrites.writeStarted);
+      await writer.waitForFunction(() => window.writeStarted);
       sequence = 4;
       rows.set("fresh", row("fresh", "Replacement baseline", 4));
       resetPending = true;
@@ -222,21 +219,19 @@ for (const writerTab of [0, 1]) {
       await primary.waitForTimeout(150);
       assert.equal(
         await primary.evaluate(() =>
-          window.syncWrites.snapshot?.runtime.agents.some(
-            (agent) => agent.id === "fresh",
-          ),
+          window.snapshot?.runtime.agents.some((agent) => agent.id === "fresh"),
         ),
         false,
         "Reset must wait for the accepted storage write",
       );
-      await writer.evaluate(() => window.syncWrites.releaseWrite());
+      await writer.evaluate(() => window.releaseWrite());
       await Promise.all(
         pages.map((page) =>
           page.waitForFunction(
             async () =>
-              window.syncWrites.snapshot?.runtime.agents.some(
+              window.snapshot?.runtime.agents.some(
                 (agent) => agent.id === "fresh",
-              ) && (await window.syncWrites.checkpoint()) === 4,
+              ) && (await window.checkpoint()) === 4,
           ),
         ),
       );
@@ -244,7 +239,7 @@ for (const writerTab of [0, 1]) {
       for (const page of pages) {
         assert.equal(
           await page.evaluate(() =>
-            window.syncWrites.snapshot?.runtime.agents.some(
+            window.snapshot!.runtime.agents.some(
               (agent) => agent.id === "ghost",
             ),
           ),
@@ -257,17 +252,14 @@ for (const writerTab of [0, 1]) {
       for (const page of pages) {
         assert.equal(
           await page.evaluate(() =>
-            window.syncWrites.snapshot?.runtime.agents.some(
+            window.snapshot!.runtime.agents.some(
               (agent) => agent.id === "ghost",
             ),
           ),
           false,
           "A stale peer frame must not resurrect a row removed by reset",
         );
-        assert.deepEqual(
-          await page.evaluate(() => window.syncWrites.errors),
-          [],
-        );
+        assert.deepEqual(await page.evaluate(() => window.errors), []);
       }
       assert.deepEqual(errors, []);
     } finally {

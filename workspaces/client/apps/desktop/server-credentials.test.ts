@@ -1,6 +1,5 @@
 import { parsedRecord } from "./test-support.ts";
-import assert from "node:assert/strict";
-import { present } from "./test-support.ts";
+
 import type { SafeStorage } from "electron";
 import type { CredentialFetch } from "./server-credentials.ts";
 import { expect, test } from "vitest";
@@ -67,15 +66,12 @@ test("pair retry keeps its key and body, signs exact bytes and refuses another s
   };
   const calls: { headers: Record<string, string>; text: string }[] = [];
   let failed = false;
-  let ownKey = "";
+  let ownKey!: string;
   const fetchRequest: CredentialFetch = async (request) => {
     const text = await request.clone().text();
     calls.push({ headers: Object.fromEntries(request.headers), text });
-    if (request.url.endsWith("/pair")) {
-      const key = parsedRecord(text).publicKey;
-      assert(typeof key === "string");
-      ownKey = key;
-    }
+    if (request.url.endsWith("/pair"))
+      ownKey = (parsedRecord(text) as Record<"publicKey", string>).publicKey;
     const headers = request.headers;
     expect(headers.get("x-canvas-token")).toBeNull();
     expect(request.redirect).toBe("error");
@@ -93,7 +89,7 @@ ${crypto.createHash("sha256").update(text).digest("hex")}`;
         null,
         Buffer.from(signed),
         ownKey,
-        Buffer.from(present(headers.get("x-studio-signature")), "base64"),
+        Buffer.from(headers.get("x-studio-signature")!, "base64"),
       ),
     ).toBe(true);
     if (!failed) {
@@ -140,19 +136,19 @@ ${crypto.createHash("sha256").update(text).digest("hex")}`;
     });
     const server = await adapter.pair(attempt);
     expect(await adapter.hasPairAttempt(identity)).toBe(true);
-    expect(present(calls[0]).text).toBe(present(calls[1]).text);
-    expect(present(calls[0]).headers["x-studio-nonce"]).not.toBe(
-      present(calls[1]).headers["x-studio-nonce"],
+    expect(calls[0]!.text).toBe(calls[1]!.text);
+    expect(calls[0]!.headers["x-studio-nonce"]).not.toBe(
+      calls[1]!.headers["x-studio-nonce"],
     );
-    expect(present(calls[0]).headers["x-studio-request-id"]).toBe(
-      present(calls[1]).headers["x-studio-request-id"],
+    expect(calls[0]!.headers["x-studio-request-id"]).toBe(
+      calls[1]!.headers["x-studio-request-id"],
     );
     await adapter.request({
       serverId: server.id,
       credentialId: server.credentialId,
       url: invitation.origin + "/api/search?q=a%20b",
-      method: "GET",
-      headers: [["X-Canvas-Token", "local-only"]],
+
+      headers: { "X-Canvas-Token": "local-only" },
       requestId: "read-once",
     });
     // The shell summary sends no request ID. The signed bytes and the header
@@ -161,9 +157,8 @@ ${crypto.createHash("sha256").update(text).digest("hex")}`;
       serverId: server.id,
       credentialId: server.credentialId,
       url: invitation.origin + "/api/ui-summary",
-      method: "GET",
     });
-    expect(present(calls.at(-1)).headers["x-studio-request-id"]).toMatch(
+    expect(calls.at(-1)!.headers["x-studio-request-id"]).toMatch(
       /^[0-9a-f-]{36}$/,
     );
     await expect(
@@ -172,7 +167,7 @@ ${crypto.createHash("sha256").update(text).digest("hex")}`;
         credentialId: server.credentialId,
         url: invitation.origin + "/api/answer",
         method: "POST",
-        body: new TextEncoder().encode("{}").buffer,
+        body: new TextEncoder().encode("{}"),
       }),
     ).rejects.toThrow("needs a request ID");
     await expect(
@@ -180,7 +175,7 @@ ${crypto.createHash("sha256").update(text).digest("hex")}`;
         serverId: server.id,
         credentialId: server.credentialId,
         url: "https://other.tailnet.ts.net/api/session",
-        method: "GET",
+
         requestId: "read-other",
       }),
     ).rejects.toThrow("does not belong");
@@ -189,7 +184,7 @@ ${crypto.createHash("sha256").update(text).digest("hex")}`;
         serverId: server.id,
         credentialId: server.credentialId,
         url: "https://computer.tailnet.ts.net/api/session",
-        method: "GET",
+
         requestId: "read-other-port",
       }),
     ).rejects.toThrow("does not belong");
@@ -236,7 +231,7 @@ test("a confirmed unavailable invitation releases only its rejected attempt and 
     publicKey: "key",
     tailscaleUser: "owner",
   };
-  let respond: (response: Response) => void = () => {};
+  let respond!: (response: Response) => void;
   const pending = new Promise<Response>((resolve) => {
     respond = resolve;
   });
@@ -246,10 +241,9 @@ test("a confirmed unavailable invitation releases only its rejected attempt and 
     profile: root,
     safeStorage,
     fetchRequest: async (request) => {
-      const body: unknown = await request.clone().json();
-      assert(body && typeof body === "object");
-      assert("inviteId" in body && "clientId" in body);
-      calls.push({ ...body });
+      // This mock reads the pair document written by the adapter under test.
+      const body: Record<string, string> = await request.clone().json();
+      calls.push(body);
       if (reject) return pending;
       return Response.json({
         ...invitation,
@@ -300,7 +294,7 @@ test("a confirmed unavailable invitation releases only its rejected attempt and 
       requestId: "new-request",
     });
     expect(calls).toHaveLength(2);
-    expect(present(calls[1]).clientId).not.toBe(present(calls[0]).clientId);
+    expect(calls[1]!.clientId).not.toBe(calls[0]!.clientId);
     expect(
       await adapter.hasPairAttempt({
         origin: invitation.origin,
@@ -315,12 +309,15 @@ test("a confirmed unavailable invitation releases only its rejected attempt and 
 });
 test("pairing fails when the OS key store is unavailable or uses plaintext", async () => {
   for (const store of [
-    { ...safeStorage, isEncryptionAvailable: () => false },
+    { isEncryptionAvailable: () => false },
     { ...safeStorage, getSelectedStorageBackend: () => "basic_text" as const },
   ]) {
     const adapter = createServerCredentials({
       profile: "/unused",
-      safeStorage: store,
+      // Missing encrypt/decrypt methods are unreachable when storage is unavailable.
+      safeStorage: store as Parameters<
+        typeof createServerCredentials
+      >[0]["safeStorage"],
     });
     await expect(
       adapter.pair({
@@ -345,12 +342,12 @@ test("an unpaired profile never reads the system key store", async () => {
   const adapter = createServerCredentials({
     profile: folder,
     safeStorage: {
-      ...safeStorage,
-      isEncryptionAvailable() {
+      isEncryptionAvailable(): boolean {
         calls++;
         throw new Error("Unexpected key-store access");
       },
-    },
+      // No encryption methods are used before this witness finds an empty profile.
+    } as Parameters<typeof createServerCredentials>[0]["safeStorage"],
   });
   try {
     expect(await adapter.owns("missing")).toBe(false);
@@ -359,7 +356,7 @@ test("an unpaired profile never reads the system key store", async () => {
         serverId: "missing",
         credentialId: "missing",
         url: "https://computer.tailnet.ts.net/api/session",
-        method: "GET",
+
         requestId: "read",
       }),
     ).rejects.toThrow("The server key is unavailable");

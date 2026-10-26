@@ -18,7 +18,7 @@ export type {
 } from "../../../desktop/api.ts";
 import type { CredentialResponse, StreamChunk } from "../../../desktop/api.ts";
 export class DesktopServerCredentials implements ServerCredentialAdapter {
-  private bridge: DesktopBridge;
+  declare private bridge: DesktopBridge;
   constructor(bridge: DesktopBridge) {
     this.bridge = bridge;
   }

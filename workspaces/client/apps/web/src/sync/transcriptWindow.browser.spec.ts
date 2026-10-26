@@ -39,7 +39,7 @@ test("a transcript window streams without pulls and older history uses one bound
   const snapshot = {
     items: all.slice(-SYNC_TRANSCRIPT_INITIAL_TAIL_ITEMS),
     truncated: true,
-    nextCursor: all.at(-SYNC_TRANSCRIPT_INITIAL_TAIL_ITEMS)?.id ?? null,
+    nextCursor: all.at(-SYNC_TRANSCRIPT_INITIAL_TAIL_ITEMS)!.id,
     nextAfterCursor: null,
     historyVersion: "window-fixture",
   } satisfies components["schemas"]["TranscriptPageResponse"];
@@ -74,7 +74,7 @@ test("a transcript window streams without pulls and older history uses one bound
         name: "transcript-window-fixture",
         configureServer(server) {
           server.middlewares.use(async (request, response, next) => {
-            const url = new URL(request.url ?? "", "http://localhost");
+            const url = new URL(request.url!, "http://localhost");
             const json = (value: unknown) => {
               response.setHeader("Content-Type", "application/json");
               response.setHeader(API_SCHEMA_HASH_HEADER, readApiSchemaHash());
@@ -98,7 +98,7 @@ test("a transcript window streams without pulls and older history uses one bound
               response.write(apiSchemaHandshakeSse());
               baseline(
                 response,
-                fixtureResources(url.searchParams.get("resources")),
+                fixtureResources(url.searchParams.get("resources") || "[]"),
               );
               streams.add(response);
               response.on("close", () => streams.delete(response));
@@ -146,7 +146,7 @@ test("a transcript window streams without pulls and older history uses one bound
               json({
                 items: all.slice(start, before),
                 truncated: start > 0,
-                nextCursor: start ? (all[start]?.id ?? null) : null,
+                nextCursor: start ? all[start].id : null,
                 nextAfterCursor: all[before - 1]?.id || null,
                 historyVersion: "window-fixture",
               } satisfies components["schemas"]["TranscriptPageResponse"]);
@@ -170,7 +170,7 @@ test("a transcript window streams without pulls and older history uses one bound
       type: "module",
       url: "/src/sync/transcriptWindow.browser.fixture.tsx",
     });
-    await page.waitForFunction(() => !!window.syncWindow);
+    await page.waitForFunction(() => !!window.historyRoot);
     await expect(page.locator("output")).toHaveAttribute(
       "data-count",
       String(SYNC_TRANSCRIPT_INITIAL_TAIL_ITEMS),
@@ -196,16 +196,14 @@ test("a transcript window streams without pulls and older history uses one bound
       1,
       "one user action issues exactly one page read",
     );
-    assert.equal(Number(pages[0]?.limit), SYNC_TRANSCRIPT_INITIAL_TAIL_ITEMS);
-    assert.equal(pages[0]?.before, snapshot.nextCursor);
+    assert.equal(Number(pages[0].limit), SYNC_TRANSCRIPT_INITIAL_TAIL_ITEMS);
+    assert.equal(pages[0].before, snapshot.nextCursor);
     assert.deepEqual(
-      (await page.locator("output").textContent())?.split(","),
+      (await page.locator("output").textContent())!.split(","),
       all.slice(-2 * SYNC_TRANSCRIPT_INITIAL_TAIL_ITEMS).map((item) => item.id),
     );
     assert.deepEqual(pulls, []);
-    const last = all.at(-1);
-    assert.ok(last);
-    last.text = "Recovered oversized transcript";
+    all.at(-1)!.text = "Recovered oversized transcript";
     transcriptSequence++;
     for (const stream of streams)
       stream.write(
@@ -234,7 +232,7 @@ test("a transcript window streams without pulls and older history uses one bound
       "only the oversized interval permits one recovery pull",
     );
     assert.deepEqual(errors, []);
-    await page.evaluate(() => window.syncWindow.historyRoot.unmount());
+    await page.evaluate(() => window.historyRoot.unmount());
   } finally {
     await context.close();
     for (const response of streams) response.end();

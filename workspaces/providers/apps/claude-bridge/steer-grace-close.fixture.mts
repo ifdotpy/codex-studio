@@ -6,6 +6,6 @@ export {
   getSessionMessages,
 } from "./steer.fixture.mts";
 import { fixtureQuery } from "./steer.fixture.mts";
-import type { FixtureQuery } from "./sdk-fixtures.ts";
+import type { FixtureTextQuery as FixtureQuery } from "./sdk-fixtures.ts";
 export const query = (args: FixtureQuery) =>
   fixtureQuery(args, { logClose: true, logQueries: true });

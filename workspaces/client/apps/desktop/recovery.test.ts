@@ -1,6 +1,9 @@
-import { record, array } from "./test-support.ts";
-import { parsedRecord } from "./test-support.ts";
-import { present, portOf } from "./test-support.ts";
+import {
+  parseRecoveryJSON,
+  parseLaunchAgentJSON,
+  parsedRecord,
+} from "./test-support.ts";
+import type { AddressInfo } from "node:net";
 import type { RecoveryRun } from "./recovery.ts";
 import { trackDesktopRecovery } from "./recovery.ts";
 import assert from "node:assert/strict";
@@ -28,6 +31,10 @@ import {
   isInstalledApplication,
   recoveryStatusLabel,
 } from "./recovery.ts";
+// Both rejection witnesses record calls and intentionally ignore push's count.
+const recordingRun = (calls: Parameters<RecoveryRun>[]) =>
+  (async (...args: Parameters<RecoveryRun>) => calls.push(args)) as RecoveryRun;
+
 function fixture() {
   const root = mkdtempSync(
     path.join(tmpdir(), "studio-recovery-registration-"),
@@ -74,7 +81,7 @@ function fixture() {
 // Two python3 stubs on PATH: `old` stands for /usr/bin/python3 (3.9), `new` for a
 // Python that runs recover_backend.py.
 function interpreters(data: ReturnType<typeof fixture>) {
-  const found = { old: "", new: "" };
+  const found = {} as Record<"old" | "new", string>;
   for (const name of ["old", "new"] as const) {
     const dir = path.join(data.root, `${name}-python`);
     mkdirSync(dir, { recursive: true });
@@ -85,13 +92,9 @@ function interpreters(data: ReturnType<typeof fixture>) {
   return found;
 }
 function plistInterpreter(file: string) {
-  return present(
-    present(
-      readFileSync(file, "utf8").match(
-        /<key>ProgramArguments<\/key><array><string>([^<]+)<\/string>/,
-      ),
-    )[1],
-  );
+  return readFileSync(file, "utf8").match(
+    /<key>ProgramArguments<\/key><array><string>([^<]+)<\/string>/,
+  )![1]!;
 }
 
 test("only the installed Studio bundle can configure background recovery", async () => {
@@ -131,9 +134,7 @@ test("only the installed Studio bundle can configure background recovery", async
         ),
         env: { ...data.env, CODEX_AGENTS_STATE_DIR: state },
         enabled,
-        run: async (...args: Parameters<RecoveryRun>) => {
-          calls.push(args);
-        },
+        run: recordingRun(calls),
       };
       await assert.rejects(
         configureRecovery(attempt),
@@ -190,21 +191,18 @@ test.skipIf(process.platform !== "darwin")(
         calls.map((args) => args[0]),
         ["print", "bootstrap", "print"],
       );
-      assert.equal(present(calls[1])[1], "gui/777");
-      const config = parsedRecord(readFileSync(result.config, "utf8"));
+      assert.equal(calls[1]![1], "gui/777");
+      const config = parseRecoveryJSON(readFileSync(result.config, "utf8"));
       assert.equal(config.supervisorEnabled, false);
+      assert.equal(config.environment.CODEX_HOME, fixtureData.env.CODEX_HOME);
       assert.equal(
-        record(config.environment).CODEX_HOME,
-        fixtureData.env.CODEX_HOME,
-      );
-      assert.equal(
-        record(config.environment).CODEX_CANVAS_CWD,
+        config.environment.CODEX_CANVAS_CWD,
         fixtureData.env.CODEX_CANVAS_CWD,
       );
-      assert.equal(record(config.environment).OPENAI_API_KEY, undefined);
-      assert.equal(record(config.environment).CODEX_BOARD_STATE_DIR, undefined);
+      assert.equal(config.environment.OPENAI_API_KEY, undefined);
+      assert.equal(config.environment.CODEX_BOARD_STATE_DIR, undefined);
       assert.equal(statSync(result.config).mode & 0o777, 0o600);
-      const plist = parsedRecord(
+      const plist = parseLaunchAgentJSON(
         execFileSync(
           "/usr/bin/plutil",
           ["-convert", "json", "-o", "-", result.plist],
@@ -214,8 +212,8 @@ test.skipIf(process.platform !== "darwin")(
       assert.equal(plist.KeepAlive, true);
       assert.equal(plist.ProcessType, "Interactive");
       assert.equal(plist.AbandonProcessGroup, true);
-      assert.equal(array(plist.ProgramArguments)[2], fixtureData.supervisor);
-      assert.equal(array(plist.ProgramArguments)[4], result.config);
+      assert.equal(plist.ProgramArguments[2], fixtureData.supervisor);
+      assert.equal(plist.ProgramArguments[4], result.config);
       assert.equal(plist.Label, result.label);
     } finally {
       rmSync(fixtureData.root, { recursive: true, force: true });
@@ -238,13 +236,10 @@ test.skipIf(process.platform !== "darwin")(
           if (args[0] === "bootstrap") registered = true;
         },
       });
-      const config = parsedRecord(readFileSync(result.config, "utf8"));
+      const config = parseRecoveryJSON(readFileSync(result.config, "utf8"));
       assert.equal(config.supervisorEnabled, true);
-      assert.equal(
-        record(config.environment).CODEX_AGENTS_SUPERVISOR_MODE,
-        undefined,
-      );
-      const supervisorPlist = parsedRecord(
+      assert.equal(config.environment.CODEX_AGENTS_SUPERVISOR_MODE, undefined);
+      const supervisorPlist = parseLaunchAgentJSON(
         execFileSync(
           "/usr/bin/plutil",
           ["-convert", "json", "-o", "-", result.supervisorPlist],
@@ -255,7 +250,7 @@ test.skipIf(process.platform !== "darwin")(
       assert.equal(supervisorPlist.ProcessType, "Interactive");
       assert.equal(supervisorPlist.AbandonProcessGroup, true);
       assert.equal(supervisorPlist.Label, result.supervisorLabel);
-      assert.deepEqual(array(supervisorPlist.ProgramArguments).slice(-3), [
+      assert.deepEqual(supervisorPlist.ProgramArguments.slice(-3), [
         "--state",
         result.state,
         "--wait-for-lease",
@@ -265,7 +260,7 @@ test.skipIf(process.platform !== "darwin")(
         enabled: true,
         run: async () => {},
       });
-      const relaunched = parsedRecord(readFileSync(result.config, "utf8"));
+      const relaunched = parseRecoveryJSON(readFileSync(result.config, "utf8"));
       assert.equal(relaunched.supervisorEnabled, true);
     } finally {
       rmSync(data.root, { recursive: true, force: true });
@@ -429,7 +424,7 @@ test("recovery rewrite refuses to stop its supervisor while handles are live", a
           throw new Error("service is not loaded");
         if (args[0] === "bootstrap")
           registered.add(
-            `${args[1]}/${present(args[2]).includes("supervisor.") ? paths.supervisorLabel : paths.label}`,
+            `${args[1]}/${args[2]!.includes("supervisor.") ? paths.supervisorLabel : paths.label}`,
           );
         if (args[0] === "print" && service === `gui/777/${paths.label}`)
           return { stdout: "pid = 4242\n" };
@@ -487,7 +482,7 @@ test("a Finder launch cannot turn off the persisted supervisor setting", async (
     );
     await configureRecovery({ ...data, enabled: true, run: async () => {} });
     assert.equal(
-      parsedRecord(readFileSync(files.config, "utf8")).supervisorEnabled,
+      parseRecoveryJSON(readFileSync(files.config, "utf8")).supervisorEnabled,
       true,
     );
     assert.equal(supervisorPreference(data.env), true);
@@ -533,7 +528,7 @@ test("a desktop launch keeps the service-owned Rust selection and its supervisor
         calls.push(args);
       },
     });
-    const saved = parsedRecord(readFileSync(files.config, "utf8"));
+    const saved = parseRecoveryJSON(readFileSync(files.config, "utf8"));
     assert.deepEqual(
       {
         backend: saved.backend,
@@ -568,7 +563,7 @@ test("updating registered recovery preserves its live service; disabling removes
     assert.equal(recoveryPreference(data.env), false);
     assert.equal(existsSync(result.plist), false);
     assert.equal(
-      parsedRecord(readFileSync(result.config, "utf8")).enabled,
+      parseRecoveryJSON(readFileSync(result.config, "utf8")).enabled,
       false,
     );
   } finally {
@@ -607,7 +602,7 @@ test.skipIf(!process.env.CODEX_DESKTOP_E2E)(
     const port = await new Promise<number>((resolve) => {
       const server = createServer();
       server.listen(0, "127.0.0.1", () => {
-        const port = portOf(server);
+        const port = (server.address() as AddressInfo).port;
         server.close(() => resolve(port));
       });
     });
@@ -645,7 +640,7 @@ test.skipIf(!process.env.CODEX_DESKTOP_E2E)(
             pid = state.pid;
         } catch {}
       }
-      if (typeof pid === "number") process.kill(pid, "SIGTERM");
+      if (pid) process.kill(pid as number, "SIGTERM");
       // Keep this isolated crash fixture and its logs for inspection.
     }
   },
@@ -657,9 +652,9 @@ test("a graceful desktop exit always withdraws open intent", async () => {
   for (const shutdown of [false, true]) {
     const data = fixture();
     try {
-      const app = Object.assign(new EventEmitter(), {
-        getPath: () => path.join(data.root, "profile"),
-      });
+      const app = new EventEmitter() as InstanceType<typeof EventEmitter> &
+        Parameters<typeof trackDesktopRecovery>[0]["app"];
+      app.getPath = () => path.join(data.root, "profile");
       const powerMonitor = new EventEmitter();
       const { filename } = trackDesktopRecovery({
         app,
@@ -694,17 +689,14 @@ test("an attaching desktop preserves the saved restart environment and explicit 
       },
       run: async () => {},
     });
-    const before = parsedRecord(readFileSync(initial.config, "utf8"));
+    const before = parseRecoveryJSON(readFileSync(initial.config, "utf8"));
     await configureRecovery({ ...data, enabled: true, run: async () => {} });
-    const after = parsedRecord(readFileSync(initial.config, "utf8"));
+    const after = parseRecoveryJSON(readFileSync(initial.config, "utf8"));
     assert.deepEqual(after.environment, before.environment);
     assert.deepEqual(after.unsetEnvironment, before.unsetEnvironment);
-    assert.equal(record(after.environment).CODEX_HOME, undefined);
-    assert.ok(array(after.unsetEnvironment).includes("CODEX_HOME"));
-    assert.equal(
-      record(after.environment).CODEX_CANVAS_CWD,
-      "/saved-workspace",
-    );
+    assert.equal(after.environment.CODEX_HOME, undefined);
+    assert.ok(after.unsetEnvironment.includes("CODEX_HOME"));
+    assert.equal(after.environment.CODEX_CANVAS_CWD, "/saved-workspace");
   } finally {
     rmSync(data.root, { recursive: true, force: true });
   }
@@ -817,12 +809,12 @@ test("a Python-era saved launch environment is accepted without its retired keys
     for (const saved of pythonEraRecords(files.state, data.resources)) {
       writeFileSync(files.config, JSON.stringify(saved));
       await configureRecovery({ ...data, enabled: true, run: async () => {} });
-      const after = parsedRecord(readFileSync(files.config, "utf8"));
+      const after = parseRecoveryJSON(readFileSync(files.config, "utf8"));
       assert.equal(after.backend, "rust");
-      assert.ok(!array(after.unsetEnvironment).includes("CODEX_AGENTS_PYTHON"));
-      assert.equal(record(after.environment).CODEX_AGENTS_PYTHON, undefined);
-      assert.equal(record(after.environment).SHELL, "/bin/zsh");
-      assert.ok(array(after.unsetEnvironment).includes("CODEX_HOME"));
+      assert.ok(!after.unsetEnvironment.includes("CODEX_AGENTS_PYTHON"));
+      assert.equal(after.environment.CODEX_AGENTS_PYTHON, undefined);
+      assert.equal(after.environment.SHELL, "/bin/zsh");
+      assert.ok(after.unsetEnvironment.includes("CODEX_HOME"));
     }
     // A retired name with a saved value is accepted and not restored.
     const [first] = pythonEraRecords(files.state, data.resources);
@@ -831,24 +823,21 @@ test("a Python-era saved launch environment is accepted without its retired keys
       JSON.stringify({
         ...first,
         environment: {
-          ...present(first).environment,
+          ...first!.environment,
           CODEX_AGENTS_PYTHON: "/old/python",
         },
-        unsetEnvironment: present(first).unsetEnvironment.filter(
+        unsetEnvironment: first!.unsetEnvironment.filter(
           (key) => key !== "CODEX_AGENTS_PYTHON",
         ),
       }),
     );
     await configureRecovery({ ...data, enabled: true, run: async () => {} });
-    const after = parsedRecord(readFileSync(files.config, "utf8"));
-    assert.equal(record(after.environment).CODEX_AGENTS_PYTHON, undefined);
+    const after = parseRecoveryJSON(readFileSync(files.config, "utf8"));
+    assert.equal(after.environment.CODEX_AGENTS_PYTHON, undefined);
     // An unknown new name is still refused.
     const before = JSON.stringify({
       ...first,
-      unsetEnvironment: [
-        ...present(first).unsetEnvironment,
-        "CODEX_UNKNOWN_SETTING",
-      ],
+      unsetEnvironment: [...first!.unsetEnvironment, "CODEX_UNKNOWN_SETTING"],
     });
     writeFileSync(files.config, before);
     await assert.rejects(
@@ -879,14 +868,14 @@ test("backend restart environment overrides the attaching desktop and preserves 
       },
       run: async () => {},
     });
-    const config = parsedRecord(readFileSync(result.config, "utf8"));
+    const config = parseRecoveryJSON(readFileSync(result.config, "utf8"));
     assert.equal(
-      record(config.environment).CODEX_CANVAS_CWD,
+      config.environment.CODEX_CANVAS_CWD,
       "/authoritative-workspace",
     );
-    assert.equal(record(config.environment).CODEX_HOME, undefined);
-    assert.equal(record(config.environment).CODEX_BOARD_STATE_DIR, undefined);
-    assert.ok(array(config.unsetEnvironment).includes("CODEX_HOME"));
+    assert.equal(config.environment.CODEX_HOME, undefined);
+    assert.equal(config.environment.CODEX_BOARD_STATE_DIR, undefined);
+    assert.ok(config.unsetEnvironment.includes("CODEX_HOME"));
   } finally {
     rmSync(data.root, { recursive: true, force: true });
   }
@@ -898,9 +887,9 @@ test("explicit Quit and window close withdraw intent after a cancelled shutdown"
   for (const action of ["closeExplicitly", "windowClosing"] as const) {
     const data = fixture();
     try {
-      const app = Object.assign(new EventEmitter(), {
-        getPath: () => path.join(data.root, "profile"),
-      });
+      const app = new EventEmitter() as InstanceType<typeof EventEmitter> &
+        Parameters<typeof trackDesktopRecovery>[0]["app"];
+      app.getPath = () => path.join(data.root, "profile");
       const powerMonitor = new EventEmitter();
       const tracker = trackDesktopRecovery({
         app,
@@ -932,9 +921,7 @@ test("recovery refuses when no interpreter runs recover_backend.py and writes no
         checkInterpreter: async () => {
           throw new Error("ImportError: cannot import name 'StrEnum'");
         },
-        run: async (...args) => {
-          calls.push(args);
-        },
+        run: recordingRun(calls),
       }),
       /needs Python 3\.11 or newer to run recover_backend\.py/,
     );
@@ -982,7 +969,7 @@ test("recovery saves the first interpreter that runs recover_backend.py", async 
       [python.new, data.supervisor],
     ]);
     assert.equal(
-      parsedRecord(readFileSync(result.config, "utf8")).python,
+      parseRecoveryJSON(readFileSync(result.config, "utf8")).python,
       python.new,
     );
     assert.equal(plistInterpreter(result.plist), python.new);
@@ -1024,7 +1011,7 @@ test("a registered recovery job with an interpreter that cannot run recover_back
     assert.deepEqual(calls, ["print", "bootout", "bootstrap", "print"]);
     assert.equal(plistInterpreter(result.plist), python.new);
     assert.equal(
-      parsedRecord(readFileSync(result.config, "utf8")).python,
+      parseRecoveryJSON(readFileSync(result.config, "utf8")).python,
       python.new,
     );
   } finally {

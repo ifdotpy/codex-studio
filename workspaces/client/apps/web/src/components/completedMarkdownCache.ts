@@ -10,14 +10,14 @@ export type CompiledMarkdownBlock =
 // Charge UTF-16 source/output plus bookkeeping per entry and block.
 // These are cache accounting limits, not a measurement of the JavaScript heap.
 export class CompletedMarkdownCache {
+  private readonly maxBytes: number;
+  private readonly maxEntries: number;
   private entries = new Map<
     string,
     { blocks: readonly CompiledMarkdownBlock[]; bytes: number }
   >();
   private bytes = 0;
 
-  private readonly maxBytes: number;
-  private readonly maxEntries: number;
   constructor(maxBytes = 4 * 1024 * 1024, maxEntries = 512) {
     this.maxBytes = maxBytes;
     this.maxEntries = maxEntries;

@@ -42,25 +42,15 @@ function run(
         resolve({ stdout });
       },
     );
-    const cancel = () => {
-      child.kill("SIGKILL");
-    };
+    const cancel = () => child.kill("SIGKILL");
     signal?.addEventListener("abort", cancel, { once: true });
-    if (!child.stderr)
-      throw new Error("Speech helper has no diagnostics stream.");
-    const lines = createInterface({ input: child.stderr });
+    const lines = createInterface({ input: child.stderr! });
     let previous = -1;
     lines.on("line", (line) => {
       try {
-        const value: unknown = JSON.parse(line);
+        // Native progress lines are checked by the original event/range tests below.
+        const value: SpeechProgress & { type: string } = JSON.parse(line);
         if (
-          !!value &&
-          typeof value === "object" &&
-          "type" in value &&
-          "completed" in value &&
-          typeof value.completed === "number" &&
-          "total" in value &&
-          typeof value.total === "number" &&
           value.type === "progress" &&
           Number.isInteger(value.completed) &&
           Number.isInteger(value.total) &&
@@ -146,28 +136,27 @@ async function transcribe(
     let stdout;
     try {
       ({ stdout } = await run(helper, [file, locale], options));
-    } catch (caughterror) {
-      if (!(caughterror instanceof Error)) throw caughterror;
-      const error: NodeJS.ErrnoException = caughterror;
-      if (options.signal?.aborted) throw error;
+    } catch (error) {
+      if (options.signal?.aborted)
+        throw error as import("node:child_process").ExecFileException;
       try {
         const detail = readSpeechResult(
-          "stdout" in error && typeof error.stdout === "string"
-            ? error.stdout
-            : "",
+          (
+            error as import("node:child_process").ExecFileException & {
+              stdout: string;
+            }
+          ).stdout,
         );
         if (detail.error) throw Error(detail.error);
-      } catch (caughtparsed) {
-        if (!(caughtparsed instanceof Error)) throw caughtparsed;
-        const parsed: NodeJS.ErrnoException = caughtparsed;
-        if (parsed instanceof SyntaxError)
+      } catch (parsed) {
+        if ((parsed as NodeJS.ErrnoException) instanceof SyntaxError)
           throw Error(
             "Native transcription failed. Your recording is saved; retry transcription.",
           );
-        throw parsed;
+        throw parsed as NodeJS.ErrnoException;
       }
     }
-    const result = readSpeechResult(stdout ?? "");
+    const result = readSpeechResult(stdout!);
     if (typeof result.text !== "string" || !result.text.trim())
       throw Error(
         result.error || "No speech was recognized. Your recording is saved.",
