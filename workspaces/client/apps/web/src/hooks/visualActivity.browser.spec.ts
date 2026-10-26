@@ -125,7 +125,7 @@ test("hidden visual rows stop timers and rate renders and resume current values"
       await page.evaluate(
         () => window.visualActivityFixture.rateInterests.size,
       ),
-    ).toBe(2);
+    ).toBe(3);
     expect(
       await page
         .locator("#far .chat-status svg")
@@ -166,7 +166,7 @@ test("hidden visual rows stop timers and rate renders and resume current values"
       await page.evaluate(
         () => window.visualActivityFixture.rateInterests.size,
       ),
-    ).toBe(3);
+    ).toBe(4);
     await expect
       .poll(() =>
         page.evaluate(() => window.visualActivityFixture.activeVisualTimers()),
@@ -184,7 +184,7 @@ test("hidden visual rows stop timers and rate renders and resume current values"
       await page.evaluate(
         () => window.visualActivityFixture.rateInterests.size,
       ),
-    ).toBe(0);
+    ).toBe(1); // The open team owns its interest until unmount, as in App.
     const ticks = await page.evaluate(
       () => window.visualActivityFixture.visualMetrics.ticks,
     );
@@ -217,7 +217,7 @@ test("hidden visual rows stop timers and rate renders and resume current values"
       await page.evaluate(
         () => window.visualActivityFixture.rateInterests.size,
       ),
-    ).toBe(1);
+    ).toBe(2);
     await expect
       .poll(() =>
         page.evaluate(() => window.visualActivityFixture.activeVisualTimers()),

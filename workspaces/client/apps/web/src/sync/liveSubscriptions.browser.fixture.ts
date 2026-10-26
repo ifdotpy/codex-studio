@@ -6,6 +6,7 @@ declare global {
   }
 }
 export const initializeSubscriptions = async (workspaceId: string) => {
+  await import("/src/sync/client.ts");
   const { createResourceEvents } = await import("/src/sync/resourceEvents.ts");
   const api = await import("/src/api.ts");
   const { openServerEvents } = await import("/src/servers/eventSource.ts");
