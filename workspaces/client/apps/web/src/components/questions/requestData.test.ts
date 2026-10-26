@@ -208,7 +208,7 @@ describe("browserOpenDetails", () => {
   });
 
   it("reads the waiting phase, its deadline, and a sent paste", () => {
-    const request: RequestDto = {
+    const request = {
       id: "request-waiting",
       method: "browser/open",
       status: "pending",
@@ -222,7 +222,7 @@ describe("browserOpenDetails", () => {
         paste: { at: 1_800_000_100 },
         outcome: null,
       },
-    };
+    } satisfies RequestDto;
     expect(browserOpenDetails(request)).toMatchObject({
       port: 40645,
       redirectPath: "/oauth/callback",

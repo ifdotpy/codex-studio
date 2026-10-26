@@ -14,7 +14,7 @@ import {
   type ReviewTask,
 } from "./taskReviewModel";
 
-const task: ReviewTask = {
+const task = {
   id: "task",
   title: "Task",
   rootId: "lead",
@@ -23,7 +23,7 @@ const task: ReviewTask = {
   version: 1,
   status: "review",
   gate: { command: "check", timeout_ms: DEFAULT_GATE_TIMEOUT_MS },
-};
+} satisfies ReviewTask;
 const result = {
   id: "result",
   agent: "worker",
@@ -46,7 +46,7 @@ test("acceptance requires an override for missing, failed, running, and unknown 
             ...result,
             gate: {
               status,
-              config: task.gate!,
+              config: task.gate,
               revision: "abc",
               cwd: null,
               monitorId: "monitor",
@@ -61,7 +61,7 @@ test("acceptance requires an override for missing, failed, running, and unknown 
 });
 
 test("only a successful gate for the current configuration permits normal acceptance", () => {
-  const passed: ReviewTask = {
+  const passed = {
     ...task,
     results: [
       {
@@ -78,7 +78,7 @@ test("only a successful gate for the current configuration permits normal accept
         },
       },
     ],
-  };
+  } satisfies ReviewTask;
   expect(requiresGateOverride(passed)).toBe(false);
   expect(requiresGateOverride({ ...passed, gate: "another check" })).toBe(true);
   expect(
@@ -87,8 +87,15 @@ test("only a successful gate for the current configuration permits normal accept
       gate: { command: "check", timeout_ms: 1 },
     }),
   ).toBe(true);
-  required(passed.results![0]).gate!.monitorId = null;
-  expect(requiresGateOverride(passed)).toBe(true);
+  const passedResult = required(passed.results[0]);
+  expect(
+    requiresGateOverride({
+      ...passed,
+      results: [
+        { ...passedResult, gate: { ...passedResult.gate, monitorId: null } },
+      ],
+    }),
+  ).toBe(true);
 });
 
 test("gate input validates the Rust-owned timeout bounds and supports disable", () => {

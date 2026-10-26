@@ -438,6 +438,7 @@ it.each(["agent", "room"] as const)(
       kind === "agent" ? "transcript" : "room",
       kind === "agent"
         ? ({
+            truncated: false,
             items: [{ id: "new", role: "assistant", text: "Streamed" }],
           } satisfies ResourceData<
             Extract<ResourceRef, { kind: "transcript" }>
@@ -450,6 +451,9 @@ it.each(["agent", "room"] as const)(
                 text: "Streamed",
                 created: 1,
                 sender: "lead",
+                senderName: "Lead",
+                room: "team",
+                deliveries: {},
               },
             ],
             room: { id: "team" },

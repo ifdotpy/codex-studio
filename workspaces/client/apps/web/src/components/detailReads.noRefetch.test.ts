@@ -259,13 +259,16 @@ it("message info reads on open and reopen but not streamed turn metadata changes
 it("Claude account status and key updates do not reload settings; explicit retry does", async () => {
   h.post.mockRejectedValue(new Error("Sign in with claude auth login first"));
   let currentAgent = agent;
-  let account: Account = {
+  const accountFields = {
     id: "claude",
     home: "/fixture",
     source: "fixture",
-    status: "signedOut",
     provider: "claude",
     label: "Claude",
+  } satisfies Account;
+  let account: typeof accountFields & Pick<Account, "status"> = {
+    ...accountFields,
+    status: "signedOut",
   };
   const read = () => ClaudeSettings({ agent: currentAgent, account });
   render(read);
