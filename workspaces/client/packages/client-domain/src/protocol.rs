@@ -58,7 +58,7 @@ pub fn fragments(bytes: &[u8]) -> io::Result<impl Iterator<Item = (u8, &[u8])>> 
         .map(move |(index, part)| (u8::from(index + 1 < count), part)))
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Request {
     pub id: String,
@@ -67,7 +67,7 @@ pub struct Request {
     pub params: Value,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Deserialize, Serialize, schemars::JsonSchema)]
 pub struct Response {
     pub id: String,
     #[serde(
@@ -88,7 +88,7 @@ fn present_result<'de, D: serde::Deserializer<'de>>(
     Value::deserialize(deserializer).map(Some)
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize, schemars::JsonSchema)]
 pub struct CommandError {
     pub code: String,
     pub message: String,

@@ -6,2816 +6,2816 @@
 export interface paths {
   "/api/accounts": {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
     /** Accounts */
     get: operations["accounts_api_accounts_get"];
-    put?: never;
-    post?: never;
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
+    put?: never | undefined;
+    post?: never | undefined;
+    delete?: never | undefined;
+    options?: never | undefined;
+    head?: never | undefined;
+    patch?: never | undefined;
+    trace?: never | undefined;
   };
   "/api/accounts/claude/add": {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
-    get?: never;
-    put?: never;
+    get?: never | undefined;
+    put?: never | undefined;
     /** Claude Add Start */
     post: operations["claude_add_start_api_accounts_claude_add_post"];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
+    delete?: never | undefined;
+    options?: never | undefined;
+    head?: never | undefined;
+    patch?: never | undefined;
+    trace?: never | undefined;
   };
   "/api/accounts/claude/login": {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
     /** Claude Login Status */
     get: operations["claude_login_status_api_accounts_claude_login_get"];
-    put?: never;
+    put?: never | undefined;
     /** Claude Login Start */
     post: operations["claude_login_start_api_accounts_claude_login_post"];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
+    delete?: never | undefined;
+    options?: never | undefined;
+    head?: never | undefined;
+    patch?: never | undefined;
+    trace?: never | undefined;
   };
   "/api/accounts/claude/login/cancel": {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
-    get?: never;
-    put?: never;
+    get?: never | undefined;
+    put?: never | undefined;
     /** Claude Login Cancel */
     post: operations["claude_login_cancel_api_accounts_claude_login_cancel_post"];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
+    delete?: never | undefined;
+    options?: never | undefined;
+    head?: never | undefined;
+    patch?: never | undefined;
+    trace?: never | undefined;
   };
   "/api/accounts/claude/login/code": {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
-    get?: never;
-    put?: never;
+    get?: never | undefined;
+    put?: never | undefined;
     /** Claude Login Code */
     post: operations["claude_login_code_api_accounts_claude_login_code_post"];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
+    delete?: never | undefined;
+    options?: never | undefined;
+    head?: never | undefined;
+    patch?: never | undefined;
+    trace?: never | undefined;
   };
   "/api/accounts/default": {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
-    get?: never;
-    put?: never;
+    get?: never | undefined;
+    put?: never | undefined;
     /** Account Default */
     post: operations["account_default_api_accounts_default_post"];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
+    delete?: never | undefined;
+    options?: never | undefined;
+    head?: never | undefined;
+    patch?: never | undefined;
+    trace?: never | undefined;
   };
   "/api/accounts/default-groups": {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
-    get?: never;
-    put?: never;
+    get?: never | undefined;
+    put?: never | undefined;
     /** Account Default Groups */
     post: operations["account_default_groups_api_accounts_default_groups_post"];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
+    delete?: never | undefined;
+    options?: never | undefined;
+    head?: never | undefined;
+    patch?: never | undefined;
+    trace?: never | undefined;
   };
   "/api/accounts/delete": {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
-    get?: never;
-    put?: never;
+    get?: never | undefined;
+    put?: never | undefined;
     /** Account Delete */
     post: operations["account_delete_api_accounts_delete_post"];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
+    delete?: never | undefined;
+    options?: never | undefined;
+    head?: never | undefined;
+    patch?: never | undefined;
+    trace?: never | undefined;
   };
   "/api/accounts/disconnect": {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
-    get?: never;
-    put?: never;
+    get?: never | undefined;
+    put?: never | undefined;
     /** Account Disconnect */
     post: operations["account_disconnect_api_accounts_disconnect_post"];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
+    delete?: never | undefined;
+    options?: never | undefined;
+    head?: never | undefined;
+    patch?: never | undefined;
+    trace?: never | undefined;
   };
   "/api/accounts/discover": {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
-    get?: never;
-    put?: never;
+    get?: never | undefined;
+    put?: never | undefined;
     /** Account Discover */
     post: operations["account_discover_api_accounts_discover_post"];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
+    delete?: never | undefined;
+    options?: never | undefined;
+    head?: never | undefined;
+    patch?: never | undefined;
+    trace?: never | undefined;
   };
   "/api/accounts/group": {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
-    get?: never;
-    put?: never;
+    get?: never | undefined;
+    put?: never | undefined;
     /** Account Group */
     post: operations["account_group_api_accounts_group_post"];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
+    delete?: never | undefined;
+    options?: never | undefined;
+    head?: never | undefined;
+    patch?: never | undefined;
+    trace?: never | undefined;
   };
   "/api/accounts/login": {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
-    get?: never;
-    put?: never;
+    get?: never | undefined;
+    put?: never | undefined;
     /** Account Login */
     post: operations["account_login_api_accounts_login_post"];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
+    delete?: never | undefined;
+    options?: never | undefined;
+    head?: never | undefined;
+    patch?: never | undefined;
+    trace?: never | undefined;
   };
   "/api/accounts/login/cancel": {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
-    get?: never;
-    put?: never;
+    get?: never | undefined;
+    put?: never | undefined;
     /** Account Login Cancel */
     post: operations["account_login_cancel_api_accounts_login_cancel_post"];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
+    delete?: never | undefined;
+    options?: never | undefined;
+    head?: never | undefined;
+    patch?: never | undefined;
+    trace?: never | undefined;
   };
   "/api/accounts/name": {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
-    get?: never;
-    put?: never;
+    get?: never | undefined;
+    put?: never | undefined;
     /** Account Name */
     post: operations["account_name_api_accounts_name_post"];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
+    delete?: never | undefined;
+    options?: never | undefined;
+    head?: never | undefined;
+    patch?: never | undefined;
+    trace?: never | undefined;
   };
   "/api/accounts/reconnect": {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
-    get?: never;
-    put?: never;
+    get?: never | undefined;
+    put?: never | undefined;
     /** Account Reconnect */
     post: operations["account_reconnect_api_accounts_reconnect_post"];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
+    delete?: never | undefined;
+    options?: never | undefined;
+    head?: never | undefined;
+    patch?: never | undefined;
+    trace?: never | undefined;
   };
   "/api/accounts/register": {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
-    get?: never;
-    put?: never;
+    get?: never | undefined;
+    put?: never | undefined;
     /** Account Register */
     post: operations["account_register_api_accounts_register_post"];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
+    delete?: never | undefined;
+    options?: never | undefined;
+    head?: never | undefined;
+    patch?: never | undefined;
+    trace?: never | undefined;
   };
   "/api/accounts/throttle": {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
-    get?: never;
-    put?: never;
+    get?: never | undefined;
+    put?: never | undefined;
     /** Account Throttle */
     post: operations["account_throttle_api_accounts_throttle_post"];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
+    delete?: never | undefined;
+    options?: never | undefined;
+    head?: never | undefined;
+    patch?: never | undefined;
+    trace?: never | undefined;
   };
   "/api/action": {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
-    get?: never;
-    put?: never;
+    get?: never | undefined;
+    put?: never | undefined;
     /** Native Action */
     post: operations["native_action_api_action_post"];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
+    delete?: never | undefined;
+    options?: never | undefined;
+    head?: never | undefined;
+    patch?: never | undefined;
+    trace?: never | undefined;
   };
   "/api/agent-chat": {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
     /** Agent Chat */
     get: operations["agent_chat_api_agent_chat_get"];
-    put?: never;
-    post?: never;
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
+    put?: never | undefined;
+    post?: never | undefined;
+    delete?: never | undefined;
+    options?: never | undefined;
+    head?: never | undefined;
+    patch?: never | undefined;
+    trace?: never | undefined;
   };
   "/api/agents": {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
-    get?: never;
-    put?: never;
+    get?: never | undefined;
+    put?: never | undefined;
     /** Create Agent */
     post: operations["create_agent_api_agents_post"];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
+    delete?: never | undefined;
+    options?: never | undefined;
+    head?: never | undefined;
+    patch?: never | undefined;
+    trace?: never | undefined;
   };
   "/api/agents/account": {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
-    get?: never;
-    put?: never;
+    get?: never | undefined;
+    put?: never | undefined;
     /** Select Account */
     post: operations["select_account_api_agents_account_post"];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
+    delete?: never | undefined;
+    options?: never | undefined;
+    head?: never | undefined;
+    patch?: never | undefined;
+    trace?: never | undefined;
   };
   "/api/agents/account-transfer": {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
-    get?: never;
-    put?: never;
+    get?: never | undefined;
+    put?: never | undefined;
     /** Account Transfer */
     post: operations["account_transfer_api_agents_account_transfer_post"];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
+    delete?: never | undefined;
+    options?: never | undefined;
+    head?: never | undefined;
+    patch?: never | undefined;
+    trace?: never | undefined;
   };
   "/api/agents/finder-view": {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
     /**
      * Finder View
      * @description Where Finder shows the chat's files. Reads saved records only; never mounts or calls the VM.
      */
     get: operations["finder_view_api_agents_finder_view_get"];
-    put?: never;
-    post?: never;
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
+    put?: never | undefined;
+    post?: never | undefined;
+    delete?: never | undefined;
+    options?: never | undefined;
+    head?: never | undefined;
+    patch?: never | undefined;
+    trace?: never | undefined;
   };
   "/api/analytics": {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
     /** Analytics */
     get: operations["analytics_api_analytics_get"];
-    put?: never;
-    post?: never;
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
+    put?: never | undefined;
+    post?: never | undefined;
+    delete?: never | undefined;
+    options?: never | undefined;
+    head?: never | undefined;
+    patch?: never | undefined;
+    trace?: never | undefined;
   };
   "/api/annotation": {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
-    get?: never;
-    put?: never;
+    get?: never | undefined;
+    put?: never | undefined;
     /** Annotation */
     post: operations["annotation_api_annotation_post"];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
+    delete?: never | undefined;
+    options?: never | undefined;
+    head?: never | undefined;
+    patch?: never | undefined;
+    trace?: never | undefined;
   };
   "/api/answer": {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
-    get?: never;
-    put?: never;
+    get?: never | undefined;
+    put?: never | undefined;
     /** Answer */
     post: operations["answer_api_answer_post"];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
+    delete?: never | undefined;
+    options?: never | undefined;
+    head?: never | undefined;
+    patch?: never | undefined;
+    trace?: never | undefined;
   };
   "/api/assets": {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
-    get?: never;
-    put?: never;
+    get?: never | undefined;
+    put?: never | undefined;
     /** Upload Asset */
     post: operations["upload_asset_api_assets_post"];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
+    delete?: never | undefined;
+    options?: never | undefined;
+    head?: never | undefined;
+    patch?: never | undefined;
+    trace?: never | undefined;
   };
   "/api/branch": {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
-    get?: never;
-    put?: never;
+    get?: never | undefined;
+    put?: never | undefined;
     /** Branch */
     post: operations["branch_api_branch_post"];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
+    delete?: never | undefined;
+    options?: never | undefined;
+    head?: never | undefined;
+    patch?: never | undefined;
+    trace?: never | undefined;
   };
   "/api/browser/forward": {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
-    get?: never;
-    put?: never;
+    get?: never | undefined;
+    put?: never | undefined;
     /** Browser Forward */
     post: operations["browser_forward_api_browser_forward_post"];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
+    delete?: never | undefined;
+    options?: never | undefined;
+    head?: never | undefined;
+    patch?: never | undefined;
+    trace?: never | undefined;
   };
   "/api/capabilities": {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
     /** Capabilities */
     get: operations["capabilities_api_capabilities_get"];
-    put?: never;
-    post?: never;
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
+    put?: never | undefined;
+    post?: never | undefined;
+    delete?: never | undefined;
+    options?: never | undefined;
+    head?: never | undefined;
+    patch?: never | undefined;
+    trace?: never | undefined;
   };
   "/api/capacity-retry": {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
-    get?: never;
-    put?: never;
+    get?: never | undefined;
+    put?: never | undefined;
     /** Capacity Retry */
     post: operations["capacity_retry_api_capacity_retry_post"];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
+    delete?: never | undefined;
+    options?: never | undefined;
+    head?: never | undefined;
+    patch?: never | undefined;
+    trace?: never | undefined;
   };
   "/api/changes": {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
     /** Changes */
     get: operations["changes_api_changes_get"];
-    put?: never;
-    post?: never;
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
+    put?: never | undefined;
+    post?: never | undefined;
+    delete?: never | undefined;
+    options?: never | undefined;
+    head?: never | undefined;
+    patch?: never | undefined;
+    trace?: never | undefined;
   };
   "/api/chats": {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
-    get?: never;
-    put?: never;
+    get?: never | undefined;
+    put?: never | undefined;
     /** Create Chat */
     post: operations["create_chat_api_chats_post"];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
+    delete?: never | undefined;
+    options?: never | undefined;
+    head?: never | undefined;
+    patch?: never | undefined;
+    trace?: never | undefined;
   };
   "/api/checkpoint": {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
-    get?: never;
-    put?: never;
+    get?: never | undefined;
+    put?: never | undefined;
     /** Checkpoint */
     post: operations["checkpoint_api_checkpoint_post"];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
+    delete?: never | undefined;
+    options?: never | undefined;
+    head?: never | undefined;
+    patch?: never | undefined;
+    trace?: never | undefined;
   };
   "/api/checkpoint/preview": {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
-    get?: never;
-    put?: never;
+    get?: never | undefined;
+    put?: never | undefined;
     /** Checkpoint Preview */
     post: operations["checkpoint_preview_api_checkpoint_preview_post"];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
+    delete?: never | undefined;
+    options?: never | undefined;
+    head?: never | undefined;
+    patch?: never | undefined;
+    trace?: never | undefined;
   };
   "/api/checkpoint/restore": {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
-    get?: never;
-    put?: never;
+    get?: never | undefined;
+    put?: never | undefined;
     /** Checkpoint Restore */
     post: operations["checkpoint_restore_api_checkpoint_restore_post"];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
+    delete?: never | undefined;
+    options?: never | undefined;
+    head?: never | undefined;
+    patch?: never | undefined;
+    trace?: never | undefined;
   };
   "/api/checkpoints": {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
     /** Checkpoints */
     get: operations["checkpoints_api_checkpoints_get"];
-    put?: never;
-    post?: never;
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
+    put?: never | undefined;
+    post?: never | undefined;
+    delete?: never | undefined;
+    options?: never | undefined;
+    head?: never | undefined;
+    patch?: never | undefined;
+    trace?: never | undefined;
   };
   "/api/claude/file-backups": {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
-    get?: never;
-    put?: never;
+    get?: never | undefined;
+    put?: never | undefined;
     /** Inspect or release settled Claude file backups */
     post: operations["claude_file_backups_api_claude_file_backups_post"];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
+    delete?: never | undefined;
+    options?: never | undefined;
+    head?: never | undefined;
+    patch?: never | undefined;
+    trace?: never | undefined;
   };
   "/api/claude/profiles": {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
-    get?: never;
-    put?: never;
+    get?: never | undefined;
+    put?: never | undefined;
     /** Claude Profile */
     post: operations["claude_profile_api_claude_profiles_post"];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
+    delete?: never | undefined;
+    options?: never | undefined;
+    head?: never | undefined;
+    patch?: never | undefined;
+    trace?: never | undefined;
   };
   "/api/claude/repair-report": {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
     /** Read saved Claude journal repair evidence without repair or replay */
     get: operations["claude_repair_report"];
-    put?: never;
-    post?: never;
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
+    put?: never | undefined;
+    post?: never | undefined;
+    delete?: never | undefined;
+    options?: never | undefined;
+    head?: never | undefined;
+    patch?: never | undefined;
+    trace?: never | undefined;
   };
   "/api/claude/session": {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
-    get?: never;
-    put?: never;
+    get?: never | undefined;
+    put?: never | undefined;
     /** Claude Session */
     post: operations["claude_session_api_claude_session_post"];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
+    delete?: never | undefined;
+    options?: never | undefined;
+    head?: never | undefined;
+    patch?: never | undefined;
+    trace?: never | undefined;
   };
   "/api/complaint": {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
     /** Complaint Detail */
     get: operations["complaint_detail_api_complaint_get"];
-    put?: never;
-    post?: never;
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
+    put?: never | undefined;
+    post?: never | undefined;
+    delete?: never | undefined;
+    options?: never | undefined;
+    head?: never | undefined;
+    patch?: never | undefined;
+    trace?: never | undefined;
   };
   "/api/complaints": {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
-    get?: never;
-    put?: never;
+    get?: never | undefined;
+    put?: never | undefined;
     /** Complaints */
     post: operations["complaints_api_complaints_post"];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
+    delete?: never | undefined;
+    options?: never | undefined;
+    head?: never | undefined;
+    patch?: never | undefined;
+    trace?: never | undefined;
   };
   "/api/configure": {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
-    get?: never;
-    put?: never;
+    get?: never | undefined;
+    put?: never | undefined;
     /** Configure */
     post: operations["configure_api_configure_post"];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
+    delete?: never | undefined;
+    options?: never | undefined;
+    head?: never | undefined;
+    patch?: never | undefined;
+    trace?: never | undefined;
   };
   "/api/connection-recovery": {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
-    get?: never;
-    put?: never;
+    get?: never | undefined;
+    put?: never | undefined;
     /** Connection Recovery */
     post: operations["connection_recovery_api_connection_recovery_post"];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
+    delete?: never | undefined;
+    options?: never | undefined;
+    head?: never | undefined;
+    patch?: never | undefined;
+    trace?: never | undefined;
   };
   "/api/connections": {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
-    get?: never;
-    put?: never;
+    get?: never | undefined;
+    put?: never | undefined;
     /** Connect Chat */
     post: operations["connect_chat_api_connections_post"];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
+    delete?: never | undefined;
+    options?: never | undefined;
+    head?: never | undefined;
+    patch?: never | undefined;
+    trace?: never | undefined;
   };
   "/api/context-repair": {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
-    get?: never;
-    put?: never;
+    get?: never | undefined;
+    put?: never | undefined;
     /** Context Repair */
     post: operations["context_repair_api_context_repair_post"];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
+    delete?: never | undefined;
+    options?: never | undefined;
+    head?: never | undefined;
+    patch?: never | undefined;
+    trace?: never | undefined;
   };
   "/api/conversation": {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
-    get?: never;
-    put?: never;
+    get?: never | undefined;
+    put?: never | undefined;
     /** Conversation Settings */
     post: operations["conversation_settings_api_conversation_post"];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
+    delete?: never | undefined;
+    options?: never | undefined;
+    head?: never | undefined;
+    patch?: never | undefined;
+    trace?: never | undefined;
   };
   "/api/conversation/delete": {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
-    get?: never;
-    put?: never;
+    get?: never | undefined;
+    put?: never | undefined;
     /** Delete Conversation */
     post: operations["delete_conversation_api_conversation_delete_post"];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
+    delete?: never | undefined;
+    options?: never | undefined;
+    head?: never | undefined;
+    patch?: never | undefined;
+    trace?: never | undefined;
   };
   "/api/costs": {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
     /** Costs */
     get: operations["costs_api_costs_get"];
-    put?: never;
-    post?: never;
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
+    put?: never | undefined;
+    post?: never | undefined;
+    delete?: never | undefined;
+    options?: never | undefined;
+    head?: never | undefined;
+    patch?: never | undefined;
+    trace?: never | undefined;
   };
   "/api/costs/interest": {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
-    get?: never;
-    put?: never;
+    get?: never | undefined;
+    put?: never | undefined;
     /** Request an on-demand account cost refresh; results arrive through sync entities */
     post: operations["cost_interest_api_costs_interest_post"];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
+    delete?: never | undefined;
+    options?: never | undefined;
+    head?: never | undefined;
+    patch?: never | undefined;
+    trace?: never | undefined;
   };
   "/api/desktop": {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
     /** Desktop */
     get: operations["desktop_api_desktop_get"];
-    put?: never;
-    post?: never;
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
+    put?: never | undefined;
+    post?: never | undefined;
+    delete?: never | undefined;
+    options?: never | undefined;
+    head?: never | undefined;
+    patch?: never | undefined;
+    trace?: never | undefined;
   };
   "/api/diagnostics": {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
     /** Diagnostics */
     get: operations["diagnostics_api_diagnostics_get"];
-    put?: never;
-    post?: never;
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
+    put?: never | undefined;
+    post?: never | undefined;
+    delete?: never | undefined;
+    options?: never | undefined;
+    head?: never | undefined;
+    patch?: never | undefined;
+    trace?: never | undefined;
   };
   "/api/diagnostics/usage-reconciliation": {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
     /**
      * Reconcile one agent usage against native evidence
      * @description Read-only bounded diagnostic for current or archived agents. Costs use request-level catalog tiers; null means unavailable pricing or tokens. Incomplete evidence and truncated scans are explicit.
      */
     get: operations["usage_reconciliation_api_diagnostics_usage_reconciliation_get"];
-    put?: never;
-    post?: never;
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
+    put?: never | undefined;
+    post?: never | undefined;
+    delete?: never | undefined;
+    options?: never | undefined;
+    head?: never | undefined;
+    patch?: never | undefined;
+    trace?: never | undefined;
   };
   "/api/directories": {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
     /** Directories */
     get: operations["directories_api_directories_get"];
-    put?: never;
-    post?: never;
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
+    put?: never | undefined;
+    post?: never | undefined;
+    delete?: never | undefined;
+    options?: never | undefined;
+    head?: never | undefined;
+    patch?: never | undefined;
+    trace?: never | undefined;
   };
   "/api/federation": {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
-    get?: never;
-    put?: never;
+    get?: never | undefined;
+    put?: never | undefined;
     /** Manage Federation */
     post: operations["manage_federation_api_federation_post"];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
+    delete?: never | undefined;
+    options?: never | undefined;
+    head?: never | undefined;
+    patch?: never | undefined;
+    trace?: never | undefined;
   };
   "/api/federation/v1/message": {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
-    get?: never;
-    put?: never;
+    get?: never | undefined;
+    put?: never | undefined;
     /** Message */
     post: operations["message_api_federation_v1_message_post"];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
+    delete?: never | undefined;
+    options?: never | undefined;
+    head?: never | undefined;
+    patch?: never | undefined;
+    trace?: never | undefined;
   };
   "/api/federation/v1/pair": {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
-    get?: never;
-    put?: never;
+    get?: never | undefined;
+    put?: never | undefined;
     /** Pair */
     post: operations["pair_api_federation_v1_pair_post"];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
+    delete?: never | undefined;
+    options?: never | undefined;
+    head?: never | undefined;
+    patch?: never | undefined;
+    trace?: never | undefined;
   };
   "/api/federation/v1/pull": {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
-    get?: never;
-    put?: never;
+    get?: never | undefined;
+    put?: never | undefined;
     /** Pull */
     post: operations["pull_api_federation_v1_pull_post"];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
+    delete?: never | undefined;
+    options?: never | undefined;
+    head?: never | undefined;
+    patch?: never | undefined;
+    trace?: never | undefined;
   };
   "/api/federation/v1/status": {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
-    get?: never;
-    put?: never;
+    get?: never | undefined;
+    put?: never | undefined;
     /** Status */
     post: operations["status_api_federation_v1_status_post"];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
+    delete?: never | undefined;
+    options?: never | undefined;
+    head?: never | undefined;
+    patch?: never | undefined;
+    trace?: never | undefined;
   };
   "/api/file": {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
     /** File Content */
     get: operations["file_content_api_file_get"];
-    put?: never;
-    post?: never;
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
+    put?: never | undefined;
+    post?: never | undefined;
+    delete?: never | undefined;
+    options?: never | undefined;
+    head?: never | undefined;
+    patch?: never | undefined;
+    trace?: never | undefined;
   };
   "/api/file-info": {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
     /** File Info */
     get: operations["file_info_api_file_info_get"];
-    put?: never;
-    post?: never;
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
+    put?: never | undefined;
+    post?: never | undefined;
+    delete?: never | undefined;
+    options?: never | undefined;
+    head?: never | undefined;
+    patch?: never | undefined;
+    trace?: never | undefined;
   };
   "/api/import": {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
     /** Import List */
     get: operations["import_list_api_import_get"];
-    put?: never;
+    put?: never | undefined;
     /** Import Thread */
     post: operations["import_thread_api_import_post"];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
+    delete?: never | undefined;
+    options?: never | undefined;
+    head?: never | undefined;
+    patch?: never | undefined;
+    trace?: never | undefined;
   };
   "/api/leads": {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
-    get?: never;
-    put?: never;
+    get?: never | undefined;
+    put?: never | undefined;
     /** Create Lead */
     post: operations["create_lead_api_leads_post"];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
+    delete?: never | undefined;
+    options?: never | undefined;
+    head?: never | undefined;
+    patch?: never | undefined;
+    trace?: never | undefined;
   };
   "/api/limits": {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
     /** Limits */
     get: operations["limits_api_limits_get"];
-    put?: never;
-    post?: never;
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
+    put?: never | undefined;
+    post?: never | undefined;
+    delete?: never | undefined;
+    options?: never | undefined;
+    head?: never | undefined;
+    patch?: never | undefined;
+    trace?: never | undefined;
   };
   "/api/limits/reset": {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
-    get?: never;
-    put?: never;
+    get?: never | undefined;
+    put?: never | undefined;
     /** Reset Limits */
     post: operations["reset_limits_api_limits_reset_post"];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
+    delete?: never | undefined;
+    options?: never | undefined;
+    head?: never | undefined;
+    patch?: never | undefined;
+    trace?: never | undefined;
   };
   "/api/linux-vm/settings": {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
     /** Linux Vm Settings */
     get: operations["linux_vm_settings_api_linux_vm_settings_get"];
-    put?: never;
+    put?: never | undefined;
     /** Linux Vm Settings Write */
     post: operations["linux_vm_settings_write_api_linux_vm_settings_post"];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
+    delete?: never | undefined;
+    options?: never | undefined;
+    head?: never | undefined;
+    patch?: never | undefined;
+    trace?: never | undefined;
   };
   "/api/mac-sync/config": {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
-    get?: never;
-    put?: never;
+    get?: never | undefined;
+    put?: never | undefined;
     /**
      * Mac Sync Config
      * @description Pause or resume a project's Mac folder sync, or confirm the Mac deletions that paused it.
      */
     post: operations["mac_sync_config_api_mac_sync_config_post"];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
+    delete?: never | undefined;
+    options?: never | undefined;
+    head?: never | undefined;
+    patch?: never | undefined;
+    trace?: never | undefined;
   };
   "/api/mac-sync/resolve": {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
-    get?: never;
-    put?: never;
+    get?: never | undefined;
+    put?: never | undefined;
     /**
      * Mac Sync Resolve
      * @description Settle one conflicting path of a project's Mac folder sync.
      */
     post: operations["mac_sync_resolve_api_mac_sync_resolve_post"];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
+    delete?: never | undefined;
+    options?: never | undefined;
+    head?: never | undefined;
+    patch?: never | undefined;
+    trace?: never | undefined;
   };
   "/api/mcp/reconnect": {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
-    get?: never;
-    put?: never;
+    get?: never | undefined;
+    put?: never | undefined;
     /** Reconnect one MCP server in one agent session */
     post: operations["mcp_reconnect_api_mcp_reconnect_post"];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
+    delete?: never | undefined;
+    options?: never | undefined;
+    head?: never | undefined;
+    patch?: never | undefined;
+    trace?: never | undefined;
   };
   "/api/messages": {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
     /** Messages */
     get: operations["messages_api_messages_get"];
-    put?: never;
+    put?: never | undefined;
     /** Post Message */
     post: operations["post_message_api_messages_post"];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
+    delete?: never | undefined;
+    options?: never | undefined;
+    head?: never | undefined;
+    patch?: never | undefined;
+    trace?: never | undefined;
   };
   "/api/messages/receipts": {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
     /** Message Receipts */
     get: operations["message_receipts_api_messages_receipts_get"];
-    put?: never;
-    post?: never;
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
+    put?: never | undefined;
+    post?: never | undefined;
+    delete?: never | undefined;
+    options?: never | undefined;
+    head?: never | undefined;
+    patch?: never | undefined;
+    trace?: never | undefined;
   };
   "/api/models": {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
     /** Models */
     get: operations["models_api_models_get"];
-    put?: never;
-    post?: never;
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
+    put?: never | undefined;
+    post?: never | undefined;
+    delete?: never | undefined;
+    options?: never | undefined;
+    head?: never | undefined;
+    patch?: never | undefined;
+    trace?: never | undefined;
   };
   "/api/monitor/cancel": {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
-    get?: never;
-    put?: never;
+    get?: never | undefined;
+    put?: never | undefined;
     /** Cancel Monitor */
     post: operations["cancel_monitor_api_monitor_cancel_post"];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
+    delete?: never | undefined;
+    options?: never | undefined;
+    head?: never | undefined;
+    patch?: never | undefined;
+    trace?: never | undefined;
   };
   "/api/monitor/input": {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
-    get?: never;
-    put?: never;
+    get?: never | undefined;
+    put?: never | undefined;
     /** Monitor Input */
     post: operations["monitor_input_api_monitor_input_post"];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
+    delete?: never | undefined;
+    options?: never | undefined;
+    head?: never | undefined;
+    patch?: never | undefined;
+    trace?: never | undefined;
   };
   "/api/monitor/log": {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
     /** Monitor Log */
     get: operations["monitor_log_api_monitor_log_get"];
-    put?: never;
-    post?: never;
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
+    put?: never | undefined;
+    post?: never | undefined;
+    delete?: never | undefined;
+    options?: never | undefined;
+    head?: never | undefined;
+    patch?: never | undefined;
+    trace?: never | undefined;
   };
   "/api/monitor/restart": {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
-    get?: never;
-    put?: never;
+    get?: never | undefined;
+    put?: never | undefined;
     /** Confirm a monitor restart with narrower output patterns */
     post: operations["restart_monitor_api_monitor_restart_post"];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
+    delete?: never | undefined;
+    options?: never | undefined;
+    head?: never | undefined;
+    patch?: never | undefined;
+    trace?: never | undefined;
   };
   "/api/multi-server": {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
     /** Snapshot */
     get: operations["snapshot_api_multi_server_get"];
-    put?: never;
+    put?: never | undefined;
     /** Manage */
     post: operations["manage_api_multi_server_post"];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
+    delete?: never | undefined;
+    options?: never | undefined;
+    head?: never | undefined;
+    patch?: never | undefined;
+    trace?: never | undefined;
   };
   "/api/multi-server/audit": {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
     /** Audit */
     get: operations["audit_api_multi_server_audit_get"];
-    put?: never;
-    post?: never;
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
+    put?: never | undefined;
+    post?: never | undefined;
+    delete?: never | undefined;
+    options?: never | undefined;
+    head?: never | undefined;
+    patch?: never | undefined;
+    trace?: never | undefined;
   };
   "/api/multi-server/v1/auto-pair": {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
-    get?: never;
-    put?: never;
+    get?: never | undefined;
+    put?: never | undefined;
     /** Auto Pair */
     post: operations["auto_pair_api_multi_server_v1_auto_pair_post"];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
+    delete?: never | undefined;
+    options?: never | undefined;
+    head?: never | undefined;
+    patch?: never | undefined;
+    trace?: never | undefined;
   };
   "/api/multi-server/v1/identity": {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
     /** Discovery Identity */
     get: operations["discovery_identity_api_multi_server_v1_identity_get"];
-    put?: never;
-    post?: never;
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
+    put?: never | undefined;
+    post?: never | undefined;
+    delete?: never | undefined;
+    options?: never | undefined;
+    head?: never | undefined;
+    patch?: never | undefined;
+    trace?: never | undefined;
   };
   "/api/multi-server/v1/name": {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
-    get?: never;
-    put?: never;
+    get?: never | undefined;
+    put?: never | undefined;
     /** Rename Server */
     post: operations["rename_server_api_multi_server_v1_name_post"];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
+    delete?: never | undefined;
+    options?: never | undefined;
+    head?: never | undefined;
+    patch?: never | undefined;
+    trace?: never | undefined;
   };
   "/api/multi-server/v1/pair": {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
-    get?: never;
-    put?: never;
+    get?: never | undefined;
+    put?: never | undefined;
     /** Pair */
     post: operations["pair_api_multi_server_v1_pair_post"];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
+    delete?: never | undefined;
+    options?: never | undefined;
+    head?: never | undefined;
+    patch?: never | undefined;
+    trace?: never | undefined;
   };
   "/api/multi-server/v1/status": {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
     /** Server Status */
     get: operations["server_status_api_multi_server_v1_status_get"];
-    put?: never;
-    post?: never;
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
+    put?: never | undefined;
+    post?: never | undefined;
+    delete?: never | undefined;
+    options?: never | undefined;
+    head?: never | undefined;
+    patch?: never | undefined;
+    trace?: never | undefined;
   };
   "/api/native-command": {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
-    get?: never;
-    put?: never;
+    get?: never | undefined;
+    put?: never | undefined;
     /** Native Command */
     post: operations["native_command_api_native_command_post"];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
+    delete?: never | undefined;
+    options?: never | undefined;
+    head?: never | undefined;
+    patch?: never | undefined;
+    trace?: never | undefined;
   };
   "/api/orchestration/settings": {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
     /** Orchestration Settings Read */
     get: operations["orchestration_settings_read_api_orchestration_settings_get"];
-    put?: never;
+    put?: never | undefined;
     /** Orchestration Settings Write */
     post: operations["orchestration_settings_write_api_orchestration_settings_post"];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
+    delete?: never | undefined;
+    options?: never | undefined;
+    head?: never | undefined;
+    patch?: never | undefined;
+    trace?: never | undefined;
   };
   "/api/organization": {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
-    get?: never;
-    put?: never;
+    get?: never | undefined;
+    put?: never | undefined;
     /** Organization */
     post: operations["organization_api_organization_post"];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
+    delete?: never | undefined;
+    options?: never | undefined;
+    head?: never | undefined;
+    patch?: never | undefined;
+    trace?: never | undefined;
   };
   "/api/peer-teams": {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
-    get?: never;
-    put?: never;
+    get?: never | undefined;
+    put?: never | undefined;
     /** Peer Teams */
     post: operations["peer_teams_api_peer_teams_post"];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
+    delete?: never | undefined;
+    options?: never | undefined;
+    head?: never | undefined;
+    patch?: never | undefined;
+    trace?: never | undefined;
   };
   "/api/plan": {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
     /** Plan */
     get: operations["plan_api_plan_get"];
-    put?: never;
+    put?: never | undefined;
     /** Save Plan */
     post: operations["save_plan_api_plan_post"];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
+    delete?: never | undefined;
+    options?: never | undefined;
+    head?: never | undefined;
+    patch?: never | undefined;
+    trace?: never | undefined;
   };
   "/api/processes": {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
     /** Processes */
     get: operations["processes_api_processes_get"];
-    put?: never;
-    post?: never;
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
+    put?: never | undefined;
+    post?: never | undefined;
+    delete?: never | undefined;
+    options?: never | undefined;
+    head?: never | undefined;
+    patch?: never | undefined;
+    trace?: never | undefined;
   };
   "/api/processes/action": {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
     /** Process Receipt */
     get: operations["process_receipt_api_processes_action_get"];
-    put?: never;
+    put?: never | undefined;
     /** Process Action */
     post: operations["process_action_api_processes_action_post"];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
+    delete?: never | undefined;
+    options?: never | undefined;
+    head?: never | undefined;
+    patch?: never | undefined;
+    trace?: never | undefined;
   };
   "/api/profiles": {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
     /** Profiles */
     get: operations["profiles_api_profiles_get"];
-    put?: never;
+    put?: never | undefined;
     /** Update Profiles */
     post: operations["update_profiles_api_profiles_post"];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
+    delete?: never | undefined;
+    options?: never | undefined;
+    head?: never | undefined;
+    patch?: never | undefined;
+    trace?: never | undefined;
   };
   "/api/project-locations": {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
     /** Project Location Query */
     get: operations["project_location_query_api_project_locations_get"];
-    put?: never;
-    post?: never;
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
+    put?: never | undefined;
+    post?: never | undefined;
+    delete?: never | undefined;
+    options?: never | undefined;
+    head?: never | undefined;
+    patch?: never | undefined;
+    trace?: never | undefined;
   };
   "/api/project-secrets/list": {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
-    get?: never;
-    put?: never;
+    get?: never | undefined;
+    put?: never | undefined;
     /**
      * Project Secrets List
      * @description The names of the project's secrets.
      */
     post: operations["project_secrets_list_api_project_secrets_list_post"];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
+    delete?: never | undefined;
+    options?: never | undefined;
+    head?: never | undefined;
+    patch?: never | undefined;
+    trace?: never | undefined;
   };
   "/api/project-secrets/remove": {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
-    get?: never;
-    put?: never;
+    get?: never | undefined;
+    put?: never | undefined;
     /**
      * Project Secrets Remove
      * @description Remove one secret of the project.
      */
     post: operations["project_secrets_remove_api_project_secrets_remove_post"];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
+    delete?: never | undefined;
+    options?: never | undefined;
+    head?: never | undefined;
+    patch?: never | undefined;
+    trace?: never | undefined;
   };
   "/api/project-secrets/set": {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
-    get?: never;
-    put?: never;
+    get?: never | undefined;
+    put?: never | undefined;
     /**
      * Project Secrets Set
      * @description Set one secret of the project; agent processes that start later get it.
      */
     post: operations["project_secrets_set_api_project_secrets_set_post"];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
+    delete?: never | undefined;
+    options?: never | undefined;
+    head?: never | undefined;
+    patch?: never | undefined;
+    trace?: never | undefined;
   };
   "/api/projects": {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
     /** Projects */
     get: operations["projects_api_projects_get"];
-    put?: never;
+    put?: never | undefined;
     /** Project Write */
     post: operations["project_write_api_projects_post"];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
+    delete?: never | undefined;
+    options?: never | undefined;
+    head?: never | undefined;
+    patch?: never | undefined;
+    trace?: never | undefined;
   };
   "/api/projects/delete": {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
-    get?: never;
-    put?: never;
+    get?: never | undefined;
+    put?: never | undefined;
     /**
      * Delete a registered project and all its chats
      * @description One canvas transaction commits logical deletion, cancellation intents, room retirement, projections and a durable exact-request receipt. An identical request replays its committed reply before target existence checks. Conflicts require fresh SSE state and confirmation. No per-chat fallback or blind retry with a new identity.
      */
     post: operations["project_delete_api_projects_delete_post"];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
+    delete?: never | undefined;
+    options?: never | undefined;
+    head?: never | undefined;
+    patch?: never | undefined;
+    trace?: never | undefined;
   };
   "/api/questions": {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
     /** Questions */
     get: operations["questions_api_questions_get"];
-    put?: never;
-    post?: never;
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
+    put?: never | undefined;
+    post?: never | undefined;
+    delete?: never | undefined;
+    options?: never | undefined;
+    head?: never | undefined;
+    patch?: never | undefined;
+    trace?: never | undefined;
   };
   "/api/questions/defer": {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
-    get?: never;
-    put?: never;
+    get?: never | undefined;
+    put?: never | undefined;
     /** Defer Question */
     post: operations["defer_question_api_questions_defer_post"];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
+    delete?: never | undefined;
+    options?: never | undefined;
+    head?: never | undefined;
+    patch?: never | undefined;
+    trace?: never | undefined;
   };
   "/api/questions/delete": {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
-    get?: never;
-    put?: never;
+    get?: never | undefined;
+    put?: never | undefined;
     /** Delete Question */
     post: operations["delete_question_api_questions_delete_post"];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
+    delete?: never | undefined;
+    options?: never | undefined;
+    head?: never | undefined;
+    patch?: never | undefined;
+    trace?: never | undefined;
   };
   "/api/queue": {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
     /** Queue */
     get: operations["queue_api_queue_get"];
-    put?: never;
+    put?: never | undefined;
     /** Queue Action */
     post: operations["queue_action_api_queue_post"];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
+    delete?: never | undefined;
+    options?: never | undefined;
+    head?: never | undefined;
+    patch?: never | undefined;
+    trace?: never | undefined;
   };
   "/api/rename": {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
-    get?: never;
-    put?: never;
+    get?: never | undefined;
+    put?: never | undefined;
     /** Rename */
     post: operations["rename_api_rename_post"];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
+    delete?: never | undefined;
+    options?: never | undefined;
+    head?: never | undefined;
+    patch?: never | undefined;
+    trace?: never | undefined;
   };
   "/api/retained-worktrees": {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
     /** Retained Worktrees */
     get: operations["retained_worktrees_api_retained_worktrees_get"];
-    put?: never;
-    post?: never;
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
+    put?: never | undefined;
+    post?: never | undefined;
+    delete?: never | undefined;
+    options?: never | undefined;
+    head?: never | undefined;
+    patch?: never | undefined;
+    trace?: never | undefined;
   };
   "/api/room/delete": {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
-    get?: never;
-    put?: never;
+    get?: never | undefined;
+    put?: never | undefined;
     /** Delete Room */
     post: operations["delete_room_api_room_delete_post"];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
+    delete?: never | undefined;
+    options?: never | undefined;
+    head?: never | undefined;
+    patch?: never | undefined;
+    trace?: never | undefined;
   };
   "/api/rules": {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
     /** Rules */
     get: operations["rules_api_rules_get"];
-    put?: never;
+    put?: never | undefined;
     /** Update Rules */
     post: operations["update_rules_api_rules_post"];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
+    delete?: never | undefined;
+    options?: never | undefined;
+    head?: never | undefined;
+    patch?: never | undefined;
+    trace?: never | undefined;
   };
   "/api/search": {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
     /** Search */
     get: operations["search_api_search_get"];
-    put?: never;
-    post?: never;
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
+    put?: never | undefined;
+    post?: never | undefined;
+    delete?: never | undefined;
+    options?: never | undefined;
+    head?: never | undefined;
+    patch?: never | undefined;
+    trace?: never | undefined;
   };
   "/api/search/item": {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
     /** Search Item */
     get: operations["search_item_api_search_item_get"];
-    put?: never;
-    post?: never;
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
+    put?: never | undefined;
+    post?: never | undefined;
+    delete?: never | undefined;
+    options?: never | undefined;
+    head?: never | undefined;
+    patch?: never | undefined;
+    trace?: never | undefined;
   };
   "/api/servers/orchestration": {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
-    get?: never;
-    put?: never;
+    get?: never | undefined;
+    put?: never | undefined;
     /** Orchestration */
     post: operations["orchestration_api_servers_orchestration_post"];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
+    delete?: never | undefined;
+    options?: never | undefined;
+    head?: never | undefined;
+    patch?: never | undefined;
+    trace?: never | undefined;
   };
   "/api/session": {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
     /** Session */
     get: operations["session_api_session_get"];
-    put?: never;
-    post?: never;
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
+    put?: never | undefined;
+    post?: never | undefined;
+    delete?: never | undefined;
+    options?: never | undefined;
+    head?: never | undefined;
+    patch?: never | undefined;
+    trace?: never | undefined;
   };
   "/api/session-cost": {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
     /** Session Cost */
     get: operations["session_cost_api_session_cost_get"];
-    put?: never;
-    post?: never;
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
+    put?: never | undefined;
+    post?: never | undefined;
+    delete?: never | undefined;
+    options?: never | undefined;
+    head?: never | undefined;
+    patch?: never | undefined;
+    trace?: never | undefined;
   };
   "/api/skills": {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
     /** Skills */
     get: operations["skills_api_skills_get"];
-    put?: never;
-    post?: never;
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
+    put?: never | undefined;
+    post?: never | undefined;
+    delete?: never | undefined;
+    options?: never | undefined;
+    head?: never | undefined;
+    patch?: never | undefined;
+    trace?: never | undefined;
   };
   "/api/stop": {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
-    get?: never;
-    put?: never;
+    get?: never | undefined;
+    put?: never | undefined;
     /** Stop */
     post: operations["stop_api_stop_post"];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
+    delete?: never | undefined;
+    options?: never | undefined;
+    head?: never | undefined;
+    patch?: never | undefined;
+    trace?: never | undefined;
   };
   "/api/studio-errors": {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
     /** Studio Errors Read */
     get: operations["studio_errors_read_api_studio_errors_get"];
-    put?: never;
-    post?: never;
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
+    put?: never | undefined;
+    post?: never | undefined;
+    delete?: never | undefined;
+    options?: never | undefined;
+    head?: never | undefined;
+    patch?: never | undefined;
+    trace?: never | undefined;
   };
   "/api/studio-errors/dismiss": {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
-    get?: never;
-    put?: never;
+    get?: never | undefined;
+    put?: never | undefined;
     /** Studio Errors Dismiss */
     post: operations["studio_errors_dismiss_api_studio_errors_dismiss_post"];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
+    delete?: never | undefined;
+    options?: never | undefined;
+    head?: never | undefined;
+    patch?: never | undefined;
+    trace?: never | undefined;
   };
   "/api/sync/drafts": {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
-    get?: never;
-    put?: never;
+    get?: never | undefined;
+    put?: never | undefined;
     /** Push Drafts */
     post: operations["push_drafts_api_sync_drafts_post"];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
+    delete?: never | undefined;
+    options?: never | undefined;
+    head?: never | undefined;
+    patch?: never | undefined;
+    trace?: never | undefined;
   };
   "/api/sync/identity": {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
     /** Identity */
     get: operations["identity_api_sync_identity_get"];
-    put?: never;
-    post?: never;
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
+    put?: never | undefined;
+    post?: never | undefined;
+    delete?: never | undefined;
+    options?: never | undefined;
+    head?: never | undefined;
+    patch?: never | undefined;
+    trace?: never | undefined;
   };
   "/api/sync/notify": {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
-    get?: never;
-    put?: never;
+    get?: never | undefined;
+    put?: never | undefined;
     /** Notify */
     post: operations["notify_api_sync_notify_post"];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
+    delete?: never | undefined;
+    options?: never | undefined;
+    head?: never | undefined;
+    patch?: never | undefined;
+    trace?: never | undefined;
   };
   "/api/sync/preferences": {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
-    get?: never;
-    put?: never;
+    get?: never | undefined;
+    put?: never | undefined;
     /** Push Preferences */
     post: operations["push_preferences_api_sync_preferences_post"];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
+    delete?: never | undefined;
+    options?: never | undefined;
+    head?: never | undefined;
+    patch?: never | undefined;
+    trace?: never | undefined;
   };
   "/api/sync/protocol": {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
     /** Protocol */
     get: operations["protocol_api_sync_protocol_get"];
-    put?: never;
-    post?: never;
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
+    put?: never | undefined;
+    post?: never | undefined;
+    delete?: never | undefined;
+    options?: never | undefined;
+    head?: never | undefined;
+    patch?: never | undefined;
+    trace?: never | undefined;
   };
   "/api/sync/pull": {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
     /** Pull */
     get: operations["pull_api_sync_pull_get"];
-    put?: never;
-    post?: never;
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
+    put?: never | undefined;
+    post?: never | undefined;
+    delete?: never | undefined;
+    options?: never | undefined;
+    head?: never | undefined;
+    patch?: never | undefined;
+    trace?: never | undefined;
   };
   "/api/sync/stream": {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
     /** Sync Stream */
     get: operations["sync_stream_api_sync_stream_get"];
-    put?: never;
-    post?: never;
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
+    put?: never | undefined;
+    post?: never | undefined;
+    delete?: never | undefined;
+    options?: never | undefined;
+    head?: never | undefined;
+    patch?: never | undefined;
+    trace?: never | undefined;
   };
   "/api/sync/subscriptions": {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
-    get?: never;
-    put?: never;
+    get?: never | undefined;
+    put?: never | undefined;
     /**
      * Change live sync subscriptions
      * @description Changes one open stream. HTTP 410 means the stream session expired; reopen with the full resource set and cursors. A lost response must recover by reopening, never retrying the diff. Resource bounds use MAX_SYNC_RESOURCE_COUNT and MAX_SYNC_RESOURCE_QUERY_BYTES from runtime-schema/src/shared_values.rs, as for the stream selector.
      */
     post: operations["sync_subscriptions_api_sync_subscriptions_post"];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
+    delete?: never | undefined;
+    options?: never | undefined;
+    head?: never | undefined;
+    patch?: never | undefined;
+    trace?: never | undefined;
   };
   "/api/task": {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
     /** Task Detail */
     get: operations["task_detail_api_task_get"];
-    put?: never;
-    post?: never;
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
+    put?: never | undefined;
+    post?: never | undefined;
+    delete?: never | undefined;
+    options?: never | undefined;
+    head?: never | undefined;
+    patch?: never | undefined;
+    trace?: never | undefined;
   };
   "/api/task/output": {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
     /** Read bounded task output within its owner workspace */
     get: operations["task_output_api_task_output_get"];
-    put?: never;
-    post?: never;
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
+    put?: never | undefined;
+    post?: never | undefined;
+    delete?: never | undefined;
+    options?: never | undefined;
+    head?: never | undefined;
+    patch?: never | undefined;
+    trace?: never | undefined;
   };
   "/api/terminals": {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
     /** List Terminals */
     get: operations["list_terminals_api_terminals_get"];
-    put?: never;
-    post?: never;
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
+    put?: never | undefined;
+    post?: never | undefined;
+    delete?: never | undefined;
+    options?: never | undefined;
+    head?: never | undefined;
+    patch?: never | undefined;
+    trace?: never | undefined;
   };
   "/api/terminals/close": {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
-    get?: never;
-    put?: never;
+    get?: never | undefined;
+    put?: never | undefined;
     /** Close Terminal */
     post: operations["close_terminal_api_terminals_close_post"];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
+    delete?: never | undefined;
+    options?: never | undefined;
+    head?: never | undefined;
+    patch?: never | undefined;
+    trace?: never | undefined;
   };
   "/api/terminals/create": {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
-    get?: never;
-    put?: never;
+    get?: never | undefined;
+    put?: never | undefined;
     /** Create Terminal */
     post: operations["create_terminal_api_terminals_create_post"];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
+    delete?: never | undefined;
+    options?: never | undefined;
+    head?: never | undefined;
+    patch?: never | undefined;
+    trace?: never | undefined;
   };
   "/api/terminals/input": {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
-    get?: never;
-    put?: never;
+    get?: never | undefined;
+    put?: never | undefined;
     /** Terminal Input */
     post: operations["terminal_input_api_terminals_input_post"];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
+    delete?: never | undefined;
+    options?: never | undefined;
+    head?: never | undefined;
+    patch?: never | undefined;
+    trace?: never | undefined;
   };
   "/api/terminals/output": {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
     /** Terminal Output */
     get: operations["terminal_output_api_terminals_output_get"];
-    put?: never;
-    post?: never;
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
+    put?: never | undefined;
+    post?: never | undefined;
+    delete?: never | undefined;
+    options?: never | undefined;
+    head?: never | undefined;
+    patch?: never | undefined;
+    trace?: never | undefined;
   };
   "/api/terminals/rename": {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
-    get?: never;
-    put?: never;
+    get?: never | undefined;
+    put?: never | undefined;
     /** Rename Terminal */
     post: operations["rename_terminal_api_terminals_rename_post"];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
+    delete?: never | undefined;
+    options?: never | undefined;
+    head?: never | undefined;
+    patch?: never | undefined;
+    trace?: never | undefined;
   };
   "/api/terminals/resize": {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
-    get?: never;
-    put?: never;
+    get?: never | undefined;
+    put?: never | undefined;
     /** Resize Terminal */
     post: operations["resize_terminal_api_terminals_resize_post"];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
+    delete?: never | undefined;
+    options?: never | undefined;
+    head?: never | undefined;
+    patch?: never | undefined;
+    trace?: never | undefined;
   };
   "/api/tool-requests": {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
     /** Tool Requests */
     get: operations["tool_requests_api_tool_requests_get"];
-    put?: never;
-    post?: never;
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
+    put?: never | undefined;
+    post?: never | undefined;
+    delete?: never | undefined;
+    options?: never | undefined;
+    head?: never | undefined;
+    patch?: never | undefined;
+    trace?: never | undefined;
   };
   "/api/tool-requests/cancel": {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
-    get?: never;
-    put?: never;
+    get?: never | undefined;
+    put?: never | undefined;
     /** Cancel Tool Request */
     post: operations["cancel_tool_request_api_tool_requests_cancel_post"];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
+    delete?: never | undefined;
+    options?: never | undefined;
+    head?: never | undefined;
+    patch?: never | undefined;
+    trace?: never | undefined;
   };
   "/api/transcript": {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
     /** Transcript */
     get: operations["transcript_api_transcript_get"];
-    put?: never;
-    post?: never;
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
+    put?: never | undefined;
+    post?: never | undefined;
+    delete?: never | undefined;
+    options?: never | undefined;
+    head?: never | undefined;
+    patch?: never | undefined;
+    trace?: never | undefined;
   };
   "/api/transcript/item": {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
     /** Transcript Item */
     get: operations["transcript_item_api_transcript_item_get"];
-    put?: never;
-    post?: never;
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
+    put?: never | undefined;
+    post?: never | undefined;
+    delete?: never | undefined;
+    options?: never | undefined;
+    head?: never | undefined;
+    patch?: never | undefined;
+    trace?: never | undefined;
   };
   "/api/transcript/page": {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
     /** Transcript Page */
     get: operations["transcript_page_api_transcript_page_get"];
-    put?: never;
-    post?: never;
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
+    put?: never | undefined;
+    post?: never | undefined;
+    delete?: never | undefined;
+    options?: never | undefined;
+    head?: never | undefined;
+    patch?: never | undefined;
+    trace?: never | undefined;
   };
   "/api/transcript/search": {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
     /** Transcript Search */
     get: operations["transcript_search_api_transcript_search_get"];
-    put?: never;
-    post?: never;
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
+    put?: never | undefined;
+    post?: never | undefined;
+    delete?: never | undefined;
+    options?: never | undefined;
+    head?: never | undefined;
+    patch?: never | undefined;
+    trace?: never | undefined;
   };
   "/api/ui-summary": {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
     /** Ui Summary */
     get: operations["ui_summary_api_ui_summary_get"];
-    put?: never;
-    post?: never;
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
+    put?: never | undefined;
+    post?: never | undefined;
+    delete?: never | undefined;
+    options?: never | undefined;
+    head?: never | undefined;
+    patch?: never | undefined;
+    trace?: never | undefined;
   };
   "/api/usage-resume": {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
-    get?: never;
-    put?: never;
+    get?: never | undefined;
+    put?: never | undefined;
     /** Usage Resume */
     post: operations["usage_resume_api_usage_resume_post"];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
+    delete?: never | undefined;
+    options?: never | undefined;
+    head?: never | undefined;
+    patch?: never | undefined;
+    trace?: never | undefined;
   };
   "/api/vault/aws-login": {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
-    get?: never;
-    put?: never;
+    get?: never | undefined;
+    put?: never | undefined;
     /**
      * Vault Aws Login
      * @description Start a sign-in to an AWS profile, or report the sign-in that this requestId
      *     started.
      */
     post: operations["vault_aws_login_api_vault_aws_login_post"];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
+    delete?: never | undefined;
+    options?: never | undefined;
+    head?: never | undefined;
+    patch?: never | undefined;
+    trace?: never | undefined;
   };
   "/api/vault/pull": {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
-    get?: never;
-    put?: never;
+    get?: never | undefined;
+    put?: never | undefined;
     /**
      * Vault Pull
      * @description Start a pull of the project's latest vault state into a new Mac folder, or report
      *     the pull that this requestId started.
      */
     post: operations["vault_pull_api_vault_pull_post"];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
+    delete?: never | undefined;
+    options?: never | undefined;
+    head?: never | undefined;
+    patch?: never | undefined;
+    trace?: never | undefined;
   };
   "/api/vault/setup": {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
-    get?: never;
-    put?: never;
+    get?: never | undefined;
+    put?: never | undefined;
     /**
      * Vault Setup
      * @description Start the setup of the project's vault, or report the setup that this requestId
      *     started.
      */
     post: operations["vault_setup_api_vault_setup_post"];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
+    delete?: never | undefined;
+    options?: never | undefined;
+    head?: never | undefined;
+    patch?: never | undefined;
+    trace?: never | undefined;
   };
   "/api/vault/setup/facts": {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
-    get?: never;
-    put?: never;
+    get?: never | undefined;
+    put?: never | undefined;
     /**
      * Vault Setup Facts
      * @description What the vault setup dialog needs: the vault name, the keys on this Mac, the Desk
      *     site and the AWS profiles.
      */
     post: operations["vault_setup_facts_api_vault_setup_facts_post"];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
+    delete?: never | undefined;
+    options?: never | undefined;
+    head?: never | undefined;
+    patch?: never | undefined;
+    trace?: never | undefined;
   };
   "/api/vault/unlock": {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
-    get?: never;
-    put?: never;
+    get?: never | undefined;
+    put?: never | undefined;
     /**
      * Vault Unlock
      * @description Keep the vault key on this Mac from the paper words; the words reach only layr-desk.
      */
     post: operations["vault_unlock_api_vault_unlock_post"];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
+    delete?: never | undefined;
+    options?: never | undefined;
+    head?: never | undefined;
+    patch?: never | undefined;
+    trace?: never | undefined;
   };
   "/api/voice/approval_speech": {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
-    get?: never;
-    put?: never;
+    get?: never | undefined;
+    put?: never | undefined;
     /** Approval Speech */
     post: operations["approval_speech_api_voice_approval_speech_post"];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
+    delete?: never | undefined;
+    options?: never | undefined;
+    head?: never | undefined;
+    patch?: never | undefined;
+    trace?: never | undefined;
   };
   "/api/voice/approvals": {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
-    get?: never;
-    put?: never;
+    get?: never | undefined;
+    put?: never | undefined;
     /** Approvals */
     post: operations["approvals_api_voice_approvals_post"];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
+    delete?: never | undefined;
+    options?: never | undefined;
+    head?: never | undefined;
+    patch?: never | undefined;
+    trace?: never | undefined;
   };
   "/api/voice/approve": {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
-    get?: never;
-    put?: never;
+    get?: never | undefined;
+    put?: never | undefined;
     /** Approve */
     post: operations["approve_api_voice_approve_post"];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
+    delete?: never | undefined;
+    options?: never | undefined;
+    head?: never | undefined;
+    patch?: never | undefined;
+    trace?: never | undefined;
   };
   "/api/voice/audio": {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
-    get?: never;
-    put?: never;
+    get?: never | undefined;
+    put?: never | undefined;
     /** Audio */
     post: operations["audio_api_voice_audio_post"];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
+    delete?: never | undefined;
+    options?: never | undefined;
+    head?: never | undefined;
+    patch?: never | undefined;
+    trace?: never | undefined;
   };
   "/api/voice/end": {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
-    get?: never;
-    put?: never;
+    get?: never | undefined;
+    put?: never | undefined;
     /** End */
     post: operations["end_api_voice_end_post"];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
+    delete?: never | undefined;
+    options?: never | undefined;
+    head?: never | undefined;
+    patch?: never | undefined;
+    trace?: never | undefined;
   };
   "/api/voice/record": {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
-    get?: never;
-    put?: never;
+    get?: never | undefined;
+    put?: never | undefined;
     /** Record */
     post: operations["record_api_voice_record_post"];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
+    delete?: never | undefined;
+    options?: never | undefined;
+    head?: never | undefined;
+    patch?: never | undefined;
+    trace?: never | undefined;
   };
   "/api/voice/records": {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
-    get?: never;
-    put?: never;
+    get?: never | undefined;
+    put?: never | undefined;
     /** Records */
     post: operations["records_api_voice_records_post"];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
+    delete?: never | undefined;
+    options?: never | undefined;
+    head?: never | undefined;
+    patch?: never | undefined;
+    trace?: never | undefined;
   };
   "/api/voice/speech": {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
-    get?: never;
-    put?: never;
+    get?: never | undefined;
+    put?: never | undefined;
     /** Speech */
     post: operations["speech_api_voice_speech_post"];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
+    delete?: never | undefined;
+    options?: never | undefined;
+    head?: never | undefined;
+    patch?: never | undefined;
+    trace?: never | undefined;
   };
   "/api/voice/start": {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
-    get?: never;
-    put?: never;
+    get?: never | undefined;
+    put?: never | undefined;
     /** Start */
     post: operations["start_api_voice_start_post"];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
+    delete?: never | undefined;
+    options?: never | undefined;
+    head?: never | undefined;
+    patch?: never | undefined;
+    trace?: never | undefined;
   };
   "/api/voice/status": {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
-    get?: never;
-    put?: never;
+    get?: never | undefined;
+    put?: never | undefined;
     /** Status */
     post: operations["status_api_voice_status_post"];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
+    delete?: never | undefined;
+    options?: never | undefined;
+    head?: never | undefined;
+    patch?: never | undefined;
+    trace?: never | undefined;
   };
   "/api/voice/submit": {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
-    get?: never;
-    put?: never;
+    get?: never | undefined;
+    put?: never | undefined;
     /** Submit */
     post: operations["submit_api_voice_submit_post"];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
+    delete?: never | undefined;
+    options?: never | undefined;
+    head?: never | undefined;
+    patch?: never | undefined;
+    trace?: never | undefined;
   };
   "/api/web-push": {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
     /** Web Push State */
     get: operations["web_push_state_api_web_push_get"];
-    put?: never;
-    post?: never;
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
+    put?: never | undefined;
+    post?: never | undefined;
+    delete?: never | undefined;
+    options?: never | undefined;
+    head?: never | undefined;
+    patch?: never | undefined;
+    trace?: never | undefined;
   };
   "/api/web-push/remove": {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
-    get?: never;
-    put?: never;
+    get?: never | undefined;
+    put?: never | undefined;
     /** Web Push Remove */
     post: operations["web_push_remove_api_web_push_remove_post"];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
+    delete?: never | undefined;
+    options?: never | undefined;
+    head?: never | undefined;
+    patch?: never | undefined;
+    trace?: never | undefined;
   };
   "/api/web-push/subscriptions": {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
-    get?: never;
-    put?: never;
+    get?: never | undefined;
+    put?: never | undefined;
     /** Web Push Subscribe */
     post: operations["web_push_subscribe_api_web_push_subscriptions_post"];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
+    delete?: never | undefined;
+    options?: never | undefined;
+    head?: never | undefined;
+    patch?: never | undefined;
+    trace?: never | undefined;
   };
   "/api/work": {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
     /** Work */
     get: operations["work_api_work_get"];
-    put?: never;
+    put?: never | undefined;
     /** Work Action */
     post: operations["work_action_api_work_post"];
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
+    delete?: never | undefined;
+    options?: never | undefined;
+    head?: never | undefined;
+    patch?: never | undefined;
+    trace?: never | undefined;
   };
   "/api/workspace": {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
     /** Workspace */
     get: operations["workspace_api_workspace_get"];
-    put?: never;
-    post?: never;
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
+    put?: never | undefined;
+    post?: never | undefined;
+    delete?: never | undefined;
+    options?: never | undefined;
+    head?: never | undefined;
+    patch?: never | undefined;
+    trace?: never | undefined;
   };
   "/api/workspace/tasks": {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
     /** Workspace Tasks */
     get: operations["workspace_tasks_api_workspace_tasks_get"];
-    put?: never;
-    post?: never;
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
+    put?: never | undefined;
+    post?: never | undefined;
+    delete?: never | undefined;
+    options?: never | undefined;
+    head?: never | undefined;
+    patch?: never | undefined;
+    trace?: never | undefined;
   };
 }
 export type webhooks = Record<string, never>;
@@ -2878,12 +2878,12 @@ export interface components {
        * Alias
        * @default null
        */
-      alias?: null | string;
+      alias?: null | string | undefined;
       /**
        * Autopair
        * @default null
        */
-      autoPair?: boolean | null;
+      autoPair?: boolean | null | undefined;
       /** Clientid */
       clientId: string;
       /** Created */
@@ -2903,7 +2903,7 @@ export interface components {
        * Lastseen
        * @default null
        */
-      lastSeen?: null | number;
+      lastSeen?: null | number | undefined;
       /** Origin */
       origin: null | string;
       /** Publickey */
@@ -2912,13 +2912,16 @@ export interface components {
        * Reachability
        * @default null
        */
-      reachability?: ("reachable" | "unreachable" | "unknown") | null;
+      reachability?:
+        | ("reachable" | "unreachable" | "unknown")
+        | null
+        | undefined;
       /**
        * Replacedby
        * @description The server identity that succeeds this lost identity.
        * @default null
        */
-      replacedBy?: null | string;
+      replacedBy?: null | string | undefined;
       /** Revoked */
       revoked: null | number;
       /** Serverid */
@@ -2964,9 +2967,11 @@ export interface components {
        * Aliases
        * @default {}
        */
-      aliases?: {
-        [key: string]: string;
-      };
+      aliases?:
+        | {
+            [key: string]: string;
+          }
+        | undefined;
       /** Autopair */
       autoPair: boolean;
       /**
@@ -2974,7 +2979,7 @@ export interface components {
        * @description Install a newer build that a paired server runs (docs/peer-updates.md).
        * @default true
        */
-      autoUpdate?: boolean;
+      autoUpdate?: boolean | undefined;
     };
     /** AccessSnapshot */
     AccessSnapshot: {
@@ -2986,7 +2991,7 @@ export interface components {
        * @description Warnings about references to previous server identities.
        * @default []
        */
-      identityAlerts?: components["schemas"]["IdentityAlert"][];
+      identityAlerts?: components["schemas"]["IdentityAlert"][] | undefined;
       /** Invites */
       invites: components["schemas"]["InviteSummary"][];
       /**
@@ -3007,63 +3012,65 @@ export interface components {
        * Accountid
        * @default null
        */
-      accountId?: null | string;
+      accountId?: null | string | undefined;
       /**
        * Authenticationrecovery
        * @default null
        */
-      authenticationRecovery?: null | string;
+      authenticationRecovery?: null | string | undefined;
       /**
        * Canattemptnativeproof
        * @default null
        */
-      canAttemptNativeProof?: boolean | null;
+      canAttemptNativeProof?: boolean | null | undefined;
       /** @default null */
-      claudeOptions?: components["schemas"]["ClaudeOptions"] | null;
+      claudeOptions?: components["schemas"]["ClaudeOptions"] | null | undefined;
       /**
        * Deleted
        * @default null
        */
-      deleted?: boolean | null;
+      deleted?: boolean | null | undefined;
       /**
        * Disconnected
        * @default null
        */
-      disconnected?: boolean | null;
+      disconnected?: boolean | null | undefined;
       /**
        * Duplicateof
        * @default null
        */
-      duplicateOf?: null | string;
+      duplicateOf?: null | string | undefined;
       /**
        * Email
        * @default null
        */
-      email?: null | string;
+      email?: null | string | undefined;
       /**
        * Error
        * @default null
        */
-      error?: null | string;
+      error?: null | string | undefined;
       /**
        * Group
        * @description The account's group in account orders (see AccountGroupRequest).
        * @default null
        */
-      group?: null | string;
+      group?: null | string | undefined;
       /** Home */
       home: string;
       /** Id */
       id: string;
       /** Label */
       label: string;
-      organization?: components["schemas"]["ClaudeOrganization"];
-      organizationMismatch?: components["schemas"]["ClaudeOrganizationMismatch"];
+      organization?: components["schemas"]["ClaudeOrganization"] | undefined;
+      organizationMismatch?:
+        | components["schemas"]["ClaudeOrganizationMismatch"]
+        | undefined;
       /**
        * Plan
        * @default null
        */
-      plan?: null | string;
+      plan?: null | string | undefined;
       /**
        * Provider
        * @enum {string}
@@ -3072,10 +3079,13 @@ export interface components {
       /** Source */
       source: string;
       /** @default null */
-      startThrottle?: components["schemas"]["AccountStartThrottle"] | null;
+      startThrottle?:
+        | components["schemas"]["AccountStartThrottle"]
+        | null
+        | undefined;
       status: components["schemas"]["AccountStatus"];
     } & {
-      [key: string]: components["schemas"]["JsonValue"];
+      [key: string]: components["schemas"]["JsonValue"] | undefined;
     };
     /** AccountCostData */
     AccountCostData: {
@@ -3083,91 +3093,94 @@ export interface components {
        * Accountid
        * @default null
        */
-      accountId?: null | string;
+      accountId?: null | string | undefined;
       /**
        * Billedusd
        * @default null
        */
-      billedUSD?: number | null;
+      billedUSD?: number | null | undefined;
       /** @default null */
-      coverage?: components["schemas"]["JsonValue"] | null;
+      coverage?: components["schemas"]["JsonValue"] | null | undefined;
       /**
        * Currency
        * @default null
        */
-      currency?: null | string;
+      currency?: null | string | undefined;
       /**
        * Currencycode
        * @default null
        */
-      currencyCode?: null | string;
+      currencyCode?: null | string | undefined;
       /**
        * Historydays
        * @default null
        */
-      historyDays?: number | null;
+      historyDays?: number | null | undefined;
       /**
        * Kind
        * @default null
        */
-      kind?: null | string;
+      kind?: null | string | undefined;
       /**
        * Last30Daystokens
        * @default null
        */
-      last30DaysTokens?: number | null;
+      last30DaysTokens?: number | null | undefined;
       /**
        * Last30Daysusd
        * @default null
        */
-      last30DaysUSD?: number | null;
+      last30DaysUSD?: number | null | undefined;
       /**
        * Modelbreakdown
        * @default null
        */
-      modelBreakdown?: {
-        [key: string]: number;
-      } | null;
+      modelBreakdown?:
+        | {
+            [key: string]: number;
+          }
+        | null
+        | undefined;
       /**
        * Note
        * @default null
        */
-      note?: null | string;
+      note?: null | string | undefined;
       /**
        * Scope
        * @default null
        */
-      scope?: null | string;
+      scope?: null | string | undefined;
       /**
        * Source
        * @default null
        */
-      source?: null | string;
+      source?: null | string | undefined;
       /**
        * Sourceday
        * @default null
        */
-      sourceDay?: null | string;
+      sourceDay?: null | string | undefined;
       /**
        * Sourceupdatedat
        * @default null
        */
-      sourceUpdatedAt?: null | number | string;
+      sourceUpdatedAt?: null | number | string | undefined;
       /**
        * Todaytokens
        * @default null
        */
-      todayTokens?: number | null;
+      todayTokens?: number | null | undefined;
       /**
        * Todayusd
        * @default null
        */
-      todayUSD?: number | null;
+      todayUSD?: number | null | undefined;
       /**
        * Unknownmodels
        * @default null
        */
-      unknownModels?: string[] | null;
+      unknownModels?: string[] | null | undefined;
     };
     /** AccountCostEntityDto */
     AccountCostEntityDto: {
@@ -3179,7 +3192,7 @@ export interface components {
        * Checkedat
        * @default null
        */
-      checkedAt?: null | number;
+      checkedAt?: null | number | undefined;
       data: components["schemas"]["AccountCostData"] | null;
       /** Error */
       error: null | string;
@@ -3198,7 +3211,7 @@ export interface components {
        * Checkedat
        * @default null
        */
-      checkedAt?: null | number;
+      checkedAt?: null | number | undefined;
       data: components["schemas"]["AccountCostData"] | null;
       /** Error */
       error: null | string;
@@ -3228,74 +3241,82 @@ export interface components {
        * Accountkey
        * @default null
        */
-      accountKey?: string;
+      accountKey?: string | undefined;
       /**
        * At
        * @default null
        */
-      at?: number;
+      at?: number | undefined;
       /**
        * Contextrepairid
        * @default null
        */
-      contextRepairId?: string;
+      contextRepairId?: string | undefined;
       /** @default null */
-      portableHistory?: components["schemas"]["PortableHistoryRecordResponse"];
+      portableHistory?:
+        | components["schemas"]["PortableHistoryRecordResponse"]
+        | undefined;
       /**
        * Provider
        * @default null
        */
-      provider?: null | string;
+      provider?: null | string | undefined;
       /** @default null */
-      providerOptionsDiscarded?: components["schemas"]["JsonObjectResponse"];
+      providerOptionsDiscarded?:
+        | components["schemas"]["JsonObjectResponse"]
+        | undefined;
       /**
        * Reason
        * @default null
        */
-      reason?: string;
+      reason?: string | undefined;
       /**
        * Recoveryid
        * @default null
        */
-      recoveryId?: string;
+      recoveryId?: string | undefined;
       /** @default null */
-      settingsDiscarded?: components["schemas"]["JsonObjectResponse"];
+      settingsDiscarded?:
+        | components["schemas"]["JsonObjectResponse"]
+        | undefined;
       /** @default null */
-      sourceHistoryMissing?: components["schemas"]["JsonObjectResponse"];
+      sourceHistoryMissing?:
+        | components["schemas"]["JsonObjectResponse"]
+        | undefined;
       /**
        * Targetaccountkey
        * @default null
        */
-      targetAccountKey?: string;
+      targetAccountKey?: string | undefined;
       /**
        * Targetprovider
        * @default null
        */
-      targetProvider?: null | string;
+      targetProvider?: null | string | undefined;
       /**
        * Targetthreadid
        * @default null
        */
-      targetThreadId?: string;
+      targetThreadId?: string | undefined;
       /**
        * Threadid
        * @default null
        */
-      threadId?: null | string;
+      threadId?: null | string | undefined;
       /**
        * Toolrefreshid
        * @default null
        */
-      toolRefreshId?: string;
+      toolRefreshId?: string | undefined;
       /**
        * Transferid
        * @default null
        */
-      transferId?: string;
+      transferId?: string | undefined;
       /** @default null */
-      vmSessionCopy?: components["schemas"]["JsonObjectResponse"];
+      vmSessionCopy?: components["schemas"]["JsonObjectResponse"] | undefined;
     } & {
-      [key: string]: components["schemas"]["JsonValue"];
+      [key: string]: components["schemas"]["JsonValue"] | undefined;
     };
     /** AccountKeyRequest */
     AccountKeyRequest: {
@@ -3303,7 +3324,7 @@ export interface components {
        * Account Key
        * @default null
        */
-      account_key?: null | string;
+      account_key?: null | string | undefined;
     };
     /** AccountLoginResponse */
     AccountLoginResponse: {
@@ -3313,34 +3334,34 @@ export interface components {
        * Createdat
        * @default null
        */
-      createdAt?: null | number;
+      createdAt?: null | number | undefined;
       /**
        * Email
        * @default null
        */
-      email?: null | string;
+      email?: null | string | undefined;
       /**
        * Error
        * @default null
        */
-      error?: null | string;
+      error?: null | string | undefined;
       /**
        * Expiresat
        * @default null
        */
-      expiresAt?: null | number;
+      expiresAt?: null | number | undefined;
       /**
        * Loginid
        * @default null
        */
-      loginId?: null | string;
+      loginId?: null | string | undefined;
       /** Requestid */
       requestId: string;
       /**
        * Resolvedaccountkey
        * @default null
        */
-      resolvedAccountKey?: null | string;
+      resolvedAccountKey?: null | string | undefined;
       /**
        * Status
        * @enum {string}
@@ -3357,12 +3378,12 @@ export interface components {
        * Usercode
        * @default null
        */
-      userCode?: null | string;
+      userCode?: null | string | undefined;
       /**
        * Verificationurl
        * @default null
        */
-      verificationUrl?: null | string;
+      verificationUrl?: null | string | undefined;
     };
     /** AccountNameRequest */
     AccountNameRequest: {
@@ -3383,14 +3404,14 @@ export interface components {
       /** At */
       at: null | number;
       /** Checkedat */
-      checkedAt?: null | number;
-      data?: components["schemas"]["RateLimitsDataDto"] | null;
+      checkedAt?: null | number | undefined;
+      data?: components["schemas"]["RateLimitsDataDto"] | null | undefined;
       /** Error */
-      error?: null | string;
+      error?: null | string | undefined;
       /** Processedat */
-      processedAt?: null | number;
+      processedAt?: null | number | undefined;
       /** Readat */
-      readAt?: null | number;
+      readAt?: null | number | undefined;
     };
     /** AccountSelectionRequest */
     AccountSelectionRequest: {
@@ -3400,7 +3421,7 @@ export interface components {
        * Cwd
        * @default null
        */
-      cwd?: null | string;
+      cwd?: null | string | undefined;
       /** Id */
       id: string;
     };
@@ -3520,12 +3541,12 @@ export interface components {
        * Name
        * @default null
        */
-      name?: null | string;
+      name?: null | string | undefined;
       /**
        * Reason
        * @default null
        */
-      reason?: null | string;
+      reason?: null | string | undefined;
     };
     /** AccountTransferBlockedRecordResponse */
     AccountTransferBlockedRecordResponse: {
@@ -3535,14 +3556,14 @@ export interface components {
        * Name
        * @default null
        */
-      name?: null | string;
+      name?: null | string | undefined;
       /**
        * Reason
        * @default null
        */
-      reason?: null | string;
+      reason?: null | string | undefined;
     } & {
-      [key: string]: components["schemas"]["JsonValue"];
+      [key: string]: components["schemas"]["JsonValue"] | undefined;
     };
     /** AccountTransferInterruptedDto */
     AccountTransferInterruptedDto: {
@@ -3552,12 +3573,12 @@ export interface components {
        * Name
        * @default null
        */
-      name?: null | string;
+      name?: null | string | undefined;
       /**
        * Reason
        * @default null
        */
-      reason?: null | string;
+      reason?: null | string | undefined;
     };
     /** AccountTransferInterruptedRecordResponse */
     AccountTransferInterruptedRecordResponse: {
@@ -3567,14 +3588,14 @@ export interface components {
        * Name
        * @default null
        */
-      name?: null | string;
+      name?: null | string | undefined;
       /**
        * Reason
        * @default null
        */
-      reason?: null | string;
+      reason?: null | string | undefined;
     } & {
-      [key: string]: components["schemas"]["JsonValue"];
+      [key: string]: components["schemas"]["JsonValue"] | undefined;
     };
     /** AccountTransferLeftOnSourceDto */
     AccountTransferLeftOnSourceDto: {
@@ -3584,14 +3605,14 @@ export interface components {
        * Name
        * @default null
        */
-      name?: null | string;
+      name?: null | string | undefined;
       /** @default null */
-      provider?: components["schemas"]["AgentProvider"] | null;
+      provider?: components["schemas"]["AgentProvider"] | null | undefined;
       /**
        * Reason
        * @default null
        */
-      reason?: null | string;
+      reason?: null | string | undefined;
     };
     /** AccountTransferLeftOnSourceRecordResponse */
     AccountTransferLeftOnSourceRecordResponse: {
@@ -3601,19 +3622,19 @@ export interface components {
        * Name
        * @default null
        */
-      name?: null | string;
+      name?: null | string | undefined;
       /**
        * Provider
        * @default null
        */
-      provider?: ("codex" | "claude") | null;
+      provider?: ("codex" | "claude") | null | undefined;
       /**
        * Reason
        * @default null
        */
-      reason?: null | string;
+      reason?: null | string | undefined;
     } & {
-      [key: string]: components["schemas"]["JsonValue"];
+      [key: string]: components["schemas"]["JsonValue"] | undefined;
     };
     /**
      * AccountTransferScope
@@ -3634,95 +3655,103 @@ export interface components {
        * Blocked
        * @default null
        */
-      blocked?: components["schemas"]["AccountTransferBlockedDto"][] | null;
+      blocked?:
+        | components["schemas"]["AccountTransferBlockedDto"][]
+        | null
+        | undefined;
       /**
        * Canfinishhistory
        * @default null
        */
-      canFinishHistory?: boolean | null;
+      canFinishHistory?: boolean | null | undefined;
       /**
        * Canretry
        * @default null
        */
-      canRetry?: boolean | null;
+      canRetry?: boolean | null | undefined;
       /**
        * Completed
        * @default null
        */
-      completed?: number | null;
+      completed?: number | null | undefined;
       /**
        * Finishhistory
        * @default null
        */
-      finishHistory?: boolean | null;
+      finishHistory?: boolean | null | undefined;
       /**
        * Id
        * @default null
        */
-      id?: null | string;
+      id?: null | string | undefined;
       /**
        * Interrupted
        * @default null
        */
       interrupted?:
         | components["schemas"]["AccountTransferInterruptedDto"][]
-        | null;
+        | null
+        | undefined;
       /**
        * Leftonsource
        * @default null
        */
       leftOnSource?:
         | components["schemas"]["AccountTransferLeftOnSourceDto"][]
-        | null;
+        | null
+        | undefined;
       /**
        * Moved
        * @default null
        */
-      moved?: number | null;
+      moved?: number | null | undefined;
       /**
        * Movingnow
        * @default null
        */
-      movingNow?: number | null;
+      movingNow?: number | null | undefined;
       /**
        * Nativehistorypending
        * @default null
        */
-      nativeHistoryPending?: number | null;
+      nativeHistoryPending?: number | null | undefined;
       /**
        * Needsattention
        * @default null
        */
-      needsAttention?: boolean | null;
+      needsAttention?: boolean | null | undefined;
       /** @default null */
-      scope?: components["schemas"]["AccountTransferScope"] | null;
+      scope?: components["schemas"]["AccountTransferScope"] | null | undefined;
       /** @default null */
-      status?: components["schemas"]["AccountTransferStatus"] | null;
+      status?:
+        | components["schemas"]["AccountTransferStatus"]
+        | null
+        | undefined;
       /**
        * Targetaccountkey
        * @default null
        */
-      targetAccountKey?: null | string;
+      targetAccountKey?: null | string | undefined;
       /**
        * Total
        * @default null
        */
-      total?: number | null;
+      total?: number | null | undefined;
       /**
        * Updated
        * @default null
        */
-      updated?: null | number;
+      updated?: null | number | undefined;
       /**
        * Waiting
        * @default null
        */
-      waiting?: null | string;
+      waiting?: null | string | undefined;
       /**
        * Waitingcount
        * @default null
        */
-      waitingCount?: number | null;
+      waitingCount?: number | null | undefined;
     };
     /** AccountTransferSummaryRecordResponse */
     AccountTransferSummaryRecordResponse: {
@@ -3732,103 +3761,106 @@ export interface components {
        */
       blocked?:
         | components["schemas"]["AccountTransferBlockedRecordResponse"][]
-        | null;
+        | null
+        | undefined;
       /**
        * Canfinishhistory
        * @default null
        */
-      canFinishHistory?: boolean | null;
+      canFinishHistory?: boolean | null | undefined;
       /**
        * Canretry
        * @default null
        */
-      canRetry?: boolean | null;
+      canRetry?: boolean | null | undefined;
       /**
        * Completed
        * @default null
        */
-      completed?: number | null;
+      completed?: number | null | undefined;
       /**
        * Finishhistory
        * @default null
        */
-      finishHistory?: boolean | null;
+      finishHistory?: boolean | null | undefined;
       /**
        * Id
        * @default null
        */
-      id?: null | string;
+      id?: null | string | undefined;
       /**
        * Interrupted
        * @default null
        */
       interrupted?:
         | components["schemas"]["AccountTransferInterruptedRecordResponse"][]
-        | null;
+        | null
+        | undefined;
       /**
        * Leftonsource
        * @default null
        */
       leftOnSource?:
         | components["schemas"]["AccountTransferLeftOnSourceRecordResponse"][]
-        | null;
+        | null
+        | undefined;
       /**
        * Moved
        * @default null
        */
-      moved?: number | null;
+      moved?: number | null | undefined;
       /**
        * Movingnow
        * @default null
        */
-      movingNow?: number | null;
+      movingNow?: number | null | undefined;
       /**
        * Nativehistorypending
        * @default null
        */
-      nativeHistoryPending?: number | null;
+      nativeHistoryPending?: number | null | undefined;
       /**
        * Needsattention
        * @default null
        */
-      needsAttention?: boolean | null;
+      needsAttention?: boolean | null | undefined;
       /**
        * Scope
        * @default null
        */
-      scope?: ("team" | "subagents") | null;
+      scope?: ("team" | "subagents") | null | undefined;
       /**
        * Status
        * @default null
        */
-      status?: ("pending" | "completed" | "cancelled") | null;
+      status?: ("pending" | "completed" | "cancelled") | null | undefined;
       /**
        * Targetaccountkey
        * @default null
        */
-      targetAccountKey?: null | string;
+      targetAccountKey?: null | string | undefined;
       /**
        * Total
        * @default null
        */
-      total?: number | null;
+      total?: number | null | undefined;
       /**
        * Updated
        * @default null
        */
-      updated?: null | number;
+      updated?: null | number | undefined;
       /**
        * Waiting
        * @default null
        */
-      waiting?: null | string;
+      waiting?: null | string | undefined;
       /**
        * Waitingcount
        * @default null
        */
-      waitingCount?: number | null;
+      waitingCount?: number | null | undefined;
     } & {
-      [key: string]: components["schemas"]["JsonValue"];
+      [key: string]: components["schemas"]["JsonValue"] | undefined;
     };
     /** ActionContext */
     ActionContext: {
@@ -3836,17 +3868,17 @@ export interface components {
        * Accountkey
        * @default null
        */
-      accountKey?: null | string;
+      accountKey?: null | string | undefined;
       /**
        * Epoch
        * @default null
        */
-      epoch?: number | null;
+      epoch?: number | null | undefined;
       /**
        * Threadid
        * @default null
        */
-      threadId?: null | string;
+      threadId?: null | string | undefined;
     };
     /** ActiveToolDto */
     ActiveToolDto: {
@@ -3866,7 +3898,7 @@ export interface components {
       /** Type */
       type: string;
     } & {
-      [key: string]: components["schemas"]["JsonValue"];
+      [key: string]: components["schemas"]["JsonValue"] | undefined;
     };
     /** AgentActivity */
     AgentActivity: {
@@ -3874,17 +3906,17 @@ export interface components {
        * At
        * @default null
        */
-      at?: null | number;
+      at?: null | number | undefined;
       /**
        * Phase
        * @default null
        */
-      phase?: null | string;
+      phase?: null | string | undefined;
       /**
        * Tools
        * @default null
        */
-      tools?: components["schemas"]["ActiveToolDto"][] | null;
+      tools?: components["schemas"]["ActiveToolDto"][] | null | undefined;
     };
     /** AgentActivityRecordResponse */
     AgentActivityRecordResponse: {
@@ -3892,19 +3924,19 @@ export interface components {
        * At
        * @default null
        */
-      at?: number;
+      at?: number | undefined;
       /**
        * Phase
        * @default null
        */
-      phase?: string;
+      phase?: string | undefined;
       /**
        * Tools
        * @default null
        */
-      tools?: components["schemas"]["ActiveToolRecordResponse"][];
+      tools?: components["schemas"]["ActiveToolRecordResponse"][] | undefined;
     } & {
-      [key: string]: components["schemas"]["JsonValue"];
+      [key: string]: components["schemas"]["JsonValue"] | undefined;
     };
     /** AgentArchiveRecordResponse */
     AgentArchiveRecordResponse: {
@@ -3912,39 +3944,39 @@ export interface components {
        * At
        * @default null
        */
-      at?: number;
+      at?: number | undefined;
       /**
        * By
        * @default null
        */
-      by?: string;
+      by?: string | undefined;
       /**
        * Cleanuppending
        * @default null
        */
-      cleanupPending?: boolean;
+      cleanupPending?: boolean | undefined;
       /**
        * Epoch
        * @default null
        */
-      epoch?: number;
+      epoch?: number | undefined;
       /**
        * Reason
        * @default null
        */
-      reason?: string;
+      reason?: string | undefined;
       /**
        * Unassignedwork
        * @default null
        */
-      unassignedWork?: components["schemas"]["JsonValue"][];
+      unassignedWork?: components["schemas"]["JsonValue"][] | undefined;
       /**
        * Unknowntoolrequests
        * @default null
        */
-      unknownToolRequests?: components["schemas"]["JsonValue"][];
+      unknownToolRequests?: components["schemas"]["JsonValue"][] | undefined;
     } & {
-      [key: string]: components["schemas"]["JsonValue"];
+      [key: string]: components["schemas"]["JsonValue"] | undefined;
     };
     /** @description A managed command currently starting or running for this agent. */
     AgentCommandProgress: {
@@ -3962,170 +3994,230 @@ export interface components {
     AgentDetailEntityDto: {
       accountTransfer?:
         | components["schemas"]["AccountTransferSummaryDto"]
-        | null;
+        | null
+        | undefined;
       /** Accounttransferid */
-      accountTransferId?: null | string;
-      activity?: components["schemas"]["AgentActivity"] | null;
-      agentMode?: components["schemas"]["AgentMode"] | null;
+      accountTransferId?: null | string | undefined;
+      activity?: components["schemas"]["AgentActivity"] | null | undefined;
+      agentMode?: components["schemas"]["AgentMode"] | null | undefined;
       /** Agentmoderevision */
-      agentModeRevision?: number | null;
+      agentModeRevision?: number | null | undefined;
       /** Agentmodesupported */
-      agentModeSupported?: boolean | null;
+      agentModeSupported?: boolean | null | undefined;
       /** Cansend */
-      canSend?: boolean | null;
+      canSend?: boolean | null | undefined;
       /** @description Claude permission mode for the worker launch preview. Other session options remain private. */
-      claudeOptions?: {
-        /** @enum {string} */
-        permissionMode?:
-          | "default"
-          | "acceptEdits"
-          | "auto"
-          | "plan"
-          | "bypassPermissions";
-      } | null;
+      claudeOptions?:
+        | {
+            /** @enum {string} */
+            permissionMode?:
+              | "default"
+              | "acceptEdits"
+              | "auto"
+              | "plan"
+              | "bypassPermissions"
+              | undefined;
+          }
+        | null
+        | undefined;
       /**
        * Commandprogress
        * @default []
        */
-      commandProgress?: components["schemas"]["AgentCommandProgress"][];
+      commandProgress?:
+        | components["schemas"]["AgentCommandProgress"][]
+        | undefined;
       /** Compactions */
-      compactions?: number | null;
+      compactions?: number | null | undefined;
       /** Concurrency */
-      concurrency?: number | null;
-      connectionCheck?: components["schemas"]["ConnectionCheckDto"] | null;
+      concurrency?: number | null | undefined;
+      connectionCheck?:
+        | components["schemas"]["ConnectionCheckDto"]
+        | null
+        | undefined;
       contextRepairWait?:
         | components["schemas"]["AgentEntityContextRepairWaitDto"]
-        | null;
-      contextUsage?: components["schemas"]["ContextUsageDto"] | null;
-      convertedFromLead?: components["schemas"]["ConvertedFromLeadDto"] | null;
+        | null
+        | undefined;
+      contextUsage?:
+        | components["schemas"]["ContextUsageDto"]
+        | null
+        | undefined;
+      convertedFromLead?:
+        | components["schemas"]["ConvertedFromLeadDto"]
+        | null
+        | undefined;
       /** Cyberaccessprogram */
-      cyberAccessProgram?: null | string;
+      cyberAccessProgram?: null | string | undefined;
       /** Daybreakenabled */
-      daybreakEnabled?: boolean | null;
+      daybreakEnabled?: boolean | null | undefined;
       /** Deletedat */
-      deletedAt?: null | number;
+      deletedAt?: null | number | undefined;
       /** Effort */
-      effort?: null | string;
+      effort?: null | string | undefined;
       /** Environment */
-      environment?: ("host" | "linux") | null;
+      environment?: ("host" | "linux") | null | undefined;
       /** Error */
-      error?: components["schemas"]["NativeProviderError"] | null | string;
+      error?:
+        | components["schemas"]["NativeProviderError"]
+        | null
+        | string
+        | undefined;
       /** Excludedaccountkeys */
-      excludedAccountKeys?: string[] | null;
+      excludedAccountKeys?: string[] | null | undefined;
       /** Executionmode */
-      executionMode?: ("vm" | "native") | null;
+      executionMode?: ("vm" | "native") | null | undefined;
       /** Fastmode */
-      fastMode?: boolean | null;
+      fastMode?: boolean | null | undefined;
       /** Hostprojectpath */
-      hostProjectPath?: null | string;
+      hostProjectPath?: null | string | undefined;
       /** Id */
       id: string;
       /** Imageworkspace */
-      imageWorkspace?: boolean | null;
+      imageWorkspace?: boolean | null | undefined;
       /** Imageworkspacebaseref */
-      imageWorkspaceBaseRef?: null | string;
+      imageWorkspaceBaseRef?: null | string | undefined;
       /** Imageworkspacebaserepo */
-      imageWorkspaceBaseRepo?: null | string;
+      imageWorkspaceBaseRepo?: null | string | undefined;
       /** Imageworkspacecreatedat */
-      imageWorkspaceCreatedAt?: null | number;
+      imageWorkspaceCreatedAt?: null | number | undefined;
       /** Imageworkspaceerror */
-      imageWorkspaceError?: null | string;
+      imageWorkspaceError?: null | string | undefined;
       /** Imageworkspacehasgit */
-      imageWorkspaceHasGit?: boolean | null;
+      imageWorkspaceHasGit?: boolean | null | undefined;
       /** Imageworkspacephase */
-      imageWorkspacePhase?: null | string;
+      imageWorkspacePhase?: null | string | undefined;
       /** Imageworkspaceready */
-      imageWorkspaceReady?: boolean | null;
+      imageWorkspaceReady?: boolean | null | undefined;
       /** Imageworkspacerepo */
-      imageWorkspaceRepo?: null | string;
+      imageWorkspaceRepo?: null | string | undefined;
       /** Imageworkspacesubpath */
-      imageWorkspaceSubpath?: null | string;
+      imageWorkspaceSubpath?: null | string | undefined;
       /** Lastanswer */
-      lastAnswer?: null | string;
+      lastAnswer?: null | string | undefined;
       /** Lastevent */
-      lastEvent?: null | string;
+      lastEvent?: null | string | undefined;
       /** Launcheralive */
-      launcherAlive?: boolean | null;
+      launcherAlive?: boolean | null | undefined;
       /** Layrerror */
-      layrError?: null | string;
+      layrError?: null | string | undefined;
       /** Layrline */
-      layrLine?: null | string;
+      layrLine?: null | string | undefined;
       /** Layrprojectid */
-      layrProjectId?: null | string;
+      layrProjectId?: null | string | undefined;
       /** Layrready */
-      layrReady?: boolean | null;
+      layrReady?: boolean | null | undefined;
       /** Layrstateid */
-      layrStateId?: null | string;
+      layrStateId?: null | string | undefined;
       /** Manualname */
-      manualName?: boolean | null;
-      movedFrom?: components["schemas"]["MovePointerDto"] | null;
+      manualName?: boolean | null | undefined;
+      movedFrom?: components["schemas"]["MovePointerDto"] | null | undefined;
       /** Nativeerror */
-      nativeError?: null | string;
+      nativeError?: null | string | undefined;
       /** Nativelimiterrorat */
-      nativeLimitErrorAt?: null | number;
-      nativeRelease?: components["schemas"]["AgentNativeRelease"] | null;
+      nativeLimitErrorAt?: null | number | undefined;
+      nativeRelease?:
+        | components["schemas"]["AgentNativeRelease"]
+        | null
+        | undefined;
       nativeSafetyBuffering?:
         | components["schemas"]["NativeSafetyBufferingRecord"]
-        | null;
-      nativeSafetyRetry?: components["schemas"]["NativeSafetyRetryDto"] | null;
+        | null
+        | undefined;
+      nativeSafetyRetry?:
+        | components["schemas"]["NativeSafetyRetryDto"]
+        | null
+        | undefined;
       /** Nativestatus */
       nativeStatus?:
         | components["schemas"]["AgentNativeStatus"]
         | components["schemas"]["AgentNativeStatusValue"]
-        | null;
-      nativeThreadBlock?: components["schemas"]["NativeThreadBlockDto"] | null;
-      nativeTurnError?: components["schemas"]["NativeTurnErrorDto"] | null;
+        | null
+        | undefined;
+      nativeThreadBlock?:
+        | components["schemas"]["NativeThreadBlockDto"]
+        | null
+        | undefined;
+      nativeTurnError?:
+        | components["schemas"]["NativeTurnErrorDto"]
+        | null
+        | undefined;
       /** Nextturnsettingssupported */
-      nextTurnSettingsSupported?: boolean | null;
+      nextTurnSettingsSupported?: boolean | null | undefined;
       /** Orchestratorid */
-      orchestratorId?: null | string;
+      orchestratorId?: null | string | undefined;
       /** Orchestratorname */
-      orchestratorName?: null | string;
-      overview?: components["schemas"]["AgentOverview"] | null;
+      orchestratorName?: null | string | undefined;
+      overview?: components["schemas"]["AgentOverview"] | null | undefined;
       /** Paneldataversion */
-      panelDataVersion?: number | null;
+      panelDataVersion?: number | null | undefined;
       /** Panelversion */
-      panelVersion?: number | null;
-      pendingSettings?: components["schemas"]["ExecutionSettingsDto"] | null;
+      panelVersion?: number | null | undefined;
+      pendingSettings?:
+        | components["schemas"]["ExecutionSettingsDto"]
+        | null
+        | undefined;
       /** Pendingsettingsaccountkey */
-      pendingSettingsAccountKey?: null | string;
+      pendingSettingsAccountKey?: null | string | undefined;
       /** Projectserverid */
-      projectServerId?: null | string;
-      queuedSettings?: components["schemas"]["ExecutionSettingsDto"] | null;
-      quickCreate?: components["schemas"]["JsonValue"] | null;
+      projectServerId?: null | string | undefined;
+      queuedSettings?:
+        | components["schemas"]["ExecutionSettingsDto"]
+        | null
+        | undefined;
+      quickCreate?: components["schemas"]["JsonValue"] | null | undefined;
       /** Retryat */
-      retryAt?: null | number;
-      reviewDefaults?: components["schemas"]["ReviewDefaultsDto"] | null;
-      startAttempt?: components["schemas"]["AgentStartAttempt"] | null;
-      startWait?: components["schemas"]["AgentEntityStartWaitDto"] | null;
+      retryAt?: null | number | undefined;
+      reviewDefaults?:
+        | components["schemas"]["ReviewDefaultsDto"]
+        | null
+        | undefined;
+      startAttempt?:
+        | components["schemas"]["AgentStartAttempt"]
+        | null
+        | undefined;
+      startWait?:
+        | components["schemas"]["AgentEntityStartWaitDto"]
+        | null
+        | undefined;
       /** Statusdetail */
-      statusDetail?: null | string;
+      statusDetail?: null | string | undefined;
       /** Subagentconcurrencyversion */
-      subagentConcurrencyVersion?: number | null;
+      subagentConcurrencyVersion?: number | null | undefined;
       /** Tail */
-      tail?: null | string;
-      taskDefaultGate?: components["schemas"]["TaskAcceptanceGate"];
+      tail?: null | string | undefined;
+      taskDefaultGate?: components["schemas"]["TaskAcceptanceGate"] | undefined;
       /** Tokensused */
-      tokensUsed?: number | null;
-      turnStatus?: components["schemas"]["AgentStatus"] | null;
-      usageResume?: components["schemas"]["AgentEntityUsageResumeDto"] | null;
-      voiceState?: components["schemas"]["JsonValue"] | null;
-      workerDefaults?: components["schemas"]["WorkerDefaultsDto"] | null;
+      tokensUsed?: number | null | undefined;
+      turnStatus?: components["schemas"]["AgentStatus"] | null | undefined;
+      usageResume?:
+        | components["schemas"]["AgentEntityUsageResumeDto"]
+        | null
+        | undefined;
+      voiceState?: components["schemas"]["JsonValue"] | null | undefined;
+      workerDefaults?:
+        | components["schemas"]["WorkerDefaultsDto"]
+        | null
+        | undefined;
       /** Workspacebackend */
-      workspaceBackend?: ("asif" | "vm") | null;
+      workspaceBackend?: ("asif" | "vm") | null | undefined;
       workspaceCleanupIntent?:
         | components["schemas"]["WorkspaceCleanupSummaryDto"]
-        | null;
+        | null
+        | undefined;
       /** Workspacemode */
-      workspaceMode?: ("layr" | "image" | "worktree" | "shared") | null;
+      workspaceMode?:
+        | ("layr" | "image" | "worktree" | "shared")
+        | null
+        | undefined;
       /** Workspaceoperation */
-      workspaceOperation?: null | string;
+      workspaceOperation?: null | string | undefined;
       /** Worktree */
-      worktree?: boolean | null | string;
+      worktree?: boolean | null | string | undefined;
       /** Worktreepreparation */
-      worktreePreparation?: ("waiting" | "preparing") | null;
+      worktreePreparation?: ("waiting" | "preparing") | null | undefined;
       /** Yolomode */
-      yoloMode?: boolean | null;
+      yoloMode?: boolean | null | undefined;
     };
     /** AgentDetailResource */
     AgentDetailResource: {
@@ -4143,19 +4235,19 @@ export interface components {
        * Assets
        * @default null
        */
-      assets?: components["schemas"]["JsonValue"][];
+      assets?: components["schemas"]["JsonValue"][] | undefined;
       /**
        * Prefixtext
        * @default null
        */
-      prefixText?: string;
+      prefixText?: string | undefined;
       /**
        * Text
        * @default null
        */
-      text?: string;
+      text?: string | undefined;
     } & {
-      [key: string]: components["schemas"]["JsonValue"];
+      [key: string]: components["schemas"]["JsonValue"] | undefined;
     };
     /**
      * AgentEntityCapacityRetryDto
@@ -4166,16 +4258,16 @@ export interface components {
        * Acceptedturnid
        * @default null
        */
-      acceptedTurnId?: null | string;
+      acceptedTurnId?: null | string | undefined;
       /** Accountkey */
       accountKey: null | string;
       /** @default null */
-      cause?: components["schemas"]["CapacityRetryCause"] | null;
+      cause?: components["schemas"]["CapacityRetryCause"] | null | undefined;
       /**
        * Claimedat
        * @default null
        */
-      claimedAt?: null | number;
+      claimedAt?: null | number | undefined;
       /** Dueat */
       dueAt: null | number;
       /** Epoch */
@@ -4186,7 +4278,7 @@ export interface components {
        * Reason
        * @default null
        */
-      reason?: null | string;
+      reason?: null | string | undefined;
       /** Status */
       status: string;
       /** Threadid */
@@ -4207,257 +4299,327 @@ export interface components {
     /** AgentEntityDto */
     AgentEntityDto: {
       /** Accountkey */
-      accountKey?: null | string;
+      accountKey?: null | string | undefined;
       accountTransfer?:
         | components["schemas"]["AccountTransferSummaryDto"]
-        | null;
+        | null
+        | undefined;
       /** Accounttransferid */
-      accountTransferId?: null | string;
-      activity?: components["schemas"]["AgentActivity"] | null;
-      agentMode?: components["schemas"]["AgentMode"] | null;
+      accountTransferId?: null | string | undefined;
+      activity?: components["schemas"]["AgentActivity"] | null | undefined;
+      agentMode?: components["schemas"]["AgentMode"] | null | undefined;
       /** Agentmoderevision */
-      agentModeRevision?: number | null;
+      agentModeRevision?: number | null | undefined;
       /** Agentmodesupported */
-      agentModeSupported?: boolean | null;
+      agentModeSupported?: boolean | null | undefined;
       /** Archived */
-      archived?: boolean | null;
+      archived?: boolean | null | undefined;
       /** Autowake */
-      autoWake?: boolean | null;
+      autoWake?: boolean | null | undefined;
       /** Cansend */
-      canSend?: boolean | null;
+      canSend?: boolean | null | undefined;
       capacityRetry?:
         | components["schemas"]["AgentEntityCapacityRetryDto"]
-        | null;
+        | null
+        | undefined;
       /** @description Claude permission mode for the worker launch preview. Other session options remain private. */
-      claudeOptions?: {
-        /** @enum {string} */
-        permissionMode?:
-          | "default"
-          | "acceptEdits"
-          | "auto"
-          | "plan"
-          | "bypassPermissions";
-      } | null;
+      claudeOptions?:
+        | {
+            /** @enum {string} */
+            permissionMode?:
+              | "default"
+              | "acceptEdits"
+              | "auto"
+              | "plan"
+              | "bypassPermissions"
+              | undefined;
+          }
+        | null
+        | undefined;
       /**
        * Commandprogress
        * @default []
        */
-      commandProgress?: components["schemas"]["AgentCommandProgress"][];
+      commandProgress?:
+        | components["schemas"]["AgentCommandProgress"][]
+        | undefined;
       /** Compactions */
-      compactions?: number | null;
+      compactions?: number | null | undefined;
       /** Concurrency */
-      concurrency?: number | null;
-      connectionCheck?: components["schemas"]["ConnectionCheckDto"] | null;
+      concurrency?: number | null | undefined;
+      connectionCheck?:
+        | components["schemas"]["ConnectionCheckDto"]
+        | null
+        | undefined;
       contextRepairWait?:
         | components["schemas"]["AgentEntityContextRepairWaitDto"]
-        | null;
-      contextUsage?: components["schemas"]["ContextUsageDto"] | null;
-      convertedFromLead?: components["schemas"]["ConvertedFromLeadDto"] | null;
+        | null
+        | undefined;
+      contextUsage?:
+        | components["schemas"]["ContextUsageDto"]
+        | null
+        | undefined;
+      convertedFromLead?:
+        | components["schemas"]["ConvertedFromLeadDto"]
+        | null
+        | undefined;
       /** Created */
-      created?: null | number;
+      created?: null | number | undefined;
       /** Cwd */
-      cwd?: null | string;
+      cwd?: null | string | undefined;
       /** Cyberaccessprogram */
-      cyberAccessProgram?: null | string;
+      cyberAccessProgram?: null | string | undefined;
       /** Daybreakenabled */
-      daybreakEnabled?: boolean | null;
+      daybreakEnabled?: boolean | null | undefined;
       /** Deletedat */
-      deletedAt?: null | number;
+      deletedAt?: null | number | undefined;
       /** Effort */
-      effort?: null | string;
+      effort?: null | string | undefined;
       /** Empty */
-      empty?: boolean | null;
+      empty?: boolean | null | undefined;
       /** Environment */
-      environment?: ("host" | "linux") | null;
+      environment?: ("host" | "linux") | null | undefined;
       /** Epoch */
-      epoch?: number | null;
+      epoch?: number | null | undefined;
       /** Error */
-      error?: components["schemas"]["NativeProviderError"] | null | string;
+      error?:
+        | components["schemas"]["NativeProviderError"]
+        | null
+        | string
+        | undefined;
       /** Excludedaccountkeys */
-      excludedAccountKeys?: string[] | null;
+      excludedAccountKeys?: string[] | null | undefined;
       /** Executionmode */
-      executionMode?: ("vm" | "native") | null;
+      executionMode?: ("vm" | "native") | null | undefined;
       /** Fastmode */
-      fastMode?: boolean | null;
+      fastMode?: boolean | null | undefined;
       /** Hasapproval */
-      hasApproval?: boolean | null;
+      hasApproval?: boolean | null | undefined;
       /** @description Whether managed commands or monitors are active; no command output is included. */
-      hasBackgroundWork?: boolean;
+      hasBackgroundWork?: boolean | undefined;
       /** Hasquestion */
-      hasQuestion?: boolean | null;
+      hasQuestion?: boolean | null | undefined;
       /** Hasunread */
-      hasUnread?: boolean | null;
+      hasUnread?: boolean | null | undefined;
       /** Hostprojectpath */
-      hostProjectPath?: null | string;
+      hostProjectPath?: null | string | undefined;
       /** Id */
       id: string;
       /** Imageworkspace */
-      imageWorkspace?: boolean | null;
+      imageWorkspace?: boolean | null | undefined;
       /** Imageworkspacebaseref */
-      imageWorkspaceBaseRef?: null | string;
+      imageWorkspaceBaseRef?: null | string | undefined;
       /** Imageworkspacebaserepo */
-      imageWorkspaceBaseRepo?: null | string;
+      imageWorkspaceBaseRepo?: null | string | undefined;
       /** Imageworkspacecreatedat */
-      imageWorkspaceCreatedAt?: null | number;
+      imageWorkspaceCreatedAt?: null | number | undefined;
       /** Imageworkspaceerror */
-      imageWorkspaceError?: null | string;
+      imageWorkspaceError?: null | string | undefined;
       /** Imageworkspacehasgit */
-      imageWorkspaceHasGit?: boolean | null;
+      imageWorkspaceHasGit?: boolean | null | undefined;
       /** Imageworkspacephase */
-      imageWorkspacePhase?: null | string;
+      imageWorkspacePhase?: null | string | undefined;
       /** Imageworkspaceready */
-      imageWorkspaceReady?: boolean | null;
+      imageWorkspaceReady?: boolean | null | undefined;
       /** Imageworkspacerepo */
-      imageWorkspaceRepo?: null | string;
+      imageWorkspaceRepo?: null | string | undefined;
       /** Imageworkspacesubpath */
-      imageWorkspaceSubpath?: null | string;
+      imageWorkspaceSubpath?: null | string | undefined;
       /** Inflight */
-      inFlight?: boolean | null;
+      inFlight?: boolean | null | undefined;
       /** Islead */
-      isLead?: boolean | null;
+      isLead?: boolean | null | undefined;
       /** Kind */
-      kind?: "agent" | null;
+      kind?: "agent" | null | undefined;
       /** Lastanswer */
-      lastAnswer?: null | string;
+      lastAnswer?: null | string | undefined;
       /** Lastcompletedturn */
-      lastCompletedTurn?: null | string;
+      lastCompletedTurn?: null | string | undefined;
       /** Lastcompletedturnstatus */
-      lastCompletedTurnStatus?: null | string;
+      lastCompletedTurnStatus?: null | string | undefined;
       /** Lastevent */
-      lastEvent?: null | string;
+      lastEvent?: null | string | undefined;
       /** Lastreadat */
-      lastReadAt?: null | number;
+      lastReadAt?: null | number | undefined;
       /** Launcheralive */
-      launcherAlive?: boolean | null;
+      launcherAlive?: boolean | null | undefined;
       /** Layrerror */
-      layrError?: null | string;
+      layrError?: null | string | undefined;
       /** Layrline */
-      layrLine?: null | string;
+      layrLine?: null | string | undefined;
       /** Layrprojectid */
-      layrProjectId?: null | string;
+      layrProjectId?: null | string | undefined;
       /** Layrready */
-      layrReady?: boolean | null;
+      layrReady?: boolean | null | undefined;
       /** Layrstateid */
-      layrStateId?: null | string;
+      layrStateId?: null | string | undefined;
       /** Manualname */
-      manualName?: boolean | null;
+      manualName?: boolean | null | undefined;
       /** Model */
-      model?: null | string;
-      movedFrom?: components["schemas"]["MovePointerDto"] | null;
-      movedTo?: components["schemas"]["MovePointerDto"] | null;
+      model?: null | string | undefined;
+      movedFrom?: components["schemas"]["MovePointerDto"] | null | undefined;
+      movedTo?: components["schemas"]["MovePointerDto"] | null | undefined;
       /**
        * Moveimportpending
        * @default false
        */
-      moveImportPending?: boolean;
+      moveImportPending?: boolean | undefined;
       /** Name */
-      name?: null | string;
+      name?: null | string | undefined;
       /** Nativeerror */
-      nativeError?: null | string;
+      nativeError?: null | string | undefined;
       /** Nativelimiterrorat */
-      nativeLimitErrorAt?: null | number;
-      nativeRelease?: components["schemas"]["AgentNativeRelease"] | null;
+      nativeLimitErrorAt?: null | number | undefined;
+      nativeRelease?:
+        | components["schemas"]["AgentNativeRelease"]
+        | null
+        | undefined;
       nativeSafetyBuffering?:
         | components["schemas"]["NativeSafetyBufferingRecord"]
-        | null;
-      nativeSafetyRetry?: components["schemas"]["NativeSafetyRetryDto"] | null;
+        | null
+        | undefined;
+      nativeSafetyRetry?:
+        | components["schemas"]["NativeSafetyRetryDto"]
+        | null
+        | undefined;
       /** Nativestatus */
       nativeStatus?:
         | components["schemas"]["AgentNativeStatus"]
         | components["schemas"]["AgentNativeStatusValue"]
-        | null;
-      nativeThreadBlock?: components["schemas"]["NativeThreadBlockDto"] | null;
-      nativeTurnError?: components["schemas"]["NativeTurnErrorDto"] | null;
+        | null
+        | undefined;
+      nativeThreadBlock?:
+        | components["schemas"]["NativeThreadBlockDto"]
+        | null
+        | undefined;
+      nativeTurnError?:
+        | components["schemas"]["NativeTurnErrorDto"]
+        | null
+        | undefined;
       /** Nextturnsettingssupported */
-      nextTurnSettingsSupported?: boolean | null;
+      nextTurnSettingsSupported?: boolean | null | undefined;
       /** Orchestratorid */
-      orchestratorId?: null | string;
+      orchestratorId?: null | string | undefined;
       /** Orchestratorname */
-      orchestratorName?: null | string;
-      overview?: components["schemas"]["AgentOverview"] | null;
+      orchestratorName?: null | string | undefined;
+      overview?: components["schemas"]["AgentOverview"] | null | undefined;
       /** Paneldataversion */
-      panelDataVersion?: number | null;
+      panelDataVersion?: number | null | undefined;
       /** Panelversion */
-      panelVersion?: number | null;
+      panelVersion?: number | null | undefined;
       /** Parentid */
-      parentId?: null | string;
+      parentId?: null | string | undefined;
       /** Parkedevent */
-      parkedEvent?: null | string;
-      pendingSettings?: components["schemas"]["ExecutionSettingsDto"] | null;
+      parkedEvent?: null | string | undefined;
+      pendingSettings?:
+        | components["schemas"]["ExecutionSettingsDto"]
+        | null
+        | undefined;
       /** Pendingsettingsaccountkey */
-      pendingSettingsAccountKey?: null | string;
+      pendingSettingsAccountKey?: null | string | undefined;
       /** Pinned */
-      pinned?: boolean | null;
+      pinned?: boolean | null | undefined;
       /** Project */
-      project?: null | string;
+      project?: null | string | undefined;
       /** Projectfolder */
-      projectFolder?: null | string;
+      projectFolder?: null | string | undefined;
       /** Projectfolderrevision */
-      projectFolderRevision?: number | null;
+      projectFolderRevision?: number | null | undefined;
       /** Projectid */
-      projectId?: null | string;
+      projectId?: null | string | undefined;
       /** Projectserverid */
-      projectServerId?: null | string;
-      provider?: components["schemas"]["AgentProvider"] | null;
-      queuedSettings?: components["schemas"]["ExecutionSettingsDto"] | null;
-      quickCreate?: components["schemas"]["JsonValue"] | null;
-      readState?: components["schemas"]["ReadStateDto"] | null;
+      projectServerId?: null | string | undefined;
+      provider?: components["schemas"]["AgentProvider"] | null | undefined;
+      queuedSettings?:
+        | components["schemas"]["ExecutionSettingsDto"]
+        | null
+        | undefined;
+      quickCreate?: components["schemas"]["JsonValue"] | null | undefined;
+      readState?: components["schemas"]["ReadStateDto"] | null | undefined;
       /** Readstatesupported */
-      readStateSupported?: boolean | null;
-      remoteAnchor?: components["schemas"]["RemoteParentLinkDto"] | null;
-      remoteOrigin?: components["schemas"]["RemoteParentLinkDto"] | null;
-      remoteWorker?: components["schemas"]["RemoteWorkerLinkDto"] | null;
+      readStateSupported?: boolean | null | undefined;
+      remoteAnchor?:
+        | components["schemas"]["RemoteParentLinkDto"]
+        | null
+        | undefined;
+      remoteOrigin?:
+        | components["schemas"]["RemoteParentLinkDto"]
+        | null
+        | undefined;
+      remoteWorker?:
+        | components["schemas"]["RemoteWorkerLinkDto"]
+        | null
+        | undefined;
       /** Retryat */
-      retryAt?: null | number;
-      reviewDefaults?: components["schemas"]["ReviewDefaultsDto"] | null;
-      role?: components["schemas"]["AgentRole"] | null;
+      retryAt?: null | number | undefined;
+      reviewDefaults?:
+        | components["schemas"]["ReviewDefaultsDto"]
+        | null
+        | undefined;
+      role?: components["schemas"]["AgentRole"] | null | undefined;
       /** Rootid */
-      rootId?: null | string;
+      rootId?: null | string | undefined;
       /** Serverid */
-      serverId?: null | string;
+      serverId?: null | string | undefined;
       /** Sharedroomid */
-      sharedRoomId?: null | string;
-      source?: components["schemas"]["AgentSource"] | null;
-      stall?: components["schemas"]["AgentStall"] | null;
-      startAttempt?: components["schemas"]["AgentStartAttempt"] | null;
-      startWait?: components["schemas"]["AgentEntityStartWaitDto"] | null;
-      status?: components["schemas"]["AgentStatus"] | null;
+      sharedRoomId?: null | string | undefined;
+      source?: components["schemas"]["AgentSource"] | null | undefined;
+      stall?: components["schemas"]["AgentStall"] | null | undefined;
+      startAttempt?:
+        | components["schemas"]["AgentStartAttempt"]
+        | null
+        | undefined;
+      startWait?:
+        | components["schemas"]["AgentEntityStartWaitDto"]
+        | null
+        | undefined;
+      status?: components["schemas"]["AgentStatus"] | null | undefined;
       /** Statusdetail */
-      statusDetail?: null | string;
+      statusDetail?: null | string | undefined;
       /** Subagentconcurrencyversion */
-      subagentConcurrencyVersion?: number | null;
+      subagentConcurrencyVersion?: number | null | undefined;
       /** Tail */
-      tail?: null | string;
-      taskDefaultGate?: components["schemas"]["TaskAcceptanceGate"];
+      tail?: null | string | undefined;
+      taskDefaultGate?: components["schemas"]["TaskAcceptanceGate"] | undefined;
       /** Threadid */
-      threadId?: null | string;
+      threadId?: null | string | undefined;
       /** Tokensused */
-      tokensUsed?: number | null;
+      tokensUsed?: number | null | undefined;
       /** Turnid */
-      turnId?: null | string;
-      turnStatus?: components["schemas"]["AgentStatus"] | null;
+      turnId?: null | string | undefined;
+      turnStatus?: components["schemas"]["AgentStatus"] | null | undefined;
       /** Unreadcount */
-      unreadCount?: number | null;
+      unreadCount?: number | null | undefined;
       /** Updated */
-      updated?: null | number;
-      usageResume?: components["schemas"]["AgentEntityUsageResumeDto"] | null;
-      voiceState?: components["schemas"]["JsonValue"] | null;
-      workerDefaults?: components["schemas"]["WorkerDefaultsDto"] | null;
+      updated?: null | number | undefined;
+      usageResume?:
+        | components["schemas"]["AgentEntityUsageResumeDto"]
+        | null
+        | undefined;
+      voiceState?: components["schemas"]["JsonValue"] | null | undefined;
+      workerDefaults?:
+        | components["schemas"]["WorkerDefaultsDto"]
+        | null
+        | undefined;
       /** Workspacebackend */
-      workspaceBackend?: ("asif" | "vm") | null;
+      workspaceBackend?: ("asif" | "vm") | null | undefined;
       workspaceCleanupIntent?:
         | components["schemas"]["WorkspaceCleanupSummaryDto"]
-        | null;
+        | null
+        | undefined;
       /** Workspacemode */
-      workspaceMode?: ("layr" | "image" | "worktree" | "shared") | null;
+      workspaceMode?:
+        | ("layr" | "image" | "worktree" | "shared")
+        | null
+        | undefined;
       /** Workspaceoperation */
-      workspaceOperation?: null | string;
+      workspaceOperation?: null | string | undefined;
       /** Worktree */
-      worktree?: boolean | null | string;
+      worktree?: boolean | null | string | undefined;
       /** Worktreepreparation */
-      worktreePreparation?: ("waiting" | "preparing") | null;
+      worktreePreparation?: ("waiting" | "preparing") | null | undefined;
       /** Yolomode */
-      yoloMode?: boolean | null;
+      yoloMode?: boolean | null | undefined;
     };
     /**
      * AgentEntityStartWaitDto
@@ -4470,7 +4632,7 @@ export interface components {
        * Maxrunningturns
        * @default null
        */
-      maxRunningTurns?: number | null;
+      maxRunningTurns?: number | null | undefined;
       /**
        * Reason
        * @enum {string}
@@ -4491,12 +4653,12 @@ export interface components {
        * Runningturns
        * @default null
        */
-      runningTurns?: number | null;
+      runningTurns?: number | null | undefined;
       /**
        * Until
        * @default null
        */
-      until?: null | number;
+      until?: null | number | undefined;
     };
     /**
      * AgentEntityUsageResumeDto
@@ -4542,12 +4704,12 @@ export interface components {
     /** AgentNativeRelease */
     AgentNativeRelease: {
       /** @default null */
-      phase?: components["schemas"]["NativeReleasePhase"] | null;
+      phase?: components["schemas"]["NativeReleasePhase"] | null | undefined;
       /**
        * Resetpending
        * @default null
        */
-      resetPending?: boolean | null;
+      resetPending?: boolean | null | undefined;
     };
     /** AgentNativeStatus */
     AgentNativeStatus: {
@@ -4555,27 +4717,31 @@ export interface components {
        * At
        * @default null
        */
-      at?: null | number;
+      at?: null | number | undefined;
       /**
        * Error
        * @default null
        */
-      error?: components["schemas"]["NativeProviderError"] | null | string;
+      error?:
+        | components["schemas"]["NativeProviderError"]
+        | null
+        | string
+        | undefined;
       /**
        * Message
        * @default null
        */
-      message?: null | string;
+      message?: null | string | undefined;
       /**
        * Phase
        * @default null
        */
-      phase?: ("safety" | "retrying" | "auth") | null;
+      phase?: ("safety" | "retrying" | "auth") | null | undefined;
       /**
        * Turnid
        * @default null
        */
-      turnId?: null | string;
+      turnId?: null | string | undefined;
     };
     /** AgentNativeStatusRecordResponse */
     AgentNativeStatusRecordResponse: {
@@ -4583,30 +4749,34 @@ export interface components {
        * At
        * @default null
        */
-      at?: number;
+      at?: number | undefined;
       /**
        * Error
        * @default null
        */
-      error?: components["schemas"]["JsonObjectResponse"] | null | string;
+      error?:
+        | components["schemas"]["JsonObjectResponse"]
+        | null
+        | string
+        | undefined;
       /**
        * Message
        * @default null
        */
-      message?: string;
+      message?: string | undefined;
       /**
        * Phase
        * @default null
        * @enum {string}
        */
-      phase?: "safety" | "retrying" | "auth";
+      phase?: "safety" | "retrying" | "auth" | undefined;
       /**
        * Turnid
        * @default null
        */
-      turnId?: string;
+      turnId?: string | undefined;
     } & {
-      [key: string]: components["schemas"]["JsonValue"];
+      [key: string]: components["schemas"]["JsonValue"] | undefined;
     };
     /**
      * AgentNativeStatusValue
@@ -4623,32 +4793,32 @@ export interface components {
        * Result
        * @default null
        */
-      result?: null | string;
+      result?: null | string | undefined;
       /**
        * Resultfile
        * @default null
        */
-      resultFile?: null | string;
+      resultFile?: null | string | undefined;
       /**
        * Resulttruncated
        * @default null
        */
-      resultTruncated?: boolean | null;
+      resultTruncated?: boolean | null | undefined;
       /**
        * Resultturnid
        * @default null
        */
-      resultTurnId?: null | string;
+      resultTurnId?: null | string | undefined;
       /**
        * Task
        * @default null
        */
-      task?: null | string;
+      task?: null | string | undefined;
       /**
        * Tasktruncated
        * @default null
        */
-      taskTruncated?: boolean | null;
+      taskTruncated?: boolean | null | undefined;
     };
     /**
      * AgentProvider
@@ -4661,352 +4831,415 @@ export interface components {
        * Accounthistory
        * @default null
        */
-      accountHistory?: components["schemas"]["AccountHistoryRecordResponse"][];
+      accountHistory?:
+        | components["schemas"]["AccountHistoryRecordResponse"][]
+        | undefined;
       /**
        * Accountid
        * @default null
        */
-      accountId?: string;
+      accountId?: string | undefined;
       /**
        * Accountkey
        * @default null
        */
-      accountKey?: string;
+      accountKey?: string | undefined;
       /** @default null */
       accountTransfer?:
         | components["schemas"]["AccountTransferSummaryRecordResponse"]
-        | null;
+        | null
+        | undefined;
       /**
        * Accounttransferid
        * @default null
        */
-      accountTransferId?: string;
-      accountTransferState?: components["schemas"]["JsonValue"];
+      accountTransferId?: string | undefined;
+      accountTransferState?: components["schemas"]["JsonValue"] | undefined;
       /**
        * Activetools
        * @default null
        */
-      activeTools?: components["schemas"]["ActiveToolRecordResponse"][];
+      activeTools?:
+        | components["schemas"]["ActiveToolRecordResponse"][]
+        | undefined;
       /** @default null */
-      activity?: components["schemas"]["AgentActivityRecordResponse"] | null;
+      activity?:
+        | components["schemas"]["AgentActivityRecordResponse"]
+        | null
+        | undefined;
       /**
        * Activityphase
        * @default null
        */
-      activityPhase?: string;
+      activityPhase?: string | undefined;
       /** @default null */
-      agentArchive?: components["schemas"]["AgentArchiveRecordResponse"];
+      agentArchive?:
+        | components["schemas"]["AgentArchiveRecordResponse"]
+        | undefined;
       /**
        * Agentmode
        * @default null
        * @enum {string}
        */
-      agentMode?: "multi" | "single";
+      agentMode?: "multi" | "single" | undefined;
       /**
        * Agentmodechangedat
        * @default null
        */
-      agentModeChangedAt?: number;
+      agentModeChangedAt?: number | undefined;
       /**
        * Agentmodechangedby
        * @default null
        */
-      agentModeChangedBy?: string;
+      agentModeChangedBy?: string | undefined;
       /**
        * Agentmoderevision
        * @default null
        */
-      agentModeRevision?: number;
+      agentModeRevision?: number | undefined;
       /**
        * Agentmodesupported
        * @default null
        */
-      agentModeSupported?: boolean;
+      agentModeSupported?: boolean | undefined;
       /**
        * Approvalpolicy
        * @default null
        */
-      approvalPolicy?: string;
+      approvalPolicy?: string | undefined;
       /**
        * Archived
        * @default null
        */
-      archived?: boolean;
+      archived?: boolean | undefined;
       /**
        * Authresumeattempt
        * @default null
        */
-      authResumeAttempt?: number;
+      authResumeAttempt?: number | undefined;
       /**
        * Autowake
        * @default null
        */
-      autoWake?: boolean;
+      autoWake?: boolean | undefined;
       /**
        * Branch
        * @default null
        */
-      branch?: string;
+      branch?: string | undefined;
       /** @default null */
-      browserRecovery?: components["schemas"]["BrowserRecoveryRecordResponse"];
+      browserRecovery?:
+        | components["schemas"]["BrowserRecoveryRecordResponse"]
+        | undefined;
       /** @default null */
-      budgetActionWait?: components["schemas"]["BudgetWaitRecordResponse"];
+      budgetActionWait?:
+        | components["schemas"]["BudgetWaitRecordResponse"]
+        | undefined;
       /**
        * Budgetblocked
        * @default null
        */
-      budgetBlocked?: string;
+      budgetBlocked?: string | undefined;
       /** @default null */
-      budgetStartWait?: components["schemas"]["BudgetWaitRecordResponse"];
+      budgetStartWait?:
+        | components["schemas"]["BudgetWaitRecordResponse"]
+        | undefined;
       /** @default null */
-      cancelledPark?: components["schemas"]["ParkReceiptRecordResponse"];
+      cancelledPark?:
+        | components["schemas"]["ParkReceiptRecordResponse"]
+        | undefined;
       /** @default null */
-      capacityRetry?: components["schemas"]["CapacityRetryRecordResponse"];
+      capacityRetry?:
+        | components["schemas"]["CapacityRetryRecordResponse"]
+        | undefined;
       /**
        * Capacityretrycount
        * @default null
        */
-      capacityRetryCount?: number;
+      capacityRetryCount?: number | undefined;
       /**
        * Checkpointerror
        * @default null
        */
-      checkpointError?: null | string;
+      checkpointError?: null | string | undefined;
       /**
        * Checkpointhistoryhead
        * @default null
        */
-      checkpointHistoryHead?: string;
+      checkpointHistoryHead?: string | undefined;
       /** @default null */
-      claudeInputRequest?: components["schemas"]["JsonObjectResponse"];
+      claudeInputRequest?:
+        | components["schemas"]["JsonObjectResponse"]
+        | undefined;
       /** @default null */
-      claudeOptions?: components["schemas"]["JsonObjectResponse"];
+      claudeOptions?: components["schemas"]["JsonObjectResponse"] | undefined;
       /** @default null */
-      claudePreInputRetry?: components["schemas"]["ClaudePreInputRetryRecordResponse"];
+      claudePreInputRetry?:
+        | components["schemas"]["ClaudePreInputRetryRecordResponse"]
+        | undefined;
       /** @default null */
-      cleanedImageWorkspace?: components["schemas"]["CleanedImageWorkspaceRecordResponse"];
+      cleanedImageWorkspace?:
+        | components["schemas"]["CleanedImageWorkspaceRecordResponse"]
+        | undefined;
       /** @default null */
-      cleanedWorktree?: components["schemas"]["WorktreeCleanupRecordResponse"];
+      cleanedWorktree?:
+        | components["schemas"]["WorktreeCleanupRecordResponse"]
+        | undefined;
       /**
        * Compactions
        * @default null
        */
-      compactions?: number;
+      compactions?: number | undefined;
       /**
        * Compactionsobservedonly
        * @default null
        */
-      compactionsObservedOnly?: boolean;
+      compactionsObservedOnly?: boolean | undefined;
       /**
        * Complaintmisses
        * @default null
        */
-      complaintMisses?: number;
+      complaintMisses?: number | undefined;
       /**
        * Complaintspresented
        * @default null
        */
-      complaintsPresented?: string[];
+      complaintsPresented?: string[] | undefined;
       /**
        * Concurrency
        * @default null
        */
-      concurrency?: number;
+      concurrency?: number | undefined;
       /** @default null */
-      connectionCheck?: components["schemas"]["ConnectionCheckRecordResponse"];
+      connectionCheck?:
+        | components["schemas"]["ConnectionCheckRecordResponse"]
+        | undefined;
       /** @default null */
-      connectionRecovery?: components["schemas"]["ConnectionRecoveryRecordResponse"];
+      connectionRecovery?:
+        | components["schemas"]["ConnectionRecoveryRecordResponse"]
+        | undefined;
       /** @default null */
-      contextRepair?: components["schemas"]["ContextRepairRecordResponse"];
+      contextRepair?:
+        | components["schemas"]["ContextRepairRecordResponse"]
+        | undefined;
       /**
        * Contextrepairhistory
        * @default null
        */
-      contextRepairHistory?: components["schemas"]["JsonValue"][];
+      contextRepairHistory?: components["schemas"]["JsonValue"][] | undefined;
       /** @default null */
-      contextRepairWait?: components["schemas"]["ContextRepairWaitRecordResponse"];
+      contextRepairWait?:
+        | components["schemas"]["ContextRepairWaitRecordResponse"]
+        | undefined;
       /** @default null */
-      contextUsage?: components["schemas"]["ContextUsageRecordResponse"] | null;
+      contextUsage?:
+        | components["schemas"]["ContextUsageRecordResponse"]
+        | null
+        | undefined;
       /** @default null */
-      convertedFromLead?: components["schemas"]["ConvertedFromLeadRecordResponse"];
+      convertedFromLead?:
+        | components["schemas"]["ConvertedFromLeadRecordResponse"]
+        | undefined;
       /**
        * Created
        * @default null
        */
-      created?: number;
+      created?: number | undefined;
       /**
        * Cwd
        * @default null
        */
-      cwd?: string;
+      cwd?: string | undefined;
       /**
        * Cyberaccessprogram
        * @default null
        */
-      cyberAccessProgram?: null | string;
+      cyberAccessProgram?: null | string | undefined;
       /**
        * Daybreakenabled
        * @default null
        */
-      daybreakEnabled?: boolean | null;
+      daybreakEnabled?: boolean | null | undefined;
       /**
        * Deletedat
        * @default null
        */
-      deletedAt?: number;
+      deletedAt?: number | undefined;
       /** @default null */
-      deliveredMode?: components["schemas"]["DeliveredModeRecordResponse"];
+      deliveredMode?:
+        | components["schemas"]["DeliveredModeRecordResponse"]
+        | undefined;
       /**
        * Deliveredmodeversion
        * @default null
        */
-      deliveredModeVersion?: number;
+      deliveredModeVersion?: number | undefined;
       /** @default null */
-      disconnectRecovery?: components["schemas"]["DisconnectRecoveryRecordResponse"];
+      disconnectRecovery?:
+        | components["schemas"]["DisconnectRecoveryRecordResponse"]
+        | undefined;
       /** @default null */
-      draft?: components["schemas"]["AgentDraftRecordResponse"];
+      draft?: components["schemas"]["AgentDraftRecordResponse"] | undefined;
       /**
        * Effort
        * @default null
        */
-      effort?: null | string;
+      effort?: null | string | undefined;
       /** @default null */
-      emptyTransferRecovery?: components["schemas"]["EmptyTransferRecoveryRecordResponse"];
+      emptyTransferRecovery?:
+        | components["schemas"]["EmptyTransferRecoveryRecordResponse"]
+        | undefined;
       /**
        * Environment
        * @default null
        */
-      environment?: ("host" | "linux") | null;
+      environment?: ("host" | "linux") | null | undefined;
       /** Epoch */
       epoch: number;
       /**
        * Error
        * @default null
        */
-      error?: components["schemas"]["JsonObjectResponse"] | null | string;
+      error?:
+        | components["schemas"]["JsonObjectResponse"]
+        | null
+        | string
+        | undefined;
       /**
        * Events
        * @default null
        */
-      events?: number;
+      events?: number | undefined;
       /**
        * Excludedaccountkeys
        * @default null
        */
-      excludedAccountKeys?: string[];
+      excludedAccountKeys?: string[] | undefined;
       /**
        * Executionarchives
        * @default null
        */
-      executionArchives?: components["schemas"]["JsonObjectResponse"][];
+      executionArchives?:
+        | components["schemas"]["JsonObjectResponse"][]
+        | undefined;
       /**
        * Executionmode
        * @default null
        * @enum {string}
        */
-      executionMode?: "vm" | "native";
+      executionMode?: "vm" | "native" | undefined;
       /** @default null */
-      executionMove?: components["schemas"]["JsonObjectResponse"];
+      executionMove?: components["schemas"]["JsonObjectResponse"] | undefined;
       /**
        * Executionroutealiases
        * @default null
        */
-      executionRouteAliases?: components["schemas"]["JsonObjectResponse"][];
+      executionRouteAliases?:
+        | components["schemas"]["JsonObjectResponse"][]
+        | undefined;
       /**
        * Executionsettingsaccountkey
        * @default null
        */
-      executionSettingsAccountKey?: string;
+      executionSettingsAccountKey?: string | undefined;
       /**
        * Fastmode
        * @default null
        */
-      fastMode?: boolean | null;
+      fastMode?: boolean | null | undefined;
       /**
        * Forkedfrom
        * @default null
        */
-      forkedFrom?: string;
+      forkedFrom?: string | undefined;
       /** @default null */
-      frozenNativeParams?: components["schemas"]["JsonObjectResponse"];
+      frozenNativeParams?:
+        | components["schemas"]["JsonObjectResponse"]
+        | undefined;
       /**
        * Hostprojectpath
        * @default null
        */
-      hostProjectPath?: string;
+      hostProjectPath?: string | undefined;
       /** Id */
       id: string;
       /**
        * Imageworkspace
        * @default null
        */
-      imageWorkspace?: boolean;
+      imageWorkspace?: boolean | undefined;
       /**
        * Imageworkspacebaseerror
        * @default null
        */
-      imageWorkspaceBaseError?: string;
+      imageWorkspaceBaseError?: string | undefined;
       /**
        * Imageworkspacebaseref
        * @default null
        */
-      imageWorkspaceBaseRef?: null | string;
+      imageWorkspaceBaseRef?: null | string | undefined;
       /**
        * Imageworkspacebaserepo
        * @default null
        */
-      imageWorkspaceBaseRepo?: null | string;
+      imageWorkspaceBaseRepo?: null | string | undefined;
       /** @default null */
-      imageWorkspaceCleanupResult?: components["schemas"]["ImageWorkspaceCleanupResultRecordResponse"];
+      imageWorkspaceCleanupResult?:
+        | components["schemas"]["ImageWorkspaceCleanupResultRecordResponse"]
+        | undefined;
       /** @default null */
-      imageWorkspaceCleanupRetry?: components["schemas"]["ImageWorkspaceCleanupRetryRecordResponse"];
+      imageWorkspaceCleanupRetry?:
+        | components["schemas"]["ImageWorkspaceCleanupRetryRecordResponse"]
+        | undefined;
       /** @default null */
-      imageWorkspaceCollect?: components["schemas"]["ImageWorkspaceCollectResultRecordResponse"];
+      imageWorkspaceCollect?:
+        | components["schemas"]["ImageWorkspaceCollectResultRecordResponse"]
+        | undefined;
       /**
        * Imageworkspacecreatedat
        * @default null
        */
-      imageWorkspaceCreatedAt?: null | number;
+      imageWorkspaceCreatedAt?: null | number | undefined;
       /**
        * Imageworkspaceerror
        * @default null
        */
-      imageWorkspaceError?: null | string;
+      imageWorkspaceError?: null | string | undefined;
       /**
        * Imageworkspacehandofftext
        * @default null
        */
-      imageWorkspaceHandoffText?: null | string;
+      imageWorkspaceHandoffText?: null | string | undefined;
       /**
        * Imageworkspacehasgit
        * @default null
        */
-      imageWorkspaceHasGit?: boolean;
+      imageWorkspaceHasGit?: boolean | undefined;
       /**
        * Imageworkspacemount
        * @default null
        */
-      imageWorkspaceMount?: null | string;
+      imageWorkspaceMount?: null | string | undefined;
       /**
        * Imageworkspacenoticeerror
        * @default null
        */
-      imageWorkspaceNoticeError?: null | string;
+      imageWorkspaceNoticeError?: null | string | undefined;
       /**
        * Imageworkspacenoticeid
        * @default null
        */
-      imageWorkspaceNoticeId?: null | string;
+      imageWorkspaceNoticeId?: null | string | undefined;
       /**
        * Imageworkspacenoticesent
        * @default null
        */
-      imageWorkspaceNoticeSent?: null | string;
+      imageWorkspaceNoticeSent?: null | string | undefined;
       /**
        * Imageworkspacenoticetext
        * @default null
        */
-      imageWorkspaceNoticeText?: null | string;
+      imageWorkspaceNoticeText?: null | string | undefined;
       /**
        * Imageworkspacephase
        * @default null
@@ -5020,55 +5253,58 @@ export interface components {
             | "archived"
             | "removed"
           )
-        | null;
+        | null
+        | undefined;
       /**
        * Imageworkspaceready
        * @default null
        */
-      imageWorkspaceReady?: boolean;
+      imageWorkspaceReady?: boolean | undefined;
       /**
        * Imageworkspacerepo
        * @default null
        */
-      imageWorkspaceRepo?: null | string;
+      imageWorkspaceRepo?: null | string | undefined;
       /**
        * Imageworkspacesnapshotcommit
        * @default null
        */
-      imageWorkspaceSnapshotCommit?: null | string;
+      imageWorkspaceSnapshotCommit?: null | string | undefined;
       /**
        * Imageworkspacesubpath
        * @default null
        */
-      imageWorkspaceSubpath?: null | string;
+      imageWorkspaceSubpath?: null | string | undefined;
       /**
        * Importedfrom
        * @default null
        */
-      importedFrom?: string;
+      importedFrom?: string | undefined;
       /**
        * Inflight
        * @default null
        */
-      inFlight?: boolean;
+      inFlight?: boolean | undefined;
       /**
        * Islead
        * @default null
        */
-      isLead?: boolean;
+      isLead?: boolean | undefined;
       /**
        * Lastanswer
        * @default null
        */
-      lastAnswer?: string;
+      lastAnswer?: string | undefined;
       /** @default null */
-      lastBudgetWait?: components["schemas"]["BudgetWaitRecordResponse"];
+      lastBudgetWait?:
+        | components["schemas"]["BudgetWaitRecordResponse"]
+        | undefined;
       /**
        * Lastcompletedturn
        * @default null
        */
-      lastCompletedTurn?: string;
-      lastCompletedTurnError?: components["schemas"]["JsonValue"];
+      lastCompletedTurn?: string | undefined;
+      lastCompletedTurnError?: components["schemas"]["JsonValue"] | undefined;
       /**
        * Lastcompletedturnstatus
        * @default null
@@ -5092,189 +5328,222 @@ export interface components {
             | "capacity-retry"
             | "waiting_on_monitor"
           )
-        | null;
+        | null
+        | undefined;
       /** @default null */
-      lastContextRepairCheck?: components["schemas"]["JsonObjectResponse"];
+      lastContextRepairCheck?:
+        | components["schemas"]["JsonObjectResponse"]
+        | undefined;
       /** @default null */
-      lastContextRepairWait?: components["schemas"]["JsonObjectResponse"];
+      lastContextRepairWait?:
+        | components["schemas"]["JsonObjectResponse"]
+        | undefined;
       /**
        * Lastevent
        * @default null
        */
-      lastEvent?: string;
+      lastEvent?: string | undefined;
       /**
        * Lastupdated
        * @default null
        */
-      lastUpdated?: number;
+      lastUpdated?: number | undefined;
       /** @default null */
-      lastWorkspaceWait?: components["schemas"]["WorkspaceWaitRecordResponse"];
+      lastWorkspaceWait?:
+        | components["schemas"]["WorkspaceWaitRecordResponse"]
+        | undefined;
       /**
        * Layrbasestate
        * @default null
        */
-      layrBaseState?: string;
+      layrBaseState?: string | undefined;
       /**
        * Layrerror
        * @default null
        */
-      layrError?: string;
+      layrError?: string | undefined;
       /**
        * Layrhandoffroot
        * @default null
        */
-      layrHandoffRoot?: string;
+      layrHandoffRoot?: string | undefined;
       /**
        * Layrhome
        * @default null
        */
-      layrHome?: string;
+      layrHome?: string | undefined;
       /**
        * Layrline
        * @default null
        */
-      layrLine?: string;
+      layrLine?: string | undefined;
       /**
        * Layrowner
        * @default null
        */
-      layrOwner?: string;
+      layrOwner?: string | undefined;
       /**
        * Layrprojectid
        * @default null
        */
-      layrProjectId?: string;
+      layrProjectId?: string | undefined;
       /**
        * Layrready
        * @default null
        */
-      layrReady?: boolean;
+      layrReady?: boolean | undefined;
       /**
        * Layrscratch
        * @default null
        */
-      layrScratch?: string;
+      layrScratch?: string | undefined;
       /**
        * Layrstateid
        * @default null
        */
-      layrStateId?: string;
+      layrStateId?: string | undefined;
       /**
        * Layrsubpath
        * @default null
        */
-      layrSubpath?: string;
+      layrSubpath?: string | undefined;
       /**
        * Layrturnretryat
        * @default null
        */
-      layrTurnRetryAt?: number;
+      layrTurnRetryAt?: number | undefined;
       /**
        * Layrturnsaves
        * @default null
        */
-      layrTurnSaves?: {
-        [key: string]: components["schemas"]["JsonObjectResponse"];
-      };
+      layrTurnSaves?:
+        | {
+            [key: string]: components["schemas"]["JsonObjectResponse"];
+          }
+        | undefined;
       /** @default null */
-      lazyAccountTransfer?: components["schemas"]["LazyAccountTransferRecordResponse"];
+      lazyAccountTransfer?:
+        | components["schemas"]["LazyAccountTransferRecordResponse"]
+        | undefined;
       /** @default null */
-      liveSteerAttempt?: components["schemas"]["JsonObjectResponse"];
+      liveSteerAttempt?:
+        | components["schemas"]["JsonObjectResponse"]
+        | undefined;
       /**
        * Livesteerrejectedturnid
        * @default null
        */
-      liveSteerRejectedTurnId?: string;
+      liveSteerRejectedTurnId?: string | undefined;
       /**
        * Manualname
        * @default null
        */
-      manualName?: boolean;
+      manualName?: boolean | undefined;
       /**
        * Maxagents
        * @default null
        */
-      maxAgents?: number;
+      maxAgents?: number | undefined;
       /**
        * Maxagentsexplicit
        * @default null
        */
-      maxAgentsExplicit?: boolean;
+      maxAgentsExplicit?: boolean | undefined;
       /**
        * Model
        * @default null
        */
-      model?: null | string;
+      model?: null | string | undefined;
       /** @default null */
-      movedFrom?: components["schemas"]["MovePointerRecordResponse"] | null;
+      movedFrom?:
+        | components["schemas"]["MovePointerRecordResponse"]
+        | null
+        | undefined;
       /** @default null */
-      movedTo?: components["schemas"]["MovePointerRecordResponse"] | null;
+      movedTo?:
+        | components["schemas"]["MovePointerRecordResponse"]
+        | null
+        | undefined;
       /**
        * Moveimportpending
        * @default null
        */
-      moveImportPending?: boolean;
+      moveImportPending?: boolean | undefined;
       /**
        * Movereviewpending
        * @default null
        */
-      moveReviewPending?: boolean;
+      moveReviewPending?: boolean | undefined;
       /**
        * Name
        * @default null
        */
-      name?: string;
+      name?: string | undefined;
       /**
        * Nativeeffort
        * @default null
        */
-      nativeEffort?: null | string;
+      nativeEffort?: null | string | undefined;
       /**
        * Nativefailurehold
        * @default null
        */
-      nativeFailureHold?: components["schemas"]["JsonObjectResponse"] | boolean;
+      nativeFailureHold?:
+        | components["schemas"]["JsonObjectResponse"]
+        | boolean
+        | undefined;
       /**
        * Nativelimiterrorat
        * @default null
        */
-      nativeLimitErrorAt?: number;
+      nativeLimitErrorAt?: number | undefined;
       /**
        * Nativename
        * @default null
        */
-      nativeName?: string;
+      nativeName?: string | undefined;
       /** @default null */
-      nativeNameFailure?: components["schemas"]["NativeNameFailureRecordResponse"];
+      nativeNameFailure?:
+        | components["schemas"]["NativeNameFailureRecordResponse"]
+        | undefined;
       /** @default null */
       nativeNameSynced?:
         | components["schemas"]["NativeNameSyncedRecordResponse"]
-        | null;
+        | null
+        | undefined;
       /**
        * Nativenamesyncerror
        * @default null
        */
-      nativeNameSyncError?: string;
+      nativeNameSyncError?: string | undefined;
       /** @default null */
-      nativeOperation?: components["schemas"]["JsonObjectResponse"];
+      nativeOperation?: components["schemas"]["JsonObjectResponse"] | undefined;
       /** @default null */
-      nativeRelease?: components["schemas"]["NativeReleaseRecordResponse"];
+      nativeRelease?:
+        | components["schemas"]["NativeReleaseRecordResponse"]
+        | undefined;
       /**
        * Nativeresponseturn
        * @default null
        */
-      nativeResponseTurn?: string;
+      nativeResponseTurn?: string | undefined;
       /** @default null */
-      nativeReview?: components["schemas"]["NativeReviewRecordResponse"];
+      nativeReview?:
+        | components["schemas"]["NativeReviewRecordResponse"]
+        | undefined;
       /**
        * Nativeroleguidance
        * @default null
        */
-      nativeRoleGuidance?: string;
+      nativeRoleGuidance?: string | undefined;
       /** @default null */
-      nativeSafetyBuffering?: components["schemas"]["NativeSafetyBufferingRecordResponse"];
+      nativeSafetyBuffering?:
+        | components["schemas"]["NativeSafetyBufferingRecordResponse"]
+        | undefined;
       /** @default null */
-      nativeSafetyRetry?: components["schemas"]["NativeSafetyRetryViewRecordResponse"];
+      nativeSafetyRetry?:
+        | components["schemas"]["NativeSafetyRetryViewRecordResponse"]
+        | undefined;
       /**
        * Nativestatus
        * @default null
@@ -5282,223 +5551,250 @@ export interface components {
       nativeStatus?:
         | components["schemas"]["AgentNativeStatusRecordResponse"]
         | ("idle" | "notLoaded" | "unsubscribed" | "notSubscribed")
-        | null;
+        | null
+        | undefined;
       /**
        * Nativeteleporttool
        * @default null
        */
-      nativeTeleportTool?: string;
+      nativeTeleportTool?: string | undefined;
       /** @default null */
-      nativeThreadBlock?: components["schemas"]["NativeThreadBlockRecordResponse"];
+      nativeThreadBlock?:
+        | components["schemas"]["NativeThreadBlockRecordResponse"]
+        | undefined;
       /** @default null */
-      nativeToolCatalog?: components["schemas"]["JsonObjectResponse"];
+      nativeToolCatalog?:
+        | components["schemas"]["JsonObjectResponse"]
+        | undefined;
       /**
        * Nativetoolrefreshid
        * @default null
        */
-      nativeToolRefreshId?: string;
+      nativeToolRefreshId?: string | undefined;
       /**
        * Nativetoolsource
        * @default null
        * @enum {string}
        */
-      nativeToolSource?: "legacy" | "current";
+      nativeToolSource?: "legacy" | "current" | undefined;
       /** @default null */
-      nativeToolUpdate?: components["schemas"]["NativeToolUpdateRecordResponse"];
+      nativeToolUpdate?:
+        | components["schemas"]["NativeToolUpdateRecordResponse"]
+        | undefined;
       /** @default null */
-      nativeTurnError?: components["schemas"]["NativeTurnErrorRecordResponse"];
+      nativeTurnError?:
+        | components["schemas"]["NativeTurnErrorRecordResponse"]
+        | undefined;
       /**
        * Needsattention
        * @default null
        */
-      needsAttention?: boolean;
+      needsAttention?: boolean | undefined;
       /**
        * Needstitle
        * @default null
        */
-      needsTitle?: boolean;
+      needsTitle?: boolean | undefined;
       /**
        * Parentid
        * @default null
        */
-      parentId?: null | string;
+      parentId?: null | string | undefined;
       /**
        * Parkafterturn
        * @default null
        */
-      parkAfterTurn?: boolean;
+      parkAfterTurn?: boolean | undefined;
       /**
        * Parkedevent
        * @default null
        */
-      parkedEvent?: string;
+      parkedEvent?: string | undefined;
       /** @default null */
-      parkReceipt?: components["schemas"]["ParkReceiptRecordResponse"];
+      parkReceipt?:
+        | components["schemas"]["ParkReceiptRecordResponse"]
+        | undefined;
       /**
        * Parksequence
        * @default null
        */
-      parkSequence?: number;
+      parkSequence?: number | undefined;
       /** @default null */
-      pendingSettings?: components["schemas"]["PendingSettingsRecordResponse"];
+      pendingSettings?:
+        | components["schemas"]["PendingSettingsRecordResponse"]
+        | undefined;
       /**
        * Pendingsettingsaccountkey
        * @default null
        */
-      pendingSettingsAccountKey?: null | string;
+      pendingSettingsAccountKey?: null | string | undefined;
       /**
        * Pinned
        * @default null
        */
-      pinned?: boolean;
+      pinned?: boolean | undefined;
       /** @default null */
-      portableHistory?: components["schemas"]["PortableHistoryRecordResponse"];
+      portableHistory?:
+        | components["schemas"]["PortableHistoryRecordResponse"]
+        | undefined;
       /**
        * Prepareattempt
        * @default null
        */
-      prepareAttempt?: string;
+      prepareAttempt?: string | undefined;
       /** @default null */
-      preparedContext?: components["schemas"]["PreparedContextRecordResponse"];
+      preparedContext?:
+        | components["schemas"]["PreparedContextRecordResponse"]
+        | undefined;
       /** @default null */
-      profile?: components["schemas"]["JsonObjectResponse"] | null;
+      profile?: components["schemas"]["JsonObjectResponse"] | null | undefined;
       /**
        * Profileid
        * @default null
        */
-      profileId?: null | string;
+      profileId?: null | string | undefined;
       /**
        * Profileinstructions
        * @default null
        */
-      profileInstructions?: string;
+      profileInstructions?: string | undefined;
       /**
        * Project
        * @default null
        */
-      project?: string;
+      project?: string | undefined;
       /**
        * Projectfolder
        * @default null
        */
-      projectFolder?: string;
+      projectFolder?: string | undefined;
       /**
        * Projectfolderrevision
        * @default null
        */
-      projectFolderRevision?: number;
+      projectFolderRevision?: number | undefined;
       /**
        * Projectid
        * @default null
        */
-      projectId?: null | string;
+      projectId?: null | string | undefined;
       /**
        * Projectserverid
        * @default null
        */
-      projectServerId?: null | string;
+      projectServerId?: null | string | undefined;
       /**
        * Prompt
        * @default null
        */
-      prompt?: string;
+      prompt?: string | undefined;
       /**
        * Provider
        * @default null
        * @enum {string}
        */
-      provider?: "codex" | "claude";
+      provider?: "codex" | "claude" | undefined;
       /**
        * Queuemutationrevision
        * @default null
        */
-      queueMutationRevision?: number;
+      queueMutationRevision?: number | undefined;
       /** @default null */
-      queueNotice?: components["schemas"]["JsonObjectResponse"];
+      queueNotice?: components["schemas"]["JsonObjectResponse"] | undefined;
       /**
        * Quickcreate
        * @default null
        */
-      quickCreate?: boolean;
+      quickCreate?: boolean | undefined;
       /**
        * Quickcreaterequest
        * @default null
        */
-      quickCreateRequest?: null | string;
+      quickCreateRequest?: null | string | undefined;
       /** @default null */
-      readState?: components["schemas"]["ReadStateRecordResponse"];
+      readState?: components["schemas"]["ReadStateRecordResponse"] | undefined;
       /** @default null */
-      remoteAdmission?: components["schemas"]["JsonObjectResponse"];
+      remoteAdmission?: components["schemas"]["JsonObjectResponse"] | undefined;
       /**
        * Remoteadmissionrequest
        * @default null
        */
-      remoteAdmissionRequest?: string;
+      remoteAdmissionRequest?: string | undefined;
       /** @default null */
-      remoteAnchor?: components["schemas"]["RemoteParentLinkRecordResponse"];
+      remoteAnchor?:
+        | components["schemas"]["RemoteParentLinkRecordResponse"]
+        | undefined;
       /**
        * Remotecontrolepoch
        * @default null
        */
-      remoteControlEpoch?: number;
+      remoteControlEpoch?: number | undefined;
       /**
        * Remoteepoch
        * @default null
        */
-      remoteEpoch?: number;
+      remoteEpoch?: number | undefined;
       /**
        * Remotelastadmission
        * @default null
        */
-      remoteLastAdmission?: string;
+      remoteLastAdmission?: string | undefined;
       /** @default null */
-      remoteOrigin?: components["schemas"]["RemoteParentLinkRecordResponse"];
+      remoteOrigin?:
+        | components["schemas"]["RemoteParentLinkRecordResponse"]
+        | undefined;
       /**
        * Remotereservation
        * @default null
        */
-      remoteReservation?: boolean;
+      remoteReservation?: boolean | undefined;
       /**
        * Remotestatesequence
        * @default null
        */
-      remoteStateSequence?: number;
+      remoteStateSequence?: number | undefined;
       /**
        * Remotestoprequest
        * @default null
        */
-      remoteStopRequest?: string;
+      remoteStopRequest?: string | undefined;
       /** @default null */
-      remoteWorker?: components["schemas"]["RemoteWorkerLinkRecordResponse"];
+      remoteWorker?:
+        | components["schemas"]["RemoteWorkerLinkRecordResponse"]
+        | undefined;
       /** @default null */
-      restartRecovery?: components["schemas"]["RestartRecoveryRecordResponse"];
+      restartRecovery?:
+        | components["schemas"]["RestartRecoveryRecordResponse"]
+        | undefined;
       /**
        * Restoredcheckpoint
        * @default null
        */
-      restoredCheckpoint?: string;
+      restoredCheckpoint?: string | undefined;
       /**
        * Reviewarchiveattempts
        * @default null
        */
-      reviewArchiveAttempts?: number;
+      reviewArchiveAttempts?: number | undefined;
       /**
        * Reviewarchiveerror
        * @default null
        */
-      reviewArchiveError?: null | string;
+      reviewArchiveError?: null | string | undefined;
       /**
        * Reviewarchivenextat
        * @default null
        */
-      reviewArchiveNextAt?: number;
+      reviewArchiveNextAt?: number | undefined;
       /**
        * Reviewarchivescheduled
        * @default null
        */
-      reviewArchiveScheduled?: string;
+      reviewArchiveScheduled?: string | undefined;
       /** @default null */
-      reviewDefaults?: components["schemas"]["ReviewDefaultsRecordResponse"];
+      reviewDefaults?:
+        | components["schemas"]["ReviewDefaultsRecordResponse"]
+        | undefined;
       /**
        * Role
        * @default null
@@ -5510,32 +5806,37 @@ export interface components {
         | "orchestrator"
         | "agent"
         | "implementer"
-        | "reviewer";
+        | "reviewer"
+        | undefined;
       /** Rootid */
       rootId: string;
       /** @default null */
-      sandbox?: components["schemas"]["JsonObjectResponse"] | null;
+      sandbox?: components["schemas"]["JsonObjectResponse"] | null | undefined;
       /**
        * Serverid
        * @default null
        */
-      serverId?: null | string;
+      serverId?: null | string | undefined;
       /**
        * Sharedroomid
        * @default null
        */
-      sharedRoomId?: string;
+      sharedRoomId?: string | undefined;
       /**
        * Sourcemessage
        * @default null
        */
-      sourceMessage?: string;
+      sourceMessage?: string | undefined;
       /** @default null */
-      startAttempt?: components["schemas"]["StartAttemptRecordResponse"];
+      startAttempt?:
+        | components["schemas"]["StartAttemptRecordResponse"]
+        | undefined;
       /** @default null */
-      startOutcomeHold?: components["schemas"]["JsonObjectResponse"];
+      startOutcomeHold?:
+        | components["schemas"]["JsonObjectResponse"]
+        | undefined;
       /** @default null */
-      startWait?: components["schemas"]["StartWaitRecordResponse"];
+      startWait?: components["schemas"]["StartWaitRecordResponse"] | undefined;
       /**
        * Status
        * @enum {string}
@@ -5561,151 +5862,164 @@ export interface components {
        * Steerrejectedturnid
        * @default null
        */
-      steerRejectedTurnId?: string;
+      steerRejectedTurnId?: string | undefined;
       /**
        * Subagentconcurrencyversion
        * @default null
        */
-      subagentConcurrencyVersion?: number;
+      subagentConcurrencyVersion?: number | undefined;
       /** @default null */
-      supervisorRestore?: components["schemas"]["JsonObjectResponse"];
+      supervisorRestore?:
+        | components["schemas"]["JsonObjectResponse"]
+        | undefined;
       /**
        * Tail
        * @default null
        */
-      tail?: string;
+      tail?: string | undefined;
       /**
        * Threadid
        * @default null
        */
-      threadId?: null | string;
+      threadId?: null | string | undefined;
       /**
        * Tokenbudget
        * @default null
        */
-      tokenBudget?: number | null;
+      tokenBudget?: number | null | undefined;
       /**
        * Tokensused
        * @default null
        */
-      tokensUsed?: number;
+      tokensUsed?: number | undefined;
       /**
        * Tokenusageaccounting
        * @default null
        */
-      tokenUsageAccounting?: string;
+      tokenUsageAccounting?: string | undefined;
       /**
        * Turnepoch
        * @default null
        */
-      turnEpoch?: number;
+      turnEpoch?: number | undefined;
       /**
        * Turnid
        * @default null
        */
-      turnId?: null | string;
+      turnId?: null | string | undefined;
       /** @default null */
-      turnRecovery?: components["schemas"]["TurnRecoveryRecordResponse"];
+      turnRecovery?:
+        | components["schemas"]["TurnRecoveryRecordResponse"]
+        | undefined;
       /**
        * Updated
        * @default null
        */
-      updated?: number;
+      updated?: number | undefined;
       /** @default null */
-      usageResume?: components["schemas"]["UsageResumeRecordResponse"];
+      usageResume?:
+        | components["schemas"]["UsageResumeRecordResponse"]
+        | undefined;
       /**
        * Usageresumeenabled
        * @default null
        */
-      usageResumeEnabled?: boolean;
+      usageResumeEnabled?: boolean | undefined;
       /** @default null */
-      vmAccountSwitch?: components["schemas"]["JsonObjectResponse"];
+      vmAccountSwitch?: components["schemas"]["JsonObjectResponse"] | undefined;
       /**
        * Workerbasebehindmain
        * @default null
        */
-      workerBaseBehindMain?: number | null;
+      workerBaseBehindMain?: number | null | undefined;
       /**
        * Workerbasecommit
        * @default null
        */
-      workerBaseCommit?: null | string;
+      workerBaseCommit?: null | string | undefined;
       /**
        * Workerbasemainref
        * @default null
        */
-      workerBaseMainRef?: null | string;
+      workerBaseMainRef?: null | string | undefined;
       /**
        * Workerbaseref
        * @default null
        */
-      workerBaseRef?: null | string;
+      workerBaseRef?: null | string | undefined;
       /**
        * Workerbasestatus
        * @default null
        */
-      workerBaseStatus?: string;
+      workerBaseStatus?: string | undefined;
       /** @default null */
-      workerDefaults?: components["schemas"]["WorkerDefaultsRecordResponse"];
+      workerDefaults?:
+        | components["schemas"]["WorkerDefaultsRecordResponse"]
+        | undefined;
       /**
        * Workspacebackend
        * @default null
        */
-      workspaceBackend?: ("asif" | "vm") | null;
+      workspaceBackend?: ("asif" | "vm") | null | undefined;
       /**
        * Workspaceingit
        * @default null
        */
-      workspaceInGit?: boolean;
+      workspaceInGit?: boolean | undefined;
       /**
        * Workspacemode
        * @default null
        */
-      workspaceMode?: ("layr" | "image" | "worktree" | "shared") | null;
+      workspaceMode?:
+        | ("layr" | "image" | "worktree" | "shared")
+        | null
+        | undefined;
       /**
        * Workspacemodeexplicit
        * @default null
        */
-      workspaceModeExplicit?: boolean;
+      workspaceModeExplicit?: boolean | undefined;
       /**
        * Workspaceoperation
        * @default null
        */
-      workspaceOperation?: null | string;
+      workspaceOperation?: null | string | undefined;
       /**
        * Workspacereservationid
        * @default null
        */
-      workspaceReservationId?: string;
+      workspaceReservationId?: string | undefined;
       /**
        * Worktree
        * @default null
        */
-      worktree?: boolean;
+      worktree?: boolean | undefined;
       /** @default null */
-      worktreeCleanup?: components["schemas"]["WorktreeCleanupRecordResponse"];
+      worktreeCleanup?:
+        | components["schemas"]["WorktreeCleanupRecordResponse"]
+        | undefined;
       /**
        * Worktreepreparation
        * @default null
        */
-      worktreePreparation?: ("waiting" | "preparing") | null;
+      worktreePreparation?: ("waiting" | "preparing") | null | undefined;
       /**
        * Worktreeready
        * @default null
        */
-      worktreeReady?: boolean;
+      worktreeReady?: boolean | undefined;
       /**
        * Worktreewarning
        * @default null
        */
-      worktreeWarning?: null | string;
+      worktreeWarning?: null | string | undefined;
       /**
        * Yolomode
        * @default null
        */
-      yoloMode?: boolean;
+      yoloMode?: boolean | undefined;
     } & {
-      [key: string]: components["schemas"]["JsonValue"];
+      [key: string]: components["schemas"]["JsonValue"] | undefined;
     };
     /** AgentRequest */
     AgentRequest: {
@@ -5715,47 +6029,53 @@ export interface components {
        * Answeredat
        * @default null
        */
-      answeredAt?: number | null;
+      answeredAt?: number | null | undefined;
       /**
        * Answeredby
        * @default null
        */
-      answeredBy?: null | string;
+      answeredBy?: null | string | undefined;
       /**
        * Answererror
        * @default null
        */
-      answerError?: null | string;
+      answerError?: null | string | undefined;
       /**
        * Answerhistory
        * @default null
        */
-      answerHistory?: components["schemas"]["AnswerHistoryEntry"][] | null;
+      answerHistory?:
+        | components["schemas"]["AnswerHistoryEntry"][]
+        | null
+        | undefined;
       /**
        * Createdat
        * @default null
        */
-      createdAt?: number | null;
+      createdAt?: number | null | undefined;
       /**
        * Decision
        * @default null
        */
-      decision?: ("answer" | "accept" | "decline" | "cancel") | null;
+      decision?:
+        | ("answer" | "accept" | "decline" | "cancel")
+        | null
+        | undefined;
       /**
        * Deferred
        * @default null
        */
-      deferred?: boolean | null;
+      deferred?: boolean | null | undefined;
       /**
        * Deferredat
        * @default null
        */
-      deferredAt?: number | null;
+      deferredAt?: number | null | undefined;
       /**
        * Deferredby
        * @default null
        */
-      deferredBy?: null | string;
+      deferredBy?: null | string | undefined;
       /** Id */
       id: string;
       /**
@@ -5763,7 +6083,7 @@ export interface components {
        * @description Provider transcript item that asked the question, when known.
        * @default null
        */
-      itemId?: null | string;
+      itemId?: null | string | undefined;
       /**
        * Method
        * @enum {string}
@@ -5776,7 +6096,7 @@ export interface components {
        * Questions
        * @default []
        */
-      questions?: components["schemas"]["QuestionEntry"][];
+      questions?: components["schemas"]["QuestionEntry"][] | undefined;
       /**
        * Status
        * @enum {string}
@@ -5795,7 +6115,7 @@ export interface components {
        * @description Native turn that asked the question, when known.
        * @default null
        */
-      turnId?: null | string;
+      turnId?: null | string | undefined;
     };
     /**
      * AgentResponse
@@ -5806,323 +6126,348 @@ export interface components {
        * Accountkey
        * @default null
        */
-      accountKey?: null | string;
+      accountKey?: null | string | undefined;
       /** @default null */
       accountTransfer?:
         | components["schemas"]["AccountTransferSummaryDto"]
-        | null;
+        | null
+        | undefined;
       /**
        * Accounttransferid
        * @default null
        */
-      accountTransferId?: null | string;
+      accountTransferId?: null | string | undefined;
       /** @default null */
-      activity?: components["schemas"]["AgentActivity"] | null;
+      activity?: components["schemas"]["AgentActivity"] | null | undefined;
       /** @default null */
-      agentMode?: components["schemas"]["AgentMode"] | null;
+      agentMode?: components["schemas"]["AgentMode"] | null | undefined;
       /**
        * Agentmoderevision
        * @default null
        */
-      agentModeRevision?: number | null;
+      agentModeRevision?: number | null | undefined;
       /**
        * Agentmodesupported
        * @default null
        */
-      agentModeSupported?: boolean | null;
+      agentModeSupported?: boolean | null | undefined;
       /**
        * Archived
        * @default null
        */
-      archived?: boolean | null;
+      archived?: boolean | null | undefined;
       /**
        * Autowake
        * @default null
        */
-      autoWake?: boolean | null;
+      autoWake?: boolean | null | undefined;
       /**
        * Cansend
        * @default null
        */
-      canSend?: boolean | null;
+      canSend?: boolean | null | undefined;
       /** @default null */
       capacityRetry?:
         | components["schemas"]["AgentEntityCapacityRetryDto"]
-        | null;
+        | null
+        | undefined;
       /**
        * Commandprogress
        * @default []
        */
-      commandProgress?: components["schemas"]["AgentCommandProgress"][];
+      commandProgress?:
+        | components["schemas"]["AgentCommandProgress"][]
+        | undefined;
       /**
        * Compactions
        * @default null
        */
-      compactions?: number | null;
+      compactions?: number | null | undefined;
       /**
        * Concurrency
        * @default null
        */
-      concurrency?: number | null;
+      concurrency?: number | null | undefined;
       /** @default null */
-      connectionCheck?: components["schemas"]["ConnectionCheckDto"] | null;
+      connectionCheck?:
+        | components["schemas"]["ConnectionCheckDto"]
+        | null
+        | undefined;
       /** @default null */
       contextRepairWait?:
         | components["schemas"]["AgentEntityContextRepairWaitDto"]
-        | null;
+        | null
+        | undefined;
       /** @default null */
-      contextUsage?: components["schemas"]["ContextUsageDto"] | null;
+      contextUsage?:
+        | components["schemas"]["ContextUsageDto"]
+        | null
+        | undefined;
       /** @default null */
-      convertedFromLead?: components["schemas"]["ConvertedFromLeadDto"] | null;
+      convertedFromLead?:
+        | components["schemas"]["ConvertedFromLeadDto"]
+        | null
+        | undefined;
       /**
        * Created
        * @default null
        */
-      created?: null | number;
+      created?: null | number | undefined;
       /**
        * Cwd
        * @default null
        */
-      cwd?: null | string;
+      cwd?: null | string | undefined;
       /**
        * Cyberaccessprogram
        * @default null
        */
-      cyberAccessProgram?: null | string;
+      cyberAccessProgram?: null | string | undefined;
       /**
        * Daybreakenabled
        * @default null
        */
-      daybreakEnabled?: boolean | null;
+      daybreakEnabled?: boolean | null | undefined;
       /**
        * Deletedat
        * @default null
        */
-      deletedAt?: null | number;
+      deletedAt?: null | number | undefined;
       /**
        * Effort
        * @default null
        */
-      effort?: null | string;
+      effort?: null | string | undefined;
       /**
        * Empty
        * @default null
        */
-      empty?: boolean | null;
+      empty?: boolean | null | undefined;
       /**
        * Environment
        * @default null
        */
-      environment?: ("host" | "linux") | null;
+      environment?: ("host" | "linux") | null | undefined;
       /**
        * Epoch
        * @default null
        */
-      epoch?: number | null;
+      epoch?: number | null | undefined;
       /**
        * Error
        * @default null
        */
-      error?: components["schemas"]["NativeProviderError"] | null | string;
+      error?:
+        | components["schemas"]["NativeProviderError"]
+        | null
+        | string
+        | undefined;
       /**
        * Excludedaccountkeys
        * @default null
        */
-      excludedAccountKeys?: string[] | null;
+      excludedAccountKeys?: string[] | null | undefined;
       /**
        * Executionmode
        * @default null
        */
-      executionMode?: ("vm" | "native") | null;
+      executionMode?: ("vm" | "native") | null | undefined;
       /**
        * Fastmode
        * @default null
        */
-      fastMode?: boolean | null;
+      fastMode?: boolean | null | undefined;
       /**
        * Hasapproval
        * @default null
        */
-      hasApproval?: boolean | null;
+      hasApproval?: boolean | null | undefined;
       /**
        * Hasquestion
        * @default null
        */
-      hasQuestion?: boolean | null;
+      hasQuestion?: boolean | null | undefined;
       /**
        * Hasunread
        * @default null
        */
-      hasUnread?: boolean | null;
+      hasUnread?: boolean | null | undefined;
       /**
        * Hostprojectpath
        * @default null
        */
-      hostProjectPath?: null | string;
+      hostProjectPath?: null | string | undefined;
       /** Id */
       id: string;
       /**
        * Imageworkspace
        * @default null
        */
-      imageWorkspace?: boolean | null;
+      imageWorkspace?: boolean | null | undefined;
       /**
        * Imageworkspacebaseref
        * @default null
        */
-      imageWorkspaceBaseRef?: null | string;
+      imageWorkspaceBaseRef?: null | string | undefined;
       /**
        * Imageworkspacebaserepo
        * @default null
        */
-      imageWorkspaceBaseRepo?: null | string;
+      imageWorkspaceBaseRepo?: null | string | undefined;
       /**
        * Imageworkspacecreatedat
        * @default null
        */
-      imageWorkspaceCreatedAt?: null | number;
+      imageWorkspaceCreatedAt?: null | number | undefined;
       /**
        * Imageworkspaceerror
        * @default null
        */
-      imageWorkspaceError?: null | string;
+      imageWorkspaceError?: null | string | undefined;
       /**
        * Imageworkspacehasgit
        * @default null
        */
-      imageWorkspaceHasGit?: boolean | null;
+      imageWorkspaceHasGit?: boolean | null | undefined;
       /**
        * Imageworkspacephase
        * @default null
        */
-      imageWorkspacePhase?: null | string;
+      imageWorkspacePhase?: null | string | undefined;
       /**
        * Imageworkspaceready
        * @default null
        */
-      imageWorkspaceReady?: boolean | null;
+      imageWorkspaceReady?: boolean | null | undefined;
       /**
        * Imageworkspacerepo
        * @default null
        */
-      imageWorkspaceRepo?: null | string;
+      imageWorkspaceRepo?: null | string | undefined;
       /**
        * Imageworkspacesubpath
        * @default null
        */
-      imageWorkspaceSubpath?: null | string;
+      imageWorkspaceSubpath?: null | string | undefined;
       /**
        * Inflight
        * @default null
        */
-      inFlight?: boolean | null;
+      inFlight?: boolean | null | undefined;
       /**
        * Islead
        * @default null
        */
-      isLead?: boolean | null;
+      isLead?: boolean | null | undefined;
       /**
        * Kind
        * @default null
        */
-      kind?: "agent" | null;
+      kind?: "agent" | null | undefined;
       /**
        * Lastanswer
        * @default null
        */
-      lastAnswer?: null | string;
+      lastAnswer?: null | string | undefined;
       /**
        * Lastcompletedturn
        * @default null
        */
-      lastCompletedTurn?: null | string;
+      lastCompletedTurn?: null | string | undefined;
       /**
        * Lastcompletedturnstatus
        * @default null
        */
-      lastCompletedTurnStatus?: null | string;
+      lastCompletedTurnStatus?: null | string | undefined;
       /**
        * Lastevent
        * @default null
        */
-      lastEvent?: null | string;
+      lastEvent?: null | string | undefined;
       /**
        * Lastreadat
        * @default null
        */
-      lastReadAt?: null | number;
+      lastReadAt?: null | number | undefined;
       /**
        * Launcheralive
        * @default null
        */
-      launcherAlive?: boolean | null;
+      launcherAlive?: boolean | null | undefined;
       /**
        * Layrerror
        * @default null
        */
-      layrError?: null | string;
+      layrError?: null | string | undefined;
       /**
        * Layrline
        * @default null
        */
-      layrLine?: null | string;
+      layrLine?: null | string | undefined;
       /**
        * Layrprojectid
        * @default null
        */
-      layrProjectId?: null | string;
+      layrProjectId?: null | string | undefined;
       /**
        * Layrready
        * @default null
        */
-      layrReady?: boolean | null;
+      layrReady?: boolean | null | undefined;
       /**
        * Layrstateid
        * @default null
        */
-      layrStateId?: null | string;
+      layrStateId?: null | string | undefined;
       /**
        * Manualname
        * @default null
        */
-      manualName?: boolean | null;
+      manualName?: boolean | null | undefined;
       /**
        * Model
        * @default null
        */
-      model?: null | string;
+      model?: null | string | undefined;
       /** @default null */
-      movedFrom?: components["schemas"]["MovePointerDto"] | null;
+      movedFrom?: components["schemas"]["MovePointerDto"] | null | undefined;
       /** @default null */
-      movedTo?: components["schemas"]["MovePointerDto"] | null;
+      movedTo?: components["schemas"]["MovePointerDto"] | null | undefined;
       /**
        * Moveimportpending
        * @default false
        */
-      moveImportPending?: boolean;
+      moveImportPending?: boolean | undefined;
       /**
        * Name
        * @default null
        */
-      name?: null | string;
+      name?: null | string | undefined;
       /**
        * Nativeerror
        * @default null
        */
-      nativeError?: null | string;
+      nativeError?: null | string | undefined;
       /**
        * Nativelimiterrorat
        * @default null
        */
-      nativeLimitErrorAt?: null | number;
+      nativeLimitErrorAt?: null | number | undefined;
       /** @default null */
-      nativeRelease?: components["schemas"]["AgentNativeRelease"] | null;
+      nativeRelease?:
+        | components["schemas"]["AgentNativeRelease"]
+        | null
+        | undefined;
       /** @default null */
       nativeSafetyBuffering?:
         | components["schemas"]["NativeSafetyBufferingRecord"]
-        | null;
+        | null
+        | undefined;
       /** @default null */
-      nativeSafetyRetry?: components["schemas"]["NativeSafetyRetryDto"] | null;
+      nativeSafetyRetry?:
+        | components["schemas"]["NativeSafetyRetryDto"]
+        | null
+        | undefined;
       /**
        * Nativestatus
        * @default null
@@ -6130,218 +6475,259 @@ export interface components {
       nativeStatus?:
         | components["schemas"]["AgentNativeStatus"]
         | components["schemas"]["AgentNativeStatusValue"]
-        | null;
+        | null
+        | undefined;
       /** @default null */
-      nativeThreadBlock?: components["schemas"]["NativeThreadBlockDto"] | null;
+      nativeThreadBlock?:
+        | components["schemas"]["NativeThreadBlockDto"]
+        | null
+        | undefined;
       /** @default null */
-      nativeTurnError?: components["schemas"]["NativeTurnErrorDto"] | null;
+      nativeTurnError?:
+        | components["schemas"]["NativeTurnErrorDto"]
+        | null
+        | undefined;
       /**
        * Nextturnsettingssupported
        * @default null
        */
-      nextTurnSettingsSupported?: boolean | null;
+      nextTurnSettingsSupported?: boolean | null | undefined;
       /**
        * Orchestratorid
        * @default null
        */
-      orchestratorId?: null | string;
+      orchestratorId?: null | string | undefined;
       /**
        * Orchestratorname
        * @default null
        */
-      orchestratorName?: null | string;
+      orchestratorName?: null | string | undefined;
       /** @default null */
-      overview?: components["schemas"]["AgentOverview"] | null;
+      overview?: components["schemas"]["AgentOverview"] | null | undefined;
       /**
        * Paneldataversion
        * @default null
        */
-      panelDataVersion?: number | null;
+      panelDataVersion?: number | null | undefined;
       /**
        * Panelversion
        * @default null
        */
-      panelVersion?: number | null;
+      panelVersion?: number | null | undefined;
       /**
        * Parentid
        * @default null
        */
-      parentId?: null | string;
+      parentId?: null | string | undefined;
       /**
        * Parkedevent
        * @default null
        */
-      parkedEvent?: null | string;
+      parkedEvent?: null | string | undefined;
       /** @default null */
-      pendingSettings?: components["schemas"]["ExecutionSettingsDto"] | null;
+      pendingSettings?:
+        | components["schemas"]["ExecutionSettingsDto"]
+        | null
+        | undefined;
       /**
        * Pendingsettingsaccountkey
        * @default null
        */
-      pendingSettingsAccountKey?: null | string;
+      pendingSettingsAccountKey?: null | string | undefined;
       /**
        * Pinned
        * @default null
        */
-      pinned?: boolean | null;
+      pinned?: boolean | null | undefined;
       /**
        * Project
        * @default null
        */
-      project?: null | string;
+      project?: null | string | undefined;
       /**
        * Projectfolder
        * @default null
        */
-      projectFolder?: null | string;
+      projectFolder?: null | string | undefined;
       /**
        * Projectfolderrevision
        * @default null
        */
-      projectFolderRevision?: number | null;
+      projectFolderRevision?: number | null | undefined;
       /**
        * Projectid
        * @default null
        */
-      projectId?: null | string;
+      projectId?: null | string | undefined;
       /**
        * Projectserverid
        * @default null
        */
-      projectServerId?: null | string;
+      projectServerId?: null | string | undefined;
       /** @default null */
-      provider?: components["schemas"]["AgentProvider"] | null;
+      provider?: components["schemas"]["AgentProvider"] | null | undefined;
       /** @default null */
-      queuedSettings?: components["schemas"]["ExecutionSettingsDto"] | null;
+      queuedSettings?:
+        | components["schemas"]["ExecutionSettingsDto"]
+        | null
+        | undefined;
       /** @default null */
-      quickCreate?: components["schemas"]["JsonValue"] | null;
+      quickCreate?: components["schemas"]["JsonValue"] | null | undefined;
       /** @default null */
-      readState?: components["schemas"]["ReadStateDto"] | null;
+      readState?: components["schemas"]["ReadStateDto"] | null | undefined;
       /**
        * Readstatesupported
        * @default null
        */
-      readStateSupported?: boolean | null;
+      readStateSupported?: boolean | null | undefined;
       /** @default null */
-      remoteAnchor?: components["schemas"]["RemoteParentLinkDto"] | null;
+      remoteAnchor?:
+        | components["schemas"]["RemoteParentLinkDto"]
+        | null
+        | undefined;
       /** @default null */
-      remoteOrigin?: components["schemas"]["RemoteParentLinkDto"] | null;
+      remoteOrigin?:
+        | components["schemas"]["RemoteParentLinkDto"]
+        | null
+        | undefined;
       /** @default null */
-      remoteWorker?: components["schemas"]["RemoteWorkerLinkDto"] | null;
+      remoteWorker?:
+        | components["schemas"]["RemoteWorkerLinkDto"]
+        | null
+        | undefined;
       /**
        * Retryat
        * @default null
        */
-      retryAt?: null | number;
+      retryAt?: null | number | undefined;
       /** @default null */
-      reviewDefaults?: components["schemas"]["ReviewDefaultsDto"] | null;
+      reviewDefaults?:
+        | components["schemas"]["ReviewDefaultsDto"]
+        | null
+        | undefined;
       /** @default null */
       role?:
         | components["schemas"]["studio_api__sync__models__AgentRole"]
-        | null;
+        | null
+        | undefined;
       /**
        * Rootid
        * @default null
        */
-      rootId?: null | string;
+      rootId?: null | string | undefined;
       /**
        * Serverid
        * @default null
        */
-      serverId?: null | string;
+      serverId?: null | string | undefined;
       /**
        * Sharedroomid
        * @default null
        */
-      sharedRoomId?: null | string;
+      sharedRoomId?: null | string | undefined;
       /** @default null */
-      source?: components["schemas"]["AgentSource"] | null;
+      source?: components["schemas"]["AgentSource"] | null | undefined;
       /** @default null */
-      stall?: components["schemas"]["AgentStall"] | null;
+      stall?: components["schemas"]["AgentStall"] | null | undefined;
       /** @default null */
-      startAttempt?: components["schemas"]["AgentStartAttempt"] | null;
+      startAttempt?:
+        | components["schemas"]["AgentStartAttempt"]
+        | null
+        | undefined;
       /** @default null */
-      startWait?: components["schemas"]["AgentEntityStartWaitDto"] | null;
+      startWait?:
+        | components["schemas"]["AgentEntityStartWaitDto"]
+        | null
+        | undefined;
       /** @default null */
-      status?: components["schemas"]["AgentStatus"] | null;
+      status?: components["schemas"]["AgentStatus"] | null | undefined;
       /**
        * Statusdetail
        * @default null
        */
-      statusDetail?: null | string;
+      statusDetail?: null | string | undefined;
       /**
        * Subagentconcurrencyversion
        * @default null
        */
-      subagentConcurrencyVersion?: number | null;
+      subagentConcurrencyVersion?: number | null | undefined;
       /**
        * Tail
        * @default null
        */
-      tail?: null | string;
+      tail?: null | string | undefined;
       /**
        * Threadid
        * @default null
        */
-      threadId?: null | string;
+      threadId?: null | string | undefined;
       /**
        * Tokensused
        * @default null
        */
-      tokensUsed?: number | null;
+      tokensUsed?: number | null | undefined;
       /**
        * Turnid
        * @default null
        */
-      turnId?: null | string;
+      turnId?: null | string | undefined;
       /** @default null */
-      turnStatus?: components["schemas"]["AgentStatus"] | null;
+      turnStatus?: components["schemas"]["AgentStatus"] | null | undefined;
       /**
        * Unreadcount
        * @default null
        */
-      unreadCount?: number | null;
+      unreadCount?: number | null | undefined;
       /**
        * Updated
        * @default null
        */
-      updated?: null | number;
+      updated?: null | number | undefined;
       /** @default null */
-      usageResume?: components["schemas"]["AgentEntityUsageResumeDto"] | null;
+      usageResume?:
+        | components["schemas"]["AgentEntityUsageResumeDto"]
+        | null
+        | undefined;
       /** @default null */
-      voiceState?: components["schemas"]["JsonValue"] | null;
+      voiceState?: components["schemas"]["JsonValue"] | null | undefined;
       /** @default null */
-      workerDefaults?: components["schemas"]["WorkerDefaultsDto"] | null;
+      workerDefaults?:
+        | components["schemas"]["WorkerDefaultsDto"]
+        | null
+        | undefined;
       /**
        * Workspacebackend
        * @default null
        */
-      workspaceBackend?: ("asif" | "vm") | null;
+      workspaceBackend?: ("asif" | "vm") | null | undefined;
       /**
        * Workspacemode
        * @default null
        */
-      workspaceMode?: ("layr" | "image" | "worktree" | "shared") | null;
+      workspaceMode?:
+        | ("layr" | "image" | "worktree" | "shared")
+        | null
+        | undefined;
       /**
        * Workspaceoperation
        * @default null
        */
-      workspaceOperation?: null | string;
+      workspaceOperation?: null | string | undefined;
       /**
        * Worktree
        * @default null
        */
-      worktree?: boolean | null | string;
+      worktree?: boolean | null | string | undefined;
       /**
        * Worktreepreparation
        * @default null
        */
-      worktreePreparation?: ("waiting" | "preparing") | null;
+      worktreePreparation?: ("waiting" | "preparing") | null | undefined;
       /**
        * Yolomode
        * @default null
        */
-      yoloMode?: boolean | null;
+      yoloMode?: boolean | null | undefined;
     };
     /**
      * AgentRole
@@ -6383,17 +6769,17 @@ export interface components {
        * Prepareerror
        * @default null
        */
-      prepareError?: null | string;
+      prepareError?: null | string | undefined;
       /**
        * Responseerror
        * @default null
        */
-      responseError?: null | string;
+      responseError?: null | string | undefined;
       /**
        * Retiredevents
        * @default null
        */
-      retiredEvents?: string[] | null;
+      retiredEvents?: string[] | null | undefined;
     };
     /**
      * AgentStatus
@@ -6422,93 +6808,103 @@ export interface components {
      */
     AgentSummaryEntityDto: {
       /** Accountkey */
-      accountKey?: null | string;
+      accountKey?: null | string | undefined;
       /** Archived */
-      archived?: boolean | null;
+      archived?: boolean | null | undefined;
       /** Autowake */
-      autoWake?: boolean | null;
+      autoWake?: boolean | null | undefined;
       capacityRetry?:
         | components["schemas"]["AgentEntityCapacityRetryDto"]
-        | null;
+        | null
+        | undefined;
       /** Created */
-      created?: null | number;
+      created?: null | number | undefined;
       /** Cwd */
-      cwd?: null | string;
+      cwd?: null | string | undefined;
       /** Empty */
-      empty?: boolean | null;
+      empty?: boolean | null | undefined;
       /** Epoch */
-      epoch?: number | null;
+      epoch?: number | null | undefined;
       /** Hasapproval */
-      hasApproval?: boolean | null;
+      hasApproval?: boolean | null | undefined;
       /** @description Whether managed commands or monitors are active; no command output is included. */
-      hasBackgroundWork?: boolean;
+      hasBackgroundWork?: boolean | undefined;
       /** Hasquestion */
-      hasQuestion?: boolean | null;
+      hasQuestion?: boolean | null | undefined;
       /** Hasunread */
-      hasUnread?: boolean | null;
+      hasUnread?: boolean | null | undefined;
       /** Id */
       id: string;
       /** Inflight */
-      inFlight?: boolean | null;
+      inFlight?: boolean | null | undefined;
       /** Islead */
-      isLead?: boolean | null;
+      isLead?: boolean | null | undefined;
       /** Kind */
-      kind?: "agent" | null;
+      kind?: "agent" | null | undefined;
       /** Lastcompletedturn */
-      lastCompletedTurn?: null | string;
+      lastCompletedTurn?: null | string | undefined;
       /** Lastcompletedturnstatus */
-      lastCompletedTurnStatus?: null | string;
+      lastCompletedTurnStatus?: null | string | undefined;
       /** Lastreadat */
-      lastReadAt?: null | number;
+      lastReadAt?: null | number | undefined;
       /** Model */
-      model?: null | string;
-      movedTo?: components["schemas"]["MovePointerDto"] | null;
+      model?: null | string | undefined;
+      movedTo?: components["schemas"]["MovePointerDto"] | null | undefined;
       /**
        * Moveimportpending
        * @default false
        */
-      moveImportPending?: boolean;
+      moveImportPending?: boolean | undefined;
       /** Name */
-      name?: null | string;
+      name?: null | string | undefined;
       /** Parentid */
-      parentId?: null | string;
+      parentId?: null | string | undefined;
       /** Parkedevent */
-      parkedEvent?: null | string;
+      parkedEvent?: null | string | undefined;
       /** Pinned */
-      pinned?: boolean | null;
+      pinned?: boolean | null | undefined;
       /** Project */
-      project?: null | string;
+      project?: null | string | undefined;
       /** Projectfolder */
-      projectFolder?: null | string;
+      projectFolder?: null | string | undefined;
       /** Projectfolderrevision */
-      projectFolderRevision?: number | null;
+      projectFolderRevision?: number | null | undefined;
       /** Projectid */
-      projectId?: null | string;
-      provider?: components["schemas"]["AgentProvider"] | null;
-      readState?: components["schemas"]["ReadStateDto"] | null;
+      projectId?: null | string | undefined;
+      provider?: components["schemas"]["AgentProvider"] | null | undefined;
+      readState?: components["schemas"]["ReadStateDto"] | null | undefined;
       /** Readstatesupported */
-      readStateSupported?: boolean | null;
-      remoteAnchor?: components["schemas"]["RemoteParentLinkDto"] | null;
-      remoteOrigin?: components["schemas"]["RemoteParentLinkDto"] | null;
-      remoteWorker?: components["schemas"]["RemoteWorkerLinkDto"] | null;
-      role?: components["schemas"]["AgentRole"] | null;
+      readStateSupported?: boolean | null | undefined;
+      remoteAnchor?:
+        | components["schemas"]["RemoteParentLinkDto"]
+        | null
+        | undefined;
+      remoteOrigin?:
+        | components["schemas"]["RemoteParentLinkDto"]
+        | null
+        | undefined;
+      remoteWorker?:
+        | components["schemas"]["RemoteWorkerLinkDto"]
+        | null
+        | undefined;
+      role?: components["schemas"]["AgentRole"] | null | undefined;
       /** Rootid */
-      rootId?: null | string;
+      rootId?: null | string | undefined;
       /** Serverid */
-      serverId?: null | string;
+      serverId?: null | string | undefined;
       /** Sharedroomid */
-      sharedRoomId?: null | string;
-      source?: components["schemas"]["AgentSource"] | null;
-      stall?: components["schemas"]["AgentStall"] | null;
-      status?: components["schemas"]["AgentStatus"] | null;
+      sharedRoomId?: null | string | undefined;
+      source?: components["schemas"]["AgentSource"] | null | undefined;
+      stall?: components["schemas"]["AgentStall"] | null | undefined;
+      status?: components["schemas"]["AgentStatus"] | null | undefined;
       /** Threadid */
-      threadId?: null | string;
+      threadId?: null | string | undefined;
       /** Turnid */
-      turnId?: null | string;
+      turnId?: null | string | undefined;
       /** Unreadcount */
-      unreadCount?: number | null;
+      unreadCount?: number | null | undefined;
       /** Updated */
-      updated?: null | number;
+      updated?: null | number | undefined;
     };
     /** AmbiguousToolRequestResponse */
     AmbiguousToolRequestResponse: {
@@ -6527,7 +6923,7 @@ export interface components {
        */
       stage: "ambiguous";
     } & {
-      [key: string]: components["schemas"]["JsonValue"];
+      [key: string]: components["schemas"]["JsonValue"] | undefined;
     };
     /** AnalyticsAgentRecord */
     AnalyticsAgentRecord: {
@@ -6535,76 +6931,76 @@ export interface components {
        * Accounthistory
        * @default null
        */
-      accountHistory?: components["schemas"]["JsonValue"][] | null;
+      accountHistory?: components["schemas"]["JsonValue"][] | null | undefined;
       /**
        * Accountkey
        * @default null
        */
-      accountKey?: null | string;
+      accountKey?: null | string | undefined;
       /**
        * Cwd
        * @default null
        */
-      cwd?: null | string;
+      cwd?: null | string | undefined;
       /**
        * Cyberaccessprogram
        * @default null
        */
-      cyberAccessProgram?: null | string;
+      cyberAccessProgram?: null | string | undefined;
       /**
        * Daybreakenabled
        * @default null
        */
-      daybreakEnabled?: boolean | null;
+      daybreakEnabled?: boolean | null | undefined;
       /**
        * Deletedat
        * @default null
        */
-      deletedAt?: number | null;
+      deletedAt?: number | null | undefined;
       /**
        * Effort
        * @default null
        */
-      effort?: null | string;
+      effort?: null | string | undefined;
       /**
        * Fastmode
        * @default null
        */
-      fastMode?: boolean | null;
+      fastMode?: boolean | null | undefined;
       /** Id */
       id: string;
       /**
        * Model
        * @default null
        */
-      model?: null | string;
+      model?: null | string | undefined;
       /**
        * Name
        * @default null
        */
-      name?: null | string;
+      name?: null | string | undefined;
       /**
        * Parentid
        * @default null
        */
-      parentId?: null | string;
+      parentId?: null | string | undefined;
       /**
        * Provider
        * @default null
        */
-      provider?: null | string;
+      provider?: null | string | undefined;
       /**
        * Rootid
        * @default null
        */
-      rootId?: null | string;
+      rootId?: null | string | undefined;
       /**
        * Threadid
        * @default null
        */
-      threadId?: null | string;
+      threadId?: null | string | undefined;
     } & {
-      [key: string]: components["schemas"]["JsonValue"];
+      [key: string]: components["schemas"]["JsonValue"] | undefined;
     };
     /** AnalyticsAgentTotal */
     AnalyticsAgentTotal: {
@@ -6612,66 +7008,66 @@ export interface components {
        * Accounthistory
        * @default null
        */
-      accountHistory?: components["schemas"]["JsonValue"][] | null;
+      accountHistory?: components["schemas"]["JsonValue"][] | null | undefined;
       /**
        * Accountkey
        * @default null
        */
-      accountKey?: null | string;
+      accountKey?: null | string | undefined;
       /** Compactions */
       compactions: number;
       /**
        * Cwd
        * @default null
        */
-      cwd?: null | string;
+      cwd?: null | string | undefined;
       /**
        * Cyberaccessprogram
        * @default null
        */
-      cyberAccessProgram?: null | string;
+      cyberAccessProgram?: null | string | undefined;
       /**
        * Daybreakenabled
        * @default null
        */
-      daybreakEnabled?: boolean | null;
+      daybreakEnabled?: boolean | null | undefined;
       /**
        * Deletedat
        * @default null
        */
-      deletedAt?: number | null;
+      deletedAt?: number | null | undefined;
       duration: components["schemas"]["AnalyticsDuration"];
       /**
        * Effort
        * @default null
        */
-      effort?: null | string;
+      effort?: null | string | undefined;
       /** Failedtoolcalls */
       failedToolCalls: number;
       /**
        * Fastmode
        * @default null
        */
-      fastMode?: boolean | null;
+      fastMode?: boolean | null | undefined;
       /** Id */
       id: string;
       /**
        * Model
        * @default null
        */
-      model?: null | string;
+      model?: null | string | undefined;
       /** Modeltoolcalls */
       modelToolCalls: number;
       /**
        * Name
        * @default null
        */
-      name?: null | string;
+      name?: null | string | undefined;
       /**
        * Parentid
        * @default null
        */
-      parentId?: null | string;
+      parentId?: null | string | undefined;
       protocolDuration: components["schemas"]["AnalyticsDuration"];
       /** Protocolfailedtoolcalls */
       protocolFailedToolCalls: number;
@@ -6681,24 +7077,24 @@ export interface components {
        * Provider
        * @default null
        */
-      provider?: null | string;
+      provider?: null | string | undefined;
       /**
        * Rootid
        * @default null
        */
-      rootId?: null | string;
+      rootId?: null | string | undefined;
       /**
        * Threadid
        * @default null
        */
-      threadId?: null | string;
+      threadId?: null | string | undefined;
       tokens: components["schemas"]["AnalyticsTokens"];
       /** Toolcalls */
       toolCalls: number;
       /** Usagesamples */
       usageSamples: number;
     } & {
-      [key: string]: components["schemas"]["JsonValue"];
+      [key: string]: components["schemas"]["JsonValue"] | undefined;
     };
     /** AnalyticsCaptureErrorRecord */
     AnalyticsCaptureErrorRecord: {
@@ -6708,14 +7104,14 @@ export interface components {
        * Code
        * @default null
        */
-      code?: null | string;
+      code?: null | string | undefined;
       /** Error */
       error: string;
       /**
        * Errortype
        * @default null
        */
-      errorType?: null | string;
+      errorType?: null | string | undefined;
       /** Operation */
       operation: string;
     };
@@ -6731,57 +7127,57 @@ export interface components {
        * Active
        * @default null
        */
-      active?: number | null;
+      active?: number | null | undefined;
       /**
        * Available
        * @default null
        */
-      available?: boolean | null;
+      available?: boolean | null | undefined;
       /**
        * Bytelimit
        * @default null
        */
-      byteLimit?: number | null;
+      byteLimit?: number | null | undefined;
       /**
        * Bytes
        * @default null
        */
-      bytes?: number | null;
+      bytes?: number | null | undefined;
       /**
        * Completed
        * @default null
        */
-      completed?: number | null;
+      completed?: number | null | undefined;
       /**
        * Failed
        * @default null
        */
-      failed?: number | null;
+      failed?: number | null | undefined;
       /**
        * Lasterror
        * @default null
        */
-      lastError?: null | string;
+      lastError?: null | string | undefined;
       /**
        * Limit
        * @default null
        */
-      limit?: number | null;
+      limit?: number | null | undefined;
       /**
        * Overflow
        * @default null
        */
-      overflow?: number | null;
+      overflow?: number | null | undefined;
       /**
        * Pendingerrors
        * @default null
        */
-      pendingErrors?: number | null;
+      pendingErrors?: number | null | undefined;
       /**
        * Queued
        * @default null
        */
-      queued?: number | null;
+      queued?: number | null | undefined;
     };
     /** AnalyticsCoverage */
     AnalyticsCoverage: {
@@ -6859,12 +7255,12 @@ export interface components {
        * Accountkey
        * @default null
        */
-      accountKey?: null | string;
+      accountKey?: null | string | undefined;
       /**
        * Model
        * @default null
        */
-      model?: null | string;
+      model?: null | string | undefined;
       /** Samples */
       samples: number;
       tokens: components["schemas"]["AnalyticsTokens"];
@@ -6875,45 +7271,49 @@ export interface components {
        * Allowedsourcethreadids
        * @default null
        */
-      allowedSourceThreadIds?: string[] | null;
+      allowedSourceThreadIds?: string[] | null | undefined;
       /**
        * Effort
        * @default null
        */
-      effort?: null | string;
+      effort?: null | string | undefined;
       /**
        * Model
        * @default null
        */
-      model?: null | string;
+      model?: null | string | undefined;
       /** @default null */
       noticeAssociation?:
         | components["schemas"]["AnalyticsUsageAssociation"]
-        | null;
+        | null
+        | undefined;
       /** @default null */
-      pendingUsage?: components["schemas"]["AnalyticsPendingUsage"] | null;
+      pendingUsage?:
+        | components["schemas"]["AnalyticsPendingUsage"]
+        | null
+        | undefined;
       /**
        * Requestusageavailable
        * @default null
        */
-      requestUsageAvailable?: boolean | null;
+      requestUsageAvailable?: boolean | null | undefined;
       /**
        * Threadid
        * @default null
        */
-      threadId?: null | string;
+      threadId?: null | string | undefined;
       /**
        * Turnid
        * @default null
        */
-      turnId?: null | string;
+      turnId?: null | string | undefined;
       /**
        * Window
        * @default null
        */
-      window?: number | null;
+      window?: number | null | undefined;
     } & {
-      [key: string]: components["schemas"]["JsonValue"];
+      [key: string]: components["schemas"]["JsonValue"] | undefined;
     };
     /** AnalyticsHistoryRecord */
     AnalyticsHistoryRecord: {
@@ -6921,125 +7321,129 @@ export interface components {
        * Accountkey
        * @default null
        */
-      accountKey?: null | string;
+      accountKey?: null | string | undefined;
       /**
        * Agent
        * @default null
        */
-      agent?: null | string;
+      agent?: null | string | undefined;
       /**
        * Anchor
        * @default null
        */
-      anchor?: null | string;
+      anchor?: null | string | undefined;
       /**
        * Consecutivefailures
        * @default null
        */
-      consecutiveFailures?: number | null;
+      consecutiveFailures?: number | null | undefined;
       /** @default null */
-      context?: components["schemas"]["AnalyticsHistoryContext"] | null;
+      context?:
+        | components["schemas"]["AnalyticsHistoryContext"]
+        | null
+        | undefined;
       /**
        * Coverage
        * @default null
        */
-      coverage?: null | string;
+      coverage?: null | string | undefined;
       /**
        * Deletedat
        * @default null
        */
-      deletedAt?: number | null;
+      deletedAt?: number | null | undefined;
       /**
        * Error
        * @default null
        */
-      error?: null | string;
+      error?: null | string | undefined;
       /**
        * Errorpersisted
        * @default null
        */
-      errorPersisted?: boolean | null;
+      errorPersisted?: boolean | null | undefined;
       /**
        * Errorpersistenceerror
        * @default null
        */
-      errorPersistenceError?: null | string;
+      errorPersistenceError?: null | string | undefined;
       /**
        * Filebytes
        * @default null
        */
-      fileBytes?: number | null;
+      fileBytes?: number | null | undefined;
       /**
        * Filesystemidentity
        * @default null
        */
-      filesystemIdentity?: number[] | null;
+      filesystemIdentity?: number[] | null | undefined;
       /** @default null */
       filesystemRemap?:
         | components["schemas"]["AnalyticsFilesystemRemap"]
-        | null;
+        | null
+        | undefined;
       /**
        * Filesystemremapcount
        * @default null
        */
-      filesystemRemapCount?: number | null;
+      filesystemRemapCount?: number | null | undefined;
       /**
        * Id
        * @default null
        */
-      id?: null | string;
+      id?: null | string | undefined;
       /**
        * Identity
        * @default null
        */
-      identity?: number[] | null;
+      identity?: number[] | null | undefined;
       /**
        * Importedrecords
        * @default null
        */
-      importedRecords?: number | null;
+      importedRecords?: number | null | undefined;
       /**
        * Malformedlines
        * @default null
        */
-      malformedLines?: number | null;
+      malformedLines?: number | null | undefined;
       /**
        * Offset
        * @default null
        */
-      offset?: number | null;
+      offset?: number | null | undefined;
       /**
        * Path
        * @default null
        */
-      path?: null | string;
+      path?: null | string | undefined;
       /**
        * Status
        * @default null
        */
-      status?: null | string;
+      status?: null | string | undefined;
       /**
        * Threadid
        * @default null
        */
-      threadId?: null | string;
+      threadId?: null | string | undefined;
       /**
        * Updated
        * @default null
        */
-      updated?: number | null;
+      updated?: number | null | undefined;
       /**
        * Validated
        * @default null
        */
-      validated?: boolean | null;
+      validated?: boolean | null | undefined;
       /**
        * Wrongthreadrecord
        * @default null
        */
-      wrongThreadRecord?: number | null;
+      wrongThreadRecord?: number | null | undefined;
     } & {
-      [key: string]: components["schemas"]["JsonValue"];
+      [key: string]: components["schemas"]["JsonValue"] | undefined;
     };
     /** AnalyticsItemBreakdown */
     AnalyticsItemBreakdown: {
@@ -7085,120 +7489,135 @@ export interface components {
        * Agentname
        * @default null
        */
-      agentName?: null | string;
+      agentName?: null | string | undefined;
       /** At */
       at: number;
       /**
        * Callid
        * @default null
        */
-      callId?: null | string;
+      callId?: null | string | undefined;
       /**
        * Category
        * @default null
        */
-      category?: null | string;
+      category?: null | string | undefined;
       /**
        * Command
        * @default null
        */
-      command?: string[] | null | string;
+      command?: string[] | null | string | undefined;
       /** @default null */
-      compactionMetadata?: components["schemas"]["JsonValue"] | null;
+      compactionMetadata?:
+        | components["schemas"]["JsonValue"]
+        | null
+        | undefined;
       /**
        * Coverage
        * @default null
        */
-      coverage?: null | string;
+      coverage?: null | string | undefined;
       /**
        * Cwd
        * @default null
        */
-      cwd?: null | string;
+      cwd?: null | string | undefined;
       /**
        * Cyberaccessprogram
        * @default null
        */
-      cyberAccessProgram?: null | string;
+      cyberAccessProgram?: null | string | undefined;
       /**
        * Daybreakenabled
        * @default null
        */
-      daybreakEnabled?: boolean | null;
+      daybreakEnabled?: boolean | null | undefined;
       /**
        * Durationms
        * @default null
        */
-      durationMs?: number | null;
+      durationMs?: number | null | undefined;
       /**
        * Durationsource
        * @default null
        */
-      durationSource?: null | string;
+      durationSource?: null | string | undefined;
       /**
        * Effort
        * @default null
        */
-      effort?: null | string;
+      effort?: null | string | undefined;
       /**
        * Error
        * @default null
        */
-      error?: null | string;
+      error?: null | string | undefined;
       /**
        * Exitcode
        * @default null
        */
-      exitCode?: number | null;
+      exitCode?: number | null | undefined;
       /**
        * Fastmode
        * @default null
        */
-      fastMode?: boolean | null;
+      fastMode?: boolean | null | undefined;
       /**
        * Finishedat
        * @default null
        */
-      finishedAt?: number | null;
+      finishedAt?: number | null | undefined;
       /**
        * Firstrecordedat
        * @default null
        */
-      firstRecordedAt?: number | null;
+      firstRecordedAt?: number | null | undefined;
       /**
        * Firstsourceat
        * @default null
        */
-      firstSourceAt?: number | null;
+      firstSourceAt?: number | null | undefined;
       /** Id */
       id: string;
       /** @default null */
-      input?: components["schemas"]["AnalyticsPayloadMeasure"] | null;
+      input?:
+        | components["schemas"]["AnalyticsPayloadMeasure"]
+        | null
+        | undefined;
       /** Istool */
       isTool: boolean;
       /**
        * Itemid
        * @default null
        */
-      itemId?: null | string;
+      itemId?: null | string | undefined;
       /**
        * Model
        * @default null
        */
-      model?: null | string;
+      model?: null | string | undefined;
       /** @default null */
-      modelInput?: components["schemas"]["AnalyticsPayloadMeasure"] | null;
+      modelInput?:
+        | components["schemas"]["AnalyticsPayloadMeasure"]
+        | null
+        | undefined;
       /** @default null */
-      modelOutput?: components["schemas"]["AnalyticsPayloadMeasure"] | null;
+      modelOutput?:
+        | components["schemas"]["AnalyticsPayloadMeasure"]
+        | null
+        | undefined;
       /** Name */
       name: string;
       /**
        * Namespace
        * @default null
        */
-      namespace?: null | string;
+      namespace?: null | string | undefined;
       /** @default null */
-      output?: components["schemas"]["AnalyticsPayloadMeasure"] | null;
+      output?:
+        | components["schemas"]["AnalyticsPayloadMeasure"]
+        | null
+        | undefined;
       /**
        * Payloadboundary
        * @enum {string}
@@ -7208,63 +7627,66 @@ export interface components {
        * Payloadtruncated
        * @default null
        */
-      payloadTruncated?: boolean | null;
+      payloadTruncated?: boolean | null | undefined;
       /**
        * Processid
        * @default null
        */
-      processId?: number | null | string;
+      processId?: number | null | string | undefined;
       /**
        * Provider
        * @default null
        */
-      provider?: null | string;
+      provider?: null | string | undefined;
       /** Recordedat */
       recordedAt: number;
       /**
        * Role
        * @default null
        */
-      role?: null | string;
+      role?: null | string | undefined;
       /** Rootid */
       rootId: string;
       /**
        * Server
        * @default null
        */
-      server?: null | string;
+      server?: null | string | undefined;
       /**
        * Snapshotitemid
        * @default null
        */
-      snapshotItemId?: null | string;
+      snapshotItemId?: null | string | undefined;
       /** Source */
       source: string;
       /**
        * Startedat
        * @default null
        */
-      startedAt?: number | null;
+      startedAt?: number | null | undefined;
       /** Status */
       status: string;
       /** @default null */
-      stream?: components["schemas"]["AnalyticsStreamMeasure"] | null;
+      stream?:
+        | components["schemas"]["AnalyticsStreamMeasure"]
+        | null
+        | undefined;
       /**
        * Threadid
        * @default null
        */
-      threadId?: null | string;
+      threadId?: null | string | undefined;
       /** Timestampsource */
       timestampSource: string;
       /**
        * Turnid
        * @default null
        */
-      turnId?: null | string;
+      turnId?: null | string | undefined;
       /** Type */
       type: string;
     } & {
-      [key: string]: components["schemas"]["JsonValue"];
+      [key: string]: components["schemas"]["JsonValue"] | undefined;
     };
     /** AnalyticsMonitor */
     AnalyticsMonitor: {
@@ -7305,9 +7727,9 @@ export interface components {
        * Root
        * @default null
        */
-      root?: null | string;
+      root?: null | string | undefined;
     } & {
-      [key: string]: components["schemas"]["JsonValue"];
+      [key: string]: components["schemas"]["JsonValue"] | undefined;
     };
     /** AnalyticsOperationCounts */
     AnalyticsOperationCounts: {
@@ -7375,7 +7797,7 @@ export interface components {
       turnId: null | string;
       usage: components["schemas"]["AnalyticsProviderTokens"];
     } & {
-      [key: string]: components["schemas"]["JsonValue"];
+      [key: string]: components["schemas"]["JsonValue"] | undefined;
     };
     /**
      * AnalyticsProviderTokens
@@ -7386,34 +7808,34 @@ export interface components {
        * Cachedinputtokens
        * @default null
        */
-      cachedInputTokens?: number | null;
+      cachedInputTokens?: number | null | undefined;
       /**
        * Cachewriteinputtokens
        * @default null
        */
-      cacheWriteInputTokens?: number | null;
+      cacheWriteInputTokens?: number | null | undefined;
       /**
        * Inputtokens
        * @default null
        */
-      inputTokens?: number | null;
+      inputTokens?: number | null | undefined;
       /**
        * Outputtokens
        * @default null
        */
-      outputTokens?: number | null;
+      outputTokens?: number | null | undefined;
       /**
        * Reasoningoutputtokens
        * @default null
        */
-      reasoningOutputTokens?: number | null;
+      reasoningOutputTokens?: number | null | undefined;
       /**
        * Totaltokens
        * @default null
        */
-      totalTokens?: number | null;
+      totalTokens?: number | null | undefined;
     } & {
-      [key: string]: components["schemas"]["JsonValue"];
+      [key: string]: components["schemas"]["JsonValue"] | undefined;
     };
     /** AnalyticsRateLimitRecord */
     AnalyticsRateLimitRecord: {
@@ -7429,198 +7851,250 @@ export interface components {
        * Accountkey
        * @default null
        */
-      accountKey?: null | string;
+      accountKey?: null | string | undefined;
       /**
        * Accountlabel
        * @default null
        */
-      accountLabel?: null | string;
+      accountLabel?: null | string | undefined;
       /**
        * Accounttotals
        * @default null
        */
-      accountTotals?: components["schemas"]["AnalyticsGroupTotal"][] | null;
+      accountTotals?:
+        | components["schemas"]["AnalyticsGroupTotal"][]
+        | null
+        | undefined;
       /**
        * Agentid
        * @default null
        */
-      agentId?: null | string;
+      agentId?: null | string | undefined;
       /**
        * Agents
        * @default null
        */
-      agents?: components["schemas"]["AnalyticsAgentRecord"][] | null;
+      agents?:
+        | components["schemas"]["AnalyticsAgentRecord"][]
+        | null
+        | undefined;
       /**
        * Agenttotals
        * @default null
        */
-      agentTotals?: components["schemas"]["AnalyticsAgentTotal"][] | null;
+      agentTotals?:
+        | components["schemas"]["AnalyticsAgentTotal"][]
+        | null
+        | undefined;
       /**
        * At
        * @default null
        */
-      at?: number | null;
+      at?: number | null | undefined;
       /**
        * Attemptid
        * @default null
        */
-      attemptId?: null | string;
+      attemptId?: null | string | undefined;
       /**
        * Calls
        * @default null
        */
-      calls?: components["schemas"]["AnalyticsItemRecord"][] | null;
+      calls?: components["schemas"]["AnalyticsItemRecord"][] | null | undefined;
       /**
        * Chartbuckets
        * @default null
        */
-      chartBuckets?: components["schemas"]["AnalyticsUsageRecord"][] | null;
+      chartBuckets?:
+        | components["schemas"]["AnalyticsUsageRecord"][]
+        | null
+        | undefined;
       /**
        * Compactions
        * @default null
        */
-      compactions?: components["schemas"]["AnalyticsItemRecord"][] | null;
+      compactions?:
+        | components["schemas"]["AnalyticsItemRecord"][]
+        | null
+        | undefined;
       /**
        * Compactionsnapshots
        * @default null
        */
       compactionSnapshots?:
         | components["schemas"]["AnalyticsItemRecord"][]
-        | null;
+        | null
+        | undefined;
       /** @default null */
-      coverage?: components["schemas"]["AnalyticsCoverage"] | null;
+      coverage?: components["schemas"]["AnalyticsCoverage"] | null | undefined;
       /** @default null */
-      detailPagination?: components["schemas"]["AnalyticsPage"] | null;
+      detailPagination?:
+        | components["schemas"]["AnalyticsPage"]
+        | null
+        | undefined;
       /**
        * Effort
        * @default null
        */
-      effort?: null | string;
+      effort?: null | string | undefined;
       /** @default null */
-      filters?: components["schemas"]["AnalyticsFilters"] | null;
+      filters?: components["schemas"]["AnalyticsFilters"] | null | undefined;
       /**
        * Generatedat
        * @default null
        */
-      generatedAt?: null | number;
+      generatedAt?: null | number | undefined;
       /**
        * History
        * @default null
        */
-      history?: components["schemas"]["AnalyticsHistoryRecord"][] | null;
+      history?:
+        | components["schemas"]["AnalyticsHistoryRecord"][]
+        | null
+        | undefined;
       /**
        * Id
        * @default null
        */
-      id?: null | string;
+      id?: null | string | undefined;
       /**
        * Itembreakdown
        * @default null
        */
-      itemBreakdown?: components["schemas"]["AnalyticsItemBreakdown"][] | null;
+      itemBreakdown?:
+        | components["schemas"]["AnalyticsItemBreakdown"][]
+        | null
+        | undefined;
       /**
        * Itemrecords
        * @default null
        */
-      itemRecords?: components["schemas"]["AnalyticsItemRecord"][] | null;
+      itemRecords?:
+        | components["schemas"]["AnalyticsItemRecord"][]
+        | null
+        | undefined;
       /**
        * Itemrecordstotal
        * @default null
        */
-      itemRecordsTotal?: number | null;
+      itemRecordsTotal?: number | null | undefined;
       /**
        * Items
        * @default null
        */
-      items?: components["schemas"]["AnalyticsItemCount"][] | null;
+      items?: components["schemas"]["AnalyticsItemCount"][] | null | undefined;
       /**
        * Model
        * @default null
        */
-      model?: null | string;
+      model?: null | string | undefined;
       /**
        * Modeltotals
        * @default null
        */
-      modelTotals?: components["schemas"]["AnalyticsGroupTotal"][] | null;
+      modelTotals?:
+        | components["schemas"]["AnalyticsGroupTotal"][]
+        | null
+        | undefined;
       /**
        * Notifications
        * @default null
        */
-      notifications?: components["schemas"]["AnalyticsNotification"][] | null;
+      notifications?:
+        | components["schemas"]["AnalyticsNotification"][]
+        | null
+        | undefined;
       /** @default null */
-      operations?: components["schemas"]["AnalyticsOperationCounts"] | null;
+      operations?:
+        | components["schemas"]["AnalyticsOperationCounts"]
+        | null
+        | undefined;
       /** @default null */
-      pagination?: components["schemas"]["AnalyticsPagination"] | null;
+      pagination?:
+        | components["schemas"]["AnalyticsPagination"]
+        | null
+        | undefined;
       /**
        * Provider
        * @default null
        */
-      provider?: null | string;
+      provider?: null | string | undefined;
       /**
        * Provisionalusage
        * @default null
        */
-      provisionalUsage?: components["schemas"]["AnalyticsUsageRecord"][] | null;
+      provisionalUsage?:
+        | components["schemas"]["AnalyticsUsageRecord"][]
+        | null
+        | undefined;
       /**
        * Ratelimits
        * @default null
        */
-      rateLimits?: components["schemas"]["AnalyticsRateLimitRecord"][] | null;
+      rateLimits?:
+        | components["schemas"]["AnalyticsRateLimitRecord"][]
+        | null
+        | undefined;
       /**
        * Responserate
        * @default null
        */
-      responseRate?: number | null;
+      responseRate?: number | null | undefined;
       /**
        * Runid
        * @default null
        */
-      runId?: null | string;
+      runId?: null | string | undefined;
       /** @default null */
-      summary?: components["schemas"]["AnalyticsSummary"] | null;
+      summary?: components["schemas"]["AnalyticsSummary"] | null | undefined;
       /**
        * Threadid
        * @default null
        */
-      threadId?: null | string;
+      threadId?: null | string | undefined;
       /**
        * Timeline
        * @default null
        */
-      timeline?: components["schemas"]["AnalyticsUsageRecord"][] | null;
+      timeline?:
+        | components["schemas"]["AnalyticsUsageRecord"][]
+        | null
+        | undefined;
       /**
        * Timelinetotal
        * @default null
        */
-      timelineTotal?: number | null;
+      timelineTotal?: number | null | undefined;
       /** @default null */
-      tokens?: components["schemas"]["AnalyticsProviderTokens"] | null;
+      tokens?:
+        | components["schemas"]["AnalyticsProviderTokens"]
+        | null
+        | undefined;
       /**
        * Tools
        * @default null
        */
-      tools?: components["schemas"]["AnalyticsTool"][] | null;
+      tools?: components["schemas"]["AnalyticsTool"][] | null | undefined;
       /**
        * Turndurationms
        * @default null
        */
-      turnDurationMs?: number | null;
+      turnDurationMs?: number | null | undefined;
       /**
        * Turnid
        * @default null
        */
-      turnId?: null | string;
+      turnId?: null | string | undefined;
       /**
        * Turns
        * @default null
        */
-      turns?: components["schemas"]["AnalyticsTurnRecord"][] | null;
+      turns?: components["schemas"]["AnalyticsTurnRecord"][] | null | undefined;
       /**
        * Version
        * @default null
        */
-      version?: 1 | null;
+      version?: 1 | null | undefined;
     };
     /**
      * AnalyticsScope
@@ -7710,32 +8184,32 @@ export interface components {
        * Cachedinputtokens
        * @default null
        */
-      cachedInputTokens?: number | null;
+      cachedInputTokens?: number | null | undefined;
       /**
        * Cachewriteinputtokens
        * @default null
        */
-      cacheWriteInputTokens?: number | null;
+      cacheWriteInputTokens?: number | null | undefined;
       /**
        * Inputtokens
        * @default null
        */
-      inputTokens?: number | null;
+      inputTokens?: number | null | undefined;
       /**
        * Outputtokens
        * @default null
        */
-      outputTokens?: number | null;
+      outputTokens?: number | null | undefined;
       /**
        * Reasoningoutputtokens
        * @default null
        */
-      reasoningOutputTokens?: number | null;
+      reasoningOutputTokens?: number | null | undefined;
       /**
        * Totaltokens
        * @default null
        */
-      totalTokens?: number | null;
+      totalTokens?: number | null | undefined;
     };
     /** AnalyticsTool */
     AnalyticsTool: {
@@ -7773,125 +8247,125 @@ export interface components {
        * Accounthistory
        * @default null
        */
-      accountHistory?: components["schemas"]["JsonValue"][] | null;
+      accountHistory?: components["schemas"]["JsonValue"][] | null | undefined;
       /**
        * Accountkey
        * @default null
        */
-      accountKey?: null | string;
+      accountKey?: null | string | undefined;
       /** Agentid */
       agentId: string;
       /**
        * Agentname
        * @default null
        */
-      agentName?: null | string;
+      agentName?: null | string | undefined;
       /**
        * At
        * @default null
        */
-      at?: number | null;
+      at?: number | null | undefined;
       /**
        * Cyberaccessprogram
        * @default null
        */
-      cyberAccessProgram?: null | string;
+      cyberAccessProgram?: null | string | undefined;
       /**
        * Daybreakenabled
        * @default null
        */
-      daybreakEnabled?: boolean | null;
+      daybreakEnabled?: boolean | null | undefined;
       /**
        * Durationms
        * @default null
        */
-      durationMs?: number | null;
+      durationMs?: number | null | undefined;
       /**
        * Effort
        * @default null
        */
-      effort?: null | string;
+      effort?: null | string | undefined;
       /** @default null */
-      error?: components["schemas"]["JsonValue"] | null;
+      error?: components["schemas"]["JsonValue"] | null | undefined;
       /**
        * Fastmode
        * @default null
        */
-      fastMode?: boolean | null;
+      fastMode?: boolean | null | undefined;
       /**
        * Finishedat
        * @default null
        */
-      finishedAt?: number | null;
+      finishedAt?: number | null | undefined;
       /**
        * Firstoutputat
        * @default null
        */
-      firstOutputAt?: number | null;
+      firstOutputAt?: number | null | undefined;
       /**
        * Firstoutputdelayms
        * @default null
        */
-      firstOutputDelayMs?: number | null;
+      firstOutputDelayMs?: number | null | undefined;
       /**
        * Id
        * @default null
        */
-      id?: null | string;
+      id?: null | string | undefined;
       /**
        * Model
        * @default null
        */
-      model?: null | string;
+      model?: null | string | undefined;
       /**
        * Nativedurationms
        * @default null
        */
-      nativeDurationMs?: number | null;
+      nativeDurationMs?: number | null | undefined;
       /**
        * Nativetimetofirsttokenms
        * @default null
        */
-      nativeTimeToFirstTokenMs?: number | null;
+      nativeTimeToFirstTokenMs?: number | null | undefined;
       /**
        * Provider
        * @default null
        */
-      provider?: null | string;
+      provider?: null | string | undefined;
       /**
        * Rootid
        * @default null
        */
-      rootId?: null | string;
+      rootId?: null | string | undefined;
       /**
        * Source
        * @default null
        */
-      source?: null | string;
+      source?: null | string | undefined;
       /**
        * Startedat
        * @default null
        */
-      startedAt?: number | null;
+      startedAt?: number | null | undefined;
       /** Status */
       status: string;
       /**
        * Terminalsource
        * @default null
        */
-      terminalSource?: null | string;
+      terminalSource?: null | string | undefined;
       /**
        * Threadid
        * @default null
        */
-      threadId?: null | string;
+      threadId?: null | string | undefined;
       /**
        * Turnid
        * @default null
        */
-      turnId?: null | string;
+      turnId?: null | string | undefined;
     } & {
-      [key: string]: components["schemas"]["JsonValue"];
+      [key: string]: components["schemas"]["JsonValue"] | undefined;
     };
     /** AnalyticsUsageAssociation */
     AnalyticsUsageAssociation: {
@@ -7902,7 +8376,7 @@ export interface components {
       /** Turnid */
       turnId: null | string;
     } & {
-      [key: string]: components["schemas"]["JsonValue"];
+      [key: string]: components["schemas"]["JsonValue"] | undefined;
     };
     /** AnalyticsUsageRecord */
     AnalyticsUsageRecord: {
@@ -7916,11 +8390,11 @@ export interface components {
        * Agentname
        * @default null
        */
-      agentName?: null | string;
+      agentName?: null | string | undefined;
       /** At */
       at: number;
       /** Baselinemissing */
-      baselineMissing?: boolean;
+      baselineMissing?: boolean | undefined;
       /**
        * Counterdomain
        * @enum {string}
@@ -7931,87 +8405,101 @@ export interface components {
         | "codexThread"
         | "claudeQuery"
         | "gap";
-      cumulativeDelta?: components["schemas"]["AnalyticsProviderTokens"];
+      cumulativeDelta?:
+        | components["schemas"]["AnalyticsProviderTokens"]
+        | undefined;
       /**
        * Cyberaccessprogram
        * @default null
        */
-      cyberAccessProgram?: null | string;
+      cyberAccessProgram?: null | string | undefined;
       /**
        * Daybreakenabled
        * @default null
        */
-      daybreakEnabled?: boolean | null;
+      daybreakEnabled?: boolean | null | undefined;
       delta: components["schemas"]["AnalyticsProviderTokens"];
       /**
        * Effort
        * @default null
        */
-      effort?: null | string;
+      effort?: null | string | undefined;
       /**
        * Fastmode
        * @default null
        */
-      fastMode?: boolean | null;
+      fastMode?: boolean | null | undefined;
       /**
        * Fingerprint
        * @default null
        */
-      fingerprint?: null | string;
+      fingerprint?: null | string | undefined;
       /** Id */
       id: string;
       /**
        * Inputtokensareuncached
        * @default null
        */
-      inputTokensAreUncached?: boolean | null;
+      inputTokensAreUncached?: boolean | null | undefined;
       last: components["schemas"]["AnalyticsProviderTokens"];
       /**
        * Model
        * @default null
        */
-      model?: null | string;
+      model?: null | string | undefined;
       /** Modelcontextwindow */
       modelContextWindow: number | null;
       /**
        * Noticeat
        * @default null
        */
-      noticeAt?: number | null;
+      noticeAt?: number | null | undefined;
       /** @default null */
-      noticeLast?: components["schemas"]["AnalyticsProviderTokens"] | null;
+      noticeLast?:
+        | components["schemas"]["AnalyticsProviderTokens"]
+        | null
+        | undefined;
       /** @default null */
-      noticeTotal?: components["schemas"]["AnalyticsProviderTokens"] | null;
+      noticeTotal?:
+        | components["schemas"]["AnalyticsProviderTokens"]
+        | null
+        | undefined;
       /**
        * Provider
        * @default null
        */
-      provider?: null | string;
+      provider?: null | string | undefined;
       /** @default null */
-      raw?: components["schemas"]["JsonValue"] | null;
+      raw?: components["schemas"]["JsonValue"] | null | undefined;
       /** @default null */
-      rawTokenUsageRecord?: components["schemas"]["JsonValue"] | null;
+      rawTokenUsageRecord?:
+        | components["schemas"]["JsonValue"]
+        | null
+        | undefined;
       /** Recordedat */
       recordedAt: number;
       /** @default null */
-      requestUsage?: components["schemas"]["AnalyticsProviderTokens"] | null;
+      requestUsage?:
+        | components["schemas"]["AnalyticsProviderTokens"]
+        | null
+        | undefined;
       /** Reset */
-      reset?: boolean | null;
+      reset?: boolean | null | undefined;
       /**
        * Responseid
        * @default null
        */
-      responseId?: null | string;
+      responseId?: null | string | undefined;
       /** Rootid */
       rootId: string;
       /** Source */
       source: string;
-      studioUsage?: components["schemas"]["UsageObservation"];
+      studioUsage?: components["schemas"]["UsageObservation"] | undefined;
       /**
        * Threadid
        * @default null
        */
-      threadId?: null | string;
+      threadId?: null | string | undefined;
       /** Timestampsource */
       timestampSource: string;
       total: components["schemas"]["AnalyticsProviderTokens"];
@@ -8019,16 +8507,19 @@ export interface components {
        * Turnid
        * @default null
        */
-      turnId?: null | string;
+      turnId?: null | string | undefined;
       /** @default null */
-      turnUsage?: components["schemas"]["AnalyticsProviderTokens"] | null;
+      turnUsage?:
+        | components["schemas"]["AnalyticsProviderTokens"]
+        | null
+        | undefined;
       /**
        * Usagesource
        * @default null
        */
-      usageSource?: null | string;
+      usageSource?: null | string | undefined;
     } & {
-      [key: string]: components["schemas"]["JsonValue"];
+      [key: string]: components["schemas"]["JsonValue"] | undefined;
     };
     /** AnnotationBody */
     AnnotationBody: {
@@ -8036,12 +8527,12 @@ export interface components {
        * Agent
        * @default null
        */
-      agent?: null | string;
+      agent?: null | string | undefined;
       /**
        * Id
        * @default null
        */
-      id?: null | string;
+      id?: null | string | undefined;
       /** Line */
       line: number;
       /** Path */
@@ -8052,7 +8543,7 @@ export interface components {
        * Turnid
        * @default null
        */
-      turnId?: string | null;
+      turnId?: string | null | undefined;
     };
     /** AnnotationEntityDto */
     AnnotationEntityDto: {
@@ -8074,7 +8565,7 @@ export interface components {
        * Turnid
        * @default null
        */
-      turnId?: null | string;
+      turnId?: null | string | undefined;
     };
     /** AnnotationReceipt */
     AnnotationReceipt: {
@@ -8096,7 +8587,7 @@ export interface components {
        * Turnid
        * @default null
        */
-      turnId?: null | string;
+      turnId?: null | string | undefined;
     };
     /** AnnotationRecord */
     AnnotationRecord: {
@@ -8118,7 +8609,7 @@ export interface components {
        * Turnid
        * @default null
        */
-      turnId?: null | string;
+      turnId?: null | string | undefined;
     };
     /**
      * AnswerBody
@@ -8129,40 +8620,49 @@ export interface components {
        * Answers
        * @default null
        */
-      answers?: {
-        [key: string]: components["schemas"]["JsonValue"];
-      } | null;
+      answers?:
+        | {
+            [key: string]: components["schemas"]["JsonValue"] | undefined;
+          }
+        | null
+        | undefined;
       /**
        * Content
        * @default null
        */
-      content?: {
-        [key: string]: components["schemas"]["JsonValue"];
-      } | null;
+      content?:
+        | {
+            [key: string]: components["schemas"]["JsonValue"] | undefined;
+          }
+        | null
+        | undefined;
       /**
        * Decision
        * @default null
        */
-      decision?: ("answer" | "accept" | "decline" | "cancel") | null;
+      decision?:
+        | ("answer" | "accept" | "decline" | "cancel")
+        | null
+        | undefined;
       /**
        * Forward
        * @default null
        */
-      forward?: boolean | null;
+      forward?: boolean | null | undefined;
       /** Id */
       id: string;
       /**
        * Paste
        * @default null
        */
-      paste?: boolean | null;
+      paste?: boolean | null | undefined;
       /**
        * Result
        * @default null
        */
-      result?: string | null;
+      result?: string | null | undefined;
     } & {
-      [key: string]: components["schemas"]["JsonValue"];
+      [key: string]: components["schemas"]["JsonValue"] | undefined;
     };
     /** AnswerHistoryEntry */
     AnswerHistoryEntry: {
@@ -8177,17 +8677,17 @@ export interface components {
     /** AnswerResult */
     AnswerResult: {
       /** @default null */
-      forward?: components["schemas"]["BrowserForward"] | null;
+      forward?: components["schemas"]["BrowserForward"] | null | undefined;
       /**
        * Openurl
        * @default null
        */
-      openUrl?: null | string;
+      openUrl?: null | string | undefined;
       /**
        * Replayed
        * @default null
        */
-      replayed?: boolean | null;
+      replayed?: boolean | null | undefined;
       /**
        * Status
        * @constant
@@ -8206,7 +8706,7 @@ export interface components {
        * @default true
        * @constant
        */
-      mismatch?: true;
+      mismatch?: true | undefined;
     };
     /**
      * AppearancePreferences
@@ -8217,61 +8717,67 @@ export interface components {
        * Checkproviderupdates
        * @default true
        */
-      checkProviderUpdates?: boolean;
+      checkProviderUpdates?: boolean | undefined;
       /**
        * Contentlayout
        * @default original
        * @enum {string}
        */
-      contentLayout?: "original" | "custom";
+      contentLayout?: "original" | "custom" | undefined;
       /**
        * Contentwidth
        * @default 100
        */
-      contentWidth?: number;
+      contentWidth?: number | undefined;
       /**
        * Fontfamily
        * @default system
        * @enum {string}
        */
-      fontFamily?: "system" | "arial" | "inter" | "georgia" | "verdana";
+      fontFamily?:
+        | "system"
+        | "arial"
+        | "inter"
+        | "georgia"
+        | "verdana"
+        | undefined;
       /**
        * Hideoldchatsthreshold
        * @default 3
        */
-      hideOldChatsThreshold?: number;
+      hideOldChatsThreshold?: number | undefined;
       /**
        * Mainfontsize
        * @default 14
        */
-      mainFontSize?: number;
+      mainFontSize?: number | undefined;
       /**
        * Showmessageavatars
        * @default false
        */
-      showMessageAvatars?: boolean;
+      showMessageAvatars?: boolean | undefined;
       /**
        * Sidebarfontsize
        * @default 14
        */
-      sidebarFontSize?: number;
+      sidebarFontSize?: number | undefined;
       /**
        * Sidebarshortcut
        * @default
        */
-      sidebarShortcut?: string;
+      sidebarShortcut?: string | undefined;
       /**
        * Theme
        * @default auto
        * @enum {string}
        */
-      theme?: "auto" | "light" | "dark";
+      theme?: "auto" | "light" | "dark" | undefined;
       /**
        * Typography
        * @default original
        * @enum {string}
        */
-      typography?: "original" | "custom";
+      typography?: "original" | "custom" | undefined;
     };
     /** ApprovePeerRequest */
     ApprovePeerRequest: {
@@ -8279,7 +8785,7 @@ export interface components {
        * Accept Missing Whois
        * @default false
        */
-      accept_missing_whois?: boolean;
+      accept_missing_whois?: boolean | undefined;
       /**
        * @description discriminator enum property added by openapi-typescript
        * @enum {string}
@@ -8303,12 +8809,12 @@ export interface components {
        * Share Names
        * @default false
        */
-      share_names?: boolean;
+      share_names?: boolean | undefined;
       /**
        * Share Status
        * @default false
        */
-      share_status?: boolean;
+      share_status?: boolean | undefined;
     };
     /**
      * AssetRecord
@@ -8332,7 +8838,7 @@ export interface components {
       /** Size */
       size: number;
     } & {
-      [key: string]: components["schemas"]["JsonValue"];
+      [key: string]: components["schemas"]["JsonValue"] | undefined;
     };
     /** AssetUpload */
     AssetUpload: {
@@ -8342,17 +8848,17 @@ export interface components {
        * Base64
        * @default null
        */
-      base64?: null | string;
+      base64?: null | string | undefined;
       /**
        * Data
        * @default null
        */
-      data?: null | string;
+      data?: null | string | undefined;
       /**
        * Id
        * @default null
        */
-      id?: string | null;
+      id?: string | null | undefined;
       /** Name */
       name: string;
     };
@@ -8470,17 +8976,17 @@ export interface components {
        * Assets
        * @default null
        */
-      assets?: components["schemas"]["TranscriptAsset"][] | null;
+      assets?: components["schemas"]["TranscriptAsset"][] | null | undefined;
       /**
        * Prefixtext
        * @default null
        */
-      prefixText?: null | string;
+      prefixText?: null | string | undefined;
       /**
        * Text
        * @default null
        */
-      text?: null | string;
+      text?: null | string | undefined;
     };
     /** BranchRequest */
     BranchRequest: {
@@ -8490,7 +8996,7 @@ export interface components {
        * Before
        * @default false
        */
-      before?: boolean;
+      before?: boolean | undefined;
       /** Id */
       id: string;
       /** Message Id */
@@ -8505,325 +9011,350 @@ export interface components {
        * Accountkey
        * @default null
        */
-      accountKey?: null | string;
+      accountKey?: null | string | undefined;
       /** @default null */
       accountTransfer?:
         | components["schemas"]["AccountTransferSummaryDto"]
-        | null;
+        | null
+        | undefined;
       /**
        * Accounttransferid
        * @default null
        */
-      accountTransferId?: null | string;
+      accountTransferId?: null | string | undefined;
       /** @default null */
-      activity?: components["schemas"]["AgentActivity"] | null;
+      activity?: components["schemas"]["AgentActivity"] | null | undefined;
       /** @default null */
-      agentMode?: components["schemas"]["AgentMode"] | null;
+      agentMode?: components["schemas"]["AgentMode"] | null | undefined;
       /**
        * Agentmoderevision
        * @default null
        */
-      agentModeRevision?: number | null;
+      agentModeRevision?: number | null | undefined;
       /**
        * Agentmodesupported
        * @default null
        */
-      agentModeSupported?: boolean | null;
+      agentModeSupported?: boolean | null | undefined;
       /**
        * Archived
        * @default null
        */
-      archived?: boolean | null;
+      archived?: boolean | null | undefined;
       /**
        * Autowake
        * @default null
        */
-      autoWake?: boolean | null;
+      autoWake?: boolean | null | undefined;
       /**
        * Cansend
        * @default null
        */
-      canSend?: boolean | null;
+      canSend?: boolean | null | undefined;
       /** @default null */
       capacityRetry?:
         | components["schemas"]["AgentEntityCapacityRetryDto"]
-        | null;
+        | null
+        | undefined;
       /**
        * Commandprogress
        * @default []
        */
-      commandProgress?: components["schemas"]["AgentCommandProgress"][];
+      commandProgress?:
+        | components["schemas"]["AgentCommandProgress"][]
+        | undefined;
       /**
        * Compactions
        * @default null
        */
-      compactions?: number | null;
+      compactions?: number | null | undefined;
       /**
        * Concurrency
        * @default null
        */
-      concurrency?: number | null;
+      concurrency?: number | null | undefined;
       /** @default null */
-      connectionCheck?: components["schemas"]["ConnectionCheckDto"] | null;
+      connectionCheck?:
+        | components["schemas"]["ConnectionCheckDto"]
+        | null
+        | undefined;
       /** @default null */
       contextRepairWait?:
         | components["schemas"]["AgentEntityContextRepairWaitDto"]
-        | null;
+        | null
+        | undefined;
       /** @default null */
-      contextUsage?: components["schemas"]["ContextUsageDto"] | null;
+      contextUsage?:
+        | components["schemas"]["ContextUsageDto"]
+        | null
+        | undefined;
       /** @default null */
-      convertedFromLead?: components["schemas"]["ConvertedFromLeadDto"] | null;
+      convertedFromLead?:
+        | components["schemas"]["ConvertedFromLeadDto"]
+        | null
+        | undefined;
       /**
        * Created
        * @default null
        */
-      created?: null | number;
+      created?: null | number | undefined;
       /**
        * Cwd
        * @default null
        */
-      cwd?: null | string;
+      cwd?: null | string | undefined;
       /**
        * Cyberaccessprogram
        * @default null
        */
-      cyberAccessProgram?: null | string;
+      cyberAccessProgram?: null | string | undefined;
       /**
        * Daybreakenabled
        * @default null
        */
-      daybreakEnabled?: boolean | null;
+      daybreakEnabled?: boolean | null | undefined;
       /**
        * Deletedat
        * @default null
        */
-      deletedAt?: null | number;
+      deletedAt?: null | number | undefined;
       /** @default null */
-      draft?: components["schemas"]["BranchDraft"] | null;
+      draft?: components["schemas"]["BranchDraft"] | null | undefined;
       /**
        * Effort
        * @default null
        */
-      effort?: null | string;
+      effort?: null | string | undefined;
       /**
        * Empty
        * @default null
        */
-      empty?: boolean | null;
+      empty?: boolean | null | undefined;
       /**
        * Environment
        * @default null
        */
-      environment?: ("host" | "linux") | null;
+      environment?: ("host" | "linux") | null | undefined;
       /**
        * Epoch
        * @default null
        */
-      epoch?: number | null;
+      epoch?: number | null | undefined;
       /**
        * Error
        * @default null
        */
-      error?: components["schemas"]["NativeProviderError"] | null | string;
+      error?:
+        | components["schemas"]["NativeProviderError"]
+        | null
+        | string
+        | undefined;
       /**
        * Excludedaccountkeys
        * @default null
        */
-      excludedAccountKeys?: string[] | null;
+      excludedAccountKeys?: string[] | null | undefined;
       /**
        * Executionmode
        * @default null
        */
-      executionMode?: ("vm" | "native") | null;
+      executionMode?: ("vm" | "native") | null | undefined;
       /**
        * Fastmode
        * @default null
        */
-      fastMode?: boolean | null;
+      fastMode?: boolean | null | undefined;
       /**
        * Hasapproval
        * @default null
        */
-      hasApproval?: boolean | null;
+      hasApproval?: boolean | null | undefined;
       /**
        * Hasquestion
        * @default null
        */
-      hasQuestion?: boolean | null;
+      hasQuestion?: boolean | null | undefined;
       /**
        * Hasunread
        * @default null
        */
-      hasUnread?: boolean | null;
+      hasUnread?: boolean | null | undefined;
       /**
        * Hostprojectpath
        * @default null
        */
-      hostProjectPath?: null | string;
+      hostProjectPath?: null | string | undefined;
       /** Id */
       id: string;
       /**
        * Imageworkspace
        * @default null
        */
-      imageWorkspace?: boolean | null;
+      imageWorkspace?: boolean | null | undefined;
       /**
        * Imageworkspacebaseref
        * @default null
        */
-      imageWorkspaceBaseRef?: null | string;
+      imageWorkspaceBaseRef?: null | string | undefined;
       /**
        * Imageworkspacebaserepo
        * @default null
        */
-      imageWorkspaceBaseRepo?: null | string;
+      imageWorkspaceBaseRepo?: null | string | undefined;
       /**
        * Imageworkspacecreatedat
        * @default null
        */
-      imageWorkspaceCreatedAt?: null | number;
+      imageWorkspaceCreatedAt?: null | number | undefined;
       /**
        * Imageworkspaceerror
        * @default null
        */
-      imageWorkspaceError?: null | string;
+      imageWorkspaceError?: null | string | undefined;
       /**
        * Imageworkspacehasgit
        * @default null
        */
-      imageWorkspaceHasGit?: boolean | null;
+      imageWorkspaceHasGit?: boolean | null | undefined;
       /**
        * Imageworkspacephase
        * @default null
        */
-      imageWorkspacePhase?: null | string;
+      imageWorkspacePhase?: null | string | undefined;
       /**
        * Imageworkspaceready
        * @default null
        */
-      imageWorkspaceReady?: boolean | null;
+      imageWorkspaceReady?: boolean | null | undefined;
       /**
        * Imageworkspacerepo
        * @default null
        */
-      imageWorkspaceRepo?: null | string;
+      imageWorkspaceRepo?: null | string | undefined;
       /**
        * Imageworkspacesubpath
        * @default null
        */
-      imageWorkspaceSubpath?: null | string;
+      imageWorkspaceSubpath?: null | string | undefined;
       /**
        * Inflight
        * @default null
        */
-      inFlight?: boolean | null;
+      inFlight?: boolean | null | undefined;
       /**
        * Islead
        * @default null
        */
-      isLead?: boolean | null;
+      isLead?: boolean | null | undefined;
       /**
        * Kind
        * @default null
        */
-      kind?: "agent" | null;
+      kind?: "agent" | null | undefined;
       /**
        * Lastanswer
        * @default null
        */
-      lastAnswer?: null | string;
+      lastAnswer?: null | string | undefined;
       /**
        * Lastcompletedturn
        * @default null
        */
-      lastCompletedTurn?: null | string;
+      lastCompletedTurn?: null | string | undefined;
       /**
        * Lastcompletedturnstatus
        * @default null
        */
-      lastCompletedTurnStatus?: null | string;
+      lastCompletedTurnStatus?: null | string | undefined;
       /**
        * Lastevent
        * @default null
        */
-      lastEvent?: null | string;
+      lastEvent?: null | string | undefined;
       /**
        * Lastreadat
        * @default null
        */
-      lastReadAt?: null | number;
+      lastReadAt?: null | number | undefined;
       /**
        * Launcheralive
        * @default null
        */
-      launcherAlive?: boolean | null;
+      launcherAlive?: boolean | null | undefined;
       /**
        * Layrerror
        * @default null
        */
-      layrError?: null | string;
+      layrError?: null | string | undefined;
       /**
        * Layrline
        * @default null
        */
-      layrLine?: null | string;
+      layrLine?: null | string | undefined;
       /**
        * Layrprojectid
        * @default null
        */
-      layrProjectId?: null | string;
+      layrProjectId?: null | string | undefined;
       /**
        * Layrready
        * @default null
        */
-      layrReady?: boolean | null;
+      layrReady?: boolean | null | undefined;
       /**
        * Layrstateid
        * @default null
        */
-      layrStateId?: null | string;
+      layrStateId?: null | string | undefined;
       /**
        * Manualname
        * @default null
        */
-      manualName?: boolean | null;
+      manualName?: boolean | null | undefined;
       /**
        * Model
        * @default null
        */
-      model?: null | string;
+      model?: null | string | undefined;
       /** @default null */
-      movedFrom?: components["schemas"]["MovePointerDto"] | null;
+      movedFrom?: components["schemas"]["MovePointerDto"] | null | undefined;
       /** @default null */
-      movedTo?: components["schemas"]["MovePointerDto"] | null;
+      movedTo?: components["schemas"]["MovePointerDto"] | null | undefined;
       /**
        * Moveimportpending
        * @default false
        */
-      moveImportPending?: boolean;
+      moveImportPending?: boolean | undefined;
       /**
        * Name
        * @default null
        */
-      name?: null | string;
+      name?: null | string | undefined;
       /**
        * Nativeerror
        * @default null
        */
-      nativeError?: null | string;
+      nativeError?: null | string | undefined;
       /**
        * Nativelimiterrorat
        * @default null
        */
-      nativeLimitErrorAt?: null | number;
+      nativeLimitErrorAt?: null | number | undefined;
       /** @default null */
-      nativeRelease?: components["schemas"]["AgentNativeRelease"] | null;
+      nativeRelease?:
+        | components["schemas"]["AgentNativeRelease"]
+        | null
+        | undefined;
       /** @default null */
       nativeSafetyBuffering?:
         | components["schemas"]["NativeSafetyBufferingRecord"]
-        | null;
+        | null
+        | undefined;
       /** @default null */
-      nativeSafetyRetry?: components["schemas"]["NativeSafetyRetryDto"] | null;
+      nativeSafetyRetry?:
+        | components["schemas"]["NativeSafetyRetryDto"]
+        | null
+        | undefined;
       /**
        * Nativestatus
        * @default null
@@ -8831,218 +9362,259 @@ export interface components {
       nativeStatus?:
         | components["schemas"]["AgentNativeStatus"]
         | components["schemas"]["AgentNativeStatusValue"]
-        | null;
+        | null
+        | undefined;
       /** @default null */
-      nativeThreadBlock?: components["schemas"]["NativeThreadBlockDto"] | null;
+      nativeThreadBlock?:
+        | components["schemas"]["NativeThreadBlockDto"]
+        | null
+        | undefined;
       /** @default null */
-      nativeTurnError?: components["schemas"]["NativeTurnErrorDto"] | null;
+      nativeTurnError?:
+        | components["schemas"]["NativeTurnErrorDto"]
+        | null
+        | undefined;
       /**
        * Nextturnsettingssupported
        * @default null
        */
-      nextTurnSettingsSupported?: boolean | null;
+      nextTurnSettingsSupported?: boolean | null | undefined;
       /**
        * Orchestratorid
        * @default null
        */
-      orchestratorId?: null | string;
+      orchestratorId?: null | string | undefined;
       /**
        * Orchestratorname
        * @default null
        */
-      orchestratorName?: null | string;
+      orchestratorName?: null | string | undefined;
       /** @default null */
-      overview?: components["schemas"]["AgentOverview"] | null;
+      overview?: components["schemas"]["AgentOverview"] | null | undefined;
       /**
        * Paneldataversion
        * @default null
        */
-      panelDataVersion?: number | null;
+      panelDataVersion?: number | null | undefined;
       /**
        * Panelversion
        * @default null
        */
-      panelVersion?: number | null;
+      panelVersion?: number | null | undefined;
       /**
        * Parentid
        * @default null
        */
-      parentId?: null | string;
+      parentId?: null | string | undefined;
       /**
        * Parkedevent
        * @default null
        */
-      parkedEvent?: null | string;
+      parkedEvent?: null | string | undefined;
       /** @default null */
-      pendingSettings?: components["schemas"]["ExecutionSettingsDto"] | null;
+      pendingSettings?:
+        | components["schemas"]["ExecutionSettingsDto"]
+        | null
+        | undefined;
       /**
        * Pendingsettingsaccountkey
        * @default null
        */
-      pendingSettingsAccountKey?: null | string;
+      pendingSettingsAccountKey?: null | string | undefined;
       /**
        * Pinned
        * @default null
        */
-      pinned?: boolean | null;
+      pinned?: boolean | null | undefined;
       /**
        * Project
        * @default null
        */
-      project?: null | string;
+      project?: null | string | undefined;
       /**
        * Projectfolder
        * @default null
        */
-      projectFolder?: null | string;
+      projectFolder?: null | string | undefined;
       /**
        * Projectfolderrevision
        * @default null
        */
-      projectFolderRevision?: number | null;
+      projectFolderRevision?: number | null | undefined;
       /**
        * Projectid
        * @default null
        */
-      projectId?: null | string;
+      projectId?: null | string | undefined;
       /**
        * Projectserverid
        * @default null
        */
-      projectServerId?: null | string;
+      projectServerId?: null | string | undefined;
       /** @default null */
-      provider?: components["schemas"]["AgentProvider"] | null;
+      provider?: components["schemas"]["AgentProvider"] | null | undefined;
       /** @default null */
-      queuedSettings?: components["schemas"]["ExecutionSettingsDto"] | null;
+      queuedSettings?:
+        | components["schemas"]["ExecutionSettingsDto"]
+        | null
+        | undefined;
       /** @default null */
-      quickCreate?: components["schemas"]["JsonValue"] | null;
+      quickCreate?: components["schemas"]["JsonValue"] | null | undefined;
       /** @default null */
-      readState?: components["schemas"]["ReadStateDto"] | null;
+      readState?: components["schemas"]["ReadStateDto"] | null | undefined;
       /**
        * Readstatesupported
        * @default null
        */
-      readStateSupported?: boolean | null;
+      readStateSupported?: boolean | null | undefined;
       /** @default null */
-      remoteAnchor?: components["schemas"]["RemoteParentLinkDto"] | null;
+      remoteAnchor?:
+        | components["schemas"]["RemoteParentLinkDto"]
+        | null
+        | undefined;
       /** @default null */
-      remoteOrigin?: components["schemas"]["RemoteParentLinkDto"] | null;
+      remoteOrigin?:
+        | components["schemas"]["RemoteParentLinkDto"]
+        | null
+        | undefined;
       /** @default null */
-      remoteWorker?: components["schemas"]["RemoteWorkerLinkDto"] | null;
+      remoteWorker?:
+        | components["schemas"]["RemoteWorkerLinkDto"]
+        | null
+        | undefined;
       /**
        * Retryat
        * @default null
        */
-      retryAt?: null | number;
+      retryAt?: null | number | undefined;
       /** @default null */
-      reviewDefaults?: components["schemas"]["ReviewDefaultsDto"] | null;
+      reviewDefaults?:
+        | components["schemas"]["ReviewDefaultsDto"]
+        | null
+        | undefined;
       /** @default null */
       role?:
         | components["schemas"]["studio_api__sync__models__AgentRole"]
-        | null;
+        | null
+        | undefined;
       /**
        * Rootid
        * @default null
        */
-      rootId?: null | string;
+      rootId?: null | string | undefined;
       /**
        * Serverid
        * @default null
        */
-      serverId?: null | string;
+      serverId?: null | string | undefined;
       /**
        * Sharedroomid
        * @default null
        */
-      sharedRoomId?: null | string;
+      sharedRoomId?: null | string | undefined;
       /** @default null */
-      source?: components["schemas"]["AgentSource"] | null;
+      source?: components["schemas"]["AgentSource"] | null | undefined;
       /** @default null */
-      stall?: components["schemas"]["AgentStall"] | null;
+      stall?: components["schemas"]["AgentStall"] | null | undefined;
       /** @default null */
-      startAttempt?: components["schemas"]["AgentStartAttempt"] | null;
+      startAttempt?:
+        | components["schemas"]["AgentStartAttempt"]
+        | null
+        | undefined;
       /** @default null */
-      startWait?: components["schemas"]["AgentEntityStartWaitDto"] | null;
+      startWait?:
+        | components["schemas"]["AgentEntityStartWaitDto"]
+        | null
+        | undefined;
       /** @default null */
-      status?: components["schemas"]["AgentStatus"] | null;
+      status?: components["schemas"]["AgentStatus"] | null | undefined;
       /**
        * Statusdetail
        * @default null
        */
-      statusDetail?: null | string;
+      statusDetail?: null | string | undefined;
       /**
        * Subagentconcurrencyversion
        * @default null
        */
-      subagentConcurrencyVersion?: number | null;
+      subagentConcurrencyVersion?: number | null | undefined;
       /**
        * Tail
        * @default null
        */
-      tail?: null | string;
+      tail?: null | string | undefined;
       /**
        * Threadid
        * @default null
        */
-      threadId?: null | string;
+      threadId?: null | string | undefined;
       /**
        * Tokensused
        * @default null
        */
-      tokensUsed?: number | null;
+      tokensUsed?: number | null | undefined;
       /**
        * Turnid
        * @default null
        */
-      turnId?: null | string;
+      turnId?: null | string | undefined;
       /** @default null */
-      turnStatus?: components["schemas"]["AgentStatus"] | null;
+      turnStatus?: components["schemas"]["AgentStatus"] | null | undefined;
       /**
        * Unreadcount
        * @default null
        */
-      unreadCount?: number | null;
+      unreadCount?: number | null | undefined;
       /**
        * Updated
        * @default null
        */
-      updated?: null | number;
+      updated?: null | number | undefined;
       /** @default null */
-      usageResume?: components["schemas"]["AgentEntityUsageResumeDto"] | null;
+      usageResume?:
+        | components["schemas"]["AgentEntityUsageResumeDto"]
+        | null
+        | undefined;
       /** @default null */
-      voiceState?: components["schemas"]["JsonValue"] | null;
+      voiceState?: components["schemas"]["JsonValue"] | null | undefined;
       /** @default null */
-      workerDefaults?: components["schemas"]["WorkerDefaultsDto"] | null;
+      workerDefaults?:
+        | components["schemas"]["WorkerDefaultsDto"]
+        | null
+        | undefined;
       /**
        * Workspacebackend
        * @default null
        */
-      workspaceBackend?: ("asif" | "vm") | null;
+      workspaceBackend?: ("asif" | "vm") | null | undefined;
       /**
        * Workspacemode
        * @default null
        */
-      workspaceMode?: ("layr" | "image" | "worktree" | "shared") | null;
+      workspaceMode?:
+        | ("layr" | "image" | "worktree" | "shared")
+        | null
+        | undefined;
       /**
        * Workspaceoperation
        * @default null
        */
-      workspaceOperation?: null | string;
+      workspaceOperation?: null | string | undefined;
       /**
        * Worktree
        * @default null
        */
-      worktree?: boolean | null | string;
+      worktree?: boolean | null | string | undefined;
       /**
        * Worktreepreparation
        * @default null
        */
-      worktreePreparation?: ("waiting" | "preparing") | null;
+      worktreePreparation?: ("waiting" | "preparing") | null | undefined;
       /**
        * Yolomode
        * @default null
        */
-      yoloMode?: boolean | null;
+      yoloMode?: boolean | null | undefined;
     };
     /**
      * BrowserForward
@@ -9073,7 +9645,7 @@ export interface components {
        * Replayed
        * @default null
        */
-      replayed?: boolean | null;
+      replayed?: boolean | null | undefined;
       /**
        * Status
        * @constant
@@ -9086,97 +9658,99 @@ export interface components {
        * Accountkey
        * @default null
        */
-      accountKey?: string;
+      accountKey?: string | undefined;
       /**
        * At
        * @default null
        */
-      at?: number;
+      at?: number | undefined;
       /**
        * Connectionid
        * @default null
        */
-      connectionId?: null | string;
+      connectionId?: null | string | undefined;
       /**
        * Createdat
        * @default null
        */
-      createdAt?: number;
+      createdAt?: number | undefined;
       /**
        * Epoch
        * @default null
        */
-      epoch?: number;
-      error?: components["schemas"]["JsonValue"];
+      epoch?: number | undefined;
+      error?: components["schemas"]["JsonValue"] | undefined;
       /**
        * Failedat
        * @default null
        */
-      failedAt?: number;
+      failedAt?: number | undefined;
       /**
        * Id
        * @default null
        */
-      id?: string;
+      id?: string | undefined;
       /**
        * Itemid
        * @default null
        */
-      itemId?: string;
+      itemId?: string | undefined;
       /** @default null */
-      nativeRequest?: components["schemas"]["BrowserRecoveryRequestRecordResponse"];
+      nativeRequest?:
+        | components["schemas"]["BrowserRecoveryRequestRecordResponse"]
+        | undefined;
       /**
        * Outcome
        * @default null
        */
-      outcome?: string;
+      outcome?: string | undefined;
       /**
        * Reason
        * @default null
        */
-      reason?: string;
+      reason?: string | undefined;
       /**
        * Requestid
        * @default null
        */
-      requestId?: string;
+      requestId?: string | undefined;
       /**
        * Resumedat
        * @default null
        */
-      resumedAt?: number;
+      resumedAt?: number | undefined;
       /**
        * Stage
        * @default null
        */
-      stage?: string;
+      stage?: string | undefined;
       /**
        * Startedat
        * @default null
        */
-      startedAt?: number;
+      startedAt?: number | undefined;
       /**
        * Threadid
        * @default null
        */
-      threadId?: null | string;
+      threadId?: null | string | undefined;
       /**
        * Turnid
        * @default null
        */
-      turnId?: string;
+      turnId?: string | undefined;
       /**
        * Verificationitem
        * @default null
        */
-      verificationItem?: string;
+      verificationItem?: string | undefined;
       /**
        * Verifiedat
        * @default null
        */
-      verifiedAt?: number;
+      verifiedAt?: number | undefined;
     } & {
-      [key: string]: components["schemas"]["JsonValue"];
+      [key: string]: components["schemas"]["JsonValue"] | undefined;
     };
     /** BrowserRecoveryRequestRecordResponse */
     BrowserRecoveryRequestRecordResponse: {
@@ -9184,26 +9758,26 @@ export interface components {
        * Id
        * @default null
        */
-      id?: string;
+      id?: string | undefined;
       /**
        * Method
        * @default null
        */
-      method?: string;
+      method?: string | undefined;
       /** @default null */
-      params?: components["schemas"]["JsonObjectResponse"];
+      params?: components["schemas"]["JsonObjectResponse"] | undefined;
       /**
        * Receivedat
        * @default null
        */
-      receivedAt?: number;
+      receivedAt?: number | undefined;
       /**
        * Submittedat
        * @default null
        */
-      submittedAt?: number;
+      submittedAt?: number | undefined;
     } & {
-      [key: string]: components["schemas"]["JsonValue"];
+      [key: string]: components["schemas"]["JsonValue"] | undefined;
     };
     /** BrowserStatus */
     BrowserStatus: {
@@ -9213,12 +9787,12 @@ export interface components {
        * Reason
        * @default null
        */
-      reason?: null | string;
+      reason?: null | string | undefined;
       /**
        * Skillroot
        * @default null
        */
-      skillRoot?: null | string;
+      skillRoot?: null | string | undefined;
     };
     /** BudgetWaitRecordResponse */
     BudgetWaitRecordResponse: {
@@ -9226,67 +9800,69 @@ export interface components {
        * Accountkey
        * @default null
        */
-      accountKey?: string;
+      accountKey?: string | undefined;
       /**
        * Action
        * @default null
        */
-      action?: boolean | null | string;
+      action?: boolean | null | string | undefined;
       /** @default null */
-      actionIdentity?: components["schemas"]["StartActionIdentityRecordResponse"];
+      actionIdentity?:
+        | components["schemas"]["StartActionIdentityRecordResponse"]
+        | undefined;
       /**
        * Actionrequestid
        * @default null
        */
-      actionRequestId?: string;
-      admission?: components["schemas"]["JsonValue"];
+      actionRequestId?: string | undefined;
+      admission?: components["schemas"]["JsonValue"] | undefined;
       /**
        * Agentid
        * @default null
        */
-      agentId?: string;
+      agentId?: string | undefined;
       /**
        * At
        * @default null
        */
-      at?: number;
+      at?: number | undefined;
       /**
        * Attemptid
        * @default null
        */
-      attemptId?: string;
+      attemptId?: string | undefined;
       /**
        * Epoch
        * @default null
        */
-      epoch?: number;
+      epoch?: number | undefined;
       /**
        * Error
        * @default null
        */
-      error?: string;
+      error?: string | undefined;
       /**
        * Events
        * @default null
        */
-      events?: components["schemas"]["JsonValue"][];
+      events?: components["schemas"]["JsonValue"][] | undefined;
       /**
        * Finishedat
        * @default null
        */
-      finishedAt?: number;
+      finishedAt?: number | undefined;
       /**
        * Status
        * @default null
        */
-      status?: string;
+      status?: string | undefined;
       /**
        * Threadid
        * @default null
        */
-      threadId?: string;
+      threadId?: string | undefined;
     } & {
-      [key: string]: components["schemas"]["JsonValue"];
+      [key: string]: components["schemas"]["JsonValue"] | undefined;
     };
     /** CapabilitiesResponse */
     CapabilitiesResponse: {
@@ -9298,7 +9874,7 @@ export interface components {
        * Effort
        * @default null
        */
-      effort?: null | string;
+      effort?: null | string | undefined;
       /** Errors */
       errors: string[];
       /** Managed */
@@ -9306,7 +9882,10 @@ export interface components {
       /** Mcp */
       mcp: components["schemas"]["JsonValue"][];
       /** @default null */
-      mcpSession?: components["schemas"]["McpSessionBinding"] | null;
+      mcpSession?:
+        | components["schemas"]["McpSessionBinding"]
+        | null
+        | undefined;
       /** Model */
       model: string;
       /** Nativeinventory */
@@ -9322,14 +9901,14 @@ export interface components {
        * Serverscursor
        * @default null
        */
-      serversCursor?: null | string;
+      serversCursor?: null | string | undefined;
       /** Skills */
       skills: components["schemas"]["JsonValue"][];
       /**
        * Skillscursor
        * @default null
        */
-      skillsCursor?: null | string;
+      skillsCursor?: null | string | undefined;
     };
     /**
      * CapacityRetryCause
@@ -9349,91 +9928,91 @@ export interface components {
        * Acceptedturnid
        * @default null
        */
-      acceptedTurnId?: string;
+      acceptedTurnId?: string | undefined;
       /**
        * Accountkey
        * @default null
        */
-      accountKey?: string;
+      accountKey?: string | undefined;
       /**
        * Attempt
        * @default null
        */
-      attempt?: number;
+      attempt?: number | undefined;
       /**
        * Cause
        * @default null
        */
-      cause?: string;
+      cause?: string | undefined;
       /**
        * Claimedat
        * @default null
        */
-      claimedAt?: number;
+      claimedAt?: number | undefined;
       /**
        * Cwd
        * @default null
        */
-      cwd?: string;
+      cwd?: string | undefined;
       /**
        * Dueat
        * @default null
        */
-      dueAt?: null | number;
+      dueAt?: null | number | undefined;
       /**
        * Epoch
        * @default null
        */
-      epoch?: number;
+      epoch?: number | undefined;
       /**
        * Id
        * @default null
        */
-      id?: string;
+      id?: string | undefined;
       /**
        * Maxattempts
        * @default null
        */
-      maxAttempts?: number;
+      maxAttempts?: number | undefined;
       /**
        * Reason
        * @default null
        */
-      reason?: null | string;
+      reason?: null | string | undefined;
       /** @default null */
-      settings?: components["schemas"]["JsonObjectResponse"];
+      settings?: components["schemas"]["JsonObjectResponse"] | undefined;
       /**
        * Status
        * @default null
        */
-      status?: string;
+      status?: string | undefined;
       /**
        * Taskclaims
        * @default null
        */
-      taskClaims?: string[];
+      taskClaims?: string[] | undefined;
       /**
        * Threadid
        * @default null
        */
-      threadId?: string;
+      threadId?: string | undefined;
       /**
        * Turnid
        * @default null
        */
-      turnId?: string;
+      turnId?: string | undefined;
       /**
        * Updatedat
        * @default null
        */
-      updatedAt?: number;
+      updatedAt?: number | undefined;
       /**
        * Waits
        * @default null
        */
-      waits?: number;
+      waits?: number | undefined;
     } & {
-      [key: string]: components["schemas"]["JsonValue"];
+      [key: string]: components["schemas"]["JsonValue"] | undefined;
     };
     /** CapacityRetryRequest */
     CapacityRetryRequest: {
@@ -9452,56 +10031,57 @@ export interface components {
        * Accountkey
        * @default null
        */
-      accountKey?: null | string;
+      accountKey?: null | string | undefined;
       /**
        * Cyberaccessprogram
        * @default null
        */
-      cyberAccessProgram?: null | string;
+      cyberAccessProgram?: null | string | undefined;
       /**
        * Daybreakenabled
        * @default null
        */
-      daybreakEnabled?: boolean | null;
+      daybreakEnabled?: boolean | null | undefined;
       /**
        * Effort
        * @default null
        */
-      effort?: null | string;
+      effort?: null | string | undefined;
       /**
        * Fastmode
        * @default null
        */
-      fastMode?: boolean | null;
+      fastMode?: boolean | null | undefined;
       /**
        * Model
        * @default null
        */
-      model?: null | string;
+      model?: null | string | undefined;
       /**
        * Nativeeffort
        * @default null
        */
-      nativeEffort?: null | string;
+      nativeEffort?: null | string | undefined;
       /**
        * Profileinstructions
        * @default null
        */
-      profileInstructions?: null | string;
+      profileInstructions?: null | string | undefined;
       /** @default null */
       role?:
         | components["schemas"]["studio_api__sync__models__AgentRole"]
-        | null;
+        | null
+        | undefined;
       /**
        * Updatedat
        * @default null
        */
-      updatedAt?: null | number;
+      updatedAt?: null | number | undefined;
       /**
        * Yolomode
        * @default null
        */
-      yoloMode?: boolean | null;
+      yoloMode?: boolean | null | undefined;
     };
     /**
      * CapacityRetryStatus
@@ -9528,12 +10108,12 @@ export interface components {
        * Diff
        * @default null
        */
-      diff?: null | string;
+      diff?: null | string | undefined;
       /**
        * Error
        * @default null
        */
-      error?: null | string;
+      error?: null | string | undefined;
       /** Files */
       files: components["schemas"]["ChangesFile"][];
       /** Git */
@@ -9544,27 +10124,27 @@ export interface components {
        * Reportedat
        * @default null
        */
-      reportedAt?: number | null;
+      reportedAt?: number | null | undefined;
       /**
        * Revision
        * @default null
        */
-      revision?: null | string;
+      revision?: null | string | undefined;
       /**
        * Scope
        * @default null
        */
-      scope?: "chat" | null;
+      scope?: "chat" | null | undefined;
       /**
        * Truncated
        * @default null
        */
-      truncated?: boolean | null;
+      truncated?: boolean | null | undefined;
       /**
        * Turnid
        * @default null
        */
-      turnId?: null | string;
+      turnId?: null | string | undefined;
     };
     /** ChatCreateBody */
     ChatCreateBody: {
@@ -9585,17 +10165,17 @@ export interface components {
       /** Id */
       id: string;
       /** Kind */
-      kind?: "chat" | null;
+      kind?: "chat" | null | undefined;
       /** Lastmessageat */
-      lastMessageAt?: null | number;
+      lastMessageAt?: null | number | undefined;
       /** Members */
-      members?: string[] | null;
+      members?: string[] | null | undefined;
       /** Messagecount */
-      messageCount?: number | null;
+      messageCount?: number | null | undefined;
       /** Name */
-      name?: null | string;
+      name?: null | string | undefined;
       /** Tail */
-      tail?: null | string;
+      tail?: null | string | undefined;
     };
     /** ChatMessage */
     ChatMessage: {
@@ -9626,12 +10206,12 @@ export interface components {
        * Nextafter
        * @default null
        */
-      nextAfter?: number | null;
+      nextAfter?: number | null | undefined;
       /**
        * Nextbefore
        * @default null
        */
-      nextBefore?: number | null;
+      nextBefore?: number | null | undefined;
       room: components["schemas"]["RoomDetailDto"];
     };
     /** ChatReceipt */
@@ -9649,7 +10229,7 @@ export interface components {
        * Label
        * @default Checkpoint
        */
-      label?: string;
+      label?: string | undefined;
     };
     /**
      * CheckpointCaptureResponse
@@ -9662,100 +10242,103 @@ export interface components {
        * Automatic
        * @default null
        */
-      automatic?: boolean | null;
+      automatic?: boolean | null | undefined;
       /**
        * Commit
        * @default null
        */
-      commit?: null | string;
+      commit?: null | string | undefined;
       /** Created */
       created: number;
       /**
        * Cwd
        * @default null
        */
-      cwd?: null | string;
+      cwd?: null | string | undefined;
       /**
        * Data
        * @default null
        */
-      data?: {
-        [key: string]: components["schemas"]["JsonValue"];
-      } | null;
+      data?:
+        | {
+            [key: string]: components["schemas"]["JsonValue"] | undefined;
+          }
+        | null
+        | undefined;
       /**
        * Error
        * @default null
        */
-      error?: null | string;
+      error?: null | string | undefined;
       /**
        * Historyboundary
        * @default null
        */
-      historyBoundary?: number | null;
+      historyBoundary?: number | null | undefined;
       /**
        * Historyparent
        * @default null
        */
-      historyParent?: null | string;
+      historyParent?: null | string | undefined;
       /** Id */
       id: string;
       /**
        * Label
        * @default null
        */
-      label?: null | string;
+      label?: null | string | undefined;
       /**
        * Message
        * @default null
        */
-      message?: null | string;
+      message?: null | string | undefined;
       /**
        * Path
        * @default null
        */
-      path?: null | string;
+      path?: null | string | undefined;
       /**
        * Ref
        * @default null
        */
-      ref?: null | string;
+      ref?: null | string | undefined;
       /**
        * Revision
        * @default null
        */
-      revision?: number | null;
+      revision?: number | null | undefined;
       /**
        * Rootid
        * @default null
        */
-      rootId?: null | string;
+      rootId?: null | string | undefined;
       /**
        * Source
        * @default null
        */
-      source?: null | string;
+      source?: null | string | undefined;
       /**
        * Threadid
        * @default null
        */
-      threadId?: null | string;
+      threadId?: null | string | undefined;
       /**
        * Tree
        * @default null
        */
-      tree?: null | string;
+      tree?: null | string | undefined;
       /**
        * Turnid
        * @default null
        */
-      turnId?: null | string;
+      turnId?: null | string | undefined;
       /**
        * Worktree
        * @default null
        */
-      worktree?: null | string;
+      worktree?: null | string | undefined;
     } & {
-      [key: string]: components["schemas"]["JsonValue"];
+      [key: string]: components["schemas"]["JsonValue"] | undefined;
     };
     /** CheckpointPreviewRequest */
     CheckpointPreviewRequest: {
@@ -9776,7 +10359,7 @@ export interface components {
       /** Patch */
       patch: string;
       /** @default null */
-      restoreUnavailableReason?: string | null;
+      restoreUnavailableReason?: string | null | undefined;
       /** Truncated */
       truncated: boolean;
     };
@@ -9788,12 +10371,12 @@ export interface components {
        * Checkpoint
        * @default null
        */
-      checkpoint?: null | string;
+      checkpoint?: null | string | undefined;
       /**
        * Checkpoint Id
        * @default null
        */
-      checkpoint_id?: null | string;
+      checkpoint_id?: null | string | undefined;
       /** Expectedtree */
       expectedTree: string;
     };
@@ -9823,100 +10406,103 @@ export interface components {
        * Automatic
        * @default null
        */
-      automatic?: boolean | null;
+      automatic?: boolean | null | undefined;
       /**
        * Commit
        * @default null
        */
-      commit?: null | string;
+      commit?: null | string | undefined;
       /** Created */
       created: number;
       /**
        * Cwd
        * @default null
        */
-      cwd?: null | string;
+      cwd?: null | string | undefined;
       /**
        * Data
        * @default null
        */
-      data?: {
-        [key: string]: components["schemas"]["JsonValue"];
-      } | null;
+      data?:
+        | {
+            [key: string]: components["schemas"]["JsonValue"] | undefined;
+          }
+        | null
+        | undefined;
       /**
        * Error
        * @default null
        */
-      error?: null | string;
+      error?: null | string | undefined;
       /**
        * Historyboundary
        * @default null
        */
-      historyBoundary?: number | null;
+      historyBoundary?: number | null | undefined;
       /**
        * Historyparent
        * @default null
        */
-      historyParent?: null | string;
+      historyParent?: null | string | undefined;
       /** Id */
       id: string;
       /**
        * Label
        * @default null
        */
-      label?: null | string;
+      label?: null | string | undefined;
       /**
        * Message
        * @default null
        */
-      message?: null | string;
+      message?: null | string | undefined;
       /**
        * Path
        * @default null
        */
-      path?: null | string;
+      path?: null | string | undefined;
       /**
        * Ref
        * @default null
        */
-      ref?: null | string;
+      ref?: null | string | undefined;
       /**
        * Revision
        * @default null
        */
-      revision?: number | null;
+      revision?: number | null | undefined;
       /**
        * Rootid
        * @default null
        */
-      rootId?: null | string;
+      rootId?: null | string | undefined;
       /**
        * Source
        * @default null
        */
-      source?: null | string;
+      source?: null | string | undefined;
       /**
        * Threadid
        * @default null
        */
-      threadId?: null | string;
+      threadId?: null | string | undefined;
       /**
        * Tree
        * @default null
        */
-      tree?: null | string;
+      tree?: null | string | undefined;
       /**
        * Turnid
        * @default null
        */
-      turnId?: null | string;
+      turnId?: null | string | undefined;
       /**
        * Worktree
        * @default null
        */
-      worktree?: null | string;
+      worktree?: null | string | undefined;
     } & {
-      [key: string]: components["schemas"]["JsonValue"];
+      [key: string]: components["schemas"]["JsonValue"] | undefined;
     };
     /** ClaudeAddStartRequest */
     ClaudeAddStartRequest: {
@@ -9924,12 +10510,12 @@ export interface components {
        * Email
        * @default null
        */
-      email?: string | null;
+      email?: string | null | undefined;
       /**
        * Label
        * @default null
        */
-      label?: string | null;
+      label?: string | null | undefined;
       /** Login Id */
       login_id: string;
     };
@@ -9939,12 +10525,12 @@ export interface components {
        * Description
        * @default null
        */
-      description?: null | string;
+      description?: null | string | undefined;
       /**
        * Status
        * @default null
        */
-      status?: null | string;
+      status?: null | string | undefined;
       /** Task Id */
       task_id: string;
     };
@@ -9979,7 +10565,7 @@ export interface components {
        * Error
        * @default null
        */
-      error?: null | string;
+      error?: null | string | undefined;
       /**
        * Phase
        * @enum {string}
@@ -9993,12 +10579,12 @@ export interface components {
       /** Requestid */
       requestId: string;
       /** @default false */
-      restoreFiles?: boolean;
+      restoreFiles?: boolean | undefined;
       /**
        * Turnid
        * @default null
        */
-      turnId?: null | string;
+      turnId?: null | string | undefined;
     };
     /**
      * ClaudeCustomModel
@@ -10010,7 +10596,7 @@ export interface components {
       /** Label */
       label: string;
     } & {
-      [key: string]: components["schemas"]["JsonValue"];
+      [key: string]: components["schemas"]["JsonValue"] | undefined;
     };
     /** ClaudeDeliveryResponse */
     ClaudeDeliveryResponse: {
@@ -10018,7 +10604,7 @@ export interface components {
        * Error
        * @default null
        */
-      error?: null | string;
+      error?: null | string | undefined;
       /** Id */
       id: string;
       /**
@@ -10059,27 +10645,27 @@ export interface components {
        * Chatsrefreshed
        * @default null
        */
-      chatsRefreshed?: boolean | null;
+      chatsRefreshed?: boolean | null | undefined;
       /**
        * Codesubmitted
        * @default null
        */
-      codeSubmitted?: boolean | null;
+      codeSubmitted?: boolean | null | undefined;
       /**
        * Email
        * @default null
        */
-      email?: null | string;
+      email?: null | string | undefined;
       /**
        * Error
        * @default null
        */
-      error?: null | string;
+      error?: null | string | undefined;
       /**
        * Plan
        * @default null
        */
-      plan?: null | string;
+      plan?: null | string | undefined;
       /** Requestid */
       requestId: string;
       /**
@@ -10091,9 +10677,9 @@ export interface components {
        * Verificationurl
        * @default null
        */
-      verificationUrl?: null | string;
+      verificationUrl?: null | string | undefined;
     } & {
-      [key: string]: components["schemas"]["JsonValue"];
+      [key: string]: components["schemas"]["JsonValue"] | undefined;
     };
     /**
      * ClaudeOptions
@@ -10104,29 +10690,32 @@ export interface components {
        * Autocompactwindow
        * @default null
        */
-      autoCompactWindow?: number | null;
+      autoCompactWindow?: number | null | undefined;
       /**
        * Binarypath
        * @default null
        */
-      binaryPath?: null | string;
+      binaryPath?: null | string | undefined;
       /**
        * Configdir
        * @default null
        */
-      configDir?: null | string;
+      configDir?: null | string | undefined;
       /**
        * Custommodels
        * @default null
        */
-      customModels?: components["schemas"]["ClaudeCustomModel"][] | null;
+      customModels?:
+        | components["schemas"]["ClaudeCustomModel"][]
+        | null
+        | undefined;
       /**
        * Launchargs
        * @default null
        */
-      launchArgs?: null | string;
+      launchArgs?: null | string | undefined;
     } & {
-      [key: string]: components["schemas"]["JsonValue"];
+      [key: string]: components["schemas"]["JsonValue"] | undefined;
     };
     ClaudeOrganization: {
       idSuffix: string;
@@ -10142,64 +10731,65 @@ export interface components {
        * Accountkey
        * @default null
        */
-      accountKey?: string;
+      accountKey?: string | undefined;
       /**
        * Connectionid
        * @default null
        */
-      connectionId?: null | string;
+      connectionId?: null | string | undefined;
       /**
        * Epoch
        * @default null
        */
-      epoch?: number;
+      epoch?: number | undefined;
       /**
        * Events
        * @default null
        */
-      events?: string[];
+      events?: string[] | undefined;
       /**
        * Id
        * @default null
        */
-      id?: string;
+      id?: string | undefined;
       /**
        * Nativeoperationid
        * @default null
        */
-      nativeOperationId?: string;
+      nativeOperationId?: string | undefined;
       /**
        * Outcome
        * @default null
        * @constant
        */
-      outcome?: "not_applied";
+      outcome?: "not_applied" | undefined;
       /**
        * Retry
        * @default null
        */
-      retry?: boolean;
+      retry?: boolean | undefined;
       /**
        * Submitted
        * @default null
        */
-      submitted?: boolean;
+      submitted?: boolean | undefined;
       /** @default null */
       supervisorIdentity?:
         | components["schemas"]["SupervisorIdentityRecordResponse"]
-        | null;
+        | null
+        | undefined;
       /**
        * Threadid
        * @default null
        */
-      threadId?: string;
+      threadId?: string | undefined;
       /**
        * Turnid
        * @default null
        */
-      turnId?: string;
+      turnId?: string | undefined;
     } & {
-      [key: string]: components["schemas"]["JsonValue"];
+      [key: string]: components["schemas"]["JsonValue"] | undefined;
     };
     /** ClaudeProfileRequest */
     ClaudeProfileRequest: {
@@ -10207,14 +10797,14 @@ export interface components {
        * Account Key
        * @default null
        */
-      account_key?: null | string;
+      account_key?: null | string | undefined;
       /**
        * Label
        * @default null
        */
-      label?: null | string;
+      label?: null | string | undefined;
       /** @default null */
-      options?: components["schemas"]["ClaudeOptions"] | null;
+      options?: components["schemas"]["ClaudeOptions"] | null | undefined;
     };
     ClaudeRepairReport: {
       invalidSequence: boolean;
@@ -10226,11 +10816,13 @@ export interface components {
     };
     /** ClaudeRollbackResponse */
     ClaudeRollbackResponse: {
-      fileResult?: {
-        [key: string]: unknown;
-      };
+      fileResult?:
+        | {
+            [key: string]: unknown;
+          }
+        | undefined;
       /** @default false */
-      filesRestored?: boolean;
+      filesRestored?: boolean | undefined;
       /** Nativeid */
       nativeId: string;
       /** Removedturns */
@@ -10264,7 +10856,7 @@ export interface components {
       /** Request Id */
       request_id: string;
       /** @default false */
-      restore_files?: boolean;
+      restore_files?: boolean | undefined;
       /** Turn Id */
       turn_id: string;
     };
@@ -10274,39 +10866,43 @@ export interface components {
        * Autocompactwindow
        * @default null
        */
-      autoCompactWindow?: number | null;
+      autoCompactWindow?: number | null | undefined;
       /**
        * Binarypath
        * @default null
        */
-      binaryPath?: null | string;
+      binaryPath?: null | string | undefined;
       /**
        * Configdir
        * @default null
        */
-      configDir?: null | string;
+      configDir?: null | string | undefined;
       /**
        * Custommodels
        * @default null
        */
-      customModels?: components["schemas"]["ClaudeCustomModel"][] | null;
+      customModels?:
+        | components["schemas"]["ClaudeCustomModel"][]
+        | null
+        | undefined;
       /**
        * Launchargs
        * @default null
        */
-      launchArgs?: null | string;
+      launchArgs?: null | string | undefined;
       /**
        * Permissionmode
        * @default null
        */
       permissionMode?:
         | ("default" | "acceptEdits" | "auto" | "plan" | "bypassPermissions")
-        | null;
+        | null
+        | undefined;
       /**
        * Thinking
        * @default null
        */
-      thinking?: boolean | null;
+      thinking?: boolean | null | undefined;
     };
     /** ClaudeSessionSettingsRequest */
     ClaudeSessionSettingsRequest: {
@@ -10321,7 +10917,7 @@ export interface components {
        * Request Id
        * @default null
        */
-      request_id?: string | null;
+      request_id?: string | null | undefined;
       settings: components["schemas"]["ClaudeSettings"];
     };
     /** ClaudeSessionStateRequest */
@@ -10340,32 +10936,35 @@ export interface components {
        * Contextwindow
        * @default null
        */
-      contextWindow?: number | null;
+      contextWindow?: number | null | undefined;
       /** @default null */
-      controlOperation?: components["schemas"]["ClaudeControlOperation"] | null;
+      controlOperation?:
+        | components["schemas"]["ClaudeControlOperation"]
+        | null
+        | undefined;
       /**
        * Nativeid
        * @default null
        */
-      nativeId?: null | string;
-      settings?: components["schemas"]["ClaudeSessionSettings"];
+      nativeId?: null | string | undefined;
+      settings?: components["schemas"]["ClaudeSessionSettings"] | undefined;
       /**
        * Tasks
        * @default []
        */
-      tasks?: components["schemas"]["ClaudeBackgroundTask"][];
+      tasks?: components["schemas"]["ClaudeBackgroundTask"][] | undefined;
       /**
        * Totaltokens
        * @default null
        */
-      totalTokens?: number | null;
+      totalTokens?: number | null | undefined;
       /** Turns */
       turns: components["schemas"]["ClaudeTurn"][];
       /**
        * Version
        * @default null
        */
-      version?: null | string;
+      version?: null | string | undefined;
     };
     /** ClaudeSessionStopTaskRequest */
     ClaudeSessionStopTaskRequest: {
@@ -10382,13 +10981,14 @@ export interface components {
     /** ClaudeSettings */
     ClaudeSettings: {
       /** Autocompactwindow */
-      autoCompactWindow?: number | null;
+      autoCompactWindow?: number | null | undefined;
       /** Permissionmode */
       permissionMode?:
         | ("default" | "acceptEdits" | "auto" | "plan" | "bypassPermissions")
-        | null;
+        | null
+        | undefined;
       /** Thinking */
-      thinking?: boolean | null;
+      thinking?: boolean | null | undefined;
     };
     /** ClaudeSettingsResponse */
     ClaudeSettingsResponse: {
@@ -10406,12 +11006,12 @@ export interface components {
     /** ClaudeTurn */
     ClaudeTurn: {
       /** @default false */
-      canRestoreFiles?: boolean;
-      error?: components["schemas"]["JsonValue"];
+      canRestoreFiles?: boolean | undefined;
+      error?: components["schemas"]["JsonValue"] | undefined;
       /** Id */
       id: string;
       /** @default null */
-      restoreFilesUnavailableReason?: string | null;
+      restoreFilesUnavailableReason?: string | null | undefined;
       /**
        * Status
        * @enum {string}
@@ -10431,68 +11031,72 @@ export interface components {
        * Branch
        * @default null
        */
-      branch?: string;
+      branch?: string | undefined;
       /**
        * Bytes
        * @default null
        */
-      bytes?: number | null;
+      bytes?: number | null | undefined;
       /** @default null */
-      collect?: components["schemas"]["ImageWorkspaceCollectResultRecordResponse"];
+      collect?:
+        | components["schemas"]["ImageWorkspaceCollectResultRecordResponse"]
+        | undefined;
       /**
        * Createdat
        * @default null
        */
-      createdAt?: null | number;
+      createdAt?: null | number | undefined;
       /**
        * Freedbytes
        * @default null
        */
-      freedBytes?: number;
+      freedBytes?: number | undefined;
       /**
        * Head
        * @default null
        */
-      head?: string;
+      head?: string | undefined;
       /**
        * Mount
        * @default null
        */
-      mount?: null | string;
+      mount?: null | string | undefined;
       /**
        * Path
        * @default null
        */
-      path?: null | string;
+      path?: null | string | undefined;
       /**
        * Phase
        * @default null
        */
-      phase?: string;
+      phase?: string | undefined;
       /**
        * Relative
        * @default null
        */
-      relative?: string;
+      relative?: string | undefined;
       /**
        * Repo
        * @default null
        */
-      repo?: string;
+      repo?: string | undefined;
       /**
        * Restoreheads
        * @default null
        */
-      restoreHeads?: {
-        [key: string]: string;
-      };
+      restoreHeads?:
+        | {
+            [key: string]: string;
+          }
+        | undefined;
       /**
        * Source
        * @default null
        */
-      source?: null | string;
+      source?: null | string | undefined;
     } & {
-      [key: string]: components["schemas"]["JsonValue"];
+      [key: string]: components["schemas"]["JsonValue"] | undefined;
     };
     /**
      * CodexLoginReceipt
@@ -10505,59 +11109,59 @@ export interface components {
        * Createdat
        * @default null
        */
-      createdAt?: null | number;
+      createdAt?: null | number | undefined;
       /**
        * Email
        * @default null
        */
-      email?: null | string;
+      email?: null | string | undefined;
       /**
        * Emailhint
        * @default null
        */
-      emailHint?: null | string;
+      emailHint?: null | string | undefined;
       /**
        * Error
        * @default null
        */
-      error?: null | string;
+      error?: null | string | undefined;
       /**
        * Expectedaccountid
        * @default null
        */
-      expectedAccountId?: null | string;
+      expectedAccountId?: null | string | undefined;
       /**
        * Expiresat
        * @default null
        */
-      expiresAt?: null | number;
+      expiresAt?: null | number | undefined;
       /**
        * Loginid
        * @default null
        */
-      loginId?: null | string;
+      loginId?: null | string | undefined;
       /**
        * Nativecompleted
        * @default null
        */
-      nativeCompleted?: boolean | null;
+      nativeCompleted?: boolean | null | undefined;
       /**
        * Reauthaccountkey
        * @default null
        */
-      reauthAccountKey?: null | string;
+      reauthAccountKey?: null | string | undefined;
       /**
        * Requestedlabel
        * @default null
        */
-      requestedLabel?: null | string;
+      requestedLabel?: null | string | undefined;
       /** Requestid */
       requestId: string;
       /**
        * Resolvedaccountkey
        * @default null
        */
-      resolvedAccountKey?: null | string;
+      resolvedAccountKey?: null | string | undefined;
       /**
        * Status
        * @enum {string}
@@ -10574,14 +11178,14 @@ export interface components {
        * Usercode
        * @default null
        */
-      userCode?: null | string;
+      userCode?: null | string | undefined;
       /**
        * Verificationurl
        * @default null
        */
-      verificationUrl?: null | string;
+      verificationUrl?: null | string | undefined;
     } & {
-      [key: string]: components["schemas"]["JsonValue"];
+      [key: string]: components["schemas"]["JsonValue"] | undefined;
     };
     /** ComplaintBody */
     ComplaintBody: {
@@ -10590,31 +11194,31 @@ export interface components {
        * @default submit
        * @enum {string}
        */
-      action?: "submit" | "respond";
+      action?: "submit" | "respond" | undefined;
       /**
        * Complaint Id
        * @default null
        */
-      complaint_id?: null | string;
+      complaint_id?: null | string | undefined;
       /** Id */
       id: string;
       /**
        * Lead
        * @default null
        */
-      lead?: null | string;
+      lead?: null | string | undefined;
       /**
        * Status
        * @default null
        */
-      status?: ("in_progress" | "resolved" | "declined") | null;
+      status?: ("in_progress" | "resolved" | "declined") | null | undefined;
       /** Text */
       text: string;
       /**
        * Version
        * @default null
        */
-      version?: number | null;
+      version?: number | null | undefined;
     };
     /** ComplaintDetailResponse */
     ComplaintDetailResponse: {
@@ -10622,105 +11226,105 @@ export interface components {
        * Author
        * @default null
        */
-      author?: null | string;
+      author?: null | string | undefined;
       /**
        * Authorname
        * @default null
        */
-      authorName?: null | string;
+      authorName?: null | string | undefined;
       /**
        * Created
        * @default null
        */
-      created?: number | null;
+      created?: number | null | undefined;
       /** Id */
       id: string;
       /**
        * Leaddeleted
        * @default null
        */
-      leadDeleted?: boolean | null;
+      leadDeleted?: boolean | null | undefined;
       /**
        * Leadid
        * @default null
        */
-      leadId?: null | string;
+      leadId?: null | string | undefined;
       /**
        * Leadname
        * @default null
        */
-      leadName?: null | string;
+      leadName?: null | string | undefined;
       /**
        * Leadstopped
        * @default null
        */
-      leadStopped?: boolean | null;
+      leadStopped?: boolean | null | undefined;
       /**
        * Needsresponse
        * @default null
        */
-      needsResponse?: boolean | null;
+      needsResponse?: boolean | null | undefined;
       /**
        * Readat
        * @default null
        */
-      readAt?: number | null;
+      readAt?: number | null | undefined;
       /**
        * Recipient
        * @default null
        */
-      recipient?: ("user" | "lead") | null;
+      recipient?: ("user" | "lead") | null | undefined;
       /** Responses */
       responses: components["schemas"]["ComplaintResponseDto"][];
       /**
        * Sourcetype
        * @default null
        */
-      sourceType?: ("message" | "user_task") | null;
+      sourceType?: ("message" | "user_task") | null | undefined;
       /** @default null */
-      status?: components["schemas"]["ComplaintStatus"] | null;
+      status?: components["schemas"]["ComplaintStatus"] | null | undefined;
       /** Text */
       text: string;
       /**
        * Title
        * @default null
        */
-      title?: null | string;
+      title?: null | string | undefined;
       /**
        * Updated
        * @default null
        */
-      updated?: number | null;
+      updated?: number | null | undefined;
       /** Version */
       version: number;
     };
     /** ComplaintEntityDto */
     ComplaintEntityDto: {
       /** Author */
-      author?: null | string;
+      author?: null | string | undefined;
       /** Authorname */
-      authorName?: null | string;
+      authorName?: null | string | undefined;
       /** Created */
-      created?: null | number;
+      created?: null | number | undefined;
       /** Id */
       id: string;
       /** Leadid */
-      leadId?: null | string;
+      leadId?: null | string | undefined;
       /** Leadname */
-      leadName?: null | string;
+      leadName?: null | string | undefined;
       /** Needsuserresponse */
-      needsUserResponse?: boolean | null;
+      needsUserResponse?: boolean | null | undefined;
       /** Readat */
-      readAt?: null | number;
+      readAt?: null | number | undefined;
       /** Recipient */
-      recipient?: ("user" | "lead") | null;
-      status?: components["schemas"]["ComplaintStatus"] | null;
+      recipient?: ("user" | "lead") | null | undefined;
+      status?: components["schemas"]["ComplaintStatus"] | null | undefined;
       /** Title */
-      title?: null | string;
+      title?: null | string | undefined;
       /** Updated */
-      updated?: null | number;
+      updated?: null | number | undefined;
       /** Version */
-      version?: number | null;
+      version?: number | null | undefined;
     };
     /** ComplaintInboxEntry */
     ComplaintInboxEntry: {
@@ -10753,37 +11357,37 @@ export interface components {
        * Readat
        * @default null
        */
-      readAt?: null | number;
+      readAt?: null | number | undefined;
       /**
        * Recipient
        * @default null
        */
-      recipient?: string;
+      recipient?: string | undefined;
       /**
        * Respondedat
        * @default null
        */
-      respondedAt?: number;
+      respondedAt?: number | undefined;
       /**
        * Respondedby
        * @default null
        */
-      respondedBy?: string;
+      respondedBy?: string | undefined;
       /**
        * Response
        * @default null
        */
-      response?: string;
+      response?: string | undefined;
       /**
        * Responses
        * @default null
        */
-      responses?: components["schemas"]["JsonValue"][];
+      responses?: components["schemas"]["JsonValue"][] | undefined;
       /**
        * Sourcetype
        * @default null
        */
-      sourceType?: string;
+      sourceType?: string | undefined;
       /**
        * Status
        * @enum {string}
@@ -10795,14 +11399,14 @@ export interface components {
        * Updated
        * @default null
        */
-      updated?: number;
+      updated?: number | undefined;
       /**
        * Version
        * @default null
        */
-      version?: number;
+      version?: number | undefined;
     } & {
-      [key: string]: components["schemas"]["JsonValue"];
+      [key: string]: components["schemas"]["JsonValue"] | undefined;
     };
     /** ComplaintResource */
     ComplaintResource: {
@@ -10842,29 +11446,29 @@ export interface components {
        * Concurrency
        * @default 32
        */
-      concurrency?: number;
+      concurrency?: number | undefined;
       /**
        * Expected Mode Revision
        * @default null
        */
-      expected_mode_revision?: number | null;
+      expected_mode_revision?: number | null | undefined;
       /** Id */
       id: string;
       /**
        * Maxagents
        * @default 64
        */
-      maxAgents?: number;
+      maxAgents?: number | undefined;
       /**
        * Request Id
        * @default null
        */
-      request_id?: string | null;
+      request_id?: string | null | undefined;
       /**
        * Tokenbudget
        * @default null
        */
-      tokenBudget?: number | null;
+      tokenBudget?: number | null | undefined;
     };
     /** ConfigureResponse */
     ConfigureResponse: {
@@ -10881,7 +11485,7 @@ export interface components {
        * Tokenbudget
        * @default null
        */
-      tokenBudget?: number | null;
+      tokenBudget?: number | null | undefined;
     };
     /** ConnectionBody */
     ConnectionBody: {
@@ -10889,7 +11493,7 @@ export interface components {
        * Connected
        * @default true
        */
-      connected?: boolean;
+      connected?: boolean | undefined;
       /** Source */
       source: string;
       /** Target */
@@ -10901,44 +11505,44 @@ export interface components {
        * Accountkey
        * @default null
        */
-      accountKey?: null | string;
+      accountKey?: null | string | undefined;
       /** At */
       at: number;
       /**
        * Epoch
        * @default null
        */
-      epoch?: number | null;
+      epoch?: number | null | undefined;
       /**
        * Nativestate
        * @default null
        */
-      nativeState?: null | string;
+      nativeState?: null | string | undefined;
       /**
        * Previouserror
        * @default null
        */
-      previousError?: null | string;
+      previousError?: null | string | undefined;
       /**
        * Readerror
        * @default null
        */
-      readError?: null | string;
+      readError?: null | string | undefined;
       /**
        * Restartturnstatus
        * @default null
        */
-      restartTurnStatus?: null | string;
+      restartTurnStatus?: null | string | undefined;
       /**
        * Threadid
        * @default null
        */
-      threadId?: null | string;
+      threadId?: null | string | undefined;
       /**
        * Turnid
        * @default null
        */
-      turnId?: null | string;
+      turnId?: null | string | undefined;
     };
     /** ConnectionCheckRecordResponse */
     ConnectionCheckRecordResponse: {
@@ -10946,46 +11550,46 @@ export interface components {
        * Accountkey
        * @default null
        */
-      accountKey?: string;
+      accountKey?: string | undefined;
       /** At */
       at: number;
       /**
        * Epoch
        * @default null
        */
-      epoch?: number;
+      epoch?: number | undefined;
       /**
        * Nativestate
        * @default null
        */
-      nativeState?: string;
+      nativeState?: string | undefined;
       /**
        * Previouserror
        * @default null
        */
-      previousError?: null | string;
+      previousError?: null | string | undefined;
       /**
        * Readerror
        * @default null
        */
-      readError?: null | string;
+      readError?: null | string | undefined;
       /**
        * Restartturnstatus
        * @default null
        */
-      restartTurnStatus?: string;
+      restartTurnStatus?: string | undefined;
       /**
        * Threadid
        * @default null
        */
-      threadId?: string;
+      threadId?: string | undefined;
       /**
        * Turnid
        * @default null
        */
-      turnId?: string;
+      turnId?: string | undefined;
     } & {
-      [key: string]: components["schemas"]["JsonValue"];
+      [key: string]: components["schemas"]["JsonValue"] | undefined;
     };
     /** ConnectionRecoveryRecordResponse */
     ConnectionRecoveryRecordResponse: {
@@ -10993,70 +11597,70 @@ export interface components {
        * At
        * @default null
        */
-      at?: number;
+      at?: number | undefined;
       /**
        * Attemptid
        * @default null
        */
-      attemptId?: null | string;
+      attemptId?: null | string | undefined;
       /**
        * Automatic
        * @default null
        */
-      automatic?: boolean;
+      automatic?: boolean | undefined;
       /**
        * Completiondelivered
        * @default null
        */
-      completionDelivered?: boolean;
+      completionDelivered?: boolean | undefined;
       /**
        * Eventids
        * @default null
        */
-      eventIds?: string[];
+      eventIds?: string[] | undefined;
       /**
        * Holdoperations
        * @default null
        */
-      holdOperations?: string[];
+      holdOperations?: string[] | undefined;
       /**
        * Outcome
        * @default null
        */
-      outcome?: string;
-      previousError?: components["schemas"]["JsonValue"];
+      outcome?: string | undefined;
+      previousError?: components["schemas"]["JsonValue"] | undefined;
       /**
        * Queuedinputpreserved
        * @default null
        */
-      queuedInputPreserved?: boolean;
-      requestBasis?: components["schemas"]["JsonValue"];
+      queuedInputPreserved?: boolean | undefined;
+      requestBasis?: components["schemas"]["JsonValue"] | undefined;
       /**
        * Requestid
        * @default null
        */
-      requestId?: string;
-      requestReceipt?: components["schemas"]["JsonValue"];
+      requestId?: string | undefined;
+      requestReceipt?: components["schemas"]["JsonValue"] | undefined;
       /**
        * Requeststate
        * @default null
        * @enum {string}
        */
-      requestState?: "pending" | "result";
+      requestState?: "pending" | "result" | undefined;
       /**
        * Source
        * @default null
        */
-      source?: string;
+      source?: string | undefined;
       /** @default null */
-      supervisor?: components["schemas"]["JsonObjectResponse"];
+      supervisor?: components["schemas"]["JsonObjectResponse"] | undefined;
       /**
        * Turnid
        * @default null
        */
-      turnId?: string;
+      turnId?: string | undefined;
     } & {
-      [key: string]: components["schemas"]["JsonValue"];
+      [key: string]: components["schemas"]["JsonValue"] | undefined;
     };
     /** ContextRepairRecordResponse */
     ContextRepairRecordResponse: {
@@ -11064,95 +11668,103 @@ export interface components {
        * Agent
        * @default null
        */
-      agent?: string;
+      agent?: string | undefined;
       /**
        * Checkedeventids
        * @default null
        */
-      checkedEventIds?: string[];
+      checkedEventIds?: string[] | undefined;
       /**
        * Compactions
        * @default null
        */
-      compactions?: number;
+      compactions?: number | undefined;
       /**
        * Connectionid
        * @default null
        */
-      connectionId?: string;
+      connectionId?: string | undefined;
       /** @default null */
-      copyCleanup?: components["schemas"]["JsonObjectResponse"];
+      copyCleanup?: components["schemas"]["JsonObjectResponse"] | undefined;
       /**
        * Created
        * @default null
        */
-      created?: number;
-      error?: components["schemas"]["JsonValue"];
+      created?: number | undefined;
+      error?: components["schemas"]["JsonValue"] | undefined;
       /** @default null */
-      historicalInputProof?: components["schemas"]["HistoricalInputProofRecordResponse"];
+      historicalInputProof?:
+        | components["schemas"]["HistoricalInputProofRecordResponse"]
+        | undefined;
       /**
        * Historicalinputs
        * @default null
        */
-      historicalInputs?: components["schemas"]["JsonValue"][];
+      historicalInputs?: components["schemas"]["JsonValue"][] | undefined;
       /**
        * Id
        * @default null
        */
-      id?: string;
+      id?: string | undefined;
       /**
        * Newthreadid
        * @default null
        */
-      newThreadId?: string;
+      newThreadId?: string | undefined;
       /**
        * Phase
        * @default null
        */
-      phase?: string;
+      phase?: string | undefined;
       /**
        * Previousrepairedeventids
        * @default null
        */
-      previousRepairedEventIds?: string[];
+      previousRepairedEventIds?: string[] | undefined;
       /**
        * Repairedeventids
        * @default null
        */
-      repairedEventIds?: string[];
-      result?: components["schemas"]["JsonValue"];
+      repairedEventIds?: string[] | undefined;
+      result?: components["schemas"]["JsonValue"] | undefined;
       /**
        * Rpcid
        * @default null
        */
-      rpcId?: number | string;
+      rpcId?: number | string | undefined;
       /**
        * Rpcmethod
        * @default null
        */
-      rpcMethod?: string;
+      rpcMethod?: string | undefined;
       /** @default null */
-      settings?: components["schemas"]["JsonObjectResponse"];
+      settings?: components["schemas"]["JsonObjectResponse"] | undefined;
       /** @default null */
-      snapshot?: components["schemas"]["ContextRepairSnapshotRecordResponse"];
+      snapshot?:
+        | components["schemas"]["ContextRepairSnapshotRecordResponse"]
+        | undefined;
       /** @default null */
-      source?: components["schemas"]["ContextRepairSourceRecordResponse"];
+      source?:
+        | components["schemas"]["ContextRepairSourceRecordResponse"]
+        | undefined;
       /** @default null */
-      sourceCleanup?: components["schemas"]["ContextRepairSourceCleanupRecordResponse"];
+      sourceCleanup?:
+        | components["schemas"]["ContextRepairSourceCleanupRecordResponse"]
+        | undefined;
       /**
        * Updated
        * @default null
        */
-      updated?: number;
+      updated?: number | undefined;
     } & {
-      [key: string]: components["schemas"]["JsonValue"];
+      [key: string]: components["schemas"]["JsonValue"] | undefined;
     };
     /** ContextRepairResponse */
     ContextRepairResponse: {
       /** Id */
       id: string;
       /** @default null */
-      repair?: components["schemas"]["JsonValue"] | null;
+      repair?: components["schemas"]["JsonValue"] | null | undefined;
     };
     /** ContextRepairSnapshotRecordResponse */
     ContextRepairSnapshotRecordResponse: {
@@ -11160,69 +11772,69 @@ export interface components {
        * Ancestry
        * @default null
        */
-      ancestry?: components["schemas"]["JsonValue"][];
+      ancestry?: components["schemas"]["JsonValue"][] | undefined;
       /**
        * Copybytes
        * @default null
        */
-      copyBytes?: number;
+      copyBytes?: number | undefined;
       /**
        * Copypath
        * @default null
        */
-      copyPath?: string;
+      copyPath?: string | undefined;
       /**
        * Copysha256
        * @default null
        */
-      copySha256?: string;
+      copySha256?: string | undefined;
       /**
        * Eventids
        * @default null
        */
-      eventIds?: string[];
+      eventIds?: string[] | undefined;
       /**
        * Importthreadid
        * @default null
        */
-      importThreadId?: string;
+      importThreadId?: string | undefined;
       /**
        * Savedbytes
        * @default null
        */
-      savedBytes?: number;
+      savedBytes?: number | undefined;
       /**
        * Sourcebytes
        * @default null
        */
-      sourceBytes?: number;
+      sourceBytes?: number | undefined;
       /**
        * Sourcefileidentity
        * @default null
        */
-      sourceFileIdentity?: components["schemas"]["JsonValue"][];
+      sourceFileIdentity?: components["schemas"]["JsonValue"][] | undefined;
       /**
        * Sourcepath
        * @default null
        */
-      sourcePath?: string;
+      sourcePath?: string | undefined;
       /**
        * Sourcesha256
        * @default null
        */
-      sourceSha256?: string;
+      sourceSha256?: string | undefined;
       /**
        * Terminalcompletedat
        * @default null
        */
-      terminalCompletedAt?: null | number;
+      terminalCompletedAt?: null | number | undefined;
       /**
        * Terminalturnid
        * @default null
        */
-      terminalTurnId?: null | string;
+      terminalTurnId?: null | string | undefined;
     } & {
-      [key: string]: components["schemas"]["JsonValue"];
+      [key: string]: components["schemas"]["JsonValue"] | undefined;
     };
     /** ContextRepairSourceCleanupRecordResponse */
     ContextRepairSourceCleanupRecordResponse: {
@@ -11230,34 +11842,34 @@ export interface components {
        * Accountkey
        * @default null
        */
-      accountKey?: string;
+      accountKey?: string | undefined;
       /**
        * Connectionid
        * @default null
        */
-      connectionId?: string;
+      connectionId?: string | undefined;
       /**
        * Phase
        * @default null
        */
-      phase?: string;
+      phase?: string | undefined;
       /**
        * Submittedat
        * @default null
        */
-      submittedAt?: number;
+      submittedAt?: number | undefined;
       /**
        * Threadid
        * @default null
        */
-      threadId?: string;
+      threadId?: string | undefined;
       /**
        * Updatedat
        * @default null
        */
-      updatedAt?: number;
+      updatedAt?: number | undefined;
     } & {
-      [key: string]: components["schemas"]["JsonValue"];
+      [key: string]: components["schemas"]["JsonValue"] | undefined;
     };
     /** ContextRepairSourceRecordResponse */
     ContextRepairSourceRecordResponse: {
@@ -11265,34 +11877,34 @@ export interface components {
        * Accountkey
        * @default null
        */
-      accountKey?: string;
+      accountKey?: string | undefined;
       /**
        * Attemptid
        * @default null
        */
-      attemptId?: string;
+      attemptId?: string | undefined;
       /**
        * Epoch
        * @default null
        */
-      epoch?: number;
+      epoch?: number | undefined;
       /**
        * Id
        * @default null
        */
-      id?: string;
+      id?: string | undefined;
       /**
        * Threadid
        * @default null
        */
-      threadId?: string;
+      threadId?: string | undefined;
       /**
        * Turnid
        * @default null
        */
-      turnId?: string;
+      turnId?: string | undefined;
     } & {
-      [key: string]: components["schemas"]["JsonValue"];
+      [key: string]: components["schemas"]["JsonValue"] | undefined;
     };
     /** ContextRepairWaitRecordResponse */
     ContextRepairWaitRecordResponse: {
@@ -11300,90 +11912,94 @@ export interface components {
        * Action
        * @default null
        */
-      action?: string;
+      action?: string | undefined;
       /**
        * Actionat
        * @default null
        */
-      actionAt?: number;
+      actionAt?: number | undefined;
       /**
        * Actionid
        * @default null
        */
-      actionId?: string;
+      actionId?: string | undefined;
       /**
        * At
        * @default null
        */
-      at?: number;
+      at?: number | undefined;
       /**
        * Checks
        * @default null
        */
-      checks?: number;
-      error?: components["schemas"]["JsonValue"];
+      checks?: number | undefined;
+      error?: components["schemas"]["JsonValue"] | undefined;
       /**
        * Events
        * @default null
        */
-      events?: components["schemas"]["JsonValue"][];
+      events?: components["schemas"]["JsonValue"][] | undefined;
       /**
        * Firstat
        * @default null
        */
-      firstAt?: number;
+      firstAt?: number | undefined;
       /**
        * Historycheckat
        * @default null
        */
-      historyCheckAt?: number;
+      historyCheckAt?: number | undefined;
       /**
        * Historycheckid
        * @default null
        */
-      historyCheckId?: string;
+      historyCheckId?: string | undefined;
       /**
        * Historycheckowner
        * @default null
        */
-      historyCheckOwner?: string;
+      historyCheckOwner?: string | undefined;
       /** @default null */
-      lastHistoryCheck?: components["schemas"]["JsonObjectResponse"];
+      lastHistoryCheck?:
+        | components["schemas"]["JsonObjectResponse"]
+        | undefined;
       /**
        * Lasttaskcheckat
        * @default null
        */
-      lastTaskCheckAt?: number;
-      lastTaskCheckError?: components["schemas"]["JsonValue"];
+      lastTaskCheckAt?: number | undefined;
+      lastTaskCheckError?: components["schemas"]["JsonValue"] | undefined;
       /**
        * Nextcheckat
        * @default null
        */
-      nextCheckAt?: number;
+      nextCheckAt?: number | undefined;
       /**
        * Scope
        * @default null
        */
-      scope?: string;
+      scope?: string | undefined;
       /** @default null */
-      source?: components["schemas"]["ContextRepairSourceRecordResponse"];
+      source?:
+        | components["schemas"]["ContextRepairSourceRecordResponse"]
+        | undefined;
       /**
        * Taskcheckat
        * @default null
        */
-      taskCheckAt?: number;
+      taskCheckAt?: number | undefined;
       /**
        * Taskcheckid
        * @default null
        */
-      taskCheckId?: string;
+      taskCheckId?: string | undefined;
       /**
        * Taskcheckowner
        * @default null
        */
-      taskCheckOwner?: string;
+      taskCheckOwner?: string | undefined;
     } & {
-      [key: string]: components["schemas"]["JsonValue"];
+      [key: string]: components["schemas"]["JsonValue"] | undefined;
     };
     /** ContextUsageDto */
     ContextUsageDto: {
@@ -11391,7 +12007,7 @@ export interface components {
        * At
        * @default null
        */
-      at?: null | number;
+      at?: null | number | undefined;
       /** Tokens */
       tokens: number | null;
       /** Window */
@@ -11403,84 +12019,90 @@ export interface components {
        * At
        * @default null
        */
-      at?: number;
+      at?: number | undefined;
       /** Tokens */
       tokens: number;
       /** Window */
       window: number;
     } & {
-      [key: string]: components["schemas"]["JsonValue"];
+      [key: string]: components["schemas"]["JsonValue"] | undefined;
     };
     /** ConversationRequest */
     ConversationRequest: {
       /** @default null */
-      agent_mode?: components["schemas"]["AgentMode"] | null;
+      agent_mode?: components["schemas"]["AgentMode"] | null | undefined;
       /**
        * Cwd
        * @default
        */
-      cwd?: string;
+      cwd?: string | undefined;
       /**
        * Daybreak Enabled
        * @default null
        */
-      daybreak_enabled?: boolean | null;
+      daybreak_enabled?: boolean | null | undefined;
       /**
        * Effort
        * @default null
        */
-      effort?: string | null;
+      effort?: string | null | undefined;
       /**
        * Excluded Account Keys
        * @default []
        */
-      excluded_account_keys?: string[];
+      excluded_account_keys?: string[] | undefined;
       /**
        * Expected Account Key
        * @default default
        */
-      expected_account_key?: string;
+      expected_account_key?: string | undefined;
       /**
        * Expected Mode Revision
        * @default null
        */
-      expected_mode_revision?: number | null;
+      expected_mode_revision?: number | null | undefined;
       /**
        * Fast Mode
        * @default null
        */
-      fast_mode?: boolean | null;
+      fast_mode?: boolean | null | undefined;
       /** Id */
       id: string;
       /**
        * Model
        * @default null
        */
-      model?: string | null;
+      model?: string | null | undefined;
       /**
        * Next Turn
        * @default null
        */
-      next_turn?: boolean | null;
+      next_turn?: boolean | null | undefined;
       /**
        * Request Id
        * @default null
        */
-      request_id?: string | null;
+      request_id?: string | null | undefined;
       /** @default null */
-      review_defaults?: components["schemas"]["ReviewDefaults"] | null;
+      review_defaults?:
+        | components["schemas"]["ReviewDefaults"]
+        | null
+        | undefined;
       /**
        * Subagent Concurrency
        * @default 32
        */
-      subagent_concurrency?: number;
+      subagent_concurrency?: number | undefined;
       /** @default null */
-      worker_defaults?: components["schemas"]["WorkerDefaults"] | null;
+      worker_defaults?:
+        | components["schemas"]["WorkerDefaults"]
+        | null
+        | undefined;
       /**
        * Yolo Mode
        * @default true
        */
-      yolo_mode?: boolean;
+      yolo_mode?: boolean | undefined;
     };
     /**
      * ConvertedFromLeadDto
@@ -11517,7 +12139,7 @@ export interface components {
       /** Rootid */
       rootId: string;
     } & {
-      [key: string]: components["schemas"]["JsonValue"];
+      [key: string]: components["schemas"]["JsonValue"] | undefined;
     };
     /** CostBreakdown */
     CostBreakdown: {
@@ -11548,57 +12170,57 @@ export interface components {
        * Account Key
        * @default default
        */
-      account_key?: string;
+      account_key?: string | undefined;
       /**
        * Concurrency
        * @default 32
        */
-      concurrency?: number;
+      concurrency?: number | undefined;
       /**
        * Cwd
        * @default
        */
-      cwd?: string;
+      cwd?: string | undefined;
       /**
        * Daybreak Enabled
        * @default null
        */
-      daybreak_enabled?: boolean | null;
+      daybreak_enabled?: boolean | null | undefined;
       /**
        * Effort
        * @default null
        */
-      effort?: string | null;
+      effort?: string | null | undefined;
       /**
        * Fast Mode
        * @default null
        */
-      fast_mode?: boolean | null;
+      fast_mode?: boolean | null | undefined;
       /**
        * Id
        * @default null
        */
-      id?: string | null;
+      id?: string | null | undefined;
       /**
        * Maxagents
        * @default 64
        */
-      maxAgents?: number;
+      maxAgents?: number | undefined;
       /**
        * Model
        * @default null
        */
-      model?: string | null;
+      model?: string | null | undefined;
       /**
        * Name
        * @default Lead
        */
-      name?: string;
+      name?: string | undefined;
       /**
        * Parent
        * @default null
        */
-      parent?: string | null;
+      parent?: string | null | undefined;
       /**
        * @description Claude child permission mode. Omit to inherit. Reviewers use plan. Bypass requires a bypass parent.
        * @enum {string}
@@ -11608,34 +12230,38 @@ export interface components {
         | "acceptEdits"
         | "auto"
         | "plan"
-        | "bypassPermissions";
+        | "bypassPermissions"
+        | undefined;
       /**
        * Profile Id
        * @default null
        */
-      profile_id?: string | null;
+      profile_id?: string | null | undefined;
       /** Prompt */
       prompt: string;
       /** @default orchestrator */
-      role?: components["schemas"]["AgentRole-Input"];
+      role?: components["schemas"]["AgentRole-Input"] | undefined;
       /**
        * Tokenbudget
        * @default null
        */
-      tokenBudget?: number | null;
+      tokenBudget?: number | null | undefined;
       /** @default null */
-      worker_defaults?: components["schemas"]["WorkerDefaults"] | null;
+      worker_defaults?:
+        | components["schemas"]["WorkerDefaults"]
+        | null
+        | undefined;
       /**
        * Workspacemode
        * @default worktree
        * @enum {string}
        */
-      workspaceMode?: "layr" | "image" | "worktree" | "shared";
+      workspaceMode?: "layr" | "image" | "worktree" | "shared" | undefined;
       /**
        * Yolo Mode
        * @default true
        */
-      yolo_mode?: boolean;
+      yolo_mode?: boolean | undefined;
     };
     /** CreateInvite */
     CreateInvite: {
@@ -11648,7 +12274,7 @@ export interface components {
        * Label
        * @default null
        */
-      label?: string | null;
+      label?: string | null | undefined;
       /** Requestid */
       requestId: string;
     };
@@ -11663,12 +12289,12 @@ export interface components {
        * Expected User
        * @default null
        */
-      expected_user?: string | null;
+      expected_user?: string | null | undefined;
       /**
        * Label
        * @default null
        */
-      label?: string | null;
+      label?: string | null | undefined;
     };
     /** CreateInviteResponse */
     CreateInviteResponse: {
@@ -11684,77 +12310,83 @@ export interface components {
        * Account Key
        * @default default
        */
-      account_key?: string;
+      account_key?: string | undefined;
       /**
        * Cwd
        * @default
        */
-      cwd?: string;
+      cwd?: string | undefined;
       /**
        * Daybreak Enabled
        * @default null
        */
-      daybreak_enabled?: boolean | null;
+      daybreak_enabled?: boolean | null | undefined;
       /**
        * Effort
        * @default null
        */
-      effort?: string | null;
+      effort?: string | null | undefined;
       /**
        * Fast Mode
        * @default null
        */
-      fast_mode?: boolean | null;
+      fast_mode?: boolean | null | undefined;
       /**
        * Id
        * @default null
        */
-      id?: string | null;
+      id?: string | null | undefined;
       /**
        * Model
        * @default null
        */
-      model?: string | null;
+      model?: string | null | undefined;
       /**
        * Previous
        * @default null
        */
-      previous?: string | null;
+      previous?: string | null | undefined;
       /**
        * Project Folder
        * @default null
        */
-      project_folder?: null | string;
+      project_folder?: null | string | undefined;
       /**
        * Project Id
        * @default null
        */
-      project_id?: string | null;
+      project_id?: string | null | undefined;
       /**
        * Project Server Id
        * @default null
        */
-      project_server_id?: string | null;
+      project_server_id?: string | null | undefined;
       /**
        * Reuse Empty
        * @default true
        */
-      reuse_empty?: boolean;
+      reuse_empty?: boolean | undefined;
       /** @default null */
-      review_defaults?: components["schemas"]["ReviewDefaults"] | null;
+      review_defaults?:
+        | components["schemas"]["ReviewDefaults"]
+        | null
+        | undefined;
       /** @default null */
-      worker_defaults?: components["schemas"]["WorkerDefaults"] | null;
+      worker_defaults?:
+        | components["schemas"]["WorkerDefaults"]
+        | null
+        | undefined;
       /**
        * Workspacemode
        * @default worktree
        * @enum {string}
        */
-      workspaceMode?: "layr" | "image" | "worktree";
+      workspaceMode?: "layr" | "image" | "worktree" | undefined;
       /**
        * Yolo Mode
        * @default true
        */
-      yolo_mode?: boolean;
+      yolo_mode?: boolean | undefined;
     };
     /** CreateRoomRequest */
     CreateRoomRequest: {
@@ -11771,12 +12403,12 @@ export interface components {
        * Share Names
        * @default false
        */
-      share_names?: boolean;
+      share_names?: boolean | undefined;
       /**
        * Share Status
        * @default false
        */
-      share_status?: boolean;
+      share_status?: boolean | undefined;
     };
     /** @description One model's cumulative contribution to a Claude query. */
     CumulativeModelUsage: {
@@ -11786,7 +12418,7 @@ export interface components {
        * Format: double
        * @description Provider's informational cost estimate; USD.
        */
-      providerCostUsd?: number | null;
+      providerCostUsd?: number | null | undefined;
       /** @description Disjoint cumulative token counts; tokens. */
       tokens: components["schemas"]["UsageTokens"];
     };
@@ -11821,24 +12453,24 @@ export interface components {
        * Epoch
        * @default null
        */
-      epoch?: (number | null | string)[];
+      epoch?: (number | null | string)[] | undefined;
       /**
        * Revision
        * @default null
        */
-      revision?: number;
+      revision?: number | undefined;
       /**
        * Text
        * @default null
        */
-      text?: null | string;
+      text?: null | string | undefined;
       /**
        * Version
        * @default null
        */
-      version?: string;
+      version?: string | undefined;
     } & {
-      [key: string]: components["schemas"]["JsonValue"];
+      [key: string]: components["schemas"]["JsonValue"] | undefined;
     };
     /**
      * DeliveryMoment
@@ -11866,15 +12498,15 @@ export interface components {
       backendBuild: string;
       browser: components["schemas"]["BrowserStatus"] | null;
       /** @default null */
-      diskSpace?: components["schemas"]["DiskSpaceStatus"] | null;
+      diskSpace?: components["schemas"]["DiskSpaceStatus"] | null | undefined;
       /** @default null */
-      linuxVm?: components["schemas"]["LinuxVMStatus"] | null;
+      linuxVm?: components["schemas"]["LinuxVMStatus"] | null | undefined;
       liveUpdate: components["schemas"]["LiveUpdateStatus"] | null;
       /** Mobileprotocol */
       mobileProtocol: number;
       nativeRuntime: components["schemas"]["NativeRuntimeStatus"] | null;
       /** @default null */
-      peerUpdate?: components["schemas"]["PeerUpdateStatus"] | null;
+      peerUpdate?: components["schemas"]["PeerUpdateStatus"] | null | undefined;
       /** Pid */
       pid: number;
       /** Protocol */
@@ -11919,18 +12551,18 @@ export interface components {
       /** Backendbuild */
       backendBuild: string;
       /** @constant */
-      backendKind?: "rust";
+      backendKind?: "rust" | undefined;
       browser: components["schemas"]["BrowserStatus"] | null;
       /** @default null */
-      diskSpace?: components["schemas"]["DiskSpaceStatus"] | null;
+      diskSpace?: components["schemas"]["DiskSpaceStatus"] | null | undefined;
       /** @default null */
-      linuxVm?: components["schemas"]["LinuxVMStatus"] | null;
+      linuxVm?: components["schemas"]["LinuxVMStatus"] | null | undefined;
       liveUpdate: components["schemas"]["LiveUpdateStatus"] | null;
       /** Mobileprotocol */
       mobileProtocol: number;
       nativeRuntime: components["schemas"]["NativeRuntimeStatus"] | null;
       /** @default null */
-      peerUpdate?: components["schemas"]["PeerUpdateStatus"] | null;
+      peerUpdate?: components["schemas"]["PeerUpdateStatus"] | null | undefined;
       /** Pid */
       pid: number;
       /** Protocol */
@@ -11977,7 +12609,7 @@ export interface components {
        * Origin
        * @default null
        */
-      origin?: string | null;
+      origin?: string | null | undefined;
       /**
        * Protocol
        * @constant
@@ -12021,12 +12653,18 @@ export interface components {
       /** At */
       at: string;
       /** @default null */
-      blockingPoolMetrics?: components["schemas"]["BlockingPoolMetrics"] | null;
+      blockingPoolMetrics?:
+        | components["schemas"]["BlockingPoolMetrics"]
+        | null
+        | undefined;
       executions: components["schemas"]["ExecutionLedger"];
       hostResources: components["schemas"]["HostResources"];
       httpRequestMetrics: components["schemas"]["HttpRequestMetrics"];
       /** @default null */
-      imageMounts?: components["schemas"]["ImageMountDiagnostics"] | null;
+      imageMounts?:
+        | components["schemas"]["ImageMountDiagnostics"]
+        | null
+        | undefined;
       migrations: components["schemas"]["MigrationStatus"];
       /** Nativeaccounts */
       nativeAccounts: {
@@ -12076,48 +12714,50 @@ export interface components {
        * Accountkey
        * @default null
        */
-      accountKey?: string;
+      accountKey?: string | undefined;
       /**
        * At
        * @default null
        */
-      at?: number;
+      at?: number | undefined;
       /**
        * Autowake
        * @default null
        */
-      autoWake?: boolean;
+      autoWake?: boolean | undefined;
       /**
        * Connectionid
        * @default null
        */
-      connectionId?: string;
+      connectionId?: string | undefined;
       /**
        * Epoch
        * @default null
        */
-      epoch?: number;
+      epoch?: number | undefined;
       /**
        * Source
        * @default null
        */
-      source?: string;
+      source?: string | undefined;
       /** @default null */
-      startAttempt?: components["schemas"]["StartAttemptRecordResponse"];
+      startAttempt?:
+        | components["schemas"]["StartAttemptRecordResponse"]
+        | undefined;
       /** @default null */
-      supervisor?: components["schemas"]["JsonObjectResponse"];
+      supervisor?: components["schemas"]["JsonObjectResponse"] | undefined;
       /**
        * Threadid
        * @default null
        */
-      threadId?: string;
+      threadId?: string | undefined;
       /**
        * Turnid
        * @default null
        */
-      turnId?: null | string;
+      turnId?: null | string | undefined;
     } & {
-      [key: string]: components["schemas"]["JsonValue"];
+      [key: string]: components["schemas"]["JsonValue"] | undefined;
     };
     /**
      * DiscoveredServer
@@ -12128,12 +12768,12 @@ export interface components {
        * Alias
        * @default null
        */
-      alias?: null | string;
+      alias?: null | string | undefined;
       /**
        * Autopair
        * @default null
        */
-      autoPair?: boolean | null;
+      autoPair?: boolean | null | undefined;
       /** Clientid */
       clientId: string;
       /** Created */
@@ -12153,7 +12793,7 @@ export interface components {
        * Lastseen
        * @default null
        */
-      lastSeen?: null | number;
+      lastSeen?: null | number | undefined;
       /** Origin */
       origin: null | string;
       /** Publickey */
@@ -12162,13 +12802,16 @@ export interface components {
        * Reachability
        * @default null
        */
-      reachability?: ("reachable" | "unreachable" | "unknown") | null;
+      reachability?:
+        | ("reachable" | "unreachable" | "unknown")
+        | null
+        | undefined;
       /**
        * Replacedby
        * @description The server identity that succeeds this lost identity.
        * @default null
        */
-      replacedBy?: null | string;
+      replacedBy?: null | string | undefined;
       /** Revoked */
       revoked: null | number;
       /** Serverid */
@@ -12184,7 +12827,7 @@ export interface components {
        */
       tailscaleUser: null | string;
     } & {
-      [key: string]: components["schemas"]["JsonValue"];
+      [key: string]: components["schemas"]["JsonValue"] | undefined;
     };
     /** DiscoverServers */
     DiscoverServers: {
@@ -12240,7 +12883,7 @@ export interface components {
        * Deleted
        * @default false
        */
-      deleted?: boolean;
+      deleted?: boolean | undefined;
       /** Id */
       id: string;
       /** Payload */
@@ -12249,7 +12892,7 @@ export interface components {
        * Seq
        * @default null
        */
-      seq?: number | null;
+      seq?: number | null | undefined;
     };
     /** DraftPushRequest */
     DraftPushRequest: {
@@ -12259,7 +12902,10 @@ export interface components {
     /** DraftPushRow */
     DraftPushRow: {
       /** @default null */
-      assumedMasterState?: components["schemas"]["DraftDocumentInput"] | null;
+      assumedMasterState?:
+        | components["schemas"]["DraftDocumentInput"]
+        | null
+        | undefined;
       newDocumentState: components["schemas"]["DraftDocumentInput"];
     };
     /** DraftsResource */
@@ -12275,11 +12921,11 @@ export interface components {
       /** Id */
       id: string;
       /** Kind */
-      kind?: ("chat" | "spawn") | null;
+      kind?: ("chat" | "spawn") | null | undefined;
       /** Source */
-      source?: null | string;
+      source?: null | string | undefined;
       /** Target */
-      target?: null | string;
+      target?: null | string | undefined;
     };
     /** EmptyTransferRecoveryRecordResponse */
     EmptyTransferRecoveryRecordResponse: {
@@ -12287,116 +12933,118 @@ export interface components {
        * Accountkey
        * @default null
        */
-      accountKey?: string;
+      accountKey?: string | undefined;
       /**
        * Agentid
        * @default null
        */
-      agentId?: string;
+      agentId?: string | undefined;
       /**
        * Completedat
        * @default null
        */
-      completedAt?: number;
+      completedAt?: number | undefined;
       /**
        * Connectionid
        * @default null
        */
-      connectionId?: string;
+      connectionId?: string | undefined;
       /**
        * Created
        * @default null
        */
-      created?: number;
+      created?: number | undefined;
       /**
        * Destinationaccountkey
        * @default null
        */
-      destinationAccountKey?: string;
+      destinationAccountKey?: string | undefined;
       /**
        * Destinationthreadid
        * @default null
        */
-      destinationThreadId?: string;
+      destinationThreadId?: string | undefined;
       /**
        * Epoch
        * @default null
        */
-      epoch?: number;
-      error?: components["schemas"]["JsonValue"];
+      epoch?: number | undefined;
+      error?: components["schemas"]["JsonValue"] | undefined;
       /**
        * Failedinputids
        * @default null
        */
-      failedInputIds?: string[];
+      failedInputIds?: string[] | undefined;
       /**
        * Id
        * @default null
        */
-      id?: string;
+      id?: string | undefined;
       /** @default null */
-      nativeParams?: components["schemas"]["JsonObjectResponse"];
+      nativeParams?: components["schemas"]["JsonObjectResponse"] | undefined;
       /**
        * Phase
        * @default null
        */
-      phase?: string;
+      phase?: string | undefined;
       /** @default null */
-      report?: components["schemas"]["JsonObjectResponse"];
+      report?: components["schemas"]["JsonObjectResponse"] | undefined;
       /**
        * Requestid
        * @default null
        */
-      requestId?: string;
+      requestId?: string | undefined;
       /** @default null */
-      settings?: components["schemas"]["JsonObjectResponse"];
+      settings?: components["schemas"]["JsonObjectResponse"] | undefined;
       /**
        * Sourceaccountkey
        * @default null
        */
-      sourceAccountKey?: string;
-      sourceHistoryMissing?: components["schemas"]["JsonValue"];
+      sourceAccountKey?: string | undefined;
+      sourceHistoryMissing?: components["schemas"]["JsonValue"] | undefined;
       /** @default null */
-      sourceState?: components["schemas"]["LazyAccountTransferSourceRecordResponse"];
+      sourceState?:
+        | components["schemas"]["LazyAccountTransferSourceRecordResponse"]
+        | undefined;
       /**
        * Sourcethreadid
        * @default null
        */
-      sourceThreadId?: string;
+      sourceThreadId?: string | undefined;
       /**
        * Startedat
        * @default null
        */
-      startedAt?: number;
+      startedAt?: number | undefined;
       /**
        * Submittedat
        * @default null
        */
-      submittedAt?: number;
+      submittedAt?: number | undefined;
       /** @default null */
-      targetSettings?: components["schemas"]["JsonObjectResponse"];
+      targetSettings?: components["schemas"]["JsonObjectResponse"] | undefined;
       /**
        * Threadid
        * @default null
        */
-      threadId?: string;
+      threadId?: string | undefined;
       /**
        * Transferid
        * @default null
        */
-      transferId?: string;
+      transferId?: string | undefined;
       /**
        * Turnid
        * @default null
        */
-      turnId?: string;
+      turnId?: string | undefined;
       /**
        * Updated
        * @default null
        */
-      updated?: number;
+      updated?: number | undefined;
     } & {
-      [key: string]: components["schemas"]["JsonValue"];
+      [key: string]: components["schemas"]["JsonValue"] | undefined;
     };
     /**
      * EntityChangeBatch
@@ -12419,56 +13067,59 @@ export interface components {
        * Catalogpending
        * @default null
        */
-      catalogPending?: boolean | null;
+      catalogPending?: boolean | null | undefined;
       /**
        * Code
        * @default null
        */
-      code?: null | string;
+      code?: null | string | undefined;
       /** Error */
       error: string;
       /**
        * Location
        * @default null
        */
-      location?: string[] | null;
+      location?: string[] | null | undefined;
       /**
        * Metadata
        * @default null
        */
-      metadata?: {
-        [key: string]: components["schemas"]["JsonValue"];
-      } | null;
+      metadata?:
+        | {
+            [key: string]: components["schemas"]["JsonValue"] | undefined;
+          }
+        | null
+        | undefined;
       /**
        * Outcome
        * @default null
        */
-      outcome?: "not_applied" | null;
+      outcome?: "not_applied" | null | undefined;
       /**
        * Protocolversion
        * @default null
        */
-      protocolVersion?: number | null;
+      protocolVersion?: number | null | undefined;
       /**
        * Supportedversions
        * @default null
        */
-      supportedVersions?: number[] | null;
+      supportedVersions?: number[] | null | undefined;
     };
     /** EventEntityDto */
     EventEntityDto: {
       /** Agent */
-      agent?: null | string;
+      agent?: null | string | undefined;
       /** Created */
-      created?: null | number;
+      created?: null | number | undefined;
       /** Error */
-      error?: null | string;
+      error?: null | string | undefined;
       /** Id */
       id: string;
       /** Kind */
-      kind?: null | string;
+      kind?: null | string | undefined;
       /** Status */
-      status?: null | string;
+      status?: null | string | undefined;
     };
     /**
      * ExecutionAction
@@ -12490,7 +13141,7 @@ export interface components {
        * Accountkey
        * @default null
        */
-      accountKey?: null | string;
+      accountKey?: null | string | undefined;
       /**
        * Action
        * @default null
@@ -12498,101 +13149,115 @@ export interface components {
       action?:
         | components["schemas"]["ExecutionAction"]
         | ("capacity" | "safety")
-        | null;
+        | null
+        | undefined;
       /** @default null */
-      actionIdentity?: components["schemas"]["ExecutionActionIdentity"] | null;
+      actionIdentity?:
+        | components["schemas"]["ExecutionActionIdentity"]
+        | null
+        | undefined;
       /**
        * Actionrequestid
        * @default null
        */
-      actionRequestId?: null | string;
+      actionRequestId?: null | string | undefined;
       /**
        * Activeatreservation
        * @default null
        */
-      activeAtReservation?: boolean | null;
+      activeAtReservation?: boolean | null | undefined;
       /**
        * Capacityretryid
        * @default null
        */
-      capacityRetryId?: null | string;
+      capacityRetryId?: null | string | undefined;
       /** @default null */
       claudeInputRejection?:
         | components["schemas"]["ExecutionInputRejection"]
-        | null;
+        | null
+        | undefined;
       /** @default null */
-      claudeInputRequest?: components["schemas"]["ExecutionClaudeInput"] | null;
+      claudeInputRequest?:
+        | components["schemas"]["ExecutionClaudeInput"]
+        | null
+        | undefined;
       /**
        * Clauderetryof
        * @default null
        */
-      claudeRetryOf?: null | string;
+      claudeRetryOf?: null | string | undefined;
       /**
        * Connectionid
        * @default null
        */
-      connectionId?: null | string;
+      connectionId?: null | string | undefined;
       /**
        * Created
        * @default null
        */
-      created?: null | number;
+      created?: null | number | undefined;
       /**
        * Epoch
        * @default null
        */
-      epoch?: number | null;
+      epoch?: number | null | undefined;
       /**
        * Error
        * @default null
        */
-      error?: null | string;
+      error?: null | string | undefined;
       /**
        * Events
        * @default null
        */
-      events?: string[] | null;
+      events?: string[] | null | undefined;
       /** @default null */
-      executionOutcome?: components["schemas"]["ExecutionStatus"] | null;
+      executionOutcome?:
+        | components["schemas"]["ExecutionStatus"]
+        | null
+        | undefined;
       /** Id */
       id: string;
       /** @default null */
-      modelSettings?: components["schemas"]["SnapshotModelSettingsDto"] | null;
+      modelSettings?:
+        | components["schemas"]["SnapshotModelSettingsDto"]
+        | null
+        | undefined;
       /**
        * Nativeoperationid
        * @default null
        */
-      nativeOperationId?: null | string;
+      nativeOperationId?: null | string | undefined;
       /**
        * Notsubmittedreason
        * @default null
        */
-      notSubmittedReason?: null | string;
+      notSubmittedReason?: null | string | undefined;
       /**
        * Observedturnid
        * @default null
        */
-      observedTurnId?: null | string;
+      observedTurnId?: null | string | undefined;
       /**
        * Prepareattemptid
        * @default null
        */
-      prepareAttemptId?: null | string;
+      prepareAttemptId?: null | string | undefined;
       /**
        * Prepareerror
        * @default null
        */
-      prepareError?: null | string;
+      prepareError?: null | string | undefined;
       /**
        * Responseerror
        * @default null
        */
-      responseError?: null | string;
+      responseError?: null | string | undefined;
       /**
        * Resultrunid
        * @default null
        */
-      resultRunId?: null | string;
+      resultRunId?: null | string | undefined;
       /**
        * Reviewtarget
        * @default null
@@ -12604,38 +13269,42 @@ export interface components {
             | components["schemas"]["ReviewCustomTargetDto"]
             | components["schemas"]["ReviewUncommittedTargetDto"]
           )
-        | null;
+        | null
+        | undefined;
       /**
        * Runid
        * @default null
        */
-      runId?: null | string;
+      runId?: null | string | undefined;
       /**
        * Settingsfixed
        * @default null
        */
-      settingsFixed?: boolean | null;
+      settingsFixed?: boolean | null | undefined;
       /** @default null */
-      submission?: components["schemas"]["ExecutionStatus"] | null;
+      submission?: components["schemas"]["ExecutionStatus"] | null | undefined;
       /**
        * Submitted
        * @default null
        */
-      submitted?: boolean | null;
+      submitted?: boolean | null | undefined;
       /** @default null */
-      supervisorIdentity?: components["schemas"]["SupervisorIdentity"] | null;
+      supervisorIdentity?:
+        | components["schemas"]["SupervisorIdentity"]
+        | null
+        | undefined;
       /**
        * Threadid
        * @default null
        */
-      threadId?: null | string;
+      threadId?: null | string | undefined;
       /**
        * Turnid
        * @default null
        */
-      turnId?: null | string;
+      turnId?: null | string | undefined;
       /** @default null */
-      turnStatus?: components["schemas"]["ExecutionStatus"] | null;
+      turnStatus?: components["schemas"]["ExecutionStatus"] | null | undefined;
     };
     /** ExecutionClaudeInput */
     ExecutionClaudeInput: {
@@ -12643,17 +13312,17 @@ export interface components {
       clientUserMessageId: string;
       /** Configuration */
       configuration: {
-        [key: string]: components["schemas"]["JsonValue"];
+        [key: string]: components["schemas"]["JsonValue"] | undefined;
       };
       /** Events */
       events: (components["schemas"]["ExecutionInputEvent"] | null)[];
       /** Input */
       input: {
-        [key: string]: components["schemas"]["JsonValue"];
+        [key: string]: components["schemas"]["JsonValue"] | undefined;
       }[];
       /** Source */
       source: {
-        [key: string]: components["schemas"]["JsonValue"];
+        [key: string]: components["schemas"]["JsonValue"] | undefined;
       };
       /** Texthash */
       textHash: string;
@@ -12666,7 +13335,7 @@ export interface components {
        * Attemptid
        * @default null
        */
-      attemptId?: null | string;
+      attemptId?: null | string | undefined;
       /** Id */
       id: string;
       kind: components["schemas"]["ExecutionEffectKind"];
@@ -12674,24 +13343,24 @@ export interface components {
        * Outcome
        * @default null
        */
-      outcome?: null | string;
+      outcome?: null | string | undefined;
       /** Referenceid */
       referenceId: string;
       /**
        * Requestid
        * @default null
        */
-      requestId?: null | string;
+      requestId?: null | string | undefined;
       /**
        * Resultreference
        * @default null
        */
-      resultReference?: null | string;
+      resultReference?: null | string | undefined;
       /**
        * Revision
        * @default null
        */
-      revision?: null | string;
+      revision?: null | string | undefined;
       /** Runid */
       runId: string;
       /**
@@ -12704,12 +13373,13 @@ export interface components {
         | components["schemas"]["RequestStatus"]
         | components["schemas"]["AgentStatus"]
         | ("answered" | "expired" | "lost" | "approved" | "deleted")
-        | null;
+        | null
+        | undefined;
       /**
        * Taskid
        * @default null
        */
-      taskId?: null | string;
+      taskId?: null | string | undefined;
     };
     /**
      * ExecutionEffectKind
@@ -12786,17 +13456,18 @@ export interface components {
        * Agentid
        * @default null
        */
-      agentId?: null | string;
+      agentId?: null | string | undefined;
       /**
        * Error
        * @default null
        */
       error?:
         | {
-            [key: string]: components["schemas"]["JsonValue"];
+            [key: string]: components["schemas"]["JsonValue"] | undefined;
           }
         | null
-        | string;
+        | string
+        | undefined;
       /** Id */
       id: string;
       kind: components["schemas"]["ExecutionNodeKind"];
@@ -12804,17 +13475,17 @@ export interface components {
        * Parentturnid
        * @default null
        */
-      parentTurnId?: null | string;
+      parentTurnId?: null | string | undefined;
       /**
        * Result
        * @default null
        */
-      result?: null | string;
+      result?: null | string | undefined;
       /**
        * Resultturnid
        * @default null
        */
-      resultTurnId?: null | string;
+      resultTurnId?: null | string | undefined;
       /** Runid */
       runId: string;
       /**
@@ -12824,17 +13495,18 @@ export interface components {
       status?:
         | components["schemas"]["AgentStatus"]
         | components["schemas"]["ExecutionStatus"]
-        | null;
+        | null
+        | undefined;
       /**
        * Threadid
        * @default null
        */
-      threadId?: null | string;
+      threadId?: null | string | undefined;
       /**
        * Turnid
        * @default null
        */
-      turnId?: null | string;
+      turnId?: null | string | undefined;
     };
     /**
      * ExecutionNodeKind
@@ -12847,143 +13519,152 @@ export interface components {
        * Accountkey
        * @default null
        */
-      accountKey?: null | string;
+      accountKey?: null | string | undefined;
       /**
        * At
        * @default null
        */
-      at?: null | number;
+      at?: null | number | undefined;
       /**
        * Attemptid
        * @default null
        */
-      attemptId?: null | string;
+      attemptId?: null | string | undefined;
       /**
        * Automatic
        * @default null
        */
-      automatic?: boolean | null;
+      automatic?: boolean | null | undefined;
       /**
        * Autowake
        * @default null
        */
-      autoWake?: boolean | null;
+      autoWake?: boolean | null | undefined;
       /**
        * Completiondelivered
        * @default null
        */
-      completionDelivered?: boolean | null;
+      completionDelivered?: boolean | null | undefined;
       /**
        * Connectionid
        * @default null
        */
-      connectionId?: null | string;
+      connectionId?: null | string | undefined;
       /**
        * Detail
        * @default null
        */
-      detail?: null | string;
+      detail?: null | string | undefined;
       /**
        * Epoch
        * @default null
        */
-      epoch?: number | null;
+      epoch?: number | null | undefined;
       /**
        * Error
        * @default null
        */
       error?:
         | {
-            [key: string]: components["schemas"]["JsonValue"];
+            [key: string]: components["schemas"]["JsonValue"] | undefined;
           }
         | null
-        | string;
+        | string
+        | undefined;
       /**
        * Eventid
        * @default null
        */
-      eventId?: null | string;
+      eventId?: null | string | undefined;
       /**
        * Eventids
        * @default null
        */
-      eventIds?: string[] | null;
+      eventIds?: string[] | null | undefined;
       /**
        * Heldat
        * @default null
        */
-      heldAt?: null | number;
+      heldAt?: null | number | undefined;
       /**
        * Holdoperations
        * @default null
        */
-      holdOperations?: components["schemas"]["ExecutionHeldOperation"][] | null;
+      holdOperations?:
+        | components["schemas"]["ExecutionHeldOperation"][]
+        | null
+        | undefined;
       /**
        * Observedat
        * @default null
        */
-      observedAt?: null | number;
+      observedAt?: null | number | undefined;
       /**
        * Outcome
        * @default null
        */
-      outcome?: null | string;
+      outcome?: null | string | undefined;
       /**
        * Previouserror
        * @default null
        */
       previousError?:
         | {
-            [key: string]: components["schemas"]["JsonValue"];
+            [key: string]: components["schemas"]["JsonValue"] | undefined;
           }
         | null
-        | string;
+        | string
+        | undefined;
       /**
        * Reason
        * @default null
        */
-      reason?: null | string;
+      reason?: null | string | undefined;
       /**
        * Reattachedat
        * @default null
        */
-      reattachedAt?: null | number;
+      reattachedAt?: null | number | undefined;
       /**
        * Reconciledat
        * @default null
        */
-      reconciledAt?: null | number;
+      reconciledAt?: null | number | undefined;
       /**
        * Source
        * @default null
        */
-      source?: null | string;
+      source?: null | string | undefined;
       /** @default null */
-      stage?: components["schemas"]["RecoveryStage"] | null;
+      stage?: components["schemas"]["RecoveryStage"] | null | undefined;
       /** @default null */
-      startAttempt?: components["schemas"]["ExecutionAttempt"] | null;
+      startAttempt?:
+        | components["schemas"]["ExecutionAttempt"]
+        | null
+        | undefined;
       /** @default null */
-      status?: components["schemas"]["ExecutionStatus"] | null;
+      status?: components["schemas"]["ExecutionStatus"] | null | undefined;
       /**
        * Supersededat
        * @default null
        */
-      supersededAt?: null | number;
+      supersededAt?: null | number | undefined;
       /** @default null */
       supervisor?:
         | components["schemas"]["SupervisorIdentity"]
         | components["schemas"]["RecoveryConnectionGeneration"]
-        | null;
+        | null
+        | undefined;
       /**
        * Threadid
        * @default null
        */
-      threadId?: null | string;
+      threadId?: null | string | undefined;
       /**
        * Turnid
        * @default null
        */
-      turnId?: null | string;
+      turnId?: null | string | undefined;
     };
     /** ExecutionRun */
     ExecutionRun: {
@@ -12996,11 +13677,17 @@ export interface components {
       /** Attempts */
       attempts: components["schemas"]["ExecutionAttempt"][];
       /** @default null */
-      connectionRecovery?: components["schemas"]["ExecutionRecovery"] | null;
+      connectionRecovery?:
+        | components["schemas"]["ExecutionRecovery"]
+        | null
+        | undefined;
       /** Created */
       created: number;
       /** @default null */
-      disconnectRecovery?: components["schemas"]["ExecutionRecovery"] | null;
+      disconnectRecovery?:
+        | components["schemas"]["ExecutionRecovery"]
+        | null
+        | undefined;
       /** Effects */
       effects: components["schemas"]["ExecutionEffect"][];
       /** Epoch */
@@ -13011,15 +13698,16 @@ export interface components {
        */
       error?:
         | {
-            [key: string]: components["schemas"]["JsonValue"];
+            [key: string]: components["schemas"]["JsonValue"] | undefined;
           }
         | null
-        | string;
+        | string
+        | undefined;
       /**
        * Finished
        * @default null
        */
-      finished?: null | number;
+      finished?: null | number | undefined;
       /** Firstattemptid */
       firstAttemptId: null | string;
       /** Id */
@@ -13034,21 +13722,24 @@ export interface components {
        * Reconciled
        * @default null
        */
-      reconciled?: boolean | null;
+      reconciled?: boolean | null | undefined;
       /** Requestids */
       requestIds: string[];
       /** @default null */
-      restartRecovery?: components["schemas"]["ExecutionRecovery"] | null;
+      restartRecovery?:
+        | components["schemas"]["ExecutionRecovery"]
+        | null
+        | undefined;
       /**
        * Result
        * @default null
        */
-      result?: null | string;
+      result?: null | string | undefined;
       /**
        * Resultitemid
        * @default null
        */
-      resultItemId?: null | string;
+      resultItemId?: null | string | undefined;
       /** Rootattemptid */
       rootAttemptId: null | string;
       status: components["schemas"]["ExecutionStatus"];
@@ -13063,42 +13754,42 @@ export interface components {
        * Accountkey
        * @default null
        */
-      accountKey?: null | string;
+      accountKey?: null | string | undefined;
       /**
        * Cyberaccessprogram
        * @default null
        */
-      cyberAccessProgram?: null | string;
+      cyberAccessProgram?: null | string | undefined;
       /**
        * Daybreakenabled
        * @default null
        */
-      daybreakEnabled?: boolean | null;
+      daybreakEnabled?: boolean | null | undefined;
       /**
        * Effort
        * @default null
        */
-      effort?: null | string;
+      effort?: null | string | undefined;
       /**
        * Fastmode
        * @default null
        */
-      fastMode?: boolean | null;
+      fastMode?: boolean | null | undefined;
       /**
        * Model
        * @default null
        */
-      model?: null | string;
+      model?: null | string | undefined;
       /**
        * Nativeeffort
        * @default null
        */
-      nativeEffort?: null | string;
+      nativeEffort?: null | string | undefined;
       /**
        * Updatedat
        * @default null
        */
-      updatedAt?: null | number;
+      updatedAt?: null | number | undefined;
     };
     /**
      * ExecutionStatus
@@ -13158,7 +13849,7 @@ export interface components {
        * Leadname
        * @default null
        */
-      leadName?: null | string;
+      leadName?: null | string | undefined;
       /** Origin */
       origin: string;
       /**
@@ -13171,12 +13862,15 @@ export interface components {
       /** Stateid */
       stateId: string;
       /** @default null */
-      tailscaleStatus?: components["schemas"]["TailscaleStatus"] | null;
+      tailscaleStatus?:
+        | components["schemas"]["TailscaleStatus"]
+        | null
+        | undefined;
       /**
        * Tailscaleuser
        * @default null
        */
-      tailscaleUser?: null | string;
+      tailscaleUser?: null | string | undefined;
       /** Token */
       token: string;
     };
@@ -13188,7 +13882,7 @@ export interface components {
        * Expecteduser
        * @default null
        */
-      expectedUser?: null | string;
+      expectedUser?: null | string | undefined;
       /** Expires */
       expires: number;
       /** Id */
@@ -13203,14 +13897,14 @@ export interface components {
        * Name
        * @default null
        */
-      name?: string | null;
+      name?: string | null | undefined;
       role: components["schemas"]["ParticipantRole"];
       /**
        * Status
        * @description Extensible agent runtime status copied into approved room membership.
        * @default null
        */
-      status?: string | null;
+      status?: string | null | undefined;
     };
     /** FederationPeer */
     FederationPeer: {
@@ -13301,31 +13995,33 @@ export interface components {
        * Deliveryoutcome
        * @default null
        */
-      deliveryOutcome?: string;
+      deliveryOutcome?: string | undefined;
       /**
        * Events
        * @default null
        */
-      events?: string[];
+      events?: string[] | undefined;
       /** @default null */
-      source?: components["schemas"]["ContextRepairSourceRecordResponse"];
+      source?:
+        | components["schemas"]["ContextRepairSourceRecordResponse"]
+        | undefined;
       /**
        * Sourcesha256
        * @default null
        */
-      sourceSha256?: string;
+      sourceSha256?: string | undefined;
       /**
        * Terminalcompletedat
        * @default null
        */
-      terminalCompletedAt?: number;
+      terminalCompletedAt?: number | undefined;
       /**
        * Terminalturnid
        * @default null
        */
-      terminalTurnId?: string;
+      terminalTurnId?: string | undefined;
     } & {
-      [key: string]: components["schemas"]["JsonValue"];
+      [key: string]: components["schemas"]["JsonValue"] | undefined;
     };
     /** HostResources */
     HostResources: {
@@ -13441,33 +14137,37 @@ export interface components {
        * Bytes
        * @default null
        */
-      bytes?: number;
+      bytes?: number | undefined;
       /** @default null */
-      collect?: components["schemas"]["ImageWorkspaceCollectResultRecordResponse"];
+      collect?:
+        | components["schemas"]["ImageWorkspaceCollectResultRecordResponse"]
+        | undefined;
       /**
        * Freedbytes
        * @default null
        */
-      freedBytes?: number;
+      freedBytes?: number | undefined;
       /**
        * Reason
        * @default null
        */
-      reason?: string;
+      reason?: string | undefined;
       /**
        * Restoreheads
        * @default null
        */
-      restoreHeads?: {
-        [key: string]: string;
-      };
+      restoreHeads?:
+        | {
+            [key: string]: string;
+          }
+        | undefined;
       /**
        * State
        * @default null
        */
-      state?: string;
+      state?: string | undefined;
     } & {
-      [key: string]: components["schemas"]["JsonValue"];
+      [key: string]: components["schemas"]["JsonValue"] | undefined;
     };
     /** ImageWorkspaceCleanupRetryRecordResponse */
     ImageWorkspaceCleanupRetryRecordResponse: {
@@ -13480,7 +14180,7 @@ export interface components {
       /** Nextat */
       nextAt: number;
     } & {
-      [key: string]: components["schemas"]["JsonValue"];
+      [key: string]: components["schemas"]["JsonValue"] | undefined;
     };
     /** ImageWorkspaceCollectRepositoryRecordResponse */
     ImageWorkspaceCollectRepositoryRecordResponse: {
@@ -13488,31 +14188,31 @@ export interface components {
        * Branch
        * @default null
        */
-      branch?: string;
+      branch?: string | undefined;
       /**
        * Commit
        * @default null
        */
-      commit?: string;
+      commit?: string | undefined;
       /**
        * Head
        * @default null
        */
-      head?: string;
+      head?: string | undefined;
       /** Path */
       path: string;
       /**
        * Rawref
        * @default null
        */
-      rawRef?: string;
+      rawRef?: string | undefined;
       /**
        * State
        * @default null
        */
-      state?: string;
+      state?: string | undefined;
     } & {
-      [key: string]: components["schemas"]["JsonValue"];
+      [key: string]: components["schemas"]["JsonValue"] | undefined;
     };
     /** ImageWorkspaceCollectResultRecordResponse */
     ImageWorkspaceCollectResultRecordResponse: {
@@ -13520,44 +14220,46 @@ export interface components {
        * Branch
        * @default null
        */
-      branch?: string;
+      branch?: string | undefined;
       /**
        * Commit
        * @default null
        */
-      commit?: string;
+      commit?: string | undefined;
       /**
        * Conflict
        * @default null
        */
-      conflict?: string;
+      conflict?: string | undefined;
       /**
        * Conflicts
        * @default null
        */
-      conflicts?: components["schemas"]["JsonValue"][];
+      conflicts?: components["schemas"]["JsonValue"][] | undefined;
       /**
        * Path
        * @default null
        */
-      path?: string;
+      path?: string | undefined;
       /**
        * Rawref
        * @default null
        */
-      rawRef?: string;
+      rawRef?: string | undefined;
       /**
        * Repositories
        * @default null
        */
-      repositories?: components["schemas"]["ImageWorkspaceCollectRepositoryRecordResponse"][];
+      repositories?:
+        | components["schemas"]["ImageWorkspaceCollectRepositoryRecordResponse"][]
+        | undefined;
       /**
        * State
        * @default null
        */
-      state?: string;
+      state?: string | undefined;
     } & {
-      [key: string]: components["schemas"]["JsonValue"];
+      [key: string]: components["schemas"]["JsonValue"] | undefined;
     };
     /** ImportListResponse */
     ImportListResponse: {
@@ -13565,12 +14267,12 @@ export interface components {
        * Data
        * @default []
        */
-      data?: components["schemas"]["JsonValue"][];
+      data?: components["schemas"]["JsonValue"][] | undefined;
       /**
        * Nextcursor
        * @default null
        */
-      nextCursor?: null | string;
+      nextCursor?: null | string | undefined;
     };
     /** ImportRequest */
     ImportRequest: {
@@ -13578,27 +14280,27 @@ export interface components {
        * Account Key
        * @default default
        */
-      account_key?: string;
+      account_key?: string | undefined;
       /**
        * Cwd
        * @default null
        */
-      cwd?: null | string;
+      cwd?: null | string | undefined;
       /**
        * Id
        * @default null
        */
-      id?: string | null;
+      id?: string | null | undefined;
       /**
        * Model
        * @default null
        */
-      model?: string | null;
+      model?: string | null | undefined;
       /**
        * Prompt
        * @default null
        */
-      prompt?: string | null;
+      prompt?: string | null | undefined;
       /** Threadid */
       threadId: string;
     };
@@ -13628,7 +14330,7 @@ export interface components {
       status: "open" | "used";
     };
     JsonObjectResponse: {
-      [key: string]: components["schemas"]["JsonValue"];
+      [key: string]: components["schemas"]["JsonValue"] | undefined;
     };
     /** JsonValue */
     JsonValue: JsonValue;
@@ -13638,83 +14340,91 @@ export interface components {
        * Id
        * @default null
        */
-      id?: string;
+      id?: string | undefined;
       /**
        * Sourceaccountkey
        * @default null
        */
-      sourceAccountKey?: string;
+      sourceAccountKey?: string | undefined;
       /** @default null */
-      sourceState?: components["schemas"]["LazyAccountTransferSourceRecordResponse"];
+      sourceState?:
+        | components["schemas"]["LazyAccountTransferSourceRecordResponse"]
+        | undefined;
       /**
        * Sourcethreadid
        * @default null
        */
-      sourceThreadId?: null | string;
+      sourceThreadId?: null | string | undefined;
     } & {
-      [key: string]: components["schemas"]["JsonValue"];
+      [key: string]: components["schemas"]["JsonValue"] | undefined;
     };
     /** LazyAccountTransferSourceRecordResponse */
     LazyAccountTransferSourceRecordResponse: {
       /** @default null */
-      claudeOptions?: components["schemas"]["JsonObjectResponse"] | null;
-      cyberAccessProgram?: components["schemas"]["JsonValue"];
+      claudeOptions?:
+        | components["schemas"]["JsonObjectResponse"]
+        | null
+        | undefined;
+      cyberAccessProgram?: components["schemas"]["JsonValue"] | undefined;
       /**
        * Daybreakenabled
        * @default null
        */
-      daybreakEnabled?: boolean | null;
+      daybreakEnabled?: boolean | null | undefined;
       /**
        * Effort
        * @default null
        */
-      effort?: null | string;
-      error?: components["schemas"]["JsonValue"];
+      effort?: null | string | undefined;
+      error?: components["schemas"]["JsonValue"] | undefined;
       /**
        * Executionsettingsaccountkey
        * @default null
        */
-      executionSettingsAccountKey?: string;
+      executionSettingsAccountKey?: string | undefined;
       /**
        * Fastmode
        * @default null
        */
-      fastMode?: boolean | null;
+      fastMode?: boolean | null | undefined;
       /**
        * Model
        * @default null
        */
-      model?: null | string;
+      model?: null | string | undefined;
       /**
        * Nativeeffort
        * @default null
        */
-      nativeEffort?: null | string;
-      nativeFailureHold?: components["schemas"]["JsonValue"];
+      nativeEffort?: null | string | undefined;
+      nativeFailureHold?: components["schemas"]["JsonValue"] | undefined;
       /** @default null */
       pendingSettings?:
         | components["schemas"]["PendingSettingsRecordResponse"]
-        | null;
+        | null
+        | undefined;
       /**
        * Pendingsettingsaccountkey
        * @default null
        */
-      pendingSettingsAccountKey?: null | string;
+      pendingSettingsAccountKey?: null | string | undefined;
       /**
        * Provider
        * @default null
        * @enum {string}
        */
-      provider?: "codex" | "claude";
+      provider?: "codex" | "claude" | undefined;
       /**
        * Status
        * @default null
        */
-      status?: string;
+      status?: string | undefined;
       /** @default null */
-      workerDefaults?: components["schemas"]["WorkerDefaultsRecordResponse"];
+      workerDefaults?:
+        | components["schemas"]["WorkerDefaultsRecordResponse"]
+        | undefined;
     } & {
-      [key: string]: components["schemas"]["JsonValue"];
+      [key: string]: components["schemas"]["JsonValue"] | undefined;
     };
     /** LimitResetResponse */
     LimitResetResponse: {
@@ -13728,7 +14438,7 @@ export interface components {
        * Error
        * @default null
        */
-      error?: null | string;
+      error?: null | string | undefined;
       limits: components["schemas"]["UsageLimitsResponse"];
       /**
        * Outcome
@@ -13770,22 +14480,22 @@ export interface components {
        * Cause
        * @default null
        */
-      cause?: null | string;
+      cause?: null | string | undefined;
       /**
        * Downloads
        * @default null
        */
-      downloads?: components["schemas"]["LinuxVMDownload"][] | null;
+      downloads?: components["schemas"]["LinuxVMDownload"][] | null | undefined;
       /**
        * Stage
        * @default null
        */
-      stage?: null | string;
+      stage?: null | string | undefined;
       /**
        * State
        * @default null
        */
-      state?: null | string;
+      state?: null | string | undefined;
     };
     /** LinuxVMSettings */
     LinuxVMSettings: {
@@ -13804,12 +14514,12 @@ export interface components {
        * Allocateddiskbytes
        * @default null
        */
-      allocatedDiskBytes?: number | null;
+      allocatedDiskBytes?: number | null | undefined;
       /**
        * Error
        * @default null
        */
-      error?: null | string;
+      error?: null | string | undefined;
       settings: components["schemas"]["LinuxVMSettings"];
       /** State */
       state: string;
@@ -13820,19 +14530,19 @@ export interface components {
        * Error
        * @default null
        */
-      error?: null | string;
+      error?: null | string | undefined;
       /**
        * Path
        * @default null
        */
-      path?: null | string;
+      path?: null | string | undefined;
       /** Projectid */
       projectId: string;
       /**
        * Readonly
        * @default null
        */
-      readOnly?: boolean | null;
+      readOnly?: boolean | null | undefined;
       /** State */
       state: string;
     };
@@ -13852,30 +14562,30 @@ export interface components {
        * Allocateddiskbytes
        * @default null
        */
-      allocatedDiskBytes?: number | null;
+      allocatedDiskBytes?: number | null | undefined;
       /**
        * Error
        * @default null
        */
-      error?: null | string;
+      error?: null | string | undefined;
       /**
        * Freehostbytes
        * @default null
        */
-      freeHostBytes?: number | null;
+      freeHostBytes?: number | null | undefined;
       /** @default null */
-      layr?: components["schemas"]["JsonValue"];
+      layr?: components["schemas"]["JsonValue"] | undefined;
       /** @default null */
-      provision?: components["schemas"]["LinuxVMProvision"] | null;
+      provision?: components["schemas"]["LinuxVMProvision"] | null | undefined;
       /** @default null */
-      share?: components["schemas"]["LinuxVMShareStatus"] | null;
+      share?: components["schemas"]["LinuxVMShareStatus"] | null | undefined;
       /**
        * State
        * @default null
        */
-      state?: null | string;
+      state?: null | string | undefined;
     } & {
-      [key: string]: components["schemas"]["JsonValue"];
+      [key: string]: components["schemas"]["JsonValue"] | undefined;
     };
     /**
      * LiveUpdateState
@@ -13891,57 +14601,57 @@ export interface components {
        * Appliedat
        * @default null
        */
-      appliedAt?: null | number;
+      appliedAt?: null | number | undefined;
       /**
        * Attempt
        * @default null
        */
-      attempt?: number | null;
+      attempt?: number | null | undefined;
       /**
        * Checkedat
        * @default null
        */
-      checkedAt?: null | number;
+      checkedAt?: null | number | undefined;
       /**
        * Error
        * @default null
        */
-      error?: null | string;
+      error?: null | string | undefined;
       /**
        * Managerid
        * @default null
        */
-      managerId?: null | string;
+      managerId?: null | string | undefined;
       /**
        * Manifesthash
        * @default null
        */
-      manifestHash?: null | string;
+      manifestHash?: null | string | undefined;
       /**
        * Manifestid
        * @default null
        */
-      manifestId?: null | string;
+      manifestId?: null | string | undefined;
       /**
        * Patchstatus
        * @default null
        */
-      patchStatus?: null | string;
+      patchStatus?: null | string | undefined;
       /**
        * Pid
        * @default null
        */
-      pid?: number | null;
+      pid?: number | null | undefined;
       /**
        * Receipterror
        * @default null
        */
-      receiptError?: null | string;
+      receiptError?: null | string | undefined;
       /**
        * Scope
        * @default null
        */
-      scope?: null | string;
+      scope?: null | string | undefined;
       status: components["schemas"]["LiveUpdateState"];
     };
     /** LocalRoomParticipantDto */
@@ -13949,14 +14659,14 @@ export interface components {
       /** Id */
       id: string;
       /** Name */
-      name?: null | string;
+      name?: null | string | undefined;
       /**
        * Role
        * @enum {string}
        */
       role: "lead" | "agent";
       /** Status */
-      status?: null | string;
+      status?: null | string | undefined;
     };
     /** LockMetricSummary */
     LockMetricSummary: {
@@ -13977,17 +14687,17 @@ export interface components {
        * Account Key
        * @default null
        */
-      account_key?: null | string;
+      account_key?: null | string | undefined;
       /**
        * Email
        * @default null
        */
-      email?: string | null;
+      email?: string | null | undefined;
       /**
        * Label
        * @default null
        */
-      label?: string | null;
+      label?: string | null | undefined;
       /** Login Id */
       login_id: string;
     };
@@ -14000,12 +14710,12 @@ export interface components {
        * Allowdeletes
        * @default false
        */
-      allowDeletes?: boolean;
+      allowDeletes?: boolean | undefined;
       /**
        * Enabled
        * @default null
        */
-      enabled?: boolean | null;
+      enabled?: boolean | null | undefined;
       /** Projectid */
       projectId: string;
     };
@@ -14035,17 +14745,17 @@ export interface components {
        * Kind
        * @default null
        */
-      kind?: ("file" | "link" | "absent") | null;
+      kind?: ("file" | "link" | "absent") | null | undefined;
       /**
        * Leadid
        * @default null
        */
-      leadId?: null | string;
+      leadId?: null | string | undefined;
       /**
        * Line
        * @default null
        */
-      line?: null | string;
+      line?: null | string | undefined;
       /** Mainstateid */
       mainStateId: string;
       /** Path */
@@ -14054,7 +14764,7 @@ export interface components {
        * Stateid
        * @default null
        */
-      stateId?: null | string;
+      stateId?: null | string | undefined;
       status: components["schemas"]["MacSyncStatusResponse"] | null;
     };
     /**
@@ -14091,9 +14801,9 @@ export interface components {
        * Assets
        * @default []
        */
-      assets?: string[];
+      assets?: string[] | undefined;
       /** @default current_turn */
-      delivery?: components["schemas"]["DeliveryMomentInput"];
+      delivery?: components["schemas"]["DeliveryMomentInput"] | undefined;
       /** Id */
       id: string;
       /** Room */
@@ -14111,32 +14821,32 @@ export interface components {
        * Bytes
        * @default 0
        */
-      bytes?: number;
+      bytes?: number | undefined;
       /**
        * Cancelrequested
        * @default false
        */
-      cancelRequested?: boolean;
+      cancelRequested?: boolean | undefined;
       capabilities: components["schemas"]["ProcessCapabilities"];
       /**
        * Command
        * @default null
        */
-      command?: null | string;
+      command?: null | string | undefined;
       /** Created */
       created: number;
       /**
        * Cwd
        * @default null
        */
-      cwd?: null | string;
+      cwd?: null | string | undefined;
       /** Epoch */
       epoch: number;
       /**
        * Error
        * @default null
        */
-      error?: null | string;
+      error?: null | string | undefined;
       /** Generation */
       generation: string;
       /** Id */
@@ -14147,24 +14857,25 @@ export interface components {
        * Log
        * @default null
        */
-      log?: null | string;
+      log?: null | string | undefined;
       /** Name */
       name: string;
       /**
        * Output
        * @default null
        */
-      output?: null | string;
-      outputFile?: string | null;
-      outputPatterns?: string[];
+      output?: null | string | undefined;
+      outputFile?: string | null | undefined;
+      outputPatterns?: string[] | undefined;
       /**
        * Outputtruncated
        * @default false
        */
-      outputTruncated?: boolean;
+      outputTruncated?: boolean | undefined;
       outputWakeBudget?:
         | components["schemas"]["MonitorOutputWakeBudget"]
-        | null;
+        | null
+        | undefined;
       /**
        * Source
        * @enum {string}
@@ -14176,17 +14887,17 @@ export interface components {
        * Stdinclosed
        * @default false
        */
-      stdinClosed?: boolean;
+      stdinClosed?: boolean | undefined;
       /**
        * Stdincloserequested
        * @default false
        */
-      stdinCloseRequested?: boolean;
+      stdinCloseRequested?: boolean | undefined;
       /**
        * Stdinerror
        * @default null
        */
-      stdinError?: null | string;
+      stdinError?: null | string | undefined;
     };
     McpReconnectRequest: {
       id: string;
@@ -14217,16 +14928,16 @@ export interface components {
     /** MessageReceiptEntityDto */
     MessageReceiptEntityDto: {
       /** Agent */
-      agent?: null | string;
+      agent?: null | string | undefined;
       /** Error */
-      error?: null | string;
+      error?: null | string | undefined;
       /** Id */
       id: string;
       /**
        * Materialized
        * @description The exact user input exists in the saved transcript.
        */
-      materialized?: boolean | null;
+      materialized?: boolean | null | undefined;
       /**
        * Status
        * @enum {string}
@@ -14254,7 +14965,7 @@ export interface components {
        * Workspaceid
        * @default null
        */
-      workspaceId?: null | string;
+      workspaceId?: null | string | undefined;
     };
     /** MessageRecord */
     MessageRecord: {
@@ -14270,7 +14981,7 @@ export interface components {
        * Error
        * @default null
        */
-      error?: null | string;
+      error?: null | string | undefined;
       /** Id */
       id: string;
       /** Room */
@@ -14279,7 +14990,10 @@ export interface components {
        * Status
        * @default null
        */
-      status?: ("queued" | "delivered" | "failed" | "uncertain") | null;
+      status?:
+        | ("queued" | "delivered" | "failed" | "uncertain")
+        | null
+        | undefined;
       /** Text */
       text: string;
     };
@@ -14295,21 +15009,27 @@ export interface components {
     /** MigrationStatus */
     MigrationStatus: {
       /** @default null */
-      entityTombstones?: components["schemas"]["TombstoneMigration"] | null;
+      entityTombstones?:
+        | components["schemas"]["TombstoneMigration"]
+        | null
+        | undefined;
       /**
        * Payloads
        * @default null
        */
-      payloads?: {
-        [key: string]: components["schemas"]["PayloadMigration"];
-      } | null;
+      payloads?:
+        | {
+            [key: string]: components["schemas"]["PayloadMigration"];
+          }
+        | null
+        | undefined;
       /** @default null */
-      search?: components["schemas"]["SearchMigration"] | null;
+      search?: components["schemas"]["SearchMigration"] | null | undefined;
       /**
        * Statereaderror
        * @default null
        */
-      stateReadError?: null | string;
+      stateReadError?: null | string | undefined;
     };
     /** MissingToolRequestResponse */
     MissingToolRequestResponse: {
@@ -14328,7 +15048,7 @@ export interface components {
        */
       stage: "not_found";
     } & {
-      [key: string]: components["schemas"]["JsonValue"];
+      [key: string]: components["schemas"]["JsonValue"] | undefined;
     };
     /** ModelCatalogResponse */
     ModelCatalogResponse: {
@@ -14336,32 +15056,34 @@ export interface components {
        * Accountkey
        * @default null
        */
-      accountKey?: null | string;
+      accountKey?: null | string | undefined;
       /**
        * Catalogpending
        * @default null
        */
-      catalogPending?: boolean | null;
+      catalogPending?: boolean | null | undefined;
       /**
        * Data
        * @default null
        */
-      data?: components["schemas"]["ProviderModel"][] | null;
+      data?: components["schemas"]["ProviderModel"][] | null | undefined;
       /**
        * Error
        * @default null
        */
-      error?: null | string;
+      error?: null | string | undefined;
       /**
        * Nextcursor
        * @default null
        */
-      nextCursor?: null | string;
+      nextCursor?: null | string | undefined;
       /**
        * Unavailableaccounts
        * @default []
        */
-      unavailableAccounts?: components["schemas"]["UnavailableAccount"][];
+      unavailableAccounts?:
+        | components["schemas"]["UnavailableAccount"][]
+        | undefined;
     };
     /**
      * ModelEntityDto
@@ -14387,12 +15109,12 @@ export interface components {
        * Cancelrequested
        * @default null
        */
-      cancelRequested?: boolean | null;
+      cancelRequested?: boolean | null | undefined;
       /**
        * Error
        * @default null
        */
-      error?: null | string;
+      error?: null | string | undefined;
       /** Id */
       id: string;
       status: components["schemas"]["MonitorState"];
@@ -14403,115 +15125,116 @@ export interface components {
        * Agent
        * @default null
        */
-      agent?: null | string;
+      agent?: null | string | undefined;
       /**
        * Bytes
        * @default null
        */
-      bytes?: number | null;
+      bytes?: number | null | undefined;
       /**
        * Cancelrequested
        * @default null
        */
-      cancelRequested?: boolean | null;
+      cancelRequested?: boolean | null | undefined;
       /**
        * Command
        * @default null
        */
-      command?: null | string;
+      command?: null | string | undefined;
       /**
        * Created
        * @default null
        */
-      created?: null | number;
+      created?: null | number | undefined;
       /**
        * Cwd
        * @default null
        */
-      cwd?: null | string;
+      cwd?: null | string | undefined;
       /**
        * Durationms
        * @default null
        */
-      durationMs?: number | null;
+      durationMs?: number | null | undefined;
       /**
        * Error
        * @default null
        */
-      error?: null | string;
+      error?: null | string | undefined;
       /**
        * Exitcode
        * @default null
        */
-      exitCode?: number | null;
+      exitCode?: number | null | undefined;
       /**
        * Finished
        * @default null
        */
-      finished?: null | number;
+      finished?: null | number | undefined;
       /** Id */
       id: string;
       /**
        * Interactive
        * @default null
        */
-      interactive?: boolean | null;
+      interactive?: boolean | null | undefined;
       /**
        * Log
        * @default null
        */
-      log?: null | string;
+      log?: null | string | undefined;
       /**
        * Name
        * @default null
        */
-      name?: null | string;
-      outputPatterns?: string[];
+      name?: null | string | undefined;
+      outputPatterns?: string[] | undefined;
       /**
        * Outputtruncated
        * @default null
        */
-      outputTruncated?: boolean | null;
+      outputTruncated?: boolean | null | undefined;
       outputWakeBudget?:
         | components["schemas"]["MonitorOutputWakeBudget"]
-        | null;
+        | null
+        | undefined;
       /**
        * Processid
        * @default null
        */
-      processId?: null | string;
+      processId?: null | string | undefined;
       /**
        * Ruleid
        * @default null
        */
-      ruleId?: null | string;
+      ruleId?: null | string | undefined;
       /** @default null */
-      status?: components["schemas"]["TaskStatus"] | null;
+      status?: components["schemas"]["TaskStatus"] | null | undefined;
       /**
        * Stdinclosed
        * @default null
        */
-      stdinClosed?: boolean | null;
+      stdinClosed?: boolean | null | undefined;
       /**
        * Stdincloserequested
        * @default null
        */
-      stdinCloseRequested?: null | string;
+      stdinCloseRequested?: null | string | undefined;
       /**
        * Stdinerror
        * @default null
        */
-      stdinError?: null | string;
+      stdinError?: null | string | undefined;
       /**
        * Tail
        * @default null
        */
-      tail?: null | string;
+      tail?: null | string | undefined;
       /**
        * Timeout Ms
        * @default null
        */
-      timeout_ms?: number | null;
+      timeout_ms?: number | null | undefined;
     };
     /** MonitorId */
     MonitorId: {
@@ -14541,24 +15264,24 @@ export interface components {
        * Closestdin
        * @default false
        */
-      closeStdin?: boolean;
+      closeStdin?: boolean | undefined;
       /**
        * Cols
        * @default 80
        */
-      cols?: number;
+      cols?: number | undefined;
       /** Id */
       id: string;
       /**
        * Rows
        * @default 24
        */
-      rows?: number;
+      rows?: number | undefined;
       /**
        * Text
        * @default
        */
-      text?: string;
+      text?: string | undefined;
     };
     /** @description Public output wake budget. The monitor matcher owns the stored budget. Tokens count available output wake batches. */
     MonitorOutputWakeBudget: {
@@ -14572,173 +15295,173 @@ export interface components {
        * Activityat
        * @default null
        */
-      activityAt?: number;
+      activityAt?: number | undefined;
       /**
        * Activitygeneration
        * @default null
        */
-      activityGeneration?: number;
+      activityGeneration?: number | undefined;
       /**
        * Agent
        * @default null
        */
-      agent?: string;
+      agent?: string | undefined;
       /**
        * Bytes
        * @default null
        */
-      bytes?: number;
+      bytes?: number | undefined;
       /**
        * Command
        * @default null
        */
-      command?: string;
+      command?: string | undefined;
       /**
        * Created
        * @default null
        */
-      created?: number;
+      created?: number | undefined;
       /**
        * Cwd
        * @default null
        */
-      cwd?: string;
+      cwd?: string | undefined;
       /**
        * Epoch
        * @default null
        */
-      epoch?: number;
+      epoch?: number | undefined;
       /**
        * Error
        * @default null
        */
-      error?: null | string;
+      error?: null | string | undefined;
       /**
        * Exitcode
        * @default null
        */
-      exitCode?: number | null;
+      exitCode?: number | null | undefined;
       /**
        * Finished
        * @default null
        */
-      finished?: number | null;
+      finished?: number | null | undefined;
       /**
        * Id
        * @default null
        */
-      id?: string;
+      id?: string | undefined;
       /**
        * Interactive
        * @default null
        */
-      interactive?: boolean;
+      interactive?: boolean | undefined;
       /**
        * Laststallexitcode
        * @default null
        */
-      lastStallExitCode?: number | null;
+      lastStallExitCode?: number | null | undefined;
       /**
        * Laststallfinished
        * @default null
        */
-      lastStallFinished?: number;
+      lastStallFinished?: number | undefined;
       /**
        * Livenesscommand
        * @default null
        */
-      livenessCommand?: string;
+      livenessCommand?: string | undefined;
       /**
        * Log
        * @default null
        */
-      log?: string;
+      log?: string | undefined;
       /**
        * Lowsince
        * @default null
        */
-      lowSince?: null | number;
+      lowSince?: null | number | undefined;
       /**
        * Minimumworkers
        * @default null
        */
-      minimumWorkers?: number;
+      minimumWorkers?: number | undefined;
       /**
        * Requestid
        * @default null
        */
-      requestId?: null | string;
+      requestId?: null | string | undefined;
       /** @default null */
-      restartCheck?: components["schemas"]["JsonObjectResponse"];
+      restartCheck?: components["schemas"]["JsonObjectResponse"] | undefined;
       /**
        * Restartholdnotified
        * @default null
        */
-      restartHoldNotified?: boolean;
+      restartHoldNotified?: boolean | undefined;
       /**
        * Ruleid
        * @default null
        */
-      ruleId?: null | string;
+      ruleId?: null | string | undefined;
       /**
        * Stalleventkey
        * @default null
        */
-      stallEventKey?: string;
+      stallEventKey?: string | undefined;
       /** @default null */
-      stallProbe?: components["schemas"]["JsonObjectResponse"];
+      stallProbe?: components["schemas"]["JsonObjectResponse"] | undefined;
       /**
        * Stalltext
        * @default null
        */
-      stallText?: string;
+      stallText?: string | undefined;
       /**
        * Stalltimeoutseconds
        * @default null
        */
-      stallTimeoutSeconds?: number;
+      stallTimeoutSeconds?: number | undefined;
       /**
        * Stallwakegeneration
        * @default null
        */
-      stallWakeGeneration?: number;
+      stallWakeGeneration?: number | undefined;
       /**
        * Status
        * @default null
        */
-      status?: string;
+      status?: string | undefined;
       /**
        * Successexitcodes
        * @default null
        */
-      successExitCodes?: number[];
+      successExitCodes?: number[] | undefined;
       /**
        * Tail
        * @default null
        */
-      tail?: string;
+      tail?: string | undefined;
       /**
        * Timeout Ms
        * @default null
        */
-      timeout_ms?: number;
+      timeout_ms?: number | undefined;
       /**
        * Turnid
        * @default null
        */
-      turnId?: null | string;
+      turnId?: null | string | undefined;
       /**
        * Userhidden
        * @default null
        */
-      userHidden?: boolean;
+      userHidden?: boolean | undefined;
       /**
        * Wakeon
        * @default null
        */
-      wakeOn?: string;
+      wakeOn?: string | undefined;
     } & {
-      [key: string]: components["schemas"]["JsonValue"];
+      [key: string]: components["schemas"]["JsonValue"] | undefined;
     };
     MonitorRestartRequest: {
       accountKey: string;
@@ -14751,7 +15474,7 @@ export interface components {
     /** MonitorsResource */
     MonitorsResource: {
       /** Agentid */
-      agentId?: string;
+      agentId?: string | undefined;
       /**
        * @description discriminator enum property added by openapi-typescript
        * @enum {string}
@@ -14789,7 +15512,7 @@ export interface components {
       /** Tool */
       tool: string;
     } & {
-      [key: string]: components["schemas"]["JsonValue"];
+      [key: string]: components["schemas"]["JsonValue"] | undefined;
     };
     /** MovePointerDto */
     MovePointerDto: {
@@ -14797,7 +15520,7 @@ export interface components {
        * Agentid
        * @default null
        */
-      agentId?: null | string;
+      agentId?: null | string | undefined;
       /** Move */
       move: string;
       /** Server */
@@ -14809,13 +15532,13 @@ export interface components {
        * Agentid
        * @default null
        */
-      agentId?: null | string;
+      agentId?: null | string | undefined;
       /** Move */
       move: string;
       /** Server */
       server: string;
     } & {
-      [key: string]: components["schemas"]["JsonValue"];
+      [key: string]: components["schemas"]["JsonValue"] | undefined;
     };
     /** MultiServerResource */
     MultiServerResource: {
@@ -14828,32 +15551,35 @@ export interface components {
     /** MutationReceipt */
     MutationReceipt: {
       /** @default null */
-      capabilities?: components["schemas"]["QueueCapabilities"] | null;
+      capabilities?:
+        | components["schemas"]["QueueCapabilities"]
+        | null
+        | undefined;
       /**
        * Deferred
        * @default null
        */
-      deferred?: boolean | null;
+      deferred?: boolean | null | undefined;
       /**
        * Deleted
        * @default null
        */
-      deleted?: string[] | null | string;
+      deleted?: string[] | null | string | undefined;
       /**
        * Id
        * @default null
        */
-      id?: null | string;
+      id?: null | string | undefined;
       /**
        * Revision
        * @default null
        */
-      revision?: null | string;
+      revision?: null | string | undefined;
       /**
        * Status
        * @default null
        */
-      status?: null | string;
+      status?: null | string | undefined;
     };
     /**
      * NativeAccountState
@@ -14866,12 +15592,12 @@ export interface components {
        * Pid
        * @default null
        */
-      pid?: number | null;
+      pid?: number | null | undefined;
       /**
        * Reason
        * @default null
        */
-      reason?: null | string;
+      reason?: null | string | undefined;
       status: components["schemas"]["NativeAccountState"];
       /** Targetversion */
       targetVersion: string;
@@ -14881,7 +15607,7 @@ export interface components {
        * Version
        * @default null
        */
-      version?: null | string;
+      version?: null | string | undefined;
     };
     /**
      * NativeAction
@@ -14897,10 +15623,10 @@ export interface components {
        * Error
        * @default null
        */
-      error?: null | string;
+      error?: null | string | undefined;
       status: components["schemas"]["NativeActionOutcomeStatus"];
     } & {
-      [key: string]: components["schemas"]["JsonValue"];
+      [key: string]: components["schemas"]["JsonValue"] | undefined;
     };
     /**
      * NativeActionOutcomeStatus
@@ -14933,7 +15659,7 @@ export interface components {
       /** Threadid */
       threadId: string;
     } & {
-      [key: string]: components["schemas"]["JsonValue"];
+      [key: string]: components["schemas"]["JsonValue"] | undefined;
     };
     /**
      * NativeActionReceiptStatus
@@ -14947,14 +15673,14 @@ export interface components {
         | components["schemas"]["NativeAction"]
         | components["schemas"]["SafetyActionRequest"];
       /** @default null */
-      context?: components["schemas"]["ActionContext"] | null;
+      context?: components["schemas"]["ActionContext"] | null | undefined;
       /** Id */
       id: string;
       /**
        * Request Id
        * @default null
        */
-      request_id?: string | null;
+      request_id?: string | null | undefined;
     };
     /** NativeActionResponse */
     NativeActionResponse: {
@@ -14962,75 +15688,75 @@ export interface components {
        * Acceptedturnid
        * @default null
        */
-      acceptedTurnId?: null | string;
+      acceptedTurnId?: null | string | undefined;
       /**
        * Accountkey
        * @default null
        */
-      accountKey?: null | string;
+      accountKey?: null | string | undefined;
       /**
        * Created
        * @default null
        */
-      created?: null | number;
+      created?: null | number | undefined;
       /**
        * Epoch
        * @default null
        */
-      epoch?: number | null;
+      epoch?: number | null | undefined;
       /**
        * Error
        * @default null
        */
-      error?: null | string;
+      error?: null | string | undefined;
       /**
        * Id
        * @default null
        */
-      id?: null | string;
+      id?: null | string | undefined;
       /**
        * Model
        * @default null
        */
-      model?: null | string;
+      model?: null | string | undefined;
       /**
        * Newthreadid
        * @default null
        */
-      newThreadId?: null | string;
+      newThreadId?: null | string | undefined;
       /** @default null */
-      outcome?: components["schemas"]["NativeActionOutcome"] | null;
+      outcome?: components["schemas"]["NativeActionOutcome"] | null | undefined;
       /** @default null */
-      receipt?: components["schemas"]["NativeActionReceipt"] | null;
+      receipt?: components["schemas"]["NativeActionReceipt"] | null | undefined;
       /**
        * Replayed
        * @default null
        */
-      replayed?: boolean | null;
+      replayed?: boolean | null | undefined;
       /**
        * Requestid
        * @default null
        */
-      requestId?: null | string;
+      requestId?: null | string | undefined;
       /** @default null */
-      result?: components["schemas"]["JsonValue"] | null;
+      result?: components["schemas"]["JsonValue"] | null | undefined;
       /**
        * Rpcmethod
        * @default null
        */
-      rpcMethod?: null | string;
+      rpcMethod?: null | string | undefined;
       /** @default null */
-      stage?: components["schemas"]["SafetyActionStage"] | null;
+      stage?: components["schemas"]["SafetyActionStage"] | null | undefined;
       /**
        * Turnid
        * @default null
        */
-      turnId?: null | string;
+      turnId?: null | string | undefined;
       /**
        * Updated
        * @default null
        */
-      updated?: null | number;
+      updated?: null | number | undefined;
     };
     /** NativeBinary */
     NativeBinary: {
@@ -15038,50 +15764,59 @@ export interface components {
        * Approvalrevision
        * @default null
        */
-      approvalRevision?: number | null;
+      approvalRevision?: number | null | undefined;
       /**
        * Bundlesha256
        * @default null
        */
-      bundleSha256?: null | string;
+      bundleSha256?: null | string | undefined;
       /**
        * Checks
        * @default null
        */
-      checks?: {
-        [key: string]: components["schemas"]["JsonValue"];
-      } | null;
+      checks?:
+        | {
+            [key: string]: components["schemas"]["JsonValue"] | undefined;
+          }
+        | null
+        | undefined;
       /**
        * Companions
        * @default null
        */
-      companions?: {
-        [key: string]: components["schemas"]["JsonValue"];
-      } | null;
+      companions?:
+        | {
+            [key: string]: components["schemas"]["JsonValue"] | undefined;
+          }
+        | null
+        | undefined;
       /** Path */
       path: string;
       /**
        * Sha256
        * @default null
        */
-      sha256?: null | string;
+      sha256?: null | string | undefined;
       /**
        * Sourceidentity
        * @default null
        */
-      sourceIdentity?: {
-        [key: string]: components["schemas"]["JsonValue"];
-      } | null;
+      sourceIdentity?:
+        | {
+            [key: string]: components["schemas"]["JsonValue"] | undefined;
+          }
+        | null
+        | undefined;
       /**
        * Sourcepath
        * @default null
        */
-      sourcePath?: null | string;
+      sourcePath?: null | string | undefined;
       /**
        * Validatedat
        * @default null
        */
-      validatedAt?: null | number;
+      validatedAt?: null | number | undefined;
       /** Version */
       version: string;
     };
@@ -15091,21 +15826,27 @@ export interface components {
        * Companionidentity
        * @default null
        */
-      companionIdentity?: {
-        [key: string]: components["schemas"]["JsonValue"];
-      } | null;
+      companionIdentity?:
+        | {
+            [key: string]: components["schemas"]["JsonValue"] | undefined;
+          }
+        | null
+        | undefined;
       /**
        * Error
        * @default null
        */
-      error?: null | string;
+      error?: null | string | undefined;
       /**
        * Identity
        * @default null
        */
-      identity?: {
-        [key: string]: components["schemas"]["JsonValue"];
-      } | null;
+      identity?:
+        | {
+            [key: string]: components["schemas"]["JsonValue"] | undefined;
+          }
+        | null
+        | undefined;
       /** Path */
       path: string;
       status: components["schemas"]["NativeCandidateState"];
@@ -15113,7 +15854,7 @@ export interface components {
        * Version
        * @default null
        */
-      version?: null | string;
+      version?: null | string | undefined;
     };
     /**
      * NativeCandidateState
@@ -15177,7 +15918,7 @@ export interface components {
        * Text
        * @default null
        */
-      text?: string | null;
+      text?: string | null | undefined;
     };
     /** NativeCommandResponse */
     NativeCommandResponse: {
@@ -15185,28 +15926,31 @@ export interface components {
        * Error
        * @default null
        */
-      error?: null | string;
+      error?: null | string | undefined;
       /**
        * Id
        * @default null
        */
-      id?: null | string;
+      id?: null | string | undefined;
       /**
        * Processid
        * @default null
        */
-      processId?: null | string;
+      processId?: null | string | undefined;
       /** @default null */
-      receipt?: components["schemas"]["JsonValue"] | null;
+      receipt?: components["schemas"]["JsonValue"] | null | undefined;
       /** @default null */
-      status?: components["schemas"]["NativeCommandEventStatus"] | null;
+      status?:
+        | components["schemas"]["NativeCommandEventStatus"]
+        | null
+        | undefined;
       /**
        * Terminated
        * @default null
        */
-      terminated?: boolean | null;
+      terminated?: boolean | null | undefined;
       /** @default null */
-      waitingFor?: components["schemas"]["JsonValue"] | null;
+      waitingFor?: components["schemas"]["JsonValue"] | null | undefined;
     };
     /** NativeErrorAccount */
     NativeErrorAccount: {
@@ -15232,17 +15976,19 @@ export interface components {
        * Attempts
        * @default null
        */
-      attempts?: number;
-      error?: components["schemas"]["JsonValue"];
+      attempts?: number | undefined;
+      error?: components["schemas"]["JsonValue"] | undefined;
       /** @default null */
-      identity?: components["schemas"]["NativeNameIdentityRecordResponse"];
+      identity?:
+        | components["schemas"]["NativeNameIdentityRecordResponse"]
+        | undefined;
       /**
        * Retryat
        * @default null
        */
-      retryAt?: number;
+      retryAt?: number | undefined;
     } & {
-      [key: string]: components["schemas"]["JsonValue"];
+      [key: string]: components["schemas"]["JsonValue"] | undefined;
     };
     /** NativeNameIdentityRecordResponse */
     NativeNameIdentityRecordResponse: {
@@ -15253,7 +15999,7 @@ export interface components {
       /** Threadid */
       threadId: null | string;
     } & {
-      [key: string]: components["schemas"]["JsonValue"];
+      [key: string]: components["schemas"]["JsonValue"] | undefined;
     };
     /** NativeNameSyncedRecordResponse */
     NativeNameSyncedRecordResponse: {
@@ -15261,19 +16007,19 @@ export interface components {
        * Accountkey
        * @default null
        */
-      accountKey?: string;
+      accountKey?: string | undefined;
       /**
        * Name
        * @default null
        */
-      name?: string;
+      name?: string | undefined;
       /**
        * Threadid
        * @default null
        */
-      threadId?: string;
+      threadId?: string | undefined;
     } & {
-      [key: string]: components["schemas"]["JsonValue"];
+      [key: string]: components["schemas"]["JsonValue"] | undefined;
     };
     /** NativeNoticeRecord */
     NativeNoticeRecord: {
@@ -15283,7 +16029,7 @@ export interface components {
       at: number;
       /** Connectionid */
       connectionId: string;
-      details?: components["schemas"]["JsonValue"];
+      details?: components["schemas"]["JsonValue"] | undefined;
       /** Id */
       id: string;
       /** Message */
@@ -15298,24 +16044,24 @@ export interface components {
        * Explanation
        * @default null
        */
-      explanation?: null | string;
+      explanation?: null | string | undefined;
       /**
        * Plan
        * @default []
        */
-      plan?: components["schemas"]["JsonValue"][];
+      plan?: components["schemas"]["JsonValue"][] | undefined;
       /**
        * Threadid
        * @default null
        */
-      threadId?: null | string;
+      threadId?: null | string | undefined;
       /**
        * Turnid
        * @default null
        */
-      turnId?: null | string;
+      turnId?: null | string | undefined;
     } & {
-      [key: string]: components["schemas"]["JsonValue"];
+      [key: string]: components["schemas"]["JsonValue"] | undefined;
     };
     /**
      * NativeProviderError
@@ -15331,40 +16077,43 @@ export interface components {
        */
       additionalDetails?:
         | {
-            [key: string]: components["schemas"]["JsonValue"];
+            [key: string]: components["schemas"]["JsonValue"] | undefined;
           }
         | null
-        | string;
+        | string
+        | undefined;
       /**
        * Code
        * @default null
        */
-      code?: number | null | string;
+      code?: number | null | string | undefined;
       /**
        * Codexerrorinfo
        * @default null
        */
       codexErrorInfo?:
         | {
-            [key: string]: components["schemas"]["JsonValue"];
+            [key: string]: components["schemas"]["JsonValue"] | undefined;
           }
         | components["schemas"]["JsonValue"][]
         | null
-        | string;
+        | string
+        | undefined;
       /** @default null */
-      data?: components["schemas"]["JsonValue"] | null;
+      data?: components["schemas"]["JsonValue"] | null | undefined;
       /**
        * Message
        * @default null
        */
       message?:
         | {
-            [key: string]: components["schemas"]["JsonValue"];
+            [key: string]: components["schemas"]["JsonValue"] | undefined;
           }
         | null
-        | string;
+        | string
+        | undefined;
     } & {
-      [key: string]: components["schemas"]["JsonValue"];
+      [key: string]: components["schemas"]["JsonValue"] | undefined;
     };
     /**
      * NativeReleasePhase
@@ -15383,49 +16132,49 @@ export interface components {
        * Accountkey
        * @default null
        */
-      accountKey?: string;
+      accountKey?: string | undefined;
       /**
        * At
        * @default null
        */
-      at?: number;
+      at?: number | undefined;
       /**
        * Closedat
        * @default null
        */
-      closedAt?: number;
+      closedAt?: number | undefined;
       /**
        * Connectionid
        * @default null
        */
-      connectionId?: string;
-      error?: components["schemas"]["JsonValue"];
+      connectionId?: string | undefined;
+      error?: components["schemas"]["JsonValue"] | undefined;
       /**
        * Id
        * @default null
        */
-      id?: string;
-      inspectionError?: components["schemas"]["JsonValue"];
+      id?: string | undefined;
+      inspectionError?: components["schemas"]["JsonValue"] | undefined;
       /**
        * Inspectionfailures
        * @default null
        */
-      inspectionFailures?: number;
+      inspectionFailures?: number | undefined;
       /**
        * Inspectionphase
        * @default null
        */
-      inspectionPhase?: string;
+      inspectionPhase?: string | undefined;
       /**
        * Nativestatus
        * @default null
        */
-      nativeStatus?: string;
+      nativeStatus?: string | undefined;
       /**
        * Nextattemptat
        * @default null
        */
-      nextAttemptAt?: number;
+      nextAttemptAt?: number | undefined;
       /**
        * Phase
        * @default null
@@ -15439,75 +16188,80 @@ export interface components {
             | "blocked"
             | "resumed"
           )
-        | null;
+        | null
+        | undefined;
       /**
        * Releasedat
        * @default null
        */
-      releasedAt?: number;
+      releasedAt?: number | undefined;
       /**
        * Resetactorepoch
        * @default null
        */
-      resetActorEpoch?: number | null;
+      resetActorEpoch?: number | null | undefined;
       /** @default null */
-      resetActorScope?: components["schemas"]["JsonObjectResponse"] | null;
+      resetActorScope?:
+        | components["schemas"]["JsonObjectResponse"]
+        | null
+        | undefined;
       /**
        * Resetby
        * @default null
        */
-      resetBy?: null | string;
+      resetBy?: null | string | undefined;
       /**
        * Resetpending
        * @default null
        */
-      resetPending?: boolean;
+      resetPending?: boolean | undefined;
       /**
        * Resetreason
        * @default null
        */
-      resetReason?: string;
+      resetReason?: string | undefined;
       /**
        * Resumedat
        * @default null
        */
-      resumedAt?: number;
+      resumedAt?: number | undefined;
       /**
        * Submittedat
        * @default null
        */
-      submittedAt?: number;
+      submittedAt?: number | undefined;
       /**
        * Supersededat
        * @default null
        */
-      supersededAt?: number;
+      supersededAt?: number | undefined;
       /** @default null */
       supervisorIdentity?:
         | components["schemas"]["SupervisorIdentityRecordResponse"]
-        | null;
+        | null
+        | undefined;
       /**
        * Targetepoch
        * @default null
        */
-      targetEpoch?: number;
+      targetEpoch?: number | undefined;
       /**
        * Targetparentid
        * @default null
        */
-      targetParentId?: null | string;
+      targetParentId?: null | string | undefined;
       /**
        * Targetrootid
        * @default null
        */
-      targetRootId?: string;
+      targetRootId?: string | undefined;
       /**
        * Threadid
        * @default null
        */
-      threadId?: string;
+      threadId?: string | undefined;
     } & {
-      [key: string]: components["schemas"]["JsonValue"];
+      [key: string]: components["schemas"]["JsonValue"] | undefined;
     };
     /** NativeReviewRecordResponse */
     NativeReviewRecordResponse: {
@@ -15515,46 +16269,46 @@ export interface components {
        * Actorid
        * @default null
        */
-      actorId?: string;
+      actorId?: string | undefined;
       /** @default null */
-      args?: components["schemas"]["JsonObjectResponse"];
+      args?: components["schemas"]["JsonObjectResponse"] | undefined;
       /**
        * Created
        * @default null
        */
-      created?: number;
-      error?: components["schemas"]["JsonValue"];
+      created?: number | undefined;
+      error?: components["schemas"]["JsonValue"] | undefined;
       /**
        * Id
        * @default null
        */
-      id?: string;
+      id?: string | undefined;
       /**
        * Requestid
        * @default null
        */
-      requestId?: string;
-      response?: components["schemas"]["JsonValue"];
-      result?: components["schemas"]["JsonValue"];
+      requestId?: string | undefined;
+      response?: components["schemas"]["JsonValue"] | undefined;
+      result?: components["schemas"]["JsonValue"] | undefined;
       /**
        * Startedat
        * @default null
        */
-      startedAt?: number;
+      startedAt?: number | undefined;
       /**
        * Status
        * @default null
        */
-      status?: string;
+      status?: string | undefined;
       /** @default null */
-      target?: components["schemas"]["JsonObjectResponse"];
+      target?: components["schemas"]["JsonObjectResponse"] | undefined;
       /**
        * Updated
        * @default null
        */
-      updated?: number;
+      updated?: number | undefined;
     } & {
-      [key: string]: components["schemas"]["JsonValue"];
+      [key: string]: components["schemas"]["JsonValue"] | undefined;
     };
     /**
      * NativeRuntimeState
@@ -15573,36 +16327,36 @@ export interface components {
        * Checkedat
        * @default null
        */
-      checkedAt?: null | number;
+      checkedAt?: null | number | undefined;
       /**
        * Error
        * @default null
        */
-      error?: null | string;
+      error?: null | string | undefined;
       /** @default null */
-      selected?: components["schemas"]["NativeBinary"] | null;
+      selected?: components["schemas"]["NativeBinary"] | null | undefined;
       status: components["schemas"]["NativeRuntimeState"];
     };
     /** NativeSafetyBufferingRecord */
     NativeSafetyBufferingRecord: {
       /** Accountkey */
-      accountKey?: string;
+      accountKey?: string | undefined;
       /** At */
-      at?: number;
+      at?: number | undefined;
       /** Connectionid */
-      connectionId?: string;
+      connectionId?: string | undefined;
       /** Dismissed */
-      dismissed?: boolean;
+      dismissed?: boolean | undefined;
       /** Fastermodel */
-      fasterModel?: string;
+      fasterModel?: string | undefined;
       /** Responsestarted */
-      responseStarted?: boolean;
+      responseStarted?: boolean | undefined;
       /** Showbufferingui */
-      showBufferingUi?: boolean;
+      showBufferingUi?: boolean | undefined;
       /** Threadid */
-      threadId?: string;
+      threadId?: string | undefined;
       /** Turnid */
-      turnId?: string;
+      turnId?: string | undefined;
     };
     /** NativeSafetyBufferingRecordResponse */
     NativeSafetyBufferingRecordResponse: {
@@ -15610,49 +16364,49 @@ export interface components {
        * Accountkey
        * @default null
        */
-      accountKey?: string;
+      accountKey?: string | undefined;
       /**
        * At
        * @default null
        */
-      at?: number;
+      at?: number | undefined;
       /**
        * Connectionid
        * @default null
        */
-      connectionId?: string;
+      connectionId?: string | undefined;
       /**
        * Dismissed
        * @default null
        */
-      dismissed?: boolean;
+      dismissed?: boolean | undefined;
       /**
        * Fastermodel
        * @default null
        */
-      fasterModel?: string;
+      fasterModel?: string | undefined;
       /**
        * Responsestarted
        * @default null
        */
-      responseStarted?: boolean;
+      responseStarted?: boolean | undefined;
       /**
        * Showbufferingui
        * @default null
        */
-      showBufferingUi?: boolean;
+      showBufferingUi?: boolean | undefined;
       /**
        * Threadid
        * @default null
        */
-      threadId?: string;
+      threadId?: string | undefined;
       /**
        * Turnid
        * @default null
        */
-      turnId?: string;
+      turnId?: string | undefined;
     } & {
-      [key: string]: components["schemas"]["JsonValue"];
+      [key: string]: components["schemas"]["JsonValue"] | undefined;
     };
     /** NativeSafetyRetryDto */
     NativeSafetyRetryDto: {
@@ -15660,64 +16414,64 @@ export interface components {
        * Acceptedturnid
        * @default null
        */
-      acceptedTurnId?: null | string;
+      acceptedTurnId?: null | string | undefined;
       /**
        * Accountkey
        * @default null
        */
-      accountKey?: null | string;
+      accountKey?: null | string | undefined;
       /**
        * Created
        * @default null
        */
-      created?: null | number;
+      created?: null | number | undefined;
       /**
        * Epoch
        * @default null
        */
-      epoch?: number | null;
+      epoch?: number | null | undefined;
       /**
        * Error
        * @default null
        */
-      error?: null | string;
+      error?: null | string | undefined;
       /**
        * Id
        * @default null
        */
-      id?: null | string;
+      id?: null | string | undefined;
       /**
        * Model
        * @default null
        */
-      model?: null | string;
+      model?: null | string | undefined;
       /**
        * Newthreadid
        * @default null
        */
-      newThreadId?: null | string;
+      newThreadId?: null | string | undefined;
       /**
        * Requestid
        * @default null
        */
-      requestId?: null | string;
+      requestId?: null | string | undefined;
       /**
        * Rpcmethod
        * @default null
        */
-      rpcMethod?: null | string;
+      rpcMethod?: null | string | undefined;
       /** @default null */
-      stage?: components["schemas"]["NativeSafetyStage"] | null;
+      stage?: components["schemas"]["NativeSafetyStage"] | null | undefined;
       /**
        * Turnid
        * @default null
        */
-      turnId?: null | string;
+      turnId?: null | string | undefined;
       /**
        * Updated
        * @default null
        */
-      updated?: null | number;
+      updated?: null | number | undefined;
     };
     /** NativeSafetyRetryViewRecordResponse */
     NativeSafetyRetryViewRecordResponse: {
@@ -15725,52 +16479,52 @@ export interface components {
        * Acceptedturnid
        * @default null
        */
-      acceptedTurnId?: null | string;
+      acceptedTurnId?: null | string | undefined;
       /**
        * Accountkey
        * @default null
        */
-      accountKey?: null | string;
+      accountKey?: null | string | undefined;
       /**
        * Created
        * @default null
        */
-      created?: null | number;
+      created?: null | number | undefined;
       /**
        * Epoch
        * @default null
        */
-      epoch?: number | null;
+      epoch?: number | null | undefined;
       /**
        * Error
        * @default null
        */
-      error?: null | string;
+      error?: null | string | undefined;
       /**
        * Id
        * @default null
        */
-      id?: null | string;
+      id?: null | string | undefined;
       /**
        * Model
        * @default null
        */
-      model?: null | string;
+      model?: null | string | undefined;
       /**
        * Newthreadid
        * @default null
        */
-      newThreadId?: null | string;
+      newThreadId?: null | string | undefined;
       /**
        * Requestid
        * @default null
        */
-      requestId?: null | string;
+      requestId?: null | string | undefined;
       /**
        * Rpcmethod
        * @default null
        */
-      rpcMethod?: null | string;
+      rpcMethod?: null | string | undefined;
       /**
        * Stage
        * @default null
@@ -15789,19 +16543,20 @@ export interface components {
             | "failed"
             | "cancelled"
           )
-        | null;
+        | null
+        | undefined;
       /**
        * Turnid
        * @default null
        */
-      turnId?: null | string;
+      turnId?: null | string | undefined;
       /**
        * Updated
        * @default null
        */
-      updated?: null | number;
+      updated?: null | number | undefined;
     } & {
-      [key: string]: components["schemas"]["JsonValue"];
+      [key: string]: components["schemas"]["JsonValue"] | undefined;
     };
     /**
      * NativeSafetyStage
@@ -15822,24 +16577,24 @@ export interface components {
     /** NativeThreadBlockDto */
     NativeThreadBlockDto: {
       /** @default null */
-      error?: components["schemas"]["NativeProviderError"] | null;
+      error?: components["schemas"]["NativeProviderError"] | null | undefined;
       /**
        * Threadid
        * @default null
        */
-      threadId?: null | string;
+      threadId?: null | string | undefined;
     };
     /** NativeThreadBlockRecordResponse */
     NativeThreadBlockRecordResponse: {
       /** @default null */
-      error?: components["schemas"]["JsonObjectResponse"];
+      error?: components["schemas"]["JsonObjectResponse"] | undefined;
       /**
        * Threadid
        * @default null
        */
-      threadId?: string;
+      threadId?: string | undefined;
     } & {
-      [key: string]: components["schemas"]["JsonValue"];
+      [key: string]: components["schemas"]["JsonValue"] | undefined;
     };
     /** NativeToolSourceRecordResponse */
     NativeToolSourceRecordResponse: {
@@ -15847,19 +16602,19 @@ export interface components {
        * Digest
        * @default null
        */
-      digest?: string;
+      digest?: string | undefined;
       /**
        * Epoch
        * @default null
        */
-      epoch?: number;
+      epoch?: number | undefined;
       /**
        * Threadid
        * @default null
        */
-      threadId?: string;
+      threadId?: string | undefined;
     } & {
-      [key: string]: components["schemas"]["JsonValue"];
+      [key: string]: components["schemas"]["JsonValue"] | undefined;
     };
     /** NativeToolUpdateRecordResponse */
     NativeToolUpdateRecordResponse: {
@@ -15867,38 +16622,40 @@ export interface components {
        * Message
        * @default null
        */
-      message?: string;
+      message?: string | undefined;
       /** @default null */
-      source?: components["schemas"]["NativeToolSourceRecordResponse"];
+      source?:
+        | components["schemas"]["NativeToolSourceRecordResponse"]
+        | undefined;
       /**
        * Status
        * @default null
        */
-      status?: string;
+      status?: string | undefined;
     } & {
-      [key: string]: components["schemas"]["JsonValue"];
+      [key: string]: components["schemas"]["JsonValue"] | undefined;
     };
     /** NativeTurnErrorDto */
     NativeTurnErrorDto: {
       /** @default null */
-      error?: components["schemas"]["NativeProviderError"] | null;
+      error?: components["schemas"]["NativeProviderError"] | null | undefined;
       /**
        * Turnid
        * @default null
        */
-      turnId?: null | string;
+      turnId?: null | string | undefined;
     };
     /** NativeTurnErrorRecordResponse */
     NativeTurnErrorRecordResponse: {
       /** @default null */
-      error?: components["schemas"]["JsonObjectResponse"] | null;
+      error?: components["schemas"]["JsonObjectResponse"] | null | undefined;
       /**
        * Turnid
        * @default null
        */
-      turnId?: string;
+      turnId?: string | undefined;
     } & {
-      [key: string]: components["schemas"]["JsonValue"];
+      [key: string]: components["schemas"]["JsonValue"] | undefined;
     };
     /** OrchestrationSettings */
     OrchestrationSettings: {
@@ -15907,7 +16664,9 @@ export interface components {
        * @description Seconds a lead's finished-subagent result waits for sibling subagents that are still running, so close results arrive in one turn; 0 delivers each at once.
        */
       childResultCoalesceSeconds: number;
-      idleCompaction?: components["schemas"]["IdleCompactionSettings"];
+      idleCompaction?:
+        | components["schemas"]["IdleCompactionSettings"]
+        | undefined;
       /**
        * Idlesessionunloadminutes
        * @description Minutes a lead's or ordinary chat's idle Codex thread or Claude session stays loaded, and an account's provider process keeps running after its last thread unloaded. A managed worker without a running turn, pending input, or active monitor unloads at once. The next message resumes a thread. 0 never unloads.
@@ -15924,41 +16683,41 @@ export interface components {
        * Archived
        * @default null
        */
-      archived?: boolean | null;
+      archived?: boolean | null | undefined;
       /**
        * Expected Folder
        * @default null
        */
-      expected_folder?: null | string;
+      expected_folder?: null | string | undefined;
       /**
        * Expected Revision
        * @default null
        */
-      expected_revision?: number | null;
+      expected_revision?: number | null | undefined;
       /** Id */
       id: string;
       /**
        * Pinned
        * @default null
        */
-      pinned?: boolean | null;
+      pinned?: boolean | null | undefined;
       /**
        * Project
        * @default null
        */
-      project?: null | string;
+      project?: null | string | undefined;
       /**
        * Project Folder
        * @default null
        */
-      project_folder?: null | string;
+      project_folder?: null | string | undefined;
       /**
        * Project Path
        * @default null
        */
-      project_path?: null | string;
+      project_path?: null | string | undefined;
       /** @default null */
-      read_state?: components["schemas"]["ReadStateBody"] | null;
+      read_state?: components["schemas"]["ReadStateBody"] | null | undefined;
     };
     /** PairRequest */
     PairRequest: {
@@ -15970,7 +16729,7 @@ export interface components {
        * Leadname
        * @default null
        */
-      leadName?: null | string;
+      leadName?: null | string | undefined;
       /** Origin */
       origin: string;
       /**
@@ -15986,12 +16745,12 @@ export interface components {
        * Tailscalestatus
        * @default null
        */
-      tailscaleStatus?: null | string;
+      tailscaleStatus?: null | string | undefined;
       /**
        * Tailscaleuser
        * @default null
        */
-      tailscaleUser?: null | string;
+      tailscaleUser?: null | string | undefined;
       /** Token */
       token: string;
     };
@@ -16001,24 +16760,24 @@ export interface components {
        * Cancelledatepoch
        * @default null
        */
-      cancelledAtEpoch?: number;
+      cancelledAtEpoch?: number | undefined;
       /**
        * Epoch
        * @default null
        */
-      epoch?: number;
+      epoch?: number | undefined;
       /**
        * Event
        * @default null
        */
-      event?: string;
+      event?: string | undefined;
       /**
        * Sequence
        * @default null
        */
-      sequence?: number;
+      sequence?: number | undefined;
     } & {
-      [key: string]: components["schemas"]["JsonValue"];
+      [key: string]: components["schemas"]["JsonValue"] | undefined;
     };
     /**
      * ParticipantRole
@@ -16078,104 +16837,110 @@ export interface components {
        * Accountgroups
        * @default null
        */
-      accountGroups?: string[] | null;
+      accountGroups?: string[] | null | undefined;
       /**
        * Accountgroupsrevision
        * @default null
        */
-      accountGroupsRevision?: number | null;
+      accountGroupsRevision?: number | null | undefined;
       /**
        * Accountkey
        * @default null
        */
-      accountKey?: null | string;
+      accountKey?: null | string | undefined;
       /**
        * Accountkeys
        * @default null
        */
-      accountKeys?: string[] | null;
+      accountKeys?: string[] | null | undefined;
       /**
        * Accountrevision
        * @default null
        */
-      accountRevision?: number | null;
+      accountRevision?: number | null | undefined;
       /** Created */
       created: number;
       /**
        * Folders
        * @default null
        */
-      folders?: components["schemas"]["ProjectFolder"][] | null;
+      folders?: components["schemas"]["ProjectFolder"][] | null | undefined;
       /**
        * Homeserverid
        * @default null
        */
-      homeServerId?: null | string;
+      homeServerId?: null | string | undefined;
       /** Id */
       id: string;
       /**
        * Locations
        * @default null
        */
-      locations?: components["schemas"]["ProjectLocation"][] | null;
+      locations?: components["schemas"]["ProjectLocation"][] | null | undefined;
       /**
        * Locationsrevision
        * @default null
        */
-      locationsRevision?: number | null;
+      locationsRevision?: number | null | undefined;
       /** Name */
       name: string;
       /**
        * Organizationrevision
        * @default null
        */
-      organizationRevision?: number | null;
+      organizationRevision?: number | null | undefined;
       /** Path */
       path: string;
       /**
        * Peerteams
        * @default null
        */
-      peerTeams?: components["schemas"]["PeerTeam"][] | null;
+      peerTeams?: components["schemas"]["PeerTeam"][] | null | undefined;
       /**
        * Peerteamsrevision
        * @default null
        */
-      peerTeamsRevision?: number | null;
+      peerTeamsRevision?: number | null | undefined;
       /**
        * Projectaliases
        * @default null
        */
-      projectAliases?: components["schemas"]["ProjectAlias"][] | null;
+      projectAliases?:
+        | components["schemas"]["ProjectAlias"][]
+        | null
+        | undefined;
       /** @default null */
-      registration?: components["schemas"]["ProjectRegistration"] | null;
+      registration?:
+        | components["schemas"]["ProjectRegistration"]
+        | null
+        | undefined;
       /**
        * Updated
        * @default null
        */
-      updated?: null | number;
+      updated?: null | number | undefined;
       /**
        * Workerbaseref
        * @default null
        */
-      workerBaseRef?: null | string;
+      workerBaseRef?: null | string | undefined;
       /**
        * Workerbaserevision
        * @default null
        */
-      workerBaseRevision?: number | null;
+      workerBaseRevision?: number | null | undefined;
       /**
        * Workerenvironment
        * @default null
        */
-      workerEnvironment?: ("host" | "linux") | null;
+      workerEnvironment?: ("host" | "linux") | null | undefined;
       /**
        * Workerenvironmentrevision
        * @default null
        */
-      workerEnvironmentRevision?: number | null;
+      workerEnvironmentRevision?: number | null | undefined;
     } & {
-      [key: string]: components["schemas"]["JsonValue"];
+      [key: string]: components["schemas"]["JsonValue"] | undefined;
     };
     /** PeerRadioActive */
     PeerRadioActive: {
@@ -16191,12 +16956,12 @@ export interface components {
        * Interruptrequested
        * @default null
        */
-      interruptRequested?: boolean | null;
+      interruptRequested?: boolean | null | undefined;
       /**
        * Questioncontinuationplanned
        * @default null
        */
-      questionContinuationPlanned?: boolean | null;
+      questionContinuationPlanned?: boolean | null | undefined;
       /** Threadid */
       threadId: null | string;
       /** Through */
@@ -16205,7 +16970,7 @@ export interface components {
        * Turnid
        * @default null
        */
-      turnId?: null | string;
+      turnId?: null | string | undefined;
     };
     /** PeerRadioResponse */
     PeerRadioResponse: {
@@ -16218,7 +16983,7 @@ export interface components {
        * Direct
        * @default null
        */
-      direct?: boolean | null;
+      direct?: boolean | null | undefined;
       /** Error */
       error: null | string;
       /** Next */
@@ -16229,9 +16994,12 @@ export interface components {
        * Seen
        * @default null
        */
-      seen?: {
-        [key: string]: components["schemas"]["RoomRadioSeen"];
-      } | null;
+      seen?:
+        | {
+            [key: string]: components["schemas"]["RoomRadioSeen"];
+          }
+        | null
+        | undefined;
       /** Speaker */
       speaker: null | string;
       status: components["schemas"]["RadioStatus"];
@@ -16244,66 +17012,66 @@ export interface components {
        * Created
        * @default null
        */
-      created?: null | number;
+      created?: null | number | undefined;
       /**
        * Customname
        * @default null
        */
-      customName?: null | string;
+      customName?: null | string | undefined;
       /** Id */
       id: string;
       /** @default null */
-      kind?: components["schemas"]["RoomKind"] | null;
+      kind?: components["schemas"]["RoomKind"] | null | undefined;
       /** @default null */
-      lastMessage?: components["schemas"]["RoomLastMessage"] | null;
+      lastMessage?: components["schemas"]["RoomLastMessage"] | null | undefined;
       /**
        * Localmembers
        * @default null
        */
-      localMembers?: string[] | null;
+      localMembers?: string[] | null | undefined;
       /** Members */
       members: string[];
       /**
        * Name
        * @default null
        */
-      name?: null | string;
+      name?: null | string | undefined;
       /**
        * Peerlabel
        * @default null
        */
-      peerLabel?: null | string;
+      peerLabel?: null | string | undefined;
       /**
        * Peerteamid
        * @default null
        */
-      peerTeamId?: null | string;
+      peerTeamId?: null | string | undefined;
       /**
        * Peerteamname
        * @default null
        */
-      peerTeamName?: null | string;
+      peerTeamName?: null | string | undefined;
       /**
        * Projectpath
        * @default null
        */
-      projectPath?: null | string;
+      projectPath?: null | string | undefined;
       radio: components["schemas"]["PeerRoomRadio"];
       /**
        * Rootid
        * @default null
        */
-      rootId?: null | string;
+      rootId?: null | string | undefined;
       /**
        * Updated
        * @default null
        */
-      updated?: null | number;
+      updated?: null | number | undefined;
       /**
        * Userhidden
        * @default null
        */
-      userHidden?: boolean | null;
+      userHidden?: boolean | null | undefined;
     };
     /**
      * PeerStatus
@@ -16322,7 +17090,7 @@ export interface components {
       /** Name */
       name: string;
     } & {
-      [key: string]: components["schemas"]["JsonValue"];
+      [key: string]: components["schemas"]["JsonValue"] | undefined;
     };
     /** PeerTeamConvertRequest */
     PeerTeamConvertRequest: {
@@ -16363,13 +17131,13 @@ export interface components {
       /** Id */
       id: string;
       /** Members */
-      members?: string[] | null;
+      members?: string[] | null | undefined;
       /** Name */
-      name?: null | string;
+      name?: null | string | undefined;
       /** Projectpath */
-      projectPath?: null | string;
+      projectPath?: null | string | undefined;
       /** Revision */
-      revision?: number | null;
+      revision?: number | null | undefined;
     };
     /** PeerTeamMoveRequest */
     PeerTeamMoveRequest: {
@@ -16390,7 +17158,7 @@ export interface components {
        * Team Id
        * @default null
        */
-      team_id?: null | string;
+      team_id?: null | string | undefined;
     };
     /** PeerTeamRadioCreateRequest */
     PeerTeamRadioCreateRequest: {
@@ -16424,7 +17192,7 @@ export interface components {
        * Expected Revision
        * @default null
        */
-      expected_revision?: number | null;
+      expected_revision?: number | null | undefined;
       /** Path */
       path: string;
       /**
@@ -16460,7 +17228,7 @@ export interface components {
        * @default 1
        * @enum {integer}
        */
-      rounds?: 1 | 2;
+      rounds?: 1 | 2 | undefined;
       /** Target */
       target: string;
       /** Team Id */
@@ -16489,12 +17257,12 @@ export interface components {
        * @default 1
        * @enum {integer}
        */
-      rounds?: 1 | 2;
+      rounds?: 1 | 2 | undefined;
       /**
        * Target
        * @default both
        */
-      target?: string;
+      target?: string | undefined;
       /** Team Id */
       team_id: string;
       /** Text */
@@ -16542,7 +17310,7 @@ export interface components {
        * Team Id
        * @default null
        */
-      team_id?: null | string;
+      team_id?: null | string | undefined;
     };
     /**
      * PeerUpdateBuild
@@ -16609,24 +17377,24 @@ export interface components {
        * Daybreakenabled
        * @default null
        */
-      daybreakEnabled?: boolean | null;
+      daybreakEnabled?: boolean | null | undefined;
       /**
        * Effort
        * @default null
        */
-      effort?: null | string;
+      effort?: null | string | undefined;
       /**
        * Fastmode
        * @default null
        */
-      fastMode?: boolean | null;
+      fastMode?: boolean | null | undefined;
       /**
        * Model
        * @default null
        */
-      model?: null | string;
+      model?: null | string | undefined;
     } & {
-      [key: string]: components["schemas"]["JsonValue"];
+      [key: string]: components["schemas"]["JsonValue"] | undefined;
     };
     /** PlanBody */
     PlanBody: {
@@ -16634,12 +17402,12 @@ export interface components {
        * Agent
        * @default null
        */
-      agent?: null | string;
+      agent?: null | string | undefined;
       /**
        * Id
        * @default null
        */
-      id?: null | string;
+      id?: null | string | undefined;
       /** Text */
       text: string;
       /** Version */
@@ -16653,14 +17421,14 @@ export interface components {
       /** Id */
       id: string;
       /** @default null */
-      native?: components["schemas"]["NativePlanPayload"] | null;
+      native?: components["schemas"]["NativePlanPayload"] | null | undefined;
       /** Rootid */
       rootId: string;
       /**
        * Steps
        * @default []
        */
-      steps?: components["schemas"]["JsonValue"][];
+      steps?: components["schemas"]["JsonValue"][] | undefined;
       /** Text */
       text: string;
       /** Updated */
@@ -16668,7 +17436,7 @@ export interface components {
       /** Version */
       version: number;
     } & {
-      [key: string]: components["schemas"]["JsonValue"];
+      [key: string]: components["schemas"]["JsonValue"] | undefined;
     };
     /**
      * PlanView
@@ -16678,14 +17446,14 @@ export interface components {
       /** Id */
       id: string;
       /** @default null */
-      native?: components["schemas"]["NativePlanPayload"] | null;
+      native?: components["schemas"]["NativePlanPayload"] | null | undefined;
       /** Rootid */
       rootId: string;
       /**
        * Steps
        * @default []
        */
-      steps?: components["schemas"]["JsonValue"][];
+      steps?: components["schemas"]["JsonValue"][] | undefined;
       /** Text */
       text: string;
       /** Updated */
@@ -16693,7 +17461,7 @@ export interface components {
       /** Version */
       version: number;
     } & {
-      [key: string]: components["schemas"]["JsonValue"];
+      [key: string]: components["schemas"]["JsonValue"] | undefined;
     };
     /** PortableHistoryRecordResponse */
     PortableHistoryRecordResponse: {
@@ -16701,38 +17469,42 @@ export interface components {
        * Bytes
        * @default null
        */
-      bytes?: number;
+      bytes?: number | undefined;
       /**
        * Counts
        * @default null
        */
-      counts?: {
-        [key: string]: number;
-      };
+      counts?:
+        | {
+            [key: string]: number;
+          }
+        | undefined;
       /**
        * Path
        * @default null
        */
-      path?: string;
+      path?: string | undefined;
       /**
        * Sha256
        * @default null
        */
-      sha256?: string;
+      sha256?: string | undefined;
       /** @default null */
-      source?: components["schemas"]["PortableHistorySourceRecordResponse"];
+      source?:
+        | components["schemas"]["PortableHistorySourceRecordResponse"]
+        | undefined;
       /**
        * Transferid
        * @default null
        */
-      transferId?: string;
+      transferId?: string | undefined;
       /**
        * Version
        * @default null
        */
-      version?: number;
+      version?: number | undefined;
     } & {
-      [key: string]: components["schemas"]["JsonValue"];
+      [key: string]: components["schemas"]["JsonValue"] | undefined;
     };
     /** PortableHistorySourceRecordResponse */
     PortableHistorySourceRecordResponse: {
@@ -16740,24 +17512,24 @@ export interface components {
        * Accountkey
        * @default null
        */
-      accountKey?: string;
+      accountKey?: string | undefined;
       /**
        * Agentid
        * @default null
        */
-      agentId?: string;
+      agentId?: string | undefined;
       /**
        * Epoch
        * @default null
        */
-      epoch?: number;
+      epoch?: number | undefined;
       /**
        * Threadid
        * @default null
        */
-      threadId?: string;
+      threadId?: string | undefined;
     } & {
-      [key: string]: components["schemas"]["JsonValue"];
+      [key: string]: components["schemas"]["JsonValue"] | undefined;
     };
     /** PreferenceField */
     PreferenceField: {
@@ -16773,9 +17545,11 @@ export interface components {
        * Fields
        * @default {}
        */
-      fields?: {
-        [key: string]: components["schemas"]["PreferenceField"];
-      };
+      fields?:
+        | {
+            [key: string]: components["schemas"]["PreferenceField"];
+          }
+        | undefined;
       /**
        * Scope
        * @enum {string}
@@ -16795,16 +17569,18 @@ export interface components {
        * Epoch
        * @default null
        */
-      epoch?: (number | null | string)[];
+      epoch?: (number | null | string)[] | undefined;
       /**
        * Versions
        * @default null
        */
-      versions?: {
-        [key: string]: string;
-      };
+      versions?:
+        | {
+            [key: string]: string;
+          }
+        | undefined;
     } & {
-      [key: string]: components["schemas"]["JsonValue"];
+      [key: string]: components["schemas"]["JsonValue"] | undefined;
     };
     /** ProcessActionResult */
     ProcessActionResult: {
@@ -16812,23 +17588,28 @@ export interface components {
        * Error
        * @default null
        */
-      error?: null | string;
+      error?: null | string | undefined;
       /**
        * Processes
        * @default []
        */
-      processes?: {
-        [key: string]: components["schemas"]["JsonValue"];
-      }[];
+      processes?:
+        | {
+            [key: string]: components["schemas"]["JsonValue"] | undefined;
+          }[]
+        | undefined;
       /** Requestid */
       requestId: string;
       /**
        * Response
        * @default null
        */
-      response?: {
-        [key: string]: components["schemas"]["JsonValue"];
-      } | null;
+      response?:
+        | {
+            [key: string]: components["schemas"]["JsonValue"] | undefined;
+          }
+        | null
+        | undefined;
       /**
        * Status
        * @enum {string}
@@ -16867,24 +17648,27 @@ export interface components {
        * Includedescendants
        * @default false
        */
-      includeDescendants?: boolean;
+      includeDescendants?: boolean | undefined;
       /**
        * Itemid
        * @description Running command item that moves to the background
        * @default null
        */
-      itemId?: string | null;
+      itemId?: string | null | undefined;
       /** @default null */
-      process?: components["schemas"]["ProcessIdentity"] | null;
+      process?: components["schemas"]["ProcessIdentity"] | null | undefined;
       /**
        * Processes
        * @default []
        */
-      processes?: components["schemas"]["ProcessIdentity"][];
+      processes?: components["schemas"]["ProcessIdentity"][] | undefined;
       /** Requestid */
       requestId: string;
       /** @default null */
-      responseTarget?: components["schemas"]["ProcessResponseTarget"] | null;
+      responseTarget?:
+        | components["schemas"]["ProcessResponseTarget"]
+        | null
+        | undefined;
     };
     /** ProcessesResource */
     ProcessesResource: {
@@ -16939,14 +17723,17 @@ export interface components {
       /** Processes */
       processes: components["schemas"]["ManagedProcessRecord"][];
       /** @default null */
-      responseTarget?: components["schemas"]["ProcessResponseTarget"] | null;
+      responseTarget?:
+        | components["schemas"]["ProcessResponseTarget"]
+        | null
+        | undefined;
     };
     /** ProcessReceipt */
     ProcessReceipt: {
       /** Found */
       found: boolean;
       /** @default null */
-      result?: components["schemas"]["ProcessActionResult"] | null;
+      result?: components["schemas"]["ProcessActionResult"] | null | undefined;
     };
     /** ProcessRecord */
     ProcessRecord: {
@@ -16995,43 +17782,46 @@ export interface components {
        * @default save
        * @enum {string}
        */
-      action?: "save" | "delete";
+      action?: "save" | "delete" | undefined;
       /**
        * Effort
        * @default null
        */
-      effort?: ("low" | "medium" | "high" | "xhigh" | "max" | "ultra") | null;
+      effort?:
+        | ("low" | "medium" | "high" | "xhigh" | "max" | "ultra")
+        | null
+        | undefined;
       /**
        * Id
        * @default null
        */
-      id?: null | string;
+      id?: null | string | undefined;
       /**
        * Instructions
        * @default
        */
-      instructions?: string;
+      instructions?: string | undefined;
       /**
        * Isnew
        * @default null
        */
-      isNew?: boolean | null;
+      isNew?: boolean | null | undefined;
       /**
        * Model
        * @default null
        */
-      model?: string | null;
+      model?: string | null | undefined;
       /**
        * Name
        * @default null
        */
-      name?: string | null;
+      name?: string | null | undefined;
       /**
        * Role
        * @default reviewer
        * @enum {string}
        */
-      role?: "reviewer" | "implementer";
+      role?: "reviewer" | "implementer" | undefined;
     };
     /** ProfileList */
     ProfileList: {
@@ -17044,37 +17834,40 @@ export interface components {
        * Deleted
        * @default null
        */
-      deleted?: null | string;
+      deleted?: null | string | undefined;
       /**
        * Effort
        * @default null
        */
-      effort?: ("low" | "medium" | "high" | "xhigh" | "max" | "ultra") | null;
+      effort?:
+        | ("low" | "medium" | "high" | "xhigh" | "max" | "ultra")
+        | null
+        | undefined;
       /**
        * Id
        * @default null
        */
-      id?: null | string;
+      id?: null | string | undefined;
       /**
        * Instructions
        * @default null
        */
-      instructions?: null | string;
+      instructions?: null | string | undefined;
       /**
        * Model
        * @default null
        */
-      model?: null | string;
+      model?: null | string | undefined;
       /**
        * Name
        * @default null
        */
-      name?: null | string;
+      name?: null | string | undefined;
       /**
        * Role
        * @default null
        */
-      role?: ("reviewer" | "implementer") | null;
+      role?: ("reviewer" | "implementer") | null | undefined;
     };
     /** ProfileRecord */
     ProfileRecord: {
@@ -17103,104 +17896,110 @@ export interface components {
        * Accountgroups
        * @default null
        */
-      accountGroups?: string[] | null;
+      accountGroups?: string[] | null | undefined;
       /**
        * Accountgroupsrevision
        * @default null
        */
-      accountGroupsRevision?: number | null;
+      accountGroupsRevision?: number | null | undefined;
       /**
        * Accountkey
        * @default null
        */
-      accountKey?: null | string;
+      accountKey?: null | string | undefined;
       /**
        * Accountkeys
        * @default null
        */
-      accountKeys?: string[] | null;
+      accountKeys?: string[] | null | undefined;
       /**
        * Accountrevision
        * @default null
        */
-      accountRevision?: number | null;
+      accountRevision?: number | null | undefined;
       /** Created */
       created: number;
       /**
        * Folders
        * @default null
        */
-      folders?: components["schemas"]["ProjectFolder"][] | null;
+      folders?: components["schemas"]["ProjectFolder"][] | null | undefined;
       /**
        * Homeserverid
        * @default null
        */
-      homeServerId?: null | string;
+      homeServerId?: null | string | undefined;
       /** Id */
       id: string;
       /**
        * Locations
        * @default null
        */
-      locations?: components["schemas"]["ProjectLocation"][] | null;
+      locations?: components["schemas"]["ProjectLocation"][] | null | undefined;
       /**
        * Locationsrevision
        * @default null
        */
-      locationsRevision?: number | null;
+      locationsRevision?: number | null | undefined;
       /** Name */
       name: string;
       /**
        * Organizationrevision
        * @default null
        */
-      organizationRevision?: number | null;
+      organizationRevision?: number | null | undefined;
       /** Path */
       path: string;
       /**
        * Peerteams
        * @default null
        */
-      peerTeams?: components["schemas"]["PeerTeam"][] | null;
+      peerTeams?: components["schemas"]["PeerTeam"][] | null | undefined;
       /**
        * Peerteamsrevision
        * @default null
        */
-      peerTeamsRevision?: number | null;
+      peerTeamsRevision?: number | null | undefined;
       /**
        * Projectaliases
        * @default null
        */
-      projectAliases?: components["schemas"]["ProjectAlias"][] | null;
+      projectAliases?:
+        | components["schemas"]["ProjectAlias"][]
+        | null
+        | undefined;
       /** @default null */
-      registration?: components["schemas"]["ProjectRegistration"] | null;
+      registration?:
+        | components["schemas"]["ProjectRegistration"]
+        | null
+        | undefined;
       /**
        * Updated
        * @default null
        */
-      updated?: null | number;
+      updated?: null | number | undefined;
       /**
        * Workerbaseref
        * @default null
        */
-      workerBaseRef?: null | string;
+      workerBaseRef?: null | string | undefined;
       /**
        * Workerbaserevision
        * @default null
        */
-      workerBaseRevision?: number | null;
+      workerBaseRevision?: number | null | undefined;
       /**
        * Workerenvironment
        * @default null
        */
-      workerEnvironment?: ("host" | "linux") | null;
+      workerEnvironment?: ("host" | "linux") | null | undefined;
       /**
        * Workerenvironmentrevision
        * @default null
        */
-      workerEnvironmentRevision?: number | null;
+      workerEnvironmentRevision?: number | null | undefined;
     } & {
-      [key: string]: components["schemas"]["JsonValue"];
+      [key: string]: components["schemas"]["JsonValue"] | undefined;
     };
     /**
      * ProjectAlias
@@ -17214,7 +18013,7 @@ export interface components {
       /** Serverid */
       serverId: string;
     } & {
-      [key: string]: components["schemas"]["JsonValue"];
+      [key: string]: components["schemas"]["JsonValue"] | undefined;
     };
     /** ProjectAliasDto */
     ProjectAliasDto: {
@@ -17234,7 +18033,7 @@ export interface components {
        * Catalogpending
        * @default null
        */
-      catalogPending?: boolean | null;
+      catalogPending?: boolean | null | undefined;
       code: components["schemas"]["ProjectDeleteFailureCode"];
       /** Error */
       error: string;
@@ -17242,29 +18041,32 @@ export interface components {
        * Location
        * @default null
        */
-      location?: string[] | null;
+      location?: string[] | null | undefined;
       /**
        * Metadata
        * @default null
        */
-      metadata?: {
-        [key: string]: components["schemas"]["JsonValue"];
-      } | null;
+      metadata?:
+        | {
+            [key: string]: components["schemas"]["JsonValue"] | undefined;
+          }
+        | null
+        | undefined;
       /**
        * Outcome
        * @default null
        */
-      outcome?: "not_applied" | null;
+      outcome?: "not_applied" | null | undefined;
       /**
        * Protocolversion
        * @default null
        */
-      protocolVersion?: number | null;
+      protocolVersion?: number | null | undefined;
       /**
        * Supportedversions
        * @default null
        */
-      supportedVersions?: number[] | null;
+      supportedVersions?: number[] | null | undefined;
     };
     /**
      * ProjectDeleteFailureCode
@@ -17303,52 +18105,64 @@ export interface components {
     /** ProjectEntityDto */
     ProjectEntityDto: {
       /** Accountgroups */
-      accountGroups?: string[] | null;
+      accountGroups?: string[] | null | undefined;
       /** Accountgroupsrevision */
-      accountGroupsRevision?: number | null;
+      accountGroupsRevision?: number | null | undefined;
       /** Accountkey */
-      accountKey?: null | string;
+      accountKey?: null | string | undefined;
       /** Accountkeys */
-      accountKeys?: string[] | null;
+      accountKeys?: string[] | null | undefined;
       /** Accountrevision */
-      accountRevision?: number | null;
+      accountRevision?: number | null | undefined;
       /** Created */
-      created?: null | number;
+      created?: null | number | undefined;
       /** Folders */
-      folders?: components["schemas"]["ProjectFolder"][] | null;
+      folders?: components["schemas"]["ProjectFolder"][] | null | undefined;
       /** Homeserverid */
-      homeServerId?: null | string;
+      homeServerId?: null | string | undefined;
       /** Id */
       id: string;
-      layrReadiness?: components["schemas"]["ProjectLayrReadinessDto"] | null;
-      layrSync?: components["schemas"]["ProjectLayrSyncDto"] | null;
+      layrReadiness?:
+        | components["schemas"]["ProjectLayrReadinessDto"]
+        | null
+        | undefined;
+      layrSync?: components["schemas"]["ProjectLayrSyncDto"] | null | undefined;
       /** Locations */
-      locations?: components["schemas"]["ProjectLocationDto"][] | null;
+      locations?:
+        | components["schemas"]["ProjectLocationDto"][]
+        | null
+        | undefined;
       /** Locationsrevision */
-      locationsRevision?: number | null;
+      locationsRevision?: number | null | undefined;
       /** Name */
-      name?: null | string;
+      name?: null | string | undefined;
       /** Organizationrevision */
-      organizationRevision?: number | null;
+      organizationRevision?: number | null | undefined;
       /** Path */
-      path?: null | string;
+      path?: null | string | undefined;
       /** Peerteams */
-      peerTeams?: components["schemas"]["ProjectPeerTeamDto"][] | null;
+      peerTeams?:
+        | components["schemas"]["ProjectPeerTeamDto"][]
+        | null
+        | undefined;
       /** Peerteamsrevision */
-      peerTeamsRevision?: number | null;
+      peerTeamsRevision?: number | null | undefined;
       /** Projectaliases */
-      projectAliases?: components["schemas"]["ProjectAliasDto"][] | null;
+      projectAliases?:
+        | components["schemas"]["ProjectAliasDto"][]
+        | null
+        | undefined;
       /** Updated */
-      updated?: null | number;
-      vault?: components["schemas"]["ProjectVaultDto"] | null;
+      updated?: null | number | undefined;
+      vault?: components["schemas"]["ProjectVaultDto"] | null | undefined;
       /** Workerbaseref */
-      workerBaseRef?: null | string;
+      workerBaseRef?: null | string | undefined;
       /** Workerbaserevision */
-      workerBaseRevision?: number | null;
+      workerBaseRevision?: number | null | undefined;
       /** Workerenvironment */
-      workerEnvironment?: ("host" | "linux") | null;
+      workerEnvironment?: ("host" | "linux") | null | undefined;
       /** Workerenvironmentrevision */
-      workerEnvironmentRevision?: number | null;
+      workerEnvironmentRevision?: number | null | undefined;
     };
     /**
      * ProjectFolder
@@ -17363,9 +18177,9 @@ export interface components {
        * Parentid
        * @default null
        */
-      parentId?: null | string;
+      parentId?: null | string | undefined;
     } & {
-      [key: string]: components["schemas"]["JsonValue"];
+      [key: string]: components["schemas"]["JsonValue"] | undefined;
     };
     /**
      * ProjectLayrReadinessDto
@@ -17374,9 +18188,9 @@ export interface components {
      */
     ProjectLayrReadinessDto: {
       /** Error */
-      error?: null | string;
+      error?: null | string | undefined;
       /** Projectid */
-      projectId?: null | string;
+      projectId?: null | string | undefined;
       /**
        * State
        * @enum {string}
@@ -17400,7 +18214,7 @@ export interface components {
       /** Projectid */
       projectId: string;
       /** Reason */
-      reason?: null | string;
+      reason?: null | string | undefined;
       /**
        * State
        * @enum {string}
@@ -17418,7 +18232,7 @@ export interface components {
        * Gitorigin
        * @default null
        */
-      gitOrigin?: null | string;
+      gitOrigin?: null | string | undefined;
       /** Path */
       path: string;
       /** Projectid */
@@ -17427,11 +18241,11 @@ export interface components {
        * Requestedpath
        * @default null
        */
-      requestedPath?: null | string;
+      requestedPath?: null | string | undefined;
       /** Serverid */
       serverId: string;
     } & {
-      [key: string]: components["schemas"]["JsonValue"];
+      [key: string]: components["schemas"]["JsonValue"] | undefined;
     };
     /** ProjectLocationDto */
     ProjectLocationDto: {
@@ -17439,7 +18253,7 @@ export interface components {
        * Gitorigin
        * @default null
        */
-      gitOrigin?: null | string;
+      gitOrigin?: null | string | undefined;
       /** Path */
       path: string;
       /** Projectid */
@@ -17448,7 +18262,7 @@ export interface components {
        * Requestedpath
        * @default null
        */
-      requestedPath?: null | string;
+      requestedPath?: null | string | undefined;
       /** Serverid */
       serverId: string;
     };
@@ -17467,17 +18281,17 @@ export interface components {
        * Githead
        * @default null
        */
-      gitHead?: null | string;
+      gitHead?: null | string | undefined;
       /**
        * Gitorigin
        * @default null
        */
-      gitOrigin?: null | string;
+      gitOrigin?: null | string | undefined;
       /**
        * Matches
        * @default []
        */
-      matches?: components["schemas"]["ProjectLocationMatch"][];
+      matches?: components["schemas"]["ProjectLocationMatch"][] | undefined;
     };
     /** ProjectLocationRequest */
     ProjectLocationRequest: {
@@ -17490,7 +18304,7 @@ export interface components {
        * Path
        * @default null
        */
-      path?: string | null;
+      path?: string | null | undefined;
       /** Project */
       project: string;
       /** Request Id */
@@ -17507,104 +18321,110 @@ export interface components {
        * Accountgroups
        * @default null
        */
-      accountGroups?: string[] | null;
+      accountGroups?: string[] | null | undefined;
       /**
        * Accountgroupsrevision
        * @default null
        */
-      accountGroupsRevision?: number | null;
+      accountGroupsRevision?: number | null | undefined;
       /**
        * Accountkey
        * @default null
        */
-      accountKey?: null | string;
+      accountKey?: null | string | undefined;
       /**
        * Accountkeys
        * @default null
        */
-      accountKeys?: string[] | null;
+      accountKeys?: string[] | null | undefined;
       /**
        * Accountrevision
        * @default null
        */
-      accountRevision?: number | null;
+      accountRevision?: number | null | undefined;
       /** Created */
       created: number;
       /**
        * Folders
        * @default null
        */
-      folders?: components["schemas"]["ProjectFolder"][] | null;
+      folders?: components["schemas"]["ProjectFolder"][] | null | undefined;
       /**
        * Homeserverid
        * @default null
        */
-      homeServerId?: null | string;
+      homeServerId?: null | string | undefined;
       /** Id */
       id: string;
       /**
        * Locations
        * @default null
        */
-      locations?: components["schemas"]["ProjectLocation"][] | null;
+      locations?: components["schemas"]["ProjectLocation"][] | null | undefined;
       /**
        * Locationsrevision
        * @default null
        */
-      locationsRevision?: number | null;
+      locationsRevision?: number | null | undefined;
       /** Name */
       name: string;
       /**
        * Organizationrevision
        * @default null
        */
-      organizationRevision?: number | null;
+      organizationRevision?: number | null | undefined;
       /** Path */
       path: string;
       /**
        * Peerteams
        * @default null
        */
-      peerTeams?: components["schemas"]["PeerTeam"][] | null;
+      peerTeams?: components["schemas"]["PeerTeam"][] | null | undefined;
       /**
        * Peerteamsrevision
        * @default null
        */
-      peerTeamsRevision?: number | null;
+      peerTeamsRevision?: number | null | undefined;
       /**
        * Projectaliases
        * @default null
        */
-      projectAliases?: components["schemas"]["ProjectAlias"][] | null;
+      projectAliases?:
+        | components["schemas"]["ProjectAlias"][]
+        | null
+        | undefined;
       /** @default null */
-      registration?: components["schemas"]["ProjectRegistration"] | null;
+      registration?:
+        | components["schemas"]["ProjectRegistration"]
+        | null
+        | undefined;
       /**
        * Updated
        * @default null
        */
-      updated?: null | number;
+      updated?: null | number | undefined;
       /**
        * Workerbaseref
        * @default null
        */
-      workerBaseRef?: null | string;
+      workerBaseRef?: null | string | undefined;
       /**
        * Workerbaserevision
        * @default null
        */
-      workerBaseRevision?: number | null;
+      workerBaseRevision?: number | null | undefined;
       /**
        * Workerenvironment
        * @default null
        */
-      workerEnvironment?: ("host" | "linux") | null;
+      workerEnvironment?: ("host" | "linux") | null | undefined;
       /**
        * Workerenvironmentrevision
        * @default null
        */
-      workerEnvironmentRevision?: number | null;
+      workerEnvironmentRevision?: number | null | undefined;
     } & {
-      [key: string]: components["schemas"]["JsonValue"];
+      [key: string]: components["schemas"]["JsonValue"] | undefined;
     };
     /** ProjectPeerTeamDto */
     ProjectPeerTeamDto: {
@@ -17637,7 +18457,7 @@ export interface components {
       /** Server */
       server: string;
     } & {
-      [key: string]: components["schemas"]["JsonValue"];
+      [key: string]: components["schemas"]["JsonValue"] | undefined;
     };
     /** ProjectRemovalResponse */
     ProjectRemovalResponse: {
@@ -17699,24 +18519,24 @@ export interface components {
      */
     ProjectVaultDto: {
       /** Disk */
-      disk?: null | string;
+      disk?: null | string | undefined;
       /** Lastpush */
-      lastPush?: null | number;
+      lastPush?: null | number | undefined;
       /** Prefix */
-      prefix?: null | string;
+      prefix?: null | string | undefined;
       /** Projectid */
       projectId: string;
       /** Reason */
-      reason?: null | string;
+      reason?: null | string | undefined;
       /** Site */
-      site?: null | string;
+      site?: null | string | undefined;
       /**
        * State
        * @enum {string}
        */
       state: "ok" | "error" | "none";
       /** Unlocked */
-      unlocked?: boolean | null;
+      unlocked?: boolean | null | undefined;
     };
     /** ProjectWriteRequest */
     ProjectWriteRequest: {
@@ -17724,17 +18544,17 @@ export interface components {
        * Account Groups
        * @default null
        */
-      account_groups?: string[] | null;
+      account_groups?: string[] | null | undefined;
       /**
        * Account Key
        * @default null
        */
-      account_key?: null | string;
+      account_key?: null | string | undefined;
       /**
        * Account Keys
        * @default null
        */
-      account_keys?: string[] | null;
+      account_keys?: string[] | null | undefined;
       /**
        * Action
        * @default null
@@ -17753,49 +18573,50 @@ export interface components {
             | "remove_folder"
             | "set_account_groups"
           )
-        | null;
+        | null
+        | undefined;
       /**
        * Base Ref
        * @default null
        */
-      base_ref?: null | string;
+      base_ref?: null | string | undefined;
       /**
        * Environment
        * @default null
        */
-      environment?: ("host" | "linux") | null;
+      environment?: ("host" | "linux") | null | undefined;
       /**
        * Expected Revision
        * @default null
        */
-      expected_revision?: number | null;
+      expected_revision?: number | null | undefined;
       /**
        * Folder Id
        * @default null
        */
-      folder_id?: null | string;
+      folder_id?: null | string | undefined;
       /**
        * Name
        * @default null
        */
-      name?: null | string;
+      name?: null | string | undefined;
       /**
        * Parent Id
        * @default null
        */
-      parent_id?: null | string;
+      parent_id?: null | string | undefined;
       /** Path */
       path: string;
       /**
        * Request Id
        * @default null
        */
-      request_id?: string | null;
+      request_id?: string | null | undefined;
       /**
        * Server
        * @default null
        */
-      server?: string | null;
+      server?: string | null | undefined;
     };
     /**
      * ProviderModel
@@ -17805,7 +18626,7 @@ export interface components {
       /** Model */
       model: string;
     } & {
-      [key: string]: components["schemas"]["JsonValue"];
+      [key: string]: components["schemas"]["JsonValue"] | undefined;
     };
     /**
      * ProviderUpdateNotice
@@ -17847,7 +18668,9 @@ export interface components {
        * Updatenotices
        * @default []
        */
-      updateNotices?: components["schemas"]["ProviderUpdateNotice"][];
+      updateNotices?:
+        | components["schemas"]["ProviderUpdateNotice"][]
+        | undefined;
     };
     /** ProviderVersions */
     ProviderVersions: {
@@ -17883,7 +18706,7 @@ export interface components {
        * @default warning
        * @enum {string}
        */
-      level?: "warning" | "info";
+      level?: "warning" | "info" | undefined;
       /** Message */
       message: string;
       /** Provider */
@@ -17908,7 +18731,7 @@ export interface components {
        * Level
        * @enum {string}
        */
-      level?: "warning" | "info";
+      level?: "warning" | "info" | undefined;
       /** Message */
       message: string;
       /** Provider */
@@ -17922,7 +18745,7 @@ export interface components {
        * Acks
        * @default []
        */
-      acks?: components["schemas"]["FederationAck"][];
+      acks?: components["schemas"]["FederationAck"][] | undefined;
       /**
        * Protocol
        * @constant
@@ -17949,7 +18772,7 @@ export interface components {
        * Deferred
        * @default null
        */
-      deferred?: boolean | null;
+      deferred?: boolean | null | undefined;
       /** Id */
       id: string;
     };
@@ -17967,7 +18790,7 @@ export interface components {
        * @description Short topic label of a native or asynchronous question.
        * @default null
        */
-      header?: null | string;
+      header?: null | string | undefined;
       /** Id */
       id: string;
       /**
@@ -17975,7 +18798,7 @@ export interface components {
        * @description The provider also accepts a free-text answer.
        * @default null
        */
-      isOther?: boolean | null;
+      isOther?: boolean | null | undefined;
       /** Issecret */
       isSecret: boolean;
       /**
@@ -17983,13 +18806,13 @@ export interface components {
        * @description The question accepts more than one choice.
        * @default null
        */
-      multiSelect?: boolean | null;
+      multiSelect?: boolean | null | undefined;
       /**
        * Options
        * @description Choices offered by a native or asynchronous question; absent for form elicitation.
        * @default null
        */
-      options?: components["schemas"]["QuestionOption"][] | null;
+      options?: components["schemas"]["QuestionOption"][] | null | undefined;
       /** Question */
       question: string;
     };
@@ -18004,7 +18827,7 @@ export interface components {
        * Description
        * @default null
        */
-      description?: null | string;
+      description?: null | string | undefined;
       /** Label */
       label: string;
     };
@@ -18019,32 +18842,32 @@ export interface components {
        * Agent
        * @default null
        */
-      agent?: null | string;
+      agent?: null | string | undefined;
       /**
        * Expected Revision
        * @default null
        */
-      expected_revision?: null | string;
+      expected_revision?: null | string | undefined;
       /**
        * Expectedtext
        * @default null
        */
-      expectedText?: null | string;
+      expectedText?: null | string | undefined;
       /**
        * Id
        * @default null
        */
-      id?: null | string;
+      id?: null | string | undefined;
       /**
        * Message Id
        * @default null
        */
-      message_id?: null | string;
+      message_id?: null | string | undefined;
       /**
        * Request Id
        * @default null
        */
-      request_id?: string | null;
+      request_id?: string | null | undefined;
     };
     /** QueueCapabilities */
     QueueCapabilities: {
@@ -18064,32 +18887,32 @@ export interface components {
        * Agent
        * @default null
        */
-      agent?: null | string;
+      agent?: null | string | undefined;
       /**
        * Expected Revision
        * @default null
        */
-      expected_revision?: null | string;
+      expected_revision?: null | string | undefined;
       /**
        * Expectedtext
        * @default null
        */
-      expectedText?: null | string;
+      expectedText?: null | string | undefined;
       /**
        * Id
        * @default null
        */
-      id?: null | string;
+      id?: null | string | undefined;
       /**
        * Message Id
        * @default null
        */
-      message_id?: null | string;
+      message_id?: null | string | undefined;
       /**
        * Request Id
        * @default null
        */
-      request_id?: string | null;
+      request_id?: string | null | undefined;
       /** Text */
       text: string;
     };
@@ -18112,32 +18935,32 @@ export interface components {
        * Agent
        * @default null
        */
-      agent?: null | string;
+      agent?: null | string | undefined;
       /**
        * Expected Revision
        * @default null
        */
-      expected_revision?: null | string;
+      expected_revision?: null | string | undefined;
       /**
        * Expectedtext
        * @default null
        */
-      expectedText?: null | string;
+      expectedText?: null | string | undefined;
       /**
        * Id
        * @default null
        */
-      id?: null | string;
+      id?: null | string | undefined;
       /**
        * Message Id
        * @default null
        */
-      message_id?: null | string;
+      message_id?: null | string | undefined;
       /**
        * Request Id
        * @default null
        */
-      request_id?: string | null;
+      request_id?: string | null | undefined;
     };
     /** QueueItem */
     QueueItem: {
@@ -18145,21 +18968,21 @@ export interface components {
        * Acceptedat
        * @default null
        */
-      acceptedAt?: number | null;
+      acceptedAt?: number | null | undefined;
       /**
        * Assets
        * @default []
        */
-      assets?: components["schemas"]["TranscriptAsset"][];
+      assets?: components["schemas"]["TranscriptAsset"][] | undefined;
       /** Created */
       created: number;
       /** @default current_turn */
-      delivery?: components["schemas"]["DeliveryMoment"];
+      delivery?: components["schemas"]["DeliveryMoment"] | undefined;
       /**
        * Error
        * @default null
        */
-      error?: null | string;
+      error?: null | string | undefined;
       /** Id */
       id: string;
       /**
@@ -18168,7 +18991,7 @@ export interface components {
        */
       kind: "user" | "followup";
       /** @default current_turn */
-      requestedDelivery?: components["schemas"]["DeliveryMoment"];
+      requestedDelivery?: components["schemas"]["DeliveryMoment"] | undefined;
       /**
        * Status
        * @constant
@@ -18188,21 +19011,21 @@ export interface components {
        * Agent
        * @default null
        */
-      agent?: null | string;
+      agent?: null | string | undefined;
       /** Expected Revision */
       expected_revision: string;
       /**
        * Id
        * @default null
        */
-      id?: null | string;
+      id?: null | string | undefined;
       /** Ordered Ids */
       ordered_ids: string[];
       /**
        * Request Id
        * @default null
        */
-      request_id?: string | null;
+      request_id?: string | null | undefined;
     };
     /** QueueResource */
     QueueResource: {
@@ -18242,33 +19065,34 @@ export interface components {
       /** @default null */
       individualLimit?:
         | components["schemas"]["RateLimitIndividualLimit"]
-        | null;
+        | null
+        | undefined;
       /**
        * Limitid
        * @default null
        */
-      limitId?: null | string;
+      limitId?: null | string | undefined;
       /**
        * Limitname
        * @default null
        */
-      limitName?: null | string;
+      limitName?: null | string | undefined;
       /** @default null */
-      primary?: components["schemas"]["RateLimitWindow"] | null;
+      primary?: components["schemas"]["RateLimitWindow"] | null | undefined;
       /**
        * Ratelimitreachedtype
        * @default null
        */
-      rateLimitReachedType?: null | string;
+      rateLimitReachedType?: null | string | undefined;
       /** @default null */
-      secondary?: components["schemas"]["RateLimitWindow"] | null;
+      secondary?: components["schemas"]["RateLimitWindow"] | null | undefined;
       /**
        * Spendcontrolreached
        * @default null
        */
-      spendControlReached?: boolean | null;
+      spendControlReached?: boolean | null | undefined;
     } & {
-      [key: string]: components["schemas"]["JsonValue"];
+      [key: string]: components["schemas"]["JsonValue"] | undefined;
     };
     /**
      * RateLimitBucketDto
@@ -18276,17 +19100,20 @@ export interface components {
      */
     RateLimitBucketDto: {
       /** Limitid */
-      limitId?: null | string;
+      limitId?: null | string | undefined;
       /** Limitname */
-      limitName?: null | string;
+      limitName?: null | string | undefined;
       /** Plantype */
-      planType?: null | string;
-      primary?: components["schemas"]["RateLimitWindowDto"] | null;
+      planType?: null | string | undefined;
+      primary?: components["schemas"]["RateLimitWindowDto"] | null | undefined;
       /** Ratelimitreachedtype */
-      rateLimitReachedType?: null | string;
-      secondary?: components["schemas"]["RateLimitWindowDto"] | null;
+      rateLimitReachedType?: null | string | undefined;
+      secondary?:
+        | components["schemas"]["RateLimitWindowDto"]
+        | null
+        | undefined;
     } & {
-      [key: string]: components["schemas"]["JsonValue"];
+      [key: string]: components["schemas"]["JsonValue"] | undefined;
     };
     /** RateLimitIndividualLimit */
     RateLimitIndividualLimit: {
@@ -18294,7 +19121,7 @@ export interface components {
        * Remainingpercent
        * @default null
        */
-      remainingPercent?: number | null;
+      remainingPercent?: number | null | undefined;
     };
     /**
      * RateLimitResetCredit
@@ -18305,12 +19132,12 @@ export interface components {
        * Expiresat
        * @default null
        */
-      expiresAt?: number | null;
+      expiresAt?: number | null | undefined;
       /**
        * Grantedat
        * @default null
        */
-      grantedAt?: number | null;
+      grantedAt?: number | null | undefined;
       /** Id */
       id: string;
       /** Resettype */
@@ -18318,7 +19145,7 @@ export interface components {
       /** Status */
       status: string;
     } & {
-      [key: string]: components["schemas"]["JsonValue"];
+      [key: string]: components["schemas"]["JsonValue"] | undefined;
     };
     /**
      * RateLimitResetCredits
@@ -18329,14 +19156,14 @@ export interface components {
        * Availablecount
        * @default null
        */
-      availableCount?: number | null;
+      availableCount?: number | null | undefined;
       /**
        * Credits
        * @default []
        */
-      credits?: components["schemas"]["RateLimitResetCredit"][];
+      credits?: components["schemas"]["RateLimitResetCredit"][] | undefined;
     } & {
-      [key: string]: components["schemas"]["JsonValue"];
+      [key: string]: components["schemas"]["JsonValue"] | undefined;
     };
     /**
      * RateLimitsDataDto
@@ -18348,21 +19175,30 @@ export interface components {
      */
     RateLimitsDataDto: {
       /** Accountid */
-      accountId?: null | string;
+      accountId?: null | string | undefined;
       /** Ordinaryusageallowed */
-      ordinaryUsageAllowed?: boolean | null;
-      rateLimitResetCredits?: components["schemas"]["JsonValue"] | null;
-      rateLimits?: components["schemas"]["RateLimitBucketDto"] | null;
+      ordinaryUsageAllowed?: boolean | null | undefined;
+      rateLimitResetCredits?:
+        | components["schemas"]["JsonValue"]
+        | null
+        | undefined;
+      rateLimits?:
+        | components["schemas"]["RateLimitBucketDto"]
+        | null
+        | undefined;
       /** Ratelimitsbylimitid */
-      rateLimitsByLimitId?: {
-        [key: string]: components["schemas"]["RateLimitBucketDto"];
-      } | null;
+      rateLimitsByLimitId?:
+        | {
+            [key: string]: components["schemas"]["RateLimitBucketDto"];
+          }
+        | null
+        | undefined;
       /** Signedin */
-      signedIn?: boolean | null;
+      signedIn?: boolean | null | undefined;
       /** Status */
-      status?: null | string;
+      status?: null | string | undefined;
     } & {
-      [key: string]: components["schemas"]["JsonValue"];
+      [key: string]: components["schemas"]["JsonValue"] | undefined;
     };
     /** RateLimitWindow */
     RateLimitWindow: {
@@ -18370,17 +19206,17 @@ export interface components {
        * Resetsat
        * @default null
        */
-      resetsAt?: number | null;
+      resetsAt?: number | null | undefined;
       /**
        * Usedpercent
        * @default null
        */
-      usedPercent?: number | null;
+      usedPercent?: number | null | undefined;
       /**
        * Windowdurationmins
        * @default null
        */
-      windowDurationMins?: number | null;
+      windowDurationMins?: number | null | undefined;
     };
     /**
      * RateLimitWindowDto
@@ -18388,13 +19224,13 @@ export interface components {
      */
     RateLimitWindowDto: {
       /** Resetsat */
-      resetsAt?: null | number;
+      resetsAt?: null | number | undefined;
       /** Usedpercent */
-      usedPercent?: null | number;
+      usedPercent?: null | number | undefined;
       /** Windowdurationmins */
-      windowDurationMins?: null | number;
+      windowDurationMins?: null | number | undefined;
     } & {
-      [key: string]: components["schemas"]["JsonValue"];
+      [key: string]: components["schemas"]["JsonValue"] | undefined;
     };
     /** ReadStateBody */
     ReadStateBody: {
@@ -18429,7 +19265,7 @@ export interface components {
       /** Turnid */
       turnId: string;
     } & {
-      [key: string]: components["schemas"]["JsonValue"];
+      [key: string]: components["schemas"]["JsonValue"] | undefined;
     };
     /** ReceiptsResource */
     ReceiptsResource: {
@@ -18460,35 +19296,35 @@ export interface components {
        * Attemptid
        * @default null
        */
-      attemptId?: null | string;
+      attemptId?: null | string | undefined;
       /**
        * Checked
        * @default null
        */
-      checked?: boolean | null;
+      checked?: boolean | null | undefined;
       /**
        * Error
        * @default null
        */
-      error?: null | string;
+      error?: null | string | undefined;
       /** @default null */
-      outcome?: components["schemas"]["RecoveryOutcome"] | null;
+      outcome?: components["schemas"]["RecoveryOutcome"] | null | undefined;
       /**
        * Queuedinputpreserved
        * @default null
        */
-      queuedInputPreserved?: boolean | null;
+      queuedInputPreserved?: boolean | null | undefined;
       /**
        * Requests
        * @default null
        */
-      requests?: string[] | null;
+      requests?: string[] | null | undefined;
       status: components["schemas"]["RecoveryStatus"];
       /**
        * Turnid
        * @default null
        */
-      turnId?: null | string;
+      turnId?: null | string | undefined;
     };
     /**
      * RecoveryStage
@@ -18532,7 +19368,7 @@ export interface components {
       /** Link */
       link: string;
     } & {
-      [key: string]: components["schemas"]["JsonValue"];
+      [key: string]: components["schemas"]["JsonValue"] | undefined;
     };
     /** RemoteProjectRegistrationResponse */
     RemoteProjectRegistrationResponse: {
@@ -18540,7 +19376,7 @@ export interface components {
        * Error
        * @default null
        */
-      error?: null | string;
+      error?: null | string | undefined;
       /** Outcome */
       outcome: string;
       /** Projectid */
@@ -18551,18 +19387,18 @@ export interface components {
        * @description The action-specific result from cross-server orchestration.
        * @default null
        */
-      value?: components["schemas"]["JsonValue"] | null;
+      value?: components["schemas"]["JsonValue"] | null | undefined;
     };
     /** RemoteRoomMemberDto */
     RemoteRoomMemberDto: {
       /** Id */
       id: string;
       /** Name */
-      name?: null | string;
+      name?: null | string | undefined;
       /** Role */
-      role?: null | string;
+      role?: null | string | undefined;
       /** Status */
-      status?: null | string;
+      status?: null | string | undefined;
     };
     /** RemoteWorkerLinkDto */
     RemoteWorkerLinkDto: {
@@ -18578,7 +19414,7 @@ export interface components {
       /** Server */
       server: string;
     } & {
-      [key: string]: components["schemas"]["JsonValue"];
+      [key: string]: components["schemas"]["JsonValue"] | undefined;
     };
     /**
      * RenameProgressEvent
@@ -18618,12 +19454,12 @@ export interface components {
        * Name
        * @default null
        */
-      name?: string | null;
+      name?: string | null | undefined;
       /**
        * Request Id
        * @default null
        */
-      request_id?: string | null;
+      request_id?: string | null | undefined;
     };
     /** RenameResponse */
     RenameResponse: {
@@ -18631,24 +19467,24 @@ export interface components {
        * Error
        * @default null
        */
-      error?: null | string;
+      error?: null | string | undefined;
       /** Id */
       id: string;
       /**
        * Name
        * @default null
        */
-      name?: null | string;
+      name?: null | string | undefined;
       /**
        * Request Id
        * @default null
        */
-      request_id?: null | string;
+      request_id?: null | string | undefined;
       /**
        * Status
        * @default null
        */
-      status?: ("pending" | "applied" | "failed") | null;
+      status?: ("pending" | "applied" | "failed") | null | undefined;
     };
     /** RenameServer */
     RenameServer: {
@@ -18659,63 +19495,63 @@ export interface components {
     };
     /** RequestAnswerRecordResponse */
     RequestAnswerRecordResponse: {
-      answer?: components["schemas"]["JsonValue"];
+      answer?: components["schemas"]["JsonValue"] | undefined;
       /**
        * Id
        * @default null
        */
-      id?: string;
+      id?: string | undefined;
       /**
        * Issecret
        * @default null
        */
-      isSecret?: boolean;
+      isSecret?: boolean | undefined;
       /**
        * Question
        * @default null
        */
-      question?: string;
+      question?: string | undefined;
     } & {
-      [key: string]: components["schemas"]["JsonValue"];
+      [key: string]: components["schemas"]["JsonValue"] | undefined;
     };
     /** RequestEntityDto */
     RequestEntityDto: {
       /** Accountkey */
-      accountKey?: null | string;
+      accountKey?: null | string | undefined;
       /** Agent */
-      agent?: null | string;
+      agent?: null | string | undefined;
       /** At */
-      at?: null | number;
+      at?: null | number | undefined;
       /** Connectionid */
-      connectionId?: null | string;
+      connectionId?: null | string | undefined;
       /** Created */
-      created?: null | number;
+      created?: null | number | undefined;
       /** Createdat */
-      createdAt?: null | number;
+      createdAt?: null | number | undefined;
       /** Deferred */
-      deferred?: boolean | null;
+      deferred?: boolean | null | undefined;
       /** Epoch */
-      epoch?: number | null;
+      epoch?: number | null | undefined;
       /** Error */
-      error?: null | string;
+      error?: null | string | undefined;
       /** Id */
       id: string;
       /** Method */
-      method?: null | string;
-      params?: components["schemas"]["RequestParamsDto"] | null;
-      preview?: components["schemas"]["RequestPreviewDto"] | null;
-      result?: components["schemas"]["JsonValue"] | null;
-      status?: components["schemas"]["RequestStatus"] | null;
+      method?: null | string | undefined;
+      params?: components["schemas"]["RequestParamsDto"] | null | undefined;
+      preview?: components["schemas"]["RequestPreviewDto"] | null | undefined;
+      result?: components["schemas"]["JsonValue"] | null | undefined;
+      status?: components["schemas"]["RequestStatus"] | null | undefined;
       /** Threadid */
-      threadId?: null | string;
+      threadId?: null | string | undefined;
       /** Title */
-      title?: null | string;
+      title?: null | string | undefined;
       /** Turnid */
-      turnId?: null | string;
+      turnId?: null | string | undefined;
       /** Updated */
-      updated?: null | number;
+      updated?: null | number | undefined;
       /** Updatedat */
-      updatedAt?: null | number;
+      updatedAt?: null | number | undefined;
     };
     /** RequestInboxEntry */
     RequestInboxEntry: {
@@ -18739,77 +19575,98 @@ export interface components {
      * @description Known request UI fields and typed JSON-safe native protocol extensions.
      */
     RequestParamsDto: {
-      changes?: components["schemas"]["JsonValue"] | null;
+      changes?: components["schemas"]["JsonValue"] | null | undefined;
       /** Clientid */
-      clientId?: null | string;
+      clientId?: null | string | undefined;
       /** Command */
-      command?: string[] | null | string;
+      command?: string[] | null | string | undefined;
       /** Cwd */
-      cwd?: null | string;
+      cwd?: null | string | undefined;
       /** Expiresat */
-      expiresAt?: null | number;
+      expiresAt?: null | number | undefined;
       /** Host */
-      host?: null | string;
+      host?: null | string | undefined;
       /** Linuxuser */
-      linuxUser?: null | string;
+      linuxUser?: null | string | undefined;
       /** Message */
-      message?: null | string;
+      message?: null | string | undefined;
       /** Paste */
-      paste?: {
-        [key: string]: components["schemas"]["JsonValue"];
-      } | null;
+      paste?:
+        | {
+            [key: string]: components["schemas"]["JsonValue"] | undefined;
+          }
+        | null
+        | undefined;
       /** Permissions */
-      permissions?: {
-        [key: string]: components["schemas"]["JsonValue"];
-      } | null;
+      permissions?:
+        | {
+            [key: string]: components["schemas"]["JsonValue"] | undefined;
+          }
+        | null
+        | undefined;
       /** Phase */
-      phase?: null | string;
+      phase?: null | string | undefined;
       /** Questions */
-      questions?: components["schemas"]["RequestQuestionDto"][] | null;
+      questions?:
+        | components["schemas"]["RequestQuestionDto"][]
+        | null
+        | undefined;
       /** Reason */
-      reason?: null | string;
+      reason?: null | string | undefined;
       /** Redirect */
-      redirect?: {
-        [key: string]: components["schemas"]["JsonValue"];
-      } | null;
-      requestedSchema?: components["schemas"]["RequestSchemaDto"] | null;
+      redirect?:
+        | {
+            [key: string]: components["schemas"]["JsonValue"] | undefined;
+          }
+        | null
+        | undefined;
+      requestedSchema?:
+        | components["schemas"]["RequestSchemaDto"]
+        | null
+        | undefined;
       /** Scope */
-      scope?: null | string;
+      scope?: null | string | undefined;
       /** Source */
-      source?: null | string;
+      source?: null | string | undefined;
       /** Threadid */
-      threadId?: null | string;
+      threadId?: null | string | undefined;
       /** Turnid */
-      turnId?: null | string;
+      turnId?: null | string | undefined;
       /** Url */
-      url?: null | string;
+      url?: null | string | undefined;
       /** Usercode */
-      userCode?: null | string;
+      userCode?: null | string | undefined;
       /** Waiting */
-      waiting?: {
-        [key: string]: components["schemas"]["JsonValue"];
-      } | null;
+      waiting?:
+        | {
+            [key: string]: components["schemas"]["JsonValue"] | undefined;
+          }
+        | null
+        | undefined;
     } & {
-      [key: string]: components["schemas"]["JsonValue"];
+      [key: string]: components["schemas"]["JsonValue"] | undefined;
     };
     /**
      * RequestPreviewDto
      * @description Known preview fields plus the native tool's provider-specific preview metadata.
      */
     RequestPreviewDto: {
-      changes?: components["schemas"]["JsonValue"] | null;
+      changes?: components["schemas"]["JsonValue"] | null | undefined;
       /** Command */
-      command?: string[] | null | string;
+      command?: string[] | null | string | undefined;
       /** Cwd */
-      cwd?: null | string;
+      cwd?: null | string | undefined;
       /** Permissions */
-      permissions?: {
-        [key: string]: components["schemas"]["JsonValue"];
-      } | null;
+      permissions?:
+        | {
+            [key: string]: components["schemas"]["JsonValue"] | undefined;
+          }
+        | null
+        | undefined;
       /** Url */
-      url?: null | string;
+      url?: null | string | undefined;
     } & {
-      [key: string]: components["schemas"]["JsonValue"];
+      [key: string]: components["schemas"]["JsonValue"] | undefined;
     };
     /**
      * RequestQuestionDto
@@ -18819,15 +19676,18 @@ export interface components {
       /** Id */
       id: string;
       /** Issecret */
-      isSecret?: boolean | null;
+      isSecret?: boolean | null | undefined;
       /** Multiselect */
-      multiSelect?: boolean | null;
+      multiSelect?: boolean | null | undefined;
       /** Options */
-      options?: components["schemas"]["RequestQuestionOptionDto"][] | null;
+      options?:
+        | components["schemas"]["RequestQuestionOptionDto"][]
+        | null
+        | undefined;
       /** Question */
       question: string;
     } & {
-      [key: string]: components["schemas"]["JsonValue"];
+      [key: string]: components["schemas"]["JsonValue"] | undefined;
     };
     /**
      * RequestQuestionOptionDto
@@ -18835,12 +19695,12 @@ export interface components {
      */
     RequestQuestionOptionDto: {
       /** Description */
-      description?: null | string;
+      description?: null | string | undefined;
       /** Label */
-      label?: null | string;
-      value?: components["schemas"]["JsonValue"] | null;
+      label?: null | string | undefined;
+      value?: components["schemas"]["JsonValue"] | null | undefined;
     } & {
-      [key: string]: components["schemas"]["JsonValue"];
+      [key: string]: components["schemas"]["JsonValue"] | undefined;
     };
     /** RequestRecordResponse */
     RequestRecordResponse: {
@@ -18848,177 +19708,182 @@ export interface components {
        * Accountkey
        * @default null
        */
-      accountKey?: string;
+      accountKey?: string | undefined;
       /**
        * Action
        * @default null
        */
-      action?: string;
+      action?: string | undefined;
       /**
        * Agent
        * @default null
        */
-      agent?: null | string;
+      agent?: null | string | undefined;
       /**
        * Answeredat
        * @default null
        */
-      answeredAt?: number;
+      answeredAt?: number | undefined;
       /**
        * Answeredby
        * @default null
        */
-      answeredBy?: string;
-      answerError?: components["schemas"]["JsonValue"];
+      answeredBy?: string | undefined;
+      answerError?: components["schemas"]["JsonValue"] | undefined;
       /**
        * Answerhistory
        * @default null
        */
-      answerHistory?: components["schemas"]["RequestAnswerRecordResponse"][];
+      answerHistory?:
+        | components["schemas"]["RequestAnswerRecordResponse"][]
+        | undefined;
       /**
        * Answersignature
        * @default null
        */
-      answerSignature?: string;
+      answerSignature?: string | undefined;
       /**
        * Command
        * @default null
        */
-      command?: string;
+      command?: string | undefined;
       /**
        * Connectionid
        * @default null
        */
-      connectionId?: string;
+      connectionId?: string | undefined;
       /**
        * Createdat
        * @default null
        */
-      createdAt?: number;
+      createdAt?: number | undefined;
       /**
        * Cursor
        * @default null
        */
-      cursor?: string;
+      cursor?: string | undefined;
       /**
        * Cwd
        * @default null
        */
-      cwd?: string;
+      cwd?: string | undefined;
       /**
        * Decision
        * @default null
        */
-      decision?: string;
+      decision?: string | undefined;
       /**
        * Deferred
        * @default null
        */
-      deferred?: boolean;
+      deferred?: boolean | undefined;
       /**
        * Deferredat
        * @default null
        */
-      deferredAt?: number;
+      deferredAt?: number | undefined;
       /**
        * Deferredby
        * @default null
        */
-      deferredBy?: string;
+      deferredBy?: string | undefined;
       /**
        * Deletedat
        * @default null
        */
-      deletedAt?: number;
+      deletedAt?: number | undefined;
       /**
        * Deletedby
        * @default null
        */
-      deletedBy?: string;
+      deletedBy?: string | undefined;
       /** @default null */
-      env?: components["schemas"]["JsonObjectResponse"];
+      env?: components["schemas"]["JsonObjectResponse"] | undefined;
       /**
        * Epoch
        * @default null
        */
-      epoch?: number;
+      epoch?: number | undefined;
       /**
        * Expectedpid
        * @default null
        */
-      expectedPid?: number;
+      expectedPid?: number | undefined;
       /**
        * Expectedsignature
        * @default null
        */
-      expectedSignature?: string;
+      expectedSignature?: string | undefined;
       /**
        * Expectedstarttime
        * @default null
        */
-      expectedStartTime?: number;
+      expectedStartTime?: number | undefined;
       /**
        * Handle
        * @default null
        */
-      handle?: string;
+      handle?: string | undefined;
       /**
        * Id
        * @default null
        */
-      id?: string;
+      id?: string | undefined;
       /**
        * Message
        * @default null
        */
-      message?: string;
+      message?: string | undefined;
       /**
        * Method
        * @default null
        */
-      method?: string;
+      method?: string | undefined;
       /**
        * Nativeid
        * @default null
        */
-      nativeId?: string;
+      nativeId?: string | undefined;
       /**
        * Operationid
        * @default null
        */
-      operationId?: string;
+      operationId?: string | undefined;
       /** @default null */
-      params?: components["schemas"]["JsonObjectResponse"];
-      preview?: components["schemas"]["JsonValue"];
+      params?: components["schemas"]["JsonObjectResponse"] | undefined;
+      preview?: components["schemas"]["JsonValue"] | undefined;
       /**
        * Resolvedat
        * @default null
        */
-      resolvedAt?: number;
+      resolvedAt?: number | undefined;
       /**
        * Rpcid
        * @default null
        */
-      rpcId?: number | string;
+      rpcId?: number | string | undefined;
       /**
        * Sequence
        * @default null
        */
-      sequence?: number;
+      sequence?: number | undefined;
       /**
        * Status
        * @default null
        */
-      status?: string;
+      status?: string | undefined;
       /** @default null */
-      supervisor?: components["schemas"]["JsonObjectResponse"] | null;
+      supervisor?:
+        | components["schemas"]["JsonObjectResponse"]
+        | null
+        | undefined;
       /**
        * Turnid
        * @default null
        */
-      turnId?: null | string;
+      turnId?: null | string | undefined;
     } & {
-      [key: string]: components["schemas"]["JsonValue"];
+      [key: string]: components["schemas"]["JsonValue"] | undefined;
     };
     /**
      * RequestSchemaDto
@@ -19030,9 +19895,9 @@ export interface components {
         [key: string]: components["schemas"]["RequestSchemaPropertyDto"];
       };
       /** Required */
-      required?: string[] | null;
+      required?: string[] | null | undefined;
     } & {
-      [key: string]: components["schemas"]["JsonValue"];
+      [key: string]: components["schemas"]["JsonValue"] | undefined;
     };
     /**
      * RequestSchemaPropertyDto
@@ -19040,20 +19905,23 @@ export interface components {
      */
     RequestSchemaPropertyDto: {
       /** Enum */
-      enum?: components["schemas"]["JsonValue"][] | null;
+      enum?: components["schemas"]["JsonValue"][] | null | undefined;
       /** Format */
-      format?: null | string;
+      format?: null | string | undefined;
       /** Issecret */
-      isSecret?: boolean | null;
-      items?: components["schemas"]["RequestSchemaPropertyDto"] | null;
+      isSecret?: boolean | null | undefined;
+      items?:
+        | components["schemas"]["RequestSchemaPropertyDto"]
+        | null
+        | undefined;
       /** Title */
-      title?: null | string;
+      title?: null | string | undefined;
       /** Type */
-      type?: string[] | null | string;
+      type?: string[] | null | string | undefined;
       /** Writeonly */
-      writeOnly?: boolean | null;
+      writeOnly?: boolean | null | undefined;
     } & {
-      [key: string]: components["schemas"]["JsonValue"];
+      [key: string]: components["schemas"]["JsonValue"] | undefined;
     };
     /**
      * RequestStatus
@@ -19084,7 +19952,7 @@ export interface components {
        * Account Key
        * @default default
        */
-      account_key?: string;
+      account_key?: string | undefined;
       /** Credit Id */
       credit_id: string;
       /** Request Id */
@@ -19099,18 +19967,18 @@ export interface components {
        * Durationms
        * @default null
        */
-      durationMs?: null | number;
+      durationMs?: null | number | undefined;
       /**
        * Logicalreadbytes
        * @default null
        */
-      logicalReadBytes?: number | null;
+      logicalReadBytes?: number | null | undefined;
       operation: components["schemas"]["AttributionOperation"];
       /**
        * Residentbytes
        * @default null
        */
-      residentBytes?: number | null;
+      residentBytes?: number | null | undefined;
     };
     /**
      * ResourceChangeEvent
@@ -19252,27 +20120,45 @@ export interface components {
      * @description Per-resource revision; StateResource uses the entity sequence.
      */
     ResourceRevisionEntry: {
-      cursor?: components["schemas"]["SubscriptionCursor"];
+      cursor?: components["schemas"]["SubscriptionCursor"] | undefined;
       /** @description Transient owner access snapshot. Never persist in the client entity cache. Omission requires HTTP recovery. */
-      discoverySnapshot?: components["schemas"]["AccessSnapshot"] | null;
-      draftChanges?: components["schemas"]["DraftChangeBatch"] | null;
-      entityChanges?: components["schemas"]["EntityChangeBatch"] | null;
+      discoverySnapshot?:
+        | components["schemas"]["AccessSnapshot"]
+        | null
+        | undefined;
+      draftChanges?:
+        | components["schemas"]["DraftChangeBatch"]
+        | null
+        | undefined;
+      entityChanges?:
+        | components["schemas"]["EntityChangeBatch"]
+        | null
+        | undefined;
       /** Entitysequencereset */
-      entitySequenceReset?: boolean | null;
+      entitySequenceReset?: boolean | null | undefined;
       /** Entitysequences */
-      entitySequences?: number[] | null;
-      replyKind?: components["schemas"]["SubscriptionReplyKind"];
-      resource?: components["schemas"]["ResourceRef"] | null;
+      entitySequences?: number[] | null | undefined;
+      replyKind?: components["schemas"]["SubscriptionReplyKind"] | undefined;
+      resource?: components["schemas"]["ResourceRef"] | null | undefined;
       /** Revision */
       revision: number;
-      transcriptChanges?: components["schemas"]["TranscriptChangeBatch"] | null;
+      transcriptChanges?:
+        | components["schemas"]["TranscriptChangeBatch"]
+        | null
+        | undefined;
       /** @description Newest transcript history window sent immediately after a subscription acknowledgement, with older-history cursors. The server shrinks it to fit the stream event byte limit; a single oversized newest item requires scoped recovery. */
       transcriptSnapshot?:
         | components["schemas"]["TranscriptPageResponse"]
-        | null;
-      viewSnapshot?: components["schemas"]["SubscriptionViewSnapshot"];
+        | null
+        | undefined;
+      viewSnapshot?:
+        | components["schemas"]["SubscriptionViewSnapshot"]
+        | undefined;
       /** @description Transient voice records and session state. Recover through HTTP if the cursor interval is missing or incomplete. */
-      voiceRecords?: components["schemas"]["VoiceRecordBatch"] | null;
+      voiceRecords?:
+        | components["schemas"]["VoiceRecordBatch"]
+        | null
+        | undefined;
     };
     /**
      * ResourceTokenRatesEvent
@@ -19316,88 +20202,90 @@ export interface components {
        * Accountkey
        * @default null
        */
-      accountKey?: string;
+      accountKey?: string | undefined;
       /**
        * At
        * @default null
        */
-      at?: number;
+      at?: number | undefined;
       /**
        * Autowake
        * @default null
        */
-      autoWake?: boolean;
+      autoWake?: boolean | undefined;
       /**
        * Epoch
        * @default null
        */
-      epoch?: number;
+      epoch?: number | undefined;
       /**
        * Eventid
        * @default null
        */
-      eventId?: string;
+      eventId?: string | undefined;
       /**
        * Observedat
        * @default null
        */
-      observedAt?: number;
+      observedAt?: number | undefined;
       /**
        * Outcome
        * @default null
        */
-      outcome?: string;
+      outcome?: string | undefined;
       /**
        * Reason
        * @default null
        */
-      reason?: string;
+      reason?: string | undefined;
       /**
        * Reattachedat
        * @default null
        */
-      reattachedAt?: number;
+      reattachedAt?: number | undefined;
       /**
        * Reconciledat
        * @default null
        */
-      reconciledAt?: number;
+      reconciledAt?: number | undefined;
       /**
        * Stage
        * @default null
        */
-      stage?: string;
+      stage?: string | undefined;
       /** @default null */
-      startAttempt?: components["schemas"]["StartAttemptRecordResponse"];
+      startAttempt?:
+        | components["schemas"]["StartAttemptRecordResponse"]
+        | undefined;
       /**
        * Supersededat
        * @default null
        */
-      supersededAt?: number;
+      supersededAt?: number | undefined;
       /**
        * Threadid
        * @default null
        */
-      threadId?: string;
+      threadId?: string | undefined;
       /**
        * Turnid
        * @default null
        */
-      turnId?: null | string;
+      turnId?: null | string | undefined;
     } & {
-      [key: string]: components["schemas"]["JsonValue"];
+      [key: string]: components["schemas"]["JsonValue"] | undefined;
     };
     RetainedWorktreeEntityDto: {
       cleanup: components["schemas"]["WorkspaceCleanupSummaryDto"];
       id: string;
-      name?: string | null;
+      name?: string | null | undefined;
       rootId: string;
     };
     RetainedWorktreesResponse: {
       retainedWorktrees: {
         cleanup: components["schemas"]["WorkspaceCleanupSummaryDto"];
         id: string;
-        name?: string | null;
+        name?: string | null | undefined;
       }[];
       rootId: string;
     };
@@ -19415,84 +20303,87 @@ export interface components {
        * Acceptedturnid
        * @default null
        */
-      acceptedTurnId?: null | string;
+      acceptedTurnId?: null | string | undefined;
       /**
        * Accountkey
        * @default null
        */
-      accountKey?: null | string;
+      accountKey?: null | string | undefined;
       /**
        * Attempt
        * @default null
        */
-      attempt?: number | null;
+      attempt?: number | null | undefined;
       /** @default null */
-      cause?: components["schemas"]["CapacityRetryCause"] | null;
+      cause?: components["schemas"]["CapacityRetryCause"] | null | undefined;
       /**
        * Claimedat
        * @default null
        */
-      claimedAt?: null | number;
+      claimedAt?: null | number | undefined;
       /**
        * Cwd
        * @default null
        */
-      cwd?: null | string;
+      cwd?: null | string | undefined;
       /**
        * Dueat
        * @default null
        */
-      dueAt?: null | number;
+      dueAt?: null | number | undefined;
       /**
        * Epoch
        * @default null
        */
-      epoch?: number | null;
+      epoch?: number | null | undefined;
       /** Id */
       id: string;
       /**
        * Maxattempts
        * @default null
        */
-      maxAttempts?: number | null;
+      maxAttempts?: number | null | undefined;
       /**
        * Reason
        * @default null
        */
-      reason?: null | string;
+      reason?: null | string | undefined;
       /**
        * Retryat
        * @default null
        */
-      retryAt?: null | number;
+      retryAt?: null | number | undefined;
       /** @default null */
-      settings?: components["schemas"]["CapacityRetrySettingsDto"] | null;
+      settings?:
+        | components["schemas"]["CapacityRetrySettingsDto"]
+        | null
+        | undefined;
       status: components["schemas"]["CapacityRetryStatus"];
       /**
        * Taskclaims
        * @default null
        */
-      taskClaims?: string[] | null;
+      taskClaims?: string[] | null | undefined;
       /**
        * Threadid
        * @default null
        */
-      threadId?: null | string;
+      threadId?: null | string | undefined;
       /**
        * Turnid
        * @default null
        */
-      turnId?: null | string;
+      turnId?: null | string | undefined;
       /**
        * Updatedat
        * @default null
        */
-      updatedAt?: null | number;
+      updatedAt?: null | number | undefined;
       /**
        * Waits
        * @default null
        */
-      waits?: number | null;
+      waits?: number | null | undefined;
     };
     /** ReviewBaseBranchTargetDto */
     ReviewBaseBranchTargetDto: {
@@ -19512,7 +20403,7 @@ export interface components {
        * Title
        * @default null
        */
-      title?: null | string;
+      title?: null | string | undefined;
       /**
        * @description discriminator enum property added by openapi-typescript
        * @enum {string}
@@ -19550,7 +20441,7 @@ export interface components {
       /** Model */
       model: null | string;
     } & {
-      [key: string]: components["schemas"]["JsonValue"];
+      [key: string]: components["schemas"]["JsonValue"] | undefined;
     };
     /** ReviewUncommittedTargetDto */
     ReviewUncommittedTargetDto: {
@@ -19590,42 +20481,46 @@ export interface components {
     /** RoomDetailDto */
     RoomDetailDto: {
       /** Customname */
-      customName?: null | string;
+      customName?: null | string | undefined;
       /** Federated */
-      federated?: boolean | null;
+      federated?: boolean | null | undefined;
       /** Id */
       id: string;
-      kind?: components["schemas"]["RoomKind"] | null;
-      lastMessage?: components["schemas"]["RoomLastMessage"] | null;
+      kind?: components["schemas"]["RoomKind"] | null | undefined;
+      lastMessage?: components["schemas"]["RoomLastMessage"] | null | undefined;
       /** Localmembers */
-      localMembers?: string[] | null;
+      localMembers?: string[] | null | undefined;
       /** Localparticipants */
       localParticipants?:
         | components["schemas"]["LocalRoomParticipantDto"][]
-        | null;
+        | null
+        | undefined;
       /** Members */
-      members?: string[] | null;
+      members?: string[] | null | undefined;
       /** Name */
-      name?: null | string;
+      name?: null | string | undefined;
       /** Peerid */
-      peerId?: null | string;
+      peerId?: null | string | undefined;
       /** Peerlabel */
-      peerLabel?: null | string;
+      peerLabel?: null | string | undefined;
       /** Peerteamid */
-      peerTeamId?: null | string;
+      peerTeamId?: null | string | undefined;
       /** Peerteamname */
-      peerTeamName?: null | string;
+      peerTeamName?: null | string | undefined;
       /** Projectpath */
-      projectPath?: null | string;
-      radio?: components["schemas"]["RoomRadio"] | null;
+      projectPath?: null | string | undefined;
+      radio?: components["schemas"]["RoomRadio"] | null | undefined;
       /** Remotemembers */
-      remoteMembers?: components["schemas"]["RemoteRoomMemberDto"][] | null;
+      remoteMembers?:
+        | components["schemas"]["RemoteRoomMemberDto"][]
+        | null
+        | undefined;
       /** Rootid */
-      rootId?: null | string;
+      rootId?: null | string | undefined;
       /** Updated */
-      updated?: null | number;
+      updated?: null | number | undefined;
       /** Userhidden */
-      userHidden?: boolean | null;
+      userHidden?: boolean | null | undefined;
     };
     /** RoomDisclosure */
     RoomDisclosure: {
@@ -19633,40 +20528,40 @@ export interface components {
        * Sharenames
        * @default null
        */
-      shareNames?: boolean | null;
+      shareNames?: boolean | null | undefined;
       /**
        * Sharestatus
        * @default null
        */
-      shareStatus?: boolean | null;
+      shareStatus?: boolean | null | undefined;
     };
     /** RoomEntityDto */
     RoomEntityDto: {
       /** Id */
       id: string;
-      kind?: components["schemas"]["RoomKind"] | null;
-      lastMessage?: components["schemas"]["RoomLastMessage"] | null;
+      kind?: components["schemas"]["RoomKind"] | null | undefined;
+      lastMessage?: components["schemas"]["RoomLastMessage"] | null | undefined;
       /** Localmembers */
-      localMembers?: string[] | null;
+      localMembers?: string[] | null | undefined;
       /** Members */
-      members?: string[] | null;
+      members?: string[] | null | undefined;
       /** Name */
-      name?: null | string;
+      name?: null | string | undefined;
       /** Peerlabel */
-      peerLabel?: null | string;
+      peerLabel?: null | string | undefined;
       /** Peerteamid */
-      peerTeamId?: null | string;
+      peerTeamId?: null | string | undefined;
       /** Peerteamname */
-      peerTeamName?: null | string;
+      peerTeamName?: null | string | undefined;
       /** Projectpath */
-      projectPath?: null | string;
-      radio?: components["schemas"]["RoomRadio"] | null;
+      projectPath?: null | string | undefined;
+      radio?: components["schemas"]["RoomRadio"] | null | undefined;
       /** Rootid */
-      rootId?: null | string;
+      rootId?: null | string | undefined;
       /** Updated */
-      updated?: null | number;
+      updated?: null | number | undefined;
       /** Userhidden */
-      userHidden?: boolean | null;
+      userHidden?: boolean | null | undefined;
     };
     /**
      * RoomKind
@@ -19699,7 +20594,7 @@ export interface components {
     RoomRadio: {
       active: components["schemas"]["RoomRadioActive"] | null;
       /** Direct */
-      direct?: boolean | null;
+      direct?: boolean | null | undefined;
       /** Error */
       error: null | string;
       /** Next */
@@ -19707,9 +20602,12 @@ export interface components {
       /** Revision */
       revision: number;
       /** Seen */
-      seen?: {
-        [key: string]: components["schemas"]["RoomRadioSeen"];
-      } | null;
+      seen?:
+        | {
+            [key: string]: components["schemas"]["RoomRadioSeen"];
+          }
+        | null
+        | undefined;
       /** Speaker */
       speaker: null | string;
       status: components["schemas"]["RadioStatus"];
@@ -19727,15 +20625,15 @@ export interface components {
       /** Identity */
       identity: [null | string, number | null, number];
       /** Interruptrequested */
-      interruptRequested?: boolean | null;
+      interruptRequested?: boolean | null | undefined;
       /** Questioncontinuationplanned */
-      questionContinuationPlanned?: boolean | null;
+      questionContinuationPlanned?: boolean | null | undefined;
       /** Threadid */
       threadId: null | string;
       /** Through */
       through: number;
       /** Turnid */
-      turnId?: null | string;
+      turnId?: null | string | undefined;
     };
     /**
      * RoomRadioSeen
@@ -19755,7 +20653,7 @@ export interface components {
        */
       kind: "room";
       /** @description Legacy canvas history, rather than coordination room messages. */
-      legacy?: boolean;
+      legacy?: boolean | undefined;
       /** Roomid */
       roomId: string;
     };
@@ -19779,243 +20677,248 @@ export interface components {
        * @default save
        * @enum {string}
        */
-      action?: "save" | "pause" | "resume" | "delete";
+      action?: "save" | "pause" | "resume" | "delete" | undefined;
       /**
        * Activeworkers
        * @default null
        */
-      activeWorkers?: number | null;
+      activeWorkers?: number | null | undefined;
       /** Agent */
       agent: string;
       /**
        * Alerted
        * @default null
        */
-      alerted?: boolean | null;
+      alerted?: boolean | null | undefined;
       /**
        * At
        * @default null
        */
-      at?: number | null;
+      at?: number | null | undefined;
       /**
        * Checks
        * @default null
        */
-      checks?: number | null;
+      checks?: number | null | undefined;
       /**
        * Command
        * @default
        */
-      command?: string;
+      command?: string | undefined;
       /**
        * Created
        * @default null
        */
-      created?: number | null;
+      created?: number | null | undefined;
       /**
        * Durationminutes
        * @default 30
        */
-      durationMinutes?: number;
+      durationMinutes?: number | undefined;
       /**
        * Epoch
        * @default null
        */
-      epoch?: number | null;
+      epoch?: number | null | undefined;
       /**
        * Error
        * @default null
        */
-      error?: null | string;
+      error?: null | string | undefined;
       /**
        * Event
        * @default worker_completed
        * @enum {string}
        */
-      event?: "worker_completed" | "monitor_exit" | "work_review" | "complaint";
+      event?:
+        | "worker_completed"
+        | "monitor_exit"
+        | "work_review"
+        | "complaint"
+        | undefined;
       /**
        * Eventtext
        * @default null
        */
-      eventText?: null | string;
+      eventText?: null | string | undefined;
       /**
        * Fileactivityat
        * @default null
        */
-      fileActivityAt?: number | null;
+      fileActivityAt?: number | null | undefined;
       /**
        * Filegeneration
        * @default null
        */
-      fileGeneration?: number | null;
+      fileGeneration?: number | null | undefined;
       /**
        * Fingerprint
        * @default null
        */
-      fingerprint?: number[] | null;
+      fingerprint?: number[] | null | undefined;
       /**
        * Id
        * @default null
        */
-      id?: null | string;
+      id?: null | string | undefined;
       /**
        * Inflight
        * @default null
        */
-      inFlight?: boolean | null;
+      inFlight?: boolean | null | undefined;
       /**
        * Intervalseconds
        * @default 60
        */
-      intervalSeconds?: number;
+      intervalSeconds?: number | undefined;
       /**
        * Isnew
        * @default null
        */
-      isNew?: boolean | null;
+      isNew?: boolean | null | undefined;
       /**
        * Kind
        * @default interval
        * @enum {string}
        */
-      kind?: "interval" | "once" | "file" | "event" | "low_workers";
+      kind?: "interval" | "once" | "file" | "event" | "low_workers" | undefined;
       /**
        * Lastat
        * @default null
        */
-      lastAt?: number | null;
+      lastAt?: number | null | undefined;
       /**
        * Lastevent
        * @default null
        */
-      lastEvent?: null | string;
+      lastEvent?: null | string | undefined;
       /**
        * Lastexitcode
        * @default null
        */
-      lastExitCode?: number | null;
+      lastExitCode?: number | null | undefined;
       /**
        * Lastfinished
        * @default null
        */
-      lastFinished?: number | null;
+      lastFinished?: number | null | undefined;
       /**
        * Lastoutput
        * @default null
        */
-      lastOutput?: null | string;
+      lastOutput?: null | string | undefined;
       /**
        * Laststallerror
        * @default null
        */
-      lastStallError?: null | string;
+      lastStallError?: null | string | undefined;
       /**
        * Laststallexitcode
        * @default null
        */
-      lastStallExitCode?: number | null;
+      lastStallExitCode?: number | null | undefined;
       /**
        * Laststallfinished
        * @default null
        */
-      lastStallFinished?: number | null;
+      lastStallFinished?: number | null | undefined;
       /**
        * Livenesscommand
        * @default
        */
-      livenessCommand?: string;
+      livenessCommand?: string | undefined;
       /**
        * Lowsince
        * @default null
        */
-      lowSince?: number | null;
+      lowSince?: number | null | undefined;
       /**
        * Minimumworkers
        * @default 8
        */
-      minimumWorkers?: number;
+      minimumWorkers?: number | undefined;
       /**
        * Name
        * @default null
        */
-      name?: string | null;
+      name?: string | null | undefined;
       /**
        * Nextat
        * @default null
        */
-      nextAt?: number | null;
+      nextAt?: number | null | undefined;
       /**
        * Path
        * @default null
        */
-      path?: string | null;
+      path?: string | null | undefined;
       /**
        * Rootid
        * @default null
        */
-      rootId?: null | string;
+      rootId?: null | string | undefined;
       /**
        * Stall Timeout Seconds
        * @default null
        */
-      stall_timeout_seconds?: number | null;
+      stall_timeout_seconds?: number | null | undefined;
       /**
        * Stalleventkey
        * @default null
        */
-      stallEventKey?: null | string;
+      stallEventKey?: null | string | undefined;
       /**
        * Stallprobe
        * @default null
        */
-      stallProbe?: boolean | null;
+      stallProbe?: boolean | null | undefined;
       /**
        * Stalltext
        * @default null
        */
-      stallText?: null | string;
+      stallText?: null | string | undefined;
       /**
        * Stalltimeoutseconds
        * @default 1800
        */
-      stallTimeoutSeconds?: number;
+      stallTimeoutSeconds?: number | undefined;
       /**
        * Stallwakegeneration
        * @default null
        */
-      stallWakeGeneration?: number | null;
+      stallWakeGeneration?: number | null | undefined;
       /**
        * Status
        * @default null
        */
-      status?: ("active" | "paused") | null;
+      status?: ("active" | "paused") | null | undefined;
       /**
        * Text
        * @default
        */
-      text?: string;
+      text?: string | undefined;
       /**
        * Wakes
        * @default null
        */
-      wakes?: number | null;
+      wakes?: number | null | undefined;
     } & ({
-      kind?: string;
+      kind?: string | undefined;
     } & {
-      kind?: string;
+      kind?: string | undefined;
     });
     /** RuleEntityDto */
     RuleEntityDto: {
       /** Agent */
-      agent?: null | string;
+      agent?: null | string | undefined;
       /** Description */
-      description?: null | string;
+      description?: null | string | undefined;
       /** Enabled */
-      enabled?: boolean | null;
+      enabled?: boolean | null | undefined;
       /** Id */
       id: string;
       /** Name */
-      name?: null | string;
+      name?: null | string | undefined;
     };
     /** RuleInboxEntry */
     RuleInboxEntry: {
@@ -20044,89 +20947,89 @@ export interface components {
        * Activeworkers
        * @default null
        */
-      activeWorkers?: number;
+      activeWorkers?: number | undefined;
       /**
        * Agent
        * @default null
        */
-      agent?: string;
+      agent?: string | undefined;
       /**
        * Alerted
        * @default null
        */
-      alerted?: boolean;
+      alerted?: boolean | undefined;
       /**
        * At
        * @default null
        */
-      at?: number;
+      at?: number | undefined;
       /**
        * Checks
        * @default null
        */
-      checks?: number;
+      checks?: number | undefined;
       /**
        * Command
        * @default null
        */
-      command?: string;
+      command?: string | undefined;
       /**
        * Created
        * @default null
        */
-      created?: number;
+      created?: number | undefined;
       /**
        * Durationminutes
        * @default null
        */
-      durationMinutes?: number;
+      durationMinutes?: number | undefined;
       /**
        * Epoch
        * @default null
        */
-      epoch?: number;
+      epoch?: number | undefined;
       /**
        * Error
        * @default null
        */
-      error?: null | string;
+      error?: null | string | undefined;
       /**
        * Event
        * @default null
        */
-      event?: string;
+      event?: string | undefined;
       /**
        * Eventtext
        * @default null
        */
-      eventText?: string;
+      eventText?: string | undefined;
       /**
        * Fileactivityat
        * @default null
        */
-      fileActivityAt?: number;
+      fileActivityAt?: number | undefined;
       /**
        * Filegeneration
        * @default null
        */
-      fileGeneration?: number;
+      fileGeneration?: number | undefined;
       /**
        * Fingerprint
        * @default null
        */
-      fingerprint?: components["schemas"]["JsonValue"][] | null;
+      fingerprint?: components["schemas"]["JsonValue"][] | null | undefined;
       /** Id */
       id: string;
       /**
        * Inflight
        * @default null
        */
-      inFlight?: boolean;
+      inFlight?: boolean | undefined;
       /**
        * Intervalseconds
        * @default null
        */
-      intervalSeconds?: number;
+      intervalSeconds?: number | undefined;
       /**
        * Kind
        * @enum {string}
@@ -20136,126 +21039,128 @@ export interface components {
        * Lastat
        * @default null
        */
-      lastAt?: number;
+      lastAt?: number | undefined;
       /**
        * Lastevent
        * @default null
        */
-      lastEvent?: string;
+      lastEvent?: string | undefined;
       /**
        * Lastexitcode
        * @default null
        */
-      lastExitCode?: number | null;
+      lastExitCode?: number | null | undefined;
       /**
        * Lastfinished
        * @default null
        */
-      lastFinished?: number;
+      lastFinished?: number | undefined;
       /**
        * Lastoutput
        * @default null
        */
-      lastOutput?: string;
+      lastOutput?: string | undefined;
       /**
        * Laststallerror
        * @default null
        */
-      lastStallError?: null | string;
+      lastStallError?: null | string | undefined;
       /**
        * Laststallexitcode
        * @default null
        */
-      lastStallExitCode?: number | null;
+      lastStallExitCode?: number | null | undefined;
       /**
        * Laststallfinished
        * @default null
        */
-      lastStallFinished?: number;
+      lastStallFinished?: number | undefined;
       /**
        * Livenesscommand
        * @default null
        */
-      livenessCommand?: string;
+      livenessCommand?: string | undefined;
       /**
        * Lowsince
        * @default null
        */
-      lowSince?: null | number;
+      lowSince?: null | number | undefined;
       /**
        * Minimumworkers
        * @default null
        */
-      minimumWorkers?: number;
+      minimumWorkers?: number | undefined;
       /**
        * Name
        * @default null
        */
-      name?: string;
+      name?: string | undefined;
       /**
        * Nextat
        * @default null
        */
-      nextAt?: number;
+      nextAt?: number | undefined;
       /**
        * Path
        * @default null
        */
-      path?: null | string;
+      path?: null | string | undefined;
       /** @default null */
-      restartCheck?: components["schemas"]["RuleRestartCheckRecordResponse"];
+      restartCheck?:
+        | components["schemas"]["RuleRestartCheckRecordResponse"]
+        | undefined;
       /**
        * Rootid
        * @default null
        */
-      rootId?: string;
+      rootId?: string | undefined;
       /**
        * Stall Timeout Seconds
        * @default null
        */
-      stall_timeout_seconds?: number;
+      stall_timeout_seconds?: number | undefined;
       /**
        * Stalleventkey
        * @default null
        */
-      stallEventKey?: string;
+      stallEventKey?: string | undefined;
       /**
        * Stallprobe
        * @default null
        */
-      stallProbe?: boolean;
+      stallProbe?: boolean | undefined;
       /**
        * Stalltext
        * @default null
        */
-      stallText?: string;
+      stallText?: string | undefined;
       /**
        * Stalltimeoutseconds
        * @default null
        */
-      stallTimeoutSeconds?: number;
+      stallTimeoutSeconds?: number | undefined;
       /**
        * Stallwakegeneration
        * @default null
        */
-      stallWakeGeneration?: number;
+      stallWakeGeneration?: number | undefined;
       /**
        * Status
        * @default null
        */
-      status?: string;
+      status?: string | undefined;
       /**
        * Text
        * @default null
        */
-      text?: string;
+      text?: string | undefined;
       /**
        * Wakes
        * @default null
        */
-      wakes?: number;
+      wakes?: number | undefined;
     } & {
-      [key: string]: components["schemas"]["JsonValue"];
+      [key: string]: components["schemas"]["JsonValue"] | undefined;
     };
     /** RuleRestartCheckRecordResponse */
     RuleRestartCheckRecordResponse: {
@@ -20266,7 +21171,7 @@ export interface components {
       /** Monitorid */
       monitorId: string;
     } & {
-      [key: string]: components["schemas"]["JsonValue"];
+      [key: string]: components["schemas"]["JsonValue"] | undefined;
     };
     /** RuntimeLockOperation */
     RuntimeLockOperation: {
@@ -20355,69 +21260,69 @@ export interface components {
        * Accountwide
        * @default null
        */
-      accountWide?: boolean | null;
+      accountWide?: boolean | null | undefined;
       /** Agent */
       agent: string;
       /**
        * Assets
        * @default null
        */
-      assets?: components["schemas"]["TranscriptAsset"][] | null;
+      assets?: components["schemas"]["TranscriptAsset"][] | null | undefined;
       /**
        * At
        * @default null
        */
-      at?: null | number | string;
+      at?: null | number | string | undefined;
       /**
        * Author
        * @default null
        */
-      author?: null | string;
+      author?: null | string | undefined;
       /**
        * Authorname
        * @default null
        */
-      authorName?: null | string;
+      authorName?: null | string | undefined;
       /**
        * Blockedby
        * @default null
        */
-      blockedBy?: string[] | null;
+      blockedBy?: string[] | null | undefined;
       /**
        * Clientmessageid
        * @default null
        */
-      clientMessageId?: null | string;
+      clientMessageId?: null | string | undefined;
       /**
        * Created
        * @default null
        */
-      created?: null | number;
+      created?: null | number | undefined;
       /**
        * Createdby
        * @default null
        */
-      createdBy?: null | string;
+      createdBy?: null | string | undefined;
       /**
        * Cyberaccessprogram
        * @default null
        */
-      cyberAccessProgram?: null | string;
+      cyberAccessProgram?: null | string | undefined;
       /**
        * Decisions
        * @default null
        */
-      decisions?: components["schemas"]["WorkDecisionDto"][] | null;
+      decisions?: components["schemas"]["WorkDecisionDto"][] | null | undefined;
       /**
        * Deliveries
        * @default null
        */
-      deliveries?: null | string;
+      deliveries?: null | string | undefined;
       /**
        * Deliveryerror
        * @default null
        */
-      deliveryError?: null | string;
+      deliveryError?: null | string | undefined;
       /**
        * Deliverystatus
        * @default null
@@ -20436,31 +21341,32 @@ export interface components {
             | "accepted"
             | "sent"
           )
-        | null;
+        | null
+        | undefined;
       /**
        * Dependencies
        * @default null
        */
-      dependencies?: string[] | null;
+      dependencies?: string[] | null | undefined;
       /**
        * Description
        * @default null
        */
-      description?: null | string;
+      description?: null | string | undefined;
       /** @default null */
-      details?: components["schemas"]["JsonValue"] | null;
+      details?: components["schemas"]["JsonValue"] | null | undefined;
       /**
        * Displaystatus
        * @default null
        */
-      displayStatus?: null | string;
+      displayStatus?: null | string | undefined;
       /** Id */
       id: string;
       /**
        * Inputs
        * @default null
        */
-      inputs?: components["schemas"]["TranscriptInput"][] | null;
+      inputs?: components["schemas"]["TranscriptInput"][] | null | undefined;
       /**
        * Kind
        * @enum {string}
@@ -20470,259 +21376,272 @@ export interface components {
        * Leaddeleted
        * @default null
        */
-      leadDeleted?: boolean | null;
+      leadDeleted?: boolean | null | undefined;
       /**
        * Leadid
        * @default null
        */
-      leadId?: null | string;
+      leadId?: null | string | undefined;
       /**
        * Leadname
        * @default null
        */
-      leadName?: null | string;
+      leadName?: null | string | undefined;
       /**
        * Leadstopped
        * @default null
        */
-      leadStopped?: boolean | null;
+      leadStopped?: boolean | null | undefined;
       /**
        * Materialized
        * @default null
        */
-      materialized?: boolean | null;
+      materialized?: boolean | null | undefined;
       /**
        * Members
        * @default null
        */
-      members?: string[] | null;
+      members?: string[] | null | undefined;
       /**
        * Name
        * @default null
        */
-      name?: null | string;
+      name?: null | string | undefined;
       /**
        * @description Provider-native plan update fields retained for plan display.
        * @default null
        */
-      native?: components["schemas"]["JsonValue"];
+      native?: components["schemas"]["JsonValue"] | undefined;
       /** @default null */
-      nativeError?: components["schemas"]["JsonValue"] | null;
+      nativeError?: components["schemas"]["JsonValue"] | null | undefined;
       /**
        * Nativehook
        * @default null
        */
-      nativeHook?: {
-        [key: string]: components["schemas"]["JsonValue"];
-      } | null;
+      nativeHook?:
+        | {
+            [key: string]: components["schemas"]["JsonValue"] | undefined;
+          }
+        | null
+        | undefined;
       /**
        * Nativehookquiet
        * @default null
        */
-      nativeHookQuiet?: boolean | null;
+      nativeHookQuiet?: boolean | null | undefined;
       /**
        * Nativenotice
        * @default null
        */
-      nativeNotice?: ("info" | "warning" | "error") | null;
+      nativeNotice?: ("info" | "warning" | "error") | null | undefined;
       /**
        * Nativereview
        * @default null
        */
-      nativeReview?: {
-        [key: string]: components["schemas"]["JsonValue"];
-      } | null;
+      nativeReview?:
+        | {
+            [key: string]: components["schemas"]["JsonValue"] | undefined;
+          }
+        | null
+        | undefined;
       /**
        * Needsresponse
        * @default null
        */
-      needsResponse?: boolean | null;
+      needsResponse?: boolean | null | undefined;
       /**
        * Observedwait
        * @default null
        */
-      observedWait?: boolean | null;
+      observedWait?: boolean | null | undefined;
       /**
        * Owner
        * @default null
        */
-      owner?: null | string;
+      owner?: null | string | undefined;
       /**
        * Pending
        * @default null
        */
-      pending?: boolean | null;
+      pending?: boolean | null | undefined;
       /**
        * Phase
        * @default null
        */
-      phase?: null | string;
+      phase?: null | string | undefined;
       /** @default null */
-      previousError?: components["schemas"]["JsonValue"] | null;
+      previousError?: components["schemas"]["JsonValue"] | null | undefined;
       /**
        * Projectpath
        * @default null
        */
-      projectPath?: null | string;
+      projectPath?: null | string | undefined;
       /**
        * @description Extensible room radio configuration from the room producer.
        * @default null
        */
-      radio?: components["schemas"]["JsonValue"];
+      radio?: components["schemas"]["JsonValue"] | undefined;
       /**
        * Readat
        * @default null
        */
-      readAt?: null | number;
+      readAt?: null | number | undefined;
       /**
        * Reasoningms
        * @default null
        */
-      reasoningMs?: null | number;
+      reasoningMs?: null | number | undefined;
       /**
        * Reasoningobservedat
        * @default null
        */
-      reasoningObservedAt?: null | number;
+      reasoningObservedAt?: null | number | undefined;
       /**
        * Reasoningsince
        * @default null
        */
-      reasoningSince?: null | number;
+      reasoningSince?: null | number | undefined;
       /**
        * Recipient
        * @default null
        */
-      recipient?: ("user" | "lead") | null;
+      recipient?: ("user" | "lead") | null | undefined;
       /**
        * Requesteddelivery
        * @default null
        */
-      requestedDelivery?: components["schemas"]["DeliveryMoment"] | null;
+      requestedDelivery?:
+        | components["schemas"]["DeliveryMoment"]
+        | null
+        | undefined;
       /**
        * Responses
        * @default null
        */
-      responses?: components["schemas"]["ComplaintResponseDto"][] | null;
+      responses?:
+        | components["schemas"]["ComplaintResponseDto"][]
+        | null
+        | undefined;
       /**
        * Results
        * @default null
        */
-      results?: components["schemas"]["WorkResultDto"][] | null;
+      results?: components["schemas"]["WorkResultDto"][] | null | undefined;
       /**
        * Role
        * @default null
        */
-      role?: null | string;
+      role?: null | string | undefined;
       /**
        * Room
        * @default null
        */
-      room?: null | string;
+      room?: null | string | undefined;
       /**
        * Rootid
        * @default null
        */
-      rootId?: null | string;
+      rootId?: null | string | undefined;
       /**
        * Sender
        * @default null
        */
-      sender?: null | string;
+      sender?: null | string | undefined;
       /**
        * Seq
        * @default null
        */
-      seq?: number | null;
+      seq?: number | null | undefined;
       /**
        * Sourceid
        * @default null
        */
-      sourceId?: null | string;
+      sourceId?: null | string | undefined;
       /**
        * Sourcetype
        * @default null
        */
-      sourceType?: null | string;
+      sourceType?: null | string | undefined;
       /**
        * Status
        * @default null
        */
-      status?: null | string;
+      status?: null | string | undefined;
       /**
        * Steps
        * @default null
        */
-      steps?: components["schemas"]["JsonValue"][] | null;
+      steps?: components["schemas"]["JsonValue"][] | null | undefined;
       /**
        * Streaming
        * @default null
        */
-      streaming?: boolean | null;
+      streaming?: boolean | null | undefined;
       /** Text */
       text: string;
       /**
        * Threadid
        * @default null
        */
-      threadId?: null | string;
+      threadId?: null | string | undefined;
       /**
        * Title
        * @default null
        */
-      title?: null | string;
+      title?: null | string | undefined;
       /**
        * Toolstatus
        * @default null
        */
-      toolStatus?: null | string;
+      toolStatus?: null | string | undefined;
       /**
        * Truncated
        * @default null
        */
-      truncated?: boolean | null;
+      truncated?: boolean | null | undefined;
       /**
        * Turnerror
        * @default null
        */
       turnError?:
         | {
-            [key: string]: components["schemas"]["JsonValue"];
+            [key: string]: components["schemas"]["JsonValue"] | undefined;
           }
         | null
-        | string;
+        | string
+        | undefined;
       /**
        * Turnerrorresolved
        * @default null
        */
-      turnErrorResolved?: boolean | null;
+      turnErrorResolved?: boolean | null | undefined;
       /**
        * Turnid
        * @default null
        */
-      turnId?: null | string;
+      turnId?: null | string | undefined;
       /**
        * Turnstatus
        * @default null
        */
-      turnStatus?: null | string;
+      turnStatus?: null | string | undefined;
       /**
        * Updated
        * @default null
        */
-      updated?: null | number;
+      updated?: null | number | undefined;
       /**
        * Userhidden
        * @default null
        */
-      userHidden?: boolean | null;
+      userHidden?: boolean | null | undefined;
       /**
        * Version
        * @default null
        */
-      version?: number | null;
+      version?: number | null | undefined;
     } & {
-      [key: string]: components["schemas"]["JsonValue"];
+      [key: string]: components["schemas"]["JsonValue"] | undefined;
     };
     /** SearchMigration */
     SearchMigration: {
@@ -20762,34 +21681,37 @@ export interface components {
        * Excerpt
        * @default null
        */
-      excerpt?: null | string;
+      excerpt?: null | string | undefined;
       /** Id */
       id: string;
       /**
        * Kind
        * @default null
        */
-      kind?: null | string;
+      kind?: null | string | undefined;
       /**
        * Reference
        * @default null
        */
-      reference?: null | string;
+      reference?: null | string | undefined;
       /**
        * Room
        * @default null
        */
-      room?: null | string;
+      room?: null | string | undefined;
       /**
        * Text
        * @default null
        */
-      text?: null | string;
+      text?: null | string | undefined;
       /**
        * Type
        * @default null
        */
-      type?: ("message" | "work" | "complaint" | "plan" | "room") | null;
+      type?:
+        | ("message" | "work" | "complaint" | "plan" | "room")
+        | null
+        | undefined;
     };
     /** ServerIdentity */
     ServerIdentity: {
@@ -20826,7 +21748,7 @@ export interface components {
        * @description The cross-server service validates the action-specific payload.
        */
       payload: {
-        [key: string]: components["schemas"]["JsonValue"];
+        [key: string]: components["schemas"]["JsonValue"] | undefined;
       };
       /** Requestid */
       requestId: string;
@@ -20837,7 +21759,7 @@ export interface components {
        * Error
        * @default null
        */
-      error?: null | string;
+      error?: null | string | undefined;
       /** Outcome */
       outcome: string;
       /** Requestid */
@@ -20846,7 +21768,7 @@ export interface components {
        * @description The action-specific result from cross-server orchestration.
        * @default null
        */
-      value?: components["schemas"]["JsonValue"] | null;
+      value?: components["schemas"]["JsonValue"] | null | undefined;
     };
     /** SessionCacheStats */
     SessionCacheStats: {
@@ -20870,19 +21792,19 @@ export interface components {
        * Claudehistoryincomplete
        * @default null
        */
-      claudeHistoryIncomplete?: boolean | null;
+      claudeHistoryIncomplete?: boolean | null | undefined;
       /** Estimated */
       estimated: boolean;
       /**
        * Generation
        * @default null
        */
-      generation?: number | null;
+      generation?: number | null | undefined;
       /**
        * Method
        * @default null
        */
-      method?: null | string;
+      method?: null | string | undefined;
       /** Pricedsamples */
       pricedSamples: number;
       /**
@@ -20918,19 +21840,19 @@ export interface components {
        * Claudehistoryincomplete
        * @default null
        */
-      claudeHistoryIncomplete?: boolean | null;
+      claudeHistoryIncomplete?: boolean | null | undefined;
       /** Estimated */
       estimated: boolean;
       /**
        * Generation
        * @default null
        */
-      generation?: number | null;
+      generation?: number | null | undefined;
       /**
        * Method
        * @default null
        */
-      method?: null | string;
+      method?: null | string | undefined;
       /** Pricedsamples */
       pricedSamples: number;
       /**
@@ -20963,17 +21885,17 @@ export interface components {
        * Autopair
        * @default null
        */
-      autoPair?: boolean | null;
+      autoPair?: boolean | null | undefined;
       /**
        * Autoupdate
        * @default null
        */
-      autoUpdate?: boolean | null;
+      autoUpdate?: boolean | null | undefined;
       /**
        * Requestid
        * @default null
        */
-      requestId?: string | null;
+      requestId?: string | null | undefined;
     };
     /** SetEnabledRequest */
     SetEnabledRequest: {
@@ -21021,7 +21943,7 @@ export interface components {
        * Effort
        * @default null
        */
-      effort?: null | string;
+      effort?: null | string | undefined;
       /** Model */
       model: string;
     };
@@ -21060,7 +21982,7 @@ export interface components {
        * Migration
        * @default null
        */
-      migration?: boolean | null;
+      migration?: boolean | null | undefined;
       /** Request Id */
       request_id: string;
     };
@@ -21248,7 +22170,7 @@ export interface components {
         [key: string]: components["schemas"]["SqliteProfileMetric"];
       };
       /** @default null */
-      lockError?: components["schemas"]["SqliteMetric"] | null;
+      lockError?: components["schemas"]["SqliteMetric"] | null | undefined;
       slowTransactions: components["schemas"]["SqliteHistory"];
       /** Sqlprofile */
       sqlProfile: {
@@ -21256,11 +22178,11 @@ export interface components {
       };
       storeAdmission: components["schemas"]["SqliteStoreAdmission"];
       /** @default null */
-      transaction?: components["schemas"]["SqliteMetric"] | null;
+      transaction?: components["schemas"]["SqliteMetric"] | null | undefined;
       /** @default null */
-      walTelemetry?: components["schemas"]["WalTelemetry"] | null;
+      walTelemetry?: components["schemas"]["WalTelemetry"] | null | undefined;
       /** @default null */
-      writeWait?: components["schemas"]["SqliteMetric"] | null;
+      writeWait?: components["schemas"]["SqliteMetric"] | null | undefined;
     };
     /**
      * SqliteDatabase
@@ -21295,17 +22217,17 @@ export interface components {
        * At
        * @default null
        */
-      at?: null | number;
+      at?: null | number | undefined;
       /**
        * Errortype
        * @default null
        */
-      errorType?: null | string;
+      errorType?: null | string | undefined;
       /**
        * Previoussnapshotavailable
        * @default null
        */
-      previousSnapshotAvailable?: boolean | null;
+      previousSnapshotAvailable?: boolean | null | undefined;
       status: components["schemas"]["SqliteJournalStatus"];
     };
     /**
@@ -21325,24 +22247,26 @@ export interface components {
        * P50Transactionms
        * @default null
        */
-      p50TransactionMs?: null | number;
+      p50TransactionMs?: null | number | undefined;
       /**
        * P95Transactionms
        * @default null
        */
-      p95TransactionMs?: null | number;
+      p95TransactionMs?: null | number | undefined;
       /**
        * P99Transactionms
        * @default null
        */
-      p99TransactionMs?: null | number;
+      p99TransactionMs?: null | number | undefined;
       /**
        * Sites
        * @default {}
        */
-      sites?: {
-        [key: string]: components["schemas"]["SqliteMetric"];
-      };
+      sites?:
+        | {
+            [key: string]: components["schemas"]["SqliteMetric"];
+          }
+        | undefined;
       /** Transactions */
       transactions: number;
       /** Writewaitms */
@@ -21418,13 +22342,13 @@ export interface components {
        * Finishedat
        * @default null
        */
-      finishedAt?: null | number;
+      finishedAt?: null | number | undefined;
       firstStatement: components["schemas"]["SqliteStatement"];
       /**
        * Frames
        * @default null
        */
-      frames?: components["schemas"]["SqliteFrame"][] | null;
+      frames?: components["schemas"]["SqliteFrame"][] | null | undefined;
       /** Id */
       id: string;
       /** Nativethreadid */
@@ -21476,7 +22400,7 @@ export interface components {
       /** Threadid */
       threadId: string;
     } & {
-      [key: string]: components["schemas"]["JsonValue"];
+      [key: string]: components["schemas"]["JsonValue"] | undefined;
     };
     /** StartAttemptRecordResponse */
     StartAttemptRecordResponse: {
@@ -21484,119 +22408,126 @@ export interface components {
        * Accountkey
        * @default null
        */
-      accountKey?: string;
+      accountKey?: string | undefined;
       /**
        * Action
        * @default null
        */
-      action?: string;
+      action?: string | undefined;
       /** @default null */
-      actionIdentity?: components["schemas"]["StartActionIdentityRecordResponse"];
+      actionIdentity?:
+        | components["schemas"]["StartActionIdentityRecordResponse"]
+        | undefined;
       /**
        * Actionrequestid
        * @default null
        */
-      actionRequestId?: string;
+      actionRequestId?: string | undefined;
       /**
        * Activeatreservation
        * @default null
        */
-      activeAtReservation?: boolean;
+      activeAtReservation?: boolean | undefined;
       /**
        * Capacityretryid
        * @default null
        */
-      capacityRetryId?: string;
+      capacityRetryId?: string | undefined;
       /** @default null */
-      claudeInputRequest?: components["schemas"]["JsonObjectResponse"];
+      claudeInputRequest?:
+        | components["schemas"]["JsonObjectResponse"]
+        | undefined;
       /**
        * Clauderetryof
        * @default null
        */
-      claudeRetryOf?: string;
+      claudeRetryOf?: string | undefined;
       /**
        * Connectionid
        * @default null
        */
-      connectionId?: string;
+      connectionId?: string | undefined;
       /**
        * Created
        * @default null
        */
-      created?: number;
+      created?: number | undefined;
       /**
        * Epoch
        * @default null
        */
-      epoch?: number;
+      epoch?: number | undefined;
       /**
        * Events
        * @default null
        */
-      events?: string[];
+      events?: string[] | undefined;
       /**
        * Executionoutcome
        * @default null
        * @enum {string}
        */
-      executionOutcome?: "unknown" | "unsent" | "rejected";
+      executionOutcome?: "unknown" | "unsent" | "rejected" | undefined;
       /**
        * Id
        * @default null
        */
-      id?: string;
+      id?: string | undefined;
       /** @default null */
-      modelSettings?: components["schemas"]["StartModelSettingsRecordResponse"];
+      modelSettings?:
+        | components["schemas"]["StartModelSettingsRecordResponse"]
+        | undefined;
       /**
        * Nativeoperationid
        * @default null
        */
-      nativeOperationId?: string;
+      nativeOperationId?: string | undefined;
       /**
        * Notsubmittedreason
        * @default null
        */
-      notSubmittedReason?: string;
+      notSubmittedReason?: string | undefined;
       /**
        * Observedturnid
        * @default null
        */
-      observedTurnId?: string;
-      prepareError?: components["schemas"]["JsonValue"];
-      responseError?: components["schemas"]["JsonValue"];
+      observedTurnId?: string | undefined;
+      prepareError?: components["schemas"]["JsonValue"] | undefined;
+      responseError?: components["schemas"]["JsonValue"] | undefined;
       /**
        * Retiredevents
        * @default null
        */
-      retiredEvents?: components["schemas"]["JsonValue"][];
+      retiredEvents?: components["schemas"]["JsonValue"][] | undefined;
       /** @default null */
-      reviewTarget?: components["schemas"]["JsonObjectResponse"];
+      reviewTarget?: components["schemas"]["JsonObjectResponse"] | undefined;
       /**
        * Settingsfixed
        * @default null
        */
-      settingsFixed?: boolean;
+      settingsFixed?: boolean | undefined;
       /**
        * Submitted
        * @default null
        */
-      submitted?: boolean;
+      submitted?: boolean | undefined;
       /** @default null */
       supervisorIdentity?:
         | components["schemas"]["SupervisorIdentityRecordResponse"]
-        | null;
+        | null
+        | undefined;
       /**
        * Threadid
        * @default null
        */
-      threadId?: string;
+      threadId?: string | undefined;
       /**
        * Turnid
        * @default null
        */
-      turnId?: string;
+      turnId?: string | undefined;
     } & {
-      [key: string]: components["schemas"]["JsonValue"];
+      [key: string]: components["schemas"]["JsonValue"] | undefined;
     };
     /** StartModelSettingsRecordResponse */
     StartModelSettingsRecordResponse: {
@@ -21604,36 +22535,36 @@ export interface components {
        * Accountkey
        * @default null
        */
-      accountKey?: string;
+      accountKey?: string | undefined;
       /**
        * Connectionid
        * @default null
        */
-      connectionId?: string;
+      connectionId?: string | undefined;
       /**
        * Epoch
        * @default null
        */
-      epoch?: number;
+      epoch?: number | undefined;
       /**
        * Id
        * @default null
        */
-      id?: string;
+      id?: string | undefined;
       /** @default null */
-      settings?: components["schemas"]["JsonObjectResponse"];
+      settings?: components["schemas"]["JsonObjectResponse"] | undefined;
       /**
        * Status
        * @default null
        */
-      status?: string;
+      status?: string | undefined;
       /**
        * Threadid
        * @default null
        */
-      threadId?: string;
+      threadId?: string | undefined;
     } & {
-      [key: string]: components["schemas"]["JsonValue"];
+      [key: string]: components["schemas"]["JsonValue"] | undefined;
     };
     /** StartWaitRecordResponse */
     StartWaitRecordResponse: {
@@ -21643,7 +22574,7 @@ export interface components {
        * Maxrunningturns
        * @default null
        */
-      maxRunningTurns?: number;
+      maxRunningTurns?: number | undefined;
       /**
        * Reason
        * @enum {string}
@@ -21664,14 +22595,14 @@ export interface components {
        * Runningturns
        * @default null
        */
-      runningTurns?: number;
+      runningTurns?: number | undefined;
       /**
        * Until
        * @default null
        */
-      until?: number;
+      until?: number | undefined;
     } & {
-      [key: string]: components["schemas"]["JsonValue"];
+      [key: string]: components["schemas"]["JsonValue"] | undefined;
     };
     /** StateResource */
     StateResource: {
@@ -21703,7 +22634,7 @@ export interface components {
        * Descendants
        * @default true
        */
-      descendants?: boolean;
+      descendants?: boolean | undefined;
       /** Id */
       id: string;
     };
@@ -21753,28 +22684,31 @@ export interface components {
     /** MessageReceipt */
     studio_api__work__models__MessageReceipt: {
       /** Agent */
-      agent?: null | string;
+      agent?: null | string | undefined;
       /** At */
-      at?: number | null;
+      at?: number | null | undefined;
       /** Author */
-      author?: null | string;
+      author?: null | string | undefined;
       /** Deliveries */
-      deliveries?: {
-        [key: string]: string;
-      } | null;
+      deliveries?:
+        | {
+            [key: string]: string;
+          }
+        | null
+        | undefined;
       /** Error */
-      error?: null | string;
+      error?: null | string | undefined;
       /** Id */
       id: string;
       /**
        * Materialized
        * @description The exact user input exists in the saved transcript.
        */
-      materialized?: boolean | null;
+      materialized?: boolean | null | undefined;
       /** Message */
-      message?: null | string;
+      message?: null | string | undefined;
       /** Room */
-      room?: null | string;
+      room?: null | string | undefined;
       /**
        * Status
        * @enum {string}
@@ -21792,9 +22726,9 @@ export interface components {
         | "cancelled"
         | "stored_only";
       /** Text */
-      text?: null | string;
+      text?: null | string | undefined;
       /** Waitingfor */
-      waitingFor?: components["schemas"]["JsonValue"][] | null;
+      waitingFor?: components["schemas"]["JsonValue"][] | null | undefined;
     };
     /**
      * StudioError
@@ -21825,7 +22759,7 @@ export interface components {
        * Eventid
        * @default null
        */
-      eventId?: string | null;
+      eventId?: string | null | undefined;
       /**
        * Id
        * @description Row identity; dismissing it hides this row only.
@@ -21848,7 +22782,7 @@ export interface components {
        * Monitorid
        * @default null
        */
-      monitorId?: string | null;
+      monitorId?: string | null | undefined;
       /**
        * Reason
        * @description The reason in plain words.
@@ -21863,9 +22797,9 @@ export interface components {
     /** StudioErrorsDismissRequest */
     StudioErrorsDismissRequest: {
       /** @description Legacy single error id. Supply either id or ids. */
-      id?: string;
+      id?: string | undefined;
       /** @description Error ids to dismiss atomically. Duplicate ids are reported once. */
-      ids?: string[];
+      ids?: string[] | undefined;
     };
     /** StudioErrorsDismissResponse */
     StudioErrorsDismissResponse: {
@@ -21883,7 +22817,7 @@ export interface components {
     /** SubscriptionAdd */
     SubscriptionAdd: {
       resource: components["schemas"]["ResourceRef"];
-      since?: components["schemas"]["SubscriptionCursor"];
+      since?: components["schemas"]["SubscriptionCursor"] | undefined;
     };
     /**
      * SubscriptionCursor
@@ -21940,12 +22874,12 @@ export interface components {
     SubscriptionReplyKind: "delta" | "snapshot";
     /** @description Bounded subscribed view records. Terminal output offsets count Unicode scalar values. Omission is reserved for oversized scoped recovery. */
     SubscriptionViewSnapshot: {
-      complaint?: components["schemas"]["ComplaintDetailResponse"];
-      legacyMessages?: components["schemas"]["MessageHistory"];
-      processes?: components["schemas"]["ProcessList"];
-      room?: components["schemas"]["ChatRead"];
-      terminalOutput?: components["schemas"]["TerminalOutput"];
-      work?: components["schemas"]["WorkList"];
+      complaint?: components["schemas"]["ComplaintDetailResponse"] | undefined;
+      legacyMessages?: components["schemas"]["MessageHistory"] | undefined;
+      processes?: components["schemas"]["ProcessList"] | undefined;
+      room?: components["schemas"]["ChatRead"] | undefined;
+      terminalOutput?: components["schemas"]["TerminalOutput"] | undefined;
+      work?: components["schemas"]["WorkList"] | undefined;
     };
     /** SummaryAccount */
     SummaryAccount: {
@@ -21953,7 +22887,7 @@ export interface components {
        * Email
        * @default null
        */
-      email?: null | string;
+      email?: null | string | undefined;
       /** Isdefault */
       isDefault: boolean;
       /** Label */
@@ -21962,7 +22896,7 @@ export interface components {
        * Plan
        * @default null
        */
-      plan?: null | string;
+      plan?: null | string | undefined;
       /**
        * Provider
        * @enum {string}
@@ -21989,14 +22923,14 @@ export interface components {
        * Created
        * @default null
        */
-      created?: null | number;
+      created?: null | number | undefined;
       /** Id */
       id: string;
       /**
        * Inflight
        * @default false
        */
-      inFlight?: boolean;
+      inFlight?: boolean | undefined;
       /** Name */
       name: string;
       /** Path */
@@ -22005,41 +22939,41 @@ export interface components {
        * Pinned
        * @default false
        */
-      pinned?: boolean;
+      pinned?: boolean | undefined;
       /**
        * Projectid
        * @default null
        */
-      projectId?: null | string;
+      projectId?: null | string | undefined;
       /**
        * Projectserverid
        * @default null
        */
-      projectServerId?: null | string;
+      projectServerId?: null | string | undefined;
       /**
        * Provider
        * @default null
        */
-      provider?: null | string;
+      provider?: null | string | undefined;
       /**
        * Serverid
        * @default null
        */
-      serverId?: null | string;
+      serverId?: null | string | undefined;
       /** Status */
       status: string;
       /**
        * Team
        * @default false
        */
-      team?: boolean;
+      team?: boolean | undefined;
       /** Unread */
       unread: boolean;
       /**
        * Updated
        * @default null
        */
-      updated?: null | number;
+      updated?: null | number | undefined;
     };
     /** SummaryProject */
     SummaryProject: {
@@ -22047,17 +22981,20 @@ export interface components {
        * Homeserverid
        * @default null
        */
-      homeServerId?: null | string;
+      homeServerId?: null | string | undefined;
       /**
        * Id
        * @default null
        */
-      id?: null | string;
+      id?: null | string | undefined;
       /**
        * Locations
        * @default null
        */
-      locations?: components["schemas"]["ProjectLocationDto"][] | null;
+      locations?:
+        | components["schemas"]["ProjectLocationDto"][]
+        | null
+        | undefined;
       /** Name */
       name: string;
       /** Path */
@@ -22066,7 +23003,10 @@ export interface components {
        * Projectaliases
        * @default null
        */
-      projectAliases?: components["schemas"]["ProjectAliasDto"][] | null;
+      projectAliases?:
+        | components["schemas"]["ProjectAliasDto"][]
+        | null
+        | undefined;
     };
     /** SummaryTarget */
     SummaryTarget: {
@@ -22076,12 +23016,12 @@ export interface components {
        * Itemid
        * @default null
        */
-      itemId?: null | string;
+      itemId?: null | string | undefined;
       /**
        * Section
        * @default messages
        */
-      section?: string;
+      section?: string | undefined;
     };
     /** SupervisorDiagnostics */
     SupervisorDiagnostics: {
@@ -22094,7 +23034,8 @@ export interface components {
       health?:
         | components["schemas"]["SupervisorError"]
         | components["schemas"]["SupervisorHealth"]
-        | null;
+        | null
+        | undefined;
       /** Mode */
       mode: boolean;
       /** Notice */
@@ -22119,14 +23060,17 @@ export interface components {
        * Jobidentity
        * @default null
        */
-      jobIdentity?: null | string;
+      jobIdentity?: null | string | undefined;
       /**
        * Persistenceerrors
        * @default null
        */
-      persistenceErrors?: {
-        [key: string]: string;
-      } | null;
+      persistenceErrors?:
+        | {
+            [key: string]: string;
+          }
+        | null
+        | undefined;
       /** Pid */
       pid: number | null;
       /** Sequence */
@@ -22139,12 +23083,12 @@ export interface components {
        * Stdoutreaderalive
        * @default null
        */
-      stdoutReaderAlive?: boolean | null;
+      stdoutReaderAlive?: boolean | null | undefined;
       /**
        * Stdoutreadererror
        * @default null
        */
-      stdoutReaderError?: null | string;
+      stdoutReaderError?: null | string | undefined;
     };
     /** SupervisorHealth */
     SupervisorHealth: {
@@ -22158,7 +23102,7 @@ export interface components {
        * Outputlimitbytesperhandle
        * @default null
        */
-      outputLimitBytesPerHandle?: number | null;
+      outputLimitBytesPerHandle?: number | null | undefined;
       /** Protocol */
       protocol: number;
       recovery: components["schemas"]["SupervisorRecovery"];
@@ -22180,34 +23124,34 @@ export interface components {
        * Generation
        * @default null
        */
-      generation?: number;
+      generation?: number | undefined;
       /**
        * Handle
        * @default null
        */
-      handle?: string;
+      handle?: string | undefined;
       /**
        * Statedir
        * @default null
        */
-      stateDir?: string;
+      stateDir?: string | undefined;
     } & {
-      [key: string]: components["schemas"]["JsonValue"];
+      [key: string]: components["schemas"]["JsonValue"] | undefined;
     };
     /** SupervisorRecovery */
     SupervisorRecovery: {
       /** @default null */
-      blocked?: components["schemas"]["JsonValue"];
+      blocked?: components["schemas"]["JsonValue"] | undefined;
       /**
        * Degraded
        * @default null
        */
-      degraded?: boolean | null;
+      degraded?: boolean | null | undefined;
       /**
        * Fallbackready
        * @default null
        */
-      fallbackReady?: boolean | null;
+      fallbackReady?: boolean | null | undefined;
     };
     /** SyncAccountCostEntityPayload */
     SyncAccountCostEntityPayload: {
@@ -22814,24 +23758,24 @@ export interface components {
        * Floor
        * @default null
        */
-      floor?: number | null;
+      floor?: number | null | undefined;
       /** Generation */
       generation: number;
       /**
        * Initialhigh
        * @default null
        */
-      initialHigh?: number | null;
+      initialHigh?: number | null | undefined;
       /**
        * Maxseq
        * @default null
        */
-      maxSeq?: number | null;
+      maxSeq?: number | null | undefined;
       /**
        * Reset
        * @default null
        */
-      reset?: false | null;
+      reset?: false | null | undefined;
       /** Workspaceid */
       workspaceId: string;
     };
@@ -22954,7 +23898,7 @@ export interface components {
       gen: number;
       remove: components["schemas"]["ResourceRef"][];
       sessionId: string;
-      tokenRates?: boolean;
+      tokenRates?: boolean | undefined;
     };
     /** SyncTaskEntityPayload */
     SyncTaskEntityPayload: {
@@ -23065,7 +24009,7 @@ export interface components {
       | {
           command: string;
           /** @default 600000 */
-          timeout_ms?: number;
+          timeout_ms?: number | undefined;
         }
       | null;
     /** TaskCursor */
@@ -23083,197 +24027,197 @@ export interface components {
        * Arguments
        * @default null
        */
-      arguments?: null | string;
+      arguments?: null | string | undefined;
       /**
        * Bytes
        * @default null
        */
-      bytes?: number | null;
+      bytes?: number | null | undefined;
       /**
        * Cancelrequested
        * @default null
        */
-      cancelRequested?: boolean | null;
+      cancelRequested?: boolean | null | undefined;
       /**
        * Command
        * @default null
        */
-      command?: null | string;
+      command?: null | string | undefined;
       /**
        * Completedatms
        * @default null
        */
-      completedAtMs?: number | null;
+      completedAtMs?: number | null | undefined;
       /** Created */
       created: number;
       /**
        * Cwd
        * @default null
        */
-      cwd?: null | string;
+      cwd?: null | string | undefined;
       /**
        * Durationms
        * @default null
        */
-      durationMs?: number | null;
+      durationMs?: number | null | undefined;
       /**
        * Error
        * @default null
        */
-      error?: null | string;
+      error?: null | string | undefined;
       /**
        * Exitcode
        * @default null
        */
-      exitCode?: number | null;
+      exitCode?: number | null | undefined;
       /**
        * Finished
        * @default null
        */
-      finished?: null | number;
+      finished?: null | number | undefined;
       /** Id */
       id: string;
       /**
        * Interactive
        * @default null
        */
-      interactive?: boolean | null;
+      interactive?: boolean | null | undefined;
       /**
        * Itemid
        * @default null
        */
-      itemId?: null | string;
+      itemId?: null | string | undefined;
       kind: components["schemas"]["TaskKind"];
       /**
        * Log
        * @default null
        */
-      log?: null | string;
+      log?: null | string | undefined;
       /**
        * Name
        * @default null
        */
-      name?: null | string;
-      outputFile?: string | null;
+      name?: null | string | undefined;
+      outputFile?: string | null | undefined;
       /**
        * Outputtruncated
        * @default null
        */
-      outputTruncated?: boolean | null;
+      outputTruncated?: boolean | null | undefined;
       /**
        * Processid
        * @default null
        */
-      processId?: null | string;
+      processId?: null | string | undefined;
       /**
        * Query
        * @default null
        */
-      query?: null | string;
+      query?: null | string | undefined;
       /**
        * Server
        * @default null
        */
-      server?: null | string;
+      server?: null | string | undefined;
       /**
        * Startedatms
        * @default null
        */
-      startedAtMs?: number | null;
+      startedAtMs?: number | null | undefined;
       status: components["schemas"]["TaskStatus"];
       /**
        * Stdinclosed
        * @default null
        */
-      stdinClosed?: boolean | null;
+      stdinClosed?: boolean | null | undefined;
       /**
        * Stdincloserequested
        * @default null
        */
-      stdinCloseRequested?: null | string;
+      stdinCloseRequested?: null | string | undefined;
       /**
        * Stdinerror
        * @default null
        */
-      stdinError?: null | string;
+      stdinError?: null | string | undefined;
       /**
        * Tail
        * @default null
        */
-      tail?: null | string;
+      tail?: null | string | undefined;
       /**
        * Timeout Ms
        * @default null
        */
-      timeout_ms?: number | null;
+      timeout_ms?: number | null | undefined;
       /**
        * Turnid
        * @default null
        */
-      turnId?: null | string;
+      turnId?: null | string | undefined;
       /**
        * Type
        * @default null
        */
-      type?: null | string;
+      type?: null | string | undefined;
     };
     /** TaskEntityDto */
     TaskEntityDto: {
       /** Agent */
-      agent?: null | string;
+      agent?: null | string | undefined;
       /** Bytes */
-      bytes?: number | null;
+      bytes?: number | null | undefined;
       /** Cancelrequested */
-      cancelRequested?: boolean | null;
+      cancelRequested?: boolean | null | undefined;
       /** Command */
-      command?: null | string;
+      command?: null | string | undefined;
       /** Created */
-      created?: null | number;
+      created?: null | number | undefined;
       /** Cwd */
-      cwd?: null | string;
+      cwd?: null | string | undefined;
       /** Durationms */
-      durationMs?: number | null;
+      durationMs?: number | null | undefined;
       /**
        * Error
        * @default null
        */
-      error?: null | string;
+      error?: null | string | undefined;
       /** Exitcode */
-      exitCode?: number | null;
+      exitCode?: number | null | undefined;
       /** Finished */
-      finished?: null | number;
+      finished?: null | number | undefined;
       /** Id */
       id: string;
       /** Interactive */
-      interactive?: boolean | null;
-      kind?: components["schemas"]["TaskKind"] | null;
+      interactive?: boolean | null | undefined;
+      kind?: components["schemas"]["TaskKind"] | null | undefined;
       /** Log */
-      log?: null | string;
+      log?: null | string | undefined;
       /** Name */
-      name?: null | string;
-      outputFile?: string | null;
+      name?: null | string | undefined;
+      outputFile?: string | null | undefined;
       /** Outputtruncated */
-      outputTruncated?: boolean | null;
+      outputTruncated?: boolean | null | undefined;
       /** Processid */
-      processId?: null | string;
+      processId?: null | string | undefined;
       /** Query */
-      query?: null | string;
-      status?: components["schemas"]["TaskStatus"] | null;
+      query?: null | string | undefined;
+      status?: components["schemas"]["TaskStatus"] | null | undefined;
       /** Stdinclosed */
-      stdinClosed?: boolean | null;
+      stdinClosed?: boolean | null | undefined;
       /** Stdincloserequested */
-      stdinCloseRequested?: null | string;
+      stdinCloseRequested?: null | string | undefined;
       /** Stdinerror */
-      stdinError?: null | string;
+      stdinError?: null | string | undefined;
       /**
        * Tail
        * @default null
        */
-      tail?: null | string;
+      tail?: null | string | undefined;
       /** Timeout Ms */
-      timeout_ms?: number | null;
+      timeout_ms?: number | null | undefined;
       /** Turnid */
-      turnId?: null | string;
+      turnId?: null | string | undefined;
     };
     TaskGateDefaultResponse: {
       defaultGate: components["schemas"]["TaskAcceptanceGate"];
@@ -23282,9 +24226,9 @@ export interface components {
     TaskGateEvidence: {
       config: components["schemas"]["TaskAcceptanceGate"];
       cwd: string | null;
-      error?: string | null;
+      error?: string | null | undefined;
       exitCode: number | null;
-      finished?: number;
+      finished?: number | undefined;
       log: string | null;
       monitorId: string | null;
       output: string;
@@ -23323,7 +24267,7 @@ export interface components {
     /** TasksResource */
     TasksResource: {
       /** Agentid */
-      agentId?: string;
+      agentId?: string | undefined;
       /**
        * @description discriminator enum property added by openapi-typescript
        * @enum {string}
@@ -23369,14 +24313,14 @@ export interface components {
        * Cols
        * @default 100
        */
-      cols?: number;
+      cols?: number | undefined;
       /** Id */
       id: string;
       /**
        * Rows
        * @default 28
        */
-      rows?: number;
+      rows?: number | undefined;
     };
     /**
      * TerminalEntityDto
@@ -23393,12 +24337,12 @@ export interface components {
        * Error
        * @default null
        */
-      error?: null | string;
+      error?: null | string | undefined;
       /**
        * Exitcode
        * @default null
        */
-      exitCode?: number | null;
+      exitCode?: number | null | undefined;
       /** Id */
       id: string;
       status: components["schemas"]["TerminalState"];
@@ -23408,9 +24352,9 @@ export interface components {
        * Updated
        * @default null
        */
-      updated?: null | number;
+      updated?: null | number | undefined;
     } & {
-      [key: string]: components["schemas"]["JsonValue"];
+      [key: string]: components["schemas"]["JsonValue"] | undefined;
     };
     /** TerminalInput */
     TerminalInput: {
@@ -23433,7 +24377,7 @@ export interface components {
        * Error
        * @default null
        */
-      error?: null | string;
+      error?: null | string | undefined;
       /** Ok */
       ok: boolean;
     };
@@ -23448,27 +24392,27 @@ export interface components {
        * Availableoffset
        * @default null
        */
-      availableOffset?: number | null;
+      availableOffset?: number | null | undefined;
       /**
        * Error
        * @default null
        */
-      error?: null | string;
+      error?: null | string | undefined;
       /**
        * Exitcode
        * @default null
        */
-      exitCode?: number | null;
+      exitCode?: number | null | undefined;
       /**
        * Hasmore
        * @default null
        */
-      hasMore?: boolean | null;
+      hasMore?: boolean | null | undefined;
       /**
        * Historystart
        * @default null
        */
-      historyStart?: number | null;
+      historyStart?: number | null | undefined;
       /** Offset */
       offset: number;
       status: components["schemas"]["TerminalState"];
@@ -23501,12 +24445,12 @@ export interface components {
        * Error
        * @default null
        */
-      error?: null | string;
+      error?: null | string | undefined;
       /**
        * Exitcode
        * @default null
        */
-      exitCode?: number | null;
+      exitCode?: number | null | undefined;
       /** Id */
       id: string;
       status: components["schemas"]["TerminalState"];
@@ -23516,9 +24460,9 @@ export interface components {
        * Updated
        * @default null
        */
-      updated?: null | number;
+      updated?: null | number | undefined;
     } & {
-      [key: string]: components["schemas"]["JsonValue"];
+      [key: string]: components["schemas"]["JsonValue"] | undefined;
     };
     /** TerminalRename */
     TerminalRename: {
@@ -23533,14 +24477,14 @@ export interface components {
        * Cols
        * @default 100
        */
-      cols?: number;
+      cols?: number | undefined;
       /** Id */
       id: string;
       /**
        * Rows
        * @default 28
        */
-      rows?: number;
+      rows?: number | undefined;
     };
     /** TerminalResource */
     TerminalResource: {
@@ -23620,12 +24564,12 @@ export interface components {
        * Error
        * @default null
        */
-      error?: null | string;
+      error?: null | string | undefined;
       /**
        * Remaining
        * @default null
        */
-      remaining?: number | null;
+      remaining?: number | null | undefined;
       status: components["schemas"]["TombstonePruneState"];
       /** Updated */
       updated: number;
@@ -23648,115 +24592,115 @@ export interface components {
        * Accountkey
        * @default null
        */
-      accountKey?: string;
+      accountKey?: string | undefined;
       /**
        * Admissiondelayms
        * @default null
        */
-      admissionDelayMs?: number;
+      admissionDelayMs?: number | undefined;
       /**
        * Agent
        * @default null
        */
-      agent?: string;
+      agent?: string | undefined;
       /**
        * Agentids
        * @default null
        */
-      agentIds?: string[];
+      agentIds?: string[] | undefined;
       /**
        * Callbackqueuedelayms
        * @default null
        */
-      callbackQueueDelayMs?: number;
+      callbackQueueDelayMs?: number | undefined;
       /**
        * Callbackstartedat
        * @default null
        */
-      callbackStartedAt?: number;
+      callbackStartedAt?: number | undefined;
       /**
        * Callid
        * @default null
        */
-      callId?: string;
+      callId?: string | undefined;
       /**
        * Cancelrequested
        * @default null
        */
-      cancelRequested?: boolean;
+      cancelRequested?: boolean | undefined;
       /**
        * Connectionid
        * @default null
        */
-      connectionId?: null | string;
+      connectionId?: null | string | undefined;
       /**
        * Created
        * @default null
        */
-      created?: number;
+      created?: number | undefined;
       /**
        * Epoch
        * @default null
        */
-      epoch?: number;
+      epoch?: number | undefined;
       /**
        * Error
        * @default null
        */
-      error?: string;
+      error?: string | undefined;
       /**
        * Executionqueuedelayms
        * @default null
        */
-      executionQueueDelayMs?: number;
+      executionQueueDelayMs?: number | undefined;
       /**
        * Finished
        * @default null
        */
-      finished?: number;
+      finished?: number | undefined;
       /** Id */
       id: string;
       /** @default null */
-      nativeDelivery?: components["schemas"]["JsonObjectResponse"];
+      nativeDelivery?: components["schemas"]["JsonObjectResponse"] | undefined;
       /** @default null */
-      operationResult?: components["schemas"]["JsonObjectResponse"];
+      operationResult?: components["schemas"]["JsonObjectResponse"] | undefined;
       /**
        * Outcome
        * @default null
        */
-      outcome?: string;
+      outcome?: string | undefined;
       /**
        * Queuedelayms
        * @default null
        */
-      queueDelayMs?: number;
+      queueDelayMs?: number | undefined;
       /**
        * Readonly
        * @default null
        */
-      readOnly?: boolean;
+      readOnly?: boolean | undefined;
       /**
        * Request Id
        * @default null
        */
-      request_id?: string;
+      request_id?: string | undefined;
       /**
        * Reservationdelayms
        * @default null
        */
-      reservationDelayMs?: number;
+      reservationDelayMs?: number | undefined;
       /** @default null */
-      result?: components["schemas"]["JsonObjectResponse"];
+      result?: components["schemas"]["JsonObjectResponse"] | undefined;
       /**
        * Rpcid
        * @default null
        */
-      rpcId?: number | string;
+      rpcId?: number | string | undefined;
       /**
        * Signature
        * @default null
        */
-      signature?: string;
+      signature?: string | undefined;
       /**
        * @description discriminator enum property added by openapi-typescript
        * @enum {string}
@@ -23773,38 +24717,40 @@ export interface components {
        * Started
        * @default null
        */
-      started?: number;
+      started?: number | undefined;
       /** @default null */
-      supervisor?: components["schemas"]["JsonObjectResponse"];
+      supervisor?: components["schemas"]["JsonObjectResponse"] | undefined;
       /**
        * Threadid
        * @default null
        */
-      threadId?: string;
+      threadId?: string | undefined;
       /** @default null */
-      timing?: components["schemas"]["ToolRequestTimingRecordResponse"];
+      timing?:
+        | components["schemas"]["ToolRequestTimingRecordResponse"]
+        | undefined;
       /**
        * Tool
        * @default null
        */
-      tool?: string;
+      tool?: string | undefined;
       /**
        * Turnid
        * @default null
        */
-      turnId?: string;
+      turnId?: string | undefined;
       /**
        * Updated
        * @default null
        */
-      updated?: number;
+      updated?: number | undefined;
       /**
        * Wirereceivedat
        * @default null
        */
-      wireReceivedAt?: number;
+      wireReceivedAt?: number | undefined;
     } & {
-      [key: string]: components["schemas"]["JsonValue"];
+      [key: string]: components["schemas"]["JsonValue"] | undefined;
     };
     /** ToolRequestTimingRecordResponse */
     ToolRequestTimingRecordResponse: {
@@ -23812,93 +24758,96 @@ export interface components {
        * Admissiondelayms
        * @default null
        */
-      admissionDelayMs?: number;
+      admissionDelayMs?: number | undefined;
       /**
        * Callbackqueuedelayms
        * @default null
        */
-      callbackQueueDelayMs?: number;
+      callbackQueueDelayMs?: number | undefined;
       /**
        * Callbackstartedat
        * @default null
        */
-      callbackStartedAt?: number;
+      callbackStartedAt?: number | undefined;
       /**
        * Executionqueuedelayms
        * @default null
        */
-      executionQueueDelayMs?: number;
+      executionQueueDelayMs?: number | undefined;
       /**
        * Handlerendedat
        * @default null
        */
-      handlerEndedAt?: number;
+      handlerEndedAt?: number | undefined;
       /**
        * Handlerstartedat
        * @default null
        */
-      handlerStartedAt?: number;
+      handlerStartedAt?: number | undefined;
       /**
        * Queuedelayms
        * @default null
        */
-      queueDelayMs?: number;
+      queueDelayMs?: number | undefined;
       /**
        * Reservationbeganat
        * @default null
        */
-      reservationBeganAt?: number;
+      reservationBeganAt?: number | undefined;
       /**
        * Reservationdelayms
        * @default null
        */
-      reservationDelayMs?: number;
+      reservationDelayMs?: number | undefined;
       /**
        * Reservationendedat
        * @default null
        */
-      reservationEndedAt?: number;
+      reservationEndedAt?: number | undefined;
       /**
        * Reservationlockedat
        * @default null
        */
-      reservationLockedAt?: number;
+      reservationLockedAt?: number | undefined;
       /**
        * Wirereceivedat
        * @default null
        */
-      wireReceivedAt?: number;
+      wireReceivedAt?: number | undefined;
     } & {
-      [key: string]: components["schemas"]["JsonValue"];
+      [key: string]: components["schemas"]["JsonValue"] | undefined;
     };
     /** TranscriptAgent */
     TranscriptAgent: {
       /** @default null */
-      activity?: components["schemas"]["AgentActivity"] | null;
+      activity?: components["schemas"]["AgentActivity"] | null | undefined;
       /**
        * Compactions
        * @default null
        */
-      compactions?: number | null;
+      compactions?: number | null | undefined;
       /**
        * Compactionsobservedonly
        * @default null
        */
-      compactionsObservedOnly?: boolean | null;
+      compactionsObservedOnly?: boolean | null | undefined;
       /** @default null */
-      contextUsage?: components["schemas"]["TranscriptContextUsage"] | null;
+      contextUsage?:
+        | components["schemas"]["TranscriptContextUsage"]
+        | null
+        | undefined;
       /** Id */
       id: string;
       /**
        * Inflight
        * @default null
        */
-      inFlight?: boolean | null;
+      inFlight?: boolean | null | undefined;
       /**
        * Status
        * @default null
        */
-      status?: null | string;
+      status?: null | string | undefined;
     };
     /**
      * TranscriptAsset
@@ -23942,12 +24891,12 @@ export interface components {
        * Tokens
        * @default null
        */
-      tokens?: number | null;
+      tokens?: number | null | undefined;
       /**
        * Window
        * @default null
        */
-      window?: number | null;
+      window?: number | null | undefined;
     };
     /**
      * TranscriptHistoryVersion
@@ -23963,22 +24912,22 @@ export interface components {
        * Assets
        * @default []
        */
-      assets?: components["schemas"]["TranscriptAsset"][];
+      assets?: components["schemas"]["TranscriptAsset"][] | undefined;
       /**
        * At
        * @default null
        */
-      at?: null | number;
+      at?: null | number | undefined;
       /**
        * Clientmessageid
        * @default null
        */
-      clientMessageId?: null | string;
+      clientMessageId?: null | string | undefined;
       /**
        * Deliveryerror
        * @default null
        */
-      deliveryError?: null | string;
+      deliveryError?: null | string | undefined;
       /**
        * Deliverystatus
        * @default null
@@ -23997,35 +24946,39 @@ export interface components {
             | "accepted"
             | "sent"
           )
-        | null;
+        | null
+        | undefined;
       /**
        * Id
        * @default null
        */
-      id?: null | string;
+      id?: null | string | undefined;
       /** Kind */
       kind: string;
       /**
        * Materialized
        * @default null
        */
-      materialized?: boolean | null;
+      materialized?: boolean | null | undefined;
       /**
        * Pending
        * @default null
        */
-      pending?: boolean | null;
+      pending?: boolean | null | undefined;
       /**
        * Requesteddelivery
        * @default null
        */
-      requestedDelivery?: components["schemas"]["DeliveryMoment"] | null;
+      requestedDelivery?:
+        | components["schemas"]["DeliveryMoment"]
+        | null
+        | undefined;
       /** Text */
       text: string;
       /** Truncated */
       truncated: boolean;
     } & {
-      [key: string]: components["schemas"]["JsonValue"];
+      [key: string]: components["schemas"]["JsonValue"] | undefined;
     };
     /**
      * TranscriptItemResponse
@@ -24036,37 +24989,37 @@ export interface components {
        * Accountwide
        * @default null
        */
-      accountWide?: boolean | null;
+      accountWide?: boolean | null | undefined;
       /**
        * Agent
        * @default null
        */
-      agent?: null | string;
+      agent?: null | string | undefined;
       /**
        * Assets
        * @default null
        */
-      assets?: components["schemas"]["TranscriptAsset"][] | null;
+      assets?: components["schemas"]["TranscriptAsset"][] | null | undefined;
       /**
        * At
        * @default null
        */
-      at?: null | number | string;
+      at?: null | number | string | undefined;
       /**
        * Clientmessageid
        * @default null
        */
-      clientMessageId?: null | string;
+      clientMessageId?: null | string | undefined;
       /**
        * Cyberaccessprogram
        * @default null
        */
-      cyberAccessProgram?: null | string;
+      cyberAccessProgram?: null | string | undefined;
       /**
        * Deliveryerror
        * @default null
        */
-      deliveryError?: null | string;
+      deliveryError?: null | string | undefined;
       /**
        * Deliverystatus
        * @default null
@@ -24085,150 +25038,161 @@ export interface components {
             | "accepted"
             | "sent"
           )
-        | null;
+        | null
+        | undefined;
       /** @default null */
-      details?: components["schemas"]["JsonValue"] | null;
+      details?: components["schemas"]["JsonValue"] | null | undefined;
       /** Id */
       id: string;
       /**
        * Inputs
        * @default null
        */
-      inputs?: components["schemas"]["TranscriptInput"][] | null;
+      inputs?: components["schemas"]["TranscriptInput"][] | null | undefined;
       /**
        * Kind
        * @default null
        */
-      kind?: null | string;
+      kind?: null | string | undefined;
       /**
        * Materialized
        * @default null
        */
-      materialized?: boolean | null;
+      materialized?: boolean | null | undefined;
       /** @default null */
-      nativeError?: components["schemas"]["JsonValue"] | null;
+      nativeError?: components["schemas"]["JsonValue"] | null | undefined;
       /**
        * Nativehook
        * @default null
        */
-      nativeHook?: {
-        [key: string]: components["schemas"]["JsonValue"];
-      } | null;
+      nativeHook?:
+        | {
+            [key: string]: components["schemas"]["JsonValue"] | undefined;
+          }
+        | null
+        | undefined;
       /**
        * Nativehookquiet
        * @default null
        */
-      nativeHookQuiet?: boolean | null;
+      nativeHookQuiet?: boolean | null | undefined;
       /**
        * Nativenotice
        * @default null
        */
-      nativeNotice?: ("info" | "warning" | "error") | null;
+      nativeNotice?: ("info" | "warning" | "error") | null | undefined;
       /**
        * Nativereview
        * @default null
        */
-      nativeReview?: {
-        [key: string]: components["schemas"]["JsonValue"];
-      } | null;
+      nativeReview?:
+        | {
+            [key: string]: components["schemas"]["JsonValue"] | undefined;
+          }
+        | null
+        | undefined;
       /**
        * Observedwait
        * @default null
        */
-      observedWait?: boolean | null;
+      observedWait?: boolean | null | undefined;
       /**
        * Pending
        * @default false
        */
-      pending?: boolean;
+      pending?: boolean | undefined;
       /**
        * Phase
        * @default null
        */
-      phase?: null | string;
+      phase?: null | string | undefined;
       /** @default null */
-      previousError?: components["schemas"]["JsonValue"] | null;
+      previousError?: components["schemas"]["JsonValue"] | null | undefined;
       /**
        * Reasoningms
        * @default null
        */
-      reasoningMs?: null | number;
+      reasoningMs?: null | number | undefined;
       /**
        * Reasoningobservedat
        * @default null
        */
-      reasoningObservedAt?: null | number;
+      reasoningObservedAt?: null | number | undefined;
       /**
        * Reasoningsince
        * @default null
        */
-      reasoningSince?: null | number;
+      reasoningSince?: null | number | undefined;
       /**
        * Requesteddelivery
        * @default null
        */
-      requestedDelivery?: components["schemas"]["DeliveryMoment"] | null;
+      requestedDelivery?:
+        | components["schemas"]["DeliveryMoment"]
+        | null
+        | undefined;
       /** Role */
       role: string;
       /**
        * Sourceid
        * @default null
        */
-      sourceId?: null | string;
+      sourceId?: null | string | undefined;
       /**
        * Streaming
        * @default null
        */
-      streaming?: boolean | null;
+      streaming?: boolean | null | undefined;
       /** Text */
       text: string;
       /**
        * Threadid
        * @default null
        */
-      threadId?: null | string;
+      threadId?: null | string | undefined;
       /**
        * Title
        * @default
        */
-      title?: string;
+      title?: string | undefined;
       /**
        * Toolstatus
        * @default null
        */
-      toolStatus?: null | string;
+      toolStatus?: null | string | undefined;
       /**
        * Truncated
        * @default null
        */
-      truncated?: boolean | null;
+      truncated?: boolean | null | undefined;
       /**
        * Turnerror
        * @default null
        */
       turnError?:
         | {
-            [key: string]: components["schemas"]["JsonValue"];
+            [key: string]: components["schemas"]["JsonValue"] | undefined;
           }
         | null
-        | string;
+        | string
+        | undefined;
       /**
        * Turnerrorresolved
        * @default null
        */
-      turnErrorResolved?: boolean | null;
+      turnErrorResolved?: boolean | null | undefined;
       /**
        * Turnid
        * @default null
        */
-      turnId?: null | string;
+      turnId?: null | string | undefined;
       /**
        * Turnstatus
        * @default null
        */
-      turnStatus?: null | string;
+      turnStatus?: null | string | undefined;
     } & {
-      [key: string]: components["schemas"]["JsonValue"];
+      [key: string]: components["schemas"]["JsonValue"] | undefined;
     };
     /**
      * TranscriptMessageRecord
@@ -24239,37 +25203,37 @@ export interface components {
        * Accountwide
        * @default null
        */
-      accountWide?: boolean | null;
+      accountWide?: boolean | null | undefined;
       /**
        * Agent
        * @default null
        */
-      agent?: null | string;
+      agent?: null | string | undefined;
       /**
        * Assets
        * @default null
        */
-      assets?: components["schemas"]["TranscriptAsset"][] | null;
+      assets?: components["schemas"]["TranscriptAsset"][] | null | undefined;
       /**
        * At
        * @default null
        */
-      at?: null | number | string;
+      at?: null | number | string | undefined;
       /**
        * Clientmessageid
        * @default null
        */
-      clientMessageId?: null | string;
+      clientMessageId?: null | string | undefined;
       /**
        * Cyberaccessprogram
        * @default null
        */
-      cyberAccessProgram?: null | string;
+      cyberAccessProgram?: null | string | undefined;
       /**
        * Deliveryerror
        * @default null
        */
-      deliveryError?: null | string;
+      deliveryError?: null | string | undefined;
       /**
        * Deliverystatus
        * @default null
@@ -24288,186 +25252,197 @@ export interface components {
             | "accepted"
             | "sent"
           )
-        | null;
+        | null
+        | undefined;
       /** @default null */
-      details?: components["schemas"]["JsonValue"] | null;
+      details?: components["schemas"]["JsonValue"] | null | undefined;
       /** Id */
       id: string;
       /** @description The notice confirms a completed idle compaction of a Claude session. */
-      idleCompaction?: boolean;
+      idleCompaction?: boolean | undefined;
       /**
        * Inputs
        * @default null
        */
-      inputs?: components["schemas"]["TranscriptInput"][] | null;
+      inputs?: components["schemas"]["TranscriptInput"][] | null | undefined;
       /**
        * Kind
        * @default null
        */
-      kind?: null | string;
+      kind?: null | string | undefined;
       /**
        * Materialized
        * @default null
        */
-      materialized?: boolean | null;
+      materialized?: boolean | null | undefined;
       /** @default null */
-      nativeError?: components["schemas"]["JsonValue"] | null;
+      nativeError?: components["schemas"]["JsonValue"] | null | undefined;
       /**
        * Nativehook
        * @default null
        */
-      nativeHook?: {
-        [key: string]: components["schemas"]["JsonValue"];
-      } | null;
+      nativeHook?:
+        | {
+            [key: string]: components["schemas"]["JsonValue"] | undefined;
+          }
+        | null
+        | undefined;
       /**
        * Nativehookquiet
        * @default null
        */
-      nativeHookQuiet?: boolean | null;
+      nativeHookQuiet?: boolean | null | undefined;
       /**
        * Nativenotice
        * @default null
        */
-      nativeNotice?: ("info" | "warning" | "error") | null;
+      nativeNotice?: ("info" | "warning" | "error") | null | undefined;
       /**
        * Nativereview
        * @default null
        */
-      nativeReview?: {
-        [key: string]: components["schemas"]["JsonValue"];
-      } | null;
+      nativeReview?:
+        | {
+            [key: string]: components["schemas"]["JsonValue"] | undefined;
+          }
+        | null
+        | undefined;
       /**
        * Observedwait
        * @default null
        */
-      observedWait?: boolean | null;
+      observedWait?: boolean | null | undefined;
       /**
        * Pending
        * @default false
        */
-      pending?: boolean;
+      pending?: boolean | undefined;
       /**
        * Phase
        * @default null
        */
-      phase?: null | string;
+      phase?: null | string | undefined;
       /** @default null */
-      previousError?: components["schemas"]["JsonValue"] | null;
+      previousError?: components["schemas"]["JsonValue"] | null | undefined;
       /**
        * Reasoningms
        * @default null
        */
-      reasoningMs?: null | number;
+      reasoningMs?: null | number | undefined;
       /**
        * Reasoningobservedat
        * @default null
        */
-      reasoningObservedAt?: null | number;
+      reasoningObservedAt?: null | number | undefined;
       /**
        * Reasoningsince
        * @default null
        */
-      reasoningSince?: null | number;
+      reasoningSince?: null | number | undefined;
       /**
        * Requesteddelivery
        * @default null
        */
-      requestedDelivery?: components["schemas"]["DeliveryMoment"] | null;
+      requestedDelivery?:
+        | components["schemas"]["DeliveryMoment"]
+        | null
+        | undefined;
       /** Role */
       role: string;
       /**
        * Sourceid
        * @default null
        */
-      sourceId?: null | string;
+      sourceId?: null | string | undefined;
       /**
        * Streaming
        * @default null
        */
-      streaming?: boolean | null;
+      streaming?: boolean | null | undefined;
       /** Text */
       text: string;
       /**
        * Threadid
        * @default null
        */
-      threadId?: null | string;
+      threadId?: null | string | undefined;
       /**
        * Title
        * @default
        */
-      title?: string;
+      title?: string | undefined;
       /**
        * Toolstatus
        * @default null
        */
-      toolStatus?: null | string;
+      toolStatus?: null | string | undefined;
       /**
        * Truncated
        * @default null
        */
-      truncated?: boolean | null;
+      truncated?: boolean | null | undefined;
       /**
        * Turnerror
        * @default null
        */
       turnError?:
         | {
-            [key: string]: components["schemas"]["JsonValue"];
+            [key: string]: components["schemas"]["JsonValue"] | undefined;
           }
         | null
-        | string;
+        | string
+        | undefined;
       /**
        * Turnerrorresolved
        * @default null
        */
-      turnErrorResolved?: boolean | null;
+      turnErrorResolved?: boolean | null | undefined;
       /**
        * Turnid
        * @default null
        */
-      turnId?: null | string;
+      turnId?: null | string | undefined;
       /**
        * Turnstatus
        * @default null
        */
-      turnStatus?: null | string;
+      turnStatus?: null | string | undefined;
     } & {
-      [key: string]: components["schemas"]["JsonValue"];
+      [key: string]: components["schemas"]["JsonValue"] | undefined;
     };
     /** TranscriptPageResponse */
     TranscriptPageResponse: {
       /** @default null */
-      agent?: components["schemas"]["TranscriptAgent"] | null;
+      agent?: components["schemas"]["TranscriptAgent"] | null | undefined;
       /**
        * Historyversion
        * @default null
        */
-      historyVersion?: null | string;
+      historyVersion?: null | string | undefined;
       /** Items */
       items: components["schemas"]["TranscriptMessageRecord"][];
       /**
        * Nextaftercursor
        * @default null
        */
-      nextAfterCursor?: null | string;
+      nextAfterCursor?: null | string | undefined;
       /**
        * Nextcursor
        * @default null
        */
-      nextCursor?: null | string;
+      nextCursor?: null | string | undefined;
       /**
        * Tail
        * @default null
        */
-      tail?: null | string;
+      tail?: null | string | undefined;
       /** Truncated */
       truncated: boolean;
       /**
        * Unavailable
        * @default null
        */
-      unavailable?: null | string;
+      unavailable?: null | string | undefined;
     };
     /** TranscriptResource */
     TranscriptResource: {
@@ -24482,7 +25457,7 @@ export interface components {
        * @description Newest records requested in the initial stream window, in items. Default and maximum are checked against runtime-schema shared_values; the server may shrink by encoded bytes.
        * @default 40
        */
-      tail?: number;
+      tail?: number | undefined;
     };
     /** TranscriptSearchResponse */
     TranscriptSearchResponse: {
@@ -24499,7 +25474,7 @@ export interface components {
        * Clientmessageid
        * @default null
        */
-      clientMessageId?: null | string;
+      clientMessageId?: null | string | undefined;
       /** Excerpt */
       excerpt: string;
       /** Id */
@@ -24514,7 +25489,7 @@ export interface components {
        * Turnid
        * @default null
        */
-      turnId?: null | string;
+      turnId?: null | string | undefined;
     };
     /**
      * TranscriptsResource
@@ -24533,28 +25508,37 @@ export interface components {
      */
     TranscriptStreamDelta: {
       /** @default null */
-      agent?: components["schemas"]["TranscriptAgent"] | null;
+      agent?: components["schemas"]["TranscriptAgent"] | null | undefined;
       /** @constant */
       delta: true;
       /** @default null */
-      historyVersion?: components["schemas"]["TranscriptHistoryVersion"] | null;
+      historyVersion?:
+        | components["schemas"]["TranscriptHistoryVersion"]
+        | null
+        | undefined;
       /** Items */
       items: components["schemas"]["TranscriptMessageRecord"][];
       /** @default null */
-      nextAfterCursor?: components["schemas"]["TranscriptStreamItemId"] | null;
+      nextAfterCursor?:
+        | components["schemas"]["TranscriptStreamItemId"]
+        | null
+        | undefined;
       /** @default null */
-      nextCursor?: components["schemas"]["TranscriptStreamItemId"] | null;
-      order?: components["schemas"]["TranscriptStreamItemId"][];
+      nextCursor?:
+        | components["schemas"]["TranscriptStreamItemId"]
+        | null
+        | undefined;
+      order?: components["schemas"]["TranscriptStreamItemId"][] | undefined;
       removed: components["schemas"]["TranscriptStreamItemId"][];
       /** @default null */
-      tail?: components["schemas"]["TranscriptStreamTail"] | null;
+      tail?: components["schemas"]["TranscriptStreamTail"] | null | undefined;
       /** Truncated */
       truncated: boolean;
       /**
        * @description The transcript projection owner emits only null; unavailable conversations fail the pull with an HTTP error rather than a string-valued reason.
        * @default null
        */
-      unavailable?: null;
+      unavailable?: null | undefined;
     };
     /**
      * TranscriptStreamItemId
@@ -24596,17 +25580,17 @@ export interface components {
        * Account Key
        * @default null
        */
-      account_key?: string | null;
+      account_key?: string | null | undefined;
       action: components["schemas"]["TransferAction"];
       /**
        * Id
        * @default null
        */
-      id?: string | null;
+      id?: string | null | undefined;
       /** Request Id */
       request_id: string;
       /** @default null */
-      scope?: components["schemas"]["TransferScope"] | null;
+      scope?: components["schemas"]["TransferScope"] | null | undefined;
     };
     /**
      * TransferInterruptOutcome
@@ -24621,17 +25605,17 @@ export interface components {
        * Name
        * @default null
        */
-      name?: null | string;
+      name?: null | string | undefined;
       /**
        * Provider
        * @default null
        */
-      provider?: null | string;
+      provider?: null | string | undefined;
       /**
        * Reason
        * @default null
        */
-      reason?: null | string;
+      reason?: null | string | undefined;
     };
     /**
      * TransferMemberPhase
@@ -24657,69 +25641,70 @@ export interface components {
        * Continueaftertransfer
        * @default null
        */
-      continueAfterTransfer?: boolean | null;
+      continueAfterTransfer?: boolean | null | undefined;
       /**
        * Error
        * @default null
        */
-      error?: null | string;
+      error?: null | string | undefined;
       /** @default null */
       interruptOutcome?:
         | components["schemas"]["TransferInterruptOutcome"]
-        | null;
+        | null
+        | undefined;
       /**
        * Interruptreason
        * @default null
        */
-      interruptReason?: null | string;
+      interruptReason?: null | string | undefined;
       /**
        * Lazy
        * @default null
        */
-      lazy?: boolean | null;
+      lazy?: boolean | null | undefined;
       /**
        * Name
        * @default null
        */
-      name?: null | string;
+      name?: null | string | undefined;
       phase: components["schemas"]["TransferMemberPhase"];
       /**
        * Provider
        * @default null
        */
-      provider?: null | string;
+      provider?: null | string | undefined;
       /**
        * Reason
        * @default null
        */
-      reason?: null | string;
+      reason?: null | string | undefined;
       /**
        * Sourceaccountkey
        * @default null
        */
-      sourceAccountKey?: null | string;
+      sourceAccountKey?: null | string | undefined;
       /**
        * Sourcethreadid
        * @default null
        */
-      sourceThreadId?: null | string;
+      sourceThreadId?: null | string | undefined;
       /**
        * Targetthreadid
        * @default null
        */
-      targetThreadId?: null | string;
+      targetThreadId?: null | string | undefined;
       /**
        * Waiting
        * @default null
        */
-      waiting?: null | string;
+      waiting?: null | string | undefined;
     };
     /** TransferRequestReceipt */
     TransferRequestReceipt: {
       /** Leadid */
       leadId: string;
       /** @default null */
-      scope?: components["schemas"]["TransferScope"] | null;
+      scope?: components["schemas"]["TransferScope"] | null | undefined;
       /** Targetaccountkey */
       targetAccountKey: string;
     };
@@ -24729,43 +25714,52 @@ export interface components {
        * Blocked
        * @default null
        */
-      blocked?: components["schemas"]["TransferMemberNotice"][] | null;
+      blocked?:
+        | components["schemas"]["TransferMemberNotice"][]
+        | null
+        | undefined;
       /**
        * Canfinishhistory
        * @default null
        */
-      canFinishHistory?: boolean | null;
+      canFinishHistory?: boolean | null | undefined;
       /**
        * Canretry
        * @default null
        */
-      canRetry?: boolean | null;
+      canRetry?: boolean | null | undefined;
       /**
        * Completed
        * @default null
        */
-      completed?: number | null;
+      completed?: number | null | undefined;
       /** Created */
       created: number;
       /**
        * Finishhistory
        * @default null
        */
-      finishHistory?: boolean | null;
+      finishHistory?: boolean | null | undefined;
       /** Id */
       id: string;
       /**
        * Interrupted
        * @default null
        */
-      interrupted?: components["schemas"]["TransferMemberNotice"][] | null;
+      interrupted?:
+        | components["schemas"]["TransferMemberNotice"][]
+        | null
+        | undefined;
       /** Leadid */
       leadId: string;
       /**
        * Leftonsource
        * @default null
        */
-      leftOnSource?: components["schemas"]["TransferMemberNotice"][] | null;
+      leftOnSource?:
+        | components["schemas"]["TransferMemberNotice"][]
+        | null
+        | undefined;
       /** Members */
       members: {
         [key: string]: components["schemas"]["TransferMemberResponse"];
@@ -24774,29 +25768,32 @@ export interface components {
        * Moved
        * @default null
        */
-      moved?: number | null;
+      moved?: number | null | undefined;
       /**
        * Movingnow
        * @default null
        */
-      movingNow?: number | null;
+      movingNow?: number | null | undefined;
       /**
        * Nativehistorypending
        * @default null
        */
-      nativeHistoryPending?: number | null;
+      nativeHistoryPending?: number | null | undefined;
       /**
        * Needsattention
        * @default null
        */
-      needsAttention?: boolean | null;
+      needsAttention?: boolean | null | undefined;
       /**
        * Requests
        * @default null
        */
-      requests?: {
-        [key: string]: components["schemas"]["TransferRequestReceipt"];
-      } | null;
+      requests?:
+        | {
+            [key: string]: components["schemas"]["TransferRequestReceipt"];
+          }
+        | null
+        | undefined;
       scope: components["schemas"]["TransferScope"];
       status: components["schemas"]["TransferStatus"];
       /** Targetaccountkey */
@@ -24805,27 +25802,27 @@ export interface components {
        * Targetprovider
        * @default null
        */
-      targetProvider?: null | string;
+      targetProvider?: null | string | undefined;
       /**
        * Total
        * @default null
        */
-      total?: number | null;
+      total?: number | null | undefined;
       /**
        * Updated
        * @default null
        */
-      updated?: null | number;
+      updated?: null | number | undefined;
       /**
        * Waiting
        * @default null
        */
-      waiting?: null | string;
+      waiting?: null | string | undefined;
       /**
        * Waitingcount
        * @default null
        */
-      waitingCount?: number | null;
+      waitingCount?: number | null | undefined;
     };
     /**
      * TransferScope
@@ -24838,16 +25835,16 @@ export interface components {
        * Account Key
        * @default null
        */
-      account_key?: string | null;
+      account_key?: string | null | undefined;
       /**
        * Id
        * @default null
        */
-      id?: string | null;
+      id?: string | null | undefined;
       /** Request Id */
       request_id: string;
       /** @default team */
-      scope?: components["schemas"]["TransferScope"];
+      scope?: components["schemas"]["TransferScope"] | undefined;
     };
     /**
      * TransferStatus
@@ -24860,34 +25857,34 @@ export interface components {
        * At
        * @default null
        */
-      at?: number;
+      at?: number | undefined;
       /**
        * Attemptid
        * @default null
        */
-      attemptId?: string;
+      attemptId?: string | undefined;
       /**
        * Latestturnid
        * @default null
        */
-      latestTurnId?: null | string;
+      latestTurnId?: null | string | undefined;
       /**
        * Outcome
        * @default null
        */
-      outcome?: string;
+      outcome?: string | undefined;
       /**
        * Source
        * @default null
        */
-      source?: string;
+      source?: string | undefined;
       /**
        * Turnid
        * @default null
        */
-      turnId?: null | string;
+      turnId?: null | string | undefined;
     } & {
-      [key: string]: components["schemas"]["JsonValue"];
+      [key: string]: components["schemas"]["JsonValue"] | undefined;
     };
     /** UiInvite */
     UiInvite: {
@@ -24904,9 +25901,11 @@ export interface components {
     /** UiPreferencesDto */
     UiPreferencesDto: {
       /** Fields */
-      fields?: {
-        [key: string]: components["schemas"]["PreferenceField"];
-      };
+      fields?:
+        | {
+            [key: string]: components["schemas"]["PreferenceField"];
+          }
+        | undefined;
     };
     /** UiSummaryResponse */
     UiSummaryResponse: {
@@ -24914,7 +25913,7 @@ export interface components {
        * Accounts
        * @default []
        */
-      accounts?: components["schemas"]["SummaryAccount"][];
+      accounts?: components["schemas"]["SummaryAccount"][] | undefined;
       /** Agentsrunning */
       agentsRunning: number;
       /** Alerts */
@@ -24938,7 +25937,7 @@ export interface components {
        * Catalogpending
        * @default null
        */
-      catalogPending?: boolean | null;
+      catalogPending?: boolean | null | undefined;
       /** Error */
       error: string;
     };
@@ -25001,42 +26000,46 @@ export interface components {
        * Accountid
        * @default null
        */
-      accountId?: null | string;
+      accountId?: null | string | undefined;
       /**
        * Ordinaryusageallowed
        * @default null
        */
-      ordinaryUsageAllowed?: boolean | null;
+      ordinaryUsageAllowed?: boolean | null | undefined;
       /** @default null */
       rateLimitResetCredits?:
         | components["schemas"]["RateLimitResetCredits"]
-        | null;
+        | null
+        | undefined;
       /** @default null */
-      rateLimits?: components["schemas"]["RateLimitBucket"] | null;
+      rateLimits?: components["schemas"]["RateLimitBucket"] | null | undefined;
       /**
        * Ratelimitsbylimitid
        * @default null
        */
-      rateLimitsByLimitId?: {
-        [key: string]: components["schemas"]["RateLimitBucket"];
-      } | null;
+      rateLimitsByLimitId?:
+        | {
+            [key: string]: components["schemas"]["RateLimitBucket"];
+          }
+        | null
+        | undefined;
       /**
        * Signedin
        * @default null
        */
-      signedIn?: boolean | null;
+      signedIn?: boolean | null | undefined;
       /**
        * Source
        * @default null
        */
-      source?: null | string;
+      source?: null | string | undefined;
       /**
        * Status
        * @default null
        */
-      status?: null | string;
+      status?: null | string | undefined;
     } & {
-      [key: string]: components["schemas"]["JsonValue"];
+      [key: string]: components["schemas"]["JsonValue"] | undefined;
     };
     /** UsageLimitsResponse */
     UsageLimitsResponse: {
@@ -25046,30 +26049,30 @@ export interface components {
        * At
        * @default null
        */
-      at?: null | number;
+      at?: null | number | undefined;
       /**
        * Checkedat
        * @default null
        */
-      checkedAt?: null | number;
+      checkedAt?: null | number | undefined;
       /** @default null */
-      data?: components["schemas"]["UsageLimitsData"] | null;
-      eligibility?: components["schemas"]["UsageEligibility"];
+      data?: components["schemas"]["UsageLimitsData"] | null | undefined;
+      eligibility?: components["schemas"]["UsageEligibility"] | undefined;
       /**
        * Error
        * @default null
        */
-      error?: null | string;
+      error?: null | string | undefined;
       /**
        * Processedat
        * @default null
        */
-      processedAt?: null | number;
+      processedAt?: null | number | undefined;
       /**
        * Readat
        * @default null
        */
-      readAt?: null | number;
+      readAt?: null | number | undefined;
     };
     /** @description Accounting evidence, preserving response identity and cumulative counter scope. */
     UsageObservation:
@@ -25084,46 +26087,49 @@ export interface components {
            * Format: uint64
            * @description Model context capacity; tokens.
            */
-          modelContextWindow?: number | null;
+          modelContextWindow?: number | null | undefined;
           /** @description Parent tool identifier; absent means main loop. */
-          parentToolUseId?: string | null;
+          parentToolUseId?: string | null | undefined;
           /** @description Native response identifier; dimensionless. */
           responseId: string;
           /** @description Final disjoint token counts; tokens. */
           tokens: components["schemas"]["UsageTokens"];
           /** @description Native turn identifier; dimensionless. */
-          turnId?: string | null;
+          turnId?: string | null | undefined;
         }
       | {
           /** @constant */
           kind: "cumulative";
           /** @description Most recent response without an identity; tokens. */
-          last?: components["schemas"]["UsageTokens"] | null;
+          last?: components["schemas"]["UsageTokens"] | null | undefined;
           /**
            * Format: uint64
            * @description Model context capacity; tokens.
            */
-          modelContextWindow?: number | null;
+          modelContextWindow?: number | null | undefined;
           /** @description Per-model running counters and informational provider costs. */
-          models?: components["schemas"]["CumulativeModelUsage"][] | null;
+          models?:
+            | components["schemas"]["CumulativeModelUsage"][]
+            | null
+            | undefined;
           /** @description Counter's reset and accumulation domain. */
           scope: components["schemas"]["UsageScope"];
           /** @description Running disjoint category counts; tokens. */
           total: components["schemas"]["UsageTokens"];
           /** @description Native turn identifier; dimensionless. */
-          turnId?: string | null;
+          turnId?: string | null | undefined;
         }
       | {
           /** @constant */
           kind: "gap";
           /** @description Provider model identifier, when known. */
-          model?: string | null;
+          model?: string | null | undefined;
           /** @description Final-usage loss reason. */
           reason: components["schemas"]["UsageGapReason"];
           /** @description Native response identifier; dimensionless. */
           responseId: string;
           /** @description Native turn identifier; dimensionless. */
-          turnId?: string | null;
+          turnId?: string | null | undefined;
         };
     UsageReconciliationResponse: {
       agentId: string;
@@ -25175,106 +26181,106 @@ export interface components {
        * Accountkey
        * @default null
        */
-      accountKey?: string;
+      accountKey?: string | undefined;
       /**
        * Authattempt
        * @default null
        */
-      authAttempt?: number;
+      authAttempt?: number | undefined;
       /**
        * Authrefreshmarker
        * @default null
        */
-      authRefreshMarker?: null | string;
+      authRefreshMarker?: null | string | undefined;
       /**
        * Cause
        * @default null
        * @enum {string}
        */
-      cause?: "usage_limit" | "rate_limit" | "auth";
+      cause?: "usage_limit" | "rate_limit" | "auth" | undefined;
       /**
        * Dueat
        * @default null
        */
-      dueAt?: null | number;
+      dueAt?: null | number | undefined;
       /**
        * Epoch
        * @default null
        */
-      epoch?: number;
+      epoch?: number | undefined;
       /**
        * Failedat
        * @default null
        */
-      failedAt?: number;
+      failedAt?: number | undefined;
       /**
        * Id
        * @default null
        */
-      id?: string;
+      id?: string | undefined;
       /**
        * Lastcheckedat
        * @default null
        */
-      lastCheckedAt?: null | number;
+      lastCheckedAt?: null | number | undefined;
       /**
        * Plannedat
        * @default null
        */
-      plannedAt?: null | number;
+      plannedAt?: null | number | undefined;
       /**
        * Proofat
        * @default null
        */
-      proofAt?: number;
+      proofAt?: number | undefined;
       /**
        * Reason
        * @default null
        */
-      reason?: null | string;
+      reason?: null | string | undefined;
       /**
        * Resetat
        * @default null
        */
-      resetAt?: null | number;
+      resetAt?: null | number | undefined;
       /**
        * Startedat
        * @default null
        */
-      startedAt?: number;
+      startedAt?: number | undefined;
       /**
        * Status
        * @default null
        * @enum {string}
        */
-      status?: "scheduled" | "started" | "cancelled" | "unknown";
+      status?: "scheduled" | "started" | "cancelled" | "unknown" | undefined;
       /**
        * Taskclaims
        * @default null
        */
-      taskClaims?: string[];
+      taskClaims?: string[] | undefined;
       /**
        * Threadid
        * @default null
        */
-      threadId?: string;
+      threadId?: string | undefined;
       /**
        * Turnid
        * @default null
        */
-      turnId?: string;
+      turnId?: string | undefined;
       /**
        * Updatedat
        * @default null
        */
-      updatedAt?: number;
+      updatedAt?: number | undefined;
       /**
        * Waitingforauth
        * @default null
        */
-      waitingForAuth?: boolean;
+      waitingForAuth?: boolean | undefined;
     } & {
-      [key: string]: components["schemas"]["JsonValue"];
+      [key: string]: components["schemas"]["JsonValue"] | undefined;
     };
     /** UsageResumeRequest */
     UsageResumeRequest: {
@@ -25296,18 +26302,18 @@ export interface components {
        * Authattempt
        * @default null
        */
-      authAttempt?: number | null;
+      authAttempt?: number | null | undefined;
       /**
        * Authrefreshmarker
        * @default null
        */
-      authRefreshMarker?: null | string;
+      authRefreshMarker?: null | string | undefined;
       cause: components["schemas"]["UsageResumeCause"];
       /**
        * Dueat
        * @default null
        */
-      dueAt?: null | number;
+      dueAt?: null | number | undefined;
       /** Epoch */
       epoch: number;
       /** Failedat */
@@ -25318,38 +26324,38 @@ export interface components {
        * Lastcheckedat
        * @default null
        */
-      lastCheckedAt?: null | number;
+      lastCheckedAt?: null | number | undefined;
       /**
        * Plannedat
        * @default null
        */
-      plannedAt?: null | number;
+      plannedAt?: null | number | undefined;
       /**
        * Proofat
        * @default null
        */
-      proofAt?: null | number;
+      proofAt?: null | number | undefined;
       /**
        * Reason
        * @default null
        */
-      reason?: null | string;
+      reason?: null | string | undefined;
       /**
        * Resetat
        * @default null
        */
-      resetAt?: null | number;
+      resetAt?: null | number | undefined;
       /**
        * Startedat
        * @default null
        */
-      startedAt?: null | number;
+      startedAt?: null | number | undefined;
       status: components["schemas"]["UsageResumeStatus"];
       /**
        * Taskclaims
        * @default null
        */
-      taskClaims?: string[] | null;
+      taskClaims?: string[] | null | undefined;
       /** Threadid */
       threadId: string;
       /** Turnid */
@@ -25358,12 +26364,12 @@ export interface components {
        * Updatedat
        * @default null
        */
-      updatedAt?: null | number;
+      updatedAt?: null | number | undefined;
       /**
        * Waitingforauth
        * @default null
        */
-      waitingForAuth?: boolean | null;
+      waitingForAuth?: boolean | null | undefined;
     };
     /**
      * UsageResumeStatus
@@ -25391,7 +26397,7 @@ export interface components {
        * Format: uint64
        * @description Subset of cache writes with a one-hour lifetime; tokens, absent for legacy pricing.
        */
-      cacheWriteInput1h?: number | null;
+      cacheWriteInput1h?: number | null | undefined;
       /**
        * Format: uint64
        * @description All generated output, including reasoning; tokens.
@@ -25401,7 +26407,7 @@ export interface components {
        * Format: uint64
        * @description Known reasoning subset of output; tokens, absent when unknown.
        */
-      reasoningOutput?: number | null;
+      reasoningOutput?: number | null | undefined;
       /**
        * Format: uint64
        * @description Base-rate input, excluding cache reads and writes; tokens.
@@ -25417,24 +26423,24 @@ export interface components {
        * Error
        * @default null
        */
-      error?: null | string;
+      error?: null | string | undefined;
       /** Name */
       name: string;
       /**
        * Region
        * @default null
        */
-      region?: null | string;
+      region?: null | string | undefined;
       /**
        * Signedin
        * @default null
        */
-      signedIn?: boolean | null;
+      signedIn?: boolean | null | undefined;
       /**
        * Sso
        * @default null
        */
-      sso?: boolean | null;
+      sso?: boolean | null | undefined;
     };
     /**
      * VaultJobProgressEvent
@@ -25489,17 +26495,17 @@ export interface components {
        * Code
        * @default null
        */
-      code?: null | string;
+      code?: null | string | undefined;
       /**
        * Error
        * @default null
        */
-      error?: null | string;
+      error?: null | string | undefined;
       /**
        * Page
        * @default null
        */
-      page?: null | string;
+      page?: null | string | undefined;
       /** Requestid */
       requestId: string;
       /**
@@ -25522,7 +26528,7 @@ export interface components {
        * To
        * @default null
        */
-      to?: string | null;
+      to?: string | null | undefined;
     };
     /**
      * VaultPullResponse
@@ -25534,17 +26540,17 @@ export interface components {
        * Bytes
        * @default null
        */
-      bytes?: number | null;
+      bytes?: number | null | undefined;
       /**
        * Error
        * @default null
        */
-      error?: null | string;
+      error?: null | string | undefined;
       /**
        * Files
        * @default null
        */
-      files?: number | null;
+      files?: number | null | undefined;
       /** Folder */
       folder: string;
       /** Requestid */
@@ -25553,7 +26559,7 @@ export interface components {
        * Seq
        * @default null
        */
-      seq?: number | null;
+      seq?: number | null | undefined;
       /**
        * State
        * @enum {string}
@@ -25597,7 +26603,7 @@ export interface components {
        * Prefix
        * @default null
        */
-      prefix?: string | null;
+      prefix?: string | null | undefined;
       /** Projectid */
       projectId: string;
     };
@@ -25646,21 +26652,21 @@ export interface components {
        * Error
        * @default null
        */
-      error?: null | string;
+      error?: null | string | undefined;
       /** Prefix */
       prefix: string;
       /**
        * Progress
        * @default null
        */
-      progress?: null | string;
+      progress?: null | string | undefined;
       /** Requestid */
       requestId: string;
       /**
        * Site
        * @default null
        */
-      site?: null | string;
+      site?: null | string | undefined;
       /**
        * State
        * @enum {string}
@@ -25708,7 +26714,7 @@ export interface components {
        * Replayed
        * @default null
        */
-      replayed?: boolean | null;
+      replayed?: boolean | null | undefined;
       /**
        * Status
        * @constant
@@ -25767,7 +26773,7 @@ export interface components {
        * Error
        * @default null
        */
-      error?: null | string;
+      error?: null | string | undefined;
       /** Id */
       id: string;
       status: components["schemas"]["VoiceDeliveryState"];
@@ -25775,7 +26781,7 @@ export interface components {
        * Waitingfor
        * @default null
        */
-      waitingFor?: components["schemas"]["JsonValue"][] | null;
+      waitingFor?: components["schemas"]["JsonValue"][] | null | undefined;
     };
     /**
      * VoiceDeliveryState
@@ -25834,27 +26840,30 @@ export interface components {
        * Item Id
        * @default
        */
-      item_id?: string;
+      item_id?: string | undefined;
       kind: components["schemas"]["VoiceRecordKind"];
       /**
        * Payload
        * @default null
        */
-      payload?: {
-        [key: string]: components["schemas"]["JsonValue"];
-      } | null;
+      payload?:
+        | {
+            [key: string]: components["schemas"]["JsonValue"] | undefined;
+          }
+        | null
+        | undefined;
       /**
        * Previous Item Id
        * @default
        */
-      previous_item_id?: string;
+      previous_item_id?: string | undefined;
       /** Session Id */
       session_id: string;
       /**
        * Text
        * @default
        */
-      text?: string;
+      text?: string | undefined;
     };
     /** VoiceRecordResponse */
     VoiceRecordResponse: {
@@ -25884,7 +26893,7 @@ export interface components {
        * After
        * @default 0
        */
-      after?: number;
+      after?: number | undefined;
       /** Agent */
       agent: string;
     };
@@ -25994,7 +27003,7 @@ export interface components {
        * Edited Text
        * @default null
        */
-      edited_text?: null | string;
+      edited_text?: null | string | undefined;
       /** Message Id */
       message_id: string;
       /** Record Ids */
@@ -26083,30 +27092,30 @@ export interface components {
     /** WorkArchiveIntentRecord */
     WorkArchiveIntentRecord: {
       /** Attempts */
-      attempts?: number;
+      attempts?: number | undefined;
       /** Created */
-      created?: number;
+      created?: number | undefined;
       /** Id */
       id: string;
-      lastOutcome?: components["schemas"]["WorkArchiveRecord"];
+      lastOutcome?: components["schemas"]["WorkArchiveRecord"] | undefined;
       /** Nextattemptat */
-      nextAttemptAt?: number;
-      outcome?: components["schemas"]["WorkArchiveRecord"];
+      nextAttemptAt?: number | undefined;
+      outcome?: components["schemas"]["WorkArchiveRecord"] | undefined;
       /** Owner */
-      owner?: null | string;
+      owner?: null | string | undefined;
       /** Previousid */
-      previousId?: string;
+      previousId?: string | undefined;
       /** Schedulerversion */
-      schedulerVersion?: number;
+      schedulerVersion?: number | undefined;
       /**
        * Status
        * @enum {string}
        */
       status: "pending" | "complete" | "terminal";
       /** Updated */
-      updated?: number;
+      updated?: number | undefined;
     } & {
-      [key: string]: components["schemas"]["JsonValue"];
+      [key: string]: components["schemas"]["JsonValue"] | undefined;
     };
     /** WorkArchiveIntentRecordResponse */
     WorkArchiveIntentRecordResponse: {
@@ -26114,38 +27123,40 @@ export interface components {
        * Attempts
        * @default null
        */
-      attempts?: number;
+      attempts?: number | undefined;
       /**
        * Created
        * @default null
        */
-      created?: number;
+      created?: number | undefined;
       /** Id */
       id: string;
       /** @default null */
-      lastOutcome?: components["schemas"]["WorkArchiveRecordResponse"];
+      lastOutcome?:
+        | components["schemas"]["WorkArchiveRecordResponse"]
+        | undefined;
       /**
        * Nextattemptat
        * @default null
        */
-      nextAttemptAt?: number;
+      nextAttemptAt?: number | undefined;
       /** @default null */
-      outcome?: components["schemas"]["WorkArchiveRecordResponse"];
+      outcome?: components["schemas"]["WorkArchiveRecordResponse"] | undefined;
       /**
        * Owner
        * @default null
        */
-      owner?: null | string;
+      owner?: null | string | undefined;
       /**
        * Previousid
        * @default null
        */
-      previousId?: string;
+      previousId?: string | undefined;
       /**
        * Schedulerversion
        * @default null
        */
-      schedulerVersion?: number;
+      schedulerVersion?: number | undefined;
       /**
        * Status
        * @enum {string}
@@ -26155,19 +27166,19 @@ export interface components {
        * Updated
        * @default null
        */
-      updated?: number;
+      updated?: number | undefined;
     } & {
-      [key: string]: components["schemas"]["JsonValue"];
+      [key: string]: components["schemas"]["JsonValue"] | undefined;
     };
     /** WorkArchiveRecord */
     WorkArchiveRecord: {
       /** Reason */
-      reason?: string;
+      reason?: string | undefined;
       /** Status */
-      status?: string;
-      worktree?: components["schemas"]["JsonObjectResponse"];
+      status?: string | undefined;
+      worktree?: components["schemas"]["JsonObjectResponse"] | undefined;
     } & {
-      [key: string]: components["schemas"]["JsonValue"];
+      [key: string]: components["schemas"]["JsonValue"] | undefined;
     };
     /** WorkArchiveRecordResponse */
     WorkArchiveRecordResponse: {
@@ -26175,16 +27186,16 @@ export interface components {
        * Reason
        * @default null
        */
-      reason?: string;
+      reason?: string | undefined;
       /**
        * Status
        * @default null
        */
-      status?: string;
+      status?: string | undefined;
       /** @default null */
-      worktree?: components["schemas"]["JsonObjectResponse"];
+      worktree?: components["schemas"]["JsonObjectResponse"] | undefined;
     } & {
-      [key: string]: components["schemas"]["JsonValue"];
+      [key: string]: components["schemas"]["JsonValue"] | undefined;
     };
     /** WorkBody */
     WorkBody: {
@@ -26206,85 +27217,87 @@ export interface components {
        * Agent
        * @default null
        */
-      agent?: null | string;
+      agent?: null | string | undefined;
       /**
        * Checks
        * @default null
        */
-      checks?: string | null;
+      checks?: string | null | undefined;
       /**
        * Dependencies
        * @default null
        */
-      dependencies?: string[] | null;
+      dependencies?: string[] | null | undefined;
       /**
        * Description
        * @default null
        */
-      description?: string | null;
+      description?: string | null | undefined;
       /**
        * Files
        * @default null
        */
-      files?: string[] | null;
+      files?: string[] | null | undefined;
       /** @description Acceptance command. Runs in the clean submitter workspace at the full submitted Git commit. Null disables the gate. Omit on create to inherit the lead default. */
       gate?:
         | string
         | {
             command: string;
             /** @default 600000 */
-            timeout_ms?: number;
+            timeout_ms?: number | undefined;
           }
-        | null;
+        | null
+        | undefined;
       /**
        * Id
        * @default null
        */
-      id?: null | string;
+      id?: null | string | undefined;
       /** @description Lead reason to accept despite a failed, missing, or unknown gate. Saved in the decision. */
-      override_reason?: string;
+      override_reason?: string | undefined;
       /**
        * Owner
        * @default null
        */
-      owner?: null | string;
+      owner?: null | string | undefined;
       /**
        * Reason
        * @default null
        */
-      reason?: string | null;
-      result?: components["schemas"]["JsonValue"];
+      reason?: string | null | undefined;
+      result?: components["schemas"]["JsonValue"] | undefined;
       /** @description Optional draft 2020-12 result contract for create/update (maximum 32768 UTF-8 bytes). Supports types, properties, required, additionalProperties, arrays, bounds, enum/const and combinators. References, regex and unknown keywords are refused. A new task version resets the submit cap. */
       result_schema?:
         | {
             [key: string]: unknown;
           }
-        | boolean;
+        | boolean
+        | undefined;
       /**
        * Revision
        * @default null
        */
-      revision?: string | null;
+      revision?: string | null | undefined;
       /**
        * Status
        * @default null
        */
-      status?: ("ready" | "blocked") | null;
+      status?: ("ready" | "blocked") | null | undefined;
       /**
        * Task Id
        * @default null
        */
-      task_id?: null | string;
+      task_id?: null | string | undefined;
       /**
        * Title
        * @default null
        */
-      title?: string | null;
+      title?: string | null | undefined;
       /**
        * Version
        * @default null
        */
-      version?: number | null;
+      version?: number | null | undefined;
     };
     /** WorkDecisionDto */
     WorkDecisionDto: {
@@ -26297,19 +27310,19 @@ export interface components {
        * @enum {string}
        */
       decision: "cancel" | "accept" | "reject";
-      gateOverrideReason?: string;
+      gateOverrideReason?: string | undefined;
       /**
        * Owner
        * @default null
        */
-      owner?: null | string;
+      owner?: null | string | undefined;
       /** Reason */
       reason: string;
       /**
        * Resultid
        * @default null
        */
-      resultId?: null | string;
+      resultId?: null | string | undefined;
     };
     /** WorkDecisionEntityDto */
     WorkDecisionEntityDto: {
@@ -26330,15 +27343,15 @@ export interface components {
        * @enum {string}
        */
       decision: "cancel" | "accept" | "reject";
-      gateOverrideReason?: string;
+      gateOverrideReason?: string | undefined;
       /** Owner */
-      owner?: null | string;
+      owner?: null | string | undefined;
       /** Reason */
       reason: string;
       /** Resultid */
-      resultId?: string;
+      resultId?: string | undefined;
     } & {
-      [key: string]: components["schemas"]["JsonValue"];
+      [key: string]: components["schemas"]["JsonValue"] | undefined;
     };
     /** WorkDecisionRecordResponse */
     WorkDecisionRecordResponse: {
@@ -26351,31 +27364,31 @@ export interface components {
        * @enum {string}
        */
       decision: "cancel" | "accept" | "reject";
-      gateOverrideReason?: string;
+      gateOverrideReason?: string | undefined;
       /**
        * Owner
        * @default null
        */
-      owner?: null | string;
+      owner?: null | string | undefined;
       /** Reason */
       reason: string;
       /**
        * Resultid
        * @default null
        */
-      resultId?: string;
+      resultId?: string | undefined;
     } & {
-      [key: string]: components["schemas"]["JsonValue"];
+      [key: string]: components["schemas"]["JsonValue"] | undefined;
     };
     /** WorkEntityDto */
     WorkEntityDto: {
       /** Agent */
-      agent?: null | string;
-      archive?: components["schemas"]["JsonValue"] | null;
+      agent?: null | string | undefined;
+      archive?: components["schemas"]["JsonValue"] | null | undefined;
       /** Id */
       id: string;
       /** Rootid */
-      rootId?: null | string;
+      rootId?: null | string | undefined;
       /** Status */
       status?:
         | (
@@ -26386,9 +27399,10 @@ export interface components {
             | "accepted"
             | "cancelled"
           )
-        | null;
+        | null
+        | undefined;
       /** Title */
-      title?: null | string;
+      title?: null | string | undefined;
     };
     /** WorkerDefaults */
     WorkerDefaults: {
@@ -26396,17 +27410,17 @@ export interface components {
        * Account Key
        * @default null
        */
-      account_key?: string | null;
+      account_key?: string | null | undefined;
       /**
        * Daybreak Enabled
        * @default null
        */
-      daybreak_enabled?: boolean | null;
+      daybreak_enabled?: boolean | null | undefined;
       /**
        * Delegation Depth
        * @default 1
        */
-      delegation_depth?: number;
+      delegation_depth?: number | undefined;
       /** Effort */
       effort: string | null;
       /** Fast Mode */
@@ -26420,22 +27434,22 @@ export interface components {
        * Accountkey
        * @default null
        */
-      accountKey?: null | string;
+      accountKey?: null | string | undefined;
       /**
        * Cyberaccessprogram
        * @default null
        */
-      cyberAccessProgram?: null | string;
+      cyberAccessProgram?: null | string | undefined;
       /**
        * Daybreakenabled
        * @default false
        */
-      daybreakEnabled?: boolean;
+      daybreakEnabled?: boolean | undefined;
       /**
        * Delegationdepth
        * @default 1
        */
-      delegationDepth?: number;
+      delegationDepth?: number | undefined;
       /** Effort */
       effort: null | string;
       /** Fastmode */
@@ -26449,22 +27463,22 @@ export interface components {
        * Accountkey
        * @default null
        */
-      accountKey?: null | string;
+      accountKey?: null | string | undefined;
       /**
        * Cyberaccessprogram
        * @default null
        */
-      cyberAccessProgram?: null | string;
+      cyberAccessProgram?: null | string | undefined;
       /**
        * Daybreakenabled
        * @default null
        */
-      daybreakEnabled?: boolean;
+      daybreakEnabled?: boolean | undefined;
       /**
        * Delegationdepth
        * @default null
        */
-      delegationDepth?: number;
+      delegationDepth?: number | undefined;
       /** Effort */
       effort: null | string;
       /** Fastmode */
@@ -26472,7 +27486,7 @@ export interface components {
       /** Model */
       model: null | string;
     } & {
-      [key: string]: components["schemas"]["JsonValue"];
+      [key: string]: components["schemas"]["JsonValue"] | undefined;
     };
     /** WorkInboxEntry */
     WorkInboxEntry: {
@@ -26497,70 +27511,74 @@ export interface components {
      */
     WorkItem: {
       /** @default null */
-      archive?: components["schemas"]["WorkArchiveRecord"] | null;
+      archive?: components["schemas"]["WorkArchiveRecord"] | null | undefined;
       /** @default null */
-      archiveIntent?: components["schemas"]["WorkArchiveIntentRecord"] | null;
+      archiveIntent?:
+        | components["schemas"]["WorkArchiveIntentRecord"]
+        | null
+        | undefined;
       /**
        * Archivepending
        * @default null
        */
-      archivePending?: boolean | null;
+      archivePending?: boolean | null | undefined;
       /**
        * Blockedby
        * @default []
        */
-      blockedBy?: string[];
+      blockedBy?: string[] | undefined;
       /** Created */
       created: number;
       /**
        * Createdby
        * @default null
        */
-      createdBy?: null | string;
+      createdBy?: null | string | undefined;
       /**
        * Decisions
        * @default []
        */
-      decisions?: components["schemas"]["WorkDecisionRecord"][];
+      decisions?: components["schemas"]["WorkDecisionRecord"][] | undefined;
       /**
        * Dependencies
        * @default []
        */
-      dependencies?: string[];
+      dependencies?: string[] | undefined;
       /**
        * Description
        * @default
        */
-      description?: string;
+      description?: string | undefined;
       /**
        * Displaystatus
        * @default null
        */
-      displayStatus?: null | string;
-      gate?: components["schemas"]["TaskAcceptanceGate"];
+      displayStatus?: null | string | undefined;
+      gate?: components["schemas"]["TaskAcceptanceGate"] | undefined;
       /** Id */
       id: string;
       /**
        * Owner
        * @default null
        */
-      owner?: null | string;
+      owner?: null | string | undefined;
       /**
        * Releases
        * @default null
        */
-      releases?: components["schemas"]["JsonValue"][] | null;
+      releases?: components["schemas"]["JsonValue"][] | null | undefined;
       /**
        * Results
        * @default []
        */
-      results?: components["schemas"]["WorkResultRecord"][];
+      results?: components["schemas"]["WorkResultRecord"][] | undefined;
       /** @description Optional draft 2020-12 result contract for create/update (maximum 32768 UTF-8 bytes). Supports types, properties, required, additionalProperties, arrays, bounds, enum/const and combinators. References, regex and unknown keywords are refused. A new task version resets the submit cap. */
       resultSchema?:
         | {
-            [key: string]: components["schemas"]["JsonValue"];
+            [key: string]: components["schemas"]["JsonValue"] | undefined;
           }
-        | boolean;
+        | boolean
+        | undefined;
       /** Rootid */
       rootId: string;
       /**
@@ -26574,7 +27592,9 @@ export interface components {
         | "review"
         | "accepted"
         | "cancelled";
-      submissionRefusal?: components["schemas"]["TaskSubmissionRefusal"];
+      submissionRefusal?:
+        | components["schemas"]["TaskSubmissionRefusal"]
+        | undefined;
       /** Title */
       title: string;
       /** Updated */
@@ -26582,14 +27602,14 @@ export interface components {
       /** Version */
       version: number;
     } & {
-      [key: string]: components["schemas"]["JsonValue"];
+      [key: string]: components["schemas"]["JsonValue"] | undefined;
     };
     /** WorkList */
     WorkList: {
       /** Items */
       items: components["schemas"]["WorkItem"][];
-      rootId?: string;
-      taskDefaultGate?: components["schemas"]["TaskAcceptanceGate"];
+      rootId?: string | undefined;
+      taskDefaultGate?: components["schemas"]["TaskAcceptanceGate"] | undefined;
       /** Tasks */
       tasks: components["schemas"]["WorkItem"][];
     };
@@ -26618,29 +27638,29 @@ export interface components {
        * Attemptid
        * @default null
        */
-      attemptId?: null | string;
+      attemptId?: null | string | undefined;
       /** Checks */
       checks: string;
       /** Created */
       created: number;
       /** Files */
       files: string[];
-      gate?: components["schemas"]["TaskGateEvidence"];
+      gate?: components["schemas"]["TaskGateEvidence"] | undefined;
       /** Id */
       id: string;
-      result?: components["schemas"]["JsonValue"];
+      result?: components["schemas"]["JsonValue"] | undefined;
       /**
        * Resultfile
        * @default null
        */
-      resultFile?: null | string;
+      resultFile?: null | string | undefined;
       /** Revision */
       revision: string;
       /**
        * Runid
        * @default null
        */
-      runId?: null | string;
+      runId?: null | string | undefined;
       /** Text */
       text: string;
     };
@@ -26657,33 +27677,33 @@ export interface components {
       /** Agent */
       agent: string;
       /** Attemptid */
-      attemptId?: null | string;
+      attemptId?: null | string | undefined;
       /** Checks */
       checks: string;
       /** Created */
       created: number;
       /** Files */
       files: string[];
-      gate?: components["schemas"]["TaskGateEvidence"];
+      gate?: components["schemas"]["TaskGateEvidence"] | undefined;
       /** Id */
       id: string;
       /** Layrline */
-      layrLine?: string;
+      layrLine?: string | undefined;
       /** Layrprojectid */
-      layrProjectId?: string;
+      layrProjectId?: string | undefined;
       /** Layrstateid */
-      layrStateId?: string;
-      result?: components["schemas"]["JsonValue"];
+      layrStateId?: string | undefined;
+      result?: components["schemas"]["JsonValue"] | undefined;
       /** Resultfile */
-      resultFile?: string;
+      resultFile?: string | undefined;
       /** Revision */
       revision: string;
       /** Runid */
-      runId?: string;
+      runId?: string | undefined;
       /** Text */
       text: string;
     } & {
-      [key: string]: components["schemas"]["JsonValue"];
+      [key: string]: components["schemas"]["JsonValue"] | undefined;
     };
     /** WorkResultRecordResponse */
     WorkResultRecordResponse: {
@@ -26693,48 +27713,48 @@ export interface components {
        * Attemptid
        * @default null
        */
-      attemptId?: null | string;
+      attemptId?: null | string | undefined;
       /** Checks */
       checks: string;
       /** Created */
       created: number;
       /** Files */
       files: string[];
-      gate?: components["schemas"]["TaskGateEvidence"];
+      gate?: components["schemas"]["TaskGateEvidence"] | undefined;
       /** Id */
       id: string;
       /**
        * Layrline
        * @default null
        */
-      layrLine?: string;
+      layrLine?: string | undefined;
       /**
        * Layrprojectid
        * @default null
        */
-      layrProjectId?: string;
+      layrProjectId?: string | undefined;
       /**
        * Layrstateid
        * @default null
        */
-      layrStateId?: string;
-      result?: components["schemas"]["JsonValue"];
+      layrStateId?: string | undefined;
+      result?: components["schemas"]["JsonValue"] | undefined;
       /**
        * Resultfile
        * @default null
        */
-      resultFile?: string;
+      resultFile?: string | undefined;
       /** Revision */
       revision: string;
       /**
        * Runid
        * @default null
        */
-      runId?: string;
+      runId?: string | undefined;
       /** Text */
       text: string;
     } & {
-      [key: string]: components["schemas"]["JsonValue"];
+      [key: string]: components["schemas"]["JsonValue"] | undefined;
     };
     WorkspaceCleanupSummaryDto: {
       path: string | null;
@@ -26744,23 +27764,27 @@ export interface components {
     /** WorkspaceEntityDto */
     WorkspaceEntityDto: {
       /** Connected */
-      connected?: boolean | null;
+      connected?: boolean | null | undefined;
       /** Nativenotices */
       nativeNotices?:
         | (
             | components["schemas"]["NativeNoticeRecord"]
             | components["schemas"]["ProviderVersionWarningDto"]
           )[]
-        | null;
+        | null
+        | undefined;
       /** Peerteamsversion */
-      peerTeamsVersion?: number | null;
+      peerTeamsVersion?: number | null | undefined;
       /** Projectorganizationversion */
-      projectOrganizationVersion?: number | null;
-      sidebarOrder?: components["schemas"]["SidebarOrderDto"] | null;
+      projectOrganizationVersion?: number | null | undefined;
+      sidebarOrder?:
+        | components["schemas"]["SidebarOrderDto"]
+        | null
+        | undefined;
       /** Statedir */
-      stateDir?: null | string;
+      stateDir?: null | string | undefined;
       /** Taskshistorylimit */
-      tasksHistoryLimit?: number | null;
+      tasksHistoryLimit?: number | null | undefined;
     };
     /** WorkspaceResource */
     WorkspaceResource: {
@@ -26775,21 +27799,24 @@ export interface components {
     /** WorkspaceTaskFeed */
     WorkspaceTaskFeed: {
       /** @default null */
-      cursor?: components["schemas"]["TaskCursor"] | null;
+      cursor?: components["schemas"]["TaskCursor"] | null | undefined;
       /** Hasmore */
       hasMore: boolean;
       /**
        * Hasmorechanges
        * @default null
        */
-      hasMoreChanges?: boolean | null;
+      hasMoreChanges?: boolean | null | undefined;
       /** @default null */
-      nextBefore?: components["schemas"]["TaskHistoryCursor"] | null;
+      nextBefore?:
+        | components["schemas"]["TaskHistoryCursor"]
+        | null
+        | undefined;
       /**
        * Reset
        * @default null
        */
-      reset?: boolean | null;
+      reset?: boolean | null | undefined;
       /** Tasks */
       tasks: components["schemas"]["WorkspaceTaskRecord"][];
     };
@@ -26801,123 +27828,123 @@ export interface components {
        * Bytes
        * @default null
        */
-      bytes?: number | null;
+      bytes?: number | null | undefined;
       /**
        * Cancelrequested
        * @default null
        */
-      cancelRequested?: boolean | null;
+      cancelRequested?: boolean | null | undefined;
       /**
        * Command
        * @default null
        */
-      command?: null | string;
+      command?: null | string | undefined;
       /**
        * Completedatms
        * @default null
        */
-      completedAtMs?: number | null;
+      completedAtMs?: number | null | undefined;
       /** Created */
       created: number;
       /**
        * Cwd
        * @default null
        */
-      cwd?: null | string;
+      cwd?: null | string | undefined;
       /**
        * Durationms
        * @default null
        */
-      durationMs?: number | null;
+      durationMs?: number | null | undefined;
       /**
        * Exitcode
        * @default null
        */
-      exitCode?: number | null;
+      exitCode?: number | null | undefined;
       /**
        * Finished
        * @default null
        */
-      finished?: null | number;
+      finished?: null | number | undefined;
       /** Id */
       id: string;
       /**
        * Interactive
        * @default null
        */
-      interactive?: boolean | null;
+      interactive?: boolean | null | undefined;
       /**
        * Itemid
        * @default null
        */
-      itemId?: null | string;
+      itemId?: null | string | undefined;
       kind: components["schemas"]["TaskKind"];
       /**
        * Log
        * @default null
        */
-      log?: null | string;
+      log?: null | string | undefined;
       /**
        * Name
        * @default null
        */
-      name?: null | string;
+      name?: null | string | undefined;
       /**
        * Outputtruncated
        * @default null
        */
-      outputTruncated?: boolean | null;
+      outputTruncated?: boolean | null | undefined;
       /**
        * Processid
        * @default null
        */
-      processId?: null | string;
+      processId?: null | string | undefined;
       /**
        * Query
        * @default null
        */
-      query?: null | string;
+      query?: null | string | undefined;
       /**
        * Server
        * @default null
        */
-      server?: null | string;
+      server?: null | string | undefined;
       /**
        * Startedatms
        * @default null
        */
-      startedAtMs?: number | null;
+      startedAtMs?: number | null | undefined;
       status: components["schemas"]["TaskStatus"];
       /**
        * Stdinclosed
        * @default null
        */
-      stdinClosed?: boolean | null;
+      stdinClosed?: boolean | null | undefined;
       /**
        * Stdincloserequested
        * @default null
        */
-      stdinCloseRequested?: null | string;
+      stdinCloseRequested?: null | string | undefined;
       /**
        * Stdinerror
        * @default null
        */
-      stdinError?: null | string;
+      stdinError?: null | string | undefined;
       /**
        * Timeout Ms
        * @default null
        */
-      timeout_ms?: number | null;
+      timeout_ms?: number | null | undefined;
       /**
        * Turnid
        * @default null
        */
-      turnId?: null | string;
+      turnId?: null | string | undefined;
       /**
        * Type
        * @default null
        */
-      type?: null | string;
+      type?: null | string | undefined;
     };
     /** WorkspaceView */
     WorkspaceView: {
@@ -26925,12 +27952,18 @@ export interface components {
        * Annotations
        * @default null
        */
-      annotations?: components["schemas"]["AnnotationRecord"][] | null;
+      annotations?:
+        | components["schemas"]["AnnotationRecord"][]
+        | null
+        | undefined;
       /**
        * Checkpoints
        * @default null
        */
-      checkpoints?: components["schemas"]["CheckpointSummary"][] | null;
+      checkpoints?:
+        | components["schemas"]["CheckpointSummary"][]
+        | null
+        | undefined;
       /**
        * Inbox
        * @default null
@@ -26944,37 +27977,38 @@ export interface components {
             | components["schemas"]["RuleInboxEntry"]
             | components["schemas"]["WorkInboxEntry"]
           )[]
-        | null;
+        | null
+        | undefined;
       /**
        * Monitors
        * @default null
        */
-      monitors?: components["schemas"]["MonitorEntityDto"][] | null;
+      monitors?: components["schemas"]["MonitorEntityDto"][] | null | undefined;
       /**
        * Plans
        * @default null
        */
-      plans?: components["schemas"]["PlanView"][] | null;
+      plans?: components["schemas"]["PlanView"][] | null | undefined;
       /**
        * Rules
        * @default null
        */
-      rules?: components["schemas"]["RuleRecordResponse"][] | null;
+      rules?: components["schemas"]["RuleRecordResponse"][] | null | undefined;
       /**
        * Tasks
        * @default null
        */
-      tasks?: components["schemas"]["WorkspaceTaskRecord"][] | null;
+      tasks?: components["schemas"]["WorkspaceTaskRecord"][] | null | undefined;
       /**
        * Taskshistorylimit
        * @default null
        */
-      tasksHistoryLimit?: number | null;
+      tasksHistoryLimit?: number | null | undefined;
       /**
        * Work
        * @default null
        */
-      work?: components["schemas"]["WorkItem"][] | null;
+      work?: components["schemas"]["WorkItem"][] | null | undefined;
     };
     /** WorkspaceWaitRecordResponse */
     WorkspaceWaitRecordResponse: {
@@ -26982,24 +28016,24 @@ export interface components {
        * At
        * @default null
        */
-      at?: number;
+      at?: number | undefined;
       /**
        * Attemptid
        * @default null
        */
-      attemptId?: string;
+      attemptId?: string | undefined;
       /**
        * Blockers
        * @default null
        */
-      blockers?: components["schemas"]["JsonValue"][];
+      blockers?: components["schemas"]["JsonValue"][] | undefined;
       /**
        * Events
        * @default null
        */
-      events?: components["schemas"]["JsonValue"][];
+      events?: components["schemas"]["JsonValue"][] | undefined;
     } & {
-      [key: string]: components["schemas"]["JsonValue"];
+      [key: string]: components["schemas"]["JsonValue"] | undefined;
     };
     /** WorktreeCleanupErrorRecordResponse */
     WorktreeCleanupErrorRecordResponse: {
@@ -27011,21 +28045,21 @@ export interface components {
        * Errno
        * @default null
        */
-      errno?: number;
+      errno?: number | undefined;
       /** Message */
       message: string;
       /**
        * Returncode
        * @default null
        */
-      returncode?: number;
+      returncode?: number | undefined;
       /**
        * Stderr
        * @default null
        */
-      stderr?: string;
+      stderr?: string | undefined;
     } & {
-      [key: string]: components["schemas"]["JsonValue"];
+      [key: string]: components["schemas"]["JsonValue"] | undefined;
     };
     /** WorktreeCleanupRecordResponse */
     WorktreeCleanupRecordResponse: {
@@ -27033,58 +28067,61 @@ export interface components {
        * At
        * @default null
        */
-      at?: number;
+      at?: number | undefined;
       /**
        * Branch
        * @default null
        */
-      branch?: null | string;
+      branch?: null | string | undefined;
       /**
        * Bytes
        * @default null
        */
-      bytes?: number | null;
+      bytes?: number | null | undefined;
       /**
        * Error
        * @default null
        */
       error?:
         | components["schemas"]["WorktreeCleanupErrorRecordResponse"]
-        | string;
+        | string
+        | undefined;
       /**
        * Gitfile
        * @default null
        */
-      gitFile?: number[];
+      gitFile?: number[] | undefined;
       /**
        * Head
        * @default null
        */
-      head?: null | string;
+      head?: null | string | undefined;
       /** Identity */
       identity: (number | null | string)[];
       /**
        * Missing
        * @default null
        */
-      missing?: boolean;
+      missing?: boolean | undefined;
       /**
        * Note
        * @default null
        */
-      note?: string;
+      note?: string | undefined;
       /**
        * Path
        * @default null
        */
-      path?: string;
+      path?: string | undefined;
       /**
        * Phase
        * @default null
        */
-      phase?: string;
+      phase?: string | undefined;
       /** @default null */
-      registrationRepair?: components["schemas"]["WorktreeRegistrationRepairRecordResponse"];
+      registrationRepair?:
+        | components["schemas"]["WorktreeRegistrationRepairRecordResponse"]
+        | undefined;
       /** Relative */
       relative: string;
       /** Repo */
@@ -27095,9 +28132,9 @@ export interface components {
        * Rootfile
        * @default null
        */
-      rootFile?: number[];
+      rootFile?: number[] | undefined;
     } & {
-      [key: string]: components["schemas"]["JsonValue"];
+      [key: string]: components["schemas"]["JsonValue"] | undefined;
     };
     /** WorktreeRegistrationRepairRecordResponse */
     WorktreeRegistrationRepairRecordResponse: {
@@ -27108,14 +28145,16 @@ export interface components {
       /** Rootfile */
       rootFile: number[];
     } & {
-      [key: string]: components["schemas"]["JsonValue"];
+      [key: string]: components["schemas"]["JsonValue"] | undefined;
     };
     /** WorkViewRecordResponse */
     WorkViewRecordResponse: {
       /** @default null */
-      archive?: components["schemas"]["WorkArchiveRecordResponse"];
+      archive?: components["schemas"]["WorkArchiveRecordResponse"] | undefined;
       /** @default null */
-      archiveIntent?: components["schemas"]["WorkArchiveIntentRecordResponse"];
+      archiveIntent?:
+        | components["schemas"]["WorkArchiveIntentRecordResponse"]
+        | undefined;
       /** Blockedby */
       blockedBy: string[];
       /** Created */
@@ -27124,7 +28163,7 @@ export interface components {
        * Createdby
        * @default null
        */
-      createdBy?: string;
+      createdBy?: string | undefined;
       /** Decisions */
       decisions: components["schemas"]["WorkDecisionRecordResponse"][];
       /** Dependencies */
@@ -27142,37 +28181,38 @@ export interface components {
             | "accepted"
             | "cancelled"
           );
-      gate?: components["schemas"]["TaskAcceptanceGate"];
+      gate?: components["schemas"]["TaskAcceptanceGate"] | undefined;
       /**
        * Handoff
        * @default null
        */
-      handoff?: string;
+      handoff?: string | undefined;
       /**
        * Handofferror
        * @default null
        */
-      handoffError?: string;
+      handoffError?: string | undefined;
       /** Id */
       id: string;
       /**
        * Owner
        * @default null
        */
-      owner?: null | string;
+      owner?: null | string | undefined;
       /**
        * Releases
        * @default null
        */
-      releases?: components["schemas"]["JsonValue"][];
+      releases?: components["schemas"]["JsonValue"][] | undefined;
       /** Results */
       results: components["schemas"]["WorkResultRecordResponse"][];
       /** @description Optional draft 2020-12 result contract for create/update (maximum 32768 UTF-8 bytes). Supports types, properties, required, additionalProperties, arrays, bounds, enum/const and combinators. References, regex and unknown keywords are refused. A new task version resets the submit cap. */
       resultSchema?:
         | {
-            [key: string]: components["schemas"]["JsonValue"];
+            [key: string]: components["schemas"]["JsonValue"] | undefined;
           }
-        | boolean;
+        | boolean
+        | undefined;
       /** Rootid */
       rootId: string;
       /**
@@ -27186,7 +28226,9 @@ export interface components {
         | "review"
         | "accepted"
         | "cancelled";
-      submissionRefusal?: components["schemas"]["TaskSubmissionRefusal"];
+      submissionRefusal?:
+        | components["schemas"]["TaskSubmissionRefusal"]
+        | undefined;
       /** Title */
       title: string;
       /** Updated */
@@ -27194,7 +28236,7 @@ export interface components {
       /** Version */
       version: number;
     } & {
-      [key: string]: components["schemas"]["JsonValue"];
+      [key: string]: components["schemas"]["JsonValue"] | undefined;
     };
   };
   responses: {
@@ -27560,12 +28602,12 @@ export type $defs = Record<string, never>;
 export interface operations {
   accounts_api_accounts_get: {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
-    requestBody?: never;
+    requestBody?: never | undefined;
     responses: {
       /** @description Successful Response */
       200: {
@@ -27607,10 +28649,10 @@ export interface operations {
   };
   claude_add_start_api_accounts_claude_add_post: {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
     requestBody: {
       content: {
@@ -27672,14 +28714,16 @@ export interface operations {
   };
   claude_login_status_api_accounts_claude_login_get: {
     parameters: {
-      query?: {
-        request_id?: string;
-      };
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?:
+        | {
+            request_id?: string | undefined;
+          }
+        | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
-    requestBody?: never;
+    requestBody?: never | undefined;
     responses: {
       /** @description Successful Response */
       200: {
@@ -27721,10 +28765,10 @@ export interface operations {
   };
   claude_login_start_api_accounts_claude_login_post: {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
     requestBody: {
       content: {
@@ -27786,10 +28830,10 @@ export interface operations {
   };
   claude_login_cancel_api_accounts_claude_login_cancel_post: {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
     requestBody: {
       content: {
@@ -27851,10 +28895,10 @@ export interface operations {
   };
   claude_login_code_api_accounts_claude_login_code_post: {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
     requestBody: {
       content: {
@@ -27916,10 +28960,10 @@ export interface operations {
   };
   account_default_api_accounts_default_post: {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
     requestBody: {
       content: {
@@ -27981,10 +29025,10 @@ export interface operations {
   };
   account_default_groups_api_accounts_default_groups_post: {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
     requestBody: {
       content: {
@@ -28046,10 +29090,10 @@ export interface operations {
   };
   account_delete_api_accounts_delete_post: {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
     requestBody: {
       content: {
@@ -28111,10 +29155,10 @@ export interface operations {
   };
   account_disconnect_api_accounts_disconnect_post: {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
     requestBody: {
       content: {
@@ -28176,16 +29220,18 @@ export interface operations {
   };
   account_discover_api_accounts_discover_post: {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
-    requestBody?: {
-      content: {
-        "application/json": components["schemas"]["AccountDiscoverRequest"];
-      };
-    };
+    requestBody?:
+      | {
+          content: {
+            "application/json": components["schemas"]["AccountDiscoverRequest"];
+          };
+        }
+      | undefined;
     responses: {
       /** @description Successful Response */
       200: {
@@ -28241,10 +29287,10 @@ export interface operations {
   };
   account_group_api_accounts_group_post: {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
     requestBody: {
       content: {
@@ -28306,10 +29352,10 @@ export interface operations {
   };
   account_login_api_accounts_login_post: {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
     requestBody: {
       content: {
@@ -28371,10 +29417,10 @@ export interface operations {
   };
   account_login_cancel_api_accounts_login_cancel_post: {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
     requestBody: {
       content: {
@@ -28436,10 +29482,10 @@ export interface operations {
   };
   account_name_api_accounts_name_post: {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
     requestBody: {
       content: {
@@ -28501,10 +29547,10 @@ export interface operations {
   };
   account_reconnect_api_accounts_reconnect_post: {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
     requestBody: {
       content: {
@@ -28566,10 +29612,10 @@ export interface operations {
   };
   account_register_api_accounts_register_post: {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
     requestBody: {
       content: {
@@ -28631,10 +29677,10 @@ export interface operations {
   };
   account_throttle_api_accounts_throttle_post: {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
     requestBody: {
       content: {
@@ -28696,10 +29742,10 @@ export interface operations {
   };
   native_action_api_action_post: {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
     requestBody: {
       content: {
@@ -28761,17 +29807,19 @@ export interface operations {
   };
   agent_chat_api_agent_chat_get: {
     parameters: {
-      query?: {
-        after?: number;
-        before?: number;
-        limit?: number;
-        room?: string;
-      };
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?:
+        | {
+            after?: number | undefined;
+            before?: number | undefined;
+            limit?: number | undefined;
+            room?: string | undefined;
+          }
+        | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
-    requestBody?: never;
+    requestBody?: never | undefined;
     responses: {
       /** @description Successful Response */
       200: {
@@ -28811,10 +29859,10 @@ export interface operations {
   };
   create_agent_api_agents_post: {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
     requestBody: {
       content: {
@@ -28876,10 +29924,10 @@ export interface operations {
   };
   select_account_api_agents_account_post: {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
     requestBody: {
       content: {
@@ -28941,10 +29989,10 @@ export interface operations {
   };
   account_transfer_api_agents_account_transfer_post: {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
     requestBody: {
       content: {
@@ -29011,11 +30059,11 @@ export interface operations {
       query: {
         agent: string;
       };
-      header?: never;
-      path?: never;
-      cookie?: never;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
-    requestBody?: never;
+    requestBody?: never | undefined;
     responses: {
       /** @description Successful Response */
       200: {
@@ -29059,28 +30107,30 @@ export interface operations {
   };
   analytics_api_analytics_get: {
     parameters: {
-      query?: {
-        agent?: string;
-        detail?: string;
-        export?: "1";
-        from_time?: number;
-        item?: string;
-        limit?: number;
-        offset?: number;
-        scope?: components["schemas"]["AnalyticsScope"];
-        thread?: string;
-        timing?: string;
-        to_time?: number;
-        tool?: string;
-        turn?: string;
-        turns?: string;
-        view?: string;
-      };
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?:
+        | {
+            agent?: string | undefined;
+            detail?: string | undefined;
+            export?: "1" | undefined;
+            from_time?: number | undefined;
+            item?: string | undefined;
+            limit?: number | undefined;
+            offset?: number | undefined;
+            scope?: components["schemas"]["AnalyticsScope"] | undefined;
+            thread?: string | undefined;
+            timing?: string | undefined;
+            to_time?: number | undefined;
+            tool?: string | undefined;
+            turn?: string | undefined;
+            turns?: string | undefined;
+            view?: string | undefined;
+          }
+        | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
-    requestBody?: never;
+    requestBody?: never | undefined;
     responses: {
       /** @description Successful Response */
       200: {
@@ -29123,10 +30173,10 @@ export interface operations {
   };
   annotation_api_annotation_post: {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
     requestBody: {
       content: {
@@ -29186,10 +30236,10 @@ export interface operations {
   };
   answer_api_answer_post: {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
     requestBody: {
       content: {
@@ -29249,10 +30299,10 @@ export interface operations {
   };
   upload_asset_api_assets_post: {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
     requestBody: {
       content: {
@@ -29312,10 +30362,10 @@ export interface operations {
   };
   branch_api_branch_post: {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
     requestBody: {
       content: {
@@ -29360,10 +30410,10 @@ export interface operations {
   };
   browser_forward_api_browser_forward_post: {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
     requestBody: {
       content: {
@@ -29423,16 +30473,18 @@ export interface operations {
   };
   capabilities_api_capabilities_get: {
     parameters: {
-      query?: {
-        agent?: string;
-        fresh?: boolean;
-        serversCursor?: string;
-      };
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?:
+        | {
+            agent?: string | undefined;
+            fresh?: boolean | undefined;
+            serversCursor?: string | undefined;
+          }
+        | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
-    requestBody?: never;
+    requestBody?: never | undefined;
     responses: {
       /** @description Successful Response */
       200: {
@@ -29476,7 +30528,7 @@ export interface operations {
           "X-Studio-Server": components["headers"]["StudioServer"];
           [name: string]: unknown;
         };
-        content?: never;
+        content?: never | undefined;
       };
       /** @description Bad Request */
       400: components["responses"]["ApiError400"];
@@ -29496,10 +30548,10 @@ export interface operations {
   };
   capacity_retry_api_capacity_retry_post: {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
     requestBody: {
       content: {
@@ -29561,15 +30613,17 @@ export interface operations {
   };
   changes_api_changes_get: {
     parameters: {
-      query?: {
-        agent?: string;
-        scope?: "chat";
-      };
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?:
+        | {
+            agent?: string | undefined;
+            scope?: "chat" | undefined;
+          }
+        | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
-    requestBody?: never;
+    requestBody?: never | undefined;
     responses: {
       /** @description Successful Response */
       200: {
@@ -29613,7 +30667,7 @@ export interface operations {
           "X-Studio-Server": components["headers"]["StudioServer"];
           [name: string]: unknown;
         };
-        content?: never;
+        content?: never | undefined;
       };
       /** @description Bad Request */
       400: components["responses"]["ApiError400"];
@@ -29631,10 +30685,10 @@ export interface operations {
   };
   create_chat_api_chats_post: {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
     requestBody: {
       content: {
@@ -29694,10 +30748,10 @@ export interface operations {
   };
   checkpoint_api_checkpoint_post: {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
     requestBody: {
       content: {
@@ -29742,10 +30796,10 @@ export interface operations {
   };
   checkpoint_preview_api_checkpoint_preview_post: {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
     requestBody: {
       content: {
@@ -29790,10 +30844,10 @@ export interface operations {
   };
   checkpoint_restore_api_checkpoint_restore_post: {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
     requestBody: {
       content: {
@@ -29838,14 +30892,16 @@ export interface operations {
   };
   checkpoints_api_checkpoints_get: {
     parameters: {
-      query?: {
-        agent?: string;
-      };
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?:
+        | {
+            agent?: string | undefined;
+          }
+        | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
-    requestBody?: never;
+    requestBody?: never | undefined;
     responses: {
       /** @description Successful Response */
       200: {
@@ -29879,10 +30935,10 @@ export interface operations {
   };
   claude_file_backups_api_claude_file_backups_post: {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
     requestBody: {
       content: {
@@ -29944,10 +31000,10 @@ export interface operations {
   };
   claude_profile_api_claude_profiles_post: {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
     requestBody: {
       content: {
@@ -30012,11 +31068,11 @@ export interface operations {
       query: {
         id: string;
       };
-      header?: never;
-      path?: never;
-      cookie?: never;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
-    requestBody?: never;
+    requestBody?: never | undefined;
     responses: {
       /** @description Safe saved repair evidence; no transcript text or paths */
       200: {
@@ -30059,10 +31115,10 @@ export interface operations {
   };
   claude_session_api_claude_session_post: {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
     requestBody: {
       content: {
@@ -30135,14 +31191,16 @@ export interface operations {
   };
   complaint_detail_api_complaint_get: {
     parameters: {
-      query?: {
-        id?: string;
-      };
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?:
+        | {
+            id?: string | undefined;
+          }
+        | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
-    requestBody?: never;
+    requestBody?: never | undefined;
     responses: {
       /** @description Successful Response */
       200: {
@@ -30182,10 +31240,10 @@ export interface operations {
   };
   complaints_api_complaints_post: {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
     requestBody: {
       content: {
@@ -30245,10 +31303,10 @@ export interface operations {
   };
   configure_api_configure_post: {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
     requestBody: {
       content: {
@@ -30310,10 +31368,10 @@ export interface operations {
   };
   connection_recovery_api_connection_recovery_post: {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
     requestBody: {
       content: {
@@ -30375,10 +31433,10 @@ export interface operations {
   };
   connect_chat_api_connections_post: {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
     requestBody: {
       content: {
@@ -30438,10 +31496,10 @@ export interface operations {
   };
   context_repair_api_context_repair_post: {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
     requestBody: {
       content: {
@@ -30503,10 +31561,10 @@ export interface operations {
   };
   conversation_settings_api_conversation_post: {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
     requestBody: {
       content: {
@@ -30568,10 +31626,10 @@ export interface operations {
   };
   delete_conversation_api_conversation_delete_post: {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
     requestBody: {
       content: {
@@ -30633,14 +31691,16 @@ export interface operations {
   };
   costs_api_costs_get: {
     parameters: {
-      query?: {
-        account_key?: string;
-      };
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?:
+        | {
+            account_key?: string | undefined;
+          }
+        | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
-    requestBody?: never;
+    requestBody?: never | undefined;
     responses: {
       /** @description Successful Response */
       200: {
@@ -30680,10 +31740,10 @@ export interface operations {
   };
   cost_interest_api_costs_interest_post: {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
     requestBody: {
       content: {
@@ -30704,14 +31764,16 @@ export interface operations {
   };
   desktop_api_desktop_get: {
     parameters: {
-      query?: {
-        account_key?: string;
-      };
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?:
+        | {
+            account_key?: string | undefined;
+          }
+        | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
-    requestBody?: never;
+    requestBody?: never | undefined;
     responses: {
       /** @description Successful Response */
       200: {
@@ -30751,12 +31813,12 @@ export interface operations {
   };
   diagnostics_api_diagnostics_get: {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
-    requestBody?: never;
+    requestBody?: never | undefined;
     responses: {
       /** @description Successful Response */
       200: {
@@ -30803,11 +31865,11 @@ export interface operations {
       query: {
         agent: string;
       };
-      header?: never;
-      path?: never;
-      cookie?: never;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
-    requestBody?: never;
+    requestBody?: never | undefined;
     responses: {
       /** @description Successful Response */
       200: {
@@ -30849,16 +31911,18 @@ export interface operations {
   };
   directories_api_directories_get: {
     parameters: {
-      query?: {
-        path?: string;
-        request_id?: string;
-        server?: string;
-      };
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?:
+        | {
+            path?: string | undefined;
+            request_id?: string | undefined;
+            server?: string | undefined;
+          }
+        | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
-    requestBody?: never;
+    requestBody?: never | undefined;
     responses: {
       /** @description Successful Response */
       200: {
@@ -30898,10 +31962,10 @@ export interface operations {
   };
   manage_federation_api_federation_post: {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
     requestBody: {
       content: {
@@ -30974,10 +32038,10 @@ export interface operations {
   };
   message_api_federation_v1_message_post: {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
     requestBody: {
       content: {
@@ -31039,10 +32103,10 @@ export interface operations {
   };
   pair_api_federation_v1_pair_post: {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
     requestBody: {
       content: {
@@ -31104,10 +32168,10 @@ export interface operations {
   };
   pull_api_federation_v1_pull_post: {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
     requestBody: {
       content: {
@@ -31169,10 +32233,10 @@ export interface operations {
   };
   status_api_federation_v1_status_post: {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
     requestBody: {
       content: {
@@ -31234,16 +32298,18 @@ export interface operations {
   };
   file_content_api_file_get: {
     parameters: {
-      query?: {
-        agent?: string;
-        asset?: string;
-        path?: string;
-      };
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?:
+        | {
+            agent?: string | undefined;
+            asset?: string | undefined;
+            path?: string | undefined;
+          }
+        | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
-    requestBody?: never;
+    requestBody?: never | undefined;
     responses: {
       /** @description Successful Response */
       200: {
@@ -31285,16 +32351,18 @@ export interface operations {
   };
   file_info_api_file_info_get: {
     parameters: {
-      query?: {
-        agent?: string;
-        asset?: string;
-        path?: string;
-      };
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?:
+        | {
+            agent?: string | undefined;
+            asset?: string | undefined;
+            path?: string | undefined;
+          }
+        | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
-    requestBody?: never;
+    requestBody?: never | undefined;
     responses: {
       /** @description Successful Response */
       200: {
@@ -31336,15 +32404,17 @@ export interface operations {
   };
   import_list_api_import_get: {
     parameters: {
-      query?: {
-        account_key?: string;
-        cursor?: string;
-      };
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?:
+        | {
+            account_key?: string | undefined;
+            cursor?: string | undefined;
+          }
+        | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
-    requestBody?: never;
+    requestBody?: never | undefined;
     responses: {
       /** @description Successful Response */
       200: {
@@ -31386,10 +32456,10 @@ export interface operations {
   };
   import_thread_api_import_post: {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
     requestBody: {
       content: {
@@ -31451,10 +32521,10 @@ export interface operations {
   };
   create_lead_api_leads_post: {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
     requestBody: {
       content: {
@@ -31516,16 +32586,18 @@ export interface operations {
   };
   limits_api_limits_get: {
     parameters: {
-      query?: {
-        account_key?: string;
-        agent?: string;
-        cached?: "1";
-      };
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?:
+        | {
+            account_key?: string | undefined;
+            agent?: string | undefined;
+            cached?: "1" | undefined;
+          }
+        | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
-    requestBody?: never;
+    requestBody?: never | undefined;
     responses: {
       /** @description Successful Response */
       200: {
@@ -31567,10 +32639,10 @@ export interface operations {
   };
   reset_limits_api_limits_reset_post: {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
     requestBody: {
       content: {
@@ -31632,12 +32704,12 @@ export interface operations {
   };
   linux_vm_settings_api_linux_vm_settings_get: {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
-    requestBody?: never;
+    requestBody?: never | undefined;
     responses: {
       /** @description Successful Response */
       200: {
@@ -31677,10 +32749,10 @@ export interface operations {
   };
   linux_vm_settings_write_api_linux_vm_settings_post: {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
     requestBody: {
       content: {
@@ -31740,10 +32812,10 @@ export interface operations {
   };
   mac_sync_config_api_mac_sync_config_post: {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
     requestBody: {
       content: {
@@ -31805,10 +32877,10 @@ export interface operations {
   };
   mac_sync_resolve_api_mac_sync_resolve_post: {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
     requestBody: {
       content: {
@@ -31870,10 +32942,10 @@ export interface operations {
   };
   mcp_reconnect_api_mcp_reconnect_post: {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
     requestBody: {
       content: {
@@ -31923,7 +32995,7 @@ export interface operations {
           "X-Studio-Server": components["headers"]["StudioServer"];
           [name: string]: unknown;
         };
-        content?: never;
+        content?: never | undefined;
       };
       /** @description Bad Request */
       400: components["responses"]["ApiError400"];
@@ -31943,14 +33015,16 @@ export interface operations {
   };
   messages_api_messages_get: {
     parameters: {
-      query?: {
-        room?: string;
-      };
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?:
+        | {
+            room?: string | undefined;
+          }
+        | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
-    requestBody?: never;
+    requestBody?: never | undefined;
     responses: {
       /** @description Successful Response */
       200: {
@@ -31990,10 +33064,10 @@ export interface operations {
   };
   post_message_api_messages_post: {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
     requestBody: {
       content: {
@@ -32053,15 +33127,17 @@ export interface operations {
   };
   message_receipts_api_messages_receipts_get: {
     parameters: {
-      query?: {
-        agent?: string;
-        ids?: string;
-      };
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?:
+        | {
+            agent?: string | undefined;
+            ids?: string | undefined;
+          }
+        | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
-    requestBody?: never;
+    requestBody?: never | undefined;
     responses: {
       /** @description Successful Response */
       200: {
@@ -32101,16 +33177,18 @@ export interface operations {
   };
   models_api_models_get: {
     parameters: {
-      query?: {
-        account_key?: string;
-        retry?: "1";
-        workers?: "1";
-      };
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?:
+        | {
+            account_key?: string | undefined;
+            retry?: "1" | undefined;
+            workers?: "1" | undefined;
+          }
+        | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
-    requestBody?: never;
+    requestBody?: never | undefined;
     responses: {
       /** @description Successful Response */
       200: {
@@ -32152,10 +33230,10 @@ export interface operations {
   };
   cancel_monitor_api_monitor_cancel_post: {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
     requestBody: {
       content: {
@@ -32215,10 +33293,10 @@ export interface operations {
   };
   monitor_input_api_monitor_input_post: {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
     requestBody: {
       content: {
@@ -32281,13 +33359,15 @@ export interface operations {
       query: {
         id: string;
       };
-      header?: {
-        Range?: string;
-      };
-      path?: never;
-      cookie?: never;
+      header?:
+        | {
+            Range?: string | undefined;
+          }
+        | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
-    requestBody?: never;
+    requestBody?: never | undefined;
     responses: {
       /** @description Successful Response */
       200: {
@@ -32367,7 +33447,7 @@ export interface operations {
           "X-Studio-Server": components["headers"]["StudioServer"];
           [name: string]: unknown;
         };
-        content?: never;
+        content?: never | undefined;
       };
       /** @description Too Many Requests */
       429: components["responses"]["ApiError429"];
@@ -32379,10 +33459,10 @@ export interface operations {
   };
   restart_monitor_api_monitor_restart_post: {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
     requestBody: {
       content: {
@@ -32442,12 +33522,12 @@ export interface operations {
   };
   snapshot_api_multi_server_get: {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
-    requestBody?: never;
+    requestBody?: never | undefined;
     responses: {
       /** @description Successful Response */
       200: {
@@ -32561,10 +33641,10 @@ export interface operations {
   };
   manage_api_multi_server_post: {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
     requestBody: {
       content: {
@@ -32697,12 +33777,12 @@ export interface operations {
   };
   audit_api_multi_server_audit_get: {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
-    requestBody?: never;
+    requestBody?: never | undefined;
     responses: {
       /** @description Successful Response */
       200: {
@@ -32816,10 +33896,10 @@ export interface operations {
   };
   auto_pair_api_multi_server_v1_auto_pair_post: {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
     requestBody: {
       content: {
@@ -32941,12 +34021,12 @@ export interface operations {
   };
   discovery_identity_api_multi_server_v1_identity_get: {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
-    requestBody?: never;
+    requestBody?: never | undefined;
     responses: {
       /** @description Successful Response */
       200: {
@@ -33060,10 +34140,10 @@ export interface operations {
   };
   rename_server_api_multi_server_v1_name_post: {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
     requestBody: {
       content: {
@@ -33185,10 +34265,10 @@ export interface operations {
   };
   pair_api_multi_server_v1_pair_post: {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
     requestBody: {
       content: {
@@ -33310,12 +34390,12 @@ export interface operations {
   };
   server_status_api_multi_server_v1_status_get: {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
-    requestBody?: never;
+    requestBody?: never | undefined;
     responses: {
       /** @description Successful Response */
       200: {
@@ -33429,10 +34509,10 @@ export interface operations {
   };
   native_command_api_native_command_post: {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
     requestBody: {
       content: {
@@ -33496,12 +34576,12 @@ export interface operations {
   };
   orchestration_settings_read_api_orchestration_settings_get: {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
-    requestBody?: never;
+    requestBody?: never | undefined;
     responses: {
       /** @description Successful Response */
       200: {
@@ -33541,10 +34621,10 @@ export interface operations {
   };
   orchestration_settings_write_api_orchestration_settings_post: {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
     requestBody: {
       content: {
@@ -33604,10 +34684,10 @@ export interface operations {
   };
   organization_api_organization_post: {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
     requestBody: {
       content: {
@@ -33667,10 +34747,10 @@ export interface operations {
   };
   peer_teams_api_peer_teams_post: {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
     requestBody: {
       content: {
@@ -33746,14 +34826,16 @@ export interface operations {
   };
   plan_api_plan_get: {
     parameters: {
-      query?: {
-        agent?: string;
-      };
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?:
+        | {
+            agent?: string | undefined;
+          }
+        | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
-    requestBody?: never;
+    requestBody?: never | undefined;
     responses: {
       /** @description Successful Response */
       200: {
@@ -33797,7 +34879,7 @@ export interface operations {
           "X-Studio-Server": components["headers"]["StudioServer"];
           [name: string]: unknown;
         };
-        content?: never;
+        content?: never | undefined;
       };
       /** @description Bad Request */
       400: components["responses"]["ApiError400"];
@@ -33815,10 +34897,10 @@ export interface operations {
   };
   save_plan_api_plan_post: {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
     requestBody: {
       content: {
@@ -33881,11 +34963,11 @@ export interface operations {
       query: {
         agent: string;
       };
-      header?: never;
-      path?: never;
-      cookie?: never;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
-    requestBody?: never;
+    requestBody?: never | undefined;
     responses: {
       /** @description Successful Response */
       200: {
@@ -33931,11 +35013,11 @@ export interface operations {
         epoch: number;
         requestId: string;
       };
-      header?: never;
-      path?: never;
-      cookie?: never;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
-    requestBody?: never;
+    requestBody?: never | undefined;
     responses: {
       /** @description Successful Response */
       200: {
@@ -33975,10 +35057,10 @@ export interface operations {
   };
   process_action_api_processes_action_post: {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
     requestBody: {
       content: {
@@ -34038,12 +35120,12 @@ export interface operations {
   };
   profiles_api_profiles_get: {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
-    requestBody?: never;
+    requestBody?: never | undefined;
     responses: {
       /** @description Successful Response */
       200: {
@@ -34083,10 +35165,10 @@ export interface operations {
   };
   update_profiles_api_profiles_post: {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
     requestBody: {
       content: {
@@ -34147,17 +35229,17 @@ export interface operations {
   project_location_query_api_project_locations_get: {
     parameters: {
       query: {
-        action?: "info" | "matches";
-        path?: string;
+        action?: "info" | "matches" | undefined;
+        path?: string | undefined;
         project: string;
-        request_id?: string;
+        request_id?: string | undefined;
         server: string;
       };
-      header?: never;
-      path?: never;
-      cookie?: never;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
-    requestBody?: never;
+    requestBody?: never | undefined;
     responses: {
       /** @description Successful Response */
       200: {
@@ -34199,10 +35281,10 @@ export interface operations {
   };
   project_secrets_list_api_project_secrets_list_post: {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
     requestBody: {
       content: {
@@ -34264,10 +35346,10 @@ export interface operations {
   };
   project_secrets_remove_api_project_secrets_remove_post: {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
     requestBody: {
       content: {
@@ -34329,10 +35411,10 @@ export interface operations {
   };
   project_secrets_set_api_project_secrets_set_post: {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
     requestBody: {
       content: {
@@ -34394,12 +35476,12 @@ export interface operations {
   };
   projects_api_projects_get: {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
-    requestBody?: never;
+    requestBody?: never | undefined;
     responses: {
       /** @description Successful Response */
       200: {
@@ -34441,10 +35523,10 @@ export interface operations {
   };
   project_write_api_projects_post: {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
     requestBody: {
       content: {
@@ -34514,10 +35596,10 @@ export interface operations {
   };
   project_delete_api_projects_delete_post: {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
     requestBody: {
       content: {
@@ -34600,14 +35682,16 @@ export interface operations {
   };
   questions_api_questions_get: {
     parameters: {
-      query?: {
-        agent?: string;
-      };
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?:
+        | {
+            agent?: string | undefined;
+          }
+        | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
-    requestBody?: never;
+    requestBody?: never | undefined;
     responses: {
       /** @description Successful Response */
       200: {
@@ -34647,10 +35731,10 @@ export interface operations {
   };
   defer_question_api_questions_defer_post: {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
     requestBody: {
       content: {
@@ -34710,10 +35794,10 @@ export interface operations {
   };
   delete_question_api_questions_delete_post: {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
     requestBody: {
       content: {
@@ -34773,14 +35857,16 @@ export interface operations {
   };
   queue_api_queue_get: {
     parameters: {
-      query?: {
-        agent?: string;
-      };
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?:
+        | {
+            agent?: string | undefined;
+          }
+        | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
-    requestBody?: never;
+    requestBody?: never | undefined;
     responses: {
       /** @description Successful Response */
       200: {
@@ -34820,10 +35906,10 @@ export interface operations {
   };
   queue_action_api_queue_post: {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
     requestBody: {
       content: {
@@ -34887,10 +35973,10 @@ export interface operations {
   };
   rename_api_rename_post: {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
     requestBody: {
       content: {
@@ -34955,11 +36041,11 @@ export interface operations {
       query: {
         agent: string;
       };
-      header?: never;
-      path?: never;
-      cookie?: never;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
-    requestBody?: never;
+    requestBody?: never | undefined;
     responses: {
       /** @description Successful Response */
       200: {
@@ -34999,10 +36085,10 @@ export interface operations {
   };
   delete_room_api_room_delete_post: {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
     requestBody: {
       content: {
@@ -35062,14 +36148,16 @@ export interface operations {
   };
   rules_api_rules_get: {
     parameters: {
-      query?: {
-        agent?: string;
-      };
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?:
+        | {
+            agent?: string | undefined;
+          }
+        | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
-    requestBody?: never;
+    requestBody?: never | undefined;
     responses: {
       /** @description Successful Response */
       200: {
@@ -35113,7 +36201,7 @@ export interface operations {
           "X-Studio-Server": components["headers"]["StudioServer"];
           [name: string]: unknown;
         };
-        content?: never;
+        content?: never | undefined;
       };
       /** @description Bad Request */
       400: components["responses"]["ApiError400"];
@@ -35131,10 +36219,10 @@ export interface operations {
   };
   update_rules_api_rules_post: {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
     requestBody: {
       content: {
@@ -35197,14 +36285,14 @@ export interface operations {
   search_api_search_get: {
     parameters: {
       query: {
-        limit?: number;
+        limit?: number | undefined;
         q: string;
       };
-      header?: never;
-      path?: never;
-      cookie?: never;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
-    requestBody?: never;
+    requestBody?: never | undefined;
     responses: {
       /** @description Successful Response */
       200: {
@@ -35238,15 +36326,17 @@ export interface operations {
   };
   search_item_api_search_item_get: {
     parameters: {
-      query?: {
-        id?: string;
-        message_id?: string;
-      };
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?:
+        | {
+            id?: string | undefined;
+            message_id?: string | undefined;
+          }
+        | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
-    requestBody?: never;
+    requestBody?: never | undefined;
     responses: {
       /** @description Successful Response */
       200: {
@@ -35280,10 +36370,10 @@ export interface operations {
   };
   orchestration_api_servers_orchestration_post: {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
     requestBody: {
       content: {
@@ -35405,12 +36495,12 @@ export interface operations {
   };
   session_api_session_get: {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
-    requestBody?: never;
+    requestBody?: never | undefined;
     responses: {
       /** @description Successful Response */
       200: {
@@ -35450,14 +36540,16 @@ export interface operations {
   };
   session_cost_api_session_cost_get: {
     parameters: {
-      query?: {
-        agent?: string;
-      };
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?:
+        | {
+            agent?: string | undefined;
+          }
+        | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
-    requestBody?: never;
+    requestBody?: never | undefined;
     responses: {
       /** @description Successful Response */
       200: {
@@ -35497,14 +36589,16 @@ export interface operations {
   };
   skills_api_skills_get: {
     parameters: {
-      query?: {
-        agent?: string;
-      };
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?:
+        | {
+            agent?: string | undefined;
+          }
+        | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
-    requestBody?: never;
+    requestBody?: never | undefined;
     responses: {
       /** @description Successful Response */
       200: {
@@ -35546,10 +36640,10 @@ export interface operations {
   };
   stop_api_stop_post: {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
     requestBody: {
       content: {
@@ -35611,12 +36705,12 @@ export interface operations {
   };
   studio_errors_read_api_studio_errors_get: {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
-    requestBody?: never;
+    requestBody?: never | undefined;
     responses: {
       /** @description Successful Response */
       200: {
@@ -35656,10 +36750,10 @@ export interface operations {
   };
   studio_errors_dismiss_api_studio_errors_dismiss_post: {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
     requestBody: {
       content: {
@@ -35719,10 +36813,10 @@ export interface operations {
   };
   push_drafts_api_sync_drafts_post: {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
     requestBody: {
       content: {
@@ -35774,12 +36868,12 @@ export interface operations {
   };
   identity_api_sync_identity_get: {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
-    requestBody?: never;
+    requestBody?: never | undefined;
     responses: {
       /** @description Successful Response */
       200: {
@@ -35815,10 +36909,10 @@ export interface operations {
   };
   notify_api_sync_notify_post: {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
     requestBody: {
       content: {
@@ -35870,10 +36964,10 @@ export interface operations {
   };
   push_preferences_api_sync_preferences_post: {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
     requestBody: {
       content: {
@@ -35925,12 +37019,12 @@ export interface operations {
   };
   protocol_api_sync_protocol_get: {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
-    requestBody?: never;
+    requestBody?: never | undefined;
     responses: {
       /** @description Successful Response */
       200: {
@@ -35966,21 +37060,23 @@ export interface operations {
   };
   pull_api_sync_pull_get: {
     parameters: {
-      query?: {
-        after?: number;
-        fresh?: "1";
-        initialHigh?: number;
-        /** @description Upper bound; the server may lower it by scope. */
-        limit?: number;
-        priorityId?: string;
-        reset?: "1";
-        scope?: string;
-      };
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?:
+        | {
+            after?: number | undefined;
+            fresh?: "1" | undefined;
+            initialHigh?: number | undefined;
+            /** @description Upper bound; the server may lower it by scope. */
+            limit?: number | undefined;
+            priorityId?: string | undefined;
+            reset?: "1" | undefined;
+            scope?: string | undefined;
+          }
+        | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
-    requestBody?: never;
+    requestBody?: never | undefined;
     responses: {
       /** @description Successful Response */
       200: {
@@ -36018,27 +37114,31 @@ export interface operations {
   };
   sync_stream_api_sync_stream_get: {
     parameters: {
-      query?: {
-        after?: number;
-        apiSchema?: string;
-        protocol?: string;
-        /** @description Marks a client initiated stream reopen for value-free recovery diagnostics. */
-        reconnect?: boolean;
-        resources?: string;
-        scope?: string;
-        /** @description JSON array of SubscriptionAdd entries carrying the last applied cursor for refs in resources. */
-        since?: string;
-        /** @description Whether this stream includes token-rate snapshots. Omitted selectors preserve native and signed-client behavior. Browser owners send the aggregate interest of their tabs. */
-        tokenRates?: boolean;
-      };
-      header?: {
-        "Last-Event-ID"?: number;
-        "X-Codex-Sync-Protocol"?: string;
-      };
-      path?: never;
-      cookie?: never;
+      query?:
+        | {
+            after?: number | undefined;
+            apiSchema?: string | undefined;
+            protocol?: string | undefined;
+            /** @description Marks a client initiated stream reopen for value-free recovery diagnostics. */
+            reconnect?: boolean | undefined;
+            resources?: string | undefined;
+            scope?: string | undefined;
+            /** @description JSON array of SubscriptionAdd entries carrying the last applied cursor for refs in resources. */
+            since?: string | undefined;
+            /** @description Whether this stream includes token-rate snapshots. Omitted selectors preserve native and signed-client behavior. Browser owners send the aggregate interest of their tabs. */
+            tokenRates?: boolean | undefined;
+          }
+        | undefined;
+      header?:
+        | {
+            "Last-Event-ID"?: number | undefined;
+            "X-Codex-Sync-Protocol"?: string | undefined;
+          }
+        | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
-    requestBody?: never;
+    requestBody?: never | undefined;
     responses: {
       /** @description Server-sent sync updates */
       200: {
@@ -36077,10 +37177,10 @@ export interface operations {
   };
   sync_subscriptions_api_sync_subscriptions_post: {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
     requestBody: {
       content: {
@@ -36114,14 +37214,16 @@ export interface operations {
   };
   task_detail_api_task_get: {
     parameters: {
-      query?: {
-        id?: string;
-      };
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?:
+        | {
+            id?: string | undefined;
+          }
+        | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
-    requestBody?: never;
+    requestBody?: never | undefined;
     responses: {
       /** @description Successful Response */
       200: {
@@ -36163,13 +37265,13 @@ export interface operations {
     parameters: {
       query: {
         agent: string;
-        id?: string;
+        id?: string | undefined;
       };
-      header?: never;
-      path?: never;
-      cookie?: never;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
-    requestBody?: never;
+    requestBody?: never | undefined;
     responses: {
       /** @description Successful Response */
       200: {
@@ -36209,12 +37311,12 @@ export interface operations {
   };
   list_terminals_api_terminals_get: {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
-    requestBody?: never;
+    requestBody?: never | undefined;
     responses: {
       /** @description Successful Response */
       200: {
@@ -36254,10 +37356,10 @@ export interface operations {
   };
   close_terminal_api_terminals_close_post: {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
     requestBody: {
       content: {
@@ -36317,10 +37419,10 @@ export interface operations {
   };
   create_terminal_api_terminals_create_post: {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
     requestBody: {
       content: {
@@ -36380,10 +37482,10 @@ export interface operations {
   };
   terminal_input_api_terminals_input_post: {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
     requestBody: {
       content: {
@@ -36443,17 +37545,19 @@ export interface operations {
   };
   terminal_output_api_terminals_output_get: {
     parameters: {
-      query?: {
-        history?: "1";
-        id?: string;
-        limit?: number;
-        offset?: number;
-      };
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?:
+        | {
+            history?: "1" | undefined;
+            id?: string | undefined;
+            limit?: number | undefined;
+            offset?: number | undefined;
+          }
+        | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
-    requestBody?: never;
+    requestBody?: never | undefined;
     responses: {
       /** @description Successful Response */
       200: {
@@ -36493,10 +37597,10 @@ export interface operations {
   };
   rename_terminal_api_terminals_rename_post: {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
     requestBody: {
       content: {
@@ -36556,10 +37660,10 @@ export interface operations {
   };
   resize_terminal_api_terminals_resize_post: {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
     requestBody: {
       content: {
@@ -36619,15 +37723,17 @@ export interface operations {
   };
   tool_requests_api_tool_requests_get: {
     parameters: {
-      query?: {
-        agent?: string;
-        request_id?: string;
-      };
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?:
+        | {
+            agent?: string | undefined;
+            request_id?: string | undefined;
+          }
+        | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
-    requestBody?: never;
+    requestBody?: never | undefined;
     responses: {
       /** @description Successful Response */
       200: {
@@ -36669,10 +37775,10 @@ export interface operations {
   };
   cancel_tool_request_api_tool_requests_cancel_post: {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
     requestBody: {
       content: {
@@ -36734,18 +37840,20 @@ export interface operations {
   };
   transcript_api_transcript_get: {
     parameters: {
-      query?: {
-        after?: string;
-        around?: string;
-        before?: string;
-        id?: string;
-        limit?: number;
-      };
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?:
+        | {
+            after?: string | undefined;
+            around?: string | undefined;
+            before?: string | undefined;
+            id?: string | undefined;
+            limit?: number | undefined;
+          }
+        | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
-    requestBody?: never;
+    requestBody?: never | undefined;
     responses: {
       /** @description Successful Response */
       200: {
@@ -36779,15 +37887,17 @@ export interface operations {
   };
   transcript_item_api_transcript_item_get: {
     parameters: {
-      query?: {
-        id?: string;
-        message_id?: string;
-      };
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?:
+        | {
+            id?: string | undefined;
+            message_id?: string | undefined;
+          }
+        | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
-    requestBody?: never;
+    requestBody?: never | undefined;
     responses: {
       /** @description Successful Response */
       200: {
@@ -36821,18 +37931,20 @@ export interface operations {
   };
   transcript_page_api_transcript_page_get: {
     parameters: {
-      query?: {
-        after?: string;
-        around?: string;
-        before?: string;
-        id?: string;
-        limit?: number;
-      };
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?:
+        | {
+            after?: string | undefined;
+            around?: string | undefined;
+            before?: string | undefined;
+            id?: string | undefined;
+            limit?: number | undefined;
+          }
+        | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
-    requestBody?: never;
+    requestBody?: never | undefined;
     responses: {
       /** @description Successful Response */
       200: {
@@ -36867,15 +37979,15 @@ export interface operations {
   transcript_search_api_transcript_search_get: {
     parameters: {
       query: {
-        id?: string;
-        limit?: number;
+        id?: string | undefined;
+        limit?: number | undefined;
         q: string;
       };
-      header?: never;
-      path?: never;
-      cookie?: never;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
-    requestBody?: never;
+    requestBody?: never | undefined;
     responses: {
       /** @description Successful Response */
       200: {
@@ -36909,12 +38021,12 @@ export interface operations {
   };
   ui_summary_api_ui_summary_get: {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
-    requestBody?: never;
+    requestBody?: never | undefined;
     responses: {
       /** @description Successful Response */
       200: {
@@ -36954,10 +38066,10 @@ export interface operations {
   };
   usage_resume_api_usage_resume_post: {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
     requestBody: {
       content: {
@@ -37021,10 +38133,10 @@ export interface operations {
   };
   vault_aws_login_api_vault_aws_login_post: {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
     requestBody: {
       content: {
@@ -37084,10 +38196,10 @@ export interface operations {
   };
   vault_pull_api_vault_pull_post: {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
     requestBody: {
       content: {
@@ -37149,10 +38261,10 @@ export interface operations {
   };
   vault_setup_api_vault_setup_post: {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
     requestBody: {
       content: {
@@ -37212,10 +38324,10 @@ export interface operations {
   };
   vault_setup_facts_api_vault_setup_facts_post: {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
     requestBody: {
       content: {
@@ -37275,10 +38387,10 @@ export interface operations {
   };
   vault_unlock_api_vault_unlock_post: {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
     requestBody: {
       content: {
@@ -37338,10 +38450,10 @@ export interface operations {
   };
   approval_speech_api_voice_approval_speech_post: {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
     requestBody: {
       content: {
@@ -37403,10 +38515,10 @@ export interface operations {
   };
   approvals_api_voice_approvals_post: {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
     requestBody: {
       content: {
@@ -37468,10 +38580,10 @@ export interface operations {
   };
   approve_api_voice_approve_post: {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
     requestBody: {
       content: {
@@ -37533,10 +38645,10 @@ export interface operations {
   };
   audio_api_voice_audio_post: {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
     requestBody: {
       content: {
@@ -37598,10 +38710,10 @@ export interface operations {
   };
   end_api_voice_end_post: {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
     requestBody: {
       content: {
@@ -37663,10 +38775,10 @@ export interface operations {
   };
   record_api_voice_record_post: {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
     requestBody: {
       content: {
@@ -37728,10 +38840,10 @@ export interface operations {
   };
   records_api_voice_records_post: {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
     requestBody: {
       content: {
@@ -37793,10 +38905,10 @@ export interface operations {
   };
   speech_api_voice_speech_post: {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
     requestBody: {
       content: {
@@ -37860,10 +38972,10 @@ export interface operations {
   };
   start_api_voice_start_post: {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
     requestBody: {
       content: {
@@ -37925,10 +39037,10 @@ export interface operations {
   };
   status_api_voice_status_post: {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
     requestBody: {
       content: {
@@ -37990,10 +39102,10 @@ export interface operations {
   };
   submit_api_voice_submit_post: {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
     requestBody: {
       content: {
@@ -38055,12 +39167,12 @@ export interface operations {
   };
   web_push_state_api_web_push_get: {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
-    requestBody?: never;
+    requestBody?: never | undefined;
     responses: {
       /** @description Successful Response */
       200: {
@@ -38100,10 +39212,10 @@ export interface operations {
   };
   web_push_remove_api_web_push_remove_post: {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
     requestBody: {
       content: {
@@ -38163,10 +39275,10 @@ export interface operations {
   };
   web_push_subscribe_api_web_push_subscriptions_post: {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
     requestBody: {
       content: {
@@ -38226,14 +39338,16 @@ export interface operations {
   };
   work_api_work_get: {
     parameters: {
-      query?: {
-        agent?: string;
-      };
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?:
+        | {
+            agent?: string | undefined;
+          }
+        | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
-    requestBody?: never;
+    requestBody?: never | undefined;
     responses: {
       /** @description Successful Response */
       200: {
@@ -38273,10 +39387,10 @@ export interface operations {
   };
   work_action_api_work_post: {
     parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
     requestBody: {
       content: {
@@ -38339,15 +39453,17 @@ export interface operations {
   };
   workspace_api_workspace_get: {
     parameters: {
-      query?: {
-        agent?: string;
-        view?: "full" | "work" | "inbox" | "annotations";
-      };
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?:
+        | {
+            agent?: string | undefined;
+            view?: "full" | "work" | "inbox" | "annotations" | undefined;
+          }
+        | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
-    requestBody?: never;
+    requestBody?: never | undefined;
     responses: {
       /** @description Successful Response */
       200: {
@@ -38391,7 +39507,7 @@ export interface operations {
           "X-Studio-Server": components["headers"]["StudioServer"];
           [name: string]: unknown;
         };
-        content?: never;
+        content?: never | undefined;
       };
       /** @description Bad Request */
       400: components["responses"]["ApiError400"];
@@ -38409,18 +39525,20 @@ export interface operations {
   };
   workspace_tasks_api_workspace_tasks_get: {
     parameters: {
-      query?: {
-        agent?: string;
-        before?: string;
-        cursor?: string;
-        limit?: number;
-        timing?: "0" | "1";
-      };
-      header?: never;
-      path?: never;
-      cookie?: never;
+      query?:
+        | {
+            agent?: string | undefined;
+            before?: string | undefined;
+            cursor?: string | undefined;
+            limit?: number | undefined;
+            timing?: "0" | "1" | undefined;
+          }
+        | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
     };
-    requestBody?: never;
+    requestBody?: never | undefined;
     responses: {
       /** @description Successful Response */
       200: {
@@ -38464,7 +39582,7 @@ export interface operations {
           "X-Studio-Server": components["headers"]["StudioServer"];
           [name: string]: unknown;
         };
-        content?: never;
+        content?: never | undefined;
       };
       /** @description Bad Request */
       400: components["responses"]["ApiError400"];
