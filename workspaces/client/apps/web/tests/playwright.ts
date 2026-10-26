@@ -33,6 +33,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
+import type { ResourceProgress } from "../src/sync/subscriptions/contracts.ts";
 import type { Json, JsonInput, JsonInputOf } from "../src/apiTypes.ts";
 import type { OpenAPI3 } from "openapi-typescript";
 import { fixtureStateDirectory as rustFixtureStateDirectory } from "./fixtures/rust-ui-fixture.ts";
@@ -1180,7 +1181,10 @@ export type TestStateView = {
   runtime: TestRuntimeView;
   threads: TestAgent[];
 };
-export type EntityFixtureState = Omit<TestStateView, "token" | "threads">;
+export type EntityFixtureState = Omit<
+  TestStateView,
+  "token" | "threads" | "runtime"
+> & { runtime: Partial<TestRuntimeView> };
 
 export type JsonObject = Json;
 export type EntityEnvelope = {
@@ -1882,10 +1886,9 @@ export function updateEntitySyncFixture(
  * current client and leaves the entity-pull fixture at the same state.
  * Mutate the snapshot before calling this helper.
  */
-export function entityMutationFixtureResponse(
-  snapshot: EntityFixtureState,
-  response: Record<string, unknown>,
-): Record<string, unknown> {
+export function entityMutationFixtureResponse<
+  T extends Record<string, unknown>,
+>(snapshot: EntityFixtureState, response: T) {
   return {
     ...response,
     _syncEntities: updateEntitySyncFixture(snapshot),
@@ -1921,23 +1924,12 @@ export function handleEntitySyncFixtureRequest(
     workspaceId: string;
     unixSocket?: boolean;
     versionedResources?: boolean;
-    epoch?: string;
+    epoch?: string | undefined;
     onPull?: () => void;
-    subscriptionUpdate?: import("../src/generated/api.ts").components["schemas"]["SyncSubscriptionRequest"];
-    progress?: (
-      resource: ResourceRef,
-    ) =>
-      | (
-          | Pick<
-              import("../src/generated/api.ts").components["schemas"]["AuthProgressEvent"],
-              "resource" | "value"
-            >
-          | Pick<
-              import("../src/generated/api.ts").components["schemas"]["VaultReadinessEvent"],
-              "resource" | "value"
-            >
-        )
+    subscriptionUpdate?:
+      | import("../src/generated/api.ts").components["schemas"]["SyncSubscriptionRequest"]
       | undefined;
+    progress?: (resource: ResourceRef) => ResourceProgress | undefined;
     onStreamReady?: (
       notify: (
         resources: ResourceRef[],

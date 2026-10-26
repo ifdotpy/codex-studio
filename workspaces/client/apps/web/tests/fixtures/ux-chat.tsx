@@ -8,11 +8,19 @@ import { ChatWaitSource } from "../../src/hooks/conversationData";
 
 import type { Agent } from "../../src/types";
 import type { components } from "../../src/generated/api";
+import type { OutgoingMessage } from "../../src/sync/send";
 import { fixtureSnapshot } from "./snapshot.ts";
+
+/** JSON body authored by this fixture, excluding the local persistence callback. */
+export type UxChatFixtureSendBody = { text: string } & Omit<
+  NonNullable<Parameters<React.ComponentProps<typeof Conversation>["send"]>[0]>,
+  "onPersist"
+>;
 
 declare global {
   interface Window {
     __uxChatSyncIdentity?: components["schemas"]["SyncIdentityResponse"];
+    __uxChatSendFailure?: string;
     chatFixture: {
       select: (id: string) => void;
       jump: (messageId: string) => void;
@@ -35,6 +43,7 @@ function Fixture() {
     requestId: string;
   }>();
   const [sending, setSending] = useState(false);
+  const [failedOutgoing, setFailedOutgoing] = useState<OutgoingMessage[]>([]);
   const branchSelections = useRef<string[]>([]);
   const regularSelections = useRef<string[]>([]);
   const agent = {
@@ -137,13 +146,37 @@ function Fixture() {
           subscribeDraft={subscribeDraft}
           setDraft={setDraft}
           sending={sending}
+          outgoing={failedOutgoing}
           send={async (options) => {
             setSending(true);
             try {
+              const failure = window.__uxChatSendFailure;
+              if (failure !== undefined) {
+                const messageId = "image-refusal";
+                setFailedOutgoing([
+                  {
+                    id: messageId,
+                    body: {
+                      id: messageId,
+                      room: id,
+                      text: getDraft(id),
+                      assets: [],
+                      delivery: "queue",
+                    },
+                    status: "failed",
+                    created: Date.now(),
+                    error: failure,
+                  },
+                ]);
+                throw new Error(failure);
+              }
               await fetch("/api/fixture-send", {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ text: getDraft(id), ...options }),
+                body: JSON.stringify({
+                  text: getDraft(id),
+                  ...options,
+                } satisfies UxChatFixtureSendBody),
               });
               setDraft("");
             } finally {
