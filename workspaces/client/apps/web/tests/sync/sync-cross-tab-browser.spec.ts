@@ -835,10 +835,9 @@ const runSyncCrossTabScenario = async (
             resourceQuery,
           }),
         ),
-        openIntervalMs:
-          takeoverRequests.length > 1
-            ? takeoverRequests[1].openedAt - takeoverRequests[0].openedAt
-            : undefined,
+        openIntervalMs: takeoverRequests[1]
+          ? takeoverRequests[1].openedAt - takeoverRequests[0].openedAt
+          : undefined,
         activeStreamsAtEnd: streams.size,
       })}\n`,
     );

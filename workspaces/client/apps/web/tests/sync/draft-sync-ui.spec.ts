@@ -454,7 +454,6 @@ test("Draft sync resume preserves a pending conflict", async ({ page }) => {
       const containsRemoteWinner = body.documents.some(
         (document) =>
           document.id === targetId &&
-          "payload" in document &&
           JSON.parse(document.payload).text === remoteText,
       );
       await route.fulfill({ response, body: JSON.stringify(body) });

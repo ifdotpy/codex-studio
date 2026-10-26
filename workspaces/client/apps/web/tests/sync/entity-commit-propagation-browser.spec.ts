@@ -97,7 +97,7 @@ test("committed entities propagate between renderer tabs @sync", async ({
           url.pathname === "/api/sync/pull" &&
           url.searchParams.get("scope") === "state:entities:v1"
         ) {
-          statePullRequestCounts[index] = statePullRequestCounts[index] + 1;
+          statePullRequestCounts[index]++;
           pullStarts[index].set(request, {
             at: timestamp(),
             after: url.searchParams.get("after"),

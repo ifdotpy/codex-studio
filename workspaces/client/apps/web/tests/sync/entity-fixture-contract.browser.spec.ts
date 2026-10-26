@@ -142,7 +142,7 @@ test("entity fixture contract matches the real sync backend", async () => {
       {
         collection: doc.collection,
         id: doc.id,
-        value: "value" in doc ? fixtureObject(doc.value) : {},
+        value: doc.value,
       },
     ]),
   );
@@ -152,7 +152,7 @@ test("entity fixture contract matches the real sync backend", async () => {
       {
         collection: doc.collection,
         id: doc.id,
-        value: "value" in doc ? fixtureObject(doc.value) : {},
+        value: doc.value,
       },
     ]),
   );
