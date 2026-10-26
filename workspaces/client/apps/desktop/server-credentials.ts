@@ -106,6 +106,7 @@ function createServerCredentials({
       throw error;
     }
     secure();
+    // The private paired-server document is written only by change() and encrypted by secure storage.
     return JSON.parse(
       safeStorage.decryptString(Buffer.from(encrypted, "base64")),
     );
