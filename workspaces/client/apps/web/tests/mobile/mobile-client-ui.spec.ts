@@ -1,3 +1,4 @@
+import type { components } from "../../src/generated/api.ts";
 import type { PricingArtifact } from "../../src/generated/pricing.ts";
 import type { FixtureStep } from "../fixtures/fixture-scripts.ts";
 import type { Browser } from "@playwright/test";
@@ -538,7 +539,7 @@ async function setupMobile320Composer(testBrowser: Browser) {
                     cacheWriteInput: 0,
                     output: 1000000,
                   },
-                },
+                } satisfies components["schemas"]["UsageObservation"],
               },
             },
           },
