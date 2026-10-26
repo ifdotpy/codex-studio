@@ -18,6 +18,7 @@ impl NotificationEffects for RuntimeNotificationEffects {
         tx: &Transaction<'_>,
         agent: &mut Value,
         params: &Value,
+        usage: Option<&studio_runtime_schema::usage::UsageObservation>,
         at: f64,
     ) -> Result<crate::budget::UsageAcceptance, NotificationDispatchError> {
         // The dispatcher persists `agent` after this capture.
@@ -25,6 +26,7 @@ impl NotificationEffects for RuntimeNotificationEffects {
             tx,
             agent,
             params,
+            usage,
             at,
             CaptureSource::Live,
             at,
@@ -37,12 +39,13 @@ impl NotificationEffects for RuntimeNotificationEffects {
         tx: &Transaction<'_>,
         agent: &Value,
         params: &Value,
+        usage: &studio_runtime_schema::usage::UsageObservation,
         at: f64,
     ) -> Result<(), NotificationDispatchError> {
         let agent_id = agent["id"]
             .as_str()
             .ok_or(NotificationDispatchError::invalid())?;
-        crate::agent_move::capture_cache(tx, agent_id, params, at)?;
+        crate::agent_move::capture_cache(tx, agent_id, params, usage, at)?;
         Ok(())
     }
 

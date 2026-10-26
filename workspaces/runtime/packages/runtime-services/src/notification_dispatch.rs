@@ -800,17 +800,26 @@ pub fn dispatch_notification_with_effects(
                                     .map_err(|_| NotificationDispatchError::invalid())?,
                             ),
                         };
-                    let mut normalized = params.clone();
-                    if let TokenUsageObservation::Typed(usage) = &observation {
-                        normalized["studioUsage"] = serde_json::to_value(usage)?;
-                    }
-                    let acceptance =
-                        effects.capture_usage(transaction, &mut agent, &normalized, observed_at)?;
-                    if crate::event_write::truthy(agent.get("movedFrom")) {
+                    let usage = match &observation {
+                        TokenUsageObservation::Typed(usage) => Some(usage),
+                        TokenUsageObservation::Legacy(_) => None,
+                    };
+                    let acceptance = effects.capture_usage(
+                        transaction,
+                        &mut agent,
+                        params,
+                        usage,
+                        observed_at,
+                    )?;
+                    if matches!(acceptance, crate::budget::UsageAcceptance::Accepted)
+                        && crate::event_write::truthy(agent.get("movedFrom"))
+                        && let Some(usage) = usage
+                    {
                         effects.capture_move_cache(
                             transaction,
                             &agent,
-                            &normalized,
+                            params,
+                            usage,
                             observed_at,
                         )?;
                     }
@@ -889,6 +898,15 @@ pub fn dispatch_notification_with_effects(
                 observed_at,
                 &outcome,
             );
+            if usage_conflict.is_some() {
+                current.retain(|effect| {
+                    !matches!(
+                        effect,
+                        NotificationPostCommit::TokenRateUsage(_)
+                            | NotificationPostCommit::TokenRateAssociation(_)
+                    )
+                });
+            }
             if command_output_monitor_present == Some(false) {
                 current
                     .retain(|effect| !matches!(effect, NotificationPostCommit::Analytics { .. }));
@@ -904,7 +922,6 @@ pub fn dispatch_notification_with_effects(
                 if let NotificationPostCommit::Analytics {
                     usage_conflict: rejected,
                     ledger_since,
-                    usage_unknown,
                     ..
                 } = effect
                 {
@@ -917,14 +934,6 @@ pub fn dispatch_notification_with_effects(
                     } else {
                         studio_runtime_schema::usage::ledger::LedgerEpoch::Current
                     };
-                    *usage_unknown = kind == "thread/tokenUsage/updated"
-                        && crate::analytics_capture::unknown_usage_receipt(
-                            transaction,
-                            after
-                                .or(before.as_ref())
-                                .ok_or(NotificationDispatchError::invalid())?,
-                            params,
-                        )?;
                 }
                 if let NotificationPostCommit::TokenRateAssociation(observation) = effect {
                     enrich_association(transaction, agent_id, observation)?;
@@ -2525,6 +2534,131 @@ mod tests {
                 .expect("price recovered Codex response");
         assert_eq!(recovered_cost["pricedSamples"], 3);
         assert!((recovered_cost["totalUSD"].as_f64().unwrap() - 110. / 1_000_000.).abs() < 1e-12);
+    }
+
+    #[tokio::test]
+    async fn rejected_usage_does_not_feed_rate_or_move_cache() {
+        let root = tempfile::tempdir().unwrap();
+        let store = RuntimeStore::open(Some(root.path())).await.unwrap();
+        store
+            .transaction_with(|tx| {
+                AgentRepository::put(
+                    tx,
+                    &AgentRecord::from_value(json!({
+                        "id":"agent","rootId":"agent","epoch":1,"status":"running",
+                        "threadId":"thread","accountKey":"default","provider":"claude",
+                        "turnId":"turn1","inFlight":true,"autoWake":false,"created":0,
+                        "activeTools":[],"events":0
+                    }))
+                    .unwrap(),
+                )
+            })
+            .await
+            .unwrap();
+        let rates = crate::token_rate::TokenRateHub::new();
+        let usage = |turn, output| {
+            json!({"method":"thread/tokenUsage/updated","params":{
+                "threadId":"thread","turnId":turn,"studioUsage":{
+                    "kind":"response","responseId":"r","turnId":turn,"model":"claude","evidence":"live",
+                    "tokens":{"uncachedInput":10,"cacheReadInput":5,"cacheWriteInput":0,"output":output}
+                }
+            }})
+        };
+        let notifications = [
+            json!({"method":"turn/started","params":{"threadId":"thread","turn":{"id":"turn1"}}}),
+            usage("turn1", 2),
+            json!({"method":"turn/started","params":{"threadId":"thread","turn":{"id":"turn2"}}}),
+            usage("turn2", 30),
+        ];
+        let move_id = crate::relocation::identity(&["move", "target"]);
+        for (index, notification) in notifications.into_iter().enumerate() {
+            let move_id = move_id.clone();
+            let effects = store.transaction_with(move |tx| {
+                if index == 3 {
+                    let mut agent = studio_runtime_store::budget::BudgetRepository::agent(tx, "agent")?;
+                    agent["movedFrom"] = json!({"move":"move"});
+                    AgentRepository::put(tx, &AgentRecord::from_value(agent)?)?;
+                    tx.execute_batch("CREATE TABLE IF NOT EXISTS runtime_agent_moves(id TEXT PRIMARY KEY,record TEXT NOT NULL)").map_err(StoreError::from)?;
+                    studio_runtime_store::AgentMoveRepository::save(tx, &json!({
+                        "id":move_id,"side":"target","phase":"active","move":"move","principal":"principal","created":0,
+                        "descriptor":{"agent":{"id":"agent","rootId":"agent","epoch":1,"status":"running"},"acceptedResult":{}}
+                    }))?;
+                }
+                let effects = if notification["method"] == "turn/started" {
+                    // The scheduler owns turn starts; publish its committed transition.
+                    use super::NotificationEffects;
+                    let before = studio_runtime_store::budget::BudgetRepository::agent(tx, "agent")?;
+                    let mut after = before.clone();
+                    after["turnId"] = notification["params"]["turn"]["id"].clone();
+                    AgentRepository::put(tx, &AgentRecord::from_value(after.clone())?)?;
+                    crate::notification_runtime_effects::RuntimeNotificationEffects.post_commit(
+                        Some(&before),Some(&after),&notification,&identity(index as u64 + 1),
+                        100. + index as f64,&DispatchOutcome::Written,
+                    )
+                } else {
+                    let result = super::dispatch_notification_with_effects(
+                        tx,"agent",&PublicationContext::default(),&NotificationStreamBuffer::default(),
+                        &identity(index as u64 + 1),&frame(&notification),100. + index as f64,
+                        &crate::notification_runtime_effects::RuntimeNotificationEffects,
+                    )?;
+                    assert_eq!(result.outcome, DispatchOutcome::Written);
+                    result.post_commit.effects
+                };
+                if index == 3 {
+                    assert!(!effects.iter().any(|effect| matches!(effect,
+                        super::NotificationPostCommit::TokenRateUsage(_)
+                        | super::NotificationPostCommit::TokenRateAssociation(_)
+                    )));
+                }
+                let mut published = Vec::new();
+                for effect in effects {
+                    if matches!(&effect, super::NotificationPostCommit::Analytics { usage_conflict: Some(_), .. }) {
+                        // The rate sink also refuses an unconverted diagnostic effect.
+                        published.push(effect.clone());
+                    }
+                    if let Some(effect) = crate::analytics_projection::log_effect(tx, effect)? {
+                        published.push(effect);
+                    }
+                }
+                Ok::<_, super::NotificationDispatchError>(published)
+            }).await.unwrap();
+            for effect in effects {
+                rates.publish_observation(effect).unwrap();
+            }
+            rates.settled().await;
+            if index == 1 {
+                assert_eq!(
+                    rates.snapshot().to_value()["records"][0]["outputTokens"],
+                    2.
+                );
+            }
+        }
+        let db = store.test_reader().unwrap();
+        let agent = studio_runtime_store::budget::BudgetRepository::agent(&db, "agent").unwrap();
+        assert_eq!(agent["tokensUsed"], 17);
+        let moved = studio_runtime_store::AgentMoveRepository::get(&db, &move_id)
+            .unwrap()
+            .unwrap();
+        let observed = json!({
+            "outputTokens":rates.snapshot().to_value()["records"][0]["outputTokens"],
+            "firstTurnCache":moved.get("firstTurnCache")
+        });
+        assert_eq!(observed, json!({"outputTokens":0.,"firstTurnCache":null}));
+        crate::analytics_projection::project_pending(&store)
+            .await
+            .unwrap();
+        let analytics = studio_runtime_store::AnalyticsRepository::new(store.root())
+            .open_read_only()
+            .unwrap();
+        let errors: String = analytics
+            .query_row(
+                "SELECT value FROM analytics_meta WHERE key='captureErrors'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let errors: Value = serde_json::from_str(&errors).unwrap();
+        assert_eq!(errors["last"]["code"], "responseReplayConflict");
     }
 
     #[tokio::test]

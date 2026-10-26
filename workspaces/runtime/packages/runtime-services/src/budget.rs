@@ -404,7 +404,18 @@ impl UsageObservation {
         at: f64,
         source: CaptureSource,
     ) -> Result<Self, BudgetError> {
-        Self::from_input(snapshot, params, at, source, None)
+        Self::from_input(snapshot, params, at, source, None, None)
+    }
+
+    /// Reuse parsed live evidence while original params still own legacy receipt preimages.
+    pub(crate) fn from_observation(
+        snapshot: &BudgetSnapshot,
+        params: &Value,
+        observation: &studio_runtime_schema::usage::UsageObservation,
+        at: f64,
+        source: CaptureSource,
+    ) -> Result<Self, BudgetError> {
+        Self::from_input(snapshot, params, at, source, None, Some(observation))
     }
 
     /// Restore a typed analytics receipt without reconstructing or parsing a notification.
@@ -419,7 +430,7 @@ impl UsageObservation {
         }
         let ledger = UsageLedgerRow::from_analytics(snapshot.provider, row)
             .map_err(|_| invalid("analytics_usage/ledger"))?;
-        Self::from_input(snapshot, row, at, source, Some(ledger))
+        Self::from_input(snapshot, row, at, source, Some(ledger), None)
     }
 
     fn from_input(
@@ -428,6 +439,7 @@ impl UsageObservation {
         at: f64,
         source: CaptureSource,
         supplied: Option<UsageLedgerRow>,
+        observation: Option<&studio_runtime_schema::usage::UsageObservation>,
     ) -> Result<Self, BudgetError> {
         use studio_runtime_schema::usage::{
             UsageObservation as ParsedUsage, parse_legacy_totals, parse_token_usage,
@@ -439,6 +451,7 @@ impl UsageObservation {
         let parsed = supplied
             .as_ref()
             .map(|row| Ok(row.studio_usage.clone()))
+            .or_else(|| observation.cloned().map(Ok))
             .unwrap_or_else(|| parse_token_usage(snapshot.provider, params));
         let typed = parsed.as_ref().ok().cloned();
         let informational = matches!(

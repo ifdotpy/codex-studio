@@ -106,6 +106,7 @@ pub fn capture_for_persisting_caller(
     tx: &Transaction<'_>,
     agent: &mut Value,
     params: &Value,
+    usage: Option<&studio_runtime_schema::usage::UsageObservation>,
     at: f64,
     source: CaptureSource,
     now: f64,
@@ -117,7 +118,7 @@ pub fn capture_for_persisting_caller(
         at,
         source,
         now,
-        CaptureMode::PersistingCaller,
+        CaptureMode::PersistingCaller(usage),
     )
     .map(|(_, acceptance)| acceptance)
 }
@@ -180,9 +181,9 @@ pub(crate) fn capture_persisted_acceptance(
     .map(|(_, acceptance)| acceptance)
 }
 
-enum CaptureMode {
+enum CaptureMode<'a> {
     Notification,
-    PersistingCaller,
+    PersistingCaller(Option<&'a studio_runtime_schema::usage::UsageObservation>),
     Persisted,
 }
 
@@ -193,7 +194,7 @@ fn capture_into(
     at: f64,
     source: CaptureSource,
     now: f64,
-    mode: CaptureMode,
+    mode: CaptureMode<'_>,
 ) -> Result<(u64, budget::UsageAcceptance), BudgetError> {
     let (state, changed, acceptance) = atomic(tx, || {
         let identity = match source {
@@ -203,6 +204,8 @@ fn capture_into(
         let snapshot = snapshot(tx, agent, identity, now)?;
         let mut observation = if matches!(mode, CaptureMode::Persisted) {
             UsageObservation::from_persisted(&snapshot, params, at, source)?
+        } else if let CaptureMode::PersistingCaller(Some(usage)) = mode {
+            UsageObservation::from_observation(&snapshot, params, usage, at, source)?
         } else {
             UsageObservation::from_record(&snapshot, params, at, source)?
         };
@@ -253,7 +256,7 @@ fn capture_into(
                 tx,
                 snapshot.agent_id(),
                 &decision.state,
-                !matches!(mode, CaptureMode::PersistingCaller),
+                !matches!(mode, CaptureMode::PersistingCaller(_)),
             )?;
         }
         Ok((decision.state, decision.changed, decision.acceptance))

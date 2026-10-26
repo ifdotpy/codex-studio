@@ -352,6 +352,15 @@ impl TokenRateHub {
         &self,
         effect: NotificationPostCommit,
     ) -> Result<(), TokenRateError> {
+        if matches!(
+            &effect,
+            NotificationPostCommit::Analytics {
+                usage_conflict: Some(_),
+                ..
+            }
+        ) {
+            return Ok(());
+        }
         let effect_bit = match effect {
             NotificationPostCommit::Analytics { .. }
             | NotificationPostCommit::AnalyticsCaptured(_)

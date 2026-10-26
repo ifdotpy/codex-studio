@@ -327,6 +327,7 @@ pub fn capture_cache(
     tx: &Transaction<'_>,
     agent_id: &str,
     notification: &Value,
+    usage: &studio_runtime_schema::usage::UsageObservation,
     now: f64,
 ) -> Result<bool, MoveError> {
     let agent = AgentRepository::get(tx, &AgentId::from(agent_id))?
@@ -352,7 +353,7 @@ pub fn capture_cache(
         return Ok(false);
     };
     let snapshot = MoveSnapshot::from_record(&row)?;
-    let Some(updated) = snapshot.observe_cache(&agent, notification, now)? else {
+    let Some(updated) = snapshot.observe_cache(&agent, usage, now)? else {
         return Ok(false);
     };
     Repository::save(tx, &updated)?;
@@ -363,7 +364,7 @@ impl MoveSnapshot {
     fn observe_cache(
         &self,
         agent: &Value,
-        notification: &Value,
+        observation: &studio_runtime_schema::usage::UsageObservation,
         now: f64,
     ) -> Result<Option<Value>, MoveError> {
         if self.agent != agent["id"] {
@@ -372,21 +373,13 @@ impl MoveSnapshot {
         if self.fields.phase != Phase::Active || truthy(self.raw.get("firstTurnCache")) {
             return Ok(None);
         }
-        use studio_runtime_schema::usage::{UsageObservation, UsageProvider, parse_token_usage};
+        use studio_runtime_schema::usage::{UsageObservation, UsageProvider};
         let provider = if agent["provider"] == "claude" {
             UsageProvider::Claude
         } else {
             UsageProvider::Codex
         };
-        let observation = match parse_token_usage(provider, notification) {
-            Ok(observation) => observation,
-            Err(_) => {
-                studio_runtime_schema::usage::parse_legacy_totals(provider, notification)
-                    .map_err(|_| invalid("tokenUsage", "/usage"))?;
-                return Ok(None);
-            }
-        };
-        let tokens = match &observation {
+        let tokens = match observation {
             UsageObservation::Response { tokens, .. } => Some(tokens),
             UsageObservation::Cumulative { last, .. } => last.as_ref(),
             UsageObservation::Gap { .. } => None,
@@ -429,8 +422,13 @@ mod usage_tests {
         };
         let agent = json!({"id":"agent","provider":"claude","turnId":"turn"});
         let notification = json!({"studioUsage":{"kind":"response","responseId":"r","model":"claude","evidence":"live","tokens":{"uncachedInput":12,"cacheReadInput":32,"cacheWriteInput":42,"output":720}}});
+        let usage = studio_runtime_schema::usage::parse_token_usage(
+            studio_runtime_schema::usage::UsageProvider::Claude,
+            &notification,
+        )
+        .expect("typed usage");
         let row = snapshot
-            .observe_cache(&agent, &notification, 100.)
+            .observe_cache(&agent, &usage, 100.)
             .expect("typed cache")
             .expect("first observation");
         assert_eq!(

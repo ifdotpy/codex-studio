@@ -36,7 +36,8 @@ const PROJECTION_REFUSED: &str = "invalidInput";
 /// effect that remains to be published: `AnalyticsCaptured` or
 /// `AnalyticsStreamCaptured` for token rates without another state reset, or `None`
 /// when the agent identity is stale (nothing is captured or published, as
-/// before). Any other effect passes through unchanged.
+/// before). Rejected usage is logged for diagnostics without a rate publication.
+/// Any other effect passes through unchanged.
 pub(crate) fn log_effect(
     canvas: &Connection,
     mut effect: NotificationPostCommit,
@@ -74,10 +75,20 @@ pub(crate) fn log_effect(
                 .agent
                 .as_ref()
                 .map(|agent| {
+                    use studio_runtime_schema::usage::{parse_legacy_totals, parse_token_usage};
+                    let provider = crate::analytics_capture::usage_provider(agent);
+                    let usage = parse_token_usage(provider, &observation.params).ok();
+                    let legacy = if usage.is_none() {
+                        parse_legacy_totals(provider, &observation.params).ok()
+                    } else {
+                        None
+                    };
                     crate::analytics_capture::unknown_usage_receipt(
                         canvas,
                         agent,
                         &observation.params,
+                        usage.as_ref(),
+                        legacy.as_ref(),
                     )
                 })
                 .transpose()?
@@ -102,15 +113,19 @@ pub(crate) fn log_effect(
         }
     }
     Repo::append_projection(canvas, &serde_json::to_string(&effect)?)?;
-    Ok(Some(match effect {
+    Ok(match effect {
+        NotificationPostCommit::Analytics {
+            usage_conflict: Some(_),
+            ..
+        } => None,
         NotificationPostCommit::Analytics { observation, .. } => {
-            NotificationPostCommit::AnalyticsCaptured(observation)
+            Some(NotificationPostCommit::AnalyticsCaptured(observation))
         }
         NotificationPostCommit::AnalyticsStream { observation, .. } => {
-            NotificationPostCommit::AnalyticsStreamCaptured(observation)
+            Some(NotificationPostCommit::AnalyticsStreamCaptured(observation))
         }
-        other => other,
-    }))
+        other => Some(other),
+    })
 }
 
 /// The outcome of one analytics transaction of a pass.

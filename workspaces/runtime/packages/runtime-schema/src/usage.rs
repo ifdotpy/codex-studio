@@ -368,7 +368,7 @@ pub fn parse_token_usage(
     params: &Value,
 ) -> Result<UsageObservation, UsageParseError> {
     if let Some(usage) = params.get("studioUsage") {
-        return Ok(serde_json::from_value(usage.clone())?);
+        return Ok(UsageObservation::deserialize(usage)?);
     }
     let source = params.get("usageSource").and_then(Value::as_str);
     let turn_id = optional_text(params, "turnId")?;
@@ -425,7 +425,7 @@ pub fn parse_token_usage(
     // Only native Codex notifications deserialize the exact vendored SDK mirror.
     if provider == UsageProvider::Codex && source.is_none() {
         let native: CodexThreadTokenUsageUpdatedNotification =
-            serde_json::from_value(params.clone())?;
+            CodexThreadTokenUsageUpdatedNotification::deserialize(params)?;
         return Ok(UsageObservation::Cumulative {
             scope: UsageScope::CodexThread,
             turn_id: Some(native.turn_id),
