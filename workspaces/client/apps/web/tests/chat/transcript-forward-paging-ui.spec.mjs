@@ -5,7 +5,7 @@ import {
   readFixtureSyncContract,
   readTestState,
   test,
-} from "../playwright.mjs";
+} from "../playwright.ts";
 import assert from "node:assert/strict";
 
 test("transcript paging returns from the oldest row to the newest", async ({

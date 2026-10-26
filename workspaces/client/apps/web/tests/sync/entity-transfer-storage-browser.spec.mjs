@@ -1,4 +1,4 @@
-import { expect, test } from "../playwright.mjs";
+import { expect, test } from "../playwright.ts";
 import { createRequire } from "node:module";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";

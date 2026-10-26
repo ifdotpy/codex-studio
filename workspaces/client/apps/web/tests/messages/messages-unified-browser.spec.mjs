@@ -4,7 +4,7 @@ import {
   expect,
   spawnFixture as spawn,
   rustUiFixture,
-} from "../playwright.mjs";
+} from "../playwright.ts";
 // Isolated server and hidden browser. No model calls or user data.
 import assert from "node:assert/strict";
 import { mkdtemp } from "node:fs/promises";

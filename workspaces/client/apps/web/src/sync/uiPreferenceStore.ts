@@ -163,6 +163,7 @@ export function receivePreferenceFields(
         continue;
       }
       const key = parts[0];
+      if (key === undefined) continue;
       if (preferenceScope(key) !== scope || key.startsWith("server-")) continue;
       if (parts.length === 1) scalars.set(key, field.value);
       else {
@@ -183,9 +184,12 @@ export function receivePreferenceFields(
             );
           }
         }
-        const record = keys.get(key)!;
-        if (field.value === null) delete record[parts[1]];
-        else record[parts[1]] = field.value;
+        const record = keys.get(key);
+        const fieldKey = parts[1];
+        if (record === undefined || fieldKey === undefined)
+          throw new Error("The preference field has no record or key.");
+        if (field.value === null) delete record[fieldKey];
+        else record[fieldKey] = field.value;
       }
     }
     for (const [key, value] of [...keys, ...scalars]) {

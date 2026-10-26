@@ -7,13 +7,13 @@ import {
   protocol3SseEvent,
   syncIdentityFixture,
   test,
-} from "../playwright.mjs";
+} from "../playwright.ts";
 
 test("Sync push", async ({ context: testContext }) => {
   test.setTimeout(180_000);
   // Real RxDB/Dexie reconciles a shared stream invalidation through HTTP pull.
   const { createFixtureViteServer: createServer } =
-    await import("../playwright.mjs");
+    await import("../playwright.ts");
   const workspaceId = "c".repeat(32);
   const streams = new Map();
   let revision = 1;

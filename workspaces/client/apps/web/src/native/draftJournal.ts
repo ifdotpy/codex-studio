@@ -12,10 +12,12 @@ export function nativeDraftJournal(workspace: string) {
 export class DraftJournal {
   private prefix: string;
   private sequence = 0;
-  constructor(
-    private storage: Storage,
-    private workspace: string,
-  ) {
+  private storage: Storage;
+  private workspace: string;
+  constructor(storage: Storage, workspace: string) {
+    this.storage = storage;
+    this.workspace = workspace;
+
     this.prefix = DRAFT_JOURNAL_PREFIX + encodeURIComponent(workspace) + ":";
   }
   load(): JournalEdit[] {

@@ -11,7 +11,7 @@ import {
   syncProtocolFixture,
   test,
   expect,
-} from "../playwright.mjs";
+} from "../playwright.ts";
 
 test("team room bounds ui", async ({ page: runnerPage }) => {
   const root = resolve(import.meta.dirname, "../../");

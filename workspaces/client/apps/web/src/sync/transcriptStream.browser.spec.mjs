@@ -12,7 +12,7 @@ import {
   readApiSchemaHash,
   createFixtureViteServer,
   test,
-} from "../../tests/playwright.mjs";
+} from "../../tests/playwright.ts";
 
 test("an open transcript streams text without pulls and recovers incomplete intervals", async ({
   browser,

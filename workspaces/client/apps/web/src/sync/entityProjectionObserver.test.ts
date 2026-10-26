@@ -1,3 +1,4 @@
+import assert from "node:assert/strict";
 import type { RxCollection } from "rxdb";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { observeEntityProjection } from "./entityProjectionObserver";
@@ -91,6 +92,7 @@ it.each([2000, 20000])(
     );
     await settle();
     await vi.advanceTimersByTimeAsync(50);
+    assert.ok(accept.mock.calls[0] != null);
     const initial = accept.mock.calls[0][0];
     expect(initial.threads).toHaveLength(count);
     expect(input.toJSON).toHaveBeenCalledTimes(count);
@@ -100,6 +102,7 @@ it.each([2000, 20000])(
     expect(accept).toHaveBeenCalledOnce();
     await vi.advanceTimersByTimeAsync(50);
     expect(accept).toHaveBeenCalledTimes(2);
+    assert.ok(accept.mock.calls[1] != null);
     const changed = accept.mock.calls[1][0];
     expect(changed.threads[0].name).toBe("update-99");
     expect(changed.threads[1]).toBe(initial.threads[1]);
@@ -130,6 +133,7 @@ it("applies events that arrive during the baseline read, including deletes", asy
   );
   await settle();
   await vi.advanceTimersByTimeAsync(50);
+  assert.ok(accept.mock.calls[0] != null);
   expect(accept.mock.calls[0][0].threads).toEqual([
     { id: "a", name: "new" },
     { id: "b", name: "b" },
@@ -161,6 +165,7 @@ it("publishes initial and changed preference rows through the projection observe
   );
   await settle();
   expect(acceptPreferences).toHaveBeenCalledOnce();
+  assert.ok(acceptPreferences.mock.calls[0] != null);
   expect(acceptPreferences.mock.calls[0][0].user.fields.initial.value).toBe(
     "initial",
   );
@@ -168,6 +173,7 @@ it("publishes initial and changed preference rows through the projection observe
   input.emit(preference("user", 2, "changed"));
   await vi.advanceTimersByTimeAsync(50);
   expect(acceptPreferences).toHaveBeenCalledTimes(2);
+  assert.ok(acceptPreferences.mock.calls[1] != null);
   expect(acceptPreferences.mock.calls[1][0].user.fields.changed.value).toBe(
     "changed",
   );
@@ -192,6 +198,7 @@ it("discards pending publication and old baseline reads when a reset lowers sequ
   await settle();
   await vi.advanceTimersByTimeAsync(100);
   expect(accept).toHaveBeenCalledOnce();
+  assert.ok(accept.mock.calls[0] != null);
   expect(accept.mock.calls[0][0].threads).toEqual([
     { id: "a", name: "replacement" },
   ]);
@@ -204,10 +211,12 @@ it("discards pending publication and old baseline reads when a reset lowers sequ
   input.emit(marker("ready", 5));
   await settle();
   await vi.advanceTimersByTimeAsync(100);
+  assert.ok(accept.mock.calls[1] != null);
   expect(accept.mock.calls[1][0].threads).toEqual([{ id: "b", name: "b" }]);
   input.emit(marker("resetting", 2), false);
   input.emit(row("b", 2, "after stale marker"));
   await vi.advanceTimersByTimeAsync(50);
+  assert.ok(accept.mock.calls[2] != null);
   expect(accept.mock.calls[2][0].threads).toEqual([
     { id: "b", name: "after stale marker" },
   ]);
@@ -247,6 +256,7 @@ it("does not scan retained IDs for one explicit change or tombstone", () => {
   expect(iterate).not.toHaveBeenCalled();
   expect(invalidKeys).not.toHaveBeenCalled();
   expect(snapshot?.threads).toHaveLength(19999);
+  assert.ok(snapshot?.threads[0] != null);
   expect(snapshot?.threads[0].name).toBe("new");
 });
 
@@ -272,6 +282,7 @@ it("retries a failed baseline without losing buffered changes", async () => {
   expect(fail).toHaveBeenCalledOnce();
   input.emit(row("a", 2, "new"));
   await vi.advanceTimersByTimeAsync(1050);
+  assert.ok(accept.mock.calls[0] != null);
   expect(accept.mock.calls[0][0].threads).toEqual([{ id: "a", name: "new" }]);
   expect(input.query).toHaveBeenCalledTimes(2);
   stop();
@@ -287,6 +298,7 @@ it("reads durable rows when old entity and marker events arrive after a reset", 
   // The reset finishes before the next frame can read its intermediate marker.
   input.emit(marker("ready", 3));
   await vi.advanceTimersByTimeAsync(100);
+  assert.ok(accept.mock.calls[1] != null);
   expect(accept.mock.calls[1][0].threads).toEqual([
     { id: "a", name: "replacement" },
   ]);
@@ -349,6 +361,7 @@ it("discards a storage result when a reset marker arrives during the read", asyn
   input.rows([row("b", 1)]);
   input.emit(marker("ready", 3));
   await vi.advanceTimersByTimeAsync(100);
+  assert.ok(accept.mock.calls[1] != null);
   expect(accept.mock.calls[1][0].threads).toEqual([{ id: "b", name: "b" }]);
   stop();
 });

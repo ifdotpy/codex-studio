@@ -1,4 +1,4 @@
-import { apiSchemaHeaders, test, expect } from "../playwright.mjs";
+import { apiSchemaHeaders, test, expect } from "../playwright.ts";
 import { createRequire } from "node:module";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";

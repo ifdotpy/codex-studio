@@ -30,7 +30,10 @@ export function mergeSidebar(
   const identities = new Set(sources.map((source) => source.id));
   if (identities.size !== sources.length)
     throw new Error("Duplicate sidebar source identity.");
-  const single = !combined && sources.length === 1;
+  const [firstSource] = sources;
+  const singleSource =
+    !combined && sources.length === 1 ? firstSource : undefined;
+  const single = singleSource !== undefined;
   const sourceById = new Map(sources.map((source) => [source.id, source]));
   const chatReferences = new Map<string, SidebarReference>();
   const offlineServers = new Set<string>();
@@ -297,8 +300,8 @@ export function mergeSidebar(
   }
   // Single-server mode preserves every identity, including rooms and teams.
   if (single) {
-    for (const team of peerTeams) teamKey(sources[0].id, team.id);
-    for (const room of rooms) chatKey(sources[0].id, room.id);
+    for (const team of peerTeams) teamKey(singleSource.id, team.id);
+    for (const room of rooms) chatKey(singleSource.id, room.id);
   } else {
     const teamsByPath = new Map<string, PeerTeam[]>();
     for (const team of peerTeams) {
@@ -497,7 +500,7 @@ export function mergeSidebar(
         const headingOwner =
           kind === "collapsed" ? collapseOwner(mapped) : undefined;
         if (headingOwner && headingOwner !== source.id) continue;
-        result[mapped] = mapped in result ? result[mapped] && value : value;
+        result[mapped] = (result[mapped] ?? true) && value;
       }
     if (kind === "collapsed")
       for (const source of sources)
@@ -519,7 +522,7 @@ export function mergeSidebar(
     new Map(sources.map((source) => [source.id, source.sidebar.collapsed])),
   );
   const scope = single
-    ? sources[0].sidebar.stateDir
+    ? singleSource.sidebar.stateDir
     : "studio-combined-sidebar";
   const requireReference = (
     values: Map<string, SidebarReference>,
@@ -595,7 +598,7 @@ export function mergeSidebar(
         ? 1
         : undefined,
       sidebarOrder: single
-        ? sources[0].sidebar.sidebarOrder
+        ? singleSource.sidebar.sidebarOrder
         : { revision, groups: order },
     },
   };
@@ -663,9 +666,9 @@ export function createMergedSidebarSelector(combined = true) {
       sources.length === previous.sources.length &&
       sources.every(
         (source, index) =>
-          source.id === previous!.sources[index].id &&
-          source.online === previous!.sources[index].online &&
-          source.sidebar === previous!.sources[index].sidebar,
+          source.id === previous?.sources[index]?.id &&
+          source.online === previous?.sources[index]?.online &&
+          source.sidebar === previous?.sources[index]?.sidebar,
       )
     )
       return previous;

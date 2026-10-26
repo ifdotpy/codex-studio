@@ -3,7 +3,7 @@ import {
   test,
   expect,
   createFixtureViteServer,
-} from "../../tests/playwright.mjs";
+} from "../../tests/playwright.ts";
 
 for (const width of [320, 1200]) {
   test(`project deletion menu and confirmation at ${width}px`, async ({

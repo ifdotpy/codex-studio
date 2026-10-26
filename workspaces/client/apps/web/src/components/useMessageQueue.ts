@@ -76,9 +76,9 @@ export function useMessageQueue(p: {
   id: string | null;
   enabled: boolean;
   scope: string;
-  workspaceId?: string;
-  observed?: (ids: string[]) => void;
-  edited?: (id: string, text: string) => void;
+  workspaceId?: string | undefined;
+  observed?: ((ids: string[]) => void) | undefined;
+  edited?: ((id: string, text: string) => void) | undefined;
   refresh: () => Promise<void>;
 }) {
   const { subscribeStateProjection } = useServerSync();

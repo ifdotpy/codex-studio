@@ -51,7 +51,7 @@ export default function SignInCard({
   agentName: string;
   /** Chat names by agent ID, for the chats that wait on this card. */
   chatNames?: ReadonlyMap<string, string>;
-  serverName?: string;
+  serverName?: string | undefined;
   sending: boolean;
   error: string;
   /** Answer the request; true when the server accepted the answer. */

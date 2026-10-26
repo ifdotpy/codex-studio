@@ -8,7 +8,7 @@ export default function CodeBlock({
   language = "text",
 }: {
   source: string;
-  language?: string;
+  language?: string | undefined;
 }) {
   const [expanded, setExpanded] = useState(false);
   const [copied, setCopied] = useState(false);

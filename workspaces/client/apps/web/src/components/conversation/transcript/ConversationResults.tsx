@@ -25,7 +25,7 @@ export default memo(function ConversationResults({
   onJump,
 }: {
   messages: Message[];
-  agentId?: string;
+  agentId?: string | undefined;
   onJump?: (messageId: string) => void;
 }) {
   const results = useMemo(() => conversationResults(messages), [messages]);
@@ -37,7 +37,10 @@ export default memo(function ConversationResults({
   useEffect(() => {
     if (dialogMounted) setDialogReady(true);
   }, [dialogMounted]);
-  const [selection, setSelection] = useState<{ id: string; agent?: string }>();
+  const [selection, setSelection] = useState<{
+    id: string;
+    agent?: string | undefined;
+  }>();
   // Selection cannot carry an old conversation's result into another chat.
   const selected =
     selection?.agent === agentId

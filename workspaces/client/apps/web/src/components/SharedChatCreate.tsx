@@ -21,7 +21,7 @@ import "./shared-chat-create.css";
 type Participant = {
   account_key: string;
   model: string;
-  effort?: string | null;
+  effort?: string | null | undefined;
 };
 type SharedCreateRequest = Extract<
   PostBody<"/api/peer-teams">,
@@ -94,6 +94,7 @@ function ParticipantFields({
     if (!frozen && !value.model && availableModels.length) {
       const preferred =
         availableModels.find((row) => row.isDefault) || availableModels[0];
+      if (!preferred) throw new Error("Missing preferred shared-chat model");
       change({ ...value, model: preferred.model });
     }
   }, [
@@ -106,10 +107,13 @@ function ParticipantFields({
     frozen,
   ]);
   const effort = value.effort || info?.defaultReasoningEffort || "Default";
+  const firstEffortLetter = effort[0];
+  if (firstEffortLetter === undefined)
+    throw new Error("Missing reasoning effort name");
   const summary = [
     modelDisplayName(info, value.model) ||
       (catalog.loading ? "Loading models…" : "Select a model"),
-    effort[0].toUpperCase() + effort.slice(1),
+    firstEffortLetter.toUpperCase() + effort.slice(1),
     setupAccountName(account),
   ]
     .filter(Boolean)
@@ -176,10 +180,15 @@ function ParticipantFields({
               !readOnlyReason && reasoningEfforts.length
                 ? [
                     { value: "", label: "Default" },
-                    ...reasoningEfforts.map((item) => ({
-                      value: item,
-                      label: item[0].toUpperCase() + item.slice(1),
-                    })),
+                    ...reasoningEfforts.map((item) => {
+                      const first = item[0];
+                      if (first === undefined)
+                        throw new Error("Missing reasoning effort name");
+                      return {
+                        value: item,
+                        label: first.toUpperCase() + item.slice(1),
+                      };
+                    }),
                   ]
                 : []
             }
@@ -217,7 +226,7 @@ export default function SharedChatCreate({
 }: {
   data: Snapshot;
   accounts: AccountsState;
-  initialPath?: string;
+  initialPath?: string | undefined;
   refresh: () => Promise<void>;
   created: (id: string) => void;
 }) {

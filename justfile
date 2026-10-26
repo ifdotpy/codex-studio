@@ -1,9 +1,9 @@
 set shell := ["bash", "-euo", "pipefail", "-c"]
 set positional-arguments
 
-export CARGO_BUILD_JOBS := `node workspaces/tooling/apps/repository-checks/gate-config.mjs`
+export CARGO_BUILD_JOBS := `node workspaces/tooling/apps/repository-checks/gate-config.ts`
 
-facade := justfile_directory() / "workspaces/tooling/apps/repository-checks/facade.mjs"
+facade := justfile_directory() / "workspaces/tooling/apps/repository-checks/facade.ts"
 rust-target := env_var_or_default("CARGO_TARGET_DIR", justfile_directory() / "target")
 rust-http-server := rust-target / "debug/studio-runtime-server"
 
@@ -143,13 +143,13 @@ test-browser:
 [doc("Manual heavy check: combined multi-server browser routing and offline recovery.")]
 test-browser-multi-server:
     @pnpm --filter codex-agents-web run build
-    @pnpm --filter codex-agents-web exec node scripts/run-browser-tests.mjs --config playwright.config.ts --project=client tests/servers/multi-server-ui.spec.mjs --workers=1
+    @pnpm --filter codex-agents-web exec node scripts/run-browser-tests.ts --config playwright.config.ts --project=client tests/servers/multi-server-ui.spec --workers=1
 
 [doc("Manual client interaction benchmark: five cumulative builds, one browser worker, three samples each; no synthetic load. Output must be outside the checkout.")]
 benchmark-client-interactions baseline output:
     @pnpm --filter codex-agents-web run build:wasm
     @pnpm --filter codex-agents-web exec node tests/performance/build-interaction-variants.mjs {{quote(baseline)}} {{quote(output)}}
-    @STUDIO_BENCHMARK_VARIANTS={{quote(output + "/variants.json")}} STUDIO_BENCHMARK_OUTPUT={{quote(output + "/measurements.json")}} PLAYWRIGHT_INCLUDE_SPECIAL=1 pnpm --filter codex-agents-web exec node scripts/run-browser-tests.mjs --config playwright.config.ts --project=performance tests/performance/interaction-benchmark.spec.mjs --workers=1
+    @STUDIO_BENCHMARK_VARIANTS={{quote(output + "/variants.json")}} STUDIO_BENCHMARK_OUTPUT={{quote(output + "/measurements.json")}} PLAYWRIGHT_INCLUDE_SPECIAL=1 pnpm --filter codex-agents-web exec node scripts/run-browser-tests.ts --config playwright.config.ts --project=performance tests/performance/interaction-benchmark.spec --workers=1
 
 [doc("Run the browser smoke subset included in the comprehensive tier and hosted CI.")]
 test-browser-smoke *args:

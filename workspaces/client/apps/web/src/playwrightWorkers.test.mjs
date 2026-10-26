@@ -1,5 +1,5 @@
 import { expect, test } from "vitest";
-import { darwinAvailableBytes } from "../playwright-workers.mjs";
+import { darwinAvailableBytes } from "../playwright-workers.ts";
 
 test("macOS memory comes from the kernel's available percent", () => {
   const total = 128 * 1024 ** 3;
@@ -12,7 +12,7 @@ test("macOS memory comes from the kernel's available percent", () => {
 
 test("worker planning reads current contention once without sleeping", async () => {
   const { sampleCompetingRunnableProcesses } =
-    await import("../playwright-workers.mjs");
+    await import("../playwright-workers.ts");
   let reads = 0;
   const result = sampleCompetingRunnableProcesses({
     readProcStat: () => {

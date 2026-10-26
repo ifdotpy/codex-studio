@@ -6,7 +6,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { test, expect } from "../playwright.mjs";
+import { test, expect } from "../playwright.ts";
 
 const SIGN_IN =
   "https://accounts.example.com/oauth/authorize?client_id=kube&redirect_uri=http%3A%2F%2Flocalhost%3A8000&state=s";

@@ -7,7 +7,7 @@ import {
   test,
   spawnFixture as spawn,
   rustUiFixture,
-} from "../playwright.mjs";
+} from "../playwright.ts";
 // Production UI with isolated files and recorded transcript fixtures. No model calls.
 import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";

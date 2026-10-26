@@ -18,6 +18,7 @@ export function retainUsageAccounts(
     previous.every((old, index) => {
       const value = next[index];
       return (
+        value !== undefined &&
         old.key === value.key &&
         old.label === value.label &&
         old.email === value.email &&

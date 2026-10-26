@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
-import { test, expect, createFixtureViteServer } from "../playwright.mjs";
+import { test, expect, createFixtureViteServer } from "../playwright.ts";
 
 test("draft pushes coalesce at the production replication boundary", async ({
   context,
