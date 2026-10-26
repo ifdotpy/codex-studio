@@ -1,7 +1,6 @@
 import type { components } from "../../src/generated/api.ts";
 import { emitRuntimeChange } from "./native-runtime-resource-events.fixture.ts";
 import { fixtureAccount } from "./fixture-helpers.ts";
-import type { AccountsState } from "../../src/components/Accounts.tsx";
 import type { ResourceRef } from "../../src/sync/resourceEvents.ts";
 
 declare global {
@@ -52,15 +51,16 @@ const notices = [
     message: "Claude account version warning",
   },
 ] as components["schemas"]["NativeNoticeRecord"][];
-const accountsData = {
-  accounts,
-  defaultAccountKey: "default",
-  archivedAccounts: [],
-  defaultAccountGroups: [],
-  logins: [],
-  supportsDelete: false,
-  supportsDisconnect: false,
-} satisfies AccountsState;
+// Partial fixture view: base data omits archives/groups/logins/support flags; refresh returns no data.
+const accountsState: Partial<
+  Record<keyof React.ComponentProps<typeof Accounts>["state"], unknown>
+> = {
+  data: { accounts, defaultAccountKey: "default" },
+  setData: () => {},
+  refresh: async () => {},
+  error: "",
+  scope: "fixture",
+};
 function Fixture() {
   const [opened, setOpened] = useState(false);
   const [integrated, setIntegrated] = useState(false);
@@ -82,13 +82,9 @@ function Fixture() {
         >
           <Accounts
             managerOnly
-            state={{
-              data: accountsData,
-              setData: () => {},
-              refresh: async () => accountsData,
-              error: "",
-              scope: "fixture",
-            }}
+            state={
+              accountsState as React.ComponentProps<typeof Accounts>["state"]
+            }
             onError={() => {}}
           />
         </Modal>

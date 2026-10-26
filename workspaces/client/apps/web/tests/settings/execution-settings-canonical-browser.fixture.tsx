@@ -121,18 +121,7 @@ window.hold = false;
 window.refreshFailure = false;
 window.refreshHold = false;
 window.refreshCount = 0;
-window.calls = [];
-window.transfers = [];
-window.transferFail = false;
-window.transferHold = false;
-window.transferReply = null;
-window.pendingTransferProjection = null;
-window.reply = null;
-window.canonicalFail = null;
-window.hold = false;
-window.refreshFailure = false;
-window.refreshHold = false;
-window.refreshCount = 0;
+
 const fixtureResponse = (value: unknown, init: ResponseInit = {}) =>
   new Response(JSON.stringify(value), {
     ...init,

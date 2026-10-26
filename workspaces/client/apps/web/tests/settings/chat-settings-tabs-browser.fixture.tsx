@@ -69,7 +69,8 @@ const accountsData: GetResult<"/api/accounts"> = {
   supportsDelete: true,
   supportsDisconnect: true,
 };
-const initial: Agent = {
+// Partial fixture view: the base workerDefaults omit fastMode.
+const initial = {
   id: "lead",
   accountKey: "default",
   provider: "codex",
@@ -85,13 +86,12 @@ const initial: Agent = {
   concurrency: 8,
   agentModeRevision: 1,
   workerDefaults: {
-    fastMode: false,
     model: "gpt-6-luna",
     effort: "high",
     delegationDepth: 1,
   },
   reviewDefaults: { model: null, effort: null },
-};
+} as Agent;
 window.calls = [];
 const nativeFetch = window.fetch;
 window.fetch = async (input, options) => {
@@ -146,7 +146,7 @@ window.fetch = async (input, options) => {
       next.excludedAccountKeys = body.excluded_account_keys;
     else if ("subagent_concurrency" in body) {
       next.concurrency = body.subagent_concurrency;
-      next.agentModeRevision = next.agentModeRevision! + 1;
+      next.agentModeRevision!++;
     } else if ("yolo_mode" in body) next.yoloMode = body.yolo_mode;
     else
       Object.assign(next, {
@@ -179,9 +179,10 @@ function Fixture() {
     <MantineProvider
       theme={theme}
       forceColorScheme={
-        new URLSearchParams(location.search).get("theme") === "dark"
-          ? "dark"
-          : "light"
+        (new URLSearchParams(location.search).get("theme") as
+          | "light"
+          | "dark"
+          | null) || "light"
       }
     >
       <ChatSettingsDialog

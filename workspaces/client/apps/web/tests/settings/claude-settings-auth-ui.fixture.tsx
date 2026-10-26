@@ -47,8 +47,8 @@ function Fixture() {
           scope="settings-fixture"
           onClose={() => setLogin(false)}
           onReady={() => {
-            const ready = structuredClone(account);
-            ready.status = "ready";
+            // Authored account fixture view preserves the base shallow update.
+            const ready = { ...account, status: "ready" } as Account;
             setAccount(ready);
             setLogin(false);
           }}

@@ -99,10 +99,7 @@ window.fail = null;
 window.reply = null;
 window.refreshCount = 0;
 window.retries = 0;
-window.fail = null;
-window.reply = null;
-window.refreshCount = 0;
-window.retries = 0;
+
 const nativeFetch = window.fetch;
 window.fetch = async (input, options) => {
   const { url, options: requestOptions } = await fixtureFetchInput(

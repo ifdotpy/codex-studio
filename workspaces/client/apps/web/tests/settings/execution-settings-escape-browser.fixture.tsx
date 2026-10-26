@@ -18,20 +18,26 @@ const agent: Agent = {
   status: "idle",
   created: 1,
 };
-// Partial fixture view: the base models omit serviceTiers.
 const models = [
   {
     model: "gpt-6-astra",
+    serviceTiers: [],
     supportedReasoningEfforts: [
       { reasoningEffort: "low" },
       { reasoningEffort: "high" },
     ],
   },
-] as import("../../src/components/agents/WorkerModelPicker.tsx").WorkerModelInfo[];
+];
+declare global {
+  interface Window {
+    escapeState: { parent: boolean; opened: boolean; account: boolean };
+  }
+}
 function Fixture() {
   const [parent, setParent] = useState(true),
     [opened, setOpened] = useState(false),
     [account, setAccount] = useState(false);
+  window.escapeState = { parent, opened, account };
 
   return (
     <MantineProvider>
