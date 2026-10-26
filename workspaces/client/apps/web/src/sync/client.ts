@@ -1438,7 +1438,7 @@ export function createSyncClient(options: SyncClientOptions) {
     collection: RxCollection<SyncDocument>,
     workspaceId: string,
     scope: string,
-    doc: SyncDocument & { _deleted?: boolean },
+    doc: SyncDocument,
   ) {
     const id = scope.slice("transcript:".length);
     if (doc._deleted) {
@@ -1473,7 +1473,7 @@ export function createSyncClient(options: SyncClientOptions) {
     collection: RxCollection<SyncDocument>,
     workspaceId: string,
     scope: string,
-    doc: SyncDocument & { _deleted?: boolean },
+    doc: SyncDocument,
   ) {
     setTimeout(
       () => void cacheStoredTranscript(collection, workspaceId, scope, doc),
@@ -1484,7 +1484,7 @@ export function createSyncClient(options: SyncClientOptions) {
   async function persistTranscriptProjection(
     collection: RxCollection<SyncDocument>,
     scope: string,
-    document: SyncDocument & { _deleted?: boolean },
+    document: SyncDocument,
     workspaceId: string,
     incoming: TranscriptSyncPayload | null,
     after?: number,
@@ -1631,9 +1631,7 @@ export function createSyncClient(options: SyncClientOptions) {
         id: scope,
         payload: JSON.stringify(nextMeta),
         seq: document.seq,
-        ...(document._deleted !== undefined
-          ? { _deleted: document._deleted }
-          : {}),
+        _deleted: document._deleted,
       };
       await persistProjection(
         collection,
