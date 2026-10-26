@@ -431,7 +431,7 @@ export async function rollbackSession(
 // The Runtime workspace operation owns submission identity and unknown outcomes.
 export async function forkAtTurn(
   source: Session,
-  params: Partial<Session> & {
+  params: { [K in keyof Session]?: Session[K] | undefined } & {
     threadId?: string | undefined;
     lastTurnId?: string | null | undefined;
   },
