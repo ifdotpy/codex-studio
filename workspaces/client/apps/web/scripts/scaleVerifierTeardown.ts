@@ -9,14 +9,22 @@ const FORCE_EXIT_SIGNAL_COUNT = 3;
 // Keep pending promises alive even when they have no active I/O, milliseconds.
 const KEEP_ALIVE_INTERVAL_MS = 1_000;
 
-export async function runScaleVerifier(run, { onInterrupt } = {}) {
+export type ScaleVerifierLifecycle = {
+  setCleanup(callback: () => Promise<void>): void;
+  setRemaining(callback: () => unknown): void;
+};
+export async function runScaleVerifier<T>(
+  run: (lifecycle: ScaleVerifierLifecycle) => Promise<T>,
+  { onInterrupt }: { onInterrupt?: (signal: NodeJS.Signals) => void } = {},
+) {
   let cleanup = async () => {};
   let cleanupRegistered = false;
-  let remaining = () => ({ state: "ownership not established" });
+  let remaining: () => unknown = () => ({ state: "ownership not established" });
   let signalCount = 0;
-  const handlers = new Map();
+  const handlers = new Map<NodeJS.Signals, () => void>();
   const keepAlive = setInterval(() => {}, KEEP_ALIVE_INTERVAL_MS);
-  for (const [signal, code] of Object.entries(SIGNAL_EXIT_CODES)) {
+  for (const signal of ["SIGINT", "SIGTERM"] as const) {
+    const code = SIGNAL_EXIT_CODES[signal];
     const handler = () => {
       signalCount += 1;
       process.exitCode = code;

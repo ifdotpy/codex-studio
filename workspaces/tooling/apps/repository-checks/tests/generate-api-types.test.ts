@@ -102,26 +102,36 @@ test("the recursive JsonValue alias stays strict", () => {
       schemas: { ...schema.components.schemas, JsonValue: jsonValue },
     },
   } satisfies OpenAPI3;
-  const result = spawnSync(
-    process.execPath,
-    [fileURLToPath(new URL("../generate-api-types.ts", import.meta.url)), "-"],
-    { input: JSON.stringify(input), encoding: "utf8" },
-  );
-  assert.equal(result.status, 0, result.stderr);
-  const source = ts.createSourceFile(
-    "generated.ts",
-    result.stdout,
-    ts.ScriptTarget.Latest,
-    true,
-    ts.ScriptKind.TS,
-  );
-  const alias = source.statements.find(
-    (node) => ts.isTypeAliasDeclaration(node) && node.name.text === "JsonValue",
-  );
-  assert.ok(alias && ts.isTypeAliasDeclaration(alias));
-  const visit = (node: ts.Node) => {
-    assert.notEqual(node.kind, ts.SyntaxKind.UndefinedKeyword);
-    ts.forEachChild(node, visit);
-  };
-  visit(alias.type);
+  for (const mode of ["-", "--rust-owned"]) {
+    const result = spawnSync(
+      process.execPath,
+      [
+        fileURLToPath(new URL("../generate-api-types.ts", import.meta.url)),
+        mode,
+      ],
+      { input: JSON.stringify(input), encoding: "utf8" },
+    );
+    assert.equal(result.status, 0, result.stderr);
+    const source = ts.createSourceFile(
+      "generated.ts",
+      result.stdout,
+      ts.ScriptTarget.Latest,
+      true,
+      ts.ScriptKind.TS,
+    );
+    const alias = source.statements.find(
+      (node) =>
+        ts.isTypeAliasDeclaration(node) && node.name.text === "JsonValue",
+    );
+    assert.ok(alias && ts.isTypeAliasDeclaration(alias));
+    const visit = (node: ts.Node) => {
+      assert.notEqual(node.kind, ts.SyntaxKind.UndefinedKeyword);
+      ts.forEachChild(node, visit);
+    };
+    assert.ok(
+      ts.isUnionTypeNode(alias.type),
+      "JsonValue has an independent recursive alias",
+    );
+    visit(alias.type);
+  }
 });

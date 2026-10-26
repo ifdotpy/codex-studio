@@ -10,7 +10,7 @@ import type { ServerNavigation } from "./navigation";
 import type { StudioServer } from "./registry";
 import { theme } from "../theme";
 
-const servers: StudioServer[] = [
+const servers = [
   {
     id: "local",
     label: "Workstation",
@@ -31,7 +31,7 @@ const servers: StudioServer[] = [
     origin: "https://travel-macbook.tail5d8bde.ts.net",
     credentialId: "fixture",
   },
-];
+] satisfies [StudioServer, ...StudioServer[]];
 const navigation = (
   system: string,
   agentsRunning: number,
