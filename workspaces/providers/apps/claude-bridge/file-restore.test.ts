@@ -384,14 +384,7 @@ test("native retention permits recent checkpoints and refuses expired checkpoint
   fixture(async (f) => {
     for (let index = 0; index < 100; index++) {
       const message = randomUUID();
-      f.messages.push({
-        type: "user",
-        uuid: message,
-        session_id: f.session.id,
-        parent_tool_use_id: null,
-        parent_agent_id: null,
-        message: { content: "later" },
-      });
+      f.messages.push(userMessage(f.session.id, message, "later"));
       f.rows.push({
         type: "file-history-snapshot",
         messageId: message,
