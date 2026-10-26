@@ -586,3 +586,17 @@ it("clears an unfinished gesture when primary-touch listeners detach", () => {
   expect(gesture(textarea).defaultPrevented).toBe(false);
   expect(textarea.focus).toHaveBeenCalledTimes(1);
 });
+
+it("publishes the full portrait layout height while the keyboard shrinks the surface", () => {
+  viewport.width = 669;
+  viewport.height = 951;
+  windowMock.innerHeight = root.clientHeight = 951;
+  mount();
+  documentMock.activeElement = new Textarea();
+  resize({ height: 500 });
+  expect(root.style.get("--viewport-layout-height")).toBe("951px");
+  expect(root.style.get("--mobile-viewport-height")).toBe("500px");
+  cleanup?.();
+  cleanup = undefined;
+  expect(root.style.has("--viewport-layout-height")).toBe(false);
+});

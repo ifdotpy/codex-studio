@@ -65,6 +65,7 @@ export function useMobileViewport(active: boolean, compact = false) {
       root.removeAttribute("data-duo-proportions");
       root.removeAttribute("data-duo-ui");
       for (const property of [
+        "--viewport-layout-height",
         "--mobile-viewport-height",
         "--mobile-viewport-top",
         "--mobile-safe-area-bottom",
@@ -161,6 +162,8 @@ export function useMobileViewport(active: boolean, compact = false) {
       )
         root.setAttribute("data-viewport-short-landscape", "");
       else root.removeAttribute("data-viewport-short-landscape");
+      // Physical layout height in CSS pixels, before keyboard occlusion.
+      root.style.setProperty("--viewport-layout-height", `${fullHeight}px`);
       root.style.setProperty("--mobile-viewport-height", `${surfaceHeight}px`);
       root.style.setProperty("--mobile-viewport-top", `${top}px`);
       root.style.setProperty(

@@ -1,4 +1,5 @@
 import type { Page, BrowserContext } from "playwright";
+import "./keyboardSequences.ts";
 import { test, expect, entityPullFixtureForRequest } from "../playwright.ts";
 import { sidebarParityFixture } from "../sidebar/sidebar-parity-fixture.ts";
 import { fixtureWorkspaceId } from "../servers/multi-server-fixture.ts";
@@ -223,6 +224,13 @@ test("Team opened on a narrow PWA stays mounted when the window becomes wide", a
     await expect(
       page.getByRole("dialog", { name: "Team", exact: true }),
     ).toBeVisible();
+    await page
+      .getByRole("dialog", { name: "Team", exact: true })
+      .evaluate(async (node) => {
+        await Promise.all(
+          node.getAnimations().map((animation) => animation.finished),
+        );
+      });
     await page.screenshot({ path: test.info().outputPath("phone-team.png") });
     const search = page.getByRole("searchbox", { name: "Find a subagent" });
     await search.fill("Pane");
@@ -478,6 +486,70 @@ test("Picking a chat from the native closed sidebar returns to the conversation"
     await page.screenshot({
       path: test.info().outputPath("closed-conversation.png"),
     });
+  } finally {
+    await cdp.detach().catch(() => {});
+    await fixture.close();
+  }
+});
+
+test("Portrait PWA keeps its pane pair while the keyboard reduces the visible height", async ({
+  page,
+  context,
+}) => {
+  await context.addInitScript(() => {
+    const viewport = Object.assign(new EventTarget(), {
+      height: 669,
+      offsetTop: 0,
+      pageTop: 0,
+      scale: 1,
+    });
+    Object.defineProperty(viewport, "width", { get: () => window.innerWidth });
+    Object.defineProperty(window, "visualViewport", {
+      configurable: true,
+      value: viewport,
+    });
+    window.resizeDuoViewport = (patch) => {
+      Object.assign(viewport, patch);
+      viewport.dispatchEvent(new Event("resize"));
+    };
+  });
+  const { fixture, cdp } = await openPaneFixture(page, context);
+  try {
+    await cdp.send("Emulation.setSafeAreaInsetsOverride", {
+      insets: { top: 0, right: 0, bottom: 34, left: 0 },
+    });
+    await page.setViewportSize({ width: 669, height: 951 });
+    await page.evaluate(() => window.resizeDuoViewport({ height: 951 }));
+    const frame = page.locator(".workspace-frame");
+    await expect(frame).toHaveAttribute("data-pane-path", "pair");
+    await expect
+      .poll(async () => (await page.locator("#sidebar").boundingBox())?.width)
+      .toBeCloseTo(250, 1);
+    await page.locator("#messages").evaluate((node) => {
+      node.dispatchEvent(new WheelEvent("wheel", { deltaY: -10000 }));
+      node.scrollTop = 160;
+      node.dispatchEvent(new Event("scroll"));
+    });
+    await expect(page.locator("#jump-latest")).toBeVisible();
+    await page.locator("#message").fill("Keep the portrait draft");
+    await page.evaluate(() => window.resizeDuoViewport({ height: 500 }));
+    await expect(page.locator("html")).toHaveAttribute(
+      "data-viewport-keyboard",
+      "",
+    );
+    await expect(frame).toHaveAttribute("data-pane-path", "pair");
+    await expect
+      .poll(async () => (await page.locator("#sidebar").boundingBox())?.width)
+      .toBeCloseTo(250, 1);
+    await expect(page.locator("#message")).toHaveValue(
+      "Keep the portrait draft",
+    );
+    await page.screenshot({
+      path: test.info().outputPath("portrait-keyboard.png"),
+    });
+    await page.locator("#message").blur();
+    await page.evaluate(() => window.resizeDuoViewport({ height: 951 }));
+    await expect(frame).toHaveAttribute("data-pane-path", "pair");
   } finally {
     await cdp.detach().catch(() => {});
     await fixture.close();

@@ -78,7 +78,14 @@ export function useWorkspaceLayout(options: {
           x: 0,
           y: 0,
           width: view.innerWidth,
-          height: app?.clientHeight || view.innerHeight,
+          height:
+            number(
+              view
+                .getComputedStyle(root)
+                .getPropertyValue("--viewport-layout-height"),
+            ) ||
+            app?.clientHeight ||
+            view.innerHeight,
         },
         rootFontPx: Number.parseFloat(
           view.getComputedStyle(document.documentElement).fontSize,
