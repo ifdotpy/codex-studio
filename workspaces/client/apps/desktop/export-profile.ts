@@ -1,3 +1,4 @@
+import type { ChunkReply } from "./profile-export-reader.ts";
 import {
   loadSourceFrame,
   captureSourceProfile,
@@ -212,15 +213,23 @@ async function main() {
               params.name !== "studioExportChunk"
             )
               return;
-            let requestId;
-            let result;
+            let requestId: number | undefined;
+            let result: ChunkReply;
             try {
               if (Buffer.byteLength(params.payload) > 64 * 1024 * 1024 + 1024)
                 throw new Error("Migration chunk is too large.");
-              const payload = JSON.parse(params.payload);
-              requestId = payload.id;
+              const payload: unknown = JSON.parse(params.payload);
+              if (!payload || typeof payload !== "object" || !("id" in payload))
+                throw new Error("Invalid migration chunk.");
+              requestId =
+                typeof payload.id === "number" ? payload.id : undefined;
               if (
-                !Number.isSafeInteger(requestId) ||
+                !payload ||
+                typeof payload !== "object" ||
+                !("id" in payload) ||
+                typeof payload.id !== "number" ||
+                !Number.isSafeInteger(payload.id) ||
+                !("records" in payload) ||
                 !Array.isArray(payload.records)
               )
                 throw new Error("Invalid migration chunk.");
