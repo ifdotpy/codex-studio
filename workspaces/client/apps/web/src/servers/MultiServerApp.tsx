@@ -97,14 +97,14 @@ export default function MultiServerApp() {
 function MultiServerShell({
   localServices,
 }: {
-  localServices?: ServerServices;
+  localServices?: ServerServices | undefined;
 }) {
   const [failure, setFailure] = useState("");
   const [newChatDialog, setNewChatDialog] = useState<{
     project: LocationProject;
     server: string;
-    folder?: string;
-    binding?: { projectId: string; projectServerId: string };
+    folder?: string | undefined;
+    binding?: { projectId: string; projectServerId: string } | undefined;
   } | null>(null);
   const load = () => {
     try {
@@ -1143,7 +1143,7 @@ function MultiServerShell({
                 <p role="status">Searching this server...</p>
               )}
               {searchResults[server.id]?.error && (
-                <p role="alert">{searchResults[server.id].error}</p>
+                <p role="alert">{searchResults[server.id]?.error}</p>
               )}
               {searchResults[server.id]?.results.map((result, index) => (
                 <button

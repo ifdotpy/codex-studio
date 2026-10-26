@@ -129,7 +129,8 @@ export class ResourceEntityDelivery {
           entry.transcriptSnapshot,
       ),
     );
-    if (!this.failed || !typed.length) return false;
+    const [first] = typed;
+    if (!this.failed || !first) return false;
     const resources = [
       ...new Map(
         typed
@@ -140,7 +141,7 @@ export class ResourceEntityDelivery {
     for (const frame of typed) this.revoke(frame);
     return (
       this.failed(
-        { ...typed[0], resources },
+        { ...first, resources },
         new Error(
           "Subscribed entity interval was discarded before application",
         ),
