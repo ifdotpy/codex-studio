@@ -569,7 +569,7 @@ function MultiServerShell({
       preferences.sidebarFontSize + "px",
     );
   }, [preferences, setColorScheme]);
-  screenEvents.current = (id, data: any, channel) => {
+  screenEvents.current = (id, data, channel) => {
     if (screens.current.get(id) !== channel) return;
     if (
       data.kind === "studio-server-activity" &&
@@ -585,8 +585,7 @@ function MultiServerShell({
       const directory =
         project?.path ||
         view?.chats.find((row) => row.id === view.opened)?.path ||
-        data.path ||
-        "";
+        (typeof data.path === "string" ? data.path : "");
       setNewChatDialog({
         server: id,
         project: {
@@ -654,20 +653,24 @@ function MultiServerShell({
       const value = data;
       if (
         typeof value.opened !== "boolean" ||
+        typeof value.height !== "number" ||
         !Number.isFinite(value.height) ||
+        typeof value.count !== "number" ||
         !Number.isInteger(value.count) ||
+        typeof value.active !== "number" ||
         !Number.isInteger(value.active) ||
         typeof value.canCreate !== "boolean"
       )
         return;
+      const { opened, height, count, active, canCreate } = value;
       setTerminals((old) => ({
         ...old,
         [id]: {
-          opened: value.opened,
-          height: Math.max(0, Math.min(4000, value.height)),
-          count: value.count,
-          active: value.active,
-          canCreate: value.canCreate,
+          opened,
+          height: Math.max(0, Math.min(4000, height)),
+          count,
+          active,
+          canCreate,
         },
       }));
     } else if (data.kind === "studio-server-toggle-sidebar") {
@@ -678,9 +681,29 @@ function MultiServerShell({
       data.kind === "studio-server-search-results" &&
       data.requestId === searchRequest.current
     ) {
+      const results = data.results;
+      if (
+        results !== undefined &&
+        results !== null &&
+        (!Array.isArray(results) ||
+          !results.every(
+            (result: unknown) =>
+              result !== null &&
+              typeof result === "object" &&
+              "id" in result &&
+              typeof result.id === "string" &&
+              "agent" in result &&
+              typeof result.agent === "string",
+          ))
+      )
+        return;
+      const error = typeof data.error === "string" ? data.error : undefined;
       setSearchResults((old) => ({
         ...old,
-        [id]: { results: data.results || [], error: data.error },
+        [id]: {
+          results: (results || []) as GetResult<"/api/search">["results"],
+          ...(error === undefined ? {} : { error }),
+        },
       }));
     } else if (data.kind === "studio-server-navigation") {
       const value = data.navigation as ServerNavigation;
@@ -719,11 +742,14 @@ function MultiServerShell({
       setAccountsByServer((old) => ({ ...old, [id]: accounts }));
     } else if (
       data.kind === "studio-server-status" &&
-      ["connecting", "live", "offline", "degraded", "schema-mismatch"].includes(
-        data.status,
-      )
+      (data.status === "connecting" ||
+        data.status === "live" ||
+        data.status === "offline" ||
+        data.status === "degraded" ||
+        data.status === "schema-mismatch")
     ) {
-      setStatus((old) => ({ ...old, [id]: data.status }));
+      const status = data.status;
+      setStatus((old) => ({ ...old, [id]: status }));
       if (data.status === "live")
         setLastSeen((old) => ({ ...old, [id]: Date.now() / 1000 }));
     }

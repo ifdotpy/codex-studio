@@ -80,7 +80,7 @@ export type ResourceTokenRatesEvent =
   components["schemas"]["ResourceTokenRatesEvent"];
 
 export type ResourceVersion = {
-  viewSnapshot?: components["schemas"]["SubscriptionViewSnapshot"];
+  viewSnapshot?: components["schemas"]["SubscriptionViewSnapshot"] | undefined;
   cursor?: components["schemas"]["SubscriptionCursor"] | undefined;
   replyKind?: components["schemas"]["SubscriptionReplyKind"] | undefined;
   /** Transient subscribed value; never sent through the entity persister. */
@@ -168,7 +168,7 @@ type TabResourceRecovery = {
   resources: ResourceRef[];
 };
 
-type TabMessage = (
+export type TabMessage = (
   | TabSubscriptions
   | TabEvent
   | TabTokenRates
@@ -1072,7 +1072,7 @@ export function createResourceEvents(options: ResourceEventsOptions) {
   function receiveResourceProgress(value: unknown, fromPeer = false) {
     if (!hasRevisionFrame(value))
       throw new TypeError("Invalid resource progress frame");
-    const candidate = value as unknown as Record<string, unknown>;
+    const candidate = value as Record<string, unknown>;
     const resource = candidate.resource as ResourceRef | undefined;
     if (
       !resource ||

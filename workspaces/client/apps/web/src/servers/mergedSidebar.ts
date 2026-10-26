@@ -634,17 +634,19 @@ export function mergeSidebar(
       studioErrors:
         sources.find((source) => source.id === "local")?.sidebar.studioErrors ||
         [],
-      ...(sources.some((source) => source.sidebar.peerTeamsVersion === 1)
-        ? { peerTeamsVersion: 1 }
-        : {}),
-      ...(sources.some((source) => source.sidebar.projectOrganizationVersion)
-        ? { projectOrganizationVersion: 1 }
-        : {}),
-      ...(!single
-        ? { sidebarOrder: { revision, groups: order } }
-        : singleSource.sidebar.sidebarOrder === undefined
-          ? {}
-          : { sidebarOrder: singleSource.sidebar.sidebarOrder }),
+      peerTeamsVersion: sources.some(
+        (source) => source.sidebar.peerTeamsVersion === 1,
+      )
+        ? 1
+        : undefined,
+      projectOrganizationVersion: sources.some(
+        (source) => source.sidebar.projectOrganizationVersion,
+      )
+        ? 1
+        : undefined,
+      sidebarOrder: single
+        ? singleSource.sidebar.sidebarOrder
+        : { revision, groups: order },
     },
   };
   return {
