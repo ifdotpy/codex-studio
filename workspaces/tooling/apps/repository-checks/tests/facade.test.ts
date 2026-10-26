@@ -1184,8 +1184,18 @@ test("Playwright launcher clears BROWSER and removes state after success and fai
 });
 
 test("tests retain temporary state ownership and follow the platform temp root", async () => {
-  const { temporaryStateFindings, repositoryTemporaryStateFindings } =
-    await import("../test-temp-state.ts");
+  const {
+    temporaryStateFindings,
+    repositoryTemporaryStateFindings,
+    testSource,
+  } = await import("../test-temp-state.ts");
+  assert.equal(
+    testSource(
+      "workspaces/client/apps/native/check-package-start.ts",
+      "fixture source",
+    ),
+    "fixture source",
+  );
   assert.deepEqual(repositoryTemporaryStateFindings(process.cwd()), []);
   for (const source of [
     `let root = tempfile::tempdir().unwrap().${"keep"}();`,
