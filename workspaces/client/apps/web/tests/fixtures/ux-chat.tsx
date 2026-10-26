@@ -3,16 +3,24 @@ import { createRoot } from "react-dom/client";
 import { MantineProvider } from "@mantine/core";
 import "@mantine/core/styles.css";
 import "../../src/style.css";
-import Conversation from "../../src/components/Conversation";
-import { ChatWaitSource } from "../../src/hooks/conversationData";
+import Conversation from "../../src/components/Conversation.tsx";
+import { ChatWaitSource } from "../../src/hooks/conversationData.ts";
 
-import type { Agent } from "../../src/types";
-import type { components } from "../../src/generated/api";
+import type { Agent } from "../../src/types.ts";
+import type { components } from "../../src/generated/api.ts";
+import type { OutgoingMessage } from "../../src/sync/send.ts";
 import { fixtureSnapshot } from "./snapshot.ts";
+
+/** JSON body authored by this fixture, excluding the local persistence callback. */
+export type UxChatFixtureSendBody = { text: string } & Omit<
+  NonNullable<Parameters<React.ComponentProps<typeof Conversation>["send"]>[0]>,
+  "onPersist"
+>;
 
 declare global {
   interface Window {
     __uxChatSyncIdentity?: components["schemas"]["SyncIdentityResponse"];
+    __uxChatSendFailure?: string;
     chatFixture: {
       select: (id: string) => void;
       jump: (messageId: string) => void;
@@ -35,6 +43,7 @@ function Fixture() {
     requestId: string;
   }>();
   const [sending, setSending] = useState(false);
+  const [failedOutgoing, setFailedOutgoing] = useState<OutgoingMessage[]>([]);
   const branchSelections = useRef<string[]>([]);
   const regularSelections = useRef<string[]>([]);
   const agent = {
@@ -117,9 +126,7 @@ function Fixture() {
         )}
         <Conversation
           id={id}
-          {...(window.__uxChatSyncIdentity
-            ? { syncWorkspaceId: window.__uxChatSyncIdentity.workspaceId }
-            : {})}
+          syncWorkspaceId={window.__uxChatSyncIdentity?.workspaceId}
           agent={agent}
           data={{
             stateDir: data.stateDir,
@@ -137,13 +144,37 @@ function Fixture() {
           subscribeDraft={subscribeDraft}
           setDraft={setDraft}
           sending={sending}
+          outgoing={failedOutgoing}
           send={async (options) => {
             setSending(true);
             try {
+              const failure = window.__uxChatSendFailure;
+              if (failure !== undefined) {
+                const messageId = "image-refusal";
+                setFailedOutgoing([
+                  {
+                    id: messageId,
+                    body: {
+                      id: messageId,
+                      room: id,
+                      text: getDraft(id),
+                      assets: [],
+                      delivery: "queue",
+                    },
+                    status: "failed",
+                    created: Date.now(),
+                    error: failure,
+                  },
+                ]);
+                throw new Error(failure);
+              }
               await fetch("/api/fixture-send", {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ text: getDraft(id), ...options }),
+                body: JSON.stringify({
+                  text: getDraft(id),
+                  ...options,
+                } satisfies UxChatFixtureSendBody),
               });
               setDraft("");
             } finally {
@@ -164,7 +195,7 @@ function Fixture() {
             branchSelections.current.push(target);
             setId(target);
           }}
-          {...(jumpTarget ? { jumpTarget } : {})}
+          jumpTarget={jumpTarget}
           onJumpHandled={() => setJumpTarget(undefined)}
         />
       </main>

@@ -1,3 +1,7 @@
+import type { components } from "../../src/generated/api.ts";
+import { installSchemaGateFixture } from "./fixtures/schemaGateBrowserFixture.ts";
+import { fixtureOrigin, fixtureResources } from "./helpers.ts";
+import type { GetResult, PostResult } from "../../src/apiTypes.ts";
 import assert from "node:assert/strict";
 import { cp, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -5,6 +9,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import {
+  waitForFixturePort,
   API_SCHEMA_HASH_HEADER,
   apiSchemaHandshakeEvent,
   apiSchemaHandshakeSse,
@@ -26,14 +31,11 @@ async function startColdGateFixture() {
     stdio: ["pipe", "pipe", "pipe"],
   });
   let fixtureLog = "";
-  fixture.stderr.on("data", (chunk) => {
+  fixture.stderr?.on("data", (chunk) => {
     fixtureLog += chunk;
   });
-  const port = await new Promise((resolve, reject) => {
-    fixture.stdout.once("data", (chunk) =>
-      resolve(Number(String(chunk).trim())),
-    );
-    fixture.once("exit", () => reject(new Error(fixtureLog)));
+  const port = await waitForFixturePort(fixture, {
+    diagnostics: () => fixtureLog,
   });
   return { fixture, url: `http://127.0.0.1:${port}` };
 }
@@ -100,80 +102,15 @@ test("cold stream handshake mismatch gates when startup responses omit schema ha
 }) => {
   test.setTimeout(60_000);
   const { fixture, url } = await startColdGateFixture();
-  await page.addInitScript(
-    (mismatchHandshake) => {
-      const nativeFetch = window.fetch.bind(window);
-      window.studioSchemaGatePendingApiFetches = 0;
-      window.fetch = async (input, init) => {
-        const url = new URL(
-          input instanceof Request ? input.url : String(input),
-          location.href,
-        );
-        // The preference client retries these endpoints on missing response
-        // hashes independently of the stream handshake exercised here.
-        const omitSchemaHash =
-          url.pathname.startsWith("/api/") &&
-          url.pathname !== "/api/sync/identity" &&
-          url.pathname !== "/api/sync/pull" &&
-          url.pathname !== "/api/session" &&
-          url.pathname !== "/api/sync/preferences";
-        if (omitSchemaHash) window.studioSchemaGatePendingApiFetches++;
-        try {
-          const response = await nativeFetch(input, init);
-          if (!omitSchemaHash) return response;
-          const headers = new Headers(response.headers);
-          headers.delete("x-studio-api-schema");
-          return new Response(response.body, {
-            status: response.status,
-            statusText: response.statusText,
-            headers,
-          });
-        } finally {
-          if (omitSchemaHash) window.studioSchemaGatePendingApiFetches--;
-        }
-      };
-      window.studioSchemaGateHandshakeCount = 0;
-      class MismatchingEventSource extends EventTarget {
-        static CONNECTING = 0;
-        static OPEN = 1;
-        static CLOSED = 2;
-        readyState = MismatchingEventSource.CONNECTING;
-        withCredentials = false;
-        onopen = null;
-        onerror = null;
-
-        constructor(url) {
-          super();
-          this.url = new URL(url, location.href).href;
-          queueMicrotask(() => {
-            if (this.readyState === MismatchingEventSource.CLOSED) return;
-            this.readyState = MismatchingEventSource.OPEN;
-            this.dispatchEvent(new Event("open"));
-            this.dispatchEvent(
-              new MessageEvent("api-schema", {
-                data: JSON.stringify(mismatchHandshake),
-              }),
-            );
-            window.studioSchemaGateHandshakeCount++;
-          });
-        }
-
-        dispatchEvent(event) {
-          const dispatched = super.dispatchEvent(event);
-          this[`on${event.type}`]?.call(this, event);
-          return dispatched;
-        }
-
-        close() {
-          this.readyState = MismatchingEventSource.CLOSED;
-        }
-      }
-      window.EventSource = MismatchingEventSource;
-    },
-    apiSchemaHandshakeEvent({ hash: "foreign-schema", mismatch: true }),
-  );
+  await page.addInitScript(installSchemaGateFixture, {
+    mode: "cold" as const,
+    handshake: apiSchemaHandshakeEvent({
+      hash: "foreign-schema",
+      mismatch: true,
+    }),
+  });
   let apiRequests = 0;
-  const apiRequestUrls = [];
+  const apiRequestUrls: string[] = [];
   page.on("request", (request) => {
     const pathname = new URL(request.url()).pathname;
     if (pathname.startsWith("/api/")) {
@@ -278,7 +215,7 @@ test("cold schema identity failure shows a reloadable error", async ({
         status: 503,
         json: {
           error: "Studio API schema identity is unavailable; restart Studio.",
-        },
+        } satisfies components["schemas"]["ErrorResponse"],
       });
     return route.continue();
   });
@@ -306,7 +243,7 @@ test("a warm server rollback preserves the draft and stops the stale stream", as
     const NativeEventSource = window.EventSource;
     window.studioTestSources = [];
     window.EventSource = class extends NativeEventSource {
-      constructor(...args) {
+      constructor(...args: ConstructorParameters<typeof EventSource>) {
         super(...args);
         window.studioTestSources.push(this);
       }
@@ -334,7 +271,9 @@ test("a warm server rollback preserves the draft and stops the stale stream", as
         rejections++;
         return route.fulfill({
           status: 426,
-          json: { error: "Old sync protocol" },
+          json: {
+            error: "Old sync protocol",
+          } satisfies components["schemas"]["ErrorResponse"],
         });
       }
       const response = await route.fetch();
@@ -374,7 +313,7 @@ test("cold silent stream handshakes escalate to the mismatch gate", async ({
     const NativeEventSource = window.EventSource;
     window.studioSchemaGateOpenStreams = 0;
     window.EventSource = class extends NativeEventSource {
-      constructor(...args) {
+      constructor(...args: ConstructorParameters<typeof EventSource>) {
         super(...args);
         this.addEventListener("open", () => {
           window.studioSchemaGateOpenStreams++;
@@ -382,7 +321,7 @@ test("cold silent stream handshakes escalate to the mismatch gate", async ({
       }
     };
   });
-  const streamAttempts = new Map();
+  const streamAttempts = new Map<string, number>();
   const { fixture, url } = await startColdGateFixture();
   await page.route("**/api/**", async (route) => {
     const url = new URL(route.request().url());
@@ -456,7 +395,7 @@ test("a response mismatch keeps the loaded transcript and local draft while stop
   const indexPath = join(webDist, "index.html");
   const originalIndex = await readFile(indexPath, "utf8");
   let indexChanged = false;
-  const browserFailures = [];
+  const browserFailures: string[] = [];
   page.on("requestfailed", (request) =>
     browserFailures.push(`${request.url()} ${request.failure()?.errorText}`),
   );
@@ -474,10 +413,10 @@ test("a response mismatch keeps the loaded transcript and local draft while stop
     env: { ...process.env, CODEX_STUDIO_WEB_DIST: webDist },
   });
   let fixtureLog = "";
-  fixture.stderr.on("data", (chunk) => {
+  fixture.stderr?.on("data", (chunk) => {
     fixtureLog += chunk;
   });
-  const activeApiRoutes = new Set();
+  const activeApiRoutes = new Set<Promise<void>>();
   let drainingApiRoutes = false;
   try {
     await page.addInitScript(() => {
@@ -487,11 +426,8 @@ test("a response mismatch keeps the loaded transcript and local draft while stop
         sessionStorage.setItem("schema-gate-test-initialized", "1");
       }
     });
-    const port = await new Promise((resolve, reject) => {
-      fixture.stdout.once("data", (chunk) =>
-        resolve(Number(String(chunk).trim())),
-      );
-      fixture.once("exit", () => reject(new Error(fixtureLog)));
+    const port = await waitForFixturePort(fixture, {
+      diagnostics: () => fixtureLog,
     });
     await page.clock.install();
     await page.goto(`http://127.0.0.1:${port}`);
@@ -521,7 +457,7 @@ test("a response mismatch keeps the loaded transcript and local draft while stop
     let totalRequests = 0;
     let apiRequests = 0;
     let mutationRequests = 0;
-    const syncRequests = [];
+    const syncRequests: string[] = [];
     page.on("request", (request) => {
       totalRequests++;
       const url = new URL(request.url());
@@ -622,8 +558,10 @@ test("a response mismatch keeps the loaded transcript and local draft while stop
       ),
     ).toBeNull();
     await page.evaluate(() => {
-      navigator.serviceWorker.getRegistration =
-        window.__originalGetRegistration;
+      const original = window.__originalGetRegistration;
+      if (!original)
+        throw new Error("Original service worker method unavailable");
+      navigator.serviceWorker.getRegistration = original;
       delete window.__originalGetRegistration;
     });
 
@@ -637,91 +575,16 @@ test("a response mismatch keeps the loaded transcript and local draft while stop
     );
     indexChanged = true;
     mismatchEnabled = false;
-    await page.context().addInitScript(
-      (handshakes) => {
-        const behavior = sessionStorage.getItem("schema-gate-handshake");
-        window.__schemaGateStreamOpens = Number(
-          sessionStorage.getItem("schema-gate-stream-opens") || "0",
-        );
-        if (sessionStorage.getItem("schema-gate-strip-api-hash") === "1") {
-          const nativeFetch = window.fetch.bind(window);
-          window.fetch = async (input, init) => {
-            const response = await nativeFetch(input, init);
-            const url = new URL(
-              input instanceof Request ? input.url : String(input),
-              location.href,
-            );
-            if (!url.pathname.startsWith("/api/")) return response;
-            if (url.pathname === "/api/sync/identity") return response;
-            const headers = new Headers(response.headers);
-            headers.delete("x-studio-api-schema");
-            if (init?.method === "GET" || !init?.method)
-              window.__schemaGateHeaderlessGets =
-                (window.__schemaGateHeaderlessGets || 0) + 1;
-            return new Response(response.body, {
-              status: response.status,
-              statusText: response.statusText,
-              headers,
-            });
-          };
-        }
-        if (!["match", "mismatch", "silent"].includes(behavior)) return;
-        class TestEventSource extends EventTarget {
-          static CONNECTING = 0;
-          static OPEN = 1;
-          static CLOSED = 2;
-          readyState = TestEventSource.CONNECTING;
-          withCredentials = false;
-          onopen = null;
-          onerror = null;
-          url;
-          #closed = false;
-
-          constructor(url) {
-            super();
-            this.url = new URL(url, location.href).href;
-            queueMicrotask(() => {
-              if (this.#closed) return;
-              this.readyState = TestEventSource.OPEN;
-              window.__schemaGateStreamOpens++;
-              sessionStorage.setItem(
-                "schema-gate-stream-opens",
-                String(window.__schemaGateStreamOpens),
-              );
-              this.dispatchEvent(new Event("open"));
-              if (behavior === "silent") return;
-              this.dispatchEvent(
-                new MessageEvent("api-schema", {
-                  data: JSON.stringify(handshakes[behavior]),
-                }),
-              );
-              if (behavior === "mismatch")
-                window.__schemaGateMismatchHandshakes =
-                  (window.__schemaGateMismatchHandshakes || 0) + 1;
-            });
-          }
-
-          dispatchEvent(event) {
-            const dispatched = super.dispatchEvent(event);
-            this[`on${event.type}`]?.call(this, event);
-            return dispatched;
-          }
-
-          close() {
-            this.#closed = true;
-            this.readyState = TestEventSource.CLOSED;
-          }
-        }
-        window.EventSource = TestEventSource;
-      },
-      {
+    await page.context().addInitScript(installSchemaGateFixture, {
+      mode: "session" as const,
+      handshakes: {
         match: apiSchemaHandshakeEvent(),
         mismatch: apiSchemaHandshakeEvent({
           hash: "foreign-schema",
           mismatch: true,
         }),
       },
-    );
+    });
     await page.evaluate(() =>
       sessionStorage.setItem("schema-gate-handshake", "mismatch"),
     );
@@ -855,15 +718,12 @@ test("a stream mismatch keeps the transcript and draft while stopping every requ
     env: { ...process.env },
   });
   let fixtureLog = "";
-  fixture.stderr.on("data", (chunk) => {
+  fixture.stderr?.on("data", (chunk) => {
     fixtureLog += chunk;
   });
   try {
-    const port = await new Promise((resolve, reject) => {
-      fixture.stdout.once("data", (chunk) =>
-        resolve(Number(String(chunk).trim())),
-      );
-      fixture.once("exit", () => reject(new Error(fixtureLog)));
+    const port = await waitForFixturePort(fixture, {
+      diagnostics: () => fixtureLog,
     });
     await page.clock.install();
     await page.goto(`http://127.0.0.1:${port}`);
@@ -936,7 +796,7 @@ test("schema hash change uses a fresh entity cache and keeps the local draft", a
     env: { ...process.env },
   });
   let fixtureLog = "";
-  fixture.stderr.on("data", (chunk) => {
+  fixture.stderr?.on("data", (chunk) => {
     fixtureLog += chunk;
   });
   const { createFixtureViteServer: createServer } =
@@ -949,8 +809,8 @@ test("schema hash change uses a fresh entity cache and keeps the local draft", a
   await server.listen();
   const originalHash = readApiSchemaHash();
   const updatedHash = `${originalHash.slice(0, -1)}${originalHash.endsWith("0") ? "1" : "0"}`;
-  const errors = [];
-  const entityFullPulls = [];
+  const errors: string[] = [];
+  const entityFullPulls: string[] = [];
   let variantEnabled = false;
   let fixtureUrl = "";
   let fixtureWorkspace = "";
@@ -969,11 +829,8 @@ test("schema hash change uses a fresh entity cache and keeps the local draft", a
       entityFullPulls.push(url.search);
   });
   try {
-    const port = await new Promise((resolve, reject) => {
-      fixture.stdout.once("data", (chunk) =>
-        resolve(Number(String(chunk).trim())),
-      );
-      fixture.once("exit", () => reject(new Error(fixtureLog)));
+    const port = await waitForFixturePort(fixture, {
+      diagnostics: () => fixtureLog,
     });
     fixtureUrl = `http://127.0.0.1:${port}`;
     await page.route("**/src/generated/apiSchema.ts", async (route) => {
@@ -986,7 +843,7 @@ test("schema hash change uses a fresh entity cache and keeps the local draft", a
       const url = new URL(route.request().url());
       const rendererHash = variantEnabled ? updatedHash : originalHash;
       if (url.pathname === "/api/sync/stream") {
-        const resources = JSON.parse(url.searchParams.get("resources") || "[]");
+        const resources = fixtureResources(url.searchParams.get("resources"));
         return route.fulfill({
           status: 200,
           headers: { "content-type": "text/event-stream" },
@@ -998,7 +855,10 @@ test("schema hash change uses a fresh entity cache and keeps the local draft", a
               revision: 1,
               reason: "initial",
               resources,
-            }),
+            } satisfies Omit<
+              components["schemas"]["ResourceChangeEvent"],
+              "resourceVersions"
+            >),
             { hash: rendererHash },
           ),
         });
@@ -1010,7 +870,10 @@ test("schema hash change uses a fresh entity cache and keeps the local draft", a
         return route.fulfill({
           status: 200,
           headers: { [API_SCHEMA_HASH_HEADER]: rendererHash },
-          json: { groups: null, revision: 0 },
+          json: {
+            groups: null,
+            revision: 0,
+          } satisfies PostResult<"/api/projects">,
         });
       if (
         route.request().method() === "POST" &&
@@ -1019,7 +882,7 @@ test("schema hash change uses a fresh entity cache and keeps the local draft", a
         return route.fulfill({
           status: 200,
           headers: { [API_SCHEMA_HASH_HEADER]: rendererHash },
-          json: [],
+          json: [] satisfies PostResult<"/api/sync/drafts">,
         });
       if (url.pathname === "/api/costs")
         return route.fulfill({
@@ -1033,7 +896,7 @@ test("schema hash change uses a fresh entity cache and keeps the local draft", a
             error: null,
             refreshing: false,
             stale: false,
-          },
+          } satisfies GetResult<"/api/costs">,
         });
       const headers = { ...route.request().headers() };
       headers[API_SCHEMA_HASH_HEADER.toLowerCase()] = originalHash;
@@ -1043,8 +906,10 @@ test("schema hash change uses a fresh entity cache and keeps the local draft", a
         url: `${fixtureUrl}${url.pathname}${url.search}`,
         headers,
       });
-      if (url.pathname === "/api/sync/identity")
-        fixtureWorkspace = (await response.json()).workspaceId;
+      if (url.pathname === "/api/sync/identity") {
+        const identity: GetResult<"/api/sync/identity"> = await response.json();
+        fixtureWorkspace = identity.workspaceId;
+      }
       const responseHeaders = new Headers(response.headers());
       responseHeaders.set(API_SCHEMA_HASH_HEADER, rendererHash);
       responseHeaders.delete("x-studio-api-schema-mismatch");
@@ -1053,7 +918,7 @@ test("schema hash change uses a fresh entity cache and keeps the local draft", a
         headers: Object.fromEntries(responseHeaders),
       });
     });
-    await page.goto(`http://127.0.0.1:${server.httpServer.address().port}`);
+    await page.goto(fixtureOrigin(server));
     await expect(page.locator("#message")).toBeVisible({ timeout: 15_000 });
     await expect(page.locator(".startup")).toHaveCount(0, { timeout: 30_000 });
     const initialCachedStartupMs = await page.evaluate(() => performance.now());
@@ -1064,6 +929,7 @@ test("schema hash change uses a fresh entity cache and keeps the local draft", a
       return (await db.projections.findOne("state:entities:checkpoint").exec())
         ?.seq;
     });
+    assert.ok(initialCheckpoint !== undefined);
     await page.reload();
     await expect(page.locator(".startup")).toHaveCount(0, { timeout: 30_000 });
     await expect(page.locator("#message")).toBeVisible();

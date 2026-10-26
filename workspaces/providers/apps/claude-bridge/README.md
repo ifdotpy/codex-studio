@@ -11,9 +11,17 @@ are owned by this app's source and [`package.json`](package.json). Focused check
 `pnpm run test:server:bridge` from the repository root, as defined by the
 [root manifest](../../../../package.json).
 
+## Installation requirements
+
+The bridge uses the [shared Node requirement](../../../../docs/typescript.md#how-typescript-runs). The stable
+[launcher](bridge.mjs) owns the supported runtime requirement and refusal message;
+it checks support before loading the bridge or the authentication-refresh helper.
+Both entrypoints run TypeScript directly without a build step. Production packages
+and guest installs must retain the TypeScript sources alongside the launcher.
+
 ## Image input
 
-The [image module](images.mjs) owns the default Claude image limits: 2000 pixels
+The [image module](images.ts) owns the default Claude image limits: 2000 pixels
 per side, 5,242,880 base64 bytes, and the derived 3,932,160 raw bytes. The source
 is Claude Code 2.1.302, `chunk-sp5b4hyj.js:475` and `chunk-hqtnbrjd.js:124661`.
 Its separate 512,000-byte budget is best effort (`chunk-sp5b4hyj.js:453`).
@@ -41,7 +49,7 @@ installs. The ARM64 guest launches its own
 `/opt/codex-studio/claude_bridge/bridge.mjs`. Linux x64 modules support standalone
 x64 servers.
 
-Run `node testing/image-codec-witness.mjs` inside a deployed production bridge
+Run `node testing/image-codec-witness.ts` inside a deployed production bridge
 to verify the codecs without a model request. Run
 `node --test workspaces/client/apps/native/bridge-image-package.test.ts` from
 the repository root to verify the Mac prune and its native codec load.
@@ -56,26 +64,26 @@ unknown outcome and is never automatically resent. Before completing a turn
 with such input, the bridge closes the CLI and reconciles its final native
 history. A split input is delivered only if every part is recorded; no recorded
 parts proves it unapplied, while partial or unavailable evidence stays unknown.
-The [history index](history-index.mjs) owns input identity for stall recovery,
+The [history index](history-index.ts) owns input identity for stall recovery,
 restart, fork, and rollback. It reads the current native session through SDK
 metadata and conversation APIs, and the SDK's typed transcript-store import.
 The import preserves hidden service parts that the conversation API omits;
 each part keeps its original SDK UUID and prompt framing. A pinned complete
 file read guards against the SDK silently skipping malformed or unknown rows.
-The [record schemas](history-records.mjs) strictly validate input-bearing prompt,
+The [record schemas](history-records.ts) strictly validate input-bearing prompt,
 queue-operation and queued-command payloads, including every known queue field.
 Assistant/system/progress/summary records, tool-result-only user messages and
 non-input attachments receive basic identity checks; their evolving payloads do
 not change input presence. Unknown top-level record types remain unknown.
 Missing sessions, unsupported structures, torn or changed files, broken ancestry,
-and files outside the [reader's coverage](native-history.mjs) remain unknown.
+and files outside the [reader's coverage](native-history.ts) remain unknown.
 Only complete authoritative absence permits redelivery. Each snapshot builds
 one UUID index that all retained inputs reuse.
 The bridge shows an uncertainty notice
 and never authorizes redelivery from that evidence.
 The next start resumes a fresh CLI, and retries reuse recorded user-message
 identities even for auto-steered input. Query-closing controls refuse unsettled
-unread input. [The lifecycle limits](stall-watch.mjs) own the echo grace and
+unread input. [The lifecycle limits](stall-watch.ts) own the echo grace and
 interrupt/exit deadlines in milliseconds.
 
 Stop finalizes an already deferred result as interrupted. If running Claude does
@@ -121,12 +129,12 @@ Earlier mirror turns remain visible, while new native history
 controls use only turns belonging to the current session. A local clear command
 has no native input boundary and cannot be selected for a history operation.
 
-Run `node testing/cli-history-witness.mjs` from this directory for the installed
+Run `node testing/cli-history-witness.ts` from this directory for the installed
 SDK/CLI witness. It uses disposable configuration below the user's cache and a
 local HTTP provider fixture, verifies both composite orders through fork,
 rollback and recovery, and proves clear/resume with three distinct identities.
 It makes no real model request and prints its retained evidence directory.
-`node testing/cli-history-compatibility-witness.mjs` also checks a local 503 retry
+`node testing/cli-history-compatibility-witness.ts` also checks a local 503 retry
 and a real ToolSearch session with tool references and deferred-tool attachments;
 both must retain exact input coverage through recovery, fork and rollback.
 
@@ -149,7 +157,7 @@ Recovery also accepts an initial input receipt or marks a steer delivered only
 when all its native UUIDs appear in order on the proven transcript chain. Partial
 or unproven inputs keep their ambiguous receipts, including after another restart.
 Input receipts use the same verified SDK history index as stall recovery.
-Reply reconstruction stays in [restart reconciliation](restart-reconcile.mjs). The mirror journal still discards a torn final record.
+Reply reconstruction stays in [restart reconciliation](restart-reconcile.ts). The mirror journal still discards a torn final record.
 
 A malformed complete journal row requires native transcript evidence before
 repair. Automatic repair supports complete text histories with exact message
@@ -181,8 +189,8 @@ Codex identity and the existing Claude `accountId` remain unchanged.
 ## Token usage
 
 The bridge emits `thread/tokenUsage/updated` observations using the
-[generated usage contract](usage-contract.generated.d.mts). The
-[SDK-typed normalizer](usage.mjs) finalizes response usage from stream events
+[generated usage contract](usage-contract.generated.ts). The
+[SDK-typed normalizer](usage.ts) finalizes response usage from stream events
 at `message_stop` only after a non-null `message_delta.delta.stop_reason` proves
 completion. Stops without that evidence produce an `unconfirmedStop` gap.
 Assistant messages without a preceding stream produce one `noStream` gap per
@@ -216,10 +224,8 @@ cleanup path to report unfinished responses exactly once, even if SDK close is
 stuck. Intentional shutdown leaves an
 unfinished turn in progress for restart reconciliation rather than publishing a
 terminal failure. The bridge integration tests
-and inline scripted SDK remain outside the strict TypeScript program because
-the shared bridge harness is untyped; SDK data fixtures and normalizer unit tests
-remain strictly checked.
-Per-thread operation ordering consumes `provider-method-policy.generated.mjs`,
+use the shared TypeScript harness.
+Per-thread operation ordering consumes `provider-method-policy.generated.ts`,
 rendered by `studio-contracts` from the Rust
 [method policy](../../../runtime/packages/runtime-schema/src/provider_method_policy.rs).
 Refresh it with `pnpm run contracts:generate`; `pnpm run contracts:check` rejects drift.

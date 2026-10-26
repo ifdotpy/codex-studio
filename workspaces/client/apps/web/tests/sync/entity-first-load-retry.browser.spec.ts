@@ -1,3 +1,19 @@
+import type { FixtureResourceChange } from "./helpers.ts";
+import type { Page } from "@playwright/test";
+import type { ResourceRef, SyncEntity } from "../playwright.ts";
+import { fixtureResources } from "./helpers.ts";
+type FixtureOptions = {
+  available?: boolean;
+  identityFailures?: number;
+  pullFailures?: number;
+  pullStatus?: number;
+  streamFailures?: number;
+  streamHeadersDelayMs?: number;
+};
+import type {} from "./entity-first-load-retry.browser.fixture.tsx";
+import type { IncomingMessage, ServerResponse } from "node:http";
+import type { Connect } from "vite";
+import { fixtureOrigin } from "./helpers.ts";
 import { FIXTURE_OPTIMIZE_DEPS } from "../playwright.ts";
 import assert from "node:assert/strict";
 import { join } from "node:path";
@@ -13,7 +29,7 @@ import {
 
 const workspaceId = "a".repeat(32);
 
-async function createFixture(page, options = {}) {
+async function createFixture(page: Page, options: FixtureOptions = {}) {
   const repo = fileURLToPath(new URL("../../../../../../", import.meta.url));
 
   const { createFixtureViteServer: createServer } =
@@ -30,31 +46,39 @@ async function createFixture(page, options = {}) {
   let pullStatus = options.pullStatus;
   let streamFailures = options.streamFailures ?? 0;
   const streamHeadersDelayMs = options.streamHeadersDelayMs ?? 0;
-  const streams = new Set();
+  const streams = new Set<{ resources: ResourceRef[]; res: ServerResponse }>();
   let revision = 1;
-  const requests = [];
+  const requests: string[] = [];
   const counts = { identity: 0, stream: 0, pull: 0 };
-  const pullAttempts = [];
-  const pullDocumentCounts = [];
-  let resolveFirstConnectedStream;
-  const firstConnectedStream = new Promise((resolve) => {
-    resolveFirstConnectedStream = resolve;
-  });
-  const entityDocument = () => ({
+  const pullAttempts: {
+    at: number;
+    scope: string | null;
+    after: string | null;
+  }[] = [];
+  const pullDocumentCounts: number[] = [];
+  const {
+    promise: firstConnectedStream,
+    resolve: resolveFirstConnectedStream,
+  } = Promise.withResolvers<void>();
+  const entityDocument = (): SyncEntity => ({
     op: "upsert",
     collection: "agent",
     id: "lead",
     value: { id: "lead", name: `Fixture ${revision}` },
     seq: revision,
   });
-  const json = (res, status, value) => {
+  const json = (res: ServerResponse, status: number, value: unknown) => {
     res.writeHead(status, { "Content-Type": "application/json" });
     res.end(JSON.stringify(value));
   };
   server.middlewares.stack.unshift({
     route: "",
-    handle(req, res, next) {
-      const url = new URL(req.url, "http://fixture.local");
+    handle(
+      req: IncomingMessage,
+      res: ServerResponse,
+      next: Connect.NextFunction,
+    ) {
+      const url = new URL(req.url ?? "/", "http://fixture.local");
       requests.push(`${req.method} ${url.pathname}${url.search}`);
       if (url.pathname === "/check") {
         res.end("<!doctype html><div id='root'></div>");
@@ -78,9 +102,7 @@ async function createFixture(page, options = {}) {
           res.writeHead(503, { "Content-Type": "text/plain" });
           res.end("Fixture stream unavailable");
         } else {
-          const resources = JSON.parse(
-            url.searchParams.get("resources") || "[]",
-          );
+          const resources = fixtureResources(url.searchParams.get("resources"));
           const connect = () => {
             if (res.destroyed) return;
             res.writeHead(200, {
@@ -147,30 +169,12 @@ async function createFixture(page, options = {}) {
   });
   await server.listen();
   try {
-    await page.goto(
-      `http://127.0.0.1:${server.httpServer.address().port}/check`,
-    );
-    await page.evaluate(async () => {
-      window.snapshotMountedAt = performance.now();
-      const { useSnapshot } = await import("/src/hooks.ts");
-      const ReactModule = await import("/node_modules/.vite/deps/react.js");
-      const DomModule =
-        await import("/node_modules/.vite/deps/react-dom_client.js");
-      const React = ReactModule.default || ReactModule;
-      const { createRoot } = DomModule.default || DomModule;
-      const root = createRoot(document.getElementById("root"));
-      window.unmountSnapshot = () => root.unmount();
-      root.render(
-        React.createElement(function SnapshotHarness() {
-          window.snapshot = useSnapshot();
-          return React.createElement(
-            "p",
-            { role: window.snapshot.error ? "alert" : "status" },
-            window.snapshot.error || "Connecting to LAYR Studio…",
-          );
-        }),
-      );
+    await page.goto(fixtureOrigin(server) + `/check`);
+    await page.addScriptTag({
+      type: "module",
+      url: "/tests/sync/entity-first-load-retry.browser.fixture.tsx",
     });
+    await page.evaluate(() => window.entityFirstLoadRetryBrowserMount1());
   } catch (error) {
     await server.close();
     throw error;
@@ -185,13 +189,15 @@ async function createFixture(page, options = {}) {
       return streams.size;
     },
     async close() {
-      await page.evaluate(() => window.unmountSnapshot?.());
+      await page.evaluate(() =>
+        window.entityFirstLoadRetryBrowserFixtureUnmountSnapshot?.(),
+      );
       await server.close();
     },
-    setPullStatus(value) {
+    setPullStatus(value: number | undefined) {
       pullStatus = value;
     },
-    setAvailable(value) {
+    setAvailable(value: boolean) {
       available = value;
       if (value) this.publish();
     },
@@ -212,7 +218,7 @@ async function createFixture(page, options = {}) {
             entitySequenceReset: false,
           },
         ],
-      });
+      } satisfies FixtureResourceChange);
       for (const stream of streams) {
         if (stream.resources.some((resource) => resource.kind === "state"))
           stream.res.write(frame);
@@ -221,15 +227,19 @@ async function createFixture(page, options = {}) {
   };
 }
 
-async function mount(page, options) {
+async function mount(page: Page, options?: FixtureOptions) {
   const fixture = await createFixture(page, options);
-  await page.waitForFunction(() => Boolean(window.snapshot));
+  await page.waitForFunction(() =>
+    Boolean(window.entityFirstLoadRetryBrowserFixtureSnapshot),
+  );
   return fixture;
 }
 
-async function waitForData(page) {
+async function waitForData(page: Page) {
   await page.waitForFunction(
-    () => Boolean(window.snapshot) && window.snapshot.data !== null,
+    () =>
+      Boolean(window.entityFirstLoadRetryBrowserFixtureSnapshot) &&
+      window.entityFirstLoadRetryBrowserFixtureSnapshot.data !== null,
     null,
     {
       timeout: 20_000,
@@ -244,7 +254,9 @@ test("first load reports failure and recovers without a legacy request", async (
   const fixture = await mount(page, { available: false });
   try {
     await page.waitForFunction(
-      () => window.snapshot?.data === null && Boolean(window.snapshot.error),
+      () =>
+        window.entityFirstLoadRetryBrowserFixtureSnapshot?.data === null &&
+        Boolean(window.entityFirstLoadRetryBrowserFixtureSnapshot.error),
     );
     assert.notEqual((await page.getByRole("alert").textContent())?.trim(), "");
     assert.equal(
@@ -253,7 +265,9 @@ test("first load reports failure and recovers without a legacy request", async (
     );
     fixture.setAvailable(true);
     await waitForData(page);
-    await page.waitForFunction(() => window.snapshot.error === "");
+    await page.waitForFunction(
+      () => window.entityFirstLoadRetryBrowserFixtureSnapshot.error === "",
+    );
     assert.equal(
       fixture.requests.some((request) => request.includes("/api/state")),
       false,
@@ -285,7 +299,9 @@ test("records first content time while stream headers are held", async ({
   try {
     await waitForData(page);
     const firstContentMs = await page.evaluate(
-      () => performance.now() - window.snapshotMountedAt,
+      () =>
+        performance.now() -
+        window.entityFirstLoadRetryBrowserFixtureSnapshotMountedAt,
     );
     console.log(`FIRST_CONTENT_WITH_HELD_STREAM ${firstContentMs}`);
     assert.ok(firstContentMs < 5_000, `first content ${firstContentMs}ms`);
@@ -328,7 +344,7 @@ test("delivers one state change committed before the delayed stream attaches", a
     fixture.publish();
     await fixture.firstConnectedStream;
     await page.waitForFunction(() =>
-      window.snapshot?.data?.runtime?.agents?.some(
+      window.entityFirstLoadRetryBrowserFixtureSnapshot?.data?.runtime?.agents?.some(
         (agent) => agent.id === "lead" && agent.name === "Fixture 2",
       ),
     );
@@ -387,7 +403,9 @@ test("retries the initial pull after three transient failures", async ({
   try {
     await waitForData(page);
     assert.ok(fixture.counts.pull >= 4);
-    await page.waitForFunction(() => window.snapshot.error === "");
+    await page.waitForFunction(
+      () => window.entityFirstLoadRetryBrowserFixtureSnapshot.error === "",
+    );
   } finally {
     await fixture.close();
   }
@@ -398,10 +416,17 @@ test("keeps the error visible for a permanent 503", async ({ page }) => {
   const fixture = await mount(page, { pullStatus: 503 });
   try {
     await page.waitForFunction(
-      () => window.snapshot?.data === null && Boolean(window.snapshot.error),
+      () =>
+        window.entityFirstLoadRetryBrowserFixtureSnapshot?.data === null &&
+        Boolean(window.entityFirstLoadRetryBrowserFixtureSnapshot.error),
     );
     await page.waitForTimeout(6_000);
-    assert.equal(await page.evaluate(() => window.snapshot.data), null);
+    assert.equal(
+      await page.evaluate(
+        () => window.entityFirstLoadRetryBrowserFixtureSnapshot.data,
+      ),
+      null,
+    );
     assert.notEqual((await page.getByRole("alert").textContent())?.trim(), "");
   } finally {
     await fixture.close();
@@ -417,11 +442,13 @@ test("bounds retries for a permanent 503", async ({ page }) => {
   const fixture = await mount(page, { pullStatus: 503 });
   try {
     await page.waitForFunction(
-      () => window.snapshot?.data === null && Boolean(window.snapshot.error),
+      () =>
+        window.entityFirstLoadRetryBrowserFixtureSnapshot?.data === null &&
+        Boolean(window.entityFirstLoadRetryBrowserFixtureSnapshot.error),
     );
     await page.waitForTimeout(6_000);
     const offsets = fixture.pullAttempts.map((attempt) =>
-      Number((attempt.at - fixture.pullAttempts[0].at).toFixed(1)),
+      Number((attempt.at - (fixture.pullAttempts[0]?.at ?? 0)).toFixed(1)),
     );
     assert.ok(
       fixture.counts.pull <= 10,
@@ -437,7 +464,9 @@ test("does not retry a permanent 400", async ({ page }) => {
   const fixture = await mount(page, { pullStatus: 400 });
   try {
     await page.waitForFunction(
-      () => window.snapshot?.data === null && Boolean(window.snapshot.error),
+      () =>
+        window.entityFirstLoadRetryBrowserFixtureSnapshot?.data === null &&
+        Boolean(window.entityFirstLoadRetryBrowserFixtureSnapshot.error),
     );
     await page.waitForTimeout(2_000);
     assert.equal(fixture.counts.pull, 1);
@@ -453,19 +482,38 @@ test("clears a later subscription error after a successful pull", async ({
   const fixture = await mount(page, {});
   try {
     await waitForData(page);
-    const initial = await page.evaluate(() => window.snapshot.data);
+    const initial = await page.evaluate(
+      () => window.entityFirstLoadRetryBrowserFixtureSnapshot.data,
+    );
     fixture.setPullStatus(503);
     fixture.publish();
-    await page.waitForFunction(() => Boolean(window.snapshot.error), null, {
-      timeout: 10_000,
-    });
-    assert.deepEqual(await page.evaluate(() => window.snapshot.data), initial);
+    await page.waitForFunction(
+      () => Boolean(window.entityFirstLoadRetryBrowserFixtureSnapshot.error),
+      null,
+      {
+        timeout: 10_000,
+      },
+    );
+    assert.deepEqual(
+      await page.evaluate(
+        () => window.entityFirstLoadRetryBrowserFixtureSnapshot.data,
+      ),
+      initial,
+    );
     fixture.setPullStatus(undefined);
     fixture.publish();
-    await page.waitForFunction(() => window.snapshot.error === "", null, {
-      timeout: 10_000,
-    });
-    assert.ok(await page.evaluate(() => window.snapshot.data));
+    await page.waitForFunction(
+      () => window.entityFirstLoadRetryBrowserFixtureSnapshot.error === "",
+      null,
+      {
+        timeout: 10_000,
+      },
+    );
+    assert.ok(
+      await page.evaluate(
+        () => window.entityFirstLoadRetryBrowserFixtureSnapshot.data,
+      ),
+    );
   } finally {
     await fixture.close();
   }

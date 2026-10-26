@@ -1000,7 +1000,7 @@ export class Smoke {
   }
 
   async renderer() {
-    const served = await this.backend.get<{ build: string; apiSchema: string }>(
+    const served = await this.backend.get<RendererManifest>(
       "/studio-renderer.json",
     );
     const installed: RendererManifest = JSON.parse(

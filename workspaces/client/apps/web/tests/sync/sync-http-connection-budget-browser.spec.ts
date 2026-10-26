@@ -1,3 +1,11 @@
+import type { FixtureResourceChange } from "./helpers.ts";
+import type { PostBody } from "../../src/apiTypes.ts";
+import type { ResourceRef } from "../playwright.ts";
+import { fixtureResources, fixturePostBody } from "./helpers.ts";
+import type { IncomingMessage, ServerResponse } from "node:http";
+import type { Connect } from "vite";
+import { fixtureOrigin } from "./helpers.ts";
+import type {} from "./sync-http-connection-budget-browser.fixture.tsx";
 import {
   apiSchemaHandshakeSse,
   apiSchemaHeaders,
@@ -7,7 +15,6 @@ import {
 } from "../playwright.ts";
 // Actual HTTP connection capacity with two renderer windows and slow history.
 import assert from "node:assert/strict";
-import { createRequire } from "node:module";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -19,17 +26,23 @@ test("Sync http connection budget browser", async ({
 }) => {
   test.setTimeout(180_000);
   const root = fileURLToPath(new URL("../../../../../../", import.meta.url));
-  const require = createRequire(
-    join(root, "workspaces/client/apps/web/package.json"),
-  );
-  const { createServer } = await import(require.resolve("vite"));
+  const { createFixtureViteServer: createServer } =
+    await import("../playwright.ts");
   const cache = await mkdtemp(join(tmpdir(), "studio-sync-connection-budget-"));
   const workspaceId = "b".repeat(32);
-  const streams = new Set();
-  const streamResources = new Map();
-  const held = new Set();
-  const requests = [];
-  const messages = new Map();
+  const streams = new Set<ServerResponse>();
+  const streamResources = new Map<ServerResponse, ResourceRef[]>();
+  const held = new Set<ServerResponse>();
+  const requests: {
+    path: string;
+    query: string;
+    at: number;
+    method: string | undefined;
+  }[] = [];
+  const messages = new Map<
+    string,
+    { body: PostBody<"/api/messages">; requests: number }
+  >();
   let revision = 1;
   const changeState = () => {
     for (const response of streams) {
@@ -44,7 +57,7 @@ test("Sync http connection budget browser", async ({
           reason: "change",
           resources: [{ kind: "state" }],
           resourceVersions: [{ resource: { kind: "state" }, revision }],
-        })}\n\n`,
+        } satisfies FixtureResourceChange)}\n\n`,
       );
     }
   };
@@ -66,42 +79,19 @@ test("Sync http connection budget browser", async ({
     plugins: [
       {
         name: "connection-budget-harness",
-        resolveId(id) {
-          if (id === "virtual:budget") return "\0" + id;
-        },
-        load(id) {
-          if (id !== "\0virtual:budget") return;
-          return `
-          import React,{useEffect} from "react";
-          import {createRoot} from "react-dom/client";
-          import {useSnapshot} from "/src/hooks.ts";
-          import {useSyncedDrafts} from "/src/sync/drafts.ts";
-          import {subscribeTranscriptProjection,watchResourceChanges,prefetchTranscript} from "/src/sync/client.ts";
-          import {durableSend} from "/src/sync/send.ts";
-          window.prefetchTranscript = prefetchTranscript;
-          window.durableSend = durableSend;
-          window.mount = selected => createRoot(document.getElementById("app")).render(
-            React.createElement(function Fixture() {
-              window.snapshot = useSnapshot();
-              useSyncedDrafts();
-              useEffect(() => subscribeTranscriptProjection("transcript:" + selected, () => {}, () => {}), []);
-              useEffect(() => window.snapshot.workspaceId ?
-                watchResourceChanges({kind:"transcript",agentId:selected}, () => {}) : undefined,
-                [window.snapshot.workspaceId]);
-              return React.createElement("div",{id:"error"}, window.snapshot.error);
-            })
-          );
-        `;
-        },
       },
     ],
     server: { host: "127.0.0.1", port: 0, hmr: false },
   });
   server.middlewares.stack.unshift({
     route: "",
-    handle(req, res, next) {
-      const url = new URL(req.url, "http://localhost");
-      const json = (value) => {
+    handle(
+      req: IncomingMessage,
+      res: ServerResponse,
+      next: Connect.NextFunction,
+    ) {
+      const url = new URL(req.url ?? "/", "http://localhost");
+      const json = (value: unknown) => {
         res.writeHead(
           200,
           apiSchemaHeaders({ "Content-Type": "application/json" }),
@@ -111,7 +101,7 @@ test("Sync http connection budget browser", async ({
       if (url.pathname === "/check") {
         res.setHeader("Content-Type", "text/html");
         res.end(
-          '<!doctype html><div id="app"></div><script type="module" src="/@id/__x00__virtual:budget"></script>',
+          '<!doctype html><div id="app"></div><script type="module" src="/tests/sync/sync-http-connection-budget-browser.fixture.tsx"></script>',
         );
       } else if (url.pathname.startsWith("/api/")) {
         requests.push({
@@ -133,7 +123,7 @@ test("Sync http connection budget browser", async ({
           res.write(apiSchemaHandshakeSse());
           res.write(": connected\n\n");
           streams.add(res);
-          const refs = JSON.parse(url.searchParams.get("resources") || "[]");
+          const refs = fixtureResources(url.searchParams.get("resources"));
           streamResources.set(res, refs);
           res.write(
             `event: resources\ndata: ${JSON.stringify({
@@ -147,14 +137,14 @@ test("Sync http connection budget browser", async ({
                 resource,
                 revision,
               })),
-            })}\n\n`,
+            } satisfies FixtureResourceChange)}\n\n`,
           );
           res.on("close", () => {
             streams.delete(res);
             streamResources.delete(res);
           });
         } else if (url.pathname === "/api/sync/pull") {
-          const scope = url.searchParams.get("scope");
+          const scope = url.searchParams.get("scope") ?? "";
           if (scope.startsWith("transcript:warm-")) {
             held.add(res);
             res.on("close", () => held.delete(res));
@@ -193,7 +183,8 @@ test("Sync http connection budget browser", async ({
             body += value;
           });
           req.on("end", () => {
-            const message = JSON.parse(body);
+            const message = fixturePostBody<"/api/messages">(JSON.parse(body));
+            assert.ok(message.id);
             const previous = messages.get(message.id);
             if (previous) assert.deepEqual(previous.body, message);
             messages.set(message.id, {
@@ -209,16 +200,20 @@ test("Sync http connection budget browser", async ({
   try {
     await server.listen();
     const context = runnerContext;
-    const pages = [await context.newPage(), await context.newPage()];
-    const errors = [];
+    const pages = [await context.newPage(), await context.newPage()] as const;
+    const errors: string[] = [];
     for (const page of pages)
       page.on("pageerror", (error) => errors.push(error.message));
-    const origin = `http://127.0.0.1:${server.httpServer.address().port}`;
+    const origin = fixtureOrigin(server);
     await Promise.all(pages.map((page) => page.goto(origin + "/check")));
     await Promise.all(
       pages.map((page) =>
         page
-          .waitForFunction(() => window.mount, undefined, { timeout: 15_000 })
+          .waitForFunction(
+            () => window.syncHttpConnectionBudgetBrowserFixtureMount,
+            undefined,
+            { timeout: 15_000 },
+          )
           .catch(async (error) => {
             throw new Error(
               `${error.message}; page errors: ${JSON.stringify(errors)}`,
@@ -228,11 +223,21 @@ test("Sync http connection budget browser", async ({
     );
     await Promise.all(
       pages.map((page, index) =>
-        page.evaluate((index) => window.mount("selected-" + index), index),
+        page.evaluate(
+          (index) =>
+            window.syncHttpConnectionBudgetBrowserFixtureMount(
+              "selected-" + index,
+            ),
+          index,
+        ),
       ),
     );
     await Promise.all(
-      pages.map((page) => page.waitForFunction(() => window.snapshot?.data)),
+      pages.map((page) =>
+        page.waitForFunction(
+          () => window.syncHttpConnectionBudgetBrowserFixtureSnapshot?.data,
+        ),
+      ),
     );
     await new Promise((resolve) => setTimeout(resolve, 400));
     const sessionCount = requests.filter(
@@ -240,15 +245,20 @@ test("Sync http connection budget browser", async ({
     ).length;
     const started = Date.now();
     await pages[0].evaluate(() => {
-      window.refresh = window.snapshot.refresh();
+      window.syncHttpConnectionBudgetBrowserFixtureRefresh =
+        window.syncHttpConnectionBudgetBrowserFixtureSnapshot.refresh();
     });
     await pages[0].waitForFunction(
-      () => window.snapshot.error || window.snapshot.data.token,
+      () =>
+        window.syncHttpConnectionBudgetBrowserFixtureSnapshot.error ||
+        window.syncHttpConnectionBudgetBrowserFixtureSnapshot.data?.token,
       undefined,
       { timeout: 20000 },
     );
     await Promise.race([
-      pages[0].evaluate(() => window.refresh),
+      pages[0].evaluate(
+        () => window.syncHttpConnectionBudgetBrowserFixtureRefresh,
+      ),
       new Promise((_, reject) =>
         setTimeout(() => reject(new Error("refresh did not terminate")), 18000),
       ),
@@ -286,9 +296,13 @@ test("Sync http connection budget browser", async ({
     changeState();
     await Promise.all(
       pages.map((page) =>
-        page.waitForFunction(
-          () => window.snapshot.data.runtime.marker === "revision-2",
-        ),
+        page.waitForFunction(() => {
+          const runtime =
+            window.syncHttpConnectionBudgetBrowserFixtureSnapshot.data?.runtime;
+          return (
+            runtime && "marker" in runtime && runtime.marker === "revision-2"
+          );
+        }),
       ),
     );
     assert.ok(
@@ -302,8 +316,11 @@ test("Sync http connection budget browser", async ({
       pages.map((page, index) =>
         page.evaluate(
           ({ workspaceId, index }) => {
-            window.warm = window
-              .prefetchTranscript(workspaceId, "warm-" + index)
+            window.syncHttpConnectionBudgetBrowserFixtureWarm = window
+              .syncHttpConnectionBudgetBrowserFixturePrefetchTranscript(
+                workspaceId,
+                "warm-" + index,
+              )
               .catch(() => false);
           },
           { workspaceId, index },
@@ -315,7 +332,12 @@ test("Sync http connection budget browser", async ({
     await Promise.all(
       pages.map((page) =>
         page.evaluate(async (workspaceId) => {
-          if (await window.prefetchTranscript(workspaceId, "warm-over-limit"))
+          if (
+            await window.syncHttpConnectionBudgetBrowserFixturePrefetchTranscript(
+              workspaceId,
+              "warm-over-limit",
+            )
+          )
             throw new Error(
               "a second background history request exceeded the limit",
             );
@@ -326,13 +348,14 @@ test("Sync http connection budget browser", async ({
     await Promise.all(
       pages.map((page, index) =>
         page.evaluate(async (index) => {
-          await window.snapshot.refresh();
+          await window.syncHttpConnectionBudgetBrowserFixtureSnapshot.refresh();
           const id = "exact-request-" + index;
-          const receipt = await window.durableSend({
-            id,
-            room: "selected-" + index,
-            text: "fixture",
-          });
+          const receipt =
+            await window.syncHttpConnectionBudgetBrowserFixtureDurableSend({
+              id,
+              room: "selected-" + index,
+              text: "fixture",
+            });
           if (receipt.id !== id) throw new Error("request identity changed");
         }, index),
       ),

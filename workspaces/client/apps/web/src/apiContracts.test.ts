@@ -374,12 +374,19 @@ type LocalContractAssertions = [
   Assert<Equal<LocalSyncRow, ProjectionSyncRow>>,
   Assert<
     Equal<
-      Required<Omit<LocalSyncRow, "entity" | "evicted">>,
-      components["schemas"]["SyncDocument"]
+      Omit<LocalSyncRow, "entity" | "evicted" | "_deleted">,
+      Omit<components["schemas"]["SyncDocument"], "_deleted">
+    >
+  >,
+  Assert<
+    Equal<
+      Exclude<LocalSyncRow["_deleted"], undefined>,
+      components["schemas"]["SyncDocument"]["_deleted"]
     >
   >,
 ];
 const localContractAssertions: LocalContractAssertions = [
+  true,
   true,
   true,
   true,

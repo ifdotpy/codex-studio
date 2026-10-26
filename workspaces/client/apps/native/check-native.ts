@@ -69,7 +69,7 @@ async function run(
   } finally {
     clearTimeout(timer);
   }
-  let result;
+  let result: unknown;
   try {
     result = JSON.parse(await readFile(report, "utf8"));
   } catch (error) {
@@ -92,6 +92,14 @@ async function run(
   for (const line of stderr.split("\n"))
     if (line.startsWith("Hidden native step:")) console.log(line);
   console.log(`Hidden WebView ${mode}: passed`);
+}
+
+// The renderer under test writes this request using the generated draft contract.
+// Keep malformed-document handling in the existing tombstone checks below.
+function readDraftPushRequest(
+  text: string,
+): components["schemas"]["DraftPushRequest"] {
+  return JSON.parse(text);
 }
 
 export async function createFixture(directory: string) {
@@ -158,9 +166,12 @@ export async function createFixture(directory: string) {
       for await (const chunk of request) chunks.push(chunk);
       const body = Buffer.concat(chunks);
       if (request.url === "/api/sync/drafts") {
-        const { rows } = JSON.parse(body.toString());
+        const { rows } = readDraftPushRequest(body.toString());
         for (const row of rows)
-          for (const field of ["newDocumentState", "assumedMasterState"]) {
+          for (const field of [
+            "newDocumentState",
+            "assumedMasterState",
+          ] as const) {
             const document = row[field];
             if (
               document != null &&

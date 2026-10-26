@@ -6,7 +6,7 @@ const limitWindow = (remaining: number, minutes: number, reset: number) => ({
   windowDurationMins: minutes,
   resetsAt: now + reset,
 });
-export const accountLimitFixtures: UsageAccount[] = [
+export const accountLimitFixtures = [
   {
     key: "codex-main",
     label: "Codex",
@@ -132,4 +132,4 @@ export const accountLimitFixtures: UsageAccount[] = [
       },
     },
   },
-];
+] satisfies UsageAccount[];

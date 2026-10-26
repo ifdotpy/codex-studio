@@ -3,12 +3,18 @@
 // of a real Studio backend. Never run from the ordinary test tiers. Headless
 // Chromium only; no window is activated and no operating-system input is sent.
 import assert from "node:assert/strict";
+import {
+  parseVerifierApi,
+  readVerifierResponse,
+  readVerifierRequest,
+} from "./verifierApi.ts";
+import type { ScaleVerifierLifecycle } from "./scaleVerifierTeardown.ts";
 import { runScaleVerifier } from "./scaleVerifierTeardown.ts";
 import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { readdirSync, readFileSync } from "node:fs";
 import { mkdir, realpath, rename, writeFile } from "node:fs/promises";
-import { chromium } from "playwright";
+import { chromium, type Request } from "playwright";
 import type { components } from "../src/generated/api.ts";
 import type { Audit, AuditItem, Counters } from "./uiTeamScaleAudit.ts";
 import type {
@@ -259,7 +265,7 @@ function createApi(
         response.ok,
         `${method} ${path} returned HTTP ${response.status}: ${text.slice(0, 300)}`,
       );
-      return JSON.parse(text || "null");
+      return parseVerifierApi<T>(text || "null");
     } finally {
       record.elapsedMs = Math.round(performance.now() - startedAt);
     }
@@ -377,6 +383,23 @@ const PROBE_SOURCE = ({ frameGapRecordMs }: { frameGapRecordMs: number }) => {
   );
 };
 
+// The historical verifier observes an optional `agent` extension. The current
+// managed-message contract publishes `room`; retain the legacy observation here
+// rather than silently changing which identity this verifier claims to observe.
+function legacySubmittedAgent(
+  request: Pick<Request, "postDataJSON">,
+): string | null {
+  const body = readVerifierRequest<unknown>(request);
+  if (
+    body &&
+    typeof body === "object" &&
+    "agent" in body &&
+    typeof body.agent === "string"
+  )
+    return body.agent;
+  return null;
+}
+
 async function resolveRole(
   api: ReturnType<typeof createApi>,
   accounts: Schemas["AccountsResponse"]["accounts"],
@@ -403,13 +426,7 @@ async function resolveRole(
   };
 }
 
-async function main({
-  setCleanup,
-  setRemaining,
-}: {
-  setCleanup(callback: () => Promise<void>): void;
-  setRemaining(callback: () => unknown): void;
-}) {
+async function main({ setCleanup, setRemaining }: ScaleVerifierLifecycle) {
   const defaults = { project: mainCheckout() };
   const options = parseArgs(process.argv.slice(2), defaults);
   if (options.help) {
@@ -448,9 +465,9 @@ async function main({
   await save();
   process.stdout.write(`Run ${runTag}; evidence ${journalPath}\n`);
 
-  const session: Schemas["SessionResponse"] = await (
-    await fetch(new URL("/api/session", options.origin))
-  ).json();
+  const session = await readVerifierResponse<Schemas["SessionResponse"]>(
+    await fetch(new URL("/api/session", options.origin)),
+  );
   assert.ok(session.token, "Backend did not provide its session token.");
   const api = createApi(options.origin, session.token, journal);
   const desktop = await api<Schemas["DesktopResponse"]>("GET", "/api/desktop");
@@ -679,11 +696,15 @@ async function main({
       if (request.method() !== "POST") return;
       if (response.url().endsWith("/api/leads") && response.ok()) {
         leadResponseId ??=
-          (await response.json().catch(() => null))?.id ?? null;
+          (
+            await readVerifierResponse<Schemas["AgentResponse"]>(
+              response,
+            ).catch(() => null)
+          )?.id ?? null;
         if (leadResponseId) pull.watch(leadResponseId);
       }
       if (response.url().endsWith("/api/messages"))
-        messageAgentId ??= request.postDataJSON()?.agent ?? null;
+        messageAgentId ??= legacySubmittedAgent(request) ?? null;
     });
     await page.addInitScript(PROBE_SOURCE, {
       frameGapRecordMs: FRAME_GAP_RECORD_MS,
@@ -1107,7 +1128,7 @@ async function main({
             .reduce(
               (counts, row) =>
                 counts.set(row.path, (counts.get(row.path) ?? 0) + 1),
-              new Map(),
+              new Map<HttpRow["path"], number>(),
             )
             .entries(),
         ].sort((left, right) => right[1] - left[1]),

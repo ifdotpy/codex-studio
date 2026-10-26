@@ -72,7 +72,7 @@ test("short and comprehensive recipes preserve their owned test boundaries", () 
 test("real IndexedDB staging belongs to provisioned browser smoke, not Node units", () => {
   const web = "workspaces/client/apps/web";
   const spec = readFileSync(
-    `${web}/tests/sync/entity-transfer-storage-browser.spec.mjs`,
+    `${web}/tests/sync/entity-transfer-storage-browser.spec.ts`,
     "utf8",
   );
   const title = spec.match(/test\(\s*"([^"]+)"/)?.[1];
@@ -1466,8 +1466,16 @@ test("boundary type imports share generated contracts and named type owners with
       [
         desktop,
         'import { type Row } from "../web/src/generated/api.ts";',
-        true,
+        false,
       ],
+      [
+        desktop,
+        'export { type Row } from "../web/src/generated/api.ts";',
+        false,
+      ],
+      [desktop, 'import { type Row } from "../web/src/native/host.ts";', false],
+      [desktop, 'export { type Row } from "../web/src/native/host.ts";', false],
+      [desktop, 'type Row = import("../web/src/native/host.ts").Row;', true],
       [desktop, 'import { Row } from "../web/src/generated/api.ts";', false],
       [
         desktop,
@@ -1504,3 +1512,28 @@ test("boundary type imports share generated contracts and named type owners with
     rmSync(fixture.root, { recursive: true, force: true });
   }
 });
+
+for (const declaration of ["import", "export"]) {
+  test(`boundary inline ${declaration} type specifiers retain runtime crossings`, () => {
+    const fixture = workspaceFixture();
+    try {
+      const desktop = fixture.add(
+        "desktop-app",
+        "workspaces/client/apps/desktop",
+      );
+      fixture.add("web-app", "workspaces/client/apps/web");
+      for (const owner of ["generated/api.ts", "native/host.ts"]) {
+        const file = path.join(desktop, "entry.ts");
+        const source = `${declaration} { type Row } from "../web/src/${owner}";`;
+        writeFileSync(file, source);
+        assert.notEqual(
+          boundaryFindings(fixture.root, fixture.packages, [file]).length,
+          0,
+          source,
+        );
+      }
+    } finally {
+      rmSync(fixture.root, { recursive: true, force: true });
+    }
+  });
+}

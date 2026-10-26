@@ -210,6 +210,6 @@ node workspaces/tooling/apps/repository-checks/replay-view-scoped.ts \
 The script reads the committed OpenAPI field/scope owners and the server encoder
 settings, verifies Brotli decompression against both inputs, and writes aggregate
 measurements without storing conversation text in this repository. The browser
-witness is `tests/sync/view-scoped-subscriptions-browser.spec.mjs`; it checks the
+witness is `tests/sync/view-scoped-subscriptions-browser.spec.ts`; it checks the
 real renderer's summary-only list, detail subscription on open, and removal
 after returning to the mobile list and advancing the grace period.

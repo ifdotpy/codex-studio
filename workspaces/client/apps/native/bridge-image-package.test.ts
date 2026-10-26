@@ -80,7 +80,7 @@ test(
       await pruneBridgeImageCodecs(directory);
       const { stdout } = await run(
         process.execPath,
-        [path.join(directory, "testing/image-codec-witness.mjs")],
+        [path.join(directory, "testing/image-codec-witness.ts")],
         { cwd: root, timeout: 10_000 },
       );
       assert.deepEqual(JSON.parse(stdout), {

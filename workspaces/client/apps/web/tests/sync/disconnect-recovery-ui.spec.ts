@@ -1,7 +1,15 @@
-#!/usr/bin/env node
+import type { Route } from "@playwright/test";
+import type { Agent } from "../../src/types.ts";
+import type { PostResult } from "../../src/apiTypes.ts";
+import {
+  original,
+  disconnected,
+  restarted,
+} from "./disconnect-recovery-ui.data.ts";
+import { fixtureOrigin } from "./helpers.ts";
+import type {} from "./disconnect-recovery-ui.fixture.tsx";
 // Real React with a fake recovery API. No backend, credentials, or model calls.
 import assert from "node:assert/strict";
-import { createRequire } from "node:module";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve, join } from "node:path";
@@ -9,25 +17,9 @@ import { test, expect } from "../playwright.ts";
 
 test("disconnect recovery ui", async ({ page: runnerPage }) => {
   const root = resolve(import.meta.dirname, "../../");
-  const require = createRequire(join(root, "package.json"));
-  const { createServer } = await import(require.resolve("vite"));
+  const { createFixtureViteServer: createServer } =
+    await import("../playwright.ts");
   const evidence = await mkdtemp(join(tmpdir(), "studio-disconnect-recovery-"));
-  const disconnected =
-    "Codex disconnected. Review the transcript before resuming.";
-  const restarted =
-    "Server restarted during a turn. Review history, then send a new instruction.";
-  const original = {
-    id: "first",
-    source: "managed",
-    status: "interrupted",
-    inFlight: false,
-    threadId: "thread-first",
-    turnId: "turn-first",
-    epoch: 1,
-    accountKey: "default",
-    error: disconnected,
-  };
-  const entry = root + "/disconnect-recovery-entry.tsx";
   const server = await createServer({
     configFile: false,
     root,
@@ -42,34 +34,10 @@ test("disconnect recovery ui", async ({ page: runnerPage }) => {
             (_request, response) => {
               response.setHeader("Content-Type", "text/html");
               response.end(
-                '<html><body><div id="root"></div><script type="module" src="/disconnect-recovery-entry.tsx"></script></body></html>',
+                '<html><body><div id="root"></div><script type="module" src="/tests/sync/disconnect-recovery-ui.fixture.tsx"></script></body></html>',
               );
             },
           );
-        },
-        resolveId(id) {
-          if (id === "/disconnect-recovery-entry.tsx") return entry;
-        },
-        load(id) {
-          if (id !== entry) return;
-          return `
-  import React, {useState} from 'react';
-  import {createRoot} from 'react-dom/client';
-  import {MantineProvider} from '@mantine/core';
-  import '@mantine/core/styles.css';
-  import {NativeError} from '/src/components/NativeNotice.tsx';
-  import {setToken} from '/src/api.ts';
-  setToken('fixture-token');
-  window.refreshes = [];
-  function Harness() {
-    const [agent, setAgent] = useState(() => JSON.parse(localStorage.getItem('fixture-agent') || 'null') || ${JSON.stringify(original)});
-    window.setAgent = setAgent;
-    return <MantineProvider><div data-agent={agent.id}>
-      <NativeError agent={agent} refresh={async () => {window.refreshes.push(agent.id);}} />
-      <p data-history>Previously recorded conversation remains available.</p>
-    </div></MantineProvider>;
-  }
-  createRoot(document.getElementById('root')).render(<Harness/>);`;
         },
       },
     ],
@@ -77,11 +45,23 @@ test("disconnect recovery ui", async ({ page: runnerPage }) => {
   try {
     await server.listen();
     const page = runnerPage;
-    const errors = [],
-      requests = [];
+    const errors: string[] = [];
+    const requests: {
+      path: string;
+      method: string;
+      body: unknown;
+      token: string | undefined;
+    }[] = [];
     page.on("pageerror", (error) => errors.push(error.message));
-    let reply = { status: "unconfirmed" },
-      held;
+    let reply: PostResult<"/api/connection-recovery"> = {
+      status: "unconfirmed",
+    };
+    const held: { route?: Route | undefined } = {};
+    const heldRoute = () => {
+      const route = held.route;
+      if (!route) throw new Error("Missing held recovery route");
+      return route;
+    };
     let hold = false,
       fail = false;
     await page.route("**/api/**", async (route) => {
@@ -93,7 +73,7 @@ test("disconnect recovery ui", async ({ page: runnerPage }) => {
         token: request.headers()["x-canvas-token"],
       });
       if (hold) {
-        held = route;
+        held.route = route;
         return;
       }
       await route.fulfill(
@@ -102,13 +82,14 @@ test("disconnect recovery ui", async ({ page: runnerPage }) => {
           : { json: reply },
       );
     });
-    await page.goto(server.resolvedUrls.local[0] + "disconnect-recovery-test");
+    await page.goto(fixtureOrigin(server) + "/disconnect-recovery-test");
     const button = page.getByRole("button", {
       name: "Check connection",
       exact: true,
     });
     await button.waitFor();
     const history = await page.locator("[data-history]").elementHandle();
+    assert.ok(history);
     assert.equal(
       requests.length,
       0,
@@ -116,23 +97,25 @@ test("disconnect recovery ui", async ({ page: runnerPage }) => {
     );
     hold = true;
     await button.evaluate((node) => {
+      if (!(node instanceof HTMLElement))
+        throw new Error("Missing recovery button");
       node.click();
       node.click();
     });
     await page.waitForFunction(
       () => document.querySelector("button")?.disabled,
     );
-    for (let attempt = 0; !held && attempt < 100; attempt++)
+    for (let attempt = 0; !held.route && attempt < 100; attempt++)
       await new Promise((resolve) => setTimeout(resolve, 10));
-    assert.ok(held);
+    assert.ok(held.route);
     assert.equal(
       requests.length,
       1,
       "duplicate click cannot start another recovery check",
     );
-    await held.fulfill({ json: reply });
+    await heldRoute().fulfill({ json: reply });
     hold = false;
-    held = undefined;
+    held.route = undefined;
     await page
       .getByRole("status")
       .filter({ hasText: "previous outcome remains unconfirmed" })
@@ -142,13 +125,16 @@ test("disconnect recovery ui", async ({ page: runnerPage }) => {
       /Codex disconnected/,
     );
     assert.equal(await history.evaluate((node) => node.isConnected), true);
-    assert.deepEqual(await page.evaluate(() => window.refreshes), []);
+    assert.deepEqual(
+      await page.evaluate(() => window.disconnectRecoveryUiFixtureRefreshes),
+      [],
+    );
 
-    for (const outcome of ["completed", "failed", "interrupted"]) {
+    for (const outcome of ["completed", "failed", "interrupted"] as const) {
       reply = { status: "reconciled", outcome };
       await button.click();
       await page.waitForFunction(
-        (count) => window.refreshes.length === count,
+        (count) => window.disconnectRecoveryUiFixtureRefreshes.length === count,
         ["completed", "failed", "interrupted"].indexOf(outcome) + 1,
       );
     }
@@ -158,7 +144,12 @@ test("disconnect recovery ui", async ({ page: runnerPage }) => {
       .getByRole("status")
       .filter({ hasText: "conversation changed" })
       .waitFor();
-    assert.equal(await page.evaluate(() => window.refreshes.length), 3);
+    assert.equal(
+      await page.evaluate(
+        () => window.disconnectRecoveryUiFixtureRefreshes.length,
+      ),
+      3,
+    );
     fail = true;
     await button.click();
     await page
@@ -184,8 +175,10 @@ test("disconnect recovery ui", async ({ page: runnerPage }) => {
       { error: "Codex disconnected." },
       { error: "An unrelated interruption" },
       { error: { message: disconnected } },
+      // @ts-expect-error negative eligibility case: imported is an unsupported source
       { source: "imported" },
       { autoWake: true },
+      // @ts-expect-error negative eligibility case: legacy startAttempt.id is not a current receipt
       { startAttempt: { id: "starting" } },
       { accountTransferId: "transfer" },
       { workspaceOperation: "restore" },
@@ -196,17 +189,24 @@ test("disconnect recovery ui", async ({ page: runnerPage }) => {
           error: { codexErrorInfo: "misalignmentPolicyViolation" },
         },
       },
-    ]) {
-      await page.evaluate((agent) => window.setAgent(agent), {
-        ...original,
-        ...patch,
-      });
+    ] satisfies Partial<Agent>[]) {
+      await page.evaluate(
+        // @ts-expect-error negative eligibility inputs include unsupported source and legacy startAttempt.id
+        (agent) => window.disconnectRecoveryUiFixtureSetAgent(agent),
+        {
+          ...original,
+          ...patch,
+        },
+      );
       await button.waitFor({ state: "hidden" });
     }
-    await page.evaluate((agent) => window.setAgent(agent), {
-      ...original,
-      error: restarted,
-    });
+    await page.evaluate(
+      (agent) => window.disconnectRecoveryUiFixtureSetAgent(agent),
+      {
+        ...original,
+        error: restarted,
+      },
+    );
     await button.waitFor();
     reply = {
       status: "unconfirmed",
@@ -234,17 +234,20 @@ test("disconnect recovery ui", async ({ page: runnerPage }) => {
 
     hold = true;
     await button.click();
-    for (let attempt = 0; !held && attempt < 100; attempt++)
+    for (let attempt = 0; !held.route && attempt < 100; attempt++)
       await new Promise((resolve) => setTimeout(resolve, 10));
-    assert.ok(held);
-    await page.evaluate((agent) => window.setAgent(agent), {
-      ...original,
-      id: "second",
-      threadId: "thread-second",
-      turnId: "turn-second",
-    });
+    assert.ok(held.route);
+    await page.evaluate(
+      (agent) => window.disconnectRecoveryUiFixtureSetAgent(agent),
+      {
+        ...original,
+        id: "second",
+        threadId: "thread-second",
+        turnId: "turn-second",
+      },
+    );
     await page.locator('[data-agent="second"]').waitFor();
-    await held.fulfill({
+    await heldRoute().fulfill({
       json: { status: "reconciled", outcome: "completed" },
     });
     await page.evaluate(
@@ -254,7 +257,7 @@ test("disconnect recovery ui", async ({ page: runnerPage }) => {
         ),
     );
     assert.deepEqual(
-      await page.evaluate(() => window.refreshes),
+      await page.evaluate(() => window.disconnectRecoveryUiFixtureRefreshes),
       ["first", "first", "first"],
       "an old chat response cannot refresh a different chat",
     );
@@ -265,11 +268,16 @@ test("disconnect recovery ui", async ({ page: runnerPage }) => {
     );
     assert.equal(await button.isEnabled(), true);
     hold = false;
-    held = undefined;
+    held.route = undefined;
     reply = { status: "unconfirmed", checked: true };
-    await page.evaluate((agent) => window.setAgent(agent), original);
+    await page.evaluate(
+      (agent) => window.disconnectRecoveryUiFixtureSetAgent(agent),
+      original,
+    );
     await button.click();
-    await page.waitForFunction(() => window.refreshes.length === 4);
+    await page.waitForFunction(
+      () => window.disconnectRecoveryUiFixtureRefreshes.length === 4,
+    );
     const checkedAgent = {
       ...original,
       connectionCheck: {
@@ -281,10 +289,10 @@ test("disconnect recovery ui", async ({ page: runnerPage }) => {
         previousError: original.error,
         nativeState: "idle",
       },
-    };
+    } satisfies Agent;
     await page.evaluate((agent) => {
       localStorage.setItem("fixture-agent", JSON.stringify(agent));
-      window.setAgent(agent);
+      window.disconnectRecoveryUiFixtureSetAgent(agent);
     }, checkedAgent);
     const reviewTitle = page.getByText("Previous turn needs review", {
       exact: true,
@@ -328,20 +336,26 @@ test("disconnect recovery ui", async ({ page: runnerPage }) => {
         },
       },
       { connectionCheck: { ...checkedAgent.connectionCheck, at: 0 } },
-    ]) {
-      await page.evaluate((agent) => window.setAgent(agent), {
-        ...checkedAgent,
-        ...patch,
-      });
+    ] satisfies Partial<Agent>[]) {
+      await page.evaluate(
+        (agent) => window.disconnectRecoveryUiFixtureSetAgent(agent),
+        {
+          ...checkedAgent,
+          ...patch,
+        },
+      );
       await reviewTitle.waitFor({ state: "hidden" });
     }
-    await page.evaluate((agent) => window.setAgent(agent), {
-      ...checkedAgent,
-      connectionCheck: {
-        ...checkedAgent.connectionCheck,
-        nativeState: "active",
+    await page.evaluate(
+      (agent) => window.disconnectRecoveryUiFixtureSetAgent(agent),
+      {
+        ...checkedAgent,
+        connectionCheck: {
+          ...checkedAgent.connectionCheck,
+          nativeState: "active",
+        },
       },
-    });
+    );
     await reviewTitle.waitFor();
     await page
       .getByText(

@@ -1,5 +1,6 @@
+import type { IncomingMessage, ServerResponse } from "node:http";
+import type { Connect } from "vite";
 import { expect, test } from "../playwright.ts";
-import { createRequire } from "node:module";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -12,10 +13,8 @@ test("real IndexedDB staging removes crash orphans while preserving another tab'
   const cacheDir = await mkdtemp(join(tmpdir(), "studio-transfer-storage-"));
   let server;
   try {
-    const require = createRequire(
-      new URL("../../package.json", import.meta.url),
-    );
-    const { createServer } = await import(require.resolve("vite"));
+    const { createFixtureViteServer: createServer } =
+      await import("../playwright.ts");
     server = await createServer({
       cacheDir,
       configFile: false,
@@ -25,14 +24,18 @@ test("real IndexedDB staging removes crash orphans while preserving another tab'
     });
     server.middlewares.stack.unshift({
       route: "",
-      handle(request, response, next) {
+      handle(
+        request: IncomingMessage,
+        response: ServerResponse,
+        next: Connect.NextFunction,
+      ) {
         if (request.url !== "/transfer-check") return next();
         response.setHeader("Content-Type", "text/html");
         response.end("<!doctype html><title>Transfer storage fixture</title>");
       },
     });
     await server.listen();
-    const address = server.httpServer.address();
+    const address = server.httpServer?.address();
     if (!address || typeof address === "string")
       throw new Error("Fixture address unavailable");
 
@@ -40,17 +43,17 @@ test("real IndexedDB staging removes crash orphans while preserving another tab'
     const second = await context.newPage();
     const url = `http://127.0.0.1:${address.port}/transfer-check`;
     await Promise.all([first.goto(url), second.goto(url)]);
-    const module = `/@fs${fileURLToPath(new URL("../../src/sync/entityTransfer.ts", import.meta.url))}`;
-    const owner = await first.evaluate(async (module) => {
-      const { IndexedTransferStorage } = await import(module);
+    const owner = await first.evaluate(async () => {
+      const { IndexedTransferStorage } =
+        await import("/src/sync/entityTransfer.ts");
       const storage = new IndexedTransferStorage();
       await storage.put("owner", "active");
-      window.staging = storage;
+      window.syncEntityTransferStorageBrowserStaging = storage;
       const databases = await indexedDB.databases();
       const name = databases.find((database) =>
         database.name?.startsWith("studio-entity-transfer-"),
-      ).name;
-      await new Promise((resolve, reject) => {
+      )?.name;
+      await new Promise<void>((resolve, reject) => {
         const request = indexedDB.open("studio-entity-transfer-orphan", 1);
         request.onsuccess = () => {
           request.result.close();
@@ -59,10 +62,11 @@ test("real IndexedDB staging removes crash orphans while preserving another tab'
         request.onerror = () => reject(request.error);
       });
       return name;
-    }, module);
+    });
     const status = await second.evaluate(
-      async ({ module, owner }) => {
-        const { IndexedTransferStorage } = await import(module);
+      async ({ owner }) => {
+        const { IndexedTransferStorage } =
+          await import("/src/sync/entityTransfer.ts");
         const storage = new IndexedTransferStorage();
         await storage.put("second", "active");
         // Wait for the once-per-owner cleanup's exclusive lock callback rather
@@ -82,7 +86,7 @@ test("real IndexedDB staging removes crash orphans while preserving another tab'
           value,
         };
       },
-      { module, owner },
+      { owner },
     );
     expect(status).toEqual({
       ownerPresent: true,
@@ -91,7 +95,7 @@ test("real IndexedDB staging removes crash orphans while preserving another tab'
     });
     expect(
       await first.evaluate(async () => {
-        const storage = window.staging;
+        const storage = window.syncEntityTransferStorageBrowserStaging;
         const value = await storage.get("owner");
         await storage.close();
         return {
@@ -107,3 +111,9 @@ test("real IndexedDB staging removes crash orphans while preserving another tab'
     await rm(cacheDir, { recursive: true, force: true });
   }
 });
+
+declare global {
+  interface Window {
+    syncEntityTransferStorageBrowserStaging: import("../../src/sync/entityTransfer.ts").IndexedTransferStorage;
+  }
+}

@@ -1,5 +1,6 @@
+import { fixtureOrigin } from "./helpers.ts";
+import type {} from "./transient-progress-browser.fixture.tsx";
 import assert from "node:assert/strict";
-import { createRequire } from "node:module";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve, join } from "node:path";
@@ -10,10 +11,9 @@ for (const flow of ["vault", "auth", "vault-job"]) {
     browser,
   }) => {
     const root = resolve(import.meta.dirname, "../..");
-    const require = createRequire(join(root, "package.json"));
-    const { createServer } = await import(require.resolve("vite"));
+    const { createFixtureViteServer: createServer } =
+      await import("../playwright.ts");
     const cacheDir = await mkdtemp(join(tmpdir(), "transient-progress-"));
-    const entry = join(root, "transient-progress-fixture.tsx");
     const server = await createServer({
       configFile: false,
       root,
@@ -26,41 +26,9 @@ for (const flow of ["vault", "auth", "vault-job"]) {
             server.middlewares.use("/check", (_req, res) => {
               res.setHeader("Content-Type", "text/html");
               res.end(
-                '<div id="root"></div><script type="module" src="/transient-progress-fixture.tsx"></script>',
+                '<div id="root"></div><script type="module" src="/tests/sync/transient-progress-browser.fixture.tsx"></script>',
               );
             });
-          },
-          resolveId(id) {
-            if (id === "/transient-progress-fixture.tsx") return entry;
-          },
-          load(id) {
-            if (id !== entry) return;
-            return `import React from 'react';
-            import {createRoot} from 'react-dom/client';
-            import {MantineProvider} from '@mantine/core';
-            import '@mantine/core/styles.css';
-            import VaultSetup from '/src/components/sidebar/VaultSetup.tsx';
-            import ClaudeSignIn from '/src/components/ClaudeSignIn.tsx';
-            import {ServerServicesProvider} from '/src/servers/ServerServicesContext.tsx';
-            window.reads={facts:0,auth:0,jobs:0}; window.selectors=[];
-            const listeners=new Map();
-            const resources={
-              watchResourceChanges(resource,accept){const key=JSON.stringify(resource);listeners.set(key,accept);window.selectors.push(resource);return()=>listeners.delete(key)},
-              watchResourceConnection(accept){accept('live');return()=>{}},
-            };
-            window.progress=(resource,value)=>listeners.get(JSON.stringify(resource))?.({epoch:'fixture',revision:1,progress:{resource,value}});
-            const api={
-              get:async()=>{window.reads.auth++;throw new Error('unexpected auth read')},
-              saved:(key,fallback)=>key==='claude-sign-in:fixture:claude-one'?'login-one':fallback,
-              save:()=>{}, stableRequestId:()=>'', clearStableRequestId:()=>{},
-            };
-            const flow=new URL(location.href).searchParams.get('flow');
-            const backend={post:async(path,body)=>{if(path!=='/api/vault/setup/facts'){window.reads.jobs++;return fetch(path,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)}).then(r=>r.json())}window.reads.facts++;return {prefix:'project-one',keys:flow==='vault-job',site:'https://desk.example',region:'eu-west-1',profiles:flow==='vault-job'?[{name:'fixture',signedIn:true}]:[]}}};
-            const services={owner:{id:'local',origin:location.origin},api,resources,fileDialogs:{showVaultKeys:async()=>{},canShowVaultKeys:()=>true}};
-            createRoot(document.getElementById('root')).render(<MantineProvider><ServerServicesProvider services={services}>
-              {flow!=='auth'?<VaultSetup entry={{vault:{projectId:'p1'}}} name='Project' backend={backend} onClose={()=>{}} onDone={()=>{window.ready=true}}/>:
-              <ClaudeSignIn account={{id:'claude-one',label:'Claude',provider:'claude',status:'signedOut'}} scope='fixture' onClose={()=>{}} onReady={()=>{window.ready=true}}/>}
-            </ServerServicesProvider></MantineProvider>);`;
           },
         },
       ],
@@ -68,7 +36,7 @@ for (const flow of ["vault", "auth", "vault-job"]) {
     const page = await browser.newPage();
     try {
       await server.listen();
-      const requests = [];
+      const requests: string[] = [];
       page.on("request", (request) => {
         if (
           /\/api\/vault\/(setup|aws-login|pull)$/.test(
@@ -87,9 +55,7 @@ for (const flow of ["vault", "auth", "vault-job"]) {
         }),
       );
       await page.clock.install();
-      await page.goto(
-        `http://127.0.0.1:${server.httpServer.address().port}/check?flow=${flow}`,
-      );
+      await page.goto(fixtureOrigin(server) + `/check?flow=${flow}`);
       if (flow === "vault") {
         await page
           .getByRole("button", { name: "Show the paper key in a terminal" })
@@ -107,13 +73,20 @@ for (const flow of ["vault", "auth", "vault-job"]) {
           .click();
         await page.waitForFunction(
           () =>
-            window.reads.jobs === 1 &&
-            window.selectors.some((r) => r.kind === "vault-job-progress"),
+            window.transientProgressFixture.reads.jobs === 1 &&
+            window.transientProgressFixture.selectors.some(
+              (r) => r.kind === "vault-job-progress",
+            ),
         );
       }
-      const before = await page.evaluate(() => ({ ...window.reads }));
+      const before = await page.evaluate(() => ({
+        ...window.transientProgressFixture.reads,
+      }));
       await page.clock.fastForward(10_000);
-      assert.deepEqual(await page.evaluate(() => window.reads), before);
+      assert.deepEqual(
+        await page.evaluate(() => window.transientProgressFixture.reads),
+        before,
+      );
       assert.deepEqual(
         before,
         flow === "vault"
@@ -129,43 +102,56 @@ for (const flow of ["vault", "auth", "vault-job"]) {
             ? "vault-job-progress"
             : "auth-progress";
       await page.waitForFunction(
-        (kind) => window.selectors.some((resource) => resource.kind === kind),
+        (kind) =>
+          window.transientProgressFixture.selectors.some(
+            (resource) => resource.kind === kind,
+          ),
         kind,
       );
       await page.evaluate((flow) => {
         if (flow === "vault")
-          window.progress(
-            { kind: "vault-readiness", prefix: "project-one" },
-            true,
-          );
+          window.transientProgressFixture.progress({
+            resource: { kind: "vault-readiness", prefix: "project-one" },
+            value: true,
+          });
         else if (flow === "vault-job") {
-          const resource = window.selectors.find(
+          const resource = window.transientProgressFixture.selectors.find(
             (r) => r.kind === "vault-job-progress",
           );
-          window.progress(resource, {
-            requestId: resource.requestId,
-            state: "running",
-            prefix: "project-one",
-            progress: "creating stack",
+          if (!resource) throw new Error("Missing vault progress subscription");
+          window.transientProgressFixture.progress({
+            resource,
+            value: {
+              requestId: resource.requestId,
+              state: "running",
+              prefix: "project-one",
+              progress: "creating stack",
+            },
           });
-          window.progress(resource, {
-            requestId: resource.requestId,
-            state: "done",
-            prefix: "project-one",
+          window.transientProgressFixture.progress({
+            resource,
+            value: {
+              requestId: resource.requestId,
+              state: "done",
+              prefix: "project-one",
+            },
           });
         } else
-          window.progress(
-            { kind: "auth-progress", requestId: "login-one" },
-            {
+          window.transientProgressFixture.progress({
+            resource: { kind: "auth-progress", requestId: "login-one" },
+            value: {
               requestId: "login-one",
               accountKey: "claude-one",
               status: "ready",
             },
-          );
+          });
       }, flow);
       if (flow === "vault")
         await page.getByText("The paper key of project-one is made.").waitFor();
-      else await page.waitForFunction(() => window.ready === true);
+      else
+        await page.waitForFunction(
+          () => window.transientProgressFixture.ready === true,
+        );
       if (flow === "vault-job")
         assert.deepEqual(
           requests,

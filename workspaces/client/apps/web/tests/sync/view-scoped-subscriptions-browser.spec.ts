@@ -1,3 +1,5 @@
+import type { ResourceRef, SyncPullResponse } from "../playwright.ts";
+import { fixturePostBody } from "./helpers.ts";
 import { test, expect } from "../playwright.ts";
 import { DEFAULT_SUBSCRIPTION_GRACE_MS } from "../../src/sync/subscriptions/contracts.ts";
 
@@ -7,9 +9,9 @@ test("chat list uses summaries and detail interest follows the visible chat", as
 }) => {
   test.setTimeout(60_000);
   await page.setViewportSize({ width: 390, height: 844 });
-  const additions = [];
+  const additions: ResourceRef[] = [];
   let subscriptionPosts = 0;
-  const removals = [];
+  const removals: ResourceRef[] = [];
   page.on("request", (request) => {
     if (
       new URL(request.url()).pathname !== "/api/sync/subscriptions" ||
@@ -17,7 +19,9 @@ test("chat list uses summaries and detail interest follows the visible chat", as
     )
       return;
     subscriptionPosts++;
-    const body = request.postDataJSON();
+    const body = fixturePostBody<"/api/sync/subscriptions">(
+      request.postDataJSON(),
+    );
     additions.push(...body.add.map((item) => item.resource));
     removals.push(...body.remove);
   });
@@ -30,13 +34,18 @@ test("chat list uses summaries and detail interest follows the visible chat", as
     `${readOnlyRust.origin}/api/sync/pull?scope=state:entities:v1&fresh=1&after=0&limit=500`,
   );
   expect(response.ok()).toBe(true);
-  const initial = await response.json();
+  const initial: SyncPullResponse = await response.json();
   expect(
-    initial.documents.some((row) => row.collection === "agentSummary"),
+    initial.documents.some(
+      (row) =>
+        ("collection" in row ? row.collection : undefined) === "agentSummary",
+    ),
   ).toBe(true);
   expect(
     initial.documents.some(
-      (row) => row.collection === "agent" || row.collection === "agentDetail",
+      (row) =>
+        "collection" in row &&
+        (row.collection === "agent" || row.collection === "agentDetail"),
     ),
   ).toBe(false);
   await row.click();

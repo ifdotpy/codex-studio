@@ -7,9 +7,17 @@ export async function pruneBridgeImageCodecs(
   directory: string,
   { platform = process.platform, arch = process.arch } = {},
 ) {
-  const manifest = JSON.parse(
+  const manifest: unknown = JSON.parse(
     await fs.readFile(path.join(directory, "package.json"), "utf8"),
   );
+  if (
+    !manifest ||
+    typeof manifest !== "object" ||
+    !("dependencies" in manifest) ||
+    !manifest.dependencies ||
+    typeof manifest.dependencies !== "object"
+  )
+    throw new Error("The bridge manifest must provide its dependency map.");
   const names = Object.keys(manifest.dependencies).filter((name) =>
     /^@img\/sharp-(?:libvips-)?(?:darwin|linux)-/.test(name),
   );
