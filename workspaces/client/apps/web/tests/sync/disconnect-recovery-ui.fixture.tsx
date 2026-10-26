@@ -43,6 +43,6 @@ function readAgent(): Agent {
   return (
     (JSON.parse(
       localStorage.getItem("fixture-agent") || "null",
-    ) as Agent | null) ?? original
+    ) as Agent | null) || original
   );
 }

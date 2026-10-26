@@ -34,18 +34,15 @@ test("chat list uses summaries and detail interest follows the visible chat", as
     `${readOnlyRust.origin}/api/sync/pull?scope=state:entities:v1&fresh=1&after=0&limit=500`,
   );
   expect(response.ok()).toBe(true);
-  const initial: SyncPullResponse = await response.json();
+  const initial: Omit<SyncPullResponse, "documents"> & {
+    documents: import("../playwright.ts").SyncEntity[];
+  } = await response.json();
   expect(
-    initial.documents.some(
-      (row) =>
-        ("collection" in row ? row.collection : undefined) === "agentSummary",
-    ),
+    initial.documents.some((row) => row.collection === "agentSummary"),
   ).toBe(true);
   expect(
     initial.documents.some(
-      (row) =>
-        "collection" in row &&
-        (row.collection === "agent" || row.collection === "agentDetail"),
+      (row) => row.collection === "agent" || row.collection === "agentDetail",
     ),
   ).toBe(false);
   await row.click();

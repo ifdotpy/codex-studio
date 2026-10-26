@@ -46,7 +46,9 @@ test("Sync Browser", async ({
       failSend = true,
       sends: PostBody<"/api/messages">[] = [],
       content = "first",
-      draftPushes: components["schemas"]["DraftPushRow"][] = [];
+      draftPushes: (components["schemas"]["DraftPushRow"] & {
+        newForkState?: components["schemas"]["JsonValue"];
+      })[] = [];
     await page.route("**/api/session", (route) =>
       route.fulfill({ json: { token: "fixture" } }),
     );
@@ -57,14 +59,14 @@ test("Sync Browser", async ({
       }),
     );
     await page.addInitScript((protocol) => {
-      window.syncBrowserFixtureEntityStreams = [];
+      window.entityStreams = [];
       const Native = window.EventSource;
       window.EventSource = class extends Native {
         constructor(url: string | URL, options?: EventSourceInit) {
           super(url, options);
           const parsed = new URL(url, location.href);
           if (parsed.searchParams.get("protocol") === String(protocol))
-            window.syncBrowserFixtureEntityStreams.push({
+            window.entityStreams.push({
               source: this,
               resources: JSON.parse(
                 parsed.searchParams.get("resources") || "[]",
@@ -157,35 +159,27 @@ test("Sync Browser", async ({
     await page.evaluate(async () => {
       const client = await import("/src/sync/client.ts");
       window.syncBrowserFixtureValues = [];
-      window.syncBrowserFixtureStopSync = client.subscribeStateProjection(
+      window.stopSync = client.subscribeStateProjection(
         (value) => {
           if (value)
             window.syncBrowserFixtureValues.push(value.threads[0]?.name);
         },
         (error) => {
-          if (error) window.syncBrowserFixtureFailure = String(error);
-          else delete window.syncBrowserFixtureFailure;
+          if (error) window.failure = String(error);
+          else delete window.failure;
         },
       );
     });
     await page.waitForFunction(
-      () =>
-        window.syncBrowserFixtureValues.includes("first") ||
-        window.syncBrowserFixtureFailure,
+      () => window.syncBrowserFixtureValues.includes("first") || window.failure,
     );
-    assert.equal(
-      await page.evaluate(() => window.syncBrowserFixtureFailure),
-      undefined,
-    );
+    assert.equal(await page.evaluate(() => window.failure), undefined);
     content = "second";
     revision++;
-    await page.waitForFunction(
-      () => window.syncBrowserFixtureEntityStreams.length > 0,
-    );
+    await page.waitForFunction(() => window.entityStreams.length > 0);
     await page.evaluate((seq) => {
-      const stream = window.syncBrowserFixtureEntityStreams.at(-1);
-      if (!stream) throw new Error("Missing captured entity stream");
-      stream.source.dispatchEvent(
+      const stream = window.entityStreams.at(-1);
+      stream!.source.dispatchEvent(
         new MessageEvent("resources", {
           data: JSON.stringify({
             protocol: 4,
@@ -193,8 +187,8 @@ test("Sync Browser", async ({
             epoch: "fixture-epoch",
             revision: seq,
             reason: "change",
-            resources: stream.resources,
-            resourceVersions: stream.resources.map((resource) => ({
+            resources: stream!.resources,
+            resourceVersions: stream!.resources.map((resource) => ({
               resource,
               revision: seq,
             })),
@@ -211,12 +205,10 @@ test("Sync Browser", async ({
     );
     await page.evaluate(async () => {
       const client = await import("/src/sync/client.ts");
-      window.syncBrowserFixtureStopDrafts = await client.startDraftReplication(
-        (error) => {
-          if (error) window.syncBrowserFixtureFailure = String(error);
-          else delete window.syncBrowserFixtureFailure;
-        },
-      );
+      window.syncStopDrafts = await client.startDraftReplication((error) => {
+        if (error) window.failure = String(error);
+        else delete window.failure;
+      });
       const { db } = await client.syncDatabase();
       await db.drafts.insert({
         id: "device:lead",
@@ -232,16 +224,11 @@ test("Sync Browser", async ({
     for (let i = 0; i < 100 && !draftPushes.length; i++)
       await new Promise((resolve) => setTimeout(resolve, 50));
     assert.equal(draftPushes.length, 1);
-    const pushedDraft = draftPushes[0];
-    if (!pushedDraft) throw new Error("Missing pushed draft");
     assert.equal(
-      JSON.parse(pushedDraft.newDocumentState.payload).text,
+      JSON.parse(draftPushes[0].newDocumentState.payload).text,
       "draft",
     );
-    assert.equal(
-      "newForkState" in pushedDraft ? pushedDraft.newForkState : undefined,
-      undefined,
-    );
+    assert.equal(draftPushes[0].newForkState, undefined);
     const result = await page.evaluate(async () =>
       (await import("/src/sync/send.ts")).durableSend({
         id: "intent-one",
@@ -255,9 +242,9 @@ test("Sync Browser", async ({
     await page.reload();
     const stored = await page.evaluate(async () => {
       const { db } = await (await import("/src/sync/client.ts")).syncDatabase();
-      const row = await db.outbox.findOne("intent-one").exec();
-      if (!row) throw new Error("Missing outbox row");
-      return JSON.parse(row.payload);
+      return JSON.parse(
+        (await db.outbox.findOne("intent-one").exec())!.payload,
+      );
     });
     assert.equal(stored.status, "queued");
     failSend = false;
@@ -271,9 +258,8 @@ test("Sync Browser", async ({
     await page.waitForFunction(async () => {
       const { db } = await (await import("/src/sync/client.ts")).syncDatabase();
       return (
-        JSON.parse(
-          (await db.outbox.findOne("intent-one").exec())?.payload ?? "null",
-        ).status === "accepted"
+        JSON.parse((await db.outbox.findOne("intent-one").exec())!.payload)
+          .status === "accepted"
       );
     });
     assert.equal(sends.length, 2);
@@ -281,28 +267,35 @@ test("Sync Browser", async ({
     await page.evaluate(async () => {
       const { db } = await (await import("/src/sync/client.ts")).syncDatabase();
       const doc = await db.outbox.findOne("intent-one").exec();
-      if (!doc) throw new Error("Missing accepted outbox row");
-      if (JSON.parse(doc.payload).status !== "accepted")
+      if (JSON.parse(doc!.payload).status !== "accepted")
         throw Error("Receipt not saved");
+      type Handler =
+        typeof import("/src/sync/conflicts.ts").draftConflictHandler;
+      type PartialDraftRow = Omit<
+        Parameters<Handler["resolve"]>[0]["realMasterState"],
+        "_deleted"
+      >;
+      type PartialConflictFixture = Omit<Handler, "resolve"> & {
+        resolve(input: {
+          realMasterState: PartialDraftRow;
+          newDocumentState: PartialDraftRow;
+        }): ReturnType<Handler["resolve"]>;
+      };
+      // This fixture omits storage tombstone flags and the unused resolve context.
       const handler = (await import("/src/sync/conflicts.ts"))
-        .draftConflictHandler;
-      const merged = await handler.resolve(
-        {
-          realMasterState: {
-            id: "d",
-            seq: 1,
-            payload: JSON.stringify({ text: "desktop" }),
-            _deleted: false,
-          },
-          newDocumentState: {
-            id: "d",
-            seq: 0,
-            payload: JSON.stringify({ text: "phone" }),
-            _deleted: false,
-          },
+        .draftConflictHandler as PartialConflictFixture;
+      const merged = await handler.resolve({
+        realMasterState: {
+          id: "d",
+          seq: 1,
+          payload: JSON.stringify({ text: "desktop" }),
         },
-        "sync-browser-fixture",
-      );
+        newDocumentState: {
+          id: "d",
+          seq: 0,
+          payload: JSON.stringify({ text: "phone" }),
+        },
+      });
       if (!JSON.parse(merged.payload).alternatives.includes("phone"))
         throw Error("Conflict lost");
     });

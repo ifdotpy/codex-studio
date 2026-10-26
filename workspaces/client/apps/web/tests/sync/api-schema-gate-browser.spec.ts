@@ -31,7 +31,7 @@ async function startColdGateFixture() {
     stdio: ["pipe", "pipe", "pipe"],
   });
   let fixtureLog = "";
-  fixture.stderr?.on("data", (chunk) => {
+  fixture.stderr!.on("data", (chunk) => {
     fixtureLog += chunk;
   });
   const port = await waitForFixturePort(fixture, {
@@ -413,7 +413,7 @@ test("a response mismatch keeps the loaded transcript and local draft while stop
     env: { ...process.env, CODEX_STUDIO_WEB_DIST: webDist },
   });
   let fixtureLog = "";
-  fixture.stderr?.on("data", (chunk) => {
+  fixture.stderr!.on("data", (chunk) => {
     fixtureLog += chunk;
   });
   const activeApiRoutes = new Set<Promise<void>>();
@@ -558,10 +558,8 @@ test("a response mismatch keeps the loaded transcript and local draft while stop
       ),
     ).toBeNull();
     await page.evaluate(() => {
-      const original = window.__originalGetRegistration;
-      if (!original)
-        throw new Error("Original service worker method unavailable");
-      navigator.serviceWorker.getRegistration = original;
+      navigator.serviceWorker.getRegistration =
+        window.__originalGetRegistration!;
       delete window.__originalGetRegistration;
     });
 
@@ -718,7 +716,7 @@ test("a stream mismatch keeps the transcript and draft while stopping every requ
     env: { ...process.env },
   });
   let fixtureLog = "";
-  fixture.stderr?.on("data", (chunk) => {
+  fixture.stderr!.on("data", (chunk) => {
     fixtureLog += chunk;
   });
   try {
@@ -796,7 +794,7 @@ test("schema hash change uses a fresh entity cache and keeps the local draft", a
     env: { ...process.env },
   });
   let fixtureLog = "";
-  fixture.stderr?.on("data", (chunk) => {
+  fixture.stderr!.on("data", (chunk) => {
     fixtureLog += chunk;
   });
   const { createFixtureViteServer: createServer } =
@@ -929,7 +927,7 @@ test("schema hash change uses a fresh entity cache and keeps the local draft", a
       return (await db.projections.findOne("state:entities:checkpoint").exec())
         ?.seq;
     });
-    assert.ok(initialCheckpoint !== undefined);
+
     await page.reload();
     await expect(page.locator(".startup")).toHaveCount(0, { timeout: 30_000 });
     await expect(page.locator("#message")).toBeVisible();
@@ -950,7 +948,7 @@ test("schema hash change uses a fresh entity cache and keeps the local draft", a
           await db.projections.findOne("state:entities:checkpoint").exec()
         )?.seq;
       }),
-    ).toBeGreaterThanOrEqual(initialCheckpoint);
+    ).toBeGreaterThanOrEqual(initialCheckpoint!);
     await page
       .locator("#message")
       .fill("Draft survives a schema cache refresh");

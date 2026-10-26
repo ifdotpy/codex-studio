@@ -1,3 +1,4 @@
+import { studioChatSwitchWorkspaceId as workspaceId } from "./studio-chat-switch-recovery-browser.data.ts";
 import { fixtureElement } from "./browser-helpers.ts";
 
 import React, { useEffect, useState } from "react";
@@ -11,16 +12,15 @@ const services = createServerServices({
   origin: location.origin,
 });
 await services.ready();
-window.studioChatSwitchRecoveryBrowserFixtureServices = services;
-window.studioChatSwitchRecoveryBrowserFixtureCursorReads = [];
-window.studioChatSwitchRecoveryBrowserFixtureConnections = [];
-window.studioChatSwitchRecoveryBrowserFixturePanelConnections = [];
-window.studioChatSwitchRecoveryBrowserFixtureDocumentIdentity =
-  crypto.randomUUID();
+window.services = services;
+window.cursorReads = [];
+window.connections = [];
+window.panelConnections = [];
+window.documentIdentity = crypto.randomUUID();
 const readCursor = services.sync.readSubscriptionCursor;
 services.sync.readSubscriptionCursor = async (ref) => {
-  if (window.studioChatSwitchRecoveryBrowserFixtureSlowCursor) {
-    window.studioChatSwitchRecoveryBrowserFixtureCursorReads.push({
+  if (window.slowCursor) {
+    window.cursorReads.push({
       ref,
       at: performance.now(),
     });
@@ -30,7 +30,7 @@ services.sync.readSubscriptionCursor = async (ref) => {
   return readCursor(ref);
 };
 services.resources.watchResourceConnection((status, stream) =>
-  window.studioChatSwitchRecoveryBrowserFixtureConnections.push({
+  window.connections.push({
     status,
     stream,
     at: performance.now(),
@@ -42,11 +42,11 @@ function Panel({ id, selected }: { id: string; selected: boolean }) {
     "agent",
     true,
     "fixture",
-    "e".repeat(32),
+    workspaceId,
     selected,
   );
   useEffect(() => {
-    window.studioChatSwitchRecoveryBrowserFixturePanelConnections.push({
+    window.panelConnections.push({
       id,
       selected,
       connection: messages.connection,
@@ -97,16 +97,16 @@ createRoot(fixtureElement("app")).render(
 
 declare global {
   interface Window {
-    studioChatSwitchRecoveryBrowserFixtureServices: ReturnType<
+    services: ReturnType<
       typeof import("../../src/servers/serverServices.ts").createServerServices
     >;
-    studioChatSwitchRecoveryBrowserFixtureDocumentIdentity: string;
-    studioChatSwitchRecoveryBrowserFixtureSlowCursor: boolean;
-    studioChatSwitchRecoveryBrowserFixtureCursorReads: {
+    documentIdentity: string;
+    slowCursor: boolean;
+    cursorReads: {
       ref: import("../playwright.ts").ResourceRef;
       at: number;
     }[];
-    studioChatSwitchRecoveryBrowserFixtureConnections: {
+    connections: {
       status: Parameters<
         Parameters<
           ReturnType<
@@ -123,7 +123,7 @@ declare global {
       >[1];
       at: number;
     }[];
-    studioChatSwitchRecoveryBrowserFixturePanelConnections: {
+    panelConnections: {
       id: string;
       selected: boolean;
       connection: ReturnType<

@@ -37,7 +37,7 @@ test("Sync Push Lifecycle Browser", async ({
       res: ServerResponse,
       next: Connect.NextFunction,
     ) {
-      const url = new URL(req.url ?? "/", "http://localhost");
+      const url = new URL(req.url!, "http://localhost");
       const json = (value: unknown) => {
         for (const [name, value] of Object.entries(
           apiSchemaHeaders({ "Content-Type": "application/json" }),
@@ -70,22 +70,17 @@ test("Sync Push Lifecycle Browser", async ({
     await page.clock.install();
     await page.goto(`${origin}/check`);
     await page.evaluate(async () => {
-      window.syncSyncPushLifecycleBrowserClient =
-        await import("/src/sync/client.ts");
-      window.syncSyncPushLifecycleBrowserStopPush =
-        window.syncSyncPushLifecycleBrowserClient.watchSyncInvalidations(
-          "entities",
-          () => {},
-        );
+      window.client = await import("/src/sync/client.ts");
+      window.stopPush = window.client.watchSyncInvalidations(
+        "entities",
+        () => {},
+      );
     });
     await expect.poll(() => Boolean(identityResponse)).toBe(true);
-    await page.evaluate(() => window.syncSyncPushLifecycleBrowserStopPush());
+    await page.evaluate(() => window.stopPush());
     delayIdentity = false;
-    if (!identityResponse) throw new Error("Missing delayed identity response");
-    identityResponse();
-    await page.evaluate(() =>
-      window.syncSyncPushLifecycleBrowserClient.syncDatabase(),
-    );
+    identityResponse!();
+    await page.evaluate(() => window.client.syncDatabase());
     await page.clock.runFor(250);
     assert.equal(
       opened,
@@ -94,16 +89,15 @@ test("Sync Push Lifecycle Browser", async ({
     );
 
     await page.evaluate(() => {
-      window.syncSyncPushLifecycleBrowserStopPush =
-        window.syncSyncPushLifecycleBrowserClient.watchSyncInvalidations(
-          "entities",
-          () => {},
-        );
+      window.stopPush = window.client.watchSyncInvalidations(
+        "entities",
+        () => {},
+      );
     });
     await expect.poll(() => streams.size).toBe(1);
     for (const response of streams) response.end();
     await expect.poll(() => streams.size).toBe(0);
-    await page.evaluate(() => window.syncSyncPushLifecycleBrowserStopPush());
+    await page.evaluate(() => window.stopPush());
     const beforeRetry = opened;
     await page.clock.runFor(1200);
     assert.equal(
@@ -113,15 +107,9 @@ test("Sync Push Lifecycle Browser", async ({
     );
 
     await page.evaluate(() => {
-      window.syncSyncPushLifecycleBrowserStops = [
-        window.syncSyncPushLifecycleBrowserClient.watchSyncInvalidations(
-          "entities",
-          () => {},
-        ),
-        window.syncSyncPushLifecycleBrowserClient.watchSyncInvalidations(
-          "entities",
-          () => {},
-        ),
+      window.stops = [
+        window.client.watchSyncInvalidations("entities", () => {}),
+        window.client.watchSyncInvalidations("entities", () => {}),
       ];
     });
     await expect.poll(() => streams.size).toBeGreaterThan(0);
@@ -131,9 +119,9 @@ test("Sync Push Lifecycle Browser", async ({
       1,
       "Subscriptions to one scope must share one stream.",
     );
-    await page.evaluate(() => window.syncSyncPushLifecycleBrowserStops[0]());
+    await page.evaluate(() => window.stops[0]());
     assert.equal(streams.size, 1, "The remaining subscriber keeps its stream.");
-    await page.evaluate(() => window.syncSyncPushLifecycleBrowserStops[1]());
+    await page.evaluate(() => window.stops[1]());
     await expect.poll(() => streams.size).toBe(0);
     assert.deepEqual(errors, []);
     console.log("sync push lifecycle browser contract passed");
@@ -145,8 +133,8 @@ test("Sync Push Lifecycle Browser", async ({
 
 declare global {
   interface Window {
-    syncSyncPushLifecycleBrowserClient: typeof import("../../src/sync/client.ts");
-    syncSyncPushLifecycleBrowserStopPush: () => void;
-    syncSyncPushLifecycleBrowserStops: [() => void, () => void];
+    client: typeof import("../../src/sync/client.ts");
+    stopPush: () => void;
+    stops: (() => void)[];
   }
 }

@@ -3,6 +3,7 @@ import type { ResourceRef } from "../playwright.ts";
 import { fixtureResources, fixturePostBody } from "./helpers.ts";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { Connect } from "vite";
+import { studioChatSwitchWorkspaceId as workspaceId } from "./studio-chat-switch-recovery-browser.data.ts";
 import { fixtureOrigin } from "./helpers.ts";
 import type {} from "./studio-chat-switch-recovery-browser.fixture.tsx";
 import assert from "node:assert/strict";
@@ -23,7 +24,6 @@ test("selected Studio chat recovers after slow cursor preparation without reload
   page,
 }, testInfo) => {
   test.setTimeout(60_000);
-  const workspaceId = "e".repeat(32);
   const snapshot = {
     chats: [],
     threads: [],
@@ -62,7 +62,10 @@ test("selected Studio chat recovers after slow cursor preparation without reload
     tail: null,
     unavailable: null,
   });
-  const baseline = (resources: ResourceRef[]) =>
+  const baseline = (
+    resources: (ResourceRef &
+      Partial<Pick<Extract<ResourceRef, { agentId: string }>, "agentId">>)[],
+  ) =>
     protocol3SseEvent("resources", {
       protocol: 4,
       workspaceId,
@@ -75,9 +78,7 @@ test("selected Studio chat recovers after slow cursor preparation without reload
         revision: transcriptRevision,
         cursor: { workspaceId, seq: transcriptRevision },
         replyKind: "snapshot",
-        transcriptSnapshot: transcript(
-          "agentId" in resource ? (resource.agentId ?? "") : "",
-        ),
+        transcriptSnapshot: transcript(resource.agentId!),
       })),
     });
   const server = await createFixtureViteServer({
@@ -106,7 +107,7 @@ test("selected Studio chat recovers after slow cursor preparation without reload
       res: ServerResponse,
       next: Connect.NextFunction,
     ) {
-      const url = new URL(req.url ?? "/", "http://fixture.invalid");
+      const url = new URL(req.url!, "http://fixture.invalid");
       if (
         url.pathname.startsWith("/api/") &&
         req.method === "GET" &&
@@ -137,9 +138,7 @@ test("selected Studio chat recovers after slow cursor preparation without reload
         url.pathname === "/api/sync/pull" &&
         url.searchParams.get("scope")?.startsWith("transcript:")
       ) {
-        const id = (url.searchParams.get("scope") ?? "").slice(
-          "transcript:".length,
-        );
+        const id = url.searchParams.get("scope")!.slice("transcript:".length);
         return json({
           workspaceId,
           ...entityPullFixtureForRequest(snapshot, url, {
@@ -210,14 +209,11 @@ test("selected Studio chat recovers after slow cursor preparation without reload
     const messages = (id: string) => panel(id).locator("[data-messages]");
     await expect(connection("first")).toHaveText("live");
     await expect(messages("first")).toHaveText("first revision 1");
-    const identity = await page.evaluate(
-      () => window.studioChatSwitchRecoveryBrowserFixtureDocumentIdentity,
-    );
+    const identity = await page.evaluate(() => window.documentIdentity);
 
     // A normal selection change keeps the server healthy and loads the new chat.
     const beforeSwitch = await page.evaluate(
-      () =>
-        window.studioChatSwitchRecoveryBrowserFixturePanelConnections.length,
+      () => window.panelConnections.length,
     );
     await page.getByRole("button", { name: "second", exact: true }).click();
     await expect(connection("second")).toHaveText("live");
@@ -225,7 +221,7 @@ test("selected Studio chat recovers after slow cursor preparation without reload
     assert.ok(
       await page.evaluate(
         (before) =>
-          window.studioChatSwitchRecoveryBrowserFixturePanelConnections
+          window.panelConnections
             .slice(before)
             .every(
               (event) =>
@@ -240,16 +236,14 @@ test("selected Studio chat recovers after slow cursor preparation without reload
     await expect(connection("first")).toHaveText("live");
 
     await page.evaluate(() => {
-      window.studioChatSwitchRecoveryBrowserFixtureSlowCursor = true;
+      window.slowCursor = true;
     });
     transcriptRevision++;
     recovering = true;
     const beforeRecovery = streamRequests.length;
     for (const response of streams) response.end();
     await expect(connection("first")).toHaveText("degraded");
-    await page.waitForFunction(
-      () => window.studioChatSwitchRecoveryBrowserFixtureCursorReads.length > 0,
-    );
+    await page.waitForFunction(() => window.cursorReads.length > 0);
     // Select a previously unopened chat while the old resource union is preparing.
     await page.getByRole("button", { name: "third", exact: true }).click();
     await expect(connection("third")).toHaveText("degraded");
@@ -263,12 +257,7 @@ test("selected Studio chat recovers after slow cursor preparation without reload
         recoveryPulls.every((read) => read.scope === "transcript:third"),
       "only the newly opened chat may bootstrap from HTTP while degraded; confirmed chats wait for the stream baseline",
     );
-    assert.equal(
-      await page.evaluate(
-        () => window.studioChatSwitchRecoveryBrowserFixtureDocumentIdentity,
-      ),
-      identity,
-    );
+    assert.equal(await page.evaluate(() => window.documentIdentity), identity);
     assert.ok(
       streamRequests
         .slice(beforeRecovery)
@@ -283,10 +272,9 @@ test("selected Studio chat recovers after slow cursor preparation without reload
   } finally {
     const browserEvidence = await page
       .evaluate(() => ({
-        cursorReads: window.studioChatSwitchRecoveryBrowserFixtureCursorReads,
-        connections: window.studioChatSwitchRecoveryBrowserFixtureConnections,
-        panelConnections:
-          window.studioChatSwitchRecoveryBrowserFixturePanelConnections,
+        cursorReads: window.cursorReads,
+        connections: window.connections,
+        panelConnections: window.panelConnections,
       }))
       .catch(() => ({}));
     await testInfo.attach("chat-switch-recovery.json", {
@@ -297,11 +285,7 @@ test("selected Studio chat recovers after slow cursor preparation without reload
       ),
       contentType: "application/json",
     });
-    await page
-      .evaluate(() =>
-        window.studioChatSwitchRecoveryBrowserFixtureServices?.close(),
-      )
-      .catch(() => {});
+    await page.evaluate(() => window.services?.close()).catch(() => {});
     await page.close();
     for (const response of streams) response.end();
     await server.close();
