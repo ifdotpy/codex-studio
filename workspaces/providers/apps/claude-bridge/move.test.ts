@@ -102,6 +102,32 @@ test("a symlinked destination folder uses the real-path key that Claude resumes"
   }
 });
 
+test("a move destination key matches the SDK normalization and length limit", async () => {
+  const root = await fs.realpath(
+    await fs.mkdtemp(path.join(os.tmpdir(), "claude-move-key-")),
+  );
+  try {
+    const id = randomUUID();
+    const config = path.join(root, "config");
+    const nfd = path.join(root, "cafe\u0301");
+    await fs.mkdir(nfd);
+    // The SDK applies NFC on macOS only. "é" in NFC is one key character.
+    const name = process.platform === "darwin" ? "caf-" : "cafe-";
+    assert.equal(
+      path.basename(path.dirname(await nativeDestination(id, nfd, config))),
+      root.replace(/[^a-zA-Z0-9]/g, "-") + "-" + name,
+    );
+    const long = "/" + "a".repeat(199);
+    assert.equal(
+      path.basename(path.dirname(await nativeDestination(id, long, config))),
+      "-" + "a".repeat(199),
+    );
+    await assert.rejects(nativeDestination(id, long + "a", config), /too long/);
+  } finally {
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});
+
 test("versions use the configured CLI without a model or authentication request", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "claude-version-"));
   try {

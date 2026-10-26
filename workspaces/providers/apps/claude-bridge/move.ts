@@ -492,12 +492,11 @@ export async function nativeDestination(
 ) {
   if (!/^[a-f0-9-]{36}$/i.test(sessionId) || !path.isAbsolute(cwd))
     throw new Error("Invalid Claude move destination");
-  return path.join(
-    configDir,
-    "projects",
-    (await nativeProjectCwd(cwd)).replace(/[^a-zA-Z0-9]/g, "-"),
-    sessionId + ".jsonl",
-  );
+  const project = (await nativeProjectCwd(cwd)).replace(/[^a-zA-Z0-9]/g, "-");
+  // Claude hashes longer names. readNativeHistory leaves them unsupported too.
+  if (project.length > 200)
+    throw new Error("The Claude move destination path is too long");
+  return path.join(configDir, "projects", project, sessionId + ".jsonl");
 }
 export async function publishNative(
   source: string,

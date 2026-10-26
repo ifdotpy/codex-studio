@@ -52,17 +52,19 @@ export const nativeUuid = (value: unknown): value is string =>
   typeof value === "string" &&
   /^[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}$/i.test(value);
 
-// Claude keys and records a project by its real path. Like the SDK, use the
-// given path when it cannot be resolved.
+// Claude keys and records a project by its real path, in NFC form on macOS.
+// Like the SDK, use the given path when it cannot be resolved.
 export async function nativeProjectCwd(
   cwd: string,
   filesystem: Pick<NativeHistoryFilesystem, "realpath"> = fs,
 ) {
+  let resolved;
   try {
-    return await filesystem.realpath(cwd);
+    resolved = await filesystem.realpath(cwd);
   } catch {
-    return path.resolve(cwd);
+    resolved = path.resolve(cwd);
   }
+  return process.platform === "darwin" ? resolved.normalize("NFC") : resolved;
 }
 
 async function readTail(
