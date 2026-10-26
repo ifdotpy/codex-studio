@@ -39,13 +39,30 @@ export class ResourceEntityDelivery {
     { epoch: string; revision: number }
   >();
 
+  // Transcripts whose delta failed for lack of a local base. Their next
+  // subscription asks for a snapshot; resuming from the cursor repeats the gap.
+  private transcriptSnapshotsRequired = new Set<string>();
+
   requiresSnapshot(resource: ResourceChangeEvent["resources"][number]) {
     const key = subscriptionKey(resource);
+    if (resource.kind === "transcript")
+      return this.transcriptSnapshotsRequired.has(key);
     return (
       resource.kind === "terminal-output" &&
       (!this.terminalBaselines.has(key) ||
         this.terminalSnapshotsRequired.has(key))
     );
+  }
+
+  private trackTranscriptBases(event: ResourceChangeEvent, failed: boolean) {
+    for (const [index, entry] of (event.resourceVersions ?? []).entries()) {
+      const resource = entry.resource ?? event.resources[index];
+      if (resource?.kind !== "transcript") continue;
+      const key = subscriptionKey(resource);
+      if (failed) this.transcriptSnapshotsRequired.add(key);
+      else if (entry.transcriptSnapshot)
+        this.transcriptSnapshotsRequired.delete(key);
+    }
   }
 
   /** A new stream owner cannot inherit a follower's unproven terminal base. */
@@ -340,6 +357,7 @@ export class ResourceEntityDelivery {
         } catch (error) {
           persistenceFailed = true;
           persistenceError = error;
+          this.trackTranscriptBases(event, true);
           this.revoke(event);
           console.error("Stream entity persistence failed", error);
         } finally {
@@ -347,6 +365,7 @@ export class ResourceEntityDelivery {
         }
         // A later baseline or overflow already requests the complete range.
         if (isCurrent()) this.restoreTerminalBases(event);
+        if (!persistenceFailed) this.trackTranscriptBases(event, false);
         this.current = undefined;
         if (generation === this.generation) {
           if (persistenceFailed && this.failed) {

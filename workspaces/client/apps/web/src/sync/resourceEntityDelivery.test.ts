@@ -327,6 +327,50 @@ describe("bounded stream entity delivery", () => {
     ]);
   });
 
+  it("asks for a transcript snapshot after a delta lost its local base", async () => {
+    const ref = { kind: "transcript", agentId: "one" } as const;
+    const persist = vi
+      .fn()
+      .mockRejectedValueOnce(
+        new Error("Transcript stream interval has no local base."),
+      )
+      .mockResolvedValue(undefined);
+    const delivery = new ResourceEntityDelivery(persist, vi.fn(), vi.fn());
+    const delta = {
+      ...frame(1),
+      resources: [ref],
+      resourceVersions: [
+        {
+          resource: ref,
+          revision: 1,
+          cursor: { workspaceId: "a".repeat(32), seq: 1 },
+          replyKind: "delta",
+          transcriptChanges: { after: 0, through: 1, items: [] },
+        },
+      ],
+    } as unknown as ResourceChangeEvent;
+    expect(delivery.requiresSnapshot(ref)).toBe(false);
+    delivery.receive(delta);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(delivery.requiresSnapshot(ref)).toBe(true);
+    delivery.receive({
+      ...delta,
+      revision: 2,
+      reason: "initial",
+      resourceVersions: [
+        {
+          resource: ref,
+          revision: 2,
+          cursor: { workspaceId: "a".repeat(32), seq: 2 },
+          replyKind: "snapshot",
+          transcriptSnapshot: { items: [] },
+        },
+      ],
+    } as unknown as ResourceChangeEvent);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(delivery.requiresSnapshot(ref)).toBe(false);
+  });
+
   it("keeps state delivery when a transcript-only frame arrives", async () => {
     let finish!: () => void;
     const persist = vi
