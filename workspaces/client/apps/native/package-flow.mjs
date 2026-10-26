@@ -55,7 +55,7 @@ export function planFlow({ out, hostedCiPassed, directory, commit }) {
     {
       label: "signing check",
       command: "node",
-      args: [path.join(root, "../desktop/signing-check.mjs")],
+      args: [path.join(root, "../desktop/signing-check.ts")],
     },
     hostedCiPassed
       ? {
