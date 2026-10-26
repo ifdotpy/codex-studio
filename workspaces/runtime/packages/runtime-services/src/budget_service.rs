@@ -7,6 +7,7 @@ use crate::budget::{
 use crate::budget_wait::{self, WaitDecision, WaitSnapshot};
 use serde_json::Value;
 use std::collections::BTreeMap;
+use studio_runtime_schema::provider_kind::ProviderKind;
 use studio_runtime_store::{
     AgentId, Table, Transaction,
     budget::{BudgetRecord, BudgetRepository},
@@ -344,17 +345,14 @@ async fn prepare_legacy_counter_ownership(
     captures: &[(Value, Value)],
 ) -> Result<(), BudgetError> {
     use studio_runtime_schema::usage::ledger::UsageLedgerRow;
-    use studio_runtime_schema::usage::{UsageObservation as Parsed, UsageProvider, UsageScope};
+    use studio_runtime_schema::usage::{UsageObservation as Parsed, UsageScope};
     let captures = captures.to_vec();
     let candidates = store
         .read_async("budget/legacy-counter-aliases", move |tx| {
             let mut candidates = Vec::new();
             for (agent, params) in captures {
-                let provider = if agent["provider"] == "claude" {
-                    UsageProvider::Claude
-                } else {
-                    UsageProvider::Codex
-                };
+                let provider = ProviderKind::of_record(&agent)
+                    .map_err(|_| BudgetError::Invalid("runtime_agents/provider".into()))?;
                 let Ok(observation) =
                     studio_runtime_schema::usage::parse_token_usage(provider, &params)
                 else {
@@ -474,17 +472,17 @@ pub async fn prepare_legacy_corrections(
     prepare_legacy_counter_ownership(store, &captures).await?;
     use studio_runtime_schema::usage::ledger::UsageLedgerRow;
     use studio_runtime_schema::usage::{
-        UsageEvidence, UsageObservation as ParsedUsage, UsageProvider, parse_token_usage,
+        UsageEvidence, UsageObservation as ParsedUsage, parse_token_usage,
     };
     let candidates = store
         .read_async("budget/legacy-receipts", move |tx| {
             let mut candidates = Vec::new();
             for (agent, params) in captures {
-                let provider = if agent["provider"] == "claude" {
-                    UsageProvider::Claude
-                } else {
-                    UsageProvider::Codex
-                };
+                let provider = ProviderKind::of_record(&agent).map_err(|_| {
+                    studio_runtime_store::StoreError::SchemaValidation(
+                        "invalid runtime_agents/provider".into(),
+                    )
+                })?;
                 let Ok(observation) = parse_token_usage(provider, &params) else {
                     continue;
                 };

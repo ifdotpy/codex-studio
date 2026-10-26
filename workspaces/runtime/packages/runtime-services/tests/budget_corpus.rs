@@ -511,7 +511,7 @@ fn pre_and_post_upgrade_rollout_notices_produce_identical_budget_state() {
     let mut after = before.clone();
     for step in after["steps"].as_array_mut().expect("steps") {
         let observation = studio_runtime_schema::usage::parse_token_usage(
-            studio_runtime_schema::usage::UsageProvider::Codex,
+            studio_runtime_schema::provider_kind::ProviderKind::Codex,
             &step["params"],
         )
         .expect("rollout usage");
@@ -1144,15 +1144,16 @@ fn incomplete_collected_tail_cannot_authorize_admission() {
 
 #[test]
 fn claude_budget_admission_uses_recorded_response_usage() {
-    for provider in ["claude", "codex"] {
+    use studio_runtime_schema::provider_kind::ProviderKind;
+    for provider in ProviderKind::ALL {
         for spent in [100, 1000, 1001, 0] {
             for history in [None, Some(json!({"status":"liveOnly"}))] {
                 let (mut case, _) = fixture();
-                case["agents"][0]["provider"] = json!(provider);
+                case["agents"][0]["provider"] = json!(provider.key());
                 case["agents"][0]["tokenBudget"] = json!(1000);
                 case["agents"][0]["lastCompletedTurn"] = json!("completed-turn");
                 case["seed_captures"] = json!([{"params":{
-                    "responseId":"response", "usageSource":if provider == "claude" {"claudeResponse"} else {"responseRecord"},
+                    "responseId":"response", "usageSource":match provider { ProviderKind::Claude => "claudeResponse", ProviderKind::Codex => "responseRecord" },
                     "requestUsage":{"totalTokens":spent,"inputTokens":spent,"cachedInputTokens":0,"cacheWriteInputTokens":0,"outputTokens":0,"reasoningOutputTokens":0}
                 }}]);
                 let initial = records(&case);
@@ -1174,10 +1175,13 @@ fn claude_budget_admission_uses_recorded_response_usage() {
                 assert_eq!(decision.status.tokens_used, Some(spent));
                 assert_eq!(
                     decision.denial.is_none(),
-                    provider == "claude" && spent < 1000,
+                    provider == ProviderKind::Claude && spent < 1000,
                     "{provider}, spent={spent}, history={history:?}: {decision:?}"
                 );
-                assert_eq!(decision.status.incomplete.is_empty(), provider == "claude");
+                assert_eq!(
+                    decision.status.incomplete.is_empty(),
+                    provider == ProviderKind::Claude
+                );
                 assert_eq!(decision.status.reached, spent >= 1000);
             }
         }

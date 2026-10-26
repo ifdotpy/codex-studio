@@ -782,16 +782,9 @@ pub fn dispatch_notification_with_effects(
                     }
                 }
                 "thread/tokenUsage/updated" => {
-                    let provider = match crate::provider_adapter::ProviderKind::of_record(&agent)
-                        .map_err(|_| NotificationDispatchError::invalid())?
-                    {
-                        crate::provider_adapter::ProviderKind::Claude => {
-                            studio_runtime_schema::usage::UsageProvider::Claude
-                        }
-                        crate::provider_adapter::ProviderKind::Codex => {
-                            studio_runtime_schema::usage::UsageProvider::Codex
-                        }
-                    };
+                    let provider =
+                        studio_runtime_schema::provider_kind::ProviderKind::of_record(&agent)
+                            .map_err(|_| NotificationDispatchError::invalid())?;
                     let observation =
                         match studio_runtime_schema::usage::parse_token_usage(provider, params) {
                             Ok(usage) => TokenUsageObservation::Typed(usage),

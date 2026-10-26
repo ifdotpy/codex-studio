@@ -76,7 +76,12 @@ pub(crate) fn log_effect(
                 .as_ref()
                 .map(|agent| {
                     use studio_runtime_schema::usage::{parse_legacy_totals, parse_token_usage};
-                    let provider = crate::analytics_capture::usage_provider(agent);
+                    let Ok(provider) =
+                        studio_runtime_schema::provider_kind::ProviderKind::of_record(agent)
+                    else {
+                        // Keep the invalid event in the projection log for capture diagnostics.
+                        return Ok(true);
+                    };
                     let usage = parse_token_usage(provider, &observation.params).ok();
                     let legacy = if usage.is_none() {
                         parse_legacy_totals(provider, &observation.params).ok()
@@ -113,6 +118,11 @@ pub(crate) fn log_effect(
         }
     }
     Repo::append_projection(canvas, &serde_json::to_string(&effect)?)?;
+    if observation.agent.as_ref().is_some_and(|agent| {
+        studio_runtime_schema::provider_kind::ProviderKind::of_record(agent).is_err()
+    }) {
+        return Ok(None);
+    }
     Ok(match effect {
         NotificationPostCommit::Analytics {
             usage_conflict: Some(_),
@@ -444,6 +454,48 @@ mod tests {
     }
 
     const CURSOR_KEY: &str = studio_runtime_store::analytics_capture::PROJECTION_CURSOR_KEY;
+
+    #[tokio::test]
+    async fn provider_identity_invalid_projection_records_diagnostic_without_rate() {
+        let state = tempfile::tempdir().expect("state");
+        let store = open(state.path()).await;
+        let mut invalid = agent();
+        invalid["provider"] = json!("future");
+        let stored = invalid.clone();
+        store
+            .transaction(move |tx| {
+                tx.execute(
+                    "INSERT INTO runtime_agents(id,record) VALUES ('agent',?1)",
+                    [stored.to_string()],
+                )?;
+                Ok(())
+            })
+            .await
+            .expect("seed unknown provider");
+        let mut effect = effect(
+            1,
+            "thread/tokenUsage/updated",
+            json!({"threadId":"thread","studioUsage":{"kind":"response","responseId":"r","model":"model","evidence":"live","tokens":{"uncachedInput":12,"cacheReadInput":3,"cacheWriteInput":2,"output":7}}}),
+        );
+        if let NotificationPostCommit::Analytics { observation, .. } = &mut effect {
+            observation.agent = Some(SharedJson::new(invalid));
+        }
+        let published = store
+            .transaction_with(move |tx| log_effect(tx, effect))
+            .await
+            .expect("log diagnostic");
+        assert!(
+            published.is_none(),
+            "invalid provider cannot publish rate usage"
+        );
+        assert_eq!(
+            project_pending(&store).await.expect("project diagnostic"),
+            1
+        );
+        let rows = dump(state.path());
+        assert_eq!(rows["analytics_usage"], json!([]));
+        assert!(rows["analytics_meta"].to_string().contains("invalidInput"));
+    }
 
     fn log_rows(store: &RuntimeStore) -> i64 {
         store

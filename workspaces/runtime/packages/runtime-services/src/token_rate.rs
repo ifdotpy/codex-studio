@@ -7,10 +7,8 @@ use std::sync::{Arc, OnceLock};
 use crate::change_notifications::{ChangeNotificationHub, SYNC_FRAME_MIN_INTERVAL};
 use crate::notification_dispatch::{NotificationObservation, NotificationPostCommit};
 use serde::{Deserialize, Serialize};
-use studio_runtime_providers::ProviderKind;
-use studio_runtime_schema::usage::{
-    UsageObservation, UsageProvider, UsageScope, UsageTokens, parse_token_usage,
-};
+use studio_runtime_schema::provider_kind::ProviderKind;
+use studio_runtime_schema::usage::{UsageObservation, UsageScope, UsageTokens, parse_token_usage};
 use studio_runtime_schema::{TOKEN_RATE_IDENTIFIER_MAX_CODEPOINTS, TOKEN_RATE_MAX_ENTRIES};
 use thiserror::Error;
 use tokio::sync::{mpsc, oneshot, watch};
@@ -479,6 +477,12 @@ impl RateProjector {
         else {
             return false;
         };
+        let Some(agent) = observation.agent.as_ref() else {
+            return false;
+        };
+        let Ok(provider) = ProviderKind::of_record(agent) else {
+            return false;
+        };
         let delivery = &observation.delivery;
         let new_generation = match self.watermarks.get_mut(&delivery.provider_handle) {
             Some(watermark) if delivery.generation < watermark.generation => return false,
@@ -535,7 +539,7 @@ impl RateProjector {
         if entry.root != root {
             root.clone_into(&mut entry.root);
         }
-        project_effect(entry, effect, observation);
+        project_effect(entry, effect, observation, provider);
         while self.agents.len() > MAX_PROJECTED_AGENTS {
             self.agents.pop_first();
         }
@@ -612,6 +616,7 @@ fn project_effect(
     state: &mut ProjectedAgent,
     effect: &NotificationPostCommit,
     observation: &NotificationObservation,
+    provider: ProviderKind,
 ) {
     let params = &observation.params;
     let at = observation.observed_at;
@@ -684,7 +689,7 @@ fn project_effect(
                     state.timing_valid = true;
                 }
             }
-            "thread/tokenUsage/updated" => project_usage(state, observation),
+            "thread/tokenUsage/updated" => project_usage(state, observation, provider),
             "turn/completed"
                 if observed_turn(params, Some(&state.turn)).as_deref() == Some(&state.turn) =>
             {
@@ -720,15 +725,11 @@ fn observed_turn<'a>(params: &'a serde_json::Value, fallback: Option<&'a str>) -
         .map(str::to_owned)
 }
 
-fn project_usage(state: &mut ProjectedAgent, observation: &NotificationObservation) {
-    let Some(agent) = observation.agent.as_ref() else {
-        return;
-    };
-    let provider = match ProviderKind::of_record(agent) {
-        Ok(ProviderKind::Codex) => UsageProvider::Codex,
-        Ok(ProviderKind::Claude) => UsageProvider::Claude,
-        Err(_) => return,
-    };
+fn project_usage(
+    state: &mut ProjectedAgent,
+    observation: &NotificationObservation,
+    provider: ProviderKind,
+) {
     let Ok(usage) = parse_token_usage(provider, &observation.params) else {
         // Invalid evidence cannot replace a live estimate with a rate sample.
         return;
@@ -931,8 +932,8 @@ fn valid_id(value: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        MAX_PROJECTED_AGENTS, MAX_TOKEN_RATE_WATERMARKS, ProjectedAgent, RateProjector,
-        TOKEN_RATE_IDENTIFIER_MAX_CODEPOINTS, TOKEN_RATE_MAX_ENTRIES, TokenRateHub,
+        MAX_PROJECTED_AGENTS, MAX_TOKEN_RATE_WATERMARKS, ProjectedAgent, ProviderKind,
+        RateProjector, TOKEN_RATE_IDENTIFIER_MAX_CODEPOINTS, TOKEN_RATE_MAX_ENTRIES, TokenRateHub,
     };
     use crate::notification_dispatch::{
         NotificationObservation, NotificationPostCommit, ProviderDeliveryIdentity, SharedJson,
@@ -1052,6 +1053,46 @@ mod tests {
         );
         assert_eq!(projector.snapshot().records[0].rate.0, 10.0);
         assert_eq!(projector.snapshot().records[0].output_tokens.0, 100.0);
+    }
+
+    #[test]
+    fn provider_identity_rate_omits_invalid_identity_and_malformed_usage() {
+        let mut projector = RateProjector::default();
+        assert!(observe(
+            &mut projector,
+            &usage_effect("agent", "provider", 1, 1, "turn")
+        ));
+        usage_at(
+            &mut projector,
+            2,
+            11.,
+            response_usage("turn", "response", 100),
+        );
+        let before = projector.snapshot();
+        for (index, provider) in [json!("future"), json!(""), json!(7), json!({})]
+            .into_iter()
+            .enumerate()
+        {
+            let mut effect = usage_effect("agent", "provider", 1, index as u64 + 3, "turn");
+            if let NotificationPostCommit::TokenRateUsage(observation) = &mut effect {
+                observation.agent = Some(SharedJson::new(
+                    json!({"id":"agent","rootId":"agent","turnId":"turn","provider":provider}),
+                ));
+                observation.method = "thread/tokenUsage/updated".into();
+                observation.params = SharedJson::new(
+                    json!({"studioUsage":{"kind":"response","responseId":"invalid","model":"model","evidence":"live","tokens":{"uncachedInput":12,"cacheReadInput":3,"cacheWriteInput":2,"output":999}}}),
+                );
+            }
+            assert!(!observe(&mut projector, &effect));
+            assert_eq!(projector.snapshot(), before);
+        }
+        usage_at(
+            &mut projector,
+            7,
+            12.,
+            json!({"studioUsage":{"kind":"response","tokens":{"output":"invalid"}}}),
+        );
+        assert_eq!(projector.snapshot(), before);
     }
 
     #[test]
@@ -1483,6 +1524,7 @@ mod tests {
                 started.clone(),
             ),
             &started,
+            ProviderKind::Codex,
         );
         assert!(state.tools.contains("tool"));
         assert_eq!(state.generation_started, None);
@@ -1495,6 +1537,7 @@ mod tests {
                 completed.clone(),
             ),
             &completed,
+            ProviderKind::Codex,
         );
         assert!(state.tools.is_empty());
         assert_eq!(state.generation_started, Some(6.0));

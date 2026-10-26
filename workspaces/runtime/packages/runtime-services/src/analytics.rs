@@ -5,6 +5,7 @@ use serde_json::Value;
 use std::collections::{BTreeSet, HashMap};
 use std::fs;
 use std::path::Path;
+use studio_runtime_schema::provider_kind::ProviderKind;
 use studio_runtime_store::analytics::{self as repo, AnalyticsRepository};
 use studio_runtime_store::sha256_hex;
 use studio_runtime_store::{Connection, RuntimeStore};
@@ -149,7 +150,7 @@ struct MessageInfo {
     #[serde(skip_serializing_if = "Option::is_none")]
     account_label: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    provider: Option<String>,
+    provider: Option<ProviderKind>,
     #[serde(skip_serializing_if = "Option::is_none")]
     turn_duration_ms: Option<serde_json::Number>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -205,13 +206,7 @@ fn message_info(
             && let Some(account) = registry.pointer(&format!("/accounts/{key}"))
         {
             result.account_label = text(account, "label");
-            if account.is_object() {
-                result.provider = if account.get("provider").is_some() {
-                    text(account, "provider")
-                } else {
-                    Some("codex".into())
-                };
-            }
+            result.provider = ProviderKind::of_record(account).ok();
         }
         result.turn_duration_ms = turn
             .get("nativeDurationMs")
@@ -244,13 +239,10 @@ fn message_info(
             result.model = text(&response, "model")
                 .filter(|s| !s.is_empty())
                 .or(result.model);
-            let provider = if result.provider.as_deref() == Some("claude") {
-                studio_runtime_schema::usage::UsageProvider::Claude
-            } else {
-                studio_runtime_schema::usage::UsageProvider::Codex
-            };
-            if let Ok(studio_runtime_schema::usage::UsageObservation::Response { tokens, .. }) =
-                studio_runtime_schema::usage::parse_analytics_usage_row(provider, &response)
+            if let Some(provider) = result.provider
+                && let Ok(studio_runtime_schema::usage::UsageObservation::Response {
+                    tokens, ..
+                }) = studio_runtime_schema::usage::parse_analytics_usage_row(provider, &response)
             {
                 result.tokens = Some(crate::analytics_capture::analytics_tokens(&tokens));
             }

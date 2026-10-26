@@ -9,6 +9,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, LazyLock, Mutex, MutexGuard, TryLockError};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime};
+use studio_runtime_schema::provider_kind::ProviderKind;
 use thiserror::Error;
 
 // This module owns on-demand cost-cache freshness ages (seconds), history windows
@@ -33,6 +34,8 @@ static PRICING_CATALOG_LOCK: Mutex<()> = Mutex::new(());
 
 #[derive(Debug, Error, Eq, PartialEq)]
 pub enum UsageError {
+    #[error(transparent)]
+    InvalidProvider(#[from] studio_runtime_schema::provider_kind::UnknownProvider),
     #[error("This account's local cost history is unavailable.")]
     AccountUnavailable,
     #[error("The account has no local profile path.")]
@@ -47,12 +50,6 @@ pub enum UsageError {
     ScannerCancelled,
 }
 
-/// Claude accounts scan Claude JSONL transcripts; every other account scans Codex rollouts.
-fn is_claude_account(account: &Value) -> bool {
-    studio_runtime_providers::ProviderKind::of_record(account)
-        == Ok(studio_runtime_providers::ProviderKind::Claude)
-}
-
 /// Read an account's last locally scanned cost snapshot.
 ///
 /// The response reports stale caches as stale and never invokes a scanner,
@@ -64,6 +61,7 @@ pub fn account_cost_snapshot(
     account: &Value,
     now: f64,
 ) -> Result<Value, UsageError> {
+    let provider = ProviderKind::of_record(account)?;
     if account.get("status").and_then(Value::as_str) != Some("ready") {
         return Err(UsageError::AccountUnavailable);
     }
@@ -73,8 +71,9 @@ pub fn account_cost_snapshot(
         .filter(|home| !home.is_empty())
         .map(PathBuf::from)
         .ok_or(UsageError::MissingProfile)?;
-    if is_claude_account(account) {
-        return claude_cost_snapshot(state_dir, account_key, &home, now);
+    match provider {
+        ProviderKind::Claude => return claude_cost_snapshot(state_dir, account_key, &home, now),
+        ProviderKind::Codex => {}
     }
     let account_id = account.get("accountId").cloned().unwrap_or(Value::Null);
     let home_text = home.to_string_lossy().into_owned();
@@ -181,6 +180,7 @@ pub fn reserve_account_cost_refresh(
     account_key: &str,
     account: &Value,
 ) -> Option<CostRefreshGuard> {
+    ProviderKind::of_record(account).ok()?;
     if account.get("status").and_then(Value::as_str) != Some("ready") {
         return None;
     }
@@ -255,6 +255,10 @@ where
     C: Fn() -> f64,
     S: FnOnce(&Path, &Path, &AtomicBool) -> Result<Value, UsageError>,
 {
+    let provider = match ProviderKind::of_record(account) {
+        Ok(provider) => provider,
+        Err(error) => return (false, Err(error.into())),
+    };
     let home = match account
         .get("home")
         .and_then(Value::as_str)
@@ -268,20 +272,23 @@ where
     let Some(_refresh) = reservation.or_else(|| begin_cost_refresh(refresh_key)) else {
         return (false, Ok(()));
     };
-    if is_claude_account(account) {
-        if cancelled.load(Ordering::Acquire) {
-            return (false, Err(UsageError::ScannerCancelled));
+    match provider {
+        ProviderKind::Claude => {
+            if cancelled.load(Ordering::Acquire) {
+                return (false, Err(UsageError::ScannerCancelled));
+            }
+            let scan_started_at = clock();
+            let result = refresh_claude_costs(
+                state_dir,
+                account_key,
+                &home,
+                scan_started_at,
+                cancelled,
+                clock,
+            );
+            return (result.is_ok(), result);
         }
-        let scan_started_at = clock();
-        let result = refresh_claude_costs(
-            state_dir,
-            account_key,
-            &home,
-            scan_started_at,
-            cancelled,
-            clock,
-        );
-        return (result.is_ok(), result);
+        ProviderKind::Codex => {}
     }
     let account_id = account.get("accountId").cloned().unwrap_or(Value::Null);
     let home_text = home.to_string_lossy().into_owned();
@@ -830,7 +837,7 @@ where
                     tokens,
                     ..
                 } = studio_runtime_schema::usage::parse_token_usage(
-                    studio_runtime_schema::usage::UsageProvider::Codex,
+                    studio_runtime_schema::provider_kind::ProviderKind::Codex,
                     &params,
                 )
                 .map_err(|_| UsageError::Scan)?
@@ -1242,6 +1249,37 @@ mod tests {
     use serde_json::{Value, json};
     use std::sync::atomic::AtomicBool;
     use std::time::Duration;
+
+    #[test]
+    fn provider_identity_invalid_account_never_reads_or_scans_codex() {
+        let temp = tempfile::tempdir().expect("state");
+        for provider in [json!("future"), json!(""), json!(7), json!({})] {
+            let account = json!({"provider":provider,"status":"ready","home":temp.path()});
+            assert!(
+                account_cost_snapshot(temp.path(), "invalid", &account, 1.).is_err(),
+                "provider {provider}"
+            );
+            let (saved, result) = refresh_account_costs_with(
+                temp.path(),
+                "invalid",
+                &account,
+                &AtomicBool::new(false),
+                || 1.,
+                |_, _, _| panic!("invalid provider invoked Codex scanner"),
+            );
+            assert!(!saved);
+            assert!(result.is_err());
+            assert!(
+                super::reserve_account_cost_refresh(temp.path(), "invalid", &account).is_none()
+            );
+        }
+        assert_eq!(
+            std::fs::read_dir(temp.path())
+                .expect("state entries")
+                .count(),
+            0
+        );
+    }
 
     fn fixed_local_midnight() -> f64 {
         use chrono::TimeZone;

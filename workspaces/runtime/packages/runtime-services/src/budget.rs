@@ -225,7 +225,7 @@ pub struct BudgetSnapshot {
     initialized: bool,
     live_only: bool,
     live_usage: Option<u64>,
-    provider: studio_runtime_schema::usage::UsageProvider,
+    provider: studio_runtime_schema::provider_kind::ProviderKind,
 }
 impl BudgetSnapshot {
     pub fn from_records(
@@ -334,12 +334,8 @@ impl BudgetSnapshot {
             initialized,
             live_only: uses_live_usage(durable_agent),
             live_usage: None,
-            provider: match ProviderKind::of_record(durable_agent)
-                .map_err(|_| invalid("runtime_agents/provider"))?
-            {
-                ProviderKind::Claude => studio_runtime_schema::usage::UsageProvider::Claude,
-                ProviderKind::Codex => studio_runtime_schema::usage::UsageProvider::Codex,
-            },
+            provider: ProviderKind::of_record(durable_agent)
+                .map_err(|_| invalid("runtime_agents/provider"))?,
         })
     }
     pub fn state(&self) -> &BudgetState {

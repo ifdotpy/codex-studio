@@ -21,6 +21,7 @@
 //!
 //! Pricing is not stored: a reader prices the few groups with the current
 //! catalog, so a catalog change needs no invalidation.
+use studio_runtime_schema::provider_kind::ProviderKind;
 
 use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
@@ -28,9 +29,7 @@ use std::path::Path;
 
 use rusqlite::{Connection, OpenFlags, OptionalExtension, Row, Transaction, params};
 use serde::Deserialize;
-use studio_runtime_schema::usage::{
-    UsageEvidence, UsageObservation, UsageProvider, UsageTokens, parse_analytics_usage_row,
-};
+use studio_runtime_schema::usage::{UsageEvidence, UsageObservation, UsageTokens};
 
 use crate::{CachedSql, StoreError, StoreResult};
 
@@ -121,12 +120,25 @@ impl From<&UsageTokens> for CostTokens {
     }
 }
 
-fn cost_observation(record: &serde_json::Value) -> StoreResult<Option<UsageObservation>> {
-    studio_runtime_schema::usage::persisted::parse_analytics_cost_usage_row(
-        UsageProvider::Codex,
-        record,
-    )
-    .map_err(|error| StoreError::SchemaValidation(error.to_string()))
+fn cost_observation(
+    db: &Connection,
+    record: &serde_json::Value,
+) -> StoreResult<Option<UsageObservation>> {
+    if record.get("studioUsage").is_some() {
+        return studio_runtime_schema::usage::ledger::UsageLedgerRow::from_typed_analytics(record)
+            .map(|ledger| Some(ledger.studio_usage))
+            .map_err(|error| StoreError::SchemaValidation(error.to_string()));
+    }
+    let owner = super::analytics_capture::AnalyticsCaptureRepository::read(
+        db,
+        super::analytics_capture::CaptureTable::Agents,
+        record["agentId"].as_str().unwrap_or_default(),
+    )?
+    .ok_or_else(|| StoreError::SchemaValidation("unknown analytics usage provider".into()))?;
+    let provider = ProviderKind::of_record(&owner)
+        .map_err(|error| StoreError::SchemaValidation(error.to_string()))?;
+    studio_runtime_schema::usage::persisted::parse_analytics_cost_usage_row(provider, record)
+        .map_err(|error| StoreError::SchemaValidation(error.to_string()))
 }
 
 /// The members of an agent record that decide how its usage is priced and
@@ -137,7 +149,7 @@ pub struct CostMember {
     #[serde(default)]
     pub account_key: Option<String>,
     #[serde(default)]
-    pub provider: Option<String>,
+    pub provider: Option<ProviderKind>,
     #[serde(default)]
     pub thread_id: Option<String>,
     #[serde(default)]
@@ -151,7 +163,7 @@ pub struct CostAccountHistory {
     #[serde(default)]
     pub account_key: Option<String>,
     #[serde(default)]
-    pub provider: Option<String>,
+    pub provider: Option<ProviderKind>,
     #[serde(default)]
     pub thread_id: Option<String>,
 }
@@ -221,7 +233,7 @@ pub fn recorded_responses_bounded(
         inspected += 1;
         let value: serde_json::Value = serde_json::from_str(&row.get::<_, String>(2)?)?;
         if let DecodedUsageEvidence::Response(response) =
-            decode_usage_evidence(row.get(0)?, row.get(1)?, &value)?
+            decode_usage_evidence(db, row.get(0)?, row.get(1)?, &value)?
         {
             rows.push(response);
         }
@@ -238,12 +250,13 @@ enum DecodedUsageEvidence {
 /// Shared interpretation for the existing response reader and the bounded
 /// reconciliation source window. Legacy unknown categories stay unknown.
 fn decode_usage_evidence(
+    db: &Connection,
     agent_id: String,
     at: f64,
     value: &serde_json::Value,
 ) -> StoreResult<DecodedUsageEvidence> {
     let fields = UsageCostFields::deserialize(value)?;
-    let (response_id, model, tokens, evidence) = match cost_observation(value)? {
+    let (response_id, model, tokens, evidence) = match cost_observation(db, value)? {
         Some(UsageObservation::Response {
             response_id,
             model,
@@ -321,7 +334,7 @@ pub fn reconciliation_usage_window(
         decoded.push((
             at,
             sequence,
-            decode_usage_evidence(row.get(1)?, at, &value)?,
+            decode_usage_evidence(db, row.get(1)?, at, &value)?,
         ));
     }
     // Keep the prior observation ordering inside the bounded recent source
@@ -372,7 +385,12 @@ pub fn partition_journal_receipts(
     let mut rows = statement.query(params![encoded, scopes])?;
     while let Some(row) = rows.next()? {
         let value: serde_json::Value = serde_json::from_str(&row.get::<_, String>(3)?)?;
-        match parse_analytics_usage_row(UsageProvider::Claude, &value) {
+        if value.get("studioUsage").is_none() {
+            continue;
+        }
+        match studio_runtime_schema::usage::ledger::UsageLedgerRow::from_typed_analytics(&value)
+            .map(|ledger| ledger.studio_usage)
+        {
             Ok(UsageObservation::Response {
                 evidence: UsageEvidence::Live | UsageEvidence::Recovered,
                 ..
@@ -668,7 +686,7 @@ fn backfill(db: &Connection) -> StoreResult<()> {
             .map_err(rusqlite::Error::from)?;
         let record: serde_json::Value = serde_json::from_str(raw)?;
         let fields = UsageCostFields::deserialize(&record)?;
-        let observation = cost_observation(&record)?;
+        let observation = cost_observation(db, &record)?;
         let root: String = source_row.get(1)?;
         let row = cost_row(
             source_row.get(0)?,
@@ -932,7 +950,7 @@ pub(crate) fn apply_usage_write(
     record: &serde_json::Value,
 ) -> StoreResult<()> {
     let fields = UsageCostFields::deserialize(record)?;
-    let observation = cost_observation(record)?;
+    let observation = cost_observation(db, record)?;
     let (root, agent, thread, turn, seq, at) = db.query_row_cached(
         "SELECT root,agent,thread,turn,seq,at FROM analytics_usage WHERE id=?1",
         [id],
@@ -1070,6 +1088,43 @@ pub fn cost_groups(
 
 #[cfg(test)]
 mod tests {
+    #[tokio::test]
+    async fn provider_identity_orphan_legacy_cost_is_invalid_but_typed_fact_is_preserved() {
+        use serde_json::json;
+        let root = tempfile::tempdir().expect("state");
+        let store = crate::RuntimeStore::open(Some(root.path()))
+            .await
+            .expect("store");
+        store.analytics_transaction::<_, crate::StoreError>(|tx, _| {
+            let mut row = json!({"id":"response","agentId":"orphan","rootId":"orphan","threadId":"thread","at":1,"responseId":"response","last":{"inputTokens":12,"cachedInputTokens":3,"cacheWriteInputTokens":2,"outputTokens":7},"total":{}});
+            assert!(super::cost_observation(tx, &row).is_err());
+            row["studioUsage"] = json!({"kind":"response","responseId":"response","model":"model","evidence":"live","tokens":{"uncachedInput":12,"cacheReadInput":3,"cacheWriteInput":2,"output":7}});
+            assert!(matches!(super::cost_observation(tx, &row)?, Some(studio_runtime_schema::usage::UsageObservation::Response { .. })));
+            Ok(())
+        }).await.expect("orphan evidence boundary");
+    }
+
+    #[test]
+    fn provider_identity_cost_members_reject_unknown_and_malformed_providers() {
+        use serde_json::json;
+        for provider in [json!("future"), json!(""), json!(7), json!({})] {
+            assert!(
+                serde_json::from_value::<super::CostMember>(json!({"provider":provider})).is_err()
+            );
+            assert!(
+                serde_json::from_value::<super::CostMember>(
+                    json!({"accountHistory":[{"provider":provider}]})
+                )
+                .is_err()
+            );
+        }
+        for provider in [json!("codex"), json!("claude"), serde_json::Value::Null] {
+            assert!(
+                serde_json::from_value::<super::CostMember>(json!({"provider":provider})).is_ok()
+            );
+        }
+        assert!(serde_json::from_value::<super::CostMember>(json!({})).is_ok());
+    }
     use super::ensure_cost_aggregate;
     use crate::analytics_capture::{AnalyticsCaptureRepository, CaptureTable};
     use crate::{RuntimeStore, StoreError};
@@ -1311,6 +1366,7 @@ mod tests {
         let temp = tempfile::tempdir().expect("temporary state");
         let store = RuntimeStore::open(Some(temp.path())).await.expect("store");
         store.analytics_transaction::<_,StoreError>(|tx,_| {
+            AnalyticsCaptureRepository::write(tx, CaptureTable::Agents, &json!({"id":"agent","provider":"codex"}))?;
             for (index, (category, unknown)) in [
                 ("cachedInputTokens",None), ("cachedInputTokens",Some(serde_json::Value::Null)),
                 ("cacheWriteInputTokens",None), ("cacheWriteInputTokens",Some(serde_json::Value::Null)),
@@ -1510,6 +1566,7 @@ mod tests {
         let temp = tempfile::tempdir().expect("temporary state");
         let store = RuntimeStore::open(Some(temp.path())).await.expect("store");
         store.analytics_transaction::<_, StoreError>(|tx, _| {
+            AnalyticsCaptureRepository::write(tx, CaptureTable::Agents, &json!({"id":"agent","provider":"codex"}))?;
             let row = json!({
                 "id":"cumulative", "agentId":"agent", "rootId":"root", "threadId":"thread",
                 "turnId":"turn", "at":1, "model":"gpt-5", "last":{"inputTokens":10,"outputTokens":2},
@@ -1637,6 +1694,13 @@ mod tests {
             let records = records.to_vec();
             store
                 .analytics_transaction::<_, StoreError>(move |tx, _| {
+                    for index in 0..4 {
+                        AnalyticsCaptureRepository::write(
+                            tx,
+                            CaptureTable::Agents,
+                            &json!({"id":format!("agent-{index}"),"provider":"codex"}),
+                        )?;
+                    }
                     for record in records {
                         AnalyticsCaptureRepository::write(tx, CaptureTable::Usage, &record)?;
                     }

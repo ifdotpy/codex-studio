@@ -1,4 +1,5 @@
 //! Python-produced snapshots exercised through the transaction consumer interfaces.
+use studio_runtime_schema::provider_kind::ProviderKind;
 
 use rusqlite::params;
 use serde_json::{Value, json};
@@ -122,12 +123,8 @@ async fn apply_move_case(
     } else {
         let agent = text(&case["agent"], "id").to_owned();
         let notification = case["notification"].clone();
-        use studio_runtime_schema::usage::{UsageProvider, parse_token_usage};
-        let provider = if case["agent"]["provider"] == "claude" {
-            UsageProvider::Claude
-        } else {
-            UsageProvider::Codex
-        };
+        use studio_runtime_schema::usage::parse_token_usage;
+        let provider = ProviderKind::of_record(&case["agent"]).expect("fixture provider");
         let usage = parse_token_usage(provider, &notification).map_err(|_| {
             agent_move::MoveError::InvalidStored {
                 object: "tokenUsage",

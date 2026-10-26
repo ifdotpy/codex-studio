@@ -2,7 +2,8 @@
 //! token counters only; response bodies live only for the bounded input batch.
 use crate::analytics_capture::{CaptureError, first, number};
 use serde_json::{Value, json};
-use studio_runtime_schema::usage::{UsageProvider, parse_token_usage};
+use studio_runtime_schema::provider_kind::ProviderKind;
+use studio_runtime_schema::usage::parse_token_usage;
 use studio_runtime_store::truthy;
 
 #[derive(Clone, Debug, PartialEq)]
@@ -100,7 +101,7 @@ impl RolloutContext {
                 self.value["pendingUsage"] =
                     json!({"responseId":p["response_id"],"turnId":turn,"usage":usage});
                 self.value["requestUsageAvailable"] = json!(true);
-                actions.push(usage_event(
+                actions.push(codex_usage_event(
                     json!({
                         "threadId":self.value["threadId"], "turnId":turn,
                         "responseId":p["response_id"], "usageSource":"responseRecord",
@@ -312,9 +313,13 @@ fn event(method: &str, params: Value, at: f64) -> RolloutAction {
         at,
     }
 }
-fn usage_event(mut params: Value, at: f64, model: &Value) -> Result<RolloutAction, CaptureError> {
+fn codex_usage_event(
+    mut params: Value,
+    at: f64,
+    model: &Value,
+) -> Result<RolloutAction, CaptureError> {
     params["model"] = model.clone();
-    let observation = parse_token_usage(UsageProvider::Codex, &params)?;
+    let observation = parse_token_usage(ProviderKind::Codex, &params)?;
     Ok(event(
         "thread/tokenUsage/updated",
         json!({"threadId":params["threadId"],"turnId":params["turnId"],"studioUsage":observation}),
@@ -566,7 +571,7 @@ mod tests {
             };
             let normalized = serde_json::to_value(
                 studio_runtime_schema::usage::parse_token_usage(
-                    studio_runtime_schema::usage::UsageProvider::Codex,
+                    studio_runtime_schema::provider_kind::ProviderKind::Codex,
                     params,
                 )
                 .expect("shared parser"),

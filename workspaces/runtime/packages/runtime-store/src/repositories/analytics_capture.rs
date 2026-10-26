@@ -6,6 +6,7 @@ use rusqlite::{
     types::ValueRef,
 };
 use serde_json::Value;
+use studio_runtime_schema::provider_kind::ProviderKind;
 
 /// Indexed capture record lookup template; the table name comes only from CaptureTable.
 pub const CAPTURE_RECORD_BY_ID_SQL: &str = "SELECT record FROM {table} WHERE id=?";
@@ -184,6 +185,12 @@ impl AnalyticsCaptureRepository {
         thread: Option<&str>,
         response: &str,
     ) -> StoreResult<Option<(studio_runtime_schema::usage::ledger::UsageLedgerRow, bool)>> {
+        let record = Self::read(db, CaptureTable::Agents, agent)?;
+        let provider = record
+            .as_ref()
+            .map(ProviderKind::of_record)
+            .transpose()
+            .map_err(|error| StoreError::SchemaValidation(error.to_string()))?;
         let mut query = db.prepare_cached(USAGE_PROVENANCE_SQL)?;
         let rows = query
             .query_map(rusqlite::params![agent, thread, response], |row| {
@@ -194,20 +201,29 @@ impl AnalyticsCaptureRepository {
             return Ok(None);
         };
         let value: Value = serde_json::from_str(raw)?;
-        Ok(
-            studio_runtime_schema::usage::ledger::UsageLedgerRow::from_analytics(
-                studio_runtime_schema::usage::UsageProvider::Codex,
-                &value,
-            )
+        let ledger = if value.get("studioUsage").is_some() {
+            studio_runtime_schema::usage::ledger::UsageLedgerRow::from_typed_analytics(&value)
+        } else {
+            let provider = provider.ok_or_else(|| {
+                StoreError::SchemaValidation("unknown analytics usage provider".into())
+            })?;
+            studio_runtime_schema::usage::ledger::UsageLedgerRow::from_analytics(provider, &value)
+        };
+        Ok(ledger
             .ok()
-            .map(|ledger| (ledger, value["timestampSource"] == "fileModifiedEstimate")),
-        )
+            .map(|ledger| (ledger, value["timestampSource"] == "fileModifiedEstimate")))
     }
 
     /// Read at most the owner's examination bound through the agent/sequence index.
     /// Reserve the final source row as lookahead before interpreting any usage kind.
     pub fn usage_inventory(db: &Connection, agent: &str) -> StoreResult<UsageInventory> {
-        use studio_runtime_schema::usage::{UsageProvider, ledger::UsageLedgerRow};
+        use studio_runtime_schema::usage::ledger::UsageLedgerRow;
+        let record = Self::read(db, CaptureTable::Agents, agent)?;
+        let provider = record
+            .as_ref()
+            .map(ProviderKind::of_record)
+            .transpose()
+            .map_err(|error| StoreError::SchemaValidation(error.to_string()))?;
         let limit = studio_runtime_schema::usage::ledger::LEGACY_GAP_COVERAGE_ROWS;
         let mut statement=db.prepare_cached("SELECT record FROM analytics_usage INDEXED BY analytics_usage_migration WHERE agent=?1 ORDER BY seq DESC LIMIT ?2")?;
         let mut source = statement.query(rusqlite::params![agent, limit as i64])?;
@@ -223,7 +239,15 @@ impl AnalyticsCaptureRepository {
                 break;
             }
             let value: Value = serde_json::from_str(&row.get::<_, String>(0)?)?;
-            match UsageLedgerRow::from_analytics(UsageProvider::Codex, &value) {
+            let ledger = if value.get("studioUsage").is_some() {
+                UsageLedgerRow::from_typed_analytics(&value)
+            } else {
+                let provider = provider.ok_or_else(|| {
+                    StoreError::SchemaValidation("unknown analytics usage provider".into())
+                })?;
+                UsageLedgerRow::from_analytics(provider, &value)
+            };
+            match ledger {
                 Ok(ledger) => {
                     let legacy_keys =
                         studio_runtime_schema::usage::ledger::legacy_analytics_receipt_keys(
@@ -757,6 +781,30 @@ mod cost_hint_tests {
     use crate::ChangedRoots;
     use std::collections::BTreeSet;
     use std::sync::{Arc, Mutex};
+
+    #[tokio::test]
+    async fn provider_identity_usage_inventory_uses_stored_provider() {
+        use serde_json::json;
+        use studio_runtime_schema::usage::{UsageObservation, UsageScope};
+        let root = tempfile::tempdir().expect("state");
+        let store = RuntimeStore::open(Some(root.path())).await.expect("store");
+        store.analytics_transaction::<_, StoreError>(|tx, _| {
+            AnalyticsCaptureRepository::write(tx, CaptureTable::Agents, &json!({"id":"agent","provider":"codex"}))?;
+            let legacy = json!({"id":"counter","agentId":"agent","rootId":"agent","threadId":"thread","at":1,"total":{"inputTokens":12,"cachedInputTokens":3,"cacheWriteInputTokens":2,"outputTokens":7},"last":{}});
+            AnalyticsCaptureRepository::write(tx, CaptureTable::Usage, &legacy)?;
+            for (provider, expected) in [(Value::Null, UsageScope::CodexThread), (json!("codex"), UsageScope::CodexThread), (json!("claude"), UsageScope::ClaudeQuery)] {
+                AnalyticsCaptureRepository::write(tx, CaptureTable::Agents, &json!({"id":"agent","provider":provider}))?;
+                let inventory = AnalyticsCaptureRepository::usage_inventory(tx, "agent")?;
+                assert!(matches!(&inventory.rows[0].ledger.studio_usage, UsageObservation::Cumulative { scope, .. } if *scope == expected));
+            }
+            for provider in [json!("future"), json!("")] {
+                AnalyticsCaptureRepository::write(tx, CaptureTable::Agents, &json!({"id":"agent","provider":provider}))?;
+                assert!(AnalyticsCaptureRepository::usage_inventory(tx, "agent").is_err());
+                assert!(AnalyticsCaptureRepository::usage_provenance(tx, "agent", Some("thread"), "response").is_err());
+            }
+            Ok(())
+        }).await.expect("provider inventory");
+    }
 
     #[tokio::test]
     async fn neutral_commits_enqueue_no_cost_roots() {
