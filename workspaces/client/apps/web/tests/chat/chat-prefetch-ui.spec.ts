@@ -1,6 +1,48 @@
-#!/usr/bin/env node
+import type {
+  LegacyPullFixture,
+  LegacyIdentityFixture,
+} from "./prefetch-storage.fixture.ts";
+import {
+  readProjectionStores,
+  projectionIsStored,
+  completedTranscriptAgent,
+} from "./prefetch-storage.fixture.ts";
+import { fixtureOrigin } from "./browser.ts";
+import type { BrowserContext, Page, Route } from "@playwright/test";
+import type { ViteDevServer } from "vite";
+import { SYNC_PROTOCOL_VERSION } from "../../src/generated/api.ts";
+import type { components } from "../../src/generated/api.ts";
+import type { Agent } from "../../src/types.ts";
+import { fixtureGetResult } from "./http.ts";
+import { initializeInstrumentation } from "./chat-prefetch-ui.fixture.ts";
+import type { GetResult, PostBody } from "../../src/apiTypes.ts";
+
+// The renderer sends the generated resource list to this fixture stream.
+function fixtureResources(
+  source: string,
+): components["schemas"]["ResourceRef"][] {
+  return JSON.parse(source) as components["schemas"]["ResourceRef"][];
+}
+
+// This scenario deliberately inspects the legacy serialized entity envelope.
+function legacyEntityName(
+  document:
+    | components["schemas"]["SyncPullResponse"]["documents"][number]
+    | undefined,
+): unknown {
+  const payload: unknown = JSON.parse(
+    document && "payload" in document ? document.payload : "null",
+  );
+  if (!payload || typeof payload !== "object" || !("value" in payload))
+    return undefined;
+  const value = payload.value;
+  return value && typeof value === "object" && "name" in value
+    ? value.name
+    : undefined;
+}
 import {
   test,
+  createFixtureViteServer,
   expect,
   spawnFixture as spawn,
   apiSchemaHandshakeSse,
@@ -26,15 +68,23 @@ test("chat prefetch ui @performance", async ({ browser }) => {
     },
   });
   let log = "",
-    context,
-    page,
-    server,
-    heartbeatTimer,
-    streamConnections = new Set();
-  fixture.stderr.on("data", (chunk) => {
+    context: BrowserContext | undefined,
+    cleanupPage: Page | undefined,
+    server: ViteDevServer | undefined,
+    heartbeatTimer: ReturnType<typeof setInterval> | undefined;
+  const streamConnections = new Set<{
+    response: import("node:http").ServerResponse;
+    resources: components["schemas"]["ResourceRef"][];
+    openedAt: number;
+  }>();
+  fixture.stderr?.on("data", (chunk) => {
     log += chunk;
   });
-  const until = async (predicate, label, timeout = 12000) => {
+  const until = async (
+    predicate: () => boolean | Promise<boolean>,
+    label: string,
+    timeout = 12000,
+  ) => {
     const deadline = Date.now() + timeout;
     while (Date.now() < deadline) {
       if (await predicate()) return;
@@ -43,25 +93,34 @@ test("chat prefetch ui @performance", async ({ browser }) => {
     throw new Error(label);
   };
   try {
-    const port = await new Promise((resolve, reject) => {
-      fixture.stdout.once("data", (chunk) =>
+    const port = await new Promise<number>((resolve, reject) => {
+      fixture.stdout?.once("data", (chunk) =>
         resolve(Number(String(chunk).trim())),
       );
       fixture.once("exit", () => reject(new Error(log)));
     });
     const origin = `http://127.0.0.1:${port}`;
     const original = await readTestState(origin);
-    const identity = await (await fetch(origin + "/api/sync/identity")).json();
+    const identity = await fixtureGetResult(
+      "/api/sync/identity",
+      await fetch(origin + "/api/sync/identity"),
+    );
     let workspaceId = identity.workspaceId;
-    const entityDocuments = new Map();
+    const entityDocuments = new Map<
+      string,
+      components["schemas"]["SyncPullResponse"]["documents"][number]
+    >();
     let entityMaxSeq = 0;
     let entityCursor = 0;
     do {
-      const result = await (
+      const result = await fixtureGetResult(
+        "/api/sync/pull",
         await fetch(
           `${origin}/api/sync/pull?scope=state%3Aentities%3Av1&after=${entityCursor}&limit=100`,
-        )
-      ).json();
+        ),
+      );
+      if (!("documents" in result))
+        throw new Error("Unexpected reset in fixture pull");
       for (const document of result.documents || [])
         entityDocuments.set(document.id, document);
       entityMaxSeq = result.maxSeq || entityMaxSeq;
@@ -69,15 +128,26 @@ test("chat prefetch ui @performance", async ({ browser }) => {
     } while (entityCursor < entityMaxSeq);
     const a = original.threads.find((agent) => agent.name === "Other project");
     const b = original.threads.find((agent) => agent.name === "Release lead");
-    let currentBName = b.name;
+    assert.ok(a && b, "Expected both fixture chats");
+    assert.ok(
+      typeof a.name === "string" && typeof b.name === "string",
+      "Expected named fixture chats",
+    );
+    let currentBName: string = b.name;
     const agents = [a, b].map((agent) => ({
       ...agent,
       status: "completed",
       inFlight: false,
       turnId: null,
     }));
-    const payload = (agent, tag) => ({
-      agent: { ...agent, status: "completed", inFlight: false, turnId: null },
+    const payload = (
+      agent: Agent,
+      tag: string,
+    ): import("../../src/types.ts").TranscriptPageData &
+      Partial<
+        Pick<components["schemas"]["TranscriptStreamDelta"], "order">
+      > => ({
+      agent: completedTranscriptAgent(agent),
       items: Array.from({ length: 40 }, (_, index) => ({
         id: `${tag}-${index}`,
         role: "assistant",
@@ -87,35 +157,50 @@ test("chat prefetch ui @performance", async ({ browser }) => {
       historyVersion: "fixture-history",
       truncated: agent.id === a.id,
       nextCursor: agent.id === a.id ? "older-a" : null,
-      replace: true,
     });
     const values = new Map([
       [a.id, { seq: 200, data: payload(a, "A-current") }],
       [b.id, { seq: 300, data: payload(b, "B-first") }],
     ]);
-    const reads = [],
-      completedReads = [],
-      streams = [],
-      entityPulls = [],
-      emittedEntityEvents = [],
-      streamQueries = [],
-      streamEvents = [],
-      held = [],
-      identities = [];
+    const reads: { id: string; seq: number; at: number; after: number }[] = [];
+    const completedReads: Pick<(typeof reads)[number], "id" | "seq">[] = [];
+    const streams: (string | null)[] = [];
+    const entityPulls: {
+      at: number;
+      after: number;
+      ids: string[];
+      renamedEntity: unknown[];
+      maxSeq: number;
+    }[] = [];
+    const streamQueries: {
+      at: number;
+      resources: components["schemas"]["ResourceRef"][];
+    }[] = [];
+    const streamEvents: ((typeof streamQueries)[number] & { kind: "open" })[] =
+      [];
+    const emittedEntityEvents: {
+      at: number;
+      revision: number;
+      reason: components["schemas"]["ResourceChangeEvent"]["reason"];
+      resources: components["schemas"]["ResourceRef"][];
+      pending: {
+        query: components["schemas"]["ResourceRef"][];
+        openedAt: number;
+      }[];
+    }[] = [];
+    const held: Route[] = [];
+    const identities: string[] = [];
     let holdNetwork = false,
       holdWorkspaceB = false,
       holdRecoveryB = false,
       failRecoveryBOnce = false,
       staleB = false;
     let staleReplies = 0,
-      releaseA,
-      releaseRecoveryB,
+      releaseA: (() => void) | undefined,
+      releaseRecoveryB: (() => void) | undefined,
       recoveryReadStarted = false;
     let notificationRevision = 0;
-    const { createServer } = await import(
-      new URL("../../node_modules/vite/dist/node/index.js", import.meta.url)
-    );
-    server = await createServer({
+    server = await createFixtureViteServer({
       configFile: false,
       root: join(repo, "workspaces/client/apps/web"),
       server: { host: "127.0.0.1", port: 0 },
@@ -125,7 +210,7 @@ test("chat prefetch ui @performance", async ({ browser }) => {
           configureServer(vite) {
             vite.middlewares.use("/api/sync/stream", (request, response) => {
               const url = new URL(request.url || "/", "http://localhost");
-              const resources = JSON.parse(
+              const resources = fixtureResources(
                 url.searchParams.get("resources") || "[]",
               );
               streamEvents.push({ at: Date.now(), kind: "open", resources });
@@ -137,7 +222,7 @@ test("chat prefetch ui @performance", async ({ browser }) => {
               response.write(apiSchemaHandshakeSse());
               response.write(
                 `retry: 100\nevent: resources\ndata: ${JSON.stringify({
-                  protocol: 4,
+                  protocol: SYNC_PROTOCOL_VERSION,
                   workspaceId,
                   epoch: "prefetch-epoch",
                   revision: notificationRevision,
@@ -147,7 +232,7 @@ test("chat prefetch ui @performance", async ({ browser }) => {
                     resource,
                     revision: notificationRevision,
                   })),
-                })}\n\n`,
+                } satisfies components["schemas"]["ResourceChangeEvent"])}\n\n`,
               );
               const connection = { response, resources, openedAt: Date.now() };
               streamConnections.add(connection);
@@ -159,14 +244,14 @@ test("chat prefetch ui @performance", async ({ browser }) => {
       ],
     });
     await server.listen();
-    const streamOrigin = `http://127.0.0.1:${server.httpServer.address().port}`;
+    const streamOrigin = fixtureOrigin(server);
     heartbeatTimer = setInterval(() => {
       const heartbeat = `event: heartbeat\ndata: ${JSON.stringify({
-        protocol: 4,
+        protocol: SYNC_PROTOCOL_VERSION,
         workspaceId,
         epoch: "prefetch-epoch",
         revision: notificationRevision,
-      })}\n\n`;
+      } satisfies components["schemas"]["ResourceHeartbeatEvent"])}\n\n`;
       for (const { response } of streamConnections) response.write(heartbeat);
     }, 5000);
     context = await browser.newContext({
@@ -175,68 +260,16 @@ test("chat prefetch ui @performance", async ({ browser }) => {
       // after reload; the separate loading suite tests the production worker.
       serviceWorkers: "block",
     });
-    page = await context.newPage();
+    const page = (cleanupPage = await context.newPage());
     page.setDefaultTimeout(12000);
-    const errors = [];
+    const errors: string[] = [];
     page.on("pageerror", (error) => errors.push(error.message));
-    await page.addInitScript(
-      ({ stateDir, id }) => {
-        localStorage.setItem(
-          `codex-desktop-opened:${stateDir}`,
-          JSON.stringify(id),
-        );
-        window.__resourceFlushAcks = [];
-        window.__resourceFlushObserved = [];
-        window.__pendingResourceFlushRevisions = [];
-        window.__activeResourceFlushRevisions = [];
-        const nativeSetTimeout = window.setTimeout.bind(window);
-        window.setTimeout = function (callback, delay, ...args) {
-          if (
-            typeof callback === "function" &&
-            callback.name === "flushResourceChanges"
-          ) {
-            const revisions = window.__pendingResourceFlushRevisions.splice(0);
-            window.__resourceFlushObserved.push(revisions);
-            return nativeSetTimeout(() => {
-              window.__activeResourceFlushRevisions = revisions;
-              try {
-                callback(...args);
-              } finally {
-                window.__activeResourceFlushRevisions = [];
-              }
-            }, delay);
-          }
-          if (delay === 0 && window.__activeResourceFlushRevisions.length > 0)
-            window.__resourceFlushAcks.push(
-              ...window.__activeResourceFlushRevisions,
-            );
-          return nativeSetTimeout(callback, delay, ...args);
-        };
-        const addEventListener = EventSource.prototype.addEventListener;
-        EventSource.prototype.addEventListener = function (
-          type,
-          listener,
-          options,
-        ) {
-          if (type !== "resources" || typeof listener !== "function")
-            return addEventListener.call(this, type, listener, options);
-          const trackedListener = function (event) {
-            try {
-              window.__pendingResourceFlushRevisions.push(
-                JSON.parse(event.data).revision,
-              );
-            } catch {
-              // Ignore malformed resource envelopes in test instrumentation.
-            }
-            return listener.call(this, event);
-          };
-          return addEventListener.call(this, type, trackedListener, options);
-        };
-      },
-      { stateDir: original.stateDir, id: a.id },
-    );
+    await page.addInitScript(initializeInstrumentation, {
+      stateDir: original.stateDir,
+      id: a.id,
+    });
 
-    const handle = async (route) => {
+    const handle = async (route: Route) => {
       const url = new URL(route.request().url());
       if (url.pathname === "/api/sync/stream") return route.fallback();
       if (holdNetwork) {
@@ -246,7 +279,10 @@ test("chat prefetch ui @performance", async ({ browser }) => {
       if (url.pathname === "/api/sync/identity") {
         identities.push(workspaceId);
         return route.fulfill({
-          json: { workspaceId, ...(legacySync ? {} : { chatState: true }) },
+          json: {
+            workspaceId,
+            ...(legacySync ? {} : { chatState: true }),
+          } satisfies LegacyIdentityFixture,
         });
       }
       if (url.pathname === "/api/transcript/stream") {
@@ -264,7 +300,7 @@ test("chat prefetch ui @performance", async ({ browser }) => {
                 text: "Find the focused history",
               },
             ],
-          },
+          } satisfies Pick<GetResult<"/api/search">, "results">,
         });
       if (url.pathname === "/api/search/item")
         return route.fulfill({
@@ -272,7 +308,10 @@ test("chat prefetch ui @performance", async ({ browser }) => {
             id: "A-focused-20",
             room: a.id,
             text: "Find the focused history",
-          },
+          } satisfies Pick<
+            GetResult<"/api/search/item">,
+            "id" | "room" | "text"
+          >,
         });
       if (url.pathname === "/api/transcript/page") {
         assert.equal(url.searchParams.get("id"), a.id);
@@ -287,7 +326,7 @@ test("chat prefetch ui @performance", async ({ browser }) => {
             ...older,
             nextCursor: null,
             nextAfterCursor: focused ? "focused-next" : null,
-          },
+          } satisfies import("../../src/types.ts").TranscriptPageData,
         });
       }
       if (url.pathname === "/api/transcript") {
@@ -319,7 +358,7 @@ test("chat prefetch ui @performance", async ({ browser }) => {
           ids: documents.map((document) => document.id),
           renamedEntity: documents
             .filter((document) => document.id === `entity:agent:${b.id}`)
-            .map((document) => JSON.parse(document.payload)?.value?.name),
+            .map((document) => legacyEntityName(document)),
           maxSeq: entityMaxSeq,
         });
         return route.fulfill({
@@ -329,12 +368,16 @@ test("chat prefetch ui @performance", async ({ browser }) => {
             checkpoint: { seq: documents.at(-1)?.seq ?? after },
             maxSeq: entityMaxSeq,
             initialHigh,
-          },
+          } satisfies LegacyPullFixture,
         });
       }
       if (scope === "drafts")
         return route.fulfill({
-          json: { workspaceId, documents: [], checkpoint: { seq: after } },
+          json: {
+            workspaceId,
+            documents: [],
+            checkpoint: { seq: after },
+          } satisfies LegacyPullFixture,
         });
       if (!scope?.startsWith("transcript:")) return route.fallback();
       const id = scope.slice(11);
@@ -343,14 +386,16 @@ test("chat prefetch ui @performance", async ({ browser }) => {
         return;
       }
       if (id === a.id && !releaseA)
-        await new Promise((resolve) => {
+        await new Promise<void>((resolve) => {
           releaseA = resolve;
         });
       let value = values.get(id);
       if (!value)
         return route.fulfill({
           status: 400,
-          json: { error: "Unknown fixture chat" },
+          json: {
+            error: "Unknown fixture chat",
+          } satisfies components["schemas"]["ErrorResponse"],
         });
       const forcedStale = staleB && id === b.id;
       if (forcedStale) {
@@ -361,7 +406,7 @@ test("chat prefetch ui @performance", async ({ browser }) => {
       if (id) reads.push({ id, seq: value.seq, at: Date.now(), after });
       if (holdRecoveryB && id === b.id) {
         recoveryReadStarted = true;
-        await new Promise((resolve) => {
+        await new Promise<void>((resolve) => {
           releaseRecoveryB = resolve;
         });
       }
@@ -369,7 +414,9 @@ test("chat prefetch ui @performance", async ({ browser }) => {
         failRecoveryBOnce = false;
         return route.fulfill({
           status: 503,
-          json: { error: "One simulated transcript pull failure" },
+          json: {
+            error: "One simulated transcript pull failure",
+          } satisfies components["schemas"]["ErrorResponse"],
         });
       }
       await route.fulfill({
@@ -387,22 +434,28 @@ test("chat prefetch ui @performance", async ({ browser }) => {
                 ]
               : [],
           checkpoint: { seq: Math.max(after, value.seq) },
-        },
+        } satisfies LegacyPullFixture,
       });
       completedReads.push({ id, seq: value.seq });
     };
     await page.route("**/api/**", handle);
-    const queryHas = (query, ref) =>
+    const queryHas = (
+      query: components["schemas"]["ResourceRef"][],
+      ref: components["schemas"]["ResourceRef"],
+    ) =>
       query.some(
         (item) =>
           item.kind === ref.kind &&
-          (ref.agentId === undefined || item.agentId === ref.agentId),
+          (!("agentId" in ref) ||
+            ("agentId" in item && item.agentId === ref.agentId)),
       );
     const emitResourceChange = async (
-      resources,
-      reason = "change",
+      resources: components["schemas"]["ResourceRef"][],
+      reason: components["schemas"]["ResourceChangeEvent"]["reason"] = "change",
       beforeNotify = () => {},
-      requiredQueryRefs = [{ kind: "state" }],
+      requiredQueryRefs: components["schemas"]["ResourceRef"][] = [
+        { kind: "state" },
+      ],
     ) => {
       await until(
         () =>
@@ -427,36 +480,48 @@ test("chat prefetch ui @performance", async ({ browser }) => {
         })),
       });
       const data = `event: resources\ndata: ${JSON.stringify({
-        protocol: 4,
+        protocol: SYNC_PROTOCOL_VERSION,
         workspaceId,
         epoch: "prefetch-epoch",
         revision: notificationRevision,
         reason,
         resources,
-      })}\n\n`;
+      } satisfies Omit<
+        components["schemas"]["ResourceChangeEvent"],
+        "resourceVersions"
+      >)}\n\n`;
       for (const { response } of pending) response.write(data);
       return notificationRevision;
     };
-    const invalidate = async (name) => {
+    const invalidate = async (name: string) => {
       const response = await fetch(origin + "/api/rename", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
           "X-Canvas-Token": original.token,
         },
-        body: JSON.stringify({ id: b.id, name }),
+        body: JSON.stringify({
+          id: b.id,
+          name,
+        } satisfies PostBody<"/api/rename">),
       });
       assert.ok(response.ok, await response.text());
       currentBName = name;
       let after = entityMaxSeq;
       let maxSeq = entityMaxSeq;
-      const updatedDocuments = new Map();
+      const updatedDocuments = new Map<
+        string,
+        components["schemas"]["SyncPullResponse"]["documents"][number]
+      >();
       do {
-        const result = await (
+        const result = await fixtureGetResult(
+          "/api/sync/pull",
           await fetch(
             `${origin}/api/sync/pull?scope=state%3Aentities%3Av1&after=${after}&limit=100`,
-          )
-        ).json();
+          ),
+        );
+        if (!("documents" in result))
+          throw new Error("Unexpected reset in fixture pull");
         for (const document of result.documents || [])
           updatedDocuments.set(document.id, document);
         maxSeq = result.maxSeq || maxSeq;
@@ -464,7 +529,7 @@ test("chat prefetch ui @performance", async ({ browser }) => {
       } while (after < maxSeq);
       const updatedAgent = updatedDocuments.get(`entity:agent:${b.id}`);
       assert.equal(
-        JSON.parse(updatedAgent?.payload || "null")?.value?.name,
+        legacyEntityName(updatedAgent),
         name,
         "The state fixture must expose the renamed entity before notifying subscribers",
       );
@@ -489,27 +554,13 @@ test("chat prefetch ui @performance", async ({ browser }) => {
         return pulledRename && rowUpdated;
       }, "The state invalidation must update the renamed chat in the sidebar").catch(
         async (error) => {
+          const projection = await page.evaluate(
+            readProjectionStores,
+            `rxdb-dexie-studio${workspaceId}--0--projections`,
+          );
           const diagnostic = await page.evaluate(
-            async ({ id, workspaceId }) => {
-              const request = indexedDB.open(
-                `rxdb-dexie-studio${workspaceId}--0--projections`,
-              );
-              const db = await new Promise((resolve, reject) => {
-                request.onsuccess = () => resolve(request.result);
-                request.onerror = () => reject(request.error);
-              });
-              const tx = db.transaction([...db.objectStoreNames], "readonly");
-              const stored = await Promise.all(
-                [...db.objectStoreNames].map(
-                  (store) =>
-                    new Promise((resolve) => {
-                      const query = tx.objectStore(store).getAll();
-                      query.onsuccess = () => resolve(query.result);
-                      query.onerror = () => resolve([]);
-                    }),
-                ),
-              );
-              db.close();
+            async ({ id, workspaceId, projection, storedAgentName }) => {
+              const { stored, names, dbName } = projection;
               const rows = stored.flat();
               const agent = rows.find((row) => row.id === `entity:agent:${id}`);
               return {
@@ -517,14 +568,14 @@ test("chat prefetch ui @performance", async ({ browser }) => {
                 databaseNames: (await indexedDB.databases()).map(
                   (database) => database.name,
                 ),
-                objectStores: [...db.objectStoreNames],
-                dbName: db.name,
+                objectStores: names,
+                dbName,
                 firstStoredRowKeys: Object.keys(rows[0] || {}),
                 matchingStoredRows: rows
                   .filter((row) => JSON.stringify(row).includes(id))
                   .slice(0, 4),
                 objectStoreRowCounts: stored.map((rows, index) => ({
-                  store: [...db.objectStoreNames][index],
+                  store: names[index],
                   count: rows.length,
                 })),
                 title: document.querySelector("#conversation-title")
@@ -543,7 +594,7 @@ test("chat prefetch ui @performance", async ({ browser }) => {
                 storedAgent: agent
                   ? {
                       seq: agent.seq,
-                      name: JSON.parse(agent.payload)?.value?.name,
+                      name: storedAgentName,
                     }
                   : null,
                 ready: rows.find((row) => row.id === "state:entities:ready")
@@ -553,26 +604,37 @@ test("chat prefetch ui @performance", async ({ browser }) => {
                 )?.seq,
               };
             },
-            { id: b.id, workspaceId },
+            {
+              id: b.id,
+              workspaceId,
+              projection,
+              storedAgentName: legacyEntityName(
+                projection.stored
+                  .flat()
+                  .find((row) => row.id === `entity:agent:${b.id}`),
+              ),
+            },
           );
           throw new Error(
-            `${error.message}; state invalidation: ${JSON.stringify({
-              name,
-              updatedFixture: JSON.parse(updatedAgent?.payload || "null")?.value
-                ?.name,
-              entityPulls: entityPulls.slice(-8),
-              emittedEntityEvents: emittedEntityEvents.slice(-4),
-              streamQueries: streamQueries.slice(-5),
-              identities,
-              diagnostic,
-              errors,
-            })}`,
+            `${error instanceof Error ? error.message : String(error)}; state invalidation: ${JSON.stringify(
+              {
+                name,
+                updatedFixture: legacyEntityName(updatedAgent),
+                entityPulls: entityPulls.slice(-8),
+                emittedEntityEvents: emittedEntityEvents.slice(-4),
+                streamQueries: streamQueries.slice(-5),
+                identities,
+                diagnostic,
+                errors,
+              },
+            )}`,
           );
         },
       );
     };
     const selected = () => page.locator("#conversation-title").innerText();
-    const marker = (tag) => page.locator(`[data-message="${tag}-39"]:visible`);
+    const marker = (tag: string) =>
+      page.locator(`[data-message="${tag}-39"]:visible`);
     await page.goto(streamOrigin);
     await until(() => !!releaseA, "The first foreground request must start");
     const selectedBeforeForegroundRelease = await selected();
@@ -583,6 +645,7 @@ test("chat prefetch ui @performance", async ({ browser }) => {
       `Background requests wait for ${selectedBeforeForegroundRelease}: ${JSON.stringify(reads)}`,
     );
     assert.equal(streams.includes(b.id), false);
+    assert.ok(releaseA);
     releaseA();
     await marker("A-current").waitFor();
     await until(
@@ -608,7 +671,7 @@ test("chat prefetch ui @performance", async ({ browser }) => {
 
     await page.evaluate(async () => {
       const { watchResourceChanges } = await import("/src/sync/client.ts");
-      window.stopUnrelatedWatch = watchResourceChanges(
+      window.prefetchUiStopUnrelatedWatch = watchResourceChanges(
         { kind: "transcript", agentId: "unrelated-agent" },
         () => {},
       );
@@ -658,7 +721,9 @@ test("chat prefetch ui @performance", async ({ browser }) => {
 
     // A real shared SSE invalidation announces a newer B while the reader stays in A.
     values.set(b.id, { seq: 301, data: payload(b, "B-newest") });
-    agents.find((agent) => agent.id === b.id).updated = Date.now();
+    const updatedB = agents.find((agent) => agent.id === b.id);
+    assert.ok(updatedB);
+    updatedB.updated = Date.now();
     const backgroundUpdateAt = Date.now();
     await invalidate("Prefetch background update");
     await until(
@@ -733,7 +798,7 @@ test("chat prefetch ui @performance", async ({ browser }) => {
       "Online and pageshow coalesce while the recovery transcript read is in flight",
     );
     const flushAckCount = await page.evaluate(
-      () => window.__resourceFlushAcks.length,
+      () => window.prefetchUiResourceFlushAcks.length,
     );
     const streamOpenCount = streamEvents.filter(
       (event) => event.kind === "open",
@@ -750,23 +815,24 @@ test("chat prefetch ui @performance", async ({ browser }) => {
         () =>
           page.evaluate(
             ({ count, revision }) =>
-              window.__resourceFlushAcks.length > count &&
-              window.__resourceFlushAcks.at(-1) === revision,
+              window.prefetchUiResourceFlushAcks.length > count &&
+              window.prefetchUiResourceFlushAcks.at(-1) === revision,
             { count: flushAckCount, revision: notificationRevision },
           ),
         "The same-version reconnect baseline reaches the transcript watcher while its pull is held",
       );
     } catch (error) {
       const diagnostic = await page.evaluate(() => ({
-        acks: window.__resourceFlushAcks,
-        flushes: window.__resourceFlushObserved,
-        pending: window.__pendingResourceFlushRevisions,
+        acks: window.prefetchUiResourceFlushAcks,
+        flushes: window.prefetchUiResourceFlushObserved,
+        pending: window.prefetchUiPendingResourceFlushRevisions,
       }));
       throw new Error(
-        `${error.message}; flush diagnostic: ${JSON.stringify({ diagnostic, notificationRevision, streamEvents: streamEvents.slice(-5), streamQueries: streamQueries.slice(-4) })}`,
+        `${error instanceof Error ? error.message : String(error)}; flush diagnostic: ${JSON.stringify({ diagnostic, notificationRevision, streamEvents: streamEvents.slice(-5), streamQueries: streamQueries.slice(-4) })}`,
       );
     }
-    releaseRecoveryB?.();
+    const releaseHeldRecovery = () => releaseRecoveryB?.();
+    releaseHeldRecovery();
     holdRecoveryB = false;
     await until(
       () => completedReads.some((read) => read.id === b.id && read.seq === 302),
@@ -806,7 +872,7 @@ test("chat prefetch ui @performance", async ({ browser }) => {
     await until(
       () =>
         page.evaluate(
-          (revision) => window.__resourceFlushAcks.includes(revision),
+          (revision) => window.prefetchUiResourceFlushAcks.includes(revision),
           inFlightRevision,
         ),
       "The targeted watch callback must queue work for the newer revision while B's pull is held",
@@ -817,7 +883,7 @@ test("chat prefetch ui @performance", async ({ browser }) => {
       readsBeforeNewerFollowup,
       "The newer notification is acknowledged before releasing the in-flight read",
     );
-    releaseRecoveryB?.();
+    releaseHeldRecovery();
     holdRecoveryB = false;
     await until(
       () => reads.some((read) => read.id === b.id && read.seq === 304),
@@ -849,7 +915,7 @@ test("chat prefetch ui @performance", async ({ browser }) => {
       (read) => read.id === b.id && read.seq === 305,
     ).length;
     const retryAckCount = await page.evaluate(
-      () => window.__resourceFlushAcks.length,
+      () => window.prefetchUiResourceFlushAcks.length,
     );
     const retryStreamOpenCount = streamEvents.filter(
       (event) => event.kind === "open",
@@ -866,13 +932,13 @@ test("chat prefetch ui @performance", async ({ browser }) => {
       () =>
         page.evaluate(
           ({ count, revision }) =>
-            window.__resourceFlushAcks.length > count &&
-            window.__resourceFlushAcks.at(-1) === revision,
+            window.prefetchUiResourceFlushAcks.length > count &&
+            window.prefetchUiResourceFlushAcks.at(-1) === revision,
           { count: retryAckCount, revision: notificationRevision },
         ),
       "A same-version recovery callback arrives before the held history read fails",
     );
-    releaseRecoveryB?.();
+    releaseHeldRecovery();
     holdRecoveryB = false;
     await until(
       () => completedReads.some((read) => read.id === b.id && read.seq === 305),
@@ -887,39 +953,12 @@ test("chat prefetch ui @performance", async ({ browser }) => {
     assert.equal(await selected(), a.name);
     await until(
       () =>
-        page.evaluate(
-          async ({ databaseName, documentId, sequence }) => {
-            const request = indexedDB.open(databaseName);
-            const db = await new Promise((resolve, reject) => {
-              request.onsuccess = () => resolve(request.result);
-              request.onerror = () => reject(request.error);
-            });
-            const tx = db.transaction([...db.objectStoreNames], "readonly");
-            const matches = await Promise.all(
-              [...db.objectStoreNames].map(
-                (store) =>
-                  new Promise((resolve) => {
-                    const query = tx.objectStore(store).getAll();
-                    query.onsuccess = () =>
-                      resolve(
-                        query.result.some(
-                          (row) =>
-                            row.id === documentId && row.seq === sequence,
-                        ),
-                      );
-                    query.onerror = () => resolve(false);
-                  }),
-              ),
-            );
-            db.close();
-            return matches.some(Boolean);
-          },
-          {
-            databaseName: `rxdb-dexie-studio${workspaceId}--0--projections`,
-            documentId: `transcript:${b.id}`,
-            sequence: 305,
-          },
-        ),
+        page.evaluate(projectionIsStored, {
+          databaseName: `rxdb-dexie-studio${workspaceId}--0--projections`,
+          documentId: `transcript:${b.id}`,
+          sequence: 305,
+        }),
+
       "RxDB must persist B's refreshed projection before network interruption",
     );
     await page.locator("#messages").evaluate((element) => {
@@ -931,19 +970,19 @@ test("chat prefetch ui @performance", async ({ browser }) => {
       .evaluate((element) => element.scrollTop);
     holdNetwork = true;
     const switchCached = async (
-      id,
-      title,
-      tag,
-      forbidden,
-      expectedScroll = null,
+      id: string,
+      title: Agent["name"],
+      tag: string,
+      forbidden: string,
+      expectedScroll: number | null = null,
     ) => {
       await page.evaluate(
         ({ id, title, tag, forbidden }) => {
-          window.switchFrames = [];
-          const capture = (window.captureSwitch =
-            (window.captureSwitch || 0) + 1);
+          window.prefetchUiSwitchFrames = [];
+          const capture = (window.prefetchUiCaptureSwitch =
+            (window.prefetchUiCaptureSwitch || 0) + 1);
           const frame = () => {
-            if (window.captureSwitch !== capture) return;
+            if (window.prefetchUiCaptureSwitch !== capture) return;
             if (
               document
                 .querySelector(`[data-chat="${CSS.escape(id)}"]`)
@@ -954,17 +993,17 @@ test("chat prefetch ui @performance", async ({ browser }) => {
               ]
                 .filter((node) => node.getClientRects().length > 0)
                 .map((node) => node.getAttribute("data-message"));
-              window.switchFrames.push({
+              window.prefetchUiSwitchFrames.push({
                 time: performance.now(),
                 fresh: ids.includes(`${tag}-39`),
-                wrong: ids.some((value) => value.startsWith(forbidden)),
+                wrong: ids.some((value) => value?.startsWith(forbidden)),
                 title: document
                   .querySelector("#conversation-title")
                   ?.textContent?.trim(),
                 titleMatches:
                   document
                     .querySelector("#conversation-title")
-                    ?.textContent?.trim() === title.trim(),
+                    ?.textContent?.trim() === title?.trim(),
                 count: ids.length,
                 scrollTop: document.querySelector("#messages")?.scrollTop,
               });
@@ -978,23 +1017,25 @@ test("chat prefetch ui @performance", async ({ browser }) => {
       const chatButton = page.locator(`[data-chat="${id}"]`);
       await chatButton.click({ trial: true });
       await chatButton.evaluate((button) => {
-        window.switchStartedAt = null;
+        window.prefetchUiSwitchStartedAt = null;
         button.addEventListener(
           "pointerdown",
-          () => (window.switchStartedAt = performance.now()),
+          () => (window.prefetchUiSwitchStartedAt = performance.now()),
           { once: true, capture: true },
         );
       });
       await chatButton.click();
       await marker(tag).waitFor();
       const elapsed = await page.evaluate(
-        () => performance.now() - window.switchStartedAt,
+        () => performance.now() - (window.prefetchUiSwitchStartedAt ?? NaN),
       );
       assert.ok(elapsed < 500, `Cached ${tag} switch took ${elapsed} ms`);
-      await page.waitForFunction(() => window.switchFrames.length >= 3);
+      await page.waitForFunction(
+        () => window.prefetchUiSwitchFrames.length >= 3,
+      );
       const frames = await page.evaluate(() => {
-        window.captureSwitch++;
-        return window.switchFrames;
+        window.prefetchUiCaptureSwitch++;
+        return window.prefetchUiSwitchFrames;
       });
       assert.ok(
         frames.every(
@@ -1009,7 +1050,7 @@ test("chat prefetch ui @performance", async ({ browser }) => {
       if (expectedScroll !== null)
         assert.ok(
           frames.every(
-            (frame) => Math.abs(frame.scrollTop - expectedScroll) < 2,
+            (frame) => Math.abs((frame.scrollTop ?? NaN) - expectedScroll) < 2,
           ),
           `The first cached frame must restore scroll ${expectedScroll}: ${JSON.stringify(frames)}`,
         );
@@ -1083,7 +1124,7 @@ test("chat prefetch ui @performance", async ({ browser }) => {
     await marker("A-current").waitFor();
     await page.locator("#earlier-messages").click();
     await marker("A-older").waitFor();
-    const checkPageReturn = async (tag, offset) => {
+    const checkPageReturn = async (tag: string, offset: number) => {
       await page.locator("#messages").evaluate((element, top) => {
         element.scrollTop = top;
         element.dispatchEvent(new Event("scroll"));
@@ -1166,7 +1207,7 @@ test("chat prefetch ui @performance", async ({ browser }) => {
         bodyText: document.body.innerText.slice(0, 500),
       }));
       throw new Error(
-        `${error.message}; workspace switch diagnostic: ${JSON.stringify({ diagnostic, identities, errors, reads: reads.slice(-12) })}`,
+        `${error instanceof Error ? error.message : String(error)}; workspace switch diagnostic: ${JSON.stringify({ diagnostic, identities, errors, reads: reads.slice(-12) })}`,
       );
     }
     await page.locator(`[data-chat="${b.id}"]`).click();
@@ -1211,7 +1252,9 @@ test("chat prefetch ui @performance", async ({ browser }) => {
       }),
     );
   } catch (error) {
-    await page?.screenshot({ path: join(dir, "failure.png") }).catch(() => {});
+    await cleanupPage
+      ?.screenshot({ path: join(dir, "failure.png") })
+      .catch(() => {});
     console.error("Evidence:", dir, log);
     throw error;
   } finally {
