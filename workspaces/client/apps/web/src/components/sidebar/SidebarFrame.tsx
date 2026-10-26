@@ -290,6 +290,7 @@ export function SidebarFrame(p: SidebarFrameProps) {
   return (
     <Drawer
       opened={p.opened}
+      returnFocus
       onEnterTransitionEnd={() => {
         if (duoSurface) aside.current?.focus({ preventScroll: true });
         else p.onEntered?.();

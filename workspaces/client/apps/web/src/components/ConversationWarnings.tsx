@@ -72,7 +72,8 @@ export default function ConversationWarnings({
         <Menu withinPortal position="top-start">
           <Menu.Target>
             <ActionIcon
-              className="sidebar-utility-button conversation-warning-trigger"
+              className={`sidebar-utility-button conversation-warning-trigger${hasWarning ? "" : " conversation-info-trigger"}`}
+              color={hasWarning ? "orange" : "blue"}
               aria-label="Sidebar settings and warnings"
               variant="subtle"
             >

@@ -67,3 +67,38 @@ for (const size of [
     }
   });
 }
+
+test("A Duo drawer returns focus to its rail opener after Escape and an outside tap", async ({
+  page,
+  context,
+}) => {
+  const fixture = await sidebarParityFixture(context, { paired: false });
+  const cdp = await context.newCDPSession(page);
+  try {
+    await page.setViewportSize({ width: 1200, height: 951 });
+    const sidebar = await fixture.open(page);
+    await sidebar
+      .getByRole("button")
+      .filter({ hasText: "Local Saved pin" })
+      .filter({ has: page.locator("strong") })
+      .first()
+      .click();
+    await cdp.send("Emulation.setSafeAreaInsetsOverride", {
+      insets: { top: 0, right: 84, bottom: 34, left: 0 },
+    });
+    await page.setViewportSize({ width: 653, height: 951 });
+    const opener = page.locator(".edge-rail #sidebar-toggle");
+    for (const close of ["escape", "outside", "opener"]) {
+      await opener.click();
+      await expect(sidebar).toBeVisible();
+      if (close === "escape") await page.keyboard.press("Escape");
+      else if (close === "outside") await page.mouse.click(450, 500);
+      else await opener.click();
+      await expect(sidebar).toBeHidden();
+      await expect(opener).toBeFocused();
+    }
+  } finally {
+    await cdp.detach();
+    await fixture.close();
+  }
+});
