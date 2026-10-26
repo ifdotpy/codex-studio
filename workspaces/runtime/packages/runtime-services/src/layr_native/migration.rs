@@ -14,7 +14,11 @@ fn git(directory: &Path, args: &[&str]) -> Result<String> {
         program: std::ffi::OsStr::new("git"),
         git_directory: Some(directory.as_os_str()),
         args,
-        environment: &[("GIT_OPTIONAL_LOCKS", "0"), ("GIT_TERMINAL_PROMPT", "0")],
+        environment: &[
+            ("GIT_OPTIONAL_LOCKS", "0"),
+            ("GIT_NO_LAZY_FETCH", "1"),
+            ("GIT_TERMINAL_PROMPT", "0"),
+        ],
         input: None,
         stdout_limit: 8 * 1024 * 1024,
         stderr_limit: 64 * 1024,
@@ -163,9 +167,21 @@ pub fn migrate_with_options(
     let target = state_dir.join(NATIVE_LAYR_DIRECTORY);
     let main_plan =
         super::import::Plan::new_with_git_policy(&project, false, &target, options.without_git)?;
+    let existing_path = main_path(state_dir, &project_id);
+    let existing_main = if existing_path.exists() {
+        Some(super::import::Plan::existing_main(&existing_path, &target)?)
+    } else {
+        None
+    };
+    let clone_main = existing_main.as_ref().unwrap_or(&main_plan);
     let mut plans = Vec::new();
-    let mut size_all = main_plan.size;
-    let mut size_dirty = main_plan.size;
+    let initial_size = if existing_main.is_some() {
+        super::import::Size::default()
+    } else {
+        main_plan.size
+    };
+    let mut size_all = initial_size;
+    let mut size_dirty = initial_size;
     let mut lines = Vec::new();
     let mut seen = BTreeSet::new();
     let mut discovery_refusals = Vec::new();
@@ -228,7 +244,7 @@ pub fn migrate_with_options(
                     continue;
                 }
             };
-            let line_size = plan.migration_size(&main_plan, relative);
+            let line_size = plan.migration_size(clone_main, relative);
             size_all.include(line_size);
             let mut entry = json!({"source":source,"repository":relative,"line":line,"headCommit":head,"status":if dry_run{"planned"}else{"pending"}});
             if let Some(fields) = serde_json::to_value(line_size)
@@ -239,8 +255,8 @@ pub fn migrate_with_options(
                     entry[key] = value.clone();
                 }
             }
-            entry["lineNewEntries"] = json!(main_plan.size.entries);
-            entry["lineNewEstimatedMetadataBytes"] = json!(main_plan.line_new_metadata_bytes());
+            entry["lineNewEntries"] = json!(clone_main.size.entries);
+            entry["lineNewEstimatedMetadataBytes"] = json!(clone_main.line_new_metadata_bytes());
             entry["refusals"] = json!(plan.refusals);
             entry["repositories"] = json!(super::inventory::repositories(&source, &plan, &[]));
             let root_facts = entry["repositories"]
@@ -386,7 +402,7 @@ pub fn migrate_with_options(
     all_estimate["linesToCreate"] = json!(all_lines_to_create);
     let mut dirty_estimate = json!(size_dirty);
     dirty_estimate["linesToCreate"] = json!(dirty_lines_to_create);
-    let mut report = json!({"dryRun":dry_run,"withoutGit":options.without_git,"worktreeSelection":options.worktrees.as_str(),"selectionEstimates":{"all":all_estimate,"dirty":dirty_estimate},"skipWorktrees":options.skip_worktrees,"gitMetadataDisposition":if options.without_git {"Top-level .git is omitted and is not preserved. Source files and nested repositories follow normal admission. The source folder remains unchanged."} else {"Git metadata follows normal admission and preservation."},"projectId":project_id,"source":project,"layrVersion":super::LAYR_VERSION,"allocationModel":super::import::allocation_model(),"mainSize":main_plan.size,"worktreeSummary":super::inventory::worktree_summary(&lines),"linesToCreate":lines_to_create,"sizesComplete":sizes_complete,"excludedWorktreeFolders":main_plan.excluded_worktree_folders,"repositories":repositories,"plainGitMetadata":super::inventory::plain_git_metadata(&project, &main_plan),"refusals":refusals,"admissible":refusals.is_empty()});
+    let mut report = json!({"dryRun":dry_run,"withoutGit":options.without_git,"worktreeSelection":options.worktrees.as_str(),"selectionEstimates":{"all":all_estimate,"dirty":dirty_estimate},"skipWorktrees":options.skip_worktrees,"gitMetadataDisposition":if options.without_git {"Top-level .git is omitted and is not preserved. Source files and nested repositories follow normal admission. The source folder remains unchanged."} else {"Git metadata follows normal admission and preservation."},"projectId":project_id,"source":project,"layrVersion":super::LAYR_VERSION,"allocationModel":super::import::allocation_model(),"mainSize":clone_main.size,"sourceSize":main_plan.size,"worktreeData":main_plan.worktree_data,"worktreeSummary":super::inventory::worktree_summary(&lines),"linesToCreate":lines_to_create,"sizesComplete":sizes_complete,"excludedWorktreeFolders":main_plan.excluded_worktree_folders,"repositories":repositories,"plainGitMetadata":super::inventory::plain_git_metadata(&project, &main_plan),"refusals":refusals,"admissible":refusals.is_empty()});
     if let Some(fields) = serde_json::to_value(size)
         .map_err(|error| NativeLayrError::Refused(error.to_string()))?
         .as_object()
@@ -420,22 +436,26 @@ pub fn migrate_with_options(
         if options.without_git {
             input["withoutGit"] = json!(true);
         }
-        let allocation = plan.migration_size(&main_plan, &relative);
+        let actual_main = super::import::Plan::existing_main(&main, &target)?;
+        let allocation = plan.migration_size(&actual_main, &relative);
         let imported_head = line["headCommit"].clone();
         let selection = options.worktrees.as_str();
-        let receipt = operation(
+        let receipt = runtime::operation_with_preflight(
             state_dir,
             &format!("migrate:{project_id}:{name}"),
             &input,
             || {
                 plan.admit()?;
-                allocation.preflight(&main)?;
+                allocation.preflight(&main)
+            },
+            || {
                 run(state_dir, &main, &["line", "new", &name, "main"])?;
                 let cwd = main
                     .parent()
                     .ok_or_else(|| NativeLayrError::Refused("Missing lines directory".into()))?
                     .join(&name);
                 let destination = cwd.join(&relative);
+                validate_destination(&cwd, &destination)?;
                 // Replace only the repository subtree. Retain Layr's generated Git bridge.
                 let git_marker = destination.join(".git");
                 let saved_git = if git_marker.exists() {
@@ -472,21 +492,7 @@ pub fn migrate_with_options(
                     fs::rename(saved.path().join("git"), &git_marker)?;
                 }
                 super::git_guard::install_hook(state_dir, &cwd)?;
-                run(state_dir, &cwd, &["add", "-A"])?;
-                let archive_files: Vec<_> = plan
-                    .files()
-                    .map(|path| relative.join(path).to_string_lossy().into_owned())
-                    .collect();
-                for paths in archive_files.chunks(64) {
-                    let mut args = vec!["add", "-f", "--"];
-                    args.extend(paths.iter().map(String::as_str));
-                    run(state_dir, &cwd, &args)?;
-                }
-                run(
-                    state_dir,
-                    &cwd,
-                    &["save", "-m", "Import Git worktree", "--allow-empty"],
-                )?;
+                runtime::save_imported_tree(state_dir, &cwd, "Import Git worktree")?;
                 plan.warm_caches(state_dir, &cwd, &relative)?;
                 Ok(
                     json!({"line":name,"headCommit":imported_head,"worktreeSelection":selection,"stateId":run(state_dir,&cwd,&["rev-parse","head"])?}),
@@ -503,7 +509,7 @@ pub fn migrate_with_options(
 }
 
 mod clear;
-use clear::{clear_import_destination, discard_inherited_cache};
+use clear::{clear_import_destination, discard_inherited_cache, validate_destination};
 
 #[cfg(test)]
 mod tests {
@@ -620,6 +626,95 @@ mod tests {
         fs::create_dir(worker.join("target")).expect("versioned folder");
         fs::write(worker.join("target/line-file"), "line-data").expect("worktree data");
         fs::write(worker.join("sub/Cargo.toml"), "[package]\n").expect("worktree cache manifest");
+    }
+
+    #[test]
+    fn review_existing_main_controls_line_clone_space() {
+        let fixture = tempfile::tempdir().unwrap();
+        let project = fixture.path().join("project");
+        cache_policy_fixture(&project);
+        let state = fixture.path().join("state");
+        let initial = migrate(&state, &project, true).unwrap();
+        let main = main_path(&state, initial["projectId"].as_str().unwrap());
+        fs::create_dir_all(main.join("extra")).unwrap();
+        for i in 0..200 {
+            fs::write(main.join("extra").join(format!("file-{i}")), "bytes").unwrap();
+        }
+        let report = migrate(&state, &project, true).unwrap();
+        assert_eq!(
+            report["lines"][0]["lineNewEntries"], 202,
+            "An existing main tree has 202 entries"
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    #[ignore = "requires the real vendored Layr binary on APFS"]
+    fn review_migration_state_keeps_empty_directories_and_modes() {
+        use std::os::unix::fs::PermissionsExt;
+        let fixture = tempfile::tempdir().unwrap();
+        let project = fixture.path().join("project");
+        cache_policy_fixture(&project);
+        let worker = project.join(".worktrees/worker");
+        fs::create_dir_all(worker.join("empty")).unwrap();
+        fs::set_permissions(worker.join("empty"), fs::Permissions::from_mode(0o710)).unwrap();
+        fs::set_permissions(worker.join("sub"), fs::Permissions::from_mode(0o750)).unwrap();
+        fs::set_permissions(
+            worker.join("sub/target/from-main"),
+            fs::Permissions::from_mode(0o755),
+        )
+        .unwrap();
+        // Same bytes, a mode change at an ordinary versioned file.
+        fs::write(project.join("same"), "same").unwrap();
+        fs::write(worker.join("same"), "same").unwrap();
+        fs::set_permissions(worker.join("same"), fs::Permissions::from_mode(0o751)).unwrap();
+        rustix::fs::lsetxattr(
+            project.join("sub"),
+            "com.studio.fixture",
+            b"main-attribute",
+            rustix::fs::XattrFlags::empty(),
+        )
+        .unwrap();
+        rustix::fs::lsetxattr(
+            worker.join("sub"),
+            "com.studio.fixture",
+            b"worker-attribute",
+            rustix::fs::XattrFlags::empty(),
+        )
+        .unwrap();
+        let state = fixture.path().join("state");
+        fs::create_dir_all(binary_path(&state).parent().unwrap()).unwrap();
+        fs::copy(
+            std::env::var_os("STUDIO_LAYR_NATIVE_TEST_BINARY").unwrap(),
+            binary_path(&state),
+        )
+        .unwrap();
+        let report = migrate(&state, &project, false).unwrap();
+        let main = PathBuf::from(report["mainPath"].as_str().unwrap());
+        let line = main
+            .parent()
+            .unwrap()
+            .join(report["lines"][0]["line"].as_str().unwrap());
+        let mut attribute = [0u8; 64];
+        let len =
+            rustix::fs::lgetxattr(main.join("sub"), "com.studio.fixture", &mut attribute).unwrap();
+        assert_eq!(&attribute[..len], b"main-attribute");
+        run(&state, &line, &["line", "new", "metadata-proof", "head"]).unwrap();
+        let proof = line.parent().unwrap().join("metadata-proof");
+        let len =
+            rustix::fs::lgetxattr(proof.join("sub"), "com.studio.fixture", &mut attribute).unwrap();
+        assert_eq!(&attribute[..len], b"worker-attribute");
+        for (name, mode) in [("empty", 0o710), ("sub", 0o750), ("same", 0o751)] {
+            assert_eq!(
+                fs::symlink_metadata(proof.join(name))
+                    .unwrap()
+                    .permissions()
+                    .mode()
+                    & 0o7777,
+                mode,
+                "State metadata at {name}"
+            );
+        }
     }
 
     #[test]
@@ -1113,8 +1208,11 @@ mod tests {
         fs::write(worktree.join("unsaved"), "retain original").expect("uncommitted work");
         let state = fixture.path().join("absent-state");
         let report = migrate(&state, &project, true).expect("complete refusal report");
-        assert_eq!(report["files"], 1);
-        assert_eq!(report["logicalBytes"], 4);
+        assert_eq!(report["files"], 3);
+        assert_eq!(
+            report["logicalBytes"],
+            4 + fs::metadata(worktree.join(".git")).unwrap().len() + 15
+        );
         assert_eq!(
             report["repositories"]
                 .as_array()

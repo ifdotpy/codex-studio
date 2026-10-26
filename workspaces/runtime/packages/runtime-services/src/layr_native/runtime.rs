@@ -56,6 +56,7 @@ pub fn run(state_dir: &Path, cwd: &Path, args: &[&str]) -> Result<String> {
             .map(|(name, value)| format!("{name}={}", value.as_str().unwrap_or_default()))
             .collect();
     argv.extend(variables.iter().map(String::as_str));
+    argv.extend(["GIT_NO_LAZY_FETCH=1", "GIT_OPTIONAL_LOCKS=0"]);
     argv.extend([
         binary
             .to_str()
@@ -107,10 +108,51 @@ pub(super) fn lock(state_dir: &Path, name: &str) -> Result<File> {
 }
 
 /// Pending receipts survive process exit. A retry returns the same result or stays held.
+#[cfg(test)]
+mod review_tests {
+    use super::*;
+    #[test]
+    fn review_preflight_failure_does_not_poison_receipt() {
+        let state = tempfile::tempdir().unwrap();
+        let intent = json!({"kind":"import"});
+        assert!(
+            operation_with_preflight(
+                state.path(),
+                "space",
+                &intent,
+                || Err(NativeLayrError::Refused("Insufficient free space".into())),
+                || Ok(json!("must not run"))
+            )
+            .is_err()
+        );
+        assert_eq!(
+            operation_with_preflight(
+                state.path(),
+                "space",
+                &intent,
+                || Ok(()),
+                || Ok(json!("retried"))
+            )
+            .unwrap(),
+            json!("retried")
+        );
+    }
+}
+
 pub fn operation(
     state_dir: &Path,
     id: &str,
     intent: &Value,
+    effect: impl FnOnce() -> Result<Value>,
+) -> Result<Value> {
+    operation_with_preflight(state_dir, id, intent, || Ok(()), effect)
+}
+
+pub(super) fn operation_with_preflight(
+    state_dir: &Path,
+    id: &str,
+    intent: &Value,
+    preflight: impl FnOnce() -> Result<()>,
     effect: impl FnOnce() -> Result<Value>,
 ) -> Result<Value> {
     let _lock = lock(state_dir, id)?;
@@ -144,6 +186,7 @@ pub fn operation(
             _ => return Err(NativeLayrError::Unknown(path.display().to_string())),
         }
     }
+    preflight()?;
     let mut options = OpenOptions::new();
     options.create_new(true).write(true);
     #[cfg(unix)]
@@ -168,6 +211,15 @@ pub fn operation(
     };
     crate::atomic_file::replace(&path, receipt.to_string().as_bytes(), Some(0o600), true)?;
     outcome
+}
+
+/// A full working snapshot retains empty directories, modes, and attributes.
+pub(super) fn save_imported_tree(state: &Path, cwd: &Path, message: &str) -> Result<()> {
+    run(state, cwd, &["save", "--force", "--note", message])?;
+    let snapshot = run(state, cwd, &["rev-parse", "head@{0}"])?;
+    run(state, cwd, &["reset", "--mixed", snapshot.trim()])?;
+    run(state, cwd, &["save", "-m", message, "--allow-empty"])?;
+    Ok(())
 }
 
 pub fn project_id(record: &Value) -> Result<String> {
@@ -252,31 +304,40 @@ pub(super) fn prepare_files_with_git_policy(
         if without_git {
             input["withoutGit"] = json!(true);
         }
-        operation(state_dir, &format!("import:{project}"), &input, || {
-            let staging = tempfile::tempdir_in(state_dir.join(NATIVE_LAYR_DIRECTORY))?;
-            plan.stage(staging.path())?;
-            run(
-                state_dir,
-                state_dir,
-                &[
-                    "init",
-                    &project,
-                    "--from",
-                    staging.path().to_str().unwrap_or_default(),
-                    "--include-ignored",
-                ],
-            )?;
-            run(state_dir, &main, &["protect", "main", "--direct"])?;
-            plan.warm_caches(state_dir, &main, Path::new(""))?;
-            let receipt = json!({"projectId":project,"source":source,"mainPath":main,"withoutGit":without_git});
-            crate::atomic_file::replace(
-                &ready_path,
-                receipt.to_string().as_bytes(),
-                Some(0o600),
-                true,
-            )?;
-            Ok(receipt)
-        })?;
+        operation_with_preflight(
+            state_dir,
+            &format!("import:{project}"),
+            &input,
+            || plan.size.preflight(&state_dir.join(NATIVE_LAYR_DIRECTORY)),
+            || {
+                let staging = tempfile::tempdir_in(state_dir.join(NATIVE_LAYR_DIRECTORY))?;
+                plan.stage(staging.path())?;
+                run(
+                    state_dir,
+                    state_dir,
+                    &[
+                        "init",
+                        &project,
+                        "--from",
+                        staging.path().to_str().unwrap_or_default(),
+                        "--include-ignored",
+                    ],
+                )?;
+                run(state_dir, &main, &["protect", "main", "--direct"])?;
+                if plan.restore_directory_attributes(&main)? {
+                    save_imported_tree(state_dir, &main, "Preserve imported directory attributes")?;
+                }
+                plan.warm_caches(state_dir, &main, Path::new(""))?;
+                let receipt = json!({"projectId":project,"source":source,"mainPath":main,"withoutGit":without_git});
+                crate::atomic_file::replace(
+                    &ready_path,
+                    receipt.to_string().as_bytes(),
+                    Some(0o600),
+                    true,
+                )?;
+                Ok(receipt)
+            },
+        )?;
     }
     let reviewer = record["role"] == "reviewer";
     let lead = record["isLead"] == true;

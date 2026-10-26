@@ -1,30 +1,108 @@
 //! Replace ordinary files without removing the btrfs cache subvolume roots.
+use std::os::unix::ffi::OsStrExt;
 use std::{
     collections::BTreeSet,
     fs,
     path::{Path, PathBuf},
 };
 
+fn directory_flags() -> rustix::fs::OFlags {
+    use rustix::fs::OFlags;
+    OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC
+}
+
+/// Open each ancestor without following links, including the destination itself.
+fn open_directory(path: &Path) -> std::io::Result<std::os::fd::OwnedFd> {
+    use rustix::fs::{Mode, open, openat};
+    let path = if cfg!(target_os = "macos") {
+        ["/var", "/tmp"]
+            .iter()
+            .find_map(|prefix| {
+                path.strip_prefix(prefix).ok().map(|suffix| {
+                    Path::new("/private")
+                        .join(prefix.trim_start_matches('/'))
+                        .join(suffix)
+                })
+            })
+            .unwrap_or_else(|| path.to_owned())
+    } else {
+        path.to_owned()
+    };
+    if !path.is_absolute() {
+        return Err(std::io::Error::other("Private line path must be absolute"));
+    }
+    let mut parent = open("/", directory_flags(), Mode::empty())?;
+    for part in path.components() {
+        match part {
+            std::path::Component::RootDir => {}
+            std::path::Component::Normal(name) => {
+                parent = openat(&parent, name, directory_flags(), Mode::empty())?
+            }
+            _ => {
+                return Err(std::io::Error::other(
+                    "Private line path contains a parent traversal",
+                ));
+            }
+        }
+    }
+    Ok(parent)
+}
+
+pub(super) fn validate_destination(line: &Path, destination: &Path) -> std::io::Result<()> {
+    use rustix::fs::{Mode, openat};
+    let relative = destination
+        .strip_prefix(line)
+        .map_err(std::io::Error::other)?;
+    let mut parent = open_directory(line)?;
+    for part in relative.components() {
+        let std::path::Component::Normal(name) = part else {
+            return Err(std::io::Error::other(
+                "Destination escapes the private line",
+            ));
+        };
+        match openat(&parent, name, directory_flags(), Mode::empty()) {
+            Ok(fd) => parent = fd,
+            Err(rustix::io::Errno::NOENT) => return Ok(()),
+            Err(error) => return Err(error.into()),
+        }
+    }
+    Ok(())
+}
+
 pub(super) fn clear_import_destination(
     destination: &Path,
     cache_roots: &BTreeSet<PathBuf>,
 ) -> std::io::Result<()> {
-    if !destination.exists() {
-        return Ok(());
+    match open_directory(destination) {
+        Ok(fd) => clear_directory(&fd, destination, cache_roots),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error),
     }
-    use std::os::unix::fs::PermissionsExt;
-    let permissions = fs::metadata(destination)?.permissions().mode();
-    fs::set_permissions(destination, fs::Permissions::from_mode(permissions | 0o700))?;
-    for entry in fs::read_dir(destination)? {
+}
+
+fn clear_directory(
+    fd: &std::os::fd::OwnedFd,
+    path: &Path,
+    cache_roots: &BTreeSet<PathBuf>,
+) -> std::io::Result<()> {
+    use rustix::fs::{AtFlags, Dir, FileType, Mode, fchmod, fstat, openat, statat, unlinkat};
+    fchmod(fd, Mode::from_raw_mode(fstat(fd)?.st_mode | 0o700))?;
+    for entry in Dir::read_from(fd)? {
         let entry = entry?;
-        let path = entry.path();
-        if entry.file_type()?.is_dir() {
-            clear_import_destination(&path, cache_roots)?;
-            if !cache_roots.iter().any(|cache| cache.starts_with(&path)) {
-                fs::remove_dir(&path)?;
+        let name = entry.file_name();
+        if matches!(name.to_bytes(), b"." | b"..") {
+            continue;
+        }
+        let child = path.join(std::ffi::OsStr::from_bytes(name.to_bytes()));
+        let stat = statat(fd, name, AtFlags::SYMLINK_NOFOLLOW)?;
+        if FileType::from_raw_mode(stat.st_mode) == FileType::Directory {
+            let child_fd = openat(fd, name, directory_flags(), Mode::empty())?;
+            clear_directory(&child_fd, &child, cache_roots)?;
+            if !cache_roots.iter().any(|cache| cache.starts_with(&child)) {
+                unlinkat(fd, name, AtFlags::REMOVEDIR)?;
             }
         } else {
-            fs::remove_file(path)?;
+            unlinkat(fd, name, AtFlags::empty())?;
         }
     }
     Ok(())
@@ -34,6 +112,33 @@ pub(super) fn clear_import_destination(
 mod tests {
     use super::*;
     use std::os::unix::fs::PermissionsExt;
+    #[test]
+    fn review_clear_refuses_symlink_destination_and_preserves_source() {
+        let fixture = tempfile::tempdir().unwrap();
+        let source = fixture.path().join("source");
+        let line = fixture.path().join("line");
+        fs::create_dir_all(source.join("repo")).unwrap();
+        fs::create_dir(&line).unwrap();
+        fs::write(source.join("repo/keep"), "original").unwrap();
+        std::os::unix::fs::symlink(&source, line.join("link")).unwrap();
+        let result = clear_import_destination(&line.join("link/repo"), &BTreeSet::new());
+        assert!(
+            result.is_err(),
+            "A symlink ancestor must refuse before clearing"
+        );
+        assert_eq!(
+            fs::read_to_string(source.join("repo/keep")).unwrap(),
+            "original"
+        );
+        clear_import_destination(&line, &BTreeSet::new())
+            .expect("Unlink the inherited link itself");
+        assert!(!line.join("link").exists());
+        assert_eq!(
+            fs::read_to_string(source.join("repo/keep")).unwrap(),
+            "original"
+        );
+    }
+
     #[test]
     fn migration_clear_keeps_cache_roots_and_removes_read_only_contents() {
         let fixture = tempfile::tempdir().expect("fixture");

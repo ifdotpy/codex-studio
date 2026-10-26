@@ -11,6 +11,7 @@ pub(super) fn git(at: &Path, args: &[&str]) -> Result<Vec<u8>> {
         args,
         environment: &[
             ("GIT_OPTIONAL_LOCKS", "0"),
+            ("GIT_NO_LAZY_FETCH", "1"),
             ("GIT_TERMINAL_PROMPT", "0"),
             ("LC_ALL", "C"),
         ],
@@ -119,6 +120,8 @@ pub(super) fn classify_worktree(
     let changes = facts["uncommittedChanges"].as_u64().ok_or_else(|| {
         NativeLayrError::Refused("Missing worktree status for classification".into())
     })?;
+    let hidden = hidden_index_changes(source)?;
+    let changes = changes.saturating_add(hidden);
     let untracked = facts["untrackedFiles"].as_u64().ok_or_else(|| {
         NativeLayrError::Refused("Missing worktree untracked count for classification".into())
     })?;
@@ -182,4 +185,99 @@ pub(super) fn worktree_summary(lines: &[Value]) -> Value {
         .filter(|line| line["classification"]["selectedByDirty"] == true)
         .count();
     json!({"selectedByDirty":selected,"total":lines.len(),"uncommittedOrUntracked":dirty,"commitsToRetain":commits,"cleanAndMerged":clean,"unclassified":lines.len() - dirty - commits - clean,"basis":"Class a has uncommitted or untracked files. Class b has HEAD commits absent from remote-tracking refs, local branches, or the parent repository HEAD. Class c has none of these. Ignored data is not part of Git status. No network fetch runs."})
+}
+
+/// Git status can conceal edits under assume-unchanged and skip-worktree flags.
+fn hidden_index_changes(source: &Path) -> Result<u64> {
+    use std::os::unix::ffi::OsStrExt;
+    let flagged = git(source, &["ls-files", "-v", "-z"])?;
+    let mut changed = 0u64;
+    for entry in flagged
+        .split(|byte| *byte == 0)
+        .filter(|entry| !entry.is_empty())
+    {
+        if entry.len() < 3 || !(entry[0].is_ascii_lowercase() || entry[0] == b'S') {
+            continue;
+        }
+        let path = std::str::from_utf8(&entry[2..])
+            .map_err(|_| NativeLayrError::Refused("Non-UTF-8 flagged index path".into()))?;
+        let equal = (|| -> Result<bool> {
+            let stage = git(source, &["ls-files", "--stage", "-z", "--", path])?;
+            let record =
+                std::str::from_utf8(&stage).map_err(|e| NativeLayrError::Refused(e.to_string()))?;
+            let (index, _) = record
+                .split_once('\t')
+                .ok_or_else(|| NativeLayrError::Refused("Invalid index entry".into()))?;
+            let mut fields = index.split_whitespace();
+            let mode = fields.next().unwrap_or_default();
+            let oid = fields.next().unwrap_or_default();
+            let bytes = git(source, &["cat-file", "blob", oid])?;
+            let at = source.join(path);
+            let metadata = std::fs::symlink_metadata(&at)?;
+            let actual = if metadata.file_type().is_symlink() {
+                std::fs::read_link(&at)?.as_os_str().as_bytes().to_vec()
+            } else if metadata.is_file() && metadata.len() <= 64 * 1024 * 1024 {
+                std::fs::read(&at)?
+            } else {
+                return Ok(false);
+            };
+            use std::os::unix::fs::PermissionsExt;
+            let actual_mode = if metadata.file_type().is_symlink() {
+                "120000"
+            } else if metadata.permissions().mode() & 0o111 != 0 {
+                "100755"
+            } else {
+                "100644"
+            };
+            Ok(mode == actual_mode && bytes == actual)
+        })()
+        .unwrap_or(false);
+        if !equal {
+            changed += 1;
+        }
+    }
+    Ok(changed)
+}
+
+#[cfg(test)]
+mod review_tests {
+    use super::*;
+    #[test]
+    fn review_dirty_selection_detects_hidden_index_edits() {
+        let root = tempfile::tempdir().unwrap();
+        let at = root.path();
+        git(at, &["init", "-q"]).unwrap();
+        for name in ["assumed", "skipped"] {
+            std::fs::write(at.join(name), "base").unwrap();
+        }
+        git(at, &["add", "."]).unwrap();
+        git(
+            at,
+            &[
+                "-c",
+                "user.name=Fixture",
+                "-c",
+                "user.email=fixture@example.test",
+                "-c",
+                "core.hooksPath=/dev/null",
+                "commit",
+                "-qm",
+                "base",
+            ],
+        )
+        .unwrap();
+        git(at, &["update-index", "--assume-unchanged", "assumed"]).unwrap();
+        git(at, &["update-index", "--skip-worktree", "skipped"]).unwrap();
+        for name in ["assumed", "skipped"] {
+            std::fs::write(at.join(name), "edit").unwrap();
+            let class =
+                classify_worktree(at, at, &json!({"uncommittedChanges":0,"untrackedFiles":0}))
+                    .unwrap();
+            assert!(
+                class.selected_by_dirty,
+                "Hidden index edits must select the line"
+            );
+            std::fs::write(at.join(name), "base").unwrap();
+        }
+    }
 }

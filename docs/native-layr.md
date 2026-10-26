@@ -99,7 +99,9 @@ This option omits only the top-level `.git`, without a backup. Nested repositori
 The report and import receipt record this choice. The source folder remains unchanged.
 The option cannot change a completed import that retained Git metadata.
 
-Studio excludes `.worktrees` and linked worktree folders from main.
+Studio excludes registered linked worktree folders from main.
+Ordinary files and folders under `.worktrees` remain versioned data.
+The `worktreeData` report lists them.
 The migration command imports their files into separate lines.
 It includes their ignored data and warm build caches.
 The `cachePathChanges` report lists paths whose role differs between main and an imported line.
@@ -112,23 +114,25 @@ The original worktree folder remains unchanged.
 
 The free-space preflight counts metadata, cross-volume copies, Git fetch output, and Git import allocations.
 Reports separate these costs as `metadataBytes`, `transientMetadataBytes`, `crossVolumeBytes`, `gitTransferBytes`, and `gitHeadBytes`.
-The metadata allowance is 1,961 bytes per entry, including directories.
+The metadata allowance is 2,862 bytes per entry, including directories.
 It is twice the larger measured peak per entry, rounded up to a byte.
 The APFS cache fixture has 4,096 files and 4,161 entries.
 Its net free-space delta is 3,297,280 bytes. Its peak is 4,079,616 bytes, or 980.44 bytes per entry.
 Every source and main cache clone ID matches.
-A second fixture has 4,096 versioned files, 4,096 cache files, and 8,502 source entries.
-A new line costs 3,112,960 bytes net and 3,575,808 bytes at peak.
-A migrated line costs 7,278,592 bytes net and 8,032,256 bytes at peak.
-These are 366.14 and 856.10 net bytes per entry, respectively.
-The temporary line allowance is 842 bytes per main entry, twice its measured peak per entry.
+The current migration fixture has 4,096 versioned files, 4,096 cache files, and 8,517 source entries.
+A new line costs 3,092,480 bytes net and 3,960,832 bytes at peak.
+A migrated line costs 11,362,304 bytes net and 12,185,600 bytes at peak.
+These are 363.09 and 1,334.07 net bytes per entry, respectively.
+The migrated-line peak is 1,430.74 bytes per entry. The allowance is twice this value, rounded up.
+The temporary line allowance is 931 bytes per main entry, twice its measured peak per entry.
 Layr 0.2.2 uses the APFS whole-directory clone call when hard links and nested layers do not require a fallback.
 The measured fixture has neither condition. The directory clone still needs metadata for its new tree.
-The 366.14 bytes per entry do not show a file-by-file fallback.
+The measured bytes per entry do not show a file-by-file fallback.
 The estimate charges only the part of that temporary allowance above the final line's metadata allowance.
 For a nested repository, each line also retains the other project folders from main.
 Their entries receive the same metadata allowance and appear as `inheritedEntries` and `inheritedMetadataBytes`.
-The report separates main's source counts as `mainSize`.
+The report separates the actual main counts as `mainSize` and the original source counts as `sourceSize`.
+If native main exists, its actual tree determines each line clone cost.
 Same-volume clones add no payload bytes to this estimate.
 The estimate follows the required host Layr version.
 Layr 0.2.1 requires a full HEAD allowance and an allowance for copies into existing HEAD files.
@@ -139,6 +143,13 @@ A margin retains at least 64 MiB or ten percent of the estimate, whichever is la
 A same-volume clone failure causes refusal, without a byte-copy fallback.
 Cross-volume files require a byte copy and sufficient space before import.
 Keep the source quiet during import. Studio checks its identities before and after the clones.
+Source Git reads set `GIT_NO_LAZY_FETCH=1` and `GIT_OPTIONAL_LOCKS=0`.
+Missing partial-clone objects cause an unknown-size refusal, without fetching into the source.
+Clears use directory descriptors and refuse symlink ancestors. They unlink links without visiting their targets.
+A copied submodule config link becomes a regular private file before any edit.
+Attribute copies use descriptors or no-follow link calls on APFS and btrfs.
+Full-tree snapshots preserve empty directories, directory modes, and file mode changes in each imported head.
+Capacity checks run before the pending receipt. A shortage can retry with the same request after capacity increases.
 
 Later chats use the existing main line.
 They do not copy changes from the original folder.
@@ -284,7 +295,7 @@ After import, its merge commands pin each imported state with `--expect`.
 The dry run starts no backend and writes no project or store files.
 For each project it reports files, logical bytes, tracked bytes, cache bytes, estimated new bytes, and lines to create.
 The totals include main and the worktree sources.
-The report lists excluded `.worktrees` folders and any worktree without an admitted parent.
+The report lists `.worktrees` containers, their versioned data, and any linked worktree without an admitted parent.
 If a worktree cannot be sized, `sizesComplete` is false and its refusal includes its source path.
 It lists nested repositories, their type, branch, uncommitted changes, untracked files, and unpushed commits.
 Unpushed commits are local branch or detached-HEAD commits absent from all remote-tracking refs.
@@ -296,6 +307,7 @@ Class `b` has HEAD commits absent from remote-tracking refs, local branches, or 
 Class `c` is clean and has none of these commits.
 The `worktreeSummary` counts these classes. All worktrees remain selected by default.
 Git status does not count ignored data. Such data can differ even in a clean worktree.
+Studio also compares flagged index files by bytes to detect edits hidden by assume-unchanged or skip-worktree.
 Use `--worktrees all` to keep the default selection.
 Use `--worktrees dirty` to select uncommitted files, untracked files, and HEAD commits outside all local branches and remote-tracking refs.
 A clean worktree on a named local branch can be skipped even when its commits are not pushed.

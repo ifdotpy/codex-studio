@@ -20,6 +20,7 @@ pub(super) fn plain_reason(directory: &Path, marker: &Path) -> Result<Option<Str
         args: &["--git-dir", marker, "rev-parse", "--is-bare-repository"],
         environment: &[
             ("GIT_OPTIONAL_LOCKS", "0"),
+            ("GIT_NO_LAZY_FETCH", "1"),
             ("GIT_TERMINAL_PROMPT", "0"),
             ("LC_ALL", "C"),
         ],
