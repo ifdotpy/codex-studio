@@ -1,6 +1,10 @@
+import type { HistorySnapshot } from "./current-command-history-fixture.tsx";
+import type { Message } from "../../src/types.ts";
+import type { BrowserContext, TestInfo } from "@playwright/test";
+import { required } from "../teams/helpers.ts";
+import { createFixtureViteServer as createServer } from "../playwright.ts";
 // Completed command rows disappear. Current commands and source records remain.
 import assert from "node:assert/strict";
-import { createRequire } from "node:module";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -8,7 +12,7 @@ import { fileURLToPath } from "node:url";
 
 import { test } from "../playwright.ts";
 
-const browserContextsByTest = new WeakMap();
+const browserContextsByTest = new WeakMap<TestInfo, Set<BrowserContext>>();
 test.beforeEach(async ({ browser }, testInfo) => {
   browserContextsByTest.set(testInfo, new Set(browser.contexts()));
 });
@@ -25,30 +29,8 @@ test.afterEach(async ({ browser }, testInfo) => {
 test("current command history ui", async ({ browser: _browser }) => {
   test.setTimeout(120_000);
   const repo = fileURLToPath(new URL("../../../../../../", import.meta.url));
-  const require = createRequire(
-    join(repo, "workspaces/client/apps/web/package.json"),
-  );
-  const { createServer } = await import(require.resolve("vite"));
   const cache = await mkdtemp(join(tmpdir(), "current-command-history-vite-"));
-  const entry = join(
-    repo,
-    "workspaces/client/apps/web/__current-command-history-fixture.jsx",
-  );
-  const source = `
-  import React, {useState} from 'react';
-  import {createRoot} from 'react-dom/client';
-  import {MantineProvider} from '@mantine/core';
-  import '@mantine/core/styles.css';
-  import TurnHistory from '/src/components/conversation/transcript/TurnHistory.tsx';
-  function Fixture(){
-   const [snapshot,setSnapshot]=useState(null);window.applySnapshot=setSnapshot;
-    return <MantineProvider><main data-case={snapshot?.label}>
-   {snapshot && <TurnHistory key={snapshot.label} items={snapshot.items} currentTurn={snapshot.currentTurn} enabled={snapshot.enabled} storageKey="fixture"
-   renderMessage={item=><p data-message={item.id}>{item.text}</p>} onJump={()=>{}}/>}
-   <output hidden>{JSON.stringify(snapshot?.items)}</output>
-   </main></MantineProvider>;
-  }
-  createRoot(document.getElementById('root')).render(<Fixture/>);`;
+
   const server = await createServer({
     configFile: false,
     cacheDir: cache,
@@ -57,18 +39,12 @@ test("current command history ui", async ({ browser: _browser }) => {
     plugins: [
       {
         name: "current-command-history-fixture",
-        resolveId(id) {
-          if (id === "/__current-command-history-fixture.jsx") return entry;
-        },
-        load(id) {
-          if (id === entry) return source;
-        },
         configureServer(vite) {
           vite.middlewares.use((req, res, next) => {
             if (req.url !== "/") return next();
             res.setHeader("Content-Type", "text/html");
             res.end(
-              '<div id="root"></div><script type="module" src="/__current-command-history-fixture.jsx"></script>',
+              '<div id="root"></div><script type="module" src="/tests/terminal/current-command-history-fixture.tsx"></script>',
             );
           });
         },
@@ -80,19 +56,24 @@ test("current command history ui", async ({ browser: _browser }) => {
     await server.listen();
     browser = _browser;
     const page = await browser.newPage();
-    const errors = [],
-      writes = [];
+    const errors: string[] = [],
+      writes: string[] = [];
     page.on("pageerror", (error) => errors.push(error.message));
     await page.route("**/api/**", async (route) => {
       if (route.request().method() !== "GET")
         writes.push(route.request().url());
       await route.fulfill({ json: {} });
     });
-    await page.goto(server.resolvedUrls.local[0]);
+    await page.goto(required(server.resolvedUrls?.local[0]));
     await page.waitForFunction(
-      () => typeof window.applySnapshot === "function",
+      () => typeof window.currentCommandHistoryApply === "function",
     );
-    const command = (id, state, type = "commandExecution", tool) => ({
+    const command = (
+      id: string,
+      state: string,
+      type = "commandExecution",
+      tool?: string,
+    ): Message => ({
       id,
       role: "tool",
       turnId: "turn",
@@ -126,7 +107,7 @@ test("current command history ui", async ({ browser: _browser }) => {
       turnStatus: "failed",
     };
     const running = command("current", "running");
-    const items = [
+    const items: Message[] = [
       { id: "user", role: "user", text: "Run checks" },
       completed,
       failed,
@@ -148,18 +129,29 @@ test("current command history ui", async ({ browser: _browser }) => {
       },
     ];
     let cases = 0;
-    const apply = async (label, rows, enabled, currentTurn) => {
-      await page.evaluate((snapshot) => window.applySnapshot(snapshot), {
-        label,
-        items: rows,
-        enabled,
-        currentTurn,
-      });
+    const apply = async (
+      label: string,
+      rows: Message[],
+      enabled: boolean,
+      currentTurn?: string,
+    ) => {
+      await page.evaluate(
+        (json) => {
+          const snapshot: HistorySnapshot = JSON.parse(json);
+          window.currentCommandHistoryApply(snapshot);
+        },
+        JSON.stringify({
+          label,
+          items: rows,
+          enabled,
+          currentTurn,
+        }),
+      );
       await page
         .locator(`main[data-case="${label}"]`)
         .waitFor({ state: "attached" });
       assert.deepEqual(
-        JSON.parse(await page.locator("output").textContent()),
+        JSON.parse(required(await page.locator("output").textContent())),
         rows,
         "Source history remains intact",
       );
