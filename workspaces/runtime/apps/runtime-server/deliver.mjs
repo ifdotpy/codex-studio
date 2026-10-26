@@ -188,6 +188,46 @@ export function deliveryPython(env = process.env) {
   });
 }
 
+function validateStartupTarget({
+  startingBackendPid,
+  recoverInstalledDelivery,
+  state,
+  app,
+}) {
+  const selected =
+    startingBackendPid !== undefined || recoverInstalledDelivery !== undefined;
+  if (
+    startingBackendPid !== undefined &&
+    recoverInstalledDelivery !== undefined
+  )
+    throw new Error("Select one delivery recovery proof kind.");
+  if (selected !== (state !== undefined))
+    throw new Error(
+      "Provide an explicit delivery recovery proof and --state together.",
+    );
+  if (selected) {
+    if (
+      startingBackendPid !== undefined &&
+      (!Number.isSafeInteger(startingBackendPid) || startingBackendPid < 2)
+    )
+      throw new Error(
+        "The startup backend PID must be an integer greater than one.",
+      );
+    if (
+      recoverInstalledDelivery !== undefined &&
+      !/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/.test(
+        recoverInstalledDelivery,
+      )
+    )
+      throw new Error(
+        "The prior installed delivery identity must be a canonical UUID.",
+      );
+    if (!path.isAbsolute(state) || path.resolve(state) !== state)
+      throw new Error("Provide the canonical absolute state path.");
+    if (!app) throw new Error("Provide a prepared --app for startup delivery.");
+  }
+}
+
 export function parseDeliveryArguments(argv) {
   const options = {
     ref: "HEAD",
@@ -197,6 +237,9 @@ export function parseDeliveryArguments(argv) {
     receipts: undefined,
     allowRetainedClaudeSteerFailure: false,
     skipCanary: false,
+    startingBackendPid: undefined,
+    recoverInstalledDelivery: undefined,
+    state: undefined,
   };
   const args = [...argv];
   if (args[0] && !args[0].startsWith("--")) options.ref = args.shift();
@@ -206,13 +249,26 @@ export function parseDeliveryArguments(argv) {
     else if (flag === "--skip-canary") options.skipCanary = true;
     else if (flag === "--allow-retained-claude-steer-failure")
       options.allowRetainedClaudeSteerFailure = true;
-    else if (["--app", "--url", "--receipts"].includes(flag)) {
+    else if (flag === "--starting-backend-pid") {
+      const value = args.shift();
+      if (!value || !/^[1-9][0-9]*$/.test(value))
+        throw new Error(
+          "The startup backend PID must be an integer greater than one.",
+        );
+      options.startingBackendPid = Number(value);
+    } else if (flag === "--recover-installed-delivery") {
+      const value = args.shift();
+      if (!value || value.startsWith("--"))
+        throw new Error(`Missing value for ${flag}`);
+      options.recoverInstalledDelivery = value;
+    } else if (["--app", "--url", "--receipts", "--state"].includes(flag)) {
       const value = args.shift();
       if (!value || value.startsWith("--"))
         throw new Error(`Missing value for ${flag}`);
       options[flag.slice(2)] = value;
     } else throw new Error(`Unknown delivery option: ${flag}`);
   }
+  validateStartupTarget(options);
   if (options.dryRun && !options.app)
     throw new Error(
       "Provide --app for a dry run; it must not build a package.",
@@ -242,8 +298,17 @@ export function deliveryPlan({
   receipts,
   allowRetainedClaudeSteerFailure = false,
   skipCanary = false,
+  startingBackendPid,
+  recoverInstalledDelivery,
+  state,
   repository: root = repository,
 }) {
+  validateStartupTarget({
+    startingBackendPid,
+    recoverInstalledDelivery,
+    state,
+    app,
+  });
   if (platform === "linux") {
     if (
       app ||
@@ -251,7 +316,10 @@ export function deliveryPlan({
       url ||
       receipts ||
       allowRetainedClaudeSteerFailure ||
-      skipCanary
+      skipCanary ||
+      startingBackendPid !== undefined ||
+      recoverInstalledDelivery !== undefined ||
+      state !== undefined
     )
       throw new Error("Mac delivery options are not supported on Linux");
     return [
@@ -320,6 +388,22 @@ export function deliveryPlan({
       folder,
       "--url",
       url ?? `http://127.0.0.1:${layout.port}`,
+      ...(startingBackendPid === undefined
+        ? []
+        : [
+            "--starting-backend-pid",
+            String(startingBackendPid),
+            "--state",
+            state,
+          ]),
+      ...(recoverInstalledDelivery === undefined
+        ? []
+        : [
+            "--recover-installed-delivery",
+            recoverInstalledDelivery,
+            "--state",
+            state,
+          ]),
     ],
   };
   if (dryRun)

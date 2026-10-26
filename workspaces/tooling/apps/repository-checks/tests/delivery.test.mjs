@@ -18,6 +18,124 @@ const repository = path.resolve(
 );
 const fixtureApp = path.join(os.tmpdir(), "checked", "Codex Studio.app");
 
+test("installed-delivery recovery uses the existing route without selecting a backend PID", () => {
+  const state = path.join(os.tmpdir(), "recovered-delivery-state");
+  const prior = "4b1e1a51-3df8-555f-906b-4b1d685b5b52";
+  const options = parseDeliveryArguments([
+    "HEAD",
+    "--app",
+    fixtureApp,
+    "--recover-installed-delivery",
+    prior,
+    "--state",
+    state,
+  ]);
+  const plan = deliveryPlan({
+    ...options,
+    platform: "darwin",
+    commit: "b".repeat(40),
+    repository,
+  });
+  for (const step of plan.filter((item) =>
+    ["verify target", "stage and verify"].includes(item.label),
+  )) {
+    assert.equal(
+      step.args[step.args.indexOf("--recover-installed-delivery") + 1],
+      prior,
+    );
+    assert.equal(step.args[step.args.indexOf("--state") + 1], state);
+    assert.ok(!step.args.includes("--starting-backend-pid"));
+  }
+  for (const args of [
+    ["--app", fixtureApp, "--recover-installed-delivery", prior],
+    [
+      "--app",
+      fixtureApp,
+      "--recover-installed-delivery",
+      "invalid",
+      "--state",
+      state,
+    ],
+    [
+      "--app",
+      fixtureApp,
+      "--recover-installed-delivery",
+      prior,
+      "--state",
+      state,
+      "--starting-backend-pid",
+      "11",
+    ],
+  ])
+    assert.throws(() => parseDeliveryArguments(args));
+});
+
+test("startup delivery pins one PID and canonical state through the existing staging owner", () => {
+  const state = path.join(os.tmpdir(), "startup-delivery-state");
+  const options = parseDeliveryArguments([
+    "HEAD",
+    "--app",
+    fixtureApp,
+    "--starting-backend-pid",
+    "36156",
+    "--state",
+    state,
+  ]);
+  assert.equal(options.startingBackendPid, 36156);
+  const plan = deliveryPlan({
+    ...options,
+    platform: "darwin",
+    commit: "b".repeat(40),
+    repository,
+  });
+  for (const step of plan.filter((item) =>
+    ["verify target", "stage and verify"].includes(item.label),
+  )) {
+    assert.equal(
+      step.args[step.args.indexOf("--starting-backend-pid") + 1],
+      "36156",
+    );
+    assert.equal(step.args[step.args.indexOf("--state") + 1], state);
+  }
+  assert.equal(
+    plan.filter((step) =>
+      step.args?.some((arg) => arg.endsWith("deliver_server.py")),
+    ).length,
+    2,
+  );
+  assert.ok(
+    !plan.some((step) =>
+      step.args?.some((arg) => arg.endsWith("install_update.py")),
+    ),
+  );
+  for (const args of [
+    ["--app", fixtureApp, "--starting-backend-pid", "11"],
+    ["--app", fixtureApp, "--state", state],
+    ["--app", fixtureApp, "--starting-backend-pid", "1", "--state", state],
+    ["--app", fixtureApp, "--starting-backend-pid", "11.5", "--state", state],
+    [
+      "--app",
+      fixtureApp,
+      "--starting-backend-pid",
+      "11",
+      "--state",
+      "relative",
+    ],
+    ["--starting-backend-pid", "11", "--state", state],
+  ])
+    assert.throws(() => parseDeliveryArguments(args));
+  assert.throws(
+    () =>
+      deliveryPlan({
+        ...options,
+        platform: "linux",
+        commit: "b".repeat(40),
+        repository,
+      }),
+    /Mac delivery/,
+  );
+});
+
 test("explicit canary skip keeps target verification and the normal install owner", () => {
   const options = parseDeliveryArguments([
     "HEAD",
@@ -421,6 +539,18 @@ test("Mac staging boundary tests use disposable bundles and state", async () => 
     { cwd: repository, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] },
   );
   assert.equal(result, "");
+});
+
+test("startup delivery keeps process proof, the legacy swap, and the existing recovery owner", async () => {
+  execFileSync(
+    await deliveryPython(),
+    ["-I", "-B", "workspaces/client/apps/desktop/startup-delivery-test.py"],
+    {
+      cwd: repository,
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "pipe"],
+    },
+  );
 });
 
 test("the Mac delivery entry point works under Python isolated mode", async () => {

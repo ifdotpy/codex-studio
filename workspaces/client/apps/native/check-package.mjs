@@ -64,6 +64,7 @@ for (const file of [
   "helpers/desktop-recovery/restart-environment.cjs",
   "studio-fs-events",
   "studio-linux-vm",
+  "delivery-contract.json",
   ...pythonEntryPoints,
 ])
   await access(path.join(resources, file));
