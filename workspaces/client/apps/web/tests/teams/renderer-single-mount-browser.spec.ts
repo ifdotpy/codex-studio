@@ -1,3 +1,9 @@
+declare global {
+  interface Window {
+    studioOriginalSidebar: HTMLElement | null;
+  }
+}
+import { waitForFixturePort } from "../playwright.ts";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -12,16 +18,11 @@ test("another entry URL keeps one Studio tree after lazy modules load", async ({
     env: { ...process.env, FIXTURE_WORKER_COUNT: "2", FIXTURE_HOLD: "workers" },
   });
   let log = "";
-  fixture.stderr.on("data", (chunk) => {
+  fixture.stderr?.on("data", (chunk) => {
     log += chunk;
   });
   try {
-    const port = await new Promise((resolve, reject) => {
-      fixture.stdout.once("data", (chunk) =>
-        resolve(Number(String(chunk).trim())),
-      );
-      fixture.once("exit", () => reject(new Error(log)));
-    });
+    const port = await waitForFixturePort(fixture);
     await page.setViewportSize({ width: 1440, height: 960 });
     await page.goto(`http://127.0.0.1:${port}`);
     await expect(page.locator("#message")).toBeVisible({ timeout: 10_000 });
@@ -35,6 +36,8 @@ test("another entry URL keeps one Studio tree after lazy modules load", async ({
     await page.evaluate(async () => {
       window.studioOriginalSidebar = document.getElementById("sidebar");
       const entry = document.querySelector('script[type="module"][src]');
+      if (!(entry instanceof HTMLScriptElement))
+        throw Error("Missing entry script");
       const url = new URL(entry.src);
       url.searchParams.set("duplicate-entry", "1");
       await import(url.href);

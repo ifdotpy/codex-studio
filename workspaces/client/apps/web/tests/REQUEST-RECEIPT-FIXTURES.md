@@ -10,13 +10,13 @@ or stored receipt using a request body field such as `id`, `request_id`, or
 - `claude/claude-login-ui.spec.mjs`
 - `drafts/dialog-drafts-ui.spec.mjs`
 - `drafts/draft-push-coalescing-browser.spec.mjs`
-- `files/upload-recovery-browser.spec.mjs`
+- `files/upload-recovery-browser.spec.ts`
 - `messages/message-delivery-ui.spec.mjs`
 - `messages/mobile-send-reliability-browser.spec.mjs`
 - `messages/send-session-token-browser.spec.mjs`
 - `mobile/mobile-send-reliability-ui.spec.mjs`
 - `outbox/send-preflight-browser.spec.mjs`
-- `projects/new-chat-workspace-ui.spec.mjs`
+- `projects/new-chat-workspace-ui.spec.ts`
 - `queue/queue-mutation-deadline-browser.spec.mjs`
 - `radio/radio-create-browser.spec.mjs`
 - `servers/multi-server-fixture.ts`
@@ -27,7 +27,7 @@ or stored receipt using a request body field such as `id`, `request_id`, or
 - `settings/unified-agent-picker-browser.spec.mjs`
 - `shell/shell-ux-ui.spec.mjs`
 - `sidebar/sidebar-parity-fixture.mjs`
-- `teams/peer-teams-browser.spec.mjs`
-- `teams/subagent-concurrency-ui.spec.mjs`
-- `terminal/terminal-dock-ui.spec.mjs`
-- `terminal/terminal-input-recovery-browser.spec.mjs`
+- `teams/peer-teams-browser.spec.ts`
+- `teams/subagent-concurrency-ui.spec.ts`
+- `terminal/terminal-dock-ui.spec.ts`
+- `terminal/terminal-input-recovery-browser.spec.ts`
