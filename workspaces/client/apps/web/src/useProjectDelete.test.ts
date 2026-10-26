@@ -1,3 +1,4 @@
+import { assert } from "vitest";
 import { beforeEach, expect, it, vi } from "vitest";
 import type { SidebarServices } from "./components/sidebar/services";
 import type { Snapshot } from "./types";
@@ -137,6 +138,7 @@ it("cancel posts nothing; repeated confirmation and effect replay send once to s
   await f.settle();
   expect(f.owner).toHaveBeenCalledWith({ kind: "project", path: "/project" });
   expect(f.post).toHaveBeenCalledOnce();
+  assert(f.post.mock.calls[0] !== undefined);
   expect(f.post.mock.calls[0][1]).toMatchObject({
     id: "project",
     expected_project_seq: 12,
@@ -154,6 +156,7 @@ it("keeps unknown visible across SSE retirement and recovers only the saved requ
   await f.settle();
   expect(f.render().dialog.phase).toBe("unknown");
   expect(f.options.onFinish).not.toHaveBeenCalled();
+  assert(f.post.mock.calls[0] !== undefined);
   const request = f.post.mock.calls[0][1];
   f.options.data = {
     ...data,
@@ -171,6 +174,7 @@ it("keeps unknown visible across SSE retirement and recovers only the saved requ
   f.render();
   await f.settle();
   expect(f.post).toHaveBeenCalledTimes(2);
+  assert(f.post.mock.calls[1] !== undefined);
   expect(f.post.mock.calls[1][1]).toEqual(request);
   expect(f.render().dialog.name).toBeNull();
 });
@@ -191,6 +195,8 @@ it("restores a saved intention after remount without automatically replaying HTT
   restored.dialog.onRecover();
   f.render();
   await f.settle();
+  assert(f.post.mock.calls[1] !== undefined);
+  assert(f.post.mock.calls[0] !== undefined);
   expect(f.post.mock.calls[1][1]).toEqual(f.post.mock.calls[0][1]);
 });
 
@@ -273,6 +279,7 @@ it("never applies an old workspace's late deletion response to the current draft
   f.render().open("project");
   f.render().dialog.onConfirm();
   f.render();
+  assert(f.post.mock.calls[0] !== undefined);
   const request = f.post.mock.calls[0][1];
   f.options.workspaceId = "new-workspace";
   f.options.data = { ...data, entityWorkspaceId: "new-workspace" };
@@ -349,6 +356,7 @@ it("does not release confirmed IDs from an incomplete projection", async () => {
   f.render().open("project");
   f.render().dialog.onConfirm();
   f.render();
+  assert(f.post.mock.calls[0] !== undefined);
   const request = f.post.mock.calls[0][1];
   f.options.data = { ...data, entitiesComplete: false, threads: [] };
   f.render();

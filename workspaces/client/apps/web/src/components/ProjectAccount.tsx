@@ -21,7 +21,7 @@ export default function ProjectAccount({
   saved,
 }: {
   path: string;
-  project?: SnapshotProject;
+  project?: SnapshotProject | undefined;
   accounts: AccountsState;
   defaultAccountKey: string;
   saved: () => Promise<void>;

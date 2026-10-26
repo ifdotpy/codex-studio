@@ -211,7 +211,7 @@
     "INSERT INTO runtime_assets VALUES('asset','{\\\"id\\\":\\\"asset\\\",\\\"agent\\\":\\\"agent\\\",\\\"name\\\":\\\"a.txt\\\",\\\"path\\\":\\\"/tmp/a.txt\\\",\\\"mime\\\":\\\"text/plain\\\",\\\"image\\\":false,\\\"size\\\":1,\\\"hash\\\":\\\"h\\\",\\\"created\\\":0}');\",",
     "\"path\": \"/tmp/a.txt\","
   ],
-  "workspaces/tooling/apps/repository-checks/tests/release-binaries.test.mjs": [
+  "workspaces/tooling/apps/repository-checks/tests/release-binaries.test.ts": [
     "const { out, hostedCiPassed } = parseFlowArguments([\"/tmp/out\"]);",
     "parseFlowArguments([\"/tmp/out\", \"--hosted-ci-passed\"]).hostedCiPassed,",
     "() => parseFlowArguments([\"/tmp/out\", \"--skip\"]),"

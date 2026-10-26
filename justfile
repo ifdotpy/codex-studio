@@ -1,9 +1,9 @@
 set shell := ["bash", "-euo", "pipefail", "-c"]
 set positional-arguments
 
-export CARGO_BUILD_JOBS := `node workspaces/tooling/apps/repository-checks/gate-config.mjs`
+export CARGO_BUILD_JOBS := `node workspaces/tooling/apps/repository-checks/gate-config.ts`
 
-facade := justfile_directory() / "workspaces/tooling/apps/repository-checks/facade.mjs"
+facade := justfile_directory() / "workspaces/tooling/apps/repository-checks/facade.ts"
 rust-target := env_var_or_default("CARGO_TARGET_DIR", justfile_directory() / "target")
 rust-http-server := rust-target / "debug/studio-runtime-server"
 

@@ -20,7 +20,10 @@ export function gateFields(gate: Gate) {
   };
 }
 
-export function parseGate(command: string, timeout: string): Gate {
+export function parseGate(
+  command: string,
+  timeout: string,
+): Exclude<Gate, undefined> {
   if (!command.trim()) return null;
   const milliseconds = Number(timeout);
   if (

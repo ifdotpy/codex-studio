@@ -30,10 +30,10 @@ export default function ProjectDirectoryPicker({
   showServerSelector = true,
   submitLabel = "Add project",
 }: {
-  initialPath?: string;
+  initialPath?: string | undefined;
   onSelect: (path: string, server: string) => Promise<void>;
-  serverChoices?: ProjectServerChoice[];
-  initialServer?: string;
+  serverChoices?: ProjectServerChoice[] | undefined;
+  initialServer?: string | undefined;
   projectId?: string;
   showServerSelector?: boolean;
   submitLabel?: string;
@@ -153,7 +153,7 @@ export default function ProjectDirectoryPicker({
           data={servers.map((row) => ({
             value: row.id,
             label: row.label + (row.disabled ? " (Offline)" : ""),
-            disabled: row.disabled,
+            disabled: !!row.disabled,
           }))}
           onChange={(next) => {
             if (!next || next === server) return;

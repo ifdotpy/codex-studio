@@ -138,7 +138,10 @@ describe("upload recovery scheduling", () => {
       readonly listeners = new Set<(event: MessageEvent) => void>();
       closed = false;
 
-      constructor(readonly name: string) {
+      readonly name: string;
+      constructor(name: string) {
+        this.name = name;
+
         TestBroadcastChannel.channels.add(this);
       }
 

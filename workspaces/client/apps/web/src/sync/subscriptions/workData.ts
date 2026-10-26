@@ -1,5 +1,18 @@
-import type { SyncEntityPayload, components } from "../../generated/api";
-type ReviewTask = components["schemas"]["WorkItem"];
+import type { DeepReadonly } from "rxdb";
+import type { KnownApiFields } from "../../apiTypes";
+import type {
+  SyncEntityPayload as MutableSyncEntityPayload,
+  components,
+} from "../../generated/api";
+type SyncEntityPayload = DeepReadonly<MutableSyncEntityPayload>;
+type ReviewTask = DeepReadonly<
+  KnownApiFields<components["schemas"]["WorkItem"]>
+>;
+type WorkList = Omit<
+  DeepReadonly<components["schemas"]["WorkList"]>,
+  "items" | "tasks"
+> &
+  Record<"items" | "tasks", ReviewTask[]>;
 
 type History = Extract<
   SyncEntityPayload,
@@ -113,7 +126,7 @@ export function createTaskAssignmentSelector() {
 /** The existing public work subscription consumes one canonical WorkList. */
 export function createWorkDataSelector() {
   const select = createTaskAssignmentSelector();
-  let previous: components["schemas"]["WorkList"] | undefined;
+  let previous: WorkList | undefined;
   return (entities: readonly SyncEntityPayload[], rootId: string) => {
     const items = select(entities, rootId);
     if (!previous || previous.rootId !== rootId || previous.items !== items)
