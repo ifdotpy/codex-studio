@@ -23,6 +23,8 @@ import type {
 
 // Fixture events share the transport but are not part of the production protocol.
 export interface BridgeFixtureNotifications {
+  "fixture/callback": { value?: unknown; error?: string; decodes: number };
+  "fixture/clockVisits": { phase: string; visits: number; at: number };
   "fixture/mode": {
     mode: import("@anthropic-ai/claude-agent-sdk").PermissionMode;
   };
@@ -72,9 +74,7 @@ function hasMethod<M extends BridgeNote["method"]>(
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
-function parseBridgeMessage<M extends BridgeMethod>(
-  value: unknown,
-): BridgeNote | BridgeResponse<BridgeResult<M>> {
+function parseBridgeMessage(value: unknown): BridgeNote | BridgeResponse {
   if (!isRecord(value)) throw new Error("Invalid bridge message envelope");
   const validId = typeof value.id === "string" || typeof value.id === "number";
   if (typeof value.method === "string") {
@@ -82,19 +82,18 @@ function parseBridgeMessage<M extends BridgeMethod>(
       throw new Error("Invalid bridge notification envelope");
   } else if (
     !validId ||
-    (!("result" in value) &&
-      !(
-        isRecord(value.error) &&
-        typeof value.error.message === "string" &&
-        typeof value.error.code === "number"
-      ))
+    "result" in value === "error" in value ||
+    ("error" in value &&
+      (!isRecord(value.error) ||
+        typeof value.error.message !== "string" ||
+        typeof value.error.code !== "number"))
   ) {
     throw new Error("Invalid bridge response envelope");
   }
   // The child is the copied program under test and its scripted SDK fixture.
   // Their payloads use the TypeScript protocol owner; this boundary checks the
   // envelope and trusts those controlled producers for the payload fields.
-  return value as BridgeNote | BridgeResponse<BridgeResult<M>>;
+  return value as BridgeNote | BridgeResponse;
 }
 
 // Maximum simulated wait and per-step advancement, both in milliseconds.
@@ -193,7 +192,7 @@ export async function startBridge(
   const notes: BridgeNote[] = [];
   const waiting = new Map<
     BridgeRpcId,
-    { resolve: (value: unknown) => void; reject: (error: Error) => void }
+    { resolve: (value: BridgeResponse) => void; reject: (error: Error) => void }
   >();
   const notifications = new Set<() => void>();
   const attach = () => {
@@ -214,7 +213,7 @@ export async function startBridge(
         const value: unknown = JSON.parse(line);
         const message = parseBridgeMessage(value);
         if ("method" in message) notes.push(message);
-        else waiting.get(message.id)?.resolve(value);
+        else waiting.get(message.id)?.resolve(message);
         for (const notify of notifications) notify();
       },
     );
@@ -347,16 +346,15 @@ export async function startBridge(
       try {
         const result = await new Promise<BridgeResult<M>>((resolve, reject) => {
           waiting.set(id, {
-            resolve(value) {
-              const message = parseBridgeMessage<M>(value);
-              if ("method" in message) return;
+            resolve(message) {
               if ("error" in message)
                 reject(
                   Object.assign(new Error(message.error.message), {
                     data: message.error.data,
                   }),
                 );
-              else resolve(message.result);
+              // The decoded id selects this call's result contract.
+              else resolve(message.result as BridgeResult<M>);
             },
             reject,
           });

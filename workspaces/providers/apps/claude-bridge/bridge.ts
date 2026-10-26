@@ -312,7 +312,7 @@ const queries = new Map<string, ActiveQuery>(),
     {
       method: BridgeServerMethod;
       params: BridgeServerParams<BridgeServerMethod>;
-      resolve: (line: string) => void;
+      resolve: (reply: BridgeResponse) => void;
       reject: (error: unknown) => void;
     }
   >();
@@ -492,10 +492,10 @@ const request = <M extends BridgeServerMethod>(
     pending.set(id, {
       method,
       params,
-      resolve: (line) => {
+      resolve: (reply) => {
         cleanup();
-        const reply = readBridgeInput<M>(line);
-        if (!("method" in reply) && "result" in reply) resolve(reply.result);
+        // The decoded envelope's id selects this method's payload contract.
+        if ("result" in reply) resolve(reply.result as BridgeServerResult<M>);
       },
       reject: (error) => {
         cleanup();
@@ -1919,7 +1919,7 @@ async function startSession(
       assertNativeSessionReady(s);
       if (queries.get(s.id) !== active) break;
       active.lastEventAt = Date.now();
-      armStallWatch();
+      if (active.toolClocks.size) armStallWatch();
       if (m.type === "system" && m.subtype === "init") {
         await persistNativeSession(
           s,
@@ -2606,10 +2606,6 @@ async function handle(
   if (
     isRecord(p) &&
     typeof p.threadId === "string" &&
-    isRecord(p) &&
-    typeof p.threadId === "string" &&
-    isRecord(p) &&
-    typeof p.threadId === "string" &&
     p.threadId &&
     [
       "turn/start",
@@ -2938,9 +2934,7 @@ async function handle(
             ].includes(waiting.method)
           ) {
             pending.delete(id);
-            waiting.resolve(
-              JSON.stringify({ id, result: { decision: "accept" } }),
-            );
+            waiting.resolve({ id, result: { decision: "accept" } });
             emit("serverRequest/resolved", { threadId: s.id, requestId: id });
           }
         }
@@ -3697,15 +3691,24 @@ function errorText(error: unknown): string | undefined {
   const text = errorField(error, "message");
   return typeof text === "string" ? text : undefined;
 }
-function readBridgeInput<M extends BridgeServerMethod = BridgeServerMethod>(
-  line: string,
-): BridgeRequest | BridgeResponse<BridgeServerResult<M>> {
+function readBridgeInput(line: string): BridgeRequest | BridgeResponse {
   const value: unknown = JSON.parse(line);
   if (!isRecord(value)) throw new Error("Invalid Claude bridge message");
   if ("method" in value && !isRecord(value.params)) value.params = {};
+  if (!("method" in value)) {
+    if (
+      (typeof value.id !== "string" && typeof value.id !== "number") ||
+      "result" in value === "error" in value ||
+      ("error" in value &&
+        (!isRecord(value.error) ||
+          typeof value.error.code !== "number" ||
+          typeof value.error.message !== "string"))
+    )
+      throw new Error("Invalid Claude bridge response");
+  }
   // Studio and this bridge own the protocol; the envelope is checked here once.
   // Payload types come from the shared wire owner, as in the scripted child boundary.
-  return value as BridgeRequest | BridgeResponse<BridgeServerResult<M>>;
+  return value as BridgeRequest | BridgeResponse;
 }
 
 const operations = new Map<string, Promise<unknown>>();
@@ -3722,7 +3725,7 @@ lines.on("line", (line) => {
     if (waiting) {
       pending.delete(message.id);
       if ("error" in message) waiting.reject(new Error(message.error.message));
-      else waiting.resolve(line);
+      else waiting.resolve(message);
     }
     return;
   }

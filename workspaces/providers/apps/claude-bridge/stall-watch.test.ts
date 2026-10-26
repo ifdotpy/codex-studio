@@ -1,7 +1,72 @@
 import { afterEach, expect, test, vi } from "vitest";
 import { watchStalls, type WatchedQuery, type Stall } from "./stall-watch.ts";
+import { startBridge } from "./testing/bridge-harness.ts";
 
 afterEach(() => vi.useRealTimers());
+
+test("a no-tool stream event skips other clocks; pending-tool progress postpones its exact deadline", async () => {
+  const bridge = await startBridge(
+    new URL("./stall-stream.fixture.mts", import.meta.url),
+    "claude-stall-stream-",
+    {
+      clock: true,
+      env: {
+        STUDIO_CLAUDE_TOOL_SILENCE_MS: "1000",
+        STUDIO_CLAUDE_TOOL_STALL_GRACE_MS: "100",
+      },
+    },
+  );
+  try {
+    await bridge.call("turn/start", {
+      threadId: bridge.thread,
+      input: [{ type: "text", text: "tool" }],
+    });
+    const ready = await bridge.note(
+      "fixture/clockVisits",
+      (n) => n.params.phase === "tool-ready",
+    );
+    const idle = (await bridge.call("thread/start", { cwd: bridge.root }))
+      .thread.id;
+    await bridge.call("turn/start", {
+      threadId: idle,
+      input: [{ type: "text", text: "idle" }],
+    });
+    await bridge.note(
+      "fixture/clockVisits",
+      (n) => n.params.phase === "idle-ready",
+    );
+    await bridge.advanceTime(400);
+    await bridge.writeSignal(".emit-idle");
+    const idleEvent = await bridge.note(
+      "fixture/clockVisits",
+      (n) => n.params.phase === "idle-event",
+    );
+    expect(idleEvent.params.visits).toBe(0);
+    await bridge.advanceTime(100);
+    await bridge.writeSignal(".emit-tool");
+    const progress = await bridge.note(
+      "fixture/clockVisits",
+      (n) => n.params.phase === "tool-event",
+    );
+    expect(progress.params.visits).toBe(1);
+    expect(progress.params.at).toBe(ready.params.at + 500);
+    await bridge.advanceTime(999);
+    expect(
+      bridge.notes.some(
+        (n) =>
+          n.method === "fixture/clockVisits" && n.params.phase === "interrupt",
+      ),
+    ).toBe(false);
+    await bridge.advanceTime(1);
+    const interrupted = await bridge.note(
+      "fixture/clockVisits",
+      (n) => n.params.phase === "interrupt",
+    );
+    expect(interrupted.params.at).toBe(progress.params.at + 1000);
+  } finally {
+    await bridge.close();
+  }
+});
 
 test("the watchdog stays idle and fires the nearest deadline once", () => {
   vi.useFakeTimers();
