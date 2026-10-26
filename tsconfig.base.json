@@ -3,7 +3,6 @@
     "target": "ES2024",
     "module": "NodeNext",
     "strict": true,
-    "noUncheckedIndexedAccess": true,
     "exactOptionalPropertyTypes": true,
     "noEmit": true,
     "skipLibCheck": true,

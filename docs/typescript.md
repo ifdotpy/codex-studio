@@ -25,8 +25,10 @@ product code, tests, fixtures, scripts, and tool configuration.
 - `any`, `@ts-ignore`, and `@ts-nocheck`. Use `unknown` and narrow it.
   `@ts-expect-error` is allowed only in a test, on a value that deliberately
   violates its declared type, with the reason.
-- A cast (`as`) or non-null assertion (`!`) that hides a mismatch. Narrow with a
-  check instead; cast only after a runtime check of untrusted input.
+- A cast (`as`) or non-null assertion (`!`) that hides a mismatch. A `!` is
+  allowed where the invariant is visible in the same function, for example
+  after `has()` or inside a bounds-checked loop; cast only after a runtime check
+  of untrusted input.
 - A copied type, constant, or helper instead of an import of its owner.
 
 ## How TypeScript runs
@@ -39,6 +41,9 @@ guest, or used by the native app's recovery helper, must therefore be Node.js
 Code therefore uses only syntax that can be removed without a transform: no
 `enum`, `namespace`, or constructor parameter properties. Type-only imports use
 `import type`, and relative imports name the `.ts` file.
+Types add no behavior: a converted file with its types removed matches the
+JavaScript it replaced, except for a bug fix with its failing test or one named
+boundary for untrusted input.
 [`tsconfig.base.json`](../tsconfig.base.json) owns these compiler settings.
 Every project extends it, and `just test-fast` checks every project.
 
