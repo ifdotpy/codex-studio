@@ -1,12 +1,7 @@
-import { required } from "./fixture-helpers.ts";
 import type { Agent } from "../../src/types.ts";
 import type { WorkerModelInfo } from "../../src/components/agents/WorkerModelPicker.tsx";
 import type { PostBody } from "../../src/apiTypes.ts";
-import {
-  fixtureNotReady,
-  fixtureFetchInput,
-  fixturePostBody,
-} from "./fixture-helpers.ts";
+import { fixtureFetchInput, fixturePostBody } from "./fixture-helpers.ts";
 export type DaybreakReset = {
   agent?: Partial<
     Pick<
@@ -26,8 +21,6 @@ export type DaybreakReset = {
   defaults?: boolean;
 };
 type DaybreakHarness = {
-  ready: boolean;
-  required: typeof required;
   calls: PostBody<"/api/conversation">[];
   fail: "network" | "rejected" | null;
   reply: Agent | null;
@@ -35,11 +28,11 @@ type DaybreakHarness = {
   retries: number;
   models: WorkerModelInfo[];
   agent: Agent;
-  setAgent: (agent: Agent) => void;
-  setModels: (models: WorkerModelInfo[]) => void;
-  reset: (options?: DaybreakReset) => void;
+  setAgent?: (agent: Agent) => void;
+  setModels?: (models: WorkerModelInfo[]) => void;
+  reset?: (options?: DaybreakReset) => void;
   hold: boolean;
-  release: () => void;
+  release?: () => void;
 };
 declare global {
   interface Window {
@@ -47,7 +40,6 @@ declare global {
   }
 }
 const fixtureRoot = document.getElementById("root");
-if (!fixtureRoot) throw new Error("Missing fixture root");
 import {
   API_SCHEMA_HASH,
   API_SCHEMA_HASH_HEADER,
@@ -104,9 +96,8 @@ const initialModels = [
   row("gpt-daybreak-blue-latest", ["daybreakBlue"]),
   row("gpt-daybreak-red-latest", ["daybreakRed"]),
 ];
+// Partial fixture view: render initializes the harness callbacks before the spec calls them.
 window.daybreakFixture = {
-  ready: false,
-  required,
   calls: [],
   fail: null,
   reply: null,
@@ -114,11 +105,7 @@ window.daybreakFixture = {
   retries: 0,
   models: initialModels,
   agent: initial,
-  setAgent: fixtureNotReady,
-  setModels: fixtureNotReady,
-  reset: fixtureNotReady,
   hold: false,
-  release: fixtureNotReady,
 };
 window.daybreakFixture.fail = null;
 window.daybreakFixture.reply = null;
@@ -129,6 +116,7 @@ window.fetch = async (input, options) => {
   const { url, options: requestOptions } = await fixtureFetchInput(
     input,
     options,
+    true,
   );
   if (url.startsWith("/api/models"))
     return new Response(
@@ -175,7 +163,6 @@ window.fetch = async (input, options) => {
   });
 };
 function Fixture() {
-  window.daybreakFixture.ready = true;
   const [agent, setAgent] = useState<Agent>(initial),
     [models, setModels] = useState(initialModels),
     [mount, setMount] = useState(0),
@@ -187,7 +174,7 @@ function Fixture() {
     flushSync(() => setModels(value));
   window.daybreakFixture.reset = (options) =>
     flushSync(() => {
-      setAgent(Object.assign(structuredClone(initial), options?.agent));
+      setAgent({ ...initial, ...options?.agent });
       setModels(options?.models || initialModels);
       setDefaults(!!options?.defaults);
       setMount((value) => value + 1);
@@ -217,4 +204,4 @@ function Fixture() {
     </MantineProvider>
   );
 }
-createRoot(fixtureRoot).render(<Fixture />);
+createRoot(fixtureRoot!).render(<Fixture />);

@@ -4,11 +4,7 @@ import type { WorkerModelInfo } from "../../src/components/agents/WorkerModelPic
 import type { PostBody } from "../../src/apiTypes.ts";
 import type { components } from "../../src/generated/api.ts";
 import { fixtureSnapshot } from "../fixtures/snapshot.ts";
-import {
-  fixtureNotReady,
-  fixtureFetchInput,
-  fixturePostBody,
-} from "./fixture-helpers.ts";
+import { fixtureFetchInput, fixturePostBody } from "./fixture-helpers.ts";
 type PickerCall = Omit<Partial<PostBody<"/api/conversation">>, "id"> &
   Pick<Partial<PostBody<"/api/agents/account-transfer">>, "id"> &
   Partial<Pick<components["schemas"]["ProjectWriteRequest"], "account_keys">> &
@@ -26,15 +22,13 @@ export type PickerScene =
   | "project"
   | "shared";
 type UnifiedPickerHarness = {
-  ready: boolean;
-  required: typeof required;
   whitelist: (value: Parameters<typeof writeModelWhitelist>[0]) => void;
   calls: PickerCall[];
   agent: Agent;
-  updateAgent: (agent: Agent) => void;
-  scene: (scene: PickerScene) => void;
-  scheme: (scheme: "light" | "dark") => void;
-  reset: () => void;
+  updateAgent?: (agent: Agent) => void;
+  scene?: (scene: PickerScene) => void;
+  scheme?: (scheme: "light" | "dark") => void;
+  reset?: () => void;
   created: string;
 };
 declare global {
@@ -42,9 +36,7 @@ declare global {
     unifiedPickerFixture: UnifiedPickerHarness;
   }
 }
-import { required } from "./fixture-helpers.ts";
 const fixtureRoot = document.getElementById("root");
-if (!fixtureRoot) throw new Error("Missing fixture root");
 import React, { useState } from "react";
 import { createRoot } from "react-dom/client";
 import { flushSync } from "react-dom";
@@ -124,16 +116,11 @@ const initial: Agent = {
   workerDefaults: { model: "gpt-6-luna", effort: "high", fastMode: false },
   reviewDefaults: { model: null, effort: null },
 };
+// Partial fixture view: render initializes the harness callbacks before the spec calls them.
 window.unifiedPickerFixture = {
-  ready: false,
-  required,
   whitelist: (value) => writeModelWhitelist(value, "local"),
   calls: [],
   agent: initial,
-  updateAgent: fixtureNotReady,
-  scene: fixtureNotReady,
-  scheme: fixtureNotReady,
-  reset: fixtureNotReady,
   created: "",
 };
 const nativeFetch = window.fetch;
@@ -148,13 +135,13 @@ window.fetch = async (input, options) => {
     const key = u.searchParams.get("account_key"),
       i = Number(key?.split("-")[1]);
     result = {
-      accountKey: key || "",
+      accountKey: key!,
       at: Date.now() / 1000,
       data: {
         rateLimits: {
           limitId: i < 4 ? "codex" : "claude",
           primary: {
-            usedPercent: required([20, 60, 95, 100, 25, 70, 100][i]),
+            usedPercent: [20, 60, 95, 100, 25, 70, 100][i]!,
             windowDurationMins: 300,
             resetsAt: Date.now() / 1000 + 3600,
           },
@@ -172,21 +159,23 @@ window.fetch = async (input, options) => {
           : codex,
     } satisfies components["schemas"]["ModelCatalogResponse"];
   } else if (requestOptions?.method === "POST") {
+    const body = fixturePostBody<
+      | "/api/conversation"
+      | "/api/agents/account-transfer"
+      | "/api/projects"
+      | "/api/peer-teams"
+    >(requestOptions.body);
+    window.unifiedPickerFixture.calls.push({ endpoint: u.pathname, ...body });
     if (u.pathname === "/api/conversation") {
-      const body = fixturePostBody<"/api/conversation">(requestOptions.body);
-      window.unifiedPickerFixture.calls.push({ endpoint: u.pathname, ...body });
-      const next = structuredClone(window.unifiedPickerFixture.agent);
+      const next = { ...window.unifiedPickerFixture.agent };
       if (body.worker_defaults)
-        next.workerDefaults = Object.assign(
-          { model: null, effort: null, fastMode: false },
-          {
-            model: body.worker_defaults.model,
-            effort: body.worker_defaults.effort,
-            fastMode: body.worker_defaults.fast_mode,
-            daybreakEnabled: body.worker_defaults.daybreak_enabled ?? false,
-            accountKey: body.worker_defaults.account_key,
-          },
-        );
+        next.workerDefaults = {
+          model: body.worker_defaults.model,
+          effort: body.worker_defaults.effort,
+          fastMode: body.worker_defaults.fast_mode,
+          daybreakEnabled: body.worker_defaults.daybreak_enabled!,
+          accountKey: body.worker_defaults.account_key,
+        };
       else if (body.review_defaults) next.reviewDefaults = body.review_defaults;
       else
         Object.assign(next, {
@@ -195,13 +184,9 @@ window.fetch = async (input, options) => {
           fastMode: body.fast_mode,
           daybreakEnabled: body.daybreak_enabled,
         });
-      window.unifiedPickerFixture.updateAgent(next);
+      window.unifiedPickerFixture.updateAgent!(next);
       result = next;
     } else if (u.pathname === "/api/agents/account-transfer") {
-      const body = fixturePostBody<"/api/agents/account-transfer">(
-        requestOptions.body,
-      );
-      window.unifiedPickerFixture.calls.push({ endpoint: u.pathname, ...body });
       result = {
         id: body.request_id,
         leadId: body.id,
@@ -212,33 +197,29 @@ window.fetch = async (input, options) => {
         moved: 0,
         completed: 0,
       };
-      window.unifiedPickerFixture.updateAgent({
+      window.unifiedPickerFixture.updateAgent!({
         ...window.unifiedPickerFixture.agent,
         workerDefaults: {
           accountKey: body.account_key,
           model:
-            Number(required(body.account_key).split("-")[1]) >= 4
-              ? required(claude[0]).model
-              : required(codex[0]).model,
+            Number(body.account_key!.split("-")[1]) >= 4
+              ? claude[0]!.model
+              : codex[0]!.model,
           effort: "medium",
           fastMode: false,
         },
       });
     } else if (u.pathname === "/api/projects") {
-      const body = fixturePostBody<"/api/projects">(requestOptions.body);
-      window.unifiedPickerFixture.calls.push({ endpoint: u.pathname, ...body });
       result = {
         id: "project",
         path: "/fixture/project",
         name: "Project",
         created: 1,
-        accountKey: "account_key" in body ? body.account_key : undefined,
-        accountKeys: "account_keys" in body ? body.account_keys : undefined,
+        accountKey: body.account_key,
+        accountKeys: body.account_keys,
         accountRevision: 1,
       };
     } else if (u.pathname === "/api/peer-teams") {
-      const body = fixturePostBody<"/api/peer-teams">(requestOptions.body);
-      window.unifiedPickerFixture.calls.push({ endpoint: u.pathname, ...body });
       result = { room: { id: "shared" } };
     }
   }
@@ -257,7 +238,6 @@ const accountsData = {
   supportsDisconnect: false,
 } satisfies AccountsState;
 function Fixture() {
-  window.unifiedPickerFixture.ready = true;
   const [agent, setAgent] = useState<Agent>(initial),
     [scene, setScene] = useState<PickerScene>("picker"),
     [scheme, setScheme] = useState<"light" | "dark">("dark"),
@@ -299,17 +279,13 @@ function Fixture() {
                 path: "account-selection",
                 key,
               });
-              const provider = required(
-                accounts.find((a) => a.id === key),
-              ).provider;
+              const provider = accounts.find((a) => a.id === key)!.provider;
               setAgent({
                 ...agent,
                 accountKey: key,
                 provider,
                 model:
-                  provider === "claude"
-                    ? required(claude[0]).model
-                    : required(codex[0]).model,
+                  provider === "claude" ? claude[0]!.model : codex[0]!.model,
                 effort: "medium",
               });
             }}
@@ -382,4 +358,4 @@ function Fixture() {
     </MantineProvider>
   );
 }
-createRoot(fixtureRoot).render(<Fixture />);
+createRoot(fixtureRoot!).render(<Fixture />);

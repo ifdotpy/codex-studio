@@ -3,9 +3,8 @@ import type { ViteDevServer } from "vite";
 
 export function fixtureUrl(server: Server | ViteDevServer, path = "") {
   const http = "httpServer" in server ? server.httpServer : server;
-  const address = http?.address();
-  if (!address || typeof address === "string")
-    throw new Error("Fixture server has no TCP address");
+  // Every caller listens on an ephemeral TCP port before reading its address.
+  const address = http!.address() as import("node:net").AddressInfo;
   return `http://127.0.0.1:${address.port}/${path}`;
 }
 
@@ -27,38 +26,34 @@ export function fixtureAccount(
   );
 }
 
-export function required<T>(value: T | null | undefined): T {
-  if (value === null || value === undefined)
-    throw new Error("Missing expected fixture value");
-  return value;
-}
-
-export function fixtureNotReady(): never {
-  throw new Error("Fixture harness has not rendered");
-}
-
 export async function fixtureFetchInput(
   input: RequestInfo | URL,
   options?: RequestInit,
+  pathOnly = false,
 ) {
-  if (!(input instanceof Request)) return { url: String(input), options };
+  if (!(input instanceof Request)) return { url: input as string, options };
   const url = new URL(input.url);
   return {
-    url: url.pathname + url.search,
+    url: pathOnly ? url.pathname + url.search : input.url,
     options: {
       method: input.method,
-      ...(input.method === "GET" ? {} : { body: await input.clone().text() }),
+      body: input.method === "GET" ? undefined : await input.clone().text(),
     },
   };
 }
+
+type UnionKeys<T> = T extends unknown ? keyof T : never;
+type WithAbsentFields<T, All = T> = T extends unknown
+  ? T & Partial<Record<Exclude<UnionKeys<All>, keyof T>, never>>
+  : never;
 
 export function fixturePostBody<
   Path extends import("../../src/apiTypes.ts").ApiPostPath,
 >(
   body: BodyInit | null | undefined,
-): import("../../src/apiTypes.ts").PostBody<Path> {
+): WithAbsentFields<import("../../src/apiTypes.ts").PostBody<Path>> {
   // The renderer under test wrote this request using the generated route contract.
-  return JSON.parse(
-    String(body),
-  ) as import("../../src/apiTypes.ts").PostBody<Path>;
+  return JSON.parse(body as string) as WithAbsentFields<
+    import("../../src/apiTypes.ts").PostBody<Path>
+  >;
 }

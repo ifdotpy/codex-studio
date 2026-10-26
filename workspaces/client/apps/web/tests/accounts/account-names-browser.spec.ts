@@ -1,7 +1,6 @@
 import type { Page } from "@playwright/test";
 import type { Account, AccountsState } from "../../src/components/Accounts.tsx";
 import {
-  required,
   fixtureUrl,
   fixtureAccount,
   fixtureAccounts,
@@ -58,9 +57,8 @@ async function fixture(page: Page) {
         route.request().postDataJSON(),
       ).body;
       bodies.push(body);
-      required(
-        accounts.find((account) => account.id === body.account_key),
-      ).label = body.label.trim();
+      accounts.find((account) => account.id === body.account_key)!.label =
+        body.label.trim();
       if (loseResponse) {
         loseResponse = false;
         return route.abort("failed");

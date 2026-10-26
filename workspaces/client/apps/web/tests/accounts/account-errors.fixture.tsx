@@ -14,7 +14,6 @@ import {
   fixtureAccount,
   fixtureAccounts,
   fixtureRuntime,
-  required,
 } from "./fixture-helpers.ts";
 const { negative }: { negative: boolean } = await (
   await fetch("/fixture-data")
@@ -107,4 +106,4 @@ function Harness() {
     </MantineProvider>
   );
 }
-createRoot(required(document.getElementById("root"))).render(<Harness />);
+createRoot(document.getElementById("root")!).render(<Harness />);

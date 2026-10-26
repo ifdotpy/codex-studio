@@ -1,5 +1,4 @@
 import type { AccountsState } from "../../src/components/Accounts.tsx";
-import { required } from "./fixture-helpers.ts";
 const initial: AccountsState = await (await fetch("/fixture-data")).json();
 declare global {
   interface Window {
@@ -58,4 +57,4 @@ function Fixture() {
     </MantineProvider>
   );
 }
-createRoot(required(document.getElementById("root"))).render(<Fixture />);
+createRoot(document.getElementById("root")!).render(<Fixture />);

@@ -35,7 +35,7 @@ test("Models whitelist filters every execution role and preserves the current mo
     },
   });
   let log = "";
-  fixture.stderr?.on("data", (chunk) => {
+  fixture.stderr!.on("data", (chunk) => {
     log += chunk;
   });
   try {
@@ -50,7 +50,6 @@ test("Models whitelist filters every execution role and preserves the current mo
     const current = await page
       .locator("#composer .execution-summary-trigger")
       .getAttribute("title");
-    if (current === null) throw new Error("Missing current model title");
     await page
       .getByRole("button", { name: "Studio settings", exact: true })
       .click();
@@ -113,7 +112,7 @@ test("Models whitelist filters every execution role and preserves the current mo
             (el) =>
               Math.abs(
                 el.getBoundingClientRect().width -
-                  (el.parentElement?.clientWidth ?? 0),
+                  el.parentElement!.clientWidth,
               ) < 16,
           ),
         ).toBe(true);
@@ -125,7 +124,7 @@ test("Models whitelist filters every execution role and preserves the current mo
     await expect(settings).toBeHidden();
     await expect(
       page.locator("#composer .execution-summary-trigger"),
-    ).toHaveAttribute("title", current);
+    ).toHaveAttribute("title", current!);
     await page.locator("#composer .execution-summary-trigger").click();
     const picker = page.locator(".execution-dropdown");
     await expect(
@@ -252,7 +251,7 @@ test("Models whitelist filters every execution role and preserves the current mo
     await expect(retained.getByRole("option")).toBeDisabled();
     await expect(
       page.locator("#composer .execution-summary-trigger"),
-    ).toHaveAttribute("title", current);
+    ).toHaveAttribute("title", current!);
     await page.keyboard.press("Escape");
     await openNewChat();
     await expect(

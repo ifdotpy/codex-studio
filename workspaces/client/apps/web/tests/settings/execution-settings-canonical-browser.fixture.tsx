@@ -2,7 +2,6 @@ import type { Agent } from "../../src/types.ts";
 import type { GetOptions } from "../../src/api.ts";
 import type { PostBody, PostResult } from "../../src/apiTypes.ts";
 import {
-  fixtureNotReady,
   fixtureFetchInput,
   fixturePostBody,
   fixtureAccount,
@@ -30,8 +29,6 @@ export type CanonicalReset = {
   defaults?: boolean;
 };
 type CanonicalHarness = {
-  ready: boolean;
-  required: typeof required;
   catalogRequests: string[];
   calls: PostBody<"/api/conversation">[];
   transfers: PostBody<"/api/agents/account-transfer">[];
@@ -52,17 +49,15 @@ type CanonicalHarness = {
   transferRelease: (() => void) | null;
   serverAccount: string | null;
   agent: Agent;
-  setAgent: (value: Agent) => void;
-  reset: (options?: CanonicalReset) => void;
+  setAgent?: (value: Agent) => void;
+  reset?: (options?: CanonicalReset) => void;
 };
 declare global {
   interface Window {
     canonicalSettingsFixture: CanonicalHarness;
   }
 }
-import { required } from "./fixture-helpers.ts";
 const fixtureRoot = document.getElementById("root");
-if (!fixtureRoot) throw new Error("Missing fixture root");
 import {
   API_SCHEMA_HASH,
   API_SCHEMA_HASH_HEADER,
@@ -77,10 +72,7 @@ import { createRoot } from "react-dom/client";
 import { flushSync } from "react-dom";
 import { MantineProvider } from "@mantine/core";
 import "@mantine/core/styles.css";
-import {
-  ExecutionSettings,
-  settingsFor,
-} from "../../src/components/agents/ExecutionSettings.tsx";
+import { ExecutionSettings } from "../../src/components/agents/ExecutionSettings.tsx";
 import { ModelCatalogReader } from "../../src/components/agents/WorkerModelPicker.tsx";
 import { get } from "../../src/api.ts";
 const fixtureModelRead = (
@@ -100,16 +92,13 @@ const initial: Agent = {
   yoloMode: false,
   nextTurnSettingsSupported: true,
 };
-function completeWorkerDefaults(
-  value: Partial<NonNullable<Agent["workerDefaults"]>>,
-): NonNullable<Agent["workerDefaults"]> {
-  const inherited = settingsFor(initial, true);
-  return {
-    model: inherited.model,
-    effort: inherited.effort,
-    fastMode: inherited.fast_mode,
-    ...value,
-  };
+// Partial fixture view: the base fixture omits inherited worker model, effort and fastMode.
+function partialAgent(
+  value: Omit<Agent, "workerDefaults"> & {
+    workerDefaults?: Partial<NonNullable<Agent["workerDefaults"]>> | null;
+  },
+): Agent {
+  return value as Agent;
 }
 const models = ["gpt-6-astra", "gpt-5.6-sol", "gpt-5.6-luna", "gpt-6-luna"].map(
   (model) => ({
@@ -121,9 +110,8 @@ const models = ["gpt-6-astra", "gpt-5.6-sol", "gpt-5.6-luna", "gpt-6-luna"].map(
     availableAccessPrograms: { cyber: ["standard", "daybreakBlue"] },
   }),
 );
+// Partial fixture view: render initializes the harness callbacks before the spec calls them.
 window.canonicalSettingsFixture = {
-  ready: false,
-  required,
   catalogRequests: [],
   calls: [],
   transfers: [],
@@ -144,8 +132,6 @@ window.canonicalSettingsFixture = {
   transferRelease: null,
   serverAccount: null,
   agent: initial,
-  setAgent: fixtureNotReady,
-  reset: fixtureNotReady,
 };
 window.canonicalSettingsFixture.calls = [];
 window.canonicalSettingsFixture.transfers = [];
@@ -172,6 +158,7 @@ window.fetch = async (input, options) => {
   const { url, options: requestOptions } = await fixtureFetchInput(
     input,
     options,
+    true,
   );
   if (String(url).startsWith("/api/models?")) {
     window.canonicalSettingsFixture.catalogRequests.push(url);
@@ -223,13 +210,13 @@ window.fetch = async (input, options) => {
         },
       ],
     };
-    window.canonicalSettingsFixture.pendingTransferProjection = {
+    window.canonicalSettingsFixture.pendingTransferProjection = partialAgent({
       ...window.canonicalSettingsFixture.agent,
-      workerDefaults: completeWorkerDefaults({
+      workerDefaults: {
         ...window.canonicalSettingsFixture.agent.workerDefaults,
         accountKey: body.account_key,
-      }),
-    };
+      },
+    });
     return fixtureResponse(result);
   }
   if (url != "/api/conversation") return nativeFetch(url, requestOptions);
@@ -238,8 +225,8 @@ window.fetch = async (input, options) => {
   );
   if (
     window.canonicalSettingsFixture.serverAccount &&
-    required(window.canonicalSettingsFixture.calls.at(-1))
-      .expected_account_key !== window.canonicalSettingsFixture.serverAccount
+    window.canonicalSettingsFixture.calls.at(-1)!.expected_account_key !==
+      window.canonicalSettingsFixture.serverAccount
   )
     return fixtureResponse(
       { error: "The account changed. Select the model again" },
@@ -284,7 +271,6 @@ const team: Agent[] = [
   },
 ] satisfies Agent[];
 function Fixture() {
-  window.canonicalSettingsFixture.ready = true;
   const [agent, setAgent] = useState<Agent>(initial),
     [mount, setMount] = useState(0),
     [defaults, setDefaults] = useState(false);
@@ -293,12 +279,7 @@ function Fixture() {
   window.canonicalSettingsFixture.agent = agent;
   window.canonicalSettingsFixture.reset = (options) =>
     flushSync(() => {
-      const { workerDefaults, ...patch } = options?.agent ?? {};
-      const next = Object.assign(structuredClone(initial), patch);
-      if (workerDefaults)
-        next.workerDefaults = completeWorkerDefaults(workerDefaults);
-      else if (workerDefaults === null) next.workerDefaults = null;
-      setAgent(next);
+      setAgent(partialAgent({ ...initial, ...options?.agent }));
       setDefaults(!!options?.defaults);
       setMount((value) => value + 1);
       window.canonicalSettingsFixture.catalogRequests = [];
@@ -368,7 +349,7 @@ function Fixture() {
             if (window.canonicalSettingsFixture.refreshFailure)
               throw new Error("Snapshot unavailable");
             if (window.canonicalSettingsFixture.pendingTransferProjection) {
-              window.canonicalSettingsFixture.setAgent(
+              window.canonicalSettingsFixture.setAgent!(
                 window.canonicalSettingsFixture.pendingTransferProjection,
               );
               window.canonicalSettingsFixture.pendingTransferProjection = null;
@@ -390,7 +371,7 @@ function Fixture() {
               if (window.canonicalSettingsFixture.refreshFailure)
                 throw new Error("Snapshot unavailable");
               if (window.canonicalSettingsFixture.pendingTransferProjection) {
-                window.canonicalSettingsFixture.setAgent(
+                window.canonicalSettingsFixture.setAgent!(
                   window.canonicalSettingsFixture.pendingTransferProjection,
                 );
                 window.canonicalSettingsFixture.pendingTransferProjection =
@@ -403,4 +384,4 @@ function Fixture() {
     </MantineProvider>
   );
 }
-createRoot(fixtureRoot).render(<Fixture />);
+createRoot(fixtureRoot!).render(<Fixture />);

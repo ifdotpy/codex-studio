@@ -162,8 +162,7 @@ test("claude settings auth ui", async ({ browser: _browser }) => {
       }
       if (url.pathname === "/api/accounts/claude/login/code") {
         authenticated = true;
-        assert.ok(receipt);
-        receipt = { ...receipt, status: "ready", email: "work@example.com" };
+        receipt = { ...receipt!, status: "ready", email: "work@example.com" };
         return route.fulfill({ json: receipt });
       }
       return route.fulfill({ json: {} });

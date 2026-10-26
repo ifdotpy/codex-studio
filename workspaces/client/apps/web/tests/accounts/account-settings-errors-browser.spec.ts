@@ -8,7 +8,6 @@ import { accountErrorFailure } from "./account-errors-data.ts";
 import {
   fixtureUrl,
   fixtureSnapshot,
-  required,
   type SyncFixture,
   type NotifyResources,
 } from "./fixture-helpers.ts";
@@ -195,18 +194,16 @@ test("Account settings errors", async () => {
         await button.click();
         assert.deepEqual(
           JSON.parse(
-            required(
-              await scope
-                .getByRole("button", {
-                  name: "Hide error details",
-                  exact: true,
-                })
-                .first()
-                .locator("..")
-                .locator(":scope > span")
-                .last()
-                .textContent(),
-            ),
+            (await scope
+              .getByRole("button", {
+                name: "Hide error details",
+                exact: true,
+              })
+              .first()
+              .locator("..")
+              .locator(":scope > span")
+              .last()
+              .textContent())!,
           ),
           expected,
         );

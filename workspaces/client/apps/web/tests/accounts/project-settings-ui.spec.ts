@@ -3,7 +3,6 @@ import type { Project } from "../../src/types.ts";
 
 import type { BrowserContext, TestInfo } from "@playwright/test";
 import {
-  required,
   fixtureAccount,
   fixtureLead,
   fixtureSnapshot,
@@ -143,7 +142,7 @@ test("project settings rows and requests", async ({ browser: _browser }) => {
   });
   const stateListeners = new Set<NotifyResources>();
   const server = createServer(async (req, res) => {
-    const url = new URL(required(req.url), "http://localhost");
+    const url = new URL(req.url!, "http://localhost");
     let rawBody: unknown = {};
     if (req.method === "POST") {
       let text = "";
@@ -151,14 +150,20 @@ test("project settings rows and requests", async ({ browser: _browser }) => {
       rawBody = JSON.parse(text || "{}");
       bodies.push(fixtureRequest(url.pathname, rawBody));
     }
-    const json = (data: Record<string, unknown>) => {
+    const json = (
+      data: Record<string, unknown> & {
+        _syncEntities?: ReturnType<
+          typeof entityMutationFixtureResponse
+        >["_syncEntities"];
+      },
+    ) => {
       res.setHeader("Content-Type", "application/json");
       const reply =
         req.method === "POST" && res.statusCode < 400 && !data._syncEntities
           ? entityMutationFixtureResponse(stateForEntities, data)
           : data;
       res.end(JSON.stringify(reply));
-      if (Array.isArray(reply._syncEntities) && reply._syncEntities.length) {
+      if (reply._syncEntities?.length) {
         for (const notify of stateListeners) notify([{ kind: "state" }]);
       }
     };
@@ -166,10 +171,8 @@ test("project settings rows and requests", async ({ browser: _browser }) => {
       handleEntitySyncFixtureRequest(req, res, {
         snapshot: stateForEntities,
         workspaceId: syncWorkspaceId,
-        subscriptionUpdate:
-          url.pathname === "/api/sync/subscriptions"
-            ? fixtureRequest("/api/sync/subscriptions", rawBody).body
-            : undefined,
+        subscriptionUpdate: fixtureRequest("/api/sync/subscriptions", rawBody)
+          .body,
         onStreamReady: (notify) => {
           stateListeners.add(notify);
           return () => stateListeners.delete(notify);
@@ -203,9 +206,9 @@ test("project settings rows and requests", async ({ browser: _browser }) => {
       }
       if (!project) {
         project = {
-          id: required(body.path),
-          path: required(body.path),
-          name: required(body.path).split("/").at(-1),
+          id: body.path!,
+          path: body.path!,
+          name: body.path!.split("/").at(-1),
           created: 1,
           accountRevision: 0,
           workerBaseRevision: 0,
@@ -213,20 +216,15 @@ test("project settings rows and requests", async ({ browser: _browser }) => {
         projects.push(project);
       }
       if (body.action === "set_worker_base") {
-        assert.equal(
-          body.expected_revision,
-          required(project).workerBaseRevision,
-        );
-        required(project).workerBaseRef = body.base_ref;
-        required(project).workerBaseRevision =
-          required(required(project).workerBaseRevision) + 1;
+        assert.equal(body.expected_revision, project!.workerBaseRevision);
+        project!.workerBaseRef = body.base_ref;
+        project!.workerBaseRevision = project!.workerBaseRevision! + 1;
         return json(project);
       }
-      assert.equal(body.expected_revision, required(project).accountRevision);
-      required(project).accountKey = body.account_key;
-      required(project).accountKeys = body.account_keys;
-      required(project).accountRevision =
-        required(required(project).accountRevision) + 1;
+      assert.equal(body.expected_revision, project!.accountRevision);
+      project!.accountKey = body.account_key;
+      project!.accountKeys = body.account_keys;
+      project!.accountRevision = project!.accountRevision! + 1;
       return json(project);
     }
     if (url.pathname === "/api/transcript/stream") {
@@ -366,7 +364,7 @@ test("project settings rows and requests", async ({ browser: _browser }) => {
         });
         await defaults.scrollIntoViewIfNeeded();
       }
-      const bounds = required(await dialog.boundingBox());
+      const bounds = (await dialog.boundingBox())!;
       assert.ok(bounds.x >= 0 && bounds.x + bounds.width <= width);
       assert.ok(
         await dialog.evaluate(
@@ -387,10 +385,10 @@ test("project settings rows and requests", async ({ browser: _browser }) => {
     await accountSave.click();
     await dialog.waitFor({ state: "hidden" });
     const requests = bodies.filter((item) => item.path === "/api/projects");
-    assert.deepEqual(required(requests[0]).body, required(requests[1]).body);
-    assert.equal(required(projects[0]).accountKey, "other");
+    assert.deepEqual(requests[0]!.body, requests[1]!.body);
+    assert.equal(projects[0]!.accountKey, "other");
     assert.deepEqual(
-      required(projects[0]).accountKeys,
+      projects[0]!.accountKeys,
       accounts.map((account) => account.id),
     );
     await page.setViewportSize({ width: 1440, height: 900 });
@@ -401,8 +399,8 @@ test("project settings rows and requests", async ({ browser: _browser }) => {
     await defaults.locator('[data-account-key="work"]').click();
     await accountSave.click();
     await dialog.waitFor({ state: "hidden" });
-    assert.equal(required(projects[0]).accountKey, "work");
-    assert.ok(!required(required(projects[0]).accountKeys).includes("other"));
+    assert.equal(projects[0]!.accountKey, "work");
+    assert.ok(!projects[0]!.accountKeys!.includes("other"));
     await openProject();
     assert.equal(
       await dialog.getByLabel("Default worker environment").count(),
@@ -414,8 +412,7 @@ test("project settings rows and requests", async ({ browser: _browser }) => {
       .click();
     await dialog.waitFor({ state: "hidden" });
     assert.deepEqual(
-      required(bodies.filter((item) => item.path === "/api/projects").at(-1))
-        .body,
+      bodies.filter((item) => item.path === "/api/projects").at(-1)!.body,
       {
         action: "set_worker_base",
         path: "/tmp/fixture",
@@ -423,10 +420,10 @@ test("project settings rows and requests", async ({ browser: _browser }) => {
         expected_revision: 1,
       },
     );
-    const removed = required(accounts.splice(2, 1)[0]);
+    const removed = accounts.splice(2, 1)[0]!;
     archivedAccounts.push(Object.assign(removed, { deleted: true }));
-    required(projects[0]).accountKey = removed.id;
-    required(projects[0]).accountKeys = ["work", removed.id];
+    projects[0]!.accountKey = removed.id;
+    projects[0]!.accountKeys = ["work", removed.id];
     await page.reload();
     await page.locator("[data-chat]").first().waitFor();
     await openProject();
@@ -442,8 +439,8 @@ test("project settings rows and requests", async ({ browser: _browser }) => {
     await defaults.locator('[data-account-key="work"]').click();
     await accountSave.click();
     await dialog.waitFor({ state: "hidden" });
-    assert.equal(required(projects[0]).accountKey, "work");
-    assert.deepEqual(required(projects[0]).accountKeys, ["work"]);
+    assert.equal(projects[0]!.accountKey, "work");
+    assert.deepEqual(projects[0]!.accountKeys, ["work"]);
     console.log(
       JSON.stringify({
         evidence,
@@ -459,8 +456,6 @@ test("project settings rows and requests", async ({ browser: _browser }) => {
     );
   } finally {
     server.closeAllConnections();
-    await new Promise<void>((resolve, reject) =>
-      server.close((error) => (error ? reject(error) : resolve())),
-    );
+    await new Promise<Error | undefined>((resolve) => server.close(resolve));
   }
 });

@@ -1,5 +1,4 @@
 import type { components } from "../../src/generated/api.ts";
-import { required } from "./fixture-helpers.ts";
 import type { DaybreakReset } from "./daybreak-settings-browser.fixture.tsx";
 import type {} from "./daybreak-settings-browser.fixture.tsx";
 import { fixtureUrl } from "./fixture-helpers.ts";
@@ -96,13 +95,17 @@ test("Daybreak settings", async ({ context }) => {
       }),
     );
     await page.goto(fixtureUrl(server, "check"));
-    await page.waitForFunction(() => window.daybreakFixture?.ready, undefined, {
-      timeout: 5_000,
-    });
+    await page.waitForFunction(
+      () => !!window.daybreakFixture?.reset,
+      undefined,
+      {
+        timeout: 5_000,
+      },
+    );
     const reset = async (options?: DaybreakReset) => {
       await page.evaluate((options) => {
         localStorage.clear();
-        window.daybreakFixture.reset(options);
+        window.daybreakFixture.reset!(options);
       }, options);
       await page
         .getByRole("button", {
@@ -184,14 +187,14 @@ test("Daybreak settings", async ({ context }) => {
       await page.screenshot({ path: process.env.SCREENSHOT });
     // A stale replication snapshot must not erase the acknowledged mode.
     await page.evaluate(() =>
-      window.daybreakFixture.setAgent({
+      window.daybreakFixture.setAgent!({
         ...window.daybreakFixture.agent,
         tail: "Unrelated update",
       }),
     );
     assert.equal(await mode().isChecked(), true);
     await page.evaluate(() =>
-      window.daybreakFixture.setAgent({
+      window.daybreakFixture.setAgent!({
         ...window.daybreakFixture.agent,
         model: "gpt-5.6-sol",
         daybreakEnabled: true,
@@ -201,7 +204,7 @@ test("Daybreak settings", async ({ context }) => {
       () => new Promise((resolve) => requestAnimationFrame(resolve)),
     );
     await page.evaluate(() =>
-      window.daybreakFixture.setAgent({
+      window.daybreakFixture.setAgent!({
         ...window.daybreakFixture.agent,
         daybreakEnabled: false,
       }),
@@ -225,9 +228,7 @@ test("Daybreak settings", async ({ context }) => {
     assert.equal(await modelValue(model()), "gpt-5.6-sol");
     assert.equal(
       await page.evaluate(
-        () =>
-          window.daybreakFixture.required(window.daybreakFixture.calls[0])
-            .daybreak_enabled,
+        () => window.daybreakFixture.calls[0]!.daybreak_enabled,
       ),
       false,
     );
@@ -302,17 +303,21 @@ test("Daybreak settings", async ({ context }) => {
       .getByRole("button", { name: "Check settings save", exact: true })
       .waitFor();
     const request = await page.evaluate(() => window.daybreakFixture.calls[0]);
-    assert.equal(required(request).next_turn, true);
-    assert.equal(required(request).daybreak_enabled, true);
+    assert.equal(request!.next_turn, true);
+    assert.equal(request!.daybreak_enabled, true);
     assert.equal(
       await page.evaluate(() => window.daybreakFixture.agent.daybreakEnabled),
       false,
     );
     assert.match(await page.locator("body").innerText(), /next turn/i);
     await page.reload();
-    await page.waitForFunction(() => window.daybreakFixture?.ready, undefined, {
-      timeout: 5_000,
-    });
+    await page.waitForFunction(
+      () => !!window.daybreakFixture?.reset,
+      undefined,
+      {
+        timeout: 5_000,
+      },
+    );
     await page
       .getByRole("button", { name: "Main agent settings", exact: true })
       .click();
@@ -338,7 +343,7 @@ test("Daybreak settings", async ({ context }) => {
       .getByRole("button", { name: "Check settings save", exact: true })
       .waitFor();
     await page.evaluate(() =>
-      window.daybreakFixture.setAgent({
+      window.daybreakFixture.setAgent!({
         ...window.daybreakFixture.agent,
         accountKey: "second",
         model: "gpt-5.6-terra",

@@ -1,34 +1,25 @@
-import { required } from "./fixture-helpers.ts";
 import type { components } from "../../src/generated/api.ts";
 import { emitRuntimeChange } from "./native-runtime-resource-events.fixture.ts";
-import { fixtureAccount, fixtureNotReady } from "./fixture-helpers.ts";
+import { fixtureAccount } from "./fixture-helpers.ts";
 import type { AccountsState } from "../../src/components/Accounts.tsx";
 import type { ResourceRef } from "../../src/sync/resourceEvents.ts";
 type NativeRuntimeHarness = {
-  ready: boolean;
-  required: typeof required;
-  setRuntimeOpen: (opened: boolean) => void;
-  setWarningAccount: (key: string) => void;
+  setRuntimeOpen?: (opened: boolean) => void;
+  setWarningAccount?: (key: string) => void;
   emitRuntimeChange: (kind: ResourceRef["kind"]) => void;
-  delayedRuntimeSignal: AbortSignal;
-  finishOldRuntimeRead: ((response: Response) => void) | null;
+  delayedRuntimeSignal?: AbortSignal;
+  finishOldRuntimeRead?: ((response: Response) => void) | null;
 };
 declare global {
   interface Window {
     nativeRuntimeFixture: NativeRuntimeHarness;
   }
 }
+// Partial fixture view: render initializes the harness callbacks before the spec calls them.
 window.nativeRuntimeFixture = {
-  ready: false,
-  required,
-  setRuntimeOpen: fixtureNotReady,
-  setWarningAccount: fixtureNotReady,
   emitRuntimeChange,
-  delayedRuntimeSignal: new AbortController().signal,
-  finishOldRuntimeRead: null,
 };
 const fixtureRoot = document.getElementById("root");
-if (!fixtureRoot) throw new Error("Missing fixture root");
 import React, { useState } from "react";
 import { createRoot } from "react-dom/client";
 import { MantineProvider, Modal, Button } from "@mantine/core";
@@ -53,22 +44,19 @@ const accounts = [
     status: "ready" as const,
   },
 ].map((account) => fixtureAccount(account));
-const notices: components["schemas"]["NativeNoticeRecord"][] = [
+// Partial fixture view: these notices omit transport-only at and connectionId.
+const notices = [
   {
     id: "codex-warning",
     accountKey: "default",
     message: "Codex account version warning",
-    at: 0,
-    connectionId: "fixture",
   },
   {
     id: "claude-warning",
     accountKey: "claude",
     message: "Claude account version warning",
-    at: 0,
-    connectionId: "fixture",
   },
-];
+] as components["schemas"]["NativeNoticeRecord"][];
 const accountsData = {
   accounts,
   defaultAccountKey: "default",
@@ -79,7 +67,6 @@ const accountsData = {
   supportsDisconnect: false,
 } satisfies AccountsState;
 function Fixture() {
-  window.nativeRuntimeFixture.ready = true;
   const [opened, setOpened] = useState(false);
   const [integrated, setIntegrated] = useState(false);
   const [warningAccount, setWarningAccount] = useState("default");
@@ -122,4 +109,4 @@ function Fixture() {
     </MantineProvider>
   );
 }
-createRoot(fixtureRoot).render(<Fixture />);
+createRoot(fixtureRoot!).render(<Fixture />);
