@@ -3,7 +3,10 @@ import type { ViteDevServer } from "vite";
 import type { Route } from "@playwright/test";
 import type { TranscriptPageResponse } from "../playwright.ts";
 import type { PostBody, PostResult } from "../../src/apiTypes.ts";
-import type { PendingUpload } from "../../src/sync/uploads.ts";
+import type {
+  PendingUpload,
+  PendingUploadContent,
+} from "../../src/sync/uploads.ts";
 import type { UxChatFixtureSendBody } from "../fixtures/ux-chat.tsx";
 import { fixturePostBody, fixtureResourceRefs } from "./http.ts";
 // Isolated component fixture. All API requests use local test responses.
@@ -458,13 +461,12 @@ test("Ux Chat Ui", async ({
                 content.onerror = () => reject(content.error);
                 content.onsuccess = () => {
                   database.close();
+                  const savedContent = content.result as PendingUploadContent;
+                  if (!savedContent.bytes)
+                    throw new Error("Saved fixture upload has no bytes");
                   resolve({
                     name: row.name,
-                    bytes: Array.from(
-                      new Uint8Array(
-                        (content.result as { bytes: ArrayBuffer }).bytes,
-                      ),
-                    ),
+                    bytes: Array.from(new Uint8Array(savedContent.bytes)),
                   });
                 };
               };
