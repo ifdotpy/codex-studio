@@ -2,7 +2,7 @@ import type { ComponentProps } from "react";
 export type BrowserAccessSnapshot = ComponentProps<typeof BrowserAccessNotice>;
 declare global {
   interface Window {
-    applyBrowserAccessSnapshot: (snapshot: BrowserAccessSnapshot) => void;
+    applySnapshot: (snapshot: BrowserAccessSnapshot) => void;
   }
 }
 
@@ -16,7 +16,7 @@ function Fixture() {
     accountKey: "default",
     active: true,
   });
-  window.applyBrowserAccessSnapshot = setSnapshot;
+  window.applySnapshot = setSnapshot;
   return (
     <MantineProvider>
       <main data-account={snapshot.accountKey}>
@@ -26,6 +26,4 @@ function Fixture() {
     </MantineProvider>
   );
 }
-const root = document.getElementById("root");
-if (!root) throw new Error("Missing fixture root");
-createRoot(root).render(<Fixture />);
+createRoot(document.getElementById("root")!).render(<Fixture />);

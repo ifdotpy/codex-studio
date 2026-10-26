@@ -46,7 +46,7 @@ export function ModelField({
         size="sm"
         value={selectedValue}
         data-value={selectedValue}
-        disabled={!!disabled}
+        disabled={disabled}
         description={selected?.disabledReason}
         onChange={(event) => onChange(event.currentTarget.value)}
         className="model-select"

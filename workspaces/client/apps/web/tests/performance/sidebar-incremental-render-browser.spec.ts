@@ -65,15 +65,15 @@ test("Sidebar incremental rows and current callbacks @performance", async ({
                 // builds every row; the memoized view builds changed rows only.
                 source = source.replace(
                   "const renderRow = (row: Agent) => {",
-                  "const renderRow = (row: Agent) => {window.sidebarIncrementalFixtureRows++;",
+                  "const renderRow = (row: Agent) => {window.fixtureRows++;",
                 );
                 source = source.replace(
                   "  const a = row;\n  return (",
-                  "  window.sidebarIncrementalFixtureRows++; const a = row;\n  return (",
+                  "  window.fixtureRows++; const a = row;\n  return (",
                 );
                 source = source.replaceAll(
                   "document.toJSON()",
-                  "(window.sidebarIncrementalFixtureJsonReads++, document.toJSON())",
+                  "(window.fixtureJsonReads++, document.toJSON())",
                 );
                 return {
                   contents: source,
@@ -95,8 +95,7 @@ test("Sidebar incremental rows and current callbacks @performance", async ({
           name: "isolated-fixture-api",
           configureServer(vite) {
             vite.middlewares.use((request, response, next) => {
-              const path = new URL(request.url ?? "", "http://fixture")
-                .pathname;
+              const path = new URL(request.url!, "http://fixture").pathname;
               response.setHeader("X-Studio-API-Schema", readApiSchemaHash());
               if (path === "/") {
                 response.setHeader("Content-Type", "text/html");
@@ -159,37 +158,31 @@ test("Sidebar incremental rows and current callbacks @performance", async ({
       return route.continue();
     });
     await page.goto(origin);
-    await page.waitForFunction(
-      () =>
-        window.sidebarIncrementalFixtureReady &&
-        window.sidebarIncrementalFixtureData,
-    );
+    await page.waitForFunction(() => window.fixtureReady && window.fixtureData);
     await page.locator('[data-chat="agent-19"]').waitFor();
     await page.waitForTimeout(100);
     const before = await page.evaluate(() => ({
-      rows: window.sidebarIncrementalFixtureRows,
-      json: window.sidebarIncrementalFixtureJsonReads,
-      renders: window.sidebarIncrementalFixtureRenders,
+      rows: window.fixtureRows,
+      json: window.fixtureJsonReads,
+      renders: window.fixtureRenders,
     }));
     for (let checks = 1; checks <= 3; checks++) {
       await page.evaluate(async (checks) => {
-        await window.sidebarIncrementalWrite(
-          "rule",
-          "r",
-          { id: "r", checks },
-          100 + checks,
-        );
+        await window.write("rule", "r", { id: "r", checks }, 100 + checks);
       }, checks);
       await page.waitForFunction((checks) => {
-        const rule = window.sidebarIncrementalFixtureData?.runtime.rules[0];
-        return rule && "checks" in rule && rule.checks === checks;
+        const rule = window.fixtureData!.runtime.rules[0];
+        return (
+          (rule as NonNullable<typeof rule> & { checks: number }).checks ===
+          checks
+        );
       }, checks);
       await page.waitForTimeout(30);
     }
     const after = await page.evaluate(() => ({
-      rows: window.sidebarIncrementalFixtureRows,
-      json: window.sidebarIncrementalFixtureJsonReads,
-      renders: window.sidebarIncrementalFixtureRenders,
+      rows: window.fixtureRows,
+      json: window.fixtureJsonReads,
+      renders: window.fixtureRenders,
     }));
     assert.equal(
       after.rows - before.rows,
@@ -207,9 +200,7 @@ test("Sidebar incremental rows and current callbacks @performance", async ({
       "empty creation reconciliation does not add a render",
     );
     assert.deepEqual(
-      await page.evaluate(() =>
-        window.sidebarIncrementalDocumentVersionProof(),
-      ),
+      await page.evaluate(() => window.documentVersionProof()),
       {
         sameVersion: true,
         newVersion: true,
@@ -219,73 +210,62 @@ test("Sidebar incremental rows and current callbacks @performance", async ({
       "RxDB caches immutable document instances per revision",
     );
     await page.locator('[data-sidebar-id="key-row"]').press("ArrowDown");
-    assert.deepEqual(
-      await page.evaluate(() => window.sidebarIncrementalFixtureActions.at(-1)),
-      ["key", 3],
-    );
+    assert.deepEqual(await page.evaluate(() => window.fixtureActions.at(-1)), [
+      "key",
+      3,
+    ]);
     await page.locator('[data-sidebar-id="key-row"]').dispatchEvent("dragover");
-    assert.deepEqual(
-      await page.evaluate(() => window.sidebarIncrementalFixtureActions.at(-1)),
-      ["drag", 3],
-    );
+    assert.deepEqual(await page.evaluate(() => window.fixtureActions.at(-1)), [
+      "drag",
+      3,
+    ]);
     await page.locator('[data-chat="agent-19"]').click();
     assert.deepEqual(
-      await page.evaluate(() => window.sidebarIncrementalFixtureActions.at(-1)),
+      await page.evaluate(() => window.fixtureActions.at(-1)),
       ["agent-19", 3],
       "an unchanged row calls the current committed callback",
     );
-    const unchanged = await page.evaluate(
-      () => window.sidebarIncrementalFixtureRenders,
-    );
+    const unchanged = await page.evaluate(() => window.fixtureRenders);
     const conversionsBeforeReady = await page.evaluate(
-      () => window.sidebarIncrementalFixtureJsonReads,
+      () => window.fixtureJsonReads,
     );
-    await page.evaluate(() => window.sidebarIncrementalReadyAgain());
+    await page.evaluate(() => window.readyAgain());
     await page.waitForFunction(
-      (prior) => window.sidebarIncrementalFixtureRenders > prior,
+      (prior) => window.fixtureRenders > prior,
       unchanged,
     );
     assert.equal(
-      await page.evaluate(() => window.sidebarIncrementalFixtureRenders),
+      await page.evaluate(() => window.fixtureRenders),
       unchanged + 1,
       "a changed ready marker republishes the same projection once",
     );
     assert.equal(
-      await page.evaluate(() => window.sidebarIncrementalFixtureJsonReads),
+      await page.evaluate(() => window.fixtureJsonReads),
       conversionsBeforeReady,
       "republishing the same projection reuses cached RxDB documents",
     );
-    const rowsBeforeAgent = await page.evaluate(
-      () => window.sidebarIncrementalFixtureRows,
-    );
+    const rowsBeforeAgent = await page.evaluate(() => window.fixtureRows);
     await page.evaluate(async () => {
       const value = {
-        ...window.sidebarIncrementalFixtureAgent,
+        ...window.fixtureAgent,
         name: "Current chat",
         status: "failed",
       };
-      await window.sidebarIncrementalWrite("agent", value.id, value, 200);
+      await window.write("agent", value.id, value, 200);
     });
     await page
       .locator('[data-chat="agent-19"]')
       .getByText("Current chat", { exact: true })
       .waitFor();
     assert.equal(
-      await page.evaluate(() => window.sidebarIncrementalFixtureRows),
+      await page.evaluate(() => window.fixtureRows),
       rowsBeforeAgent + 1,
       "the changed agent immediately replaces exactly its row view",
     );
-    await page.evaluate(() =>
-      window.sidebarIncrementalWrite("agent", "agent-19", {}, 201, true),
-    );
+    await page.evaluate(() => window.write("agent", "agent-19", {}, 201, true));
     await page.locator('[data-chat="agent-19"]').waitFor({ state: "detached" });
     await page.evaluate(() =>
-      window.sidebarIncrementalWrite(
-        "agent",
-        "agent-19",
-        window.sidebarIncrementalFixtureAgent,
-        200,
-      ),
+      window.write("agent", "agent-19", window.fixtureAgent, 200),
     );
     await page.waitForTimeout(50);
     assert.equal(
@@ -294,10 +274,10 @@ test("Sidebar incremental rows and current callbacks @performance", async ({
       "a stale sequence cannot restore a deleted agent",
     );
     await page.evaluate(() =>
-      window.sidebarIncrementalWrite(
+      window.write(
         "agent",
         "agent-19",
-        { ...window.sidebarIncrementalFixtureAgent, name: "Restored" },
+        { ...window.fixtureAgent, name: "Restored" },
         202,
       ),
     );
