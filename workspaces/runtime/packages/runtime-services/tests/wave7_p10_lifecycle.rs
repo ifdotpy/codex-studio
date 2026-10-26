@@ -439,7 +439,7 @@ async fn committed_delete_drains_its_intent_despite_unrelated_cleanup_failure() 
         .expect("delete case");
     let mut records: Records = serde_json::from_value(case["records"].clone()).expect("records");
     let root = tempfile::tempdir().expect("root");
-    records.tables.get_mut("runtime_agents").expect("agents").push(json!({
+    records.tables.get_mut("runtime_agents").expect("agents").push(json!({"provider":studio_runtime_schema::ProviderKind::Codex,
         "id":"a-broken-cleanup", "rootId":"a-broken-cleanup", "epoch":1, "status":"paused", "deletedAt":1,
         "cwd":root.path(), "worktreeReady":true, "agentArchive":{"at":1,"epoch":1,"cleanupPending":true},
         "workspaceCleanupIntent":studio_runtime_services::workspace_cleanup_runtime::queued_cleanup_intent("a-broken-cleanup", 1, studio_runtime_services::workspace_cleanup_runtime::CleanupAction::Archive)
@@ -931,6 +931,13 @@ fn assert_records(store: &RuntimeStore, case: &Value) {
         .map(|row| json!([row[0], row[1], row[4], row[5]]))
         .collect::<Vec<_>>();
     expected_sync.iter_mut().for_each(|row| {
+        if row[0] == "agent" && row[3] == 0 {
+            // The frozen Codex projection predates explicit provider identity.
+            let mut payload: Value = serde_json::from_str(row[2].as_str().expect("agent payload"))
+                .expect("frozen agent JSON");
+            payload["value"]["provider"] = json!(studio_runtime_schema::ProviderKind::Codex);
+            row[2] = json!(payload.to_string());
+        }
         *row = json!([row[0], row[1], row[2], row[3]]);
     });
     expected_sync.sort_by_key(|row| {

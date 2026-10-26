@@ -576,12 +576,16 @@ async fn monitor_completion_commits_the_python_rule_result_and_wake_atomically()
     use studio_runtime_store::{RuleRecord, RulesRepository};
     let root = fixtures::tempdir();
     fixtures::corpus(root.path());
-    let cases: Vec<Value> = serde_json::from_str(
+    let mut cases: Vec<Value> = serde_json::from_str(
         &include_str!("wave7_p15_support/completions.json")
             .replace("@FIXTURE_ROOT@", &root.path().to_string_lossy()),
     )
     .expect("frozen rule completions");
     assert_eq!(cases.len(), 9);
+    // These Python monitor completions belong to the historical Codex actor.
+    for case in &mut cases {
+        case["actor"]["provider"] = json!(studio_runtime_schema::ProviderKind::Codex);
+    }
     for (number, case) in cases.iter().enumerate() {
         let store = Arc::new(fixtures::store(root.path(), &format!("rule-{number}")).await);
         fixtures::seed(&store, case).await;

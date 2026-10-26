@@ -2621,10 +2621,12 @@ mod tests {
         let id =
             store
                 .transaction_with(move |tx| {
-                    let actor = AgentRecord::from_value(json!({
-                        "id":"agent", "rootId":"agent", "epoch":1, "autoWake":true,
-                        "status":"idle", "cwd":cwd, "accountKey":"default"
-                    }))
+                    let actor = AgentRecord::from_value(
+                        json!({"provider":studio_runtime_schema::ProviderKind::Codex,
+                            "id":"agent", "rootId":"agent", "epoch":1, "autoWake":true,
+                            "status":"idle", "cwd":cwd, "accountKey":"default"
+                        }),
+                    )
                     .map_err(StoreError::from)?;
                     AgentRepository::put(tx, &actor)?;
                     let mut monitor = monitor_policy::create_record(
@@ -2806,8 +2808,10 @@ mod tests {
     fn monitor_window_keeps_active_rows_and_holds_invalid_rows_without_projecting_inactive_owners()
     {
         let mut connection = Connection::open_in_memory().expect("database");
+        // Keep a record-only legacy source table so non-object corruption reaches the reader.
+        // The current provider column rejects that corruption at write time.
         connection
-            .execute_batch(&studio_runtime_store::agent_columns::fixture_sql(
+            .execute_batch(
                 "CREATE TABLE runtime_monitors(id TEXT PRIMARY KEY, record TEXT NOT NULL);
                  CREATE TABLE runtime_agents(id TEXT PRIMARY KEY, record TEXT NOT NULL);
                  CREATE TABLE sync_entities(
@@ -2818,10 +2822,10 @@ mod tests {
                  CREATE TABLE sync_versions(seq INTEGER PRIMARY KEY);
                  CREATE TABLE sync_entity_meta(key TEXT PRIMARY KEY,value TEXT NOT NULL);
                  INSERT INTO runtime_agents VALUES
-                     ('active','{\"id\":\"active\",\"deletedAt\":null}'),
-                     ('deleted','{\"id\":\"deleted\",\"deletedAt\":1}'),
+                     ('active','{\"id\":\"active\",\"provider\":\"codex\",\"deletedAt\":null}'),
+                     ('deleted','{\"id\":\"deleted\",\"provider\":\"codex\",\"deletedAt\":1}'),
                      ('broken','[\"not an agent object\"]');",
-            ))
+            )
             .expect("projection fixture");
         connection
             .execute_batch(studio_runtime_store::agent_volatile::agent_volatile_table_sql())
@@ -2985,8 +2989,10 @@ mod tests {
     #[test]
     fn indexed_monitor_window_matches_python_tie_boundary_and_filters_owner_after_selection() {
         let mut connection = Connection::open_in_memory().expect("database");
+        // Keep a record-only legacy source table so non-object corruption reaches the reader.
+        // The current provider column rejects that corruption at write time.
         connection
-            .execute_batch(&studio_runtime_store::agent_columns::fixture_sql(
+            .execute_batch(
                 "CREATE TABLE runtime_monitors(id TEXT PRIMARY KEY,record TEXT NOT NULL);
                  CREATE INDEX runtime_monitor_status ON runtime_monitors(
                      json_extract(record,'$.status'),json_extract(record,'$.created'));
@@ -2999,10 +3005,10 @@ mod tests {
                  CREATE TABLE sync_versions(seq INTEGER PRIMARY KEY);
                  CREATE TABLE sync_entity_meta(key TEXT PRIMARY KEY,value TEXT NOT NULL);
                  INSERT INTO runtime_agents VALUES
-                     ('active','{\"id\":\"active\",\"deletedAt\":null}'),
-                     ('deleted','{\"id\":\"deleted\",\"deletedAt\":1}'),
+                     ('active','{\"id\":\"active\",\"provider\":\"codex\",\"deletedAt\":null}'),
+                     ('deleted','{\"id\":\"deleted\",\"provider\":\"codex\",\"deletedAt\":1}'),
                      ('broken','[\"not an agent object\"]');",
-            ))
+            )
             .expect("indexed projection fixture");
         connection
             .execute_batch(studio_runtime_store::agent_volatile::agent_volatile_table_sql())
@@ -3112,7 +3118,7 @@ mod tests {
         let store = RuntimeStore::open(Some(root.path()))
             .await
             .expect("open isolated runtime store");
-        let agent = json!({"id":"agent","rootId":"agent","epoch":0,"status":"idle","isLead":true});
+        let agent = json!({"provider":studio_runtime_schema::ProviderKind::Codex,"id":"agent","rootId":"agent","epoch":0,"status":"idle","isLead":true});
         let snapshot = ProjectVaultSnapshot::default();
 
         store
@@ -3233,13 +3239,15 @@ mod tests {
         store
             .transaction(move |transaction| {
                 for id in ["live", "deleting"] {
-                    let agent = studio_runtime_store::AgentRecord::from_value(json!({
-                        "id": id,
-                        "rootId": id,
-                        "epoch": 0,
-                        "status": "idle",
-                        "isLead": true
-                    }))?;
+                    let agent = studio_runtime_store::AgentRecord::from_value(
+                        json!({"provider":studio_runtime_schema::ProviderKind::Codex,
+                            "id": id,
+                            "rootId": id,
+                            "epoch": 0,
+                            "status": "idle",
+                            "isLead": true
+                        }),
+                    )?;
                     studio_runtime_store::AgentRepository::put(transaction, &agent)?;
                 }
                 for index in 0..105 {
@@ -3540,9 +3548,11 @@ mod tests {
         store
             .transaction(|transaction| {
                 for id in ["a", "b"] {
-                    let agent = studio_runtime_store::AgentRecord::from_value(json!({
-                        "id": id, "rootId": id, "epoch": 0, "status": "idle", "isLead": true
-                    }))?;
+                    let agent = studio_runtime_store::AgentRecord::from_value(
+                        json!({"provider":studio_runtime_schema::ProviderKind::Codex,
+                            "id": id, "rootId": id, "epoch": 0, "status": "idle", "isLead": true
+                        }),
+                    )?;
                     studio_runtime_store::AgentRepository::put(transaction, &agent)?;
                 }
                 maintain_task_window(transaction, &|_, _, _, _| true)

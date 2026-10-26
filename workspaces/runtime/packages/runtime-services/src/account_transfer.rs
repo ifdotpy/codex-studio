@@ -1627,7 +1627,7 @@ mod provider_receipt_tests {
             "members":{"agent":{"phase":"lazy", "sourceAccountKey":"source",
                 "sourceThreadId":"source-thread", "lazy":true}}
         });
-        let agent = json!({
+        let agent = json!({"provider":studio_runtime_schema::ProviderKind::Codex,
             "id":"agent", "rootId":"agent", "epoch":7, "status":"idle",
             "accountKey":"target", "accountTransferId":"transfer",
             "lazyAccountTransfer":{"id":"transfer"}, "model":"model-a"

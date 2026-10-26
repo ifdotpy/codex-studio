@@ -125,11 +125,11 @@ impl Fixture {
         std::fs::write(
             &registry,
             json!({
-                "version":1,
+                "version":studio_runtime_schema::shared_values::ACCOUNT_REGISTRY_FORMAT_VERSION,
                 "defaultAccountKey":"default",
                 "accounts":{
-                    "default":{"id":"default","home":root.path().join("base-home"),"source":"Fixture","label":"Default","status":"signedOut"},
-                    "signed-out":{"id":"signed-out","home":root.path().join("signed-out-home"),"source":"Codex Agents","label":"Signed out","accountId":"fixture-subscription","email":"fixture@example.invalid","plan":"pro","status":"signedOut"}
+                    "default":{"provider":studio_runtime_schema::ProviderKind::Codex,"id":"default","home":root.path().join("base-home"),"source":"Fixture","label":"Default","status":"signedOut"},
+                    "signed-out":{"provider":studio_runtime_schema::ProviderKind::Codex,"id":"signed-out","home":root.path().join("signed-out-home"),"source":"Codex Agents","label":"Signed out","accountId":"fixture-subscription","email":"fixture@example.invalid","plan":"pro","status":"signedOut"}
                 },
                 "logins":{}
             })
@@ -226,7 +226,7 @@ async fn re_sign_in_recreates_a_missing_sign_in_home() {
     let registry = fixture.root.path().join("accounts/registry.json");
     let mut value: Value =
         serde_json::from_slice(&std::fs::read(&registry).expect("registry")).expect("JSON");
-    value["accounts"][key] = json!({"id":key,"home":home,"source":"Codex Agents","label":"Saved","accountId":"fixture-saved","email":"fixture@example.invalid","plan":"pro","status":"signedOut"});
+    value["accounts"][key] = json!({"provider":studio_runtime_schema::ProviderKind::Codex,"id":key,"home":home,"source":"Codex Agents","label":"Saved","accountId":"fixture-saved","email":"fixture@example.invalid","plan":"pro","status":"signedOut"});
     std::fs::write(&registry, value.to_string()).expect("registry");
     let driver = Arc::new(AccountDriver::open(&registry).expect("reopen"));
     let fixture = Fixture { driver, ..fixture };

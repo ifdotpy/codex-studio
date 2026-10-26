@@ -358,7 +358,7 @@ mod tests {
     async fn pending_native_question() -> (tempfile::TempDir, Arc<RuntimeStore>) {
         let directory = tempfile::tempdir().unwrap();
         let store = Arc::new(RuntimeStore::open(Some(directory.path())).await.unwrap());
-        let actor = json!({
+        let actor = json!({"provider":studio_runtime_schema::ProviderKind::Codex,
             "id":"delete-agent", "rootId":"delete-agent", "epoch":0,
             "status":"running", "autoWake":true, "isLead":true,
             "accountKey":"default", "threadId":"thread", "turnId":"turn",

@@ -6,7 +6,7 @@ use studio_runtime_services::account_transfer::{
 
 fn fixture() -> (Value, Value, Ticket) {
     let op = json!({"id":"op","leadId":"a","targetAccountKey":"target","status":"pending","created":1.0,"members":{"a":{"phase":"waiting","sourceAccountKey":"source","lazy":false}}});
-    let agent = json!({"id":"a","rootId":"a","epoch":3,"status":"idle","accountKey":"source","accountTransferId":"op"});
+    let agent = json!({"provider":studio_runtime_schema::ProviderKind::Codex,"id":"a","rootId":"a","epoch":3,"status":"idle","accountKey":"source","accountTransferId":"op"});
     let ticket = Ticket {
         operation: "op".into(),
         agent: "a".into(),
@@ -160,7 +160,7 @@ fn request_replay_is_bound_to_lead_destination_and_scope() {
 }
 #[test]
 fn selection_decision_keeps_resume_for_atomic_store_cancellation() {
-    let agent = json!({"id":"lead","rootId":"lead","epoch":0,"status":"idle","isLead":true,"accountKey":"source","cwd":"/project","usageResume":{"status":"scheduled"}});
+    let agent = json!({"provider":studio_runtime_schema::ProviderKind::Codex,"id":"lead","rootId":"lead","epoch":0,"status":"idle","isLead":true,"accountKey":"source","cwd":"/project","usageResume":{"status":"scheduled"}});
     let snapshot =
         studio_runtime_services::account_selection::SelectionSnapshot::read(&agent.to_string())
             .expect("snapshot");

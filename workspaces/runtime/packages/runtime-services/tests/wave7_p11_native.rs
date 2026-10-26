@@ -18,7 +18,25 @@ fn corpus() -> &'static Value {
         } else {
             include_str!("wave7_p11_native/cases.json")
         };
-        serde_json::from_str(data).expect("frozen native corpus")
+        let mut data: Value = serde_json::from_str(data).expect("frozen native corpus");
+        // These frozen native actions/reviews exercise the Codex wire protocol.
+        // Keep their oracle independent and adapt only the historical identity.
+        for (group, fields) in [
+            ("outcomes", &["agent"][..]),
+            ("actions", &["agent", "after"][..]),
+            ("reviews", &["actor", "root", "child"][..]),
+            ("reviewTurns", &["child", "claimed", "submitted"][..]),
+            ("commands", &["agent"][..]),
+            ("cancellations", &["agent"][..]),
+            ("forks", &["agent"][..]),
+        ] {
+            for case in data[group].as_array_mut().expect("native cases") {
+                for field in fields {
+                    case[*field]["provider"] = json!(studio_runtime_schema::ProviderKind::Codex);
+                }
+            }
+        }
+        data
     })
 }
 

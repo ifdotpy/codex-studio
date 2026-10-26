@@ -38,7 +38,7 @@ fn pending_reauth(root: &Path, created: f64) -> AccountDriver {
     let path = root.join("registry.json");
     std::fs::write(
         &path,
-        json!({"version":1,"defaultAccountKey":"default","accounts":{"default":{
+        json!({"version":studio_runtime_schema::shared_values::ACCOUNT_REGISTRY_FORMAT_VERSION,"defaultAccountKey":"default","accounts":{"default":{"provider":studio_runtime_schema::ProviderKind::Codex,
             "id":"default","home":home,"label":"Default","source":"Fixture",
             "status":"ready","accountId":EXPECTED}},"logins":{}})
         .to_string(),

@@ -40,7 +40,7 @@ impl Corpus {
         let agents: Vec<Value> = ["lead", "helper"]
             .iter()
             .map(|name| {
-                json!({"id":name,"rootId":"lead","epoch":0,"status":"idle","name":name,
+                json!({"provider":studio_runtime_schema::ProviderKind::Codex,"id":name,"rootId":"lead","epoch":0,"status":"idle","name":name,
                 "autoWake":false,"isLead":*name == "lead"})
             })
             .collect();

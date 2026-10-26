@@ -58,7 +58,7 @@ async fn fixture() -> (tempfile::TempDir, Arc<RuntimeStore>) {
 }
 
 fn agent(id: &str, fields: Value) -> Value {
-    let mut record = json!({
+    let mut record = json!({"provider":studio_runtime_schema::ProviderKind::Codex,
         "id":id,"rootId":id,"name":id,"epoch":3,"turnEpoch":3,"status":"idle",
         "autoWake":true,"created":1_760_000_000.0,"cwd":"/source/project/app",
         "imageWorkspaceRepo":"/source/project","imageWorkspaceSubpath":"app",
