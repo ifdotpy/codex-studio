@@ -3,7 +3,6 @@ export {
   createSdkMcpServer,
   forkSession,
   getSessionMessages,
-  resolveSettings,
 } from "./steer.fixture.mts";
 import { fixtureQuery, installSteerFaults } from "./steer.fixture.mts";
 import type { FixtureQuery } from "./sdk-fixtures.ts";

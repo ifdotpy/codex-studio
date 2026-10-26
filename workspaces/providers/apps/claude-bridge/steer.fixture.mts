@@ -18,9 +18,7 @@ export interface SteerFixtureOptions {
   steadyToSteer?: boolean;
   crashOnClear?: boolean;
 }
-import { waitForFile as waitSignal } from "./testing/file-signals.ts";
-const waitForFile: typeof waitSignal = (file, options) =>
-  waitSignal(file, { ...options, childIpc: true });
+import { waitForFile } from "./sdk-fixtures.ts";
 
 export const resolveSettings = async () => ({ effective: {} });
 import fs from "node:fs";

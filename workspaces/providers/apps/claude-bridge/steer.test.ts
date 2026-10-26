@@ -869,6 +869,7 @@ for (const mode of ["empty", "partial", "all"]) {
     assert.deepEqual(
       await bridge.call("claude/settings", {
         threadId: bridge.thread,
+        // @ts-expect-error Deliberately send legacy invalid settings to verify unchanged wire passthrough.
         settings,
       }),
       { settings },
@@ -964,6 +965,7 @@ test.concurrent("backpressured output waits for the prior turn's final save", as
       n.params.item.text === "after final save",
   );
   assert.notEqual(answer.params.turnId, old);
+  assert.ok(answer.params.turnId);
   await completed(bridge, answer.params.turnId);
 });
 
@@ -1005,6 +1007,7 @@ test("bridge request and notification guards are disposed after settlement", asy
   vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
   try {
     await bridge.call("thread/loaded/list", { limit: 100 });
+    // @ts-expect-error An invalid method must reject and release the same request timer.
     await assert.rejects(bridge.call("not/a/method", {}));
     await bridge.restart();
     assert.equal(vi.getTimerCount(), 0);

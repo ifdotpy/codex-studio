@@ -5,9 +5,7 @@ import type { SDKTaskNotificationMessage } from "@anthropic-ai/claude-agent-sdk"
 type NativeTaskFixtureMessage =
   | SessionFixtureMessage
   | Partial<Omit<SDKTaskNotificationMessage, "status"> & { status: "killed" }>;
-import { waitForFile as waitForFileSignal } from "./testing/file-signals.ts";
-const waitForFile: typeof waitForFileSignal = (file, options) =>
-  waitForFileSignal(file, { ...options, childIpc: true });
+import { waitForFile } from "./sdk-fixtures.ts";
 import type { FixtureQuery } from "./sdk-fixtures.ts";
 
 import fs from "node:fs";
