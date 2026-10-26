@@ -201,19 +201,24 @@ test("Tasks show gate evidence and schema refusals and require an override reaso
           gate: body.gate,
           version: required(tasks[1]).version + 1,
         });
-      } else if (body.action === "set_default_gate")
-        taskDefaultGate = required(body.gate);
-      else if (body.action === "create")
-        tasks.push(
-          fixtureWorkItem({
-            ...common,
-            ...body,
-            id: "created-task",
-            status: required(body.status),
-            resultSchema: fixtureResultSchema(body.result_schema),
-          }),
-        );
-      else if (body.action === "reject") {
+      } else if (body.action === "set_default_gate") {
+        if (body.gate === undefined) throw new Error("Missing default gate");
+        taskDefaultGate = body.gate;
+      } else if (body.action === "create") {
+        const resultSchema = fixtureResultSchema(body.result_schema);
+        tasks.push({
+          ...common,
+          ...body,
+          id: "created-task",
+          title: required(body.title),
+          description: body.description ?? undefined,
+          dependencies: body.dependencies ?? undefined,
+          version: body.version ?? common.version,
+          status: required(body.status),
+          result_schema: resultSchema,
+          resultSchema,
+        } satisfies components["schemas"]["WorkItem"]);
+      } else if (body.action === "reject") {
         required(tasks[0]).status = "ready";
         required(tasks[0]).version++;
       }
@@ -373,9 +378,4 @@ function fixtureResultSchema(
   schema: PostBody<"/api/work">["result_schema"],
 ): components["schemas"]["WorkItem"]["resultSchema"] {
   return schema === undefined ? undefined : JSON.parse(JSON.stringify(schema));
-}
-
-/** The fixture persists the renderer-authored task creation document as JSON. */
-function fixtureWorkItem(value: unknown): components["schemas"]["WorkItem"] {
-  return JSON.parse(JSON.stringify(value));
 }
