@@ -27,3 +27,5 @@ pub use provider_kind::{ProviderKind, RequestIdScheme, UnknownProvider, WireProf
 pub use session::{BookError, PendingBook, RequestState, ResponseMatch};
 
 pub use studio_runtime_schema::provider_diagnostics;
+
+pub use studio_runtime_schema::supervisor_contract;
