@@ -213,6 +213,9 @@ html[data-server-view] .workspace {
   .server-sidebar-open {
     display: block;
   }
+  html[data-viewport-top-strip] .server-sidebar {
+    inset-block-start: var(--native-safe-top, 0px);
+  }
 }
 
 .server-sidebar-hidden .server-sidebar {
@@ -313,9 +316,4 @@ html[data-viewport-top-strip] .multi-server-shell {
 }
 html[data-viewport-top-strip] .server-mobile-toggle {
   display: none;
-}
-@media (max-width: 760px) {
-  html[data-viewport-top-strip] .server-sidebar {
-    inset-block-start: var(--native-safe-top, 0px);
-  }
 }

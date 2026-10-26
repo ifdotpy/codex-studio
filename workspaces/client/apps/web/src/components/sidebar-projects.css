@@ -489,7 +489,8 @@
 .chat-scroll {
   container: chat-list / inline-size;
 }
-@container chat-list (max-width: 280px) {
+/* layout-query: sidebar.headingStackMax <= */
+@container chat-list (width <= 288px) {
   .projects-heading {
     flex-wrap: wrap;
     row-gap: 0;
@@ -520,7 +521,8 @@
 .sidebar-header {
   container: sidebar-header / inline-size;
 }
-@container sidebar-header (max-width: 240px) {
+/* layout-query: sidebar.headerStackMax <= */
+@container sidebar-header (width <= 240px) {
   .sidebar-header > .brand {
     flex: 1 1
       calc(
