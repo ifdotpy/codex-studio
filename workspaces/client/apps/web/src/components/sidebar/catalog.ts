@@ -240,7 +240,10 @@ export function createSidebarCatalogSelector() {
           high = ids.length;
         while (low < high) {
           const mid = (low + high) >>> 1;
-          if (compare(ids[mid], id) <= 0) low = mid + 1;
+          const candidate = ids[mid];
+          if (candidate === undefined)
+            throw new Error("Missing sidebar ordering candidate");
+          if (compare(candidate, id) <= 0) low = mid + 1;
           else high = mid;
         }
         ids.splice(low, 0, id);

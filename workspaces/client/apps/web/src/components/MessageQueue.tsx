@@ -17,7 +17,6 @@ import {
   Trash2,
 } from "lucide-react";
 import { errorText, type QueueItemDto } from "../api";
-import type { components } from "../generated/api";
 import type { Message } from "../types";
 import "./message-queue.css";
 import { copyText } from "../clipboard/clipboard";
@@ -51,14 +50,17 @@ function isQueueItemDto(value: unknown): value is QueueItemDto {
   );
 }
 
-type QueueAsset = { id: string; name: string };
-function isQueueAsset(
-  value: components["schemas"]["JsonValue"],
-): value is QueueAsset {
+type QueueAsset = Pick<
+  NonNullable<QueueItemDto["assets"]>[number],
+  "id" | "name"
+>;
+function isQueueAsset(value: unknown): value is QueueAsset {
   return (
     typeof value === "object" &&
     value !== null &&
     !Array.isArray(value) &&
+    "id" in value &&
+    "name" in value &&
     typeof value.id === "string" &&
     typeof value.name === "string"
   );
@@ -88,7 +90,7 @@ type EditDraft = {
   revision: string;
   key: string;
   updated: number;
-  ancestors?: Array<{ key: string; revision: string }>;
+  ancestors?: Array<{ key: string; revision: string }> | undefined;
 };
 type Drafts = { active: string | null; entries: Record<string, EditDraft> };
 const dragType = "application/x-studio-queued-message";

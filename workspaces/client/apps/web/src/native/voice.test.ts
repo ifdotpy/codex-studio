@@ -16,8 +16,17 @@ it("subscribes before creating a Rust peer, then applies answer, mute and close"
     emit = callback;
     return stop;
   });
-  vi.mocked(nativeRequest).mockImplementation(async (method, params: any) => {
-    if (method === "view.subscribe") subscription = params.subscription;
+  vi.mocked(nativeRequest).mockImplementation(async (method, params) => {
+    if (method === "view.subscribe") {
+      if (
+        !params ||
+        typeof params !== "object" ||
+        !("subscription" in params) ||
+        typeof params.subscription !== "string"
+      )
+        throw new Error("Missing subscription.");
+      subscription = params.subscription;
+    }
     return method === "voice.create" ? { sdp: "offer" } : true;
   });
   const receive = vi.fn();

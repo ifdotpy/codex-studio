@@ -90,7 +90,7 @@ export function useModelWhitelist() {
 
 /** Provider-qualified resolved identity keeps catalog aliases in one preference. */
 export function modelWhitelistKey(model: {
-  provider?: string;
+  provider?: string | undefined;
   model?: string;
   value?: string;
   resolvedModel?: string;

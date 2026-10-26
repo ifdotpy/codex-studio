@@ -25,7 +25,10 @@ export class DesktopServerCredentials implements ServerCredentialAdapter {
   async hasPairAttempt(attempt: PairAttemptIdentity): Promise<boolean> {
     const result = await this.bridge.serverCredentialAction!({
       action: "pairAttempt",
-      ...attempt,
+      requestId: attempt.requestId,
+      serverId: attempt.serverId,
+      origin: attempt.origin,
+      ...(attempt.inviteId === undefined ? {} : { inviteId: attempt.inviteId }),
     });
     if (typeof result !== "boolean")
       throw new Error("The credential state response is invalid.");
@@ -81,7 +84,7 @@ export class DesktopServerCredentials implements ServerCredentialAdapter {
         action: "cancel",
         serverId: server.id,
         streamId,
-        frameOwner: serverViewId || undefined,
+        ...(serverViewId ? { frameOwner: serverViewId } : {}),
       }).catch(() => {});
     };
     const abort = () => {
@@ -99,14 +102,16 @@ export class DesktopServerCredentials implements ServerCredentialAdapter {
       const result = (await this.bridge.serverCredentialAction!({
         action: "request",
         serverId: server.id,
-        credentialId: server.credentialId,
+        ...(server.credentialId === undefined
+          ? {}
+          : { credentialId: server.credentialId }),
         url: request.url,
         method: request.method,
         headers: [...request.headers],
         body: await request.clone().arrayBuffer(),
         requestId: await requestIdentity(request),
         streamId,
-        frameOwner: serverViewId || undefined,
+        ...(serverViewId ? { frameOwner: serverViewId } : {}),
       })) as CredentialResponse;
       if (request.signal.aborted) {
         cancel();

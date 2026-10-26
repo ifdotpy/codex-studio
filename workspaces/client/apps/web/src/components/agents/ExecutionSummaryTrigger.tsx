@@ -16,7 +16,7 @@ export function ExecutionSummaryTrigger({
 }: ComponentProps<typeof ActionButton> & {
   agent: Agent;
   team: Agent[];
-  lead?: Agent | null;
+  lead?: Agent | null | undefined;
   onOpen: () => void;
 }) {
   const root = agent.isLead

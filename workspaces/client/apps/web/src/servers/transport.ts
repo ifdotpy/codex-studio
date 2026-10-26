@@ -18,7 +18,7 @@ export type PairAttemptIdentity = {
   requestId: string;
   serverId: string;
   origin: string;
-  inviteId?: string;
+  inviteId?: string | undefined;
 };
 export type FrameSigningCredential = {
   clientId: string;

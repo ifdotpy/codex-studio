@@ -26,7 +26,7 @@ import {
 } from "./newChatSettings";
 
 type Props = {
-  server?: StudioServer;
+  server?: StudioServer | undefined;
   projectId: string;
   path: string;
   onChange: (settings: Omit<NewChatSettings, "workspaceMode"> | null) => void;

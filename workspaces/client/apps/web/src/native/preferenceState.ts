@@ -83,17 +83,26 @@ export function preferenceScope(
 // synchronous durable Rust commit. Never acknowledge an enqueue as a commit.
 export class NativePreferenceStorage implements Storage {
   private values = new Map<string, string>();
-  private keySnapshot?: readonly string[];
+  private keySnapshot: readonly string[] | undefined;
   private writes: Write[] = [];
-  private running?: Promise<void>;
+  private running: Promise<void> | undefined;
   private failed = false;
 
+  private journal: Storage;
+  private invoke: Invoke;
+  private report: (error: unknown) => void;
+  private scope: string;
   private constructor(
-    private journal: Storage,
-    private invoke: Invoke,
-    private report: (error: unknown) => void,
-    private scope: string,
-  ) {}
+    journal: Storage,
+    invoke: Invoke,
+    report: (error: unknown) => void,
+    scope: string,
+  ) {
+    this.journal = journal;
+    this.invoke = invoke;
+    this.report = report;
+    this.scope = scope;
+  }
 
   static async open(
     journal: Storage,
@@ -183,6 +192,7 @@ export class NativePreferenceStorage implements Storage {
     const run = async () => {
       while (this.writes.length) {
         const write = this.writes[0];
+        if (!write) break;
         await this.invoke(write.method, write.params, write.id);
         const next = this.writes.slice(1);
         this.save(next);

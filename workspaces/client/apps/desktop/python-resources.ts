@@ -53,17 +53,12 @@ export function missingPythonModules(
   directory: string,
   entryPoints = pythonEntryPoints,
 ): string[] {
-  const result: unknown = JSON.parse(
+  // The fixed script above writes this report; this boundary reads its own child output.
+  return JSON.parse(
     execFileSync(
       "python3",
       ["-I", "-S", "-c", missingModulesScript, directory, ...entryPoints],
       { encoding: "utf8" },
     ),
   );
-  if (
-    !Array.isArray(result) ||
-    !result.every((item: unknown) => typeof item === "string")
-  )
-    throw new Error("Invalid Python module report.");
-  return result;
 }
