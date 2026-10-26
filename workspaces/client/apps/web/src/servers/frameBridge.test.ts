@@ -32,8 +32,9 @@ vi.mock("./transport", async (importOriginal) => ({
   apiOrigin: () => "https://remote.example",
 }));
 const stopConnection = vi.hoisted(() => vi.fn());
-vi.mock("../sync/resourceEvents", () => ({
+vi.mock("../sync/subscriptions/events", () => ({
   watchResourceConnection: () => stopConnection,
+  defaultSubscriptions: { watchResourceConnection: () => stopConnection },
 }));
 
 import { useServerFrame } from "./frameBridge";
@@ -106,6 +107,7 @@ function mount(
       peerTeams: [],
       events: [],
       work: [],
+      studioErrors: [],
     },
   },
   accounts: ServerAccount[] = [],

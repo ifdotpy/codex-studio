@@ -29,6 +29,16 @@ From the repository root, start the selected backend and open
 Build output is local and ignored by Git. Rebuild it after a frontend change.
 The server reports a missing build instead of serving an older client.
 
+Every production Vite build runs [asset precompression](scripts/precompress-assets.ts)
+after the offline shell is finalized. It keeps smaller Brotli and gzip siblings
+for the server-owned [compressible extensions](../../../runtime/apps/runtime-server/src/web_asset_extensions.txt).
+Deploy the whole `dist/` directory, including these siblings. The Rust server
+negotiates `Accept-Encoding`, prefers Brotli, falls back to gzip or identity,
+and varies caches by encoding without compressing requests at runtime. A sibling
+older than its original file is ignored. Shell
+build IDs and service-worker URLs refer to original files. Fixtures that rewrite
+built files must rebuild or remove their compressed siblings too.
+
 ## Develop
 
 Keep the selected runtime server on port 4620. Start Vite in another terminal:
@@ -128,6 +138,21 @@ Model and reasoning fields retain accessible names without visible captions;
 model descriptions do not add lines below the list. Picker width is owned by
 `--studio-model-picker-size` in [`src/design/layout.css`](src/design/layout.css)
 and stays within the available width on phones.
+The composer model summary adapts to its own available width, including when a
+sidebar is open. Wide composers show all role names and models; medium composers
+keep the lead model and secondary provider marks; phones show the lead model and
+a compact count of the other roles. Open the summary for the full settings;
+its accessible name also retains every role, model, provider, and reasoning level.
+After a model save, the summary immediately uses the server's acknowledged
+settings while the typed SSE projection catches up. Later projected settings,
+including remote changes and reconnect baselines, take ownership again. Model
+and review saves do not trigger a follow-up settings read.
+Account-move status appears above the input so it cannot crowd the send controls.
+On narrow composers, saved draft copies and then Stop move into the upper tools
+corner, preserving the lead name and the bottom-row send action.
+The container stages are owned by
+[`empty-chat-settings.css`](src/components/conversation/empty-chat-settings.css).
+
 The server's creation response opens the chat before the full list refreshes.
 An older list cannot remove that confirmed chat while synchronization catches up.
 The client retains the confirmed chat across reloads until the list includes it.
@@ -172,6 +197,14 @@ tab is closed or reloaded.
 Mutating HTTP requests with a hash mismatch receive the marked reload-required
 response.
 These UI updates do not call the model.
+
+The conversation's Reconnecting banner follows its server's transport state.
+An inactive transcript subscription, initial loading, or a projection error does
+not mean the connection was lost. Hidden conversations drop their connection
+listener and read the current transport state when shown again. Provider retry
+messages remain part of the agent's runtime phase, independently of transport.
+Opening a retry keeps the server transport degraded until a valid live frame
+arrives, so switching chats during that retry preserves the reconnect notice.
 
 Draft recovery journal and local record writes happen synchronously on each
 edit. RxDB coalesces upstream draft pushes according to the wait policy in
@@ -403,3 +436,8 @@ the browser after the observation window is outside the measured interval. A
 completed measurement does not prove that no agents were active or that the
 server was idle; zero exit status only means the measurement completed without
 the listed errors.
+
+The limits window sends one account-cost interest when opened or when its
+selected account changes. Cost values, saved-result age, refresh state, and stale
+failure state come from streamed `accountCost` entities. Re-rendering and elapsed
+time do not send more requests; closing and reopening permits a new interest.

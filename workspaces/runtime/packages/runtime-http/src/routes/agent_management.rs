@@ -1319,14 +1319,14 @@ mod native_review_preflight_tests {
         assert_eq!(calls[5].0, "line.bind");
         assert_eq!(
             calls[5].2.as_deref(),
-            Some(vm_preparation::vm_guest_request_id("layr-bind", "vm-lead").as_str())
+            Some("layr-bind:ec1ba18479610216ce57fdf070f4c843ed49e4008fb3dbc8993a6e08d3d11443")
         );
         assert_eq!(calls[5].1["line"], "main");
         assert_eq!(calls[6].0, "health");
         assert_eq!(calls[7].0, "agent.context");
         assert_eq!(
             calls[7].2.as_deref(),
-            Some(vm_preparation::vm_guest_request_id("layr-context", "vm-lead").as_str())
+            Some("layr-context:ec1ba18479610216ce57fdf070f4c843ed49e4008fb3dbc8993a6e08d3d11443")
         );
         drop(calls);
         let connection = store.test_reader().expect("read store");
@@ -1426,7 +1426,7 @@ mod native_review_preflight_tests {
         assert_eq!(calls[0].1["stateId"], "base-1");
         assert_eq!(
             calls[0].2.as_deref(),
-            Some(vm_preparation::vm_guest_request_id("layr-branch", "vm-reviewer").as_str())
+            Some("layr-branch:109dc95d1bea82df9f8dad0978f66af8cf0cafe9d487e058e51899b0d49227ed")
         );
     }
 

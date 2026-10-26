@@ -27,6 +27,7 @@ const data = {
     peerTeams: [],
     events: [],
     work: [],
+    studioErrors: [],
   },
 } satisfies Snapshot;
 

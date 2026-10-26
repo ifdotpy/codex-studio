@@ -8,6 +8,7 @@ import {
 } from "../servers/projectLocations";
 import "./project-locations.css";
 import NewChatModelSettings from "./NewChatModelSettings";
+import type { ServerServices } from "../servers/serverServices";
 import {
   defaultWorkspaceMode,
   readNewChatResource,
@@ -17,6 +18,7 @@ import {
 export default function ProjectServerCards({
   project,
   servers,
+  servicesFor,
   lastServer,
   onChoose,
   onAdd,
@@ -24,6 +26,7 @@ export default function ProjectServerCards({
 }: {
   project: LocationProject;
   servers: ProjectServerChoice[];
+  servicesFor?: (id: string) => ServerServices | undefined;
   lastServer?: string;
   onChoose: (location: ProjectLocation, settings: NewChatSettings) => void;
   onAdd: (server: string) => void;
@@ -59,26 +62,39 @@ export default function ProjectServerCards({
   const [fetched, setFetched] = useState<{
     key: string;
     system?: string;
+    hasStudioVm?: boolean;
+    nativeLayr?: ProjectServerChoice["nativeLayr"];
   } | null>(null);
   const system =
     server?.system ??
     (fetched?.key === connectionKey ? fetched.system : undefined);
+  const nativeLayr =
+    server?.nativeLayr ??
+    (fetched?.key === connectionKey ? fetched.nativeLayr : undefined);
+  const nativeAvailable = nativeLayr?.ready ?? system === "Darwin";
+  const nativeReason =
+    nativeLayr?.reason || "Native Layr is not ready on this server.";
   const fetchedKey = useRef("");
   fetchedKey.current = fetched?.key || "";
   const [modeChoice, setModeChoice] = useState<{
     server: string;
-    mode: "layr" | "image" | "worktree";
+    mode: NewChatSettings["workspaceMode"];
   } | null>(null);
+  const chosenMode =
+    modeChoice?.server === selected ? modeChoice.mode : undefined;
   const mode =
-    modeChoice?.server === selected
-      ? modeChoice.mode
-      : defaultWorkspaceMode(system);
+    chosenMode && (chosenMode !== "layr-native" || nativeAvailable)
+      ? chosenMode
+      : defaultWorkspaceMode(system, nativeLayr);
   const [models, setModels] = useState<Omit<
     NewChatSettings,
     "workspaceMode"
   > | null>(null);
   const [platformError, setPlatformError] = useState("");
-  const knownSystem = !!server?.system;
+  const knownSystem =
+    !!server?.system &&
+    server.hasStudioVm !== undefined &&
+    (server.system !== "Linux" || server.nativeLayr !== undefined);
   const disabled = !!server?.disabled;
   const available = !!server;
   useEffect(() => {
@@ -96,7 +112,12 @@ export default function ProjectServerCards({
     })
       .then((value) => {
         if (!controller.signal.aborted)
-          setFetched({ key: connectionKey, system: value.system });
+          setFetched({
+            key: connectionKey,
+            system: value.system,
+            hasStudioVm: value.hasStudioVm,
+            nativeLayr: value.nativeLayr,
+          });
       })
       .catch((error) => {
         if (!controller.signal.aborted) setPlatformError(String(error));
@@ -149,7 +170,7 @@ export default function ProjectServerCards({
           );
         })}
       </div>
-      {system === "Darwin" && (
+      {(system === "Darwin" || system === "Linux") && (
         <div className="new-chat-run-mode">
           <Text component="label" id="new-chat-run-mode-label" size="sm">
             Workspace
@@ -164,17 +185,29 @@ export default function ProjectServerCards({
                 mode:
                   value === "layr"
                     ? "layr"
-                    : value === "image"
-                      ? "image"
+                    : value === "layr-native"
+                      ? "layr-native"
                       : "worktree",
               })
             }
             data={[
-              { value: "layr", label: "layr" },
-              { value: "image", label: "ASIF" },
-              { value: "worktree", label: "worktree" },
+              {
+                value: "layr-native",
+                label: "Layr",
+                disabled: !nativeAvailable,
+              },
+              ...((server?.hasStudioVm ??
+              (fetched?.key === connectionKey && fetched.hasStudioVm))
+                ? [{ value: "layr", label: "Layr VM" }]
+                : []),
+              { value: "worktree", label: "WT" },
             ]}
           />
+          {!nativeAvailable && (
+            <Text size="xs" c="dimmed" role="status">
+              {nativeReason}
+            </Text>
+          )}
         </div>
       )}
       {platformError && (
@@ -186,6 +219,7 @@ export default function ProjectServerCards({
         <NewChatModelSettings
           key={selected}
           server={server.connection}
+          serverServices={servicesFor?.(selected)}
           projectId={project.id}
           path={location.path}
           onChange={setModels}
@@ -199,6 +233,9 @@ export default function ProjectServerCards({
             !location ||
             !models ||
             !system ||
+            (system === "Linux" &&
+              !nativeLayr &&
+              fetched?.key !== connectionKey) ||
             !!platformError ||
             !!servers.find((row) => row.id === selected)?.disabled
           }
@@ -209,7 +246,8 @@ export default function ProjectServerCards({
               { ...location, serverId: selected },
               {
                 ...models,
-                workspaceMode: system === "Darwin" ? mode : "worktree",
+                workspaceMode:
+                  system === "Darwin" || system === "Linux" ? mode : "worktree",
               },
             )
           }

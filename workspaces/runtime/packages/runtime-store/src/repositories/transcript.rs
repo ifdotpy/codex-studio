@@ -1076,16 +1076,15 @@ fn transcript_pull_write(
         vec![json!({"id":scope,"payload":"{}","seq":high,"_deleted":true})]
     } else if after < high {
         let changed = transaction
-            .prepare_cached("SELECT id,hash,deleted FROM sync_entities WHERE collection=?1 AND seq>?2 AND id!='@floor' ORDER BY seq")?
+            .prepare_cached("SELECT id,deleted FROM sync_entities WHERE collection=?1 AND seq>?2 AND id!='@floor' ORDER BY seq")?
             .query_map(params![scope, after], |row| {
-                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, i64>(2)? != 0))
+                Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)? != 0))
             })?
             .collect::<Result<Vec<_>, _>>()?;
-        let mut changed_items = std::collections::BTreeMap::new();
+        let mut changed_items = std::collections::BTreeSet::new();
         let mut removed = Vec::new();
-        let mut revisions = serde_json::Map::new();
         let mut order_changed = false;
-        for (id, hash, is_deleted) in changed {
+        for (id, is_deleted) in changed {
             if id == "@order" {
                 order_changed = true;
             } else if id.starts_with("item:") {
@@ -1093,28 +1092,22 @@ fn transcript_pull_write(
                 if is_deleted {
                     removed.push(item_id);
                 } else {
-                    changed_items.insert(item_id.clone(), hash.clone());
-                    revisions.insert(item_id, Value::String(hash));
+                    changed_items.insert(item_id);
                 }
             }
         }
-        let ids = changed_items
-            .keys()
-            .cloned()
-            .collect::<std::collections::BTreeSet<_>>();
         let deltas = items
             .iter()
             .filter(|item| {
                 item.get("id")
                     .and_then(Value::as_str)
-                    .is_some_and(|id| ids.contains(id))
+                    .is_some_and(|id| changed_items.contains(id))
             })
             .cloned()
             .collect::<Vec<_>>();
         let mut delta = Value::Object(metadata);
         delta["delta"] = Value::Bool(true);
         delta["items"] = Value::Array(deltas);
-        delta["itemRevisions"] = Value::Object(revisions);
         delta["removed"] = json!(removed);
         if order_changed {
             delta["order"] = json!(order);

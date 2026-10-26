@@ -29,6 +29,39 @@ struct Clients {
     workspace: Mutex<Option<String>>,
 }
 
+struct Resources {
+    directory: std::path::PathBuf,
+    workspace: std::path::PathBuf,
+}
+
+// Resolve paths before creating the window, and retain failures for every caller.
+struct StartupResources(Result<Resources, String>);
+
+fn startup_resources(app: &tauri::App) -> Result<Resources, String> {
+    #[cfg(target_os = "macos")]
+    let directory = {
+        // Tauri caches a rejected symlink path before main. Resolve the actual
+        // executable instead of consulting that cached resource lookup.
+        let executable = std::env::current_exe()
+            .map_err(|error| format!("Cannot locate the application executable: {error}"))?;
+        let _ = app;
+        local_backend::bundle_resource_dir(&executable)?
+    };
+    #[cfg(not(target_os = "macos"))]
+    let directory = app
+        .path()
+        .resource_dir()
+        .map_err(|error| format!("Cannot locate the application resources: {error}"))?;
+    #[cfg(all(not(target_os = "macos"), desktop))]
+    let directory = std::fs::canonicalize(directory)
+        .map_err(|error| format!("Cannot resolve the application resources: {error}"))?;
+    let workspace = local_backend::workspace_resources(&directory)?;
+    Ok(Resources {
+        directory,
+        workspace,
+    })
+}
+
 // Held for the entire host lifetime, including before local client creation.
 struct ProfileLock(#[allow(dead_code)] std::fs::File);
 fn lock_profile(directory: &std::path::Path) -> Result<ProfileLock, String> {
@@ -243,6 +276,8 @@ async fn client_request(
     #[cfg(feature = "native-check")]
     eprintln!("Hidden native command: {}", request.method);
     trusted(&window)?;
+    let resources = window.app_handle().state::<StartupResources>();
+    let resources = resources.0.as_ref().map_err(Clone::clone)?;
     if request.method.starts_with("servers.") {
         #[cfg(not(target_os = "macos"))]
         return Err("The native server key store is unavailable on this platform.".into());
@@ -499,26 +534,10 @@ async fn client_request(
         }
         let mut verified = state.backend_verified.lock().await;
         if !*verified {
-            let resources = window
-                .app_handle()
-                .path()
-                .resource_dir()
-                .map_err(|error| error.to_string())?
-                .join("workspace");
-            #[cfg(debug_assertions)]
-            let resources = if resources.join("bin/studio-runtime-server").is_file() {
-                resources
-            } else {
-                std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                    .ancestors()
-                    .nth(5)
-                    .ok_or("Cannot locate development resources.")?
-                    .to_path_buf()
-            };
             let allow_start = true;
             #[cfg(feature = "native-check")]
             let allow_start = allow_start && native_check::directory().is_none();
-            local_backend::verify(&origin, &resources, allow_start).await?;
+            local_backend::verify(&origin, &resources.workspace, allow_start).await?;
             *verified = true;
         }
     }
@@ -616,6 +635,12 @@ pub fn run() {
             let _ = (window, payload);
         })
         .setup(|app| {
+            let resources = startup_resources(app);
+            let startup_error = resources.as_ref().err().cloned();
+            if let Some(error) = &startup_error {
+                eprintln!("The application could not start: {error}");
+            }
+            app.manage(StartupResources(resources));
             let hidden = std::env::args().any(|argument| argument == "--hidden");
             #[cfg(feature = "native-check")]
             let hidden = native_check::setup(app)? || hidden;
@@ -662,6 +687,22 @@ pub fn run() {
             .on_new_window(|_, _| tauri::webview::NewWindowResponse::Deny)
             .inner_size(1200.0, 800.0)
             .visible(!hidden);
+            let window = if let Some(error) = startup_error {
+                let message = serde_json::to_string(&format!(
+                    "The application could not start. {error}"
+                ))?;
+                window.initialization_script(format!(
+                    r#"addEventListener('DOMContentLoaded', () => {{
+                        const message = document.createElement('div');
+                        message.role = 'alert';
+                        message.style.cssText = 'position:fixed;inset:0;z-index:2147483647;padding:24px;background:#7f1d1d;color:white;white-space:pre-wrap';
+                        message.textContent = {message};
+                        document.body.append(message);
+                    }}, {{ once: true }});"#
+                ))
+            } else {
+                window
+            };
             // Explicit test profiles never reuse the installed WebKit data store.
             let ephemeral = std::env::var("CODEX_DESKTOP_EPHEMERAL_PROFILE").as_deref() == Ok("1");
             if ephemeral && std::env::var_os("CODEX_DESKTOP_PROFILE").is_none() {

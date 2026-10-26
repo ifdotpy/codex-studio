@@ -689,6 +689,11 @@ pub(super) async fn dispatch(
             .await
         }
         crate::layr_read::TOOL => {
+            if crate::layr_native::is_native(&actor.record().value()) {
+                return Ok(Some(
+                    crate::layr_read::run_native(&store, actor, args, request_id).await,
+                ));
+            }
             let Some(guest) = ports.late.layr_read.get() else {
                 return Ok(Some(not_sent(Error::Unavailable(
                     crate::layr_read::DEPENDENCY,

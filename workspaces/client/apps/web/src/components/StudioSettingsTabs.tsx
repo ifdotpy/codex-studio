@@ -9,7 +9,7 @@ export const studioSettingsTabs = [
   ["agents", "Agents"],
   ["federation", "Federation"],
   ["servers", "Servers"],
-  ["linux-vm", "Linux VM"],
+  ["linux-vm", "VM"],
   ["phone-alerts", "Phone alerts"],
   ["hotkeys", "Hotkeys"],
 ] as const;

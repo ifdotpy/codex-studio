@@ -138,20 +138,59 @@ pub struct AgentAdmission {
 }
 
 pub(crate) const DEFAULT_LEAD_MODEL: &str = "gpt-6-astra";
-/// The workspace mode of a new macOS lead chat whose request has no `workspaceMode`.
-const MACOS_LEAD_WORKSPACE_MODE: &str = "layr";
-/// The workspace mode of every other new top-level chat without `workspaceMode`: a task
-/// agent (`POST /api/agents`) and every chat on another system.
-const DEFAULT_WORKSPACE_MODE: &str = "worktree";
-
-/// The workspace mode of a new top-level chat whose request omits it (`lead` is a
-/// `POST /api/leads` chat).
-fn default_workspace_mode(lead: bool) -> &'static str {
-    if lead && cfg!(target_os = "macos") {
-        MACOS_LEAD_WORKSPACE_MODE
-    } else {
-        DEFAULT_WORKSPACE_MODE
+/// Resolve defaults through the shared contract; filesystem capability reads stay outside SQL.
+const DEFAULT_WORKSPACE_MODE: &str =
+    studio_runtime_schema::workspace_modes::DEFAULT_AGENT_WORKSPACE_MODE;
+fn default_workspace_mode(lead: bool, native_ready: bool) -> &'static str {
+    if !lead {
+        return DEFAULT_WORKSPACE_MODE;
     }
+    let system = if cfg!(target_os = "macos") {
+        "Darwin"
+    } else if cfg!(target_os = "linux") {
+        "Linux"
+    } else {
+        "unsupported"
+    };
+    studio_runtime_schema::workspace_modes::default_chat_workspace_mode(system, native_ready)
+}
+
+async fn native_capability(
+    context: &Context<'_>,
+) -> Result<crate::layr_native::NativeLayrCapability, OperationError> {
+    let state_dir = context.store.state_dir().to_path_buf();
+    studio_runtime_process::blocking_pool::spawn_blocking(
+        "agents-create/native-capability",
+        move || crate::layr_native::capability(&state_dir),
+    )
+    .await
+    .map_err(|_| OperationError::Internal)
+}
+
+async fn creation_workspace_mode(
+    context: &Context<'_>,
+    request: &Creation,
+    lead: bool,
+) -> Result<String, OperationError> {
+    if let Some(mode) = &request.workspace {
+        return Ok(mode.clone());
+    }
+    if !lead {
+        return Ok(DEFAULT_WORKSPACE_MODE.into());
+    }
+    // An omitted mode is part of a durable request's first resolution. Capability changes
+    // must not change its replay identity.
+    if let Some(id) = request.id.clone() {
+        let saved=context.store.read_async("agents-create/default-replay", move |tx| {
+            use rusqlite::OptionalExtension;
+            let signature:Option<String>=tx.query_row("SELECT signature FROM runtime_lead_requests WHERE id=?1 UNION ALL SELECT json_extract(record,'$.quickCreateRequest') FROM runtime_agents WHERE id=?1 AND json_type(record,'$.quickCreateRequest')='text' LIMIT 1", [&id], |row|row.get(0)).optional().map_err(StoreError::from)?;
+            Ok::<_,StoreError>(signature.and_then(|value|serde_json::from_str::<Value>(&value).ok()).and_then(|value|value["workspaceMode"].as_str().map(str::to_owned)))
+        }).await?;
+        if let Some(saved) = saved {
+            return Ok(saved);
+        }
+    }
+    Ok(default_workspace_mode(true, native_capability(context).await?.ready).into())
 }
 
 pub async fn lead(context: &Context<'_>, request: Creation) -> Result<Value, OperationError> {
@@ -169,12 +208,9 @@ pub async fn replay_lead_request(
     let Some(id) = request.id.as_deref() else {
         return Ok(None);
     };
-    let workspace = request
-        .workspace
-        .as_deref()
-        .unwrap_or(default_workspace_mode(true));
+    let workspace = creation_workspace_mode(context, request, true).await?;
     let cwd = request.cwd.as_deref().map(project_directory).transpose()?;
-    let signature = lead_signature(&request.intent, workspace, cwd.as_deref());
+    let signature = lead_signature(&request.intent, &workspace, cwd.as_deref());
     let validate = std::sync::Arc::clone(&context.validate);
     let id = id.to_owned();
     context
@@ -556,11 +592,7 @@ async fn create(
     draft: bool,
 ) -> Result<Value, OperationError> {
     let id = request.id.clone().map_or_else(new_id, Ok)?;
-    let workspace = request
-        .workspace
-        .as_deref()
-        .unwrap_or(default_workspace_mode(draft))
-        .to_owned();
+    let workspace = creation_workspace_mode(context, &request, draft).await?;
     let requested_cwd = project_directory_async(request.cwd.clone()).await?;
     if !draft {
         // Import source is part of the durable creation identity. Keep it in
@@ -606,14 +638,6 @@ async fn create(
                 Ok::<Value, OperationError>(sync_projection(tx, &current)?)
             })
             .await?;
-        #[cfg(target_os = "macos")]
-        // Replays use the persisted child workspace mode, even when the retry
-        // omitted an explicit workspace (Python `codex_runtime.py:5175-5201`).
-        let replayed = if should_resume_image_provisioning(&replayed) {
-            provision_image_workspace(context, &replayed, &id).await?
-        } else {
-            replayed
-        };
         return Ok(replayed);
     }
     let previous_id = request.previous.clone();
@@ -665,14 +689,18 @@ async fn create(
         )
         .await;
     }
-    if matches!(workspace.as_str(), "image" | "layr") {
-        if !cfg!(target_os = "macos") {
-            return Err(OperationError::Invalid(
-                "This server supports only worktree chats",
-            ));
-        }
-    } else if workspace != "worktree" {
+    if !studio_runtime_schema::workspace_modes::accepts_chat(&workspace) {
         return Err(OperationError::Invalid("Unknown workspace mode"));
+    }
+    if workspace == "layr-native" && !native_capability(context).await?.ready {
+        return Err(OperationError::Invalid(
+            "Native Layr is not ready on this server. Select WT or configure its store and daemon.",
+        ));
+    }
+    if workspace == "layr" && !cfg!(target_os = "macos") {
+        return Err(OperationError::Invalid(
+            "This server has no Studio Linux VM",
+        ));
     }
     if !draft && request.cwd.as_deref().is_none_or(str::is_empty) {
         return Err(OperationError::Invalid(
@@ -695,6 +723,13 @@ async fn create(
     } else {
         project_directory_default_async().await?
     };
+    let admission_path = cwd.clone();
+    let admission_version = context
+        .store
+        .read_async("runtime-services/project_deletion/admission", move |db| {
+            crate::project_deletion::admission_version(db, &admission_path)
+        })
+        .await?;
     let binding = if request.project_binding {
         Some(
             resolve_project_binding(
@@ -894,8 +929,8 @@ async fn create(
         record["reviewDefaults"] = review_defaults.unwrap_or(json!({"model":null,"effort":null}));
     }
     mode_fields(&mut record);
-    if workspace == "image" {
-        set_image_workspace_fields(&mut record, &cwd);
+    if workspace == "layr-native" {
+        crate::layr_native::configure_new_chat(&mut record, &cwd);
     }
     if workspace == "layr" {
         set_vm_workspace_fields(&mut record, &cwd);
@@ -945,6 +980,11 @@ async fn create(
         };
         if let Some(existing) = replay(tx)? {
             return Ok(sync_projection(tx, &existing)?);
+        }
+        if crate::project_deletion::admission_version(tx, &cwd)? != admission_version
+            || admission_version.is_some_and(|(_, deleted)| deleted)
+        {
+            return Err(CreateError::IdentityChanged.into());
         }
         if let Some(prior) = previous_lead(tx, request.previous.as_deref(), &validate)?
             && request.reuse_empty.unwrap_or(true)
@@ -1010,8 +1050,8 @@ async fn create(
             }
             if workspace_for_write == "layr" {
                 set_vm_workspace_fields(&mut reused, &cwd);
-            } else if workspace_for_write == "image" {
-                set_image_workspace_fields(&mut reused, &cwd);
+            } else if workspace_for_write == "layr-native" {
+                crate::layr_native::configure_new_chat(&mut reused, &cwd);
             }
             ensure_project(tx, &reused)?;
             save_agent(tx, &reused, &validate)?;
@@ -1047,12 +1087,6 @@ async fn create(
         )?)
     })
     .await?;
-    #[cfg(target_os = "macos")]
-    let result = if workspace == "image" {
-        provision_image_workspace(context, &result, &id).await?
-    } else {
-        result
-    };
     Ok(result)
 }
 
@@ -1114,8 +1148,8 @@ async fn create_child(
         parent_workspace,
         parent.get("executionMode").and_then(Value::as_str) == Some("vm"),
     )?;
-    validate_vm_parent_for_create(workspace, &parent)?;
-    if matches!(workspace, "image" | "layr") && !cfg!(target_os = "macos") {
+    validate_parent_workspace_for_create(workspace, &parent)?;
+    if workspace == "layr" && !cfg!(target_os = "macos") {
         return Err(OperationError::Invalid(
             "This server supports only worktree chats",
         ));
@@ -1272,8 +1306,8 @@ async fn create_child(
             record["worktree"] = json!(false);
         }
     }
-    if workspace == "image" {
-        set_image_workspace_fields(&mut record, cwd);
+    if workspace == "layr-native" {
+        crate::layr_native::configure_child(&mut record, &parent, &root);
     }
     record["creationIntent"] = creation_intent.clone();
     record["provider"] = json!(provider);
@@ -1340,16 +1374,18 @@ async fn create_child(
         Ok(result)
     })
     .await?;
-    #[cfg(target_os = "macos")]
-    let result = if workspace == "image" {
-        provision_image_workspace(context, &result, &id).await?
-    } else {
-        result
-    };
     Ok(result)
 }
 
-fn validate_vm_parent_for_create(workspace: &str, parent: &Value) -> Result<(), OperationError> {
+fn validate_parent_workspace_for_create(
+    workspace: &str,
+    parent: &Value,
+) -> Result<(), OperationError> {
+    if workspace == "layr-native" && !crate::layr_native::is_native(parent) {
+        return Err(OperationError::Invalid(
+            "A native Layr workspace requires a native Layr parent",
+        ));
+    }
     if workspace == "layr" && parent.get("executionMode").and_then(Value::as_str) != Some("vm") {
         return Err(OperationError::Invalid(
             "A VM workspace requires a VM parent",
@@ -1377,18 +1413,25 @@ fn child_role_workspace<'a>(
             "A VM reviewer must use the parent's layr workspace",
         ));
     }
-    let workspace = requested_workspace.unwrap_or(if role == "reviewer" && !vm_parent {
-        "shared"
-    } else {
-        parent_workspace
-    });
-    let worktree = match workspace {
-        "worktree" => true,
-        "shared" => false,
-        "image" => false,
-        "layr" => false,
-        _ => return Err(OperationError::Invalid("Unknown workspace mode")),
-    };
+    if role == "reviewer"
+        && parent_workspace == "layr-native"
+        && requested_workspace.is_some_and(|mode| mode != "layr-native")
+    {
+        return Err(OperationError::Invalid(
+            "A native Layr reviewer must use the parent's workspace",
+        ));
+    }
+    let workspace = requested_workspace.unwrap_or(
+        if role == "reviewer" && !vm_parent && parent_workspace != "layr-native" {
+            "shared"
+        } else {
+            parent_workspace
+        },
+    );
+    if !studio_runtime_schema::workspace_modes::accepts_worker(workspace) {
+        return Err(OperationError::Invalid("Unknown workspace mode"));
+    }
+    let worktree = workspace == "worktree";
     Ok((role, workspace, worktree))
 }
 
@@ -1421,44 +1464,6 @@ fn parent_project_binding(
     )
 }
 
-pub(crate) fn image_provision_is_current(record: &Value, expected_epoch: i64) -> bool {
-    record.get("epoch").and_then(Value::as_i64) == Some(expected_epoch)
-        && record.get("deletedAt").is_none_or(Value::is_null)
-        && record.get("imageWorkspace").and_then(Value::as_bool) == Some(true)
-        && record.get("imageWorkspaceReady").and_then(Value::as_bool) != Some(true)
-        && matches!(
-            record.get("imageWorkspacePhase").and_then(Value::as_str),
-            Some("creating" | "read_only")
-        )
-        && !matches!(
-            record.get("status").and_then(Value::as_str),
-            Some("completed" | "cancelled" | "archived" | "deleted")
-        )
-}
-
-#[cfg(any(target_os = "macos", test))]
-fn should_resume_image_provisioning(record: &Value) -> bool {
-    // Cleanup archives remain unready by design; only pending states may remount
-    // (`workspace_cleanup_runtime.rs:706-710`).
-    record.get("workspaceMode").and_then(Value::as_str) == Some("image")
-        && record
-            .get("epoch")
-            .and_then(Value::as_i64)
-            .is_some_and(|epoch| image_provision_is_current(record, epoch))
-}
-
-/// Record image intent so readiness can remount the durable ASIF state. On macOS,
-/// provisioning is queued like Python's `codex_runtime.py:5757` base-build callback;
-/// Python provisions with `create_workspace` at line 5878 after the base is ready.
-pub(crate) fn set_image_workspace_fields(record: &mut Value, root: &str) {
-    record["workspaceMode"] = json!("image");
-    record["imageWorkspace"] = json!(true);
-    record["imageWorkspaceReady"] = json!(false);
-    record["imageWorkspacePhase"] = json!("creating");
-    record["imageWorkspaceRepo"] = json!(root);
-    record["workspaceBackend"] = json!("asif");
-}
-
 /// Persist the host identity while the VM guest creates the project and line
 /// before its first turn. Python's `codex_runtime.py:5018-5026` stores these
 /// fields at creation; `codex_vm_agents.py:196-230` fills the guest association
@@ -1470,161 +1475,6 @@ pub(crate) fn set_vm_workspace_fields(record: &mut Value, host_root: &str) {
     record["environment"] = json!("linux");
     record["worktree"] = json!(false);
     record["layrReady"] = json!(false);
-}
-
-#[cfg(target_os = "macos")]
-async fn provision_image_workspace(
-    context: &Context<'_>,
-    result: &Value,
-    fallback_id: &str,
-) -> Result<Value, OperationError> {
-    let id = result
-        .get("id")
-        .and_then(Value::as_str)
-        .unwrap_or(fallback_id);
-    let root = result
-        .get("imageWorkspaceRepo")
-        .or_else(|| result.get("cwd"))
-        .and_then(Value::as_str)
-        .ok_or(OperationError::Internal)?;
-    let expected_epoch = result
-        .get("epoch")
-        .and_then(Value::as_i64)
-        .ok_or(OperationError::Internal)?;
-    let root = root.to_owned();
-    let id = id.to_owned();
-    let create_id = id.clone();
-    let workspace = match studio_runtime_process::blocking_pool::spawn_blocking(
-        "runtime-services/agents_create/image_workspace_create",
-        move || crate::image_workspace::create_workspace(PathBuf::from(root).as_path(), &create_id),
-    )
-    .await
-    .map_err(|_| OperationError::Internal)?
-    {
-        Ok(workspace) => workspace,
-        Err(error) => {
-            discard_image_workspace(id.to_owned()).await;
-            persist_image_provision_failure(
-                context.store.as_ref(),
-                &id,
-                expected_epoch,
-                &error.to_string(),
-            )
-            .await?;
-            return Err(OperationError::Unavailable(
-                "workspace-state/image-provisioning",
-            ));
-        }
-    };
-    if workspace.get("path").and_then(Value::as_str).is_none()
-        || workspace.get("mount").and_then(Value::as_str).is_none()
-    {
-        discard_image_workspace(id.to_owned()).await;
-        persist_image_provision_failure(
-            context.store.as_ref(),
-            &id,
-            expected_epoch,
-            "Image workspace provider returned no path",
-        )
-        .await?;
-        return Err(OperationError::Unavailable(
-            "workspace-state/image-provisioning",
-        ));
-    };
-    let agent_id = id.to_owned();
-    let projection = context
-        .store
-        .transaction(move |tx| {
-            let Some(agent) = studio_runtime_store::AgentRepository::get(
-                tx,
-                &studio_runtime_store::AgentId::from(agent_id.clone()),
-            )?
-            else {
-                return Ok(None);
-            };
-            let value = agent.into_value();
-            if !image_provision_is_current(&value, expected_epoch) {
-                return Ok(None);
-            }
-            let now =
-                crate::event_write::unix_time().map_err(|_| StoreError::InvalidStoredObject {
-                    table: "runtime_agents",
-                    id: agent_id.to_owned(),
-                })?;
-            crate::image_workspace_agents::record_ready(tx, value, &workspace, now)
-                .map(Some)
-                .map_err(|error| match error {
-                    crate::event_write::EventWriteError::Store(error) => error,
-                    _ => StoreError::InvalidStoredObject {
-                        table: "runtime_agents",
-                        id: agent_id.to_owned(),
-                    },
-                })
-        })
-        .await?;
-    if let Some(projection) = projection {
-        Ok(projection)
-    } else {
-        discard_image_workspace(id.to_owned()).await;
-        Err(OperationError::Create(CreateError::IdentityChanged))
-    }
-}
-
-/// Remove the image workspace of a provisioning attempt that will not finish.
-/// The caller returns its own error to the request, so a cleanup failure is
-/// logged with the agent identity instead of replacing that error.
-#[cfg(target_os = "macos")]
-async fn discard_image_workspace(id: String) {
-    let agent = id.clone();
-    let removed = studio_runtime_process::blocking_pool::spawn_blocking(
-        "runtime-services/agents_create/image_workspace_remove",
-        move || {
-            crate::image_workspace::remove_workspace(&id, true)
-                .map(|_| ())
-                .map_err(|error| error.to_string())
-        },
-    )
-    .await;
-    match removed {
-        Ok(Ok(())) => {}
-        Ok(Err(error)) => eprintln!("image workspace cleanup failed for agent {agent}: {error}"),
-        Err(_) => eprintln!("image workspace cleanup task did not run for agent {agent}"),
-    }
-}
-
-pub(crate) async fn persist_image_provision_failure(
-    store: &RuntimeStore,
-    agent_id: &str,
-    expected_epoch: i64,
-    message: &str,
-) -> Result<(), OperationError> {
-    let message = message.chars().take(1200).collect::<String>();
-    let agent_id = agent_id.to_owned();
-    store.transaction(move |tx| {
-        let Some(agent) = studio_runtime_store::AgentRepository::get(
-            tx,
-            &studio_runtime_store::AgentId::from(agent_id.clone()),
-        )? else {
-            return Ok(());
-        };
-        let mut value = agent.into_value();
-        if image_provision_is_current(&value, expected_epoch) {
-            let notice = format!("[Studio workspace error] The requested image workspace failed: {message}. The worker remains read-only in the selected folder.");
-            value["imageWorkspacePhase"] = json!("failed");
-            value["imageWorkspaceError"] = json!(message);
-            value["status"] = json!("paused");
-            value["autoWake"] = json!(false);
-            value["error"] = json!(notice);
-            let record = studio_runtime_store::AgentRecord::from_value(value.clone()).map_err(|_| {
-                StoreError::InvalidStoredObject { table: "runtime_agents", id: agent_id.to_owned() }
-            })?;
-            studio_runtime_store::AgentRepository::put(tx, &record)?;
-            crate::agents_create::publish_agent(tx, &record.value())?;
-        }
-        Ok(())
-    })
-    .await?;
-    Ok(())
 }
 
 pub async fn configure(
@@ -3010,8 +2860,15 @@ fn resolve_project_binding_from(
                 }
                 Some(_) => return Err(OperationError::Invalid("Select a project folder")),
             };
+            let version = crate::project_deletion::admission_version(
+                connection,
+                project
+                    .get("id")
+                    .and_then(Value::as_str)
+                    .ok_or(OperationError::Internal)?,
+            )?;
             return Ok(
-                json!({"cwd":cwd,"projectId":project_id,"projectServerId":home_server,"localServerId":local,"projectFolder":folder_id}),
+                json!({"cwd":cwd,"projectId":project_id,"projectServerId":home_server,"localServerId":local,"projectFolder":folder_id,"projectVersion":version}),
             );
         }
     }
@@ -3064,8 +2921,8 @@ fn lead_signature(body: &Value, workspace_mode: &str, cwd: Option<&str>) -> Stri
     python_json(&settings)
 }
 
-fn reusable_previous_workspace(prior: &Value, workspace: &str, cwd: &str) -> bool {
-    workspace != "image" || prior.get("imageWorkspaceRepo").and_then(Value::as_str) == Some(cwd)
+fn reusable_previous_workspace(prior: &Value, _workspace: &str, _cwd: &str) -> bool {
+    !crate::legacy_image_workspace::is_legacy(prior)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -3102,10 +2959,7 @@ pub(crate) fn build_agent_record(
         json!({
           "tail":"","worktree":false,"workspaceMode":workspace_mode,"executionMode":"native",
           "hostProjectPath":cwd,"layrReady":false,"workspaceInGit":false,"worktreeReady":false,
-          "environment":"host","imageWorkspace":false,"imageWorkspaceReady":false,
-          "imageWorkspacePhase":null,"imageWorkspaceRepo":null,"imageWorkspaceSubpath":".",
-          "imageWorkspaceBaseRef":null,"imageWorkspaceHasGit":false,"imageWorkspaceCreatedAt":null,
-          "imageWorkspaceError":null,"workspaceBackend":null,"workspaceModeExplicit":false,
+          "environment":"host","workspaceBackend":null,"workspaceModeExplicit":false,
           "worktreeWarning":null,"workerBaseRef":null,"workerBaseCommit":null,
           "workerBaseBehindMain":null,"workerBaseMainRef":null
         }),
@@ -3157,14 +3011,26 @@ mod tests {
     use crate::host_worker_create::CreationCatalog as _;
 
     #[test]
+    fn review_regression_agent_default_matches_runtime_mode_owner() {
+        let mut document = json!({});
+        studio_runtime_schema::workspace_modes::update_openapi(&mut document);
+        assert_eq!(
+            document["components"]["schemas"]["CreateAgentRequest"]["properties"]["workspaceMode"]
+                ["default"],
+            default_workspace_mode(false, false)
+        );
+    }
+
+    #[test]
     fn default_workspace_mode_follows_platform_defaults() {
-        assert_eq!(default_workspace_mode(false), DEFAULT_WORKSPACE_MODE);
-        let lead = if cfg!(target_os = "macos") {
-            MACOS_LEAD_WORKSPACE_MODE
-        } else {
-            DEFAULT_WORKSPACE_MODE
-        };
-        assert_eq!(default_workspace_mode(true), lead);
+        assert_eq!(default_workspace_mode(false, false), DEFAULT_WORKSPACE_MODE);
+        #[cfg(any(target_os = "macos", target_os = "linux"))]
+        assert_eq!(
+            default_workspace_mode(true, true),
+            studio_runtime_schema::workspace_modes::DEFAULT_CHAT_WORKSPACE_MODE
+        );
+        #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+        assert_eq!(default_workspace_mode(true, true), DEFAULT_WORKSPACE_MODE);
     }
 
     #[test]
@@ -3544,78 +3410,6 @@ mod tests {
         assert_eq!(payload["model"], "default");
     }
 
-    #[tokio::test]
-    async fn image_provision_failure_persists_a_visible_paused_phase() {
-        let root = tempfile::tempdir().expect("temporary state root creates");
-        let store = RuntimeStore::open(Some(root.path()))
-            .await
-            .expect("runtime store opens");
-        let mut value = build_agent_record(
-            "image-worker",
-            "Worker",
-            "Task",
-            "/workspace",
-            "default",
-            ProviderKind::Codex,
-            false,
-            "implementer",
-            false,
-            "running",
-            "image",
-            None,
-            DEFAULT_MAX_TEAM_AGENTS,
-            false,
-            1.0,
-            None,
-        );
-        value["epoch"] = json!(4);
-        set_image_workspace_fields(&mut value, "/workspace");
-        let record = AgentRecord::from_value(value).expect("image agent record validates");
-        store
-            .transaction(move |tx| studio_runtime_store::AgentRepository::put(tx, &record))
-            .await
-            .expect("image intent stores");
-
-        persist_image_provision_failure(&store, "image-worker", 4, "ASIF mount failed")
-            .await
-            .expect("failure phase stores");
-        let read = store.test_reader().expect("saved failure reads");
-        let saved = studio_runtime_store::AgentRepository::get(
-            &read,
-            &studio_runtime_store::AgentId::from("image-worker"),
-        )
-        .expect("agent lookup succeeds")
-        .expect("failed agent remains visible")
-        .into_value();
-        assert_eq!(saved["imageWorkspacePhase"], "failed");
-        assert_eq!(saved["imageWorkspaceError"], "ASIF mount failed");
-        assert_eq!(saved["status"], "paused");
-        assert_eq!(saved["autoWake"], false);
-        assert!(
-            saved["error"]
-                .as_str()
-                .is_some_and(|error| { error.contains("requested image workspace failed") })
-        );
-    }
-
-    #[test]
-    fn image_lead_reuse_requires_the_same_repository() {
-        let prior = json!({
-            "id":"reused","cwd":"/fake-mount/project-a",
-            "workspaceMode":"image","imageWorkspace":true,
-            "imageWorkspaceReady":true,"imageWorkspacePhase":"ready",
-            "imageWorkspaceRepo":"/project-a"
-        });
-        assert!(!reusable_previous_workspace(&prior, "image", "/project-b"));
-        assert!(reusable_previous_workspace(&prior, "image", "/project-a"));
-
-        let mut same_repository = prior;
-        set_image_workspace_fields(&mut same_repository, "/project-a");
-        assert_eq!(same_repository["imageWorkspaceRepo"], "/project-a");
-        assert_eq!(same_repository["imageWorkspaceReady"], false);
-        assert_eq!(same_repository["imageWorkspacePhase"], "creating");
-    }
-
     #[test]
     fn vm_child_recheck_freezes_host_project_path_not_guest_cwd() {
         let parent = json!({
@@ -3661,72 +3455,14 @@ mod tests {
         );
     }
 
-    #[test]
-    fn image_replay_resumes_pending_inherited_provisioning_from_persisted_mode() {
-        let pending = json!({
-            "epoch":7,
-            "deletedAt":null,
-            "workspaceMode":"image",
-            "imageWorkspace":true,
-            "imageWorkspaceReady":false,
-            "imageWorkspacePhase":"creating",
-            "status":"running"
-        });
-        let ready = json!({
-            "epoch":7,
-            "deletedAt":null,
-            "workspaceMode":"image",
-            "imageWorkspace":true,
-            "imageWorkspaceReady":true
-        });
-        let archived = json!({
-            "epoch":7,
-            "deletedAt":null,
-            "workspaceMode":"image",
-            "imageWorkspace":true,
-            "imageWorkspaceReady":false,
-            "imageWorkspacePhase":"archived"
-        });
-        let non_image = json!({"workspaceMode":"worktree", "imageWorkspace":false});
-        assert!(should_resume_image_provisioning(&pending));
-        assert!(!should_resume_image_provisioning(&ready));
-        assert!(!should_resume_image_provisioning(&archived));
-        let terminal = json!({"epoch":7,"deletedAt":null,"workspaceMode":"image",
-            "imageWorkspace":true,"imageWorkspaceReady":false,
-            "imageWorkspacePhase":"creating","status":"completed"});
-        assert!(!should_resume_image_provisioning(&terminal));
-        assert!(!should_resume_image_provisioning(&non_image));
-    }
-
-    #[test]
-    fn image_provision_completion_rejects_changed_tombstoned_or_terminal_agents() {
-        let pending = json!({"epoch":7,"deletedAt":null,"imageWorkspace":true,
-            "imageWorkspaceReady":false,"imageWorkspacePhase":"creating","status":"running"});
-        assert!(image_provision_is_current(&pending, 7));
-        assert!(!image_provision_is_current(&pending, 8));
-        let mut deleted = pending.clone();
-        deleted["deletedAt"] = json!(123);
-        assert!(!image_provision_is_current(&deleted, 7));
-        let mut terminal = pending;
-        terminal["status"] = json!("completed");
-        assert!(!image_provision_is_current(&terminal, 7));
-    }
-
-    #[test]
-    fn lead_project_folder_must_belong_to_selected_project() {
-        let connection = rusqlite::Connection::open_in_memory().expect("open project fixture");
-        connection
-            .execute(
-                "CREATE TABLE runtime_projects(id TEXT PRIMARY KEY,record TEXT NOT NULL)",
-                [],
-            )
-            .expect("project table");
-        connection
-            .execute(
-                "CREATE TABLE runtime_access_clients(id TEXT PRIMARY KEY,record TEXT NOT NULL)",
-                [],
-            )
-            .expect("paired clients table");
+    #[tokio::test]
+    async fn lead_project_folder_must_belong_to_selected_project() {
+        // Production always prepares the sync schema before exposing a store.
+        // Use that owner here so binding admission reads a real project version.
+        let state = tempfile::tempdir().expect("project fixture state");
+        let store = RuntimeStore::open(Some(state.path()))
+            .await
+            .expect("open project fixture");
         let project = json!({
             "id":"project:example",
             "path":"project:example",
@@ -3735,12 +3471,6 @@ mod tests {
             "locations":[{"serverId":"local-server","path":"/work/example"}],
             "folders":[{"id":"folder-a","name":"Nested","parentId":null}]
         });
-        connection
-            .execute(
-                "INSERT INTO runtime_projects(id,record) VALUES(?1,?2)",
-                ("project:example", project.to_string()),
-            )
-            .expect("save local project");
         let alias = json!({
             "id":"/work/alias",
             "path":"/work/alias",
@@ -3750,21 +3480,22 @@ mod tests {
             "projectAliases":[{"serverId":"home-server","projectId":"project:remote","name":"Remote"}],
             "folders":[{"id":"remote-folder","name":"Nested","parentId":null}]
         });
-        connection
-            .execute(
-                "INSERT INTO runtime_projects(id,record) VALUES(?1,?2)",
-                ("/work/alias", alias.to_string()),
-            )
-            .expect("save remote project alias");
-        connection
-            .execute(
-                "INSERT INTO runtime_access_clients(id,record) VALUES(?1,?2)",
-                (
-                    "home-server",
-                    json!({"id":"home-server","kind":"server","status":"paired"}).to_string(),
-                ),
-            )
-            .expect("paired home server");
+        store
+            .transaction(move |tx| {
+                studio_runtime_store::ProjectsRepository::put_project(tx, &project)?;
+                studio_runtime_store::ProjectsRepository::put_project(tx, &alias)?;
+                tx.execute(
+                    "INSERT INTO runtime_access_clients(id,record) VALUES(?1,?2)",
+                    (
+                        "home-server",
+                        json!({"id":"home-server","kind":"server","status":"paired"}).to_string(),
+                    ),
+                )?;
+                Ok(())
+            })
+            .await
+            .expect("project and paired-server fixtures");
+        let connection = store.test_reader().expect("project fixture reader");
         let valid = resolve_project_binding_from(
             &connection,
             "/work/example",
@@ -4114,6 +3845,24 @@ mod tests {
     }
 
     #[test]
+    fn native_child_requires_a_native_parent() {
+        assert!(
+            validate_parent_workspace_for_create(
+                "layr-native",
+                &json!({"workspaceMode":"worktree"})
+            )
+            .is_err()
+        );
+        assert!(
+            validate_parent_workspace_for_create(
+                "layr-native",
+                &json!({"workspaceMode":"layr-native"})
+            )
+            .is_ok()
+        );
+    }
+
+    #[test]
     fn explicit_shared_workspace_gives_an_implementer_the_parent_directory() {
         assert_eq!(
             child_role_workspace(None, Some("shared"), "worktree", false)
@@ -4125,24 +3874,19 @@ mod tests {
     #[test]
     fn reviewer_child_defaults_to_shared_workspace() {
         assert_eq!(
-            child_role_workspace(Some("reviewer"), None, "image", false)
+            child_role_workspace(Some("reviewer"), None, "worktree", false)
                 .expect("host reviewer defaults to shared workspace"),
             ("reviewer", "shared", false),
         );
         assert_eq!(
-            child_role_workspace(None, None, "image", false)
-                .expect("image implementer inherits image workspace"),
-            ("implementer", "image", false),
+            child_role_workspace(None, None, "layr-native", false)
+                .expect("native implementer inherits Layr workspace"),
+            ("implementer", "layr-native", false),
         );
         assert!(matches!(
             child_role_workspace(Some("orchestrator"), None, "worktree", false),
             Err(OperationError::Invalid("Invalid agent role"))
         ));
-        let mut record = json!({"id":"worker","cwd":"/repo"});
-        set_image_workspace_fields(&mut record, "/repo");
-        assert_eq!(record["workspaceMode"], "image");
-        assert_eq!(record["imageWorkspace"], true);
-        assert_eq!(record["imageWorkspaceRepo"], "/repo");
         let mut vm = json!({"id":"vm-worker","cwd":"/guest/project/lines/main"});
         set_vm_workspace_fields(&mut vm, "/host/project");
         assert_eq!(vm["workspaceMode"], "layr");
@@ -4157,12 +3901,14 @@ mod tests {
             ("implementer", "layr", false)
         );
         assert!(matches!(
-            validate_vm_parent_for_create("layr", &json!({"executionMode":"native"})),
+            validate_parent_workspace_for_create("layr", &json!({"executionMode":"native"})),
             Err(OperationError::Invalid(
                 "A VM workspace requires a VM parent"
             ))
         ));
-        assert!(validate_vm_parent_for_create("layr", &json!({"executionMode":"vm"})).is_ok());
+        assert!(
+            validate_parent_workspace_for_create("layr", &json!({"executionMode":"vm"})).is_ok()
+        );
         assert_eq!(
             child_role_workspace(Some("reviewer"), None, "layr", true)
                 .expect("VM reviewer inherits layr workspace"),
@@ -4175,7 +3921,8 @@ mod tests {
             ))
         ));
         assert!(
-            validate_vm_parent_for_create("worktree", &json!({"executionMode":"native"})).is_ok()
+            validate_parent_workspace_for_create("worktree", &json!({"executionMode":"native"}))
+                .is_ok()
         );
     }
 

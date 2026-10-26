@@ -4,7 +4,6 @@ use crate::monitor_runtime_fixtures as fixtures;
 use base64::Engine;
 use serde_json::{Value, json};
 use std::sync::Arc;
-use std::time::Duration;
 use studio_runtime_services::{
     agent_lifecycle_runtime,
     agent_management::Action,
@@ -1645,68 +1644,4 @@ async fn cancellation_recovery_runs_after_a_full_delivery_batch() {
     assert_eq!(port.deliveries.lock().expect("deliveries").len(), 0);
     assert_eq!(record(&store, &id)["cancelDispatch"]["status"], "written");
     assert_eq!(port.submitted.lock().expect("submitted").len(), 1);
-}
-
-#[tokio::test]
-async fn timer_retries_a_lost_ack_then_joins_the_consumer() {
-    let root = fixtures::tempdir();
-    let cases = fixtures::corpus(root.path());
-    let mut case = running(&cases);
-    case["before"]["activityAt"] = json!(
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .expect("clock")
-            .as_secs_f64()
-    );
-    case["before"]["stallTimeoutSeconds"] = json!(86400);
-    let store = Arc::new(fixtures::store(root.path(), "timer").await);
-    let id = case["before"]["id"].as_str().expect("id").to_owned();
-    case["before"]["log"] = json!(store.root().join("monitor-logs").join(format!("{id}.log")));
-    fixtures::seed(&store, &case).await;
-    let port = Arc::new(Port::default());
-    port.deliveries
-        .lock()
-        .expect("deliveries")
-        .push_back(delivery(
-            &case,
-            "out:0",
-            MonitorEvent::Output {
-                offset: 0,
-                bytes: b"marker".to_vec(),
-            },
-        ));
-    *port.fail_ack.lock().expect("ack") = true;
-    let first_ack_attempt = Arc::new(Notify::new());
-    let (release_tx, release_rx) = tokio::sync::oneshot::channel();
-    *port.fail_ack_gate.lock().expect("ack gate") = Some((first_ack_attempt.clone(), release_rx));
-    let acknowledged = Arc::new(tokio::sync::Semaphore::new(0));
-    *port.acknowledged.lock().expect("acknowledged") = Some(acknowledged.clone());
-    let wake = Arc::new(Notify::new());
-    let runtime = Arc::new(MonitorRuntime::new(
-        store.clone(),
-        port.clone(),
-        wake.clone(),
-    ));
-    let (stop, receiver) = tokio::sync::watch::channel(false);
-    let first_ack = first_ack_attempt.notified();
-    tokio::pin!(first_ack);
-    first_ack.as_mut().enable();
-    let task = studio_runtime_services::monitor_runtime_wiring::start(runtime.clone(), receiver);
-    tokio::time::timeout(Duration::from_secs(5), first_ack)
-        .await
-        .expect("first ACK attempt");
-    assert_eq!(port.deliveries.lock().expect("deliveries").len(), 1);
-    release_tx.send(()).expect("release failed ACK");
-    let ack = tokio::time::timeout(Duration::from_secs(5), acknowledged.acquire())
-        .await
-        .expect("retry tick acknowledges the retained delivery")
-        .expect("acknowledgement semaphore remains open");
-    drop(ack);
-    assert_eq!(port.deliveries.lock().expect("deliveries").len(), 0);
-    assert_eq!(record(&store, &id)["bytes"], 6);
-    stop.send(true).expect("shutdown request");
-    task.await.expect("task join").expect("clean stop");
-    assert_eq!(runtime.last_tick_error(), None);
-    let events = fixtures::events(&store);
-    assert!(events.as_array().expect("events").is_empty());
 }

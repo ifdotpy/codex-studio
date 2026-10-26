@@ -63,7 +63,7 @@ import {
   type StudioServer,
 } from "./registry";
 import type { ServerCommand, ServerNavigation } from "./navigation";
-import type { ResourceConnectionState } from "../sync/resourceEvents";
+import type { ResourceConnectionState } from "../sync/subscriptions/events";
 import ServerManager from "./ServerManager";
 import ServerAccountsPanel from "./ServerAccountsPanel";
 import { accountServers } from "./accountServers";
@@ -1030,6 +1030,7 @@ function MultiServerShell({
       >
         {newChatDialog && (
           <ProjectServerCards
+            servicesFor={(id) => services.get(id)}
             project={newChatDialog.project}
             servers={projectServerChoices(
               servers,

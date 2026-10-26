@@ -785,8 +785,12 @@ pub(super) fn hold_invalid_agent_record_in(
             id: agent_id.to_owned(),
         }
     })?;
-    studio_runtime_store::SyncDocumentsRepository::put_entity(
-        tx, "agent", agent_id, projection, false,
+    crate::sync_policy::publish_agent_projection(
+        tx,
+        agent_id,
+        projection,
+        false,
+        &|_, _, _, _| true,
     )?;
     Ok(())
 }
@@ -2242,7 +2246,31 @@ fn journal_one(
                             if let Some(turn) = turn {
                                 next.settle_turn(account, thread, turn);
                             }
-                            effect = Some(Effect::Wake(identity.agent_id, identity.epoch));
+                            effect = Some(
+                                if params["turn"]["status"] == "failed"
+                                    && matches!(
+                                        crate::continuation_runtime::classify_usage_failure(
+                                            &params["turn"]["error"],
+                                            None
+                                        ),
+                                        Some(
+                                            crate::usage_resume::Cause::UsageLimit
+                                                | crate::usage_resume::Cause::RateLimit
+                                        )
+                                    )
+                                {
+                                    Effect::LimitFailure {
+                                        agent: identity.agent_id,
+                                        epoch: identity.epoch,
+                                        turn: params["turn"]["id"]
+                                            .as_str()
+                                            .unwrap_or_default()
+                                            .into(),
+                                    }
+                                } else {
+                                    Effect::Wake(identity.agent_id, identity.epoch)
+                                },
+                            );
                         }
                     }
                     _ => {
@@ -3163,6 +3191,19 @@ async fn publish_pending(
         // The sink's delivery identity is the effect's provider identity.
         // It must make a replay after a crash between publish and delete safe.
         for effect in effects {
+            if let crate::notification_dispatch::NotificationPostCommit::TokenRateUsage(observation) =
+                &effect
+                && observation.method == "turn/completed"
+                && let Some(agent) = observation.agent.as_ref().and_then(|a| a["id"].as_str())
+                && let Some(turn) = observation
+                    .params
+                    .pointer("/turn/id")
+                    .and_then(Value::as_str)
+            {
+                crate::layr_native::save_turn(store, agent, turn)
+                    .await
+                    .map_err(|error| WorkerError::PreparationPending(error.to_string().into()))?;
+            }
             sink.publish(&effect).await?;
         }
     } else if value.get("analyticsOverflow").is_none() && value.get("publicationOverflow").is_none()

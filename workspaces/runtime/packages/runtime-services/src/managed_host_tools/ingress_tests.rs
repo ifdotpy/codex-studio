@@ -19,9 +19,9 @@ use std::sync::{
 };
 use studio_runtime_providers::{Frame, Method, RequestFrame, RequestId, ResponseBody};
 use studio_runtime_store::path_identity::CanonicalPath;
-use studio_runtime_store::{RuntimeStore, StoreError};
+use studio_runtime_store::{AgentId, AgentRecord, AgentRepository, RuntimeStore, StoreError};
 
-const BASE_AGENT: &str = "{\"accountKey\": \"default\", \"executionSettingsAccountKey\": \"default\", \"provider\": \"codex\", \"yoloMode\": true, \"prompt\": \"fixture\", \"cwd\": \"@cwd\", \"role\": \"orchestrator\", \"needsTitle\": false, \"subagentConcurrencyVersion\": 2, \"maxAgentsExplicit\": false, \"model\": \"gpt-6-astra\", \"effort\": \"medium\", \"fastMode\": false, \"daybreakEnabled\": false, \"cyberAccessProgram\": \"standard\", \"concurrency\": 32, \"maxAgents\": 64, \"tokenBudget\": null, \"status\": \"running\", \"autoWake\": true, \"epoch\": 3, \"inFlight\": false, \"turnEpoch\": 3, \"usageResumeEnabled\": true, \"tokensUsed\": 0, \"compactions\": 0, \"compactionsObservedOnly\": false, \"contextUsage\": null, \"events\": 0, \"error\": null, \"profileId\": null, \"profileInstructions\": \"\", \"tail\": \"\", \"worktree\": false, \"workspaceMode\": \"worktree\", \"executionMode\": \"native\", \"hostProjectPath\": \"@cwd\", \"layrReady\": false, \"workspaceBackend\": null, \"workspaceModeExplicit\": false, \"workspaceInGit\": false, \"worktreeReady\": false, \"environment\": \"host\", \"imageWorkspace\": false, \"imageWorkspaceReady\": false, \"imageWorkspacePhase\": null, \"imageWorkspaceRepo\": null, \"imageWorkspaceSubpath\": \".\", \"imageWorkspaceBaseRef\": null, \"imageWorkspaceHasGit\": false, \"imageWorkspaceCreatedAt\": null, \"imageWorkspaceError\": null, \"worktreeWarning\": null, \"workerBaseRef\": null, \"workerBaseCommit\": null, \"workerBaseBehindMain\": null, \"workerBaseMainRef\": null, \"workerDefaults\": {\"model\": \"gpt-6-luna\", \"effort\": \"high\", \"fastMode\": false, \"daybreakEnabled\": false, \"delegationDepth\": 1}, \"reviewDefaults\": {\"model\": null, \"effort\": null}, \"agentMode\": \"multi\", \"agentModeRevision\": 0, \"agentModeSupported\": true}";
+const BASE_AGENT: &str = "{\"accountKey\": \"default\", \"executionSettingsAccountKey\": \"default\", \"provider\": \"codex\", \"yoloMode\": true, \"prompt\": \"fixture\", \"cwd\": \"@cwd\", \"role\": \"orchestrator\", \"needsTitle\": false, \"subagentConcurrencyVersion\": 2, \"maxAgentsExplicit\": false, \"model\": \"gpt-6-astra\", \"effort\": \"medium\", \"fastMode\": false, \"daybreakEnabled\": false, \"cyberAccessProgram\": \"standard\", \"concurrency\": 32, \"maxAgents\": 64, \"tokenBudget\": null, \"status\": \"running\", \"autoWake\": true, \"epoch\": 3, \"inFlight\": false, \"turnEpoch\": 3, \"usageResumeEnabled\": true, \"tokensUsed\": 0, \"compactions\": 0, \"compactionsObservedOnly\": false, \"contextUsage\": null, \"events\": 0, \"error\": null, \"profileId\": null, \"profileInstructions\": \"\", \"tail\": \"\", \"worktree\": false, \"workspaceMode\": \"worktree\", \"executionMode\": \"native\", \"hostProjectPath\": \"@cwd\", \"layrReady\": false, \"workspaceBackend\": null, \"workspaceModeExplicit\": false, \"workspaceInGit\": false, \"worktreeReady\": false, \"environment\": \"host\", \"worktreeWarning\": null, \"workerBaseRef\": null, \"workerBaseCommit\": null, \"workerBaseBehindMain\": null, \"workerBaseMainRef\": null, \"workerDefaults\": {\"model\": \"gpt-6-luna\", \"effort\": \"high\", \"fastMode\": false, \"daybreakEnabled\": false, \"delegationDepth\": 1}, \"reviewDefaults\": {\"model\": null, \"effort\": null}, \"agentMode\": \"multi\", \"agentModeRevision\": 0, \"agentModeSupported\": true}";
 const FIXTURE_MONITOR: &str = "{\"activityAt\": 19.0, \"activityGeneration\": 0, \"agent\": \"bf2eeb40-0cc8-44ef-a4e8-aa321b4d7331\", \"bytes\": 0, \"command\": \"printf fixture\", \"created\": 19.0, \"cwd\": \"@cwd\", \"epoch\": 3, \"error\": \"Server restarted. Command outcome unknown; not rerun.\", \"exitCode\": null, \"id\": \"6a1cbd51-e035-54ce-af5c-7fd9850e3065\", \"interactive\": false, \"livenessCommand\": \"\", \"log\": \"@cwd/monitor-logs/6a1cbd51-e035-54ce-af5c-7fd9850e3065.log\", \"operation\": {\"accountKey\": \"default\", \"agent\": \"bf2eeb40-0cc8-44ef-a4e8-aa321b4d7331\", \"connectionId\": \"connection\", \"epoch\": 3, \"requestId\": \"managed-monitor\"}, \"outputEventCount\": 0, \"outputEventIds\": [], \"outputEventSequence\": 0, \"outputPatterns\": [], \"reattachRecovery\": {\"accountKey\": \"default\", \"epoch\": 3, \"status\": \"not_reattachable\", \"startedAt\": 19.0}, \"requestId\": \"managed-monitor\", \"ruleId\": null, \"stallTimeoutSeconds\": 1800, \"stallWakeGeneration\": -1, \"status\": \"lost\", \"successExitCodes\": [0], \"tail\": \"\", \"timeout_ms\": 3600000, \"turnId\": \"turn-0\", \"wakeOn\": \"exit\"}";
 const LEAD: &str = "bf2eeb40-0cc8-44ef-a4e8-aa321b4d7331";
 const WORKER: &str = "415ccbb7-cd04-444e-8599-af5c52da8e5e";
@@ -1601,129 +1601,136 @@ async fn managed_reads_preserve_corrupt_record_identity() {
     );
 }
 
-#[tokio::test]
-async fn managed_durable_writes_rollback_replay_once_and_reject_changed_content() {
+async fn managed_write_rollback(case_index: usize, table: &str, operation: &str, timing: &str) {
     let seed = &template().value;
     let cases = seed["managedToolCases"].as_array().unwrap();
-    let matrix = [
-        (0, "runtime_events", "INSERT"),
-        (0, "runtime_event_meta", "INSERT"),
-        (1, "runtime_rooms", "INSERT"),
-        (1, "runtime_chat_messages", "INSERT"),
-        (5, "runtime_complaints", "INSERT"),
-        (5, "runtime_events", "INSERT"),
-        (6, "runtime_complaints", "UPDATE"),
-        (7, "runtime_complaints", "UPDATE"),
-        (7, "runtime_events", "UPDATE"),
-        (7, "runtime_events", "INSERT"),
-    ];
-    for (case_index, table, operation) in matrix {
-        for timing in ["BEFORE", "AFTER"] {
-            let (_root, store, _) = fixture().await;
-            for previous in &cases[..case_index] {
-                assert!(matches!(
-                    dispatch_case(&store, seed, previous, None).await.unwrap(),
-                    CallbackDecision::Answer(_)
-                ));
-            }
-            let trigger = format!("p05_fail_{case_index}_{timing}_{operation}");
-            let hits = Arc::new(AtomicUsize::new(0));
-            let observed = Arc::clone(&hits);
-            let create_sql = format!(
-                "CREATE TRIGGER {trigger} {timing} {operation} ON {table} BEGIN SELECT p05_fault_reached(); SELECT RAISE(ABORT,'injected {table} {timing} {operation}'); END"
-            );
-            store
-                .transaction_with::<_, StoreError>(move |tx| {
-                    tx.create_scalar_function(
-                        "p05_fault_reached",
-                        0,
-                        rusqlite::functions::FunctionFlags::SQLITE_UTF8,
-                        move |_| {
-                            observed.fetch_add(1, Ordering::SeqCst);
-                            Ok(1)
-                        },
-                    )?;
-                    tx.execute_batch(&create_sql)?;
-                    Ok(())
-                })
-                .await
-                .unwrap();
-            let before = application_table_snapshot(&store);
-            let expected = &cases[case_index];
-            let first_attempt = dispatch_case(&store, seed, expected, None).await;
-            assert_eq!(
-                hits.load(Ordering::SeqCst),
-                1,
-                "{table} {timing} {operation} must reach its failpoint: {first_attempt:?}"
-            );
-            let saved_failure = match first_attempt {
-                Err(_) => None,
-                Ok(CallbackDecision::Answer(reply)) => {
-                    assert!(
-                        matches!(&reply.body, ResponseBody::Result(result) if result["success"] == false),
-                        "{} {timing} {operation} on {table} unexpectedly succeeded",
-                        expected["tool"]
-                    );
-                    Some(reply.body)
-                }
-                Ok(other) => panic!("unexpected failure decision: {other:?}"),
-            };
-            let drop_sql = format!("DROP TRIGGER {trigger}");
-            store
-                .transaction_with::<_, StoreError>(move |tx| {
-                    tx.execute_batch(&drop_sql)?;
-                    Ok(())
-                })
-                .await
-                .unwrap();
-            assert_eq!(
-                before,
-                application_table_snapshot(&store),
-                "partial write: {table}"
-            );
-            let first = match dispatch_case(&store, seed, expected, None).await.unwrap() {
-                CallbackDecision::Answer(reply) => reply,
-                _ => panic!("retry must answer"),
-            };
-            if let Some(saved) = saved_failure {
-                assert_eq!(first.body, saved, "failed reply is durable for {table}");
-                assert_eq!(
-                    before,
-                    application_table_snapshot(&store),
-                    "failed operation wrote: {table}"
-                );
-            }
-            let committed = application_table_snapshot(&store);
-            let replay = dispatch_case(&store, seed, expected, None).await.unwrap();
-            let CallbackDecision::Answer(replay) = replay else {
-                panic!("replay must return saved answer")
-            };
-            assert_eq!(first.body, replay.body, "saved answer for {table}");
-            assert_eq!(
-                committed,
-                application_table_snapshot(&store),
-                "duplicate effect: {table}"
-            );
-            let mut changed = expected["arguments"].clone();
-            if let Some(text) = changed["text"].as_str() {
-                changed["text"] = json!(format!("{text} changed"));
-            } else if let Some(id) = changed["monitor_id"].as_str() {
-                changed["monitor_id"] = json!(format!("{id}-changed"));
-            } else {
-                changed["action"] = json!("changed");
-            }
-            assert!(
-                dispatch_case(&store, seed, expected, Some(changed))
-                    .await
-                    .is_err()
-            );
-            assert_eq!(
-                committed,
-                application_table_snapshot(&store),
-                "changed identity wrote: {table}"
-            );
-        }
+    let (_root, store, _) = fixture().await;
+    if matches!(case_index, 6 | 7) {
+        // Complaint read/respond need the submit; earlier sends and reads are independent.
+        assert!(matches!(
+            dispatch_case(&store, seed, &cases[5], None).await.unwrap(),
+            CallbackDecision::Answer(_)
+        ));
     }
+    let trigger = format!("p05_fail_{case_index}_{timing}_{operation}");
+    let hits = Arc::new(AtomicUsize::new(0));
+    let observed = Arc::clone(&hits);
+    let create_sql = format!(
+        "CREATE TRIGGER {trigger} {timing} {operation} ON {table} BEGIN SELECT p05_fault_reached(); SELECT RAISE(ABORT,'injected {table} {timing} {operation}'); END"
+    );
+    store
+        .transaction_with::<_, StoreError>(move |tx| {
+            tx.create_scalar_function(
+                "p05_fault_reached",
+                0,
+                rusqlite::functions::FunctionFlags::SQLITE_UTF8,
+                move |_| {
+                    observed.fetch_add(1, Ordering::SeqCst);
+                    Ok(1)
+                },
+            )?;
+            tx.execute_batch(&create_sql)?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    let before = application_table_snapshot(&store);
+    let expected = &cases[case_index];
+    let first_attempt = dispatch_case(&store, seed, expected, None).await;
+    assert_eq!(
+        hits.load(Ordering::SeqCst),
+        1,
+        "{table} {timing} {operation} must reach its failpoint: {first_attempt:?}"
+    );
+    let saved_failure = match first_attempt {
+        Err(_) => None,
+        Ok(CallbackDecision::Answer(reply)) => {
+            assert!(
+                matches!(&reply.body, ResponseBody::Result(result) if result["success"] == false),
+                "{} {timing} {operation} on {table} unexpectedly succeeded",
+                expected["tool"]
+            );
+            Some(reply.body)
+        }
+        Ok(other) => panic!("unexpected failure decision: {other:?}"),
+    };
+    let drop_sql = format!("DROP TRIGGER {trigger}");
+    store
+        .transaction_with::<_, StoreError>(move |tx| {
+            tx.execute_batch(&drop_sql)?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        before,
+        application_table_snapshot(&store),
+        "partial write: {table}"
+    );
+    let first = match dispatch_case(&store, seed, expected, None).await.unwrap() {
+        CallbackDecision::Answer(reply) => reply,
+        _ => panic!("retry must answer"),
+    };
+    if let Some(saved) = saved_failure {
+        assert_eq!(first.body, saved, "failed reply is durable for {table}");
+        assert_eq!(
+            before,
+            application_table_snapshot(&store),
+            "failed operation wrote: {table}"
+        );
+    }
+    let committed = application_table_snapshot(&store);
+    let replay = dispatch_case(&store, seed, expected, None).await.unwrap();
+    let CallbackDecision::Answer(replay) = replay else {
+        panic!("replay must return saved answer")
+    };
+    assert_eq!(first.body, replay.body, "saved answer for {table}");
+    assert_eq!(
+        committed,
+        application_table_snapshot(&store),
+        "duplicate effect: {table}"
+    );
+    let mut changed = expected["arguments"].clone();
+    if let Some(text) = changed["text"].as_str() {
+        changed["text"] = json!(format!("{text} changed"));
+    } else if let Some(id) = changed["monitor_id"].as_str() {
+        changed["monitor_id"] = json!(format!("{id}-changed"));
+    } else {
+        changed["action"] = json!("changed");
+    }
+    assert!(
+        dispatch_case(&store, seed, expected, Some(changed))
+            .await
+            .is_err()
+    );
+    assert_eq!(
+        committed,
+        application_table_snapshot(&store),
+        "changed identity wrote: {table}"
+    );
+}
+
+// Keep an operation's fault cells together to amortize the process-local
+// schema validators. Separate operations still run in parallel under nextest.
+macro_rules! managed_write_cases {
+    ($($name:ident: ($index:expr, [$(($table:literal, $operation:literal)),+ $(,)?])),+ $(,)?) => {
+        $(#[tokio::test]
+        async fn $name() {
+            for (table, operation) in [$(($table, $operation)),+] {
+                for timing in ["BEFORE", "AFTER"] {
+                    managed_write_rollback($index, table, operation, timing).await;
+                }
+            }
+        })+
+    };
+}
+
+managed_write_cases! {
+    managed_durable_writes_send_input: (0, [("runtime_events", "INSERT"), ("runtime_event_meta", "INSERT")]),
+    managed_durable_writes_send_chat: (1, [("runtime_rooms", "INSERT"), ("runtime_chat_messages", "INSERT")]),
+    managed_durable_writes_complaint_submit: (5, [("runtime_complaints", "INSERT"), ("runtime_events", "INSERT")]),
+    managed_durable_writes_complaint_read: (6, [("runtime_complaints", "UPDATE")]),
+    managed_durable_writes_complaint_respond: (7, [("runtime_complaints", "UPDATE"), ("runtime_events", "UPDATE"), ("runtime_events", "INSERT")]),
 }
 
 #[tokio::test]
@@ -2041,7 +2048,6 @@ struct CreationEnvironment;
 struct FakeVmReviewGuest;
 thread_local! {
     static VM_REVIEW_GUEST_CALLS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
-    static IMAGE_PROVISION_CALLS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 impl crate::linux_vm_guest::GuestRpc for FakeVmReviewGuest {
     fn stream(
@@ -2069,10 +2075,6 @@ thread_local! {
     static FAIL_MANAGED_WORKSPACE_PREPARATION: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 impl crate::managed_child_create::ManagedCreationEnvironment for CreationEnvironment {
-    fn supports_image_workspace(&self) -> bool {
-        true
-    }
-
     fn guest_rpc(
         &self,
         _: &RuntimeStore,
@@ -2162,16 +2164,6 @@ impl crate::managed_child_create::ManagedCreationEnvironment for CreationEnviron
         }
         Ok(Box::new(AllowWorkspace))
     }
-
-    fn provision_image_workspace(
-        &self,
-        _: &RuntimeStore,
-        _: &std::path::Path,
-        _: &str,
-    ) -> Result<Value, crate::managed_child_create::ManagedCreationEnvironmentError> {
-        IMAGE_PROVISION_CALLS.with(|calls| calls.set(calls.get() + 1));
-        Ok(json!({"path":"/fake-image/repo","mount":"/fake-image"}))
-    }
 }
 impl crate::host_worker_create::CreationCatalog for CreationEnvironment {
     fn resolve(
@@ -2208,6 +2200,402 @@ fn run_git_output(directory: &std::path::Path, arguments: &[&str]) -> String {
 }
 
 #[tokio::test]
+async fn managed_reviewer_defaults_reach_public_spawn_tool() {
+    let (_root, store, context) = fixture().await;
+    let actor_id = context.agent.clone();
+    store
+        .transaction_with::<_, StoreError>(move |tx| {
+            let mut parent =
+                studio_runtime_store::AgentRepository::get(tx, &actor_id.as_str().into())?
+                    .unwrap()
+                    .value();
+            parent["model"] = json!("gpt-6.1-sol");
+            parent["effort"] = json!("medium");
+            parent["workerDefaults"]["model"] = json!("gpt-6-luna");
+            parent["workerDefaults"]["delegationDepth"] = json!(2);
+            parent["reviewDefaults"] = json!({"model":"gpt-6-astra","effort":"high"});
+            studio_runtime_store::AgentRepository::put(
+                tx,
+                &studio_runtime_store::AgentRecord::from_value(parent).unwrap(),
+            )?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    let monitor = Arc::new(crate::monitor_runtime_wiring::MonitorRuntime::new(
+        Arc::clone(&store),
+        Arc::new(ScriptedRetainedMonitorPort {
+            certainty: crate::managed_host_tools::DeliveryCertainty::Written,
+            calls: AtomicUsize::new(0),
+            tickets: Mutex::new(Vec::new()),
+        }),
+        Arc::new(tokio::sync::Notify::new()),
+    ));
+    let runtime = crate::provider_callbacks::ManagedToolRuntime::with_creation(
+        monitor,
+        Arc::new(NoopLifecyclePorts),
+        Arc::new(CreationEnvironment),
+    );
+    let project = tempfile::tempdir().unwrap();
+    run_git_output(project.path(), &["init", "-q"]);
+    run_git_output(
+        project.path(),
+        &[
+            "-c",
+            "user.name=Test",
+            "-c",
+            "user.email=test@example.invalid",
+            "commit",
+            "-q",
+            "--allow-empty",
+            "-m",
+            "base",
+        ],
+    );
+    let worker_cwd = project.path().to_owned();
+    store
+        .transaction_with::<_, StoreError>(move |tx| {
+            let mut worker = studio_runtime_store::AgentRepository::get(tx, &WORKER.into())?
+                .unwrap()
+                .value();
+            worker["cwd"] = json!(worker_cwd);
+            worker["role"] = json!("implementer");
+            worker["model"] = json!("gpt-6-luna");
+            worker["effort"] = json!("low");
+            // Nested callers must consult the root's current review settings.
+            worker["reviewDefaults"] = json!({"model":"gpt-6.1-sol","effort":"medium"});
+            studio_runtime_store::AgentRepository::put(
+                tx,
+                &studio_runtime_store::AgentRecord::from_value(worker).unwrap(),
+            )?;
+            for (id, effort) in [
+                ("review-model-profile", None),
+                (
+                    "review-effort-profile",
+                    Some(studio_runtime_store::ReasoningEffort::Low),
+                ),
+            ] {
+                studio_runtime_store::ProfileRepository::save(
+                    tx,
+                    &studio_runtime_store::ProfileRecord {
+                        id: id.into(),
+                        name: id.into(),
+                        role: studio_runtime_store::ProfileRole::Reviewer,
+                        model: "gpt-6-luna".into(),
+                        effort,
+                        instructions: "review profile".into(),
+                    },
+                )?;
+            }
+            Ok(())
+        })
+        .await
+        .unwrap();
+    let configured = json!({"model":"gpt-6-astra","effort":"high"});
+    let cases = [
+        (
+            "configured",
+            json!({}),
+            configured.clone(),
+            "gpt-6-astra",
+            Some("high"),
+            true,
+            "codex",
+        ),
+        (
+            "same-caller-model",
+            json!({"model":"gpt-6.1-sol"}),
+            configured.clone(),
+            "gpt-6.1-sol",
+            Some("medium"),
+            true,
+            "codex",
+        ),
+        (
+            "same-review-model",
+            json!({"model":"gpt-6-astra"}),
+            configured.clone(),
+            "gpt-6-astra",
+            None,
+            true,
+            "codex",
+        ),
+        (
+            "different-model",
+            json!({"model":"gpt-6-luna"}),
+            configured.clone(),
+            "gpt-6-luna",
+            None,
+            true,
+            "codex",
+        ),
+        (
+            "effort-only",
+            json!({"effort":"low"}),
+            configured.clone(),
+            "gpt-6-astra",
+            Some("low"),
+            true,
+            "codex",
+        ),
+        (
+            "model-and-effort",
+            json!({"model":"gpt-6.1-sol","effort":"high"}),
+            configured.clone(),
+            "gpt-6.1-sol",
+            Some("high"),
+            true,
+            "codex",
+        ),
+        (
+            "null-effort",
+            json!({"effort":null}),
+            configured.clone(),
+            "gpt-6-astra",
+            None,
+            false,
+            "codex",
+        ),
+        (
+            "profile-model",
+            json!({"profile_id":"review-model-profile"}),
+            configured.clone(),
+            "gpt-6-luna",
+            Some("high"),
+            false,
+            "codex",
+        ),
+        (
+            "profile-effort",
+            json!({"profile_id":"review-effort-profile"}),
+            configured.clone(),
+            "gpt-6-luna",
+            Some("low"),
+            false,
+            "codex",
+        ),
+        (
+            "profile-overridden",
+            json!({"profile_id":"review-effort-profile","model":"gpt-6-astra","effort":"medium"}),
+            configured.clone(),
+            "gpt-6-astra",
+            Some("medium"),
+            false,
+            "codex",
+        ),
+        (
+            "profile-role",
+            json!({"profile_id":"review-model-profile","role":null}),
+            configured.clone(),
+            "gpt-6-luna",
+            Some("high"),
+            false,
+            "codex",
+        ),
+        (
+            "missing-default",
+            json!({}),
+            Value::Null,
+            "gpt-6.1-sol",
+            Some("medium"),
+            true,
+            "codex",
+        ),
+        (
+            "null-default",
+            json!({}),
+            json!({"model":null,"effort":null}),
+            "gpt-6.1-sol",
+            Some("medium"),
+            true,
+            "codex",
+        ),
+        (
+            "null-default-effort",
+            json!({}),
+            json!({"model":"gpt-6-astra","effort":null}),
+            "gpt-6-astra",
+            None,
+            true,
+            "codex",
+        ),
+        (
+            "implementer",
+            json!({"role":"implementer","workspace":"shared"}),
+            configured.clone(),
+            "gpt-6-luna",
+            Some("high"),
+            false,
+            "codex",
+        ),
+        (
+            "implementer-explicit",
+            json!({"role":"implementer","workspace":"shared","model":"gpt-6.1-sol"}),
+            configured.clone(),
+            "gpt-6.1-sol",
+            Some("high"),
+            false,
+            "codex",
+        ),
+        (
+            "nested-configured",
+            json!({}),
+            configured.clone(),
+            "gpt-6-astra",
+            Some("high"),
+            true,
+            "codex",
+        ),
+        (
+            "nested-fallback",
+            json!({}),
+            Value::Null,
+            "gpt-6-luna",
+            Some("low"),
+            true,
+            "codex",
+        ),
+        (
+            "provider",
+            json!({"model":"claude-opus-5-5"}),
+            configured,
+            "claude-opus-5-5",
+            None,
+            false,
+            "claude",
+        ),
+    ];
+    for (label, options, defaults, model, effort, native_parity, expected_provider) in cases {
+        let actor_id = context.agent.clone();
+        let cwd = project.path().to_owned();
+        store
+            .transaction_with::<_, StoreError>(move |tx| {
+                let mut parent =
+                    studio_runtime_store::AgentRepository::get(tx, &actor_id.as_str().into())?
+                        .unwrap()
+                        .value();
+                parent["cwd"] = json!(cwd);
+                parent["workerDefaults"]["accountKey"] = json!("default");
+                parent["workerDefaults"]["fastMode"] = json!(true);
+                if defaults.is_null() {
+                    parent.as_object_mut().unwrap().remove("reviewDefaults");
+                } else {
+                    parent["reviewDefaults"] = defaults;
+                }
+                studio_runtime_store::AgentRepository::put(
+                    tx,
+                    &studio_runtime_store::AgentRecord::from_value(parent).unwrap(),
+                )?;
+                Ok(())
+            })
+            .await
+            .unwrap();
+        let context = if label.starts_with("nested-") {
+            CallbackContext {
+                agent: WORKER.into(),
+                thread: "thread-1".into(),
+                turn: "turn-1".into(),
+                ..context.clone()
+            }
+        } else {
+            context.clone()
+        };
+        for tool in ["orchestration_spawn", "orchestration_review"] {
+            if tool == "orchestration_review" && !native_parity {
+                continue;
+            }
+            let key = format!("reviewer-defaults-{label}-{tool}");
+            let args = if tool == "orchestration_spawn" {
+                let mut spec =
+                    json!({"name":"Review", "prompt":"Review the changes", "role":"reviewer"});
+                spec.as_object_mut()
+                    .unwrap()
+                    .extend(options.as_object().unwrap().clone());
+                if spec["role"].is_null() {
+                    spec.as_object_mut().unwrap().remove("role");
+                }
+                json!({"request_id":key,"agents":[spec]})
+            } else {
+                let mut args = options.clone();
+                args["request_id"] = json!(key);
+                args
+            };
+            let frame = call(&context, &key, tool, args);
+            let ports = shared_ports(
+                crate::provider_callbacks::managed_tool_ports_with_bundle(
+                    &store,
+                    &context,
+                    &frame,
+                    Arc::new(tokio::sync::Notify::new()),
+                    Arc::new(tokio::sync::Notify::new()),
+                    Some(&runtime),
+                )
+                .await
+                .unwrap(),
+            );
+            let (success, result) = tool_reply(
+                dispatch_with_managed_tools(
+                    Arc::clone(&store),
+                    &context,
+                    &frame,
+                    20.0,
+                    ports.clone(),
+                )
+                .await
+                .unwrap(),
+            );
+            assert!(success, "{label}/{tool}: {result}");
+            let returned = &result["agents"][0];
+            assert_eq!(returned["model"], model, "{label}/{tool}");
+            assert_eq!(returned["effort"], json!(effort), "{label}/{tool}");
+            let child = studio_runtime_store::AgentRepository::get(
+                &store.test_reader().unwrap(),
+                &returned["id"].as_str().unwrap().into(),
+            )
+            .unwrap()
+            .unwrap()
+            .value();
+            assert_eq!(child["model"], model, "{label}/{tool}");
+            assert_eq!(child["effort"], json!(effort), "{label}/{tool}");
+            assert_eq!(
+                child["nativeEffort"],
+                effort.unwrap_or("low"),
+                "{label}/{tool}"
+            );
+            assert_eq!(child["provider"], expected_provider, "{label}/{tool}");
+            assert_eq!(child["accountKey"], "default", "{label}/{tool}");
+            if tool == "orchestration_spawn" {
+                assert_eq!(child["fastMode"], true, "{label}");
+                if options["profile_id"].is_string() {
+                    assert_eq!(child["profileId"], options["profile_id"]);
+                    assert_eq!(child["profileInstructions"], "review profile");
+                }
+            } else {
+                assert_eq!(result["reviewModel"], model);
+                assert_eq!(result["reviewEffort"], effort.unwrap_or("low"));
+            }
+            let count_before: i64 = store
+                .test_reader()
+                .unwrap()
+                .query_row("SELECT count(*) FROM runtime_agents", [], |row| row.get(0))
+                .unwrap();
+            let replay = tool_reply(
+                dispatch_with_managed_tools(Arc::clone(&store), &context, &frame, 21.0, ports)
+                    .await
+                    .unwrap(),
+            );
+            assert_eq!(replay, (true, result), "{label}/{tool} replay");
+            let count_after: i64 = store
+                .test_reader()
+                .unwrap()
+                .query_row("SELECT count(*) FROM runtime_agents", [], |row| row.get(0))
+                .unwrap();
+            assert_eq!(count_after, count_before, "{label}/{tool} duplicate child");
+        }
+    }
+}
+
+#[tokio::test]
 async fn managed_spawn_accepts_any_explicit_model_for_each_role() {
     let (_root, store, context) = fixture().await;
     let parent = studio_runtime_store::AgentRepository::get(
@@ -2219,7 +2607,8 @@ async fn managed_spawn_accepts_any_explicit_model_for_each_role() {
     .value();
     let actor = Actor::from_record(&parent, &context.agent, context.epoch).unwrap();
     for role in ["implementer", "reviewer"] {
-        for model in ["gpt-6-astra", "claude-opus-5-5"] {
+        for (model, expected_provider) in [("gpt-6-astra", "codex"), ("claude-opus-5-5", "claude")]
+        {
             let request_id = format!("explicit-model-{role}-{model}");
             let mut args = json!({"agents":[{"name":"Explicit model", "prompt":"Read the task",
                 "role":role, "model":model, "effort":null}]});
@@ -2246,12 +2635,7 @@ async fn managed_spawn_accepts_any_explicit_model_for_each_role() {
             .value();
             assert_eq!(child["role"], role);
             assert_eq!(child["model"], model);
-            assert_eq!(
-                child["provider"],
-                crate::provider_adapter::model_provider(model)
-                    .unwrap()
-                    .key()
-            );
+            assert_eq!(child["provider"], expected_provider);
             let replayed = crate::managed_child_create::spawn_agents(
                 &store,
                 &actor,
@@ -2622,54 +3006,33 @@ async fn managed_child_creation_preserves_spawn_and_review_contracts() {
         .unwrap();
     assert_eq!(before_workspace_refusal, after_workspace_refusal);
 
-    let provision_calls_before = IMAGE_PROVISION_CALLS.get();
-    let image_base = crate::managed_child_create::spawn_agents(
+    assert!(
+        crate::managed_child_create::spawn_agents(
+            &store,
+            &actor,
+            &json!({"agents":[{"name":"Native","prompt":"Task","workspace":"layr-native"}]}),
+            "dispatcher-native-parent-refusal",
+            20.45,
+            &CreationEnvironment,
+        )
+        .await
+        .is_err(),
+        "native Layr requires a native Layr parent"
+    );
+
+    let legacy_request = crate::managed_child_create::spawn_agents(
         &store,
         &actor,
-        &json!({"agents":[{"name":"Image Base","prompt":"Review the requested image base","workspace":"image","base_ref":"HEAD~1"}]}),
-        "dispatcher-image-base-ref",
+        &json!({"agents":[{"name":"Legacy","prompt":"Task","workspace":"image"}]}),
+        "dispatcher-legacy-workspace-refusal",
         20.5,
         &CreationEnvironment,
-    ).await
-    .expect("image base refs resolve to a worker checkout instruction");
-    assert_eq!(IMAGE_PROVISION_CALLS.get(), provision_calls_before + 1);
-    let image_base_id = image_base.value["agents"][0]["id"].as_str().unwrap();
-    let image_base_child = studio_runtime_store::AgentRepository::get(
-        &store.test_reader().unwrap(),
-        &studio_runtime_store::AgentId::from(image_base_id),
     )
-    .unwrap()
-    .unwrap()
-    .value();
-    assert_eq!(image_base_child["imageWorkspaceReady"], true);
-    assert_eq!(image_base_child["imageWorkspacePhase"], "ready");
-    assert_eq!(image_base_child["cwd"], "/fake-image/repo");
-    assert_eq!(image_base.value["agents"][0]["cwd"], "/fake-image/repo");
-    assert_eq!(image_base.value["agents"][0]["imageWorkspaceReady"], true);
-    let published_image_child: String = store
-        .test_reader()
-        .unwrap()
-        .query_row(
-            "SELECT payload FROM sync_entities WHERE collection='agent' AND id=?1",
-            [image_base_id],
-            |row| row.get(0),
-        )
-        .unwrap();
-    let published_image_child: Value = serde_json::from_str(&published_image_child).unwrap();
-    assert_eq!(published_image_child["value"]["cwd"], "/fake-image/repo");
-    assert_eq!(published_image_child["value"]["imageWorkspaceReady"], true);
-    assert_eq!(image_base_child["imageWorkspaceBaseRef"], "HEAD~1");
-    assert_eq!(image_base_child["workerBaseCommit"], base_commit);
-    let image_base_event: String = store
-        .test_reader()
-        .unwrap()
-        .query_row(
-            "SELECT text FROM runtime_events WHERE id=?1",
-            [format!("{image_base_id}:initial")],
-            |row| row.get(0),
-        )
-        .unwrap();
-    assert!(image_base_event.contains("Check out this commit yourself before editing."));
+    .await;
+    assert!(
+        legacy_request.is_err(),
+        "removed workspace mode must be refused"
+    );
 
     let reviewed = crate::managed_child_create::request_review(
         &store,
@@ -3166,6 +3529,79 @@ async fn task_claim_submit_and_accept_run_through_the_work_action_owner_once() {
             .contains("Only the owner can submit this task"),
         "{value}"
     );
+}
+
+#[tokio::test]
+async fn legacy_worker_archives_through_current_tool_without_losing_its_row() {
+    let (_root, store, context) = fixture_arc().await;
+    let worker = template().value["agents"][1]["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let saved_id = worker.clone();
+    store
+        .transaction_with::<_, StoreError>(move |tx| {
+            let mut record = AgentRepository::get(tx, &AgentId::from(saved_id.as_str()))?
+                .unwrap()
+                .value();
+            record["workspaceMode"] = json!("image");
+            record["imageWorkspace"] = json!(true);
+            record["imageWorkspaceReady"] = json!(true);
+            record["worktree"] = json!(false);
+            record["worktreeReady"] = json!(false);
+            record["cwd"] = json!("/legacy-workspace-no-longer-mounted/repo");
+            record["threadId"] = json!("legacy-thread");
+            record["lastCompletedTurn"] = Value::Null;
+            record["turnId"] = json!("legacy-turn");
+            record["startAttempt"] = json!({"turnId":"legacy-turn"});
+            record["restartRecovery"] = json!({"turnId":"legacy-turn","stage":"pending"});
+            AgentRepository::put(tx, &AgentRecord::from_value(record)?)?;
+            crate::notification_dispatch::put_task_record(tx, &json!({
+                "id":"legacy-running-task", "agent":saved_id,"itemId":"item", "turnId":"legacy-turn",
+                "created":1.0, "kind":"command", "status":"running", "type":"commandExecution", "name":"commandExecution"
+            })).unwrap();
+            Ok(())
+        })
+        .await
+        .unwrap();
+    crate::legacy_image_workspace::finish_stored_workspaces(&store)
+        .await
+        .unwrap();
+    let frame = call(
+        &context,
+        "legacy-archive",
+        "orchestration_agent_manage",
+        json!({
+            "action":"archive", "agent_id":worker, "reason":"Legacy workspace is finished", "unassign_work":true
+        }),
+    );
+    let ports = shared_ports(
+        crate::provider_callbacks::managed_tool_ports(
+            &store,
+            &context,
+            &frame,
+            Arc::new(tokio::sync::Notify::new()),
+        )
+        .await
+        .unwrap(),
+    );
+    let (success, archived) = tool_reply(
+        dispatch_with_managed_tools(Arc::clone(&store), &context, &frame, 30.0, ports)
+            .await
+            .unwrap(),
+    );
+    assert!(success, "{archived}");
+    assert_eq!(archived["status"], "archived", "{archived}");
+    let saved = AgentRepository::get(
+        &store.test_reader().unwrap(),
+        &AgentId::from(worker.as_str()),
+    )
+    .unwrap()
+    .expect("legacy row stays in SQLite")
+    .value();
+    assert_eq!(saved["workspaceMode"], "image");
+    assert_eq!(saved["imageWorkspaceReady"], true);
+    assert_eq!(saved["agentArchive"]["cleanupPending"], false);
 }
 
 #[tokio::test]

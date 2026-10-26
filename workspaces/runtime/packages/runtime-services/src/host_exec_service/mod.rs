@@ -29,6 +29,8 @@ use protocol::{Failure, HostExecError, INVALID, Outcome, require};
 
 /// The subcommand of `studio-runtime-server` that runs this service.
 pub const SUBCOMMAND: &str = "host-exec-service";
+/// Stdout line proving the host service has bound and secured its Unix socket.
+pub const SERVICE_READY_LINE: &str = "studio-host-exec-ready";
 /// The optional argument that names the Studio server's host bridge folder.
 pub const BROWSER_HOST_ARGUMENT: &str = "--browser-host";
 /// The service socket in the VM state folder; the native helper forwards the
@@ -37,7 +39,7 @@ pub const SOCKET_FILE: &str = "host-exec.sock";
 /// The channel token file in the VM state folder; the guest gets it with `host.configure`.
 pub const TOKEN_FILE: &str = crate::host_exec::TOKEN_FILE;
 /// The lease that one running service holds.
-pub(crate) const LEASE_FILE: &str = "host-exec.lock";
+pub const LEASE_FILE: &str = "host-exec.lock";
 /// The lease of a service start, held by [`lifecycle::ensure_service`].
 pub(crate) const START_LEASE_FILE: &str = "host-exec-start.lock";
 /// The output of the service process.
@@ -138,10 +140,13 @@ pub(crate) struct HostService {
     token: String,
     build_id: String,
     _lease: fs::File,
-    db: Mutex<rusqlite::Connection>,
+    /// Shared with the periodic WAL flush thread, which ends when the service drops.
+    db: Arc<Mutex<rusqlite::Connection>>,
     inner: Mutex<Inner>,
     locks: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
     stopped: tokio::sync::Notify,
+    #[cfg(test)]
+    command_finished: tokio::sync::Notify,
 }
 
 /// The project settings of one operation.
@@ -252,12 +257,21 @@ impl HostService {
             .map_err(std::io::Error::from)?;
         let db =
             rusqlite::Connection::open(state.join(DATABASE_FILE)).map_err(std::io::Error::other)?;
+        studio_runtime_store::sqlite_durability::configure_writer(&db)
+            .map_err(std::io::Error::other)?;
         db.execute_batch(
-            "PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL;
-             CREATE TABLE IF NOT EXISTS receipts (id TEXT PRIMARY KEY, digest TEXT, response TEXT);
+            "CREATE TABLE IF NOT EXISTS receipts (id TEXT PRIMARY KEY, digest TEXT, response TEXT);
              CREATE TABLE IF NOT EXISTS events (operation TEXT, seq INTEGER, value TEXT, PRIMARY KEY(operation,seq));",
         )
         .map_err(std::io::Error::other)?;
+        let db = Arc::new(Mutex::new(db));
+        if let Err(error) = studio_runtime_store::sqlite_durability::spawn_periodic_flush(
+            "host-exec",
+            Arc::downgrade(&db),
+        ) {
+            // Automatic checkpoints and the close checkpoint still flush the database.
+            eprintln!("host_exec service periodic WAL flush did not start: {error}");
+        }
         Ok(Self {
             state,
             browser_host: None,
@@ -267,10 +281,12 @@ impl HostService {
             token,
             build_id,
             _lease: lease,
-            db: Mutex::new(db),
+            db,
             inner: Mutex::new(Inner::default()),
             locks: Mutex::new(HashMap::new()),
             stopped: tokio::sync::Notify::new(),
+            #[cfg(test)]
+            command_finished: tokio::sync::Notify::new(),
         })
     }
 
@@ -918,6 +934,12 @@ fn bind_listener(service: &HostService) -> std::io::Result<tokio::net::UnixListe
     }
     let listener = tokio::net::UnixListener::bind(&path)?;
     fs::set_permissions(&path, fs::Permissions::from_mode(0o600))?;
+    {
+        use std::io::Write;
+        let mut stdout = std::io::stdout().lock();
+        writeln!(stdout, "{SERVICE_READY_LINE}")?;
+        stdout.flush()?;
+    }
     Ok(listener)
 }
 

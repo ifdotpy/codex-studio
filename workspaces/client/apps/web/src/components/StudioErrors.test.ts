@@ -5,6 +5,8 @@ import { expect, test } from "vitest";
 import {
   StudioErrorList,
   actionLabel,
+  StudioErrorsProvider,
+  useStudioErrors,
   type StudioErrorItem,
 } from "./StudioErrors";
 
@@ -94,4 +96,23 @@ test("rows provide named checkboxes and bulk controls", () => {
   expect(markup).toContain(`Select error ${lost.id} for Fixture worker`);
   expect(markup).toContain("Select all");
   expect(markup).toMatch(/<button[^>]*disabled[^>]*>[^]*?Delete selected/);
+});
+
+// The warning owner must start from the stream projection, with no HTTP hydration.
+test("the server-scoped warning owner consumes streamed error rows", () => {
+  function Count() {
+    return createElement(
+      "span",
+      null,
+      `Streamed errors: ${useStudioErrors().items.length}`,
+    );
+  }
+  const markup = renderToStaticMarkup(
+    createElement(
+      StudioErrorsProvider,
+      { items: [lost, disconnected] },
+      createElement(Count),
+    ),
+  );
+  expect(markup).toContain("Streamed errors: 2");
 });

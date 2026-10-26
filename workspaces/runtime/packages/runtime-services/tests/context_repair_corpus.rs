@@ -265,7 +265,7 @@ async fn explicit_repair_skips_ready_linux_workspace_and_persists_note() {
             let mut agent =
                 ContextRepairRepository::agent(tx, "agent")?.expect("seeded agent exists");
             agent["environment"] = json!("linux");
-            agent["imageWorkspaceReady"] = json!(true);
+            agent["executionMode"] = json!("vm");
             agent
                 .as_object_mut()
                 .expect("agent object")
@@ -284,7 +284,7 @@ async fn explicit_repair_skips_ready_linux_workspace_and_persists_note() {
         ContextRepairRepository::agent(&store.test_reader().expect("store readable"), "agent")
             .expect("agent read")
             .expect("agent present")["contextRepairNote"],
-        "Automatic context repair is skipped for Linux workers. The rollout stays in the guest. The next turn can proceed."
+        "Automatic context repair is skipped for VM workers. The rollout stays in the guest. The next turn can proceed."
     );
 }
 fn state(store: &RuntimeStore) -> Value {

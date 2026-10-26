@@ -68,6 +68,21 @@ class InstallLayrTests(unittest.TestCase):
         self.stderr = result.stderr
         return (self.root / "systemctl.log").read_text().splitlines()
 
+    def test_a_changed_workspace_crate_fails_before_the_build(self):
+        source = self.root / "opt/codex-studio/vm/layr"
+        crate = source / "crates/layr-model/src/lib.rs"
+        crate.parent.mkdir(parents=True)
+        crate.write_bytes(b"original")
+        manifest = json.loads((source / "manifest.json").read_text())
+        manifest["files"]["crates/layr-model/src/lib.rs"] = hashlib.sha256(b"original").hexdigest()
+        manifest["sourceSha256"] = hashlib.sha256(json.dumps(
+            manifest["files"], sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+        (source / "manifest.json").write_text(json.dumps(manifest))
+        crate.write_bytes(b"changed")
+        self.run_script(code=1)
+        self.assertIn("AssertionError: crates/layr-model/src/lib.rs", self.stderr)
+        self.assertFalse((self.root / "cargo.log").exists())
+
     def test_a_rebuilt_layr_restarts_its_daemon_and_an_unchanged_one_does_not(self):
         calls = self.run_script()
         self.assertEqual((self.root / "var/lib/codex-studio/layr-build").read_text().strip(), self.identity)

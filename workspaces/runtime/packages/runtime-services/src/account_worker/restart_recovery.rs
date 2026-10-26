@@ -105,10 +105,7 @@ async fn reconcile_first_pass(
                 if snapshot.automatic_turn().is_some());
             if recovery_turn
                 && matches!(&job, RecoveryJob::Connection { snapshot, .. }
-                if !crate::image_workspace::restart_follow_up_allowed(
-                    snapshot.record(),
-                    crate::image_workspace::IMAGE_EXECUTION_SUPPORTED,
-                ))
+                if crate::legacy_image_workspace::is_legacy(snapshot.record()))
             {
                 continue;
             }

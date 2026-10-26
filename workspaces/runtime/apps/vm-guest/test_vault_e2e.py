@@ -23,8 +23,8 @@ import uuid
 
 sys.path.insert(0, str(Path(__file__).parent))
 ROOT = os.environ.get("LAYR_E2E_ROOT")
-LAYR = os.environ.get("LAYR_E2E_LAYR", "/usr/local/bin/layr")
-DESK = os.environ.get("LAYR_E2E_DESK", "/usr/local/bin/layr-desk")
+LAYR = os.environ.get("LAYR_E2E_LAYR") or shutil.which("layr") or "layr"
+DESK = os.environ.get("LAYR_E2E_DESK") or shutil.which("layr-desk") or "layr-desk"
 
 
 def decompress(frame, base=None):
@@ -141,7 +141,7 @@ class VaultEndToEnd(unittest.IsolatedAsyncioTestCase):
         (main / "new.txt").write_text("new\n")
         (main / "run.sh").unlink()
         layr("add", "-A", cwd=main)
-        layr("commit", "-qm", "two", cwd=main)
+        layr("save", "-qm", "two", cwd=main)
         second = await handlers.dispatch("p2", "vault.push", {"projectId": project}, None)
         self.assertEqual((second["pushed"], second["seq"]), (True, 2))
         third = await handlers.dispatch("p3", "vault.push", {"projectId": project}, None)

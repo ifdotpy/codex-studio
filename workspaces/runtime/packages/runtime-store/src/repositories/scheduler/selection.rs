@@ -1004,14 +1004,6 @@ impl SchedulerRepository {
             None
         } else if agent.extra.get("pendingSettings").is_some_and(truthy) {
             Some("pendingSettings are not supported by the Rust turn driver; apply settings first.")
-        } else if agent.extra.get("imageWorkspace").and_then(Value::as_bool) == Some(true)
-            && agent
-                .extra
-                .get("imageWorkspaceReady")
-                .and_then(Value::as_bool)
-                != Some(true)
-        {
-            Some("image workspace is not ready; prepare the workspace before submitting input.")
         } else {
             events
                 .iter()

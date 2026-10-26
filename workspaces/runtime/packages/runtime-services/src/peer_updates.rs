@@ -121,12 +121,6 @@ impl Offer {
         }
     }
 
-    #[cfg(test)]
-    fn with_export_wait(mut self, wait: Duration) -> Self {
-        self.export_wait = wait;
-        self
-    }
-
     fn app(&self) -> Option<PathBuf> {
         match &self.app {
             AppSource::Installed => installed_app(),
@@ -682,7 +676,7 @@ pub(crate) mod fixture {
         let blob = folder.join(format!("{name}.bin"));
         std::fs::write(&blob, archive).unwrap();
         let wait = gate.map_or_else(String::new, |gate| {
-            format!("while [ ! -e '{}' ]; do sleep 0.05; done\n", gate.display())
+            format!("read _ < '{}'\n", gate.display())
         });
         script(
             folder,
@@ -716,7 +710,6 @@ mod tests {
 
     use base64::Engine;
     use serde_json::{Value, json};
-    use sha2::{Digest, Sha256};
 
     use super::{CHUNK_BYTES, EXPORT_WAIT, Offer, UpdateError, fixture};
 
@@ -794,7 +787,7 @@ mod tests {
         assert_eq!(meta["size"], json!(expected.len()));
         assert_eq!(
             meta["sha256"],
-            json!(data_encoding::HEXLOWER.encode(&Sha256::digest(&expected)))
+            json!("eb608359d3f6b6237f580573c9f57a08ab2aed97d515e5d969ac553641c41eab")
         );
         assert!(!cache.join("module.cpython-314.pyc").exists());
         assert!(cache.join("keep.txt").exists());
@@ -810,7 +803,11 @@ mod tests {
         assert_eq!(again, meta, "a second export reuses the archive");
 
         let mut received = Vec::new();
-        while received.len() < expected.len() {
+        for expected_hash in [
+            "61d1d9c5745bdaa4fab39240651bc242a5186b15393fd475082fcf6e84f400ab",
+            "c6edd274fd1dde0ecf8b0440b9c38c91a9989ed002b1f54c9ee7079997012d98",
+            "fe60079befe6a202ab8c03711649592f19fe2ccfa528b548956bbecf0fa5f2cc",
+        ] {
             let chunk = call(
                 &offer,
                 &root,
@@ -825,10 +822,7 @@ mod tests {
             assert!(!data.is_empty() && data.len() <= CHUNK_BYTES);
             assert_eq!(chunk["offset"], json!(received.len()));
             assert_eq!(chunk["nextOffset"], json!(received.len() + data.len()));
-            assert_eq!(
-                chunk["sha256"],
-                json!(data_encoding::HEXLOWER.encode(&Sha256::digest(&data)))
-            );
+            assert_eq!(chunk["sha256"], expected_hash);
             received.extend(data);
         }
         assert_eq!(received, expected);
@@ -920,23 +914,36 @@ mod tests {
         let root = folder.path().join("state");
         std::fs::create_dir(&root).unwrap();
         let gate = folder.path().join("gate");
+        const FIFO_SETUP_TIMEOUT: Duration = Duration::from_secs(5);
+        super::tool(
+            std::path::Path::new("mkfifo"),
+            &[gate.to_str().unwrap()],
+            FIFO_SETUP_TIMEOUT,
+        )
+        .unwrap();
+        // Keep both ends open so release cannot block on the child being scheduled.
+        let mut release = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&gate)
+            .unwrap();
         let app = fixture::app(folder.path());
         let codesign = fixture::script(folder.path(), "codesign", "exit 0");
         let ditto = fixture::ditto(folder.path(), "ditto-slow", b"slow archive", Some(&gate));
-        let waiting = Arc::new(
-            Offer::fixture(app.clone(), codesign.clone(), ditto.clone())
-                .with_export_wait(Duration::from_millis(20)),
-        );
+        let waiting = Arc::new(Offer::fixture(app.clone(), codesign.clone(), ditto.clone()));
+        tokio::time::pause();
         let first = call(
             &waiting,
             &root,
             "update.export",
             json!({"builtAt": 1792647971.037}),
         )
-        .await
-        .unwrap();
+        .await;
+        tokio::time::resume();
+        // Release the owned child before checking the response, including failure paths.
+        std::io::Write::write_all(&mut release, b"ready\n").unwrap();
+        let first = first.unwrap();
         assert_eq!(first["preparing"], json!(true));
-        std::fs::write(&gate, b"").unwrap();
         let patient = Arc::new(Offer::fixture(app, codesign, ditto));
         let ready = call(
             &patient,

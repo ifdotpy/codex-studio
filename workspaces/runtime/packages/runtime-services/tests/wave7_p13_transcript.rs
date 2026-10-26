@@ -392,6 +392,11 @@ fn assert_pull(got: &Value, expected: &Value, fixture_sync_high: i64) {
     // Its one startup write uses the shared allocator. Shift only newly
     // allocated transcript sequences; persisted cursors and pruning stay exact.
     for document in expected["documents"].as_array_mut().expect("documents") {
+        // Preserve the frozen corpus while retiring its unused wire-only map.
+        document["payload"]
+            .as_object_mut()
+            .expect("transcript payload")
+            .remove("itemRevisions");
         let sequence = document["seq"].as_i64().expect("document sequence");
         if sequence > fixture_sync_high {
             document["seq"] = json!(sequence + 1);
@@ -451,7 +456,7 @@ fn restore_snapshot(fixture: &Path, state: &Path, root: &Path) {
                 &root.to_string_lossy().replace('\'', "''"),
             );
         let db = rusqlite::Connection::open(state.join(name)).expect("snapshot database");
-        db.execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL;")
+        studio_runtime_store::sqlite_durability::configure_writer(&db)
             .expect("snapshot durability");
         db.execute_batch(&sql).expect("restore frozen SQLite seed");
     }

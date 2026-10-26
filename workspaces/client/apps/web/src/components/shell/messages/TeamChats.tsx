@@ -262,6 +262,15 @@ export default function TeamChats({
     const root = scroll.current;
     if (!root || showYou) return;
     const update = () => {
+      // Newly mounted rows must be measured before changing the window again.
+      // Waiting for ResizeObserver lets estimated and actual heights alternate
+      // during layout commits, moving the scroll position back and forth.
+      for (const node of root.querySelectorAll<HTMLElement>(
+        "[data-room-row]",
+      )) {
+        const height = Math.ceil(node.getBoundingClientRect().height);
+        if (height) heights.current.set(node.dataset.roomRow!, height);
+      }
       const estimate = (message: (typeof items)[number]) =>
         heights.current.get(message.id) ||
         Math.max(112, Math.ceil((message.text?.length || 0) / 78) * 23 + 82);
@@ -294,24 +303,7 @@ export default function TeamChats({
     };
     update();
     root.addEventListener("scroll", update, { passive: true });
-    const observer = new ResizeObserver((entries) => {
-      let changed = false;
-      for (const entry of entries) {
-        const node = entry.target as HTMLElement;
-        if (node === root) {
-          changed = true;
-          continue;
-        }
-        const id = node.dataset.roomRow;
-        if (!id) continue;
-        const size = Math.ceil(entry.contentRect.height);
-        if (size && heights.current.get(id) !== size) {
-          heights.current.set(id, size);
-          changed = true;
-        }
-      }
-      if (changed) update();
-    });
+    const observer = new ResizeObserver(update);
     observer.observe(root);
     root
       .querySelectorAll<HTMLElement>("[data-room-row]")

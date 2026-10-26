@@ -189,6 +189,7 @@ pub fn physical_snapshot(store: &RuntimeStore) -> Value {
 fn snapshot_rows(store: &RuntimeStore, logical: bool) -> Value {
     use rusqlite::types::ValueRef;
     let connection = store.test_reader().unwrap();
+    super::agent_view_fixtures::assert_agent_view_projections(&connection);
     let mut names=connection.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name").unwrap();
     let tables = names
         .query_map([], |r| r.get::<_, String>(0))
@@ -207,7 +208,7 @@ fn snapshot_rows(store: &RuntimeStore, logical: bool) -> Value {
             continue;
         }
         let sql = if logical && name == "sync_entities" {
-            "SELECT collection,id,payload,deleted FROM sync_entities".to_owned()
+            "SELECT collection,id,payload,deleted FROM sync_entities WHERE collection NOT IN ('agentSummary','agentDetail')".to_owned()
         } else {
             studio_runtime_store::agent_columns::select_declared_sql(&connection, &name).unwrap()
         };
@@ -348,6 +349,18 @@ pub async fn seed_case(store: &RuntimeStore, case: &Value) {
                                 row[2]["value"].clone(),
                                 row[3] == 1,
                             )?;
+                            if row[0] == "agent" {
+                                // This corpus explicitly installs a historical view. Seed
+                                // both current projections from that same view, too.
+                                for collection in ["agentSummary", "agentDetail"] {
+                                    let value = studio_runtime_services::sync_policy::project_persisted_record(
+                                        collection, &row[2]["value"],
+                                    ).expect("frozen agent view has id");
+                                    studio_runtime_store::SyncDocumentsRepository::put_entity(
+                                        tx, collection, row[1].as_str().unwrap(), value, row[3] == 1,
+                                    )?;
+                                }
+                            }
                         } else {
                             insert_row(tx, table, row)?;
                         }

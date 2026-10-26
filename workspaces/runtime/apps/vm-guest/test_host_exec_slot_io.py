@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import os
 import sys
 import tempfile
 import unittest
@@ -10,17 +11,20 @@ sys.path.insert(0, str(Path(__file__).parent))
 from host_exec_slot_io import collect, run
 
 # `layr show <state>:<path>` from a folder that stands for the held state, and
-# `layr status --porcelain --ignored -z` in the line, where the line ignores `target/`. Like layr,
+# `layr status --json --ignored` in the line, where the line ignores `target/`. Like layr,
 # the status reports only files that exist in the line.
-FAKE_LAYR = """#!/bin/sh
-if [ "$1" = status ]; then
-    [ -d target ] && find target -type f | sort | while read -r f; do printf '!! %s\\0' "$f"; done
-    exit 0
-fi
-[ "$1" = show ] || exit 2
-rel=${2#*:}
-[ -f "$FAKE_BASE/$rel" ] || { echo "fatal: path '$rel' does not exist" >&2; exit 128; }
-cat "$FAKE_BASE/$rel"
+FAKE_LAYR = """#!/usr/bin/env python3
+import json, os, pathlib, sys
+if sys.argv[1] == "status":
+    assert sys.argv[2:] == ["--json", "--ignored"]
+    print(json.dumps({"ignored": [str(p) for p in pathlib.Path("target").rglob("*") if p.is_file()]}))
+    sys.exit(0)
+assert sys.argv[1] == "show"
+p = pathlib.Path(os.environ["FAKE_BASE"]) / sys.argv[2].split(":", 1)[1]
+if not p.is_file():
+    print("fatal: path does not exist", file=sys.stderr)
+    sys.exit(128)
+sys.stdout.buffer.write(p.read_bytes())
 """
 
 
@@ -34,7 +38,7 @@ class CollectTests(unittest.TestCase):
             folder.mkdir()
         (tools / "layr").write_text(FAKE_LAYR)
         (tools / "layr").chmod(0o755)
-        self.env = {"PATH": f"{tools}:/usr/local/bin:/usr/bin:/bin", "FAKE_BASE": str(self.base)}
+        self.env = {"PATH": str(tools) + os.pathsep + os.environ.get("PATH", os.defpath), "FAKE_BASE": str(self.base)}
 
     def tearDown(self):
         self.temp.cleanup()
@@ -51,6 +55,13 @@ class CollectTests(unittest.TestCase):
     def collect(self, paths):
         return collect({"root": str(self.slot), "line": str(self.line), "held": "abc123",
                         "paths": paths, "env": self.env})
+
+    def test_ignored_new_path_with_quotes_stays_out_of_the_line(self):
+        relative = "target/a quoted\".bin"
+        self.put(self.slot, relative, b"Mac executable")
+        result = self.collect([relative])
+        self.assertEqual(result["kept"], [relative])
+        self.assertFalse((self.line / relative).exists())
 
     def test_a_path_only_the_slot_changed_is_copied(self):
         self.everywhere("a.txt", "one\n")

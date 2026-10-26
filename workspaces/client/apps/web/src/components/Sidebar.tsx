@@ -18,7 +18,6 @@ import {
 } from "react";
 import {
   ActionIcon,
-  Button,
   Drawer,
   Menu,
   Modal,
@@ -129,6 +128,7 @@ export type SidebarProps = {
   changeProject: (agent: Agent) => void;
   projectAccount: (path: string) => void;
   projectFolders?: (path: string) => void;
+  deleteProject?: (path: string) => void;
   creating: boolean;
   rename: (id: string, name: string) => Promise<void>;
   remove: (id: string, room: boolean) => void;
@@ -1297,6 +1297,15 @@ function SidebarContents(p: SidebarProps & { services: SidebarServices }) {
           </span>
         </a>
         <SidebarWarningsTarget />
+        <ActionIcon
+          className="sidebar-search"
+          aria-label="Search chats"
+          title="Search chats (Ctrl+K / ⌘K)"
+          aria-keyshortcuts="Control+k Meta+k"
+          onClick={p.onSearch}
+        >
+          <Search size={18} />
+        </ActionIcon>
         {p.settings && (
           <ActionIcon
             variant="subtle"
@@ -1318,42 +1327,6 @@ function SidebarContents(p: SidebarProps & { services: SidebarServices }) {
           {p.notice}
         </p>
       )}
-      <div className="sidebar-nav">
-        <div className="sidebar-primary-actions">
-          <Button
-            className="sidebar-nav-button sidebar-search"
-            aria-label="Search chats"
-            leftSection={<Search size={15} />}
-            onClick={p.onSearch}
-          >
-            Search{" "}
-            <kbd>
-              {navigator.platform.toLowerCase().includes("mac")
-                ? "⌘K"
-                : "Ctrl+K"}
-            </kbd>
-          </Button>
-          <ActionIcon
-            className="sidebar-new-chat"
-            aria-label="New chat"
-            title="New chat"
-            disabled={p.creating}
-            onClick={() => p.newChat()}
-          >
-            <SquarePen size={16} />
-          </ActionIcon>
-          {p.newSharedChat && (
-            <ActionIcon
-              className="sidebar-shared-chat"
-              aria-label="New shared chat"
-              title="New shared chat"
-              onClick={() => p.newSharedChat?.()}
-            >
-              <Users size={16} />
-            </ActionIcon>
-          )}
-        </div>
-      </div>
       <TextInput
         id="chat-search"
         type="search"
@@ -1391,6 +1364,25 @@ function SidebarContents(p: SidebarProps & { services: SidebarServices }) {
               </Menu.Item>
             </Menu.Dropdown>
           </Menu>
+          <ActionIcon
+            className="sidebar-new-chat"
+            aria-label="New chat"
+            title="New chat"
+            disabled={p.creating}
+            onClick={() => p.newChat()}
+          >
+            <SquarePen size={16} />
+          </ActionIcon>
+          {p.newSharedChat && (
+            <ActionIcon
+              className="sidebar-shared-chat"
+              aria-label="New shared chat"
+              title="New shared chat"
+              onClick={() => p.newSharedChat?.()}
+            >
+              <Users size={16} />
+            </ActionIcon>
+          )}
           {
             <ActionIcon aria-label="Add project" onClick={p.addProject}>
               <Plus size={18} />
@@ -1628,24 +1620,13 @@ function SidebarContents(p: SidebarProps & { services: SidebarServices }) {
                       >
                         Project account
                       </Menu.Item>
-                      {group.registered && !group.hasChats && (
+                      {group.registered && p.deleteProject && (
                         <Menu.Item
+                          color="red"
                           disabled={!canEdit(projectTarget(group.path))}
-                          onClick={async () => {
-                            try {
-                              await services
-                                .owner({ kind: "project", path: group.path })
-                                .post("/api/projects", {
-                                  action: "remove",
-                                  path: group.path,
-                                });
-                              await p.refresh?.();
-                            } catch (error) {
-                              p.notify?.(errorText(error));
-                            }
-                          }}
+                          onClick={() => p.deleteProject?.(group.path)}
                         >
-                          Remove from sidebar
+                          Delete project…
                         </Menu.Item>
                       )}
                     </Menu.Dropdown>
@@ -1658,7 +1639,7 @@ function SidebarContents(p: SidebarProps & { services: SidebarServices }) {
                     ))}
                     {syncEntries.length > 0 && <Menu.Divider />}
                     {syncEntries.length > 0 && (
-                      <Menu.Label>Mac folder sync</Menu.Label>
+                      <Menu.Label>Folder sync</Menu.Label>
                     )}
                     {syncEntries.flatMap((entry) => {
                       const suffix = entry.server ? ` (${entry.server})` : "";
@@ -1691,7 +1672,7 @@ function SidebarContents(p: SidebarProps & { services: SidebarServices }) {
                               })
                             }
                           >
-                            {`Sync ${entry.sync.deletes} Mac deletions${suffix}`}
+                            {`Sync ${entry.sync.deletes} local deletions${suffix}`}
                           </Menu.Item>
                         ),
                         <Menu.Item
@@ -1741,7 +1722,7 @@ function SidebarContents(p: SidebarProps & { services: SidebarServices }) {
                               })
                             }
                           >
-                            {`Unlock on this Mac…${suffix}`}
+                            {`Unlock on this computer…${suffix}`}
                           </Menu.Item>
                         ),
                         actions(entry).includes("finder") && (
@@ -1749,7 +1730,7 @@ function SidebarContents(p: SidebarProps & { services: SidebarServices }) {
                             key={`${key}:finder`}
                             onClick={() => void revealPath(entry.vault.disk!)}
                           >
-                            {`Show in Finder${suffix}`}
+                            {`Show folder${suffix}`}
                           </Menu.Item>
                         ),
                         actions(entry).includes("pull") && (

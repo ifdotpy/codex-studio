@@ -1,4 +1,8 @@
 import {
+  CHAT_WORKSPACE_MODES,
+  defaultChatWorkspaceMode,
+} from "../generated/workspaceModes";
+import {
   get,
   ApiError,
   READ_DEADLINE_MS,
@@ -20,7 +24,10 @@ export type NewChatSettings = Pick<
   | "daybreak_enabled"
   | "worker_defaults"
   | "review_defaults"
-> & { account_key?: string; workspaceMode: "layr" | "image" | "worktree" };
+> & {
+  account_key?: string;
+  workspaceMode: (typeof CHAT_WORKSPACE_MODES)[number];
+};
 
 export type NewChatSettingsDraft = Omit<NewChatSettings, "workspaceMode">;
 
@@ -61,8 +68,11 @@ export function settingsForNewChatAccount(
   };
 }
 
-export function defaultWorkspaceMode(system?: string) {
-  return system === "Darwin" ? "layr" : "worktree";
+export function defaultWorkspaceMode(
+  system?: string,
+  nativeLayr?: GetResult<"/api/ui-summary">["nativeLayr"],
+) {
+  return defaultChatWorkspaceMode(system, nativeLayr?.ready === true);
 }
 
 type ChatReadOptions = {
@@ -134,7 +144,11 @@ export function isNewChatSettings(value: unknown): value is NewChatSettings {
     "review_defaults",
   ];
   if (Object.keys(value).some((key) => !allowed.includes(key))) return false;
-  if (!["layr", "image", "worktree"].includes(String(value.workspaceMode)))
+  if (
+    !(CHAT_WORKSPACE_MODES as readonly string[]).includes(
+      String(value.workspaceMode),
+    )
+  )
     return false;
   if (
     value.account_key !== undefined &&

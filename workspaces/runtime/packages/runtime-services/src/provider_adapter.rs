@@ -382,6 +382,25 @@ impl ProviderAdapter for ClaudeAdapter {
             );
             options.insert("env".into(), json!(environment));
         }
+        // Native Layr shares the same per-thread environment contract as Codex.
+        let mut native_env = options
+            .get("env")
+            .and_then(Value::as_object)
+            .cloned()
+            .unwrap_or_default();
+        for (key, value) in &s.guidance.thread_config {
+            if let Some(name) = key.strip_prefix("shell_environment_policy.set.")
+                && matches!(
+                    name,
+                    "LAYR_ROOT" | "LAYR_DIRECT" | "LAYR_SOCKET" | "PATH" | "TMPDIR"
+                )
+            {
+                native_env.insert(name.into(), value.clone());
+            }
+        }
+        if !native_env.is_empty() {
+            options.insert("env".into(), json!(native_env));
+        }
         params.insert("claude".into(), json!(options));
         // A managed worker (a child agent) runs without the user's MCP servers.
         if s.actor.parent_id.is_some() {

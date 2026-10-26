@@ -20,7 +20,14 @@ describe("new chat actions", () => {
               { serverId: "local", path: "/folder", projectId: "/folder" },
             ],
           },
-          servers: [{ id: "local", label: "This computer", system: "Darwin" }],
+          servers: [
+            {
+              id: "local",
+              label: "This computer",
+              system: "Darwin",
+              hasStudioVm: true,
+            },
+          ],
           onChoose: () => {},
           onAdd: () => {},
           onCancel: () => {},
@@ -28,9 +35,9 @@ describe("new chat actions", () => {
       ),
     );
     expect(markup).toContain("Workspace");
-    expect(markup).toContain("layr");
-    expect(markup).toContain("ASIF");
-    expect(markup).toContain("worktree");
+    expect(markup).toContain("Layr");
+    expect(markup).toContain("Layr VM");
+    expect(markup).toContain("WT");
     expect(markup).toContain('aria-label="Agent role" role="radiogroup"');
     expect(markup).toMatch(/<input[^>]*type="radio"[^>]*value="worker"/);
     expect(markup).toMatch(/<input[^>]*type="radio"[^>]*value="review"/);
@@ -39,4 +46,42 @@ describe("new chat actions", () => {
     expect(markup).toContain("Start chat");
     expect(markup).toMatch(/data-variant="filled"[^>]*>[\s\S]*?Start chat/);
   });
+});
+
+it("disables unavailable native Layr on Linux and explains the fallback", () => {
+  const markup = renderToStaticMarkup(
+    createElement(
+      MantineProvider,
+      { theme },
+      createElement(ProjectServerCards, {
+        project: {
+          id: "linux",
+          name: "Linux",
+          path: "/folder",
+          locations: [
+            { serverId: "linux", projectId: "linux", path: "/folder" },
+          ],
+        },
+        servers: [
+          {
+            id: "linux",
+            label: "Linux",
+            system: "Linux",
+            hasStudioVm: false,
+            nativeLayr: { ready: false, reason: "A btrfs store is required." },
+          },
+        ],
+        onChoose: () => {},
+        onAdd: () => {},
+        onCancel: () => {},
+      }),
+    ),
+  );
+  expect(markup).toContain("A btrfs store is required.");
+  expect(
+    markup.match(/<input(?=[^>]*value="layr-native")[^>]*>/)?.[0],
+  ).toContain('disabled=""');
+  expect(markup.match(/<input(?=[^>]*value="worktree")[^>]*>/)?.[0]).toContain(
+    'checked=""',
+  );
 });

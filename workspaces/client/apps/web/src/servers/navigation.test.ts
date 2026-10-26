@@ -73,7 +73,7 @@ it("accepts account commands with only public account identity fields", () => {
   ).toBe(true);
 });
 
-it("rejects malformed account commands and credential-shaped fields", () => {
+it("rejects malformed account providers and operations", () => {
   expect(
     isServerCommand({
       action: "account-sign-in",

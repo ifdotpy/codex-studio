@@ -18,6 +18,41 @@ pub const VAULT_SETUP_TIMEOUT: Duration = Duration::from_secs(3600);
 pub const VAULT_PULL_TIMEOUT: Duration = Duration::from_secs(3600);
 const DESK_OUTPUT_LIMIT: usize = 32 * 1024;
 
+/// Owns the OS notification source for a stream interested in vault readiness.
+/// It observes names and metadata only; key contents never enter the runtime.
+pub struct VaultReadinessWatcher {
+    _watcher: notify::RecommendedWatcher,
+}
+
+pub fn watch_readiness(
+    settings: &Path,
+    changed: std::sync::Arc<dyn Fn() + Send + Sync>,
+) -> Result<VaultReadinessWatcher, VaultError> {
+    use notify::Watcher;
+    fs::create_dir_all(settings)
+        .map_err(|_| VaultError::InvalidStoredRecord("vault settings directory"))?;
+    let mut watcher = notify::recommended_watcher(move |event: notify::Result<notify::Event>| {
+        if event.is_err()
+            || event.is_ok_and(|event| !matches!(event.kind, notify::EventKind::Access(_)))
+        {
+            changed();
+        }
+    })
+    .map_err(|_| VaultError::InvalidStoredRecord("vault readiness watcher"))?;
+    watcher
+        .watch(settings, notify::RecursiveMode::Recursive)
+        .map_err(|_| VaultError::InvalidStoredRecord("vault readiness watcher"))?;
+    Ok(VaultReadinessWatcher { _watcher: watcher })
+}
+
+/// Presence of the public recipient file, without opening private key material.
+pub fn keys_ready(settings: &Path, prefix: &str) -> Result<bool, VaultError> {
+    if !valid_prefix(prefix) {
+        return Err(VaultError::InvalidPrefix);
+    }
+    Ok(settings.join(prefix).join("recipient.txt").is_file())
+}
+
 /// Resolve the Linux VM data directory used by Python's `codex_linux_vm.Client.state_dir`.
 pub fn linux_vm_state_dir(runtime_state_dir: &Path) -> PathBuf {
     std::env::var_os("CODEX_LINUX_VM_STATE_DIR")
@@ -31,7 +66,7 @@ pub enum VaultError {
     InvalidProjectId,
     #[error("The project has a vault already")]
     AlreadyConfigured,
-    #[error("The project has no Mac folder")]
+    #[error("The project has no host folder")]
     ProjectSourceMissing,
     #[error("A vault name has up to 44 letters, digits, - and _, and is not api or assets")]
     InvalidPrefix,
@@ -466,7 +501,7 @@ pub fn setup_facts(
         .ok_or(VaultError::InvalidStoredRecord("aws-profiles"))?;
     Ok(json!({
         "prefix": prefix,
-        "keys": settings_dir.join(&prefix).join("recipient.txt").is_file(),
+        "keys": keys_ready(settings_dir, &prefix)?,
         "site": site,
         "region": region,
         "gatewayProfile": gateway_profile,
@@ -851,6 +886,34 @@ mod tests {
         assert_eq!(facts["site"], "https://desk.example/");
         assert_eq!(facts["region"], "eu-west-1");
         assert_eq!(facts["gatewayProfile"], "personal");
+    }
+
+    #[test]
+    fn readiness_changes_are_driven_by_filesystem_notifications() {
+        let root = tempfile::tempdir().expect("isolated settings");
+        let settings = root.path().join("settings");
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let watched_settings = settings.clone();
+        let _watcher = super::watch_readiness(
+            &settings,
+            std::sync::Arc::new(move || {
+                if super::keys_ready(&watched_settings, "project-one").expect("readiness") {
+                    // The receiver outlives the owned watcher in this fixture.
+                    sender.send(()).expect("readiness receiver is alive");
+                }
+            }),
+        )
+        .expect("OS watcher");
+        assert!(!super::keys_ready(&settings, "project-one").expect("initial readiness"));
+        fs::create_dir_all(settings.join("project-one")).expect("project folder");
+        fs::write(
+            settings.join("project-one/recipient.txt"),
+            "public recipient fixture",
+        )
+        .expect("recipient");
+        receiver
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("notification without a poll timer");
     }
 
     #[test]

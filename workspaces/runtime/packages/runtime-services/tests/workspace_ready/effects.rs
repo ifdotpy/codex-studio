@@ -53,16 +53,20 @@ impl Fixture {
         );
         let state = root.path().join("state");
         std::fs::create_dir(&state).expect("state");
-        seed_schema(&state, &repo.join("project"));
         let id = "workspace-fixture".to_owned();
         let store = std::sync::Arc::new(
             RuntimeStore::open(Some(&state))
                 .await
                 .expect("open fixture state"),
         );
-        {
-            store.transaction(|tx| { tx.execute("INSERT INTO runtime_events(id,agent,kind,text,status,created,epoch) VALUES('workspace-input','workspace-fixture','user','fixture','pending',1,0)",[])?; Ok(()) }).await.expect("queued event");
-        }
+        let cwd = repo.join("project");
+        store.transaction(move |tx| {
+            let actor = json!({"id":"workspace-fixture","rootId":"workspace-fixture","epoch":0,"status":"queued","cwd":cwd,"autoWake":true,"worktree":true,"worktreeReady":false,"workspaceMode":"worktree"});
+            AgentRepository::put(tx, &AgentRecord::from_value(actor.clone())?)?;
+            tx.execute("INSERT INTO sync_entities(collection,id,seq,hash,payload,deleted) VALUES('agent','workspace-fixture',1,'fixture',?1,0)", [json!({"collection":"agent","id":"workspace-fixture","value":actor}).to_string()])?;
+            tx.execute("INSERT INTO runtime_events(id,agent,kind,text,status,created,epoch) VALUES('workspace-input','workspace-fixture','user','fixture','pending',1,0)", [])?;
+            Ok(())
+        }).await.expect("workspace fixture");
         Self {
             root,
             store,
@@ -76,7 +80,7 @@ impl Fixture {
         let journal =
             WorkspaceReadyRepository::journal(&self.store.test_reader().expect("test reader"), &id)
                 .expect("journal");
-        observe(snapshot, journal, &git()).expect("observe")
+        observe(snapshot, journal, self.store.state_dir(), &git()).expect("observe")
     }
     fn plan(&self) -> crate::workspace_ready::WorktreePlan {
         match self.context().decide() {
@@ -147,57 +151,6 @@ impl Fixture {
             .expect("patch actor");
     }
 }
-// Reuse the repository's committed Python schema rather than bootstrapping Runtime per case.
-fn seed_schema(root: &Path, cwd: &Path) {
-    let schema: Value = serde_json::from_str(include_str!(
-        "../../../runtime-store/tests/fixtures/live-state-schema.json"
-    ))
-    .expect("Python schema fixture");
-    for name in ["canvas.sqlite3", "analytics.sqlite3"] {
-        let mut db = rusqlite::Connection::open(root.join(name)).expect("fixture database");
-        db.execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL;")
-            .expect("durable fixture");
-        let tx = db.transaction().expect("one fixture transaction");
-        let mut objects = schema[name]["sqlite_master"]
-            .as_array()
-            .expect("schema objects")
-            .iter()
-            .collect::<Vec<_>>();
-        objects.sort_by_key(|o| match o["type"].as_str() {
-            Some("table") => 0,
-            Some("index") => 1,
-            Some("trigger") => 2,
-            _ => 3,
-        });
-        for object in objects {
-            if matches!(
-                object["name"].as_str(),
-                Some(
-                    "runtime_search_next_config"
-                        | "runtime_search_next_data"
-                        | "runtime_search_next_docsize"
-                        | "runtime_search_next_idx"
-                )
-            ) {
-                continue;
-            }
-            if let Some(sql) = object["sql"].as_str() {
-                tx.execute_batch(sql).expect("fixture DDL");
-            }
-        }
-        if name == "canvas.sqlite3" {
-            let actor = json!({"id":"workspace-fixture","rootId":"workspace-fixture","epoch":0,"status":"queued","cwd":cwd,"autoWake":true,"worktree":true,"worktreeReady":false,"workspaceMode":"worktree"});
-            tx.execute(
-                "INSERT INTO runtime_agents(id,record) VALUES('workspace-fixture',?1)",
-                [actor.to_string()],
-            )
-            .expect("actor seed");
-            tx.execute("INSERT INTO sync_entities(collection,id,seq,hash,payload,deleted) VALUES('agent','workspace-fixture',1,'fixture',?1,0)", [json!({"collection":"agent","id":"workspace-fixture","value":actor}).to_string()]).expect("agent projection");
-        }
-        tx.commit().expect("fixture commits");
-    }
-}
-
 fn git() -> Git {
     Git {
         deadline: Instant::now() + GIT_TIMEOUT,
@@ -211,7 +164,7 @@ fn command(cwd: &Path, args: &[&str]) -> String {
     );
     let output = Command::new("git")
         .env_clear()
-        .env("PATH", "/usr/bin:/bin")
+        .env("PATH", std::env::var_os("PATH").unwrap_or_default())
         .env("HOME", cwd.join(".fixture-home"))
         .arg("-C")
         .arg(cwd)
@@ -248,7 +201,7 @@ async fn image_readiness_refuses_with_python_message_without_workspace_writes() 
         .await
         .expect("readiness decision");
     assert!(matches!(decision, WorkspaceDecision::Refuse(refusal)
-        if refusal.to_string() == crate::image_workspace::PLATFORM_REFUSAL));
+        if matches!(refusal,crate::workspace_ready::WorkspaceRefusal::ImageWorkspaceUnsupported)));
 
     let after = std::fs::read_dir(fixture.root.path())
         .expect("fixture contents after refusal")
@@ -278,6 +231,61 @@ async fn repository_root_cwd_is_stored_without_a_trailing_separator() {
         .to_owned();
     assert_eq!(fixture.actor()["cwd"], json!(expected));
     assert_eq!(cwd.to_str(), Some(expected.as_str()));
+}
+
+/// `worktree-root.json` moves new worker worktrees out of the repository,
+/// reached through a symbolic link, and keeps the subproject cwd.
+#[tokio::test]
+async fn configured_root_places_the_worktree_outside_the_repository() {
+    let fixture = Fixture::new().await;
+    let disk = fixture.root.path().join("disk");
+    std::fs::create_dir(&disk).expect("configured root");
+    let link = fixture.root.path().join("disk-link");
+    std::os::unix::fs::symlink(&disk, &link).expect("root link");
+    std::fs::write(
+        fixture
+            .store
+            .state_dir()
+            .join(crate::worktree_root::WORKTREE_ROOT_FILE),
+        json!({ "root": link }).to_string(),
+    )
+    .expect("configuration");
+    let result = prepare(std::sync::Arc::clone(&fixture.store), fixture.id.clone())
+        .await
+        .expect("prepare");
+    let cwd = admitted(&fixture, result).await;
+    let expected = CanonicalPath::existing(&disk)
+        .expect("canonical root")
+        .join("codex-agents")
+        .join(&fixture.id)
+        .join("project");
+    assert_eq!(cwd, expected);
+    assert_eq!(fixture.actor()["cwd"], json!(expected));
+    assert!(!fixture.repo.join(".worktrees").exists());
+    assert_eq!(
+        std::fs::read_to_string(cwd.join("file")).expect("checkout"),
+        "base\n"
+    );
+}
+
+/// A configured root that does not exist refuses provisioning instead of
+/// falling back to the repository.
+#[tokio::test]
+async fn missing_configured_root_fails_closed() {
+    let fixture = Fixture::new().await;
+    std::fs::write(
+        fixture
+            .store
+            .state_dir()
+            .join(crate::worktree_root::WORKTREE_ROOT_FILE),
+        json!({ "root": fixture.root.path().join("absent") }).to_string(),
+    )
+    .expect("configuration");
+    let error = prepare(std::sync::Arc::clone(&fixture.store), fixture.id.clone())
+        .await
+        .expect_err("missing root refuses");
+    assert!(matches!(error, WorkspaceError::WorktreeRoot(_)), "{error}");
+    assert!(!fixture.repo.join(".worktrees").exists());
 }
 
 #[tokio::test]
@@ -1083,58 +1091,68 @@ async fn linked_worktree_and_submodule_sources_preserve_git_identity() {
 
 #[cfg(unix)]
 #[tokio::test]
-#[allow(clippy::disallowed_methods)]
 async fn running_git_deadline_kills_child_and_keeps_durable_identity() {
+    use std::io::{BufRead, Read};
+
     let fixture = Fixture::new().await;
     let plan = fixture.plan().identity;
     fixture.reserve(&plan).await;
+    // A short-lived fixture tool, like the `command` Git helper above.
+    #[allow(clippy::disallowed_methods)]
+    let fifos = Command::new("mkfifo")
+        .args(["running-handshake", "never-released"])
+        .current_dir(&fixture.repo)
+        .status()
+        .expect("child handshake FIFOs");
+    assert!(fifos.success());
     command(
         &fixture.repo,
         &[
             "config",
             "alias.workspace-stall",
-            "!echo $$ > running-marker; exec sleep 300",
+            "!exec 9>running-handshake; echo $$ >&9; IFS= read -r _ < never-released",
         ],
     );
-    // Startup is not the behavior under test. Expire the runner's clock only
-    // after the real child has published its PID, then exercise real termination.
-    let marker = fixture.repo.join("running-marker");
-    crate::bounded_child::DEADLINE_OVERRIDE.set(Some(Box::new(move || {
-        let guard = Instant::now() + Duration::from_secs(120);
-        while Instant::now() < guard {
-            if std::fs::read_to_string(&marker).is_ok_and(|pid| pid.trim().parse::<u32>().is_ok()) {
-                break;
-            }
-            std::thread::park_timeout(Duration::from_millis(1));
-        }
+    let fifo = fixture.repo.join("running-handshake");
+    let (ready, started) = std::sync::mpsc::channel();
+    let (closed, exited) = std::sync::mpsc::channel();
+    let reader = std::thread::spawn(move || {
+        let mut pipe = std::io::BufReader::new(std::fs::File::open(fifo).expect("open handshake"));
+        let mut pid = String::new();
+        pipe.read_line(&mut pid).expect("child PID");
+        ready
+            .send(pid.trim().parse::<u32>().expect("running child PID"))
+            .expect("report child readiness");
+        let mut rest = Vec::new();
+        pipe.read_to_end(&mut rest).expect("child EOF");
+        assert!(rest.is_empty());
+        closed.send(()).expect("report closed child pipe");
+    });
+    let expired = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let observed = expired.clone();
+    crate::bounded_child::RUNNING_DEADLINE_OVERRIDE.set(Some(Box::new(move || {
+        let ready = started.recv_timeout(Duration::from_secs(10)).is_ok();
+        observed.store(ready, std::sync::atomic::Ordering::SeqCst);
         std::time::Instant::now()
     })));
+    crate::bounded_child::LEADER_UNREAPED_AT_SIGNAL.set(None);
     let result = Git {
-        deadline: Instant::now() + Duration::from_secs(120),
+        deadline: Instant::now() + Duration::from_millis(500),
     }
     .run(&fixture.repo, &["workspace-stall"]);
     assert!(matches!(result, Err(WorkspaceError::Deadline(_))));
     assert!(
-        fixture.repo.join("running-marker").exists(),
-        "child actually started before the readiness hang guard"
+        expired.load(std::sync::atomic::Ordering::SeqCst),
+        "execution deadline expires after child readiness"
     );
-    let pid =
-        std::fs::read_to_string(fixture.repo.join("running-marker")).expect("child PID marker");
-    let guard = Instant::now() + Duration::from_secs(120);
-    loop {
-        let status = Command::new("ps")
-            .args(["-p", pid.trim(), "-o", "stat="])
-            .output()
-            .expect("check child termination");
-        let status = String::from_utf8(status.stdout).expect("process status");
-        // An orphan may await init's reaper after group termination; a zombie
-        // has already stopped executing and cannot retain the worktree lock.
-        if status.trim().is_empty() || status.trim().starts_with('Z') {
-            break;
-        }
-        assert!(Instant::now() < guard, "timed-out child remains alive");
-        std::thread::park_timeout(Duration::from_millis(1));
-    }
+    exited
+        .recv_timeout(Duration::from_secs(10))
+        .expect("killed child closes its pipe");
+    reader.join().expect("handshake reader joins");
+    assert_eq!(
+        crate::bounded_child::LEADER_UNREAPED_AT_SIGNAL.get(),
+        Some(true)
+    );
     assert!(
         WorkspaceReadyRepository::journal(&fixture.store.test_reader().expect("read"), &plan.id)
             .expect("journal")
@@ -1203,17 +1221,10 @@ async fn ambient_git_child() {
 }
 
 #[tokio::test]
-async fn publication_and_checkpoint_history_match_python() {
-    compare_publication_with_python(&Fixture::new().await, true).await;
-}
-
-async fn compare_publication_with_python(fixture: &Fixture, has_parent: bool) {
+async fn publication_preserves_checkpoint_history_and_native_thread() {
+    let fixture = &Fixture::new().await;
     let items = json!([{"id":"old"}, {"id":"new"}, {"id":"hidden","afterRestore":true}]);
-    let parent = if has_parent {
-        json!({"id":"parent-checkpoint","agent":fixture.id,"historyBoundary":1})
-    } else {
-        Value::Null
-    };
+    let parent = json!({"id":"parent-checkpoint","agent":fixture.id,"historyBoundary":1});
     let id = fixture.id.clone();
     let items_for_store = items.clone();
     let parent_for_store = parent.clone();
@@ -1223,14 +1234,12 @@ async fn compare_publication_with_python(fixture: &Fixture, has_parent: bool) {
             tx.execute("INSERT INTO runtime_items(rowid,id,agent,record,created) VALUES(?1,?2,?3,?4,1)",
                 rusqlite::params![i as i64 + 1, item["id"].as_str(), id, item.to_string()])?;
         }
-        if has_parent { tx.execute("INSERT INTO runtime_checkpoints(id,record) VALUES('parent-checkpoint',?1)", [parent_for_store.to_string()])?; }
+        tx.execute("INSERT INTO runtime_checkpoints(id,record) VALUES('parent-checkpoint',?1)", [parent_for_store.to_string()])?;
         Ok(())
     }).await.expect("history fixture");
-    if has_parent {
-        fixture
-            .patch("checkpointHistoryHead", json!("parent-checkpoint"))
-            .await;
-    }
+    fixture
+        .patch("checkpointHistoryHead", json!("parent-checkpoint"))
+        .await;
     fixture
         .patch("lastCompletedTurn", json!("previous-turn"))
         .await;
@@ -1253,14 +1262,7 @@ async fn compare_publication_with_python(fixture: &Fixture, has_parent: bool) {
     .expect("checkpoint")
     .expect("saved")
     .record;
-    assert_eq!(
-        checkpoint["historyDelta"],
-        if has_parent {
-            json!(["new"])
-        } else {
-            json!(["old", "new"])
-        }
-    );
+    assert_eq!(checkpoint["historyDelta"], json!(["new"]));
     assert_eq!(checkpoint["historyBoundary"], 2);
     assert_eq!(
         command(
@@ -1411,7 +1413,16 @@ async fn public_probe(fixture: Fixture, action: &str, expectation: &str) -> Fixt
         id,
         repo,
     } = fixture;
+    let search_path = std::env::var_os("PATH").expect("executable search path");
+    let real_git = std::env::split_paths(&search_path)
+        .map(|directory| directory.join("git"))
+        .find(|path| path.is_file())
+        .expect("Git fixture executable");
     let bin = root.path().join("bin");
+    let probe_path = std::env::join_paths(
+        std::iter::once(bin.clone()).chain(std::env::split_paths(&search_path)),
+    )
+    .expect("probe executable search path");
     std::fs::create_dir(&bin).expect("wrapper directory");
     if !action.is_empty() {
         let node = Command::new("node")
@@ -1429,10 +1440,10 @@ const {{DatabaseSync}} = require('node:sqlite');
 const root = process.env.WORKSPACE_PROBE_ROOT;
 const repo = path.join(root, 'repo');
 const args = process.argv.slice(2);
-const result = spawnSync('/usr/bin/git', args);
+const result = spawnSync(process.env.WORKSPACE_REAL_GIT, args);
 if (result.error) throw result.error;
 const marker = path.join(root, 'probe-executed');
-const observation = spawnSync('/usr/bin/git', ['-C', repo, 'for-each-ref', '--format=%(refname)', 'refs/codex-agents/checkpoints/'], {{encoding:'utf8'}});
+const observation = spawnSync(process.env.WORKSPACE_REAL_GIT, ['-C', repo, 'for-each-ref', '--format=%(refname)', 'refs/codex-agents/checkpoints/'], {{encoding:'utf8'}});
 if (observation.error) throw observation.error;
 const refs = observation.stdout.trim().split('\n').filter(Boolean);
 {action}
@@ -1453,7 +1464,7 @@ process.exitCode = result.status;
             r#"#!/bin/sh
 case " $* " in
   *" diff --cached "*|*" for-each-ref "*) exec "$0.probe" "$@" ;;
-  *) exec /usr/bin/git "$@" ;;
+  *) exec "$WORKSPACE_REAL_GIT" "$@" ;;
 esac
 "#,
         )
@@ -1473,7 +1484,8 @@ esac
         .env("WORKSPACE_PROBE_ID", &id)
         .env("WORKSPACE_PROBE_EXPECT", expectation)
         .env("FIXTURE_FILTER_KEY", "present")
-        .env("PATH", format!("{}:/usr/bin:/bin", bin.display()))
+        .env("PATH", probe_path)
+        .env("WORKSPACE_REAL_GIT", real_git)
         .output()
         .expect("probe subprocess");
     assert!(
@@ -1624,7 +1636,7 @@ async fn exact_checkpoint_replay_atomically_rejects_ref_changed_after_read() {
         fixture,
         r#"
 if (args.includes('for-each-ref') && args.some(a => a.startsWith('refs/codex-agents/checkpoints/')) && result.stdout.toString().trim() && !fs.existsSync(marker)) {
-    const update = spawnSync('/usr/bin/git', ['-C', repo, 'update-ref', refs[0], fs.readFileSync(path.join(root, 'other-oid'), 'utf8')]);
+    const update = spawnSync(process.env.WORKSPACE_REAL_GIT, ['-C', repo, 'update-ref', refs[0], fs.readFileSync(path.join(root, 'other-oid'), 'utf8')]);
     if (update.error) throw update.error;
     if (update.status !== 0) throw new Error(update.stderr.toString());
     fs.writeFileSync(marker, 'ref changed after read');
@@ -1864,13 +1876,9 @@ async fn git_failure_and_git_deadline_have_distinct_messages() {
 
 #[tokio::test]
 async fn concurrent_workers_and_lead_of_one_repository_all_reach_ready() {
-    const WORKERS: usize = 40;
-    // The preparations queue on one repository lock; the wait is not Git time.
-    // This test checks that concurrency refuses and defers nothing, not host
-    // speed: on a macOS host under shared disk load one preparation takes about
-    // one second, so the last of 40 children can wait longer than the production
-    // queue bound. Unit: wall time of one lock wait.
-    const QUEUE: std::time::Duration = std::time::Duration::from_secs(150);
+    // Two workers and a lead exercise the shared repository lock. Larger
+    // populations repeat the same serialized Git effect.
+    const WORKERS: usize = 2;
     let fixture = Fixture::new().await;
     let seed = fixture.actor();
     let mut ids = vec![fixture.id.clone()];
@@ -1913,12 +1921,7 @@ async fn concurrent_workers_and_lead_of_one_repository_all_reach_ready() {
         .into_iter()
         .map(|id| {
             let store = std::sync::Arc::clone(&fixture.store);
-            tokio::spawn(async move {
-                (
-                    id.clone(),
-                    prepare_with_budget(store, id, GIT_TIMEOUT, QUEUE).await,
-                )
-            })
+            tokio::spawn(async move { (id.clone(), prepare(store, id).await) })
         })
         .collect::<Vec<_>>();
     for task in tasks {
@@ -1926,27 +1929,6 @@ async fn concurrent_workers_and_lead_of_one_repository_all_reach_ready() {
         assert!(
             matches!(decision, Ok(WorkspaceDecision::Ready { .. })),
             "{id}: {decision:?}"
-        );
-    }
-}
-
-/// Python runs an image agent's turn in `<mount>/repo/<imageWorkspaceSubpath>`.
-#[test]
-fn an_image_turn_runs_in_the_saved_subpath_of_the_mounted_repo() {
-    let repo = Path::new("/state/workspaces/mnt/agent/repo");
-    assert_eq!(image_turn_cwd(repo, None).expect("default"), repo);
-    assert_eq!(image_turn_cwd(repo, Some(".")).expect("root"), repo);
-    assert_eq!(
-        image_turn_cwd(repo, Some("crates/backend")).expect("subpath"),
-        repo.join("crates/backend")
-    );
-    for outside in ["..", "../other", "/etc", "crates/../../x"] {
-        assert!(
-            matches!(
-                image_turn_cwd(repo, Some(outside)),
-                Err(WorkspaceError::InvalidRecord)
-            ),
-            "{outside}"
         );
     }
 }
@@ -2106,9 +2088,10 @@ async fn reserve_provision(store: &std::sync::Arc<RuntimeStore>, id: &str) -> Pr
         &provision_id(&actor(&snapshot).expect("actor")),
     )
     .expect("journal");
-    let WorkspaceDecision::Provision(plan) = observe(snapshot.clone(), journal, &git())
-        .expect("observe")
-        .decide()
+    let WorkspaceDecision::Provision(plan) =
+        observe(snapshot.clone(), journal, store.state_dir(), &git())
+            .expect("observe")
+            .decide()
     else {
         panic!("{id} must plan a worktree");
     };

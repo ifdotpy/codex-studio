@@ -46,7 +46,7 @@ test("Claude checkpoints show the reason and send one combined restore identity"
           import {MantineProvider} from '@mantine/core';
           import '@mantine/core/styles.css';
           import Restore from '/src/components/ClaudeCheckpointRestore.tsx';
-          const agent={id:'worker',provider:'claude',imageWorkspace:true,worktreeReady:false,status:'paused'};
+          const agent={id:'worker',provider:'claude',workspaceMode:"shared",worktreeReady:false,status:'paused'};
           function Fixture(){const [revision,setRevision]=useState(0);return <MantineProvider><Restore agent={agent} revision={revision} onRestored={()=>setRevision(v=>v+1)}/></MantineProvider>;}
           createRoot(document.getElementById('root')).render(<Fixture/>);`;
         },

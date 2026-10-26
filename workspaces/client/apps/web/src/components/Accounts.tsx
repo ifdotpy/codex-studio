@@ -3,7 +3,7 @@ import ClaudeOrganization from "./ClaudeOrganization";
 import Disclosure from "./ui/Disclosure";
 import {
   useServerApi,
-  useServerResources,
+  useServerSync,
   useServerStorage,
 } from "../servers/ServerServicesContext";
 import { accountDisplayName, accountCanStart } from "../accountName";
@@ -22,7 +22,6 @@ import AccountGroup from "./AccountGroup";
 import ClaudeSignIn from "./ClaudeSignIn";
 import CodexSignIn from "./CodexSignIn";
 import NativeRuntimeStatus from "./NativeRuntimeStatus";
-import { watchResourceReads } from "./watchResourceReads";
 import {
   Accordion,
   Button,
@@ -81,7 +80,7 @@ export type AccountsState = GetResult<"/api/accounts">;
 export type Account = AccountsState["accounts"][number];
 export function useAccounts(stateDir?: string) {
   const { get } = useServerApi();
-  const events = useServerResources();
+  const { subscribeStateProjection } = useServerSync();
 
   const [data, setAccountsData] = useState<AccountsState>({
     accounts: [],
@@ -118,19 +117,25 @@ export function useAccounts(stateDir?: string) {
   }, [stateDir, get]);
   useEffect(() => {
     if (!stateDir) return;
-    const stop = watchResourceReads(
-      { kind: "accounts" },
-      async () => {
-        await refresh();
+    const stop = subscribeStateProjection(
+      (snapshot) => {
+        const summary = snapshot?.runtime.accountsSummary;
+        if (summary)
+          setAccountsData((previous) => ({
+            ...summary,
+            logins: previous.logins,
+          }));
       },
-      (failure) => setError(errorText(failure)),
-      { waitForBaseline: true, events },
+      (failure) => {
+        if (failure) setError(errorText(failure));
+      },
     );
     return () => {
       latestRead.current++;
       stop();
     };
-  }, [stateDir, refresh, events]);
+  }, [stateDir, subscribeStateProjection]);
+
   return useMemo(
     () => ({ data, setData, error, refresh, scope: stateDir }),
     [data, setData, error, refresh, stateDir],
@@ -733,6 +738,7 @@ export default function Accounts({
   externalCommand,
   onExternalCommandHandled,
   dialogsOnly = false,
+  showTransferStatus = true,
 }: {
   state: ReturnType<typeof useAccounts>;
   agent?: Agent;
@@ -751,6 +757,7 @@ export default function Accounts({
   > | null;
   onExternalCommandHandled?: () => void;
   dialogsOnly?: boolean;
+  showTransferStatus?: boolean;
 }) {
   const { post } = useServerApi();
   const storage = useServerStorage();
@@ -987,10 +994,6 @@ export default function Accounts({
         await changeAccount?.(account.id);
       });
   };
-  useEffect(() => {
-    if (!opened && !managerOnly) return;
-    void state.refresh();
-  }, [opened, managerOnly, state.refresh]);
   return (
     <>
       {codexLogin && (
@@ -1022,7 +1025,7 @@ export default function Accounts({
       {!managerOnly &&
         renderPicker &&
         renderPicker(selectAccount, !!pending || (pinned && !owner))}
-      {!managerOnly && renderPicker && (
+      {!managerOnly && renderPicker && showTransferStatus && (
         <AccountTransferChip transfer={teamTransfer ?? undefined} />
       )}
       {!dialogsOnly && (

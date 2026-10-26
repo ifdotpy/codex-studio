@@ -729,7 +729,10 @@ async fn recovered_publications(state: &State) -> Vec<(String, String)> {
 }
 
 #[derive(Default)]
-struct RecoveredPublicationRecorder(Mutex<Vec<(String, String)>>);
+struct RecoveredPublicationRecorder {
+    records: Mutex<Vec<(String, String)>>,
+    changed: tokio::sync::Notify,
+}
 
 impl crate::notification_runtime_effects::NotificationPostCommitSink
     for RecoveredPublicationRecorder
@@ -751,10 +754,11 @@ impl crate::notification_runtime_effects::NotificationPostCommitSink
                     identity,
                     observation,
                 } => {
-                    self.0
+                    self.records
                         .lock()
                         .expect("recorded recovered publications")
                         .push((identity.clone(), observation.method.clone()));
+                    self.changed.notify_one();
                     Ok(())
                 }
                 _ => Err(
@@ -2175,14 +2179,14 @@ async fn restart_terminal_commit_before_wake_converges_on_next_worker_start() {
     worker_barrier(&worker).await;
     // Delivery runs in the worker's own drain task, outside the command barrier.
     tokio::time::timeout(std::time::Duration::from_secs(60), async {
-        while publications.0.lock().expect("recorded").len() < 2 {
-            tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+        while publications.records.lock().expect("recorded").len() < 2 {
+            publications.changed.notified().await;
         }
     })
     .await
     .expect("recovered publications delivered");
     let recovered = publications
-        .0
+        .records
         .lock()
         .expect("recorded recovered publications")
         .clone();
@@ -2202,7 +2206,7 @@ async fn restart_terminal_commit_before_wake_converges_on_next_worker_start() {
     worker_barrier(&worker).await;
     assert_eq!(
         publications
-            .0
+            .records
             .lock()
             .expect("recorded recovered publications")
             .len(),
@@ -3680,4 +3684,45 @@ async fn claude_adapter_distinguishes_not_sent_from_unknown() {
         }
         worker.shutdown().await.unwrap();
     }
+}
+
+#[tokio::test]
+async fn retained_claude_mutation_waits_while_lightweight_read_can_progress() {
+    let state = State::new().await;
+    let mut peer = Peer::new();
+    peer.wire = studio_runtime_providers::ProviderKind::Claude.wire();
+    let mut worker = peer.worker(state.bridge.clone()).await;
+    let port = worker.retained_session();
+    let mut first = request(&state, &port, "serialized:first");
+    first.method = Method::ClaudeState;
+    first.params = json!({"threadId":"fake-thread-0"});
+    let first_port = port.clone();
+    let first = tokio::spawn(async move { first_port.request(first).await });
+    let wire = peer.write("claude/state").await;
+
+    let mut second = request(&state, &port, "serialized:second");
+    second.method = Method::ClaudeSettings;
+    second.params = json!({"threadId":"fake-thread-0"});
+    let mut second = Box::pin(port.request(second));
+    assert!(
+        std::future::poll_fn(|cx| std::task::Poll::Ready(second.as_mut().poll(cx).is_pending()))
+            .await
+    );
+    worker_barrier(&worker).await;
+
+    // This read proves progress through the real caller while the mutation waits.
+    let read = request(&state, &port, "serialized:read");
+    let read_port = port.clone();
+    let read = tokio::spawn(async move { read_port.request(read).await });
+    let read_wire = peer.write("thread/read").await;
+    peer.reply(&read_wire, json!({"thread":{"id":"fake-thread-0"}}))
+        .await;
+    read.await.unwrap().unwrap();
+    let first_cursor = peer.frame(json!({"id":wire["id"],"result":{}})).await;
+    let second_wire = peer.write("claude/settings").await;
+    peer.acknowledged(first_cursor).await;
+    first.await.unwrap().unwrap();
+    peer.reply(&second_wire, json!({})).await;
+    second.await.unwrap();
+    worker.shutdown().await.unwrap();
 }

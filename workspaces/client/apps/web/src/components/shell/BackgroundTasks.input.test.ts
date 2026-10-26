@@ -125,7 +125,6 @@ function fixture() {
       sessionStorage: storage,
       beginMutation: createMutationJournal(null, storage, journal.store(null)),
       beginActivity: () => () => {},
-      entityCheckpoint: () => undefined,
     });
   hooks.api = open();
   const task = monitorTask({

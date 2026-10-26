@@ -87,8 +87,6 @@ impl<'de> Deserialize<'de> for SharedJson {
 pub enum NotificationDependency {
     /// Older builds recorded this dependency of the removed team token budget;
     /// stored receipts still decode. No current step needs it.
-    #[serde(rename = "budget/capture")]
-    BudgetCapture,
     #[serde(rename = "agent-move/cache-capture")]
     MoveCache,
     #[serde(rename = "accounts/login-completed")]
@@ -117,7 +115,6 @@ pub enum NotificationDependency {
 impl NotificationDependency {
     pub fn name(self) -> &'static str {
         match self {
-            Self::BudgetCapture => "budget/capture",
             Self::MoveCache => "agent-move/cache-capture",
             Self::AccountLogin => "accounts/login-completed",
             Self::AccountRefresh => "accounts/refresh",

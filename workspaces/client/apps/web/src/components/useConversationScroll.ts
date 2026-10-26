@@ -12,6 +12,8 @@ type Position = { top: number; following: boolean; distance: number };
 /** Distance from the bottom, in CSS pixels, inside which the transcript keeps
  * following new content. */
 export const FOLLOW_THRESHOLD_PX = 32;
+/** Rounding allowance at the history start, in CSS pixels. */
+export const TRANSCRIPT_HISTORY_START_PX = 1;
 /** Time, in milliseconds, for which wheel, touch, or key input is recent. */
 const RECENT_INPUT_MS = 600;
 /** Scroll distance, in CSS pixels, of one wheel line (`deltaMode` 1). */
@@ -59,6 +61,16 @@ export function useConversationScroll(id: string, ready: boolean) {
     () => performance.now() - lastScrollInput.current < RECENT_INPUT_MS,
     [],
   );
+  const lastHistoryInput = useRef(-Infinity);
+  const consumeHistoryScrollInput = useCallback(() => {
+    if (
+      !hasRecentScrollInput() ||
+      lastHistoryInput.current === lastScrollInput.current
+    )
+      return false;
+    lastHistoryInput.current = lastScrollInput.current;
+    return true;
+  }, [hasRecentScrollInput]);
   // CSS pixels that the recent input can scroll up and down.
   const inputReach = useRef({ up: 0, down: 0 });
   const anchor = useRef<{ element: HTMLElement; offset: number } | null>(null);
@@ -358,6 +370,7 @@ export function useConversationScroll(id: string, ready: boolean) {
     setFollow,
     onScroll,
     hasRecentScrollInput,
+    consumeHistoryScrollInput,
     remember,
     revealRequest,
     getAnchorId,

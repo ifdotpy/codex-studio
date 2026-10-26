@@ -16,6 +16,7 @@ use studio_runtime_services::model_catalog::{CatalogRead, ModelCatalogService};
 // own "no workers were created" wording.
 pub(super) const PENDING_MESSAGE: &str =
     "Model catalog is still loading from the provider; retry shortly";
+const PENDING_STATUS: StatusCode = StatusCode::SERVICE_UNAVAILABLE;
 const WORKER_PENDING_MESSAGE: &str =
     "Model catalog is pending; no worker model catalog is available yet";
 pub(super) const UNAVAILABLE_MESSAGE: &str = "Model catalog is temporarily unavailable: the provider did not return its model list; retry shortly";
@@ -96,6 +97,16 @@ async fn account_catalog_read(
         std::sync::Arc<dyn studio_runtime_services::account_session_runtime::AccountSessionPort>,
     >,
 ) -> Result<Value, (StatusCode, Value)> {
+    if account_key == "default"
+        && !snapshot
+            .accounts
+            .iter()
+            .any(|row| row.get("id").and_then(Value::as_str) == Some("default"))
+    {
+        // Startup can ask for models before any default account exists. The
+        // catalog is not ready yet; expose the established pending response.
+        return Err(catalog_pending());
+    }
     let account = account_context(snapshot, account_key)?;
     if account.provider == "claude" && session.is_none() {
         return Err(catalog_pending());
@@ -162,7 +173,7 @@ fn catalog_unavailable() -> (StatusCode, Value) {
 
 fn catalog_pending() -> (StatusCode, Value) {
     (
-        StatusCode::BAD_REQUEST,
+        PENDING_STATUS,
         json!({"error": PENDING_MESSAGE, "catalogPending": true}),
     )
 }
@@ -242,6 +253,9 @@ async fn worker_catalog(
     >,
 ) -> Result<Value, (StatusCode, Value)> {
     let default_account = snapshot.default_account_key.as_str().unwrap_or("default");
+    if parent_account == "default" && snapshot.accounts.is_empty() {
+        return Err(catalog_pending());
+    }
     let mut order = Vec::new();
     for key in [parent_account, default_account].into_iter().chain(
         snapshot
@@ -340,7 +354,7 @@ async fn worker_catalog(
     if models.is_empty() {
         if pending {
             return Err((
-                StatusCode::BAD_REQUEST,
+                PENDING_STATUS,
                 json!({"error": WORKER_PENDING_MESSAGE, "catalogPending": true}),
             ));
         }
@@ -697,6 +711,26 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn startup_model_catalog_without_a_configured_default_is_pending() {
+        let mut snapshot = snapshot(json!({}));
+        snapshot.accounts.clear();
+        for fresh in [false, true] {
+            let error = super::account_catalog_read(
+                &ModelCatalogService::new(),
+                &snapshot,
+                "default",
+                false,
+                fresh,
+                None,
+            )
+            .await
+            .expect_err("an unconfigured account has no catalog yet");
+            assert_eq!(error.0, StatusCode::SERVICE_UNAVAILABLE);
+            assert_eq!(error.1, super::catalog_pending().1);
+        }
+    }
+
+    #[tokio::test]
     async fn changed_and_error_accounts_are_refused_before_catalog_read() {
         for status in ["changed", "error"] {
             let snapshot = snapshot(json!({"id":"default", "home":"/missing", "status":status}));
@@ -748,7 +782,7 @@ mod tests {
         )
         .await
         .expect_err("Claude requires its provider service");
-        assert_eq!(error.0, StatusCode::BAD_REQUEST);
+        assert_eq!(error.0, StatusCode::SERVICE_UNAVAILABLE);
         assert_eq!(
             error.1,
             json!({"error":PENDING_MESSAGE,"catalogPending":true})

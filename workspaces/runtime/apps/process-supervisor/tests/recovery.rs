@@ -182,9 +182,7 @@ fn recovery_signals_only_exact_native_identity() {
         if case == RecoveryCase::Native {
             assert!(health.recovery.blocked.is_none());
             assert!(health.handles.is_empty());
-            wait_until("verified native child termination", || {
-                probe.0.try_wait().unwrap().is_some()
-            });
+            probe.0.wait().expect("verified native child termination");
         } else {
             assert!(
                 probe.0.try_wait().unwrap().is_none(),

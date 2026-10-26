@@ -33,6 +33,7 @@ function fixture(): Snapshot {
       peerTeams: [],
       events: [],
       work: [],
+      studioErrors: [],
     },
   };
 }

@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { cp, mkdir, mkdtemp, rm } from "node:fs/promises";
+import { cp, mkdir, mkdtemp, realpath, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -9,6 +9,7 @@ import {
   prebuiltReleaseDirectory,
   releaseTargetEnvironment,
 } from "../desktop/release-binaries.mjs";
+import { pruneBridgeImageCodecs } from "./bridge-image-package.mjs";
 
 const root = path.dirname(fileURLToPath(import.meta.url));
 const repository = path.resolve(root, "../../../..");
@@ -16,7 +17,7 @@ if (process.platform !== "darwin")
   throw new Error("Packaging currently requires macOS.");
 if (!process.env.CODEX_NATIVE_PACKAGE_OUT)
   throw new Error("Set CODEX_NATIVE_PACKAGE_OUT to a new artifact directory.");
-const output = path.resolve(process.env.CODEX_NATIVE_PACKAGE_OUT);
+let output = path.resolve(process.env.CODEX_NATIVE_PACKAGE_OUT);
 // With CODEX_RELEASE_TARGET_DIR set, the Rust release binaries must come from that
 // directory and match this exact commit; a mismatch stops here, before any build.
 // The Tauri client builds in the same directory and reuses its compiled crates.
@@ -31,6 +32,7 @@ const cargoEnvironment = prebuiltRelease
 const identity = signingIdentity();
 // Refuse to overwrite a previously verified artifact.
 await mkdir(output, { recursive: false });
+output = await realpath(output);
 const stage = await mkdtemp(path.join(tmpdir(), "studio-native-package-"));
 try {
   execFileSync(
@@ -54,6 +56,9 @@ try {
         CODEX_DESKTOP_UI_ONLY: "0",
       },
     },
+  );
+  await pruneBridgeImageCodecs(
+    path.join(stage, "workspace/scripts/claude_bridge"),
   );
   const target =
     prebuiltRelease ??

@@ -25,8 +25,8 @@ use studio_runtime_services::{
     },
 };
 use studio_runtime_store::{
-    AgentId, AgentRepository, AgentStatus, QueueEvent, QueueEventId, QueueEventRepository,
-    RuntimeStore, SchedulerRepository,
+    AgentId, AgentRepository, QueueEvent, QueueEventId, QueueEventRepository, RuntimeStore,
+    SchedulerRepository,
 };
 use tokio::sync::{Notify, mpsc, oneshot};
 
@@ -133,7 +133,6 @@ const WAKE_PAGE: usize = 32;
 const RETRY_DELAY: Duration = Duration::from_secs(1);
 const MAX_RETRY_DELAY: Duration = Duration::from_secs(30);
 const ACCOUNT_WORKER_SHUTDOWN_WAIT: Duration = Duration::from_secs(5);
-const IMAGE_EXECUTION_DEPENDENCY: &str = "workspace-state/image-execution";
 
 fn next_retry_delay(current: Duration) -> Duration {
     current.saturating_mul(2).min(MAX_RETRY_DELAY)
@@ -264,6 +263,8 @@ enum RegistryTrigger {
     Hinted,
     Retry,
     Ensure(EnsureRequest),
+    /// A commit requested a WAL flush while none was pending.
+    FlushRequested,
     WorkerExited(String, u64),
     CommandCapacityAvailable(String, bool),
 }
@@ -1091,23 +1092,15 @@ impl AccountRegistry {
             return Ok(AccountPageDispatch::Exhausted);
         }
         let page_was_full = pending_agents.len() == WAKE_PAGE;
-        let (image_agents, agents, image_recovery) =
+        let (image_agents, agents, account_has_work) =
             classify_pending_agents(self.store.clone(), account.to_owned(), pending_agents).await?;
         for agent_id in &image_agents {
             self.after_agent
                 .insert(account.to_owned(), agent_id.clone());
         }
-        // An image-only pending page must not start an account provider
-        // outside the workspace image's shared mount namespace.
-        if agents.is_empty()
-            && (!image_agents.is_empty() || image_recovery)
-            && !self.workers.contains_key(account)
-        {
-            if image_recovery {
-                studio_runtime_services::diagnostics::log_stderr(format_args!(
-                    "account registry refused recovery for account {account}: workspace-state/image-execution"
-                ));
-            }
+        // Legacy-only recovery can select an account before compatibility settlement.
+        // Recheck durable demand after settlement before starting a provider.
+        if agents.is_empty() && !account_has_work && !self.workers.contains_key(account) {
             return Ok(if page_was_full {
                 AccountPageDispatch::Continue
             } else {
@@ -1497,6 +1490,7 @@ impl AccountRegistry {
                     },
                     _ = wake.notified() => Some(RegistryTrigger::Wake),
                     () = self.hints.notified() => Some(RegistryTrigger::Hinted),
+                    () = self.store.wal_flush_requested() => Some(RegistryTrigger::FlushRequested),
                     request = self.ensure_requests.recv() => request.map(RegistryTrigger::Ensure),
                     _ = async {
                         match retry_at {
@@ -1625,6 +1619,27 @@ impl AccountRegistry {
                     }
                     continue;
                 }
+                Some(RegistryTrigger::FlushRequested) => {
+                    // Arm the flush on the registry's one retry timer. Commits
+                    // that wake no scheduler are flushed this way too.
+                    match self.store.wal_checkpoint_retry_after() {
+                        Ok(Some(delay)) => {
+                            let flush_at = tokio::time::Instant::now() + delay;
+                            retry_at =
+                                Some(retry_at.map_or(flush_at, |current| current.min(flush_at)));
+                        }
+                        Ok(None) => {}
+                        Err(error) => {
+                            studio_runtime_services::diagnostics::log_stderr(format_args!(
+                                "account registry WAL flush deadline read deferred: {error}"
+                            ));
+                            let flush_at = tokio::time::Instant::now() + RETRY_DELAY;
+                            retry_at =
+                                Some(retry_at.map_or(flush_at, |current| current.min(flush_at)));
+                        }
+                    }
+                    continue;
+                }
                 Some(RegistryTrigger::Wake | RegistryTrigger::Hinted)
                     if defer_wake(
                         last_reconcile_error.as_deref(),
@@ -1679,7 +1694,11 @@ impl AccountRegistry {
                         ));
                         last_reconcile_error = Some(message);
                     }
-                    retry_at = Some(tokio::time::Instant::now() + retry_delay);
+                    // A pending WAL flush keeps its deadline during reconcile backoff.
+                    let reconcile_retry_at = tokio::time::Instant::now() + retry_delay;
+                    retry_at = checkpoint_retry_at.map_or(Some(reconcile_retry_at), |flush_at| {
+                        Some(reconcile_retry_at.min(flush_at))
+                    });
                     retry_delay = next_retry_delay(retry_delay);
                 }
                 Ok(()) => {
@@ -1769,36 +1788,42 @@ async fn classify_pending_agents(
     account: String,
     pending_agents: Vec<(String, i64, Option<String>)>,
 ) -> Result<(std::collections::BTreeSet<String>, Vec<(String, i64)>, bool), WorkerError> {
-    // A host that runs image turns starts the account worker for them like for
-    // any agent: workspace preparation mounts the image and runs the turn in
-    // `<mount>/repo`, and the worker's first pass makes their restart check.
-    if studio_runtime_services::image_workspace::IMAGE_EXECUTION_SUPPORTED {
-        let agents = pending_agents
-            .into_iter()
-            .map(|(id, epoch, _)| (id, epoch))
-            .collect();
-        return Ok((std::collections::BTreeSet::new(), agents, false));
-    }
-    let image_agents = pending_agents
-        .iter()
-        .filter(|(_, _, mode)| mode.as_deref() == Some("image"))
-        .map(|(id, _, _)| id.clone())
-        .collect::<std::collections::BTreeSet<_>>();
-    hold_image_workspace_agents(&store, &image_agents).await?;
-    let agents = pending_agents
-        .into_iter()
-        .filter_map(|(id, epoch, mode)| (mode.as_deref() != Some("image")).then_some((id, epoch)))
-        .collect::<Vec<_>>();
-    let image_recovery = if agents.is_empty() {
-        store
-            .read_async("runtime-server/account_registry", move |db| {
-                has_image_workspace_recovery(db, &account)
-            })
-            .await
-    } else {
-        Ok(false)
-    }?;
-    Ok((image_agents, agents, image_recovery))
+    // Legacy workspaces remain visible but cannot execute after removal.
+    studio_runtime_services::legacy_image_workspace::finish_stored_workspaces(&store).await?;
+    store
+        .read_async::<_, studio_runtime_store::StoreError>(
+            "account-registry/legacy-settlement",
+            move |db| {
+                let mut legacy_agents = BTreeSet::new();
+                let mut agents = Vec::new();
+                for (id, epoch, mode) in pending_agents {
+                    let legacy = mode.as_deref() == Some("image")
+                        || AgentRepository::get(db, &AgentId::from(id.as_str()))?.is_some_and(
+                            |agent| {
+                                studio_runtime_services::legacy_image_workspace::is_legacy(
+                                    &agent.value(),
+                                )
+                            },
+                        );
+                    if legacy {
+                        legacy_agents.insert(id);
+                    } else {
+                        agents.push((id, epoch));
+                    }
+                }
+                let account_has_work =
+                    studio_runtime_store::SchedulerRepository::account_wake_for_accounts(
+                        db,
+                        [account.as_str()],
+                        1,
+                        event_time(),
+                    )?
+                    .contains_key(&account);
+                Ok((legacy_agents, agents, account_has_work))
+            },
+        )
+        .await
+        .map_err(Into::into)
 }
 
 /// Accounts whose pending or recovery work can have changed with these rows. A row that no
@@ -2003,94 +2028,6 @@ fn event_time() -> f64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0.0, |duration| duration.as_secs_f64())
-}
-
-/// Keep the durable event pending while exposing the unavailable workspace executor on its agent.
-async fn hold_image_workspace_agents(
-    store: &RuntimeStore,
-    agents: &std::collections::BTreeSet<String>,
-) -> Result<(), WorkerError> {
-    if agents.is_empty() {
-        return Ok(());
-    }
-    let agents = agents.clone();
-    store
-        .transaction_with(move |tx| {
-            for id in agents {
-                let Some(mut agent) = AgentRepository::get(tx, &AgentId::from(id.as_str()))? else {
-                    continue;
-                };
-                if agent
-                    .extra
-                    .get("workspaceMode")
-                    .and_then(|mode| mode.as_str())
-                    != Some("image")
-                {
-                    continue;
-                }
-                if agent.status == AgentStatus::Paused
-                    && agent.extra.get("error").and_then(|value| value.as_str())
-                        == Some(IMAGE_EXECUTION_DEPENDENCY)
-                    && agent
-                        .extra
-                        .get("nativeFailureHold")
-                        .and_then(|value| value.as_bool())
-                        == Some(true)
-                {
-                    continue;
-                }
-                agent.status = AgentStatus::Paused;
-                agent
-                    .extra
-                    .insert("autoWake".into(), serde_json::json!(false));
-                agent
-                    .extra
-                    .insert("inFlight".into(), serde_json::json!(false));
-                agent
-                    .extra
-                    .insert("nativeFailureHold".into(), serde_json::json!(true));
-                agent.extra.insert(
-                    "error".into(),
-                    serde_json::json!(IMAGE_EXECUTION_DEPENDENCY),
-                );
-                agent.extra.insert(
-                    "startOutcomeHold".into(),
-                    serde_json::json!({"stage":"held","reason":IMAGE_EXECUTION_DEPENDENCY}),
-                );
-                AgentRepository::put(tx, &agent)?;
-            }
-            Ok::<_, WorkerError>(())
-        })
-        .await
-}
-
-fn has_image_workspace_recovery(
-    db: &rusqlite::Connection,
-    account: &str,
-) -> Result<bool, WorkerError> {
-    Ok(db.query_row(
-        "SELECT EXISTS(
-          SELECT 1 FROM runtime_agents a
-          WHERE COALESCE(json_extract(a.record,'$.accountKey'),'default')=?1
-            AND json_extract(a.record,'$.workspaceMode')='image'
-            AND json_extract(a.record,'$.deletedAt') IS NULL
-            AND COALESCE(json_extract(a.record,'$.remoteWorker'),0)=0
-            AND COALESCE(json_extract(a.record,'$.remoteAnchor'),0)=0
-            AND ((COALESCE(json_extract(a.record,'$.provider'),'codex')='codex'
-                  AND json_extract(a.record,'$.startAttempt.submitted')=1
-                  AND json_extract(a.record,'$.startAttempt.connectionGeneration') IS NOT NULL
-                  AND json_extract(a.record,'$.status') IN ('starting','running','waiting','paused','interrupted'))
-              OR (json_type(a.record,'$.disconnectRecovery')='object' AND (
-                  COALESCE(json_extract(a.record,'$.status'),'') NOT IN ('completed','waiting','paused','parked')
-                  OR json_extract(a.record,'$.disconnectRecovery.stage') IS NOT NULL))
-              OR (json_type(a.record,'$.restartRecovery')='object' AND (
-                  COALESCE(json_extract(a.record,'$.status'),'') NOT IN ('completed','waiting','paused','parked')
-                  OR COALESCE(json_extract(a.record,'$.restartRecovery.stage'),'')
-                     NOT IN ('finished','continued','reattached','input_restored'))))
-        )",
-        [account],
-        |row| row.get(0),
-    )?)
 }
 
 /// Load the host project snapshot and recheck its paths for one radio write.
@@ -2402,6 +2339,29 @@ mod tests {
         (directory, store, hints)
     }
 
+    #[tokio::test]
+    async fn current_workspace_account_classification_does_not_admit_a_legacy_writer() {
+        let (_directory, store, _hints) =
+            registry_fixture(&[("agent", "codex", "account", None)]).await;
+        queue_user_event(&store, "input", "agent").await;
+        let before = store.writer_admissions();
+        let (legacy, agents, has_work) = super::classify_pending_agents(
+            store.clone(),
+            "account".into(),
+            vec![("agent".into(), 0, None)],
+        )
+        .await
+        .expect("current workspace remains dispatchable");
+        assert!(legacy.is_empty());
+        assert_eq!(agents, [("agent".to_owned(), 0)]);
+        assert!(has_work);
+        assert_eq!(
+            store.writer_admissions(),
+            before,
+            "Read-only account paging must not enqueue a legacy cleanup transaction"
+        );
+    }
+
     async fn queue_user_event(store: &RuntimeStore, id: &'static str, agent: &'static str) {
         store
             .transaction(move |tx| {
@@ -2586,7 +2546,7 @@ mod tests {
     #[test]
     fn deferred_checkpoint_keeps_registry_asleep_until_its_deadline() {
         let now = tokio::time::Instant::now();
-        let checkpoint_retry_at = now + studio_runtime_store::WAL_CHECKPOINT_CADENCE;
+        let checkpoint_retry_at = now + studio_runtime_store::WAL_FLUSH_INTERVAL;
         assert_eq!(
             next_registry_retry_at(None, Some(checkpoint_retry_at), &BTreeMap::new()),
             Some(checkpoint_retry_at),
@@ -2597,7 +2557,7 @@ mod tests {
     #[test]
     fn command_capacity_wake_preserves_deferred_checkpoint_deadline() {
         let now = tokio::time::Instant::now();
-        let checkpoint_retry_at = now + studio_runtime_store::WAL_CHECKPOINT_CADENCE;
+        let checkpoint_retry_at = now + studio_runtime_store::WAL_FLUSH_INTERVAL;
 
         // Capacity events skip checkpoint I/O but must retain the existing retry
         // deadline when the next scheduler wait is assembled.

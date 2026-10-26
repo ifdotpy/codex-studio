@@ -14,8 +14,9 @@ mod claude_controls;
 mod claude_login;
 pub(crate) mod compose;
 mod context_repair;
-mod desktop;
+pub(crate) mod desktop;
 pub use desktop::{backend_build_identity, initialize_backend_identity};
+mod entity_transfer;
 pub(crate) mod extractors;
 mod federation;
 mod host_secrets;
@@ -45,6 +46,8 @@ mod retained_worktrees;
 mod rules;
 mod session;
 mod studio_errors;
+mod subscription_entities;
+mod subscriptions;
 mod sync;
 mod sync_delta;
 mod sync_documents;
@@ -55,6 +58,7 @@ mod terminals;
 mod tool_requests;
 mod transcript;
 mod usage;
+mod usage_reconciliation;
 pub(crate) mod vm_native_provider;
 pub(crate) mod voice;
 mod web_push;
@@ -94,8 +98,6 @@ pub(super) fn accounts_response(
         .map_err(|_| crate::error::ApiError::internal())?;
 
     Ok(axum::Json(AccountsResponse {
-        sync_entities: None,
-        sync_entities_after: None,
         accounts,
         archived_accounts,
         default_account_key: serde_json::from_value(snapshot.default_account_key)

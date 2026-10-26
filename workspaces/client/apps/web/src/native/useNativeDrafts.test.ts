@@ -3,7 +3,7 @@ import type {
   ResourceConnectionState,
   ResourceStreamState,
   ResourceVersion,
-} from "../sync/resourceEvents";
+} from "../sync/subscriptions/events";
 import type { DraftView } from "./draftState";
 
 const mocks = vi.hoisted(() => ({
@@ -32,7 +32,7 @@ vi.mock("../sync/resume", () => ({
     return () => mocks.resumes.delete(callback);
   },
 }));
-vi.mock("../sync/resourceEvents", () => ({
+vi.mock("../sync/subscriptions/events", () => ({
   watchResourceChanges: (
     resource: unknown,
     callback: (version?: ResourceVersion) => void,

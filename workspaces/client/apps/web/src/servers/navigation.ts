@@ -105,6 +105,7 @@ export type ServerCommand =
   | { action: "project-account"; path: string }
   | { action: "new-shared-chat"; path?: string }
   | { action: "project-folders"; projectId: string; server?: string }
+  | { action: "delete-project"; projectId: string }
   | { action: "projects" }
   | { action: "settings"; tab?: StudioSettingsTab }
   | { action: "search"; query: string; requestId: string }
@@ -237,6 +238,8 @@ export function navigationSnapshot(
 export function isServerCommand(value: unknown): value is ServerCommand {
   if (!value || typeof value !== "object") return false;
   const command = value as Record<string, unknown>;
+  if (command.action === "delete-project")
+    return typeof command.projectId === "string" && !!command.projectId;
   if (command.action === "refresh") return true;
   if (command.action === "terminal")
     return command.operation === "toggle" || command.operation === "new";

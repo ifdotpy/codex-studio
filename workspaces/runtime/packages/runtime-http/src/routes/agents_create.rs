@@ -193,34 +193,7 @@ pub(super) fn prepare_parent_workspace(
             line: line.to_owned(),
         }));
     }
-    if mode == "image" {
-        let repo = actor
-                .extra
-                .get("imageWorkspaceRepo")
-                .and_then(Value::as_str)
-                .filter(|value| !value.is_empty())
-                .ok_or(studio_runtime_services::provider_callbacks::ManagedCreationEnvironmentError::Invalid(
-                    "The image workspace is not ready",
-                ))?;
-        if actor.extra.get("imageWorkspace").and_then(Value::as_bool) != Some(true)
-            || actor
-                .extra
-                .get("imageWorkspaceReady")
-                .and_then(Value::as_bool)
-                != Some(true)
-        {
-            return Err(studio_runtime_services::provider_callbacks::ManagedCreationEnvironmentError::Invalid(
-                    "The image workspace is not ready",
-                ));
-        }
-        return Ok(Box::new(ImageManagedWorkspace {
-            id,
-            epoch,
-            cwd: cwd.to_owned(),
-            repo: repo.to_owned(),
-        }));
-    }
-    if !matches!(mode, "shared" | "worktree") {
+    if !matches!(mode, "shared" | "worktree" | "layr-native") {
         return Err(
             studio_runtime_services::provider_callbacks::ManagedCreationEnvironmentError::Invalid(
                 "Unknown workspace mode",
@@ -250,22 +223,13 @@ mod workspace_admission_tests {
     use super::*;
 
     #[test]
-    fn child_image_request_does_not_require_parent_image_repository() {
+    fn native_parent_admits_native_layr_without_image_metadata() {
         let native = studio_runtime_store::AgentRecord::from_value(serde_json::json!({
             "id":"native-parent","rootId":"native-parent","epoch":1,"status":"queued",
-            "workspaceMode":"worktree","cwd":"/fake/project"
+            "workspaceMode":"layr-native","cwd":"/fake/project"
         }))
         .expect("native parent");
-        assert_eq!(parent_workspace_mode(&native), "worktree");
-
-        let image_lead = studio_runtime_store::AgentRecord::from_value(serde_json::json!({
-            "id":"image-parent","rootId":"image-parent","epoch":2,"status":"queued",
-            "workspaceMode":"image","imageWorkspace":true,
-            "imageWorkspaceReady":true,"imageWorkspaceRepo":"/fake/project",
-            "cwd":"/fake/mount/repo"
-        }))
-        .expect("image lead");
-        assert_eq!(parent_workspace_mode(&image_lead), "image");
+        assert!(prepare_parent_workspace(&native).is_ok());
     }
 
     /// Live 128-worker run: a second spawn batch was refused while the first
@@ -440,37 +404,6 @@ struct VmManagedWorkspace {
     cwd: String,
     project_id: String,
     line: String,
-}
-
-struct ImageManagedWorkspace {
-    id: String,
-    epoch: i64,
-    cwd: String,
-    repo: String,
-}
-
-impl studio_runtime_services::monitor_runtime::WorkspaceAdmission for ImageManagedWorkspace {
-    fn check(
-        &self,
-        _tx: &studio_runtime_store::Transaction<'_>,
-        actor: &studio_runtime_store::AgentRecord,
-    ) -> Result<(), studio_runtime_services::monitor_policy::MonitorError> {
-        let extra = &actor.extra;
-        if actor.id.0 != self.id
-            || actor.epoch != self.epoch
-            || extra.get("cwd").and_then(Value::as_str) != Some(self.cwd.as_str())
-            || extra.get("imageWorkspace").and_then(Value::as_bool) != Some(true)
-            || extra.get("imageWorkspaceReady").and_then(Value::as_bool) != Some(true)
-            || extra.get("imageWorkspaceRepo").and_then(Value::as_str) != Some(self.repo.as_str())
-        {
-            return Err(
-                studio_runtime_services::monitor_policy::MonitorError::Refused(
-                    "Image workspace changed during preparation",
-                ),
-            );
-        }
-        Ok(())
-    }
 }
 
 impl studio_runtime_services::monitor_runtime::WorkspaceAdmission for VmManagedWorkspace {
@@ -2108,20 +2041,32 @@ async fn rename(
             let driver = state.account_driver.clone();
             let catalog = state.model_catalog.clone();
             let event_wake = state.event_wake.clone();
+            let notifications = state.resource_notifications.clone();
             let agent_id = agent_id.clone();
             let request_id = request_id.clone();
             drop(tokio::spawn(async move {
                 finish_title_request(
-                    store, provider, driver, catalog, event_wake, agent_id, request_id,
+                    store,
+                    provider,
+                    driver,
+                    catalog,
+                    event_wake,
+                    agent_id.clone(),
+                    request_id.clone(),
                 )
                 .await;
+                // Receipt-only commits deliberately do not wake entity readers.
+                // Publish this exact selector after every finisher exit, including failure.
+                if let Err(error) = notifications.publish_once(&serde_json::json!({
+                    "requestId":format!("rename-result:{request_id}"),
+                    "resources":[{"kind":"rename-progress", "agentId":agent_id, "requestId":request_id}]
+                })) {
+                    eprintln!("Could not publish rename completion: {error}");
+                }
             }));
         }
-        let mut response =
+        let response =
             Json(super::generated_json::<generated::RenameResponse>(receipt)?).into_response();
-        response
-            .extensions_mut()
-            .insert(crate::mutation_sync::SkipMutationSyncEnvelope);
         return Ok(response);
     }
     let store = state.store.clone().ok_or_else(ApiError::internal)?;
@@ -2147,15 +2092,10 @@ async fn rename(
     if !result.replayed {
         state.event_wake.notify_one();
     }
-    let mut response = super::generated_json::<generated::RenameResponse>(result.response)
+    let response = super::generated_json::<generated::RenameResponse>(result.response)
         .map(Json)
         .map_err(|_| ApiError::internal())?
         .into_response();
-    if result.replayed {
-        response
-            .extensions_mut()
-            .insert(crate::mutation_sync::SkipMutationSyncEnvelope);
-    }
     Ok(response)
 }
 fn operation_error(error: OperationError) -> ApiError {

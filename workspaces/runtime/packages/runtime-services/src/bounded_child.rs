@@ -20,6 +20,14 @@ thread_local! {
         const { std::cell::RefCell::new(None) };
 }
 
+// Expire execution only after a test-owned child readiness handshake. Kept
+// separate from DEADLINE_OVERRIDE, which runs after exit to test pipe draining.
+#[cfg(test)]
+thread_local! {
+    pub(crate) static RUNNING_DEADLINE_OVERRIDE: std::cell::RefCell<Option<Box<dyn FnOnce() -> Instant>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
 // Whether the leader was still an unreaped child of this thread's process when
 // the last group signal went out. Absent from production builds.
 #[cfg(test)]
@@ -163,6 +171,10 @@ fn run_with_environment(request: Request<'_>, remove_git: bool) -> Result<Output
         detach(stdout_reader, stderr_reader);
         return Err(launch("stdin write", error));
     }
+
+    #[cfg(test)]
+    let deadline = RUNNING_DEADLINE_OVERRIDE
+        .with_borrow_mut(|hook| hook.take().map_or(deadline, |ready| ready()));
 
     // The exit is observed without reaping the leader, so the group ID stays
     // owned until the group signal below (`owned_process_group`).

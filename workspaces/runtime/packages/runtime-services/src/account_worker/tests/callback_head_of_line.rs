@@ -223,8 +223,8 @@ async fn stalled() -> Stall {
 fn b_flood() -> impl Iterator<Item = Value> {
     (0..FLOOD_FRAMES).map(|index| {
         json!({"method":"thread/tokenUsage/updated","params":{"threadId":"fake-thread-1","turnId":"turn-b",
-            "tokenUsage":{"total":{"inputTokens":index,"outputTokens":0,"totalTokens":index},
-            "last":{"inputTokens":1,"outputTokens":0,"totalTokens":1}}}})
+            "tokenUsage":{"total":{"inputTokens":index,"cachedInputTokens":0,"reasoningOutputTokens":0,"outputTokens":0,"totalTokens":index},
+            "last":{"inputTokens":1,"cachedInputTokens":0,"reasoningOutputTokens":0,"outputTokens":0,"totalTokens":1}}}})
     })
 }
 
@@ -259,14 +259,7 @@ async fn stall_report(stall: &Stall, sent: &AtomicU64, total: u64) -> String {
     tokio::time::pause();
     tokio::time::advance(REQUEST_DEADLINE + Duration::from_secs(1)).await;
     tokio::time::resume();
-    let mut error = Value::Null;
-    for _ in 0..50 {
-        error = record_of(&stall.state, "agent-c").await["error"].clone();
-        if error.is_string() {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(100)).await;
-    }
+    let error = record_of(&stall.state, "agent-c").await["error"].clone();
     format!(
         "the session read {} of {total} provider frames behind agent A's unanswered callback; \
          agent C's error after the request deadline: {error}",

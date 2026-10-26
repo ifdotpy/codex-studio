@@ -75,6 +75,10 @@ pub(crate) fn validate(root: &Path) -> StoreResult<()> {
             // registry/identity files before it opens the SQLite databases.
             Some("accounts") => accepted_python_directory(&path, "registry.json"),
             Some("multi-server") => accepted_python_directory(&path, "identity.json"),
+            // The host installer and migration command can run before the first backend.
+            Some(crate::NATIVE_LAYR_DIRECTORY) => {
+                fs::symlink_metadata(&path).is_ok_and(|metadata| metadata.file_type().is_dir())
+            }
             // launchd (macOS) and systemd (Linux) can start the process
             // supervisor before the first backend. Python and Rust supervisors
             // create their lease, journal and socket, and the launch agent
@@ -310,10 +314,9 @@ fn seed_python_lazy_markers(
     Ok(())
 }
 
-fn create_database(path: &Path, snapshot: &Value, schema_name: &str) -> StoreResult<()> {
+fn create_database(path: &Path, snapshot: &Value, schema_name: &str) -> StoreResult<Connection> {
     let mut connection = Connection::open(path)?;
-    connection.pragma_update(None, "journal_mode", "WAL")?;
-    connection.pragma_update(None, "synchronous", "FULL")?;
+    crate::sqlite_durability::configure_writer(&connection)?;
     let transaction = connection.transaction()?;
 
     let catalog =
@@ -361,7 +364,26 @@ fn create_database(path: &Path, snapshot: &Value, schema_name: &str) -> StoreRes
         ))?;
     transaction.pragma_update(None, "user_version", version)?;
     transaction.commit()?;
-    Ok(())
+    Ok(connection)
+}
+
+/// Repository witnesses use the production catalog without files, fsyncs or writer actors.
+#[cfg(any(test, feature = "test-support"))]
+pub fn test_canvas() -> Connection {
+    let snapshot = serde_json::from_str(SNAPSHOT).expect("fresh schema snapshot");
+    let mut connection = create_database(Path::new(":memory:"), &snapshot, "canvas.sqlite3")
+        .expect("in-memory canvas");
+    crate::schema::register_python_trigger_functions(&connection).expect("projection functions");
+    let tx = connection.transaction().expect("fixture transaction");
+    crate::agent_columns::prepare(&tx).expect("agent columns");
+    crate::bootstrap::prepare_sync_schema(&tx).expect("sync schema");
+    crate::bootstrap::prepare_runtime_event_indexes(&tx).expect("scheduler and event indexes");
+    crate::AgentRepository::prepare_change_journal(&tx).expect("change journal");
+    crate::agent_volatile::prepare(&tx).expect("volatile fields");
+    crate::feature_schema::prepare(&tx).expect("feature schema");
+    crate::AgentIndexedReads::prepare_index(&tx).expect("agent indexes");
+    tx.commit().expect("fixture commits");
+    connection
 }
 
 fn is_virtual_table_shadow(name: &str) -> bool {
@@ -408,6 +430,18 @@ fn seed_workspace(transaction: &rusqlite::Transaction<'_>, state_dir: &Path) -> 
         "INSERT OR IGNORE INTO sync_entity_meta(key,value) VALUES('task_window_migrated','1')",
         [],
     )?;
+    // New stores have no summary or conversation-detail source rows; their empty projections are complete.
+    for marker in [
+        crate::AGENT_PROJECTIONS_SEED_MARKER,
+        crate::SUMMARY_ENTITIES_SEED_MARKER,
+        crate::CONVERSATION_DETAILS_SEED_MARKER,
+        crate::WORK_DETAILS_SEED_MARKER,
+    ] {
+        transaction.execute(
+            "INSERT OR IGNORE INTO sync_entity_meta(key,value) VALUES(?1,'1')",
+            [marker],
+        )?;
+    }
     Ok(())
 }
 
@@ -435,5 +469,42 @@ fn publish(staging: &Path, root: &Path) -> StoreResult<()> {
             published.retain(|path| fs::remove_file(path).is_err());
             Err(StoreError::StateDirectory(error))
         }
+    }
+}
+
+#[cfg(test)]
+mod native_layr_tests {
+    use super::*;
+
+    #[test]
+    fn native_layr_install_can_precede_the_first_backend_start() {
+        let root = tempfile::tempdir().expect("fixture operation succeeds");
+        let native = root.path().join(crate::NATIVE_LAYR_DIRECTORY);
+        fs::create_dir_all(native.join("bin")).expect("fixture operation succeeds");
+        fs::write(native.join("bin/layr"), "installed host binary")
+            .expect("fixture operation succeeds");
+        validate(root.path()).expect("fixture operation succeeds");
+        assert!(!root.path().join("canvas.sqlite3").exists());
+    }
+
+    #[test]
+    fn native_layr_installation_directory_cannot_be_a_file() {
+        let root = tempfile::tempdir().expect("fixture operation succeeds");
+        fs::write(root.path().join(crate::NATIVE_LAYR_DIRECTORY), "wrong type")
+            .expect("fixture operation succeeds");
+        assert!(validate(root.path()).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn native_layr_installation_directory_cannot_be_a_symlink() {
+        let root = tempfile::tempdir().expect("fixture operation succeeds");
+        let outside = tempfile::tempdir().expect("fixture operation succeeds");
+        std::os::unix::fs::symlink(
+            outside.path(),
+            root.path().join(crate::NATIVE_LAYR_DIRECTORY),
+        )
+        .expect("fixture operation succeeds");
+        assert!(validate(root.path()).is_err());
     }
 }

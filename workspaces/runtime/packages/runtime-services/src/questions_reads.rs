@@ -69,6 +69,35 @@ pub fn question_history(
     Ok(json!({"items": items}))
 }
 
+/// The same question history projection used by the explicit read, published per request.
+pub(crate) fn question_history_entity(raw: &str) -> Result<Option<Value>, QuestionsReadsError> {
+    let record: Value = serde_json::from_str(raw).map_err(|_| invalid("requests", "unknown"))?;
+    let Some(record) = record.as_object() else {
+        return Err(invalid("requests", "unknown"));
+    };
+    if deleted_value(record.get("deletedAt")) || !is_question(record) {
+        return Ok(None);
+    }
+    let id = string_member(record, "id").ok_or_else(|| invalid("requests", "unknown"))?;
+    let order = elicitation_property_order(raw, id)?;
+    let mut projected = question_projection(record, id, &order)?;
+    // Secret answers are transient user input, never durable client cache data.
+    if let Some(history) = projected
+        .get_mut("answerHistory")
+        .and_then(Value::as_array_mut)
+    {
+        for answer in history {
+            if answer.get("isSecret").and_then(Value::as_bool) == Some(true) {
+                answer["answer"] = Value::Null;
+            }
+        }
+    }
+    Ok(crate::sync_views::project_persisted_record(
+        "questionHistory",
+        &projected,
+    ))
+}
+
 pub fn complaint_detail(stored: Option<ComplaintRecord>) -> Result<Value, QuestionsReadsError> {
     let record = stored.ok_or(QuestionsReadsError::UnknownComplaint)?;
     Ok(record.value().clone())

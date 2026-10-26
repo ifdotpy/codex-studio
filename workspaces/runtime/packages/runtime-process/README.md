@@ -45,6 +45,13 @@ Every client sends the typed v2 handshake and requires the daemon to echo the
 protocol version owned by [`supervisor_protocol.rs`](../runtime-providers/src/supervisor_protocol.rs).
 A wrong protocol or state directory is rejected before requests are accepted.
 Operator connections send `{stateDir, operator: true}` with that same version.
+Admission captures typed connection capabilities from
+[`supervisor_protocol.rs`](../runtime-providers/src/supervisor_protocol.rs):
+probes may only read health, backend actions require a nonempty admitted
+`backendId`, and operators may read health, finish fallback, or close an exact
+verified child identity. Older guest operator handshakes may include `backendId`;
+it is ignored and never grants backend ownership. Unidentified clients and
+ambiguous probe roles are refused before commands run.
 The retained VM guest uses v2 too; its fast boundary test checks version parity
 against the Rust owner.
 

@@ -1,4 +1,4 @@
-//! save, undo, op log, try, checks, gc, fsck, reindex, init, projects, config, cache.
+//! save, undo, op log, try, gc, fsck, reindex, init, projects, config, cache.
 
 use super::{exit, here};
 use crate::args::{parse, Spec};
@@ -15,24 +15,61 @@ use anyhow::{bail, Result};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
+pub(super) fn operation_name(op: &str) -> String {
+    let (name, suffix) = op.split_once('.').unwrap_or((op, ""));
+    let name = match name {
+        "commit" => "state",
+        "stash" => "park",
+        "cherry-pick" => "pick",
+        "rebase" => "replay",
+        "revert" => "invert",
+        _ => name,
+    };
+    if suffix.is_empty() {
+        name.to_string()
+    } else {
+        format!("{name}.{suffix}")
+    }
+}
+
 pub fn save(ctx: &Ctx, args: &[String]) -> Result<i32> {
     let spec = Spec::new()
         .value("-m|--message")
+        .value("--note")
+        .value("-F|--file")
+        .flag("-a|--all")
+        .flag("--amend")
+        .flag("--allow-empty")
+        .flag("--no-verify|-n")
+        .flag("-v|--verbose")
+        .flag("--no-edit")
+        .value("--author")
+        .flag("-s|--signoff")
         .flag("--running")
         .flag("--force")
-        .flag("--caches|--layers")
-        .flag("--all")
+        .flag("--caches")
+        .removed("--layers", "--caches")
+        .flag("--all-lines")
         .flag("-q|--quiet");
     let a = parse(&spec, args)?;
+    if a.has("-m") || a.has("-F") || a.has("--amend") {
+        return super::work::commit(ctx, args);
+    }
+    if a.has("-a") {
+        return Err(exit(2, "Use --all-lines to save automatic states of all lines, or use -a with layr save -m <message>."));
+    }
+    if ["--allow-empty", "--no-verify", "-v", "--no-edit", "--author", "-s"].iter().any(|flag| a.has(flag)) {
+        return Err(exit(2, "These options require a named state. Use 'layr save -m <message>'."));
+    }
     let h = here(ctx)?;
     let repo = &h.repo;
-    let lines: Vec<Line> = if a.has("--all") {
+    let lines: Vec<Line> = if a.has("--all-lines") {
         repo.require(ctx, "line.manage")?;
         repo.lines()?.into_iter().filter(|l| repo.working(l).exists()).collect()
     } else {
         vec![h.line()?.clone()]
     };
-    let msg = a.get("-m").unwrap_or("").to_string();
+    let msg = a.get("--note").unwrap_or("").to_string();
     for l in lines {
         repo.authorize_line(ctx, &l, crate::repo::LineOp::Save)?;
         let _lock = repo.p.lock()?;
@@ -51,7 +88,7 @@ pub fn save(ctx: &Ctx, args: &[String]) -> Result<i32> {
                 }
             }
             for p in &caches {
-                let _ = crate::repo::convert_cache(&repo.working(&l), p, u, g);
+                crate::repo::convert_cache(&repo.working(&l), p, u, g)?;
             }
             Some(repo.caches_state(ctx, &l, &msg, a.has("--running"), &caches)?)
         } else {
@@ -124,7 +161,7 @@ pub fn record_caches(
         uuids.insert(snap.clone(), serde_json::Value::String(info.uuid));
     }
     let mut rec = Record::new("save.layers");
-    rec.data = serde_json::json!({"state": state, "layers": caches, "uuids": uuids, "shared": shared});
+    rec.data = serde_json::json!({"state": state, "layers": caches, "uuids": uuids, "shared": shared, "platform": crate::model::cache_platform()});
     repo.commit_record(ctx, rec).map_err(undo)?;
     Ok(caches)
 }
@@ -142,11 +179,11 @@ pub fn undo_last_of(ctx: &Ctx, repo: &Repo, line: &Line, ops: &[&str]) -> Result
 const NOT_UNDOABLE: &[&str] = &[
     "line.adopt",
     "machine.trust",
-    "backup",
     "save",
     "save.caches",
     "save.layers",
     "check",
+    "attest",
     "gc",
     "machine",
     "project",
@@ -183,7 +220,11 @@ pub fn undo(ctx: &Ctx, args: &[String]) -> Result<i32> {
                     repo.p.db.line_by_id(lid).ok().flatten().map(|l| repo.p.line_path(&l.name).exists()).unwrap_or(false)
                         || r.op == "line.delete"
                 });
-                if r.actor.uid == ctx.caller.uid && r.actor.session == session && local && !NOT_UNDOABLE.contains(&r.op.as_str())
+                if r.actor.uid == ctx.caller.uid
+                    && r.actor.session == session
+                    && local
+                    && !NOT_UNDOABLE.contains(&r.op.as_str())
+                    && !repo.p.db.undone(&r.id)?
                 {
                     found = Some(r.id.clone());
                     break;
@@ -194,7 +235,7 @@ pub fn undo(ctx: &Ctx, args: &[String]) -> Result<i32> {
     };
     if a.has("-n") {
         let r = repo.p.db.record(&id)?.unwrap();
-        outln!(ctx, "would undo {} {} ({})", short_op(&r.id), r.op, fmt_time(r.time));
+        outln!(ctx, "would undo {} {} ({})", short_op(&r.id), operation_name(&r.op), fmt_time(r.time));
         return Ok(0);
     }
     undo_record(ctx, repo, &id, a.has("-f"))
@@ -220,10 +261,10 @@ fn fmt_time(ms: i64) -> String {
 pub fn undo_record(ctx: &Ctx, repo: &Repo, id: &str, force: bool) -> Result<i32> {
     let r = repo.p.db.record(id)?.ok_or_else(|| exit(128, "fatal: unknown operation"))?;
     if r.op == "export" {
-        return Err(exit(1, "error: a push cannot be undone here: the commit is on the remote. Push a revert ('layr revert <state>' then 'layr push')."));
+        return Err(exit(1, "error: a push cannot be undone here: the state is on the remote. Run invert ('layr invert <state>' then 'layr git push')."));
     }
     if NOT_UNDOABLE.contains(&r.op.as_str()) {
-        return Err(exit(1, format!("error: operation '{}' has nothing to undo", r.op)));
+        return Err(exit(1, format!("error: operation '{}' has nothing to undo", operation_name(&r.op))));
     }
     // Permissions: undo changes every line the operation changed, so the caller must be allowed
     // to change each of them. An operation without lines (tags, groups) needs the admin or the
@@ -242,9 +283,37 @@ pub fn undo_record(ctx: &Ctx, repo: &Repo, id: &str, force: bool) -> Result<i32>
     if r.lines.is_empty() && !repo.is_admin(ctx) && r.actor.uid != ctx.caller.uid {
         return Err(exit(1, "permission denied: only the project admin or the user who made it can undo this operation"));
     }
+    let _queue_lock = if r.data.get("queue_change").is_some() { Some(super::queue::require_lock(repo)?) } else { None };
     let _lock = repo.p.lock()?;
     let mut rec = Record::new("undo");
     rec.data = serde_json::json!({"undo": r.id, "op": r.op});
+    if let Some(value) = r.data.get("ref_change") {
+        let ch: crate::model::RefChange = serde_json::from_value(value.clone())?;
+        let current = repo.p.db.ref_value(&ch.name, ids::now_ms())?;
+        if !force && current != ch.after {
+            bail!("ref '{}' changed after this operation; undo the later operations first", ch.name);
+        }
+        if let Some(before) = &ch.before {
+            repo.state_root(&before.target)?;
+        }
+        if r.data.get("queue_change").is_none() {
+            super::refs::authorize_update(ctx, repo, &ch.name, current.as_ref(), ch.before.as_ref(), true)?;
+        }
+        let inverse = crate::model::RefChange { name: ch.name, before: current, after: ch.before };
+        rec.data["ref_change"] = serde_json::to_value(inverse)?;
+    }
+    if let Some(value) = r.data.get("queue_change") {
+        let change: crate::model::QueueChange = serde_json::from_value(value.clone())?;
+        let current = repo.p.db.queue_entry(&change.id)?;
+        if !force && current != change.after {
+            bail!("queue entry '{}' changed after this operation", change.id);
+        }
+        if let Some(before) = &change.before {
+            repo.state_root(&before.state)?;
+        }
+        rec.data["queue_change"] =
+            serde_json::to_value(crate::model::QueueChange { id: change.id, before: current, after: change.before })?;
+    }
     // A commit that changed overlays: their lines move back and the line shows their earlier
     // states again; the changes stay in the working folder, as for the shared set. The overlay
     // lines move only after every check of the undo passed.
@@ -257,7 +326,10 @@ pub fn undo_record(ctx: &Ctx, repo: &Repo, id: &str, force: bool) -> Result<i32>
         .unwrap_or_default();
     if !changed.is_empty() {
         if r.op != "commit" {
-            return Err(exit(1, format!("error: undo of a {} that changed overlays is not available yet", r.op)));
+            return Err(exit(
+                1,
+                format!("error: undo of a {} that changed overlays is not available yet", operation_name(&r.op)),
+            ));
         }
         let lid = r.data["line"].as_str().unwrap_or("").to_string();
         let line = repo.line(&lid)?;
@@ -265,7 +337,7 @@ pub fn undo_record(ctx: &Ctx, repo: &Repo, id: &str, force: bool) -> Result<i32>
         if repo.layers(&line)? != after && !force {
             return Err(exit(
                 1,
-                "error: the overlays of the line changed after this commit; undo the later operations first, or use --force",
+                "error: the overlays of the line changed after this state; undo the later operations first, or use --force",
             ));
         }
         let mut before = after.clone();
@@ -282,7 +354,7 @@ pub fn undo_record(ctx: &Ctx, repo: &Repo, id: &str, force: bool) -> Result<i32>
             l.state = parent;
         }
         rec.data["line"] = serde_json::json!(lid);
-        rec.data["stack"] = crate::overlay::stack_data(&lid, &before);
+        rec.data["stack"] = repo.public_stack_data(&lid, &before)?;
     }
     // Tags.
     match r.op.as_str() {
@@ -296,7 +368,7 @@ pub fn undo_record(ctx: &Ctx, repo: &Repo, id: &str, force: bool) -> Result<i32>
         }
         "stash.drop" => {
             bail!(
-                "a dropped stash can be applied again with 'layr stash apply {}'",
+                "a dropped park entry can be applied again with 'layr park apply {}'",
                 r.data["state"].as_str().map(ids::short).unwrap_or_default()
             );
         }
@@ -321,7 +393,7 @@ pub fn undo_record(ctx: &Ctx, repo: &Repo, id: &str, force: bool) -> Result<i32>
         }
         // Required states must still exist (retention can delete old automatic states).
         for s in [ch.before.as_ref().map(|b| b.head.clone()), ch.working_before.clone()].into_iter().flatten() {
-            if !repo.p.state_path(&s).exists() {
+            if !repo.p.has_state(&s) {
                 return Err(exit(
                     1,
                     format!(
@@ -344,7 +416,7 @@ pub fn undo_record(ctx: &Ctx, repo: &Repo, id: &str, force: bool) -> Result<i32>
                 l2.name = b.name.clone();
                 match (&ch.working_before, &ch.working_after) {
                     // Revert only what the operation changed; later work stays.
-                    (Some(before), Some(after)) if repo.p.state_path(after).exists() => {
+                    (Some(before), Some(after)) if repo.p.has_state(after) => {
                         let cur = repo.scan(&l2)?;
                         let later: BTreeSet<String> = changes::file_changes(&repo.state_root(after)?, &cur.path)?
                             .into_iter()
@@ -410,7 +482,14 @@ pub fn undo_record(ctx: &Ctx, repo: &Repo, id: &str, force: bool) -> Result<i32>
     }
     let done = repo.commit_record(ctx, rec)?;
     crate::gitbridge::sync_store_access(repo)?;
-    outln!(ctx, "Undid {} {} ({}); undo it with 'layr undo {}'", short_op(&r.id), r.op, fmt_time(r.time), short_op(&done.id));
+    outln!(
+        ctx,
+        "Undid {} {} ({}); undo it with 'layr undo {}'",
+        short_op(&r.id),
+        operation_name(&r.op),
+        fmt_time(r.time),
+        short_op(&done.id)
+    );
     Ok(0)
 }
 
@@ -422,20 +501,18 @@ fn restore_working(repo: &Repo, line: &Line, state: &str) -> Result<()> {
     let own = repo.own(line);
     // Automatic states leave the overlay files out: those files stay as they are.
     let private = repo.private_paths(line)?;
-    for c in changes::file_changes(&scan.path, &target)? {
-        if skip_path(&c.path) || private.contains(&c.path) || c.old_path.as_ref().map(|o| private.contains(o)).unwrap_or(false) {
-            continue;
-        }
-        if let Some(src) = &c.old_path {
-            fsutil::remove_entry(&w, src)?;
-        }
-        if c.new.is_none() {
-            fsutil::remove_entry(&w, &c.path)?;
-        } else {
-            fsutil::copy_entry(&target, &c.path, &w, &c.path, own)?;
-        }
-    }
-    Ok(())
+    let list: Vec<_> = changes::file_changes(&scan.path, &target)?
+        .into_iter()
+        .filter(|c| {
+            !(skip_path(&c.path)
+                || private.contains(&c.path)
+                || c.old_path.as_ref().map(|o| private.contains(o)).unwrap_or(false))
+        })
+        .collect();
+    let gone: Vec<&str> =
+        list.iter().flat_map(|c| c.old_path.as_deref().into_iter().chain(c.new.is_none().then_some(c.path.as_str()))).collect();
+    let write: Vec<&str> = list.iter().filter(|c| c.new.is_some()).map(|c| c.path.as_str()).collect();
+    fsutil::replace_entries(&target, &w, &gone, &write, own)
 }
 
 pub fn op(ctx: &Ctx, args: &[String]) -> Result<i32> {
@@ -479,7 +556,10 @@ pub fn op(ctx: &Ctx, args: &[String]) -> Result<i32> {
     for r in repo.p.db.records(100000)? {
         if !a.has("--all") {
             if let Some(l) = &line {
-                if !r.lines.contains_key(&l.id) && r.data.get("line").and_then(|v| v.as_str()) != Some(&l.id) {
+                if !matches!(r.op.as_str(), "push" | "sync")
+                    && !r.lines.contains_key(&l.id)
+                    && r.data.get("line").and_then(|v| v.as_str()) != Some(&l.id)
+                {
                     continue;
                 }
             }
@@ -488,13 +568,31 @@ pub fn op(ctx: &Ctx, args: &[String]) -> Result<i32> {
             outln!(ctx, "{}", serde_json::to_string(&r)?);
         } else {
             let undone = if repo.p.db.undone(&r.id)? { " (undone)" } else { "" };
-            let what = r
-                .states
-                .first()
-                .map(|s| format!(" {} {}", ids::short(&s.id), s.message.lines().next().unwrap_or("")))
-                .unwrap_or_default();
+            let what = if matches!(r.op.as_str(), "push" | "sync") {
+                format!(
+                    " {}: states sent {}, received {}",
+                    r.data["remote"].as_str().unwrap_or(""),
+                    r.data["states_sent"],
+                    r.data["states_received"]
+                )
+            } else {
+                r.states
+                    .first()
+                    .map(|s| format!(" {} {}", ids::short(&s.id), s.message.lines().next().unwrap_or("")))
+                    .unwrap_or_default()
+            };
             let session = r.actor.session.as_ref().map(|a| format!(" [{a}]")).unwrap_or_default();
-            outln!(ctx, "{} {} {}{} {}{}{}", short_op(&r.id), fmt_time(r.time), r.actor.name, session, r.op, what, undone);
+            outln!(
+                ctx,
+                "{} {} {}{} {}{}{}",
+                short_op(&r.id),
+                fmt_time(r.time),
+                r.actor.name,
+                session,
+                operation_name(&r.op),
+                what,
+                undone
+            );
         }
         shown += 1;
         if shown >= n {
@@ -506,19 +604,77 @@ pub fn op(ctx: &Ctx, args: &[String]) -> Result<i32> {
 
 /// Run a command in a temporary writable copy of an exact state and record the result.
 pub fn try_cmd(ctx: &Ctx, args: &[String]) -> Result<i32> {
-    let spec = Spec::new().flag("--keep").flag("-q|--quiet");
+    let spec = Spec::new().flag("--keep").flag("-q|--quiet").value("--check");
     let a = parse(&spec, args)?;
     let h = here(ctx)?;
     let repo = &h.repo;
     repo.require(ctx, "try")?;
-    let rev = a.pos.first().ok_or_else(|| exit(128, "usage: layr try <rev> -- <command>..."))?;
-    if a.paths.is_empty() {
-        return Err(exit(128, "usage: layr try <rev> -- <command>..."));
-    }
-    let state = revs::resolve(repo, h.line.as_ref(), rev)?;
-    // `try` is the caller's own command: it gets the caller's environment.
-    let env: Vec<(String, String)> = ctx.env.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
-    run_check_in(ctx, repo, &state, &a.paths, &a.paths.join(" "), &env, a.has("-q"), a.has("--keep"))
+    const USAGE: &str = "usage: layr try [--keep] [-q] <rev> -- <command>...\n\
+        \x20      layr try [--keep] [-q] <rev> --check <name>\n\
+        Runs the command in a temporary copy of the state <rev> (with a .git folder at its commit) \
+        and deletes the copy afterwards; your line does not change. --check runs the command of \
+        'layr config check.<name>', as protected refs, merges and the queue run it.";
+    let rev = a.pos.first().ok_or_else(|| exit(128, USAGE))?;
+    let argv: Vec<String> = match a.get("--check") {
+        Some(name) => {
+            if !a.paths.is_empty() {
+                return Err(exit(128, USAGE));
+            }
+            let command = repo
+                .p
+                .config_value(&format!("check.{name}"))?
+                .and_then(|v| v.as_str().map(String::from))
+                .ok_or_else(|| exit(128, format!("check '{name}' is not defined (layr config check.{name} '<command>')")))?;
+            vec!["sh".into(), "-c".into(), command]
+        }
+        None => {
+            if a.paths.is_empty() {
+                return Err(exit(128, USAGE));
+            }
+            a.paths.clone()
+        }
+    };
+    let view = {
+        let _lock = repo.p.lock()?;
+        let current = h.line.as_ref().map(|line| repo.line(&line.id)).transpose()?;
+        let view = revs::resolve_view(repo, current.as_ref(), rev).map_err(|e| exit(128, format!("layr try: {e:#}")))?;
+        repo.check_view_read(ctx, &view)?;
+        if !view.layers.is_empty() {
+            repo.save_view(ctx, &view)?;
+        }
+        view
+    };
+    // `try` is the caller's own command: it gets the caller's environment, except the variables
+    // that would point git or layr at the caller's own folder instead of the copy.
+    const TO_COPY: &[&str] =
+        &["GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY", "GIT_COMMON_DIR", "LAYR_LINE"];
+    let env: Vec<(String, String)> =
+        ctx.env.iter().filter(|(k, _)| !TO_COPY.contains(&k.as_str())).map(|(k, v)| (k.clone(), v.clone())).collect();
+    run_check_in(
+        ctx,
+        repo,
+        &view.shared,
+        &argv,
+        &argv.join(" "),
+        &env,
+        a.has("-q"),
+        a.has("--keep"),
+        false,
+        (!view.layers.is_empty()).then_some(&view),
+    )
+}
+
+/// Use the `try` copy and environment. JSON output sends child output to standard error.
+pub fn try_state(ctx: &Ctx, repo: &Repo, state: &str, argv: &[String], quiet: bool, json: bool) -> Result<i32> {
+    try_state_in(ctx, repo, state, argv, quiet, false, json)
+}
+
+fn try_state_in(ctx: &Ctx, repo: &Repo, state: &str, argv: &[String], quiet: bool, keep: bool, json: bool) -> Result<i32> {
+    const TO_COPY: &[&str] =
+        &["GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY", "GIT_COMMON_DIR", "LAYR_LINE"];
+    let env: Vec<(String, String)> =
+        ctx.env.iter().filter(|(k, _)| !TO_COPY.contains(&k.as_str())).map(|(k, v)| (k.clone(), v.clone())).collect();
+    run_check_in(ctx, repo, state, argv, &argv.join(" "), &env, quiet, keep, json, None)
 }
 
 /// Run a configured check as the caller in a temporary copy of `state` and record its exit code
@@ -529,7 +685,29 @@ pub fn try_cmd(ctx: &Ctx, args: &[String]) -> Result<i32> {
 /// The copy starts with the warm caches of the state, but its build output is never kept: layr
 /// cannot tell whether build output is valid for a state (docs/design.md, section 5).
 pub fn run_check(ctx: &Ctx, repo: &Repo, state: &str, argv: &[String], command: &str, quiet: bool) -> Result<i32> {
-    run_check_in(ctx, repo, state, argv, command, &[], quiet, false)
+    run_check_in(ctx, repo, state, argv, command, &[], quiet, false, false, None)
+}
+
+/// Run a configured check in an exact view, with the same clean environment as `run_check`.
+/// This function takes the project lock itself; the caller must not hold it.
+pub fn run_check_view(
+    ctx: &Ctx,
+    repo: &Repo,
+    view: &crate::overlay::View,
+    argv: &[String],
+    command: &str,
+    quiet: bool,
+) -> Result<i32> {
+    {
+        let _lock = repo.p.lock()?;
+        repo.require(ctx, "try")?;
+        repo.check_view_collected(view)?;
+        repo.check_view_read(ctx, view)?;
+        if !view.layers.is_empty() {
+            repo.save_view(ctx, view)?;
+        }
+    }
+    run_check_in(ctx, repo, &view.shared, argv, command, &[], quiet, false, false, (!view.layers.is_empty()).then_some(view))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -542,64 +720,99 @@ fn run_check_in(
     env: &[(String, String)],
     quiet: bool,
     keep: bool,
+    json: bool,
+    view: Option<&crate::overlay::View>,
 ) -> Result<i32> {
-    let name = format!(".try-{:016x}", rand::random::<u64>());
-    let dir = repo.p.line_path(&name);
-    let tmp_line = Line {
-        id: format!("try-{name}"),
-        name: name.clone(),
-        head: state.to_string(),
-        owner: ctx.caller.uid,
-        machine: repo.p.store.machine.id.clone(),
-    };
-    repo.materialize(&tmp_line, state, &dir)?;
-    let res = (|| -> Result<i32> {
+    let layers = view.map(|v| v.layers.as_slice()).unwrap_or(&[]);
+    with_try_copy(ctx, repo, state, layers, keep, |dir| {
         if !quiet {
             eprintln!("layr: running '{command}' in {} (state {})", dir.display(), ids::short(state));
         }
         let started = std::time::Instant::now();
-        let mut c = std::process::Command::new(&argv[0]);
-        c.args(&argv[1..]).current_dir(&dir);
-        // The caller's identity (uid, groups), never the service's.
         let mut env = env.to_vec();
-        env.push(("LAYR_TRY_STATE".into(), ids::display(state)));
-        crate::privs::command_as(&mut c, ctx.caller.uid, &env)?;
-        let st = c.status()?;
-        let code = st.code().unwrap_or(128);
+        env.retain(|(k, _)| k != "LAYR_TRY_VIEW");
+        if let Some(view) = view {
+            env.push(("LAYR_TRY_VIEW".into(), view.id()?));
+        }
+        let code = try_command(ctx, repo, state, argv, dir, &env, json)?;
         let _lock = repo.p.lock()?;
-        let mut rec = Record::new("check");
-        rec.data =
-            serde_json::json!({"state": state, "command": command, "exit": code, "seconds": started.elapsed().as_secs_f64()});
+        let result = serde_json::json!({"command":command,"argv":argv,"exit":code,"seconds":started.elapsed().as_secs_f64()});
+        let mut rec = match view {
+            Some(view) => super::attest::record_view(repo, view, "check", &serde_json::to_vec(&result)?)?,
+            None => super::attest::record(repo, state, "check", &serde_json::to_vec(&result)?)?,
+        };
+        rec.data["check"] = result;
         repo.commit_record(ctx, rec)?;
+        if !quiet {
+            eprintln!("layr: state {} exit {code}", ids::short(state));
+        }
         Ok(code)
-    })();
+    })
+}
+
+/// Create a private try copy, run the callback, then remove the copy unless requested otherwise.
+pub fn with_try_copy<T>(
+    ctx: &Ctx,
+    repo: &Repo,
+    state: &str,
+    layers: &[crate::overlay::Layer],
+    keep: bool,
+    run: impl FnOnce(&Path) -> Result<T>,
+) -> Result<T> {
+    let name = format!(".try-{:016x}", rand::random::<u64>());
+    let dir = repo.p.line_path(&name);
+    let tmp_line = Line {
+        id: format!("try-{name}"),
+        name,
+        head: state.into(),
+        owner: ctx.caller.uid,
+        machine: repo.p.store.machine.id.clone(),
+    };
+    if layers.is_empty() {
+        repo.materialize(&tmp_line, state, &dir)?;
+    } else {
+        let view = crate::overlay::View::new(state.to_string(), layers.to_vec());
+        repo.materialize_view(ctx, &tmp_line, &view, &dir)?;
+    }
+    let result = run(&dir);
     if keep {
         eprintln!("layr try: kept {}", dir.display());
     } else {
         let _ = btrfs::delete_tree(&dir);
     }
-    let code = res?;
-    if !quiet {
-        eprintln!("layr: state {} exit {code}", ids::short(state));
-    }
-    Ok(code)
+    result
 }
 
-pub fn checks(ctx: &Ctx, args: &[String]) -> Result<i32> {
-    let h = here(ctx)?;
-    let state = revs::resolve(&h.repo, h.line.as_ref(), args.first().map(|s| s.as_str()).unwrap_or("HEAD"))?;
-    let v = h.repo.p.db.checks(&state)?;
-    if v.is_empty() {
-        outln!(ctx, "no checks for {}", ids::short(&state));
-        return Ok(1);
+/// Use the try identity and environment rules for commands from an exact tree.
+pub fn try_command(
+    ctx: &Ctx,
+    repo: &Repo,
+    state: &str,
+    argv: &[String],
+    dir: &Path,
+    env: &[(String, String)],
+    json: bool,
+) -> Result<i32> {
+    if argv.is_empty() || argv[0].is_empty() {
+        anyhow::bail!("a command needs a nonempty argv");
     }
-    for (cmd, exitc, time, actor) in v {
-        outln!(ctx, "{} {} {} exit {exitc}: {cmd}", ids::short(&state), fmt_time(time), actor);
+    let mut command = std::process::Command::new(&argv[0]);
+    command.args(&argv[1..]).current_dir(dir);
+    if json {
+        command.stdout(std::process::Stdio::from(rustix::io::dup(std::io::stderr())?));
     }
-    Ok(0)
+    let mut env = env.to_vec();
+    env.push(("LAYR_TRY_STATE".into(), ids::display(state)));
+    env.retain(|(k, _)| k != "LAYR_PROJECT");
+    env.push(("LAYR_PROJECT".into(), repo.p.name.clone()));
+    crate::privs::command_as(&mut command, ctx.caller.uid, &env)?;
+    let status = command
+        .status()
+        .map_err(|e| exit(127, format!("layr try: cannot run '{}' as user {}: {e}", argv[0], ctx.caller.user)))?;
+    Ok(status.code().unwrap_or(128))
 }
 
-/// Retention. Kept: line heads and their history, tags, remote refs, stashes, the newest
+/// Retention. Kept: line heads and their history, tags, remote refs, park entries, the newest
 /// export per branch, conflict sources, automatic states (the newest N per line and
 /// one per hour for a day), and every state that a record inside the undo window names.
 pub fn retention_plan(repo: &Repo) -> Result<(BTreeSet<String>, Vec<String>)> {
@@ -628,6 +841,9 @@ pub fn retention_plan(repo: &Repo) -> Result<(BTreeSet<String>, Vec<String>)> {
             roots.push(s.id);
         }
     }
+    for r in db.refs("", now)? {
+        roots.push(r.target);
+    }
     for (_, s, _) in db.tags()? {
         roots.push(s);
     }
@@ -640,6 +856,14 @@ pub fn retention_plan(repo: &Repo) -> Result<(BTreeSet<String>, Vec<String>)> {
     }
     roots.extend(newest_export.into_values());
     for r in db.records_since(now - undo_days * 86400 * 1000)? {
+        if let Some(v) = r.data.get("ref_change") {
+            let ch: crate::model::RefChange = serde_json::from_value(v.clone())?;
+            for position in [ch.before, ch.after].into_iter().flatten() {
+                if position.expires_at.map(|t| t > now).unwrap_or(true) {
+                    keep.insert(position.target);
+                }
+            }
+        }
         for s in &r.states {
             keep.insert(s.id.clone());
         }
@@ -660,11 +884,11 @@ pub fn retention_plan(repo: &Repo) -> Result<(BTreeSet<String>, Vec<String>)> {
     // History of every root.
     let mut stack = roots;
     while let Some(x) = stack.pop() {
-        if !keep.insert(x.clone()) && repo.p.state_path(&x).exists() {
+        if !keep.insert(x.clone()) && repo.p.has_state(&x) {
             // Already kept: its parents were or will be visited from the first insert.
         }
         if let Some(s) = db.state(&x)? {
-            for p in &s.parents {
+            for p in s.parents.iter().chain(s.derived_from.iter()) {
                 if !keep.contains(p) {
                     stack.push(p.clone());
                 }
@@ -676,15 +900,16 @@ pub fn retention_plan(repo: &Repo) -> Result<(BTreeSet<String>, Vec<String>)> {
             }
         }
     }
-    // Commits reachable from kept states (an automatic state's parent is a commit).
+    // States reachable from kept states (an automatic state's parent is a state).
     let kept: Vec<String> = keep.iter().cloned().collect();
     for k in kept {
         if let Some(s) = db.state(&k)? {
-            let mut stack: Vec<String> = s.parents.clone();
+            let mut stack: Vec<String> = s.parents.iter().chain(s.derived_from.iter()).cloned().collect();
             while let Some(p) = stack.pop() {
                 if keep.insert(p.clone()) {
                     if let Some(ps) = db.state(&p)? {
                         stack.extend(ps.parents);
+                        stack.extend(ps.derived_from);
                     }
                 }
             }
@@ -705,6 +930,11 @@ pub fn run_gc(ctx: &Ctx, repo: &Repo, dry: bool) -> Result<Vec<String>> {
     if dry {
         return Ok(delete);
     }
+    for expired in repo.p.db.expired_refs(ids::now_ms())? {
+        let mut rec = Record::new("ref.expire");
+        rec.data = serde_json::json!({"ref_change": crate::model::RefChange { name:expired.name.clone(),before:Some(expired),after:None }});
+        repo.commit_record(ctx, rec)?;
+    }
     let mut deleted = Vec::new();
     for id in &delete {
         let s = repo.p.db.state(id)?;
@@ -713,12 +943,36 @@ pub fn run_gc(ctx: &Ctx, repo: &Repo, dry: bool) -> Result<Vec<String>> {
                 let _ = btrfs::delete_tree(&repo.p.cache_path(id, snap));
             }
         }
-        if btrfs::delete_tree(&repo.p.state_path(id)).is_ok() {
+        if repo.p.delete_state(id).is_ok() {
             deleted.push(id.clone());
         }
     }
     let caches = prune_caches(repo)?;
+    #[cfg(target_os = "macos")]
+    {
+        let lines = repo.lines()?;
+        let heads: BTreeSet<String> = lines.iter().map(|l| l.head.clone()).collect();
+        let done = crate::thin::upkeep(&repo.p, &heads)?;
+        // Saved statuses of lines that are gone.
+        let ids: BTreeSet<String> = lines.iter().map(|l| format!("{}.cache", l.id)).collect();
+        if let Ok(rd) = std::fs::read_dir(repo.p.meta_dir().join("status")) {
+            for e in rd.flatten() {
+                if !ids.contains(&e.file_name().to_string_lossy().into_owned()) {
+                    let _ = std::fs::remove_file(e.path());
+                }
+            }
+        }
+        if done.views + done.keyframes + done.deleted > 0 {
+            eprintln!(
+                "thin states: {} view(s) removed, {} complete tree(s) made, {} kept base(s) deleted",
+                done.views, done.keyframes, done.deleted
+            );
+        }
+    }
     repo.prune_all_bases()?;
+    if crate::gitbridge::has_store(repo) {
+        crate::gitbridge::prune_indexes(repo)?;
+    }
     if !deleted.is_empty() || !caches.is_empty() {
         let mut rec = Record::new("gc");
         rec.data = serde_json::json!({"deleted": deleted, "caches": caches});
@@ -748,7 +1002,8 @@ pub fn run_gc(ctx: &Ctx, repo: &Repo, dry: bool) -> Result<Vec<String>> {
 /// states themselves stay; only their cache snapshots go.
 fn prune_caches(repo: &Repo) -> Result<Vec<String>> {
     let keep_n = repo.p.config_u64("retention.caches", 5) as usize;
-    let heads: BTreeSet<String> = repo.p.db.lines()?.into_iter().map(|l| l.head).collect();
+    let mut heads: BTreeSet<String> = repo.p.db.lines()?.into_iter().map(|l| l.head).collect();
+    heads.extend(repo.p.db.refs("", ids::now_ms())?.into_iter().map(|r| r.target));
     let mut with_caches: Vec<(i64, String, Vec<String>)> = Vec::new();
     for (id, _) in repo.p.db.present_states()? {
         if let Some(s) = repo.p.db.state(&id)? {
@@ -774,6 +1029,9 @@ fn prune_caches(repo: &Repo) -> Result<Vec<String>> {
 }
 
 pub fn gc(ctx: &Ctx, args: &[String]) -> Result<i32> {
+    if args.iter().any(|v| v == "--remote" || v.starts_with("--remote=")) {
+        return crate::store_remote::command(ctx, "gc", args);
+    }
     let spec = Spec::new().flag("-n|--dry-run").flag("-q|--quiet");
     let a = parse(&spec, args)?;
     let h = here(ctx)?;
@@ -790,6 +1048,9 @@ pub fn gc(ctx: &Ctx, args: &[String]) -> Result<i32> {
 }
 
 pub fn fsck(ctx: &Ctx, args: &[String]) -> Result<i32> {
+    if args.iter().any(|v| v == "--remote" || v.starts_with("--remote=")) {
+        return crate::store_remote::command(ctx, "fsck", args);
+    }
     let spec = Spec::new().flag("--repair");
     let a = parse(&spec, args)?;
     let h = here(ctx)?;
@@ -831,7 +1092,7 @@ pub fn fsck(ctx: &Ctx, args: &[String]) -> Result<i32> {
     let ids_v: Vec<String> = st.query_map([], |r| r.get(0))?.collect::<Result<Vec<_>, _>>()?;
     drop(st);
     for id in ids_v {
-        if !repo.p.state_path(&id).exists() {
+        if !repo.p.has_state(&id) {
             problems += 1;
             outln!(ctx, "state {} is marked present but missing", ids::short(&id));
             if a.has("--repair") {
@@ -856,7 +1117,12 @@ pub fn fsck(ctx: &Ctx, args: &[String]) -> Result<i32> {
 /// (each layer exists; a kept base equals its layers).
 fn fsck_overlays(ctx: &Ctx, repo: &Repo, repair: bool) -> Result<usize> {
     let mut problems = 0;
-    for name in repo.overlay_names()? {
+    for name in repo.visible_overlay_names(ctx)? {
+        // A machine that is not a reader of an overlay never receives its project.
+        if !repo.p.store.project_dir(&format!("{}%{name}", repo.p.name))?.exists() {
+            outln!(ctx, "overlay {name}: not on this machine (no key)");
+            continue;
+        }
         let o = match repo.overlay_repo(&name) {
             Ok(o) => o,
             Err(e) => {
@@ -888,7 +1154,7 @@ fn fsck_overlays(ctx: &Ctx, repo: &Repo, repair: bool) -> Result<usize> {
             }
         }
         for l in o.lines()? {
-            if !o.p.state_path(&l.head).exists() {
+            if !o.p.has_state(&l.head) {
                 problems += 1;
                 outln!(ctx, "overlay {name}: the head of line {} is missing", l.name);
             }
@@ -896,12 +1162,18 @@ fn fsck_overlays(ctx: &Ctx, repo: &Repo, repair: bool) -> Result<usize> {
     }
     for l in repo.lines()? {
         let layers = repo.layers(&l)?;
+        if layers.iter().any(|layer| {
+            repo.need_overlay(&layer.overlay).is_ok_and(|info| info.hidden)
+                && !repo.reads_overlay(&layer.overlay, ctx.caller.uid, ctx.caller.gid).unwrap_or(false)
+        }) {
+            continue;
+        }
         if layers.is_empty() || l.machine != repo.p.store.machine.id {
             continue;
         }
         let mut ok = true;
         for x in &layers {
-            if repo.overlay_repo(&x.overlay).map(|o| o.p.state_path(&x.state).exists()).unwrap_or(false) {
+            if repo.overlay_repo(&x.overlay).map(|o| o.p.has_state(&x.state)).unwrap_or(false) {
                 continue;
             }
             ok = false;
@@ -941,8 +1213,9 @@ pub fn reindex(ctx: &Ctx, _args: &[String]) -> Result<i32> {
     let n: i64 = h.repo.p.db.conn.query_row("SELECT COUNT(*) FROM records", [], |r| r.get(0))?;
     outln!(ctx, "index rebuilt from {n} records");
     if !h.repo.p.is_overlay() {
-        for name in h.repo.overlay_names()? {
-            let o = h.repo.overlay_project(&name)?;
+        for name in h.repo.visible_overlay_names(ctx)? {
+            // An overlay without a key on this machine has no local project to index.
+            let Ok(o) = h.repo.overlay_project(&name) else { continue };
             let _l = o.lock()?;
             o.rebuild_index()?;
             let n: i64 = o.db.conn.query_row("SELECT COUNT(*) FROM records", [], |r| r.get(0))?;
@@ -968,6 +1241,8 @@ fn copy_folder(ctx: &Ctx, src: &std::path::Path, dst: &std::path::Path, include_
             Ok(true)
         })
     })?;
+    // On a store volume that ignores case, README and Readme would become one file.
+    fsutil::refuse_case_collisions(dst, entries.iter().map(|(rel, _)| rel.as_str()))?;
     for (rel, m) in entries {
         if m.is_dir() {
             fsutil::make_parents(dst, &format!("{rel}/x"), None)?;
@@ -1031,12 +1306,12 @@ pub fn init(ctx: &Ctx, args: &[String]) -> Result<i32> {
             set_config(ctx, &repo, "remote.origin.url", serde_json::json!(url))?;
             let refs = crate::gitbridge::fetch(ctx, &repo, "origin")?;
             let branch = a.get("-b").map(|s| s.to_string()).or_else(|| default_branch(&repo)).unwrap_or_else(|| "main".into());
-            let commit = refs
+            let state = refs
                 .iter()
                 .find(|(b, _)| b == &format!("origin/{branch}") || b.ends_with(&format!("/{branch}")))
                 .map(|x| x.1.clone());
-            let commit = commit.ok_or_else(|| exit(128, format!("fatal: remote has no branch '{branch}'")))?;
-            let (st, _) = crate::gitbridge::import_commit(ctx, &repo, &commit, &format!("origin/{branch}"), owner)?;
+            let state = state.ok_or_else(|| exit(128, format!("fatal: remote has no branch '{branch}'")))?;
+            let (st, _) = crate::gitbridge::import_commit(ctx, &repo, &state, &format!("origin/{branch}"), owner)?;
             drop(cleanup);
             return Ok((st, branch));
         }
@@ -1063,9 +1338,9 @@ pub fn init(ctx: &Ctx, args: &[String]) -> Result<i32> {
                 if !head.is_empty() && head != "HEAD" {
                     let (st, _) = crate::gitbridge::import_commit(ctx, &repo, &head, &format!("local/{branch}"), owner)?;
                     parents.push(st.clone());
-                    // The folder content on top (uncommitted changes, if any).
+                    // The folder content on top (unsaved changes, if any).
                     btrfs::delete_tree(&work)?;
-                    btrfs::snapshot(&repo.state_root(&st)?, &work, false)?;
+                    repo.snapshot_state(&st, &work, false)?;
                     let tmp = repo.p.work_dir().join(ids::new_id());
                     btrfs::create_subvolume(&tmp)?;
                     let _t2 = crate::repo::Temp { path: tmp.clone() };
@@ -1077,16 +1352,11 @@ pub fn init(ctx: &Ctx, args: &[String]) -> Result<i32> {
                     let _ = diffs;
                     let mut changed = false;
                     let mut seen = BTreeSet::new();
+                    let mut files = Vec::new();
                     fsutil::walk(&snap.path, "", &mut |rel, m| {
-                        if m.is_dir() {
-                            return Ok(true);
-                        }
-                        seen.insert(rel.to_string());
-                        if !fsutil::same_entry(&imported, rel, &snap.path, rel, None)?
-                            || fsutil::lmeta(&imported, rel).map(|x| x.mode != m.mode).unwrap_or(true)
-                        {
-                            fsutil::copy_entry(&snap.path, rel, &work, rel, None)?;
-                            changed = true;
+                        if !m.is_dir() {
+                            seen.insert(rel.to_string());
+                            files.push((rel.to_string(), m.mode));
                         }
                         Ok(true)
                     })?;
@@ -1097,15 +1367,23 @@ pub fn init(ctx: &Ctx, args: &[String]) -> Result<i32> {
                         }
                         Ok(true)
                     })?;
-                    for g in gone {
-                        fsutil::remove_entry(&work, &g)?;
-                        changed = true;
+                    let mut copies = Vec::new();
+                    for (rel, mode) in &files {
+                        if !fsutil::same_entry(&imported, rel, &snap.path, rel, None)?
+                            || fsutil::lmeta(&imported, rel).map(|x| x.mode != *mode).unwrap_or(true)
+                        {
+                            copies.push(rel.clone());
+                        }
                     }
+                    let gone_paths: Vec<&str> = gone.iter().map(String::as_str).collect();
+                    let copy_paths: Vec<&str> = copies.iter().map(String::as_str).collect();
+                    fsutil::replace_entries(&snap.path, &work, &gone_paths, &copy_paths, None)?;
+                    changed |= !copies.is_empty() || !gone.is_empty();
                     if !changed {
                         drop(cleanup);
                         return Ok((st, branch));
                     }
-                    msg = "uncommitted changes of the imported folder".into();
+                    msg = "unsaved changes of the imported folder".into();
                 } else {
                     copy_folder(ctx, &src, &work, a.has("--include-ignored"))?;
                 }
@@ -1157,6 +1435,22 @@ fn default_branch(repo: &Repo) -> Option<String> {
 }
 
 pub fn set_config(ctx: &Ctx, repo: &Repo, key: &str, value: serde_json::Value) -> Result<()> {
+    if !repo.p.is_overlay() {
+        if let Some(rest) = key.strip_prefix("overlay.") {
+            let name = rest.split('.').next().unwrap_or("");
+            if let Some(info) = repo.overlay_info(name)? {
+                if rest == name || rest == format!("{name}.hidden") {
+                    return Err(exit(1, "overlay visibility changes only through overlay show-to-project"));
+                }
+                if info.hidden {
+                    let orepo = repo.overlay_repo(name)?;
+                    orepo.require(ctx, "access")?;
+                    let _lock = orepo.p.lock()?;
+                    return set_config(ctx, &orepo, key, value);
+                }
+            }
+        }
+    }
     let mut rec = Record::new("config");
     let mut m = serde_json::Map::new();
     m.insert(key.to_string(), value);
@@ -1190,7 +1484,18 @@ pub fn config(ctx: &Ctx, args: &[String]) -> Result<i32> {
         return Ok(0);
     }
     if let Some(k) = a.get("--get").or(if a.pos.len() == 1 { Some(a.pos[0].as_str()) } else { None }) {
-        return match repo.p.config_value(k)? {
+        let mut value = repo.p.config_value(k)?;
+        if let Some(rest) = k.strip_prefix("overlay.") {
+            let name = rest.split('.').next().unwrap_or("");
+            if repo.overlay_info(name)?.is_some_and(|i| i.hidden) {
+                value = if repo.reads_overlay(name, ctx.caller.uid, ctx.caller.gid)? {
+                    repo.overlay_project(name)?.db.overlay_config(k)?
+                } else {
+                    None
+                };
+            }
+        }
+        return match value {
             Some(v) => {
                 match v.as_str() {
                     Some(s) => outln!(ctx, "{s}"),
@@ -1212,12 +1517,19 @@ pub fn config(ctx: &Ctx, args: &[String]) -> Result<i32> {
         return Ok(0);
     }
     let (k, v) = (&a.pos[0], a.pos[1..].join(" "));
-    let val: serde_json::Value = serde_json::from_str(&v).unwrap_or(serde_json::Value::String(v.clone()));
-    set_config(ctx, repo, k, val)?;
-    if k == "backup.dir" {
-        // The service writes its own backups into this folder as the user who named it.
-        set_config(ctx, repo, "backup.writer", serde_json::json!(ctx.caller.uid))?;
+    let command = ["check.", "derive.command.", "merge.driver.", "merge.verify."].iter().any(|prefix| k.starts_with(prefix));
+    let val =
+        if command { serde_json::Value::String(v) } else { serde_json::from_str(&v).unwrap_or(serde_json::Value::String(v)) };
+    if k == "queue.probes" && !val.is_null() && !val.is_boolean() {
+        return Err(exit(128, "queue.probes must be true or false"));
     }
+    if k == "queue.run" && !val.is_null() {
+        let value = val.as_str().ok_or_else(|| exit(128, "queue.run must be a comma-separated list of line names"))?;
+        for name in value.split(',').map(str::trim).filter(|s| !s.is_empty()) {
+            crate::store::check_name("line", name)?;
+        }
+    }
+    set_config(ctx, repo, k, val)?;
     if POLICY_KEYS.contains(&k.as_str()) {
         crate::gitbridge::sync_store_access(repo)?;
     }
@@ -1229,11 +1541,14 @@ const POLICY_KEYS: &[&str] = &["access", "grants", "deny", "protect", "members",
 
 /// A named check's command belongs to the protection rules that name it (`check.<name>`).
 fn policy_key(key: &str) -> bool {
-    POLICY_KEYS.contains(&key) || key.starts_with("check.")
+    POLICY_KEYS.contains(&key) || key.starts_with("check.") || key == "registry.tokens"
 }
 
 /// `layr access`: roles and deny rules (docs/design.md, section 3).
 pub fn access(ctx: &Ctx, args: &[String]) -> Result<i32> {
+    if args.first().map(String::as_str) == Some("token") {
+        return super::oci::token(ctx, &args[1..]);
+    }
     use crate::access::{action_role, parse_principal, show_principal, Role, ACTIONS};
     let h = here(ctx)?;
     let repo = &h.repo;
@@ -1345,37 +1660,40 @@ pub fn access(ctx: &Ctx, args: &[String]) -> Result<i32> {
 /// `layr approve [<rev>] [--withdraw]`: approve an exact state (or withdraw the approval). A
 /// protection rule can require approvals of the state a merge takes (`--approvals`).
 pub fn approve(ctx: &Ctx, args: &[String]) -> Result<i32> {
-    let spec = Spec::new().flag("--withdraw").flag("-q|--quiet");
+    let spec = Spec::new().flag("--withdraw").flag("-q|--quiet").value("--declassify").flag("--json");
     let a = parse(&spec, args)?;
     let h = here(ctx)?;
     let repo = &h.repo;
-    let state = revs::resolve(repo, h.line.as_ref(), a.pos.first().map(|s| s.as_str()).unwrap_or("HEAD"))?;
+    let state = revs::resolve(repo, h.line.as_ref(), a.pos.first().map(|s| s.as_str()).unwrap_or("head"))?;
+    if a.pos.len() > 1 {
+        bail!("usage: layr approve [--declassify <path>@<id>] <rev>");
+    }
+    if a.has("--withdraw") && a.has("--declassify") {
+        bail!("--withdraw and --declassify cannot be combined");
+    }
     let s = repo.state(&state)?;
     let _lock = repo.p.lock()?;
     let withdraw = a.has("--withdraw");
-    let mut rec = Record::new(if withdraw { "approve.withdraw" } else { "approve" });
-    rec.data = serde_json::json!({"state": state});
-    repo.commit_record(ctx, rec)?;
-    if !a.has("-q") {
+    let mut rec = match a.get("--declassify") {
+        Some(scope) => crate::secrets::declassify(ctx, repo, scope, &state)?,
+        None => super::attest::record(repo, &state, if withdraw { "revoke" } else { "approval" }, b"")?,
+    };
+    if withdraw {
+        rec.data["revokes"] =
+            serde_json::json!(repo.p.db.own_attestations(&state, &repo.p.store.machine.id, ctx.caller.uid, Some("approval"))?);
+    }
+    let rec = repo.commit_record(ctx, rec)?;
+    if a.has("--json") {
+        outln!(ctx, "{}", rec.data);
+    } else if !a.has("-q") {
         let what = if withdraw { "Withdrew the approval of" } else { "Approved" };
         outln!(ctx, "{what} state {} {}", ids::short(&state), s.message.lines().next().unwrap_or(""));
     }
     Ok(0)
 }
 
-/// `layr approvals [<rev>]`: who approved exactly this state.
-pub fn approvals(ctx: &Ctx, args: &[String]) -> Result<i32> {
-    let h = here(ctx)?;
-    let state = revs::resolve(&h.repo, h.line.as_ref(), args.first().map(|s| s.as_str()).unwrap_or("HEAD"))?;
-    let v = h.repo.p.db.approvals(&state)?;
-    for (uid, time) in &v {
-        outln!(ctx, "{}\t{}", crate::ctx::Caller::from_uid(*uid).user, fmt_time(*time));
-    }
-    Ok(if v.is_empty() { 1 } else { 0 })
-}
-
 /// A duration: `90s`, `30m`, `2h`, `1d`.
-fn duration_ms(s: &str) -> Result<i64> {
+pub(crate) fn duration_ms(s: &str) -> Result<i64> {
     let (n, unit) = s.split_at(s.len().saturating_sub(1));
     let n: i64 = n.parse().map_err(|_| exit(128, format!("fatal: bad duration '{s}' (for example 30m, 2h, 1d)")))?;
     let k = match unit {
@@ -1414,6 +1732,20 @@ pub fn protect(ctx: &Ctx, args: &[String]) -> Result<i32> {
                 let checks = r.check.join(",");
                 match rule {
                     Some(x) => {
+                        if crate::model::ref_namespace(p) {
+                            let from =
+                                x.approvers.iter().map(|key| crate::access::show_principal(key)).collect::<Vec<_>>().join(",");
+                            outln!(
+                                ctx,
+                                "{p}\tupdate {}\texpect {}\tcheck {}\tapprovals {} from {}",
+                                x.update.name(),
+                                x.expect,
+                                if checks.is_empty() { "-" } else { &checks },
+                                x.approvals,
+                                if from.is_empty() { "maintainers" } else { &from }
+                            );
+                            continue;
+                        }
                         let paths: Vec<String> = x.paths.iter().map(|(p, r)| format!("{p}={}", r.name())).collect();
                         outln!(
                             ctx,
@@ -1443,6 +1775,10 @@ pub fn protect(ctx: &Ctx, args: &[String]) -> Result<i32> {
         }
         Some(p) => p.clone(),
     };
+    if crate::model::ref_namespace(&pattern) && ["--direct", "--no-direct", "--rewrite", "--path"].iter().any(|flag| a.has(flag))
+    {
+        bail!("ref protection does not accept --direct, --no-direct, --rewrite or --path");
+    }
     repo.require(ctx, "access")?;
     let _lock = repo.p.lock()?;
     let mut all = repo.policy().protect;
@@ -1587,43 +1923,6 @@ pub fn cache(ctx: &Ctx, args: &[String]) -> Result<i32> {
         }
         _ => Err(exit(128, "usage: layr cache (list|add|remove|repair) [<path>]")),
     }
-}
-
-pub fn machines(ctx: &Ctx, args: &[String]) -> Result<i32> {
-    let h = here(ctx)?;
-    if args.first().map(|s| s.as_str()) == Some("trust") {
-        let spec = Spec::new().value("--key");
-        let a = parse(&spec, &args[1..])?;
-        h.repo.require(ctx, "sync")?;
-        let id = a.pos.first().ok_or_else(|| exit(128, "usage: layr machines trust <id> --key <public key>"))?;
-        let key = a.get("--key").ok_or_else(|| exit(128, "usage: layr machines trust <id> --key <public key>"))?;
-        let full = if id.len() == 36 {
-            id.clone()
-        } else {
-            h.repo.p.db.machine_by_name(id)?.ok_or_else(|| exit(128, format!("unknown machine {id}: give its full id")))?
-        };
-        let _lock = h.repo.p.lock()?;
-        super::replicate::trust(ctx, &h.repo.p, &full, key)?;
-        outln!(ctx, "trusted machine {}", &ids::display(&full)[..8]);
-        return Ok(0);
-    }
-    let me = &h.repo.p.store.machine.id;
-    for (id, name) in h.repo.p.db.machines()? {
-        let key = h.repo.p.db.machine_key(&id)?.unwrap_or_default();
-        let trusted =
-            if &id == me || h.repo.p.db.trusted(&id)?.as_deref() == Some(key.as_str()) { "trusted" } else { "untrusted" };
-        outln!(
-            ctx,
-            "{}{} {:<16} {:<9} id {} key {}",
-            if &id == me { "* " } else { "  " },
-            &ids::display(&id)[..8],
-            name,
-            trusted,
-            id,
-            key
-        );
-    }
-    Ok(0)
 }
 
 /// Hidden helpers for tests: `layr debug changes <a> <b>` prints the raw change list.

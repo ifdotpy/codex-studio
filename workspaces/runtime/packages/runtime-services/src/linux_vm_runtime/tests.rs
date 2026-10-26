@@ -409,7 +409,7 @@ async fn a_helper_exit_and_a_kernel_panic_fail_the_start() {
     assert!(
         error
             .to_string()
-            .contains("The Linux VM failed: Kernel panic - not syncing"),
+            .contains("The VM failed: Kernel panic - not syncing"),
         "{error}"
     );
     assert_eq!(
@@ -807,7 +807,7 @@ async fn a_restart_of_a_failed_guest_tells_each_chat_with_a_live_turn_once() {
     let text = notices::notice_text(&posted[0]);
     assert!(
         text.starts_with(
-            "The Linux VM stopped working (Kernel panic - not syncing: corrupted stack end \
+            "The VM stopped working (Kernel panic - not syncing: corrupted stack end \
              detected inside scheduler). Studio restarted it at "
         ),
         "{text}"
@@ -885,7 +885,7 @@ async fn the_store_names_the_vm_chats_and_shows_each_restart_notice() {
         items,
         [(
             "vm-running".to_owned(),
-            "The Linux VM stopped working (Kernel panic - not syncing). It was stopped on \
+            "The VM stopped working (Kernel panic - not syncing). It was stopped on \
              purpose, so Studio did not start it again."
                 .to_owned()
         )]

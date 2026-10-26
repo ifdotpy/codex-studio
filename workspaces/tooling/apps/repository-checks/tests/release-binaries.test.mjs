@@ -1,6 +1,14 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import {
+  chmod,
+  mkdir,
+  mkdtemp,
+  readFile,
+  rm,
+  writeFile,
+} from "node:fs/promises";
+import { execFileSync } from "node:child_process";
 import os from "node:os";
 import path from "node:path";
 import {
@@ -11,6 +19,7 @@ import {
   releaseTargetEnvironment,
   verifyReleaseBinaries,
   writeReleaseManifest,
+  sha256File,
 } from "../../../../client/apps/desktop/release-binaries.mjs";
 import {
   parseFlowArguments,
@@ -19,6 +28,92 @@ import {
 
 const commitA = "a".repeat(40);
 const commitB = "b".repeat(40);
+
+test("desktop resources include a verified native Layr executable", async () => {
+  const source = await readFile(
+    new URL("../../../../client/apps/desktop/package.mjs", import.meta.url),
+    "utf8",
+  );
+  assert.match(source, /await bundleLayrBinary\(/);
+});
+
+test("packages Layr once, reuses its release cache and hashes the signed binary", async () => {
+  const { bundleLayrBinary, verifyBundledLayr, layrBundleContract } =
+    await import("../../../../client/apps/desktop/layr-binary.mjs");
+  const repository = path.resolve(import.meta.dirname, "../../../../..");
+  const { version, manifestName } = await layrBundleContract(repository);
+  const temporary = await mkdtemp(path.join(os.tmpdir(), "layr-package-"));
+  try {
+    const targetDirectory = path.join(temporary, "release-target");
+    const cachedTarget = targetDirectory;
+    await mkdir(path.join(cachedTarget, "release"), { recursive: true });
+    const built = path.join(cachedTarget, "release/layr");
+    const script = `#!/bin/sh\nprintf '%s\\n' 'layr version ${version}'\n`;
+    await writeFile(built, script, { mode: 0o755 });
+    const workspace = path.join(temporary, "Contents/Resources/workspace");
+    const builds = [];
+    await bundleLayrBinary({
+      repository,
+      workspace,
+      targetDirectory,
+      run(command, args, options) {
+        builds.push({ command, args, options });
+      },
+      async sign(file) {
+        await writeFile(file, `${script}# signed\n`);
+        await chmod(file, 0o755);
+      },
+    });
+    assert.equal(builds.length, 1);
+    assert.equal(builds[0].command, "cargo");
+    assert.deepEqual(builds[0].args, [
+      "build",
+      "--release",
+      "--locked",
+      "-j",
+      "4",
+      "--manifest-path",
+      path.join(repository, "workspaces/runtime/apps/layr/Cargo.toml"),
+      "--target-dir",
+      cachedTarget,
+    ]);
+    assert.equal(builds[0].options.env.CARGO_INCREMENTAL, "0");
+    assert.equal(await verifyBundledLayr(workspace, repository), version);
+    assert.equal(
+      execFileSync(path.join(workspace, "bin/layr"), ["--version"], {
+        encoding: "utf8",
+      }).trim(),
+      `layr version ${version}`,
+    );
+    const manifest = JSON.parse(
+      await readFile(path.join(workspace, "bin", manifestName), "utf8"),
+    );
+    assert.equal(manifest.version, version);
+    assert.match(manifest.sha256, /^[a-f0-9]{64}$/);
+    const binary = path.join(workspace, "bin/layr");
+    await writeFile(binary, "#!/bin/sh\nprintf '%s\\n' 'layr version 0.0.0'\n");
+    await writeFile(
+      path.join(workspace, "bin", manifestName),
+      JSON.stringify({
+        version,
+        sha256: await sha256File(binary),
+      }),
+    );
+    await assert.rejects(
+      verifyBundledLayr(workspace, repository),
+      /Expected Layr .* found layr version 0.0.0/,
+    );
+    await writeFile(path.join(workspace, "bin/layr"), "changed");
+    await assert.rejects(
+      verifyBundledLayr(workspace, repository),
+      /hash mismatch/,
+    );
+    await rm(path.join(workspace, "bin/layr"));
+    await assert.rejects(verifyBundledLayr(workspace, repository), /ENOENT/);
+  } finally {
+    await rm(temporary, { recursive: true, force: true });
+  }
+});
 
 test("desktop packaging uses the manifest-owned Electron version", async () => {
   const source = await readFile(

@@ -31,17 +31,19 @@ export function useTurnErrors(items: Message[], agent?: Agent, workspace = "") {
   const { get } = useServerApi();
 
   const scope = `${workspace}:${agent?.id}:${agent?.threadId}`;
+  const [lookupAttempt, setLookupAttempt] = useState(0);
   const [result, setResult] = useState<{
     scope: string;
     checked: string[];
     failed: string[];
     errors: Record<string, JsonValue>;
-  }>({ scope, checked: [], failed: [], errors: {} });
+    loading: string[];
+  }>({ scope, checked: [], failed: [], errors: {}, loading: [] });
   const current = useMemo(
     () =>
       result.scope === scope
         ? result
-        : { scope, checked: [], failed: [], errors: {} },
+        : { scope, checked: [], failed: [], errors: {}, loading: [] },
     [result, scope],
   );
   const cached = cachedErrors.get(scope);
@@ -87,10 +89,16 @@ export function useTurnErrors(items: Message[], agent?: Agent, workspace = "") {
     )
     .slice(-120);
   const requestKey = pending.join(",");
+  // Historical analytics is a first-load fallback. Live failures carry their
+  // errors in transcript/agent records; only an explicit retry reads again.
   useEffect(() => {
     if (!agent?.id || !agent.threadId || !requestKey) return;
     let active = true;
     const requested = requestKey.split(",");
+    setResult((old) => ({
+      ...(old.scope === scope ? old : current),
+      loading: requested,
+    }));
     const agentId = agent.id;
     const threadId = agent.threadId;
     const key = `${scope}:${requestKey}`;
@@ -147,6 +155,7 @@ export function useTurnErrors(items: Message[], agent?: Agent, workspace = "") {
               ? old.failed.filter((turn) => !requested.includes(turn))
               : [],
           errors: { ...(old.scope === scope ? old.errors : {}), ...recovered },
+          loading: [],
         }));
       })
       .catch(() => {
@@ -159,12 +168,13 @@ export function useTurnErrors(items: Message[], agent?: Agent, workspace = "") {
             ],
             failed: [...(old.scope === scope ? old.failed : []), ...requested],
             errors: old.scope === scope ? old.errors : {},
+            loading: [],
           }));
       });
     return () => {
       active = false;
     };
-  }, [scope, agent?.id, agent?.threadId, requestKey]);
+  }, [scope, lookupAttempt]);
   const enriched = useMemo(() => {
     const last = new Map<string, number>();
     const unconfirmed = new Set(
@@ -205,21 +215,12 @@ export function useTurnErrors(items: Message[], agent?: Agent, workspace = "") {
       ];
     });
   }, [items, errors, existing, agent?.id, agent?.threadId]);
-  const loading = new Set(
-    agent?.id && agent.threadId
-      ? turns.filter(
-          (turn) =>
-            !errors[turn] &&
-            !resolved.has(turn) &&
-            !current.checked.includes(turn),
-        )
-      : [],
-  );
+  const loading = new Set(current.loading);
   return {
     items: enriched,
     loading,
     failed: new Set(current.failed),
-    retry: (turn: string) =>
+    retry: (turn: string) => {
       setResult((old) => ({
         scope,
         errors: old.scope === scope ? old.errors : {},
@@ -227,6 +228,9 @@ export function useTurnErrors(items: Message[], agent?: Agent, workspace = "") {
           old.scope === scope ? old.checked.filter((id) => id !== turn) : [],
         failed:
           old.scope === scope ? old.failed.filter((id) => id !== turn) : [],
-      })),
+        loading: [],
+      }));
+      setLookupAttempt((value) => value + 1);
+    },
   };
 }

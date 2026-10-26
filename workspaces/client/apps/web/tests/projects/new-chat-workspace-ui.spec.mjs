@@ -19,6 +19,8 @@ async function setup(
   label = "Local",
   signed = false,
   provider = "codex",
+  hasStudioVm = true,
+  nativeReady = true,
 ) {
   const creations = [];
   const changes = [];
@@ -72,6 +74,13 @@ async function setup(
           ready: true,
           busy: false,
           system,
+          hasStudioVm,
+          nativeLayr: {
+            ready: nativeReady,
+            reason: nativeReady
+              ? null
+              : "Native Layr requires a btrfs store and root daemon.",
+          },
           agentsRunning: 0,
           alerts: [],
           accounts: [
@@ -121,6 +130,25 @@ async function setup(
       return false;
     },
   });
+  const catalogRows = (accountKey, rows) =>
+    rows.map((row, catalogPosition) => ({
+      ...row,
+      accountKey,
+      catalogPosition,
+      hidden: false,
+    }));
+  server.snapshot.runtime.modelsByAccount =
+    provider === "claude"
+      ? {
+          default: catalogRows("default", claudeModels),
+          codex: catalogRows("codex", models),
+        }
+      : {
+          default: catalogRows(
+            "default",
+            label === "Remote" ? [models[2]] : models,
+          ),
+        };
   return { server, creations, changes, modelReads };
 }
 async function openNewChat(page, server, classic = false) {
@@ -141,30 +169,38 @@ async function openNewChat(page, server, classic = false) {
   return dialog;
 }
 for (const [choice, badge] of [
-  ["layr", "LAYR"],
-  ["ASIF", "ASIF"],
-  ["worktree", "WT"],
+  ["Layr", "Layr"],
+  ["Layr VM", "Layr VM"],
+  ["WT", "WT"],
 ]) {
   test(`macOS New chat ${choice} and actual model menus`, async ({ page }) => {
     const { server, creations, changes } = await setup();
     try {
       const dialog = await openNewChat(page, server);
       await expect(
-        dialog.getByRole("radio", { name: "layr", exact: true }),
+        dialog.getByRole("radio", { name: "Layr", exact: true }),
       ).toBeChecked();
       await dialog.getByText(choice, { exact: true }).click();
-      const main = dialog.getByRole("region", {
-        name: "Lead model",
-        exact: true,
-      });
-      await main.getByRole("option", { name: /Sol/ }).click();
-      await main.getByText("High", { exact: true }).click();
-      const worker = dialog.getByRole("region", {
-        name: "Worker model",
-        exact: true,
-      });
-      await worker.getByRole("option", { name: /Astra/ }).click();
-      await worker.getByText("Low", { exact: true }).click();
+      await dialog
+        .getByRole("listbox", { name: "Main agent model", exact: true })
+        .getByRole("option", { name: /Sol/ })
+        .click();
+      await dialog
+        .getByRole("radiogroup", { name: "Main agent reasoning", exact: true })
+        .getByText("High", { exact: true })
+        .click();
+      await dialog.getByText("Workers", { exact: true }).click();
+      await dialog
+        .getByRole("listbox", { name: "Default subagent model", exact: true })
+        .getByRole("option", { name: /Astra/ })
+        .click();
+      await dialog
+        .getByRole("radiogroup", {
+          name: "Default subagent reasoning",
+          exact: true,
+        })
+        .getByText("Low", { exact: true })
+        .click();
       await expect(page.getByRole("dialog")).toHaveCount(1);
       expect(changes).toHaveLength(0);
       await dialog
@@ -172,7 +208,12 @@ for (const [choice, badge] of [
         .click();
       await expect.poll(() => creations.length).toBe(1);
       expect(creations[0]).toMatchObject({
-        workspaceMode: choice === "ASIF" ? "image" : choice,
+        workspaceMode:
+          choice === "Layr"
+            ? "layr-native"
+            : choice === "Layr VM"
+              ? "layr"
+              : "worktree",
         model: "gpt-5.6-sol",
         effort: "high",
         worker_defaults: {
@@ -189,7 +230,7 @@ for (const [choice, badge] of [
     }
   });
 }
-for (const system of ["Linux", "Windows"]) {
+for (const system of ["Windows"]) {
   test(`${system} New chat uses only worktree`, async ({ page }) => {
     const { server, creations } = await setup(system);
     try {
@@ -236,7 +277,7 @@ for (const width of [320, 390, 1440])
           dialog.getByRole("button", { name: "Start chat", exact: true }),
         ).toBeEnabled();
         await expect(
-          dialog.getByRole("radio", { name: "layr", exact: true }),
+          dialog.getByRole("radio", { name: "Layr", exact: true }),
         ).toBeChecked();
         await expect(
           dialog.getByRole("listbox", {
@@ -244,6 +285,7 @@ for (const width of [320, 390, 1440])
             exact: true,
           }),
         ).toBeVisible();
+        await dialog.getByText("Workers", { exact: true }).click();
         await expect(
           dialog.getByRole("listbox", {
             name: "Default subagent model",
@@ -286,7 +328,7 @@ test("the general New chat button opens the controls for one folder", async ({
       dialog.getByRole("button", { name: "Start chat", exact: true }),
     ).toBeEnabled();
     await expect(
-      dialog.getByRole("radio", { name: "layr", exact: true }),
+      dialog.getByRole("radio", { name: "Layr", exact: true }),
     ).toBeChecked();
     expect(creations).toHaveLength(0);
   } finally {
@@ -364,7 +406,9 @@ test("a paired server uses its own platform and catalog", async ({
     await expect(
       dialog.getByRole("button", { name: "Start chat", exact: true }),
     ).toBeEnabled();
-    await expect(dialog.getByText("Workspace", { exact: true })).toHaveCount(0);
+    await expect(
+      dialog.getByRole("radio", { name: "Layr", exact: true }),
+    ).toBeChecked();
     await expect(
       dialog
         .getByRole("listbox", { name: "Main agent model", exact: true })
@@ -376,10 +420,10 @@ test("a paired server uses its own platform and catalog", async ({
     await expect.poll(() => remote.creations.length).toBe(1);
     expect(local.creations).toHaveLength(0);
     expect(remote.creations[0]).toMatchObject({
-      workspaceMode: "worktree",
+      workspaceMode: "layr-native",
       model: "gpt-5.6-sol",
     });
-    expect(remote.modelReads.length).toBeGreaterThan(0);
+    expect(remote.modelReads).toHaveLength(0);
   } finally {
     await local.server.close();
     await remote.server.close();
@@ -406,7 +450,7 @@ test("a filtered Claude lead keeps the server's Codex worker default without inj
       .uncheck();
     await page.keyboard.press("Escape");
     await page
-      .locator(".sidebar-nav")
+      .locator("#sidebar .projects-heading")
       .getByRole("button", { name: "New chat", exact: true })
       .click();
     await expect(
@@ -414,6 +458,7 @@ test("a filtered Claude lead keeps the server's Codex worker default without inj
         .getByRole("listbox", { name: "Main agent model", exact: true })
         .getByRole("option", { selected: true }),
     ).toHaveAccessibleName(/Opus 5.5/);
+    await dialog.getByText("Workers", { exact: true }).click();
     await expect(
       dialog
         .getByRole("listbox", { name: "Default subagent model", exact: true })
@@ -425,6 +470,91 @@ test("a filtered Claude lead keeps the server's Codex worker default without inj
     await expect.poll(() => creations.length).toBe(1);
     expect(creations[0].model).toBe("claude-opus-5-5");
     expect(creations[0]).not.toHaveProperty("worker_defaults");
+  } finally {
+    await server.close();
+  }
+});
+
+for (const system of ["Darwin", "Linux"]) {
+  test(`${system} defaults to native Layr and hides the absent Studio VM`, async ({
+    page,
+  }) => {
+    const { server, creations } = await setup(
+      system,
+      "Local",
+      false,
+      "codex",
+      false,
+    );
+    try {
+      const dialog = await openNewChat(page, server);
+      await expect(
+        dialog.getByRole("radio", { name: "Layr", exact: true }),
+      ).toBeChecked();
+      await expect(
+        dialog.getByRole("radio", { name: "Layr VM", exact: true }),
+      ).toHaveCount(0);
+      await expect(dialog.getByText("WT", { exact: true })).toBeVisible();
+      await dialog
+        .getByRole("button", { name: "Start chat", exact: true })
+        .click();
+      await expect.poll(() => creations.length).toBe(1);
+      expect(creations[0].workspaceMode).toBe("layr-native");
+    } finally {
+      await server.close();
+    }
+  });
+}
+
+test("Linux offers Layr VM only when its server has the Studio VM", async ({
+  page,
+}) => {
+  const { server, creations } = await setup("Linux");
+  try {
+    const dialog = await openNewChat(page, server);
+    await expect(
+      dialog.getByRole("radio", { name: "Layr", exact: true }),
+    ).toBeChecked();
+    await dialog.getByText("Layr VM", { exact: true }).click();
+    await dialog
+      .getByRole("button", { name: "Start chat", exact: true })
+      .click();
+    await expect.poll(() => creations.length).toBe(1);
+    expect(creations[0].workspaceMode).toBe("layr");
+  } finally {
+    await server.close();
+  }
+});
+
+test("Linux without native Layr defaults to WT and explains the unavailable option", async ({
+  page,
+}) => {
+  const { server, creations } = await setup(
+    "Linux",
+    "Local",
+    false,
+    "codex",
+    false,
+    false,
+  );
+  try {
+    const dialog = await openNewChat(page, server);
+    await expect(
+      dialog.getByRole("radio", { name: "Layr", exact: true }),
+    ).toBeDisabled();
+    await expect(
+      dialog.getByRole("radio", { name: "WT", exact: true }),
+    ).toBeChecked();
+    await expect(
+      dialog.getByText("Native Layr requires a btrfs store and root daemon.", {
+        exact: true,
+      }),
+    ).toBeVisible();
+    await dialog
+      .getByRole("button", { name: "Start chat", exact: true })
+      .click();
+    await expect.poll(() => creations.length).toBe(1);
+    expect(creations[0].workspaceMode).toBe("worktree");
   } finally {
     await server.close();
   }

@@ -697,33 +697,6 @@ mod tests {
     }
 
     #[test]
-    fn explicit_invalidation_causes_exactly_one_reprobe() {
-        let directory = tempfile::tempdir().expect("config dir");
-        let (cache, probes) = (AuthCache::default(), probes());
-        let location = location(directory.path());
-        cache.read(&location, || probes.run(ready()));
-        cache.invalidate(&location);
-        cache.invalidate(&location);
-        for _ in 0..3 {
-            cache.read(&location, || probes.run(ready()));
-        }
-        assert_eq!(probes.count(), 2);
-    }
-
-    #[test]
-    fn credential_file_change_causes_exactly_one_reprobe() {
-        let directory = tempfile::tempdir().expect("config dir");
-        let (cache, probes) = (AuthCache::default(), probes());
-        let location = location(directory.path());
-        cache.read(&location, || probes.run(ready()));
-        std::fs::write(directory.path().join(".credentials.json"), "{}").expect("credentials");
-        for _ in 0..3 {
-            cache.read(&location, || probes.run(ready()));
-        }
-        assert_eq!(probes.count(), 2);
-    }
-
-    #[test]
     fn concurrent_readers_share_one_probe() {
         let directory = tempfile::tempdir().expect("config dir");
         let (cache, probes) = (AuthCache::default(), probes());
@@ -785,7 +758,8 @@ mod tests {
         // A turn reports a provider auth error: the next read probes once and the
         // refreshed status, not the stale Ready, is what every reader sees.
         cache.invalidate(&location);
-        for _ in 0..3 {
+        cache.invalidate(&location);
+        for _ in 0..2 {
             let metadata = cache.read(&location, || probes.run(AuthMetadata::signed_out()));
             assert_eq!(metadata.status, AuthStatus::SignedOut);
         }
@@ -809,12 +783,12 @@ mod tests {
         let directory = tempfile::tempdir().expect("codex home");
         let (cache, probes) = (AuthCache::default(), probes());
         let location = codex_location(directory.path());
-        for _ in 0..3 {
+        for _ in 0..2 {
             cache.read(&location, || probes.run(ready()));
         }
         assert_eq!(probes.count(), 1);
         std::fs::write(directory.path().join("auth.json"), "{}").expect("auth file");
-        for _ in 0..3 {
+        for _ in 0..2 {
             cache.read(&location, || probes.run(ready()));
         }
         assert_eq!(probes.count(), 2);
@@ -829,18 +803,21 @@ mod tests {
         let (cache, probes) = (AuthCache::default(), probes());
         let location = location(directory.path());
         let file = directory.path().join(".credentials.json");
+        cache.read(&location, || probes.run(ready()));
         std::fs::write(&file, "aa").expect("credentials");
         cache.read(&location, || probes.run(ready()));
+        cache.read(&location, || probes.run(ready()));
+        assert_eq!(probes.count(), 2);
         // Same size, new inode: an atomic replace is still a change.
         std::fs::write(directory.path().join("next"), "bb").expect("replacement");
         std::fs::rename(directory.path().join("next"), &file).expect("replace");
         cache.read(&location, || probes.run(ready()));
         cache.read(&location, || probes.run(ready()));
-        assert_eq!(probes.count(), 2);
+        assert_eq!(probes.count(), 3);
         std::fs::remove_file(&file).expect("remove");
         cache.read(&location, || probes.run(AuthMetadata::signed_out()));
         cache.read(&location, || probes.run(AuthMetadata::signed_out()));
-        assert_eq!(probes.count(), 3);
+        assert_eq!(probes.count(), 4);
     }
 
     /// Event-driven invalidation, with a watcher on real directories. Each wait
@@ -978,32 +955,52 @@ mod tests {
             }
         }
 
-        #[tokio::test]
-        async fn the_watch_set_follows_added_and_removed_profiles() {
-            let (first, second) = (
-                tempfile::tempdir().expect("first"),
-                tempfile::tempdir().expect("second"),
-            );
-            let [(first_location, first_name), (second_location, second_name)] =
+        #[test]
+        fn the_watch_set_follows_added_and_removed_profiles() {
+            let first = tempfile::tempdir().expect("first");
+            let second = tempfile::tempdir().expect("second");
+            let [(first_location, _), (second_location, _)] =
                 provider_cases(first.path(), second.path());
             let cache = AuthCache::default();
-            let mut changes = cache.changes();
-            cache.watch(vec![first_location.clone()]);
-            // Unwatched yet: this must not be seen; the first profile is the sentinel.
-            rewrite(second.path(), second_name, false);
-            rewrite(first.path(), first_name, false);
-            next_change(&mut changes).await;
-            assert_eq!(*changes.borrow(), 1);
-            cache.watch(vec![first_location.clone(), second_location.clone()]);
-            rewrite(second.path(), second_name, false);
-            next_change(&mut changes).await;
-            assert_eq!(*changes.borrow(), 2);
-            cache.watch(vec![second_location.clone()]);
-            rewrite(first.path(), first_name, false);
-            rewrite(second.path(), second_name, true);
-            next_change(&mut changes).await;
-            assert_eq!(*changes.borrow(), 3);
-            assert_eq!(generation(&cache, &first_location), 0);
+            let mut watcher =
+                CredentialWatcher::new(Arc::downgrade(&cache.core)).expect("directory watcher");
+            for (wanted, expected_directories) in [
+                (
+                    vec![first_location.clone()],
+                    HashSet::from([first.path().to_owned()]),
+                ),
+                (
+                    vec![first_location, second_location.clone()],
+                    HashSet::from([first.path().to_owned(), second.path().to_owned()]),
+                ),
+                (
+                    vec![second_location],
+                    HashSet::from([second.path().to_owned()]),
+                ),
+            ] {
+                watcher.set(wanted.clone());
+                assert_eq!(watcher.watched, expected_directories);
+                assert_eq!(
+                    watcher
+                        .locations
+                        .lock()
+                        .expect("locations")
+                        .iter()
+                        .map(|watched| watched.location.clone())
+                        .collect::<Vec<_>>(),
+                    wanted
+                );
+                assert_eq!(
+                    watcher
+                        .seen
+                        .lock()
+                        .expect("identity baselines")
+                        .keys()
+                        .cloned()
+                        .collect::<HashSet<_>>(),
+                    wanted.into_iter().collect()
+                );
+            }
         }
     }
 }

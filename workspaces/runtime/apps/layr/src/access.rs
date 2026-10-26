@@ -9,40 +9,9 @@
 //! A principal is `user:<uid>`, `group:<gid>` or `*` (everyone).
 
 use crate::store::Project;
-use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub enum Role {
-    None,
-    Reader,
-    Writer,
-    Maintainer,
-    Admin,
-}
-
-impl Role {
-    pub fn parse(s: &str) -> Option<Role> {
-        Some(match s {
-            "none" => Role::None,
-            "reader" => Role::Reader,
-            "writer" => Role::Writer,
-            "maintainer" => Role::Maintainer,
-            "admin" => Role::Admin,
-            _ => return None,
-        })
-    }
-
-    pub fn name(self) -> &'static str {
-        match self {
-            Role::None => "none",
-            Role::Reader => "reader",
-            Role::Writer => "writer",
-            Role::Maintainer => "maintainer",
-            Role::Admin => "admin",
-        }
-    }
-}
+pub use layr_model::policy::{Role, Rule, RuleSpec};
 
 /// The actions of a project and the lowest role that takes each one. Changes inside a line are
 /// not here: they belong to the owner of the line and to the line's protection rule.
@@ -59,7 +28,6 @@ pub const ACTIONS: &[(&str, Role)] = &[
     ("config", Role::Admin),
     ("remote", Role::Admin),
     ("sync", Role::Admin),
-    ("backup", Role::Admin),
     ("gc", Role::Admin),
     ("records", Role::Admin),
     ("fsck", Role::Admin),
@@ -69,75 +37,8 @@ pub fn action_role(action: &str) -> Option<Role> {
     ACTIONS.iter().find(|(a, _)| *a == action).map(|(_, r)| *r)
 }
 
-/// A protection rule of a line name pattern (as stored).
-#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
-pub struct RuleSpec {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub update: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub expect: Option<bool>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub check: Vec<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub direct: Option<bool>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub rewrite: Option<String>,
-    /// Paths (a folder, a file or a glob) whose change needs a higher role than `update`.
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub paths: BTreeMap<String, String>,
-    /// Approvals of the merged state that a merge needs (`layr approve`).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub approvals: Option<u32>,
-    /// Who may approve: principals (an approver matches all of them); none: a maintainer.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub approvers: Vec<String>,
-}
-
-/// The rule that applies to a line: every matching pattern combined, the most restrictive value
-/// of each setting.
-#[derive(Clone, Debug, PartialEq)]
-pub struct Rule {
-    pub update: Role,
-    pub expect: bool,
-    pub check: Vec<String>,
-    pub direct: bool,
-    pub rewrite: Role,
-    pub paths: BTreeMap<String, Role>,
-    pub approvals: u32,
-    pub approvers: Vec<String>,
-}
-
-impl Rule {
-    /// The role a merge needs that changes `path`: `update`, or higher for a path rule.
-    pub fn role_for_path(&self, path: &str) -> Role {
-        self.paths.iter().filter(|(pat, _)| path_matches(pat, path)).map(|(_, r)| *r).fold(self.update, Role::max)
-    }
-}
-
-/// A path rule matches the path itself, everything below a folder, or a glob.
 pub fn path_matches(pattern: &str, path: &str) -> bool {
-    let p = pattern.trim_end_matches('/');
-    path == p || path.starts_with(&format!("{p}/")) || crate::cmd::glob(p, path)
-}
-
-fn role_or(s: &Option<String>, default: Role) -> Role {
-    // An unknown role name is the most restrictive one: admin.
-    s.as_deref().map(|x| Role::parse(x).unwrap_or(Role::Admin)).unwrap_or(default)
-}
-
-impl RuleSpec {
-    fn rule(&self) -> Rule {
-        Rule {
-            update: role_or(&self.update, Role::Maintainer),
-            expect: self.expect.unwrap_or(true),
-            check: self.check.clone(),
-            direct: self.direct.unwrap_or(false),
-            rewrite: role_or(&self.rewrite, Role::Admin),
-            paths: self.paths.iter().map(|(p, r)| (p.clone(), Role::parse(r).unwrap_or(Role::Admin))).collect(),
-            approvals: self.approvals.unwrap_or(0),
-            approvers: self.approvers.clone(),
-        }
-    }
+    layr_model::policy::path_matches(pattern, path)
 }
 
 /// Who acts: a uid and its groups.
@@ -176,7 +77,13 @@ pub struct Policy {
 
 impl Policy {
     pub fn load(p: &Project) -> Policy {
-        let cfg = |k: &str| p.config_value(k).ok().flatten();
+        let cfg = |k: &str| {
+            if p.is_overlay() && matches!(k, "access" | "deny" | "overlay") {
+                p.db.overlay_config(k).ok().flatten()
+            } else {
+                p.config_value(k).ok().flatten()
+            }
+        };
         let mut access = BTreeMap::new();
         let mut grants = BTreeMap::new();
         let now = crate::ids::now_ms();
@@ -194,6 +101,7 @@ impl Policy {
                     access.insert(k, v.as_str().and_then(Role::parse).unwrap_or(Role::None));
                 }
             }
+            None if p.is_overlay() => {}
             None => {
                 // Stores of older versions: one admin (`admin`, before that `lead`) and the
                 // members list (`*` or uids), who were writers.
@@ -255,52 +163,15 @@ impl Policy {
         Ok(())
     }
 
-    /// The rule of a line: all matching patterns, the most restrictive value of each setting.
+    /// The rule of a line or ref: all matching patterns, with the most restrictive values.
     pub fn rule_for(&self, line: &str) -> Option<Rule> {
-        let mut out: Option<Rule> = None;
-        for (pat, spec) in &self.protect {
-            if !(pat == line || crate::cmd::glob(pat, line)) {
-                continue;
-            }
-            let r = spec.rule();
-            out = Some(match out {
-                None => r,
-                Some(o) => Rule {
-                    update: o.update.max(r.update),
-                    expect: o.expect || r.expect,
-                    check: {
-                        let mut c = o.check;
-                        for x in r.check {
-                            if !c.contains(&x) {
-                                c.push(x);
-                            }
-                        }
-                        c
-                    },
-                    direct: o.direct && r.direct,
-                    rewrite: o.rewrite.max(r.rewrite),
-                    paths: {
-                        let mut m = o.paths;
-                        for (p, role) in r.paths {
-                            let e = m.entry(p).or_insert(role);
-                            *e = (*e).max(role);
-                        }
-                        m
-                    },
-                    approvals: o.approvals.max(r.approvals),
-                    approvers: {
-                        let mut v = o.approvers;
-                        for x in r.approvers {
-                            if !v.contains(&x) {
-                                v.push(x);
-                            }
-                        }
-                        v
-                    },
-                },
-            });
+        layr_model::policy::Policy {
+            access: self.access.clone(),
+            grants: self.grants.clone(),
+            deny: self.deny.clone(),
+            protect: self.protect.clone(),
         }
-        out
+        .rule_for(line)
     }
 
     /// Whether `who` may approve for a rule: it matches every listed principal, or with none
@@ -408,6 +279,33 @@ mod tests {
     }
 
     #[test]
+    fn overlay_readers_follow_signed_foreign_policy_without_changing_project_policy() {
+        let root = std::env::temp_dir().join(crate::ids::new_id());
+        let store = crate::store::Store::open(&root).unwrap();
+        let db = crate::db::Db::open(std::path::Path::new(":memory:")).unwrap();
+        let mut record = crate::model::Record::new("project");
+        record.machine = crate::ids::new_id();
+        record.seq = 1;
+        record.time = 1;
+        record.data = serde_json::json!({"config":{"access":{"user:1001":"admin","user:1002":"reader"}}});
+        db.derive(&record, &|_| false, &store.machine.id).unwrap();
+        let mut project =
+            crate::store::Project { store: &store, name: "p%private".into(), dir: root.clone(), id: crate::ids::new_id(), db };
+        assert!(Policy::load(&project).check(&who(1002, &[]), "read").is_ok());
+        assert!(Policy::load(&project).check(&who(1003, &[]), "read").is_err());
+        record.op = "config".into();
+        record.seq = 2;
+        record.time = 2;
+        record.data = serde_json::json!({"config":{"access":{"user:1001":"admin"}}});
+        project.db.derive(&record, &|_| false, &store.machine.id).unwrap();
+        assert!(Policy::load(&project).check(&who(1002, &[]), "read").is_err());
+        project.name = "p".into();
+        assert!(project.db.config("access").unwrap().is_none());
+        drop(project);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn roles_deny_and_rules() {
         let mut p = Policy::default();
         p.access.insert("user:10".into(), Role::Admin);
@@ -452,4 +350,23 @@ mod tests {
         p.protect.insert("x".into(), RuleSpec { update: Some("bogus".into()), ..Default::default() });
         assert_eq!(p.rule_for("x").unwrap().update, Role::Admin);
     }
+}
+
+/// Count exact-state approvals from allowed users other than the incoming states' authors.
+pub fn approval_count(
+    repo: &crate::repo::Repo,
+    policy: &Policy,
+    rule: &Rule,
+    base: Option<&str>,
+    subject: &str,
+) -> anyhow::Result<usize> {
+    Ok(layr_model::protection::approvals(
+        subject,
+        base,
+        layr_model::protection::ApprovalMode::Ref,
+        &repo.p.db.approvals(subject)?,
+        |id| repo.p.db.state(id),
+        |uid| policy.may_approve(rule, &Who::of(uid, crate::ctx::Caller::from_uid(uid).gid)),
+    )?
+    .len())
 }

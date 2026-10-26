@@ -50,7 +50,10 @@ impl WorkspaceActor {
     pub fn image_bound(&self) -> bool {
         self.image_workspace
             || self.image_workspace_ready
-            || crate::image_workspace::image_phase(self.image_workspace_phase.as_deref())
+            || self
+                .image_workspace_phase
+                .as_deref()
+                .is_some_and(|phase| !matches!(phase, "fallback" | "failed"))
             || self.workspace_mode.as_deref() == Some("image")
     }
 }
@@ -87,7 +90,7 @@ pub struct WorktreePlan {
 
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum WorkspaceRefusal {
-    #[error("Image workspaces require macOS ASIF. Use a Git worktree on this server")]
+    #[error("{}", crate::legacy_image_workspace::FINISHED_MESSAGE)]
     ImageWorkspaceUnsupported,
     #[error("VmWorkspaceUnsupported")]
     VmWorkspaceUnsupported,
@@ -126,6 +129,9 @@ pub enum WorkspaceDecision {
 }
 
 pub fn unsupported(actor: &WorkspaceActor) -> Option<WorkspaceRefusal> {
+    if actor.workspace_mode.as_deref() == Some("layr-native") {
+        return None;
+    }
     if actor.execution_mode.as_deref() == Some("vm")
         || actor.workspace_mode.as_deref() == Some("layr")
         || actor.layr_ready

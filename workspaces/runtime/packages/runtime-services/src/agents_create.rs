@@ -8,9 +8,8 @@
 //! provide the authoritative value once that change is merged.
 mod operations;
 pub(crate) use operations::DEFAULT_LEAD_MODEL;
+pub(crate) use operations::set_vm_workspace_fields;
 pub use operations::*;
-pub(crate) use operations::{image_provision_is_current, persist_image_provision_failure};
-pub(crate) use operations::{set_image_workspace_fields, set_vm_workspace_fields};
 
 use rusqlite::{Connection, OptionalExtension};
 use serde_json::{Value, json};
@@ -135,7 +134,13 @@ pub fn publish_agent(transaction: &Transaction<'_>, record: &Value) -> Result<Va
         .ok_or_else(|| StoreError::SchemaMismatch("agent sync projection has no id".to_owned()))?;
     let deleted = crate::event_write::truthy(record.get("deletedAt"));
     let projection = sync_projection(transaction, record)?;
-    SyncDocumentsRepository::put_entity(transaction, "agent", id, projection.clone(), deleted)?;
+    crate::sync_policy::publish_agent_projection(
+        transaction,
+        id,
+        projection.clone(),
+        deleted,
+        &|_, _, _, _| true,
+    )?;
     Ok(projection)
 }
 
@@ -294,6 +299,11 @@ pub(crate) fn ensure_project(
         .get("cwd")
         .and_then(Value::as_str)
         .ok_or_else(|| StoreError::SchemaMismatch("new lead has no project path".to_owned()))?;
+    if crate::project_deletion::admission_version(transaction, path)?
+        .is_some_and(|(_, deleted)| deleted)
+    {
+        return Err(MutationError::Deleted);
+    }
     if load_open_record(transaction, "runtime_projects", path)?.is_some() {
         return Ok(());
     }
@@ -426,7 +436,13 @@ fn create_agent_with_identity(
         .ok_or_else(|| StoreError::SchemaMismatch("agent sync projection has no id".to_owned()))?;
     let deleted = crate::event_write::truthy(record.get("deletedAt"));
     let projection = sync_projection(transaction, &record)?;
-    SyncDocumentsRepository::put_entity(transaction, "agent", id, projection.clone(), deleted)?;
+    crate::sync_policy::publish_agent_projection(
+        transaction,
+        id,
+        projection.clone(),
+        deleted,
+        &|_, _, _, _| true,
+    )?;
     if !draft {
         let event_id = format!("{id}:initial");
         let inserted = crate::event_write::enqueue_event(
@@ -948,8 +964,8 @@ mod tests {
                 .expect("count successful retry rows");
             assert_eq!(
                 (agents, events, projections),
-                (1, 1, 1),
-                "failpoint {index}"
+                (1, 1, 3),
+                "failpoint {index}: agent plus summary/detail projections"
             );
             let (event_status, queue_metadata): (String, i64) = connection
                 .query_row(

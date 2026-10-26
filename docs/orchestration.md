@@ -91,7 +91,7 @@ native Codex delegation disabled in both modes.
 
 **Subagents** sets the account, model, reasoning level, and Fast default for future workers in this team.
 The default is `gpt-6-luna` with `high` reasoning for Codex and Claude leads.
-The orchestrator can select any available model and reasoning level for either
+When the user explicitly requests an override, the orchestrator can select any available model and reasoning level for either
 an implementer or reviewer. Explicit models are not limited by the default
 subagent model's price or provider; account selection and model availability
 still apply.
@@ -104,7 +104,14 @@ model access and reasoning levels. Each batch validates all targets before it
 creates any worker. Parent transfers preserve independent worker settings.
 The lead can override execution defaults in `orchestration_spawn`, but cannot change the user's account choice.
 Omitted fields use the latest root lead defaults, including for workers created by another worker.
-A null default model uses the root lead model. A null effort uses the selected model's native default.
+Implementers use the worker defaults. A null worker default model uses the root lead model.
+Reviewers use the team review defaults, falling back to the caller's model and effort when no review model is configured.
+Both `orchestration_spawn` with `role: "reviewer"` and `orchestration_review` use the
+[review settings owner](../workspaces/runtime/packages/runtime-services/src/native_review.rs).
+An explicit reviewer model equal to the caller's model keeps the caller's effort;
+a different explicit model without effort uses its native default. Explicit effort wins,
+including `effort: null` on spawn for the selected model's native default.
+A null default effort uses the selected model's native default.
 Fast defaults to off. The main agent's reasoning and Fast settings do not become worker defaults.
 Explicit profile model and effort values override team defaults; explicit spawn fields override the profile.
 A profile's null effort leaves the team default in effect.
@@ -218,7 +225,9 @@ The server creates a managed reviewer in `cwd` without sending an initial user
 turn. `cwd` defaults to the caller's folder and must be inside a git repository;
 otherwise the call fails and no reviewer is created. It runs `review/start` on that reviewer's native thread.
 The caller's active turn continues. The reviewer uses read-only permissions and
-the caller's model, unless native `review_model` selects another model.
+the team review defaults, then the caller's model and effort. Explicit model and effort
+override these defaults as described above. Studio sets the reviewer's native
+`review_model` to the selected model, so account configuration cannot replace it.
 Team concurrency, active agent limits, and budget admission apply. Completed,
 failed, interrupted, and stopped paused agents do not use active agent slots.
 Completion sends one
@@ -785,56 +794,31 @@ Each team defaults to `DEFAULT_SUBAGENT_CONCURRENCY` concurrent subagents and
 `DEFAULT_GLOBAL_CONCURRENCY`). Lead turns have priority when a slot becomes free.
 Lowering a limit does not interrupt existing turns.
 
-Chat creation selects `workspaceMode`: `layr`, `image`, or `worktree`.
-A new lead chat on a Mac server defaults to `layr`. A top-level task agent from
-`POST /api/agents` defaults to `worktree`. Linux servers support `worktree` only.
+Chat creation selects `workspaceMode`: `layr-native`, `layr`, or `worktree`.
+New lead chats default to native Layr on macOS. Linux selects native Layr only
+when the server reports a ready native capability; otherwise it selects WT.
+`Layr VM` appears only when the server has the Studio Linux VM.
+`WT` selects a Git worktree.
 
-| Chat mode  | Environment                         | Worker workspace         |
-| ---------- | ----------------------------------- | ------------------------ |
-| `layr`     | Studio Linux VM, including the lead | Separate owned layr line |
-| `image`    | Native macOS                        | ASIF image               |
-| `worktree` | Native host                         | Git worktree             |
+Workers inherit the chat mode. Native Layr workers use separate owned lines.
+Worktrees use a committed Git base. Shared workers use the selected folder.
+Reviewers keep read-only access.
+Use `server` and an absolute remote `cwd` for work on a paired machine.
 
-Workers inherit the chat mode. `orchestration_spawn` accepts `cwd` within the
-lead's workspace. Native workers can select `workspace: "image"`, `"worktree"`,
-or deliberate `"shared"` edits. Images require macOS and include uncommitted
-changes. Worktrees use a committed Git base. Linux image requests fall back to
-worktrees with a clear message. Native reviewers use the selected folder with
-read-only access. Layr reviewers use separate read-only lines.
-Use `server` and an absolute remote `cwd` for native work on a paired machine.
+The chat badge shows `Layr`, `Layr VM`, or `WT`.
+Shared workers show `SHARED`. Hover or focus the badge for its path.
+See [VM chats](linux-vm-workspaces.md).
 
-The first layr chat imports the source once. Later chats reuse the VM main line.
-The Mac folder stays separate. Studio saves a state after each agent turn.
-Workers submit an exact layr state ID. Acceptance merges that state with
-`layr merge <line> --expect <state>`. Archive removes the worker line.
-The host keeps credential refresh. Guest profiles receive access credentials only.
-See [layr VM chats](docs/linux-vm-workspaces.md) and
-[macOS images](docs/workspace-images.md) for their lifecycle and checks.
-
-The chat badge shows `LAYR`, `ASIF`, or `WT` for the selected mode.
-Native shared workers show `SHARED`. Hover or focus the badge for its path.
-
-On a real Mac, default-config agent start took 2.610 s at 50,000 files and 10.104 s at
-200,000 files with no staged source change. After source `git add`, it took 3.757 s and
-10.212 s. The first `git status` took 0.983 s and 4.661 s with no staged change, and 0.844 s
-and 4.013 s after `git add`. At 200,000 files, staged start used 5.365 s for source Git status,
-0.618 s for path copy, 0.610 s for index entry reads, and 1.857 s for index changes. It did not
-mirror Git metadata or restat paths. The base build took 361.245 s, including 87.022 s for file
-copy and 223.949 s for index handling. These step times overlap.
-The base-copy worker now splits nested directory trees into balanced tar shards. This fixed the
-earlier 443.842 s 50,000-file build, which had put nearly all payload files in one shard.
-A native agent can set `base_ref` to a branch, tag, or commit. Studio gives the requested ref and
-resolved commit to the worker in its first input. The worker checks it out. Studio does not
-run Git checkpoints or collect worker changes inside image copies. The worker result includes
-the copy path, source path, copy time, and confirmation that uncommitted changes were copied.
-Ask the worker to commit on a named branch. Integrate its changes by reading files from the
-copy or fetching the branch, for example `git fetch <path> <branch>`.
+A Git worktree can select `base_ref` as a branch, tag, or commit.
+Studio gives the resolved commit to the worker before its first turn.
+Ask the worker to commit on a named branch.
+Use a reviewed Layr state for native Layr and VM task acceptance.
 Only the lead creates agents. Unfinished work of a failed or deleted worker returns to ready.
 Native reviewers use the chosen folder. Their sandbox is read-only when YOLO is off.
 VM reviewers always use read-only lines.
-The lead owns review and integration. Acceptance merges a reviewed VM state.
-The runtime does not merge native worker changes.
-Archive retains a macOS image, removes a safe Git worktree, or removes a layr worker line.
+The lead owns review and integration. Acceptance merges a reviewed Layr state.
+Archive removes a safe Git worktree or an owned Layr line.
+Legacy workspaces keep their files and stored records.
 
 Creating ready work with an assigned worker queues one `work_ready` event.
 Changing the owner or releasing blocked work also notifies the assigned worker.
@@ -1342,12 +1326,11 @@ Archive requires a reason. It hides a worker through the existing tombstone filt
 and stores an archive receipt with its actor, time, epoch, and unknown tool request IDs.
 Active work blocks archive. A finished worker can keep unknown tool outcomes when
 no operation can still run. A command with a completed turn and a missing process
-is marked lost; its outcome stays unknown. Studio detaches and retains image
-workspaces. A Git
-worktree is removed only when Studio can verify its registration and archive ref.
-Dirty and nested worktrees stay with an exact reason. Restore recreates the saved
-image workspace by reattaching it, or recreates a Git worktree from its saved branch. Deleting
-the worker removes its image. History and native threads remain.
+is marked lost; its outcome stays unknown. Legacy workspaces retain their files.
+A Git worktree is removed only when Studio can verify its registration and archive ref.
+Dirty and nested worktrees stay with an exact reason.
+Restore recreates a Git worktree from its saved branch.
+History and native threads remain.
 Archive children before their parent. A later user deletion or stop invalidates
 the archive receipt. Repeated calls keep the same request result.
 
@@ -1383,7 +1366,7 @@ Archive commit and workspace cleanup follow one flow:
 4. Recover through the saved tool receipt after a lost response. A later archive
    call preserves the original archive identity; uncertain effects stay held.
 
-After an image detach interruption, make a new `archive` call to finish detaching. After partial Git removal, make a new `archive` call to retry cleanup. Studio
+After partial Git removal, make a new `archive` call to retry cleanup. Studio
 preserves the failed cleanup record and Git error. It can repair the exact saved
 Git registration without changing worktree files. Modified or untracked files
 stay. A missing or changed original `.git` file leaves the folder for inspection.
@@ -1395,8 +1378,7 @@ A failed remote check keeps the worker. An exact retry of an old stale-main
 accept receipt repeats only the archive check, not the task decision.
 For `orchestration_task` actions `accept` and `reject`, supply the decision text
 in the `result` field.
-`maintenance_report` lists old image workspaces, bases, and Git worktrees without
-removing them. Disk reports include workspace and base sizes.
+`maintenance_report` lists retained workspaces and Git worktrees without removing them.
 
 Agent tools accept a unique ID prefix of at least eight characters among agents
 visible to the caller. Ambiguous and unknown IDs return candidate full IDs.

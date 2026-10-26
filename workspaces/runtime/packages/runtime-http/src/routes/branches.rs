@@ -1372,9 +1372,11 @@ mod tests {
     }
     #[tokio::test]
     async fn branch_before_handles_same_page_first_and_missing_turns() {
-        for (selected, predecessor, pages) in
-            [(95, Some("turn-94"), 1), (1, None, 10), (0, None, 10)]
-        {
+        for (selected, predecessor, pages, expected_method) in [
+            (95, Some("turn-94"), 1, Some(Method::ThreadFork)),
+            (1, None, 10, Some(Method::ThreadStart)),
+            (0, None, 10, None),
+        ] {
             let (port, operation, _) = lookup(selected, true, false).await;
             assert_eq!(*port.body_bytes.lock().expect("bytes"), 0);
             let requests = port.requests.lock().expect("requests");
@@ -1399,11 +1401,7 @@ mod tests {
                 );
                 assert_eq!(
                     requests.last().expect("branch").method,
-                    if predecessor.is_some() {
-                        Method::ThreadFork
-                    } else {
-                        Method::ThreadStart
-                    }
+                    expected_method.expect("branch method")
                 );
             }
         }

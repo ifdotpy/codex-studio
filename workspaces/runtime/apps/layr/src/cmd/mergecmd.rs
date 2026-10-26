@@ -40,7 +40,7 @@ pub fn merge_states(
         base_id: base,
         ours_id: ours,
         theirs_id: theirs,
-        ours_label: "HEAD",
+        ours_label: "head",
         theirs_label,
         config: &cfg,
         run_as: ctx.caller.driver_ids(),
@@ -191,6 +191,13 @@ fn finish(
     if let Err(e) = repo.check_move(ctx, line, new_head) {
         return Err(fail(e));
     }
+    if op == "merge" && new_head != line.head {
+        if let Err(e) =
+            crate::secrets::check_between(ctx, repo, &repo.state_src(&line.head)?, &repo.state_src(new_head)?, &line.head)
+        {
+            return Err(fail(e));
+        }
+    }
     // A line with overlays: the full trees of the old and the new head, with the overlays in
     // place, so the update never touches an overlay file it does not change.
     let layers = match ovl {
@@ -219,9 +226,13 @@ fn finish(
         if let Err(e) = o.record(ctx, repo) {
             return Err(fail(e));
         }
-        data["stack"] = crate::overlay::stack_data(&line.id, &layers);
+        data["stack"] = repo.public_stack_data(&line.id, &layers)?;
         data["line"] = serde_json::json!(line.id);
-        data["overlays"] = serde_json::json!(o.names());
+        data["overlays"] = serde_json::json!(o
+            .names()
+            .into_iter()
+            .filter(|n| !repo.need_overlay(n).map(|i| i.hidden).unwrap_or(true))
+            .collect::<Vec<_>>());
     }
     repo.move_head(ctx, op, line, new_head, states, working_before, data)?;
     if let Some(v) = view {
@@ -238,6 +249,7 @@ fn finish(
 /// Path rules of a protected line: every path that the merge changes needs the role of its
 /// rule (`layr protect <line> --path <path>=<role>`).
 fn check_paths(ctx: &Ctx, repo: &Repo, line: &Line, rule: Option<&crate::access::Rule>, head: &str, result: &str) -> Result<()> {
+    crate::secrets::check_between(ctx, repo, &repo.state_src(head)?, &repo.state_src(result)?, head)?;
     let rule = match rule {
         Some(r) if !r.paths.is_empty() && !ctx.caller.is_root() => r,
         _ => return Ok(()),
@@ -245,8 +257,10 @@ fn check_paths(ctx: &Ctx, repo: &Repo, line: &Line, rule: Option<&crate::access:
     let role = repo.policy().role(&Repo::who(ctx));
     for c in changes::file_changes(&repo.state_root(head)?, &repo.state_root(result)?)? {
         for p in [Some(c.path.clone()), c.old_path.clone()].into_iter().flatten() {
-            let need = rule.role_for_path(&p);
-            if role < need {
+            let requirement =
+                layr_model::protection::path_requirements([p.as_str()], role, |path| rule.role_for_path(path)).remove(0);
+            let need = requirement.role;
+            if requirement.met != Some(true) {
                 return Err(exit(
                     1,
                     format!(
@@ -278,24 +292,20 @@ fn check_approvals(
         _ => return Ok(()),
     };
     let pol = repo.policy();
-    let have: std::collections::BTreeSet<String> = repo.ancestors(head)?.into_iter().collect();
-    let mut authors = std::collections::BTreeSet::new();
-    for s in repo.ancestors(theirs)? {
-        if !have.contains(&s) {
-            if let Some(r) = repo.p.db.state(&s)? {
-                authors.insert(r.author.uid);
+    let counted = layr_model::protection::approvals(
+        theirs,
+        Some(head),
+        layr_model::protection::ApprovalMode::Merge,
+        &repo.p.db.approvals(theirs)?,
+        |id| {
+            let state = repo.p.db.state(id)?;
+            if state.as_ref().is_some_and(|state| state.kind.auxiliary()) {
+                repo.source_state(id)?;
             }
-        }
-    }
-    let counted: Vec<u32> = repo
-        .p
-        .db
-        .approvals(theirs)?
-        .into_iter()
-        .map(|(u, _)| u)
-        .filter(|u| !authors.contains(u))
-        .filter(|u| pol.may_approve(rule, &crate::access::Who::of(*u, crate::ctx::Caller::from_uid(*u).gid)))
-        .collect();
+            Ok(state)
+        },
+        |uid| pol.may_approve(rule, &crate::access::Who::of(uid, crate::ctx::Caller::from_uid(uid).gid)),
+    )?;
     if (counted.len() as u32) < rule.approvals {
         let from: Vec<String> = rule.approvers.iter().map(|k| crate::access::show_principal(k)).collect();
         return Err(exit(
@@ -313,10 +323,16 @@ fn check_approvals(
     Ok(())
 }
 
-/// The checks of a protected line, on the state the line would take. They run as the caller
-/// without the project lock; a passing check of the same state and command is reused. Then the
-/// lock is taken again and the line must still be at `head`. Returns the lock (held until the
-/// merge finishes) and the paths with local changes in the line's folder now.
+/// The authorization and reviewed source before the merge releases the project lock.
+struct MergeGuard<'a> {
+    expect: bool,
+    rule: Option<&'a crate::access::Rule>,
+    source: &'a str,
+}
+
+/// Run checks without the project lock. After taking it again, revalidate the target,
+/// permission, protection and check commands before the merge can install its result.
+#[allow(clippy::too_many_arguments)]
 fn run_line_checks(
     ctx: &Ctx,
     repo: &Repo,
@@ -324,8 +340,11 @@ fn run_line_checks(
     head: &str,
     candidate: &str,
     checks: &[String],
+    guard: &MergeGuard<'_>,
     quiet: bool,
+    queue: Option<&QueuedMerge<'_>>,
 ) -> Result<(crate::store::Lock, std::collections::BTreeSet<String>)> {
+    let mut commands = Vec::new();
     for name in checks {
         let cmd =
             repo.p.config_value(&format!("check.{name}"))?.and_then(|v| v.as_str().map(|s| s.to_string())).ok_or_else(|| {
@@ -337,10 +356,17 @@ fn run_line_checks(
                     ),
                 )
             })?;
-        if repo.p.db.checks(candidate)?.iter().any(|c| c.0 == cmd && c.1 == 0) {
+        commands.push((name, cmd.clone()));
+        let argv = layr_model::protection::check_argv(&cmd);
+        let evidence = layr_model::protection::required_check(
+            name,
+            Some(&cmd),
+            repo.p.db.check_exit(candidate, &argv, Some(0))?.is_some(),
+            None,
+        );
+        if evidence.result == layr_model::protection::CheckResult::Passed {
             continue;
         }
-        let argv = vec!["sh".to_string(), "-c".to_string(), cmd.clone()];
         let code = super::admin::run_check(ctx, repo, candidate, &argv, &cmd, quiet)?;
         if code != 0 {
             return Err(exit(
@@ -354,10 +380,38 @@ fn run_line_checks(
             ));
         }
     }
+    if let Some(q) = queue.filter(|q| q.run_probes) {
+        let outcome = crate::probes::queue_run(ctx, repo, head, candidate)?;
+        let reason = outcome["probes"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .flat_map(|probe| probe["reasons"].as_array().into_iter().flatten())
+            .filter_map(serde_json::Value::as_str)
+            .next()
+            .map(str::to_owned);
+        *q.probes.borrow_mut() = Some(outcome);
+        if let Some(reason) = reason {
+            anyhow::bail!("{reason}");
+        }
+    }
     let lock = repo.p.lock()?;
     let now = repo.line(&line.id)?;
     if now.head != head {
-        return Err(exit(1, format!("error: line '{}' moved while its checks ran; merge again", line.name)));
+        return Err(target_moved(&line.name));
+    }
+    let rule = repo.authorize_line(ctx, &now, crate::repo::LineOp::Merge { expect: guard.expect })?;
+    if rule.as_ref() != guard.rule {
+        return Err(exit(1, "merge protection changed during checks; run the merge again"));
+    }
+    for (name, command) in commands {
+        if repo.p.config_value(&format!("check.{name}"))?.and_then(|v| v.as_str().map(str::to_owned)).as_ref() != Some(&command) {
+            return Err(exit(1, format!("merge check '{name}' changed during checks; run the merge again")));
+        }
+    }
+    check_paths(ctx, repo, &now, rule.as_ref(), head, candidate)?;
+    if candidate != head {
+        check_approvals(ctx, repo, &now, rule.as_ref(), head, guard.source)?;
     }
     let (st, _scan, _it, _idx) = repo.status(&now)?;
     Ok((lock, local_paths(repo, &now, &st)?))
@@ -400,7 +454,8 @@ pub fn merge(ctx: &Ctx, args: &[String]) -> Result<i32> {
         .flag("--abort")
         .flag("--continue")
         .flag("--no-edit")
-        .flag("--no-commit")
+        .flag("--no-save")
+        .removed("--no-commit", "--no-save")
         .flag("-q|--quiet")
         .flag("--stat")
         .flag("--no-stat")
@@ -413,17 +468,140 @@ pub fn merge(ctx: &Ctx, args: &[String]) -> Result<i32> {
         return super::admin::undo_last_of(ctx, &h.repo, &line, &["merge", "pull"]);
     }
     if a.has("--continue") {
-        return Err(exit(1, "layr merges never stop on a conflict: fix the files and run 'layr commit'."));
+        return Err(exit(1, "layr merges never stop on a conflict: fix the files and run 'layr save -m <message>'."));
     }
     let rev = a.pos.first().ok_or_else(|| exit(128, "usage: layr merge <rev> [--expect <state>]"))?.clone();
     merge_rev(ctx, &h.repo, &line, &rev, &a)
 }
 
+#[derive(Debug)]
+pub struct TargetMoved;
+impl std::fmt::Display for TargetMoved {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("target head changed")
+    }
+}
+impl std::error::Error for TargetMoved {}
+
+fn target_moved(name: &str) -> anyhow::Error {
+    exit(1, format!("error: line '{name}' moved while its merge ran; merge again")).context(TargetMoved)
+}
+
+struct QueuedMerge<'a> {
+    entry: &'a crate::model::QueueEntry,
+    expected_head: &'a str,
+    attempts: u32,
+    run_probes: bool,
+    probes: std::cell::RefCell<Option<serde_json::Value>>,
+}
+
+/// A queue entry pins its source and compares the target under the merge's project lock.
+pub fn merge_queued(
+    ctx: &Ctx,
+    repo: &Repo,
+    line: &Line,
+    entry: &crate::model::QueueEntry,
+    expected_head: &str,
+    attempts: u32,
+) -> (Result<i32>, Option<serde_json::Value>) {
+    let run_probes = match crate::probes::queue_enabled(repo) {
+        Ok(enabled) => enabled,
+        Err(error) => return (Err(error), None),
+    };
+    let queue = QueuedMerge { entry, expected_head, attempts, run_probes, probes: Default::default() };
+    let result = (|| {
+        let source = repo.source_state(&entry.state)?;
+        if !source.conflicts.is_empty() {
+            return Err(exit(
+                1,
+                format!(
+                    "queued state has conflicts: {}",
+                    source.conflicts.iter().map(|c| c.path.as_str()).collect::<Vec<_>>().join(", ")
+                ),
+            ));
+        }
+        let mut args = crate::args::Parsed::default();
+        args.values.insert("--expect".into(), vec![entry.state.clone()]);
+        args.flags.insert("-q".into(), 1);
+        merge_rev_inner(ctx, repo, line, &entry.state, &args, Some(&queue))
+    })();
+    (result, queue.probes.into_inner())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn finish_queued(
+    ctx: &Ctx,
+    repo: &Repo,
+    line: &Line,
+    new_head: &str,
+    states: Vec<StateRec>,
+    working_before: Option<String>,
+    local: &std::collections::BTreeSet<String>,
+    data: serde_json::Value,
+    ovl: Option<&OverlayMerge>,
+    queue: Option<&QueuedMerge<'_>>,
+) -> Result<Vec<changes::Change>> {
+    let data = match queue {
+        Some(q) => match super::queue::complete_data(repo, q.entry, new_head, q.attempts, q.probes.borrow().clone(), data) {
+            Ok(data) => data,
+            Err(error) => {
+                repo.discard_states(&states);
+                if let Some(ovl) = ovl {
+                    ovl.discard(repo);
+                }
+                return Err(error);
+            }
+        },
+        None => data,
+    };
+    finish(
+        ctx,
+        repo,
+        line,
+        if queue.is_some() { "queue.result" } else { "merge" },
+        new_head,
+        states,
+        working_before,
+        local,
+        data,
+        ovl,
+    )
+}
+
 pub fn merge_rev(ctx: &Ctx, repo: &Repo, line: &Line, rev: &str, a: &crate::args::Parsed) -> Result<i32> {
-    let theirs = revs::resolve(repo, Some(line), rev)?;
-    let theirs_line = repo.p.db.line_by_name(rev)?;
-    if let Some(e) = a.get("--expect") {
-        let want = revs::resolve(repo, Some(line), e)?;
+    merge_rev_inner(ctx, repo, line, rev, a, None)
+}
+
+fn merge_rev_inner(
+    ctx: &Ctx,
+    repo: &Repo,
+    line: &Line,
+    rev: &str,
+    a: &crate::args::Parsed,
+    queue: Option<&QueuedMerge<'_>>,
+) -> Result<i32> {
+    // Pin the expectation before waiting, but resolve the source only under the project lock.
+    let want = a
+        .get("--expect")
+        .map(|e| if queue.is_some() { Ok(e.to_string()) } else { revs::resolve(repo, Some(line), e) })
+        .transpose()?;
+    let expect = want.is_some();
+    repo.authorize_line(ctx, line, crate::repo::LineOp::Merge { expect })?;
+    let lock = repo.p.lock()?;
+    let line = repo.line(&line.id)?;
+    if let Some(q) = queue {
+        if line.head != q.expected_head {
+            return Err(target_moved(&line.name));
+        }
+        if repo.p.db.queue_entry(&q.entry.id)?.as_ref() != Some(q.entry) {
+            return Err(exit(1, "queue entry changed before the merge"));
+        }
+    }
+    let (theirs, theirs_line) = match queue {
+        Some(q) => (q.entry.state.clone(), None),
+        None => (revs::resolve(repo, Some(&line), rev)?, repo.p.db.line_by_name(rev)?),
+    };
+    if let Some(want) = want {
         if want != theirs {
             return Err(exit(
                 1,
@@ -435,10 +613,9 @@ pub fn merge_rev(ctx: &Ctx, repo: &Repo, line: &Line, rev: &str, a: &crate::args
             ));
         }
     }
-    let expect = a.get("--expect").is_some();
-    let (lock, w) = work::begin(ctx, repo, line, crate::repo::LineOp::Merge { expect })?;
-    let rule = repo.policy().rule_for(&line.name);
-    let line = repo.line(&line.id)?;
+    let rule = repo.authorize_line(ctx, &line, crate::repo::LineOp::Merge { expect })?;
+    let w = repo.working_state(ctx, &line, if queue.is_some() { "before a queued merge" } else { "before a layr command" })?;
+    let guard = MergeGuard { expect, rule: rule.as_ref(), source: &theirs };
     let head = line.head.clone();
     let label = theirs_line.as_ref().map(|l| l.name.clone()).unwrap_or_else(|| rev.to_string());
     let message = a.get("-m").map(|s| s.to_string()).unwrap_or_else(|| {
@@ -454,18 +631,50 @@ pub fn merge_rev(ctx: &Ctx, repo: &Repo, line: &Line, rev: &str, a: &crate::args
     };
     let up_to_date = theirs == head || repo.is_ancestor(&theirs, &head)?;
     if up_to_date && theirs_line.as_ref().map(|t| repo.layers(t).map(|v| v.is_empty())).transpose()?.unwrap_or(true) {
-        outln!(ctx, "Already up to date.");
+        if queue.is_some() {
+            let _relock = if queue.is_some_and(|q| q.run_probes) {
+                drop(lock);
+                Some(run_line_checks(ctx, repo, &line, &head, &head, &[], &guard, true, queue)?.0)
+            } else {
+                None
+            };
+            finish_queued(
+                ctx,
+                repo,
+                &line,
+                &head,
+                vec![],
+                w,
+                &std::collections::BTreeSet::new(),
+                serde_json::json!({"theirs":theirs,"up_to_date":true}),
+                None,
+                queue,
+            )?;
+        }
+        if !a.has("-q") {
+            outln!(ctx, "Already up to date.");
+        }
         return Ok(0);
     }
     let (st, _scan, _it, _idx) = repo.status(&line)?;
     if !st.staged.is_empty() {
-        return Err(exit(1, "error: you have staged changes; commit or stash them before merging."));
+        return Err(exit(1, "error: you have staged changes; save or park them before merging."));
     }
     let mut local = local_paths(repo, &line, &st)?;
     let quiet = a.has("-q");
     let checks = rule.as_ref().map(|r| r.check.clone()).unwrap_or_default();
     // The follow overlays merge with the line: all of them or none.
     let ovl = plan_overlays(ctx, repo, &line, theirs_line.as_ref(), &label, &message)?;
+    if queue.is_some() && ovl.conflicts > 0 {
+        let paths: Vec<_> = ovl
+            .moves
+            .iter()
+            .filter_map(|(_, _, _, s)| s.as_ref())
+            .flat_map(|s| s.conflicts.iter().map(|c| c.path.as_str()))
+            .collect();
+        ovl.discard(repo);
+        return Err(exit(1, format!("queued merge has overlay conflicts: {}", paths.join(", "))));
+    }
     if !checks.is_empty() && ovl.conflicts > 0 {
         ovl.discard(repo);
         return Err(exit(
@@ -490,43 +699,44 @@ pub fn merge_rev(ctx: &Ctx, repo: &Repo, line: &Line, rev: &str, a: &crate::args
             return Ok(0);
         }
         // Only the overlays changed: the shared set stays.
-        finish(
+        finish_queued(
             ctx,
             repo,
             &line,
-            "merge",
             &head,
             vec![],
             w,
             &local,
             serde_json::json!({"theirs": theirs, "overlays_only": true}),
             Some(&ovl),
+            queue,
         )?;
         report(ctx);
         return Ok(if ovl.conflicts > 0 { 1 } else { 0 });
     }
     let ff = repo.is_ancestor(&head, &theirs)?;
     let mut _relock = None;
+    let run_probes = queue.is_some_and(|q| q.run_probes);
     if ff && !a.has("--no-ff") && !a.has("--squash") {
         check_paths(ctx, repo, &line, rule.as_ref(), &head, &theirs)?;
         check_approvals(ctx, repo, &line, rule.as_ref(), &head, &theirs)?;
-        if !checks.is_empty() {
+        if !checks.is_empty() || run_probes {
             drop(lock);
-            let (l, paths) = run_line_checks(ctx, repo, &line, &head, &theirs, &checks, quiet)?;
+            let (l, paths) = run_line_checks(ctx, repo, &line, &head, &theirs, &checks, &guard, quiet, queue)?;
             _relock = Some(l);
             local = paths;
         }
-        finish(
+        finish_queued(
             ctx,
             repo,
             &line,
-            "merge",
             &theirs,
             vec![],
             w,
             &local,
             serde_json::json!({"theirs": theirs, "fast_forward": true}),
             Some(&ovl),
+            queue,
         )?;
         if !quiet {
             outln!(ctx, "Updating {}..{}\nFast-forward", ids::short(&head), ids::short(&theirs));
@@ -550,6 +760,12 @@ pub fn merge_rev(ctx: &Ctx, repo: &Repo, line: &Line, rev: &str, a: &crate::args
     let (state, out) = merge_states(ctx, repo, &line, &base, &head, &theirs, &label, parents, &message)?;
     let sid = state.id.clone();
     let nconf = out.conflicts.len();
+    if queue.is_some() && nconf > 0 {
+        let paths = out.conflicts.iter().map(|c| c.path.as_str()).collect::<Vec<_>>().join(", ");
+        repo.discard_states(std::slice::from_ref(&state));
+        ovl.discard(repo);
+        return Err(exit(1, format!("queued merge has conflicts: {paths}")));
+    }
     let mut states = vec![state];
     if let Err(e) = check_paths(ctx, repo, &line, rule.as_ref(), &head, &sid)
         .and_then(|_| check_approvals(ctx, repo, &line, rule.as_ref(), &head, &theirs))
@@ -558,7 +774,7 @@ pub fn merge_rev(ctx: &Ctx, repo: &Repo, line: &Line, rev: &str, a: &crate::args
         ovl.discard(repo);
         return Err(e);
     }
-    if !checks.is_empty() {
+    if !checks.is_empty() || run_probes {
         if nconf > 0 {
             repo.discard_states(&states);
             ovl.discard(repo);
@@ -574,21 +790,21 @@ pub fn merge_rev(ctx: &Ctx, repo: &Repo, line: &Line, rev: &str, a: &crate::args
         rec.data = serde_json::json!({"line": line.id, "theirs": theirs});
         repo.commit_record(ctx, rec)?;
         drop(lock);
-        let (l, paths) = run_line_checks(ctx, repo, &line, &head, &sid, &checks, quiet)?;
+        let (l, paths) = run_line_checks(ctx, repo, &line, &head, &sid, &checks, &guard, quiet, queue)?;
         _relock = Some(l);
         local = paths;
     }
-    finish(
+    finish_queued(
         ctx,
         repo,
         &line,
-        "merge",
         &sid,
         states,
         w,
         &local,
         serde_json::json!({"theirs": theirs, "base": base, "squash": a.has("--squash"), "conflicts": nconf}),
         Some(&ovl),
+        queue,
     )?;
     for m in &out.messages {
         outln!(ctx, "{m}");
@@ -597,7 +813,7 @@ pub fn merge_rev(ctx: &Ctx, repo: &Repo, line: &Line, rev: &str, a: &crate::args
     if nconf > 0 {
         outln!(
             ctx,
-            "Automatic merge left {nconf} conflict(s) in state {}: fix them, then 'layr add' and 'layr commit'.",
+            "Automatic merge left {nconf} conflict(s) in state {}: fix them, then 'layr add' and 'layr save -m <message>'.",
             ids::short(&sid)
         );
         return Ok(1);
@@ -611,7 +827,8 @@ pub fn merge_rev(ctx: &Ctx, repo: &Repo, line: &Line, rev: &str, a: &crate::args
 
 fn pick(ctx: &Ctx, args: &[String], revert: bool) -> Result<i32> {
     let spec = Spec::new()
-        .flag("-n|--no-commit")
+        .flag("-n|--no-save")
+        .removed("--no-commit", "--no-save")
         .flag("-x")
         .flag("--no-edit")
         .flag("--abort")
@@ -627,7 +844,7 @@ fn pick(ctx: &Ctx, args: &[String], revert: bool) -> Result<i32> {
         return super::admin::undo_last_of(ctx, repo, &line, &[if revert { "revert" } else { "cherry-pick" }]);
     }
     if a.pos.is_empty() {
-        return Err(exit(128, "usage: layr cherry-pick <rev>..."));
+        return Err(exit(128, if revert { "usage: layr invert <rev>..." } else { "usage: layr pick <rev>..." }));
     }
     let mut picks = Vec::new();
     for r in &a.pos {
@@ -645,7 +862,7 @@ fn pick(ctx: &Ctx, args: &[String], revert: bool) -> Result<i32> {
     let mut line = repo.line(&line.id)?;
     let (st, _scan, _it, _idx) = repo.status(&line)?;
     if !st.staged.is_empty() {
-        return Err(exit(1, "error: you have staged changes; commit or stash them first."));
+        return Err(exit(1, "error: you have staged changes; save or park them first."));
     }
     let local = st.local_paths();
     let mut code = 0;
@@ -659,9 +876,9 @@ fn pick(ctx: &Ctx, args: &[String], revert: bool) -> Result<i32> {
         let (base, theirs) = if revert { (p.clone(), parent.clone()) } else { (parent.clone(), p.clone()) };
         let subject = c.message.lines().next().unwrap_or("").to_string();
         let message = if revert {
-            format!("Revert \"{subject}\"\n\nThis reverts state {}.", ids::display(&p))
+            format!("Invert \"{subject}\"\n\nThis inverts state {}.", ids::display(&p))
         } else if a.has("-x") {
-            format!("{}\n\n(cherry picked from state {})", c.message, ids::display(&p))
+            format!("{}\n\n(picked from state {})", c.message, ids::display(&p))
         } else {
             c.message.clone()
         };
@@ -670,6 +887,7 @@ fn pick(ctx: &Ctx, args: &[String], revert: bool) -> Result<i32> {
             merge_states(ctx, repo, &line, &base, &line.head, &theirs, &label, vec![line.head.clone()], &message)?;
         if !revert {
             state.author = c.author.clone();
+            state.change_id = c.change_id.clone();
         }
         let sid = state.id.clone();
         let n = out.conflicts.len();
@@ -682,7 +900,14 @@ fn pick(ctx: &Ctx, args: &[String], revert: bool) -> Result<i32> {
             vec![state],
             first_w.take(),
             &local,
-            serde_json::json!({"source": p}),
+            if revert {
+                serde_json::json!({"source": p})
+            } else {
+                serde_json::json!({"source":p,"version":crate::model::VersionOperation {
+                    state: sid.clone(), kind: "pick".into(), source: p.clone(),
+                    target_line: Some(line.id.clone()), target_head: line.head.clone(),
+                }})
+            },
             None,
         )?;
         line = repo.line(&line.id)?;
@@ -692,8 +917,8 @@ fn pick(ctx: &Ctx, args: &[String], revert: bool) -> Result<i32> {
         if n > 0 {
             outln!(
                 ctx,
-                "{} {label} left {n} conflict(s) in state {}: fix them and commit.",
-                if revert { "Revert of" } else { "Cherry-pick of" },
+                "{} {label} left {n} conflict(s) in state {}: fix them and save.",
+                if revert { "Invert of" } else { "Pick of" },
                 ids::short(&sid)
             );
             code = 1;
@@ -719,10 +944,11 @@ pub fn rebase(ctx: &Ctx, args: &[String]) -> Result<i32> {
         .flag("--continue")
         .flag("-i|--interactive")
         .flag("-q|--quiet")
-        .flag("--autostash");
+        .flag("--autopark")
+        .removed("--autostash", "--autopark");
     let a = parse(&spec, args)?;
     if a.has("-i") {
-        return Err(exit(1, "interactive rebase is not supported"));
+        return Err(exit(1, "interactive replay is not supported"));
     }
     let h = here(ctx)?;
     let line = h.line()?.clone();
@@ -731,9 +957,9 @@ pub fn rebase(ctx: &Ctx, args: &[String]) -> Result<i32> {
         return super::admin::undo_last_of(ctx, repo, &line, &["rebase"]);
     }
     if a.has("--continue") {
-        return Err(exit(1, "layr rebase never stops on a conflict: fix the files and run 'layr commit'."));
+        return Err(exit(1, "layr replay never stops on a conflict: fix the files and run 'layr save -m <message>'."));
     }
-    let up = a.pos.first().ok_or_else(|| exit(128, "usage: layr rebase [--onto <newbase>] <upstream>"))?;
+    let up = a.pos.first().ok_or_else(|| exit(128, "usage: layr replay [--onto <newbase>] <upstream>"))?;
     let upstream = revs::resolve(repo, Some(&line), up)?;
     let onto = match a.get("--onto") {
         Some(o) => revs::resolve(repo, Some(&line), o)?,
@@ -743,7 +969,7 @@ pub fn rebase(ctx: &Ctx, args: &[String]) -> Result<i32> {
     let line = repo.line(&line.id)?;
     let (st, _scan, _it, _idx) = repo.status(&line)?;
     if !st.clean() {
-        return Err(exit(1, "error: cannot rebase: you have unstaged or staged changes.\nPlease commit or stash them."));
+        return Err(exit(1, "error: cannot replay: you have unstaged or staged changes.\nPlease save or park them."));
     }
     let base = repo.merge_base(&line.head, &upstream)?.ok_or_else(|| exit(128, "fatal: no common ancestor"))?;
     if repo.is_ancestor(&upstream, &line.head)? && onto == upstream {
@@ -752,6 +978,7 @@ pub fn rebase(ctx: &Ctx, args: &[String]) -> Result<i32> {
     }
     let mut chain = repo.first_parent_chain(&line.head, Some(&base))?;
     chain.reverse();
+    let target_line = repo.p.db.line_by_name(a.get("--onto").unwrap_or(up))?.map(|l| l.id).or(repo.state(&onto)?.line);
     let mut cur = onto.clone();
     let mut states = Vec::new();
     let mut conflicts = 0;
@@ -763,6 +990,7 @@ pub fn rebase(ctx: &Ctx, args: &[String]) -> Result<i32> {
         let parent = c.parents[0].clone();
         let (mut s, out) = merge_states(ctx, repo, &line, &parent, &cur, p, &ids::short(p), vec![cur.clone()], &c.message)?;
         s.author = c.author.clone();
+        s.change_id = c.change_id.clone();
         conflicts += out.conflicts.len();
         for m in &out.messages {
             outln!(ctx, "{m}");
@@ -771,6 +999,10 @@ pub fn rebase(ctx: &Ctx, args: &[String]) -> Result<i32> {
         // Later picks read this state: write its record now, as part of the rebase.
         let mut rec = Record::new("rebase.step");
         rec.states.push(s.clone());
+        rec.data = serde_json::json!({"line":line.id,"version":crate::model::VersionOperation {
+            state: s.id.clone(), kind: "replay".into(), source: p.clone(),
+            target_line: target_line.clone(), target_head: onto.clone(),
+        }});
         repo.commit_record(ctx, rec)?;
         states.push(s);
     }
@@ -790,12 +1022,95 @@ pub fn rebase(ctx: &Ctx, args: &[String]) -> Result<i32> {
     if conflicts > 0 {
         outln!(
             ctx,
-            "Rebased {} state(s) onto {} with {conflicts} conflict(s): fix them and commit.",
+            "Replayed {} state(s) onto {} with {conflicts} conflict(s): fix them and save.",
             states.len(),
             ids::short(&onto)
         );
         return Ok(1);
     }
-    outln!(ctx, "Successfully rebased {} onto {}.", line.name, ids::short(&onto));
+    outln!(ctx, "Successfully replayed {} onto {}.", line.name, ids::short(&onto));
     Ok(0)
+}
+
+#[cfg(test)]
+mod approval_tests {
+    use super::*;
+    use crate::{
+        ctx::Caller,
+        model::{Author, Record, StateKind, StateRec},
+        store::{Project, Store},
+    };
+
+    #[test]
+    fn merge_approval_guard_refuses_derived_source_ancestry() {
+        let dir = std::env::temp_dir().join(format!("layr-merge-ancestry-{}", crate::ids::new_id()));
+        let ctx = Ctx {
+            store: Store::open(&dir).unwrap(),
+            caller: Caller::from_uid(1001),
+            cwd: dir.clone(),
+            env: std::collections::HashMap::new(),
+            out: std::cell::RefCell::new(Box::new(std::io::sink())),
+        };
+        let project_dir = ctx.store.projects_dir().join("p");
+        std::fs::create_dir_all(project_dir.join("meta/db")).unwrap();
+        let project_id = crate::ids::new_id();
+        let p = Project {
+            store: &ctx.store,
+            name: "p".into(),
+            dir: project_dir.clone(),
+            id: project_id.clone(),
+            db: crate::db::Db::open(&project_dir.join("meta/db/layr.sqlite")).unwrap(),
+        };
+        let mut creation = Record::new("project");
+        creation.data = serde_json::json!({"id":project_id,"name":"p","config":{}});
+        p.append(creation, &ctx.actor()).unwrap();
+        let state = |kind, parents| StateRec {
+            id: crate::ids::new_id(),
+            kind,
+            change_id: None,
+            derived_from: None,
+            context: Some("test-v1".into()),
+            parents,
+            line: None,
+            subvol: String::new(),
+            author: Author::default(),
+            message: String::new(),
+            time: crate::ids::now_ms(),
+            running: false,
+            conflicts: vec![],
+            caches: Default::default(),
+            cache_by: None,
+            cache_shared: false,
+            cache_platform: None,
+        };
+        let base = state(StateKind::Commit, vec![]);
+        let derived = state(StateKind::Derived, vec![]);
+        let source = state(StateKind::Commit, vec![derived.id.clone()]);
+        let mut record = Record::new("state");
+        // A forward parent reference can arrive before the parent's record during import.
+        record.states = vec![base.clone(), source.clone()];
+        p.append(record, &ctx.actor()).unwrap();
+        let mut record = Record::new("state");
+        record.states = vec![derived.clone()];
+        p.append(record, &ctx.actor()).unwrap();
+        let repo = Repo { p };
+        let line = Line {
+            id: crate::ids::new_id(),
+            name: "main".into(),
+            head: base.id.clone(),
+            owner: 1001,
+            machine: ctx.store.machine.id.clone(),
+        };
+        let mut rule = crate::access::RuleSpec::default().rule();
+        rule.approvals = 1;
+        // Exercise the merge's approval guard even if an earlier ancestry check also rejects it.
+        let error = check_approvals(&ctx, &repo, &line, Some(&rule), &base.id, &source.id).unwrap_err().to_string();
+        let expected = repo.source_state(&derived.id).unwrap_err().to_string();
+        assert_eq!(error, expected);
+        assert_eq!(repo.is_ancestor(&base.id, &source.id).unwrap_err().to_string(), expected);
+        assert!(error.contains("is derived; cache and derived states are outside source history"));
+        drop(repo);
+        drop(ctx);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
 }

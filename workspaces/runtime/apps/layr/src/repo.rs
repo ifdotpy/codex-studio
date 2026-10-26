@@ -5,6 +5,8 @@ use crate::changes::{self, Change};
 use crate::ctx::Ctx;
 use crate::db::need;
 use crate::fsutil;
+#[cfg(target_os = "macos")]
+use crate::fsutil::Src;
 use crate::ids;
 use crate::ignore_rules::Rules;
 use crate::model::{Conflict, Line, LineChange, LineState, Record, StateKind, StateRec};
@@ -16,8 +18,34 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 
+/// A tree that hot paths read: on APFS the layers of a state, elsewhere its folder.
+#[cfg(target_os = "macos")]
+pub type Snap = crate::thin::Layered;
+#[cfg(not(target_os = "macos"))]
+pub type Snap = PathBuf;
+
 pub struct Repo<'a> {
     pub p: Project<'a>,
+}
+
+/// A complete folder as a tree to read.
+#[cfg(target_os = "macos")]
+pub fn snap(p: &Path) -> Snap {
+    crate::thin::Layered::complete(p)
+}
+#[cfg(not(target_os = "macos"))]
+pub fn snap(p: &Path) -> Snap {
+    p.to_path_buf()
+}
+
+/// True when two trees are the same tree (not only equal content).
+#[cfg(target_os = "macos")]
+pub fn same_tree(a: &Snap, b: &Snap) -> bool {
+    a.top() == b.top()
+}
+#[cfg(not(target_os = "macos"))]
+pub fn same_tree(a: &Snap, b: &Snap) -> bool {
+    a == b
 }
 
 /// A temporary read-only or writable snapshot, deleted on drop.
@@ -31,7 +59,7 @@ impl Drop for Temp {
     }
 }
 
-#[derive(Default)]
+#[derive(Default, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Status {
     pub staged: Vec<Change>,
     pub unstaged: Vec<Change>,
@@ -58,6 +86,15 @@ impl Status {
     }
     pub fn clean(&self) -> bool {
         self.staged.is_empty() && self.unstaged.is_empty()
+    }
+}
+
+/// Whether a cache saved on `saved` (None: by an older layr) may warm a line on the platform
+/// `local`. `here`: the cache was saved on this machine.
+pub fn cache_fits(saved: Option<&str>, local: &str, here: bool) -> bool {
+    match saved {
+        Some(p) => p == local,
+        None => here,
     }
 }
 
@@ -236,12 +273,6 @@ impl<'a> Repo<'a> {
         self.authorize_line(ctx, line, LineOp::Rewrite).map(|_| ())
     }
 
-    /// The user that the service's own backups are written as: the one who set `backup.dir`.
-    pub fn backup_writer(&self) -> (u32, u32) {
-        let uid = self.p.config_u64("backup.writer", self.p.legacy_admin() as u64) as u32;
-        (uid, crate::ctx::Caller::from_uid(uid).gid)
-    }
-
     // ----- lookups -----
 
     pub fn line(&self, name: &str) -> Result<Line> {
@@ -278,17 +309,118 @@ impl<'a> Repo<'a> {
         need(self.p.db.state(id)?, &format!("state {}", ids::short(id)))
     }
 
-    /// Path of a state snapshot on this machine.
+    /// Source history cannot contain cache or derived states.
+    pub fn source_state(&self, id: &str) -> Result<StateRec> {
+        let state = self.state(id)?;
+        if state.kind.auxiliary() {
+            bail!(
+                "state {} is {}; cache and derived states are outside source history, diff, merge and Git export",
+                ids::short(id),
+                crate::db::kind_str(state.kind)
+            );
+        }
+        Ok(state)
+    }
+
+    /// The complete tree of a state. On APFS a thin state gets a view (`thin::complete_tree`);
+    /// commands that read few paths use `state_src` instead.
     pub fn state_root(&self, id: &str) -> Result<PathBuf> {
-        let p = self.p.state_path(id);
-        if !p.exists() {
+        self.check_state(id)?;
+        #[cfg(target_os = "macos")]
+        return crate::thin::complete_tree(&self.p, id);
+        #[cfg(not(target_os = "macos"))]
+        Ok(self.p.state_path(id))
+    }
+
+    fn check_state(&self, id: &str) -> Result<()> {
+        if !self.p.has_state(id) {
             match self.p.db.state_flags(id)? {
                 Some((_, true)) => bail!("state {} was deleted by retention", ids::short(id)),
-                Some(_) => bail!("state {} is not on this machine (run layr sync)", ids::short(id)),
+                Some(_) => bail!("state {} is not on this machine (run layr fetch <remote>)", ids::short(id)),
                 None => bail!("unknown state {}", ids::short(id)),
             }
         }
-        Ok(p)
+        Ok(())
+    }
+
+    /// A state to read without a complete copy: on APFS its layers, elsewhere its folder.
+    pub fn state_src(&self, id: &str) -> Result<Snap> {
+        self.check_state(id)?;
+        #[cfg(target_os = "macos")]
+        return crate::thin::Layered::of_state(&self.p, id);
+        #[cfg(not(target_os = "macos"))]
+        Ok(self.p.state_path(id))
+    }
+
+    /// The head of a line to read (`state_src`). A line with overlays reads its base.
+    pub fn head_src(&self, line: &Line) -> Result<Snap> {
+        let layers = if self.p.is_overlay() { Vec::new() } else { self.layers(line)? };
+        if layers.is_empty() {
+            return self.state_src(&line.head);
+        }
+        let base = self.head_tree(line)?;
+        #[cfg(target_os = "macos")]
+        return Ok(crate::thin::Layered::complete(&base));
+        #[cfg(not(target_os = "macos"))]
+        Ok(base)
+    }
+
+    /// A complete folder of a tree. A layered tree gets a temporary read-only copy in `keep`.
+    pub fn complete(&self, tree: Snap, keep: &mut Vec<Temp>) -> Result<PathBuf> {
+        #[cfg(target_os = "macos")]
+        {
+            if tree.is_complete() {
+                return Ok(tree.bottom().to_path_buf());
+            }
+            let t = Temp { path: self.p.scan_dir().join(ids::new_id()) };
+            tree.materialize(&t.path, true)?;
+            btrfs::write_info(
+                &t.path,
+                &btrfs::SubvolInfo { uuid: ids::new_id(), received_uuid: None, parent_uuid: None, readonly: true, base: None },
+            )?;
+            btrfs::seal(&t.path, true, false)?;
+            let p = t.path.clone();
+            keep.push(t);
+            Ok(p)
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            let _ = keep;
+            Ok(tree)
+        }
+    }
+
+    /// Copy a state to `dst`: a writable folder, or a read-only snapshot.
+    pub fn snapshot_state(&self, id: &str, dst: &Path, readonly: bool) -> Result<()> {
+        #[cfg(target_os = "macos")]
+        {
+            let src = self.state_src(id)?;
+            if src.is_complete() {
+                return btrfs::snapshot(src.bottom(), dst, readonly);
+            }
+            let parent = btrfs::subvol_info(src.top())?.uuid;
+            src.materialize(dst, readonly)?;
+            let marked = (|| -> Result<()> {
+                let info = btrfs::SubvolInfo {
+                    uuid: ids::new_id(),
+                    received_uuid: None,
+                    parent_uuid: Some(parent),
+                    readonly,
+                    base: None,
+                };
+                btrfs::write_info(dst, &info)?;
+                if readonly {
+                    btrfs::seal(dst, true, false)?;
+                }
+                Ok(())
+            })();
+            if marked.is_err() {
+                let _ = btrfs::delete_tree(dst);
+            }
+            marked
+        }
+        #[cfg(not(target_os = "macos"))]
+        btrfs::snapshot(&self.state_root(id)?, dst, readonly)
     }
 
     pub fn working(&self, line: &Line) -> PathBuf {
@@ -323,12 +455,56 @@ impl<'a> Repo<'a> {
         let id = ids::new_id();
         let dst = self.p.state_path(&id);
         btrfs::snapshot(src, &dst, true)?;
+        self.describe_state(ctx, id, kind, parents, message, line)
+    }
+
+    /// A new state with the content of `base`: on APFS an empty thin layer over it, elsewhere a
+    /// snapshot. The record is not written yet.
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+    pub fn same_state(
+        &self,
+        ctx: &Ctx,
+        base: &str,
+        kind: StateKind,
+        parents: Vec<String>,
+        message: &str,
+        line: Option<&Line>,
+    ) -> Result<StateRec> {
+        // Overlay projects read their states as folders: they keep complete trees.
+        #[cfg(target_os = "macos")]
+        if !self.p.is_overlay() {
+            let id = ids::new_id();
+            let src = self.state_src(base)?;
+            let dst = self.p.delta_path(&id);
+            crate::thin::write_layer(&src.at("")?, &dst, &crate::thin::Diff::default(), base, false, None)?;
+            return self.describe_state(ctx, id, kind, parents, message, line);
+        }
+        self.new_state(ctx, &self.state_root(base)?, kind, parents, message, line)
+    }
+
+    /// Describe an already prepared immutable tree. No record is written here.
+    pub fn describe_state(
+        &self,
+        ctx: &Ctx,
+        id: String,
+        kind: StateKind,
+        parents: Vec<String>,
+        message: &str,
+        line: Option<&Line>,
+    ) -> Result<StateRec> {
+        let mut dst = self.p.state_path(&id);
+        if !dst.exists() && self.p.delta_path(&id).exists() {
+            dst = self.p.delta_path(&id);
+        }
         let info = btrfs::subvol_info(&dst)?;
         Ok(StateRec {
             id,
             kind,
-            parents,
-            line: line.map(|l| l.id.clone()),
+            change_id: (kind == StateKind::Commit).then(ids::new_id),
+            derived_from: if kind.auxiliary() { parents.first().cloned() } else { None },
+            context: None,
+            parents: if kind.auxiliary() { Vec::new() } else { parents },
+            line: if kind.auxiliary() { None } else { line.map(|l| l.id.clone()) },
             subvol: info.uuid,
             author: ctx.author(),
             message: message.to_string(),
@@ -338,6 +514,7 @@ impl<'a> Repo<'a> {
             caches: BTreeMap::new(),
             cache_by: None,
             cache_shared: false,
+            cache_platform: None,
         })
     }
 
@@ -347,6 +524,23 @@ impl<'a> Repo<'a> {
     pub fn working_snapshot(&self, ctx: &Ctx, line: &Line, parents: Vec<String>, message: &str) -> Result<StateRec> {
         let w = self.working(line);
         let private = self.private_paths(line)?;
+        #[cfg(target_os = "macos")]
+        if private.is_empty() && self.thin_line(line)? {
+            // A thin layer over the head: only the entries that changed are copied.
+            let id = ids::new_id();
+            let head = self.state_src(&line.head)?;
+            let dst = self.p.delta_path(&id);
+            match crate::thin::snapshot_over(&head, &line.head, &w, &dst, false) {
+                Ok(Some(_)) => return self.describe_state(ctx, id, StateKind::Auto, parents, message, Some(line)),
+                Ok(None) => {
+                    crate::thin::write_layer(&head.at("")?, &dst, &crate::thin::Diff::default(), &line.head, false, None)?;
+                    return self.describe_state(ctx, id, StateKind::Auto, parents, message, Some(line));
+                }
+                // Hard links need a complete tree.
+                Err(e) if crate::thin::needs_complete(&e) => {}
+                Err(e) => return Err(e),
+            }
+        }
         if private.is_empty() {
             return self.new_state(ctx, &w, StateKind::Auto, parents, message, Some(line));
         }
@@ -363,7 +557,7 @@ impl<'a> Repo<'a> {
             drop(t);
             btrfs::set_readonly(&dst)?;
             // An overlay file under another name leaves too: moved from an overlay path, or a
-            // new file with the content of an overlay file (a copy, an editor's backup).
+            // new file with the content of an overlay file (a copy, an editor's extra copy).
             let copies = self.private_copies(line, &dst, &private)?;
             if !copies.is_empty() {
                 btrfs::set_writable(&dst)?;
@@ -386,6 +580,9 @@ impl<'a> Repo<'a> {
         Ok(StateRec {
             id,
             kind: StateKind::Auto,
+            change_id: None,
+            derived_from: None,
+            context: None,
             parents,
             line: Some(line.id.clone()),
             subvol: info.uuid,
@@ -397,7 +594,14 @@ impl<'a> Repo<'a> {
             caches: BTreeMap::new(),
             cache_by: None,
             cache_shared: false,
+            cache_platform: None,
         })
+    }
+
+    /// True when the states of a line can be thin layers: APFS, no overlays.
+    #[cfg(target_os = "macos")]
+    fn thin_line(&self, line: &Line) -> Result<bool> {
+        Ok(!self.p.is_overlay() && self.layers(line)?.is_empty())
     }
 
     /// Files of a snapshot of the working folder that hold an overlay file under another name:
@@ -435,11 +639,51 @@ impl<'a> Repo<'a> {
     /// Remove state snapshots that were made for a record that was not written.
     pub fn discard_states(&self, states: &[StateRec]) {
         for s in states {
-            let _ = btrfs::delete_tree(&self.p.state_path(&s.id));
+            #[cfg(target_os = "macos")]
+            if crate::apfs_commit::preserves(&self.p, &s.id).unwrap_or(true) {
+                // The journal owns rollback of the only staged copy.
+                continue;
+            }
+            let _ = self.p.delete_state(&s.id);
         }
     }
 
-    /// Write a record. On failure, the states it names are deleted (no snapshot without record).
+    /// Read authenticated records already accepted into the local database.
+    pub fn read_model(&self) -> Result<layr_model::Project> {
+        let records = self
+            .p
+            .db
+            .all_lines()?
+            .iter()
+            .map(|line| crate::oplog::parse_line(line, None).map(|s| s.record))
+            .collect::<Result<Vec<_>>>()?;
+        layr_model::Project::from_records(&self.p.id, records, &self.p.store.machine.id)
+    }
+
+    /// Append a completed named transfer through the normal signed record path.
+    pub fn record_transfer(&self, ctx: &Ctx, op: &str, remote: &str, url: &str, transfer: &crate::model::Transfer) -> Result<()> {
+        let _lock = self.p.lock()?;
+        let mut rec = Record::new(op);
+        let mut transfer = transfer.clone();
+        if !self.p.is_overlay() {
+            transfer.overlays = transfer
+                .overlays
+                .into_iter()
+                .filter(|name| self.overlay_info(name).ok().flatten().is_some_and(|info| !info.hidden))
+                .collect();
+        }
+        rec.data = serde_json::to_value(transfer)?;
+        rec.data["remote"] = serde_json::json!(remote);
+        rec.data["url"] = serde_json::json!(layr_model::operations::public_url(url));
+        rec.data["result"] = serde_json::json!("success");
+        if let Some((_, overlay)) = self.p.name.split_once('%') {
+            rec.data["overlay"] = serde_json::json!(overlay);
+        }
+        self.commit_record(ctx, rec)?;
+        Ok(())
+    }
+
+    /// Write a record. On failure, delete the states it names.
     pub fn commit_record(&self, ctx: &Ctx, rec: Record) -> Result<Record> {
         let states = rec.states.clone();
         match self.p.append(rec, &ctx.actor()) {
@@ -475,7 +719,7 @@ impl<'a> Repo<'a> {
 
     /// The newest automatic state of a line, if any.
     pub fn last_auto(&self, line: &Line) -> Result<Option<StateRec>> {
-        Ok(self.p.db.line_states(&line.id, StateKind::Auto)?.into_iter().find(|s| self.p.state_path(&s.id).exists()))
+        Ok(self.p.db.line_states(&line.id, StateKind::Auto)?.into_iter().find(|s| self.p.has_state(&s.id)))
     }
 
     /// The id of a state equal to the working content: a new automatic state, or the previous
@@ -497,13 +741,51 @@ impl<'a> Repo<'a> {
         if !w.exists() {
             return Ok(None);
         }
+        #[cfg(target_os = "macos")]
+        if !force && self.private_paths(line)?.is_empty() && self.thin_line(line)? {
+            // Compare before any copy: an unchanged folder makes no state. One scan of the
+            // working folder serves the comparison and the layer over the head.
+            let prev = self.last_auto(line)?.map(|s| s.id).unwrap_or(line.head.clone());
+            let new = btrfs::scan_with_data(&w, true)?;
+            let head = self.state_src(&line.head)?;
+            let head_scan = head.scan(true)?;
+            let head_diff = crate::thin::diff(&head_scan, &|k| head.path(k), &new, &w)?;
+            let relevant = |d: &crate::thin::Diff| d.write.iter().chain(d.removed.iter()).any(|p| !skip_path(p));
+            let changed = if prev == line.head {
+                relevant(&head_diff)
+            } else if self.p.has_state(&prev) {
+                let base = self.state_src(&prev)?;
+                relevant(&crate::thin::diff(&base.scan(true)?, &|k| base.path(k), &new, &w)?)
+            } else {
+                true
+            };
+            if !changed {
+                return Ok(None);
+            }
+            let id = ids::new_id();
+            let dst = self.p.delta_path(&id);
+            let mut st = match crate::thin::write_checked(&w, &head, &head_scan, &new, &head_diff, &dst, &line.head, false) {
+                Ok(()) => self.describe_state(ctx, id, StateKind::Auto, vec![line.head.clone()], message, Some(line))?,
+                // Hard links need a complete tree.
+                Err(e) if crate::thin::needs_complete(&e) => {
+                    self.new_state(ctx, &w, StateKind::Auto, vec![line.head.clone()], message, Some(line))?
+                }
+                Err(e) => return Err(e),
+            };
+            st.running = running;
+            let mut rec = Record::new("save");
+            rec.states.push(st.clone());
+            rec.data = serde_json::json!({"line": line.id});
+            self.commit_record(ctx, rec)?;
+            return Ok(Some(st));
+        }
         let mut st = self.working_snapshot(ctx, line, vec![line.head.clone()], message)?;
         st.running = running;
         if !force {
             let prev = self.last_auto(line)?.map(|s| s.id).unwrap_or(line.head.clone());
-            let base = self.p.state_path(&prev);
-            if base.exists() {
-                let changed = changes::candidates(&base, &self.p.state_path(&st.id))?.into_iter().any(|c| !skip_path(&c.path));
+            if self.p.has_state(&prev) {
+                let base = self.state_src(&prev)?;
+                let changed = changes::candidates(&base, &self.state_src(&st.id)?)?.into_iter().any(|c| !skip_path(&c.path));
                 if !changed {
                     self.discard_states(std::slice::from_ref(&st));
                     return Ok(None);
@@ -528,14 +810,15 @@ impl<'a> Repo<'a> {
         }
         let mut st = self.working_snapshot(ctx, line, vec![line.head.clone()], message)?;
         if let Some(head) = self.p.db.state(&line.head)? {
-            let base = self.p.state_path(&head.id);
-            if self.policy().rule_for(&line.name).is_some() && base.exists() {
+            if self.policy().rule_for(&line.name).is_some() && self.p.has_state(&head.id) {
+                let base = self.state_src(&head.id)?;
                 // Changes as git would see them: a cache is an empty folder in a snapshot, a
                 // merge leaves new owners and times on unchanged files, and ignored files (such
                 // as other build output) are not changes.
                 let in_cache = |path: &str| caches.iter().any(|c| path == c || path.starts_with(&format!("{c}/")));
-                let rules = Rules::new(&self.p.state_path(&st.id));
-                let changed = changes::file_changes(&base, &self.p.state_path(&st.id))?
+                let made = self.state_src(&st.id)?;
+                let rules = Rules::of(&made);
+                let changed = changes::file_changes(&base, &made)?
                     .into_iter()
                     .any(|c| !skip_path(&c.path) && !in_cache(&c.path) && !rules.ignored(&c.path, false));
                 if !changed {
@@ -568,7 +851,8 @@ impl<'a> Repo<'a> {
     }
 
     /// The staging line, created from the head (the full tree of a line with overlays) if
-    /// missing or based on an older head or stack.
+    /// missing or based on an older head or stack. On APFS it is a thin layer over the head
+    /// when the line has no overlays; `ensure_full_stage` gives commands a complete tree.
     pub fn ensure_stage(&self, line: &Line) -> Result<PathBuf> {
         let p = self.p.stage_path(&line.id);
         let basef = self.stage_base_file(line);
@@ -580,9 +864,66 @@ impl<'a> Repo<'a> {
             }
             self.drop_stage(line)?;
         }
-        btrfs::snapshot(&self.head_tree(line)?, &p, false)?;
+        #[cfg(target_os = "macos")]
+        let thin = !self.p.is_overlay() && self.layers(line)?.is_empty();
+        #[cfg(not(target_os = "macos"))]
+        let thin = false;
+        if thin {
+            #[cfg(target_os = "macos")]
+            {
+                let head = self.head_src(line)?;
+                crate::thin::empty_layer(&p, &line.head, &head.at("")?)?;
+            }
+        } else {
+            btrfs::snapshot(&self.head_tree(line)?, &p, false)?;
+        }
         crate::fsutil::atomic_write(&basef, key.as_bytes(), 0o600)?;
         Ok(p)
+    }
+
+    /// The staging line as a complete writable tree, for commands that change it in ways a
+    /// thin layer does not support (a patch, a move, a removal, a restore).
+    pub fn ensure_full_stage(&self, line: &Line) -> Result<PathBuf> {
+        let p = self.ensure_stage(line)?;
+        #[cfg(target_os = "macos")]
+        if crate::thin::is_thin(&p) {
+            let tree = self.stage_tree(line, &p)?;
+            let tmp = self.p.work_dir().join(ids::new_id());
+            tree.materialize(&tmp, false)?;
+            let done = (|| -> Result<()> {
+                let info = btrfs::SubvolInfo {
+                    uuid: ids::new_id(),
+                    received_uuid: None,
+                    parent_uuid: None,
+                    readonly: false,
+                    base: None,
+                };
+                btrfs::write_info(&tmp, &info)?;
+                // One atomic swap: a stop at any point leaves one complete index in place.
+                crate::sys::apfs_swap(&tmp, &p)?;
+                btrfs::delete_tree(&tmp)
+            })();
+            if done.is_err() {
+                let _ = btrfs::delete_tree(&tmp);
+            }
+            done?;
+        }
+        Ok(p)
+    }
+
+    /// The tree of a staging line: a thin layer over the head, or a complete tree.
+    #[cfg(target_os = "macos")]
+    fn stage_tree(&self, line: &Line, stage: &Path) -> Result<Snap> {
+        if crate::thin::is_thin(stage) {
+            crate::thin::Layered::over(stage, self.head_src(line)?)
+        } else {
+            Ok(crate::thin::Layered::complete(stage))
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
+    #[allow(dead_code)]
+    fn stage_tree(&self, _line: &Line, stage: &Path) -> Result<Snap> {
+        Ok(stage.to_path_buf())
     }
 
     /// Write the key of a staging line made for `line` (a soft reset keeps the index for a new head).
@@ -615,19 +956,32 @@ impl<'a> Repo<'a> {
         Ok(())
     }
 
+    /// The index to read and the staging folder when there is one. The caller must hold the
+    /// project lock while it reads a mutable index.
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+    pub fn index_source(&self, line: &Line) -> Result<(Snap, Option<PathBuf>)> {
+        match self.current_stage(line)? {
+            Some(s) => Ok((self.stage_tree(line, &s)?, Some(s))),
+            None => Ok((self.head_src(line)?, None)),
+        }
+    }
+
     /// The staging content as a read-only snapshot, or the head state when nothing is staged.
-    pub fn index_view(&self, line: &Line) -> Result<(PathBuf, Option<Temp>)> {
-        match self.stage(line) {
+    pub fn index_view(&self, line: &Line) -> Result<(Snap, Option<Temp>)> {
+        match self.current_stage(line)? {
             Some(s) => {
-                let base = std::fs::read_to_string(self.stage_base_file(line)).unwrap_or_default();
-                if base.trim() != self.stage_key(line)? {
-                    self.drop_stage(line)?;
-                    return Ok((self.head_tree(line)?, None));
-                }
                 let t = self.temp_snapshot(&s, true)?;
-                Ok((t.path.clone(), Some(t)))
+                #[cfg(target_os = "macos")]
+                let tree = if crate::thin::is_thin(&s) {
+                    crate::thin::Layered::over(&t.path, self.head_src(line)?)?
+                } else {
+                    crate::thin::Layered::complete(&t.path)
+                };
+                #[cfg(not(target_os = "macos"))]
+                let tree = t.path.clone();
+                Ok((tree, Some(t)))
             }
-            None => Ok((self.head_tree(line)?, None)),
+            None => Ok((self.head_src(line)?, None)),
         }
     }
 
@@ -635,32 +989,36 @@ impl<'a> Repo<'a> {
 
     /// Changes of the working content: staged (head to index), unstaged (index to working),
     /// untracked and ignored paths, and conflicts left by a merge.
-    pub fn status_of(&self, line: &Line, scan: &Path, index: &Path) -> Result<Status> {
-        let head = self.head_tree(line)?;
+    pub fn status_of(&self, line: &Line, scan: &Path, index: &Snap) -> Result<Status> {
+        self.status_of_inner(line, scan, index, true)
+    }
+
+    /// Add only needs paths that differ between the index and the working tree.
+    #[cfg(target_os = "macos")]
+    pub fn status_for_add(&self, line: &Line, scan: &Path, index: &Snap) -> Result<Status> {
+        self.status_of_inner(line, scan, index, false)
+    }
+
+    fn status_of_inner(&self, line: &Line, scan: &Path, index: &Snap, full: bool) -> Result<Status> {
         let mut st = Status::default();
-        if index != head.as_path() {
-            let staged: Vec<Change> = changes::file_changes(&head, index)?.into_iter().filter(|c| !skip_path(&c.path)).collect();
-            st.staged = changes::with_renames(&head, index, staged);
-        }
-        let rules = Rules::new(scan);
-        let mut untracked_files = Vec::new();
-        for c in changes::without_moves(changes::file_changes(index, scan)?) {
-            if skip_path(&c.path) {
-                continue;
+        if full {
+            let head = self.head_src(line)?;
+            if !same_tree(index, &head) {
+                let staged: Vec<Change> =
+                    changes::file_changes(&head, index)?.into_iter().filter(|c| !skip_path(&c.path)).collect();
+                st.staged = changes::with_renames(&head, index, staged);
             }
-            if c.old.is_none() {
-                if rules.ignored(&c.path, false) {
-                    st.ignored.push(c.path.clone());
-                } else {
-                    untracked_files.push(c.path.clone());
-                }
-                continue;
-            }
-            st.unstaged.push(c);
         }
+        classify(scan, changes::file_changes(index, scan)?, &mut st);
+        self.finish_status(line, scan, index, full, &mut st)?;
+        Ok(st)
+    }
+
+    /// Untracked folders and open conflicts of a status whose lists are complete.
+    fn finish_status(&self, line: &Line, scan: &Path, index: &Snap, full: bool, st: &mut Status) -> Result<()> {
         // Untracked folders: the topmost folder that does not exist in the index.
         let mut dirs: BTreeSet<String> = BTreeSet::new();
-        for f in &untracked_files {
+        for f in &st.untracked {
             let comps: Vec<&str> = f.split('/').collect();
             let mut top = None;
             for i in 1..comps.len() {
@@ -675,7 +1033,10 @@ impl<'a> Repo<'a> {
             }
         }
         st.untracked_dirs = dirs.into_iter().collect();
-        st.untracked = untracked_files;
+        st.conflicts.clear();
+        if !full {
+            return Ok(());
+        }
         let head_rec = self.state(&line.head)?;
         for c in &head_rec.conflicts {
             if conflict_open(scan, c)? {
@@ -694,14 +1055,168 @@ impl<'a> Repo<'a> {
                 }
             }
         }
-        Ok(st)
+        Ok(())
     }
 
-    pub fn status(&self, line: &Line) -> Result<(Status, Temp, Option<Temp>, PathBuf)> {
+    pub fn status(&self, line: &Line) -> Result<(Status, Temp, Option<Temp>, Snap)> {
         let scan = self.scan(line)?;
         let (index, itemp) = self.index_view(line)?;
         let st = self.status_of(line, &scan.path, &index)?;
         Ok((st, scan, itemp, index))
+    }
+
+    /// A status report needs no retained snapshot. Call with the project lock held.
+    /// Commands that use the returned file bytes must still call `status`.
+    #[cfg(target_os = "macos")]
+    pub fn status_report(&self, line: &Line) -> Result<Status> {
+        let work = self.working(line);
+        let (index, stage) = self.index_source(line)?;
+        // LAYR_NO_STATUS_CACHE=1 compares the whole folder every time (for comparisons).
+        let key = match std::env::var_os("LAYR_NO_STATUS_CACHE") {
+            Some(_) => None,
+            None => self.status_key(line, &work, &stage)?,
+        };
+        // One scan of the working folder: it finds the changed paths for the saved status, and
+        // it is the baseline of the next saved status.
+        let now = match &key {
+            Some(_) => Some(btrfs::scan_with_data(&work, true)?),
+            None => None,
+        };
+        if let (Some(key), Some(now)) = (&key, &now) {
+            match self.cached_status(line, &work, &index, key, now) {
+                Ok(Some(st)) => return Ok(st),
+                Ok(None) => {}
+                Err(e) => eprintln!("warning: saved status failed, comparing the whole folder: {e:#}"),
+            }
+        }
+        // States are immutable; the lock keeps the index still. Only the working folder moves.
+        let mut roots = vec![work.as_path()];
+        if let Some(s) = &stage {
+            roots.push(s.as_path());
+        }
+        let st = match crate::storage::stable_read(&roots, || self.status_of(line, &work, &index))? {
+            Some(st) => st,
+            None => self.status(line)?.0,
+        };
+        if let (Some(key), Some(now)) = (key, now) {
+            // `now` comes before the read: a change during the read differs from it next time.
+            let _ = self.save_status_cache(line, &StatusCache::new(key, &now, st.clone()));
+        }
+        Ok(st)
+    }
+
+    #[cfg(target_os = "macos")]
+    fn status_cache_path(&self, line: &Line) -> PathBuf {
+        self.p.meta_dir().join("status").join(format!("{}.cache", line.id))
+    }
+
+    #[cfg(target_os = "macos")]
+    fn save_status_cache(&self, line: &Line, cache: &StatusCache) -> Result<()> {
+        // A lost cache costs only time: no fsync, but never a partial file.
+        let path = self.status_cache_path(line);
+        let dir = path.parent().context("status cache folder")?;
+        std::fs::create_dir_all(dir)?;
+        let tmp = dir.join(format!(".{}.tmp", ids::new_id()));
+        std::fs::write(&tmp, cache.encode()?)?;
+        std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600))?;
+        std::fs::rename(&tmp, &path).inspect_err(|_| {
+            let _ = std::fs::remove_file(&tmp);
+        })?;
+        Ok(())
+    }
+
+    /// What a saved status depends on besides the working folder: the head, the index layer,
+    /// and the working folder itself. `None` when a saved status cannot be used: a line with
+    /// overlays, or a complete index.
+    #[cfg(target_os = "macos")]
+    fn status_key(&self, line: &Line, work: &Path, stage: &Option<PathBuf>) -> Result<Option<String>> {
+        use sha1::{Digest, Sha1};
+        if self.p.is_overlay() || !self.layers(line)?.is_empty() {
+            return Ok(None);
+        }
+        let mut h = Sha1::new();
+        let w = std::fs::symlink_metadata(work)?;
+        h.update(format!("{}|{}|{}|{}|", line.head, w.dev(), w.ino(), work.display()));
+        if let Some(s) = stage {
+            if !crate::thin::is_thin(s) {
+                return Ok(None);
+            }
+            h.update(std::fs::read(self.stage_base_file(line)).unwrap_or_default());
+            h.update(btrfs::subvol_info(s)?.uuid.as_bytes());
+            h.update(serde_json::to_vec(&crate::thin::removed_of(s)?)?);
+            for (k, e) in btrfs::scan_with_data(s, true)? {
+                h.update(format!("{k}|{:?}|{:?}\n", e.fingerprint, e.data).as_bytes());
+            }
+        }
+        Ok(Some(hex::encode(h.finalize())))
+    }
+
+    /// The saved status, brought up to date for the entries of the working folder whose
+    /// metadata, change counter, or clone ID differ from the saved scan (as git's index does
+    /// with stat data). `now` is a scan of the working folder made before this read. `None`
+    /// when the saved status cannot answer: then the caller compares the whole folder.
+    #[cfg(target_os = "macos")]
+    fn cached_status(
+        &self,
+        line: &Line,
+        work: &Path,
+        index: &Snap,
+        key: &str,
+        now: &BTreeMap<String, btrfs::ScanEntry>,
+    ) -> Result<Option<Status>> {
+        let Ok(raw) = std::fs::read(self.status_cache_path(line)) else {
+            return Ok(None);
+        };
+        let Some(cache) = StatusCache::decode(&raw) else {
+            return Ok(None);
+        };
+        if cache.version != STATUS_CACHE_VERSION || cache.key != key {
+            return Ok(None);
+        }
+        let _t = crate::trace::span("saved status");
+        let paths = cache.changed(now);
+        if paths.len() > STATUS_CACHE_MAX_PATHS {
+            return Ok(None);
+        }
+        for p in &paths {
+            let name = p.rsplit('/').next().unwrap_or("");
+            if name == ".gitignore" || name == ".layrignore" {
+                // Ignore rules decide the state of unchanged paths too.
+                return Ok(None);
+            }
+        }
+        if paths.is_empty() {
+            let _used = crate::trace::span("saved status used for 0 paths");
+            let mut st = cache.status;
+            self.finish_status(line, work, index, true, &mut st)?;
+            return Ok(Some(st));
+        }
+        let below = |p: &str| paths.contains(p) || p.match_indices('/').any(|(i, _)| paths.contains(&p[..i]));
+        let w: BTreeMap<String, btrfs::ScanEntry> =
+            now.iter().filter(|(k, _)| below(k)).map(|(k, v)| (k.clone(), v.clone())).collect();
+        let list =
+            changes::file_changes_of(index, work, btrfs::candidates_scanned(index, work, btrfs::scan_paths(index, &paths)?, w)?)?;
+        // The content read must see the entries of the scan.
+        let again = btrfs::scan_paths(work, &paths)?;
+        if paths.iter().any(|p| again.get(p) != now.get(p)) {
+            return Ok(None);
+        }
+        let mut st = cache.status;
+        st.unstaged.retain(|c| !below(&c.path) && !c.old_path.as_deref().is_some_and(below));
+        st.untracked.retain(|p| !below(p));
+        st.ignored.retain(|p| !below(p));
+        classify(work, list, &mut st);
+        st.unstaged.sort_by(|a, b| a.path.cmp(&b.path));
+        st.untracked.sort();
+        st.ignored.sort();
+        self.finish_status(line, work, index, true, &mut st)?;
+        // A new baseline saves work when many paths changed. With few, the old baseline and
+        // its status stay valid: the same paths are compared again next time.
+        if paths.len() >= STATUS_CACHE_RESAVE {
+            let _ = self.save_status_cache(line, &StatusCache::new(key.to_string(), now, st.clone()));
+        }
+        let _used = crate::trace::span(format!("saved status used for {} paths", paths.len()));
+        Ok(Some(st))
     }
 
     // ----- in-place updates -----
@@ -740,7 +1255,7 @@ impl<'a> Repo<'a> {
                 return Err(crate::cmd::exit(
                     1,
                     format!(
-                        "error: Your local changes to the following files would be overwritten:\n{}\nPlease commit your changes or stash them.",
+                        "error: Your local changes to the following files would be overwritten:\n{}\nPlease save your changes or park them.",
                         names.join("\n")
                     ),
                 ));
@@ -786,6 +1301,7 @@ impl<'a> Repo<'a> {
     /// that its owner reads (docs/overlays.md).
     pub fn create_line_from(&self, ctx: &Ctx, name: &str, start: &str, owner: u32, source: Option<&Line>) -> Result<Line> {
         check_name("line", name)?;
+        self.source_state(start)?;
         if self.p.db.line_by_name(name)?.is_some() {
             bail!("a line named '{name}' already exists");
         }
@@ -818,7 +1334,9 @@ impl<'a> Repo<'a> {
             );
             rec.data = serde_json::json!({"name": name, "start": start});
             if !layers.is_empty() {
-                rec.data["stack"] = crate::overlay::stack_data(&line.id, &layers);
+                if !self.public_layers(&layers)?.is_empty() {
+                    rec.data["stack"] = self.public_stack_data(&line.id, &layers)?;
+                }
             }
             self.p.append(rec, &ctx.actor())
         })();
@@ -836,8 +1354,8 @@ impl<'a> Repo<'a> {
     /// service's private work folder (owner, mode, .git folder, caches) and appears at `dst` only
     /// when it is ready, so no other user can change it while root works on it.
     pub fn materialize(&self, line: &Line, state: &str, dst: &Path) -> Result<()> {
-        // A line with overlays gets their files too; its base is made when first needed.
-        let layers = if self.p.is_overlay() { Vec::new() } else { self.layers(line)? };
+        // Only available layers that the line owner reads enter its working folder.
+        let layers = self.readable_layers(line)?;
         self.materialize_with(line, state, dst, &layers, false)
     }
 
@@ -855,7 +1373,7 @@ impl<'a> Repo<'a> {
             bail!("{} already exists", dst.display());
         }
         let tmp = self.p.work_dir().join(ids::new_id());
-        btrfs::snapshot(&self.state_root(state)?, &tmp, false)?;
+        self.snapshot_state(state, &tmp, false)?;
         let r = self
             .put_layers(&tmp, layers, self.own(line))
             .and_then(|_| self.prepare_at(line, state, &tmp))
@@ -873,7 +1391,7 @@ impl<'a> Repo<'a> {
         r
     }
 
-    fn prepare_at(&self, line: &Line, state: &str, w: &Path) -> Result<()> {
+    pub(crate) fn prepare_at(&self, line: &Line, state: &str, w: &Path) -> Result<()> {
         let (uid, gid) = self.owner_ids(line);
         let root_meta = std::fs::symlink_metadata(w)?;
         if root_meta.uid() != uid {
@@ -980,9 +1498,12 @@ impl<'a> Repo<'a> {
     /// own, or else the one of its nearest ancestor that has one on this machine (the build
     /// output closest to the line's content). A cache made by another user is taken only if it
     /// was made on a protected line (`cache_shared`): a cache holds code that review does not see.
+    /// A cache is taken only on the platform it was saved on (`model::cache_platform`); a cache
+    /// of an older layr that does not name its platform only on the machine that saved it.
     pub fn warm_cache(&self, state: &str, path: &str, uid: u32) -> Result<Option<PathBuf>> {
         const SEARCH: usize = 200;
         let local = self.p.store.machine.id.clone();
+        let platform = crate::model::cache_platform();
         let mut seen = BTreeSet::new();
         let mut q = std::collections::VecDeque::from([state.to_string()]);
         while let Some(id) = q.pop_front() {
@@ -1001,7 +1522,9 @@ impl<'a> Repo<'a> {
                 let owner_of_line = rec.line.as_ref().and_then(|l| self.p.db.line_by_id(l).ok().flatten()).map(|l| l.owner);
                 let allowed = rec.cache_shared || rec.cache_by == Some(uid) || owner_of_line == Some(uid);
                 // Another state's cache only from this machine; the state's own also after a move.
-                if src.exists() && allowed && (id == state || self.p.db.state_machine(&id)?.as_deref() == Some(local.as_str())) {
+                let here = self.p.db.state_machine(&id)?.as_deref() == Some(local.as_str());
+                if src.exists() && allowed && cache_fits(rec.cache_platform.as_deref(), &platform, here) && (id == state || here)
+                {
                     return Ok(Some(src));
                 }
             }
@@ -1063,7 +1586,7 @@ impl<'a> Repo<'a> {
     // ----- ancestry -----
 
     pub fn parents(&self, id: &str) -> Result<Vec<String>> {
-        Ok(self.state(id)?.parents)
+        Ok(self.source_state(id)?.parents)
     }
 
     /// All ancestors of `id` (including itself), breadth first.
@@ -1077,6 +1600,9 @@ impl<'a> Repo<'a> {
             }
             order.push(x.clone());
             if let Some(s) = self.p.db.state(&x)? {
+                if s.kind.auxiliary() {
+                    self.source_state(&x)?;
+                }
                 for p in s.parents {
                     q.push_back(p);
                 }
@@ -1124,11 +1650,172 @@ impl<'a> Repo<'a> {
     }
 }
 
+/// A saved status of a line and the scan of its working folder that it matches
+/// (`Repo::status_report`). Each entry keeps its type, inode, mode, size, times, change counter,
+/// and clone ID: a write changes the change counter, as with git's stat data.
+#[cfg(target_os = "macos")]
+struct StatusCache {
+    version: u32,
+    key: String,
+    /// Path, then fingerprint and data identity of each entry, in path order.
+    entries: Vec<(String, [i64; 10])>,
+    status: Status,
+}
+
+#[cfg(target_os = "macos")]
+#[derive(serde::Serialize, serde::Deserialize)]
+struct StatusHead {
+    version: u32,
+    key: String,
+    status: Status,
+}
+
+#[cfg(target_os = "macos")]
+const STATUS_CACHE_VERSION: u32 = 2;
+#[cfg(target_os = "macos")]
+const STATUS_CACHE_MAGIC: &[u8] = b"layr status cache\n";
+
+/// More changed paths than this compare the whole folder.
+#[cfg(target_os = "macos")]
+const STATUS_CACHE_MAX_PATHS: usize = 20_000;
+
+/// From this many changed paths on, a saved status gets a new baseline.
+#[cfg(target_os = "macos")]
+const STATUS_CACHE_RESAVE: usize = 256;
+
+#[cfg(target_os = "macos")]
+fn entry_key(e: &btrfs::ScanEntry) -> [i64; 10] {
+    let f = e.fingerprint;
+    let d = e.data.unwrap_or_default();
+    [
+        f.0 as i64,
+        f.1 as i64,
+        f.2 as i64,
+        f.3 as i64,
+        f.4,
+        f.5,
+        f.6,
+        f.7,
+        d.generation.map(|g| g as i64).unwrap_or(-1),
+        d.clone_id.map(|c| c as i64).unwrap_or(-1),
+    ]
+}
+
+#[cfg(target_os = "macos")]
+impl StatusCache {
+    fn new(key: String, scan: &BTreeMap<String, btrfs::ScanEntry>, status: Status) -> Self {
+        StatusCache {
+            version: STATUS_CACHE_VERSION,
+            key,
+            entries: scan.iter().map(|(k, e)| (k.clone(), entry_key(e))).collect(),
+            status,
+        }
+    }
+
+    /// A header in JSON, then each entry as a path length, the path, and ten numbers.
+    fn encode(&self) -> Result<Vec<u8>> {
+        let head = serde_json::to_vec(&StatusHead { version: self.version, key: self.key.clone(), status: self.status.clone() })?;
+        let mut out = Vec::with_capacity(head.len() + self.entries.len() * 120);
+        out.extend_from_slice(STATUS_CACHE_MAGIC);
+        out.extend_from_slice(&(head.len() as u64).to_le_bytes());
+        out.extend_from_slice(&head);
+        out.extend_from_slice(&(self.entries.len() as u64).to_le_bytes());
+        for (k, v) in &self.entries {
+            out.extend_from_slice(&(k.len() as u32).to_le_bytes());
+            out.extend_from_slice(k.as_bytes());
+            for n in v {
+                out.extend_from_slice(&n.to_le_bytes());
+            }
+        }
+        Ok(out)
+    }
+
+    fn decode(raw: &[u8]) -> Option<Self> {
+        let mut r = raw.strip_prefix(STATUS_CACHE_MAGIC)?;
+        let mut take = |n: usize| -> Option<&[u8]> {
+            let (a, b) = (r.get(..n)?, r.get(n..)?);
+            r = b;
+            Some(a)
+        };
+        let head_len = u64::from_le_bytes(take(8)?.try_into().ok()?) as usize;
+        let head: StatusHead = serde_json::from_slice(take(head_len)?).ok()?;
+        let count = u64::from_le_bytes(take(8)?.try_into().ok()?) as usize;
+        let mut entries = Vec::with_capacity(count.min(10_000_000));
+        for _ in 0..count {
+            let len = u32::from_le_bytes(take(4)?.try_into().ok()?) as usize;
+            let path = String::from_utf8(take(len)?.to_vec()).ok()?;
+            let mut v = [0i64; 10];
+            for n in v.iter_mut() {
+                *n = i64::from_le_bytes(take(8)?.try_into().ok()?);
+            }
+            entries.push((path, v));
+        }
+        Some(StatusCache { version: head.version, key: head.key, entries, status: head.status })
+    }
+
+    /// Paths whose entries differ from the saved scan, and files without a change counter (a
+    /// file that a process maps can change without a visible sign). A folder that only changed
+    /// its times is left out: each changed entry inside it is in the list itself.
+    fn changed(&self, now: &BTreeMap<String, btrfs::ScanEntry>) -> BTreeSet<String> {
+        let kind = |v: &[i64; 10]| v[2] & libc::S_IFMT as i64;
+        const DIR: i64 = libc::S_IFDIR as i64;
+        const FILE: i64 = libc::S_IFREG as i64;
+        let mut out = BTreeSet::new();
+        // Both lists are in path order: one walk over both.
+        let mut old = self.entries.iter().peekable();
+        for (k, e) in now {
+            while let Some((ok, _)) = old.peek() {
+                if ok.as_str() < k.as_str() {
+                    out.insert(ok.clone());
+                    old.next();
+                } else {
+                    break;
+                }
+            }
+            let new = entry_key(e);
+            let same = match old.peek() {
+                Some((ok, ov)) if ok == k => {
+                    let same = *ov == new || (kind(ov) == DIR && kind(&new) == DIR);
+                    old.next();
+                    same
+                }
+                _ => false,
+            };
+            let no_counter = kind(&new) == FILE && new[8] < 0;
+            if !k.is_empty() && (!same || no_counter) {
+                out.insert(k.clone());
+            }
+        }
+        out.extend(old.map(|(k, _)| k.clone()));
+        out.remove("");
+        out
+    }
+}
+
+/// Sort index-to-working changes into unstaged, untracked, and ignored paths.
+fn classify(scan: &Path, list: Vec<Change>, st: &mut Status) {
+    let rules = Rules::new(scan);
+    for c in changes::without_moves(list) {
+        if skip_path(&c.path) {
+            continue;
+        }
+        if c.old.is_none() {
+            if rules.ignored(&c.path, false) {
+                st.ignored.push(c.path.clone());
+            } else {
+                st.untracked.push(c.path.clone());
+            }
+            continue;
+        }
+        st.unstaged.push(c);
+    }
+}
+
 /// True if a conflict is still open in `root`. A content conflict is open while the file holds
 /// conflict markers (a merge writes markers only into files of at most `MAX_TEXT` bytes, so a
 /// larger file has none). Other kinds (moves, deletes, types, binary files) stay open until the
 /// next commit of the line, which is the admin's decision.
-pub fn conflict_open(root: &Path, c: &Conflict) -> Result<bool> {
+pub fn conflict_open(root: &(impl fsutil::Src + ?Sized), c: &Conflict) -> Result<bool> {
     if c.kind == "content" || c.kind == "add/add" {
         return Ok(match fsutil::lmeta(root, &c.path) {
             Some(m) if m.is_file() && m.size <= fsutil::MAX_TEXT => has_markers(&fsutil::read_file(root, &c.path)?),
@@ -1238,19 +1925,22 @@ pub fn make_cache(w: &Path, path: &str, uid: u32, gid: u32) -> Result<()> {
 }
 
 /// Copy a folder within one tree (both sides may change under us: all through descriptors).
-fn copy_tree(t: &Tree, from: &str, to: &str, own: Option<(u32, u32)>) -> Result<()> {
-    use std::os::unix::fs::PermissionsExt;
+fn copy_tree(
+    t: &Tree,
+    from: &str,
+    to: &str,
+    own: Option<(u32, u32)>,
+    linked: &mut std::collections::HashMap<(u64, u64), String>,
+) -> Result<()> {
+    use std::os::unix::fs::MetadataExt;
     for name in t.list(from)? {
         let (s, d) = (format!("{from}/{name}"), format!("{to}/{name}"));
-        let m = match t.stat(&s) {
-            Some(m) => m,
-            None => continue,
-        };
+        let m = t.stat_checked(&s)?;
         match m.ftype {
             fsutil::FType::Dir => {
-                t.mkdirs(&d, own)?;
-                t.chmod(&d, m.mode)?;
-                copy_tree(t, &s, &d, own)?;
+                t.mkdir_private(&d, own)?;
+                copy_tree(t, &s, &d, own, linked)?;
+                t.copy_directory_metadata(&s, &d)?;
             }
             fsutil::FType::Symlink => {
                 let target = t.read_link(&s)?;
@@ -1258,20 +1948,36 @@ fn copy_tree(t: &Tree, from: &str, to: &str, own: Option<(u32, u32)>) -> Result<
                 if let Some((u, g)) = own {
                     t.chown(&d, u, g)?;
                 }
+                t.copy_symlink_xattrs(&s, &d)?;
             }
             fsutil::FType::File => {
                 let src = t.open_read(&s)?;
-                let dst = t.create(&d, m.mode)?;
-                if btrfs::clone_file(&src, &dst).is_err() {
+                let meta = src.metadata()?;
+                let inode = (meta.dev(), meta.ino());
+                if let Some(first) = linked.get(&inode) {
+                    t.hard_link(first, &d)?;
+                    continue;
+                }
+                #[cfg(target_os = "macos")]
+                let cloned = t.clone_new_file(&src, &d)?;
+                #[cfg(not(target_os = "macos"))]
+                let cloned: Option<std::fs::File> = None;
+                let (dst, cloned) = match cloned {
+                    Some(dst) => (dst, true),
+                    None => (t.create(&d, m.mode)?, false),
+                };
+                if !cloned && btrfs::clone_file(&src, &dst).is_err() {
                     std::io::copy(&mut &src, &mut &dst)?;
                 }
-                dst.set_permissions(std::fs::Permissions::from_mode(m.mode))?;
-                fsutil::set_mtime(&dst, m.mtime, 0)?;
+                fsutil::copy_metadata(&src, &dst)?;
                 if let Some((u, g)) = own {
                     t.chown(&d, u, g)?;
                 }
+                if meta.nlink() > 1 {
+                    linked.insert(inode, d);
+                }
             }
-            fsutil::FType::Special => {}
+            fsutil::FType::Special => anyhow::bail!("cannot copy special cache entry {s}"),
         }
     }
     Ok(())
@@ -1309,20 +2015,26 @@ pub fn uncache(w: &Path, path: &str, uid: u32, gid: u32) -> Result<bool> {
 
 /// Replace the folder at `path` with a copy of its files in a new subvolume or plain folder.
 fn replace_folder(t: &Tree, path: &str, subvolume: bool, uid: u32, gid: u32) -> Result<()> {
-    let mode = t.stat(path).map(|m| m.mode).unwrap_or(0o755);
     let (tmp, old) = (format!("{path}.layr-new"), format!("{path}.layr-old"));
     for x in [&tmp, &old] {
         if t.stat(x).is_some() {
             t.remove(x)?;
         }
     }
-    if subvolume {
-        t.create_subvolume(&tmp)?;
-    } else {
-        t.mkdirs(&tmp, None)?;
-        t.chmod(&tmp, mode)?;
+    let copy = (|| {
+        if subvolume {
+            t.create_subvolume(&tmp)?;
+            t.chmod(&tmp, 0o700)?;
+        } else {
+            t.mkdir_private(&tmp, None)?;
+        }
+        copy_tree(t, path, &tmp, Some((uid, gid)), &mut std::collections::HashMap::new())?;
+        t.copy_directory_metadata(path, &tmp)
+    })();
+    if let Err(error) = copy {
+        t.remove(&tmp).with_context(|| format!("remove incomplete cache {tmp} after {error:#}"))?;
+        return Err(error);
     }
-    copy_tree(t, path, &tmp, Some((uid, gid)))?;
     t.rename(path, &old)?;
     t.rename(&tmp, path)?;
     t.chown(path, uid, gid)?;
@@ -1358,4 +2070,114 @@ pub fn holds_files(root: &Path, path: &str) -> bool {
         }
     }
     false
+}
+
+#[cfg(test)]
+mod cache_copy_tests {
+    use super::*;
+    use std::os::unix::{fs::PermissionsExt, net::UnixListener};
+
+    #[test]
+    fn incomplete_cache_directories_are_private() -> Result<()> {
+        struct Scratch(std::path::PathBuf);
+        impl Drop for Scratch {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_dir_all(&self.0);
+            }
+        }
+        let root = Scratch(std::env::temp_dir().join(format!("layr-copy-{}", crate::ids::short(&crate::ids::new_id()))));
+        std::fs::create_dir_all(root.0.join("source/private"))?;
+        std::fs::set_permissions(root.0.join("source/private"), std::fs::Permissions::from_mode(0o700))?;
+        std::fs::create_dir(root.0.join("destination"))?;
+        let _socket = UnixListener::bind(root.0.join("source/private/socket"))?;
+        let tree = Tree::open(&root.0)?;
+        assert!(copy_tree(&tree, "source", "destination", None, &mut std::collections::HashMap::new()).is_err());
+        assert_eq!(std::fs::metadata(root.0.join("destination/private"))?.permissions().mode() & 0o777, 0o700);
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod cache_platform_tests {
+    use super::cache_fits;
+
+    #[test]
+    fn a_cache_warms_only_lines_of_its_platform() {
+        // A Mac build in a Linux line: never, also after a move to this machine.
+        assert!(!cache_fits(Some("macos-aarch64"), "linux-aarch64", false));
+        assert!(!cache_fits(Some("macos-aarch64"), "linux-aarch64", true));
+        assert!(!cache_fits(Some("linux-x86_64"), "linux-aarch64", false));
+        assert!(cache_fits(Some("linux-aarch64"), "linux-aarch64", false));
+        // An older record names no platform: only a cache saved on this machine.
+        assert!(cache_fits(None, "linux-aarch64", true));
+        assert!(!cache_fits(None, "linux-aarch64", false));
+    }
+    #[test]
+    fn auxiliary_states_resolve_but_source_commands_refuse_them() {
+        use super::*;
+        use crate::ctx::Caller;
+        use crate::model::{Actor, Author};
+        use crate::store::{Project, Store};
+        let dir = std::env::temp_dir().join(format!("layr-auxiliary-{}", ids::new_id()));
+        let ctx = Ctx {
+            store: Store::open(&dir).unwrap(),
+            caller: Caller::from_uid(0),
+            cwd: dir.clone(),
+            env: std::collections::HashMap::from([("LAYR_PROJECT".into(), "p".into())]),
+            out: std::cell::RefCell::new(Box::new(std::io::sink())),
+        };
+        let project_dir = ctx.store.projects_dir().join("p");
+        std::fs::create_dir_all(project_dir.join("meta/db")).unwrap();
+        std::fs::create_dir(project_dir.join("states")).unwrap();
+        let id = ids::new_id();
+        let p = Project {
+            store: &ctx.store,
+            name: "p".into(),
+            dir: project_dir.clone(),
+            id: id.clone(),
+            db: crate::db::Db::open(&project_dir.join("meta/db/layr.sqlite")).unwrap(),
+        };
+        let mut rec = Record::new("project");
+        rec.data = serde_json::json!({"id":id,"name":"p","config":{}});
+        p.append(rec, &Actor { uid: 0, name: "root".into(), session: None }).unwrap();
+        for kind in [StateKind::Cache, StateKind::Derived] {
+            let id = ids::new_id();
+            std::fs::create_dir(p.state_path(&id)).unwrap();
+            let mut rec = Record::new("state");
+            rec.states.push(StateRec {
+                id: id.clone(),
+                kind,
+                change_id: None,
+                derived_from: None,
+                context: Some("test-v1".into()),
+                parents: vec![],
+                line: None,
+                subvol: String::new(),
+                author: Author::default(),
+                message: String::new(),
+                time: ids::now_ms(),
+                running: false,
+                conflicts: vec![],
+                caches: Default::default(),
+                cache_by: None,
+                cache_shared: false,
+                cache_platform: None,
+            });
+            p.append(rec, &ctx.actor()).unwrap();
+            let repo = Repo::open(&ctx, "p").unwrap();
+            assert!(repo.state_root(&id).is_ok());
+            assert_eq!(crate::revs::resolve(&repo, None, &id).unwrap(), id);
+            for args in [vec!["line", "new", "rejected", &id], vec!["diff", &id, &id], vec!["log", &id], vec!["show", &id]] {
+                let args: Vec<String> = args.into_iter().map(String::from).collect();
+                let error = crate::cmd::run(&ctx, &args).unwrap_err().to_string();
+                assert!(error.contains("outside source history"), "{args:?}: {error}");
+            }
+            assert!(crate::gitbridge::export_history(&repo, &id).unwrap_err().to_string().contains("outside source history"));
+            assert!(repo.merge_base(&id, &id).unwrap_err().to_string().contains("outside source history"));
+            let args = vec!["ref".into(), "set".into(), format!("caches/{}", crate::db::kind_str(kind)), id.clone()];
+            assert_eq!(crate::cmd::run(&ctx, &args).unwrap(), 0);
+        }
+        drop(p);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
 }

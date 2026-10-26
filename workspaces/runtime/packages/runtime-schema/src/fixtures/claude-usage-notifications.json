@@ -1,0 +1,63 @@
+[
+  {
+    "threadId": "thread",
+    "turnId": "turn",
+    "studioUsage": {
+      "kind": "response",
+      "responseId": "response-1",
+      "turnId": "turn",
+      "model": "claude-opus-5-5",
+      "evidence": "live",
+      "modelContextWindow": 200000,
+      "tokens": {
+        "uncachedInput": 12,
+        "cacheReadInput": 32,
+        "cacheWriteInput": 42,
+        "output": 720,
+        "reasoningOutput": 20,
+        "cacheWriteInput1h": 0
+      }
+    }
+  },
+  {
+    "threadId": "thread",
+    "turnId": "turn",
+    "studioUsage": {
+      "kind": "cumulative",
+      "scope": "claudeQuery",
+      "turnId": "turn",
+      "modelContextWindow": 200000,
+      "total": {
+        "uncachedInput": 10,
+        "cacheReadInput": 30,
+        "cacheWriteInput": 40,
+        "output": 720,
+        "reasoningOutput": 20
+      },
+      "models": [
+        {
+          "model": "claude-opus-5-5",
+          "providerCostUsd": 0.1,
+          "tokens": {
+            "uncachedInput": 10,
+            "cacheReadInput": 30,
+            "cacheWriteInput": 40,
+            "output": 720,
+            "reasoningOutput": 20
+          }
+        }
+      ]
+    }
+  },
+  {
+    "threadId": "thread",
+    "turnId": "turn",
+    "studioUsage": {
+      "kind": "gap",
+      "responseId": "response-1",
+      "turnId": "turn",
+      "model": "claude-opus-5-5",
+      "reason": "streamInterrupted"
+    }
+  }
+]

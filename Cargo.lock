@@ -5521,6 +5521,7 @@ dependencies = [
 name = "studio-process-supervisor"
 version = "0.1.0"
 dependencies = [
+ "notify",
  "rusqlite",
  "rustix",
  "serde_json",
@@ -5585,6 +5586,7 @@ dependencies = [
  "chrono",
  "command-fds",
  "file-rotate",
+ "notify",
  "process-wrap",
  "pty-process",
  "rustix",
@@ -5606,6 +5608,7 @@ version = "0.1.0"
 dependencies = [
  "serde",
  "serde_json",
+ "studio-runtime-schema",
  "thiserror 2.0.21",
 ]
 
@@ -5675,7 +5678,6 @@ dependencies = [
  "notify",
  "objc2-core-foundation",
  "objc2-core-services",
- "plist",
  "process-wrap",
  "regex",
  "ring",

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import base64
+import json
 import os
 import pwd
 from pathlib import Path
@@ -13,7 +14,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 sys.path.insert(0, str(Path(__file__).parent))
 from common import GuestError
 from host_exec_protocol import HostExecError
-from mac_sync import CHUNK, MacSync, _state
+from mac_sync import MacSync, _state
 
 
 class MacSyncRead(unittest.IsolatedAsyncioTestCase):
@@ -25,13 +26,24 @@ class MacSyncRead(unittest.IsolatedAsyncioTestCase):
         self.sync.lines = AsyncMock(return_value=("owner", self.root, self.root, self.root))
         self.sync.checkout = AsyncMock()
 
+    async def test_clean_uses_status_json_and_ignores_ignored_files(self) -> None:
+        status = {"staged": [], "unstaged": [], "untracked": [], "conflicts": [], "ignored": ["target/cache"]}
+        self.sync.layr = AsyncMock(return_value=json.dumps(status))
+        await self.sync.clean(self.root, "owner", "main")
+        self.sync.layr.assert_awaited_once_with(["status", "--json"], cwd=self.root, owner="owner")
+        for field in ("staged", "unstaged", "untracked", "conflicts"):
+            with self.subTest(field=field):
+                self.sync.layr.return_value = json.dumps({**status, field: ["changed"]})
+                with self.assertRaises(GuestError):
+                    await self.sync.clean(self.root, "owner", "main")
+
     async def read(self, path: str, offset: int = 0) -> dict:
         return await self.sync.dispatch("read-request", "sync.mac.read", {
             "projectId": "project", "stateId": "abcdef0", "path": path, "offset": offset,
         }, None)
 
     async def test_regular_file_reads_only_the_requested_chunk_under_lock(self) -> None:
-        content = b"a" * CHUNK + b"b" * CHUNK + b"tail"
+        content = b"aaaabbbbtail"
         path = self.root / "file"
         path.write_bytes(content)
         path.chmod(0o751)
@@ -53,16 +65,22 @@ class MacSyncRead(unittest.IsolatedAsyncioTestCase):
             wrapped.read.side_effect = counted_read
             return wrapped
 
-        for offset in (0, CHUNK, CHUNK * 2, len(content), len(content) + CHUNK, 1 << 100):
-            with self.subTest(offset=offset), patch.object(Path, "open", counted_open):
+        for offset, encoded, size, eof in [
+            (0, "YWFhYQ==", 4, False),
+            (4, "YmJiYg==", 4, False),
+            (8, "dGFpbA==", 4, True),
+            (12, "", 0, True),
+            (16, "", 0, True),
+            (1 << 100, "", 0, True),
+        ]:
+            with self.subTest(offset=offset), patch("mac_sync.CHUNK", 4), patch.object(Path, "open", counted_open):
                 reads.clear()
                 result = await self.read("file", offset)
-                expected = content[offset:offset + CHUNK]
-                self.assertEqual(reads, [(CHUNK, len(expected))])
+                self.assertEqual(reads, [(4, size)])
                 self.assertEqual(result, {
                     "kind": "file", "mode": 0o751, "size": len(content), "offset": offset,
-                    "data": base64.b64encode(expected).decode(),
-                    "eof": offset + len(expected) >= len(content),
+                    "data": encoded,
+                    "eof": eof,
                 })
 
     async def test_link_returns_target_bytes_without_following_it(self) -> None:

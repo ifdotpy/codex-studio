@@ -5,8 +5,8 @@ use std::collections::BTreeSet;
 use crate::event_write;
 use serde_json::{Value, json};
 use studio_runtime_store::{
-    AgentId, AgentRecord, AgentRepository, AgentStatus, EventWriteRepository, QueueWriteRepository,
-    SchedulerRepository, StoreError, Transaction,
+    AgentId, AgentRecord, AgentRepository, AgentStatus, Connection, EventWriteRepository, QueueWriteRepository,
+    SchedulerRepository, StoreError, Transaction, WorkItemsRepository,
 };
 use thiserror::Error;
 
@@ -358,4 +358,137 @@ fn invalid_stored(object: &'static str, id: &str) -> QueueWriteError {
         object,
         id: id.to_owned(),
     }
+}
+
+pub fn queue_snapshot(
+    connection: &Connection,
+    agent: &AgentRecord,
+) -> Result<QueueSnapshot, QueueWriteError> {
+    let prepared = crate::work_policy::prepare_queue(WorkItemsRepository::queue(
+        connection,
+        &agent.id.0,
+        agent.epoch,
+    )?)
+    .map_err(|error| match error {
+        crate::work_policy::WorkPolicyError::InvalidStoredObject { object, id } => {
+            invalid_stored(object, &id)
+        }
+    })?;
+    let assets = WorkItemsRepository::assets(connection, &prepared.asset_ids)?;
+    let assets = assets
+        .into_iter()
+        .map(|mut value| {
+            value
+                .as_object_mut()
+                .expect("stored asset is an object")
+                .remove("path");
+            Ok(value)
+        })
+        .collect::<Result<Vec<_>, QueueWriteError>>()?;
+    let owners = assets
+        .iter()
+        .map(|asset| {
+            asset
+                .get("agent")
+                .and_then(Value::as_str)
+                .ok_or_else(|| invalid_stored("runtime_assets", "<asset>"))
+        })
+        .collect::<Result<std::collections::BTreeSet<_>, _>>()?;
+    for owner in owners {
+        let record = AgentRepository::get(connection, &AgentId::from(owner))
+            .map_err(QueueWriteError::Store)?;
+        let Some(record) = record else {
+            return Err(invalid_stored("runtime_agents", owner));
+        };
+        if !is_live(&record) {
+            return Err(invalid_stored("runtime_agents", owner));
+        }
+    }
+    let mut items =
+        crate::work_policy::queue_items(prepared, &assets).map_err(|error| match error {
+            crate::work_policy::WorkPolicyError::InvalidStoredObject { object, id } => {
+                invalid_stored(object, &id)
+            }
+        })?;
+    for item in &mut items {
+        let id = item
+            .get("id")
+            .and_then(Value::as_str)
+            .unwrap_or("<event>")
+            .to_owned();
+        for field in ["delivery", "requestedDelivery"] {
+            let raw = item[field]
+                .as_str()
+                .ok_or_else(|| invalid_stored("runtime_events", &id))?;
+            let moment = studio_runtime_schema::DeliveryMoment::parse_legacy(raw)
+                .map_err(|_| invalid_stored("runtime_events", &id))?;
+            item[field] = json!(moment.as_str());
+        }
+        if !matches!(
+            studio_runtime_schema::first_error("QueueItem", item),
+            Ok(None)
+        ) {
+            return Err(invalid_stored("runtime_events", &id));
+        }
+    }
+    let revision_number = match agent.extra.get("queueMutationRevision") {
+        None => 0,
+        Some(value) => value
+            .as_i64()
+            .filter(|value| *value >= 0)
+            .ok_or_else(|| invalid_stored("runtime_agents", &agent.id.0))?,
+    };
+    let bytes = serde_json::to_vec(&json!([agent.epoch, revision_number, items]))?;
+    let revision = studio_runtime_store::sha256_hex(&bytes);
+    Ok(QueueSnapshot {
+        items,
+        revision,
+        capabilities: json!({"reorder":true,"receipts":true}),
+    })
+}
+
+pub fn is_live(agent: &AgentRecord) -> bool {
+    !agent
+        .extra
+        .get("deletedAt")
+        .is_some_and(|value| match value {
+            Value::Null | Value::Bool(false) => false,
+            Value::Bool(true) => true,
+            Value::Number(value) => value.as_f64().is_some_and(|number| number != 0.0),
+            Value::String(value) => !value.is_empty(),
+            _ => true,
+        })
+}
+
+/// Queue collection owner. Every relevant source write calls this before commit.
+pub fn publish_queue(
+    transaction: &Transaction<'_>,
+    id: &str,
+) -> studio_runtime_store::StoreResult<()> {
+    let agent = AgentRepository::get(transaction, &AgentId::from(id))?;
+    let (value, deleted) = match agent.filter(is_live) {
+        Some(agent) => {
+            let snapshot = queue_snapshot(transaction, &agent).map_err(|error| match error {
+                QueueWriteError::Store(error) => error,
+                QueueWriteError::Json(error) => StoreError::Json(error),
+                _ => StoreError::InvalidSyncObject {
+                    scope: "queue".into(),
+                    id: id.into(),
+                },
+            })?;
+            (
+                json!({"items":snapshot.items,"revision":snapshot.revision,"capabilities":snapshot.capabilities}),
+                false,
+            )
+        }
+        None => (json!({}), true),
+    };
+    studio_runtime_store::SyncDocumentsRepository::put_entity(
+        transaction,
+        "queue",
+        id,
+        value,
+        deleted,
+    )?;
+    Ok(())
 }

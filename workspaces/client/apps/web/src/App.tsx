@@ -1,3 +1,5 @@
+import { useSubscription } from "./sync/subscriptions";
+import { submitRename, watchRenameResult } from "./renameRequest";
 import { randomUUID } from "./uuid";
 import {
   StudioErrorsScope,
@@ -12,6 +14,7 @@ import { DeliveryMoment } from "./generated/deliveryMoment";
 import { useScreenEnvironment } from "./servers/ScreenContext";
 import {
   useServerApi,
+  useServerSync,
   useServerStorage,
   useServerStorageEventKey,
   useServerChatCreations,
@@ -57,6 +60,8 @@ import { menuActions, renameCommand, studioCommand } from "./nativeCommands";
 import { useDesktopNotifications } from "./hooks/desktopNotifications";
 import { useNativeAction } from "./useNativeAction";
 import { useChatPrefetch } from "./hooks/chatPrefetch";
+import { useProjectDelete } from "./useProjectDelete";
+import { ProjectDeleteDialog } from "./components/ProjectDeleteDialog";
 import {
   beginConversationDelete,
   claimConversationDeletePost,
@@ -70,10 +75,8 @@ import { useTeamTokenRateStream } from "./hooks/useTeamTokenRateStream";
 import {
   accountLimits,
   limitsReadSucceeded,
-  limitsSnapshotIsFresh,
   shouldReplaceLimitsSnapshot,
 } from "./usage/accountUsage";
-import { usageAccountConnectionKey as usageConnectionKey } from "./usage/usageAccountRefresh";
 import type { AccountLimitsSnapshot } from "./usage/accountUsage";
 import { useMobileViewport } from "./hooks/mobileViewport";
 import { roomLeadIds, messageAttentionCount } from "./chatScope";
@@ -215,11 +218,6 @@ import {
 import Conversation from "./components/Conversation";
 const SelectedConversation = memo(Conversation);
 import type { UsageAccount } from "./components/Usage";
-import { useServerResourceReads } from "./servers/ServerServicesContext";
-import {
-  limitsBaselineReader,
-  type LimitsBaselineHydration,
-} from "./usage/limitsBaseline";
 import RadioChat from "./components/RadioChat";
 import SharedChatCreate, {
   sharedCreationKey,
@@ -265,9 +263,9 @@ export default function App({ active = true }: { active?: boolean }) {
     dismissChatCreation,
   } = useServerChatCreations();
   const { canRevealPath, revealPath } = useServerFileDialogs();
-  const { watchResourceChanges, watchResourceConnection } =
-    useServerResources();
-  const watchResourceReads = useServerResourceReads();
+  const { refreshProjection: recoverRenameProjection } = useServerSync();
+  const renameEvents = useServerResources();
+  const { watchResourceConnection } = renameEvents;
   const sidebarServices = useServerSidebarServices();
   const serverAliases = useServerAliases(readServerAliases);
   const {
@@ -649,6 +647,9 @@ export default function App({ active = true }: { active?: boolean }) {
     null,
   );
   const conversationDeleteLock = useRef(false);
+  const [projectDeleteScope, setProjectDeleteScope] = useState<
+    ReadonlySet<string>
+  >(new Set());
   const startedConversationDeletes = useRef(
     new WeakSet<PendingConversationDelete>(),
   );
@@ -675,12 +676,6 @@ export default function App({ active = true }: { active?: boolean }) {
     [cachedLimitsByAccount, cacheAccountLimits],
   );
   useEffect(() => {
-    if (mobileClient || !data?.stateDir) return;
-    // Include terminals in the first typed subscription set; TerminalDock can
-    // mount later, and its watcher then shares this resource without a reopen.
-    return watchResourceChanges({ kind: "terminals" }, () => {});
-  }, [mobileClient, data?.stateDir]);
-  useEffect(() => {
     if (data?.stateDir && saved(sharedCreationKey(data.stateDir), null))
       setSharedCreate({});
   }, [data?.stateDir]);
@@ -690,15 +685,22 @@ export default function App({ active = true }: { active?: boolean }) {
     [data?.runtime?.events],
   );
   const prefetchData = useMemo(() => {
-    if (!data || !pendingConversationDelete?.scope.size) return data;
+    if (
+      !data ||
+      (!pendingConversationDelete?.scope.size && !projectDeleteScope.size)
+    )
+      return data;
     return {
       ...data,
       threads: withoutAgentDeleteScope(
         data.threads,
-        pendingConversationDelete.scope,
+        new Set([
+          ...(pendingConversationDelete?.scope || []),
+          ...projectDeleteScope,
+        ]),
       ),
     };
-  }, [data, pendingConversationDelete]);
+  }, [data, pendingConversationDelete, projectDeleteScope]);
   const prepareChat = useChatPrefetch(
     prefetchData,
     opened,
@@ -807,6 +809,11 @@ export default function App({ active = true }: { active?: boolean }) {
     renameRequests = useRef<Record<string, { text: string; id: string }>>({}),
     toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const pendingSendKey = `studio-pending-sends:${data?.stateDir || ""}`;
+  const [renameVersion, setRenameVersion] = useState(0);
+  const persistRenames = () => {
+    save(pendingRenameKey, renameRequests.current);
+    setRenameVersion((version) => version + 1);
+  };
   const pendingRenameKey = `studio-pending-renames:${data?.stateDir || ""}`;
   useEffect(() => {
     if (data?.stateDir) sends.current = saved(pendingSendKey, {});
@@ -814,6 +821,20 @@ export default function App({ active = true }: { active?: boolean }) {
   useEffect(() => {
     if (data?.stateDir) renameRequests.current = saved(pendingRenameKey, {});
   }, [pendingRenameKey, data?.stateDir]);
+  useEffect(() => {
+    if (!data?.stateDir) return;
+    const stops = Object.entries(renameRequests.current).map(
+      ([agentId, request]) =>
+        watchRenameResult(renameEvents, agentId, request.id, (receipt) => {
+          if (renameRequests.current[agentId]?.id !== request.id) return;
+          delete renameRequests.current[agentId];
+          persistRenames();
+          if (receipt.status === "failed")
+            notify(receipt.error || "The title could not be generated.");
+        }),
+    );
+    return () => stops.forEach((stop) => stop());
+  }, [pendingRenameKey, renameVersion, renameEvents]);
   const persistSends = () => save(pendingSendKey, sends.current);
   useEffect(() => {
     if (!data?.stateDir) return;
@@ -862,6 +883,14 @@ export default function App({ active = true }: { active?: boolean }) {
   const catalog = appCatalogSelector(agents);
   const leads = catalog.leads;
   const agent = catalog.byId.get(opened || "");
+  useSubscription(
+    active &&
+      agent &&
+      !projectDeleteScope.has(agent.id) &&
+      !(mobileClient && sidebar)
+      ? { kind: "agentDetail", agentId: agent.id }
+      : null,
+  );
   const room = data?.runtime?.rooms?.find((r) => r.id === opened);
   const legacy = data?.chats.find((c) => c.id === opened);
   const roomRoots = room ? roomLeadIds(room, agents) : [];
@@ -885,6 +914,7 @@ export default function App({ active = true }: { active?: boolean }) {
     Boolean(
       workers.length &&
       !team.some((member) => pendingConversationDelete?.scope.has(member.id)) &&
+      !team.some((member) => projectDeleteScope.has(member.id)) &&
       (narrowTeam ? teamOpen : wideTeamOpen),
     ),
   );
@@ -969,8 +999,10 @@ export default function App({ active = true }: { active?: boolean }) {
     (!cachedLimits || (matchingSnapshot.at || 0) > (cachedLimits.at || 0))
       ? matchingSnapshot
       : cachedLimits || null;
-  const chatData = useChatSnapshot(data, lead?.id);
-  const scopedConversationData = useChatSnapshot(data, lead?.id, true);
+  const readableLeadId =
+    lead?.id && !projectDeleteScope.has(lead.id) ? lead.id : undefined;
+  const chatData = useChatSnapshot(data, readableLeadId);
+  const scopedConversationData = useChatSnapshot(data, readableLeadId, true);
   // The conversation reads a narrow projection, so a worker's progress does not
   // render it; its wait state arrives through a source that filters unchanged waits.
   const conversationSnapshot =
@@ -1008,7 +1040,23 @@ export default function App({ active = true }: { active?: boolean }) {
     },
     [forgetCreated, setDrafts],
   );
+  const projectDeletion = useProjectDelete({
+    data,
+    workspaceId,
+    services: sidebarServices,
+    onSuspend: (scope) => {
+      prepareChat.suspend(scope);
+      setProjectDeleteScope(scope);
+    },
+    onResume: (scope) => {
+      prepareChat.resume(scope);
+      setProjectDeleteScope(new Set());
+    },
+    onFinish: finishConversationDelete,
+    notify,
+  });
   const open = useCommittedCallback((id: string, messageId?: string) => {
+    if (projectDeleteScope.has(id)) return;
     prepareChat(id);
     navigationIntent.current++;
     setJumpTarget(
@@ -1025,6 +1073,7 @@ export default function App({ active = true }: { active?: boolean }) {
     if (!data) return;
     if (
       agent?.sharedRoomId &&
+      !projectDeleteScope.has(agent.sharedRoomId) &&
       data.runtime?.rooms.some(
         (room) => room.id === agent.sharedRoomId && !room.userHidden,
       )
@@ -1045,6 +1094,7 @@ export default function App({ active = true }: { active?: boolean }) {
       const selected = saved<string | null>(key, null);
       if (
         selected &&
+        !projectDeleteScope.has(selected) &&
         (data.threads.some((item) => item.id === selected) ||
           data.runtime?.rooms.some((item) => item.id === selected) ||
           data.chats.some((item) => item.id === selected))
@@ -1070,16 +1120,21 @@ export default function App({ active = true }: { active?: boolean }) {
     }
     if (!opened || (!agent && !room && !legacy))
       setOpened(
-        mostRecentActivity(leads)?.id ||
+        mostRecentActivity(
+          leads.filter((lead) => !projectDeleteScope.has(lead.id)),
+        )?.id ||
           mostRecentActivity(
             data.runtime?.rooms.filter(
-              (room) => room.radio?.direct && !room.userHidden,
+              (room) =>
+                room.radio?.direct &&
+                !room.userHidden &&
+                !projectDeleteScope.has(room.id),
             ) || [],
           )?.id ||
           null,
       );
     else save(key, opened);
-  }, [data, opened, agent, room, legacy, mobileClient]);
+  }, [data, opened, agent, room, legacy, mobileClient, projectDeleteScope]);
   useEffect(() => {
     const onError = (event: Event) => {
       if (activeScreen.current) notify((event as CustomEvent<string>).detail);
@@ -1134,13 +1189,6 @@ export default function App({ active = true }: { active?: boolean }) {
   }, [navigationTarget, data, agents, notify]);
   const limitsCache = useRef(limitsByAccount);
   limitsCache.current = limitsByAccount;
-  const limitsWatchers = useRef(new Map<string, () => void>());
-  const limitsCacheHydrations = useRef(
-    new Map<
-      string,
-      { token: object; promise: Promise<LimitsBaselineHydration> }
-    >(),
-  );
   const accountsForLimits = useRef(accounts.data.accounts);
   accountsForLimits.current = accounts.data.accounts;
   const reloadLimitsFor = useCallback(
@@ -1311,140 +1359,6 @@ export default function App({ active = true }: { active?: boolean }) {
     reloadLimitsFor,
   ]);
   const usageAccounts = useRetainedUsageAccounts(nextUsageAccounts);
-  // Only accounts that take part in this chat team get a dot and a cache read.
-  const usageAccountKeys = usageAccounts.map((item) => item.key).join("\n");
-  const usageAccountConnectionKey = usageConnectionKey(
-    usageAccountKeys,
-    accounts.data.accounts,
-  );
-  useEffect(() => {
-    if (!data?.stateDir || !usageAccountKeys) return;
-    for (const key of usageAccountKeys.split("\n")) {
-      const account = accountsForLimits.current.find((item) => item.id === key);
-      if (account?.disconnected) {
-        limitsCacheHydrations.current.delete(key);
-        continue;
-      }
-      if (limitsCacheHydrations.current.has(key)) continue;
-      const token = {};
-      const hydration = get("/api/limits", {
-        query: { account_key: key, cached: "1" },
-      })
-        .then((result) => {
-          if (limitsCacheHydrations.current.get(key)?.token !== token)
-            return false;
-          const currentAccount = accountsForLimits.current.find(
-            (item) => item.id === key,
-          );
-          const snapshot = accountLimits(
-            result,
-            key,
-            currentAccount?.accountId,
-          );
-          if (
-            currentAccount?.disconnected ||
-            !snapshot ||
-            !limitsSnapshotIsFresh(snapshot, key, currentAccount?.accountId)
-          )
-            return false;
-          const previousCurrent = accountLimits(
-            limitsCache.current[key],
-            key,
-            currentAccount?.accountId,
-          );
-          if (
-            !previousCurrent ||
-            (previousCurrent.at || 0) < (snapshot.at || 0)
-          )
-            limitsCache.current = {
-              ...limitsCache.current,
-              [key]: { ...snapshot, accountKey: key },
-            };
-          setLimitsByAccount((old) => {
-            const previous = accountLimits(
-              old[key],
-              key,
-              currentAccount?.accountId,
-            );
-            if (previous && (previous.at || 0) >= (snapshot.at || 0))
-              return old;
-            return { ...old, [key]: snapshot };
-          });
-          return { snapshot };
-        })
-        .catch(() => false);
-      limitsCacheHydrations.current.set(key, { token, promise: hydration });
-    }
-    // Account metadata validates this key through the ref above; the request
-    // identity depends only on workspace + usageAccountKeys. Replacing the
-    // accounts array during its initial load must not repeat the same read.
-  }, [data?.stateDir, usageAccountKeys, usageAccountConnectionKey]);
-  useEffect(() => {
-    if (!data?.stateDir) return;
-    return () => {
-      for (const stop of limitsWatchers.current.values()) stop();
-      limitsWatchers.current.clear();
-      limitsCacheHydrations.current.clear();
-    };
-  }, [data?.stateDir]);
-  useEffect(() => {
-    if (!data?.stateDir) return;
-    const keys = new Set(
-      active
-        ? [accountKey, ...usageAccountKeys.split("\n").filter(Boolean)]
-        : [],
-    );
-    for (const [key, stop] of limitsWatchers.current) {
-      if (keys.has(key)) continue;
-      stop();
-      limitsWatchers.current.delete(key);
-    }
-    for (const key of keys) {
-      if (limitsWatchers.current.has(key)) continue;
-      let active = true;
-      const stopWatching = watchResourceReads(
-        { kind: "limits", accountKey: key },
-        limitsBaselineReader(
-          () =>
-            limitsCacheHydrations.current.get(key)?.promise ??
-            Promise.resolve(false),
-          // A same-version reconnect baseline is covered by hydration; a newer
-          // resource version still forces a read despite a fresh cache entry.
-          () => reloadLimitsForRef.current(key, true),
-          () => {
-            const account = accountsForLimits.current.find(
-              (item) => item.id === key,
-            );
-            return active && !account?.disconnected;
-          },
-          (snapshot) => {
-            const account = accountsForLimits.current.find(
-              (item) => item.id === key,
-            );
-            return limitsSnapshotIsFresh(
-              snapshot ?? limitsCache.current[key],
-              key,
-              account?.accountId,
-            );
-          },
-        ),
-        () => {
-          // reloadLimitsFor stores errors in visible account state.
-        },
-      );
-      const stop = () => {
-        active = false;
-        stopWatching();
-      };
-      limitsWatchers.current.set(key, stop);
-    }
-  }, [
-    data?.stateDir,
-    accountKey,
-    usageAccountKeys,
-    watchResourceReads,
-    active,
-  ]);
   useEffect(() => {
     // Keep each account's latest snapshot for immediate return navigation.
     const incoming = { ...data?.runtime?.rateLimitsByAccount };
@@ -1799,42 +1713,25 @@ export default function App({ active = true }: { active?: boolean }) {
             throw new Error("A name must have 1 to 80 characters.");
           if (renameRequests.current[id]?.text !== text) {
             renameRequests.current[id] = { text, id: randomUUID() };
-            save(pendingRenameKey, renameRequests.current);
+            persistRenames();
           }
           const request_id = renameRequests.current[id].id;
           const body = { id, name, request_id };
-          const result = await post("/api/rename", body);
-          const finishRename = async (receipt: typeof result, attempts = 0) => {
-            if (receipt.status === "pending") {
-              if (attempts >= 90) {
-                notify(
-                  "The rename outcome is unknown. Use /rename again to check this request.",
-                );
-                return;
-              }
-              window.setTimeout(async () => {
-                try {
-                  await finishRename(
-                    await post("/api/rename", body),
-                    attempts + 1,
-                  );
-                } catch (error) {
-                  notify(errorText(error));
-                }
-              }, 1000);
-              return;
-            }
-            if (receipt.status === "failed") {
-              delete renameRequests.current[id];
-              save(pendingRenameKey, renameRequests.current);
-              notify(receipt.error || "The title could not be generated.");
-              return;
-            }
+          const result = await submitRename(body, post, () =>
+            recoverRenameProjection(),
+          );
+          if (result.status === "failed") {
             delete renameRequests.current[id];
-            save(pendingRenameKey, renameRequests.current);
-            await refresh();
-          };
-          void finishRename(result);
+            persistRenames();
+            notify(result.error || "The title could not be generated.");
+          } else if (result.status !== "pending") {
+            delete renameRequests.current[id];
+            persistRenames();
+          } else if (renameRequests.current[id]?.id === request_id) {
+            notify(
+              "Rename requested. Waiting for live updates. Use /rename again to check this request.",
+            );
+          }
         } else if (command === "/stop" || command === "/stop-team")
           await post("/api/stop", {
             id: command === "/stop-team" ? (agent.rootId ?? id) : id,
@@ -2241,7 +2138,6 @@ export default function App({ active = true }: { active?: boolean }) {
           onSelect={async (path, server) => {
             await registerProject(path, server, randomUUID(), projectServices);
             setModal(null);
-            await refresh();
           }}
         />
       ),
@@ -2418,6 +2314,8 @@ export default function App({ active = true }: { active?: boolean }) {
         if (agent) folders(agent);
       } else if (command.action === "project-account")
         openSidebarProjectAccount(command.path);
+      else if (command.action === "delete-project")
+        projectDeletion.open(command.projectId);
       else if (command.action === "new-shared-chat") {
         setSidebar(false);
         setSharedCreate({ path: command.path });
@@ -2459,7 +2357,7 @@ export default function App({ active = true }: { active?: boolean }) {
     publicAccounts,
     creating,
   );
-  const studioErrors = useStudioErrorsState(!!data);
+  const studioErrors = useStudioErrorsState(data?.runtime.studioErrors);
   if (!active) return null;
   // A server contract gate must not cover navigation to other server owners.
   if (screen && schemaMismatch)
@@ -2529,6 +2427,7 @@ export default function App({ active = true }: { active?: boolean }) {
     <StudioErrorsScope value={studioErrors}>
       {active && (
         <SidebarWarnings
+          visible={!(mobileClient && sidebar)}
           data={data}
           agent={agent}
           opened={opened}
@@ -2553,6 +2452,7 @@ export default function App({ active = true }: { active?: boolean }) {
           addProject={openAddProject}
           changeProject={folders}
           projectFolders={(path) => openProjectFolders(path)}
+          deleteProject={projectDeletion.open}
           projectAccount={openSidebarProjectAccount}
           creating={creating}
           refresh={refresh}
@@ -3053,7 +2953,11 @@ export default function App({ active = true }: { active?: boolean }) {
             )}
           </div>
           <UIErrorBoundary label="this conversation" resetKey={opened}>
-            {opened && pendingConversationDelete?.scope.has(opened) ? (
+            {opened && projectDeleteScope.has(opened) ? (
+              <div className="chat-empty-state" role="status">
+                Project deletion in progress or unconfirmed.
+              </div>
+            ) : opened && pendingConversationDelete?.scope.has(opened) ? (
               <div className="chat-empty-state" role="status">
                 {pendingConversationDelete.phase === "submitting"
                   ? "Deleting chat…"
@@ -3061,6 +2965,7 @@ export default function App({ active = true }: { active?: boolean }) {
               </div>
             ) : room?.radio ? (
               <RadioChat
+                visible={!(mobileClient && sidebar)}
                 key={room.id}
                 room={room}
                 data={data}
@@ -3072,6 +2977,7 @@ export default function App({ active = true }: { active?: boolean }) {
               />
             ) : (
               <SelectedConversation
+                visible={!(mobileClient && sidebar)}
                 projectName={projectName}
                 recentChats={
                   agent?.empty
@@ -3269,7 +3175,12 @@ export default function App({ active = true }: { active?: boolean }) {
                 <ServerAccessSettings active={studioSettingsOpen} />
               )}
             </Tabs.Panel>
-            <Tabs.Panel value="models" pt="md" keepMounted={false}>
+            <Tabs.Panel
+              value="models"
+              className="model-whitelist-panel"
+              pt="md"
+              keepMounted={false}
+            >
               <ModelWhitelistSettings />
             </Tabs.Panel>
             <Tabs.Panel value="appearance" pt="md">
@@ -3747,6 +3658,7 @@ export default function App({ active = true }: { active?: boolean }) {
         selectedAccount={selectedAccount}
         setClaudeLoginKey={setClaudeLoginKey}
       />
+      <ProjectDeleteDialog {...projectDeletion.dialog} />
       <Modal
         opened={!!modal}
         padding={

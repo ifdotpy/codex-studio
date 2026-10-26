@@ -39,7 +39,7 @@ pub enum RemoteTransportError {
     InvalidIdentity,
     #[error("remote identity storage is unavailable or unsafe")]
     IdentityStorage,
-    #[error("remote identity loading is unsupported on Windows")]
+    #[error("remote identity loading is unavailable on this server")]
     UnsupportedPlatform,
     #[error("invalid stored object {table}/{key}")]
     InvalidStoredObject { table: &'static str, key: String },
@@ -1672,7 +1672,6 @@ pub(crate) mod tests {
     };
     use base64::Engine as _;
     use base64::engine::general_purpose::STANDARD;
-    use ring::signature::{ED25519, UnparsedPublicKey};
     use serde_json::{Value, json};
     use std::path::{Path, PathBuf};
     use std::time::Duration;
@@ -1688,14 +1687,6 @@ pub(crate) mod tests {
         0x3a, 0x0e, 0xe1, 0x72, 0xf3, 0xda, 0xa6, 0x23, 0x25, 0xaf, 0x02, 0x1a, 0x68, 0xf7, 0x07,
         0x51, 0x1a,
     ];
-    const PYTHON_SIGNATURE_EMPTY: [u8; 64] = [
-        0xe5, 0x56, 0x43, 0x00, 0xc3, 0x60, 0xac, 0x72, 0x90, 0x86, 0xe2, 0xcc, 0x80, 0x6e, 0x82,
-        0x8a, 0x84, 0x87, 0x7f, 0x1e, 0xb8, 0xe5, 0xd9, 0x74, 0xd8, 0x73, 0xe0, 0x65, 0x22, 0x49,
-        0x01, 0x55, 0x5f, 0xb8, 0x82, 0x15, 0x90, 0xa3, 0x3b, 0xac, 0xc6, 0x1e, 0x39, 0x70, 0x1c,
-        0xf9, 0xb4, 0x6b, 0xd2, 0x5b, 0xf5, 0xf0, 0x59, 0x5b, 0xbe, 0x24, 0x65, 0x51, 0x41, 0x43,
-        0x8e, 0x7a, 0x10, 0x0b,
-    ];
-
     fn pkcs8_pem() -> Vec<u8> {
         let mut der = vec![
             0x30, 0x53, 0x02, 0x01, 0x01, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70, 0x04, 0x22,
@@ -1763,8 +1754,10 @@ pub(crate) mod tests {
             let path = root.join(name);
             let connection =
                 studio_runtime_store::Connection::open(path).expect("fixture database opens");
+            studio_runtime_store::sqlite_durability::configure_writer(&connection)
+                .expect("fixture pragmas apply");
             connection
-                .execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; BEGIN;")
+                .execute_batch("BEGIN;")
                 .expect("fixture pragmas apply");
             let mut statements = snapshot[name]["sqlite_master"]
                 .as_array()
@@ -1806,21 +1799,6 @@ pub(crate) mod tests {
             .await
             .expect("schema fixture opens");
         (directory, root, Arc::new(store))
-    }
-
-    #[test]
-    fn python_ed25519_signature_verifies_and_rust_signing_is_interoperable() {
-        let public_pem = spki_pem();
-        verify_signature(&public_pem, b"", &STANDARD.encode(PYTHON_SIGNATURE_EMPTY))
-            .expect("RFC/Python-compatible signature verifies");
-        let signed = identity().sign(b"");
-        assert_eq!(
-            STANDARD.decode(&signed).expect("standard base64 decodes"),
-            PYTHON_SIGNATURE_EMPTY
-        );
-        UnparsedPublicKey::new(&ED25519, PUBLIC)
-            .verify(b"", &STANDARD.decode(signed).expect("signature decodes"))
-            .expect("Rust signature verifies with Ed25519");
     }
 
     #[test]
@@ -1944,6 +1922,15 @@ pub(crate) mod tests {
     #[test]
     fn signing_headers_and_federation_response_match_the_python_contract() {
         let identity = identity();
+        let signature = identity.sign(b"");
+        for alternate in [
+            signature.trim_end_matches('=').to_owned(),
+            format!("{signature}\n"),
+            signature.replace('+', "-").replace('/', "_"),
+        ] {
+            assert_ne!(alternate, signature);
+            assert!(verify_signature(&spki_pem(), b"", &alternate).is_err());
+        }
         let nonce = "abcdefghijklmnopqrstuvwxyz012345";
         let body = br#"{"a":1}"#;
         let multi = multi_server_signed_headers(
@@ -2028,93 +2015,13 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn python_produced_federation_vectors_verify_with_shared_canonical_json() {
-        let vectors: serde_json::Value = serde_json::from_str(include_str!(
-            "../tests/fixtures/remote-transport-python-vectors.json"
-        ))
-        .expect("review's Python-generated vectors parse");
-        let public_key = vectors["public"].as_str().expect("fixture public key");
-        for case in vectors["responses"].as_array().expect("response list") {
-            let name = case["name"].as_str().expect("vector name");
-            let wrapper = &case["wrapper"];
-            let proof = json!({
-                "stateId":wrapper["stateId"],
-                "timestamp":wrapper["timestamp"],
-                "nonce":wrapper["nonce"],
-                "result":wrapper["result"]
-            });
-            let canonical = canonical_json(&proof).expect("Python response proof canonicalizes");
-            verify_signature(
-                public_key,
-                format!("studio-federation-response-v1\n{canonical}").as_bytes(),
-                wrapper["signature"]
-                    .as_str()
-                    .expect("Python response signature"),
-            )
-            .expect("Python-produced response signature verifies over shared canonical bytes");
-            let expected_state = if name == "null_state" || name == "short_nonce" {
-                None
-            } else {
-                Some("peer")
-            };
-            let wire = serde_json::to_vec(wrapper).expect("Python response wrapper serializes");
-            let verified =
-                super::verify_federation_response(&wire, public_key, expected_state, 1_700_000_000);
-            if name == "short_nonce" {
-                assert!(matches!(
-                    verified,
-                    Err(super::RemoteTransportError::InvalidNonce)
-                ));
-            } else {
-                assert!(verified.is_ok(), "Python-produced {name} envelope verifies");
-            }
-        }
-
-        let signatures = vectors["signatures"].as_array().expect("signature list");
-        for case in signatures {
-            let signature = case["signature"].as_str().expect("signature value");
-            let accepted = verify_signature(public_key, b"", signature).is_ok();
-            assert_eq!(
-                accepted,
-                case["name"] == "standard",
-                "signature encoding policy for {}",
-                case["name"]
-            );
-        }
-
-        let canonical = vectors["canonical"].as_array().expect("canonical list");
-        for case in &canonical[..2] {
-            let wire = case["wire"].as_str().expect("canonical wire value");
-            let parsed: serde_json::Value = serde_json::from_str(wire).expect("float JSON parses");
-            assert_eq!(canonical_json(&parsed).expect("float canonicalizes"), wire);
+    fn exact_json_refuses_unrepresentable_integer_tokens() {
+        for wire in [r#"{"x":1e-06}"#, r#"{"x":1e+16}"#] {
+            let parsed = super::parse_exact_json(wire.as_bytes()).expect("exact float JSON");
+            assert_eq!(canonical_json(&parsed).expect("canonical JSON"), wire);
         }
         assert!(super::parse_exact_json(br#"{"n":18446744073709551617}"#).is_err());
         assert!(super::parse_exact_json(br#"{"text":"18446744073709551617","n":1e+16}"#).is_ok());
-        assert!(
-            super::verify_federation_response(
-                &serde_json::to_vec(&vectors["responses"][3]["wrapper"])
-                    .expect("null state wrapper serializes"),
-                public_key,
-                Some("peer"),
-                1_700_000_000
-            )
-            .is_err(),
-            "null state cannot match an expected federation state"
-        );
-        let mut missing_state = vectors["responses"][3]["wrapper"].clone();
-        missing_state
-            .as_object_mut()
-            .expect("fixture wrapper is an object")
-            .remove("stateId");
-        assert!(
-            super::verify_federation_response(
-                &serde_json::to_vec(&missing_state).expect("missing state wrapper serializes"),
-                public_key,
-                None,
-                1_700_000_000,
-            )
-            .is_ok()
-        );
     }
 
     #[test]

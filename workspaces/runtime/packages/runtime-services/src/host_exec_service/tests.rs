@@ -18,6 +18,34 @@ struct Fixture {
     service: Arc<HostService>,
 }
 
+impl Drop for Fixture {
+    fn drop(&mut self) {
+        // A failed assertion must also release children blocked on fixture FIFOs.
+        let children = self
+            .service
+            .inner()
+            .children
+            .values()
+            .cloned()
+            .collect::<Vec<_>>();
+        for child in children {
+            let mut reaped = child.reaped.lock().unwrap();
+            if !*reaped {
+                nix::sys::signal::killpg(
+                    nix::unistd::Pid::from_raw(child.pid),
+                    nix::sys::signal::Signal::SIGKILL,
+                )
+                .unwrap_or_default();
+                let _wait_result = rustix::process::waitpid(
+                    rustix::process::Pid::from_raw(child.pid),
+                    rustix::process::WaitOptions::empty(),
+                );
+                *reaped = true;
+            }
+        }
+    }
+}
+
 impl Fixture {
     fn new() -> Self {
         Self::build(None)
@@ -105,20 +133,26 @@ impl Fixture {
         .unwrap()
     }
 
-    /// Attach until the command exited; returns its status and the output text.
+    /// Wait for the actual command task, then read its completed output pages.
     async fn finish(&self, operation: &str) -> (Value, String) {
+        tokio::time::timeout(Duration::from_secs(30), async {
+            while self.service.inner().commands.contains(operation) {
+                self.service.command_finished.notified().await;
+            }
+        })
+        .await
+        .expect("the command task finishes");
         let mut after = 0;
         let mut output = String::new();
-        for round in 0..400 {
-            let attached = self
-                .call(
-                    &format!("attach:{operation}:{round}"),
-                    "attach",
-                    json!({"operationId": operation, "agentId": "agent", "afterSeq": after, "waitSeconds": 1}),
-                )
-                .await
-                .unwrap();
+        loop {
+            let attached = self.call(
+                &format!("attach:{operation}:{after}"), "attach",
+                json!({"operationId":operation,"agentId":"agent","afterSeq":after,"waitSeconds":0}),
+            ).await.unwrap();
             let events = attached["events"].as_array().unwrap();
+            if events.is_empty() {
+                return (attached["status"].clone(), output);
+            }
             for event in events {
                 after = event["seq"].as_i64().unwrap();
                 output.push_str(
@@ -128,11 +162,50 @@ impl Fixture {
                         .unwrap_or_default(),
                 );
             }
-            if attached["status"]["state"] != "running" && events.is_empty() {
-                return (attached["status"].clone(), output);
-            }
         }
-        panic!("the command of {operation} did not finish");
+    }
+
+    /// The shell acknowledges its edits, then blocks on an owned FIFO until
+    /// the production cancellation or timeout kills its process group.
+    async fn start_waiting(&self, operation: &str, edits: &str, timeout: f64) {
+        use notify::Watcher;
+        let marker = self.root.join(format!("ready-{operation}"));
+        let fifo = self.root.join(format!("release-{operation}"));
+        let (send, mut changes) = tokio::sync::mpsc::unbounded_channel();
+        let mut watcher =
+            notify::recommended_watcher(move |event: notify::Result<notify::Event>| {
+                send.send(event).ok();
+            })
+            .unwrap();
+        watcher
+            .watch(&self.root, notify::RecursiveMode::NonRecursive)
+            .unwrap();
+        let script =
+            format!("mkfifo \"$2\"; {edits}; printf ready > \"$1\"; read -r release < \"$2\"");
+        self.start(
+            operation,
+            &[
+                "/bin/sh",
+                "-c",
+                &script,
+                "fixture",
+                marker.to_str().unwrap(),
+                fifo.to_str().unwrap(),
+            ],
+            timeout,
+        )
+        .await;
+        tokio::time::timeout(Duration::from_secs(30), async {
+            while !marker.exists() {
+                changes
+                    .recv()
+                    .await
+                    .expect("file watcher alive")
+                    .expect("file event");
+            }
+        })
+        .await
+        .expect("child acknowledges its edits");
     }
 
     fn op_status(&self, operation: &str) -> Op {
@@ -388,7 +461,7 @@ async fn retirement_needs_the_token_the_build_and_an_idle_service() {
         (json!(BUILD), json!(false))
     );
     // A running command keeps the service.
-    fixture.start("busy", &["/bin/sleep", "30"], 30.0).await;
+    fixture.start_waiting("busy", ":", 30.0).await;
     let busy = fixture
         .call("retire-busy", "service.retire", params.clone())
         .await;
@@ -656,23 +729,8 @@ async fn the_mac_refuses_an_invalid_tree_id_and_a_changed_manifest() {
 async fn cancel_and_timeout_stop_the_command_and_keep_its_changes() {
     let fixture = Fixture::new();
     fixture
-        .start(
-            "cancel",
-            &[
-                "/bin/sh",
-                "-c",
-                "printf before > edit; touch started; exec sleep 30",
-            ],
-            60.0,
-        )
+        .start_waiting("cancel", "printf before > edit; touch started", 60.0)
         .await;
-    let slot = PathBuf::from(fixture.op_status("cancel")["slotPath"].as_str().unwrap());
-    for _ in 0..400 {
-        if slot.join("started").exists() {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(25)).await;
-    }
     let cancelled = fixture
         .call(
             "cancel",
@@ -686,12 +744,11 @@ async fn cancel_and_timeout_stop_the_command_and_keep_its_changes() {
     assert_eq!(status["reason"], "cancelled");
     assert_eq!(status["changedPaths"], 2);
     fixture
-        .start(
-            "timeout",
-            &["/bin/sh", "-c", "printf before > edit2; exec sleep 30"],
-            1.0,
-        )
+        .start_waiting("timeout", "printf before > edit2", 60.0)
         .await;
+    tokio::time::pause();
+    tokio::time::advance(Duration::from_secs(61)).await;
+    tokio::time::resume();
     let (status, _) = fixture.finish("timeout").await;
     assert_eq!(status["reason"], "timeout");
 }
@@ -708,19 +765,8 @@ async fn command_group_signals_come_before_the_leader_is_reaped() {
     let (status, _) = fixture.finish("plain").await;
     assert_eq!(status["reason"], "exited");
     fixture
-        .start(
-            "stopped",
-            &["/bin/sh", "-c", "touch started; exec sleep 30"],
-            60.0,
-        )
+        .start_waiting("stopped", "touch started", 60.0)
         .await;
-    let slot = PathBuf::from(fixture.op_status("stopped")["slotPath"].as_str().unwrap());
-    for _ in 0..400 {
-        if slot.join("started").exists() {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(25)).await;
-    }
     fixture
         .call(
             "cancel-stopped",
@@ -840,6 +886,19 @@ async fn a_guest_restart_frees_idle_slots_and_orphans_running_commands() {
         .unwrap();
     // A running command of a lost guest keeps its slot until it exits, then frees it.
     let gate = fixture.root.join("gate");
+    assert!(
+        tokio::time::timeout(
+            Duration::from_secs(30),
+            tokio::process::Command::new("mkfifo")
+                .arg(&gate)
+                .kill_on_drop(true)
+                .status()
+        )
+        .await
+        .unwrap()
+        .unwrap()
+        .success()
+    );
     let op = fixture
         .call("acquire-running", "acquire", params("running", "old"))
         .await
@@ -849,7 +908,7 @@ async fn a_guest_restart_frees_idle_slots_and_orphans_running_commands() {
             "run-running",
             "run",
             json!({"operationId": "running", "agentId": "agent",
-                   "argv": ["/bin/sh", "-c", format!("while [ ! -e '{}' ]; do sleep 0.05; done", gate.display())],
+                   "argv": ["/bin/sh", "-c", "read -r release < \"$1\"", "fixture", gate],
                    "manifestSha256": Fixture::manifest_digest(&op["slotPath"])}),
         )
         .await
@@ -890,7 +949,7 @@ async fn a_guest_restart_frees_idle_slots_and_orphans_running_commands() {
         )
         .await;
     assert_eq!(release.unwrap_err().0, "invalid_params");
-    fs::write(&gate, "exit").unwrap();
+    tokio::fs::write(&gate, "exit\n").await.unwrap();
     let (status, _) = fixture.finish("running").await;
     assert_eq!(
         (
@@ -904,7 +963,6 @@ async fn a_guest_restart_frees_idle_slots_and_orphans_running_commands() {
 
 #[tokio::test]
 async fn an_interrupted_slot_removal_blocks_reuse_until_recovery() {
-    use std::os::unix::fs::PermissionsExt;
     let fixture = Fixture::new();
     let op = fixture.acquire("retire-old").await.unwrap();
     fixture
@@ -919,14 +977,14 @@ async fn an_interrupted_slot_removal_blocks_reuse_until_recovery() {
         .parent()
         .unwrap()
         .to_path_buf();
-    // A folder that the cleanup cannot empty interrupts the removal.
+    // Fail this slot after the durable retirement marker, independently of user privileges.
     let locked = slot.join("DerivedData/locked");
     fs::create_dir_all(&locked).unwrap();
     fs::write(locked.join("evidence"), vec![b'x'; 65536]).unwrap();
-    fs::set_permissions(&locked, fs::Permissions::from_mode(0o500)).unwrap();
+    super::slots::REMOVE_SLOT_FAILURE.set(Some(slot.clone()));
     fixture.settings(&json!({"diskBudgetGiB": 8192.0 / (1u64 << 30) as f64}));
     let failed = fixture.acquire("retire-failed").await.unwrap_err();
-    fs::set_permissions(&locked, fs::Permissions::from_mode(0o700)).unwrap();
+    super::slots::REMOVE_SLOT_FAILURE.set(None);
     assert_eq!(failed.0, "slot_cleanup_failed", "{failed:?}");
     let marker = slot.with_file_name(format!(
         ".retiring-{}.json",
@@ -972,16 +1030,41 @@ async fn the_socket_serves_one_request_per_connection() {
     .unwrap()
     .unwrap_err();
     assert_eq!(rejected.code, "forbidden");
-    let state = fixture.state.clone();
-    let health = studio_runtime_store::blocking_pool::spawn_blocking("test", move || {
-        lifecycle::service_call(&state, TOKEN, "health", None)
-    })
+    let socket = fixture.state.join(SOCKET_FILE);
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let request = json!({"id":"wire-health","method":"health","token":TOKEN,"params":{}});
+    let mut stream = tokio::net::UnixStream::connect(&socket).await.unwrap();
+    stream
+        .write_all(format!("{request}\n{request}\n").as_bytes())
+        .await
+        .unwrap();
+    let mut response = String::new();
+    tokio::time::timeout(
+        Duration::from_secs(10),
+        stream.read_to_string(&mut response),
+    )
     .await
     .unwrap()
     .unwrap();
+    assert_eq!(response.lines().count(), 1, "one answer followed by EOF");
+    let health: Value = serde_json::from_str(&response).unwrap();
     assert_eq!(
-        (health["protocol"].clone(), health["buildId"].clone()),
-        (json!(PROTOCOL), json!(BUILD))
+        (&health["result"]["protocol"], &health["result"]["buildId"]),
+        (&json!(PROTOCOL), &json!(BUILD))
+    );
+    let mut stream = tokio::net::UnixStream::connect(&socket).await.unwrap();
+    stream.write_all(b"not JSON\n").await.unwrap();
+    response.clear();
+    tokio::time::timeout(
+        Duration::from_secs(10),
+        stream.read_to_string(&mut response),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert!(
+        response.is_empty(),
+        "malformed frames close without an answer"
     );
     let state = fixture.state.clone();
     let retired = studio_runtime_store::blocking_pool::spawn_blocking("test", move || {

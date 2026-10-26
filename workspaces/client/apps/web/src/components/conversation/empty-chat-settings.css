@@ -1,4 +1,4 @@
-/* One execution summary shares the composer tools row at every container stage. */
+/* Disclosure follows the composer content width, including docked sidebars. */
 .empty-chat-settings {
   display: flex;
   align-items: center;
@@ -10,156 +10,60 @@
   min-height: var(--studio-touch-target);
   min-width: 0;
   max-width: 100%;
-  padding-inline: calc(var(--mantine-spacing-xs) / 2);
+  padding: calc(var(--mantine-spacing-xs) / 2);
+  font-size: var(--studio-text-meta);
+}
+.execution-summary-trigger .mantine-Button-label {
+  overflow: visible;
+  width: 100%;
 }
 .execution-summary-segments,
-.execution-summary-segment,
-.execution-symbols {
+.execution-summary-segment {
   display: flex;
-  align-items: center;
-  flex-wrap: nowrap;
+  align-items: baseline;
+  flex-wrap: wrap;
   gap: calc(var(--mantine-spacing-xs) / 2);
   min-width: 0;
 }
-.execution-symbols {
+.execution-summary-segments {
+  width: 100%;
+}
+.execution-summary-segment {
+  max-width: 100%;
+  text-align: start;
+}
+.execution-summary-segment .execution-role {
   flex: none;
-  gap: calc(var(--mantine-spacing-xs) / 4);
 }
-.execution-summary-segment + .execution-summary-segment {
-  border-inline-start: var(--studio-border-width) solid
-    var(--mantine-color-default-border);
-  padding-inline-start: var(--mantine-spacing-xs);
-  margin-inline-start: calc(var(--mantine-spacing-xs) / 2);
-}
-.execution-summary-segment svg {
-  display: block;
-  flex: none;
-  width: var(--mantine-font-size-sm);
-  height: var(--mantine-font-size-sm);
-  color: var(--text);
-}
-.execution-summary-segment .execution-role-icon {
-  color: var(--mantine-color-dimmed);
-}
-.execution-summary-segment .execution-model {
-  min-inline-size: var(--studio-composer-model-min);
-  flex: 1 1 auto;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.execution-model-family {
-  display: none;
+.execution-summary-segment .execution-model,
+.execution-inherited-label {
+  min-width: 0;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  text-align: start;
 }
 .execution-summary-segment .execution-role,
-.execution-summary-segment .execution-effort,
 .execution-inherited-label {
   font-size: var(--studio-text-meta);
   color: var(--mantine-color-dimmed);
-  white-space: nowrap;
 }
-@container composer (max-width: 60em) {
-  .execution-summary-segment .execution-effort {
-    display: none;
-  }
-}
-/* Drop role words before model names; paired symbols stay on one line. */
-@container composer (max-width: 45em) {
-  .execution-summary-segment .execution-role {
-    display: none;
-  }
-  .execution-summary-trigger {
-    font-size: var(--studio-text-meta);
-  }
-  .execution-inherited-label {
-    max-inline-size: calc(var(--studio-composer-model-min) + 1ch);
-    white-space: normal;
-    line-height: var(--mantine-line-height-xs);
-    text-align: start;
-  }
-  .execution-summary-segment + .execution-summary-segment {
-    padding-inline-start: calc(var(--mantine-spacing-xs) / 2);
-    margin-inline-start: 0;
+/* Separate roles when the composer has room for an inline summary. */
+@container composer (min-width: 50em) {
+  .execution-summary-segment:not([data-role="lead"]) {
+    border-inline-start: var(--studio-border-width) solid
+      var(--mantine-color-default-border);
+    padding-inline-start: var(--mantine-spacing-xs);
   }
 }
-@container composer (max-width: 32em) {
-  .execution-summary-segment[data-role="review"] .execution-model,
-  .execution-inherited-label {
-    display: none;
-  }
+/* Status never competes with the model summary or Send for horizontal space. */
+#composer > .account-transfer-chip {
+  flex: none;
+  align-self: flex-start;
+  max-width: 100%;
+  padding-bottom: calc(var(--mantine-spacing-xs) / 2);
+  overflow: visible;
+  white-space: normal;
 }
-@container composer (max-width: 25em) {
-  .execution-summary-segment[data-role="worker"] .execution-model {
-    display: none;
-  }
-  .execution-model-full {
-    display: none;
-  }
-  .execution-model-family {
-    display: inline;
-  }
-  .execution-summary-segment[data-role="lead"] .execution-model {
-    flex-shrink: 0;
-    text-overflow: clip;
-  }
-}
-
-/* Wide composers reserve the summary's natural width before delivery hints.
-   The zero basis above still keeps attachments and controls on one narrow row. */
-@container composer (min-width: 56.25em) {
-  .empty-chat-settings,
-  .execution-summary-trigger {
-    flex: 0 0 auto;
-  }
-  .composer-tools:has(.execution-summary-trigger) {
-    flex: 1 0 auto;
-  }
-  .composer-bar:has(.execution-summary-trigger) .composer-submit-actions {
-    flex: 0 1 auto;
-    min-width: 0;
-  }
-  .composer-bar:has(.execution-summary-trigger) .composer-timing {
-    flex: 0 1 auto;
-    min-width: 0;
-    overflow: hidden;
-    white-space: nowrap;
-    flex-wrap: nowrap;
-  }
-  .execution-summary-segment .execution-model {
-    flex: none;
-  }
-}
-
-/* The narrowest composer keeps one-line role symbols only. */
-@container composer (max-width: 20em) {
-  .execution-summary-segment[data-role="lead"] .execution-model {
-    display: none;
-  }
-}
-
-/* Touch targets leave narrow phones room for symbols only; the trigger's
-   accessible name and title keep the full model names. */
-@media (pointer: coarse) {
-  @container composer (max-width: 30em) {
-    .execution-summary-segment:not([data-role="lead"]) .execution-model {
-      display: none;
-    }
-    .execution-summary-segment[data-role="lead"] .execution-model {
-      min-inline-size: 0;
-    }
-  }
-  @container composer (max-width: 22em) {
-    .execution-summary-segment[data-role="lead"] .execution-model {
-      display: none;
-    }
-  }
-  @container composer (max-width: 18em) {
-    .execution-summary-segment[data-role="review"] {
-      display: none;
-    }
-  }
-}
-
 /* Reserve the active Stop slot so dictation and Send do not jump on turn start. */
 @media (pointer: fine) {
   @container composer (min-width: 35em) {
@@ -170,12 +74,8 @@
     }
   }
 }
-
-/* Phone summaries keep all role/provider symbols on one line beside Attach. */
+/* Queue remains available through the existing tools disclosure on phones. */
 @container composer (max-width: 25em) {
-  .execution-summary-segment .execution-model {
-    display: none;
-  }
   #composer .composer-queue-primary {
     display: none;
   }
@@ -184,5 +84,45 @@
   }
   #composer .composer-tools-disclosure {
     display: block;
+  }
+}
+
+/* Match the tools-row height when attachment previews occupy the preceding row. */
+.composer-draft-control:not(:empty) {
+  display: flex;
+  align-items: center;
+  flex: none;
+  min-height: var(--studio-touch-target);
+}
+.composer-draft-control:empty {
+  display: none;
+}
+
+/* Auxiliary controls use the input's existing tools corner before they can
+   squeeze the lead name. Their reserved input inset follows the same query. */
+@container composer (max-width: 25em) {
+  .composer-draft-control:not(:empty) {
+    position: absolute;
+    top: 0;
+    right: var(--studio-touch-target);
+  }
+  #composer:has(.composer-draft-control:not(:empty)) #message {
+    padding-right: calc(2 * var(--studio-touch-target));
+  }
+  #composer > .account-transfer-chip {
+    max-width: calc(100% - 2 * var(--studio-touch-target));
+  }
+}
+@container composer (max-width: 20em) {
+  #composer #stop {
+    position: absolute;
+    top: 0;
+    right: calc(2 * var(--studio-touch-target));
+  }
+  #composer:has(#stop) #message {
+    padding-right: calc(3 * var(--studio-touch-target));
+  }
+  #composer:has(#stop) > .account-transfer-chip {
+    max-width: calc(100% - 3 * var(--studio-touch-target));
   }
 }

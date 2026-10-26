@@ -27,12 +27,6 @@ const BRIEF_FIELDS: &[&str] = &[
     "agentArchive",
     "nativeRelease",
     "parkedEvent",
-    "imageWorkspace",
-    "imageWorkspaceReady",
-    "imageWorkspacePhase",
-    "imageWorkspaceError",
-    "imageWorkspaceCreatedAt",
-    "cleanedImageWorkspace",
 ];
 
 #[derive(Debug, Error)]
@@ -782,7 +776,16 @@ fn usage_resume_pending(agent: &Agent) -> bool {
 /// The scheduler claims input only for queued agents, so its pending input
 /// waits for a manual resume that an archive rules out. Python `_blockers`
 /// refused this archive with `input_delivery`; the Rust owner settles it.
+fn legacy_finished(agent: &Agent) -> bool {
+    agent.flag("legacyWorkspaceFinished")
+        && crate::legacy_image_workspace::is_legacy(&agent.record)
+        && !agent.active()
+}
+
 fn failed_without_retry(agent: &Agent) -> bool {
+    if legacy_finished(agent) {
+        return true;
+    }
     agent.identity.status == AgentStatus::Failed
         && !agent.active()
         && !agent.flag("startAttempt")
@@ -793,6 +796,9 @@ fn failed_without_retry(agent: &Agent) -> bool {
 /// Python `_completed_native_turn`: a durable completion of the last submitted
 /// turn proves that no native turn is left to wait for.
 fn completed_native_turn(agent: &Agent) -> bool {
+    if legacy_finished(agent) {
+        return true;
+    }
     let record = &agent.record;
     let attempt_turn = record.pointer("/startAttempt/turnId");
     let turn = record
@@ -827,20 +833,7 @@ pub(crate) fn archived_cleanup_result(record: &Value) -> (Value, Value) {
         }
         None => json!({"state":"kept","reason":"already archived","bytes":0}),
     };
-    let cleaned_image = (!flag("imageWorkspaceReady"))
-        .then(|| record.get("cleanedImageWorkspace"))
-        .flatten()
-        .filter(|cleaned| truthy(Some(cleaned)));
-    let workspace = record
-        .get("imageWorkspaceCleanupResult")
-        .filter(|result| truthy(Some(result)))
-        .cloned()
-        .or_else(|| {
-            cleaned_image.map(|cleaned| {
-                json!({"state":"archived","bytes":cleaned.get("bytes").cloned().unwrap_or(json!(0))})
-            })
-        })
-        .unwrap_or(Value::Null);
+    let workspace = Value::Null;
     (worktree, workspace)
 }
 
@@ -886,19 +879,10 @@ fn next_epoch(agent: &Agent) -> Result<i64, ManagementError> {
         .ok_or(ManagementError::Invalid("Agent epoch limit reached"))
 }
 fn workspace_dependency(agent: &Agent) -> Result<(), ManagementError> {
-    let image_removed = agent
-        .record
-        .get("imageWorkspacePhase")
-        .and_then(Value::as_str)
-        == Some("removed");
     if agent.record.get("executionMode").and_then(Value::as_str) == Some("vm")
         || ["worktreeReady", "worktreeCleanup", "cleanedWorktree"]
             .iter()
             .any(|key| agent.flag(key))
-        || (!image_removed
-            && ["imageWorkspaceReady", "cleanedImageWorkspace"]
-                .iter()
-                .any(|key| agent.flag(key)))
     {
         return Err(ManagementError::Unavailable(
             "workspace-state/agent-lifecycle",
@@ -1214,6 +1198,16 @@ fn stop(
                 .or_default()
                 .push(LifecycleEffectKind::RemoteStop);
         }
+        if delete {
+            // Final deletion must revoke archive restoration while retaining
+            // any previously requested cleanup and its exact effect identity.
+            if let Some(archive) = object.remove("agentArchive") {
+                object.insert(
+                    crate::workspace_cleanup_runtime::DELETED_ARCHIVE_FIELD.to_owned(),
+                    archive,
+                );
+            }
+        }
         if delete && !agent.flag("deletedAt") {
             object.insert("deletedAt".to_owned(), json!(now));
         }
@@ -1310,7 +1304,7 @@ fn archive(
             "blockers":[{"kind":ArchiveBlockerKind::NativeStateUnconfirmed,"count":1,"ids":[agent.id()]}]
         })));
     }
-    // The workspace cleanup service removes the worktree, archives the image
+    // The workspace cleanup service removes the worktree, retains legacy workspace records
     // or releases the layr line from the durable intent written below.
     let reason = python_strip(reason);
     if reason.is_empty() || reason.chars().count() > 1000 {
@@ -1444,9 +1438,6 @@ fn restore(snapshot: &ManagementSnapshot, agent: &Agent) -> Result<Decision, Man
     object.insert("status".to_owned(), json!("paused"));
     object.insert("autoWake".to_owned(), json!(false));
     object.insert("epoch".to_owned(), json!(next_epoch(agent)?));
-    if agent.flag("imageWorkspace") && !agent.flag("imageWorkspaceReady") {
-        object.insert("imageWorkspacePhase".to_owned(), json!("read_only"));
-    }
     let mut decision = Decision::result(
         json!({"status":"restored","agent":brief(&record),"next":"Use orchestration_send to resume with an instruction"}),
     );
@@ -1814,6 +1805,28 @@ mod archive_parity_tests {
             vec![json!({"id":"task-done","agent":"worker","status":"completed"})],
         ));
         assert_eq!(result["status"], "archived", "{result}");
+    }
+
+    #[test]
+    fn legacy_finished_worker_archives_without_a_native_executor() {
+        let mut snapshot = records(
+            worker(json!({
+                "workspaceMode":"image", "legacyWorkspaceFinished":true,
+                "autoWake":false, "lastCompletedTurn":null,
+                "startAttempt":{"submitted":true,"turnId":"legacy-turn"}
+            })),
+            Vec::new(),
+            Vec::new(),
+        );
+        snapshot.tables.insert(
+            "runtime_events".into(),
+            vec![json!({
+                "id":"legacy-input", "agent":"worker", "epoch":2, "status":"pending"
+            })],
+        );
+        let result = archive(snapshot);
+        assert_eq!(result["status"], "archived", "{result}");
+        assert_eq!(result["settledInputs"], json!(["legacy-input"]));
     }
 
     #[test]

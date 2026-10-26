@@ -2,6 +2,7 @@
 mod install;
 mod linux_vm;
 mod mac_sync;
+mod native_layr;
 mod service;
 mod stored_text;
 
@@ -34,6 +35,7 @@ pub(crate) fn dispatch() -> Option<ExitCode> {
         Some("service") => service::run(&args[1..]),
         Some("install-cli") => install::run(&args[1..]),
         Some("linux-vm") => linux_vm::run(&args[1..]),
+        Some("native-layr") => native_layr::run(&args[1..]),
         Some("stored-text") => stored_text::run(&args[1..]),
         Some("mac-sync") => mac_sync::run(&args[1..]),
         Some("--help" | "-h") => {

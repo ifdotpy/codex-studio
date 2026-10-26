@@ -65,6 +65,8 @@ pub enum WorkspaceError {
     Lock,
     #[error("Workspace preparation worker failed")]
     Worker,
+    #[error(transparent)]
+    WorktreeRoot(#[from] crate::worktree_root::WorktreeRootError),
 }
 
 /// Call on a blocking preparation worker. Queued events belong to the caller and are never mutated.
@@ -172,6 +174,15 @@ async fn prepare_attempt(
     queue: Duration,
 ) -> Result<WorkspaceDecision, WorkspaceError> {
     let initial = snapshot(&store, agent_id.clone()).await?;
+    if crate::layr_native::is_native(&initial.agent.record) {
+        let ready = crate::layr_native::prepare(Arc::clone(&store), initial.agent.record.clone())
+            .await
+            .map_err(|error| WorkspaceError::Git(error.to_string()))?;
+        let cwd = ready["cwd"].as_str().ok_or(WorkspaceError::InvalidRecord)?;
+        return Ok(WorkspaceDecision::Ready {
+            token: ReadyToken::new(&ready, PathBuf::from(cwd)),
+        });
+    }
     let actor = actor(&initial)?;
     // VM paths are guest paths, so they cannot enter Git canonicalization. The
     // native-action owner binds the line; this token admits only the persisted
@@ -207,81 +218,9 @@ async fn prepare_attempt(
         });
     }
     if actor.image_bound() {
-        #[cfg(not(target_os = "macos"))]
-        return Ok(image_workspace_refusal_decision());
-        #[cfg(target_os = "macos")]
-        {
-            if actor.deleted_at.is_some() || !actor.auto_wake {
-                return Ok(WorkspaceDecision::Defer {
-                    by: crate::workspace_ready::DeferredBy::Actor,
-                });
-            }
-            if !actor.image_workspace_ready {
-                return Ok(match actor.image_workspace_phase.as_deref() {
-                    Some("creating") => WorkspaceDecision::Defer {
-                        by: crate::workspace_ready::DeferredBy::Actor,
-                    },
-                    // Python `prepare_locked` starts the base build and the copy here.
-                    // The turn waits for the ready copy instead of running read-only.
-                    Some("read_only") => {
-                        crate::image_workspace_agents::start(&store, &agent_id);
-                        WorkspaceDecision::Defer {
-                            by: crate::workspace_ready::DeferredBy::Actor,
-                        }
-                    }
-                    _ => WorkspaceDecision::Refuse(
-                        crate::workspace_ready::WorkspaceRefusal::ImageWorkspaceUnsupported,
-                    ),
-                });
-            }
-            let read_agent_id = agent_id.clone();
-            let mounted = studio_runtime_process::blocking_pool::spawn_blocking(
-                "runtime-services/workspace_ready_git",
-                move || crate::image_workspace::ensure_mounted(&read_agent_id),
-            )
-            .await
-            .map_err(|_| WorkspaceError::Worker)?
-            .map_err(|error| WorkspaceError::Git(format!("image workspace mount: {error}")))?;
-            let repo = mounted
-                .get("path")
-                .and_then(Value::as_str)
-                .map(PathBuf::from)
-                .ok_or(WorkspaceError::InvalidRecord)?;
-            let path = image_turn_cwd(
-                &repo,
-                initial.agent.record["imageWorkspaceSubpath"].as_str(),
-            )?;
-            let mount = mounted
-                .get("mount")
-                .and_then(Value::as_str)
-                .ok_or(WorkspaceError::InvalidRecord)?
-                .to_owned();
-            // Python `prepare_locked`: the record names the mounted directory and
-            // mount, and the agent gets the ready notice once.
-            let write_id = agent_id.clone();
-            let write_path = path.clone();
-            let record = store
-                .transaction_with(move |tx| {
-                    crate::image_workspace_agents::record_mounted(
-                        tx,
-                        &write_id,
-                        &write_path,
-                        &mount,
-                        now(),
-                    )
-                })
-                .await
-                .map_err(|error| match error {
-                    crate::event_write::EventWriteError::Store(error) => {
-                        WorkspaceError::Store(error)
-                    }
-                    _ => WorkspaceError::InvalidRecord,
-                })?
-                .unwrap_or_else(|| initial.agent.record.clone());
-            return Ok(WorkspaceDecision::Ready {
-                token: ReadyToken::new(&record, path.into_path_buf()),
-            });
-        }
+        return Ok(WorkspaceDecision::Refuse(
+            crate::workspace_ready::WorkspaceRefusal::ImageWorkspaceUnsupported,
+        ));
     }
     if let Some(refusal) = unsupported(&actor) {
         return Ok(WorkspaceDecision::Refuse(refusal));
@@ -292,6 +231,7 @@ async fn prepare_attempt(
         });
     }
     let journal = provision_journal(&store, provision_id(&actor)).await?;
+    let state_dir = store.state_dir().to_path_buf();
     let context = studio_runtime_process::blocking_pool::spawn_blocking(
         "runtime-services/workspace_ready_git",
         move || {
@@ -300,6 +240,7 @@ async fn prepare_attempt(
             observe(
                 initial,
                 journal,
+                &state_dir,
                 &Git {
                     deadline: Instant::now() + timeout,
                 },
@@ -329,12 +270,14 @@ async fn prepare_attempt(
             Ok::<_, WorkspaceError>((snapshot, journal))
         })
         .await?;
+    let state_dir = store.state_dir().to_path_buf();
     let (context, git_deadline) = studio_runtime_process::blocking_pool::spawn_blocking(
         "runtime-services/workspace_ready_git",
         move || {
             // The locked phase starts its own Git budget.
             let deadline = Instant::now() + timeout;
-            observe(snapshot, journal, &Git { deadline }).map(|context| (context, deadline))
+            observe(snapshot, journal, &state_dir, &Git { deadline })
+                .map(|context| (context, deadline))
         },
     )
     .await
@@ -345,23 +288,6 @@ async fn prepare_attempt(
     provision(store, context, plan, git_deadline, timeout).await
 }
 
-/// The turn directory of an image agent: its mounted `repo` plus the saved
-/// subpath, as Python's `prepare_locked` builds it. A subpath that leaves the
-/// repository is an invalid record.
-#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
-fn image_turn_cwd(
-    repo: &Path,
-    subpath: Option<&str>,
-) -> Result<path_identity::LexicalPath, WorkspaceError> {
-    crate::image_workspace_agents::turn_cwd(repo, subpath).ok_or(WorkspaceError::InvalidRecord)
-}
-
-#[cfg(not(target_os = "macos"))]
-pub(crate) fn image_workspace_refusal_decision() -> WorkspaceDecision {
-    WorkspaceDecision::Refuse(crate::workspace_ready::WorkspaceRefusal::ImageWorkspaceUnsupported)
-}
-
-/// `deadline` bounds the effect; `budget` is the Git budget of each later phase.
 async fn provision(
     store: Arc<RuntimeStore>,
     context: Context,
@@ -470,7 +396,10 @@ fn establish(
         &observed,
     );
     if !matches!(decision, WorkspaceDecision::Provision(ref p) if p.effect == ProvisionEffect::Publish)
-        || !confined(plan)
+        || !context
+            .workers
+            .as_deref()
+            .is_some_and(|workers| confined(plan, workers))
     {
         return Err(WorkspaceError::Git(
             "the created worktree does not match its provisioning plan".into(),
@@ -479,13 +408,11 @@ fn establish(
     Ok(git.checkpoint(plan).map_err(|error| error.to_string()))
 }
 
-fn confined(identity: &ProvisionIdentity) -> bool {
+/// `workers` is the worker worktree directory from `crate::worktree_root`.
+fn confined(identity: &ProvisionIdentity, workers: &Path) -> bool {
     CanonicalPath::existing(&identity.destination)
         .ok()
-        .is_some_and(|p| {
-            p == identity.destination
-                && p.starts_with(identity.repository.join(".worktrees/codex-agents"))
-        })
+        .is_some_and(|p| p == identity.destination && p.parent() == Some(workers))
         && CanonicalPath::existing(&identity.cwd).ok().as_deref() == Some(identity.cwd.as_path())
 }
 
@@ -507,9 +434,14 @@ async fn publish_verified(
         })
         .await?;
     let read_identity = identity.clone();
+    let state_dir = store.state_dir().to_path_buf();
     let (observed, confined, observed_cwd) = studio_runtime_process::blocking_pool::spawn_blocking(
         "runtime-services/workspace_ready_git",
         move || {
+            // A root configuration changed since provisioning refuses publication.
+            let workers = crate::worktree_root::configured(&state_dir).map(|root| {
+                crate::worktree_root::workers_directory(root.as_deref(), &read_identity.repository)
+            });
             // Publication checks Git with its own budget.
             let git = Git {
                 deadline: Instant::now() + budget,
@@ -522,7 +454,7 @@ async fn publish_verified(
             });
             (
                 git.worktree(&read_identity).ok(),
-                confined(&read_identity),
+                workers.is_ok_and(|workers| confined(&read_identity, &workers)),
                 cwd,
             )
         },
@@ -575,6 +507,8 @@ struct Context {
     cwd: Option<CanonicalPath>,
     reservations: Vec<Reservation>,
     plan: Option<ProvisionIdentity>,
+    /// The worker worktree directory that `plan` was confined to.
+    workers: Option<PathBuf>,
     journaled: bool,
     observed: GitObservation,
 }
@@ -633,6 +567,7 @@ fn actor(snapshot: &WorkspaceSnapshot) -> Result<WorkspaceActor, WorkspaceError>
 fn observe(
     snapshot: WorkspaceSnapshot,
     journal: Option<Value>,
+    state_dir: &Path,
     git: &Git,
 ) -> Result<Context, WorkspaceError> {
     let actor = actor(&snapshot)?;
@@ -646,6 +581,7 @@ fn observe(
         cwd,
         reservations,
         plan: None,
+        workers: None,
         journaled: false,
         observed: GitObservation::default(),
     };
@@ -686,12 +622,11 @@ fn observe(
     let relative = cwd
         .strip_prefix(&repository)
         .map_err(|_| WorkspaceError::InvalidRecord)?;
-    let destination = path_identity::LexicalPath::new(
-        &repository
-            .join(".worktrees/codex-agents")
-            .join(&context.actor.id),
-    )
-    .ok_or(WorkspaceError::InvalidRecord)?;
+    let configured_root = crate::worktree_root::configured(state_dir)?;
+    let worktree_root = crate::worktree_root::root_for(configured_root.as_deref(), &repository);
+    let workers = crate::worktree_root::workers_directory(configured_root.as_deref(), &repository);
+    let destination = path_identity::LexicalPath::new(&workers.join(&context.actor.id))
+        .ok_or(WorkspaceError::InvalidRecord)?;
     let plan = if let Some(operation) = journal {
         context.journaled = true;
         serde_json::from_value(operation["plan"].clone())
@@ -738,10 +673,16 @@ fn observe(
     {
         return Err(WorkspaceError::InvalidRecord);
     }
+    // A configured root is canonical; only the directories below it are checked.
+    let ancestor_limit = if configured_root.is_some() {
+        worktree_root.as_path()
+    } else {
+        repository.as_path()
+    };
     for ancestor in destination
         .ancestors()
         .skip(1)
-        .take_while(|p| *p != repository)
+        .take_while(|p| *p != ancestor_limit)
     {
         if ancestor.symlink_metadata().is_ok()
             && CanonicalPath::existing(ancestor).ok().as_deref() != Some(ancestor)
@@ -751,6 +692,7 @@ fn observe(
     }
     context.observed = git.worktree(&plan)?;
     context.plan = Some(plan);
+    context.workers = Some(workers);
     Ok(context)
 }
 

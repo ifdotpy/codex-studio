@@ -21,8 +21,8 @@
   sourced only from `src/sync_schema.sql`.
   Python persisted models and the OpenAPI document own the schemas.
 - **Invariants:** One exclusive runtime lock, one serialized Canvas writer
-  using `BEGIN IMMEDIATE`, independent query-only read connections, WAL and
-  FULL synchronous writes, and fail-closed checks for required tables, columns,
+  using `BEGIN IMMEDIATE`, independent query-only read connections, WAL with
+  `synchronous=NORMAL` and a periodic flush (`sqlite_durability`), and fail-closed checks for required tables, columns,
   triggers and migration-marker meaning. `Table<R>` validates records against
   their named schemas on reads and writes, checks declared key modes, and
   reports invalid records with one table/key error while preserving extension
@@ -87,8 +87,9 @@ Python connection behavior reproduced in this slice:
 | Startup WAL setup for the primary DB                                                                                             | `codex_runtime.py:1597`                                                        |
 | `synchronous=FULL` observed on both DBs by the fresh-start snapshot; Python does not explicitly set it in these connection paths | `codex_runtime.py:2017, 2686`; `codex_analytics.py` has no SQLite PRAGMA calls |
 
-Rust checks the expected WAL/FULL values before opening the writer, then sets
-`synchronous=FULL` on that connection. Reads are opened read-only and set
+Rust checks WAL before opening the writer, then sets `synchronous=NORMAL` on the
+writer and analytics connections and refuses either without it; see
+[the flush decision](../../../../docs/decisions/2026-10-24-sqlite-normal-with-periodic-flush.md). Reads are opened read-only and set
 `query_only=ON`. Its standard busy timeout is 15 seconds. Event sync triggers
 depend on Python's connection-local `sync_entity_payload` and
 `sync_entity_hash` functions; the writer registers compatible event projections
@@ -353,3 +354,41 @@ completed retention may replace an old large `tail` with a preview and
 `outputTruncated` / `outputPreviewOnly` flags. Rust preserves either record
 shape. `analytics_meta.fileMigrationV1` is accepted only when its JSON phase is
 `complete`; an absent marker is `NotStarted`.
+
+## Scoped analytics cost notifications
+
+`add_analytics_root_change_observer` reports the roots written to
+`analytics_usage_roots` by a committed usage-generation change. Both analytics
+transaction adapters collect bounded row hints and resolve roots after commit.
+Rollback emits nothing; unknown scope, deleted roots, hint overflow, or uncertain
+commit emits `ChangedRoots::Full`. The existing unscoped commit observers remain
+available. Observers enqueue work and never read the database within callbacks.
+
+## Usage cost evidence
+
+The [cost aggregate](src/repositories/cost_aggregate.rs) prices response rows from
+the shared normalized token contract and excludes running totals and gaps. It
+retains request token tuples so context pricing tiers apply per request. Native
+journal receipts replace provisional legacy evidence and add missing responses;
+final live or recovered evidence takes precedence. The typed response reader
+provides a bounded variant for diagnostics. Legacy response rows with absent or
+null cache counts keep unknown tokens and are not newly priced; explicit zero
+counts remain priceable. Migrated-row suppression precomputes responded turns
+once, so predicate work grows linearly with the selected scope. Old analytics rows remain readable
+through the [shared adapter](../runtime-schema/src/usage/persisted.rs). Opening an
+existing aggregate adds nullable eligibility and final-evidence columns without
+reading usage records or rebuilding groups. NULL eligibility preserves the prior
+derived interpretation; newly written responses suppress matching legacy rows.
+Historical totals can therefore retain previously counted cumulative observations
+until their affected scopes receive new evidence. This delivery does not recalculate
+all historical costs.
+
+Journal partitioning batches receipts through current and historical agent scopes
+and the existing usage response index. Capture checks canonical response IDs before
+the existing thread-scoped legacy lookup. Neither path adds a startup index.
+
+Reconciliation uses `cost_aggregate::reconciliation_usage_window`: a single recent
+source window read through the existing agent/sequence index, before usage-kind
+filtering. Responses, gaps and cumulative observations share its examination
+budget, including one lookahead row for truncation. The response decoder is shared
+with the existing recorded-response readers; aggregate interpretation is unchanged.

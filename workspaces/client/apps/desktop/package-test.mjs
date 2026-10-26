@@ -6,6 +6,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { createServer } from "node:net";
 import { execFileSync, spawnSync } from "node:child_process";
+import { verifyBundledLayr } from "./layr-binary.mjs";
 const root = path.dirname(fileURLToPath(import.meta.url));
 const port = await new Promise((resolve) => {
   const server = createServer();
@@ -21,6 +22,9 @@ const executable =
     "dist/Codex Studio-darwin-arm64/Codex Studio.app/Contents/MacOS/Codex Studio",
   );
 const origin = `http://127.0.0.1:${port}`;
+await verifyBundledLayr(
+  path.join(path.dirname(executable), "../Resources/workspace"),
+);
 let desktop;
 let pid;
 const temp = await mkdtemp(path.join(tmpdir(), "studio-pkg-"));

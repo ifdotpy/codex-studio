@@ -29,7 +29,6 @@
   --input-bd-focus: var(--mantine-color-default-border);
 }
 .sidebar-header,
-.sidebar-primary-actions,
 .projects-heading,
 .project-tree-heading,
 .project-tree-toggle,
@@ -44,6 +43,7 @@
 }
 .brand {
   flex: 1;
+  min-inline-size: 0;
   color: var(--text);
   text-decoration: none;
   font-size: var(--mantine-font-size-lg);
@@ -52,41 +52,9 @@
 .brand-name strong {
   font: inherit;
 }
-.sidebar-nav {
-  display: grid;
-  gap: var(--mantine-spacing-xs);
-  flex: none;
-}
-.sidebar-primary-actions .sidebar-search {
-  flex: 1;
-  min-inline-size: 0;
-}
-.sidebar-nav-button {
-  min-inline-size: 0;
-  color: var(--text);
-  font-size: var(--mantine-font-size-sm);
-}
-.sidebar-search .mantine-Button-inner {
-  justify-content: flex-start;
-}
-.sidebar-search .mantine-Button-label {
-  flex: 1;
-  justify-content: space-between;
-  gap: var(--mantine-spacing-xs);
-}
-.sidebar-search kbd {
-  color: var(--muted);
-  font: inherit;
-  font-size: var(--mantine-font-size-xs);
-}
 .sidebar-new-chat {
   flex: none;
   color: var(--studio-state-working);
-}
-.sidebar-shared-chat .mantine-Button-label {
-  min-inline-size: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
 }
 #chat-search {
   font-size: var(--mantine-font-size-sm);
@@ -101,7 +69,6 @@
   overflow-y: auto;
   overflow-x: hidden;
   overscroll-behavior: contain;
-  scrollbar-width: thin;
 }
 .fleet-attention {
   margin-block-end: var(--mantine-spacing-md);
@@ -447,7 +414,6 @@
     .row-copy small,
     .row-meta,
     #chat-search,
-    .sidebar-nav-button,
     .sidebar-footer,
     .load-more,
     #open-complaints
@@ -461,6 +427,7 @@
 }
 @media (max-width: 47.5em) {
   #sidebar {
+    --studio-action-size: var(--studio-touch-target);
     inline-size: 100%;
     flex-basis: 100%;
     block-size: 100%;
@@ -485,11 +452,21 @@
       var(--studio-touch-target) + var(--mantine-spacing-xs)
     );
   }
-  .sidebar-nav-button {
-    min-block-size: var(--studio-touch-target);
-  }
   #chat-search {
     font-size: var(--mantine-font-size-md);
+  }
+}
+
+@media (hover: none), (pointer: coarse) {
+  /* Touch has no preview hover: keep chat and menu targets stable on first tap. */
+  #sidebar .fleet-strip > .chat-row {
+    padding-inline-end: calc(
+      var(--studio-action-size) + var(--mantine-spacing-xs)
+    );
+  }
+  .sidebar-row .row-actions {
+    opacity: 1;
+    pointer-events: auto;
   }
 }
 

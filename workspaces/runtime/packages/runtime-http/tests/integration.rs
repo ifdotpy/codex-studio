@@ -47,3 +47,8 @@ pub(crate) mod monitor_runtime_support;
 
 #[path = "../../runtime-services/tests/multi_server/common.rs"]
 pub(crate) mod multi_server_fixtures;
+
+#[path = "../../runtime-services/tests/test_support/agent_views.rs"]
+pub(crate) mod agent_view_fixtures;
+
+mod project_deletion;

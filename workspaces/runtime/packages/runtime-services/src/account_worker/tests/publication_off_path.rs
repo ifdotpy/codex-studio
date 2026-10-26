@@ -11,6 +11,7 @@ struct GatedSink {
     delivered: Mutex<Vec<u64>>,
     /// Every delivered effect by cursor and kind; one frame can carry several.
     effects: Mutex<Vec<(u64, String)>>,
+    changed: tokio::sync::Notify,
 }
 
 impl GatedSink {
@@ -19,6 +20,7 @@ impl GatedSink {
             gate: tokio::sync::Semaphore::new(if open { usize::MAX >> 4 } else { 0 }),
             delivered: Mutex::new(Vec::new()),
             effects: Mutex::new(Vec::new()),
+            changed: tokio::sync::Notify::new(),
         })
     }
     fn open(&self) {
@@ -60,20 +62,23 @@ impl NotificationPostCommitSink for GatedSink {
             drop(self.gate.acquire().await.expect("gate"));
             self.delivered.lock().expect("delivered").push(cursor);
             self.effects.lock().expect("effects").push((cursor, kind));
+            self.changed.notify_one();
             Ok(())
         })
     }
 }
 
-async fn wait_delivered(sink: &GatedSink, count: usize) {
+async fn wait_delivered(sink: &GatedSink, cursors: &[u64]) {
     tokio::time::timeout(std::time::Duration::from_secs(60), async {
-        while sink.delivered().len() < count {
-            tokio::task::yield_now().await;
-            tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+        while !cursors
+            .iter()
+            .all(|cursor| sink.delivered().contains(cursor))
+        {
+            sink.changed.notified().await;
         }
     })
     .await
-    .expect("sink delivery deadline");
+    .expect("every expected cursor reaches the sink");
 }
 
 fn delta_frame(index: usize) -> Value {
@@ -111,7 +116,7 @@ async fn blocked_sink_does_not_delay_the_worker_and_order_is_kept() {
     worker_barrier(&worker).await;
     assert!(sink.delivered().is_empty(), "the sink is still shut");
     sink.open();
-    wait_delivered(&sink, cursors.len()).await;
+    wait_delivered(&sink, &cursors).await;
     let delivered = sink.delivered();
     let mut sorted = delivered.clone();
     sorted.sort_unstable();
@@ -158,7 +163,7 @@ async fn restart_replays_undelivered_publications_once() {
             open.clone(),
         )
         .await;
-    wait_delivered(&open, 1).await;
+    wait_delivered(&open, &cursors).await;
     worker_barrier(&worker).await;
     let delivered = open.delivered();
     let mut sorted = delivered.clone();
@@ -260,8 +265,8 @@ async fn analytics_are_logged_in_the_journal_commit_and_projected_off_the_writer
 
 fn usage_frame(index: usize) -> Value {
     json!({"method":"thread/tokenUsage/updated","params":{"threadId":"fake-thread-0","turnId":"turn",
-        "tokenUsage":{"total":{"inputTokens":index,"outputTokens":1,"totalTokens":index + 1},
-            "last":{"inputTokens":1,"outputTokens":1,"totalTokens":2}}}})
+        "tokenUsage":{"total":{"inputTokens":index,"cachedInputTokens":0,"reasoningOutputTokens":0,"outputTokens":1,"totalTokens":index + 1},
+            "last":{"inputTokens":1,"cachedInputTokens":0,"reasoningOutputTokens":0,"outputTokens":1,"totalTokens":2}}}})
 }
 
 /// Pending publication receipts that carry provider `cursor`.
@@ -313,13 +318,7 @@ async fn delivered_receipts_are_deleted_by_the_next_journal_commit() {
     let first = peer.frame(usage_frame(0)).await;
     peer.acknowledged_or_worker_exits(first, &mut worker).await;
     assert!(receipts_for(&state, first) > 0, "committed with the frame");
-    tokio::time::timeout(std::time::Duration::from_secs(60), async {
-        while !sink.delivered().contains(&first) {
-            tokio::time::sleep(std::time::Duration::from_millis(1)).await;
-        }
-    })
-    .await
-    .expect("sink delivery deadline");
+    wait_delivered(&sink, &[first]).await;
     let mut frames = 1;
     while receipts_for(&state, first) > 0 {
         assert!(

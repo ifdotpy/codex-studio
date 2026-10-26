@@ -14,9 +14,9 @@ import {
   type GetOptions,
   type GetResult,
 } from "../../api";
-import { watchResourceReads } from "../watchResourceReads";
-import type { ResourceVersion } from "../../sync/resourceEvents";
 import { serverResourceScope } from "../../servers/registry";
+import type { Snapshot } from "../../types";
+import { subscribeStateProjection } from "../../sync/client";
 
 export type WorkerModelInfo = {
   model: string;
@@ -133,12 +133,21 @@ type ModelCatalogSource = {
     query?: GetOptions<"/api/models">["query"];
     signal?: AbortSignal;
   }) => Promise<GetResult<"/api/models">>;
-  watchResourceReads: typeof watchResourceReads;
+  subscribeState: (
+    accept: (snapshot: ModelCatalogProjection) => void,
+    fail: (error: unknown | null) => void,
+  ) => () => void;
+};
+type ModelCatalogProjection = Pick<Snapshot, "entitiesComplete"> & {
+  runtime: Pick<Snapshot["runtime"], "modelsByAccount">;
 };
 const defaultModelCatalogReader: ModelCatalogSource = {
   scope: serverResourceScope(),
   read: (options) => get("/api/models", options),
-  watchResourceReads,
+  subscribeState: (accept, fail) =>
+    subscribeStateProjection((snapshot) => {
+      if (snapshot) accept(snapshot);
+    }, fail),
 };
 export const ModelCatalogReader = createContext(defaultModelCatalogReader);
 
@@ -156,7 +165,10 @@ export function useModelCatalogReader() {
               services.owner.credentialId,
             ]),
             read: (options) => services.api.get("/api/models", options),
-            watchResourceReads: services.watchResourceReads,
+            subscribeState: (accept, fail) =>
+              services.sync.subscribeStateProjection((snapshot) => {
+                if (snapshot) accept(snapshot);
+              }, fail),
           }
         : undefined,
     [services],
@@ -178,8 +190,6 @@ type ModelCatalogSnapshot = {
 };
 type ModelCatalogEntry = {
   snapshot: ModelCatalogSnapshot;
-  version?: ResourceVersion;
-  valueVersion?: ResourceVersion;
   inFlight?: Promise<void>;
   listeners: Set<() => void>;
   stopWatching?: () => void;
@@ -231,18 +241,6 @@ function publishCatalog(
   for (const listener of entry.listeners) listener();
 }
 
-function sameResourceVersion(
-  left: ResourceVersion | undefined,
-  right: ResourceVersion | undefined,
-) {
-  return (
-    !!left &&
-    !!right &&
-    left.epoch === right.epoch &&
-    left.revision === right.revision
-  );
-}
-
 function modelRows(data: GetResult<"/api/models">): WorkerModelInfo[] {
   return Array.isArray(data.data)
     ? data.data.flatMap((row) => {
@@ -257,16 +255,10 @@ function readModelCatalog(
   read: ModelCatalogRead,
   accountKey: string,
   workers: boolean,
-  version?: ResourceVersion,
   retry = false,
 ): Promise<void> {
-  if (version) entry.version = version;
-  const readVersion = version ?? entry.version;
-  const changed =
-    readVersion !== undefined &&
-    !sameResourceVersion(entry.valueVersion, readVersion);
   if (entry.inFlight) return entry.inFlight;
-  if (!retry && !changed && entry.snapshot.loaded) return Promise.resolve();
+  if (!retry && entry.snapshot.loaded) return Promise.resolve();
 
   const previous = entry.snapshot;
   const request = (async () => {
@@ -304,11 +296,10 @@ function readModelCatalog(
         pending,
         loaded: true,
       });
-      entry.valueVersion = readVersion;
     } catch (error) {
       const pending =
         error instanceof ApiError &&
-        error.status === 400 &&
+        error.status === 503 &&
         error.catalogPending === true;
       publishCatalog(entry, {
         models: previous.models,
@@ -317,7 +308,6 @@ function readModelCatalog(
         loaded: pending,
       });
       if (!pending) throw error;
-      if (pending) entry.valueVersion = readVersion;
     }
   })();
   entry.inFlight = request;
@@ -329,27 +319,62 @@ function readModelCatalog(
   return request;
 }
 
+function projectedModelRows(
+  snapshot: ModelCatalogProjection,
+  accountKey: string,
+  workers: boolean,
+): NonNullable<Snapshot["runtime"]["modelsByAccount"]>[string] {
+  const all = Object.values(snapshot.runtime.modelsByAccount ?? {}).flat();
+  let rows = workers
+    ? all
+        .filter((row) => !row.hidden)
+        .sort((left, right) => {
+          const rank = (key: string) =>
+            key === accountKey ? 0 : key === "default" ? 1 : 2;
+          return (
+            rank(left.accountKey) - rank(right.accountKey) ||
+            left.catalogPosition - right.catalogPosition ||
+            left.accountKey.localeCompare(right.accountKey)
+          );
+        })
+    : (snapshot.runtime.modelsByAccount?.[accountKey] ?? []);
+  if (workers) {
+    const seen = new Set<string>();
+    rows = rows.filter((row) => {
+      if (seen.has(row.model)) return false;
+      seen.add(row.model);
+      return true;
+    });
+  }
+  return rows;
+}
+
 function subscribeModelCatalog(
   modelCatalogs: Map<string, ModelCatalogEntry>,
   key: string,
   listener: () => void,
-  read: ModelCatalogRead,
   accountKey: string,
   workers: boolean,
-  watch: typeof watchResourceReads,
+  subscribeState: ModelCatalogSource["subscribeState"],
 ) {
   const entry = catalogEntry(modelCatalogs, key);
   entry.listeners.add(listener);
   if (!entry.stopWatching) {
-    const stop = watch(
-      { kind: "models" },
-      (version) => readModelCatalog(entry, read, accountKey, workers, version),
+    const stop = subscribeState(
+      (snapshot) => {
+        const rows = projectedModelRows(snapshot, accountKey, workers);
+        const models = rows.flatMap((row) => {
+          const parsed = modelInfo(row);
+          return parsed ? [parsed] : [];
+        });
+        const loaded = snapshot.entitiesComplete === true;
+        publishCatalog(entry, { models, error: "", pending: !loaded, loaded });
+      },
       (error) =>
         publishCatalog(entry, {
           ...entry.snapshot,
-          error: errorText(error),
+          error: error === null ? "" : errorText(error),
         }),
-      { waitForBaseline: true },
     );
     entry.stopWatching = stop;
   }
@@ -375,12 +400,7 @@ export async function readWorkerModels(
       fresh: "1",
     },
   });
-  return Array.isArray(data.data)
-    ? data.data.flatMap((row) => {
-        const parsed = modelInfo(row);
-        return parsed ? [parsed] : [];
-      })
-    : [];
+  return modelRows(data);
 }
 
 export function useWorkerModels(
@@ -399,10 +419,9 @@ export function useWorkerModels(
             modelCatalogs,
             catalogKey,
             listener,
-            read,
             accountKey,
             workers,
-            reader.watchResourceReads,
+            reader.subscribeState,
           )
         : () => {},
     [
@@ -411,7 +430,7 @@ export function useWorkerModels(
       enabled,
       read,
       workers,
-      reader.watchResourceReads,
+      reader.subscribeState,
       modelCatalogs,
     ],
   );
@@ -432,14 +451,9 @@ export function useWorkerModels(
     retry: () => {
       if (!enabled) return;
       const entry = catalogEntry(modelCatalogs, catalogKey);
-      void readModelCatalog(
-        entry,
-        read,
-        accountKey,
-        workers,
-        undefined,
-        true,
-      ).catch(() => {});
+      void readModelCatalog(entry, read, accountKey, workers, true).catch(
+        () => {},
+      );
     },
   };
 }

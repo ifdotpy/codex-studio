@@ -50,43 +50,6 @@ fn outgoing(actions: &[Action]) -> Vec<Value> {
 }
 
 #[test]
-fn initialize_handshake_and_python_caller_request_shapes() {
-    let shapes = [
-        (Method::TurnStart, json!({"threadId":"thread","input":[]})),
-        (
-            Method::TurnInterrupt,
-            json!({"threadId":"thread","turnId":"turn"}),
-        ),
-        (Method::AccountRead, json!({"passive":true})),
-        (Method::ModelList, json!({"limit":100,"includeHidden":true})),
-    ];
-    for (method, params) in shapes {
-        let mut session = state(false);
-        let (ticket, actions) = session
-            .submit(method, params.clone(), 1, 10, None, false)
-            .expect("scripted test operation");
-        let request = &outgoing(&actions)[0];
-        assert_eq!(request["method"], method.as_str());
-        assert_eq!(request["id"], 2);
-        assert_eq!(request["params"], params);
-        let settled = session
-            .receive(Frame::Response {
-                id: ticket.id,
-                body: ResponseBody::Result(json!({"ok":true})),
-                fields: Default::default(),
-            })
-            .expect("scripted test operation");
-        assert!(matches!(
-            &settled[0],
-            Action::Resolve {
-                outcome: RequestOutcome::Reply { late: false, .. },
-                ..
-            }
-        ));
-    }
-}
-
-#[test]
 fn one_off_catalog_and_terminal_requests_are_correlated_and_resolved() {
     let shapes = [
         (
@@ -113,6 +76,7 @@ fn one_off_catalog_and_terminal_requests_are_correlated_and_resolved() {
             .expect("one-off request is admitted");
         let request = &outgoing(&actions)[0];
         assert_eq!(request["method"], method.as_str());
+        assert_eq!(request["id"], 2);
         assert_eq!(request["params"], params);
         let settled = session
             .receive(Frame::Response {
@@ -386,7 +350,7 @@ fn claude_cancel_removes_pending_and_orphan_and_duplicate_responses_are_ignored(
     let (active, _) = session
         .submit(
             Method::ThreadRead,
-            json!({"threadId":"t"}),
+            json!({"threadId":"t","includeTurns":true}),
             0,
             20,
             Some("t".into()),
@@ -708,6 +672,11 @@ fn every_claude_serialized_method_waits_behind_same_thread_operation() {
         Method::ThreadResume,
         Method::ThreadFork,
         Method::ThreadRead,
+        Method::ThreadRollback,
+        Method::ClaudeSettings,
+        Method::ClaudeState,
+        Method::ClaudeFileBackups,
+        Method::ThreadCompactStart,
     ] {
         let mut session = state(true);
         let (_, start) = session
@@ -722,7 +691,14 @@ fn every_claude_serialized_method_waits_behind_same_thread_operation() {
             .expect("scripted test operation");
         assert_eq!(outgoing(&start).len(), 1);
         let (_, queued) = session
-            .submit(method, json!({}), 0, 50, Some("same".into()), false)
+            .submit(
+                method,
+                json!({"includeTurns":true}),
+                0,
+                50,
+                Some("same".into()),
+                false,
+            )
             .expect("scripted test operation");
         assert!(queued.is_empty(), "{method:?} queues behind turn/start");
     }
@@ -738,10 +714,11 @@ fn provider_frames_are_passed_to_dispatch_in_order_without_method_filtering() {
     ];
     for value in messages {
         let line = serde_json::to_vec(&value).expect("scripted test operation");
-        let frame = studio_runtime_providers::LineDecoder::new()
-            .push(&[line, vec![b'\n']].concat())
-            .expect("scripted test operation")
-            .remove(0);
+        let studio_runtime_providers::DecodedJournalPayload::Frame(frame) =
+            studio_runtime_providers::decode_journal_entry(1, 1, line).payload
+        else {
+            panic!("fixture frame must decode");
+        };
         assert_eq!(
             session
                 .receive(frame.clone())
@@ -764,12 +741,8 @@ fn all_recorded_replay_fixture_frames_parse_through_the_session() {
         }
         let value: Value =
             serde_json::from_slice(&std::fs::read(&path).expect("fixture")).expect("JSON");
-        // RPC-only and raw SDK fixtures are exercised by their own callers below
-        // and by codec.rs; this witness admits protocol event fixtures only.
-        if path.file_name().expect("name") == "codex-rpc-replies.json"
-            || value["boundaryOnly"] == true && value.get("events").is_none()
-            || value.get("sdkEvents").is_some()
-        {
+        // RPC replies have a dedicated session witness below.
+        if path.file_name().expect("name") == "codex-rpc-replies.json" {
             continue;
         }
         let mut session = state(value["provider"] == "claude");
@@ -787,10 +760,20 @@ fn all_recorded_replay_fixture_frames_parse_through_the_session() {
         for expected_frame in expected {
             let mut bytes = serde_json::to_vec(&expected_frame).expect("scripted test operation");
             bytes.push(b'\n');
-            let frame = studio_runtime_providers::LineDecoder::new()
-                .push(&bytes)
-                .expect("scripted test operation")
-                .remove(0);
+            let studio_runtime_providers::DecodedJournalPayload::Frame(frame) =
+                studio_runtime_providers::decode_journal_entry(1, 1, bytes).payload
+            else {
+                panic!("fixture frame must decode");
+            };
+            assert_eq!(
+                serde_json::from_slice::<Value>(
+                    &studio_runtime_providers::encode_line(&frame).expect("frame encodes")
+                )
+                .expect("encoded frame is JSON"),
+                expected_frame,
+                "{}: wire round trip preserves the recorded frame",
+                path.display()
+            );
             let actions = session
                 .receive(frame.clone())
                 .expect("scripted test operation");
@@ -827,13 +810,11 @@ fn recorded_rpc_reply_templates_match_session_request_ids_and_methods() {
         let mut response = reply["message"].clone();
         response["id"] = json!(ticket.id);
         let line = serde_json::to_vec(&response).expect("scripted test operation");
-        let mut decoder = studio_runtime_providers::LineDecoder::new();
-        let mut bytes = line;
-        bytes.push(b'\n');
-        let frame = decoder
-            .push(&bytes)
-            .expect("scripted test operation")
-            .remove(0);
+        let studio_runtime_providers::DecodedJournalPayload::Frame(frame) =
+            studio_runtime_providers::decode_journal_entry(1, 1, line).payload
+        else {
+            panic!("reply must decode");
+        };
         assert!(session
             .receive(frame)
             .expect("scripted test operation")
@@ -920,7 +901,7 @@ fn cancelled_book_ids_are_removed_but_never_reused() {
 
 #[test]
 fn arrival_timestamp_classification_is_independent_of_expiry_order() {
-    for received_at_ms in [10, 11, 12] {
+    for (received_at_ms, expected_late) in [(10, false), (11, true), (12, true)] {
         let mut replies = Vec::new();
         for expire_first in [false, true] {
             let mut session = state(false);
@@ -944,7 +925,7 @@ fn arrival_timestamp_classification_is_independent_of_expiry_order() {
                 .expect("timestamped response");
             assert!(matches!(&actions[0], Action::Resolve {
                 outcome: RequestOutcome::Reply { late, .. }, ..
-            } if *late == (received_at_ms >= 11)));
+            } if *late == expected_late));
             replies.push(actions);
             assert!(session.expire(30).1.is_empty());
         }
@@ -1061,7 +1042,7 @@ fn rejecting_unsent_validates_generation_and_supports_codex_unknown_tickets() {
 
 #[test]
 fn arrival_timestamp_still_uses_original_deadline_after_transport_loss() {
-    for arrived in [9, 10, 11] {
+    for (arrived, expected_late) in [(9, false), (10, true), (11, true)] {
         let mut session = state(false);
         let (ticket, _) = session
             .submit(Method::ModelList, json!({}), 0, 10, None, false)
@@ -1071,7 +1052,7 @@ fn arrival_timestamp_still_uses_original_deadline_after_transport_loss() {
             .receive_at(reply_for_test(ticket.id), arrived)
             .expect("late evidence");
         assert!(
-            matches!(&actions[0], Action::Resolve { outcome: RequestOutcome::Reply { late, .. }, .. } if *late == (arrived >= 10))
+            matches!(&actions[0], Action::Resolve { outcome: RequestOutcome::Reply { late, .. }, .. } if *late == expected_late)
         );
     }
 }
@@ -1211,4 +1192,155 @@ fn deadline_index_expires_only_due_unanswered_requests_for_both_providers() {
         assert_eq!(session.next_deadline_ms(), None);
         assert!(session.expire(60).1.is_empty(), "{fresh:?}");
     }
+}
+
+#[test]
+fn claude_thread_read_serializes_only_when_include_turns_is_true() {
+    for include in [
+        None,
+        Some(json!(false)),
+        Some(json!(true)),
+        Some(json!("true")),
+    ] {
+        let mut session = state(true);
+        session
+            .submit(Method::TurnStart, json!({}), 0, 50, Some("t".into()), false)
+            .expect("scripted test operation");
+        let mut params = json!({"threadId":"t"});
+        if let Some(value) = include.clone() {
+            params["includeTurns"] = value;
+        }
+        session
+            .preflight_with_id(
+                RequestId::String("read".into()),
+                Method::ThreadRead,
+                &params,
+                Some("t"),
+                false,
+            )
+            .expect("scripted test operation");
+        let (_, actions) = session
+            .submit(Method::ThreadRead, params, 0, 50, Some("t".into()), false)
+            .expect("scripted test operation");
+        assert_eq!(
+            outgoing(&actions).len(),
+            usize::from(include != Some(json!(true)))
+        );
+    }
+}
+
+#[test]
+fn malformed_reply_does_not_consume_pending_request_before_real_reply() {
+    let mut session = state(false);
+    let (ticket, _) = session
+        .submit(Method::ModelList, json!({}), 0, 50, None, false)
+        .expect("scripted test operation");
+    for value in [
+        json!({"id":ticket.id}),
+        json!({"id":ticket.id,"result":{},"error":{}}),
+    ] {
+        let entry = studio_runtime_providers::decode_journal_value(1, 1, &value);
+        if let studio_runtime_providers::DecodedJournalPayload::Frame(frame) = entry.payload {
+            session.receive(frame).expect("scripted test operation");
+        }
+    }
+    let actions = session
+        .receive(reply_for_test(ticket.id.clone()))
+        .expect("scripted test operation");
+    assert!(actions.iter().any(
+        |action| matches!(action, Action::Resolve { ticket: resolved, .. } if resolved == &ticket)
+    ));
+}
+
+#[test]
+fn recovered_same_thread_requests_hold_fresh_work_until_every_owner_settles() {
+    for order in [[0, 1], [1, 0]] {
+        for settlement in ["reply", "cancel", "unsent"] {
+            let mut session = state(true);
+            let restored = [80, 81].map(|id| RequestTicket {
+                generation: 9,
+                id: RequestId::Number(id),
+                method: Method::ClaudeSettings,
+            });
+            for ticket in &restored {
+                session
+                    .restore_request(ticket, Some("t".into()), 10, false, false)
+                    .expect("all unresolved same-thread identities restore without writes");
+            }
+            let (fresh, actions) = session
+                .submit(
+                    Method::TurnStart,
+                    json!({"threadId":"t"}),
+                    0,
+                    100,
+                    Some("t".into()),
+                    false,
+                )
+                .expect("fresh request queues");
+            assert!(actions.is_empty());
+            if settlement != "cancel" {
+                let (_, expired) = session.expire(10);
+                assert!(
+                    outgoing(&expired).is_empty(),
+                    "unknown expiry retains reservations"
+                );
+            }
+            for (index, owner) in order.into_iter().enumerate() {
+                let ticket = &restored[owner];
+                let actions = match settlement {
+                    "cancel" => session.cancel(ticket).expect("cancel one owner"),
+                    "unsent" => session
+                        .reject_unsent(ticket)
+                        .expect("retire one proven-unsent owner"),
+                    _ => session
+                        .receive(reply_for_test(ticket.id.clone()))
+                        .expect("late reply settles one owner"),
+                };
+                let writes = outgoing(&actions);
+                if index == 0 {
+                    assert!(
+                        writes.is_empty(),
+                        "the other restored owner still holds the thread"
+                    );
+                } else {
+                    assert_eq!(writes.len(), 1);
+                    assert_eq!(writes[0]["id"], json!(fresh.id));
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn recovered_unknown_owner_refuses_cancellation_and_keeps_fresh_work_waiting() {
+    let mut session = state(true);
+    let restored = RequestTicket {
+        generation: 9,
+        id: RequestId::Number(80),
+        method: Method::ClaudeSettings,
+    };
+    session
+        .restore_request(&restored, Some("t".into()), 10, true, false)
+        .expect("restore unknown owner");
+    let (_, actions) = session
+        .submit(
+            Method::TurnStart,
+            json!({"threadId":"t"}),
+            0,
+            100,
+            Some("t".into()),
+            false,
+        )
+        .expect("fresh work");
+    assert!(actions.is_empty());
+    assert!(matches!(
+        session.cancel(&restored),
+        Err(studio_runtime_providers::SessionError::Book(
+            studio_runtime_providers::BookError::DuplicateResponse
+        ))
+    ));
+    let actions = session
+        .receive(reply_for_test(restored.id))
+        .expect("late reply releases ownership");
+    assert_eq!(outgoing(&actions).len(), 1);
 }

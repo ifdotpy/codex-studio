@@ -5,6 +5,8 @@ use std::path::{Component, Path, PathBuf};
 use crate::{StoreError, StoreResult};
 
 const STATE_DIRECTORY_NAME: &str = "codex-agents";
+/// Directory below the Studio state root for the native Layr store and host installation.
+pub const NATIVE_LAYR_DIRECTORY: &str = "layr-native";
 #[cfg(windows)]
 const WINDOWS_STATE_DIRECTORY: &str = "CodexStudio/state";
 

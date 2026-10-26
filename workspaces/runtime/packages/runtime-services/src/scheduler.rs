@@ -282,12 +282,12 @@ fn project_changed_agents(
                     id: row_id.clone(),
                 }
             })?;
-        studio_runtime_store::SyncDocumentsRepository::put_entity(
+        crate::sync_policy::publish_agent_projection(
             tx,
-            "agent",
             &row_id,
             projection,
             crate::event_write::truthy(agent.get("deletedAt")),
+            &|_, _, _, _| true,
         )?;
     }
     crate::sync_policy::publish_entity_changes(tx, &changes, server_id, &|_, _, _, _| true)
@@ -679,6 +679,12 @@ pub(crate) fn settle_terminal_in_transaction(
             .unwrap_or_default(),
     )?;
     if result {
+        if agent.as_ref().is_some_and(|record| {
+            record.extra.get("workspaceMode").and_then(Value::as_str) == Some("layr-native")
+                && record.extra.get("layrReady").and_then(Value::as_bool) == Some(true)
+        }) {
+            crate::layr_native::stage_turn_save(transaction, &identity.agent_id, turn_id)?;
+        }
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map_or(0.0, |d| d.as_secs_f64());

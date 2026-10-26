@@ -1,11 +1,10 @@
 import Disclosure from "./ui/Disclosure";
-import { useServerApi } from "../servers/ServerServicesContext";
+import { useServerSync } from "../servers/ServerServicesContext";
 import { localDateTime } from "../local-time";
 import { useEffect, useState } from "react";
 import { type GetResult, errorText } from "../api";
 import type { Account } from "./Accounts";
 import ProviderUpdateNotices from "./ProviderUpdateNotices";
-import { useServerResourceReads } from "../servers/ServerServicesContext";
 import "./native-runtime-status.css";
 
 type DesktopStatus = GetResult<"/api/desktop">;
@@ -34,8 +33,7 @@ export default function NativeRuntimeStatus({
   opened: boolean;
   accounts: Account[];
 }) {
-  const watchResourceReads = useServerResourceReads();
-  const { get } = useServerApi();
+  const { subscribeStateProjection } = useServerSync();
 
   const [data, setData] = useState<RuntimeStatus | null>(null);
   const [providers, setProviders] = useState<ProviderVersions>({
@@ -49,15 +47,10 @@ export default function NativeRuntimeStatus({
     setProviders({ checkedAt: null, providers: [], warnings: [] });
     setError("");
     if (!opened) return;
-    let live = true;
-    const controller = new AbortController();
-    const stop = watchResourceReads(
-      { kind: "desktop" },
-      async () => {
-        const result = await get("/api/desktop", {
-          signal: controller.signal,
-        });
-        if (live) {
+    return subscribeStateProjection(
+      (snapshot) => {
+        const result = snapshot?.runtime.desktop;
+        if (result) {
           setData(result.nativeRuntime ?? null);
           setProviders(
             result.providerVersions || {
@@ -70,15 +63,10 @@ export default function NativeRuntimeStatus({
         }
       },
       (failure) => {
-        if (live) setError(errorText(failure));
+        if (failure) setError(errorText(failure));
       },
     );
-    return () => {
-      live = false;
-      controller.abort();
-      stop();
-    };
-  }, [opened, watchResourceReads]);
+  }, [opened, subscribeStateProjection]);
 
   if (!opened) return null;
   const entries = Object.entries(data?.accounts || {});

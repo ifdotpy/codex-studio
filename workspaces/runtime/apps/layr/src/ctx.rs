@@ -102,7 +102,10 @@ impl Ctx {
         }
         match self.loc_from_path(&self.cwd) {
             Some(l) => Ok(l),
-            None => bail!("not in a layr line (cwd {}); cd into a line or set LAYR_PROJECT", self.cwd.display()),
+            None => bail!(
+                "not in a layr line (cwd {}); cd into a line, or name the project with --project <name> (and a line with --line <name>)",
+                self.cwd.display()
+            ),
         }
     }
 

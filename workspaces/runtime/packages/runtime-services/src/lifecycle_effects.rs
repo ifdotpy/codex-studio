@@ -9,7 +9,7 @@
 //! `usage_resume_cancel` in `codex_usage_resume.py:375-381`;
 //! Runtime.delete_conversation and
 //! `_settle_deleted_conversations` in `codex_runtime.py:5121-5250`;
-//! `image_workspace_summary` / `child_stopped_event` in
+//! `workspace_summary` / `child_stopped_event` in
 //! `codex_runtime.py:7671-7745`; and
 //! `release_failed_work` in `codex_work.py:1313-1355`.
 
@@ -1058,6 +1058,9 @@ fn release_work(tx: &Transaction<'_>, effect: &LifecycleEffect) -> Result<(), Ma
             .and_then(Iterator::collect::<Result<Vec<_>, _>>)
             .map_err(studio_runtime_store::StoreError::from)?;
     }
+    if let Some(scope) = effect.owner_scope() {
+        owners.retain(|owner| scope.contains(owner));
+    }
     let mut candidates = Vec::new();
     for owner in owners {
         let Some(agent) = AgentRepository::get(tx, &AgentId::from(owner.as_str()))? else {
@@ -1376,40 +1379,8 @@ fn child_result_payload(agent: &Value, status: Value, result: Value) -> Value {
         "result": result,
         "cwd": agent.get("cwd").cloned().unwrap_or(Value::Null),
         "branch": agent.get("branch").cloned().unwrap_or(Value::Null),
-        "workspace": image_workspace_summary(agent),
+        "workspace": workspace_summary(agent),
     })
-}
-
-/// Python `parent_event(..., recovery=True)` for an image-workspace outcome:
-/// the parent gets one `child_result` under `child:{id}:{event_id}`. A child
-/// without a stored parent has nobody to tell; a remote parent has no local queue.
-pub(crate) fn notify_parent_of_image_workspace(
-    tx: &Transaction<'_>,
-    agent: &Value,
-    event_id: &str,
-    text: &str,
-    at: f64,
-) -> Result<(), event_write::EventWriteError> {
-    let Some(parent_id) = agent.get("parentId").and_then(Value::as_str) else {
-        return Ok(());
-    };
-    let Some(parent) = AgentRepository::get(tx, &AgentId::from(parent_id))? else {
-        return Ok(());
-    };
-    let agent_id = agent.get("id").and_then(Value::as_str).unwrap_or_default();
-    let status = agent.get("status").cloned().unwrap_or(Value::Null);
-    let payload = child_result_payload(agent, status, json!(text));
-    match event_write::enqueue_recovery_event(
-        tx,
-        &parent,
-        format!("child:{agent_id}:{event_id}"),
-        "child_result",
-        payload.to_string(),
-        at,
-    ) {
-        Ok(_) | Err(event_write::EventWriteError::RemoteEventsUnavailable) => Ok(()),
-        Err(error) => Err(error),
-    }
 }
 
 /// Report a settled child turn to its parent inside the settling transaction.
@@ -1589,7 +1560,7 @@ fn enqueue_turn_result(
     Ok(())
 }
 
-fn image_workspace_summary(agent: &Value) -> Value {
+fn workspace_summary(agent: &Value) -> Value {
     if agent.get("executionMode").and_then(Value::as_str) == Some("vm") {
         return json!({
             "workspace":"layr",
@@ -1600,57 +1571,17 @@ fn image_workspace_summary(agent: &Value) -> Value {
             "path":agent.get("cwd").cloned().unwrap_or(Value::Null),
         });
     }
-    let phase = agent.get("imageWorkspacePhase");
     let mode = agent
         .get("workspaceMode")
         .and_then(Value::as_str)
-        .or_else(|| {
-            if studio_runtime_store::truthy(agent.get("imageWorkspace")) {
-                Some("image")
-            } else if studio_runtime_store::truthy(agent.get("worktree")) {
-                Some("worktree")
+        .unwrap_or_else(|| {
+            if studio_runtime_store::truthy(agent.get("worktree")) {
+                "worktree"
             } else {
-                Some("shared")
+                "shared"
             }
-        })
-        .unwrap_or("shared");
-    let mut result = json!({"mode":mode,"path":agent.get("cwd").cloned().unwrap_or(Value::Null)});
-    let image = studio_runtime_store::truthy(agent.get("imageWorkspace"));
-    let fallback = phase.and_then(Value::as_str) == Some("fallback");
-    if !image && !fallback && mode != "image" {
-        return result;
-    }
-    let ready = studio_runtime_store::truthy(agent.get("imageWorkspaceReady"));
-    let state = agent
-        .get("imageWorkspaceBaseState")
-        .filter(|value| !value.is_null())
-        .cloned()
-        .or_else(|| {
-            if ready {
-                Some(json!("ready"))
-            } else if phase.and_then(Value::as_str) == Some("read_only") {
-                Some(json!("building"))
-            } else {
-                phase.cloned()
-            }
-        })
-        .unwrap_or(Value::Null);
-    let taken_at = agent
-        .get("imageWorkspaceCreatedAt")
-        .and_then(Value::as_f64)
-        .and_then(|created| chrono::DateTime::from_timestamp(created as i64, 0))
-        .map(|created| created.to_rfc3339_opts(chrono::SecondsFormat::Secs, true));
-    result["source"] = agent
-        .get("imageWorkspaceRepo")
-        .cloned()
-        .unwrap_or(Value::Null);
-    result["state"] = state;
-    result["takenAt"] = taken_at.map_or(Value::Null, |at| json!(at));
-    result["includesUncommittedChanges"] = json!(matches!(mode, "image" | "shared"));
-    if let Some(error) = agent.get("imageWorkspaceError") {
-        result["error"] = error.clone();
-    }
-    result
+        });
+    json!({"mode":mode,"path":agent.get("cwd").cloned().unwrap_or(Value::Null)})
 }
 
 fn finalize_deleted(tx: &Transaction<'_>, id: &str) -> Result<(), ManagementError> {

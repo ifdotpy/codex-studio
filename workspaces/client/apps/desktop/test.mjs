@@ -220,7 +220,7 @@ try {
   );
   await page.locator("#project").click();
   await page
-    .getByRole("button", { name: "Browse in Finder…", exact: true })
+    .getByRole("button", { name: "Browse folders…", exact: true })
     .click();
   await page.locator(".directory-location").filter({ hasText: temp }).waitFor();
   await page

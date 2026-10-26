@@ -74,7 +74,7 @@ boundaries-check:
 check-affected base *args:
     @node {{quote(facade)}} check-affected {{quote(base)}} {{args}}
 
-[doc("Run the fast nextest profile and JS/guest witnesses in three concurrent lanes.")]
+[doc("Run the fast nextest profile and JS/guest witnesses in five bounded concurrent lanes.")]
 test-fast:
     @node {{quote(facade)}} test-fast
 

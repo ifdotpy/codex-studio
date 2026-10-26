@@ -59,15 +59,18 @@ pub(crate) async fn complaint(
         .and_then(Value::as_str)
         .unwrap_or_default()
         .to_owned();
+    complaint_for_id(state, id).await.map(Json)
+}
+
+pub(super) async fn complaint_for_id(state: HttpState, id: String) -> Result<Value, ApiError> {
     let store = state.store.clone().ok_or_else(ApiError::internal)?;
-    let value = store
+    store
         .read_async("runtime-http/routes/questions_reads", move |connection| {
             let stored =
                 QuestionsReadsRepository::complaint(connection, &id).map_err(map_store_error)?;
             questions_reads::complaint_detail(stored).map_err(questions_error)
         })
-        .await?;
-    Ok(Json(value))
+        .await
 }
 
 pub(crate) async fn checkpoints(

@@ -106,21 +106,21 @@ pub type Result<T> = std::result::Result<T, GuestProviderError>;
 
 #[derive(Debug, Error)]
 pub enum GuestProviderError {
-    #[error("invalid Linux VM provider identity or launch options")]
+    #[error("invalid VM provider identity or launch options")]
     Invalid,
-    #[error("Linux VM provider outcome is unknown and must be reconciled")]
+    #[error("VM provider outcome is unknown and must be reconciled")]
     Unknown,
-    #[error("Linux VM provider refused the operation")]
+    #[error("VM provider refused the operation")]
     Refused,
-    #[error("Linux VM provider response is invalid")]
+    #[error("VM provider response is invalid")]
     InvalidResponse,
-    #[error("Linux VM provider persistence failed")]
+    #[error("VM provider persistence failed")]
     Persistence(#[from] StoreError),
-    #[error("Linux VM guest request failed")]
+    #[error("VM guest request failed")]
     Guest(#[from] GuestError),
-    #[error("Linux VM provider JSON is invalid")]
+    #[error("VM provider JSON is invalid")]
     Json(#[from] serde_json::Error),
-    #[error("Linux VM provider worker task failed")]
+    #[error("VM provider worker task failed")]
     Task,
 }
 
@@ -204,7 +204,7 @@ pub struct GuestProviderTaskFactory {
 
 enum GuestProviderSource {
     Launch(String),
-    Existing(GuestProviderSession),
+    Existing(Box<GuestProviderSession>),
 }
 
 impl GuestProviderTaskFactory {
@@ -234,7 +234,7 @@ impl GuestProviderTaskFactory {
             store,
             guest,
             identity,
-            source: GuestProviderSource::Existing(session),
+            source: GuestProviderSource::Existing(Box::new(session)),
         })
     }
 }
@@ -258,7 +258,7 @@ impl ProviderTaskFactory for GuestProviderTaskFactory {
             }
             let existing_only = matches!(&self.source, GuestProviderSource::Existing(_));
             let session = match &self.source {
-                GuestProviderSource::Existing(session) => session.clone(),
+                GuestProviderSource::Existing(session) => session.as_ref().clone(),
                 GuestProviderSource::Launch(profile) => GuestProviderSession::open(
                     self.store.clone(),
                     self.guest.clone(),
@@ -677,7 +677,7 @@ impl GuestProviderSession {
         } else {
             // An existing reservation means dispatch may have happened before a
             // crash or lost response. Reconcile through the read-only info lane.
-            let info = call_guest(
+            call_guest(
                 guest.clone(),
                 "provider.rpc",
                 json!({"handle": identity.handle, "action": "info"}),
@@ -691,8 +691,7 @@ impl GuestProviderSession {
                 } else {
                     error.into()
                 }
-            })?;
-            info
+            })?
         };
         // A known start can retain stdout and exit events after its process ends.
         // An uncertain start still needs running proof before it becomes Started.
@@ -1464,6 +1463,7 @@ mod tests {
         write_entered: tokio::sync::Notify,
         endless_events: Mutex<bool>,
         next_calls: Mutex<usize>,
+        next_changed: tokio::sync::Notify,
         /// `next` answers with these guest errors first, in order.
         next_failures: Mutex<Vec<GuestError>>,
         next_attempts: Mutex<usize>,
@@ -1486,6 +1486,7 @@ mod tests {
                 write_entered: tokio::sync::Notify::new(),
                 endless_events: Mutex::new(false),
                 next_calls: Mutex::new(0),
+                next_changed: tokio::sync::Notify::new(),
                 next_failures: Mutex::new(Vec::new()),
                 next_attempts: Mutex::new(0),
             }
@@ -1545,6 +1546,7 @@ mod tests {
                     "info" => Ok(Self::info()),
                     "next" if *self.endless_events.lock().unwrap() => {
                         *self.next_calls.lock().unwrap() += 1;
+                        self.next_changed.notify_one();
                         let sequence = params["cursor"].as_u64().unwrap() + 1;
                         let payload = json!({"method":"item/started","params":{}});
                         Ok(
@@ -2356,14 +2358,14 @@ mod tests {
         assert_eq!(receipt.result, "complete");
         assert!(!receipt.result.contains("private-token"));
         assert!(!receipt.signature.contains("private-token"));
-        let expected_material = serde_json::to_vec(&json!({
-            "agentId": "agent-1",
-            "accountKey": "account-1",
-            "path": ".claude/studio-accounts/key/.credentials.json",
-            "digest": digest,
-        }))
-        .unwrap();
-        assert_eq!(receipt.signature, hex_digest(&expected_material));
+        assert_eq!(
+            digest,
+            "740707bd18f54cdc7ed7de3947165486e8cc3dcf7b4d1f6c300cd5c0d641d85d"
+        );
+        assert_eq!(
+            receipt.signature,
+            "ce9eaf46470ff0819976ff38033a4601097be67230e404dfb0dddf2672a8e90f"
+        );
     }
 
     #[tokio::test]
@@ -2761,13 +2763,15 @@ mod tests {
         // previous one. Read LANE_CAPACITY + 3 thus proves that the lane is
         // full and the attachment waits to send entry LANE_CAPACITY + 1.
         let blocked_reads = LANE_CAPACITY + 3;
+        tokio::time::pause();
         tokio::time::timeout(Duration::from_secs(10), async {
             while *guest.next_calls.lock().unwrap() < blocked_reads {
-                tokio::time::sleep(Duration::from_millis(10)).await;
+                guest.next_changed.notified().await;
             }
         })
         .await
         .expect("the attachment fills its journal lane");
+        tokio::time::resume();
 
         let exit = tokio::time::timeout(Duration::from_secs(3), attachment.shutdown())
             .await

@@ -178,7 +178,7 @@ async fn installed_runtime_drives_input_and_cancel_through_http() {
     assert_eq!(receipt["result"]["status"], "uncertain");
     assert_eq!(receipt["result"]["response"]["status"], "unknown");
     *port.unknown.lock().expect("unknown") = false;
-    for attempt in 0..2 {
+    for _ in 0..2 {
         let (status, response) = call(
             &app,
             "/api/monitor/cancel",
@@ -187,16 +187,8 @@ async fn installed_runtime_drives_input_and_cancel_through_http() {
         .await;
         assert_eq!(status, 200, "{response}");
         assert_eq!(response["cancelRequested"], true);
-        if attempt == 0 {
-            let entities = response["_syncEntities"].as_array().expect("sync deltas");
-            let entity_id = case["before"]["id"].as_str().expect("monitor id");
-            assert!(
-                entities
-                    .iter()
-                    .any(|entity| entity["collection"] == "monitor" && entity["id"] == entity_id)
-            );
-            assert!(response["_syncEntitiesAfter"].is_number());
-        }
+        assert!(response.get("_syncEntities").is_none());
+        assert!(response.get("_syncEntitiesAfter").is_none());
     }
     assert_eq!(port.submitted.lock().expect("submitted").len(), 2);
     let saved = MonitorsRepository::get(
@@ -212,7 +204,7 @@ async fn installed_runtime_drives_input_and_cancel_through_http() {
 }
 
 #[tokio::test]
-async fn acknowledged_monitor_input_is_persisted_through_http() {
+async fn acknowledged_monitor_input_returns_without_entity_envelope() {
     let root = fixtures::tempdir();
     let cases = fixtures::corpus(root.path());
     let mut case = cases
@@ -248,33 +240,8 @@ async fn acknowledged_monitor_input_is_persisted_through_http() {
     .await;
 
     assert_eq!(status, 200, "acknowledged input should succeed: {response}");
-    let entities = response["_syncEntities"].as_array().expect("sync entities");
-    assert_eq!(
-        entities.len(),
-        2,
-        "monitor input also publishes owner progress"
-    );
-    let ids = entities
-        .iter()
-        .map(|entity| {
-            format!(
-                "entity:{}:{}",
-                entity["collection"].as_str().expect("collection"),
-                entity["id"].as_str().expect("entity id")
-            )
-        })
-        .collect::<std::collections::BTreeSet<_>>();
-    let owner = case["before"]["agent"].as_str().expect("monitor owner");
-    assert_eq!(
-        ids,
-        [
-            format!("entity:monitor:{id}"),
-            format!("entity:agent:{owner}")
-        ]
-        .into_iter()
-        .collect()
-    );
-    assert!(response["_syncEntitiesAfter"].is_number());
+    assert!(response.get("_syncEntities").is_none());
+    assert!(response.get("_syncEntitiesAfter").is_none());
     {
         let submitted = port.submitted.lock().expect("submitted effects");
         assert_eq!(
@@ -353,6 +320,7 @@ async fn acknowledged_monitor_input_is_persisted_through_http() {
     assert_eq!(status, 400, "invalid identities fail before a native write");
     assert_eq!(port.submitted.lock().expect("no second input").len(), 1);
 
+    let owner = case["before"]["agent"].as_str().expect("monitor owner");
     let epoch = case["actor"]["epoch"].as_i64().expect("actor epoch");
     let account = case["actor"]["accountKey"].as_str().unwrap_or("default");
     for (agent, account, epoch, found) in [

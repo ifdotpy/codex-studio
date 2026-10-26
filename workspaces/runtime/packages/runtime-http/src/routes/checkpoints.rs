@@ -897,14 +897,12 @@ fn map_error(error: CheckpointsError) -> ApiError {
         CheckpointsError::DeletedAgent => {
             ApiError::new(StatusCode::BAD_REQUEST, "This agent was deleted")
         }
-        CheckpointsError::ExecutionWorkspace => ApiError::new(
-            StatusCode::BAD_REQUEST,
-            "Studio Git checkpoints are unavailable for image workspaces",
-        ),
-        CheckpointsError::GitToolsUnavailable => ApiError::new(
-            StatusCode::BAD_REQUEST,
-            "Studio Git tools are unavailable for image workspaces",
-        ),
+        CheckpointsError::ExecutionWorkspace => {
+            ApiError::new(StatusCode::BAD_REQUEST, "This legacy workspace is finished")
+        }
+        CheckpointsError::GitToolsUnavailable => {
+            ApiError::new(StatusCode::BAD_REQUEST, "This legacy workspace is finished")
+        }
         CheckpointsError::ActivityChanged => ApiError::new(
             StatusCode::BAD_REQUEST,
             "Workspace activity changed before checkpoint capture",

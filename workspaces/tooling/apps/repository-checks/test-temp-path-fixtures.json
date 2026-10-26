@@ -55,7 +55,7 @@
   ],
   "workspaces/client/packages/client-core/src/file_links.rs": [
     "\"\\u{200b} file:///tmp/%D0%96%F0%9F%A6%80.rs#L12C2 \\u{200b}\",",
-    "json!({\"path\":\"/tmp/\u0416\ud83e\udd80.rs\",\"line\":12}),",
+    "json!({\"path\":\"/tmp/Ж🦀.rs\",\"line\":12}),",
     "\"sandbox:/tmp/report.md:9:2\",",
     "json!({\"path\":\"/tmp/report.md\",\"line\":9}),",
     "\"file://localhost/tmp/a.md#L4-L8\",",
@@ -76,12 +76,19 @@
     "cwd: \"/tmp/work\",",
     "cwd: \"/tmp/title\","
   ],
+  "workspaces/runtime/apps/layr/crates/layr-model/src/operations.rs": [
+    "(\"file:///tmp/store\", \"file:///tmp/store\"),",
+    "(\"/tmp/repo.git\", \"/tmp/repo.git\"),"
+  ],
+  "workspaces/runtime/apps/layr/src/cmd/remote.rs": [
+    "assert_eq!(kind(\"file:///tmp/store\").unwrap(), Kind::Store);",
+    "\"/tmp/repo.git\","
+  ],
   "workspaces/runtime/apps/layr-desk/crates/layr-desk/src/service.rs": [
     "\"<dict>\\n  <key>Label</key>\\n  <string>{LABEL}</string>\\n  <key>ProgramArguments</key>\\n  <array>\\n{rows}  </array>\\n  <key>StandardOutPath</key>\\n  <string>/tmp/log</string>\\n</dict>\""
   ],
   "workspaces/runtime/apps/runtime-server/src/host_runtime.rs": [
     "vm_claude_keychain_service(Some(\"/tmp/claude-profile/\")),",
-    "+ &data_encoding::HEXLOWER.encode(&Sha256::digest(b\"/tmp/claude-profile\"))[..8]",
     "\"/tmp\".into(),"
   ],
   "workspaces/runtime/apps/runtime-server/src/io_runtime.rs": [

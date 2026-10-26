@@ -1642,7 +1642,7 @@ mod tests {
             json!({"type":"event_msg","timestamp":3,"payload":{"type":"task_complete","turn_id":"history-turn","status":"completed"}}),
             json!({"type":"token_usage_record","timestamp":4,"payload":{
                 "thread_id":"history-thread","response_id":"history-response-1",
-                "usage":{"total_tokens":23},"thread_token_usage":{"total_tokens":23}
+                "usage":{"input_tokens":20,"output_tokens":3,"total_tokens":23},"thread_token_usage":{"input_tokens":20,"output_tokens":3,"total_tokens":23}
             }}),
         ];
         let mut bytes = Vec::new();
@@ -1661,7 +1661,7 @@ mod tests {
             json!({"type":"event_msg","timestamp":3,"payload":{"type":"task_complete","turn_id":"history-turn-after-recovery","status":"completed"}}),
             json!({"type":"token_usage_record","timestamp":4,"payload":{
                 "thread_id":second_thread,"response_id":second_response,
-                "usage":{"total_tokens":23},"thread_token_usage":{"total_tokens":23}
+                "usage":{"input_tokens":20,"output_tokens":3,"total_tokens":23},"thread_token_usage":{"input_tokens":20,"output_tokens":3,"total_tokens":23}
             }}),
         ];
         let mut second_bytes = Vec::new();
@@ -1739,7 +1739,7 @@ mod tests {
 
         let appended = json!({"type":"token_usage_record","timestamp":5,"payload":{
             "thread_id":"history-thread","response_id":"history-response-2",
-            "usage":{"total_tokens":31},"thread_token_usage":{"total_tokens":54}
+            "usage":{"input_tokens":28,"output_tokens":3,"total_tokens":31},"thread_token_usage":{"input_tokens":51,"output_tokens":3,"total_tokens":54}
         }});
         let mut append_bytes = serde_json::to_vec(&appended).expect("appended rollout record");
         append_bytes.push(b'\n');
@@ -1813,7 +1813,7 @@ mod tests {
             json!({"type":"event_msg","timestamp":3,"payload":{"type":"task_complete","turn_id":"history-turn","status":"completed"}}),
             json!({"type":"token_usage_record","timestamp":4,"payload":{
                 "thread_id":"history-thread","response_id":"history-response",
-                "usage":{"total_tokens":23},"thread_token_usage":{"total_tokens":23}
+                "usage":{"input_tokens":20,"output_tokens":3,"total_tokens":23},"thread_token_usage":{"input_tokens":20,"output_tokens":3,"total_tokens":23}
             }}),
         ];
         let mut bytes = Vec::new();

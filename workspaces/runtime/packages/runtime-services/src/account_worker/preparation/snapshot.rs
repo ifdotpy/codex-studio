@@ -674,6 +674,20 @@ pub(super) fn guidance(
             state_root, agent_id,
         ));
     }
+    if crate::layr_native::is_native(record) {
+        for (name, value) in crate::layr_native::thread_environment(state_root) {
+            thread_config.insert(format!("shell_environment_policy.set.{name}"), value);
+        }
+        if record["role"] == "reviewer"
+            && let Some(scratch) = record["layrScratch"].as_str()
+        {
+            thread_config.insert("shell_environment_policy.set.TMPDIR".into(), json!(scratch));
+        }
+        thread_config.insert(
+            "shell_environment_policy.exclude".into(),
+            json!(["LAYR_SOCKET", "LAYR_PROJECT", "LAYR_LINE", "LAYR_SESSION"]),
+        );
+    }
     Ok(thread::GuidanceBundle {
         instructions: resources.instructions.clone(),
         role,
@@ -873,7 +887,7 @@ pub(crate) fn actor_tool_definitions(
     }
     let definitions = catalog_definitions(resources, record)?;
     let cwd = text(record, "cwd")?.unwrap_or_default();
-    let filtered = thread::filter_tool_definitions(
+    let mut filtered = thread::filter_tool_definitions(
         definitions,
         &thread::CatalogFilter {
             provider: studio_runtime_providers::ProviderKind::of_record(record)
@@ -890,6 +904,13 @@ pub(crate) fn actor_tool_definitions(
         },
     )
     .map_err(|_| invalid("tool catalog"))?;
+    if crate::layr_native::is_native(record) && record["role"] == "reviewer" {
+        filtered.push(
+            crate::layr_read::native_tool_definition()
+                .ok_or_else(|| invalid("native layr read tool"))?
+                .clone(),
+        );
+    }
     serde_json::to_value(filtered).map_err(|_| invalid("tool catalog"))
 }
 
@@ -1000,7 +1021,7 @@ fn host_worktree(
         || record["parentId"].as_str().is_none()
         || record["executionMode"] == "vm"
         || !((record["worktree"] == true && record["worktreeReady"] == true)
-            || (record["imageWorkspace"] == true && record["imageWorkspaceReady"] == true))
+            || (crate::layr_native::is_native(record) && record["layrReady"] == true))
     {
         return Ok(None);
     }
@@ -1008,11 +1029,9 @@ fn host_worktree(
     if !Path::new(&tree).is_absolute() {
         return Err(invalid("agent/cwd"));
     }
-    // hostProjectPath survives worktree provisioning. Image copies also retain
-    // imageWorkspaceRepo. The root paths protect the lead for nested workers.
+    // hostProjectPath preserves the source identity. The root paths protect nested workers.
     let mut fence = Vec::new();
     for value in [
-        &record["imageWorkspaceRepo"],
         &record["hostProjectPath"],
         &root["cwd"],
         &root["hostProjectPath"],
@@ -1054,6 +1073,29 @@ fn frozen_params(record: &Value) -> Result<Option<thread::FrozenParams>, WorkerE
         effort: frozen.get("effort").cloned(),
         summary: frozen.get("summary").cloned(),
     }))
+}
+
+fn native_claude_options(
+    record: &Value,
+    state_root: &Path,
+) -> Result<serde_json::Map<String, Value>, WorkerError> {
+    let mut options: serde_json::Map<String, Value> =
+        optional(record, "claudeOptions")?.unwrap_or_default();
+    if crate::layr_native::is_native(record) && record["role"] == "reviewer" {
+        let scratch = record["layrScratch"]
+            .as_str()
+            .ok_or_else(|| invalid("native-reviewer/scratch"))?;
+        options.insert("sandbox".into(),json!({"enabled":true,"failIfUnavailable":true,"allowUnsandboxedCommands":false,
+            "filesystem":{"allowWrite":[scratch],"denyWrite":[crate::layr_native::store_path(state_root)]},
+            "network":{"allowedDomains":[],"strictAllowlist":true,"allowUnixSockets":[],"allowAllUnixSockets":false}}));
+        options.insert(
+            "nativeReviewerEnvironment".into(),
+            Value::Object(crate::layr_native::reviewer_environment(
+                state_root, scratch,
+            )),
+        );
+    }
+    Ok(options)
 }
 
 pub(super) fn thread_snapshot(
@@ -1143,7 +1185,7 @@ pub(super) fn thread_snapshot(
             role,
             is_lead: lead,
             needs_title: flag(record, "needsTitle")?,
-            claude_options: optional(record, "claudeOptions")?.unwrap_or_default(),
+            claude_options: native_claude_options(record, state_root)?,
             daybreak_enabled: stored(record, "daybreakEnabled")?,
             cyber_access_program: stored(record, "cyberAccessProgram")?,
         },
@@ -1463,6 +1505,46 @@ fn can_delegate(tx: &Transaction<'_>, record: &Value, root: &Value) -> Result<bo
 
 #[cfg(test)]
 mod resource_tests {
+    #[test]
+    fn native_release_phases_hold_only_unsettled_releases() {
+        for (patch, held) in [
+            (
+                json!({"phase":"blocked", "connectionId":"earlier", "error":"native background command is active"}),
+                false,
+            ),
+            (json!({"phase":"blocked"}), false),
+            (json!({"phase":null, "inspectionPhase":"superseded"}), false),
+            (json!({"phase":"released"}), false),
+            (json!({"phase":"resumed"}), false),
+            (json!({"phase":"pending"}), false),
+            (json!({"phase":"released", "resetPending":true}), true),
+            (json!({"phase":"unsubscribing"}), true),
+            (
+                json!({"phase":"unsubscribing", "connectionId":"earlier"}),
+                false,
+            ),
+            (json!({"phase":"unknown"}), true),
+            (json!({"phase":"checking"}), true),
+            (
+                json!({"phase":"checking", "inspectionPhase":"inspecting"}),
+                false,
+            ),
+            (
+                json!({"phase":"unsubscribing", "resetActorEpoch":0, "submittedAt":101}),
+                true,
+            ),
+        ] {
+            let mut record = json!({"threadId":"thread", "nativeRelease":{
+                "threadId":"thread", "connectionId":"1"
+            }});
+            record["nativeRelease"]
+                .as_object_mut()
+                .expect("release object")
+                .extend(patch.as_object().expect("patch object").clone());
+            assert_eq!(native_release_held(&record, "1"), held, "{patch}");
+        }
+    }
+
     fn guidance(
         resources: &super::PreparationResources,
         record: &serde_json::Value,
@@ -1476,6 +1558,33 @@ mod resource_tests {
     }
 
     use super::*;
+
+    #[test]
+    fn reviewer_defaults_are_explained_in_emitted_tools_and_role_guidance() {
+        let resources = PreparationResources::bundled(String::new(), ModelCatalogService::new())
+            .expect("runtime resources");
+        for tools in [&resources.tools, &resources.legacy_tools] {
+            let spawn = tools
+                .iter()
+                .find(|tool| tool.name == "orchestration_spawn")
+                .expect("spawn tool");
+            assert!(
+                spawn.description.contains("review defaults"),
+                "{}",
+                spawn.description
+            );
+            assert!(!spawn.description.contains("Default: gpt-6-luna"));
+        }
+        for record in [
+            json!({"id":"new", "isLead":true}),
+            json!({"id":"native", "isLead":true, "threadId":"thread", "nativeTeleportTool":"orchestration_teleport"}),
+            json!({"id":"legacy", "isLead":true, "threadId":"thread"}),
+        ] {
+            let text = role_guidance(&resources, &record).expect("emitted role guidance");
+            assert!(text.contains("review defaults"), "{text}");
+            assert!(!text.contains("Use `gpt-6-luna`"), "{text}");
+        }
+    }
 
     #[tokio::test]
     async fn structured_native_errors_keep_thread_preparation_and_holds() {
@@ -1697,8 +1806,10 @@ mod resource_tests {
                 let names = |tools: Vec<thread::ToolDefinition>| {
                     tools.into_iter().map(|tool| tool.name).collect::<Vec<_>>()
                 };
-                for mode in ["vm", "native"] {
-                    let vm = mode == "vm";
+                for (mode, expected_tools, vm) in [
+                    ("vm", &resources.tools, true),
+                    ("native", &resources.legacy_tools, false),
+                ] {
                     // An old thread without a saved source, and a new thread
                     // of an agent whose saved source is legacy.
                     for (thread_id, source) in [(Some("thread-old"), None), (None, Some("legacy"))]
@@ -1731,12 +1842,7 @@ mod resource_tests {
                             thread::CatalogSource::Legacy,
                             "{case}"
                         );
-                        let expected = if vm {
-                            &resources.tools
-                        } else {
-                            &resources.legacy_tools
-                        };
-                        assert_eq!(&snapshot.catalog.definitions, expected, "{case}");
+                        assert_eq!(&snapshot.catalog.definitions, expected_tools, "{case}");
                         let tools = names(thread::tool_definitions(&snapshot).expect("tools"));
                         assert_eq!(
                             tools.iter().any(|name| name == "orchestration_sign_in"),
@@ -2200,81 +2306,197 @@ mod workspace_fence_tests {
             .expect("store");
         let resources = PreparationResources::bundled(String::new(), ModelCatalogService::new())
             .expect("resources");
-        store.transaction_with(move |tx| {
-            let root = json!({"id":"lead","rootId":"lead","epoch":1,"status":"running",
+        store
+            .transaction_with(move |tx| {
+                let root = json!({"id":"lead","rootId":"lead","epoch":1,"status":"running",
                 "isLead":true,"cwd":"/source checkout","hostProjectPath":"/source checkout"});
-            AgentRepository::put(tx, &AgentRecord::from_value(root).expect("lead"))?;
-            for (mode, provider, role, ready, fenced) in [
-                ("worktree", "claude", "implementer", true, true),
-                ("image", "claude", "implementer", true, true),
-                ("shared", "claude", "implementer", true, false),
-                ("worktree", "claude", "reviewer", true, false),
-                ("image", "claude", "reviewer", true, false),
-                ("worktree", "claude", "implementer", false, false),
-                ("image", "claude", "implementer", false, false),
-                ("worktree", "codex", "implementer", true, false),
-            ] {
-                let record = json!({"id":"worker","rootId":"lead","parentId":"lead",
+                AgentRepository::put(tx, &AgentRecord::from_value(root).expect("lead"))?;
+                for (mode, provider, role, ready, fenced, expected_sandbox) in [
+                    (
+                        "worktree",
+                        "claude",
+                        "implementer",
+                        true,
+                        true,
+                        "danger-full-access",
+                    ),
+                    (
+                        "layr-native",
+                        "claude",
+                        "implementer",
+                        true,
+                        true,
+                        "danger-full-access",
+                    ),
+                    (
+                        "shared",
+                        "claude",
+                        "implementer",
+                        true,
+                        false,
+                        "danger-full-access",
+                    ),
+                    ("worktree", "claude", "reviewer", true, false, "read-only"),
+                    (
+                        "layr-native",
+                        "claude",
+                        "reviewer",
+                        true,
+                        false,
+                        "read-only",
+                    ),
+                    (
+                        "worktree",
+                        "claude",
+                        "implementer",
+                        false,
+                        false,
+                        "danger-full-access",
+                    ),
+                    (
+                        "layr-native",
+                        "claude",
+                        "implementer",
+                        false,
+                        false,
+                        "danger-full-access",
+                    ),
+                    (
+                        "worktree",
+                        "codex",
+                        "implementer",
+                        true,
+                        false,
+                        "danger-full-access",
+                    ),
+                ] {
+                    let record = json!({"id":"worker","rootId":"lead","parentId":"lead",
                     "epoch":1,"status":"queued","isLead":false,"role":role,"provider":provider,
                     "cwd":"/worker copy:quoted\"path","hostProjectPath":"/parent copy",
-                    "imageWorkspaceRepo":if mode == "image" { json!("/image source") } else { Value::Null },
                     "workspaceMode":mode,"worktree":mode == "worktree","worktreeReady":ready,
-                    "imageWorkspace":mode == "image","imageWorkspaceReady":ready,
+                    "layrReady":mode == "layr-native" && ready,
+                    "layrScratch":"/private/reviewer-scratch",
                     "yoloMode":true,"claudeOptions":{"permissionMode":"bypassPermissions"}});
-                for resumed in [false, true] {
-                    let mut record = record.clone();
-                    if resumed {
-                        // A current thread retains the catalog selected at start.
-                        record["threadId"] = json!("existing-thread");
-                        record["nativeToolSource"] = json!("current");
-                    }
-                    let snapshot = thread_snapshot(tx, &resources, &record, "connection", Path::new("/state"),
-                        None)?;
-                    let attempt = match thread::plan(&snapshot, "attempt", "ticket") {
-                        thread::Outcome::Start(attempt) | thread::Outcome::Resume(attempt) => attempt,
-                        other => panic!("expected thread launch, got {other:?}"),
-                    };
-                    let options = attempt.params.get("claude").unwrap_or(&Value::Null);
-                    if provider == "claude" && role == "reviewer" {
-                        assert_eq!(options["permissionMode"], "plan");
-                        assert_eq!(attempt.params["sandbox"], "read-only");
-                        assert_eq!(attempt.params["approvalPolicy"], "on-request");
-                    }
-                    if fenced {
-                        assert_eq!(options["permissionMode"], "bypassPermissions");
-                        assert_eq!(options["env"]["CLAUDE_CODE_HOST_WORKTREE"], record["cwd"]);
-                        let fence: Vec<String> = serde_json::from_str(
-                            options["env"]["CLAUDE_CODE_HOST_WORKTREE_FENCE"].as_str().expect("JSON fence"))
-                            .expect("fence array");
-                        let expected = if mode == "image" {
-                            vec!["/image source", "/parent copy", "/source checkout"]
-                        } else { vec!["/parent copy", "/source checkout"] };
-                        assert_eq!(fence, expected);
-                        let mut current = snapshot.clone();
-                        current.actor.prepare_attempt = Some(attempt.attempt_id.clone());
-                        let receipt = thread::ProviderReceipt {
-                            identity: attempt.receipt_identity(),
-                            thread_id: Some("existing-thread".into()),
-                            fields: Map::new(),
-                            reattached: false,
+                    for resumed in [false, true] {
+                        let mut record = record.clone();
+                        if resumed {
+                            // A current thread retains the catalog selected at start.
+                            record["threadId"] = json!("existing-thread");
+                            record["nativeToolSource"] = json!("current");
+                        }
+                        let snapshot = thread_snapshot(
+                            tx,
+                            &resources,
+                            &record,
+                            "connection",
+                            Path::new("/state"),
+                            None,
+                        )?;
+                        let attempt = match thread::plan(&snapshot, "attempt", "ticket") {
+                            thread::Outcome::Start(attempt) | thread::Outcome::Resume(attempt) => {
+                                attempt
+                            }
+                            other => panic!("expected thread launch, got {other:?}"),
                         };
-                        assert!(matches!(thread::reduce_receipt(&attempt, &current, Some(&receipt), None, json!(1)),
-                            thread::ReceiptOutcome::Accepted { .. }));
-                        current.host_worktree.as_mut().expect("worker fence").fence.push("/changed-source".into());
-                        assert_eq!(thread::reduce_receipt(&attempt, &current, Some(&receipt), None, json!(1)),
-                            thread::ReceiptOutcome::Stale(thread::StaleReason::Settings));
-                    } else {
-                        assert!(options.get("env").is_none(), "{mode}/{provider}/{role}/{ready}: {options}");
+                        let options = attempt.params.get("claude").unwrap_or(&Value::Null);
+                        if provider == "claude" && role == "reviewer" {
+                            assert_eq!(options["permissionMode"], "plan");
+                            assert_eq!(attempt.params["sandbox"], "read-only");
+                            assert_eq!(attempt.params["approvalPolicy"], "on-request");
+                        }
+                        if fenced {
+                            assert_eq!(options["permissionMode"], "bypassPermissions");
+                            assert_eq!(options["env"]["CLAUDE_CODE_HOST_WORKTREE"], record["cwd"]);
+                            let fence: Vec<String> = serde_json::from_str(
+                                options["env"]["CLAUDE_CODE_HOST_WORKTREE_FENCE"]
+                                    .as_str()
+                                    .expect("JSON fence"),
+                            )
+                            .expect("fence array");
+                            let expected = vec!["/parent copy", "/source checkout"];
+                            assert_eq!(fence, expected);
+                            let mut current = snapshot.clone();
+                            current.actor.prepare_attempt = Some(attempt.attempt_id.clone());
+                            let receipt = thread::ProviderReceipt {
+                                identity: attempt.receipt_identity(),
+                                thread_id: Some("existing-thread".into()),
+                                fields: Map::new(),
+                                reattached: false,
+                            };
+                            assert!(matches!(
+                                thread::reduce_receipt(
+                                    &attempt,
+                                    &current,
+                                    Some(&receipt),
+                                    None,
+                                    json!(1)
+                                ),
+                                thread::ReceiptOutcome::Accepted { .. }
+                            ));
+                            current
+                                .host_worktree
+                                .as_mut()
+                                .expect("worker fence")
+                                .fence
+                                .push("/changed-source".into());
+                            assert_eq!(
+                                thread::reduce_receipt(
+                                    &attempt,
+                                    &current,
+                                    Some(&receipt),
+                                    None,
+                                    json!(1)
+                                ),
+                                thread::ReceiptOutcome::Stale(thread::StaleReason::Settings)
+                            );
+                        } else {
+                            for key in [
+                                "CLAUDE_CODE_HOST_WORKTREE",
+                                "CLAUDE_CODE_HOST_WORKTREE_FENCE",
+                            ] {
+                                assert!(
+                                    options.get("env").and_then(|env| env.get(key)).is_none(),
+                                    "{mode}/{provider}/{role}/{ready}: {options}"
+                                );
+                            }
+                            if mode == "layr-native" && provider == "claude" {
+                                assert_eq!(
+                                    options["env"]["LAYR_DIRECT"],
+                                    if cfg!(target_os = "linux") { "0" } else { "1" }
+                                );
+                                assert!(options["env"]["LAYR_ROOT"].is_string());
+                                if role == "reviewer" {
+                                    assert_eq!(options["sandbox"]["enabled"], true);
+                                    assert_eq!(options["sandbox"]["failIfUnavailable"], true);
+                                    assert_eq!(
+                                        options["sandbox"]["filesystem"]["allowWrite"],
+                                        json!(["/private/reviewer-scratch"])
+                                    );
+                                    assert_eq!(
+                                        options["sandbox"]["filesystem"]["denyWrite"],
+                                        json!([crate::layr_native::store_path(Path::new(
+                                            "/state"
+                                        ))])
+                                    );
+                                    assert_eq!(
+                                        options["nativeReviewerEnvironment"]["TMPDIR"],
+                                        "/private/reviewer-scratch"
+                                    );
+                                    assert!(
+                                        options["nativeReviewerEnvironment"]
+                                            .get("LAYR_ROOT")
+                                            .is_none()
+                                    );
+                                }
+                            }
+                        }
+                        assert_eq!(attempt.params["sandbox"], expected_sandbox);
                     }
-                    assert_eq!(attempt.params["sandbox"], if provider == "claude" && role == "reviewer" {
-                        "read-only"
-                    } else {
-                        "danger-full-access"
-                    });
                 }
-            }
-            Ok::<_, WorkerError>(())
-        }).await.expect("production snapshot and provider params");
+                Ok::<_, WorkerError>(())
+            })
+            .await
+            .expect("production snapshot and provider params");
     }
 
     #[test]

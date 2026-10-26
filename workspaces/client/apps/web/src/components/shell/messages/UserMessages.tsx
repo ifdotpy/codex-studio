@@ -1,3 +1,4 @@
+import { useSubscription } from "../../../sync/subscriptions";
 import {
   useServerApi,
   useServerStorage,
@@ -258,7 +259,7 @@ export default function UserMessages({
   );
 }
 
-function UserMessage({
+export function UserMessage({
   message,
   data,
   focused,
@@ -291,7 +292,10 @@ function UserMessage({
   });
   const [reply, setReply] = useState(focused || requests.has(message.id));
   const [error, setError] = useState<unknown>(null);
-  const [attempt, setAttempt] = useState(0);
+  const streamed = useSubscription({
+    kind: "complaint",
+    complaintId: message.id,
+  });
   useEffect(() => {
     if (focused) setReply(true);
   }, [focused, focusRequestId]);
@@ -307,21 +311,23 @@ function UserMessage({
         confirmedMessages.delete(confirmedKey);
       return;
     }
-    let live = true;
-    get("/api/complaint", { query: { id: message.id } })
-      .then((result) => {
-        if (live) {
-          setDetail(result);
-          setError("");
-        }
-      })
-      .catch((reason) => {
-        if (live) setError(reason);
-      });
-    return () => {
-      live = false;
-    };
-  }, [message.id, message.version, attempt]);
+  }, [message, confirmedKey, confirmedMessages]);
+  useEffect(() => {
+    if (streamed.data) {
+      setDetail((current) =>
+        (current.version || 0) > (streamed.data!.version || 0)
+          ? current
+          : streamed.data!,
+      );
+      setError(null);
+    }
+    if (streamed.error) setError(streamed.error);
+  }, [streamed.data, streamed.error]);
+  const retryDetail = () => {
+    void get("/api/complaint", { query: { id: message.id } })
+      .then(setDetail)
+      .catch(setError);
+  };
   const detailView = isComplaintDetail(detail) ? detail : null;
   const authorName = (id: string) =>
     id === "user"
@@ -347,9 +353,7 @@ function UserMessage({
       {!!error && (
         <p role="alert">
           <ErrorDescription value={error} role="status" />{" "}
-          <Button onClick={() => setAttempt((value) => value + 1)}>
-            Retry
-          </Button>
+          <Button onClick={retryDetail}>Retry</Button>
         </p>
       )}
       {detailView?.responses.map((response) => (

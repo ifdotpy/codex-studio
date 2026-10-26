@@ -362,12 +362,6 @@ async fn run(shutdown_requested: Sender<()>) -> Result<(), Box<dyn std::error::E
         println!("{}", serde_json::to_string_pretty(&report)?);
         return Ok(());
     }
-    if args.first().map(String::as_str) == Some("mounts") {
-        // Read-only `check`, or `repair` that only attaches at empty mount points.
-        let (report, ok) = studio_runtime_services::image_workspace::mounts_command(&args[1..])?;
-        println!("{}", serde_json::to_string_pretty(&report)?);
-        std::process::exit(if ok { 0 } else { 1 });
-    }
     let port = parse_port(args.into_iter())?;
     studio_runtime_schema::initialize()?;
     startup_trace("backend-identity-started");
@@ -391,7 +385,7 @@ async fn run(shutdown_requested: Sender<()>) -> Result<(), Box<dyn std::error::E
         Arc::new(RuntimeStore::open_claiming(configured_state_dir.as_deref(), &owner).await?);
     // Before the first runtime write: every writer transaction publishes the chats and
     // cards it changed.
-    studio_runtime_services::entity_publication::install(&store);
+    studio_runtime_services::entity_publication::install(&store).await?;
     store
         .set_diagnostics_callback(Some(
             studio_runtime_services::diagnostics::observe_store_event,
@@ -440,11 +434,8 @@ async fn run(shutdown_requested: Sender<()>) -> Result<(), Box<dyn std::error::E
         Ok(closed) => eprintln!("closed {closed} tasks of settled turns"),
         Err(error) => eprintln!("tasks of settled turns remain running: {error}"),
     }
+    studio_runtime_services::legacy_image_workspace::finish_stored_workspaces(&store).await?;
     startup_trace("store-recovery-completed");
-    // Report stranded or mismatched image workspace mounts; never repair them here.
-    std::thread::Builder::new()
-        .name("image-mount-check".to_owned())
-        .spawn(studio_runtime_services::image_workspace::run_startup_mount_check)?;
     let (workspace_id, limits_read) = store
         .read_async("runtime-server/startup", |db| {
             Ok::<_, studio_runtime_store::StoreError>((
@@ -748,15 +739,6 @@ async fn run(shutdown_requested: Sender<()>) -> Result<(), Box<dyn std::error::E
     .await?;
     startup_trace("provider-and-io-setup-completed");
     let registry_wake = state.event_wake_handle();
-    studio_runtime_services::image_workspace_agents::install_wake(Arc::clone(&registry_wake));
-    // Python `resume_read_only_image_bases`: an image agent still in its
-    // read-only phase gets its base build and copy again after a restart.
-    #[cfg(target_os = "macos")]
-    match studio_runtime_services::image_workspace_agents::resume_read_only(&store).await {
-        Ok(0) => {}
-        Ok(count) => eprintln!("resumed the image workspace of {count} read-only agent(s)"),
-        Err(error) => eprintln!("image workspace resume failed: {error}"),
-    }
     let orchestration_wake = Arc::new(Notify::new());
     let federation_wake = Arc::new(Notify::new());
     observe_table_wakes(
@@ -886,8 +868,9 @@ async fn run(shutdown_requested: Sender<()>) -> Result<(), Box<dyn std::error::E
     }
     let sync_changes = state.sync_changes_handle();
     let cost_scan_cancelled = state.cost_scan_cancellation_handle();
-    let vault_job_owner = VaultJobOwner::start();
+    let vault_job_owner = VaultJobOwner::start(Arc::clone(&sync_changes));
     state = state.with_vault_job_client(vault_job_owner.client());
+    state.initialize_bounded_entities().await?;
     let app = match router(state.clone()) {
         Ok(app) => {
             let app = app
@@ -997,6 +980,10 @@ async fn run(shutdown_requested: Sender<()>) -> Result<(), Box<dyn std::error::E
     let web_push_task = tokio::spawn(studio_runtime_services::web_push::run(
         Arc::clone(&store),
         state_root.to_path_buf(),
+        monitor_shutdown.subscribe(),
+    ));
+    let studio_errors_task = tokio::spawn(studio_runtime_services::studio_errors::run(
+        Arc::clone(&store),
         monitor_shutdown.subscribe(),
     ));
     let retention_task = tokio::spawn(studio_runtime_services::storage_retention::run(
@@ -1286,73 +1273,88 @@ async fn run(shutdown_requested: Sender<()>) -> Result<(), Box<dyn std::error::E
         }
     })
     .await;
-    // Keep account/provider dependencies live while HTTP mutations and durable
-    // login/cancel work drain. The existing 20-second watchdog bounds this
-    // sequence; if it forces exit, existing receipt, unknown-outcome, and
-    // recovery rules remain authoritative without automatic request replay.
-    state.shutdown_mutations().await;
-    let durable_session_cleanup = shutdown_join(
-        "provider login and cancellation operations",
-        account_session.shutdown_durable_operations(),
-    )
-    .await?;
-    durable_session_cleanup.map_err(std::io::Error::other)?;
-    monitor_shutdown.send_replace(true);
-    #[cfg(unix)]
-    stop_runtime.cancel();
-    #[cfg(unix)]
-    if let Some(peer_link) = peer_link_runtime.as_mut() {
-        peer_link.shutdown().await;
-    }
-    federation_cancelled.store(true, std::sync::atomic::Ordering::Release);
-    let vault_jobs_cleanup = shutdown_join("vault job owner", vault_job_owner.shutdown()).await?;
-    vault_jobs_cleanup?;
-    #[cfg(unix)]
-    let history_cleanup = shutdown_join("history runtime task", history_task).await?;
-    #[cfg(unix)]
-    history_cleanup.map_err(std::io::Error::other)??;
-    shutdown_join("federation delivery task", federation_task).await??;
-    shutdown_join("continuation scheduler task", continuation_task).await??;
-    #[cfg(unix)]
-    if let Some(task) = idle_compaction_task {
-        shutdown_join("idle compaction scheduler task", task).await??;
-    }
+    let drained: Result<(), Box<dyn std::error::Error>> = async {
+        // Keep account/provider dependencies live while HTTP mutations and durable
+        // login/cancel work drain. The existing 20-second watchdog bounds this
+        // sequence; if it forces exit, existing receipt, unknown-outcome, and
+        // recovery rules remain authoritative without automatic request replay.
+        state.shutdown_mutations().await;
+        let durable_session_cleanup = shutdown_join(
+            "provider login and cancellation operations",
+            account_session.shutdown_durable_operations(),
+        )
+        .await?;
+        durable_session_cleanup.map_err(std::io::Error::other)?;
+        monitor_shutdown.send_replace(true);
+        #[cfg(unix)]
+        stop_runtime.cancel();
+        #[cfg(unix)]
+        if let Some(peer_link) = peer_link_runtime.as_mut() {
+            peer_link.shutdown().await;
+        }
+        federation_cancelled.store(true, std::sync::atomic::Ordering::Release);
+        let vault_jobs_cleanup =
+            shutdown_join("vault job owner", vault_job_owner.shutdown()).await?;
+        vault_jobs_cleanup?;
+        #[cfg(unix)]
+        let history_cleanup = shutdown_join("history runtime task", history_task).await?;
+        #[cfg(unix)]
+        history_cleanup.map_err(std::io::Error::other)??;
+        shutdown_join("federation delivery task", federation_task).await??;
+        shutdown_join("continuation scheduler task", continuation_task).await??;
+        #[cfg(unix)]
+        if let Some(task) = idle_compaction_task {
+            shutdown_join("idle compaction scheduler task", task).await??;
+        }
 
-    shutdown_join("held turn release task", auth_release_task).await??;
-    for task in browser_card_tasks {
-        shutdown_join("browser card poll", task).await??;
+        shutdown_join("held turn release task", auth_release_task).await??;
+        for task in browser_card_tasks {
+            shutdown_join("browser card poll", task).await??;
+        }
+        shutdown_join("sign-in message links", sign_in_task).await??;
+        shutdown_join("web push", web_push_task).await??;
+        #[cfg(unix)]
+        if let Some(service) = browser_host {
+            shutdown_join("browser host bridge", service.stop()).await?;
+        }
+        shutdown_join("Studio error publication task", studio_errors_task).await??;
+        shutdown_join("storage retention task", retention_task).await??;
+        shutdown_join("stored text compaction task", stored_text_task).await??;
+        shutdown_join("analytics projection task", analytics_projection_task).await??;
+        if let Some(task) = orchestration_task {
+            shutdown_join("orchestration driver task", task).await??;
+        }
+        let monitor_result = shutdown_join("monitor runtime task", monitor_task).await?;
+        monitor_result.map_err(std::io::Error::other)??;
+        #[cfg(unix)]
+        {
+            let terminal_cleanup = shutdown_join(
+                "terminal IO runtime",
+                shutdown_io_runtime(Arc::clone(&io_runtime)),
+            )
+            .await?;
+            terminal_cleanup?;
+            let runtime_cleanup = shutdown_join(
+                "host workers and retained services",
+                runtime_shutdown::close(runtime, &state),
+            )
+            .await?;
+            runtime_cleanup?;
+        }
+        #[cfg(not(unix))]
+        shutdown_join("retained services", state.shutdown_services()).await??;
+        Ok(())
     }
-    shutdown_join("sign-in message links", sign_in_task).await??;
-    shutdown_join("web push", web_push_task).await??;
-    #[cfg(unix)]
-    if let Some(service) = browser_host {
-        shutdown_join("browser host bridge", service.stop()).await?;
+    .await;
+    // Every writer has stopped: flush both runtime databases and truncate their
+    // WAL files (docs/decisions/2026-10-24-sqlite-normal-with-periodic-flush.md).
+    // A failure is reported; commits then wait for the next start's checkpoint.
+    match shutdown_join("final SQLite WAL flush", store.flush_wal_for_shutdown()).await {
+        Ok(Ok(())) => {}
+        Ok(Err(error)) => eprintln!("runtime server final WAL flush failed: {error}"),
+        Err(error) => eprintln!("{error}"),
     }
-    shutdown_join("storage retention task", retention_task).await??;
-    shutdown_join("stored text compaction task", stored_text_task).await??;
-    shutdown_join("analytics projection task", analytics_projection_task).await??;
-    if let Some(task) = orchestration_task {
-        shutdown_join("orchestration driver task", task).await??;
-    }
-    let monitor_result = shutdown_join("monitor runtime task", monitor_task).await?;
-    monitor_result.map_err(std::io::Error::other)??;
-    #[cfg(unix)]
-    {
-        let terminal_cleanup = shutdown_join(
-            "terminal IO runtime",
-            shutdown_io_runtime(Arc::clone(&io_runtime)),
-        )
-        .await?;
-        terminal_cleanup?;
-        let runtime_cleanup = shutdown_join(
-            "host workers and retained services",
-            runtime_shutdown::close(runtime, &state),
-        )
-        .await?;
-        runtime_cleanup?;
-    }
-    #[cfg(not(unix))]
-    shutdown_join("retained services", state.shutdown_services()).await??;
+    drained?;
     result?;
     Ok(())
 }

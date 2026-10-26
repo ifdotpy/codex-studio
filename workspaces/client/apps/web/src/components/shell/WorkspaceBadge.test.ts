@@ -13,7 +13,7 @@ const agent = (values: Partial<Agent>) =>
   }) as Agent;
 
 test.each([
-  ["image", "ASIF", "Apple Sparse Image Format workspace"],
+  ["layr-native", "Layr", "Native Layr workspace"],
   ["worktree", "WT", "Git worktree"],
   ["shared", "SHARED", "Shared folder"],
 ] as const)("shows %s workspace as %s", (workspaceMode, label, name) => {
@@ -37,7 +37,7 @@ test("hides the badge for leads and unknown remote workspaces", () => {
 });
 
 test.each([
-  ["image", "ASIF", "Apple Sparse Image Format workspace"],
+  ["layr-native", "Layr", "Native Layr workspace"],
   ["worktree", "WT", "Git worktree"],
 ] as const)(
   "shows remote %s mode even when local workspace flags are false",
@@ -48,7 +48,6 @@ test.each([
           cwd: "/remote/repo",
           remoteWorker: { server: "remote", link: "link" },
           workspaceMode,
-          imageWorkspace: false,
           worktree: false,
         }),
       ),
@@ -57,8 +56,8 @@ test.each([
 );
 
 test.each([
-  ["layr", "LAYR"],
-  ["image", "ASIF"],
+  ["layr", "Layr VM"],
+  ["layr-native", "Layr"],
   ["worktree", "WT"],
 ])("shows the chat workspace %s as %s", (mode, label) => {
   const current = { ...agent({ isLead: true }), workspaceMode: mode } as Agent;
@@ -77,7 +76,7 @@ test.each([false, true])("shows the layr worker badge, remote=%s", (remote) => {
     workspaceMode: "layr",
   } as unknown as Agent;
   expect(workspaceBadgeInfo(current)).toEqual({
-    label: "LAYR",
-    title: "Linux VM with layr · /projects/example",
+    label: "Layr VM",
+    title: "Linux VM with Layr · /projects/example",
   });
 });

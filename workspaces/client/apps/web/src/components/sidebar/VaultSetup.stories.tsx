@@ -1,12 +1,16 @@
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import { expect, fn, userEvent, waitFor, within } from "storybook/test";
 import VaultSetup from "./VaultSetup";
+import type {
+  ResourceRef,
+  ResourceVersion,
+} from "../../sync/subscriptions/events";
 
 type Reply = Record<string, unknown>;
 
 /** A fake of this Mac's server: the setup facts, the AWS sign-in and the setup job. */
 function server({ keys = false, signedIn = true } = {}) {
-  const state = { keys, signedIn, polls: 0, posts: [] as [string, Reply][] };
+  const state = { keys, signedIn, posts: [] as [string, Reply][] };
   const facts = () => ({
     prefix: "my-project",
     keys: state.keys,
@@ -18,41 +22,75 @@ function server({ keys = false, signedIn = true } = {}) {
       { name: "work", sso: true, signedIn: state.signedIn },
     ],
   });
+  const jobs = new Map<string, Reply>();
+  const listeners = new Map<string, (version?: ResourceVersion) => void>();
+  const resources = {
+    watchResourceChanges(
+      resource: ResourceRef,
+      accept: (version?: ResourceVersion) => void,
+    ) {
+      if (resource.kind === "vault-readiness") {
+        accept({
+          epoch: "story",
+          revision: 1,
+          progress: { resource, value: state.keys },
+        });
+        return () => {};
+      }
+      if (resource.kind !== "vault-job-progress") return () => {};
+      const key = resource.requestId;
+      listeners.set(key, accept);
+      accept({
+        epoch: "story",
+        revision: 1,
+        progress: { resource, value: jobs.get(key) as never },
+      });
+      return () => {
+        listeners.delete(key);
+      };
+    },
+    watchResourceConnection: () => () => {},
+  };
   const post = async (path: string, body: Reply) => {
     state.posts.push([path, body]);
     if (path === "/api/vault/setup/facts") return facts();
-    if (path === "/api/vault/aws-login") {
-      state.polls += 1;
-      if (state.polls < 3)
-        return {
-          requestId: body.requestId,
-          state: "running",
-          ...(state.polls > 1
-            ? { page: "https://device.example/?code=WXYZ", code: "WXYZ" }
-            : {}),
-        };
-      state.signedIn = true;
-      return { requestId: body.requestId, state: "done" };
-    }
-    if (path === "/api/vault/setup") {
-      const runs = state.posts.filter(([p]) => p === path).length;
-      return runs < 2
-        ? {
-            requestId: body.requestId,
-            state: "running",
-            prefix: "my-project",
-            progress: "studio-vault-my-project: CREATE_IN_PROGRESS",
-          }
-        : {
-            requestId: body.requestId,
-            state: "done",
-            prefix: "my-project",
-            site: "https://desk.example.com/my-project/",
-          };
+    const requestId = String(body.requestId);
+    if (path === "/api/vault/aws-login" || path === "/api/vault/setup") {
+      const value = {
+        requestId,
+        state: "running",
+        ...(path === "/api/vault/aws-login"
+          ? { page: "https://device.example/?code=WXYZ", code: "WXYZ" }
+          : {
+              prefix: "my-project",
+              progress: "studio-vault-my-project: CREATE_IN_PROGRESS",
+            }),
+      };
+      jobs.set(requestId, value);
+      return value;
     }
     throw new Error(`no fake for ${path}`);
   };
-  return { state, backend: { post: post as never } };
+  const finish = (job: "login" | "setup") => {
+    const requestId = [...listeners.keys()][0];
+    if (job === "login") state.signedIn = true;
+    const value = {
+      requestId,
+      state: "done" as const,
+      prefix: "my-project",
+      site: "https://desk.example.com/my-project/",
+    };
+    jobs.set(requestId, value);
+    listeners.get(requestId)?.({
+      epoch: "story",
+      revision: 2,
+      progress: {
+        resource: { kind: "vault-job-progress", job, requestId },
+        value,
+      },
+    });
+  };
+  return { state, finish, backend: { post: post as never, resources } };
 }
 
 const meta = {
@@ -100,7 +138,7 @@ export const PaperKeyThenVault: Story = {
     const create = await page.findByRole("button", { name: "Create vault" });
     await expect(create).toBeDisabled();
     await userEvent.click(
-      page.getByRole("button", { name: "Show the paper key in Terminal" }),
+      page.getByRole("button", { name: "Show the paper key in a terminal" }),
     );
     await expect(shown).toEqual(["my-project"]);
     await page.findByText("The paper key of my-project is made.", undefined, {
@@ -109,6 +147,7 @@ export const PaperKeyThenVault: Story = {
     await waitFor(() => expect(create).toBeEnabled());
     await userEvent.click(create);
     await page.findByText(/CREATE_IN_PROGRESS/);
+    fake.finish("setup");
     const open = await page.findByRole(
       "link",
       { name: "Open in Desk" },
@@ -128,8 +167,7 @@ export const PaperKeyThenVault: Story = {
       profile: "work",
       region: "eu-central-1",
     });
-    // Every poll of the job keeps its request id.
-    await expect(new Set(setup.map(([, b]) => b.requestId)).size).toBe(1);
+    await expect(setup).toHaveLength(1);
   },
 };
 
@@ -151,6 +189,7 @@ export const SignInFirst: Story = {
       "https://device.example/?code=WXYZ",
     );
     await expect(page.getByText("WXYZ")).toBeVisible();
+    signin.finish("login");
     await waitFor(() => expect(create).toBeEnabled(), { timeout: 5000 });
   },
 };

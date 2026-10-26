@@ -1,4 +1,4 @@
-# Layr chats
+# Layr VM chats
 
 This guidance applies when the chat workspace mode is `layr`.
 The lead, workers, and reviewers run in the Studio Linux VM.
@@ -8,16 +8,16 @@ Export a copy only when the user asks for it.
 
 Use `layr` for all local version control commands.
 Use `layr status`, `layr diff`, `layr log`, and `layr show` to inspect the work.
-Use `layr add` and `layr commit` to save the task result.
-Submit the full state ID from `layr rev-parse HEAD` as the task revision.
+Use `layr add <paths>` and `layr save -m "<message>"` to save the task result.
+Submit the full state ID from `layr rev-parse head` as the task revision.
 Use Git only for the remote bridge and tools that call Git themselves.
-Use `layr push --squash -m <task title>` to export one task commit to the remote when authorized.
-In a project synced with the Mac, Git lives on the Mac: `layr push` from the VM is off and
+Use `layr git push --squash -m "<task title>" origin <branch>` to export one task commit to the remote when authorized.
+In a project synced with the Mac, Git lives on the Mac: `layr git push` from the VM is off and
 agents may not add remotes. Accepted work reaches the Mac folder as uncommitted changes.
-If a tool in the VM needs git HEAD at the current layr state, run `layr git-sync`; it does not
-push.
+In a project with a Git store, layr updates Git HEAD when the line head moves.
+Use `layr git sync` to update the local Git mirror without a push.
 
-The lead owns the main line and may commit in it.
+The lead owns the main line and may save named states in it.
 Each worker has its own line and Linux user.
 Only the owner of a line changes it.
 Reviewers have read-only lines.
@@ -26,7 +26,9 @@ A reviewer reads states with the `layr_read` tool (`layr show`, `layr diff`, `la
 A reviewer writes notes and copies only in `$TMPDIR`, its private folder.
 layr refuses line changes, new lines, and merges from a reviewer.
 To test another agent's exact state without a change to your line, run `layr try <state> -- <command>`.
-Studio saves a state after every agent turn.
+Studio saves an automatic state after every agent turn.
+Save a named task result before submission. Save overlay edits with a named save.
+Read [the layr task recipes](../../layr/SKILL.md) for checks, recovery, queues, probes, and caches.
 `layr access check <user> <action>` explains a refused command.
 Inspect the exact submitted state before accepting the result.
 Each task of the lead has a handoff folder: `handoff` in the task.
@@ -36,7 +38,7 @@ If an assignee cannot read a copied file, run `chmod -R g+rX` on the folder.
 Acceptance calls `layr merge <line> --expect <reviewed state>`.
 Acceptance does not merge a reviewer's result or your own result: they have no line changes.
 A changed line rejects acceptance.
-Resolve merge conflicts in the main line with `layr`.
+Resolve conflicts in an owned line before acceptance when main requires checks.
 Archive or removal deletes the worker line and keeps its states.
 
 Use `host_exec` for commands that require macOS.
@@ -74,9 +76,6 @@ A vault push saves the VM main state. It does not include the separate Mac sourc
 For a full Mac backup, import the approved files into btrfs before the vault push.
 Use the source manifest to check both the saved state and restored cloud files.
 
-Use a layr-desk writer with multipart support for objects above S3's single-request limit.
-Update the vault stack from that release before the first multipart push.
-Keep conditional object creation enabled. Multipart setup and upload parts need the
-`s3:ObjectCreationOperation` policy exception, but completion must require `If-None-Match`.
-The writer still holds a complete file and its encoded forms in memory.
-Size the temporary VM for the largest file, then remove its resources after verified restoration.
+Use the configured layr store remote for backups.
+The 0.2.0 store writer supports multipart uploads.
+Check the saved state and restored files against the source manifest.

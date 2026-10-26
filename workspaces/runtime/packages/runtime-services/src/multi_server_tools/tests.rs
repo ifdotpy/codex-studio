@@ -28,7 +28,7 @@ fn seed(directory: &std::path::Path) -> Value {
     std::fs::create_dir(&project).unwrap();
     let cwd = project.to_string_lossy().into_owned();
     let base: Value =
-            serde_json::from_str(&"{\"accountKey\": \"default\", \"executionSettingsAccountKey\": \"default\", \"provider\": \"codex\", \"yoloMode\": true, \"prompt\": \"fixture\", \"cwd\": \"@cwd\", \"role\": \"orchestrator\", \"needsTitle\": false, \"subagentConcurrencyVersion\": 2, \"maxAgentsExplicit\": false, \"model\": \"gpt-6-astra\", \"effort\": \"medium\", \"fastMode\": false, \"daybreakEnabled\": false, \"cyberAccessProgram\": \"standard\", \"concurrency\": 32, \"maxAgents\": 64, \"tokenBudget\": null, \"status\": \"running\", \"autoWake\": true, \"epoch\": 3, \"inFlight\": false, \"turnEpoch\": 3, \"usageResumeEnabled\": true, \"tokensUsed\": 0, \"compactions\": 0, \"compactionsObservedOnly\": false, \"contextUsage\": null, \"events\": 0, \"error\": null, \"profileId\": null, \"profileInstructions\": \"\", \"tail\": \"\", \"worktree\": false, \"workspaceMode\": \"worktree\", \"executionMode\": \"native\", \"hostProjectPath\": \"@cwd\", \"layrReady\": false, \"workspaceBackend\": null, \"workspaceModeExplicit\": false, \"workspaceInGit\": false, \"worktreeReady\": false, \"environment\": \"host\", \"imageWorkspace\": false, \"imageWorkspaceReady\": false, \"imageWorkspacePhase\": null, \"imageWorkspaceRepo\": null, \"imageWorkspaceSubpath\": \".\", \"imageWorkspaceBaseRef\": null, \"imageWorkspaceHasGit\": false, \"imageWorkspaceCreatedAt\": null, \"imageWorkspaceError\": null, \"worktreeWarning\": null, \"workerBaseRef\": null, \"workerBaseCommit\": null, \"workerBaseBehindMain\": null, \"workerBaseMainRef\": null, \"workerDefaults\": {\"model\": \"gpt-6-luna\", \"effort\": \"high\", \"fastMode\": false, \"daybreakEnabled\": false, \"delegationDepth\": 1}, \"reviewDefaults\": {\"model\": null, \"effort\": null}, \"agentMode\": \"multi\", \"agentModeRevision\": 0, \"agentModeSupported\": true}".replace("@cwd", &cwd)).unwrap();
+            serde_json::from_str(&"{\"accountKey\": \"default\", \"executionSettingsAccountKey\": \"default\", \"provider\": \"codex\", \"yoloMode\": true, \"prompt\": \"fixture\", \"cwd\": \"@cwd\", \"role\": \"orchestrator\", \"needsTitle\": false, \"subagentConcurrencyVersion\": 2, \"maxAgentsExplicit\": false, \"model\": \"gpt-6-astra\", \"effort\": \"medium\", \"fastMode\": false, \"daybreakEnabled\": false, \"cyberAccessProgram\": \"standard\", \"concurrency\": 32, \"maxAgents\": 64, \"tokenBudget\": null, \"status\": \"running\", \"autoWake\": true, \"epoch\": 3, \"inFlight\": false, \"turnEpoch\": 3, \"usageResumeEnabled\": true, \"tokensUsed\": 0, \"compactions\": 0, \"compactionsObservedOnly\": false, \"contextUsage\": null, \"events\": 0, \"error\": null, \"profileId\": null, \"profileInstructions\": \"\", \"tail\": \"\", \"worktree\": false, \"workspaceMode\": \"worktree\", \"executionMode\": \"native\", \"hostProjectPath\": \"@cwd\", \"layrReady\": false, \"workspaceBackend\": null, \"workspaceModeExplicit\": false, \"workspaceInGit\": false, \"worktreeReady\": false, \"environment\": \"host\", \"worktreeWarning\": null, \"workerBaseRef\": null, \"workerBaseCommit\": null, \"workerBaseBehindMain\": null, \"workerBaseMainRef\": null, \"workerDefaults\": {\"model\": \"gpt-6-luna\", \"effort\": \"high\", \"fastMode\": false, \"daybreakEnabled\": false, \"delegationDepth\": 1}, \"reviewDefaults\": {\"model\": null, \"effort\": null}, \"agentMode\": \"multi\", \"agentModeRevision\": 0, \"agentModeSupported\": true}".replace("@cwd", &cwd)).unwrap();
     let actor = |index: usize, id: &str, name: &str, parent: Option<&str>, lead: bool| {
         let mut record = base.clone();
         record["id"] = json!(id);
@@ -184,10 +184,7 @@ async fn seeded_store_with_identity(
                 "INSERT INTO runtime_server_links(id,record) VALUES(?1,?2)",
                 rusqlite::params![LINK, link.to_string()],
             )?;
-            tx.execute(
-                "INSERT INTO runtime_projects(id,record) VALUES(?1,?2)",
-                rusqlite::params![project, project_record.to_string()],
-            )?;
+            ProjectsRepository::put_project(tx, &project_record)?;
             tx.execute(
                 "INSERT INTO runtime_access_clients(id,record) VALUES(?1,?2)",
                 rusqlite::params![PEER, peer.to_string()],
@@ -1374,23 +1371,40 @@ async fn wait_for_status(
     handle: &str,
     name: &str,
 ) -> Value {
-    for attempt in 0..250 {
-        let read = call_tool(
-            store,
-            lead,
-            &format!("{name}-{attempt}"),
-            &format!("call-{name}-{attempt}"),
-            &json!({"action": "exec_read", "handle": handle}),
-            Some(Arc::clone(tools)),
-        )
-        .await;
-        let value = parsed(&read)["value"].clone();
-        if !matches!(value["status"].as_str(), Some("starting" | "running")) {
-            return value;
+    let committed = Arc::new(tokio::sync::Notify::new());
+    store.add_commit_observer({
+        let committed = Arc::clone(&committed);
+        move || committed.notify_one()
+    });
+    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        loop {
+            let status: String = store
+                .test_reader()
+                .unwrap()
+                .query_row(
+                    "SELECT json_extract(record,'$.status') FROM runtime_server_exec WHERE id=?1",
+                    [handle],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            if !matches!(status.as_str(), "starting" | "running") {
+                break;
+            }
+            committed.notified().await;
         }
-        tokio::time::sleep(std::time::Duration::from_millis(40)).await;
-    }
-    panic!("{name}: the command did not finish");
+    })
+    .await
+    .expect("command commits its final state");
+    let read = call_tool(
+        store,
+        lead,
+        name,
+        &format!("call-{name}"),
+        &json!({"action": "exec_read", "handle": handle}),
+        Some(Arc::clone(tools)),
+    )
+    .await;
+    parsed(&read)["value"].clone()
 }
 
 fn exit_events(store: &RuntimeStore) -> Vec<Value> {
@@ -1626,10 +1640,7 @@ async fn a_python_lead_runs_a_command_here_and_gets_one_exit_notice() {
         })
         .unwrap();
     let notice: Value = serde_json::from_str(&notice).unwrap();
-    assert_eq!(
-        notice["requestId"],
-        crate::projects::cross_server_identity(&["command-exit", "peer-exec-1", "completed"])
-    );
+    assert_eq!(notice["requestId"], "b75e85fe-064e-5373-9c79-ff2454f3c4e1");
     assert_eq!(notice["payload"]["actor"], "peer-lead");
     assert_eq!(notice["payload"]["handle"], "peer-exec-1");
     assert_eq!(notice["payload"]["record"]["exitCode"], 0);

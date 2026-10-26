@@ -490,7 +490,7 @@ const VM_REVIEW_DESCRIPTION: &str = "Create a read-only layr reviewer in the VM.
 const VM_SPAWN_DESCRIPTION: &str = "Delegate a batch to VM agents on separate owned layr lines. \
     Reviewers receive read-only lines. Each completion wakes you. \
     base_ref selects a layr state ID. Use cwd within your line. \
-    Omit model and effort to use the team defaults.";
+    Omit model and effort to use the review defaults for reviewers and worker defaults for implementers.";
 
 /// Python `Runtime.tool_definitions`: a VM agent delegates to VM agents on
 /// layr lines in the same guest, so `orchestration_spawn` offers only the layr
@@ -1287,7 +1287,7 @@ mod vm_catalog_tests {
             spawn.description,
             "Delegate a batch to VM agents on separate owned layr lines. Reviewers receive \
              read-only lines. Each completion wakes you. base_ref selects a layr state ID. Use \
-             cwd within your line. Omit model and effort to use the team defaults."
+             cwd within your line. Omit model and effort to use the review defaults for reviewers and worker defaults for implementers."
         );
         let host = tool(&catalog(None), "orchestration_spawn");
         assert!(
@@ -1320,7 +1320,7 @@ mod vm_catalog_tests {
         let fields = &host.input_schema["properties"]["agents"]["items"]["properties"];
         assert_eq!(
             fields["workspace"]["enum"],
-            json!(["image", "worktree", "shared"])
+            json!(["layr-native", "layr", "worktree", "shared"])
         );
         assert!(fields.get("server").is_some());
     }

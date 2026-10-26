@@ -42,6 +42,14 @@ repository or change its license without explicit authorization.
 Write everything in this repository in English: code, comments, commit messages,
 pull requests, issues, and documentation.
 
+Product UI copy and visual labels must be platform-neutral. Refer to the device,
+server, project folder, virtual machine, file manager, or secure storage instead
+of naming an operating system or platform brand. This includes status and error
+messages supplied by the runtime. Preserve capability checks and technical API
+identifiers; explain an unavailable capability without implying platform support.
+Platform-specific installation and operator documentation may name the platform
+when it is required to perform the documented action.
+
 Run `just test-fast` before every pull request and merge, and state its result
 in the pull request. This short local tier selects deterministic request,
 recovery, schema, and boundary witnesses. Hosted CI continues to run the full
@@ -69,6 +77,11 @@ starts. Its owner stops every load generator when the run ends or fails; do not
 leave detached generators. Results of ordinary checks taken while a load run was
 active are not valid evidence. See [docs/testing.md](docs/testing.md) for the
 manual-run rules.
+
+## Live data
+
+Server data reaches the client only as SSE events; the client never polls. See
+[the no-polling rule](docs/sync-protocol.md#rule-no-polling-only-sse-events).
 
 ## Code checks
 

@@ -1019,6 +1019,33 @@ fn new_id() -> Result<String, TerminalError> {
         .to_string())
 }
 
+/// Terminal collection owner. Output buffers and native process identity are
+/// excluded; close/delete publishes a tombstone in the source transaction.
+pub fn publish_terminal(
+    transaction: &studio_runtime_store::Transaction<'_>,
+    id: &str,
+) -> studio_runtime_store::StoreResult<()> {
+    let row = TerminalsRepository::get(transaction, id)?;
+    let (value, deleted) = match row
+        .filter(|row| row.record.get("status").and_then(Value::as_str) != Some("closed"))
+    {
+        Some(row) => {
+            let mut value = row.record.value().clone();
+            hide_process_identity(&mut value);
+            (value, false)
+        }
+        None => (Value::Null, true),
+    };
+    studio_runtime_store::SyncDocumentsRepository::put_entity(
+        transaction,
+        "terminal",
+        id,
+        value,
+        deleted,
+    )?;
+    Ok(())
+}
+
 #[cfg(test)]
 #[allow(clippy::disallowed_methods)]
 mod tests {
@@ -2561,149 +2588,41 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn terminal_action_corpus_covers_complete_returns_wire_requests_and_rows() {
-        use base64::Engine as _;
+    async fn terminal_actions_preserve_private_process_identity() {
         let state = test_state().await;
         let driver = test_driver(&state, FakeSession::default());
-        let created = create(&driver, &state.root).await;
-        let id = created["id"].as_str().expect("terminal id").to_owned();
-        assert_eq!(created["status"], "running");
-        let mut seeded = TerminalsRepository::get(
-            &state
-                .store
-                .as_ref()
-                .expect("store")
-                .test_reader()
-                .expect("read"),
-            &id,
-        )
-        .expect("terminal row")
-        .expect("terminal exists")
-        .record;
+        let id = create(&driver, &state.root).await["id"]
+            .as_str()
+            .expect("terminal id")
+            .to_owned();
+        let store = state.store.as_ref().expect("store");
         let saved_identity = serde_json::json!({"pid":7,"process_group":7,"session":7,"start_time_ticks":11,"boot_id":"boot"});
-        seeded.set("_processIdentity", saved_identity.clone());
+        let mut record = TerminalsRepository::get(&store.test_reader().expect("read"), &id)
+            .expect("terminal row")
+            .expect("terminal exists")
+            .record;
+        record.set("_processIdentity", saved_identity.clone());
         let seed_id = id.clone();
-        state
-            .store
-            .as_ref()
-            .expect("store")
-            .transaction(move |tx| TerminalsRepository::update_record(tx, &seed_id, &seeded))
+        store
+            .transaction(move |tx| TerminalsRepository::update_record(tx, &seed_id, &record))
             .await
-            .expect("seed process identity");
-
-        let renamed = driver
-            .action("rename", &serde_json::json!({"id":id,"title":"  Shell  "}))
-            .await
-            .expect("rename");
-        assert_eq!(renamed["title"], "Shell");
-        assert_eq!(renamed["id"], id);
-        let row = TerminalsRepository::get(
-            &state
-                .store
-                .as_ref()
-                .expect("store")
-                .test_reader()
-                .expect("read"),
-            &id,
-        )
-        .expect("renamed row")
-        .expect("exists");
-        assert_eq!(row.record.get("_processIdentity"), Some(&saved_identity));
-        let mut visible_row = row.record.value().clone();
-        visible_row
-            .as_object_mut()
-            .expect("object")
-            .remove("_processIdentity");
-        assert_eq!(renamed, visible_row);
-
-        let input = driver
-            .action(
-                "input",
-                &serde_json::json!({"id":id,"text":"hi🙂","request_id":"actions-input"}),
-            )
-            .await
-            .expect("input");
-        assert_eq!(input, serde_json::json!({"ok":true,"delivery":"sent"}));
-        let request = driver
-            .session
-            .requests
-            .lock()
-            .expect("requests")
-            .iter()
-            .find(|(_, method, _)| method == "process/writeStdin")
-            .expect("input request")
-            .clone();
-        assert_eq!(
-            request.2["deltaBase64"],
-            base64::engine::general_purpose::STANDARD.encode("hi🙂")
-        );
-        let connection = state
-            .store
-            .as_ref()
-            .expect("store")
-            .test_reader()
-            .expect("read");
-        assert_eq!(
-            TerminalsRepository::receipt(&connection, "actions-input")
-                .expect("receipt")
-                .expect("saved")
-                .1,
-            r#"{"delivery":"sent","ok":true}"#
-        );
-        drop(connection);
-
-        let resized = driver
-            .action("resize", &serde_json::json!({"id":id,"cols":91,"rows":33}))
-            .await
-            .expect("resize");
-        assert_eq!(resized["id"], id);
-        assert_eq!(
-            driver
-                .session
-                .requests
-                .lock()
-                .expect("requests")
-                .iter()
-                .find(|(_, method, _)| method == "process/resizePty")
-                .expect("resize request")
-                .2["size"],
-            serde_json::json!({"cols":91,"rows":33})
-        );
-
-        let closed = driver
-            .action("close", &serde_json::json!({"id":id}))
-            .await
-            .expect("close");
-        assert_eq!(closed["status"], "closed");
-        let row = TerminalsRepository::get(
-            &state
-                .store
-                .as_ref()
-                .expect("store")
-                .test_reader()
-                .expect("read"),
-            &id,
-        )
-        .expect("closed row")
-        .expect("exists");
-        assert_eq!(row.record.get("_processIdentity"), Some(&saved_identity));
-        let mut visible_row = row.record.value().clone();
-        visible_row
-            .as_object_mut()
-            .expect("object")
-            .remove("_processIdentity");
-        assert_eq!(closed, visible_row);
-        assert!(
-            driver
-                .session
-                .requests
-                .lock()
-                .expect("requests")
-                .iter()
-                .any(
-                    |(_, method, params)| method == "process/kill" && params["processHandle"] == id
-                )
-        );
+            .expect("seed private process identity");
+        for (action, args) in [
+            ("rename", serde_json::json!({"id":id,"title":"Shell"})),
+            ("close", serde_json::json!({"id":id})),
+        ] {
+            let visible = driver.action(action, &args).await.expect("terminal action");
+            let row = TerminalsRepository::get(&store.test_reader().expect("read"), &id)
+                .expect("updated row")
+                .expect("terminal exists");
+            assert_eq!(row.record.get("_processIdentity"), Some(&saved_identity));
+            let mut expected = row.record.value().clone();
+            expected
+                .as_object_mut()
+                .expect("record object")
+                .remove("_processIdentity");
+            assert_eq!(visible, expected, "{action} hides the private identity");
+        }
     }
 
     #[tokio::test]
@@ -2784,17 +2703,12 @@ mod tests {
             error: Option<String>,
             tables: Value,
         }
-        #[derive(serde::Deserialize)]
-        #[serde(deny_unknown_fields)]
-        struct ActionCorpus {
-            actions: Vec<ActionCase>,
-            #[serde(rename = "wire")]
-            _wire: Vec<Value>,
-        }
-        let oracle: ActionCorpus =
+        // Keep the recorded return/row contract; the old Python launcher wire is retired.
+        let oracle: Value =
             serde_json::from_str(include_str!("../tests/terminal_action_corpus.json"))
                 .expect("frozen terminal actions");
-        let python_actions = &oracle.actions;
+        let python_actions: Vec<ActionCase> = serde_json::from_value(oracle["actions"].clone())
+            .expect("frozen terminal action results");
         assert_eq!(python_actions.len(), 7);
         let store = state.store.as_ref().expect("store").clone();
         let driver = TerminalDriver::with_sources(
@@ -2863,6 +2777,26 @@ mod tests {
         ));
         rust_results.push((Value::Null, Some("receipt_conflict".to_owned())));
         rust_tables.push(snapshot(&store));
+
+        let requests = driver.session.requests.lock().expect("wire requests");
+        assert_eq!(requests.len(), 4, "replayed input must not write again");
+        assert_eq!(requests[0].1, "process/spawn");
+        assert_eq!(
+            requests[1],
+            (
+                "terminal-input:actions-input".into(),
+                "process/writeStdin".into(),
+                serde_json::json!({"processHandle":rust_id,"deltaBase64":"aGnwn5mC"}),
+            )
+        );
+        assert_eq!(requests[2].1, "process/resizePty");
+        assert_eq!(
+            requests[2].2,
+            serde_json::json!({"processHandle":rust_id,"size":{"cols":91,"rows":33}})
+        );
+        assert_eq!(requests[3].1, "process/kill");
+        assert_eq!(requests[3].2, serde_json::json!({"processHandle":rust_id}));
+        drop(requests);
 
         // Terminals record the canonical cwd (macOS `/var` is `/private/var`).
         let root = CanonicalPath::existing(&state.root)

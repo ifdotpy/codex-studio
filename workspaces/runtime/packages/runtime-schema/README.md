@@ -28,7 +28,7 @@ HTTP request validators use `registry_for_document` to prepare references
 against the same OpenAPI document and the persisted-state schema documents.
 This crate owns the shared runtime contracts: `src/shared_values.rs`,
 `src/agent_limits.rs`, `src/api_schema.rs`, `src/multi_server_protocol.rs`,
-`src/sync_protocol.rs`, `src/delivery.rs`, and `src/token_rate_limits.rs`. The `studio-contracts`
+`src/sync_protocol.rs`, `src/delivery.rs`, `src/provider_method_policy.rs`, and `src/token_rate_limits.rs`. The `studio-contracts`
 binary (`src/contracts.rs`) renders their TypeScript, Swift, and VM guest copies
 and the web API types of `runtime-http/openapi.json`, and holds the committed
 OpenAPI and persisted-state schemas to these owners. Refresh the copies with
@@ -90,3 +90,26 @@ A lead update or a new provider attempt permits another set of submissions.
 
 The runtime applies the tool contract to both native and legacy tool catalogs.
 OpenAPI parity checks use this owner, and `studio-contracts` generates the web types.
+
+`src/usage.rs` owns provider-neutral token observations and the single notification
+parser. Response evidence, cumulative counter scope, and missing final usage remain
+explicit. `studio-contracts` generates the observation JSON schema, named OpenAPI
+components, and the Claude bridge's `usage-contract.generated.d.mts`. The committed
+Codex notification schema under `src/schemas/codex` comes from Codex CLI 0.164.0
+`app-server generate-json-schema`; a short-tier parity witness checks the Rust mirror.
+
+The [`usage/persisted.rs`](src/usage/persisted.rs) adapter owns legacy analytics
+usage column interpretation. It prefers canonical `studioUsage`, preserves
+uncached versus inclusive historical input semantics, and reconstructs sparse
+legacy Claude notifications for totals-only budget migration. Analytics notice
+and usage schema copies are checked against the usage owner's renderer by a
+short-tier parity witness.
+
+`parse_legacy_totals` is a transitional total-only projection for pre-contract
+Claude bridges and their journal replay. It never invents missing token categories,
+accepts no Codex input, and cannot bypass malformed `studioUsage`. Retire it once
+those bridges and the replay window have closed.
+The provider method policy owns per-thread serialization methods and parameter
+predicates. Both the Rust transport and the generated Claude bridge module consume
+this owner; contract drift checks cover the bridge copy. Recovery conservatively
+reserves serialized-capable methods when their parameter predicate is unreadable.

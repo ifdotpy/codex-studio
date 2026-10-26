@@ -1,6 +1,6 @@
-import { get, post, refreshSession } from "../api";
+import { get, post, refreshSession, type GetResult } from "../api";
 import { serverLocalStorage } from "./storage";
-import type { ResourceConnectionState } from "../sync/resourceEvents";
+import type { ResourceConnectionState } from "../sync/subscriptions/events";
 import { readServers, type StudioServer } from "./registry";
 
 export type ProjectLocation = {
@@ -28,6 +28,8 @@ export type ProjectServerChoice = {
   disabled?: boolean;
   serverId?: string;
   system?: string;
+  hasStudioVm?: boolean;
+  nativeLayr?: GetResult<"/api/ui-summary">["nativeLayr"];
   connection?: StudioServer;
 };
 export function projectServerChoices(

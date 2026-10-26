@@ -71,9 +71,9 @@ fn token_rate_usage_effect(cursor: u64) -> NotificationPostCommit {
     NotificationPostCommit::TokenRateUsage(NotificationObservation {
         agent: Some(SharedJson::new(rate_agent())),
         method: "thread/tokenUsage/updated".into(),
-        params: SharedJson::new(json!({"turnId":"turn","tokenUsage":{
-            "total":{"inputTokens":20,"outputTokens":100,"totalTokens":120},
-            "last":{"inputTokens":2,"outputTokens":10,"totalTokens":12}
+        params: SharedJson::new(json!({"threadId":"thread","turnId":"turn","tokenUsage":{
+            "total":{"inputTokens":20,"cachedInputTokens":0,"outputTokens":100,"reasoningOutputTokens":0,"totalTokens":120},
+            "last":{"inputTokens":2,"cachedInputTokens":0,"outputTokens":10,"reasoningOutputTokens":0,"totalTokens":12}
         }})),
         delivery: ProviderDeliveryIdentity {
             provider_handle: "account:default".into(),
@@ -171,8 +171,7 @@ fn root() -> PathBuf {
 
 async fn test_store() -> (PathBuf, Arc<RuntimeStore>) {
     let root = root();
-    seed_fixture_root(&root).await;
-    let store = RuntimeStore::open(Some(&root)).await.expect("open store");
+    let store = seed_fixture_root(&root).await;
     (root, Arc::new(store))
 }
 
@@ -399,8 +398,8 @@ async fn complete_analytics_usage_persists_beyond_the_publication_bound() {
             300,
             "thread/tokenUsage/updated",
             json!({"turnId":"turn","tokenUsage":{
-                "total":{"inputTokens":20,"outputTokens":100,"totalTokens":120},
-                "last":{"inputTokens":2,"outputTokens":10,"totalTokens":12}
+                "total":{"inputTokens":20,"cachedInputTokens":0,"outputTokens":100,"reasoningOutputTokens":0,"totalTokens":120},
+                "last":{"inputTokens":2,"cachedInputTokens":0,"outputTokens":10,"reasoningOutputTokens":0,"totalTokens":12}
             }}),
         )],
         analytics_overflow: 0,
@@ -457,8 +456,8 @@ async fn durable_usage_survives_a_failed_drain_and_replays_once() {
             7,
             "thread/tokenUsage/updated",
             json!({"turnId":"turn","tokenUsage":{
-                "total":{"inputTokens":20,"outputTokens":100,"totalTokens":120},
-                "last":{"inputTokens":2,"outputTokens":10,"totalTokens":12}
+                "total":{"inputTokens":20,"cachedInputTokens":0,"outputTokens":100,"reasoningOutputTokens":0,"totalTokens":120},
+                "last":{"inputTokens":2,"cachedInputTokens":0,"outputTokens":10,"reasoningOutputTokens":0,"totalTokens":12}
             }}),
         )],
         analytics_overflow: 0,
@@ -562,8 +561,8 @@ async fn provider_notification_is_acknowledged_at_the_publication_bound() {
                 "threadId":"fake-thread-0",
                 "turnId":"turn",
                 "tokenUsage":{
-                    "total":{"inputTokens":10,"outputTokens":1,"totalTokens":11},
-                    "last":{"inputTokens":10,"outputTokens":1,"totalTokens":11}
+                    "total":{"inputTokens":10,"cachedInputTokens":0,"outputTokens":1,"reasoningOutputTokens":0,"totalTokens":11},
+                    "last":{"inputTokens":10,"cachedInputTokens":0,"outputTokens":1,"reasoningOutputTokens":0,"totalTokens":11}
                 }
             }
         }))
@@ -617,11 +616,11 @@ async fn provider_notification_is_acknowledged_at_the_publication_bound() {
             let cursor = peer
                 .frame(json!({"method":"thread/tokenUsage/updated","params":{
                     "threadId":"fake-thread-0","turnId":"turn","tokenUsage":{
-                        "total":{"inputTokens":usage,"outputTokens":1,"totalTokens":usage + 1},
-                        "last":{"inputTokens":1,"outputTokens":1,"totalTokens":2}}}}))
+                        "total":{"inputTokens":usage,"cachedInputTokens":0,"outputTokens":1,"reasoningOutputTokens":0,"totalTokens":usage + 1},
+                        "last":{"inputTokens":1,"cachedInputTokens":0,"outputTokens":1,"reasoningOutputTokens":0,"totalTokens":2}}}}))
                 .await;
             peer.acknowledged_or_worker_exits(cursor, &mut worker).await;
-            tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+            worker_barrier(&worker).await;
         }
     })
     .await
@@ -978,8 +977,8 @@ async fn stale_analytics_observation_is_neither_logged_nor_published() {
             50,
             "thread/tokenUsage/updated",
             json!({"turnId":"turn","tokenUsage":{
-                "total":{"inputTokens":20,"outputTokens":100,"totalTokens":120},
-                "last":{"inputTokens":2,"outputTokens":10,"totalTokens":12}
+                "total":{"inputTokens":20,"cachedInputTokens":0,"outputTokens":100,"reasoningOutputTokens":0,"totalTokens":120},
+                "last":{"inputTokens":2,"cachedInputTokens":0,"outputTokens":10,"reasoningOutputTokens":0,"totalTokens":12}
             }}),
         ),
     )

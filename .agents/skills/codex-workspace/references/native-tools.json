@@ -52,7 +52,7 @@
   {
     "type": "function",
     "name": "orchestration_message",
-    "description": "Share a finding, question, or answer with other agents during work. target is user (lead only), a teammate, a user-grouped peer chat, parent, lead, or broadcast (your own agent tree). Broadcasts notify only active agents; other recipients can read them in chat history. Private chats are visible to their participants and the user. Direct messages wake idle recipients but never resume stopped agents. Use importance=progress only for routine updates; these batch briefly and keep the latest progress per sender, room and progress_key when progress_version increases. Use the task id as progress_key. Without these fields, every update is retained. Original messages remain in chat history. Questions and blockers deliver immediately. Send when you have new information or an answer for the recipient.",
+    "description": "Share a finding, question, or answer with other agents during work. target is user (lead only), a teammate, a user-grouped peer chat, parent, lead, or broadcast (your own agent tree). Broadcasts notify only active agents; other recipients can read them in chat history. Private chats are visible to their participants and the user. Direct messages wake idle recipients but never resume stopped agents. Use importance=progress only for routine updates; these batch briefly and keep the latest progress per sender, room and progress_key when progress_version increases. Use the task id as progress_key. Without these fields, every update is retained. Original messages remain in chat history. Delivery defaults to next_turn for progress and current_turn otherwise. Choose delivery explicitly to steer the current turn or wait for the next turn. Send when you have new information or an answer for the recipient.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -72,6 +72,10 @@
         "progress_version": {
           "type": "integer",
           "minimum": 0
+        },
+        "delivery": {
+          "type": "string",
+          "enum": ["current_turn", "next_turn"]
         }
       },
       "required": ["target", "text"],
@@ -132,7 +136,7 @@
   {
     "type": "function",
     "name": "orchestration_spawn",
-    "description": "Delegate a batch to managed agents. Returns immediately. Each child completion wakes you, even after your final answer. Use these agents instead of native subagents. Implementers receive an image workspace when supported and a Git worktree otherwise. reviewers share your directory read-only. Never poll for their completion. Default: gpt-6-luna with high reasoning, unless the user sets team defaults. environment=linux runs an implementer in the shared Linux VM. The project default applies when omitted. Linux tasks wait for their base before the first provider turn. Reviewers stay on the host. Choose model and effort for each task. Codex and Claude can delegate to each other. Studio selects a connected account that offers the model; optional account_key selects it explicitly. effort=null uses that model's native default. server selects a paired remote server; omit it for local workers. Remote cwd must be absolute. Use one server per batch. Supply a stable request_id for recovery across turns. Reuse it only for the exact same batch; query orchestration_request before any retry. cwd sets the worker's folder (absolute, or relative to your folder); default is your folder. The default is an image when supported, a Git worktree when available, or the selected folder otherwise. Set workspace to image, worktree, or shared to choose an implementer's isolation. Image copies include uncommitted changes and are read-only until ready. Worktrees start from a committed Git base. Shared workers use the selected folder directly. The lead gets the workspace path with the result. Ask an isolated worker to commit on a named branch, then read or fetch that branch from its workspace. Optional per-agent base_ref selects a branch, tag, or commit for an implementer. Otherwise Studio uses the closest project's worker base ref when one is set. Studio gives the requested ref and resolved commit to the worker in its first input. The worker checks it out. Pass task_id to assign an orchestration_task item to the new worker. The worker receives the task id and submits its evidence to it.",
+    "description": "Delegate a batch to managed agents. Returns immediately. Each child completion wakes you, even after your final answer. Use these agents instead of native subagents. Workers inherit the chat workspace mode. Reviewers retain read-only access. Never poll for their completion. Omit model and effort to honor the user settings: reviewers use the team review defaults, then the caller model and effort; implementers use the worker defaults. Supply overrides only when the user explicitly requests them. Native Layr runs agents on macOS and Linux. Layr VM runs agents in the Studio Linux VM. Codex and Claude can delegate to each other. Studio selects a connected account that offers the model; optional account_key selects it explicitly. effort=null uses that model's native default. server selects a paired remote server; omit it for local workers. Remote cwd must be absolute. Use one server per batch. Supply a stable request_id for recovery across turns. Reuse it only for the exact same batch; query orchestration_request before any retry. cwd sets the worker's folder (absolute, or relative to your folder); default is your folder. Workers inherit the chat mode. Select layr-native, layr, worktree, or shared for an implementer. Worktrees start from a committed Git base. Shared workers use the selected folder directly. The lead gets the workspace path with the result. Ask an isolated worker to commit on a named branch, then read or fetch that branch from its workspace. Optional per-agent base_ref selects a branch, tag, or commit for an implementer. Otherwise Studio uses the closest project's worker base ref when one is set. Studio gives the requested ref and resolved commit to the worker in its first input. The worker checks it out. Pass task_id to assign an orchestration_task item to the new worker. The worker receives the task id and submits its evidence to it.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -164,11 +168,11 @@
               },
               "workspace": {
                 "type": "string",
-                "enum": ["image", "worktree", "shared"]
+                "enum": ["layr-native", "layr", "worktree", "shared"]
               },
               "environment": {
                 "type": "string",
-                "enum": ["host", "linux"]
+                "enum": ["host"]
               },
               "fast_mode": {
                 "type": "boolean"
@@ -209,7 +213,7 @@
   {
     "type": "function",
     "name": "orchestration_send",
-    "description": "Assign a new or revised instruction to an existing descendant, or explicitly resume its authorized work. Native delivery steers an active turn or starts a turn when idle. Completion returns to its parent automatically. Review corrections travel through orchestration_task action=reject. The delivery field is accepted and ignored for compatibility. Supply a stable request_id for an instruction. Reuse it only for the exact same target and text. Recover the receipt before retrying.",
+    "description": "Assign a new or revised instruction to an existing descendant, or explicitly resume its authorized work. Native delivery steers an active turn or starts a turn when idle. Completion returns to its parent automatically. Review corrections travel through orchestration_task action=reject. Delivery defaults to current_turn; choose next_turn to wait for the active turn to end. Supply a stable request_id for an instruction. Reuse it only for the exact same target and text. Recover the receipt before retrying.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -221,7 +225,7 @@
         },
         "delivery": {
           "type": "string",
-          "enum": ["queue", "steer"]
+          "enum": ["current_turn", "next_turn"]
         },
         "request_id": {
           "type": "string",
@@ -261,12 +265,35 @@
   {
     "type": "function",
     "name": "orchestration_monitor",
-    "description": "Run a command under this thread's sandbox and wait outside the model. Returns a watch id immediately. At process exit you receive one event with exit code, bounded output and log path. Every command exit wakes you, including success, failure, signal, or lost process. wake_on cannot suppress exit events. A quiet process wakes you after stall_timeout_seconds (default 1800, 0 disables stall wakes). Finish your turn while waiting. success_exit_codes lists the exit codes that mean success (default [0]); use [0, 1] for grep or diff. The thread's approval policy applies; a required approval appears in the canvas.",
+    "description": "Use this tool for every long command, check, and watcher; native provider exec sessions do not wake you. Run a command under this thread's sandbox. Use command to launch once, or monitor_id to observe an existing command without launching it. wait_timeout_ms bounds this call only (default 0, maximum 10000); timeout_ms remains the command execution limit. A wait expiry returns the same active monitor id. Reuse monitor_id for a later wait. At process exit you receive one event with exit code, bounded output and log path. Every command exit wakes you, including success, failure, signal, or lost process. Literal output_patterns use OR matching and wake at most once per second, with repeated matches coalesced and counted. wake_on cannot suppress exit events. A quiet process wakes you after stall_timeout_seconds (default 1800, 0 disables stall wakes). Finish your turn while waiting. success_exit_codes lists the exit codes that mean success (default [0]); use [0, 1] for grep or diff. The thread's approval policy applies; a required approval appears in the canvas.",
     "inputSchema": {
       "type": "object",
       "properties": {
         "command": {
-          "type": "string"
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 12000
+        },
+        "monitor_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        },
+        "wait_timeout_ms": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 10000
+        },
+        "output_patterns": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 16,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          }
         },
         "wake_on": {
           "type": "string",
@@ -301,7 +328,7 @@
           "maxLength": 12000
         }
       },
-      "required": ["command"],
+      "required": [],
       "additionalProperties": false
     }
   },
@@ -481,7 +508,7 @@
   {
     "type": "function",
     "name": "orchestration_agent_manage",
-    "description": "Manage your own descendant workers. inspect returns archive blockers. recover checks exact unconfirmed input IDs in native history, requeues only IDs absent from an idle thread, and reconciles an existing turn. For a transferred thread with no source rollout, recover reports the missing history and does not replay inputs. archive hides an inactive worker, detaches and retains its image workspace, or removes a safe Studio Git worktree. It reports why a workspace stays. archive_finished archives finished descendants with safe workspaces and reports kept workers. For archive or archive_finished, unassign_work=true returns open assigned tasks to the unassigned ready backlog in the same transaction. Task results and decisions remain. The default keeps the assigned_work blocker. Other archive blockers remain. Retry archive with a new tool call after an image detach interruption or partial Git removal. The exact original Git link and archive ref are required. Changed or untracked files stay for inspection. A missing Git link leaves the folder for manual review. reset_tools releases an idle worker subscription after native command and receipt checks. Give a reason. Codex can end its idle session after its configured idle window (60 seconds by default); send new work after confirmed closure to start fresh tools. restore reattaches an archived image or recreates a removed Git worktree, then returns the worker paused; use orchestration_send to resume. Deleting a worker removes its image. list and list_archived are paged. maintenance_report lists old archived or deleted workspaces, bases, and Git worktrees; it does not remove them. For Linux VM workers, it includes VM disk allocation, disk free space, and RAM. park waits for a named event after the current turn. list_parked shows event waits. cancel_park wakes a worker. emit_event wakes every worker waiting for that event once; supply a stable request_id. Only the lead may archive, restore, recover, reset tools, or emit an event.",
+    "description": "Manage your own descendant workers. inspect returns archive blockers. recover checks exact unconfirmed input IDs in native history and reconciles an existing turn. It never requeues or replays input. The worker stays held until a new instruction enables delivery. For a transferred thread with no source rollout, recover reports the missing history and does not replay inputs. archive hides an inactive worker, retains a legacy workspace, removes an owned Layr line, or removes a safe Studio Git worktree. It reports why a workspace stays. archive_finished archives finished descendants with safe workspaces and reports kept workers. For archive or archive_finished, unassign_work=true returns open assigned tasks to the unassigned ready backlog in the same transaction. Task results and decisions remain. The default keeps the assigned_work blocker. Other archive blockers remain. Retry archive with a new tool call after an interrupted cleanup or partial Git removal. The exact original Git link and archive ref are required. Changed or untracked files stay for inspection. A missing Git link leaves the folder for manual review. reset_tools releases an idle worker subscription after native command and receipt checks. Give a reason. Codex can end its idle session after its configured idle window (60 seconds by default); send new work after confirmed closure to start fresh tools. restore recreates a removed Git worktree, then returns the worker paused; use orchestration_send to resume. Deleting a worker removes its owned workspace. list and list_archived are paged. maintenance_report lists old archived or deleted workspaces and Git worktrees; it does not remove them. For Linux VM workers, it includes VM disk allocation, disk free space, and RAM. park waits for a named event after the current turn. list_parked shows event waits. cancel_park wakes a worker. emit_event wakes every worker waiting for that event once; supply a stable request_id. A failed native history read remains unconfirmed. Recovery does not repair native rollout files. Only the lead may archive, restore, recover, reset tools, or emit an event.",
     "inputSchema": {
       "type": "object",
       "properties": {
@@ -608,8 +635,10 @@
         },
         "files": {
           "type": "array",
+          "maxItems": 500,
           "items": {
-            "type": "string"
+            "type": "string",
+            "maxLength": 4096
           }
         },
         "version": {
@@ -901,6 +930,23 @@
         }
       },
       "required": [],
+      "additionalProperties": false
+    }
+  },
+  {
+    "type": "function",
+    "name": "orchestration_sign_in",
+    "description": "Show the person a sign-in card for a link that they must open to sign in or approve access: an OAuth, OpenID Connect, SSO or SAML sign-in page, a device code page, or the loopback sign-in page of a command. After the person approves the card, the link opens in the person's own browser on their Mac or phone, and the sign-in result returns to the command. Use this tool for every such link that a command prints or that you must give to the person. Do not open the link in another way, and do not give it in a message as the only way to open it. Keep the sign-in command running while the person signs in. A repeated call with the same link returns the same card.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "url": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 8192
+        }
+      },
+      "required": ["url"],
       "additionalProperties": false
     }
   }

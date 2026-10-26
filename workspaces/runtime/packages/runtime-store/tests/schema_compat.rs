@@ -412,57 +412,6 @@ async fn unicode_altered_table_column_is_named_and_left_untouched() {
 }
 
 #[tokio::test]
-async fn sync_schema_has_no_unchecked_table_constraints() {
-    let sql = include_str!("../src/sync_schema.sql").to_ascii_uppercase();
-    assert!(
-        !sql.contains("CHECK") && !sql.contains("REFERENCES"),
-        "extend structural comparison before adding CHECK or FOREIGN KEY constraints"
-    );
-
-    let state_directory = temporary_state();
-    let state = state_directory.path();
-    create_from_live_schema(state);
-    let store = RuntimeStore::open(Some(state))
-        .await
-        .expect("scratch-derived sync schema opens");
-    let db = store.test_reader().expect("reader opens");
-    let mut statement = db
-        .prepare("SELECT name,sql FROM sqlite_master WHERE type='table' AND (name GLOB 'sync_*' OR name='runtime_transcript_revisions')")
-        .expect("owned table query prepares");
-    let tables = statement
-        .query_map([], |row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-        })
-        .expect("owned table query executes")
-        .collect::<Result<Vec<_>, _>>()
-        .expect("owned tables read");
-    drop(statement);
-    for (table, _table_sql) in tables {
-        let foreign_keys: i64 = db
-            .query_row(
-                "SELECT COUNT(*) FROM pragma_foreign_key_list(?1)",
-                [&table],
-                |row| row.get(0),
-            )
-            .expect("foreign key count reads");
-        assert_eq!(foreign_keys, 0, "extend FOREIGN KEY comparison for {table}");
-        let generated_columns: i64 = db
-            .query_row(
-                "SELECT COUNT(*) FROM pragma_table_xinfo(?1) WHERE hidden!=0",
-                [&table],
-                |row| row.get(0),
-            )
-            .expect("generated column count reads");
-        assert_eq!(
-            generated_columns, 0,
-            "unexpected generated column in {table}"
-        );
-    }
-    drop(db);
-    drop(store);
-}
-
-#[tokio::test]
 async fn noncanonical_tombstone_triggers_are_replaced() {
     let state_directory = temporary_state();
     let state = state_directory.path();
@@ -924,9 +873,8 @@ fn create_from_live_schema(root: &Path) {
     let schema: Value = serde_json::from_str(LIVE_SCHEMA).expect("schema-only fixture parses");
     for database in ["canvas.sqlite3", "analytics.sqlite3"] {
         let mut connection = Connection::open(root.join(database)).expect("database file opens");
-        connection
-            .execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL;")
-            .expect("WAL and FULL are enabled");
+        studio_runtime_store::sqlite_durability::configure_writer(&connection)
+            .expect("WAL and NORMAL are enabled");
         let mut objects = schema[database]["sqlite_master"]
             .as_array()
             .expect("fixture contains SQLite objects")

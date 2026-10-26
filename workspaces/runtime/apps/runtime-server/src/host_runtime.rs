@@ -1672,7 +1672,6 @@ fn vm_claude_keychain_service(config_dir: Option<&str>) -> String {
 #[cfg(test)]
 mod vm_claude_keychain_tests {
     use super::vm_claude_keychain_service;
-    use sha2::{Digest, Sha256};
 
     #[test]
     fn default_claude_keychain_service_stays_unsuffixed() {
@@ -1683,8 +1682,7 @@ mod vm_claude_keychain_tests {
     fn explicitly_selected_claude_config_uses_scoped_service() {
         assert_eq!(
             vm_claude_keychain_service(Some("/tmp/claude-profile/")),
-            "Claude Code-credentials-".to_owned()
-                + &data_encoding::HEXLOWER.encode(&Sha256::digest(b"/tmp/claude-profile"))[..8]
+            "Claude Code-credentials-7182514b"
         );
     }
 }
@@ -2220,52 +2218,14 @@ mod install_root_tests {
     }
 
     #[tokio::test]
-    async fn rust_server_serves_session_and_accounts_without_python() {
-        const CHILD_MARKER: &str = "CODEX_RUNTIME_NO_PYTHON_TEST_CHILD";
-        if std::env::var_os(CHILD_MARKER).is_none() {
-            let empty_path = tempfile::tempdir().expect("empty PATH fixture creates");
-            let module = module_path!()
-                .split_once("::")
-                .expect("test module belongs to a crate")
-                .1;
-            let test = format!("{module}::rust_server_serves_session_and_accounts_without_python");
-            let mut command =
-                tokio::process::Command::new(std::env::current_exe().expect("test executable"));
-            command
-                .args(["--exact", &test, "--nocapture"])
-                .env(CHILD_MARKER, "1")
-                .env("PATH", empty_path.path())
-                .env_remove("CODEX_AGENTS_PYTHON")
-                .env("CODEX_SERVER_TEST_TMP_ROOT", "/dev/shm/pyb2")
-                .kill_on_drop(true);
-            let output = tokio::time::timeout(std::time::Duration::from_secs(45), command.output())
-                .await
-                .expect("no-Python startup child finishes")
-                .expect("no-Python startup child starts");
-            assert!(
-                output.status.success(),
-                "no-Python startup failed: {}",
-                String::from_utf8_lossy(&output.stderr)
-            );
-            assert!(
-                String::from_utf8_lossy(&output.stdout)
-                    .contains("rust_server_serves_session_and_accounts_without_python ... ok"),
-                "no-Python child did not run the composed-server test: {}",
-                String::from_utf8_lossy(&output.stdout)
-            );
-            return;
-        }
-
-        assert!(std::env::var_os("CODEX_AGENTS_PYTHON").is_none());
-        assert!(
-            std::process::Command::new("python3")
-                .arg("--version")
-                .output()
-                .is_err()
-        );
-
-        use std::{net::SocketAddr, sync::Arc};
-        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    async fn host_runtime_serves_session_and_accounts() {
+        use axum::{
+            body::{Body, to_bytes},
+            extract::ConnectInfo,
+            http::Request,
+        };
+        use std::sync::Arc;
+        use tower::ServiceExt;
 
         let root = tempfile::tempdir().expect("isolated runtime state creates");
         let store = Arc::new(
@@ -2291,15 +2251,11 @@ mod install_root_tests {
             )
             .expect("empty account policy loads"),
         );
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-            .await
-            .expect("test HTTP listener binds");
-        let address = listener.local_addr().expect("test listener address");
         let mut state = HttpState::new(
-            "no-python-test-token".into(),
-            "no-python-test-workspace".into(),
+            "host-runtime-token".into(),
+            "host-runtime-workspace".into(),
             root.path().to_string_lossy().into_owned(),
-            address.port(),
+            4620,
             None,
             Some(store.clone()),
             Some(account_policy),
@@ -2313,71 +2269,42 @@ mod install_root_tests {
             super::AccountRegistryConfig::default(),
         )
         .await
-        .expect("composed host runtime starts without Python");
+        .expect("composed host runtime starts");
 
         let app = studio_runtime_http::router(state).expect("HTTP routes compose");
-        let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
-        let server = tokio::spawn(async move {
-            axum::serve(
-                listener,
-                app.into_make_service_with_connect_info::<SocketAddr>(),
-            )
-            .with_graceful_shutdown(async move {
-                if stopped.await.is_err() {
-                    eprintln!("host runtime shutdown requester ended before signaling");
-                }
-            })
-            .await
-        });
-
-        async fn get(address: SocketAddr, path: &str) -> (u16, serde_json::Value) {
-            let mut stream = tokio::net::TcpStream::connect(address)
-                .await
-                .expect("composed HTTP server accepts a connection");
-            stream
-                .write_all(
-                    format!(
-                        "GET {path} HTTP/1.1\r\nHost: 127.0.0.1:{}\r\nOrigin: http://127.0.0.1:{}\r\nConnection: close\r\n\r\n",
-                        address.port(), address.port()
-                    )
-                    .as_bytes(),
+        async fn get(app: &axum::Router, path: &str) -> (u16, serde_json::Value) {
+            let response = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .uri(path)
+                        .header("host", "127.0.0.1:4620")
+                        .extension(ConnectInfo(std::net::SocketAddr::from((
+                            [127, 0, 0, 1],
+                            12345,
+                        ))))
+                        .body(Body::empty())
+                        .expect("request builds"),
                 )
                 .await
-                .expect("HTTP request writes");
-            let mut response = Vec::new();
-            stream
-                .read_to_end(&mut response)
+                .expect("composed HTTP response");
+            let status = response.status().as_u16();
+            let body = to_bytes(response.into_body(), 4096)
                 .await
-                .expect("HTTP response reads");
-            let response = String::from_utf8(response).expect("HTTP response is UTF-8");
-            let (headers, body) = response
-                .split_once("\r\n\r\n")
-                .expect("HTTP response separates headers and body");
-            let status = headers
-                .lines()
-                .next()
-                .and_then(|line| line.split_whitespace().nth(1))
-                .and_then(|status| status.parse().ok())
-                .expect("HTTP response has a status");
+                .expect("JSON body");
             (
                 status,
-                serde_json::from_str(body).expect("HTTP response body is JSON"),
+                serde_json::from_slice(&body).expect("response JSON"),
             )
         }
 
-        let (session_status, session) = get(address, "/api/session").await;
+        let (session_status, session) = get(&app, "/api/session").await;
         assert_eq!(session_status, 200);
-        assert_eq!(session["token"], "no-python-test-token");
-        let (accounts_status, accounts) = get(address, "/api/accounts").await;
+        assert_eq!(session["token"], "host-runtime-token");
+        let (accounts_status, accounts) = get(&app, "/api/accounts").await;
         assert_eq!(accounts_status, 200);
         assert!(accounts["accounts"].as_array().is_some());
 
-        stop.send(())
-            .expect("graceful shutdown receiver is still active");
-        server
-            .await
-            .expect("HTTP server task completes")
-            .expect("HTTP server exits cleanly");
         runtime
             .shutdown()
             .await

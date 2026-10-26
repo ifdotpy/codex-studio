@@ -125,6 +125,12 @@ test("short and comprehensive recipes preserve their owned test boundaries", () 
   for (const recipe of [fast, comprehensive]) {
     assert.match(recipe.command, /build:wasm/);
     assert.match(recipe.command, /build:bundle:prepared/);
+    for (const once of [
+      /build:wasm/g,
+      /build:bundle:prepared/g,
+      /'nextest' 'run'/g,
+    ])
+      assert.equal([...recipe.command.matchAll(once)].length, 1);
     assert.match(recipe.command, /'nextest' 'run' '--workspace'/);
     assert.match(recipe.command, /studio-contracts/);
     assert.match(recipe.command, /boundaries-check/);
@@ -142,6 +148,37 @@ test("short and comprehensive recipes preserve their owned test boundaries", () 
   assert.match(comprehensive.command, /'clippy' '--workspace'/);
   assert.match(comprehensive.command, /test:unit:prepared/);
   assert.match(comprehensive.command, /test:browser:smoke:prepared/);
+});
+
+test("real IndexedDB staging belongs to provisioned browser smoke, not Node units", () => {
+  const web = "workspaces/client/apps/web";
+  const spec = readFileSync(
+    `${web}/tests/sync/entity-transfer-storage-browser.spec.mjs`,
+    "utf8",
+  );
+  const title = spec.match(/test\(\s*"([^"]+)"/)?.[1];
+  assert.ok(title, "the real IndexedDB witness must remain registered");
+  const scripts = JSON.parse(
+    readFileSync(`${web}/package.json`, "utf8"),
+  ).scripts;
+  const smoke = scripts["test:browser:smoke:prepared"];
+  const grep = smoke.match(/--grep "([^"]+)"/)?.[1];
+  assert.ok(grep, "package.json owns the smoke selector");
+  assert.match(title, new RegExp(grep));
+  assert.match(spec, /from "\.\.\/playwright\.mjs"/);
+  assert.equal(
+    existsSync(`${web}/src/sync/entityTransfer.storage.test.ts`),
+    false,
+  );
+  const fast = readFileSync(`${web}/vitest.fast.config.ts`, "utf8");
+  assert.doesNotMatch(fast, /entityTransfer\.storage\.test/);
+  assert.match(fast, /"src\/sync\/entityTransfer\.test\.ts"/);
+  const workflow = readFileSync(".github/workflows/ci.yml", "utf8");
+  const browserJob = workflow.split("  fast-browser-smoke:")[1];
+  assert.match(
+    browserJob,
+    /playwright install chromium[\s\S]+just test-browser-smoke --prepared/,
+  );
 });
 
 test("consolidated Rust targets register every integration test file once", () => {
@@ -184,7 +221,7 @@ test("unsafe Rust is limited to the purpose-listed modules", () => {
   const root = mkdtempSync(path.join(os.tmpdir(), "codex-unsafe-rust-policy-"));
   const exception = path.join(
     root,
-    "workspaces/runtime/packages/runtime-services/src/image_workspace_macos/fsevents_ffi.rs",
+    "workspaces/runtime/packages/runtime-services/src/host_exec_service/clone_ffi.rs",
   );
   const violation = path.join(root, "workspaces/runtime/src/unsafe_probe.rs");
   const quotedViolation = path.join(
@@ -1029,6 +1066,10 @@ test("check-affected selects a changed package and transitive workspace dependen
     fixture.add("desktop-b", "workspaces/client/apps/b", {
       dependencies: { "web-a": "workspace:*" },
     });
+    fixture.add("consumer-c", "workspaces/client/apps/c", {
+      dependencies: { "desktop-b": "workspace:*" },
+    });
+    fixture.add("unrelated-d", "workspaces/client/apps/d");
     const aItem = fixture.packages[0];
     aItem.manifest = path.join(a, "package.json");
     assert.deepEqual(
@@ -1042,6 +1083,7 @@ test("check-affected selects a changed package and transitive workspace dependen
             "changed file workspaces/client/apps/a/src/page.ts belongs to workspaces/client/apps/a",
         },
         { package: "desktop-b", reason: "reverse dependency of web-a" },
+        { package: "consumer-c", reason: "reverse dependency of desktop-b" },
       ],
     );
     const widened = affectedPlan(
@@ -1050,7 +1092,7 @@ test("check-affected selects a changed package and transitive workspace dependen
       fixture.packages,
       ["root-unowned.md"],
     );
-    assert.equal(widened.length, 2);
+    assert.equal(widened.length, 4);
     assert.ok(
       widened.every((item) =>
         item.reason.includes("unowned file root-unowned.md"),
@@ -1073,44 +1115,27 @@ test("check-affected selects a changed package and transitive workspace dependen
 test("check-affected adds Cargo workspace dependents from cargo metadata", () => {
   const root = mkdtempSync(path.join(os.tmpdir(), "codex-cargo-affected-"));
   try {
-    mkdirSync(path.join(root, "crates/a"), { recursive: true });
-    mkdirSync(path.join(root, "crates/b"), { recursive: true });
-    mkdirSync(path.join(root, "crates/a/src"));
-    mkdirSync(path.join(root, "crates/b/src"));
+    const graph = [
+      ["a", null],
+      ["b", "a"],
+      ["c", "b"],
+      ["d", null],
+    ];
     writeFileSync(
       path.join(root, "Cargo.toml"),
-      '[workspace]\nresolver = "3"\nmembers = ["crates/a", "crates/b"]\n',
+      '[workspace]\nresolver = "3"\nmembers = ["crates/*"]\n',
     );
-    writeFileSync(
-      path.join(root, "crates/a/Cargo.toml"),
-      '[package]\nname = "crate-a"\nversion = "0.1.0"\nedition = "2024"\n',
-    );
-    writeFileSync(
-      path.join(root, "crates/b/Cargo.toml"),
-      '[package]\nname = "crate-b"\nversion = "0.1.0"\nedition = "2024"\n[dependencies]\ncrate-a = { path = "../a" }\n',
-    );
-    writeFileSync(
-      path.join(root, "crates/a/src/lib.rs"),
-      "pub fn value() {}\n",
-    );
-    writeFileSync(
-      path.join(root, "crates/b/src/lib.rs"),
-      "pub fn value() {}\n",
-    );
-    const packages = [
-      {
-        name: "crate-a",
-        ecosystem: "cargo",
-        dir: "crates/a",
-        manifest: path.join(root, "crates/a/Cargo.toml"),
-      },
-      {
-        name: "crate-b",
-        ecosystem: "cargo",
-        dir: "crates/b",
-        manifest: path.join(root, "crates/b/Cargo.toml"),
-      },
-    ];
+    const packages = graph.map(([name, dependency]) => {
+      const dir = `crates/${name}`;
+      mkdirSync(path.join(root, dir, "src"), { recursive: true });
+      const manifest = path.join(root, dir, "Cargo.toml");
+      writeFileSync(
+        manifest,
+        `[package]\nname = "crate-${name}"\nversion = "0.1.0"\nedition = "2024"\n${dependency ? `[dependencies]\ncrate-${dependency} = { path = "../${dependency}" }\n` : ""}`,
+      );
+      writeFileSync(path.join(root, dir, "src/lib.rs"), "pub fn value() {}\n");
+      return { name: `crate-${name}`, ecosystem: "cargo", dir, manifest };
+    });
     assert.deepEqual(
       affectedPlan(root, "origin/main", packages, ["crates/a/src/lib.rs"]),
       [
@@ -1119,6 +1144,7 @@ test("check-affected adds Cargo workspace dependents from cargo metadata", () =>
           reason: "changed file crates/a/src/lib.rs belongs to crates/a",
         },
         { package: "crate-b", reason: "reverse dependency of crate-a" },
+        { package: "crate-c", reason: "reverse dependency of crate-b" },
       ],
     );
   } finally {
@@ -1290,6 +1316,37 @@ test("tests retain temporary state ownership and follow the platform temp root",
     ),
     [],
   );
+});
+
+test("temporary state scan skips tracked files removed by the current change", async () => {
+  const { repositoryTemporaryStateFindings } =
+    await import("../test-temp-state.mjs");
+  const root = mkdtempSync(
+    path.join(os.tmpdir(), "studio-temp-state-deleted-"),
+  );
+  try {
+    for (const args of [
+      ["init", "--quiet"],
+      ["config", "user.email", "checks@example.invalid"],
+      ["config", "user.name", "Repository checks"],
+    ]) {
+      const result = spawnSync("git", args, { cwd: root, encoding: "utf8" });
+      assert.equal(result.status, 0, result.stderr);
+    }
+    writeFileSync(
+      path.join(root, "removed.test.mjs"),
+      "const root = '" + "/" + "tmp" + "';\n",
+    );
+    let result = spawnSync("git", ["add", "removed.test.mjs"], {
+      cwd: root,
+      encoding: "utf8",
+    });
+    assert.equal(result.status, 0, result.stderr);
+    rmSync(path.join(root, "removed.test.mjs"));
+    assert.deepEqual(repositoryTemporaryStateFindings(root), []);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });
 
 test("installer recipe preserves directory arguments as literal positional values", () => {

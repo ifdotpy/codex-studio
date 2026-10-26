@@ -8,6 +8,9 @@
     "workspaces/runtime/apps/layr/",
     "workspaces/runtime/apps/layr-desk/",
     "workspaces/runtime/packages/runtime-http/openapi.json",
-    "workspaces/runtime/packages/runtime-http/draft-payload.schema.json"
+    "workspaces/runtime/packages/runtime-http/draft-payload.schema.json",
+    "workspaces/runtime/packages/runtime-schema/src/schemas/usage-observation.schema.json",
+    "workspaces/runtime/packages/runtime-schema/src/schemas/analytics-usage.schema.json",
+    "workspaces/runtime/packages/runtime-schema/src/schemas/analytics-notice.schema.json"
   ]
 }

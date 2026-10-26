@@ -19,7 +19,7 @@ line's git layer and can name an older commit; use this ID to identify the sourc
 
 `HOST_EXEC_TREE` is the git tree ID of that state: the 40 hexadecimal digits that
 `layr rev-parse <state>^{tree}` prints in the guest. It is the tree of the commit that
-`layr push` exports for the state, so it equals `git rev-parse HEAD^{tree}` after a git
+`layr git push` exports for the state, so it equals `git rev-parse HEAD^{tree}` after a git
 sync of that state. Use it to record the whole source tree of a build. A tree computed
 in the slot is not this value: the slot holds ignored build output, and layr-only files
 of the state do not have to be there. The
@@ -125,6 +125,9 @@ request keeps the old service, and the backend reports the reason; a later call
 replaces it. A service without a build identity is never stopped by the backend.
 Receipts, tokens, leases, and unknown outcomes stay in the same state folder. The
 runtime-server witnesses `host_exec_service::*` check this with real service processes.
+After securing its Unix socket, the service emits the stdout readiness line owned by
+[`SERVICE_READY_LINE`](../workspaces/runtime/packages/runtime-services/src/host_exec_service/mod.rs).
+The launcher writes stdout to the service log; fixtures await that line before using the socket.
 
 ### Backend
 

@@ -392,7 +392,8 @@ impl RecoveryRuntime {
 
 pub const TASK_SCAN_INTERVAL: Duration = Duration::from_secs(30);
 pub const MAX_SCAN_JOBS: usize = 32;
-const MAX_CHECKS: usize = 256;
+/// Maximum cached recovery backoff checks per account worker. Unit: job identities.
+pub const MAX_CHECKS: usize = 256;
 const UNKNOWN_START_QUIET_SECONDS: f64 = 10.0;
 const TURN_QUIET_SECONDS: f64 = 120.0;
 const TURN_CHECK_INTERVAL: Duration = Duration::from_secs(60);

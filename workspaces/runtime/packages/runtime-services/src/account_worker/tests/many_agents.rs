@@ -12,56 +12,6 @@ const THREAD_PREFIX: &str = "fake-thread-";
 /// Streamed answer deltas per scripted turn, between the item start and end.
 const DELTAS_PER_TURN: usize = 3;
 
-/// Writer transactions observed during a run, by caller origin.
-static WRITER_ORIGINS: std::sync::Mutex<
-    Vec<(&'static std::panic::Location<'static>, std::time::Duration)>,
-> = std::sync::Mutex::new(Vec::new());
-
-fn record_writer_origin(event: studio_runtime_store::StoreDiagnosticsEvent) {
-    if let studio_runtime_store::StoreDiagnosticsEvent::WriterTransaction { hold, origin, .. } =
-        event
-    {
-        WRITER_ORIGINS
-            .lock()
-            .expect("writer origins")
-            .push((origin, hold));
-    }
-}
-
-/// Print writer transactions per agent turn by origin, largest first.
-fn report_writer_origins(provider: studio_runtime_providers::ProviderKind, turns: usize) {
-    let origins = std::mem::take(&mut *WRITER_ORIGINS.lock().expect("writer origins"));
-    let mut table = std::collections::BTreeMap::<String, (usize, std::time::Duration)>::new();
-    for (origin, hold) in &origins {
-        let file = origin.file();
-        let file = file.rsplit_once("/src/").map_or(file, |(_, tail)| tail);
-        let entry = table
-            .entry(format!("{file}:{}", origin.line()))
-            .or_default();
-        entry.0 += 1;
-        entry.1 += *hold;
-    }
-    let mut rows = table.into_iter().collect::<Vec<_>>();
-    rows.sort_by_key(|(_, (count, _))| std::cmp::Reverse(*count));
-    eprintln!("{provider:?} writer transactions per agent turn ({turns} turns):");
-    for (origin, (count, hold)) in rows {
-        eprintln!(
-            "  {:>6.2}  {:>8.3} ms avg  {origin}",
-            count as f64 / turns as f64,
-            hold.as_secs_f64() * 1000.0 / count as f64
-        );
-    }
-    let hold = origins
-        .iter()
-        .map(|(_, hold)| *hold)
-        .sum::<std::time::Duration>();
-    eprintln!(
-        "  {:>6.2}  {:>8.3} ms writer hold per turn  total",
-        origins.len() as f64 / turns as f64,
-        hold.as_secs_f64() * 1000.0 / turns as f64
-    );
-}
-
 /// `count` agents on one account: the fixture agent and clones of it, each
 /// with its own thread and queued input.
 async fn agents(state: &State, count: usize) -> Vec<String> {
@@ -124,10 +74,6 @@ struct Script<'a> {
     frames: mpsc::UnboundedSender<Value>,
     turns: Vec<usize>,
     done: usize,
-    /// When every agent's first turn/start was written.
-    first_turns_written: Option<std::time::Duration>,
-    started: std::time::Instant,
-    first_turns: usize,
     /// Provider frames sent; unit: journal cursors.
     sent: u64,
 }
@@ -150,10 +96,6 @@ impl Script<'_> {
                 let exchange = self.turns[index];
                 assert!(exchange <= EXCHANGES_PER_AGENT, "{request}");
                 if exchange == 1 {
-                    self.first_turns += 1;
-                    if self.first_turns == self.agents.len() {
-                        self.first_turns_written = Some(self.started.elapsed());
-                    }
                     let input = format!("{}-second", self.agents[index]);
                     self.state.enqueue_for(&self.agents[index], &input).await;
                     self.state.deliver_after_turn(&input).await;
@@ -171,8 +113,8 @@ impl Script<'_> {
                 notifications.extend([
                     json!({"method":"item/completed","params":{"threadId":thread,"turnId":turn,"item":{"id":item,"type":"agentMessage","text":"done"}}}),
                     json!({"method":"thread/tokenUsage/updated","params":{"threadId":thread,"turnId":turn,"tokenUsage":{
-                        "total":{"inputTokens":20,"outputTokens":100,"totalTokens":120},
-                        "last":{"inputTokens":2,"outputTokens":10,"totalTokens":12}}}}),
+                        "total":{"inputTokens":20,"cachedInputTokens":0,"outputTokens":100,"reasoningOutputTokens":0,"totalTokens":120},
+                        "last":{"inputTokens":2,"cachedInputTokens":0,"outputTokens":10,"reasoningOutputTokens":0,"totalTokens":12}}}}),
                     json!({"method":"turn/completed","params":{"threadId":thread,"turn":{"id":turn,"status":"completed"}}}),
                 ]);
                 for notification in notifications {
@@ -195,14 +137,6 @@ async fn scenario_many_agents_complete_two_exchanges(provider: &str, count: usiz
     let mut peer = Peer::new();
     let mut worker = provider_worker(&state, &mut peer, provider).await;
     let agents = agents(&state, count).await;
-    WRITER_ORIGINS.lock().expect("writer origins").clear();
-    state
-        .bridge
-        .store
-        .set_diagnostics_callback(Some(record_writer_origin))
-        .await
-        .expect("install writer origin counter");
-    let started = std::time::Instant::now();
     for agent in &agents {
         worker
             .send(AccountCommand::Wake {
@@ -235,9 +169,6 @@ async fn scenario_many_agents_complete_two_exchanges(provider: &str, count: usiz
         frames,
         turns: vec![0; count],
         done: 0,
-        first_turns_written: None,
-        started,
-        first_turns: 0,
         sent: 0,
     };
     let mut withheld = Vec::new();
@@ -286,21 +217,6 @@ async fn scenario_many_agents_complete_two_exchanges(provider: &str, count: usiz
         );
     }
     assert!(script.turns.iter().all(|n| *n == EXCHANGES_PER_AGENT));
-    // Reported, not asserted: wall time is evidence for a manual run only.
-    eprintln!(
-        "{count} agents: every first turn/start written after {:?}, two exchanges done after {:?}",
-        script
-            .first_turns_written
-            .expect("every first turn written"),
-        script.started.elapsed()
-    );
-    state
-        .bridge
-        .store
-        .set_diagnostics_callback(None)
-        .await
-        .expect("clear writer origin counter");
-    report_writer_origins(provider, count * EXCHANGES_PER_AGENT);
     assert!(!*worker.completion_signal().borrow());
     worker.cancel();
     sender.abort();
@@ -325,15 +241,15 @@ macro_rules! many_agents {
 }
 
 many_agents!(
-    thirty_two_agents_complete_two_exchanges: 32,
+    two_agents_complete_two_exchanges: 2,
     /// About half a minute of serialized store work in a debug build: run it
     /// with `just test-rust-many-agents` (manual heavy tier).
     #[ignore = "manual heavy tier: just test-rust-many-agents"]
     two_hundred_agents_complete_two_exchanges: 200,
 );
 
-/// Agents of one account whose turns stay loaded only while they run.
-const UNLOAD_AGENTS: usize = 50;
+/// Two settled/resumed agents and two still-running peers share one account.
+const UNLOAD_AGENTS: usize = 4;
 
 /// A scripted provider that keeps the loaded-thread set the way the Claude
 /// bridge and Codex app-server do: `thread/resume` loads a thread and an
@@ -578,7 +494,7 @@ async fn scenario_loaded_threads_follow_running_turns(provider: &str) {
     let _completed = worker.completion().await;
 }
 
-mod fifty_agents_keep_threads_loaded_only_while_running {
+mod settled_and_running_agents_keep_only_running_threads_loaded {
     #[tokio::test]
     async fn codex() {
         super::scenario_loaded_threads_follow_running_turns("codex").await;

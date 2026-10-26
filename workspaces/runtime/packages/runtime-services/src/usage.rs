@@ -11,10 +11,12 @@ use std::thread;
 use std::time::{Duration, Instant, SystemTime};
 use thiserror::Error;
 
-// This module owns cost-cache refresh intervals (seconds), history windows
+// This module owns on-demand cost-cache freshness ages (seconds), history windows
 // (days), and the scan timeout (seconds).
-const COST_REFRESH_SECONDS: f64 = 120.0;
-const CLAUDE_COST_REFRESH_SECONDS: f64 = 300.0;
+const CODEX_COST_CACHE_MAX_AGE_SECONDS: f64 = 120.0;
+// Minimum spacing between scan attempts, including failed cache writes.
+const COST_REFRESH_RETRY_DELAY: Duration = Duration::from_secs(120);
+const CLAUDE_COST_CACHE_MAX_AGE_SECONDS: f64 = 300.0;
 const CLAUDE_COST_HISTORY_DAYS: i64 = 30;
 const COST_REPORT_HISTORY_DAYS: i64 = 30;
 // This module owns the models.dev catalog lifetime and request timeout.
@@ -97,10 +99,10 @@ pub fn account_cost_snapshot(
         .get("checkedAt")
         .and_then(Value::as_f64)
         .or_else(|| state.get("at").and_then(Value::as_f64));
-    let mut stale = checked_at.is_none_or(|at| now - at >= COST_REFRESH_SECONDS)
+    let mut stale = checked_at.is_none_or(|at| now - at >= CODEX_COST_CACHE_MAX_AGE_SECONDS)
         || state.get("error").is_some_and(|error| !error.is_null());
-    let refreshing = cost_refresh_active(&account_refresh_key(account_key, &home));
-    let refresh_due = checked_at.is_none_or(|at| now - at >= COST_REFRESH_SECONDS);
+    let refreshing = cost_refresh_active(&account_refresh_key(state_dir, account_key));
+    let refresh_due = checked_at.is_none_or(|at| now - at >= CODEX_COST_CACHE_MAX_AGE_SECONDS);
     if let Some(data) = state.get_mut("data").and_then(Value::as_object_mut) {
         let current_day = local_day(now);
         if data.get("sourceDay").and_then(Value::as_str) != Some(&current_day) {
@@ -132,19 +134,18 @@ pub fn account_cost_snapshot(
 }
 
 /// Reserve an in-process refresh attempt so a failed cache write cannot cause
-/// every following GET to start another scan. The interval remains owned by
-/// `COST_REFRESH_SECONDS` above.
+/// every following window-open interest to start another scan. The minimum
+/// spacing is owned by `COST_REFRESH_RETRY_DELAY`.
 pub fn claim_cost_refresh_attempt(account_key: &str) -> bool {
     let now = tokio::time::Instant::now();
     let Ok(mut attempts) = COST_REFRESH_ATTEMPTS.lock() else {
         return false;
     };
-    attempts.retain(|_, started| {
-        now.duration_since(*started) < Duration::from_secs_f64(COST_REFRESH_SECONDS)
-    });
-    if attempts.get(account_key).is_some_and(|started| {
-        now.duration_since(*started) < Duration::from_secs_f64(COST_REFRESH_SECONDS)
-    }) {
+    attempts.retain(|_, started| now.duration_since(*started) < COST_REFRESH_RETRY_DELAY);
+    if attempts
+        .get(account_key)
+        .is_some_and(|started| now.duration_since(*started) < COST_REFRESH_RETRY_DELAY)
+    {
         return false;
     }
     attempts.insert(account_key.to_owned(), now);
@@ -152,7 +153,7 @@ pub fn claim_cost_refresh_attempt(account_key: &str) -> bool {
 }
 
 /// Refresh local session logs into the account-scoped cache.
-/// GET handlers return their cache before scheduling this blocking work.
+/// Interest handlers return promptly; saved results are delivered by sync entities.
 /// Refresh and report whether a cache value was durably saved, even if the
 /// scanner itself failed and the saved value records that failure.
 pub fn refresh_account_costs_report(
@@ -161,7 +162,7 @@ pub fn refresh_account_costs_report(
     account: &Value,
     cancelled: &AtomicBool,
 ) -> (bool, Result<(), UsageError>) {
-    refresh_account_costs_with(
+    let result = refresh_account_costs_with(
         state_dir,
         account_key,
         account,
@@ -170,7 +171,58 @@ pub fn refresh_account_costs_report(
         |home, state_dir, cancelled| {
             scan_codex_sessions(home, state_dir, unix_time_seconds(), cancelled)
         },
-    )
+    );
+    if result.0 {
+        crate::resource_notify::publish_bounded_source(
+            crate::resource_notify::BoundedSource::Costs,
+        );
+    }
+    result
+}
+
+/// Reserve before dispatching blocking work, so concurrent window interests join
+/// the same scan even while it is queued. Dropping the reservation settles it.
+pub fn reserve_account_cost_refresh(
+    state_dir: &Path,
+    account_key: &str,
+    account: &Value,
+) -> Option<CostRefreshGuard> {
+    if account.get("status").and_then(Value::as_str) != Some("ready") {
+        return None;
+    }
+    account
+        .get("home")?
+        .as_str()
+        .filter(|home| !home.is_empty())?;
+    let key = account_refresh_key(state_dir, account_key);
+    let guard = begin_cost_refresh(key.clone())?;
+    claim_cost_refresh_attempt(&key).then_some(guard)
+}
+
+pub fn refresh_reserved_account_costs_report(
+    state_dir: &Path,
+    account_key: &str,
+    account: &Value,
+    cancelled: &AtomicBool,
+    reservation: CostRefreshGuard,
+) -> (bool, Result<(), UsageError>) {
+    let result = refresh_account_costs_reserved_with(
+        state_dir,
+        account_key,
+        account,
+        cancelled,
+        unix_time_seconds,
+        |home, state_dir, cancelled| {
+            scan_codex_sessions(home, state_dir, unix_time_seconds(), cancelled)
+        },
+        Some(reservation),
+    );
+    if result.0 {
+        crate::resource_notify::publish_bounded_source(
+            crate::resource_notify::BoundedSource::Costs,
+        );
+    }
+    result
 }
 
 fn refresh_account_costs_with<C, S>(
@@ -185,6 +237,30 @@ where
     C: Fn() -> f64,
     S: FnOnce(&Path, &Path, &AtomicBool) -> Result<Value, UsageError>,
 {
+    refresh_account_costs_reserved_with(
+        state_dir,
+        account_key,
+        account,
+        cancelled,
+        clock,
+        scanner,
+        None,
+    )
+}
+
+fn refresh_account_costs_reserved_with<C, S>(
+    state_dir: &Path,
+    account_key: &str,
+    account: &Value,
+    cancelled: &AtomicBool,
+    clock: C,
+    scanner: S,
+    reservation: Option<CostRefreshGuard>,
+) -> (bool, Result<(), UsageError>)
+where
+    C: Fn() -> f64,
+    S: FnOnce(&Path, &Path, &AtomicBool) -> Result<Value, UsageError>,
+{
     let home = match account
         .get("home")
         .and_then(Value::as_str)
@@ -194,8 +270,8 @@ where
         Some(home) => home,
         None => return (false, Err(UsageError::MissingProfile)),
     };
-    let refresh_key = account_refresh_key(account_key, &home);
-    let Some(_refresh) = begin_cost_refresh(refresh_key) else {
+    let refresh_key = account_refresh_key(state_dir, account_key);
+    let Some(_refresh) = reservation.or_else(|| begin_cost_refresh(refresh_key)) else {
         return (false, Ok(()));
     };
     if is_claude_account(account) {
@@ -360,7 +436,18 @@ fn refresh_claude_costs(
     if cancelled.load(Ordering::Acquire) {
         return Err(UsageError::ScannerCancelled);
     }
-    let content = json!({"config":home,"data":data,"checked":clock(),"error":error});
+    let checked = clock();
+    let at = if error.is_null() {
+        json!(checked)
+    } else {
+        previous
+            .as_ref()
+            .filter(|value| value.get("data").is_some_and(Value::is_object))
+            .and_then(|value| value.get("at").or_else(|| value.get("checked")))
+            .cloned()
+            .unwrap_or(Value::Null)
+    };
+    let content = json!({"config":home,"data":data,"at":at,"checked":checked,"error":error});
     let bytes = serde_json::to_vec(&content).map_err(|_| UsageError::Scan)?;
     if cancelled.load(Ordering::Acquire) {
         return Err(UsageError::ScannerCancelled);
@@ -370,7 +457,7 @@ fn refresh_claude_costs(
     Ok(())
 }
 
-struct CostRefreshGuard(String);
+pub struct CostRefreshGuard(String);
 
 impl Drop for CostRefreshGuard {
     fn drop(&mut self) {
@@ -381,8 +468,11 @@ impl Drop for CostRefreshGuard {
     }
 }
 
-fn account_refresh_key(account_key: &str, home: &Path) -> String {
-    digest(&format!("{account_key}{}", home.to_string_lossy()))
+fn account_refresh_key(state_dir: &Path, account_key: &str) -> String {
+    digest(&crate::event_write::python_json(&json!([
+        state_dir,
+        account_key
+    ])))
 }
 
 fn begin_cost_refresh(key: String) -> Option<CostRefreshGuard> {
@@ -408,6 +498,7 @@ struct ClaudeUsage {
     input: Option<u64>,
     cached: Option<u64>,
     write: Option<u64>,
+    write_1h: Option<u64>,
     output: Option<u64>,
 }
 
@@ -510,6 +601,12 @@ where
                     input: value("input_tokens"),
                     cached: value("cache_read_input_tokens"),
                     write: value("cache_creation_input_tokens"),
+                    write_1h: value("cache_creation_input_tokens").map(|write| {
+                        usage["cache_creation"]["ephemeral_1h_input_tokens"]
+                            .as_u64()
+                            .unwrap_or(0)
+                            .min(write)
+                    }),
                     // An absent output count marks pricing as incomplete;
                     // it cannot prove zero output usage.
                     output: usage.get("output_tokens").and_then(Value::as_u64),
@@ -548,6 +645,7 @@ where
             input_tokens: row.input.map(|tokens| tokens as f64),
             cached_input_tokens: row.cached.map(|tokens| tokens as f64),
             cache_write_input_tokens: row.write.map(|tokens| tokens as f64),
+            cache_write_input_1h_tokens: row.write_1h.map(|tokens| tokens as f64),
             output_tokens: row.output.map(|tokens| tokens as f64),
         };
         let context = row
@@ -595,43 +693,6 @@ where
     )
 }
 
-/// Token counts of one Codex `token_count` usage object: input (including
-/// cached), cached input, and output.
-#[derive(Clone, Copy, Default, Eq, PartialEq)]
-struct CodexTokens {
-    input: u64,
-    cached: u64,
-    output: u64,
-}
-
-impl CodexTokens {
-    fn from_usage(usage: Option<&Value>) -> Option<Self> {
-        let usage = usage?;
-        let count = |keys: &[&str]| {
-            keys.iter()
-                .find_map(|key| usage.get(*key).and_then(Value::as_u64))
-                .unwrap_or(0)
-        };
-        Some(Self {
-            input: count(&["input_tokens"]),
-            cached: count(&["cached_input_tokens", "cache_read_input_tokens"]),
-            output: count(&["output_tokens"]),
-        })
-    }
-
-    fn at_least(self, other: Self) -> bool {
-        self.input >= other.input && self.cached >= other.cached && self.output >= other.output
-    }
-
-    fn minus(self, other: Self) -> Self {
-        Self {
-            input: self.input - other.input,
-            cached: self.cached - other.cached,
-            output: self.output - other.output,
-        }
-    }
-}
-
 /// Estimated usage of one model on one local day.
 #[derive(Default)]
 struct CodexModelDay {
@@ -640,9 +701,18 @@ struct CodexModelDay {
     unpriced: bool,
 }
 
+/// One recovered response, retaining its original event time across replay files.
+struct CodexResponse {
+    at: chrono::DateTime<chrono::FixedOffset>,
+    model: String,
+    tokens: studio_runtime_schema::usage::UsageTokens,
+    /// At least one original record belongs to this session rather than fork replay.
+    eligible: bool,
+}
+
 /// Scan the Codex session logs of one profile and build the aggregate cost
 /// report. Reads `sessions` and the sibling `archived_sessions` under `home`;
-/// a fork's replayed parent history only advances the running totals.
+/// a fork's replayed parent responses are excluded from its costs.
 /// History completeness is never verified, so coverage is always `partial`.
 fn scan_codex_sessions(
     home: &Path,
@@ -696,11 +766,14 @@ where
     }
     let catalog = fetch_catalog();
     let mut days = BTreeMap::<(String, String), CodexModelDay>::new();
+    let mut responses = BTreeMap::<String, CodexResponse>::new();
     for path in files.values() {
         let file = File::open(path).map_err(|_| UsageError::Scan)?;
-        let mut model = None::<String>;
+        let mut rollout = crate::analytics_rollout::RolloutContext::from_record(
+            json!({"threadId":"", "model":"gpt-5"}),
+        )
+        .map_err(|_| UsageError::Scan)?;
         let mut fork_at = None::<chrono::DateTime<chrono::FixedOffset>>;
-        let mut previous = CodexTokens::default();
         for line in BufReader::new(file).lines() {
             check_codex_scan(started, cancelled)?;
             let Ok(row) = serde_json::from_str::<Value>(&line.map_err(|_| UsageError::Scan)?)
@@ -721,79 +794,104 @@ where
                             .and_then(|value| chrono::DateTime::parse_from_rfc3339(value).ok())
                             .or(at);
                     }
-                }
-                Some("turn_context") => {
-                    let named = |value: Option<&Value>| {
-                        value
-                            .and_then(|v| v.get("model"))
-                            .and_then(Value::as_str)
-                            .map(str::to_owned)
-                    };
-                    model = named(payload).or_else(|| named(payload.and_then(|p| p.get("info"))));
-                }
-                Some("event_msg")
-                    if payload.and_then(|p| p.get("type")).and_then(Value::as_str)
-                        == Some("token_count") =>
-                {
-                    let info = payload.and_then(|p| p.get("info"));
-                    let last =
-                        CodexTokens::from_usage(info.and_then(|i| i.get("last_token_usage")));
-                    let total =
-                        CodexTokens::from_usage(info.and_then(|i| i.get("total_token_usage")));
-                    let delta = match (total, last) {
-                        (Some(total), last) => {
-                            let delta = if total.at_least(previous) {
-                                total.minus(previous)
-                            } else {
-                                last.unwrap_or(total)
-                            };
-                            previous = total;
-                            delta
-                        }
-                        (None, Some(last)) => last,
-                        (None, None) => continue,
-                    };
-                    let Some(at) = at else { continue };
-                    if fork_at.is_some_and(|forked| at < forked) || delta == CodexTokens::default()
+                    if let Some(id) = payload
+                        .and_then(|meta| meta.get("id"))
+                        .and_then(Value::as_str)
                     {
-                        continue;
-                    }
-                    let day = at
-                        .with_timezone(&chrono::Local)
-                        .format("%Y-%m-%d")
-                        .to_string();
-                    if day < since_day {
-                        continue;
-                    }
-                    let name = codex_model_name(model.as_deref().unwrap_or("gpt-5"));
-                    let cached = delta.cached.min(delta.input);
-                    let usage = crate::pricing::TokenUsage {
-                        input_tokens: Some(delta.input as f64),
-                        cached_input_tokens: Some(cached as f64),
-                        cache_write_input_tokens: None,
-                        output_tokens: Some(delta.output as f64),
-                    };
-                    let cost = catalog
-                        .as_ref()
-                        .map(|catalog| {
-                            catalog.price_usage(
-                                "openai",
-                                &name,
-                                usage,
-                                Some(delta.input as f64),
-                                false,
-                            )
-                        })
-                        .and_then(|price| price.amount_usd);
-                    let entry = days.entry((day, name)).or_default();
-                    entry.tokens += delta.input + delta.output;
-                    match cost {
-                        Some(cost) => entry.cost_usd += cost,
-                        None => entry.unpriced = true,
+                        let mut context = rollout.record().clone();
+                        context["threadId"] = json!(id);
+                        rollout = crate::analytics_rollout::RolloutContext::from_record(context)
+                            .map_err(|_| UsageError::Scan)?;
                     }
                 }
-                _ => {}
+                Some("turn_context" | "token_usage_record") => {}
+                // A snapshot carries no original response time. Its replay must
+                // never turn an old response into today's billable evidence.
+                _ => continue,
             }
+            // Keep the scanner's older nested model context compatibility. Token
+            // categories and recovered response semantics belong to the rollout owner.
+            let mut row = row;
+            if row["type"] == "turn_context"
+                && row["payload"]["model"].is_null()
+                && row["payload"]["info"]["model"].is_string()
+            {
+                row["payload"]["model"] = row["payload"]["info"]["model"].clone();
+            }
+            let actions = rollout
+                .actions(&row, "account-cost", 0.)
+                .map_err(|_| UsageError::Scan)?;
+            for action in actions {
+                let crate::analytics_rollout::RolloutAction::Event { method, params, .. } = action
+                else {
+                    continue;
+                };
+                if method != "thread/tokenUsage/updated" {
+                    continue;
+                }
+                let studio_runtime_schema::usage::UsageObservation::Response {
+                    response_id,
+                    model,
+                    tokens,
+                    ..
+                } = studio_runtime_schema::usage::parse_token_usage(
+                    studio_runtime_schema::usage::UsageProvider::Codex,
+                    &params,
+                )
+                .map_err(|_| UsageError::Scan)?
+                else {
+                    continue;
+                };
+                let Some(at) = at else { continue };
+                let response = CodexResponse {
+                    at,
+                    model,
+                    tokens,
+                    eligible: !fork_at.is_some_and(|forked| at < forked),
+                };
+                // Canonicalize all original records before applying the report
+                // window: resume/archive traversal order cannot move usage forward.
+                responses
+                    .entry(response_id)
+                    .and_modify(|previous| {
+                        previous.at = previous.at.min(response.at);
+                        previous.eligible |= response.eligible;
+                    })
+                    .or_insert(response);
+            }
+        }
+    }
+    for response in responses.into_values() {
+        check_codex_scan(started, cancelled)?;
+        let day = response
+            .at
+            .with_timezone(&chrono::Local)
+            .format("%Y-%m-%d")
+            .to_string();
+        if !response.eligible || day < since_day {
+            continue;
+        }
+        let name = codex_model_name(&response.model);
+        let tokens = response.tokens;
+        let total = tokens.total().ok_or(UsageError::Scan)?;
+        let input = total - tokens.output;
+        // The shared conversion has already split Codex's inclusive input.
+        let usage = crate::pricing::TokenUsage {
+            input_tokens: Some(tokens.uncached_input as f64),
+            cached_input_tokens: Some(tokens.cache_read_input as f64),
+            cache_write_input_tokens: Some(tokens.cache_write_input as f64),
+            cache_write_input_1h_tokens: tokens.cache_write_input_1h.map(|n| n as f64),
+            output_tokens: Some(tokens.output as f64),
+        };
+        let cost = catalog
+            .as_ref()
+            .map(|catalog| catalog.price_usage("openai", &name, usage, Some(input as f64), true))
+            .and_then(|price| price.amount_usd);
+        let entry = days.entry((day, name)).or_default();
+        entry.tokens += total;
+        match cost {
+            Some(cost) => entry.cost_usd += cost,
+            None => entry.unpriced = true,
         }
     }
     let today = local_day(now);
@@ -890,6 +988,49 @@ fn acquire_codex_scan_lock_for(
     }
 }
 
+/// Durable attempt marker relative to the state root; shared by scan and session refreshes.
+const PRICING_REFRESH_STATE: &str = "model-pricing/refresh-state.json";
+
+fn pricing_refresh_due(state_dir: &Path, now: f64) -> bool {
+    let catalog_attempt = crate::pricing::load_pricing(state_dir)
+        .filter(|loaded| loaded.catalog.is_some())
+        .map_or(0.0, |loaded| loaded.last_attempt_at);
+    let failed_attempt = read_json(&state_dir.join(PRICING_REFRESH_STATE))
+        .and_then(|value| value.get("lastAttemptAt").and_then(Value::as_f64))
+        .unwrap_or_default();
+    now - catalog_attempt.max(failed_attempt) >= PRICING_CATALOG_TTL_SECONDS
+}
+
+/// Result of a bounded pricing check, including the no-catalog failure state.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PricingRefreshOutcome {
+    Changed,
+    Unchanged,
+    Unavailable,
+}
+
+/// Ensure session pricing independently of account scans. The cached artifact metadata
+/// avoids reparsing the catalog on each publication; the existing lock and durable
+/// attempt TTL fence concurrent session and account callers, including failed fetches.
+/// Changed means a persisted catalog has different pricing contents.
+pub fn refresh_pricing_with_fetch<F>(state_dir: &Path, now: f64, fetch: F) -> PricingRefreshOutcome
+where
+    F: FnOnce() -> Option<Value>,
+{
+    let previous =
+        crate::pricing::load_pricing(state_dir).and_then(|loaded| loaded.signature.clone());
+    if pricing_refresh_due(state_dir, now) {
+        let _catalog = pricing_catalog_with_fetch(state_dir, now, fetch);
+    }
+    let current =
+        crate::pricing::load_pricing(state_dir).and_then(|loaded| loaded.signature.clone());
+    match current {
+        None => PricingRefreshOutcome::Unavailable,
+        Some(_) if current != previous => PricingRefreshOutcome::Changed,
+        Some(_) => PricingRefreshOutcome::Unchanged,
+    }
+}
+
 fn pricing_catalog_with_fetch<F>(
     state_dir: &Path,
     now: f64,
@@ -901,43 +1042,14 @@ where
     let _catalog_guard = PRICING_CATALOG_LOCK
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let path = state_dir.join("model-pricing/models-dev-v1.json");
-    let attempt_path = state_dir.join("model-pricing/refresh-state.json");
-    let mut artifact = read_json(&path).filter(|artifact| {
-        artifact.get("version").and_then(Value::as_u64) == Some(1)
-            && artifact
-                .get("catalog")
-                .and_then(|catalog| crate::pricing::PricingCatalog::from_value(catalog).ok())
-                .is_some()
-    });
-    let current_catalog = artifact
-        .as_ref()
-        .and_then(|artifact| artifact.get("catalog"))
-        .and_then(|catalog| crate::pricing::PricingCatalog::from_value(catalog).ok());
-    let last_attempt = artifact
-        .as_ref()
-        .and_then(|artifact| {
-            artifact
-                .get("lastAttemptAt")
-                .and_then(Value::as_f64)
-                .or_else(|| artifact.get("fetchedAtEpoch").and_then(Value::as_f64))
-                .or_else(|| {
-                    artifact
-                        .get("fetchedAt")
-                        .and_then(Value::as_str)
-                        .and_then(|stamp| chrono::DateTime::parse_from_rfc3339(stamp).ok())
-                        .map(|stamp| stamp.timestamp() as f64)
-                })
-        })
-        .unwrap_or_default()
-        .max(
-            read_json(&attempt_path)
-                .and_then(|value| value.get("lastAttemptAt").and_then(Value::as_f64))
-                .unwrap_or_default(),
-        );
-    if now - last_attempt < PRICING_CATALOG_TTL_SECONDS {
+    let path = state_dir.join(crate::pricing::PRICING_ARTIFACT);
+    let attempt_path = state_dir.join(PRICING_REFRESH_STATE);
+    let current_catalog =
+        crate::pricing::load_pricing(state_dir).and_then(|loaded| loaded.catalog.clone());
+    if !pricing_refresh_due(state_dir, now) {
         return current_catalog;
     }
+    let mut artifact = current_catalog.as_ref().and_then(|_| read_json(&path));
 
     if write_pricing_attempt(&attempt_path, now).is_err() {
         return current_catalog;
@@ -975,7 +1087,7 @@ where
     Some(catalog)
 }
 
-fn fetch_models_dev_catalog() -> Option<Value> {
+pub fn fetch_models_dev_catalog() -> Option<Value> {
     fetch_models_dev_catalog_with(|agent, url| {
         let response = agent
             .get(url)
@@ -1063,17 +1175,18 @@ fn claude_cost_snapshot(
             .as_ref()
             .and_then(|saved| saved.get("error"))
             .is_some_and(|error| !error.is_null());
-    let refreshing = cost_refresh_active(&account_refresh_key(account_key, home));
+    let refreshing = cost_refresh_active(&account_refresh_key(state_dir, account_key));
     let refresh_due = checked
         .as_f64()
-        .is_none_or(|checked| now - checked >= CLAUDE_COST_REFRESH_SECONDS);
+        .is_none_or(|checked| now - checked >= CLAUDE_COST_CACHE_MAX_AGE_SECONDS);
     let error = saved
         .as_ref()
         .and_then(|saved| saved.get("error"))
         .cloned()
         .unwrap_or(Value::Null);
     Ok(json!({
-        "at": checked,
+        "at": saved.as_ref().and_then(|value| value.get("at")).cloned().unwrap_or_else(|| checked.clone()),
+        "checkedAt": checked,
         "error": error,
         "data": data,
         "refreshing": refreshing,
@@ -1318,7 +1431,7 @@ mod tests {
     }
 
     #[test]
-    fn codex_session_fixture_counts_total_deltas_skips_fork_replay_and_flags_unpriced_models() {
+    fn codex_session_fixture_prices_records_skips_fork_replay_and_flags_unpriced_models() {
         let root = tempfile::tempdir().expect("fixture directory");
         let home = root.path();
         let day = home.join("sessions/2026/10/15");
@@ -1336,21 +1449,35 @@ mod tests {
             json!({"timestamp":at(minutes),"type":"turn_context","payload":{"model":model}})
                 .to_string()
         };
-        // Repeated totals add nothing: 1_000_000 input (200_000 cached) and 100_000 output.
+        let record = |minutes: i64, id: &str, input: u64, cached: u64, output: u64| {
+            json!({"timestamp":at(minutes),"type":"token_usage_record","payload":{
+                "response_id":id,"usage":{"input_tokens":input,"cached_input_tokens":cached,
+                "output_tokens":output,"reasoning_output_tokens":0,"total_tokens":input+output},
+                "turn_token_usage":{},"thread_token_usage":{}}})
+            .to_string()
+        };
+        // Response records survive both repeated totals and compaction replay.
         let parent = [
             context(60, "openai/gpt-test-2026-01-01"),
+            record(59, "r1", 400_000, 100_000, 40_000),
             count(59, 400_000, 100_000, 40_000),
             count(58, 400_000, 100_000, 40_000),
-            count(57, 1_000_000, 200_000, 100_000),
+            record(58, "r1", 400_000, 100_000, 40_000),
+            json!({"timestamp":at(57),"type":"compacted","payload":{
+                "latest_token_usage_record":serde_json::from_str::<Value>(&record(57,"r1",400_000,100_000,40_000)).expect("valid response fixture")["payload"]}}).to_string(),
+            record(56, "r2", 600_000, 100_000, 60_000),
+            // Compaction's cumulative total omits part of the recovered responses.
+            count(55, 900_000, 150_000, 90_000),
         ];
         std::fs::write(day.join("rollout-parent.jsonl"), parent.join("\n")).expect("parent log");
-        // The fork replays the parent history, then adds 1_000 input and 2_000 output tokens.
         let fork = [
             json!({"timestamp":at(30),"type":"session_meta","payload":{"id":"fork",
                 "forked_from_id":"parent","timestamp":at(30)}})
             .to_string(),
             context(40, "gpt-test"),
+            record(39, "r2", 600_000, 100_000, 60_000),
             count(39, 1_000_000, 200_000, 100_000),
+            record(20, "fork-r", 1_000, 0, 2_000),
             count(20, 1_001_000, 200_000, 102_000),
         ];
         std::fs::write(
@@ -1358,7 +1485,10 @@ mod tests {
             fork.join("\n"),
         )
         .expect("fork log");
-        let unknown = [context(10, "gpt-unpriced"), count(9, 10, 0, 5)];
+        let unknown = [
+            context(10, "gpt-unpriced"),
+            record(9, "unknown-r", 10, 0, 5),
+        ];
         std::fs::write(day.join("rollout-unknown.jsonl"), unknown.join("\n")).expect("unknown log");
         let catalog = crate::pricing::PricingCatalog::from_value(&json!({"providers":{
             "openai":{"models":{"gpt-test":{"cost":{"input":1,"output":2,"cache_read":0.5}}}},
@@ -1382,6 +1512,131 @@ mod tests {
         assert_eq!(report["historyDays"], 30);
         let latest = (now - chrono::Duration::minutes(9)).with_timezone(&chrono::Local);
         assert_eq!(report["sourceDay"], latest.format("%Y-%m-%d").to_string());
+    }
+
+    #[test]
+    fn codex_session_fixture_replays_keep_original_time_before_history_filtering() {
+        let now = chrono::Utc::now();
+        let usage = json!({"response_id":"old-response", "usage":{
+            "input_tokens":1_000_000,"cached_input_tokens":200_000,"output_tokens":100_000,
+            "reasoning_output_tokens":0,"total_tokens":1_100_000}});
+        let context = json!({"type":"turn_context","payload":{"model":"gpt-test"}});
+        for (case, age_days, original_file, replay_file, compacted) in [
+            (
+                "same file",
+                31,
+                Some("sessions/a.jsonl"),
+                "sessions/a.jsonl",
+                true,
+            ),
+            (
+                "archived original visited last",
+                31,
+                Some("archived_sessions/z.jsonl"),
+                "sessions/a.jsonl",
+                true,
+            ),
+            (
+                "archived original visited first",
+                31,
+                Some("archived_sessions/a.jsonl"),
+                "sessions/z.jsonl",
+                true,
+            ),
+            (
+                "snapshot without original time",
+                31,
+                None,
+                "sessions/a.jsonl",
+                true,
+            ),
+            (
+                "direct replay visited first",
+                31,
+                Some("archived_sessions/z.jsonl"),
+                "sessions/a.jsonl",
+                false,
+            ),
+            (
+                "recent original stays on its day",
+                2,
+                Some("archived_sessions/z.jsonl"),
+                "sessions/a.jsonl",
+                false,
+            ),
+        ] {
+            let root = tempfile::tempdir().expect("fixture directory");
+            for directory in ["sessions", "archived_sessions"] {
+                std::fs::create_dir(root.path().join(directory)).expect("fixture sessions");
+            }
+            let old = json!({"timestamp":(now-chrono::Duration::days(age_days)).to_rfc3339(),
+                "type":"token_usage_record","payload":usage});
+            if let Some(path) = original_file {
+                std::fs::write(root.path().join(path), format!("{context}\n{old}\n"))
+                    .expect("original record");
+            }
+            let replay = if compacted {
+                json!({"timestamp":now.to_rfc3339(),"type":"compacted",
+                    "payload":{"latest_token_usage_record":usage}})
+            } else {
+                json!({"timestamp":now.to_rfc3339(),"type":"token_usage_record","payload":usage})
+            };
+            use std::io::Write;
+            let mut file = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(root.path().join(replay_file))
+                .expect("replay file");
+            writeln!(file, "{context}\n{replay}").expect("replay record");
+            let catalog = crate::pricing::PricingCatalog::from_value(&json!({"providers":{
+                "openai":{"models":{"gpt-test":{"cost":{"input":1,"output":2,"cache_read":0.5}}}},
+                "anthropic":{"models":{"claude-test":{"cost":{"input":1,"output":2}}}}
+            }}))
+            .expect("fixture catalog");
+            let report = super::scan_codex_sessions_with_catalog(
+                root.path(),
+                now.timestamp() as f64,
+                &AtomicBool::new(false),
+                || Some(catalog),
+            )
+            .expect("scan replay fixture");
+            assert_eq!(report["todayUSD"], Value::Null, "{case}");
+            assert_eq!(report["todayTokens"], Value::Null, "{case}");
+            if age_days > 30 {
+                assert_eq!(report["last30DaysUSD"], Value::Null, "{case}");
+                assert_eq!(report["last30DaysTokens"], Value::Null, "{case}");
+            } else {
+                assert_eq!(report["last30DaysUSD"], 1.1, "{case}");
+                assert_eq!(report["last30DaysTokens"], 1_100_000, "{case}");
+            }
+        }
+    }
+
+    #[test]
+    fn codex_session_fixture_token_count_only_is_not_priced() {
+        let root = tempfile::tempdir().expect("fixture directory");
+        std::fs::create_dir(root.path().join("sessions")).expect("fixture sessions");
+        let now = chrono::Utc::now();
+        std::fs::write(root.path().join("sessions/counts.jsonl"), [
+            json!({"type":"turn_context","payload":{"model":"gpt-test"}}).to_string(),
+            json!({"timestamp":now.to_rfc3339(),"type":"event_msg","payload":{"type":"token_count",
+                "info":{"total_token_usage":{"input_tokens":1000000,"cached_input_tokens":0,"output_tokens":1000000}}}}).to_string(),
+        ].join("\n")).expect("counter-only log");
+        let catalog = crate::pricing::PricingCatalog::from_value(&json!({"providers":{
+            "openai":{"models":{"gpt-test":{"cost":{"input":1,"output":2}}}},
+            "anthropic":{"models":{"claude-test":{"cost":{"input":1,"output":2}}}}
+        }}))
+        .expect("fixture catalog");
+        let report = super::scan_codex_sessions_with_catalog(
+            root.path(),
+            now.timestamp() as f64,
+            &AtomicBool::new(false),
+            || Some(catalog),
+        )
+        .expect("scan counter-only fixture");
+        assert_eq!(report["last30DaysUSD"], Value::Null);
+        assert_eq!(report["last30DaysTokens"], Value::Null);
+        assert_eq!(report["coverage"], "partial");
     }
 
     #[test]
@@ -1440,6 +1695,30 @@ mod tests {
         assert_eq!(cached["stale"], false);
         assert_eq!(cached["refreshing"], false);
         assert_eq!(cached["data"]["todayUSD"], 0.3);
+    }
+
+    #[test]
+    fn cache_write_1h_account_scan_prices_native_split() {
+        let directory = tempfile::tempdir().expect("profile");
+        let logs = directory.path().join("projects/sample");
+        std::fs::create_dir_all(&logs).expect("projects");
+        let now = chrono::DateTime::from_timestamp(1_700_049_600, 0).expect("time");
+        let row = json!({"type":"assistant","timestamp":now.to_rfc3339(),"message":{"id":"r","model":"claude-test","usage":{
+            "input_tokens":2,"cache_read_input_tokens":3,"cache_creation_input_tokens":10,"cache_creation":{"ephemeral_1h_input_tokens":99},"output_tokens":4}}});
+        std::fs::write(logs.join("thread.jsonl"), format!("{row}\n{row}\n")).expect("journal");
+        let catalog = crate::pricing::PricingCatalog::from_value(&json!({"providers":{
+            "openai":{"models":{"gpt":{"cost":{"input":1,"output":1}}}},
+            "anthropic":{"models":{"claude-test":{"cost":{"input":1,"output":2,"cache_read":0.5,"cache_write":1.25}}}}
+        }})).expect("catalog");
+        let result = super::scan_claude_sessions_with_catalog(
+            directory.path(),
+            now.timestamp() as f64,
+            &AtomicBool::new(false),
+            || Some(catalog),
+        )
+        .expect("scan");
+        assert_eq!(result["todayUSD"], 31.5 / 1_000_000.0);
+        assert_eq!(result["last30DaysUSD"], 31.5 / 1_000_000.0);
     }
 
     #[test]

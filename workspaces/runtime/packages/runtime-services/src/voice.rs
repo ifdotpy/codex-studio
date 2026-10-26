@@ -339,6 +339,49 @@ pub async fn records(
     Ok(json!({"records": records, "cursor": cursor, "delivered": delivered, "session": session}))
 }
 
+/// A bounded transient interval. Large histories retain the HTTP recovery path.
+/// The returned cursor advances even when the interval cannot be inlined.
+pub async fn stream_records(
+    store: &RuntimeStore,
+    agent_id: &str,
+    after: i64,
+) -> Result<(i64, Option<Value>), VoiceError> {
+    use studio_runtime_schema::shared_values::SYNC_VOICE_STREAM_MAX_RECORDS;
+    let id = agent_id.to_owned();
+    let (agent, rows, session, cursor) = store
+        .read_async("runtime-services/voice-stream", move |connection| {
+            Ok::<_, StoreError>((
+                AgentRepository::get(connection, &AgentId::from(id.as_str()))?,
+                VoiceRepository::records_page(
+                    connection,
+                    &id,
+                    after,
+                    SYNC_VOICE_STREAM_MAX_RECORDS + 1,
+                )?,
+                VoiceRepository::latest_session(connection, &id)?,
+                VoiceRepository::record_sequence(connection, &id)?,
+            ))
+        })
+        .await?;
+    validate_agent(agent, agent_id)?;
+    if rows.len() > SYNC_VOICE_STREAM_MAX_RECORDS as usize {
+        return Ok((cursor, None));
+    }
+    let cursor = rows.last().map_or(after, |row| row.sequence);
+    let mut records = Vec::with_capacity(rows.len());
+    for row in rows {
+        validate_record(&row)?;
+        records.push(row.value()?);
+    }
+    if let Some(session) = &session {
+        validate_session(session)?;
+    }
+    Ok((
+        cursor,
+        Some(json!({"after":after,"cursor":cursor,"records":records,"session":session})),
+    ))
+}
+
 pub async fn approvals(store: &RuntimeStore, agent_id: &str) -> Result<Value, VoiceError> {
     let agent_for_read = AgentId::from(agent_id);
     let (agent, rows) = store

@@ -470,9 +470,9 @@ fn guest_error_text(error: &GuestError) -> String {
                 .flatten()
                 .collect::<Vec<_>>()
                 .join(": ");
-            format!("Linux guest host.exec: {text}")
+            format!("VM guest host.exec: {text}")
         }
-        error => format!("Linux guest host.exec failed: {error}"),
+        error => format!("VM guest host.exec failed: {error}"),
     }
 }
 

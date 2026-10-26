@@ -80,9 +80,9 @@ pub mod host_exec_service;
 pub mod host_project_runtime;
 pub mod host_worker_create;
 pub mod idle_compaction;
-pub mod image_workspace;
-pub mod image_workspace_agents;
+pub mod layr_native;
 pub(crate) mod layr_read;
+pub mod legacy_image_workspace;
 pub mod lifecycle_effects;
 pub mod limit_reset;
 pub mod linux_vm_guest;
@@ -139,6 +139,7 @@ pub mod peer_updates;
 pub mod portable_history;
 pub mod pricing;
 pub mod process_controls;
+pub mod project_deletion;
 pub mod project_locations;
 pub mod project_secrets;
 pub mod projects;
@@ -220,6 +221,7 @@ pub mod workspace_operations_effects;
 pub mod workspace_ready;
 pub mod workspace_ready_git;
 pub mod workspace_views;
+pub mod worktree_root;
 
 #[cfg(test)]
 mod registration_tests {

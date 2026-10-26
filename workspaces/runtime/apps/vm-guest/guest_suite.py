@@ -1,4 +1,4 @@
-"""Stdlib module workers; run-guest-suite.mjs owns the deadline and process cleanup."""
+"""Stdlib case workers; run-guest-suite.mjs owns the deadline and process cleanup."""
 from concurrent.futures import ProcessPoolExecutor
 from concurrent.futures.process import BrokenProcessPool
 from contextlib import redirect_stderr, redirect_stdout
@@ -32,22 +32,22 @@ def prepare(directory):
     sys.addaudithook(guard)
 
 
-def run_module(module):
+def run_case(identity):
     output = io.StringIO()
     started = time.monotonic()
     with redirect_stdout(output), redirect_stderr(output):
-        suite = unittest.defaultTestLoader.loadTestsFromName(module)
+        suite = unittest.defaultTestLoader.loadTestsFromName(identity)
         result = unittest.TextTestRunner(stream=output, verbosity=2).run(suite)
     return (result.testsRun, len(result.failures), len(result.errors) + len(result.unexpectedSuccesses),
             len(result.skipped), time.monotonic() - started, output.getvalue())
 
 
-def modules(suite):
+def cases(suite):
     for entry in suite:
         if isinstance(entry, unittest.TestSuite):
-            yield from modules(entry)
+            yield from cases(entry)
         else:
-            yield entry.__class__.__module__
+            yield entry.id()
 
 
 def main(*, executor_factory=ProcessPoolExecutor):
@@ -59,20 +59,21 @@ def main(*, executor_factory=ProcessPoolExecutor):
     suite = unittest.defaultTestLoader.discover(directory)
     if unittest.defaultTestLoader.errors:
         raise RuntimeError("\n".join(unittest.defaultTestLoader.errors))
-    names = sorted(set(modules(suite)))
+    names = sorted(cases(suite))
     total = failures = errors = skipped = 0
     started = time.monotonic()
     with executor_factory(max_workers=workers, mp_context=multiprocessing.get_context("spawn"),
-                          initializer=prepare, initargs=(directory,)) as pool:
-        # map preserves discovery order; each module has isolated globals and buffered output.
-        results = pool.map(run_module, names)
-        for index, module in enumerate(names):
+                             initializer=prepare, initargs=(directory,)) as pool:
+        # Each case owns its fixtures; map preserves discovery order and buffered output.
+        results = pool.map(run_case, names)
+        for index, identity in enumerate(names):
             try:
                 ran, failed, errored, skip, seconds, output = next(results)
             except BrokenProcessPool as error:
-                raise RuntimeError(f"module worker crashed; unfinished: {', '.join(names[index:])}") from error
-            print(f"{module}: {ran} tests in {seconds:.3f}s", file=sys.stderr)
-            print(textwrap.indent(output, "  "), file=sys.stderr, end="")
+                raise RuntimeError(f"test worker crashed; unfinished: {', '.join(names[index:])}") from error
+            print(f"{identity}: {ran} tests in {seconds:.3f}s", file=sys.stderr)
+            if failed or errored or skip:
+                print(textwrap.indent(output, "  "), file=sys.stderr, end="")
             total += ran
             failures += failed
             errors += errored

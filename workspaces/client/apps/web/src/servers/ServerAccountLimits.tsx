@@ -6,30 +6,30 @@ import { accountLimitView } from "../components/AccountTiles";
 import { AccountCapacityView, type Account } from "../components/Accounts";
 import type { AccountLimitsSnapshot } from "../usage/accountUsage";
 import { useAccountLimits } from "../usage/useAccountLimits";
-import { ServerServicesProvider, useServerApi } from "./ServerServicesContext";
+import { ServerServicesProvider, useServerSync } from "./ServerServicesContext";
 import type { ServerAccount } from "./navigation";
 import type { ServerServices } from "./serverServices";
 
 type Accounts = Record<string, Account[]>;
 
-/** The full accounts of every server (ids and stored limits), read from each
- * server's own API when the settings panel opens. */
+/** Full accounts (ids and stored limits) from each server's entity projection. */
 export function useServerFullAccounts(
   serverIds: string[],
   servicesFor: ((serverId: string) => ServerServices | undefined) | undefined,
 ) {
   const [accounts, setAccounts] = useState<Accounts>({});
-  const fallback = useServerApi();
+  const fallback = useServerSync();
   const current = serverIds.map((id) => ({
     id,
-    api: servicesFor ? servicesFor(id)?.api : fallback,
+    sync: servicesFor ? servicesFor(id)?.sync : fallback,
   }));
   const readers = useRef(current);
   if (
     readers.current.length !== current.length ||
     readers.current.some(
       (reader, index) =>
-        reader.id !== current[index]?.id || reader.api !== current[index]?.api,
+        reader.id !== current[index]?.id ||
+        reader.sync !== current[index]?.sync,
     )
   )
     readers.current = current;
@@ -37,25 +37,31 @@ export function useServerFullAccounts(
   const settledOwners = useRef(new Map<string, typeof fallback>());
   useEffect(() => {
     let stopped = false;
-    for (const { id, api } of sources) {
-      if (!api) continue;
-      void api
-        .get("/api/accounts")
-        .then((result) => {
-          if (!stopped) {
-            settledOwners.current.set(id, api);
-            setAccounts((old) => ({ ...old, [id]: result.accounts }));
-          }
-        })
-        .catch((failure: unknown) => console.warn(errorText(failure)));
-    }
+    const stops = sources.flatMap(({ id, sync }) => {
+      if (!sync) return [];
+      return [
+        sync.subscribeStateProjection(
+          (snapshot) => {
+            const summary = snapshot?.runtime.accountsSummary;
+            if (!stopped && summary) {
+              settledOwners.current.set(id, sync);
+              setAccounts((old) => ({ ...old, [id]: summary.accounts }));
+            }
+          },
+          (failure) => {
+            if (!stopped && failure) console.warn(errorText(failure));
+          },
+        ),
+      ];
+    });
     return () => {
       stopped = true;
+      stops.forEach((stop) => stop());
     };
   }, [sources]);
   const visible: Accounts = Object.fromEntries(
-    sources.flatMap(({ id, api }) =>
-      api && settledOwners.current.get(id) === api && accounts[id]
+    sources.flatMap(({ id, sync }) =>
+      sync && settledOwners.current.get(id) === sync && accounts[id]
         ? [[id, accounts[id]]]
         : [],
     ),

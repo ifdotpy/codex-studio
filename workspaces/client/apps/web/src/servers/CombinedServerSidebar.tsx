@@ -191,6 +191,12 @@ export default function CombinedServerSidebar({
           projectId: model.wireProject(owner, path),
         }))
       }
+      deleteProject={(path) =>
+        action({ kind: "project", path }, (owner) => ({
+          action: "delete-project",
+          projectId: model.wireProject(owner, path),
+        }))
+      }
       projectAccount={(path) =>
         action({ kind: "project", path }, (owner) => ({
           action: "project-account",

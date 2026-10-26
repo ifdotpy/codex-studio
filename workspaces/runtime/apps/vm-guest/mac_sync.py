@@ -137,14 +137,18 @@ class MacSync:
             raise GuestError("not_found", "The layr project does not exist")
         for line, path in ((LINE, mac), (VIEW, view)):
             if not path.is_dir():
-                await self.layr(["branch", line, "main", "--owner", owner], cwd=main, owner=owner)
+                await self.layr(["line", "new", line, "main", "--owner", owner], cwd=main, owner=owner)
         return owner, main, mac, view
 
     async def head(self, cwd: Path, owner: str) -> str:
-        return _state(await self.layr(["rev-parse", "HEAD"], cwd=cwd, owner=owner))
+        return _state(await self.layr(["rev-parse", "head"], cwd=cwd, owner=owner))
+
+    async def dirty(self, cwd: Path, owner: str) -> bool:
+        status = json.loads(await self.layr(["status", "--json"], cwd=cwd, owner=owner))
+        return any(status[field] for field in ("staged", "unstaged", "untracked", "conflicts"))
 
     async def clean(self, cwd: Path, owner: str, name: str) -> None:
-        if await self.layr(["status", "--porcelain"], cwd=cwd, owner=owner):
+        if await self.dirty(cwd, owner):
             raise GuestError("operation_failed", "The " + name + " line has uncommitted changes")
 
     async def checkout(self, view: Path, owner: str, state: str) -> None:
@@ -262,7 +266,7 @@ class MacSync:
             owner, main, mac, view = await self.lines(project)
             await self.deny_push(project, receipts)
             main_head, mac_head = await self.head(main, owner), await self.head(mac, owner)
-            if await self.layr(["status", "--porcelain"], cwd=mac, owner=owner):
+            if await self.dirty(mac, owner):
                 # Only sync writes the mac line: a failed round left these changes.
                 await self.layr(["reset", "-q", "--hard", mac_head], cwd=mac, owner=owner)
             # The line follows main between rounds; unmerged Mac work stays where it is.
@@ -288,8 +292,8 @@ class MacSync:
                     present = [rel for rel in applied if os.path.lexists(mac / rel)]
                     for start in range(0, len(present), 500):
                         await self.layr(["add", "-f", "--", *present[start:start + 500]], cwd=mac, owner=owner)
-                    if await self.layr(["status", "--porcelain"], cwd=mac, owner=owner):
-                        await self.layr(["commit", "-q", "-m", "Mac sync"], cwd=mac, owner=owner)
+                    if await self.dirty(mac, owner):
+                        await self.layr(["save", "-q", "-m", "Mac sync"], cwd=mac, owner=owner)
                 except BaseException:
                     # The next round starts again from main; nothing of this round stays.
                     await self.layr(["reset", "-q", "--hard", main_head], cwd=mac, owner=owner)
@@ -356,7 +360,7 @@ class MacSync:
             owner, main, _mac, _view = await self.lines(project)
             line = main.parent / "mac-conflict"
             if not line.is_dir():
-                await self.layr(["branch", "mac-conflict", "main", "--owner", owner], cwd=main, owner=owner)
+                await self.layr(["line", "new", "mac-conflict", "main", "--owner", owner], cwd=main, owner=owner)
             await self.clean(line, owner, "mac-conflict")
             main_state, line_state = await self.head(main, owner), await self.head(line, owner)
             # Earlier handoffs the lead has not merged stay in the line; merged ones leave it.
@@ -376,7 +380,7 @@ class MacSync:
             await self.layr(["add", "-A"], cwd=line, owner=owner)
             if entry is not None:
                 await self.layr(["add", "-f", "--", rel], cwd=line, owner=owner)
-            await self.layr(["commit", "-q", "--allow-empty", "-m", "Mac version of " + rel], cwd=line, owner=owner)
+            await self.layr(["save", "-q", "--allow-empty", "-m", "Mac version of " + rel], cwd=line, owner=owner)
             result = {"projectId": project, "line": "mac-conflict", "path": rel, "mainStateId": main_state,
                       "stateId": await self.head(line, owner)}
             receipts.mkdir(parents=True, mode=0o700, exist_ok=True)
@@ -413,7 +417,7 @@ class MacSync:
             line = main.parent / name
             require(not line.exists(), "The line exists already: " + name)
             user = self.projects.owner(project)
-            await self.layr(["branch", name, "main", "--owner", owner], cwd=main, owner=owner)
+            await self.layr(["line", "new", name, "main", "--owner", owner], cwd=main, owner=owner)
             identity = "mac-worktree:" + project + ":" + operation
             stale = self.state / "imports" / hashlib.sha256(identity.encode()).hexdigest()
             if stale.exists():
@@ -453,10 +457,10 @@ class MacSync:
                 names = [prefix + rel for rel in sorted(wanted)]
                 for start in range(0, len(names), 500):
                     await self.layr(["add", "-f", "--", *names[start:start + 500]], cwd=line, owner=owner)
-                if await self.layr(["status", "--porcelain"], cwd=line, owner=owner):
-                    await self.layr(["commit", "-q", "-m", message], cwd=line, owner=owner)
+                if await self.dirty(line, owner):
+                    await self.layr(["save", "-q", "-m", message], cwd=line, owner=owner)
             except BaseException:
-                await self.run(["branch", "-D", name], cwd=main, owner=owner)
+                await self.run(["line", "delete", "-D", name], cwd=main, owner=owner)
                 raise
             finally:
                 await command(["btrfs", "subvolume", "delete", frozen])

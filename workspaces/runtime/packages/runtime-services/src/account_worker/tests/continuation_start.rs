@@ -509,6 +509,90 @@ async fn a_claude_session_limit_resumes_once_after_the_provider_reset() {
     }
 }
 
+struct FailureLimits {
+    runtime: crate::account_session_runtime::AccountSessionRuntime,
+    observed: tokio::sync::mpsc::UnboundedSender<()>,
+}
+impl crate::account_session_runtime::AccountSessionPort for FailureLimits {
+    fn refresh_limits<'a>(
+        &'a self,
+        account: &'a str,
+    ) -> crate::account_session_runtime::AccountSessionFuture<'a, ()> {
+        Box::pin(async move {
+            self.runtime
+                .persist_limits(
+                    account,
+                    &json!({"accountKey":account,"at":1000.0,"error":null,
+                "data":{"rateLimits":{"primary":{"usedPercent":100.0}}}}),
+                )
+                .await?;
+            self.observed.send(()).unwrap();
+            Ok(())
+        })
+    }
+}
+
+#[tokio::test]
+async fn limit_failure_refresh_publishes_account_entity_after_recording_failure_once() {
+    for error_kind in ["usageLimitExceeded", "rateLimitExceeded"] {
+        let (state, account) = fixture(ProviderKind::Codex).await;
+        let runtime = crate::account_session_runtime::AccountSessionRuntime::new(
+            account.driver.clone(),
+            None,
+            tokio::runtime::Handle::current(),
+            state.root.join("accounts"),
+            state.root.clone(),
+            state.root.clone(),
+        )
+        .with_store(state.bridge.store.clone());
+        let (observed, mut received) = tokio::sync::mpsc::unbounded_channel();
+        let mut resources = account.resources();
+        resources.account_session = Some(Arc::new(FailureLimits { runtime, observed }));
+        let mut peer = Peer::new();
+        let mut worker = peer
+            .open_worker_with_resources(state.bridge.clone(), resources)
+            .await;
+        let error = json!({"codexErrorInfo":error_kind});
+        fail_first_turn(&state, &mut peer, &worker, error.clone()).await;
+        tokio::time::timeout(std::time::Duration::from_secs(5), received.recv())
+            .await
+            .expect("recorded limit failure refreshes its account")
+            .expect("refresh owner remains alive");
+        assert_eq!(
+            record_of(&state, &state.agent).await["usageResume"]["status"],
+            "scheduled"
+        );
+        let raw: String = state
+            .bridge
+            .store
+            .test_reader()
+            .unwrap()
+            .query_row(
+                "SELECT payload FROM sync_entities WHERE collection='rateLimit' AND id='default'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            serde_json::from_str::<Value>(&raw).unwrap()["value"]["data"]["rateLimits"]["primary"]
+                ["usedPercent"],
+            100.0
+        );
+        let cursor = peer
+            .frame(
+                json!({"method":"turn/completed","params":{"threadId":"fake-thread-0",
+            "turn":{"id":FAILED_TURN,"status":"failed","error":error}}}),
+            )
+            .await;
+        peer.acknowledged(cursor).await;
+        worker.shutdown().await.unwrap();
+        assert!(
+            received.try_recv().is_err(),
+            "a terminal replay does not refresh again"
+        );
+    }
+}
+
 fn unix_now() -> f64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)

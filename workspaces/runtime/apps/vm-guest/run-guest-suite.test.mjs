@@ -1,7 +1,7 @@
 // The leak check of the guest suite runner (run-guest-suite.mjs): it finds the processes
 // that name the run's folder or work in it, stops them, and leaves other processes alone.
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import {
   existsSync,
   mkdirSync,
@@ -14,6 +14,8 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { test } from "node:test";
+import { createServer } from "node:net";
+import { once } from "node:events";
 import {
   stopSuiteProcesses,
   suiteProcesses,
@@ -119,7 +121,7 @@ function scopedProbeGuard(folder, pids) {
       path.join(bin, name),
       `#!${process.execPath}
 import { appendFileSync } from 'node:fs';
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 const args=process.argv.slice(2);
 appendFileSync(${JSON.stringify(log)},JSON.stringify({name:${JSON.stringify(name)},args})+'\\n');
 const index=args.indexOf('-p');
@@ -221,7 +223,64 @@ test("a failed or interrupted scoped ps probe is not an empty selection", () => 
   }
 });
 
-function moduleExecutor(folder, broken = false) {
+test("cases within one module overlap and keep ordered output, failures and skips", async (t) => {
+  const folder = mkdtempSync(path.join(os.tmpdir(), "guest-modules-"));
+  const peers = [];
+  const barrier = createServer((peer) => {
+    peers.push(peer);
+    if (peers.length === 2) peers.forEach((socket) => socket.end("ready"));
+  });
+  barrier.listen(0, "127.0.0.1");
+  await once(barrier, "listening");
+  t.after(() => {
+    peers.forEach((peer) => peer.destroy());
+    barrier.close();
+    rmSync(folder, { recursive: true, force: true });
+  });
+  writeFileSync(
+    path.join(folder, "test_a.py"),
+    `import os,socket,sys,unittest
+class A(unittest.TestCase):
+ def setUp(self):
+  with socket.create_connection(('127.0.0.1',${barrier.address().port}),timeout=5) as peer:
+   self.assertEqual(peer.recv(5),b'ready')
+ def test_fail(self): self.fail('case failure')
+ @unittest.skip('fixture')
+ def test_skip(self): pass
+ def test_pass(self):
+  self.assertNotIn('LAYR_E2E_ROOT',os.environ)
+  with self.assertRaisesRegex(RuntimeError,'privileged command forbidden'):
+   sys.audit('subprocess.Popen','/usr/sbin/groupadd',[],None,None)
+`,
+  );
+  const run = spawn(
+    process.env.STUDIO_GUEST_PYTHON || "python3",
+    ["-B", fileURLToPath(new URL("guest_suite.py", import.meta.url)), folder],
+    {
+      timeout: 10000,
+      env: {
+        ...process.env,
+        STUDIO_GUEST_WORKERS: "2",
+        LAYR_E2E_ROOT: "/not-for-contracts",
+      },
+    },
+  );
+  let stderr = "";
+  run.stderr.on("data", (chunk) => {
+    stderr += chunk;
+  });
+  const [code] = await once(run, "close");
+  assert.equal(code, 1, stderr);
+  assert.match(stderr, /case failure/);
+  assert.ok(
+    stderr.indexOf("test_a.A.test_fail:") <
+      stderr.indexOf("test_a.A.test_pass:"),
+  );
+  assert.match(stderr, /Ran 3 tests in /);
+  assert.match(stderr, /FAILED \(failures=1, errors=0, skipped=1\)/);
+});
+
+function caseExecutor(folder, broken = false) {
   const script = `
 import importlib.util, multiprocessing, sys
 from pathlib import Path
@@ -241,9 +300,9 @@ class Executor:
   assert not multiprocessing.active_children()
   print("fixture executor closed", file=sys.stderr)
  def map(self, function, names):
-  assert function is runner.run_module
-  assert names == ${broken ? '["test_a", "test_crash", "test_z"]' : '["test_a", "test_b"]'}
-  ${broken ? 'def crashed():\n   yield function("test_a")\n   raise runner.BrokenProcessPool("fixture worker exit")\n  return crashed()' : "return map(function, names)"}
+  assert function is runner.run_case
+  assert names == ${broken ? '["test_a.Complete.test_pass", "test_crash.Crash.test_crash", "test_z.Complete.test_pass"]' : '["test_a.A.test_fail", "test_b.B.test_pass", "test_b.B.test_skip"]'}
+  ${broken ? 'def crashed():\n   yield function("test_a.Complete.test_pass")\n   raise runner.BrokenProcessPool("fixture worker exit")\n  return crashed()' : "return map(function, names)"}
 sys.argv = [source, directory]
 sys.exit(runner.main(executor_factory=Executor))
 `;
@@ -268,7 +327,7 @@ sys.exit(runner.main(executor_factory=Executor))
   );
 }
 
-test("the module executor keeps ordered output and aggregates failures and skips", () => {
+test("the case executor keeps ordered output and aggregates failures and skips", () => {
   const folder = mkdtempSync(path.join(os.tmpdir(), "guest-modules-"));
   try {
     writeFileSync(
@@ -279,14 +338,17 @@ test("the module executor keeps ordered output and aggregates failures and skips
       path.join(folder, "test_b.py"),
       "import os,sys,unittest\nclass B(unittest.TestCase):\n @unittest.skip('fixture')\n def test_skip(self): pass\n def test_pass(self):\n  self.assertNotIn('LAYR_E2E_ROOT',os.environ)\n  with self.assertRaisesRegex(RuntimeError,'privileged command forbidden'):\n   sys.audit('subprocess.Popen','/usr/sbin/groupadd',[],None,None)\n",
     );
-    const run = moduleExecutor(folder);
+    const run = caseExecutor(folder);
     assert.equal(
       run.status,
       1,
       `${run.error?.stack ?? ""}\n${run.signal ?? ""}\n${run.stderr}`,
     );
     assert.match(run.stderr, /module failure/);
-    assert.ok(run.stderr.indexOf("test_a:") < run.stderr.indexOf("test_b:"));
+    assert.ok(
+      run.stderr.indexOf("test_a.A.test_fail:") <
+        run.stderr.indexOf("test_b.B.test_pass:"),
+    );
     assert.match(run.stderr, /Ran 3 tests in /);
     assert.match(run.stderr, /FAILED \(failures=1, errors=0, skipped=1\)/);
     assert.equal(run.stderr.match(/fixture executor closed/g)?.length, 1);
@@ -295,7 +357,7 @@ test("the module executor keeps ordered output and aggregates failures and skips
   }
 });
 
-test("a broken executor closes its pool and names unfinished modules", () => {
+test("a broken executor closes its pool and names unfinished cases", () => {
   const folder = mkdtempSync(path.join(os.tmpdir(), "guest-crash-"));
   try {
     for (const name of ["test_a", "test_z"])
@@ -307,18 +369,40 @@ test("a broken executor closes its pool and names unfinished modules", () => {
       path.join(folder, "test_crash.py"),
       "import unittest\nclass Crash(unittest.TestCase):\n def test_crash(self): pass\n",
     );
-    const run = moduleExecutor(folder, true);
+    const run = caseExecutor(folder, true);
     assert.equal(
       run.status,
       1,
       `${run.error?.stack ?? ""}\n${run.signal ?? ""}\n${run.stderr}`,
     );
-    assert.match(run.stderr, /test_a: 1 tests in /);
+    assert.match(run.stderr, /test_a.Complete.test_pass: 1 tests in /);
     assert.match(
       run.stderr,
-      /module worker crashed; unfinished: test_crash, test_z/,
+      /test worker crashed; unfinished: test_crash.Crash.test_crash, test_z.Complete.test_pass/,
     );
     assert.equal(run.stderr.match(/fixture executor closed/g)?.length, 1);
+  } finally {
+    rmSync(folder, { recursive: true, force: true });
+  }
+});
+
+test("a crashed case names unfinished cases and fails the run", () => {
+  const folder = mkdtempSync(path.join(os.tmpdir(), "guest-crash-"));
+  try {
+    writeFileSync(
+      path.join(folder, "test_crash.py"),
+      "import os,unittest\nclass Crash(unittest.TestCase):\n def test_crash(self): os._exit(7)\n",
+    );
+    const run = spawnSync(
+      process.env.STUDIO_GUEST_PYTHON || "python3",
+      ["-B", fileURLToPath(new URL("guest_suite.py", import.meta.url)), folder],
+      { encoding: "utf8", timeout: 10000 },
+    );
+    assert.equal(run.status, 1, run.stderr);
+    assert.match(
+      run.stderr,
+      /test worker crashed; unfinished: test_crash.Crash.test_crash/,
+    );
   } finally {
     rmSync(folder, { recursive: true, force: true });
   }

@@ -348,7 +348,7 @@ async fn store_failure_rolls_back_each_effect_and_the_checkpoint() {
             let (root, agent) = fixture();
             let mut lines = records();
             lines.push(json!({"type":"response_item","timestamp":4,"payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"synthetic"}]}}));
-            lines.push(json!({"type":"token_usage_record","timestamp":5,"payload":{"thread_id":"thread","response_id":"r","usage":{"total_tokens":2},"thread_token_usage":{"total_tokens":2}}}));
+            lines.push(json!({"type":"token_usage_record","timestamp":5,"payload":{"thread_id":"thread","response_id":"r","usage":{"input_tokens":2,"output_tokens":0,"total_tokens":2},"thread_token_usage":{"input_tokens":2,"output_tokens":0,"total_tokens":2}}}));
             let path = file(root.path(), &lines, b"");
             let store = RuntimeStore::open(Some(root.path())).await.expect("store");
             let db = rusqlite::Connection::open(root.path().join("analytics.sqlite3")).expect("db");
@@ -402,7 +402,7 @@ async fn store_failure_rolls_back_each_effect_and_the_checkpoint() {
 async fn stale_agent_and_cancellation_write_nothing() {
     let (root, agent) = fixture();
     let mut lines = records();
-    lines.push(json!({"type":"token_usage_record","timestamp":4,"payload":{"thread_id":"thread","response_id":"r","usage":{"total_tokens":2},"thread_token_usage":{"total_tokens":2}}}));
+    lines.push(json!({"type":"token_usage_record","timestamp":4,"payload":{"thread_id":"thread","response_id":"r","usage":{"input_tokens":2,"output_tokens":0,"total_tokens":2},"thread_token_usage":{"input_tokens":2,"output_tokens":0,"total_tokens":2}}}));
     let path = file(root.path(), &lines, b"");
     let store = RuntimeStore::open(Some(root.path())).await.expect("store");
     let before = common::actual(&common::analytics(root.path()), &common::tables());
@@ -459,7 +459,7 @@ async fn collector_tick_imports_rollout_usage_and_replay_is_exactly_once() {
     let mut lines = records();
     lines.push(json!({"type":"token_usage_record","timestamp":4,"payload":{
         "thread_id":"thread","response_id":"history-response",
-        "usage":{"total_tokens":23},"thread_token_usage":{"total_tokens":23}
+        "usage":{"input_tokens":23,"output_tokens":0,"total_tokens":23},"thread_token_usage":{"input_tokens":23,"output_tokens":0,"total_tokens":23}
     }}));
     let mut bytes = Vec::new();
     for line in &lines {
@@ -842,7 +842,7 @@ async fn changed_consumed_range_is_refused_before_any_effect() {
     for change in ["rewrite", "truncate", "replace"] {
         let (root, agent) = fixture();
         let mut lines = records();
-        lines.push(json!({"type":"token_usage_record","timestamp":4,"payload":{"thread_id":"thread","response_id":"r","usage":{"total_tokens":2},"thread_token_usage":{"total_tokens":2}}}));
+        lines.push(json!({"type":"token_usage_record","timestamp":4,"payload":{"thread_id":"thread","response_id":"r","usage":{"input_tokens":2,"output_tokens":0,"total_tokens":2},"thread_token_usage":{"input_tokens":2,"output_tokens":0,"total_tokens":2}}}));
         lines.push(json!({"type":"ignored","padding":"x".repeat(512)}));
         let path = file(root.path(), &lines, b"");
         let original = fs::read(&path).expect("original");

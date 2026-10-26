@@ -61,7 +61,7 @@ class ProjectGroup(unittest.TestCase):
     def test_the_lead_and_each_worker_join_only_their_project_group(self):
         sap, other = "a" * 64, "b" * 64
         group = layr_agents.project_group(sap)
-        self.assertEqual(group, "studio-g-" + hashlib.sha256(sap.encode()).hexdigest()[:16])
+        self.assertEqual(group, "studio-g-ffe054fe7ae0cb6d")
         lead = layr_agents.ensure_project_owner(sap)
         worker = layr_agents.join_project_group(layr_agents._user("studio-a-" + "1" * 22), sap)
         stranger = layr_agents.ensure_project_owner(other)

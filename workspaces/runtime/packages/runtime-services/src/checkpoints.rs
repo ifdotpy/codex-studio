@@ -62,9 +62,9 @@ pub enum CheckpointsError {
     WrongAgent,
     #[error("This agent was deleted")]
     DeletedAgent,
-    #[error("Studio Git checkpoints are unavailable for image workspaces")]
+    #[error("This legacy workspace is finished")]
     ExecutionWorkspace,
-    #[error("Studio Git tools are unavailable for image workspaces")]
+    #[error("This legacy workspace is finished")]
     GitToolsUnavailable,
     #[error("Workspace activity changed before checkpoint capture")]
     ActivityChanged,
@@ -621,7 +621,7 @@ async fn capture_reserved(
 
 pub fn preview(store: &RuntimeStore, context: PreviewContext) -> Result<Value, CheckpointsError> {
     ensure_agent_identity(&context.agent)?;
-    if is_image_workspace(&context.agent) {
+    if is_legacy_workspace(&context.agent) {
         return Err(CheckpointsError::GitToolsUnavailable);
     }
     ensure_agent_available(&context.agent)?;
@@ -744,7 +744,7 @@ pub fn ensure_restore_available(
 
 pub fn ensure_agent_available(agent: &StoredCheckpointObject) -> Result<(), CheckpointsError> {
     ensure_agent_identity(agent)?;
-    if is_image_workspace(agent) {
+    if is_legacy_workspace(agent) {
         return Err(CheckpointsError::ExecutionWorkspace);
     }
     Ok(())
@@ -760,8 +760,8 @@ fn ensure_agent_identity(agent: &StoredCheckpointObject) -> Result<(), Checkpoin
     Ok(())
 }
 
-fn is_image_workspace(agent: &StoredCheckpointObject) -> bool {
-    agent.record.get("imageWorkspace").and_then(Value::as_bool) == Some(true)
+fn is_legacy_workspace(agent: &StoredCheckpointObject) -> bool {
+    crate::legacy_image_workspace::is_legacy(&agent.record)
 }
 
 pub fn ensure_workspace_idle(

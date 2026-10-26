@@ -237,6 +237,11 @@ pub(crate) fn routes() -> RouteGroup {
     RouteGroup::new(vec![
         get("/api/projects", OperationStatus::Implemented, list_projects),
         post("/api/projects", OperationStatus::Implemented, write_project),
+        post(
+            "/api/projects/delete",
+            OperationStatus::Implemented,
+            delete_project,
+        ),
         get(
             "/api/project-locations",
             OperationStatus::Implemented,
@@ -244,6 +249,73 @@ pub(crate) fn routes() -> RouteGroup {
         ),
         post("/api/peer-teams", OperationStatus::Implemented, peer_teams),
     ])
+}
+
+async fn delete_project(
+    State(state): State<HttpState>,
+    ports: Option<
+        axum::Extension<Arc<dyn studio_runtime_services::agent_lifecycle_runtime::LifecyclePorts>>,
+    >,
+    ApiJson(body): ApiJson<crate::generated::ProjectDeleteRequest>,
+) -> Result<Response, ApiError> {
+    use crate::generated::ProjectDeleteFailureCode as Code;
+    use studio_runtime_services::project_deletion::{self, Error};
+    let store = state.store.clone().ok_or_else(ApiError::internal)?;
+    let ports = ports
+        .map(|axum::Extension(ports)| ports)
+        .unwrap_or_else(|| {
+            Arc::new(studio_runtime_services::agent_lifecycle_runtime::UnavailableLifecyclePorts)
+        });
+    let now =
+        studio_runtime_services::event_write::unix_time().map_err(|_| ApiError::internal())?;
+    let result = project_deletion::execute(
+        store,
+        project_deletion::Request {
+            id: body.id,
+            request_id: body.request_id,
+            expected_workspace_id: body.expected_workspace_id,
+            expected_project_seq: body.expected_project_seq,
+        },
+        now,
+        ports,
+    )
+    .await;
+    let error = match result {
+        Ok(reply) => {
+            return super::generated_json::<crate::generated::ProjectDeleteResponse>(reply)
+                .map(|reply| Json(reply).into_response());
+        }
+        Err(error) => error,
+    };
+    let (status, code) = match &error {
+        Error::NotFound => (StatusCode::NOT_FOUND, Code::ProjectNotFound),
+        Error::Workspace => (StatusCode::CONFLICT, Code::ProjectWorkspaceConflict),
+        Error::Sequence => (StatusCode::CONFLICT, Code::ProjectSequenceConflict),
+        Error::RequestConflict => (StatusCode::CONFLICT, Code::ProjectRequestConflict),
+        Error::Remote => (StatusCode::CONFLICT, Code::ProjectRemoteScope),
+        Error::Membership => (StatusCode::CONFLICT, Code::ProjectMembershipConflict),
+        Error::Lifecycle(
+            studio_runtime_services::agent_management::ManagementError::Unavailable(_),
+        ) => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Code::ProjectLifecycleUnavailable,
+        ),
+        Error::Lifecycle(studio_runtime_services::agent_management::ManagementError::Invalid(
+            _,
+        )) => (StatusCode::CONFLICT, Code::ProjectMembershipConflict),
+        Error::Store(error) => {
+            eprintln!("Project deletion store error: {error}");
+            return Err(ApiError::internal());
+        }
+        _ => {
+            eprintln!("Project deletion lifecycle error: {error}");
+            return Err(ApiError::internal());
+        }
+    };
+    let body = super::generated_json::<crate::generated::ProjectDeleteErrorResponse>(
+        json!({"error":error.to_string(),"code":code,"outcome":"not_applied"}),
+    )?;
+    Ok((status, Json(body)).into_response())
 }
 
 async fn list_projects(
@@ -372,15 +444,7 @@ async fn write_project(
         super::generated_json::<crate::generated::ProjectMutationRecord>(value)
             .map(|value| ProjectWriteResponse::Mutation(Box::new(value)))?
     };
-    let mut response = Json(value).into_response();
-    if is_sidebar {
-        // Python preserves the durable sidebar receipt on both first apply and
-        // exact retry; request-specific sync decoration would alter its shape.
-        response
-            .extensions_mut()
-            .insert(crate::mutation_sync::SkipMutationSyncEnvelope);
-    }
-    Ok(response)
+    Ok(Json(value).into_response())
 }
 
 async fn local_project_registration(
@@ -710,18 +774,23 @@ async fn remote_project_write(
         let operation = projects::cross_server_identity(&["project-location", "ui", request_id]);
         let project_store = store.clone();
         let project_id_for_read = project.to_owned();
-        let record = project_store
-            .read_async(
-                "runtime-http/routes/projects/project-read",
-                move |project_row| {
-                    studio_runtime_store::ProjectsRepository::get(project_row, &project_id_for_read)
+        let (record, admission) = project_store
+            .read_async("runtime-http/routes/projects/project-read", move |db| {
+                let record =
+                    studio_runtime_store::ProjectsRepository::get(db, &project_id_for_read)
                         .map_err(ApiError::stored)?
-                        .map(|(_, record)| record)
                         .ok_or_else(|| {
                             ApiError::new(StatusCode::BAD_REQUEST, "Select an existing project")
-                        })
-                },
-            )
+                        })?
+                        .1;
+                let admission = studio_runtime_services::project_locations::location_admission(
+                    db,
+                    &project_id_for_read,
+                    None,
+                )
+                .map_err(|error| ApiError::new(StatusCode::CONFLICT, error.to_string()))?;
+                Ok::<_, ApiError>((record, admission))
+            })
             .await?;
         let locations = record
             .get("locations")
@@ -750,11 +819,12 @@ async fn remote_project_write(
             ));
         }
         let signature_data = json!({"action":action,"project":project,"server":server,"path":path});
-        let payload = json!({"project":project,"name":record.get("name"),"path":path,
+        let mut payload = json!({"project":project,"name":record.get("name"),"path":path,
             "request":signature_data,"signature":studio_runtime_store::sha256_hex(
                 studio_runtime_services::remote_transport::canonical_json(&signature_data)
                     .map_err(|_| ApiError::internal())?.as_bytes()),
             "location":existing});
+        payload[studio_runtime_services::project_locations::LOCATION_ADMISSION_FIELD] = admission;
         (project.to_owned(), operation, signature_data, payload, None)
     } else {
         return Err(ApiError::new(
@@ -782,7 +852,7 @@ async fn remote_project_write(
         let account_for_registration = default_account.clone();
         let operation_for_registration = operation_id.clone();
         let registration_for_write = registration.clone();
-        store.transaction_with(move |tx| -> Result<(), ProjectsError> {
+        let admission=store.transaction_with(move |tx| -> Result<Value, ProjectsError> {
             let receipt_id = format!("project-registration:{project_for_registration}");
             let mut has_receipt = false;
             if let Some((saved, previous)) = studio_runtime_store::ProjectsRepository::receipt(tx, &receipt_id)? {
@@ -791,7 +861,7 @@ async fn remote_project_write(
                     return Err(ProjectsError::Conflict("This request ID has different content"));
                 }
                 if previous.get("outcome").and_then(Value::as_str) == Some("applied") {
-                    return Ok(());
+                    return studio_runtime_services::project_locations::location_admission(tx,&project_for_registration,None).map_err(|_|ProjectsError::Conflict("The project changed before location reservation"));
                 }
             }
             if studio_runtime_store::ProjectsRepository::get(tx, &project_for_registration)?.is_none() {
@@ -805,10 +875,11 @@ async fn remote_project_write(
                 studio_runtime_store::ProjectsRepository::save_receipt(tx, &receipt_id, &signature_for_registration,
                     &json!({"outcome":"unknown","projectId":project_for_registration,"requestId":operation_for_registration}))?;
             }
-            Ok(())
+            studio_runtime_services::project_locations::location_admission(tx,&project_for_registration,None).map_err(|_|ProjectsError::Conflict("The project changed before location reservation"))
         })
         .await
         .map_err(projects_error)?;
+        payload[studio_runtime_services::project_locations::LOCATION_ADMISSION_FIELD] = admission;
     }
     let receipt_store = store.clone();
     let receipt_operation_id = operation_id.clone();

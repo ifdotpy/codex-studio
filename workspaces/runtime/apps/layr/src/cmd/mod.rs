@@ -1,13 +1,21 @@
 //! Command dispatch and helpers shared by commands.
 
 pub mod admin;
+pub mod attest;
+pub mod bisect;
 pub mod branch;
+pub mod change;
 pub mod history;
 pub mod mergecmd;
+pub mod oci;
 pub mod overlaycmd;
+pub mod probe;
+pub mod queue;
+pub mod refs;
 pub mod remote;
 pub mod replicate;
 pub mod transfer;
+pub mod view;
 pub mod work;
 
 use crate::ctx::{Ctx, Loc};
@@ -40,7 +48,7 @@ impl<'a> Here<'a> {
     pub fn line(&self) -> Result<&Line> {
         match &self.line {
             Some(l) => Ok(l),
-            None => bail!("not in a line: cd into lines/<name> of project {}", self.repo.p.name),
+            None => bail!("not in a line: cd into lines/<name> of project {}, or add --line <name>", self.repo.p.name),
         }
     }
 
@@ -174,19 +182,29 @@ pub fn matches(specs: &[String], path: &str) -> bool {
 
 const HELP: &str = "usage: layr <command> [<args>]
 
-Work in a line (git verbs):
-   status, diff, add, rm, mv, restore, reset, commit, stash, clean, apply
+Work in a line:
+   status, diff, add, rm, mv, restore, reset, save -m <message>, park, clean, apply
 Read history:
    log, show, blame, grep, ls-files, rev-parse, merge-base
 Lines and states:
-   branch, switch, checkout, tag, merge, cherry-pick, revert, rebase
-   save, undo, op, try, checks, adopt
-Remote (git bridge):
-   remote, fetch, pull, push, clone, git-sync
+   line new <name> [<rev>] [--count N], line list, line delete, line rename
+   save -m <message> [-a] [--amend]
+   save [--note <text>] [--all-lines] [--running] [--force] [--caches]
+   park [list/show/pop/apply/drop/clear]
+   tag, merge, pick, invert, replay, undo, op, try, bisect run, adopt
+   ref set/list/log/delete, attest, attestations, change list/show/log/diff
+   view [<rev or line>] [--json], view save [<line>], view show <id>
+Remotes:
+   person keys, show, accept
+   remote add, list, self, remove, trust, grant; sync, fetch, pull, push, clone
+   mount <remote> [--listen 127.0.0.1:8095]
+Git bridge:
+   git remote, fetch, pull, push, clone, sync
+   queue add/list/remove/run
 Overlays (files with their own readers and history, shown in lines):
    overlay create, list, readers, use, move, log, show, diff, grep, ls-files
 Projects and machines:
-   init, projects, config, cache, export, backup, sync, serve-peer, gc, fsck, reindex, daemon
+   init, projects, config, cache, export, gc, fsck, reindex, daemon
 
 Lines are folders: <root>/projects/<project>/lines/<line>. Run commands inside a line folder.
 ";
@@ -204,6 +222,20 @@ pub fn run(ctx: &Ctx, argv: &[String]) -> Result<i32> {
         }
     };
     let rest: Vec<String> = rest.to_vec();
+    // Removed commands fail before repository lookup and overlay policy checks.
+    let replacement = match cmd {
+        "branch" => Some("line"),
+        "commit" => Some("save -m <message>"),
+        "stash" => Some("park"),
+        "cherry-pick" => Some("pick"),
+        "rebase" => Some("replay"),
+        "revert" => Some("invert"),
+        "checkout" | "switch" => return branch::removed_switch(ctx, &rest),
+        _ => None,
+    };
+    if let Some(new) = replacement {
+        return Err(exit(2, format!("layr {cmd} was removed. Use 'layr {new}'.")));
+    }
     // An overlay (`<project>%<overlay>`) is read through layr only: its history, by its readers.
     if ctx.env("LAYR_PROJECT").map(|p| p.contains('%')).unwrap_or(false) {
         let reading = OVERLAY_READS.contains(&cmd)
@@ -234,51 +266,56 @@ pub fn run(ctx: &Ctx, argv: &[String]) -> Result<i32> {
         "rm" => work::rm(ctx, &rest),
         "mv" => work::mv(ctx, &rest),
         "apply" => work::apply(ctx, &rest),
-        "commit" => work::commit(ctx, &rest),
         "restore" => work::restore(ctx, &rest),
-        "checkout" => branch::checkout(ctx, &rest),
-        "switch" => branch::switch(ctx, &rest),
         "reset" => work::reset(ctx, &rest),
-        "stash" => work::stash(ctx, &rest),
+        "park" => work::stash(ctx, &rest),
         "clean" => work::clean(ctx, &rest),
-        "branch" => branch::branch(ctx, &rest),
+        "line" => branch::line(ctx, &rest),
         "tag" => branch::tag(ctx, &rest),
         "adopt" => branch::adopt(ctx, &rest),
         "merge" => mergecmd::merge(ctx, &rest),
-        "cherry-pick" => mergecmd::cherry_pick(ctx, &rest),
-        "revert" => mergecmd::revert(ctx, &rest),
-        "rebase" => mergecmd::rebase(ctx, &rest),
+        "pick" => mergecmd::cherry_pick(ctx, &rest),
+        "invert" => mergecmd::revert(ctx, &rest),
+        "replay" => mergecmd::rebase(ctx, &rest),
         "save" => admin::save(ctx, &rest),
         "undo" => admin::undo(ctx, &rest),
         "op" => admin::op(ctx, &rest),
         "try" => admin::try_cmd(ctx, &rest),
+        "bisect" => bisect::run(ctx, &rest),
         "access" => admin::access(ctx, &rest),
         "protect" => admin::protect(ctx, &rest),
         "approve" => admin::approve(ctx, &rest),
-        "approvals" => admin::approvals(ctx, &rest),
-        "checks" => admin::checks(ctx, &rest),
+        "approvals" | "checks" => Err(exit(1, "this command was removed; use 'layr attestations <rev> [--kind <kind>]'")),
+        "ref" => refs::refs(ctx, &rest),
+        "queue" => queue::queue(ctx, &rest),
+        "view" => view::view(ctx, &rest),
+        "attest" => attest::attest(ctx, &rest),
+        "attestations" => attest::attestations(ctx, &rest),
+        "change" => change::change(ctx, &rest),
+        "probe" => probe::probe(ctx, &rest),
         "gc" => admin::gc(ctx, &rest),
         "fsck" => admin::fsck(ctx, &rest),
         "reindex" => admin::reindex(ctx, &rest),
         "init" => admin::init(ctx, &rest),
         "projects" => admin::projects(ctx, &rest),
-        "machines" => admin::machines(ctx, &rest),
+        "machines" => Err(exit(128, "use layr remote list or layr remote trust <name> <machine>")),
         "debug" => admin::debug(ctx, &rest),
         "config" => admin::config(ctx, &rest),
-        "cache" | "layer" => admin::cache(ctx, &rest),
+        "cache" => admin::cache(ctx, &rest),
+        "layer" => Err(exit(1, "this command was removed; use 'layr cache'")),
         "remote" => remote::remote(ctx, &rest),
         "fetch" => remote::fetch(ctx, &rest),
         "pull" => remote::pull(ctx, &rest),
         "push" => remote::push(ctx, &rest),
-        "git-sync" => remote::git_sync(ctx, &rest),
+        "git-sync" => Err(exit(128, "use layr git sync")),
+        "git" => remote::git::run(ctx, &rest),
         "clone" => remote::clone(ctx, &rest),
         "overlay" => overlaycmd::overlay(ctx, &rest),
         "export" => transfer::export(ctx, &rest),
-        "backup" => transfer::backup(ctx, &rest),
-        "sync" => replicate::sync(ctx, &rest),
+        "sync" => remote::sync(ctx, &rest),
         "serve-peer" => replicate::serve(ctx, &rest),
         "worktree" => {
-            Err(exit(1, "layr has no worktrees: each line is a folder. Create one with 'layr branch <name> [<start>]'."))
+            Err(exit(1, "layr has no worktrees: each line is a folder. Create one with 'layr line new <name> [<rev>]'."))
         }
         other => Err(exit(1, format!("layr: '{other}' is not a layr command. See 'layr help'."))),
     }

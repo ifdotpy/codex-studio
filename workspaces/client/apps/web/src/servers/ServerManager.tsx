@@ -6,7 +6,7 @@ import DiscoveryPanel from "./DiscoveryPanel";
 import ServerAccessSettings from "./ServerAccessSettings";
 import { setServerExcluded } from "./automaticAccessStore";
 import type { useServerDiscovery } from "./useServerDiscovery";
-import type { ResourceConnectionState } from "../sync/resourceEvents";
+import type { ResourceConnectionState } from "../sync/subscriptions/events";
 import { parseInvitation } from "./pairing";
 import {
   Badge,
@@ -148,10 +148,6 @@ export default function ServerManager({
                   : server.id === "local" && state === "working"
                     ? "This computer"
                     : status;
-              const system =
-                summary?.system === "Darwin"
-                  ? "macOS"
-                  : summary?.system || "OS unavailable";
               const address =
                 server.id === "local"
                   ? discovery.snapshot?.localOrigin || server.origin
@@ -207,7 +203,9 @@ export default function ServerManager({
                     <DataList.Item className="server-settings-host">
                       <DataList.ItemLabel>Host</DataList.ItemLabel>
                       <DataList.ItemValue>
-                        <span className="server-settings-system">{system}</span>
+                        <span className="server-settings-system">
+                          Studio server
+                        </span>
                         <span
                           className="server-settings-address"
                           title={address}

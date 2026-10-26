@@ -888,6 +888,12 @@ enum Effect {
         Option<i64>,
     ),
     LimitsUpdated(crate::account_session_runtime::LimitsUpdate),
+    /// A committed terminal limit failure owes one account refresh before its wake.
+    LimitFailure {
+        agent: String,
+        epoch: i64,
+        turn: String,
+    },
     Submit(TurnIntent),
     Interrupt {
         agent: String,
@@ -1443,6 +1449,17 @@ impl Worker {
                     .ingest_limits(update)
                     .await
                     .map_err(|error| WorkerError::PreparationRefused(error.to_string()))?;
+            }
+            Effect::LimitFailure { agent, epoch, .. } => {
+                if let Some(session) = self.resources.account_session.as_ref() {
+                    // The session owner schedules the read: awaiting provider I/O here
+                    // would block the worker that delivers its response.
+                    session
+                        .refresh_limits(&self.account)
+                        .await
+                        .map_err(|error| WorkerError::PreparationRefused(error.to_string()))?;
+                }
+                self.wake(agent, epoch).await?;
             }
             Effect::Submit(intent) => self.submit(intent, Method::TurnStart, None).await?,
             Effect::Interrupt {

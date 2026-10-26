@@ -12,7 +12,7 @@ pub mod supervisor_protocol;
 
 pub use callback_queue_limit::CALLBACK_QUEUE_LIMIT;
 pub use codec::{
-    CodecError, DecodedJournalEntry, DecodedJournalPayload, Frame, LineDecoder, MAX_FRAME_BYTES,
+    CodecError, DecodedJournalEntry, DecodedJournalPayload, Frame, MAX_FRAME_BYTES,
     MAX_FRAME_DELIMITER_BYTES, Method, NotificationFrame, RequestFrame, RequestId, ResponseBody,
     UnknownMethodFrame, decode_journal_entry, decode_journal_entry_borrowed, decode_journal_value,
     encode_line, encode_line_into, frame_payload_bytes, frame_prefix_payload_bytes,

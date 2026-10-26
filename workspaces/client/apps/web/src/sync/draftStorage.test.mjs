@@ -57,12 +57,15 @@ test("current draft records stay scoped and never inspect the retired map", () =
 
     copyLocalDraftScope(a, b);
     assert.deepEqual(readLocalDrafts(b), { lead: "Current local draft" });
-    assert.equal(readLocalDraftRecord(b, "lead").workspace, b.slice(13));
+    assert.equal(
+      readLocalDraftRecord(b, "lead").workspace,
+      "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    );
     assert.equal(storage.values.get(a), retiredMap);
     assert.equal(storage.values.has(b), false);
     assert.deepEqual(JSON.parse(storage.values.get(localDraftKey(b, "lead"))), {
       ...JSON.parse(storage.values.get(localDraftKey(a, "lead"))),
-      workspace: b.slice("codex-drafts:".length),
+      workspace: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
     });
   } finally {
     if (originalLocalStorage)

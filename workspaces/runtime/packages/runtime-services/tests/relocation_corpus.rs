@@ -190,6 +190,7 @@ async fn python_location_and_move_corpus_through_consumers() {
                 "hold-exported-active",
                 "expire-importing",
                 "cache-first-observation",
+                "cache-boolean-not-integer",
                 "cache-wrong-turn",
                 "status-waiting",
                 "tool-applied",
@@ -354,12 +355,24 @@ async fn python_location_and_move_corpus_through_consumers() {
             "cache" => {
                 let agent = text(&case["agent"], "id").to_owned();
                 let notification = case["notification"].clone();
-                store
+                let result = store
                     .transaction_with(move |tx| {
                         agent_move::capture_cache(tx, &agent, &notification, now)
                     })
-                    .await
-                    .expect("cache notification");
+                    .await;
+                if case["name"] == "cache-boolean-not-integer" {
+                    assert!(
+                        result.is_err(),
+                        "malformed native token category is rejected"
+                    );
+                    assert_eq!(
+                        snapshot(&store),
+                        before,
+                        "invalid usage leaves state unchanged"
+                    );
+                } else {
+                    result.expect("cache notification");
+                }
             }
             "status" => {
                 let actor = text(&fixture.data, "actor").to_owned();

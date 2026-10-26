@@ -4,9 +4,10 @@
 //! derived tables can be rebuilt from the records at any time.
 
 use crate::ids;
-use crate::model::{Line, Record, StateKind, StateRec};
+use crate::model::{Attestation, Line, QueueChange, QueueEntry, Record, RefChange, RefState, StateKind, StateRec, Subject};
 use anyhow::{anyhow, Result};
 use rusqlite::{params, Connection, OptionalExtension};
+use sha2::{Digest, Sha256};
 use std::path::Path;
 
 pub struct Db {
@@ -35,6 +36,13 @@ CREATE TABLE IF NOT EXISTS machines (id TEXT PRIMARY KEY, name TEXT, public_key 
 CREATE TABLE IF NOT EXISTS config (key TEXT PRIMARY KEY, value TEXT, ord TEXT);
 CREATE TABLE IF NOT EXISTS trusted (machine TEXT PRIMARY KEY, public_key TEXT, by TEXT);
 CREATE TABLE IF NOT EXISTS approvals (id TEXT PRIMARY KEY, state TEXT, uid INTEGER, time INTEGER, withdrawn INTEGER DEFAULT 0);
+CREATE TABLE IF NOT EXISTS refs (name TEXT PRIMARY KEY, target TEXT, expires_at INTEGER, deleted INTEGER DEFAULT 0, ord TEXT);
+CREATE TABLE IF NOT EXISTS ref_history (id TEXT PRIMARY KEY, name TEXT, rec TEXT, ord TEXT);
+CREATE INDEX IF NOT EXISTS ref_history_name ON ref_history(name, ord);
+CREATE TABLE IF NOT EXISTS attestations (id TEXT PRIMARY KEY, subject TEXT, kind TEXT, rec TEXT, machine TEXT, uid INTEGER, local INTEGER DEFAULT 0, ord TEXT);
+CREATE INDEX IF NOT EXISTS attestations_subject ON attestations(subject, kind, ord);
+CREATE TABLE IF NOT EXISTS queue_entries (id TEXT PRIMARY KEY, rec TEXT, deleted INTEGER DEFAULT 0, ord TEXT);
+CREATE TABLE IF NOT EXISTS attestation_revocations (id TEXT, target TEXT, machine TEXT, uid INTEGER, ord TEXT, PRIMARY KEY(id,target));
 "#;
 
 /// Version of the derived tables. Records never change shape; a database with an older version
@@ -55,6 +63,11 @@ const DERIVED: &[&str] = &[
     "config",
     "trusted",
     "approvals",
+    "refs",
+    "ref_history",
+    "attestations",
+    "attestation_revocations",
+    "queue_entries",
 ];
 
 /// Derived tables of older versions, dropped on migration.
@@ -82,7 +95,19 @@ impl Db {
             }
         }
         let stale = opened.map_err(|e| e.context(path.display().to_string()))?;
-        Ok(Db { conn, stale })
+        let db = Db { conn, stale };
+        // Older binaries can still add legacy records. Import their evidence on each open.
+        db.with_tx(|| {
+            let mut st = db.conn.prepare(
+                "SELECT raw FROM records WHERE op IN ('approve','approve.withdraw','check') ORDER BY time,machine,seq",
+            )?;
+            let raw = st.query_map([], |r| r.get::<_, String>(0))?.collect::<Result<Vec<_>, _>>()?;
+            for line in raw {
+                db.derive_attestation(&crate::oplog::parse_line(&line, None)?.record, false)?;
+            }
+            Ok(())
+        })?;
+        Ok(db)
     }
 
     /// Create or upgrade the schema inside the open transaction. Returns whether the derived
@@ -144,7 +169,8 @@ impl Db {
             "DELETE FROM states; DELETE FROM parents; DELETE FROM lines; DELETE FROM line_heads;
              DELETE FROM tags; DELETE FROM remote_refs; DELETE FROM git_map; DELETE FROM exports; DELETE FROM checks;
              DELETE FROM machines; DELETE FROM config;
-             DELETE FROM trusted; DELETE FROM approvals;",
+             DELETE FROM trusted; DELETE FROM approvals; DELETE FROM refs; DELETE FROM ref_history;
+             DELETE FROM attestations; DELETE FROM attestation_revocations; DELETE FROM queue_entries;",
         )?;
         Ok(())
     }
@@ -197,7 +223,7 @@ impl Db {
     /// later record can replace keeps the order key of the record that wrote it (time,
     /// machine, sequence number), and only a record with a larger key replaces it. Deletes
     /// leave a marked row for the same reason. Settings that act on this machine (admin,
-    /// members, merge commands, remotes, the backup folder) and the lines that have their
+    /// members, merge commands, remotes) and the lines that have their
     /// working folder here change only by this machine's records; the values written by other
     /// machines are kept under `<key>@<machine>`.
     pub fn derive(&self, rec: &Record, state_present: &dyn Fn(&str) -> bool, local: &str) -> Result<()> {
@@ -226,6 +252,11 @@ impl Db {
                     rec.machine
                 ],
             )?;
+            for p in &s.parents {
+                if self.state(p)?.map(|p| p.kind.auxiliary()).unwrap_or(false) {
+                    anyhow::bail!("source history cannot have a cache or derived parent");
+                }
+            }
             for (i, p) in s.parents.iter().enumerate() {
                 tx.execute("INSERT OR IGNORE INTO parents(state, parent, ord) VALUES(?1,?2,?3)", params![s.id, p, i as i64])?;
             }
@@ -233,6 +264,9 @@ impl Db {
         for (id, ch) in &rec.lines {
             // Heads per machine: each machine's own records, in its order.
             if let Some(a) = &ch.after {
+                if self.state(&a.head)?.map(|s| s.kind.auxiliary()).unwrap_or(false) {
+                    anyhow::bail!("line head cannot be a cache or derived state");
+                }
                 tx.execute(
                     "INSERT INTO line_heads(line, machine, head, time, ord) VALUES(?1,?2,?3,?4,?5)
                      ON CONFLICT(line, machine) DO UPDATE SET head=?3, time=?4, ord=?5 WHERE excluded.ord > line_heads.ord",
@@ -262,6 +296,53 @@ impl Db {
                 }
             }
         }
+        if let Some(value) = rec.data.get("queue_change") {
+            let change: QueueChange = serde_json::from_value(value.clone())?;
+            tx.execute(
+                "INSERT INTO queue_entries(id,rec,deleted,ord) VALUES(?1,?2,?3,?4)
+                ON CONFLICT(id) DO UPDATE SET rec=?2,deleted=?3,ord=?4 WHERE excluded.ord>queue_entries.ord",
+                params![
+                    change.id,
+                    change.after.as_ref().map(serde_json::to_string).transpose()?,
+                    change.after.is_none() as i64,
+                    ord
+                ],
+            )?;
+        }
+        self.derive_attestation(rec, !foreign)?;
+        if !foreign {
+            if let Some(a) = rec.data.get("attestation") {
+                if a["kind"] == "revoke" {
+                    for id in rec.data["revokes"].as_array().into_iter().flatten().filter_map(|v| v.as_str()) {
+                        tx.execute("UPDATE approvals SET withdrawn=1 WHERE id=?1 AND uid=?2", params![id, rec.actor.uid as i64])?;
+                    }
+                }
+                if a["kind"] == "approval" && rec.data.get("declassify").is_none() {
+                    tx.execute(
+                        "INSERT OR IGNORE INTO approvals(id,state,uid,time) VALUES(?1,?2,?3,?4)",
+                        params![rec.id, a["subject"]["id"].as_str(), rec.actor.uid as i64, rec.time],
+                    )?;
+                }
+            }
+        }
+        if let Some(v) = rec.data.get("ref_change") {
+            let ch: RefChange = serde_json::from_value(v.clone())?;
+            tx.execute(
+                "INSERT OR IGNORE INTO ref_history(id,name,rec,ord) VALUES(?1,?2,?3,?4)",
+                params![rec.id, ch.name, serde_json::to_string(&ch)?, ord],
+            )?;
+            tx.execute(
+                "INSERT INTO refs(name,target,expires_at,deleted,ord) VALUES(?1,?2,?3,?4,?5)
+                ON CONFLICT(name) DO UPDATE SET target=?2,expires_at=?3,deleted=?4,ord=?5 WHERE excluded.ord > refs.ord",
+                params![
+                    ch.name,
+                    ch.after.as_ref().map(|v| &v.target),
+                    ch.after.as_ref().and_then(|v| v.expires_at),
+                    ch.after.is_none() as i64,
+                    ord
+                ],
+            )?;
+        }
         let d = &rec.data;
         let s = |k: &str| d.get(k).and_then(|v| v.as_str()).map(|x| x.to_string());
         match rec.op.as_str() {
@@ -283,7 +364,7 @@ impl Db {
                     params![s("machine"), s("public_key"), rec.machine],
                 )?;
             }
-            "project" | "config" | "overlay.create" => {
+            "project" | "config" | "overlay.create" | "overlay.readers" | "overlay.use" | "overlay.show-to-project" => {
                 if let Some(obj) = d.get("config").and_then(|v| v.as_object()) {
                     for (k, v) in obj {
                         let key = if foreign && local_key(k) { format!("{k}@{}", rec.machine) } else { k.clone() };
@@ -359,7 +440,7 @@ impl Db {
             "gc" => {
                 if let Some(arr) = d.get("deleted").and_then(|v| v.as_array()) {
                     for id in arr.iter().filter_map(|v| v.as_str()) {
-                        if !foreign {
+                        if !foreign && !state_present(id) {
                             tx.execute("UPDATE states SET deleted=1, present=0 WHERE id=?1", params![id])?;
                         }
                     }
@@ -391,6 +472,15 @@ impl Db {
                             }
                             v.as_object_mut().unwrap().remove("cache_by");
                             v.as_object_mut().unwrap().remove("cache_shared");
+                            v.as_object_mut().unwrap().remove("cache_platform");
+                            // The platform of the newest save; all saves of a state are made on
+                            // its own machine.
+                            match d.get("platform").and_then(|x| x.as_str()) {
+                                Some(p) => v["layer_platform"] = serde_json::json!(p),
+                                None => {
+                                    v.as_object_mut().unwrap().remove("layer_platform");
+                                }
+                            }
                             v["layer_by"] = serde_json::json!(rec.actor.uid);
                             v["layer_shared"] = serde_json::json!(d.get("shared").and_then(|x| x.as_bool()).unwrap_or(false));
                             tx.execute("UPDATE states SET rec=?2 WHERE id=?1", params![st, v.to_string()])?;
@@ -462,7 +552,10 @@ impl Db {
     }
 
     pub fn set_present(&self, id: &str, present: bool) -> Result<()> {
-        self.conn.execute("UPDATE states SET present=?2 WHERE id=?1", params![id, present as i64])?;
+        self.conn.execute(
+            "UPDATE states SET present=?2, deleted=CASE WHEN ?2=1 THEN 0 ELSE deleted END WHERE id=?1",
+            params![id, present as i64],
+        )?;
         Ok(())
     }
 
@@ -472,10 +565,15 @@ impl Db {
         Ok(v)
     }
 
-    /// Users (uids of this machine) whose approval of `state` stands, with its time.
+    /// Users of this machine whose approval of the exact subject still stands.
     pub fn approvals(&self, state: &str) -> Result<Vec<(u32, i64)>> {
-        let mut st =
-            self.conn.prepare("SELECT uid, MAX(time) FROM approvals WHERE state=?1 AND withdrawn=0 GROUP BY uid ORDER BY uid")?;
+        let mut st = self.conn.prepare(
+            "SELECT a.uid,MAX(json_extract(a.rec,'$.time')) FROM attestations a
+            WHERE (a.local=1 OR EXISTS (SELECT 1 FROM approvals p WHERE p.id=a.id)) AND a.subject=?1 AND a.kind='approval'
+            AND NOT EXISTS (SELECT 1 FROM records scoped WHERE scoped.id=a.id AND json_type(scoped.raw,'$.r.data.declassify') IS NOT NULL) AND NOT EXISTS
+            (SELECT 1 FROM attestation_revocations r WHERE r.target=a.id AND r.machine=a.machine AND r.uid=a.uid AND r.ord>a.ord)
+            GROUP BY a.machine,a.uid ORDER BY a.uid",
+        )?;
         let v = st.query_map(params![state], |r| Ok((r.get::<_, i64>(0)? as u32, r.get(1)?)))?.collect::<Result<Vec<_>, _>>()?;
         Ok(v)
     }
@@ -585,11 +683,185 @@ impl Db {
         Ok(v)
     }
 
+    /// Active value declassifications, across all state subjects in this project.
+    pub fn declassifications(&self) -> Result<Vec<Record>> {
+        let mut st = self.conn.prepare("SELECT r.raw FROM attestations a JOIN records r ON r.id=a.id
+            WHERE a.kind='approval' AND json_extract(r.raw,'$.r.data.declassify') IS NOT NULL
+            AND NOT EXISTS (SELECT 1 FROM attestation_revocations v WHERE v.target=a.id AND v.machine=a.machine AND v.uid=a.uid AND v.ord>a.ord)")?;
+        let raw = st.query_map([], |r| r.get::<_, String>(0))?.collect::<Result<Vec<_>, _>>()?;
+        raw.into_iter().map(|r| Ok(crate::oplog::parse_line(&r, None)?.record)).collect()
+    }
+
     pub fn checks(&self, state: &str) -> Result<Vec<(String, i64, i64, String)>> {
-        let mut st = self.conn.prepare("SELECT command, exit, time, actor FROM checks WHERE state=?1 ORDER BY time")?;
+        let mut st = self.conn.prepare("SELECT COALESCE(json_extract(r.raw,'$.r.data.check.command'),json_extract(r.raw,'$.r.data.command')),
+            COALESCE(json_extract(r.raw,'$.r.data.check.exit'),json_extract(r.raw,'$.r.data.exit'),-1),r.time,json_extract(r.raw,'$.r.actor.name')
+            FROM attestations a JOIN records r ON r.id=a.id WHERE a.subject=?1 AND a.kind='check'
+            AND NOT EXISTS (SELECT 1 FROM attestation_revocations v WHERE v.target=a.id AND v.machine=a.machine AND v.uid=a.uid AND v.ord>a.ord)
+            ORDER BY a.ord")?;
         let v = st
-            .query_map(params![state], |r| Ok((r.get(0)?, r.get::<_, Option<i64>>(1)?.unwrap_or(-1), r.get(2)?, r.get(3)?)))?
+            .query_map(params![state], |r| {
+                Ok((r.get::<_, Option<String>>(0)?.unwrap_or_default(), r.get(1)?, r.get(2)?, r.get(3)?))
+            })?
             .collect::<Result<Vec<_>, _>>()?;
+        Ok(v)
+    }
+
+    /// Match command arguments, not their display text. With no requested exit, use the newest result.
+    pub fn check_exit(&self, state: &str, argv: &[String], wanted_exit: Option<i64>) -> Result<Option<i64>> {
+        let mut statement=self.conn.prepare("SELECT COALESCE(json_extract(r.raw,'$.r.data.check'),json_extract(r.raw,'$.r.data'))
+            FROM attestations a JOIN records r ON r.id=a.id WHERE a.subject=?1 AND a.kind='check'
+            AND NOT EXISTS (SELECT 1 FROM attestation_revocations v WHERE v.target=a.id AND v.machine=a.machine AND v.uid=a.uid AND v.ord>a.ord)
+            ORDER BY a.ord DESC")?;
+        let rows = statement.query_map(params![state], |r| r.get::<_, String>(0))?.collect::<Result<Vec<_>, _>>()?;
+        for row in rows {
+            let result: serde_json::Value = serde_json::from_str(&row)?;
+            let matches = match result.get("argv") {
+                Some(value) => {
+                    serde_json::from_value::<Vec<String>>(value.clone()).map(|recorded| recorded == argv).unwrap_or(false)
+                }
+                None => {
+                    argv.len() == 1
+                        && !argv[0].is_empty()
+                        && !argv[0].chars().any(|c| c.is_whitespace())
+                        && result["command"].as_str() == Some(argv[0].as_str())
+                }
+            };
+            if matches {
+                if let Some(code) = result["exit"].as_i64() {
+                    if wanted_exit.map(|wanted| wanted == code).unwrap_or(true) {
+                        return Ok(Some(code));
+                    }
+                }
+            }
+        }
+        Ok(None)
+    }
+
+    fn derive_attestation(&self, rec: &Record, local: bool) -> Result<()> {
+        let ord = format!("{:016}:{}:{:012}", rec.time.max(0), rec.machine, rec.seq);
+        let a = if let Some(v) = rec.data.get("attestation") {
+            Some(serde_json::from_value::<Attestation>(v.clone())?)
+        } else if matches!(rec.op.as_str(), "approve" | "approve.withdraw" | "check") {
+            rec.data["state"].as_str().map(|state| Attestation {
+                format: 1,
+                attestation_id: rec.id.clone(),
+                subject: Subject { kind: "state".into(), id: state.into() },
+                change_id: self.state(state).ok().flatten().and_then(|s| s.change_id),
+                kind: match rec.op.as_str() {
+                    "approve" => "approval",
+                    "check" => "check",
+                    _ => "revoke",
+                }
+                .into(),
+                payload_digest: hex::encode(Sha256::digest(serde_json::to_vec(&rec.data).unwrap_or_default())),
+                payload_ref: None,
+                signer: rec.machine.clone(),
+                time: rec.time,
+            })
+        } else {
+            None
+        };
+        if let Some(a) = a {
+            self.conn.execute(
+                "INSERT INTO attestations(id,subject,kind,rec,machine,uid,ord,local) VALUES(?1,?2,?3,?4,?5,?6,?7,?8) ON CONFLICT(id) DO UPDATE SET local=MAX(attestations.local,excluded.local)",
+                params![
+                    a.attestation_id,
+                    a.subject.id,
+                    a.kind,
+                    serde_json::to_string(&a)?,
+                    rec.machine,
+                    rec.actor.uid as i64,
+                    ord,
+                    local as i64
+                ],
+            )?;
+            if rec.op == "approve.withdraw" {
+                self.conn.execute("INSERT OR IGNORE INTO attestation_revocations(id,target,machine,uid,ord)
+                    SELECT ?1,id,?2,?3,?4 FROM attestations WHERE subject=?5 AND kind='approval' AND machine=?2 AND uid=?3 AND ord<?4",
+                    params![a.attestation_id,rec.machine,rec.actor.uid as i64,ord,a.subject.id])?;
+            }
+            if a.kind == "revoke" {
+                for id in rec.data["revokes"].as_array().into_iter().flatten().filter_map(|v| v.as_str()) {
+                    self.conn.execute(
+                        "INSERT OR IGNORE INTO attestation_revocations(id,target,machine,uid,ord)
+                         SELECT ?1,?2,?3,?4,?5 FROM attestations WHERE id=?2 AND subject=?6",
+                        params![a.attestation_id, id, rec.machine, rec.actor.uid as i64, ord, a.subject.id],
+                    )?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    pub fn attestation(&self, id: &str) -> Result<Option<Attestation>> {
+        let raw: Option<String> =
+            self.conn.query_row("SELECT rec FROM attestations WHERE id=?1", params![id], |r| r.get(0)).optional()?;
+        raw.map(|r| Ok(serde_json::from_str(&r)?)).transpose()
+    }
+
+    pub fn attestations(&self, subject: &str, kind: Option<&str>) -> Result<Vec<Attestation>> {
+        let mut st =
+            self.conn.prepare("SELECT rec FROM attestations WHERE subject=?1 AND (?2 IS NULL OR kind=?2) ORDER BY ord,id")?;
+        let raw = st.query_map(params![subject, kind], |r| r.get::<_, String>(0))?.collect::<Result<Vec<_>, _>>()?;
+        raw.into_iter().map(|r| Ok(serde_json::from_str(&r)?)).collect()
+    }
+
+    pub fn own_attestations(&self, subject: &str, machine: &str, uid: u32, kind: Option<&str>) -> Result<Vec<String>> {
+        let mut st = self.conn.prepare("SELECT id FROM attestations WHERE subject=?1 AND machine=?2 AND uid=?3 AND (?4 IS NULL OR kind=?4) AND kind<>'revoke'")?;
+        let v = st.query_map(params![subject, machine, uid as i64, kind], |r| r.get(0))?.collect::<Result<Vec<_>, _>>()?;
+        Ok(v)
+    }
+
+    pub fn refs(&self, prefix: &str, now: i64) -> Result<Vec<RefState>> {
+        let mut st = self.conn.prepare("SELECT name,target,expires_at FROM refs WHERE deleted=0 AND substr(name,1,length(?1))=?1 AND (expires_at IS NULL OR expires_at>?2) ORDER BY name")?;
+        let v = st
+            .query_map(params![prefix, now], |r| Ok(RefState { name: r.get(0)?, target: r.get(1)?, expires_at: r.get(2)? }))?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(v)
+    }
+
+    pub fn ref_value(&self, name: &str, now: i64) -> Result<Option<RefState>> {
+        Ok(self.refs(name, now)?.into_iter().find(|r| r.name == name))
+    }
+
+    pub fn expired_refs(&self, now: i64) -> Result<Vec<RefState>> {
+        let mut st =
+            self.conn.prepare("SELECT name,target,expires_at FROM refs WHERE deleted=0 AND expires_at<=?1 ORDER BY name")?;
+        let v = st
+            .query_map(params![now], |r| Ok(RefState { name: r.get(0)?, target: r.get(1)?, expires_at: r.get(2)? }))?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(v)
+    }
+
+    pub fn ref_log(&self, name: &str) -> Result<Vec<RefChange>> {
+        let mut st = self.conn.prepare("SELECT rec FROM ref_history WHERE name=?1 ORDER BY ord DESC,id DESC")?;
+        let raw = st.query_map(params![name], |r| r.get::<_, String>(0))?.collect::<Result<Vec<_>, _>>()?;
+        raw.into_iter().map(|r| Ok(serde_json::from_str(&r)?)).collect()
+    }
+
+    pub fn queue_entries(&self, target: Option<&str>) -> Result<Vec<QueueEntry>> {
+        let mut st=self.conn.prepare("SELECT rec FROM queue_entries WHERE deleted=0 AND (?1 IS NULL OR json_extract(rec,'$.target_line')=?1) ORDER BY json_extract(rec,'$.time'),id")?;
+        let rows = st.query_map(params![target], |r| r.get::<_, String>(0))?.collect::<Result<Vec<_>, _>>()?;
+        rows.into_iter().map(|raw| Ok(serde_json::from_str(&raw)?)).collect()
+    }
+
+    pub fn queue_entry(&self, id: &str) -> Result<Option<QueueEntry>> {
+        let raw: Option<String> = self
+            .conn
+            .query_row("SELECT rec FROM queue_entries WHERE id=?1 AND deleted=0", params![id], |r| r.get(0))
+            .optional()?;
+        raw.map(|raw| Ok(serde_json::from_str(&raw)?)).transpose()
+    }
+
+    pub fn change_versions(&self, id: &str) -> Result<Vec<StateRec>> {
+        let mut st = self.conn.prepare("SELECT rec FROM states WHERE json_extract(rec,'$.change_id')=?1 ORDER BY time,id")?;
+        let raw = st.query_map(params![id], |r| r.get::<_, String>(0))?.collect::<Result<Vec<_>, _>>()?;
+        raw.into_iter().map(|r| Ok(serde_json::from_str(&r)?)).collect()
+    }
+
+    pub fn changes(&self) -> Result<Vec<String>> {
+        let mut st = self.conn.prepare("SELECT DISTINCT json_extract(rec,'$.change_id') FROM states WHERE json_extract(rec,'$.change_id') IS NOT NULL ORDER BY 1")?;
+        let v = st.query_map([], |r| r.get(0))?.collect::<Result<Vec<_>, _>>()?;
         Ok(v)
     }
 
@@ -609,6 +881,19 @@ impl Db {
         let mut st = self.conn.prepare("SELECT key, value FROM config WHERE value IS NOT NULL ORDER BY key")?;
         let v = st.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?.collect::<Result<Vec<_>, _>>()?;
         Ok(v)
+    }
+
+    /// Overlay policy and metadata follow their signed records across machines.
+    pub fn overlay_config(&self, key: &str) -> Result<Option<serde_json::Value>> {
+        let value: Option<Option<String>> = self
+            .conn
+            .query_row(
+                "SELECT value FROM config WHERE key=?1 OR substr(key,1,length(?1)+1)=?1||'@' ORDER BY ord DESC LIMIT 1",
+                params![key],
+                |row| row.get(0),
+            )
+            .optional()?;
+        value.flatten().map(|value| serde_json::from_str(&value).map_err(Into::into)).transpose()
     }
 
     pub fn machine_key(&self, id: &str) -> Result<Option<String>> {
@@ -675,9 +960,8 @@ impl Db {
 }
 
 /// Every setting acts on one machine (admin, members, merge commands, remotes, retention,
-/// push policy, caches, backups): settings never come from another machine's records. Those
-/// values stay as `<key>@<machine>`; a restore takes over the values of the machine that wrote
-/// the backup.
+/// push policy, caches): settings never come from another machine's records. Those
+/// values stay as `<key>@<machine>`.
 pub fn local_key(_k: &str) -> bool {
     true
 }
@@ -688,6 +972,8 @@ pub fn kind_str(k: StateKind) -> &'static str {
         StateKind::Auto => "auto",
         StateKind::Stash => "stash",
         StateKind::Import => "import",
+        StateKind::Cache => "cache",
+        StateKind::Derived => "derived",
     }
 }
 
@@ -747,6 +1033,9 @@ mod tests {
         r.states.push(StateRec {
             id: state.into(),
             kind: StateKind::Commit,
+            change_id: None,
+            derived_from: None,
+            context: None,
             parents,
             line: None,
             subvol: String::new(),
@@ -758,8 +1047,35 @@ mod tests {
             caches: Default::default(),
             cache_by: None,
             cache_shared: false,
+            cache_platform: None,
         });
         r
+    }
+
+    #[test]
+    fn restored_states_clear_local_gc_tombstones() {
+        let path = std::env::temp_dir().join(format!("layr-db-restore-{}", crate::ids::new_id()));
+        let db = Db::open(&path).unwrap();
+        let state = "01a12290-0000-7000-8000-00000000c0c0";
+        let machine = "01a12290-0000-7000-8000-00000000aaaa";
+        let creation = state_record(1, state, vec![]);
+        let mut gc = Record::new("gc");
+        gc.machine = machine.into();
+        gc.data = serde_json::json!({"deleted": [state]});
+        db.derive(&creation, &|_| true, machine).unwrap();
+        db.derive(&gc, &|_| false, machine).unwrap();
+        assert_eq!(db.state_flags(state).unwrap(), Some((false, true)));
+        db.set_present(state, true).unwrap();
+        assert_eq!(db.state_flags(state).unwrap(), Some((true, false)));
+        // Reindex replays an older gc record against the snapshots that exist now.
+        db.derive(&gc, &|_| true, machine).unwrap();
+        assert_eq!(db.state_flags(state).unwrap(), Some((true, false)));
+        // Another machine's gc never deletes the local copy.
+        gc.machine = "01a12290-0000-7000-8000-00000000bbbb".into();
+        db.derive(&gc, &|_| false, machine).unwrap();
+        assert_eq!(db.state_flags(state).unwrap(), Some((true, false)));
+        drop(db);
+        let _ = std::fs::remove_file(path);
     }
 
     #[test]
@@ -819,6 +1135,27 @@ mod tests {
         {
             assert_eq!(db.cache_uuid(st, &format!("{st}@{path}")).unwrap().as_deref(), Some(uuid));
         }
+        // Records of an older layr name no platform.
+        assert_eq!(s.cache_platform, None);
+        let _ = std::fs::remove_file(&dir);
+    }
+
+    #[test]
+    fn a_state_keeps_the_platform_of_its_caches() {
+        let dir = std::env::temp_dir().join(format!("layr-db-platform-{}", std::process::id()));
+        let db = Db::open(&dir).unwrap();
+        let st = "01a12290-0000-7000-8000-00000000c1c1";
+        let machine = "01a12290-0000-7000-8000-00000000aaaa";
+        db.derive(&state_record(1, st, vec![]), &|_| true, machine).unwrap();
+        let mut r = Record::new("save.layers");
+        r.id = "01a12290-0000-7000-8000-000000000002".into();
+        r.machine = machine.into();
+        r.seq = 2;
+        r.time = 2;
+        let snap = format!("{st}@target");
+        r.data = serde_json::json!({"state": st, "layers": {"target": snap}, "uuids": {snap: "01a12290-0000-7000-8000-000000000003"}, "shared": false, "platform": "macos-aarch64"});
+        db.derive(&r, &|_| true, machine).unwrap();
+        assert_eq!(db.state(st).unwrap().unwrap().cache_platform.as_deref(), Some("macos-aarch64"));
         let _ = std::fs::remove_file(&dir);
     }
 
@@ -833,5 +1170,212 @@ mod tests {
         assert!(db.derive(&state_record(2, st, vec![other]), &|_| true, "x").is_err());
         assert_eq!(db.state(st).unwrap().unwrap().parents, vec![parent]);
         let _ = std::fs::remove_file(&dir);
+    }
+    fn memory() -> Db {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(SCHEMA).unwrap();
+        Db { conn, stale: false }
+    }
+
+    #[test]
+    fn refs_replay_in_order_and_keep_their_history() {
+        let db = memory();
+        let a = "01a12290-0000-7000-8000-000000000003";
+        let b = "01a12290-0000-7000-8000-000000000004";
+        let rec = |n: u64, target: &str| {
+            let mut r = state_record(n, a, vec![]);
+            r.states.clear();
+            r.op = "ref.set".into();
+            r.data = serde_json::json!({"ref_change":RefChange { name:"env/prod".into(),before:None,after:Some(RefState{name:"env/prod".into(),target:target.into(),expires_at:Some(100)}) }});
+            r
+        };
+        db.derive(&rec(2, b), &|_| true, "local").unwrap();
+        db.derive(&rec(1, a), &|_| true, "local").unwrap();
+        assert_eq!(db.ref_value("env/prod", 99).unwrap().unwrap().target, b);
+        assert_eq!(db.ref_log("env/prod").unwrap().len(), 2);
+        assert!(db.refs("env/", 100).unwrap().is_empty());
+        assert_eq!(db.expired_refs(100).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn legacy_approvals_checks_and_withdrawals_become_attestations() {
+        let db = memory();
+        let state = "01a12290-0000-7000-8000-000000000003";
+        let machine = "01a12290-0000-7000-8000-00000000aaaa";
+        let key = ed25519_dalek::SigningKey::from_bytes(&[7; 32]);
+        for (seq, op) in [(1, "approve"), (2, "check"), (3, "approve.withdraw"), (4, "approve")] {
+            let mut r = state_record(seq, state, vec![]);
+            r.states.clear();
+            r.op = op.into();
+            r.data = serde_json::json!({"state":state,"command":"true","exit":0});
+            let raw = crate::oplog::sign_line(&r, &key).unwrap();
+            db.insert_record(&r, &raw).unwrap();
+            db.derive(&r, &|_| true, machine).unwrap();
+            if seq == 3 {
+                assert!(db.approvals(state).unwrap().is_empty());
+            }
+        }
+        assert_eq!(db.attestations(state, None).unwrap().len(), 4);
+        assert_eq!(db.approvals(state).unwrap(), vec![(0, 4)]);
+        assert_eq!(db.checks(state).unwrap()[0].0, "true");
+        // The original signed bytes are unchanged.
+        assert!(crate::oplog::parse_line(&db.record_line(machine, 2).unwrap().unwrap(), Some(&key.verifying_key())).is_ok());
+    }
+
+    #[test]
+    fn a_revoke_does_not_withdraw_another_signers_evidence() {
+        let db = memory();
+        let state = "01a12290-0000-7000-8000-000000000003";
+        let machine = "01a12290-0000-7000-8000-00000000aaaa";
+        let mut first = state_record(1, state, vec![]);
+        first.states.clear();
+        first.op = "approve".into();
+        first.data = serde_json::json!({"state":state});
+        db.derive(&first, &|_| true, machine).unwrap();
+        let mut other = first.clone();
+        other.id = "01a12290-0000-7000-8000-000000000002".into();
+        other.seq = 2;
+        other.op = "attest".into();
+        other.time = 2;
+        other.actor.uid = 99;
+        other.data = serde_json::json!({"attestation":Attestation {format:1,attestation_id:other.id.clone(),subject:Subject{kind:"state".into(),id:state.into()},change_id:None,kind:"revoke".into(),payload_digest:"0".repeat(64),payload_ref:None,signer:machine.into(),time:2},"revokes":[first.id]});
+        db.derive(&other, &|_| true, machine).unwrap();
+        assert_eq!(db.approvals(state).unwrap(), vec![(0, 1)]);
+    }
+    #[test]
+    fn scoped_declassification_does_not_count_as_subject_approval() {
+        let db = memory();
+        let state = "01a12290-0000-7000-8000-000000000003";
+        let machine = "01a12290-0000-7000-8000-00000000aaaa";
+        let key = ed25519_dalek::SigningKey::from_bytes(&[7; 32]);
+        let mut rec = state_record(1, state, vec![]);
+        rec.states.clear();
+        rec.op = "attest".into();
+        rec.data = serde_json::json!({"attestation":Attestation {format:1,attestation_id:rec.id.clone(),subject:Subject{kind:"state".into(),id:state.into()},change_id:None,kind:"approval".into(),payload_digest:"0".repeat(64),payload_ref:None,signer:machine.into(),time:1},"declassify":{"path":"a:1","hmac":"digest"}});
+        let raw = crate::oplog::sign_line(&rec, &key).unwrap();
+        db.insert_record(&rec, &raw).unwrap();
+        db.derive(&rec, &|_| true, machine).unwrap();
+        assert!(db.approvals(state).unwrap().is_empty());
+        assert_eq!(db.conn.query_row("SELECT COUNT(*) FROM approvals", [], |r| r.get::<_, i64>(0)).unwrap(), 0);
+        assert_eq!(db.attestations(state, Some("approval")).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn queue_status_replay_is_order_independent() {
+        let db = memory();
+        let id = "01a12290-0000-7000-8000-000000000003";
+        let entry = QueueEntry {
+            id: id.into(),
+            into: "main".into(),
+            target_line: "01a12290-0000-7000-8000-000000000004".into(),
+            state: "01a12290-0000-7000-8000-000000000005".into(),
+            change_id: None,
+            added_by: 0,
+            time: 1,
+            status: "pending".into(),
+            attempts: 0,
+            result: None,
+            reason: None,
+            probes: None,
+        };
+        let event = |seq, status: Option<&str>| {
+            let mut rec = state_record(seq, id, vec![]);
+            rec.states.clear();
+            rec.op = "queue.result".into();
+            let after = status.map(|status| {
+                let mut entry = entry.clone();
+                entry.status = status.into();
+                entry
+            });
+            rec.data = serde_json::json!({"queue_change":QueueChange{id:id.into(),before:None,after}});
+            rec
+        };
+        db.derive(&event(3, Some("done")), &|_| true, "local").unwrap();
+        db.derive(&event(1, Some("pending")), &|_| true, "local").unwrap();
+        assert_eq!(db.queue_entry(id).unwrap().unwrap().status, "done");
+        db.derive(&event(4, None), &|_| true, "local").unwrap();
+        assert!(db.queue_entry(id).unwrap().is_none());
+        db.derive(&event(5, Some("pending")), &|_| true, "local").unwrap();
+        assert_eq!(db.queue_entries(Some(&entry.target_line)).unwrap().len(), 1);
+    }
+    #[test]
+    fn check_reuse_preserves_argument_boundaries() {
+        let db = memory();
+        let state = "01a12290-0000-7000-8000-000000000003";
+        let machine = "01a12290-0000-7000-8000-00000000aaaa";
+        let key = ed25519_dalek::SigningKey::from_bytes(&[7; 32]);
+        let insert = |seq, data: serde_json::Value| {
+            let mut rec = state_record(seq, state, vec![]);
+            rec.states.clear();
+            rec.op = "check".into();
+            rec.data = data;
+            let raw = crate::oplog::sign_line(&rec, &key).unwrap();
+            db.insert_record(&rec, &raw).unwrap();
+            db.derive(&rec, &|_| true, machine).unwrap();
+        };
+        insert(1, serde_json::json!({"state":state,"command":"sh -c exit 1","argv":["sh","-c","exit 1"],"exit":1}));
+        assert_eq!(db.check_exit(state, &["sh".into(), "-c".into(), "exit 1".into()], None).unwrap(), Some(1));
+        assert_eq!(db.check_exit(state, &["sh".into(), "-c".into(), "exit".into(), "1".into()], None).unwrap(), None);
+        insert(2, serde_json::json!({"state":state,"command":"sh -c true","exit":0}));
+        assert_eq!(db.check_exit(state, &["sh".into(), "-c".into(), "true".into()], None).unwrap(), None);
+        insert(3, serde_json::json!({"state":state,"command":"true","exit":0}));
+        assert_eq!(db.check_exit(state, &["true".into()], None).unwrap(), Some(0));
+        insert(4, serde_json::json!({"state":state,"command":"true","argv":["true"],"exit":1}));
+        assert_eq!(db.check_exit(state, &["true".into()], None).unwrap(), Some(1));
+        assert_eq!(db.check_exit(state, &["true".into()], Some(0)).unwrap(), Some(0));
+    }
+}
+
+// Addressable view descriptors stay in their signed records; no derived schema is needed.
+impl Db {
+    pub fn saved_view(&self, id: &str) -> Result<Option<crate::overlay::View>> {
+        let raw: Option<String> = self
+            .conn
+            .query_row(
+                "SELECT json_extract(raw,'$.r.data.view') FROM records WHERE op='view.save'
+             AND json_extract(raw,'$.r.data.view_id')=?1 ORDER BY time,seq LIMIT 1",
+                params![id],
+                |row| row.get(0),
+            )
+            .optional()?;
+        raw.map(|raw| Ok(serde_json::from_str(&raw)?)).transpose()
+    }
+}
+
+#[cfg(test)]
+mod view_tests {
+    use super::*;
+
+    #[test]
+    fn saved_descriptors_and_checks_accept_view_subjects() -> Result<()> {
+        let path = std::env::temp_dir().join(format!("layr-view-db-{}", crate::ids::new_id()));
+        std::fs::create_dir(&path)?;
+        let db = Db::open(&path.join("test.sqlite"))?;
+        let view = crate::overlay::View::new("01a12290-0000-7000-8000-000000000003".into(), Vec::new());
+        let subject = view.id()?;
+        let raw = serde_json::json!({"r":{"data":{"view_id":subject,"view":view}}});
+        db.conn.execute("INSERT INTO records(id,op,raw,time,seq) VALUES('view','view.save',?1,1,1)", params![raw.to_string()])?;
+        assert_eq!(db.saved_view(&subject)?, Some(view));
+        let argv = vec!["sh".to_string(), "-c".into(), "check argument".into()];
+        for (id, code, ord) in [("first", 7, "1"), ("second", 0, "2")] {
+            let raw = serde_json::json!({"r":{"data":{"check":{"argv":argv,"command":"sh -c check argument","exit":code}}}});
+            db.conn.execute("INSERT INTO records(id,op,raw) VALUES(?1,'attest',?2)", params![id, raw.to_string()])?;
+            db.conn.execute(
+                "INSERT INTO attestations(id,subject,kind,machine,uid,ord) VALUES(?1,?2,'check','machine',1,?3)",
+                params![id, subject, ord],
+            )?;
+        }
+        assert_eq!(db.check_exit(&subject, &argv, None)?, Some(0));
+        assert_eq!(db.check_exit(&subject, &argv, Some(7))?, Some(7));
+        assert_eq!(db.check_exit(&subject, &["sh -c check argument".into()], None)?, None);
+        assert_eq!(db.check_exit(&"0".repeat(64), &argv, None)?, None);
+        db.conn.execute(
+            "INSERT INTO attestation_revocations(id,target,machine,uid,ord) VALUES('revoke','second','machine',1,'3')",
+            [],
+        )?;
+        assert_eq!(db.check_exit(&subject, &argv, None)?, Some(7));
+        drop(db);
+        std::fs::remove_dir_all(path)?;
+        Ok(())
     }
 }

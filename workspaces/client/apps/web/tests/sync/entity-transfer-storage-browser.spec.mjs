@@ -1,0 +1,109 @@
+import { expect, test } from "../playwright.mjs";
+import { createRequire } from "node:module";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
+
+test("real IndexedDB staging removes crash orphans while preserving another tab's owner lease and cleans cancellation", async ({
+  context,
+}) => {
+  const root = fileURLToPath(new URL("../../", import.meta.url));
+  const cacheDir = await mkdtemp(join(tmpdir(), "studio-transfer-storage-"));
+  let server;
+  try {
+    const require = createRequire(
+      new URL("../../package.json", import.meta.url),
+    );
+    const { createServer } = await import(require.resolve("vite"));
+    server = await createServer({
+      cacheDir,
+      configFile: false,
+      root,
+      optimizeDeps: { noDiscovery: true },
+      server: { host: "127.0.0.1", port: 0, fs: { allow: [root] } },
+    });
+    server.middlewares.stack.unshift({
+      route: "",
+      handle(request, response, next) {
+        if (request.url !== "/transfer-check") return next();
+        response.setHeader("Content-Type", "text/html");
+        response.end("<!doctype html><title>Transfer storage fixture</title>");
+      },
+    });
+    await server.listen();
+    const address = server.httpServer.address();
+    if (!address || typeof address === "string")
+      throw new Error("Fixture address unavailable");
+
+    const first = await context.newPage();
+    const second = await context.newPage();
+    const url = `http://127.0.0.1:${address.port}/transfer-check`;
+    await Promise.all([first.goto(url), second.goto(url)]);
+    const module = `/@fs${fileURLToPath(new URL("../../src/sync/entityTransfer.ts", import.meta.url))}`;
+    const owner = await first.evaluate(async (module) => {
+      const { IndexedTransferStorage } = await import(module);
+      const storage = new IndexedTransferStorage();
+      await storage.put("owner", "active");
+      window.staging = storage;
+      const databases = await indexedDB.databases();
+      const name = databases.find((database) =>
+        database.name?.startsWith("studio-entity-transfer-"),
+      ).name;
+      await new Promise((resolve, reject) => {
+        const request = indexedDB.open("studio-entity-transfer-orphan", 1);
+        request.onsuccess = () => {
+          request.result.close();
+          resolve();
+        };
+        request.onerror = () => reject(request.error);
+      });
+      return name;
+    }, module);
+    const status = await second.evaluate(
+      async ({ module, owner }) => {
+        const { IndexedTransferStorage } = await import(module);
+        const storage = new IndexedTransferStorage();
+        await storage.put("second", "active");
+        // Wait for the once-per-owner cleanup's exclusive lock callback rather
+        // than polling the database directory.
+        await navigator.locks.request(
+          "studio-entity-transfer-orphan",
+          async () => {},
+        );
+        const names = (await indexedDB.databases()).map(
+          (database) => database.name,
+        );
+        const value = await storage.get("second");
+        await storage.close();
+        return {
+          ownerPresent: names.includes(owner),
+          orphanPresent: names.includes("studio-entity-transfer-orphan"),
+          value,
+        };
+      },
+      { module, owner },
+    );
+    expect(status).toEqual({
+      ownerPresent: true,
+      orphanPresent: false,
+      value: "active",
+    });
+    expect(
+      await first.evaluate(async () => {
+        const storage = window.staging;
+        const value = await storage.get("owner");
+        await storage.close();
+        return {
+          value,
+          remaining: (await indexedDB.databases()).filter((database) =>
+            database.name?.startsWith("studio-entity-transfer-"),
+          ).length,
+        };
+      }),
+    ).toEqual({ value: "active", remaining: 0 });
+  } finally {
+    await server?.close();
+    await rm(cacheDir, { recursive: true, force: true });
+  }
+});

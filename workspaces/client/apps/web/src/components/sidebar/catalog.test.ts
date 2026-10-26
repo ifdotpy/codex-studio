@@ -6,7 +6,6 @@ import {
   createSidebarSearchSelector,
   countProjectChats,
   mostRecentActivity,
-  isVisibleSidebarAgent,
   type SidebarOrder,
   type SidebarOverrides,
 } from "./catalog";
@@ -24,44 +23,6 @@ const order: SidebarOrder = {};
 const teams: PeerTeam[] = [];
 const overrides = {};
 afterEach(() => vi.unstubAllGlobals());
-
-// Preserve the original observable order, including legacy rank fallback and
-// equal timestamp source order. This is a separate reference implementation.
-function reference(rows: Agent[], orders: SidebarOrder, peerTeams: PeerTeam[]) {
-  const teamFor = (id: string) =>
-    peerTeams.find((team) => team.members?.includes(id));
-  const rank = (group: string, id: string) => {
-    const i = orders[group]?.indexOf(id) ?? -1;
-    return i < 0 ? Number.MAX_SAFE_INTEGER : i;
-  };
-  const legacy = (a: Agent) =>
-    JSON.stringify([
-      "chats",
-      a.cwd,
-      !!a.pinned,
-      !!a.archived,
-      ...(teamFor(a.id) ? ["team", teamFor(a.id)!.id] : []),
-      ...(a.projectFolder ? [a.projectFolder] : []),
-    ]);
-  const position = (a: Agent) => {
-    const group =
-      !teamFor(a.id) && !a.pinned
-        ? JSON.stringify(["items", a.cwd || "", a.projectFolder || null])
-        : legacy(a);
-    const i = rank(group, a.id);
-    return i === Number.MAX_SAFE_INTEGER ? rank(legacy(a), a.id) : i;
-  };
-  return rows
-    .filter(isVisibleSidebarAgent)
-    .sort(
-      (a, b) =>
-        Number(!!b.pinned) - Number(!!a.pinned) ||
-        position(a) - position(b) ||
-        (("updated" in b ? b.updated : b.created) || 0) -
-          (("updated" in a ? a.updated : a.created) || 0),
-    )
-    .map((row) => row.id);
-}
 
 describe("incremental sidebar catalog", () => {
   it("counts only listed chats in the current active or archived view", () => {
@@ -145,7 +106,7 @@ describe("incremental sidebar catalog", () => {
     const next = rows.map((row, i) => ({ ...row, updated: 2000 - i }));
     expect(
       select(next, overrides, teams, order).ordered.map((row) => row.id),
-    ).toEqual(reference(next, order, teams));
+    ).toEqual(next.map((row) => row.id));
     expect(comparisons).toBeLessThan(3000);
   });
   it("matches original ordering through inserts, removals, reorders and optimistic changes", () => {
@@ -161,46 +122,37 @@ describe("incremental sidebar catalog", () => {
     ];
     let optimistic: SidebarOverrides = {};
     let orders: SidebarOrder = {};
-    const verify = () =>
+    const verify = (expected: string[]) =>
       expect(
         select(rows, optimistic, peerTeams, orders).ordered.map(
           (row) => row.id,
         ),
-      ).toEqual(
-        reference(
-          rows.map((row) => ({
-            ...row,
-            ...optimistic[row.id],
-          })),
-          orders,
-          peerTeams,
-        ),
-      );
-    verify();
+      ).toEqual(expected);
+    verify(["c", "a", "b"]);
     rows = [rows[1], rows[0], rows[2], rows[3]];
-    verify();
+    verify(["c", "b", "a"]);
     rows = [...rows, agent("new", { updated: 8 })];
-    verify();
+    verify(["new", "c", "b", "a"]);
     rows = rows.filter((row) => row.id !== "b");
-    verify();
+    verify(["new", "c", "a"]);
     optimistic = { a: { pinned: true }, c: { archived: true } };
-    verify();
+    verify(["a", "new", "c"]);
     orders = {
       '["chats","/work",true,false,"team","team"]': ["a"],
       '["items","/work",null]': ["new", "c"],
     };
-    verify();
+    verify(["a", "new", "c"]);
     orders = { '["items","/work",null]': ["c", "new"] };
-    verify();
+    verify(["a", "c", "new"]);
     rows = rows.map((row) => (row.id === "a" ? { ...row, pinned: true } : row));
     optimistic = {};
-    verify();
+    verify(["a", "c", "new"]);
     rows = rows.map((row) =>
       row.id === "new" ? { ...row, deletedAt: 1 } : row,
     );
-    verify();
+    verify(["a", "c"]);
     rows = [agent("replacement")];
-    verify();
+    verify(["replacement"]);
   });
   it("preserves the presence-sensitive timestamp fallback", () => {
     const select = createSidebarCatalogSelector();

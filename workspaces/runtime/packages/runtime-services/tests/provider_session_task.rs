@@ -664,7 +664,7 @@ async fn stalled_write_does_not_block_deadline_or_shutdown_barrier() {
 
 #[tokio::test(start_paused = true)]
 async fn predeadline_arrival_admitted_after_deadline_is_on_time_and_mirror_is_late() {
-    for arrived in [9, 11] {
+    for (arrived, expected_late) in [(9, false), (11, true)] {
         let (mut session, mut peer) = open().await;
         ready(&mut session, &mut peer).await;
         session
@@ -685,7 +685,7 @@ async fn predeadline_arrival_admitted_after_deadline_is_on_time_and_mirror_is_la
             .await
             .unwrap();
         let event = session.events.recv().await.unwrap();
-        assert!(event.outcomes.iter().any(|outcome| matches!(outcome, SessionOutcome::Resolved { outcome: RequestOutcome::Reply { late, .. }, .. } if *late == (arrived >= 10))));
+        assert!(event.outcomes.iter().any(|outcome| matches!(outcome, SessionOutcome::Resolved { outcome: RequestOutcome::Reply { late, .. }, .. } if *late == expected_late)));
         session.checked_shutdown().await;
     }
 }
@@ -948,7 +948,7 @@ async fn incomplete_initialization_shutdown_surfaces_recovery_after_adapter_join
 
 #[tokio::test(start_paused = true)]
 async fn before_at_and_after_deadline_arrivals_keep_classification_under_full_backlog() {
-    for arrived in [9, 10, 11] {
+    for (arrived, expected_late) in [(9, false), (10, true), (11, true)] {
         let (mut session, mut peer) = open().await;
         ready(&mut session, &mut peer).await;
         session
@@ -990,7 +990,7 @@ async fn before_at_and_after_deadline_arrivals_keep_classification_under_full_ba
                 break event;
             }
         };
-        assert!(response.outcomes.iter().any(|outcome| matches!(outcome, SessionOutcome::Resolved { outcome: RequestOutcome::Reply { late, .. }, .. } if *late == (arrived >= 10))));
+        assert!(response.outcomes.iter().any(|outcome| matches!(outcome, SessionOutcome::Resolved { outcome: RequestOutcome::Reply { late, .. }, .. } if *late == expected_late)));
         session.checked_shutdown().await;
     }
 }
@@ -1342,6 +1342,53 @@ async fn full_command_and_event_lanes_do_not_block_cancellation_or_join() {
         pending(submit.as_mut()).await;
         submitted.push(submit);
     }
+    control.cancel();
+    session.checked_shutdown().await;
+    peer.gone.await.unwrap();
+    for submit in submitted {
+        assert!(submit.await.is_err());
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn dropping_submission_waiting_for_full_lane_keeps_shared_session_alive() {
+    let (mut session, mut peer) = open().await;
+    ready(&mut session, &mut peer).await;
+    let control = session.control.clone();
+    let mut prepared = vec![];
+    for id in 2..LANE_CAPACITY as u64 + 3 {
+        prepared.push(control.prepare(spec(id, 100)).await.unwrap());
+    }
+    for cursor in 1..=(LANE_CAPACITY * 2 + 1) as u64 {
+        peer.events
+            .send(entry(cursor, 0, JournalPayload::Stderr(json!({}))))
+            .await
+            .unwrap();
+    }
+    pending(
+        peer.events
+            .send(entry(100, 0, JournalPayload::Stderr(json!({})))),
+    )
+    .await;
+    let mut submitted = vec![];
+    for request in prepared {
+        let mut submit = Box::pin(control.submit(request));
+        pending(submit.as_mut()).await;
+        submitted.push(submit);
+    }
+    // The last future is waiting for bounded channel capacity, so it has not
+    // admitted a command and may be abandoned without stopping other agents.
+    drop(submitted.pop().unwrap());
+    for _ in 0..8 {
+        tokio::task::yield_now().await;
+    }
+    assert!(
+        matches!(
+            peer.stopping.try_recv(),
+            Err(oneshot::error::TryRecvError::Empty)
+        ),
+        "an unsent submission stopped the shared session"
+    );
     control.cancel();
     session.checked_shutdown().await;
     peer.gone.await.unwrap();
@@ -2241,5 +2288,45 @@ async fn active_barrier_holds_new_requests_but_not_callback_answers_or_interrupt
     barrier.await.unwrap().unwrap();
     held.await.unwrap().unwrap();
     written(write(&mut peer).await);
+    session.checked_shutdown().await;
+}
+
+#[tokio::test(start_paused = true)]
+async fn multiple_recovered_thread_owners_open_without_replay_and_hold_fresh_work() {
+    let (factory, mut peer) = fake();
+    let mut cfg = config();
+    cfg.wire = studio_runtime_providers::ProviderKind::Claude.wire();
+    for id in [42, 43] {
+        let mut record = recovered(RequestId::Number(id), Method::ClaudeSettings, 1000);
+        record.thread_id = Some("thread".into());
+        cfg.recovered.push(record);
+    }
+    let mut session =
+        SessionHandle::open(factory, ProviderHandle::for_account("test"), options(), cfg)
+            .await
+            .expect("multiple unresolved same-thread requests must not block account startup");
+    ready(&mut session, &mut peer).await;
+    session
+        .control
+        .submit(session.control.prepare(serialized(44, 1000)).await.unwrap())
+        .await
+        .unwrap();
+    pending(peer.commands.recv()).await;
+    for (cursor, id) in [(1, 43), (2, 42)] {
+        peer.events
+            .send(entry(
+                cursor,
+                1,
+                JournalPayload::Frame(reply(RequestId::Number(id))),
+            ))
+            .await
+            .unwrap();
+        session.events.recv().await.unwrap();
+        if cursor == 1 {
+            pending(peer.commands.recv()).await;
+        }
+    }
+    written(write(&mut peer).await);
+    pending(peer.commands.recv()).await;
     session.checked_shutdown().await;
 }

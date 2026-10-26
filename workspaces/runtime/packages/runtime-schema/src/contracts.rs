@@ -49,6 +49,23 @@ fn ts_strings(lines: &mut String, constants: &[(&str, &str)]) {
     }
 }
 
+fn provider_method_policy_mjs() -> String {
+    let rules = crate::provider_method_policy::THREAD_SERIALIZATION_RULES
+        .iter()
+        .map(|rule| {
+            format!(
+                "  [{}, {}],\n",
+                json_string(rule.method),
+                rule.true_parameter
+                    .map_or_else(|| "null".into(), json_string)
+            )
+        })
+        .collect::<String>();
+    format!(
+        "// {HEADER}\nconst rules = [\n{rules}];\nexport function isThreadSerialized(method, params) {{\n  return rules.some(\n    ([name, parameter]) =>\n      name === method && (parameter === null || params[parameter] === true),\n  );\n}}\n"
+    )
+}
+
 fn shared_values_ts() -> String {
     let mut text = format!("// {HEADER}\n");
     ts_constants(
@@ -56,8 +73,40 @@ fn shared_values_ts() -> String {
         &[
             ("MAX_SAFE_INTEGER", values::MAX_SAFE_INTEGER.to_string()),
             (
+                "MODEL_WHITELIST_PREFERENCE_KEY",
+                json_string(values::MODEL_WHITELIST_PREFERENCE_KEY),
+            ),
+            (
+                "MODEL_WHITELIST_MAX_KEYS",
+                values::MODEL_WHITELIST_MAX_KEYS.to_string(),
+            ),
+            (
+                "MODEL_WHITELIST_KEY_MAX_CODEPOINTS",
+                values::MODEL_WHITELIST_KEY_MAX_CODEPOINTS.to_string(),
+            ),
+            (
+                "MODEL_WHITELIST_KEY_PATTERN",
+                json_string(values::MODEL_WHITELIST_KEY_PATTERN),
+            ),
+            (
+                "SYNC_TERMINAL_STREAM_MAX_CHARS",
+                values::SYNC_TERMINAL_STREAM_MAX_CHARS.to_string(),
+            ),
+            (
+                "MAX_SYNC_RESOURCE_COUNT",
+                values::MAX_SYNC_RESOURCE_COUNT.to_string(),
+            ),
+            (
+                "SYNC_ENTITY_TRANSFER_ID_MAX_CODEPOINTS",
+                values::SYNC_ENTITY_TRANSFER_ID_MAX_CODEPOINTS.to_string(),
+            ),
+            (
                 "STUDIO_ERRORS_DISMISS_MAX_IDS",
                 values::STUDIO_ERRORS_DISMISS_MAX_IDS.to_string(),
+            ),
+            (
+                "SYNC_TRANSCRIPT_INITIAL_TAIL_ITEMS",
+                values::SYNC_TRANSCRIPT_INITIAL_TAIL_ITEMS.to_string(),
             ),
             (
                 "SYNC_TRANSCRIPT_STREAM_MAX_ITEMS",
@@ -220,6 +269,10 @@ fn shared_values_ts() -> String {
             (
                 "VM_PROVIDER_DISCONNECTED_TURN_ERROR",
                 values::VM_PROVIDER_DISCONNECTED_TURN_ERROR,
+            ),
+            (
+                "LEGACY_VM_PROVIDER_DISCONNECTED_TURN_ERROR",
+                values::LEGACY_VM_PROVIDER_DISCONNECTED_TURN_ERROR,
             ),
             ("DISK_FULL_ERROR_PATTERN", values::DISK_FULL_ERROR_PATTERN),
         ],
@@ -405,8 +458,23 @@ pub fn check_schema_parity(openapi: &Value, account_transfer: &Value) -> Result<
     )?;
     expect_number(
         openapi,
+        "/components/schemas/ResourceEntityTransferEvent/properties/transferId/maxLength",
+        values::SYNC_ENTITY_TRANSFER_ID_MAX_CODEPOINTS as i64,
+    )?;
+    expect_number(
+        openapi,
+        "/components/schemas/ResourceEntityTransferEvent/properties/data/maxLength",
+        values::SYNC_STREAM_EVENT_MAX_BYTES as i64,
+    )?;
+    expect_number(
+        openapi,
         "/components/schemas/EntityChangeBatch/properties/documents/maxItems",
         values::SYNC_ENTITY_STREAM_MAX_DOCUMENTS,
+    )?;
+    expect_number(
+        openapi,
+        "/components/schemas/VoiceRecordBatch/properties/records/maxItems",
+        values::SYNC_VOICE_STREAM_MAX_RECORDS,
     )?;
     for field in ["items", "removed", "order"] {
         expect_number(
@@ -417,8 +485,19 @@ pub fn check_schema_parity(openapi: &Value, account_transfer: &Value) -> Result<
     }
     expect_number(
         openapi,
-        "/components/schemas/TranscriptStreamDelta/properties/itemRevisions/maxProperties",
+        "/components/schemas/TranscriptResource/properties/tail/default",
+        values::SYNC_TRANSCRIPT_INITIAL_TAIL_ITEMS as i64,
+    )?;
+    expect_number(
+        openapi,
+        "/components/schemas/TranscriptResource/properties/tail/maximum",
         values::SYNC_TRANSCRIPT_STREAM_MAX_ITEMS as i64,
+    )?;
+    crate::workspace_modes::check_openapi(openapi)?;
+    expect_number(
+        openapi,
+        "/components/schemas/ProjectDeleteRequest/properties/expected_project_seq/maximum",
+        values::MAX_SAFE_INTEGER,
     )?;
     check_delivery_parity(openapi)?;
     let modes = serde_json::json!(crate::claude_permissions::PERMISSION_MODES);
@@ -530,6 +609,10 @@ pub fn check_schema_parity(openapi: &Value, account_transfer: &Value) -> Result<
         "ResourceChangeEvent",
         "ResourceHeartbeatEvent",
         "ResourceTokenRatesEvent",
+        "AuthProgressEvent",
+        "RenameProgressEvent",
+        "VaultReadinessEvent",
+        "VaultJobProgressEvent",
     ] {
         for bound in ["const", "minimum", "maximum"] {
             expect_number(
@@ -537,6 +620,19 @@ pub fn check_schema_parity(openapi: &Value, account_transfer: &Value) -> Result<
                 &format!("/components/schemas/{owner}/properties/protocol/{bound}"),
                 version,
             )?;
+        }
+    }
+    for (owner, consumer) in [("id", "agentId"), ("request_id/anyOf/0", "requestId")] {
+        let source = openapi.pointer(&format!(
+            "/components/schemas/RenameRequest/properties/{owner}"
+        ));
+        let target = openapi.pointer(&format!(
+            "/components/schemas/RenameProgressResource/properties/{consumer}"
+        ));
+        if source != target {
+            return Err(format!(
+                "RenameRequest owns rename selector bounds; RenameProgressResource.{consumer} differs"
+            ));
         }
     }
     for owner in ["TokenRateSnapshot", "ResourceTokenRatesEvent"] {
@@ -672,9 +768,106 @@ fn api_types(root: &Path, document: &Value, argument: &str) -> Result<String, St
     Ok(body)
 }
 
+fn subscription_scopes_ts(
+    scopes: &std::collections::BTreeMap<String, crate::sync_protocol::SubscriptionEntityScope>,
+    print_width: usize,
+) -> String {
+    let mut text = format!("// {HEADER}\nexport const SUBSCRIPTION_ENTITY_SCOPES = {{\n");
+    for (kind, scope) in scopes {
+        let key = if kind.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+            kind.clone()
+        } else {
+            json_string(kind)
+        };
+        writeln!(text, "  {key}: {{").expect("String write");
+        let inline = format!(
+            "    collections: [{}],",
+            scope
+                .collections
+                .iter()
+                .map(|collection| json_string(collection))
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+        if inline.chars().count() <= print_width {
+            writeln!(text, "{inline}").expect("String write");
+        } else {
+            text.push_str("    collections: [\n");
+            for collection in &scope.collections {
+                writeln!(text, "      {},", json_string(collection)).expect("String write");
+            }
+            text.push_str("    ],\n");
+        }
+        for (field, value) in [
+            ("idField", &scope.id_field),
+            ("agentField", &scope.agent_field),
+        ] {
+            writeln!(
+                text,
+                "    {field}: {},",
+                value
+                    .as_deref()
+                    .map(json_string)
+                    .unwrap_or_else(|| "null".into())
+            )
+            .expect("String write");
+        }
+        writeln!(
+            text,
+            "    includeTeamMembers: {},",
+            scope.include_team_members
+        )
+        .expect("String write");
+        text.push_str("  },\n");
+    }
+    text.push_str("} as const;\n");
+    text
+}
+
+fn workspace_modes_ts() -> String {
+    use crate::workspace_modes as modes;
+    let mut text = format!(
+        "// {HEADER}\nexport const CHAT_WORKSPACE_MODES = [\n{},\n] as const;\n",
+        modes::CHAT_WORKSPACE_MODES
+            .iter()
+            .map(|mode| format!("  {}", json_string(mode)))
+            .collect::<Vec<_>>()
+            .join(",\n")
+    );
+    for (name, values) in [
+        ("ALWAYS_NATIVE_SYSTEMS", modes::ALWAYS_NATIVE_SYSTEMS),
+        (
+            "CAPABILITY_NATIVE_SYSTEMS",
+            modes::CAPABILITY_NATIVE_SYSTEMS,
+        ),
+    ] {
+        writeln!(
+            text,
+            "export const {name} = {} as const;",
+            serde_json::to_string(values).expect("mode names serialize")
+        )
+        .expect("String write");
+    }
+    for (name, value) in [
+        (
+            "DEFAULT_CHAT_WORKSPACE_MODE",
+            modes::DEFAULT_CHAT_WORKSPACE_MODE,
+        ),
+        (
+            "DEFAULT_AGENT_WORKSPACE_MODE",
+            modes::DEFAULT_AGENT_WORKSPACE_MODE,
+        ),
+    ] {
+        writeln!(text, "export const {name} = {};", json_string(value)).expect("String write");
+    }
+    text.push_str("export function defaultChatWorkspaceMode(system?: string, nativeReady = false) {\n  return ALWAYS_NATIVE_SYSTEMS.some((value) => value === system) ||\n    (nativeReady && CAPABILITY_NATIVE_SYSTEMS.some((value) => value === system))\n    ? DEFAULT_CHAT_WORKSPACE_MODE\n    : DEFAULT_AGENT_WORKSPACE_MODE;\n}\n");
+    text
+}
+
 /// Render every contract file. `with_api_types` also runs Node for web types.
 pub fn render(root: &Path, with_api_types: bool) -> Result<Vec<Rendered>, String> {
     let mut openapi = read_json(root, OPENAPI_PATH)?;
+    crate::workspace_modes::update_openapi(&mut openapi);
     for (name, schema) in crate::agent_progress::schemas()
         .into_iter()
         .chain(crate::desktop::schemas())
@@ -682,6 +875,9 @@ pub fn render(root: &Path, with_api_types: bool) -> Result<Vec<Rendered>, String
         *openapi
             .pointer_mut(&format!("/components/schemas/{name}"))
             .ok_or_else(|| format!("OpenAPI is missing Rust-owned {name}"))? = schema;
+    }
+    for (name, schema) in crate::usage::schemas() {
+        openapi["components"]["schemas"][name] = schema;
     }
     check_schema_parity(&openapi, &read_json(root, ACCOUNT_TRANSFER_SCHEMA_PATH)?)?;
     for (name, fields) in [
@@ -707,7 +903,27 @@ pub fn render(root: &Path, with_api_types: bool) -> Result<Vec<Rendered>, String
         }
     }
     let web = |name: &str| format!("{WEB_GENERATED}/{name}");
+    let scopes = crate::sync_protocol::entity_scopes_from_document(&openapi)?;
     let mut rendered = vec![
+        Rendered {
+            path: web("workspaceModes.ts"),
+            text: workspace_modes_ts(),
+        },
+        Rendered {
+            path: "workspaces/providers/apps/claude-bridge/provider-method-policy.generated.mjs"
+                .into(),
+            text: provider_method_policy_mjs(),
+        },
+        Rendered {
+            path: web("subscriptionEntities.ts"),
+            text: subscription_scopes_ts(
+                &scopes,
+                read_json(root, ".oxfmtrc.json")?["printWidth"]
+                    .as_u64()
+                    .and_then(|width| usize::try_from(width).ok())
+                    .ok_or("root Oxfmt printWidth is missing")?,
+            ),
+        },
         Rendered {
             path: web("taskReview.ts"),
             text: format!(
@@ -773,12 +989,57 @@ pub fn render(root: &Path, with_api_types: bool) -> Result<Vec<Rendered>, String
             text: linux_vm_swift(),
         },
     ];
+    // Analytics embeds the same accounting owner with local schema references.
+    let usage_defs: serde_json::Value = serde_json::from_str(
+        &serde_json::to_string(&crate::usage::schemas())
+            .map_err(|error| error.to_string())?
+            .replace("#/components/schemas/", "#/$defs/"),
+    )
+    .map_err(|error| error.to_string())?;
+    for name in ["analytics-usage", "analytics-notice"] {
+        let path =
+            format!("workspaces/runtime/packages/runtime-schema/src/schemas/{name}.schema.json");
+        let mut schema = read_json(root, &path)?;
+        for (name, value) in usage_defs
+            .as_object()
+            .ok_or("usage definitions must be an object")?
+        {
+            schema["$defs"][name] = value.clone();
+        }
+        rendered.push(Rendered {
+            path,
+            text: serde_json::to_string_pretty(&schema).map_err(|error| error.to_string())? + "\n",
+        });
+    }
     let draft_schema = studio_client_domain::drafts::schema().to_value();
     rendered.push(Rendered {
         path: "workspaces/runtime/packages/runtime-http/draft-payload.schema.json".into(),
         text: serde_json::to_string_pretty(&draft_schema).map_err(|error| error.to_string())?
             + "\n",
     });
+    let usage_schema = schemars::schema_for!(crate::usage::UsageObservation).to_value();
+    rendered.push(Rendered {
+        path:
+            "workspaces/runtime/packages/runtime-schema/src/schemas/usage-observation.schema.json"
+                .into(),
+        text: serde_json::to_string_pretty(&usage_schema).map_err(|error| error.to_string())?
+            + "\n",
+    });
+    if with_api_types {
+        let mut usage_generator = schemars::generate::SchemaSettings::draft2020_12()
+            .for_serialize()
+            .with(|settings| settings.definitions_path = "/components/schemas".into())
+            .into_generator();
+        usage_generator.subschema_for::<crate::usage::UsageObservation>();
+        let usage_document = serde_json::json!({
+            "openapi":"3.1.0", "info":{"title":"Usage contract","version":"1"},
+            "paths":{}, "components":{"schemas":usage_generator.take_definitions(true)}
+        });
+        rendered.push(Rendered {
+            path: "workspaces/providers/apps/claude-bridge/usage-contract.generated.d.mts".into(),
+            text: api_types(root, &usage_document, "--rust-owned")?,
+        });
+    }
     if with_api_types {
         let mut generator = schemars::generate::SchemaSettings::draft2020_12()
             .for_serialize()
@@ -851,6 +1112,54 @@ mod tests {
         assert!(!validator.is_valid(
             &serde_json::json!([{"nodes":[{"sentences":[{"text":"x","index":"bad"}]}],"length":1}])
         ));
+    }
+
+    #[test]
+    fn provider_method_policy_matches_generated_bridge_for_parameter_shapes() {
+        let root = repository_root();
+        let script = r#"import { isThreadSerialized } from './workspaces/providers/apps/claude-bridge/provider-method-policy.generated.mjs';
+let input = ''; for await (const chunk of process.stdin) input += chunk;
+process.stdout.write(JSON.stringify(JSON.parse(input).map(([method, params]) => isThreadSerialized(method, params))));"#;
+        let mut cases = Vec::new();
+        for method in crate::provider_method_policy::THREAD_SERIALIZATION_RULES
+            .iter()
+            .map(|rule| rule.method)
+            .chain(["turn/interrupt", "unknown/method"])
+        {
+            for params in [
+                serde_json::json!({}),
+                serde_json::json!({"includeTurns":false}),
+                serde_json::json!({"includeTurns":true}),
+                serde_json::json!({"includeTurns":"true"}),
+                serde_json::json!({"includeTurns":null}),
+            ] {
+                cases.push((method, params));
+            }
+        }
+        let expected = cases
+            .iter()
+            .map(|(method, params)| {
+                crate::provider_method_policy::is_thread_serialized(method, params)
+            })
+            .collect::<Vec<_>>();
+        let node = std::env::var(NODE_ENVIRONMENT).unwrap_or_else(|_| "node".into());
+        let mut child = Command::new(node)
+            .args(["--input-type=module", "-e", script])
+            .current_dir(root)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()
+            .expect("Node policy witness");
+        child
+            .stdin
+            .take()
+            .expect("input pipe")
+            .write_all(&serde_json::to_vec(&cases).expect("cases serialize"))
+            .expect("write policy cases");
+        let output = child.wait_with_output().expect("policy witness exits");
+        assert!(output.status.success());
+        let actual: Vec<bool> = serde_json::from_slice(&output.stdout).expect("policy results");
+        assert_eq!(actual, expected);
     }
 
     #[test]

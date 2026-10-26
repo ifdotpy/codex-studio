@@ -6,6 +6,12 @@ use serde_json::{Value, json};
 use crate::schema::{ConditionalTableRequirement, SchemaRequirements, TableRequirement};
 use crate::{StoreError, StoreResult, SyncDocumentsRepository};
 
+/// Signature of the internal destructive-project lifetime marker.
+const DESTRUCTIVE_REMOVAL_SIGNATURE: &str = "project-destructive-removal";
+fn destructive_removal_key(id: &str) -> String {
+    format!("project-destructive-removal:{id}")
+}
+
 const PROJECT_TABLE: &[TableRequirement] = &[TableRequirement {
     name: "runtime_projects",
     columns: &["id", "record"],
@@ -51,6 +57,40 @@ pub(crate) const REQUIREMENTS: SchemaRequirements = SchemaRequirements {
 pub struct ProjectsRepository;
 
 impl ProjectsRepository {
+    /// Durable Unix timestamp in seconds marking permanent project-owned room retirement.
+    pub const ROOM_RETIRED_FIELD: &'static str = "projectDeletedAt";
+
+    pub fn room_retired(room: &Value) -> bool {
+        room.get(Self::ROOM_RETIRED_FIELD)
+            .is_some_and(|value| !value.is_null())
+    }
+
+    /// Distinguish a destructive project lifetime fence from sidebar-only removal.
+    /// The recorded sequence is the exact project tombstone's durable sequence.
+    pub fn record_destructive_removal(tx: &Transaction<'_>, id: &str) -> StoreResult<()> {
+        let seq: i64 = tx.query_row(
+            "SELECT seq FROM sync_entities WHERE collection='project' AND id=?1 AND deleted=1",
+            [id],
+            |row| row.get(0),
+        )?;
+        tx.execute("INSERT INTO runtime_operation_receipts(id,signature,result) VALUES(?1,?2,?3) ON CONFLICT(id) DO UPDATE SET result=excluded.result",
+            params![destructive_removal_key(id),DESTRUCTIVE_REMOVAL_SIGNATURE,serde_json::to_string(&seq)?])?;
+        Ok(())
+    }
+    pub fn is_destructive_removal(
+        connection: &Connection,
+        id: &str,
+        seq: i64,
+    ) -> StoreResult<bool> {
+        Ok(
+            Self::receipt(connection, &destructive_removal_key(id))?.is_some_and(
+                |(signature, result)| {
+                    signature == DESTRUCTIVE_REMOVAL_SIGNATURE && result.as_i64() == Some(seq)
+                },
+            ),
+        )
+    }
+
     pub fn list(connection: &Connection) -> StoreResult<Vec<(String, Value)>> {
         let mut statement = connection.prepare_cached(
             "SELECT id,record FROM runtime_projects ORDER BY json_extract(record,'$.created'),id",
@@ -228,6 +268,10 @@ impl ProjectsRepository {
                 object: "runtime_rooms",
                 id: id.to_owned(),
             })?;
+        if Self::room_retired(&room) {
+            SyncDocumentsRepository::put_entity(transaction, "room", id, json!({}), true)?;
+            return Ok(());
+        }
         let members = room
             .get("members")
             .and_then(Value::as_array)

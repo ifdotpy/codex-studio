@@ -224,8 +224,9 @@ def supervisor_request(state: Path, action: SupervisorAction) -> dict[str, objec
                     raise RuntimeError("The supervisor reply exceeds its limit or is incomplete.")
                 return json.loads(line)
 
+            role = "operator" if action is SupervisorAction.FINISH_FALLBACK else "probe"
             hello = SupervisorHello(**exchange({"protocol": SUPERVISOR_PROTOCOL_V2,
-                              "stateDir": str(state), "probe": True}))
+                              "stateDir": str(state), role: True}))
             if hello.ok is not True or hello.protocol != SUPERVISOR_PROTOCOL_V2:
                 raise RuntimeError("The running process supervisor does not serve protocol 2.")
             reply = SupervisorReply(**exchange({"requestId": 1, "action": action}))

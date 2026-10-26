@@ -10,7 +10,6 @@ mod analytics_capture_corpus;
 mod analytics_history_checkpoint;
 mod browser_host_flow;
 mod catalog_reads_corpus;
-mod change_notifications;
 mod claude_accounts;
 mod claude_bridge_org;
 mod claude_controls_actor;
@@ -22,7 +21,6 @@ mod context_repair_corpus;
 mod continuation_corpus;
 mod continuation_recovery;
 mod idle_compaction;
-mod image_workspace_corpus;
 mod liveness;
 mod media_auth_fixtures;
 mod monitor_deadline_answer;
@@ -37,6 +35,7 @@ mod notification_dispatch_corpus;
 mod payload_safety_oracle;
 mod portable_history_python_parity;
 mod process_controls;
+mod project_deletion;
 mod project_preparation;
 mod provider_binaries_differential;
 mod provider_callbacks;
@@ -61,7 +60,6 @@ mod thread_prepare_corpus;
 mod title_generation_corpus;
 mod title_generation_effects;
 mod turn_fixtures;
-mod turn_lifecycle_corpus;
 mod turn_prepare_corpus;
 mod vm_macsync_corpus;
 mod vm_macsync_round;
@@ -122,3 +120,6 @@ pub(crate) mod process_support;
 pub(crate) mod projection_fixtures;
 
 pub(crate) use callback_fixtures::frozen as recovery_fixtures;
+
+#[path = "test_support/agent_views.rs"]
+pub(crate) mod agent_view_fixtures;

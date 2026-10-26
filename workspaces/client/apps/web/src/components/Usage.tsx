@@ -1,9 +1,17 @@
+import { useSubscription } from "../sync/subscriptions";
 import { randomUUID } from "../uuid";
 import { useServerApi } from "../servers/ServerServicesContext";
 import { localDateTime, localTime } from "../local-time";
 import { accountLimits } from "../usage/accountUsage";
 import { weeklyRunway } from "../usage/weeklyRunway";
-import { lazy, Suspense, useEffect, useRef, useState } from "react";
+import {
+  lazy,
+  Suspense,
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+} from "react";
 import { Button, Popover, Progress, Tabs, Tooltip } from "@mantine/core";
 import {
   ChevronUp,
@@ -19,7 +27,7 @@ import { useRecoveredLimit } from "./useRecoveredLimit";
 import { useLimitEligibility } from "../usage/useLimitEligibility";
 import { limitRecovery } from "../usage/limitRecovery";
 import LimitRecoveryNotice from "./LimitRecoveryNotice";
-import { useServerResourceReads } from "../servers/ServerServicesContext";
+import { useServerSync } from "../servers/ServerServicesContext";
 export { limitRecovery } from "../usage/limitRecovery";
 import "./Usage.css";
 import { remainingLimitColor } from "./accountLimitColor";
@@ -187,6 +195,7 @@ export default function Usage({
   onChange,
   limitsLoading,
   accounts = [],
+  visible = true,
 }: {
   agent: Agent;
   stateDir: string;
@@ -197,10 +206,11 @@ export default function Usage({
   onChange?: (opened: boolean) => void;
   limitsLoading?: boolean;
   accounts?: UsageAccount[];
+  visible?: boolean;
 }) {
   const { peekSessionCost, storeSessionCost } = useServerSessionCosts();
-  const watchResourceReads = useServerResourceReads();
-  const { get, post } = useServerApi();
+  const { subscribeStateProjection } = useServerSync();
+  const { post } = useServerApi();
 
   const [localOpened, setLocalOpened] = useState(false);
   const limitsOpened = opened ?? localOpened;
@@ -325,6 +335,54 @@ export default function Usage({
     (Partial<GetResult<"/api/costs">> & { error?: string | null }) | null
   >(null);
   const rootId = agent.rootId || agent.id;
+  useSubscription(visible ? { kind: "session-cost", agentId: rootId } : null);
+  useSubscription(visible && limitsOpened ? { kind: "costs" } : null);
+  const costObservation = useRef<{
+    scope: string;
+    signature: string | null;
+  } | null>(null);
+  const costInterest = useRef<{
+    scope: string;
+    accountKey: string;
+    baseline: string | null;
+    phase: "baseline" | "pending" | "settled";
+  } | null>(null);
+  const [costInterestError, setCostInterestError] = useState("");
+  const sendCostInterest = useCallback(
+    (attempt: NonNullable<typeof costInterest.current>) => {
+      if (costInterest.current !== attempt || attempt.phase !== "baseline")
+        return;
+      attempt.phase = "pending";
+      void post("/api/costs/interest", {
+        account_key: attempt.accountKey,
+      }).catch((error) => {
+        if (costInterest.current === attempt && attempt.phase === "pending")
+          setCostInterestError(errorText(error));
+      });
+    },
+    [post],
+  );
+  useEffect(() => {
+    if (!visible || !limitsOpened) {
+      costInterest.current = null;
+      return;
+    }
+    const scope = JSON.stringify([stateDir, accountKey]);
+    if (costInterest.current?.scope === scope) return;
+    const observation =
+      costObservation.current?.scope === scope ? costObservation.current : null;
+    const attempt: NonNullable<typeof costInterest.current> = {
+      scope,
+      accountKey,
+      baseline: observation?.signature ?? null,
+      phase: "baseline",
+    };
+    costInterest.current = attempt;
+    setCostInterestError("");
+    // A local projection baseline distinguishes cached data from the result
+    // of this opening, including when switching accounts while already open.
+    if (observation) sendCostInterest(attempt);
+  }, [visible, limitsOpened, stateDir, accountKey, sendCostInterest]);
   const costScope = JSON.stringify([stateDir, rootId]);
   const [sessionCostState, setSessionCostState] = useState<{
     scope: string;
@@ -341,104 +399,54 @@ export default function Usage({
       : peekSessionCost(stateDir, rootId);
   const sessionCostUpdating =
     sessionCostState.scope !== costScope || sessionCostState.updating;
-  useEffect(() => {
-    let active = true;
-    const load = async () => {
-      setSessionCostState((previous) =>
-        previous.scope === costScope
-          ? { ...previous, updating: true }
-          : {
-              scope: costScope,
-              value: peekSessionCost(stateDir, rootId),
-              updating: true,
-            },
-      );
-      try {
-        const value = await get("/api/session-cost", {
-          query: { agent: agent.id },
-          timeoutMs: 5000,
-        });
-        if (!active) return;
-        if (value.pricingState === "loading") {
-          setSessionCostState((previous) => {
-            const cached =
-              previous.scope === costScope
-                ? previous.value
-                : peekSessionCost(stateDir, rootId);
-            return {
-              scope: costScope,
-              value: cached || value,
-              updating: Boolean(cached),
-            };
-          });
-        } else {
+  useEffect(
+    () =>
+      subscribeStateProjection(
+        (snapshot) => {
+          const value = snapshot?.runtime.sessionCostsByAgent?.[rootId];
+          if (!value) return;
           const cached = storeSessionCost(stateDir, rootId, value);
           setSessionCostState({
             scope: costScope,
             value: cached || value,
             updating: Boolean(value.refreshing),
           });
+        },
+        () => {},
+      ),
+    [costScope, rootId, stateDir, subscribeStateProjection],
+  );
+  useEffect(() => {
+    setCosts(null);
+    const stop = subscribeStateProjection(
+      (snapshot) => {
+        const value = snapshot?.runtime.accountCostsByAccount?.[accountKey];
+        if (!snapshot) return;
+        const scope = JSON.stringify([stateDir, accountKey]);
+        const signature = value ? JSON.stringify(value) : null;
+        costObservation.current = { scope, signature };
+        const attempt = costInterest.current;
+        if (attempt?.scope === scope) {
+          if (attempt.phase === "baseline") {
+            attempt.baseline = signature;
+            sendCostInterest(attempt);
+          } else if (
+            attempt.phase === "pending" &&
+            signature !== attempt.baseline
+          ) {
+            attempt.phase = "settled";
+            setCostInterestError("");
+          }
         }
-      } catch (error) {
-        if (active)
-          setSessionCostState((previous) => ({
-            scope: costScope,
-            value:
-              previous.scope === costScope
-                ? previous.value
-                : peekSessionCost(stateDir, rootId),
-            updating: false,
-          }));
-        throw error;
-      }
-    };
-    const stop = watchResourceReads(
-      { kind: "session-cost", agentId: agent.id },
-      load,
-      () => {
-        // Keep the cached value while the session cost service is unavailable.
+        setCosts(value || null);
       },
+      () => {},
     );
     return () => {
-      active = false;
+      costObservation.current = null;
       stop();
     };
-  }, [agent.id, costScope, rootId, stateDir, watchResourceReads]);
-  useEffect(() => {
-    let active = true;
-    const load = async () => {
-      try {
-        const result = await get("/api/costs", {
-          query: { account_key: accountKey },
-          timeoutMs: 15000,
-        });
-        if (!active) return;
-        if (result.accountKey !== accountKey)
-          throw new Error("Cost account mismatch");
-        setCosts(result);
-      } catch (error) {
-        if (active) {
-          setCosts((previous) => ({
-            ...previous,
-            error: "Local costs unavailable",
-          }));
-        }
-        throw error;
-      }
-    };
-    setCosts(null);
-    const stop = watchResourceReads({ kind: "costs" }, load, () => {
-      if (active)
-        setCosts((previous) => ({
-          ...previous,
-          error: "Local costs unavailable",
-        }));
-    });
-    return () => {
-      active = false;
-      stop();
-    };
-  }, [accountKey, watchResourceReads]);
+  }, [stateDir, accountKey, subscribeStateProjection, sendCostInterest]);
   const [now, setNow] = useState(() => Date.now() / 1000);
   useEffect(() => {
     const timer = window.setInterval(() => setNow(Date.now() / 1000), 30000);
@@ -1269,6 +1277,17 @@ export default function Usage({
                     </div>
                   ))}
                 </div>
+                <p className="account-cost-caption" role="status">
+                  {costs?.refreshing
+                    ? "Refreshing estimate…"
+                    : costInterestError || costs?.error
+                      ? "Refresh failed · stale estimate"
+                      : costs?.stale
+                        ? "Stale estimate"
+                        : "Saved estimate"}
+                  {number(costs?.at) &&
+                    ` · Updated ${Math.max(0, Math.round(now - costs!.at!))} seconds ago`}
+                </p>
                 {(costs?.data?.coverage === "partial" ||
                   costs?.stale ||
                   costs?.error) && (

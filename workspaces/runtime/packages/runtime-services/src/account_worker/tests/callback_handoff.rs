@@ -1048,9 +1048,10 @@ async fn the_same_cursor_in_two_generations_is_two_records() {
     // An ended generation's record with the same cursor appears next to it.
     leave_record(&state, 1, 1, &request("old"), None).await;
     peer.frame(tool_call).await;
+    let mut changes = state.commits();
     tokio::time::timeout(std::time::Duration::from_secs(60), async {
         while phases(&state, 1, 1)[0] {
-            tokio::task::yield_now().await;
+            changes.changed().await.expect("callback retirement commit");
         }
     })
     .await

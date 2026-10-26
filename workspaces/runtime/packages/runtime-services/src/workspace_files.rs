@@ -22,8 +22,6 @@ const PYTHON_MIME_OVERRIDES: &[(&str, &str)] = &[
 pub struct WorkspaceContext {
     pub cwd: String,
     pub execution_backed: bool,
-    pub image_workspace: bool,
-    pub image_workspace_ready: bool,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -69,18 +67,12 @@ impl WorkspaceContext {
             .to_owned();
         let execution_mode = record.get("executionMode").and_then(Value::as_str);
         let workspace_mode = record.get("workspaceMode").and_then(Value::as_str);
-        let image_workspace = record.get("imageWorkspace").and_then(Value::as_bool) == Some(true)
-            || workspace_mode == Some("image");
-        let image_workspace_ready =
-            record.get("imageWorkspaceReady").and_then(Value::as_bool) == Some(true);
-        let execution_backed = image_workspace
+        let execution_backed = crate::legacy_image_workspace::is_legacy(record)
             || execution_mode == Some("vm")
-            || matches!(workspace_mode, Some("image" | "layr"));
+            || workspace_mode == Some("layr");
         Ok(Self {
             cwd,
             execution_backed,
-            image_workspace,
-            image_workspace_ready,
         })
     }
 }
@@ -139,39 +131,6 @@ pub fn file_content(path: &str, root: Option<&str>) -> Result<FileContent, Works
         mime: mime_type(&file_path),
         bytes,
     })
-}
-
-/// Read metadata from a ready ASIF workspace. The mounted APFS image is visible
-/// to the host, so use the same bounded local file path as ordinary workspaces.
-pub fn image_file_info(path: &str, root: &str) -> Result<FileInfo, WorkspaceFilesError> {
-    let path = resolve_image_path(path, root)?;
-    file_info(&path.to_string_lossy(), None)
-}
-
-/// Read bounded bytes from a ready ASIF workspace (`codex_workspace.py:729-741`).
-pub fn image_file_content(path: &str, root: &str) -> Result<FileContent, WorkspaceFilesError> {
-    let path = resolve_image_path(path, root)?;
-    file_content(&path.to_string_lossy(), None)
-}
-
-fn resolve_image_path(path: &str, root: &str) -> Result<PathBuf, WorkspaceFilesError> {
-    studio_runtime_store::debug_assert_outside_sql();
-    if path.is_empty() {
-        return Err(WorkspaceFilesError::MissingPath);
-    }
-    if path.chars().count() > MAX_PATH_CHARS {
-        return Err(WorkspaceFilesError::InvalidPath);
-    }
-    let expanded = expand_home(path);
-    let supplied = Path::new(&expanded);
-    let candidate = if supplied.is_absolute() {
-        supplied.to_path_buf()
-    } else {
-        Path::new(root).join(supplied)
-    };
-    Ok(CanonicalPath::existing(&candidate)
-        .map(CanonicalPath::into_path_buf)
-        .unwrap_or(candidate))
 }
 
 fn resolve_file(path: &str, root: Option<&str>) -> Result<PathBuf, WorkspaceFilesError> {
@@ -256,12 +215,12 @@ mod tests {
 
     use super::{
         MAX_PREVIEW_BYTES, WORKSPACE_PREVIEW_LIMIT_LABEL, WorkspaceContext, WorkspaceFilesError,
-        file_content, file_info, image_file_content, image_file_info, mime_type,
+        file_content, file_info, mime_type,
     };
 
     #[test]
     fn local_file_metadata_and_content_follow_symlinks() {
-        let directory = tempfile_dir();
+        let directory = tempfile::tempdir().expect("fixture directory");
         let root = directory.path();
         let target = root.join("outside.md");
         fs::write(&target, "content").expect("target writes");
@@ -272,8 +231,6 @@ mod tests {
         let context = WorkspaceContext {
             cwd: workspace.to_string_lossy().into_owned(),
             execution_backed: false,
-            image_workspace: false,
-            image_workspace_ready: false,
         };
 
         let info = file_info("link.md", Some(&context.cwd)).expect("metadata reads");
@@ -300,7 +257,7 @@ mod tests {
 
     #[test]
     fn file_content_is_bounded_and_metadata_is_not_limited() {
-        let directory = tempfile_dir();
+        let directory = tempfile::tempdir().expect("fixture directory");
         let root = directory.path();
         let file = root.join("large.bin");
         let content = fs::File::create(&file).expect("file creates");
@@ -327,45 +284,11 @@ mod tests {
             Err(WorkspaceFilesError::InvalidAgent("agent".to_owned()))
         );
         let context = WorkspaceContext::from_agent(
-            &json!({"id":"agent","cwd":"/workspace","executionMode":"vm","imageWorkspace":true,"workspaceMode":"image","imageWorkspaceReady":true}),
+            &json!({"id":"agent","cwd":"/workspace","executionMode":"vm","workspaceMode":"layr"}),
             "agent",
         )
         .expect("agent context parses");
         assert!(context.execution_backed);
-        assert!(context.image_workspace_ready);
-    }
-
-    #[test]
-    fn image_file_helpers_read_host_visible_mount_with_the_same_bounds() {
-        let directory = tempfile_dir();
-        let root = directory.path();
-        let file = root.join("mounted.txt");
-        fs::write(&file, b"mounted content").expect("fixture writes");
-        let path = file.to_string_lossy();
-        let root_name = root.to_string_lossy();
-        let info = image_file_info(&path, &root_name).expect("image metadata reads");
-        assert_eq!(info.size, b"mounted content".len() as u64);
-        assert_eq!(
-            image_file_content(&path, &root_name)
-                .expect("image content reads")
-                .bytes,
-            b"mounted content"
-        );
-        let large = root.join("large.bin");
-        fs::File::create(&large)
-            .expect("large fixture creates")
-            .set_len(MAX_PREVIEW_BYTES + 1)
-            .expect("large fixture expands");
-        assert_eq!(
-            image_file_content(&large.to_string_lossy(), &root_name),
-            Err(WorkspaceFilesError::PreviewLimit {
-                limit_label: WORKSPACE_PREVIEW_LIMIT_LABEL,
-            })
-        );
-    }
-
-    fn tempfile_dir() -> tempfile::TempDir {
-        tempfile::tempdir().expect("temporary directory creates")
     }
 
     #[test]

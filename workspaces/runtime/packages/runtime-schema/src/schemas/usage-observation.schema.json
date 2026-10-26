@@ -1,0 +1,272 @@
+{
+  "$defs": {
+    "CumulativeModelUsage": {
+      "additionalProperties": false,
+      "description": "One model's cumulative contribution to a Claude query.",
+      "properties": {
+        "model": {
+          "description": "Provider model identifier; dimensionless.",
+          "type": "string"
+        },
+        "providerCostUsd": {
+          "description": "Provider's informational cost estimate; USD.",
+          "format": "double",
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "tokens": {
+          "$ref": "#/$defs/UsageTokens",
+          "description": "Disjoint cumulative token counts; tokens."
+        }
+      },
+      "required": [
+        "model",
+        "tokens"
+      ],
+      "type": "object"
+    },
+    "UsageEvidence": {
+      "description": "Provenance of a final response; legacy observations may be provisional.",
+      "enum": [
+        "live",
+        "recovered",
+        "legacy"
+      ],
+      "type": "string"
+    },
+    "UsageGapReason": {
+      "description": "Why final response accounting is unavailable.",
+      "enum": [
+        "streamInterrupted",
+        "queryClosed"
+      ],
+      "type": "string"
+    },
+    "UsageScope": {
+      "description": "Counter ownership: a native Codex thread or one Claude SDK query.",
+      "enum": [
+        "codexThread",
+        "claudeQuery"
+      ],
+      "type": "string"
+    },
+    "UsageTokens": {
+      "additionalProperties": false,
+      "description": "Disjoint billable token categories; reasoning is already included in output.",
+      "properties": {
+        "cacheReadInput": {
+          "description": "Input served from the prompt cache; tokens.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "cacheWriteInput": {
+          "description": "Input written to the prompt cache; tokens.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "cacheWriteInput1h": {
+          "description": "Subset of cache writes with a one-hour lifetime; tokens, absent for legacy pricing.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "output": {
+          "description": "All generated output, including reasoning; tokens.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "reasoningOutput": {
+          "description": "Known reasoning subset of output; tokens, absent when unknown.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "uncachedInput": {
+          "description": "Base-rate input, excluding cache reads and writes; tokens.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "uncachedInput",
+        "cacheReadInput",
+        "cacheWriteInput",
+        "output"
+      ],
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "Accounting evidence, preserving response identity and cumulative counter scope.",
+  "oneOf": [
+    {
+      "additionalProperties": false,
+      "description": "Final usage for one response, keyed by agent and response ID.",
+      "properties": {
+        "evidence": {
+          "$ref": "#/$defs/UsageEvidence",
+          "description": "How the final usage was collected."
+        },
+        "kind": {
+          "const": "response",
+          "type": "string"
+        },
+        "model": {
+          "description": "Provider model identifier; dimensionless.",
+          "type": "string"
+        },
+        "modelContextWindow": {
+          "description": "Model context capacity; tokens.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "parentToolUseId": {
+          "description": "Parent tool identifier; absent means main loop.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "responseId": {
+          "description": "Native response identifier; dimensionless.",
+          "type": "string"
+        },
+        "tokens": {
+          "$ref": "#/$defs/UsageTokens",
+          "description": "Final disjoint token counts; tokens."
+        },
+        "turnId": {
+          "description": "Native turn identifier; dimensionless.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "kind",
+        "responseId",
+        "model",
+        "tokens",
+        "evidence"
+      ],
+      "type": "object"
+    },
+    {
+      "additionalProperties": false,
+      "description": "Running provider counter; never added to response records.",
+      "properties": {
+        "kind": {
+          "const": "cumulative",
+          "type": "string"
+        },
+        "last": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/UsageTokens"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Most recent response without an identity; tokens."
+        },
+        "modelContextWindow": {
+          "description": "Model context capacity; tokens.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "models": {
+          "description": "Per-model running counters and informational provider costs.",
+          "items": {
+            "$ref": "#/$defs/CumulativeModelUsage"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "scope": {
+          "$ref": "#/$defs/UsageScope",
+          "description": "Counter's reset and accumulation domain."
+        },
+        "total": {
+          "$ref": "#/$defs/UsageTokens",
+          "description": "Running disjoint category counts; tokens."
+        },
+        "turnId": {
+          "description": "Native turn identifier; dimensionless.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "kind",
+        "scope",
+        "total"
+      ],
+      "type": "object"
+    },
+    {
+      "additionalProperties": false,
+      "description": "A response with no final usage; unknown rather than zero tokens.",
+      "properties": {
+        "kind": {
+          "const": "gap",
+          "type": "string"
+        },
+        "model": {
+          "description": "Provider model identifier, when known.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "reason": {
+          "$ref": "#/$defs/UsageGapReason",
+          "description": "Final-usage loss reason."
+        },
+        "responseId": {
+          "description": "Native response identifier; dimensionless.",
+          "type": "string"
+        },
+        "turnId": {
+          "description": "Native turn identifier; dimensionless.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "kind",
+        "responseId",
+        "reason"
+      ],
+      "type": "object"
+    }
+  ],
+  "title": "UsageObservation"
+}

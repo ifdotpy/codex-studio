@@ -321,14 +321,17 @@ test("accounts settings show per-server state and provider choices", async ({
       },
     },
   );
-  await page.route("**/api/limits?*", async (route) => {
-    const accountKey = new URL(route.request().url()).searchParams.get(
-      "account_key",
-    );
-    const reading = sharedReadings[accountKey];
-    const at = Date.now() / 1000 - (reading?.ageSeconds ?? 0);
-    await route.fulfill({
-      json: {
+  // Limits arrive in the same initial rateLimit entities as the real renderer.
+  for (const [server, accounts] of [
+    [local, localAccounts],
+    [remote, remoteAccounts],
+  ]) {
+    server.snapshot.runtime.rateLimitsByAccount = {};
+    for (const account of accounts) {
+      const accountKey = account.id;
+      const reading = sharedReadings[accountKey];
+      const at = Date.now() / 1000 - (reading?.ageSeconds ?? 0);
+      server.snapshot.runtime.rateLimitsByAccount[accountKey] = {
         accountKey,
         at,
         readAt: at,
@@ -347,9 +350,9 @@ test("accounts settings show per-server state and provider choices", async ({
               },
             }
           : null,
-      },
-    });
-  });
+      };
+    }
+  }
   const pageClockStart = new Date();
   await page.clock.install({ time: pageClockStart });
   await page.goto(local.origin + "/?studio-navigation=combined");
@@ -434,7 +437,10 @@ test("accounts settings show per-server state and provider choices", async ({
   await work.getByRole("button", { name: /^Limit details for/ }).click();
   await expect(work.getByRole("button", { name: "✓ Local" })).toBeVisible();
   await expect(
-    work.getByRole("button", { name: /sign in again/ }),
+    work.getByRole("button", {
+      name: "Sign in to Work on Remote",
+      exact: true,
+    }),
   ).toBeVisible();
   await expect(work.getByRole("button", { name: "+ Empty" })).toBeVisible();
   await expect(accounts.getByText("Claude personal")).toBeVisible();
@@ -550,6 +556,7 @@ test("accounts settings show per-server state and provider choices", async ({
     path: resolve(screenshots, "accounts-mobile.png"),
   });
 
+  await settings.getByRole("button", { name: "Back", exact: true }).click();
   await settings.getByRole("tab", { name: "Servers", exact: true }).click();
   const servers = settings.getByRole("region", {
     name: "Servers",
@@ -661,6 +668,14 @@ test("accounts settings show per-server state and provider choices", async ({
   let verificationReady = false;
   let finalStatusBarrier;
   const loginRequestId = addStarts[0]?.loginId;
+  // The provider has not acknowledged code delivery yet. Keep the stream's
+  // current receipt pending while the explicit recovery reads below are gated.
+  remote.setClaudeProgress(loginRequestId, {
+    requestId: loginRequestId,
+    accountKey: loginRequestId,
+    status: "pending",
+    codeSubmitted: false,
+  });
   const codeAttempts = [];
   await page.route("**/api/accounts/claude/login/code", async (route) => {
     const request = route.request();
@@ -760,8 +775,7 @@ test("accounts settings show per-server state and provider choices", async ({
   await expect(claudeSignIn).toContainText(
     "The full authorization response was submitted. Waiting for Claude to verify it; do not submit it again.",
   );
-  // An account event may schedule a read while Playwright waits for the button
-  // to settle. Keep that read pending until the manual refresh is dispatched.
+  // Keep the explicit recovery read pending until the manual refresh is dispatched.
   let releaseFinalStatus;
   finalStatusBarrier = new Promise((resolve) => {
     releaseFinalStatus = resolve;
@@ -931,7 +945,9 @@ test("accounts settings show per-server state and provider choices", async ({
     .click();
   await expect(settings).toBeVisible();
   await work.getByRole("button", { name: /^Limit details for/ }).click();
-  await work.getByRole("button", { name: /Remote · sign in again/ }).click();
+  await work
+    .getByRole("button", { name: "Sign in to Work on Remote", exact: true })
+    .click();
   const reconnect = remoteFrame.getByRole("dialog", {
     name: /Sign in to Codex · person@example.test · Remote/,
   });

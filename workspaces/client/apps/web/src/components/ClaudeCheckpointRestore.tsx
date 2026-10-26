@@ -11,6 +11,15 @@ import {
 
 type State = Extract<PostResult<"/api/claude/session">, { turns: unknown[] }>;
 
+function isState(value: unknown): value is State {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    "turns" in value &&
+    Array.isArray(value.turns)
+  );
+}
+
 export default function ClaudeCheckpointRestore({
   agent,
   revision,
@@ -32,7 +41,7 @@ export default function ClaudeCheckpointRestore({
     setError("");
     post("/api/claude/session", { id: agent.id, action: "state" })
       .then((value) => {
-        if (current && "turns" in value) setState(value);
+        if (current && isState(value)) setState(value);
       })
       .catch((failure) => current && setError(errorText(failure)));
     return () => {

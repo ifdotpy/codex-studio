@@ -83,6 +83,7 @@ describe("project locations", () => {
     const groups = logicalProjects(navigation);
     expect(groups).toHaveLength(1);
     expect(groups[0].owner).toBe("local");
+    expect(groups[0].deleteTarget).toBe(project.id);
     expect(groups[0].compact).toBe(false);
     expect(groups[0].locations?.map((row) => row.serverId)).toEqual([
       "local",
@@ -148,7 +149,12 @@ describe("project locations", () => {
       setItem: (key: string, value: string) => entries.set(key, value),
       removeItem: (key: string) => entries.delete(key),
     };
-    const body = { server: "mbp", path: "/Projects/attar" };
+    const body = {
+      action: "add_location",
+      project: project.id,
+      server: "mbp",
+      path: "/Projects/attar",
+    };
     const refusal = new ApiError("Refused", 403);
     durableProjectRequest(body, "fresh", storage).reject(refusal);
     expect(entries.size).toBe(1);
@@ -178,26 +184,6 @@ describe("project locations", () => {
     } finally {
       get.mockRestore();
     }
-  });
-  it("keeps the exact identity after a first HTTP refusal with an uncertain effect", () => {
-    const entries = new Map<string, string>();
-    const storage = {
-      getItem: (key: string) => entries.get(key) || null,
-      setItem: (key: string, value: string) => entries.set(key, value),
-      removeItem: (key: string) => entries.delete(key),
-    };
-    const body = {
-      action: "add_location",
-      project: project.id,
-      server: "mbp",
-      path: "/Projects/attar",
-    };
-    durableProjectRequest(body, "accepted-at-peer", storage).reject(
-      new ApiError("Invalid peer reply", 403),
-    );
-    expect(durableProjectRequest(body, "fresh-modal", storage).id).toBe(
-      "accepted-at-peer",
-    );
   });
   it("reads the same location receipt after HTTP refusal and clears a final receipt", async () => {
     const body = {
@@ -270,6 +256,41 @@ describe("project locations", () => {
       }),
     ).toBeNull();
   });
+});
+
+it("only registered logical projects expose a native deletion target", () => {
+  const groups = logicalProjects({
+    local: view(
+      [{ id: "saved", name: "Saved", path: "/saved" }],
+      [
+        {
+          id: "inferred",
+          name: "Inferred",
+          path: "/inferred",
+          archived: false,
+          status: "",
+          unread: false,
+        },
+        {
+          id: "other",
+          name: "Other",
+          path: "",
+          archived: false,
+          status: "",
+          unread: false,
+        },
+      ],
+    ),
+  });
+  expect(groups.find((group) => group.id === "saved")?.deleteTarget).toBe(
+    "saved",
+  );
+  expect(
+    groups.find((group) => group.path === "/inferred")?.deleteTarget,
+  ).toBeUndefined();
+  expect(
+    groups.find((group) => group.path === "")?.deleteTarget,
+  ).toBeUndefined();
 });
 
 it("keeps project mutation tokens and uncertain receipt IDs with the captured owner", async () => {

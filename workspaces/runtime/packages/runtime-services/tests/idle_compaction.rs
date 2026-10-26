@@ -446,7 +446,7 @@ async fn compact_boundary_writes_the_notice_once_and_advances_the_roster_epoch()
         agent["turnId"]=json!("compact-turn");agent["status"]=json!("running");
         AgentRepository::put(tx,&AgentRecord::from_value(agent).unwrap())?;
         let value=json!({"method":"item/completed","params":{"threadId":"thread","turnId":"compact-turn","item":{"id":"compact-boundary","type":"contextCompaction","status":"completed"}}});
-        let frame=studio_runtime_providers::LineDecoder::new().push(format!("{value}\n").as_bytes()).unwrap().remove(0);
+        let frame=match studio_runtime_providers::decode_journal_entry_borrowed(1, 1, format!("{value}\n").as_bytes()).payload { studio_runtime_providers::DecodedJournalPayload::Frame(frame) => frame, other => panic!("fixture must decode: {other:?}"), };
         for _ in 0..2 {
             studio_runtime_services::notification_dispatch::dispatch_notification(tx,"claude",
                 &studio_runtime_services::notification_dispatch::PublicationContext::default(),
@@ -515,7 +515,7 @@ async fn cache_notification_replaces_the_timer_without_changing_token_accounting
         for (cursor,ttl) in [(1,"1h"),(2,"5m")] {
             let value=json!({"method":"thread/idleCompaction/updated","params":{"threadId":"thread","report":{
                 "requestId":"next-response","ttl":ttl,"warm":true,"lastActivityAt":idle::wall_now()*1000.0,"contextTokens":220000,"prefix":"prefix"}}});
-            let frame=studio_runtime_providers::LineDecoder::new().push(format!("{value}\n").as_bytes()).unwrap().remove(0);
+            let frame=match studio_runtime_providers::decode_journal_entry_borrowed(1, 1, format!("{value}\n").as_bytes()).payload { studio_runtime_providers::DecodedJournalPayload::Frame(frame) => frame, other => panic!("fixture must decode: {other:?}"), };
             studio_runtime_services::notification_dispatch::dispatch_notification(tx,"claude",
                 &studio_runtime_services::notification_dispatch::PublicationContext::default(),
                 &studio_runtime_services::notification_dispatch::NotificationStreamBuffer::default(),

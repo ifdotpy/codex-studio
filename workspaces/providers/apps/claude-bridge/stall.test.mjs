@@ -1,14 +1,12 @@
-import {
-  startBridge as startScriptedBridge,
-  HANG_GUARD_MS,
-} from "./testing/bridge-harness.mjs";
+import { waitForFile } from "./testing/file-signals.mjs";
+import { startBridge as startScriptedBridge } from "./testing/bridge-harness.mjs";
 // Stalled tool calls through the real bridge with a scripted SDK. The fake CLI
 // emits a Bash tool_use and then never returns its result, as in the
 // 2026-10-17 incident. No model calls.
 import { afterEach, test } from "vitest";
 import assert from "node:assert/strict";
 import fs from "node:fs/promises";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { bashTimeoutMs, findStall, recordedInputIds } from "./stall-watch.mjs";
 
@@ -30,6 +28,7 @@ const GRACE_MS = 300;
 const FAKE_SDK = String.raw`
 export const resolveSettings=async()=>({effective:{}});
 import fs from 'node:fs';
+import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 export const tool=(name,description,schema,call)=>({name,description,schema,call});
 export const createSdkMcpServer=value=>({...value});
@@ -40,8 +39,8 @@ const sleep=ms=>new Promise(r=>setTimeout(r,ms));
 export function query({prompt,options}){
  const abort=new AbortController(),cwd=options.cwd;
  const session=options.sessionId||options.resume;
- const history=path.join(process.env.CLAUDE_CONFIG_DIR,'projects','fake',session+'.jsonl');
- let interrupted=null,wedged=false,deaf=false;
+ const history=path.join(process.env.CLAUDE_CONFIG_DIR,'projects',cwd.replace(/[^a-zA-Z0-9]/g,'-'),session+'.jsonl');
+ let interrupted=null,wedged=false,deaf=false,historyParent=null;
  const interrupt=new Promise(r=>(interrupted=r));
  const queued=[];
  let reading=null;
@@ -52,8 +51,11 @@ export function query({prompt,options}){
  // Hold a steer like the CLI queue: no echo until the turn ends.
  const hold=value=>{
   queued.push(value);
-  if(value.message.content[0].text.includes('recorded'))
-   fs.appendFileSync(history,JSON.stringify({type:'attachment',attachment:{type:'queued_command',source_uuid:value.uuid}})+'\n');
+  if(value.message.content[0].text.includes('recorded')){
+   const uuid=randomUUID();
+   fs.appendFileSync(history,JSON.stringify({type:'attachment',uuid,parentUuid:historyParent,sessionId:session,cwd,isSidechain:false,attachment:{type:'queued_command',source_uuid:value.uuid}})+'\n');
+   historyParent=uuid;
+  }
  };
  return {
   mcpServerStatus:async()=>[],reconnectMcpServer:async()=>{},
@@ -70,12 +72,15 @@ export function query({prompt,options}){
     const input=await read();
     if(input.done)return;
     const text=input.value.message.content[0].text;
+    fs.appendFileSync(history,JSON.stringify({type:'user',uuid:input.value.uuid,parentUuid:historyParent,sessionId:session,cwd,isSidechain:false})+'\n');
+    historyParent=input.value.uuid;
+    if(text==='stall')fs.appendFileSync(history,'broken native row\n');
     yield {type:'user',isReplay:true,uuid:input.value.uuid};
     yield {type:'system',subtype:'init'};
     yield {type:'stream_event',event:{type:'message_start',message:{id:'message-'+text}}};
     // While the test keeps a .hold file, steers queue before the tool call.
     while(fs.existsSync(cwd+'/.hold')){
-     const next=await Promise.race([read(),sleep(5).then(()=>null)]);
+     const next=await Promise.race([read(),waitForFile(cwd+'/.hold',{absent:true}).then(()=>null)]);
      if(next?.done)return;
      if(next)hold(next.value);
     }
@@ -144,6 +149,7 @@ async function startBridge({ env = {}, thread = {} } = {}) {
       ...env,
     },
     thread,
+    clock: true,
   });
   bridges.push(bridge);
   return bridge;
@@ -151,7 +157,7 @@ async function startBridge({ env = {}, thread = {} } = {}) {
 
 const text = (value) => [{ type: "text", text: value }];
 const completed = (bridge, turn) =>
-  bridge.note(
+  bridge.advanceUntil(
     (n) => n.method === "turn/completed" && n.params.turn.id === turn,
   );
 const acks = (bridge, id) =>
@@ -161,7 +167,6 @@ const acks = (bridge, id) =>
       n.params.item.type === "userMessage" &&
       n.params.item.clientId === id,
   );
-const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 // Start a scenario turn. Each steer in `steers` ([id, text] pairs) is in the
 // CLI queue before its tool call starts: the stall clock starts with the tool
@@ -202,13 +207,13 @@ async function inputs(bridge) {
     : [];
 }
 
-async function read(bridge, value) {
-  const deadline = Date.now() + HANG_GUARD_MS;
-  while (!(await inputs(bridge)).includes(value)) {
-    if (Date.now() > deadline) throw new Error(value + " was not read");
-    await sleep(5);
-  }
-}
+const read = (bridge, value) => {
+  const file = path.join(bridge.root, ".inputs");
+  return waitForFile(file, {
+    matches: () =>
+      readFileSync(file, "utf8").trim().split("\n").includes(value),
+  });
+};
 
 test("a tool stall closes a CLI with unconfirmed input without resending it", async () => {
   const bridge = await startBridge();
@@ -281,7 +286,7 @@ test("a CLI whose stream outlives its close still ends the stalled turn once", a
   const done = await completed(bridge, turn);
   assert.equal(done.params.turn.status, "interrupted");
   assert.match(done.params.turn.error.message, /Studio stopped this turn/);
-  await sleep(200);
+  await bridge.advanceTime(200);
   assert.equal(
     bridge.notes.filter(
       (n) => n.method === "turn/completed" && n.params.turn.id === turn,
@@ -310,16 +315,18 @@ test("an unanswered approval is not a stall, and the tool budget restarts at the
   );
   assert.equal(approval.params.itemId, "toolu_stall");
   // Several tool budgets pass while Studio owns the wait.
-  await sleep(100 + GRACE_MS * 4);
+  await bridge.advanceTime(100 + GRACE_MS * 4);
   assert.equal(
     bridge.notes.find((n) => n.method === "turn/completed"),
     undefined,
   );
-  const answeredAt = Date.now();
+
   bridge.answer(approval.id, { decision: "accept" });
   const done = await completed(bridge, turn);
   assert.equal(done.params.turn.status, "interrupted");
-  assert.ok(Date.now() - answeredAt >= 100 + GRACE_MS);
+  assert.ok(
+    done.params.turn.error.data.claudeToolStall.elapsedMs >= 100 + GRACE_MS,
+  );
   assert.equal(
     await fs.readFile(path.join(bridge.root, ".approved"), "utf8"),
     "allow",
@@ -344,7 +351,7 @@ test("an approval nobody answers in a no-approval agent is declined and its card
     approval.params.reason,
     "Claude requests permission to use Bash although this agent runs without approvals: rm on a critical path",
   );
-  const resolved = await bridge.note(
+  const resolved = await bridge.advanceUntil(
     (n) => n.method === "serverRequest/resolved",
   );
   assert.deepEqual(resolved.params, {
@@ -372,7 +379,7 @@ test("an approval nobody answers in a no-approval agent is declined and its card
   );
   // A late answer to the closed card changes nothing.
   bridge.answer(approval.id, { decision: "accept" });
-  await sleep(100);
+  await bridge.advanceTime(100);
   assert.equal(
     await fs.readFile(path.join(bridge.root, ".approved"), "utf8"),
     "deny",
@@ -418,13 +425,15 @@ test("the stall rule needs both an elapsed budget and silence", () => {
         JSON.stringify({ type: "user", uuid: "u1" }),
         JSON.stringify({
           type: "attachment",
-          attachment: { type: "queued_command", source_uuid: "u2" },
+          attachment: {
+            type: "queued_command",
+            source_uuid: "22222222-2222-4222-8222-222222222222",
+          },
         }),
         JSON.stringify({ type: "queue-operation", operation: "enqueue" }),
-        "not json",
       ]),
     ],
-    ["u1", "u2"],
+    ["u1", "22222222-2222-4222-8222-222222222222"],
   );
 });
 

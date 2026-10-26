@@ -18,9 +18,10 @@ model request or a real reset-credit redemption.
 `just test-fast` runs the [`fast` nextest profile](../.config/nextest.toml), desktop
 recovery and retained-helper boundaries, web API/type witnesses, tooling tests,
 generated-contract and dependency guards, and the VM guest Python suite through its
-[runner](../workspaces/runtime/apps/vm-guest/run-guest-suite.mjs). The facade uses three
-fixed concurrent lanes: Rust preparation and tests, JavaScript checks, and the guest
-suite. Cargo compilation stays in the Rust lane with four build jobs. WASM is
+[runner](../workspaces/runtime/apps/vm-guest/run-guest-suite.mjs). The facade uses five
+bounded concurrent lanes: Rust preparation and tests, type checks, web tests,
+independent tooling/provider/desktop checks, and the guest suite. Independent
+checks start immediately; artifact consumers wait only for their preparation. Cargo compilation stays in the Rust lane with four build jobs. WASM is
 generated once; the renderer is built once before the native crate embeds it.
 Type checks wait for WASM; web tests wait for the workspace build's debug
 `examples/draft-server`, and the guest waits for its debug supervisor. The gate
@@ -28,7 +29,9 @@ passes both binary paths explicitly. These checks overlap the Rust build or test
 [WASM builder](../workspaces/client/apps/web/scripts/build-client-wasm.mjs) requires
 the exact binding generator version pinned by the client-wasm crate; its error
 gives the installation command. Cold builds are outside the warm short-tier
-target. The short tier starts no browser or model provider.
+target. The nextest configuration also owns the failure deadline; its CI profile
+caps a stuck test above the measured busy-service witness. Test concurrency stays
+runner-derived, without global serial groups. The short tier starts no browser or model provider.
 
 `just test-comprehensive` runs the provider bridge, workspace Clippy, workspace
 Rust nextest with the `ci` profile, web type and unit checks, tooling tests, the
@@ -39,7 +42,12 @@ prepares the supervisor, contracts tool and HTTP fixture without package-only or
 release builds; one workspace nextest invocation selects the tests. Consumers get
 explicit debug binary paths. Browser smoke uses the prepared renderer and fixture,
 without repeating WASM generation, main TypeScript checking or the renderer build.
-Run it on the exact commit before every push to `main` and before packaging for
+The real IndexedDB staging witness runs in the provisioned browser smoke job;
+its two-tab owner lease, orphan cleanup and cancellation assertions need Chromium
+and Web Locks. The [smoke selector](../workspaces/client/apps/web/package.json)
+includes it, while deterministic transfer assembly remains in the short unit tier.
+Hosted Rust jobs build only the renderer bundle; API drift and TypeScript checks
+run once in their owning jobs. Run it on the exact commit before every push to `main` and before packaging for
 installation. Run `just test-fast` before every PR and merge and state its result
 in the PR. Workers run focused witnesses; the lead runs these gates on the
 integrated batch.
@@ -140,7 +148,7 @@ fixtures and the gate supply their explicit binary paths afterward.
 
 `just test-fast-rest` runs the comprehensive remainder without browser smoke.
 `just test-fast-rest-non-rust` consumes prebuilt WASM, a debug supervisor and draft-server and
-runs only the JavaScript and guest lanes: no Clippy, WASM builder or Rust
+runs only the type, web, independent check and guest lanes: no Clippy, WASM builder or Rust
 compilation. Hosted CI restores commit- and SHA-256-verified artifacts from the
 workspace build job for this remainder and browser smoke. Standalone browser
 smoke prepares itself; `just test-browser-smoke --prepared` consumes those inputs.
@@ -191,6 +199,13 @@ scripts select client unit, browser, desktop, and provider bridge checks. Browse
 checks build the renderer, use isolated state and a Rust HTTP fixture, and reap
 fixture process groups after success, failure, or timeout. Browser scratch and
 parallelism are owned by the [launcher](../workspaces/client/apps/web/scripts/run-browser-tests.mjs).
+Read-only layout and navigation specs can opt into `readOnlyRust` in the
+[shared browser fixtures](../workspaces/client/apps/web/tests/playwright.mjs).
+It reuses one minimal backend per worker, mocks preference and read acknowledgements
+per browser context, and rejects other persistent writes. Tests that exercise
+mutations keep disposable backends. The scroll-follow smoke covers the phone
+reader/stream/Latest path; its desktop, trackpad and content-growth matrix remains
+in the full browser project.
 Explicit worker counts override its automatic plan. The wrapper clears `BROWSER`
 before launching and retains JSON diagnostics for failures.
 
@@ -203,7 +218,9 @@ installed-build evidence.
 ## Installed scenario smoke
 
 `just smoke-installed` checks the main user scenarios on the app that is installed
-on this Mac, against its live backend. Run it after an install. The
+on this host, against its live backend. On Linux it checks the `codex-studio`
+user service and the delivered release under
+`~/.local/share/codex-studio/server/current`; macOS keeps the application bundle layout. Run it after an install. The
 [script](../workspaces/tooling/apps/installed-smoke/smoke.mjs) owns the steps and
 their time limits:
 
@@ -230,6 +247,56 @@ The smoke sends small real model requests and never changes the owner's chats.
 `--no-model` runs only the read-only steps; `--provider` and `--model
 provider=id` narrow the scenarios. A pending card raises an approval alert in a
 build without the 10 s alert grace.
+
+For usage accounting acceptance, announce and run `just smoke-installed --usage`.
+It uses both providers' cheapest offered models, with three turns each: short,
+about 300 words with one read of a script-created `notes.txt`, then short.
+The chats are first created idle with YOLO disabled; the script verifies their
+returned settings before sending a model message. Codex uses workspace-write
+restricted to the disposable run folder with approvals enabled. The verifier
+normalizes stored policy objects, rejects unknown/bypass policies, and checks the
+folder's captured realpath/device/inode identity. Claude uses
+default permission mode. Read-only Codex leads require a server API change and
+are outside this verifier. Claude also receives a steer during the second turn.
+Older evidence retains its original harmless `pwd` step. Usage waits follow SSE invalidations. The evidence
+contains final native Claude journal usage per message id, Codex rollout response
+usage, recorded response rows, budget tokens and accounting, the `sessionCost`
+entities sent to the renderer, independent base-rate price arithmetic from the
+installed pricing artifact, and server/Claude bridge binary and release identity.
+The optional usage reconciliation endpoint is included when available; only HTTP
+404 skips it. Python's standard-library SQLite reader opens the live database
+strictly read-only for the accounting label absent from the installed API.
+
+The collector waits for the scoped cost publication to match a fresh server cost
+generation containing final-turn usage, and rejects unavailable pricing. It checks
+the exact Claude steer receipt and its materialized current-turn input. Interrupts
+cancel model waits and prohibit further model submissions; cleanup continues under
+the same signal handlers. SSE connection establishment has a deadline. Server and
+bridge provenance captured before model submission stays immutable; recovery-time
+observations are recorded separately. Direct-child ancestry or the backend's
+authoritative supervisor account handle and matching native process-start
+identity identify a bridge. Recovery retains
+saved serving provenance when a current bridge is unavailable. Evidence
+checkpoints use an atomic rename, and recovery resumes completed snapshots.
+
+Evidence is written with private permissions below
+`~/.cache/codex-studio/live-usage/`. The run archives its chats and removes only its
+own project and marked folder; archived records remain available for comparison.
+After installing the new build, run the same usage scenario and compare with
+`just smoke-installed --compare <old.json> <new.json>`. The table reports token
+categories, recorded/truth ratio, budget, native-evidence price, displayed price,
+and reconciliation costs when present. Differences are evidence, not an automatic
+pass: inspect response identities and category differences as well as the totals.
+If collection fails after the model turns, `--collect <run.json>` recovers the
+same run's evidence without another paid request or mutation of its chats; it
+requires the original server build and state directory. It preserves the failed
+checks in the artifact rather than turning the original run into a passing run.
+Explicitly approved recovery can add `--sqlite-ro-agent <owned-Claude-id>` when
+that run's analytics endpoint is unavailable. This reads only bounded rows for
+that exact run with SQLite read-only mode, query-only transactions and a short
+busy timeout; costs remain SSE entities and receipts remain API reads. The
+artifact marks the analytics source `sqlite-ro`. Normal runs measure analytics
+request latency so OLD/NEW comparison also shows successful or timed-out reads.
 
 ## Upgrade canary
 
@@ -404,7 +471,14 @@ composite actions. Heavy and load checks remain outside hosted CI.
 backend through headless Chromium: it creates a lead chat in the dialog, types one
 prompt, and measures agent visibility, UI responsiveness, API latency, SQLite lock
 counters and process load while the team runs. It deletes the chat and its agents
-afterward and checks that no provider or tool process leaked (`--keep` skips this).
+afterward and checks that no agent or identifiable provider/tool process owned by
+the run remains (`--keep` skips this). Loaded-thread totals remain evidence only:
+the diagnostics API exposes counts, not the identities needed to attribute a
+loaded thread to this run on a shared server. Agent summaries and scoped details
+arrive through the current SSE resource contract. Multipart entity transfers stay
+staged until every page is continuous and the complete marker arrives; incomplete
+required transfers make the audit inconclusive and fail the run. Cleanup reports
+agents and owned processes separately from the unverified owned-thread boundary.
 It is a manual, announced live run, outside every test tier. A small run:
 `PLAYWRIGHT_BROWSERS_PATH=~/.cache/ms-playwright node
 workspaces/client/apps/web/scripts/verify-ui-team-scale.mjs --workers 3`; `--help`
@@ -424,11 +498,24 @@ Before the cleanup, a strict audit (`scripts/uiTeamScaleAudit.mjs`) reads the
 lead and worker transcripts, the lead's tool requests, the backend journal of the
 run window (`journalctl --user --unit codex-studio`, `--journal-unit` changes it)
 and diagnostics counters. The run fails on a failed or interrupted turn, a worker
-with more than one turn or an error, a `child_result` delivered twice or never,
+with unexplained extra turns or an error, a `child_result` delivered twice or never,
 any input delivered twice, a tool call or request without a result, a tool request
 applied while the model was told it failed, a lead final report made before the
 last worker reply, a backend restart, an `ERROR` or panic journal line, a growing
-error counter or a non-empty input queue. Everything else suspicious (failed lead
+error counter, or pending durable inputs on the run's own lead or workers.
+Shared-server input/recovery gauges are evidence only: the summary reports their
+baseline, end and delta, without attributing other chats' work to this team. The scoped input audit reads
+a fenced, read-only snapshot of every retained `runtime_events` row through
+`readRetainedInputRows` in
+[`verify-rust-chat-scale.mjs`](../workspaces/client/apps/web/scripts/verify-rust-chat-scale.mjs).
+The bounded event SSE window is not authoritative for pending-input absence.
+The audit uses the status projection owned by
+[`scaleVerifierHelpers.mjs`](../workspaces/client/apps/web/scripts/scaleVerifierHelpers.mjs).
+Baseline and final global gauges remain in the evidence. A worker's extra turn
+triggered by a unique `agent_message` from the run's lead is attributed to the
+lead and reported as an anomaly with the message text; repeated input identities
+still fail. An empty journal grep result is a clean journal, not a read failure.
+Everything else suspicious (failed lead
 tool calls, placeholder answers, repeated final reports, long lead input waits,
 start-order inversions, provider retries, other journal warnings) is listed under
 `anomalies` in `summary.txt` and `evidence.json`.

@@ -15,7 +15,6 @@ import { performance } from "node:perf_hooks";
 import { setTimeout as sleep } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import {
-  assertStoredScaleProfile,
   readProcessTable,
   requireScaleModel,
   sampleProviderProcesses,
@@ -32,9 +31,17 @@ import {
   SAMPLE_INTERVAL_MS,
   USAGE,
   buildLeadPrompt,
+  configureNewChat,
   cpuDeltaMs,
   cpuPercent,
   createTeamTracker,
+  createEntityReader,
+  openEntityStream,
+  cleanupVerified,
+  readTeamUiCounts,
+  approvedModelUiValues,
+  assertCreatedTeamProfiles,
+  OWNED_CLEANUP_VERIFIED_STATE,
   evaluateCriteria,
   firstReachedMs,
   parseArgs,
@@ -49,8 +56,8 @@ import {
   AUDIT_FETCH_CONCURRENCY,
   JOURNAL_GREP,
   TRANSCRIPT_PAGE_LIMIT,
-  auditDiagnostics,
-  auditJournal,
+  auditTeamDiagnostics,
+  auditJournalResult,
   auditLead,
   auditLeadReport,
   auditToolRequests,
@@ -80,8 +87,6 @@ const UI_STEP_TIMEOUT_MS = 30_000;
 // A hover-revealed click is retried this often, each attempt this long.
 const UI_CLICK_ATTEMPTS = 3;
 const UI_CLICK_TIMEOUT_MS = 10_000;
-// Entity documents per sync pull page.
-const PULL_PAGE_LIMIT = 500;
 // Poll period of waits that have no event to await, milliseconds.
 const POLL_MS = 250;
 const BYTES_PER_MIB = 1024 * 1024;
@@ -138,7 +143,6 @@ function createApi(origin, token, journal) {
     "content-type": "application/json",
     origin,
     "x-canvas-token": token,
-    "X-Codex-Sync-Protocol": "3",
   };
   return async function api(method, path, body) {
     const startedAt = performance.now();
@@ -166,43 +170,6 @@ function createApi(origin, token, journal) {
       return text ? JSON.parse(text) : null;
     } finally {
       record.elapsedMs = Math.round(performance.now() - startedAt);
-    }
-  };
-}
-
-// Incremental reader of the agent entities that change after `cursor`.
-function createEntityReader(api, onAgent) {
-  let cursor = null;
-  return async function pull() {
-    if (cursor === null) {
-      const first = await api(
-        "GET",
-        "/api/sync/pull?scope=state:entities:v1&after=0&fresh=1&reset=1&limit=1",
-      );
-      cursor = first.maxSeq;
-      return;
-    }
-    for (;;) {
-      const page = await api(
-        "GET",
-        `/api/sync/pull?scope=state:entities:v1&after=${cursor}&limit=${PULL_PAGE_LIMIT}`,
-      );
-      for (const document of page.documents) {
-        const id = /^entity:agent:(.+)$/.exec(document.id)?.[1];
-        if (!id) continue;
-        if (document._deleted) onAgent({ id, deletedAt: true, deleted: true });
-        else {
-          const entity = JSON.parse(document.payload);
-          if (entity.collection === "agent")
-            onAgent({
-              ...entity.value,
-              deleted: Boolean(entity.value.deletedAt),
-            });
-        }
-      }
-      const next = page.checkpoint.seq;
-      if (!page.documents.length || next === cursor) return;
-      cursor = next;
     }
   };
 }
@@ -309,95 +276,6 @@ const PROBE_SOURCE = ({ frameGapRecordMs }) => {
   );
 };
 
-const UI_COUNTS_SOURCE = () => ({
-  teamCount: [...document.querySelectorAll("[data-team-count] dd")].reduce(
-    (sum, node) => sum + Number(node.textContent),
-    0,
-  ),
-  // The collapsed Finished group renders no cards, so its overview count stands
-  // in for them: this still reaches the team size once every card is reachable.
-  workerCards:
-    document.querySelectorAll("[data-worker]").length +
-    Number(
-      document.querySelector('[data-team-count="completed"] dd')?.textContent ||
-        0,
-    ),
-  sidebarChats: document.querySelectorAll("#sidebar [data-chat]").length,
-  teamPanelClosed:
-    document.querySelector("#team-toggle")?.getAttribute("aria-expanded") ===
-    "false",
-});
-
-// Operate a visible segmented control or the account tiles with real clicks.
-async function chooseSetupValue(locator, value) {
-  const segment = locator.locator(`input[value="${value}"]`);
-  if (
-    (await locator.getAttribute("role")) === "radiogroup" &&
-    (await segment.count())
-  ) {
-    const id = await segment.getAttribute("id");
-    await locator.locator(`label[for="${id}"]`).click();
-    return;
-  }
-  const tile = locator.locator(`[data-account-key="${value}"]`);
-  // A tile of another provider shows after that provider is selected.
-  for (const provider of await locator.locator('input[type="radio"]').all()) {
-    if (await tile.isVisible()) break;
-    const id = await provider.getAttribute("id");
-    await locator.locator(`label[for="${id}"]`).click();
-  }
-  await tile.click();
-}
-
-async function configureNewChat(page, dialog, lead, worker) {
-  const main = await dialog.getByRole("button", {
-    name: "Main agent settings",
-    exact: true,
-  });
-  await main.click();
-  const mainPopover = page.getByRole("dialog", {
-    name: "Main agent settings",
-    exact: true,
-  });
-  if (lead.accountKey)
-    await chooseSetupValue(
-      mainPopover.getByLabel("Main agent account", { exact: true }),
-      lead.accountKey,
-    );
-  const mainModel = mainPopover.getByLabel("Main agent model", { exact: true });
-  await mainModel.locator(`[data-value="${lead.uiModel}"]`).click();
-  await page.waitForFunction(
-    ([label, value]) =>
-      document
-        .querySelector(`[aria-label="${label}"]`)
-        ?.getAttribute("data-value") === value,
-    ["Main agent model", lead.uiModel],
-  );
-  await chooseSetupValue(
-    mainPopover.getByLabel("Main agent reasoning", { exact: true }),
-    lead.effort,
-  );
-  await page.keyboard.press("Escape");
-  await mainPopover.waitFor({ state: "hidden" });
-  await dialog
-    .getByRole("button", { name: "Subagent defaults", exact: true })
-    .click();
-  const workerPopover = page.getByRole("dialog", {
-    name: "Subagent defaults",
-    exact: true,
-  });
-  await workerPopover
-    .getByLabel("Default subagent model", { exact: true })
-    .locator(`[data-value="${worker.uiModel}"]`)
-    .click();
-  await chooseSetupValue(
-    workerPopover.getByLabel("Default subagent reasoning", { exact: true }),
-    worker.effort,
-  );
-  await page.keyboard.press("Escape");
-  await workerPopover.waitFor({ state: "hidden" });
-}
-
 async function resolveRole(api, accounts, profile) {
   const accountKeys = scaleAccountKeys(accounts, profile);
   const catalog = await api(
@@ -409,6 +287,7 @@ async function resolveRole(api, accounts, profile) {
     profile,
     accountKey: accountKeys[0],
     uiModel: candidate.model,
+    uiModelValues: approvedModelUiValues(catalog, candidate),
     model: candidate.resolvedModel ?? candidate.model,
     effort: profile.effort,
   };
@@ -495,6 +374,7 @@ async function main({ setCleanup, setRemaining }) {
   const runStart = performance.now();
   const runMs = () => Math.round(performance.now() - runStart);
   const agents = new Map();
+
   let leadId = null;
   let tracker = null;
   const pending = [];
@@ -504,8 +384,20 @@ async function main({ setCleanup, setRemaining }) {
     if (tracker) tracker.observe(value, runMs());
     else pending.push([value, runMs()]);
   };
-  const pull = createEntityReader(api, onAgent);
-  await pull();
+  const protocol = await api("GET", "/api/sync/protocol");
+  const pull = createEntityReader(
+    (resource, receive, failed) =>
+      openEntityStream({
+        origin: options.origin,
+        token: session.token,
+        protocol,
+        resource,
+        timeoutMs: REQUEST_DEADLINE_MS,
+        receive,
+        failed,
+      }),
+    onAgent,
+  );
 
   const browser = await chromium.launch({ headless: true });
   let samplerRunning = false;
@@ -537,7 +429,12 @@ async function main({ setCleanup, setRemaining }) {
     journal.result ??= { passed: false, failures: ["runFailed"], checks: {} };
     try {
       if (leadId) {
+        await pull();
+        pull.assertComplete();
+        const identity = await api("GET", "/api/sync/identity");
         journal.audit = await auditRun({
+          stateDir: desktop.stateDir,
+          workspaceId: identity.workspaceId,
           origin: options.origin,
           token: session.token,
           backendPid,
@@ -557,6 +454,7 @@ async function main({ setCleanup, setRemaining }) {
             after: journal.diagnostics.countersAfter,
           },
         });
+        pull.assertComplete();
         const kinds = [
           ...new Set(journal.audit.failures.map((entry) => entry.kind)),
         ];
@@ -601,16 +499,18 @@ async function main({ setCleanup, setRemaining }) {
         process.stdout.write(`\n${summaryText(journal)}`);
       }
       const cleanupOk =
-        journal.cleanup.state === "verified" ||
+        journal.cleanup.state === OWNED_CLEANUP_VERIFIED_STATE ||
         journal.cleanup.state.startsWith("skipped") ||
         journal.cleanup.state === "nothing created";
       process.stdout.write(`evidence: ${journalPath}\n`);
       if (!journal.result?.passed || !cleanupOk) process.exitCode = 1;
     } finally {
+      await pull.close();
       await browser.close().catch(() => {});
     }
   });
   try {
+    await pull();
     const context = await browser.newContext({ viewport: VIEWPORT });
     const page = await context.newPage();
     page.setDefaultTimeout(UI_STEP_TIMEOUT_MS);
@@ -632,9 +532,11 @@ async function main({ setCleanup, setRemaining }) {
     page.on("response", async (response) => {
       const request = response.request();
       if (request.method() !== "POST") return;
-      if (response.url().endsWith("/api/leads") && response.ok())
+      if (response.url().endsWith("/api/leads") && response.ok()) {
         leadResponseId ??=
           (await response.json().catch(() => null))?.id ?? null;
+        if (leadResponseId) pull.watch(leadResponseId);
+      }
       if (response.url().endsWith("/api/messages"))
         messageAgentId ??= request.postDataJSON()?.agent ?? null;
     });
@@ -668,7 +570,7 @@ async function main({ setCleanup, setRemaining }) {
         try {
           await pull();
           const uiStart = performance.now();
-          const ui = await page.evaluate(UI_COUNTS_SOURCE);
+          const ui = await page.evaluate(readTeamUiCounts);
           const uiRoundtripMs = Math.round(performance.now() - uiStart);
           if (ui.teamPanelClosed)
             await page
@@ -683,6 +585,19 @@ async function main({ setCleanup, setRemaining }) {
           );
           const wallMs = performance.now() - previousCpu.at;
           const workersSeen = tracker ? tracker.summary() : null;
+          if (
+            promptSentAtMs !== null &&
+            ui.teamCount > 0 &&
+            !journal.teamVisibleScreenshot
+          ) {
+            const path = join(runDir, "workers-visible.png");
+            await page.screenshot({ path });
+            journal.teamVisibleScreenshot = {
+              path,
+              atMs: runMs(),
+              teamCount: ui.teamCount,
+            };
+          }
           journal.samples.push({
             atMs: runMs(),
             ui: { ...ui, rafRoundtripMs: uiRoundtripMs },
@@ -762,12 +677,12 @@ async function main({ setCleanup, setRemaining }) {
     await dialog.waitFor();
     // The dialog loads accounts and the catalogue before its settings can be saved.
     await dialog
-      .getByRole("button", { name: "Main agent settings", exact: true })
+      .getByRole("radiogroup", { name: "Agent role", exact: true })
       .waitFor();
     await page.waitForFunction(
       () => !document.querySelector('[role="dialog"] [role="alert"]'),
     );
-    await configureNewChat(page, dialog, lead, workerRole);
+    await configureNewChat(dialog, lead, workerRole);
     checkAborted();
     const startClickAt = performance.now();
     await dialog
@@ -783,6 +698,7 @@ async function main({ setCleanup, setRemaining }) {
       await sleep(POLL_MS);
     }
     leadId = leadResponseId;
+    pull.watch(leadId);
     journal.leadId = leadId;
     await save();
     await page
@@ -799,33 +715,16 @@ async function main({ setCleanup, setRemaining }) {
     let leadEntity = agents.get(leadId);
     for (
       let waited = 0;
-      !leadEntity && waited < REQUEST_DEADLINE_MS;
+      (!leadEntity ||
+        leadEntity.fastMode === undefined ||
+        !leadEntity.workerDefaults) &&
+      waited < REQUEST_DEADLINE_MS;
       waited += POLL_MS
     ) {
       await sleep(POLL_MS);
       leadEntity = agents.get(leadId);
     }
-    assertStoredScaleProfile(leadEntity, {
-      id: leadId,
-      model: lead.model,
-      effort: lead.effort,
-      fastMode: false,
-    });
-    assert.equal(
-      leadEntity.accountKey,
-      lead.accountKey,
-      "The lead is not on the selected account.",
-    );
-    assert.equal(
-      leadEntity.workerDefaults?.model,
-      workerRole.model,
-      "Worker default model differs from the approved model.",
-    );
-    assert.equal(
-      leadEntity.workerDefaults?.effort,
-      workerRole.effort,
-      "Worker default effort differs from the approved effort.",
-    );
+    assertCreatedTeamProfiles(leadEntity, lead, workerRole);
 
     // The team limit is a user setting; raise it in the UI when it is too low.
     if (!(leadEntity.concurrency >= options.workers)) {
@@ -1092,6 +991,8 @@ async function main({ setCleanup, setRemaining }) {
 // requests, backend journal and diagnostics of the run window. Its requests
 // are kept out of the run's API latency journal.
 async function auditRun({
+  stateDir,
+  workspaceId,
   origin,
   token,
   backendPid,
@@ -1139,7 +1040,7 @@ async function auditRun({
   const workers = await mapLimited(
     workerIds,
     AUDIT_FETCH_CONCURRENCY,
-    async (id) => auditWorker(id, await transcript(id)),
+    async (id) => auditWorker(id, await transcript(id), leadId),
   );
   parts.push(...workers);
   parts.push({
@@ -1165,7 +1066,15 @@ async function auditRun({
   });
   if (throttling.events)
     parts.push({ anomalies: [{ kind: "providerRetries", ...throttling }] });
-  parts.push(auditDiagnostics(diagnostics.before, diagnostics.after));
+  const diagnosticsAudit = auditTeamDiagnostics({
+    before: diagnostics.before,
+    after: diagnostics.after,
+    stateDir,
+    workspaceId,
+    agentIds: [leadId, ...workerIds],
+    deadlineAt: performance.now() + REQUEST_DEADLINE_MS,
+  });
+  parts.push(diagnosticsAudit);
   const journalRead = spawnSync(
     "journalctl",
     [
@@ -1184,23 +1093,11 @@ async function auditRun({
     ],
     { encoding: "utf8", maxBuffer: JOURNAL_MAX_BYTES },
   );
-  if (journalRead.status === 0)
-    parts.push(auditJournal(journalRead.stdout.split("\n")));
-  else
-    parts.push({
-      anomalies: [
-        {
-          kind: "journalUnavailable",
-          unit: journalUnit,
-          error: String(journalRead.error?.message ?? journalRead.stderr).slice(
-            0,
-            300,
-          ),
-        },
-      ],
-    });
+  parts.push(auditJournalResult(journalRead, journalUnit));
   return {
     ...mergeAudits(parts),
+    teamInputAudit: diagnosticsAudit.teamInputAudit,
+    queueGauges: diagnosticsAudit.queueGauges,
     leadTurns: lead.turns,
     leadChildResults: lead.childResults,
     leadMaxInputWaitMs: lead.maxInputWaitMs,
@@ -1228,6 +1125,10 @@ async function cleanup({
     sharedAppServersAdded: null,
     loadedThreads: null,
     baselineLoadedThreads,
+    loadedThreadAudit:
+      "unavailable: diagnostics exposes counts only; global count is evidence only",
+    providerProcessAudit:
+      "owned agent/thread identities matched against provider command lines; processes without an exposed identity cannot be attributed",
     leakedProcesses: [],
   };
   const owned = () =>
@@ -1235,11 +1136,16 @@ async function cleanup({
       (value) => value.id === leadId || value.rootId === leadId,
     );
   const startedAt = performance.now();
+  const ownedIdentity = new Set([leadId]);
   try {
     await pull().catch((error) => {
       state.observationError = String(error?.message ?? error);
     });
     state.ownedAgents = owned().length;
+    for (const agent of owned()) {
+      ownedIdentity.add(agent.id);
+      if (agent.threadId) ownedIdentity.add(agent.threadId);
+    }
     // One delete command: the server removes the lead and every descendant. A
     // lost reply is resolved by observation, never by a second command.
     try {
@@ -1255,7 +1161,14 @@ async function cleanup({
       const table = readProcessTable();
       const providerLeaks = [
         ...providerPids(table, backendPid, AGENT_OWNED_PROCESS_NAMES),
-      ].filter((pid) => !baselineProviderPids.has(pid));
+      ].filter((pid) => {
+        try {
+          const command = readFileSync(`/proc/${pid}/cmdline`, "utf8");
+          return [...ownedIdentity].some((id) => command.includes(id));
+        } catch {
+          return false;
+        }
+      });
       state.sharedAppServersAdded = [
         ...providerPids(table, backendPid, PROVIDER_PROCESS_NAMES),
       ].filter(
@@ -1264,20 +1177,18 @@ async function cleanup({
       state.loadedThreads = compactDiagnostics(
         await api("GET", DIAGNOSTICS_PATH),
       ).loadedThreads;
-      const threadLeak =
-        state.loadedThreads !== null &&
-        baselineLoadedThreads !== null &&
-        state.loadedThreads > baselineLoadedThreads;
       const toolLeaks = processesMentioning(runTag);
       state.leakedProviderPids = providerLeaks;
       state.leakedProcesses = toolLeaks;
-      if (
-        !live.length &&
-        !providerLeaks.length &&
-        !toolLeaks.length &&
-        !threadLeak
-      ) {
-        state.state = "verified";
+      let complete = true;
+      try {
+        pull.assertComplete();
+      } catch (error) {
+        complete = false;
+        state.observationError = String(error?.message ?? error);
+      }
+      if (complete && cleanupVerified(state)) {
+        state.state = OWNED_CLEANUP_VERIFIED_STATE;
         break;
       }
       if (performance.now() - startedAt > CLEANUP_DEADLINE_MS) {

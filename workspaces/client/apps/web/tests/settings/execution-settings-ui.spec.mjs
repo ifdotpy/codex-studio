@@ -130,7 +130,8 @@ test("execution settings ui", async ({ browser: _browser }) => {
     } else {
       await page.goto(url);
     }
-    const state = async () => (await readTestState(url)).runtime.agents;
+    const state = async () =>
+      (await readTestState(url, { agentDetails: true })).runtime.agents;
     const settingsResponse = (id, matches) =>
       page.waitForResponse((response) => {
         const request = response.request();
@@ -497,8 +498,10 @@ test("execution settings ui", async ({ browser: _browser }) => {
           (node) => node.scrollWidth <= node.clientWidth + 1,
         ),
       );
-      // The open model list stays inside the window at every width.
+      // The open model list stays inside the window at every width. A width
+      // change remounts the responsive sheet; measure after it is visible.
       await openModelList(defaultModel);
+      await defaultModel.waitFor({ state: "visible" });
       const box = await defaultModel.boundingBox();
       assert.ok(
         box.x >= 0 && box.x + box.width <= width + 1,
@@ -601,6 +604,7 @@ test("execution settings ui", async ({ browser: _browser }) => {
     await highReasoningOption.click();
     assert.ok((await higherWorkerReasoningSaved).ok());
     await waitFor(() => defaultReasoning.isEnabled());
+    await expect(defaultReasoning.locator('input[value="high"]')).toBeChecked();
     const lowReasoningSaved = settingsResponse(
       lead.id,
       (body) =>

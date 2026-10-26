@@ -1,11 +1,11 @@
+import { nativeInputIds } from "./input-messages.mjs";
 import { readNativeHistory, nativeUuid } from "./native-history.mjs";
 
 // A native user UUID binds the mirror turn to one transcript chain. Text and
 // timestamps alone cannot distinguish an earlier reply or a different branch.
-function outcome(session, turn, records) {
-  const userId = turn.items.find(
-    (item) => item.type === "userMessage",
-  )?.nativeId;
+function outcome(session, turn, records, proven) {
+  const initial = turn.items.find((item) => item.type === "userMessage");
+  const userId = nativeInputIds(initial)?.[0];
   if (!nativeUuid(userId) || !records) return null;
   const rows = records.map(({ row }) => row);
   const anchors = rows.filter((row) => row.uuid === userId);
@@ -19,6 +19,9 @@ function outcome(session, turn, records) {
   )
     return null;
   const seen = new Set();
+  const counts = new Map();
+  for (const row of rows)
+    if (row.uuid) counts.set(row.uuid, (counts.get(row.uuid) || 0) + 1);
   const pending = new Set();
   let previous,
     last,
@@ -46,6 +49,7 @@ function outcome(session, turn, records) {
       !["assistant", "user"].includes(row.type) ||
       !nativeUuid(row.uuid) ||
       seen.has(row.uuid) ||
+      counts.get(row.uuid) !== 1 ||
       row.sessionId !== (session.nativeId || session.id) ||
       row.cwd !== (session.nativeHistoryCwd || session.cwd) ||
       row.isSidechain !== false ||
@@ -57,7 +61,10 @@ function outcome(session, turn, records) {
     seen.add(row.uuid);
     previous = row.uuid;
     last = row;
-    if (row === anchor) continue;
+    if (row === anchor) {
+      proven.add(row.uuid);
+      continue;
+    }
     const blocks = row.message?.content;
     if (
       !Array.isArray(blocks) ||
@@ -67,13 +74,16 @@ function outcome(session, turn, records) {
     if (row.type === "user") {
       // A later input must belong to this turn (tool receipts or saved steers).
       const steer = turn.items.some(
-        (item) => item.type === "userMessage" && item.nativeId === row.uuid,
+        (item) =>
+          item.type === "userMessage" &&
+          nativeInputIds(item)?.includes(row.uuid),
       );
       if (
         !steer &&
         (!blocks.length || blocks.some((block) => block.type !== "tool_result"))
       )
         return null;
+      if (steer) proven.add(row.uuid);
       for (const block of blocks) {
         if (block.type === "tool_result" && !pending.delete(block.tool_use_id))
           return null;
@@ -133,7 +143,34 @@ export async function reconcileRestartTurns(session, options) {
   if (!stale.length) return;
   const records = await readNativeHistory(session, options).catch(() => null);
   for (const turn of stale) {
-    const result = outcome(session, turn, records);
+    const proven = new Set();
+    const result = outcome(session, turn, records, proven);
+    for (const [index, item] of turn.items.entries()) {
+      if (item.type !== "userMessage") continue;
+      const ids = nativeInputIds(item);
+      if (!ids) continue;
+      const positions = ids.map(
+        (id) => records?.findIndex(({ row }) => row.uuid === id) ?? -1,
+      );
+      if (
+        !ids.length ||
+        !ids.every((id) => nativeUuid(id) && proven.has(id)) ||
+        positions.some(
+          (position, i) =>
+            position < 0 || (i > 0 && position <= positions[i - 1]),
+        )
+      )
+        continue;
+      if (index === 0 && turn.startOutcome === "preparing")
+        turn.startOutcome = "accepted";
+      if (
+        item.delivery === "steer" &&
+        ["preparing", "submitted"].includes(item.deliveryStatus)
+      ) {
+        item.deliveryStatus = "delivered";
+        delete item.error;
+      }
+    }
     turn.status = result?.status || "uncertain";
     if (result?.status === "completed") {
       const existing = turn.items.findIndex(

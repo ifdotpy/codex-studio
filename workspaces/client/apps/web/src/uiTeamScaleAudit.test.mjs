@@ -3,7 +3,9 @@ import {
   LEAD_INPUT_WAIT_ANOMALY_MS,
   START_ORDER_TOLERANCE_MS,
   auditDiagnostics,
+  pendingTeamInputs,
   auditJournal,
+  auditJournalResult,
   auditLead,
   auditLeadReport,
   auditSummaryLines,
@@ -293,8 +295,12 @@ describe("journal audit", () => {
 describe("diagnostics audit", () => {
   it("fails a growing counter or a pending queue and records missing paths", () => {
     const before = diagnosticsCounters({
-      queues: { claudeLogLinesSkipped: 0 },
       sqliteContention: { lockError: { lockErrors: 1 } },
+      queues: {
+        claudeLogLinesSkipped: 0,
+        durableInputPending: 0,
+        recoveryPending: 0,
+      },
     });
     const after = diagnosticsCounters({
       queues: {
@@ -311,11 +317,6 @@ describe("diagnostics audit", () => {
         path: "/queues/claudeLogLinesSkipped",
         from: 0,
         to: 2,
-      },
-      {
-        kind: "diagnosticsGaugeNotZero",
-        path: "/queues/durableInputPending",
-        value: 1,
       },
     ]);
     expect(
@@ -385,4 +386,144 @@ describe("helpers", () => {
       '  - backendLog {"message":"m","count":9}',
     ]);
   });
+});
+
+it("records global queue growth as evidence and rejects only retained team inputs", () => {
+  const before = diagnosticsCounters({
+    queues: { durableInputPending: 13, recoveryPending: 2 },
+  });
+  const after = diagnosticsCounters({
+    queues: { durableInputPending: 12, recoveryPending: 1 },
+  });
+  expect(auditDiagnostics(before, after).failures).toEqual([]);
+  const pending = pendingTeamInputs(
+    [
+      { id: "foreign", agent: "other", status: "pending" },
+      { id: "done", agent: "lead", status: "completed" },
+      { id: "own", agent: "worker", status: "dispatching" },
+    ],
+    ["lead", "worker"],
+  );
+  expect(pending).toEqual([
+    { id: "own", agent: "worker", status: "dispatching" },
+  ]);
+  // A team input fails even if another chat drains and masks its global growth.
+  expect(auditDiagnostics(before, after, pending).failures).toEqual([
+    { kind: "teamInputsPending", count: 1, inputs: pending },
+  ]);
+  const grown = diagnosticsCounters({
+    queues: { durableInputPending: 14, recoveryPending: 2 },
+  });
+  expect(auditDiagnostics(before, grown).failures).toEqual([]);
+  expect(auditDiagnostics(before, grown).queueGauges).toContainEqual({
+    path: "/queues/durableInputPending",
+    before: 13,
+    after: 14,
+    delta: 1,
+  });
+  expect(
+    auditDiagnostics(before, grown, pending).failures.map(({ kind }) => kind),
+  ).toContain("teamInputsPending");
+});
+
+it("treats journalctl's empty status 1 as no matches, while preserving other failures", () => {
+  expect(
+    auditJournalResult({ status: 1, stdout: "", stderr: "" }, "studio"),
+  ).toEqual({ failures: [], anomalies: [] });
+  expect(
+    auditJournalResult(
+      { status: 1, stdout: "", stderr: "No journal access" },
+      "studio",
+    ).anomalies,
+  ).toEqual([
+    { kind: "journalUnavailable", unit: "studio", error: "No journal access" },
+  ]);
+  expect(
+    auditJournalResult({ status: 2, stdout: "", stderr: "" }, "studio")
+      .anomalies[0].kind,
+  ).toBe("journalUnavailable");
+});
+
+it("attributes only a new lead message triggering another worker turn to the lead", () => {
+  const initial = {
+    ...userItem(1, [{ id: "initial", kind: "user", text: "task" }]),
+    turnId: "t1",
+  };
+  const message = {
+    id: "nudge",
+    kind: "agent_message",
+    text: JSON.stringify({
+      sender: "lead",
+      text: "Please finish the assigned exact shell command",
+    }),
+  };
+  const audit = auditWorker(
+    "worker",
+    [
+      initial,
+      answer("TOKEN"),
+      { ...userItem(2, [message]), turnId: "t2" },
+      answer("TOKEN", "t2"),
+    ],
+    "lead",
+  );
+  expect(audit.failures).toEqual([]);
+  expect(audit.anomalies).toEqual([
+    {
+      kind: "leadMessageTriggeredWorkerTurn",
+      agent: "worker",
+      turnId: "t2",
+      input: "nudge",
+      text: "Please finish the assigned exact shell command",
+    },
+  ]);
+  expect(
+    kinds(
+      auditWorker(
+        "worker",
+        [initial, answer("TOKEN"), answer("TOKEN", "t2")],
+        "lead",
+      ),
+    ),
+  ).toContain("duplicateWorkerTurns");
+  expect(
+    kinds(
+      auditWorker(
+        "worker",
+        [
+          initial,
+          answer("TOKEN"),
+          { ...userItem(2, [message]), turnId: "t2" },
+          answer("TOKEN", "t2"),
+          { ...userItem(3, [message]), turnId: "t3" },
+          answer("TOKEN", "t3"),
+        ],
+        "lead",
+      ),
+    ),
+  ).toEqual(
+    expect.arrayContaining(["duplicateWorkerTurns", "duplicateDelivery"]),
+  );
+  expect(
+    kinds(
+      auditWorker(
+        "worker",
+        [
+          initial,
+          answer("TOKEN"),
+          {
+            ...userItem(2, [
+              {
+                ...message,
+                text: JSON.stringify({ sender: "other", text: "go" }),
+              },
+            ]),
+            turnId: "t2",
+          },
+          answer("TOKEN", "t2"),
+        ],
+        "lead",
+      ),
+    ),
+  ).toContain("duplicateWorkerTurns");
 });

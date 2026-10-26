@@ -82,7 +82,7 @@ describe("Finder location", () => {
       createElement(FinderLocation, { view, canReveal: true, onReveal }),
     );
     expect(markup).toContain(STUDIO_PATH);
-    expect(markup).toContain("Show in Finder");
+    expect(markup).toContain("Show folder");
   });
 
   it("has no button outside the desktop app or without a mount", () => {
@@ -95,7 +95,7 @@ describe("Finder location", () => {
       }),
     );
     expect(mounted).toContain(STUDIO_PATH);
-    expect(mounted).not.toContain("Show in Finder");
+    expect(mounted).not.toContain("Show folder");
 
     const failed = render(
       createElement(FinderLocation, {
@@ -105,7 +105,7 @@ describe("Finder location", () => {
       }),
     );
     expect(failed).toContain("<p>denied</p>");
-    expect(failed).not.toContain("Show in Finder");
+    expect(failed).not.toContain("Show folder");
     expect(
       buttons(
         FinderLocation({
@@ -119,7 +119,7 @@ describe("Finder location", () => {
 });
 
 describe("Project folder dialog", () => {
-  it("keeps the native folder and its Finder button", () => {
+  it("keeps the native folder and its folder button", () => {
     const onReveal = vi.fn();
     const native = agent({ executionMode: "native" });
     const markup = render(
@@ -131,7 +131,7 @@ describe("Project folder dialog", () => {
     );
     expect(markup).toContain("<p>/Users/me/app</p>");
     expect(markup).toContain("To use another folder, start a new chat.");
-    expect(markup).toContain("Show in Finder");
+    expect(markup).toContain("Show folder");
     expect(markup).not.toContain(VM_FOLDER_NOTE);
     const [button] = buttons(
       ProjectFolderDialog({ agent: native, canReveal: true, onReveal }),
@@ -147,7 +147,7 @@ describe("Project folder dialog", () => {
           onReveal,
         }),
       ),
-    ).not.toContain("Show in Finder");
+    ).not.toContain("Show folder");
   });
 
   it("explains the VM view instead of the VM path while it loads", () => {
@@ -164,6 +164,6 @@ describe("Project folder dialog", () => {
     );
     expect(markup).toContain(VM_FOLDER_NOTE.replace("'", "&#x27;"));
     expect(markup).not.toContain(VM_CWD);
-    expect(markup).not.toContain("Show in Finder");
+    expect(markup).not.toContain("Show folder");
   });
 });

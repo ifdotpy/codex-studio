@@ -217,13 +217,21 @@ const previewCatalog = [
 const previewReader: ContextType<typeof ModelCatalogReader> = {
   scope: "execution-panel-story",
   read: async () => ({ data: previewCatalog }),
-  watchResourceReads: (_refs, read, failed) => {
-    void read().catch(failed);
-    return Object.assign(() => {}, {
-      refresh: () => {
-        void read().catch(failed);
+  subscribeState: (accept) => {
+    accept({
+      runtime: {
+        modelsByAccount: {
+          default: previewCatalog.map((model, catalogPosition) => ({
+            ...model,
+            accountKey: "default",
+            provider: "codex",
+            catalogPosition,
+          })),
+        },
       },
+      entitiesComplete: true,
     });
+    return () => {};
   },
 };
 const previewAgent = {
@@ -321,10 +329,10 @@ export const ComposerRolePopover: Story = {
             retry: () => {},
           }}
           refresh={async () => {}}
-          renderTrigger={({ opened, ref, onClick }) => (
+          renderTrigger={({ agent, opened, ref, onClick }) => (
             <ExecutionSummaryTrigger
               ref={ref}
-              agent={previewAgent}
+              agent={agent}
               team={[]}
               aria-expanded={opened}
               onOpen={onClick}

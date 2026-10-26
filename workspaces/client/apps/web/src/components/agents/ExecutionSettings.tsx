@@ -24,6 +24,7 @@ import {
   useEffect,
   useId,
   useLayoutEffect,
+  useMemo,
   useRef,
   useState,
 } from "react";
@@ -99,6 +100,7 @@ const fastTier = (info?: WorkerModelInfo) =>
 type SettingsProps = {
   presentation?: "menu" | "panel";
   renderTrigger?: (props: {
+    agent: Agent;
     opened: boolean;
     ref: RefObject<HTMLButtonElement | null>;
     onClick: () => void;
@@ -236,7 +238,94 @@ export function ExecutionPermissions(props: SettingsProps) {
 type ControllerProps = SettingsProps & {
   section?: "delegation" | "permissions";
 };
+type SettingsReceipt = { version: object; value: Agent };
+const sameRoleSettings = (left: Agent, right: Agent, role: SetupRole) =>
+  role === "review"
+    ? left.reviewDefaults?.model === right.reviewDefaults?.model &&
+      left.reviewDefaults?.effort === right.reviewDefaults?.effort
+    : sameSettings(
+        settingsFor(left, role === "worker"),
+        settingsFor(right, role === "worker"),
+      );
 function ExecutionSettingsController(props: ControllerProps) {
+  const [confirmed, setConfirmed] = useState<
+    Partial<Record<SetupRole, SettingsReceipt>>
+  >({});
+  const projected = useRef({
+    agent: props.agent,
+    versions: { orchestrator: {}, worker: {}, review: {} },
+    requests: {} as Partial<Record<SetupRole, object>>,
+  });
+  const previous = projected.current.agent;
+  const changedScope =
+    previous.id !== props.agent.id ||
+    accountOf(previous) !== accountOf(props.agent);
+  // A separate identity for each written settings domain lets unrelated SSE
+  // updates coexist with a receipt. Any observed same-domain update wins,
+  // including an update followed by a return to the earlier settings.
+  for (const role of ["orchestrator", "worker", "review"] as const)
+    if (changedScope || !sameRoleSettings(previous, props.agent, role)) {
+      projected.current.versions[role] = {};
+      delete projected.current.requests[role];
+    }
+  projected.current.agent = props.agent;
+  const mounted = useRef(true);
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+    };
+  }, []);
+  const beginSettingsSave = (role: SetupRole) => {
+    const version = projected.current.versions[role];
+    const request = {};
+    projected.current.requests[role] = request;
+    return (value: Agent) => {
+      const latest = projected.current;
+      if (
+        !mounted.current ||
+        latest.versions[role] !== version ||
+        latest.requests[role] !== request ||
+        value.id !== latest.agent.id ||
+        accountOf(value) !== accountOf(latest.agent)
+      )
+        return false;
+      setConfirmed((old) => ({ ...old, [role]: { version, value } }));
+      return true;
+    };
+  };
+  const receipt = (role: SetupRole) => {
+    const saved = confirmed[role];
+    return saved?.version === projected.current.versions[role]
+      ? saved.value
+      : undefined;
+  };
+  const main = receipt("orchestrator");
+  const worker = receipt("worker");
+  const review = receipt("review");
+  // Only execution fields bridge the response-to-SSE interval. Status and
+  // other agent fields continue to come from the workspace projection.
+  const triggerAgent = useMemo(
+    () =>
+      main || worker || review
+        ? {
+            ...props.agent,
+            ...(main
+              ? {
+                  model: main.model,
+                  effort: main.effort,
+                  fastMode: main.fastMode,
+                  daybreakEnabled: main.daybreakEnabled,
+                  pendingSettings: main.pendingSettings,
+                  pendingSettingsAccountKey: main.pendingSettingsAccountKey,
+                }
+              : {}),
+            ...(worker ? { workerDefaults: worker.workerDefaults } : {}),
+            ...(review ? { reviewDefaults: review.reviewDefaults } : {}),
+          }
+        : props.agent,
+    [props.agent, main, worker, review],
+  );
   const [role, setRole] = useState<SetupRole>(
     props.initialRole || (props.agent.isLead ? "orchestrator" : "worker"),
   );
@@ -286,6 +375,7 @@ function ExecutionSettingsController(props: ControllerProps) {
     <ScopedExecutionSettings
       key={scope}
       {...props}
+      beginSettingsSave={beginSettingsSave}
       presentation={props.renderTrigger ? "panel" : props.presentation}
       agent={agent}
       inheritedUnavailable={inheritedRole && !props.lead}
@@ -314,6 +404,7 @@ function ExecutionSettingsController(props: ControllerProps) {
         role === "review" || (role === "worker" && !!agent.isLead),
       )}
       trigger={props.renderTrigger({
+        agent: triggerAgent,
         opened,
         ref: triggerRef,
         onClick: () => changeOpened(!opened),
@@ -353,7 +444,9 @@ function ScopedExecutionSettings({
   opened,
   triggerRef,
   setOpened,
+  beginSettingsSave,
 }: ControllerProps & {
+  beginSettingsSave: (role: SetupRole) => (agent: Agent) => boolean;
   teamDefaults: boolean;
   readOnlyReason?: string;
   inheritedUnavailable: boolean;
@@ -690,12 +783,15 @@ function ScopedExecutionSettings({
     }
     if (saveLock.current) return;
     saveLock.current = true;
+    const acceptCanonical = beginSettingsSave(
+      teamDefaults ? "worker" : "orchestrator",
+    );
     request = { ...request, expected_account_key: accountOf(agent) };
     const previousPending = pending;
     setSaving(true);
     setError("");
     setStatus({ kind: "saving", text: "" });
-    const generation = ++refreshGeneration.current;
+    ++refreshGeneration.current;
     if (request.next_turn) {
       save(receiptKey, request);
       setUnconfirmed(request);
@@ -753,13 +849,14 @@ function ScopedExecutionSettings({
         clearReceipt();
         if (mounted.current) setUnconfirmed(null);
       }
+      const accepted = acceptCanonical(canonical);
       if (!mounted.current) return;
-      setPending({
-        values: settingsFor(canonical, teamDefaults),
-        baseline: stored,
-      });
+      if (accepted)
+        setPending({
+          values: settingsFor(canonical, teamDefaults),
+          baseline: stored,
+        });
       setStatus({ kind: "saved", text: notice });
-      refreshConfirmed(generation);
     } catch (failure) {
       const rejected =
         failure instanceof ApiError &&
@@ -1108,10 +1205,11 @@ function ScopedExecutionSettings({
     }
     saveLock.current = true;
     const previousPending = reviewPending;
+    const acceptCanonical = beginSettingsSave("review");
     setSaving(true);
     setError("");
     setStatus({ kind: "saving", text: "" });
-    const generation = ++refreshGeneration.current;
+    ++refreshGeneration.current;
     try {
       const canonical = await post(
         "/api/conversation",
@@ -1130,16 +1228,17 @@ function ScopedExecutionSettings({
         throw new Error(
           "The settings account changed. Check the current settings.",
         );
+      const accepted = acceptCanonical(canonical);
       if (!mounted.current) return;
-      setReviewPending({
-        values: {
-          model: canonical.reviewDefaults?.model ?? null,
-          effort: canonical.reviewDefaults?.effort ?? null,
-        },
-        baseline: reviewStored,
-      });
+      if (accepted)
+        setReviewPending({
+          values: {
+            model: canonical.reviewDefaults?.model ?? null,
+            effort: canonical.reviewDefaults?.effort ?? null,
+          },
+          baseline: reviewStored,
+        });
       setStatus({ kind: "saved", text: "" });
-      refreshConfirmed(generation);
     } catch (failure) {
       if (!mounted.current) return;
       setReviewPending(previousPending);

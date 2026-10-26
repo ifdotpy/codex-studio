@@ -42,6 +42,10 @@ enum ResourceKind {
     Transcript,
     Transcripts,
     Room,
+    Processes,
+    Complaint,
+    Work,
+    TerminalOutput,
     Task,
     Tasks,
     Workspace,
@@ -212,20 +216,34 @@ impl ResourceNotifications {
             } else {
                 state.resource_revision(&key)
             };
-            let version = match scope.kind {
-                // Discovery reads refresh volatile access timestamps; only its
-                // explicit publications may advance this semantic cursor.
-                ResourceKind::MultiServer => explicit,
-                ResourceKind::State
-                | ResourceKind::Transcript
-                | ResourceKind::Transcripts
-                | ResourceKind::Room
-                | ResourceKind::Task
-                | ResourceKind::Tasks
-                | ResourceKind::Workspace => explicit
+            let entity_view = resource["kind"].as_str().is_some_and(|kind| {
+                studio_runtime_schema::sync_protocol::subscription_entity_scopes()
+                    .contains_key(kind)
+            });
+            let version = if entity_view {
+                explicit
                     .max(cursor.resource_revision)
-                    .max(state.entity_revision),
-                ResourceKind::Other => explicit.max(cursor.resource_revision),
+                    .max(state.entity_revision)
+            } else {
+                match scope.kind {
+                    // Discovery reads refresh volatile access timestamps; only its
+                    // explicit publications may advance this semantic cursor.
+                    ResourceKind::MultiServer => explicit,
+                    ResourceKind::State
+                    | ResourceKind::Transcript
+                    | ResourceKind::Transcripts
+                    | ResourceKind::Room
+                    | ResourceKind::Processes
+                    | ResourceKind::Complaint
+                    | ResourceKind::Work
+                    | ResourceKind::TerminalOutput
+                    | ResourceKind::Task
+                    | ResourceKind::Tasks
+                    | ResourceKind::Workspace => explicit
+                        .max(cursor.resource_revision)
+                        .max(state.entity_revision),
+                    ResourceKind::Other => explicit.max(cursor.resource_revision),
+                }
             };
             if after.is_none_or(|revision| version > revision) || overflow {
                 selected.push(resource.clone());
@@ -353,7 +371,6 @@ mod tests {
         let notifications = ResourceNotifications::new(hub.clone());
         let resources = vec![
             json!({"kind":"accounts"}),
-            json!({"kind":"models"}),
             json!({"kind":"costs"}),
             json!({"kind":"desktop"}),
             json!({"kind":"terminals"}),
@@ -621,5 +638,29 @@ mod tests {
         assert!(state.receipts.is_empty());
         assert!(state.versions.is_empty());
         assert_eq!(changes.snapshot().revision, 0);
+    }
+}
+
+/// Source-owned process notifications for projections derived outside Canvas.
+/// Values are never carried here: login URLs and credentials stay in their owners.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum BoundedSource {
+    Desktop,
+    Costs,
+}
+
+fn bounded_source_sender() -> &'static tokio::sync::broadcast::Sender<BoundedSource> {
+    static SENDER: OnceLock<tokio::sync::broadcast::Sender<BoundedSource>> = OnceLock::new();
+    SENDER.get_or_init(|| tokio::sync::broadcast::channel(MAX_NOTIFY_RECEIPTS).0)
+}
+
+pub fn bounded_source_changes() -> tokio::sync::broadcast::Receiver<BoundedSource> {
+    bounded_source_sender().subscribe()
+}
+
+pub fn publish_bounded_source(source: BoundedSource) {
+    // No HTTP owner is required during startup or isolated service tests.
+    if bounded_source_sender().receiver_count() > 0 {
+        let _receivers = bounded_source_sender().send(source);
     }
 }

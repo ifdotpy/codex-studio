@@ -16,6 +16,19 @@ use thiserror::Error;
 #[path = "workspace_cleanup_submodules.rs"]
 mod submodules;
 
+/// Archive metadata retained for cleanup after final deletion revokes restoration.
+pub(crate) const DELETED_ARCHIVE_FIELD: &str = "deletedArchive";
+fn cleanup_archive(agent: &Value) -> Option<&Value> {
+    agent
+        .get("agentArchive")
+        .filter(|value| value.is_object())
+        .or_else(|| {
+            agent
+                .get(DELETED_ARCHIVE_FIELD)
+                .filter(|value| value.is_object())
+        })
+}
+
 const INTENT_FIELD: &str = "workspaceCleanupIntent";
 const GUEST_TIMEOUT: Duration = Duration::from_secs(3_600);
 
@@ -68,6 +81,8 @@ pub enum WorkspaceCleanupError {
 pub enum CleanupEffect {
     ArchiveImage,
     RemoveImage,
+    SaveNativeTurn,
+    ReleaseNativeLine,
     SaveVmTurn { turn_id: String },
     ReleaseVmLine { method: String },
     SaveWorktreeRef { identity: Value },
@@ -120,15 +135,10 @@ pub async fn cleanup_agent_workspace_with_ports(
     if agent.get("deletedAt").is_none() {
         return Err(WorkspaceCleanupError::InvalidRecord);
     }
-    if action == CleanupAction::Archive
-        && agent
-            .get("agentArchive")
-            .and_then(Value::as_object)
-            .is_none()
-    {
+    if action == CleanupAction::Archive && cleanup_archive(&agent).is_none() {
         return Err(WorkspaceCleanupError::InvalidRecord);
     }
-    let effects = plan(&agent, action)?;
+    let effects = plan(&agent, action, store.state_dir())?;
     if effects.is_empty() {
         complete_without_effect(&store, &agent_id, action, &agent).await?;
         return Ok(result(&agent_id, action, None, None, false));
@@ -397,7 +407,11 @@ async fn reconcile_cleanup_intent(
     Ok(result(id, intent.action, None, None, true))
 }
 
-fn plan(agent: &Value, action: CleanupAction) -> Result<Vec<CleanupEffect>, WorkspaceCleanupError> {
+fn plan(
+    agent: &Value,
+    action: CleanupAction,
+    state_dir: &std::path::Path,
+) -> Result<Vec<CleanupEffect>, WorkspaceCleanupError> {
     if agent
         .get(INTENT_FIELD)
         .is_some_and(|intent| !intent.is_null())
@@ -419,11 +433,14 @@ fn plan(agent: &Value, action: CleanupAction) -> Result<Vec<CleanupEffect>, Work
     }
     let mut effects = Vec::new();
     let is_vm = agent.get("executionMode").and_then(Value::as_str) == Some("vm");
-    let image = agent.get("imageWorkspace").and_then(Value::as_bool) == Some(true);
+
     let vm_dispose = is_vm
         && (agent.get("layrReady").and_then(Value::as_bool) == Some(true)
             || action == CleanupAction::Archive);
-    if vm_dispose {
+    if crate::layr_native::is_native(agent) && agent["layrReady"] == true {
+        effects.push(CleanupEffect::SaveNativeTurn);
+        effects.push(CleanupEffect::ReleaseNativeLine);
+    } else if vm_dispose {
         if let Some(turns) = agent.get("layrTurnSaves").and_then(Value::as_object) {
             for (turn, state) in turns {
                 if state.get("status").and_then(Value::as_str) != Some("saved") {
@@ -440,23 +457,10 @@ fn plan(agent: &Value, action: CleanupAction) -> Result<Vec<CleanupEffect>, Work
                 "line.remove".into()
             },
         });
-    } else if image && action == CleanupAction::Archive {
-        if agent.get("imageWorkspaceReady").and_then(Value::as_bool) == Some(true)
-            || agent
-                .pointer("/cleanedImageWorkspace/phase")
-                .and_then(Value::as_str)
-                == Some("archiving")
-        {
-            effects.push(CleanupEffect::ArchiveImage);
-        }
-    } else if image && action == CleanupAction::Delete {
-        if agent.get("imageWorkspacePhase").and_then(Value::as_str) != Some("removed") {
-            effects.push(CleanupEffect::RemoveImage);
-        }
     } else if action == CleanupAction::Archive
         && agent.get("worktreeReady").and_then(Value::as_bool) == Some(true)
     {
-        let Some(identity) = worktree_identity(agent)? else {
+        let Some(identity) = worktree_identity(agent, state_dir)? else {
             return Ok(effects);
         };
         effects.push(CleanupEffect::SaveWorktreeRef {
@@ -469,7 +473,10 @@ fn plan(agent: &Value, action: CleanupAction) -> Result<Vec<CleanupEffect>, Work
 
 /// The batch archive preflight uses the same original-link, clean-tree and
 /// nested-worktree checks as the effect owner. Ignored build output is removable.
-pub(crate) fn check_archive_worktree(agent: &Value) -> Result<(), WorkspaceCleanupError> {
+pub(crate) fn check_archive_worktree(
+    agent: &Value,
+    state_dir: &std::path::Path,
+) -> Result<(), WorkspaceCleanupError> {
     #[derive(Deserialize)]
     #[serde(rename_all = "camelCase")]
     struct Workspace {
@@ -479,7 +486,7 @@ pub(crate) fn check_archive_worktree(agent: &Value) -> Result<(), WorkspaceClean
     let workspace: Workspace =
         serde_json::from_value(agent.clone()).map_err(|_| WorkspaceCleanupError::InvalidRecord)?;
     if workspace.worktree_ready
-        && let Some(identity) = worktree_identity(agent)?
+        && let Some(identity) = worktree_identity(agent, state_dir)?
     {
         checked_cleanup_worktree(&identity).map_err(|_| WorkspaceCleanupError::NotSent)?;
     }
@@ -488,7 +495,7 @@ pub(crate) fn check_archive_worktree(agent: &Value) -> Result<(), WorkspaceClean
 
 /// Describe stale worktrees through the cleanup owner's exact path checks.
 /// A clean Git tree alone does not authorize removal of the worker.
-pub(crate) fn maintenance_worktree(agent: &Value) -> Option<Value> {
+pub(crate) fn maintenance_worktree(agent: &Value, state_dir: &std::path::Path) -> Option<Value> {
     if agent["worktreeReady"] != true {
         return None;
     }
@@ -500,7 +507,7 @@ pub(crate) fn maintenance_worktree(agent: &Value) -> Option<Value> {
         .and_then(|cwd| {
             owned_worktree_root(&cwd, id)
                 .ok()
-                .map(std::path::Path::to_path_buf)
+                .map(|owned| owned.root().to_path_buf())
         });
     let Some(root) = root else {
         return deleted.then(|| {
@@ -517,7 +524,7 @@ pub(crate) fn maintenance_worktree(agent: &Value) -> Option<Value> {
         "worktree folder missing"
     } else if metadata.is_err() {
         "The worktree folder state is unavailable"
-    } else if check_archive_worktree(agent).is_ok() {
+    } else if check_archive_worktree(agent, state_dir).is_ok() {
         "The Git worktree is clean. Inspect the worker before removal"
     } else {
         "The worktree is changed or unverified. Preserve its files for inspection"
@@ -525,25 +532,34 @@ pub(crate) fn maintenance_worktree(agent: &Value) -> Option<Value> {
     Some(json!({"id":id,"folderMissing":missing,"reason":reason}))
 }
 
+/// The owned worktree root of worker `id` that contains `cwd`
+/// (`crate::worktree_root`). Layout only; the caller proves ownership.
 fn owned_worktree_root<'a>(
     cwd: &'a std::path::Path,
     id: &str,
-) -> Result<&'a std::path::Path, WorkspaceCleanupError> {
-    cwd.ancestors()
-        .find(|path| {
-            path.file_name().and_then(|name| name.to_str()) == Some(id)
-                && path
-                    .parent()
-                    .and_then(std::path::Path::file_name)
-                    .and_then(|name| name.to_str())
-                    == Some("codex-agents")
-                && path
-                    .parent()
-                    .and_then(std::path::Path::parent)
-                    .and_then(std::path::Path::file_name)
-                    .and_then(|name| name.to_str())
-                    == Some(".worktrees")
-        })
+) -> Result<crate::worktree_root::OwnedRoot<'a>, WorkspaceCleanupError> {
+    crate::worktree_root::owned_root(cwd, id).ok_or(WorkspaceCleanupError::InvalidRecord)
+}
+
+/// The main worktree of the repository that owns linked worktree `root`.
+fn owning_repository(root: &std::path::Path) -> Result<PathBuf, WorkspaceCleanupError> {
+    let common = String::from_utf8(
+        git_output(
+            root,
+            &["rev-parse", "--path-format=absolute", "--git-common-dir"],
+            None,
+        )
+        .map_err(|_| WorkspaceCleanupError::InvalidRecord)?,
+    )
+    .map_err(|_| WorkspaceCleanupError::InvalidRecord)?;
+    let common = CanonicalPath::existing(common.trim_end_matches('\n'))
+        .map_err(|_| WorkspaceCleanupError::InvalidRecord)?;
+    if common.file_name().and_then(|name| name.to_str()) != Some(".git") {
+        return Err(WorkspaceCleanupError::InvalidRecord);
+    }
+    common
+        .parent()
+        .map(std::path::Path::to_path_buf)
         .ok_or(WorkspaceCleanupError::InvalidRecord)
 }
 
@@ -556,32 +572,79 @@ fn cleanup_cwd(path: &std::path::Path) -> Option<LexicalPath> {
     })
 }
 
-fn worktree_identity(agent: &Value) -> Result<Option<Value>, WorkspaceCleanupError> {
+fn worktree_identity(
+    agent: &Value,
+    _state_dir: &std::path::Path,
+) -> Result<Option<Value>, WorkspaceCleanupError> {
     #[derive(Deserialize)]
     struct WorktreeOwner {
         id: String,
         cwd: PathBuf,
+        /// The canonical Git common directory recorded when Studio provisioned
+        /// the worktree.
+        #[serde(default, rename = "worktreeCommonDir")]
+        common_dir: Option<PathBuf>,
     }
     let owner: WorktreeOwner =
         serde_json::from_value(agent.clone()).map_err(|_| WorkspaceCleanupError::InvalidRecord)?;
     let lexical = cleanup_cwd(&owner.cwd).ok_or(WorkspaceCleanupError::InvalidRecord)?;
-    let root = owned_worktree_root(&lexical, &owner.id)?;
+    let lexical_owned = owned_worktree_root(&lexical, &owner.id)?;
+    let lexical_root = lexical_owned.root();
     // Inspect the exact owned root, not a canonicalized parent or a missing cwd
-    // subdirectory. A dangling link is still present and must stay held.
-    match std::fs::symlink_metadata(root) {
+    // subdirectory. A dangling link is still present and must stay held. The
+    // worker directory itself must never be a link: cleanup would act on its
+    // target, which may belong to another repository. Ancestors may be links.
+    match std::fs::symlink_metadata(lexical_root) {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(_) => return Err(WorkspaceCleanupError::InvalidRecord),
+        Ok(metadata) if metadata.file_type().is_symlink() => {
+            return Err(WorkspaceCleanupError::InvalidRecord);
+        }
         Ok(_) => {}
     }
     let id = owner.id.as_str();
     let cwd =
         CanonicalPath::existing(&owner.cwd).map_err(|_| WorkspaceCleanupError::InvalidRecord)?;
-    let root = owned_worktree_root(&cwd, id)?;
-    let repo = root
-        .parent()
-        .and_then(std::path::Path::parent)
-        .and_then(std::path::Path::parent)
-        .ok_or(WorkspaceCleanupError::InvalidRecord)?;
+    let owned = owned_worktree_root(&cwd, id)?;
+    // The recorded spelling and the resolved directory must name the same
+    // worker directory; otherwise a substituted path redirects cleanup.
+    let resolved_root =
+        CanonicalPath::existing(lexical_root).map_err(|_| WorkspaceCleanupError::InvalidRecord)?;
+    if resolved_root.as_path() != owned.root() {
+        return Err(WorkspaceCleanupError::InvalidRecord);
+    }
+    let root = owned.root();
+    // Git registration proves repository membership, not Studio ownership: a
+    // replaced ancestor can lead to another repository's registered worktree.
+    // Require the Git common directory Studio provisioned from. Records from
+    // before that field existed are accepted only in the `<repository>/.worktrees`
+    // layout of their recorded path.
+    let expected = match (&owner.common_dir, lexical_owned) {
+        (Some(recorded), _) => CanonicalPath::existing(recorded),
+        (None, crate::worktree_root::OwnedRoot::Repository { repository, .. }) => {
+            let git = repository.join(".git");
+            if git.is_file() {
+                // Legacy workers can belong to a linked project. Prove that
+                // project is registered before using its common directory.
+                let project = CanonicalPath::existing(repository)
+                    .map_err(|_| WorkspaceCleanupError::InvalidRecord)?;
+                let main = owning_repository(&project)?;
+                registered_worktree_branch(&main, &project)?;
+                CanonicalPath::existing(main.join(".git"))
+            } else {
+                CanonicalPath::existing(git)
+            }
+        }
+        (None, crate::worktree_root::OwnedRoot::Linked(_)) => {
+            return Err(WorkspaceCleanupError::InvalidRecord);
+        }
+    }
+    .map_err(|_| WorkspaceCleanupError::InvalidRecord)?;
+    let repo = owning_repository(root)?;
+    if repo.join(".git").as_path() != expected.as_path() {
+        return Err(WorkspaceCleanupError::InvalidRecord);
+    }
+    let repo = repo.as_path();
     let relative = cwd
         .strip_prefix(root)
         .map_err(|_| WorkspaceCleanupError::InvalidRecord)?;
@@ -748,8 +811,8 @@ fn lifecycle_identity(agent: &Value) -> Value {
         "epoch":agent.get("epoch"),
         "cwd":agent.get("cwd"),
         "deletedAt":agent.get("deletedAt"),
-        "archiveAt":agent.pointer("/agentArchive/at"),
-        "archiveEpoch":agent.pointer("/agentArchive/epoch")
+        "archiveAt":cleanup_archive(agent).and_then(|archive|archive.get("at")),
+        "archiveEpoch":cleanup_archive(agent).and_then(|archive|archive.get("epoch"))
     })
 }
 
@@ -815,7 +878,7 @@ async fn complete_effect(
 
 fn valid_receipt(effect: &CleanupEffect, receipt: &Value) -> bool {
     match effect {
-        CleanupEffect::SaveVmTurn { .. } => receipt
+        CleanupEffect::SaveNativeTurn | CleanupEffect::SaveVmTurn { .. } => receipt
             .get("stateId")
             .and_then(Value::as_str)
             .is_some_and(|state_id| !state_id.is_empty()),
@@ -866,16 +929,8 @@ fn apply_effect_result(
     receipt: &Value,
 ) -> Result<(), WorkspaceCleanupError> {
     match effect {
-        CleanupEffect::ArchiveImage => {
-            agent["imageWorkspaceReady"] = json!(false);
-            agent["imageWorkspacePhase"] = json!("archived");
-            agent["cleanedImageWorkspace"] = json!({"phase":"archived","freedBytes":receipt.get("freedBytes").cloned().unwrap_or(json!(0))});
-        }
-        CleanupEffect::RemoveImage => {
-            agent["imageWorkspaceReady"] = json!(false);
-            agent["imageWorkspacePhase"] = json!("removed");
-        }
-        CleanupEffect::ReleaseVmLine { .. } => {
+        CleanupEffect::ArchiveImage | CleanupEffect::RemoveImage => {}
+        CleanupEffect::ReleaseNativeLine | CleanupEffect::ReleaseVmLine { .. } => {
             agent["layrReady"] = json!(false);
         }
         CleanupEffect::RemoveWorktree { identity } => {
@@ -912,6 +967,14 @@ fn apply_effect_result(
                 .as_object_mut()
                 .ok_or(WorkspaceCleanupError::InvalidRecord)?
                 .remove("worktreeCleanup");
+        }
+        CleanupEffect::SaveNativeTurn => {
+            agent["layrStateId"] = receipt["stateId"].clone();
+            if let Some(turns) = agent["layrTurnSaves"].as_object_mut() {
+                for save in turns.values_mut().filter(|save| save["status"] != "saved") {
+                    *save = json!({"status":"saved","stateId":receipt["stateId"]});
+                }
+            }
         }
         CleanupEffect::SaveWorktreeRef { .. } => {}
         CleanupEffect::SaveVmTurn { turn_id } => {
@@ -997,15 +1060,18 @@ impl CleanupPorts for ProductionPorts {
         request_id: &str,
     ) -> Result<Value, EffectFailure> {
         match effect {
-            CleanupEffect::ArchiveImage => crate::image_workspace::archive_workspace(
-                agent["id"].as_str().ok_or(EffectFailure::NotSent)?,
-            )
-            .map_err(|_| EffectFailure::Unknown),
-            CleanupEffect::RemoveImage => crate::image_workspace::remove_workspace(
-                agent["id"].as_str().ok_or(EffectFailure::NotSent)?,
-                false,
-            )
-            .map_err(|_| EffectFailure::Unknown),
+            CleanupEffect::SaveNativeTurn => {
+                crate::layr_native::save(&self.state_dir, agent, request_id)
+                    .map_err(|_| EffectFailure::Unknown)
+            }
+            CleanupEffect::ReleaseNativeLine => {
+                crate::layr_native::remove(&self.state_dir, agent, request_id)
+                    .map_err(|_| EffectFailure::Unknown)
+            }
+            // Historical image records keep their files. New cleanup plans never emit these effects.
+            CleanupEffect::ArchiveImage | CleanupEffect::RemoveImage => {
+                Ok(json!({"state":"kept","reason":"legacy image workspace"}))
+            }
             CleanupEffect::SaveVmTurn { turn_id } => {
                 let client =
                     crate::linux_vm_guest::UnixGuestRpc::for_runtime_state(&self.state_dir);
@@ -1349,54 +1415,9 @@ mod tests {
     }
 
     async fn fixture() -> (tempfile::TempDir, Arc<RuntimeStore>) {
-        let directory = tempfile::tempdir().expect("owned cleanup fixture directory");
-        let root = directory.path();
-        let schema: Value = serde_json::from_str(include_str!(
-            "../../runtime-store/src/runtime-state-schema.json"
-        ))
-        .expect("runtime schema fixture parses");
-        for name in ["canvas.sqlite3", "analytics.sqlite3"] {
-            let path = root.join(name);
-            let connection = rusqlite::Connection::open(path).expect("fixture DB opens");
-            connection
-                .execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; BEGIN;")
-                .expect("fixture pragmas apply");
-            let mut statements = schema[name]["sqlite_master"]
-                .as_array()
-                .expect("schema entries")
-                .iter()
-                .filter_map(|entry| {
-                    Some((
-                        entry["type"].as_str()?,
-                        entry["name"].as_str()?,
-                        entry["sql"].as_str()?,
-                    ))
-                })
-                .collect::<Vec<_>>();
-            statements.sort_by_key(|(kind, _, _)| match *kind {
-                "table" => 0,
-                "index" => 1,
-                "view" => 2,
-                _ => 3,
-            });
-            for (_, object_name, sql) in statements {
-                let exists: bool = connection
-                    .query_row(
-                        "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE name=?1)",
-                        [object_name],
-                        |row| row.get(0),
-                    )
-                    .expect("schema entry lookup");
-                if !exists {
-                    connection.execute_batch(sql).expect("schema installs");
-                }
-            }
-            connection.execute_batch("COMMIT;").expect("schema commits");
-        }
-        let store = RuntimeStore::open(Some(root))
-            .await
-            .expect("fixture store opens");
-        (directory, Arc::new(store))
+        let (directory, _root, store) =
+            crate::remote_transport::tests::runtime_store_fixture().await;
+        (directory, store)
     }
 
     async fn put_agent(store: &RuntimeStore, mut record: Value) {
@@ -1444,7 +1465,11 @@ mod tests {
             "worktree":false,
         });
         for action in [CleanupAction::Archive, CleanupAction::Delete] {
-            assert!(super::plan(&agent, action).expect("plan").is_empty());
+            assert!(
+                super::plan(&agent, action, std::path::Path::new("/nonexistent-state"))
+                    .expect("plan")
+                    .is_empty()
+            );
         }
     }
 
@@ -1597,7 +1622,8 @@ mod tests {
         put_agent(
             &store,
             json!({
-                "imageWorkspace":true, "imageWorkspaceReady":true,
+                "executionMode":"vm", "layrReady":true,
+                "layrTurnSaves":{"turn-1":{"status":"pending"}},
                 "agentArchive":{"cleanupPending":true}
             }),
         )
@@ -1660,7 +1686,8 @@ mod tests {
         let (directory, store) = fixture().await;
         put_agent(
             &store,
-            json!({"imageWorkspace":true,"imageWorkspaceReady":true,
+            json!({"executionMode":"vm", "layrReady":true,
+                "layrTurnSaves":{"turn-1":{"status":"pending"}},
                 "agentArchive":{"cleanupPending":true}}),
         )
         .await;
@@ -1696,31 +1723,30 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn delete_removes_image_workspace_through_the_effect_port() {
+    async fn legacy_image_cleanup_preserves_files_and_record_fields() {
         let (_directory, store) = fixture().await;
         put_agent(
             &store,
             json!({"imageWorkspace":true,"imageWorkspaceReady":true}),
         )
         .await;
-        let ports = Arc::new(FakePorts::new(vec![Ok(
-            json!({"state":"removed","freedBytes":44}),
-        )]));
+        let ports = Arc::new(FakePorts::new(vec![]));
         cleanup_agent_workspace_with_ports(
             Arc::clone(&store),
-            "cleanup-agent".to_owned(),
+            "cleanup-agent".into(),
             CleanupAction::Delete,
             ports.clone(),
         )
         .await
-        .expect("delete removes image workspace");
-        assert!(matches!(
-            ports.calls.lock().expect("calls mutex")[0].0,
-            CleanupEffect::RemoveImage
-        ));
-        let saved = agent(&store);
-        assert_eq!(saved["imageWorkspacePhase"], "removed");
-        assert_eq!(saved["imageWorkspaceReady"], false);
+        .expect("metadata cleanup");
+        assert!(
+            ports
+                .calls
+                .lock()
+                .expect("fixture operation succeeds")
+                .is_empty()
+        );
+        assert_eq!(agent(&store)["imageWorkspaceReady"], true);
     }
 
     #[tokio::test]
@@ -2049,6 +2075,284 @@ mod tests {
         );
     }
 
+    /// Archive a clean fixture worktree at `root` while `configured` names the
+    /// worktree root in `worktree-root.json`.
+    async fn archive_fixture_worktree_at(
+        directory: &tempfile::TempDir,
+        store: &Arc<RuntimeStore>,
+        repository: &std::path::Path,
+        root: &std::path::Path,
+        configured: &std::path::Path,
+    ) {
+        std::fs::create_dir_all(configured).expect("configured root creates");
+        std::fs::write(
+            store
+                .state_dir()
+                .join(crate::worktree_root::WORKTREE_ROOT_FILE),
+            json!({ "root": configured }).to_string(),
+        )
+        .expect("worktree root configuration writes");
+        std::fs::create_dir_all(root.parent().expect("worktree parent"))
+            .expect("fixture parent creates");
+        fixture_git(
+            directory.path(),
+            &["init", "-q", repository.to_str().expect("repository path")],
+        );
+        let git = |args: &[&str]| fixture_git(repository, args);
+        std::fs::write(repository.join("README.md"), "fixture\n").expect("fixture file writes");
+        git(&["add", "README.md"]);
+        git(&["commit", "-q", "-m", "fixture"]);
+        git(&[
+            "worktree",
+            "add",
+            "-q",
+            "-b",
+            "cleanup-agent",
+            root.to_str().expect("fixture path is UTF-8"),
+        ]);
+        let head = git(&["rev-parse", "cleanup-agent"]);
+        put_agent(
+            store,
+            json!({
+                "cwd":root, "branch":"cleanup-agent", "worktreeReady":true,
+                "worktreeCommonDir":repository.join(".git"),
+                "agentArchive":{"at":7,"epoch":7,"cleanupPending":true}
+            }),
+        )
+        .await;
+        super::cleanup_agent_workspace(
+            Arc::clone(store),
+            "cleanup-agent".to_owned(),
+            CleanupAction::Archive,
+        )
+        .await
+        .expect("fixture worktree archives");
+        assert!(!root.exists(), "target worktree is removed");
+        assert_eq!(
+            git(&["rev-parse", "refs/codex-agents/archive/cleanup-agent"]),
+            head
+        );
+        let saved = agent(store);
+        assert_eq!(saved["worktreeReady"], false);
+        assert_eq!(
+            saved["cleanedWorktree"]["repo"],
+            repository.to_string_lossy().to_string()
+        );
+    }
+
+    #[tokio::test]
+    async fn archive_removes_a_worktree_under_the_configured_root() {
+        let (directory, store) = fixture().await;
+        let base = studio_runtime_store::path_identity::resolve(directory.path())
+            .expect("resolved fixture folder");
+        let repository = base.join("project");
+        let configured = base.join("other-disk/worktrees");
+        let root = configured.join("codex-agents/cleanup-agent");
+        archive_fixture_worktree_at(&directory, &store, &repository, &root, &configured).await;
+    }
+
+    #[tokio::test]
+    async fn archive_keeps_repository_default_worktrees_manageable_after_configuration() {
+        let (directory, store) = fixture().await;
+        let base = studio_runtime_store::path_identity::resolve(directory.path())
+            .expect("resolved fixture folder");
+        let repository = base.join("project");
+        let root = repository.join(".worktrees/codex-agents/cleanup-agent");
+        let configured = base.join("other-disk/worktrees");
+        archive_fixture_worktree_at(&directory, &store, &repository, &root, &configured).await;
+    }
+
+    #[tokio::test]
+    async fn archive_manages_a_configured_root_named_like_the_default() {
+        let (directory, store) = fixture().await;
+        let base = studio_runtime_store::path_identity::resolve(directory.path())
+            .expect("resolved fixture folder");
+        let repository = base.join("project");
+        let configured = base.join("disk/.worktrees");
+        let root = configured.join("codex-agents/cleanup-agent");
+        archive_fixture_worktree_at(&directory, &store, &repository, &root, &configured).await;
+    }
+
+    fn fixture_repository(base: &std::path::Path, name: &str) -> std::path::PathBuf {
+        let repository = base.join(name);
+        fixture_git(base, &["init", "-q", repository.to_str().expect("path")]);
+        std::fs::write(repository.join("README.md"), "fixture\n").expect("file writes");
+        fixture_git(&repository, &["add", "README.md"]);
+        fixture_git(&repository, &["commit", "-q", "-m", "fixture"]);
+        repository
+    }
+
+    /// A worker provisioned from a lead's linked worktree records the shared
+    /// common directory, which cleanup must accept.
+    #[test]
+    fn worker_provisioned_from_a_linked_source_stays_owned() {
+        let directory = tempfile::tempdir().expect("fixture directory");
+        let base = studio_runtime_store::path_identity::resolve(directory.path())
+            .expect("resolved fixture folder");
+        let repository = fixture_repository(&base, "project");
+        let lead = base.join("lead-checkout");
+        fixture_git(
+            &repository,
+            &[
+                "worktree",
+                "add",
+                "-q",
+                "--detach",
+                lead.to_str().expect("lead path"),
+            ],
+        );
+        let root = base.join("configured/codex-agents/cleanup-agent");
+        std::fs::create_dir_all(root.parent().expect("workers")).expect("workers create");
+        fixture_git(
+            &lead,
+            &[
+                "worktree",
+                "add",
+                "-q",
+                "-b",
+                "cleanup-agent",
+                root.to_str().expect("root path"),
+            ],
+        );
+        let common = fixture_git(
+            &lead,
+            &["rev-parse", "--path-format=absolute", "--git-common-dir"],
+        );
+        let agent = json!({"id": "cleanup-agent", "cwd": root, "worktreeCommonDir": common.trim()});
+        let identity = super::worktree_identity(&agent, &base)
+            .expect("linked-source worker is owned")
+            .expect("worker worktree identity");
+        assert_eq!(identity["repository"], json!(repository));
+    }
+
+    /// A legacy worker reached through a `.worktrees` link to another disk,
+    /// recorded before the common directory existed, stays owned.
+    #[test]
+    fn legacy_worker_under_a_linked_default_root_stays_owned() {
+        let directory = tempfile::tempdir().expect("fixture directory");
+        let base = studio_runtime_store::path_identity::resolve(directory.path())
+            .expect("resolved fixture folder");
+        let repository = fixture_repository(&base, "project");
+        let disk = base.join("other-disk");
+        std::fs::create_dir_all(disk.join("codex-agents")).expect("disk root creates");
+        std::os::unix::fs::symlink(&disk, repository.join(".worktrees")).expect("root link");
+        let root = repository.join(".worktrees/codex-agents/cleanup-agent");
+        fixture_git(
+            &repository,
+            &[
+                "worktree",
+                "add",
+                "-q",
+                "-b",
+                "cleanup-agent",
+                root.to_str().expect("root path"),
+            ],
+        );
+        let agent = json!({"id": "cleanup-agent", "cwd": root});
+        let identity = super::worktree_identity(&agent, &base)
+            .expect("legacy linked-root worker is owned")
+            .expect("worker worktree identity");
+        assert_eq!(identity["repository"], json!(repository));
+    }
+
+    /// A replaced `codex-agents` ancestor that leads to another repository's
+    /// registered worktree must not pass ownership, with or without a record.
+    #[test]
+    fn substituted_worker_ancestor_is_refused_and_target_survives() {
+        let directory = tempfile::tempdir().expect("fixture directory");
+        let base = studio_runtime_store::path_identity::resolve(directory.path())
+            .expect("resolved fixture folder");
+        let mut repositories = Vec::new();
+        for name in ["project", "foreign"] {
+            let repository = base.join(name);
+            fixture_git(&base, &["init", "-q", repository.to_str().expect("path")]);
+            std::fs::write(repository.join("README.md"), "fixture\n").expect("file writes");
+            fixture_git(&repository, &["add", "README.md"]);
+            fixture_git(&repository, &["commit", "-q", "-m", "fixture"]);
+            repositories.push(repository);
+        }
+        let target = repositories[1].join(".worktrees/codex-agents/cleanup-agent");
+        fixture_git(
+            &repositories[1],
+            &[
+                "worktree",
+                "add",
+                "-q",
+                "--detach",
+                target.to_str().expect("target path"),
+            ],
+        );
+        let configured = base.join("configured");
+        std::fs::create_dir_all(&configured).expect("configured root creates");
+        std::os::unix::fs::symlink(
+            target.parent().expect("foreign workers"),
+            configured.join("codex-agents"),
+        )
+        .expect("substitute ancestor link creates");
+        let cwd = configured.join("codex-agents/cleanup-agent");
+        for agent in [
+            json!({"id": "cleanup-agent", "cwd": cwd, "worktreeCommonDir": repositories[0].join(".git")}),
+            json!({"id": "cleanup-agent", "cwd": cwd}),
+        ] {
+            assert!(matches!(
+                super::worktree_identity(&agent, &base),
+                Err(WorkspaceCleanupError::InvalidRecord)
+            ));
+        }
+        assert!(target.join("README.md").exists());
+    }
+
+    #[test]
+    fn worktree_outside_a_worker_directory_is_not_owned() {
+        for path in [
+            "/elsewhere/cleanup-agent",
+            "/elsewhere/codex-agents/other-agent",
+        ] {
+            assert!(matches!(
+                super::owned_worktree_root(std::path::Path::new(path), "cleanup-agent"),
+                Err(WorkspaceCleanupError::InvalidRecord)
+            ));
+        }
+    }
+
+    /// A worker directory replaced by a link to another repository's worktree
+    /// must never become the cleanup target.
+    #[test]
+    fn substituted_worker_link_is_refused_and_target_survives() {
+        let directory = tempfile::tempdir().expect("fixture directory");
+        let base = studio_runtime_store::path_identity::resolve(directory.path())
+            .expect("resolved fixture folder");
+        let foreign = base.join("foreign");
+        fixture_git(
+            &base,
+            &["init", "-q", foreign.to_str().expect("foreign path")],
+        );
+        std::fs::write(foreign.join("README.md"), "foreign\n").expect("file writes");
+        fixture_git(&foreign, &["add", "README.md"]);
+        fixture_git(&foreign, &["commit", "-q", "-m", "foreign"]);
+        let target = foreign.join(".worktrees/codex-agents/cleanup-agent");
+        fixture_git(
+            &foreign,
+            &[
+                "worktree",
+                "add",
+                "-q",
+                "--detach",
+                target.to_str().expect("target path"),
+            ],
+        );
+        let workers = base.join("configured/codex-agents");
+        std::fs::create_dir_all(&workers).expect("workers directory creates");
+        let link = workers.join("cleanup-agent");
+        std::os::unix::fs::symlink(&target, &link).expect("substitute link creates");
+        let agent = json!({"id": "cleanup-agent", "cwd": link, "worktreeReady": true});
+        assert!(matches!(
+            super::worktree_identity(&agent, &base),
+            Err(WorkspaceCleanupError::InvalidRecord)
+        ));
+        assert!(target.join("README.md").exists());
+    }
+
     #[tokio::test]
     async fn archive_allows_a_verified_detached_worktree() {
         let (directory, store) = fixture().await;
@@ -2259,7 +2563,7 @@ mod tests {
     async fn linked_project_cleanup_retries_a_proven_unsent_archive_without_user_input() {
         let f = linked_project_fixture().await;
         let expected = agent(&f.store);
-        let effect = super::plan(&expected, CleanupAction::Archive)
+        let effect = super::plan(&expected, CleanupAction::Archive, f.store.state_dir())
             .expect("archive plan")
             .remove(0);
         let (request, _) = begin_effect(
@@ -2704,7 +3008,7 @@ mod tests {
     #[tokio::test]
     async fn archive_rechecks_submodule_after_saving_parent_ref() {
         let (_directory, store, repository, root) = submodule_fixture().await;
-        let identity = super::worktree_identity(&agent(&store))
+        let identity = super::worktree_identity(&agent(&store), store.state_dir())
             .expect("worktree identity reads")
             .expect("owned worktree identity");
         super::save_worktree_archive_ref(&identity).expect("clean parent ref saves");

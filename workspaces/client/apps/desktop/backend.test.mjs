@@ -272,7 +272,7 @@ http.createServer((request, response) => response.end(JSON.stringify({
       supervisorEnabled: false,
       environment: {
         CODEX_CANVAS_CWD: "/saved-workspace",
-        CODEX_BIN: "/usr/bin/true",
+        CODEX_BIN: process.execPath,
         PATH: process.env.PATH,
       },
       unsetEnvironment: ["CODEX_HOME"],
@@ -286,7 +286,7 @@ http.createServer((request, response) => response.end(JSON.stringify({
       CODEX_RUNTIME_SERVER: runtime,
       CODEX_HOME: "/foreign-command-executor",
       CODEX_CANVAS_CWD: "/attaching-desktop",
-      CODEX_BIN: "/usr/bin/true",
+      CODEX_BIN: process.execPath,
     };
     try {
       const result = await ensureBackend({ resources: root, port, env });

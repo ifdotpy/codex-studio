@@ -68,20 +68,10 @@ async fn a_worker_wake_runs_the_pending_native_review_before_queued_input() {
         .open_worker_with_resources(state.bridge.clone(), resources)
         .await;
     state.wake(&worker).await;
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
     // The review/start receipt commits after the provider reply.
-    let record = loop {
-        let record = state.record().await;
-        if record["turnId"].is_string() {
-            break record;
-        }
-        assert!(
-            std::time::Instant::now() < deadline,
-            "review requests: {:?}",
-            session.methods()
-        );
-        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-    };
+    let record = state
+        .wait_record(|record| record["turnId"].is_string())
+        .await;
     assert_eq!(
         session.methods(),
         ["thread/start", "thread/settings/update", "review/start"]
@@ -94,18 +84,6 @@ async fn a_worker_wake_runs_the_pending_native_review_before_queued_input() {
     assert_eq!(state.event_status("input").await, "pending");
     assert!(peer.writes.try_recv().is_err(), "no ordinary turn request");
     worker.shutdown().await.unwrap();
-}
-
-async fn wait_for(state: &State, what: &str, done: impl Fn(&Value) -> bool) -> Value {
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
-    loop {
-        let record = state.record().await;
-        if done(&record) {
-            return record;
-        }
-        assert!(std::time::Instant::now() < deadline, "{what}: {record}");
-        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-    }
 }
 
 async fn lead_child_results(state: &State) -> Vec<String> {
@@ -160,7 +138,7 @@ async fn a_native_review_turn_starts_completes_and_reports_to_the_parent() {
         .open_worker_with_resources(state.bridge.clone(), resources)
         .await;
     state.wake(&worker).await;
-    let running = wait_for(&state, "review start", |r| r["turnId"].is_string()).await;
+    let running = state.wait_record(|r| r["turnId"].is_string()).await;
     assert_eq!(running["startAttempt"]["action"], "review");
     assert_eq!(running["startAttempt"]["events"], json!([]));
     // The review/start reply binds the attempt like an ordinary turn/start reply.
@@ -186,7 +164,7 @@ async fn a_native_review_turn_starts_completes_and_reports_to_the_parent() {
         .await;
     peer.acknowledged_or_worker_exits(cursor, &mut worker).await;
 
-    let done = wait_for(&state, "review completion", |r| r["status"] == "completed").await;
+    let done = state.wait_record(|r| r["status"] == "completed").await;
     assert_eq!(done["lastCompletedTurn"], "review-turn", "{done}");
     assert_eq!(done["lastAnswer"], "No defects found.", "{done}");
     assert_eq!(done["inFlight"], false);
@@ -254,10 +232,7 @@ async fn an_unbound_interrupted_review_completion_settles_instead_of_holding_the
         )
         .await;
     peer.acknowledged_or_worker_exits(cursor, &mut worker).await;
-    let done = wait_for(&state, "recovered review completion", |r| {
-        r["status"] == "completed"
-    })
-    .await;
+    let done = state.wait_record(|r| r["status"] == "completed").await;
     assert_eq!(done["lastCompletedTurn"], "review-turn", "{done}");
     assert_eq!(done["startAttempt"]["turnId"], "review-turn", "{done}");
     worker.shutdown().await.unwrap();
