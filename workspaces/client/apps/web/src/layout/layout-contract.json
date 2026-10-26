@@ -863,6 +863,12 @@
       "kind": "dimension",
       "purpose": "Duo rail title and project bar height over the transcript"
     },
+    "duo.projectCountersStackMax": {
+      "value": 288,
+      "unit": "px",
+      "kind": "condition",
+      "purpose": "Maximum Duo chat list width for project counters below the project name"
+    },
     "duo.titleMinWidth": {
       "value": 140,
       "unit": "px",
@@ -917,6 +923,10 @@
     }
   },
   "queries": {
+    "duoProjectCountersStacked": {
+      "key": "duo.projectCountersStackMax",
+      "operator": "<="
+    },
     "navigationCompact": {
       "key": "navigation.inlineMin",
       "operator": "<"

@@ -946,6 +946,13 @@ export const layoutTokens = {
     kind: "dimension",
     purpose: "Duo rail title and project bar height over the transcript",
   },
+  "duo.projectCountersStackMax": {
+    value: 288,
+    unit: "px",
+    kind: "condition",
+    purpose:
+      "Maximum Duo chat list width for project counters below the project name",
+  },
   "duo.titleMinWidth": {
     value: 140,
     unit: "px",
@@ -1303,6 +1310,7 @@ export const layoutValues = {
     columnGutter: 20,
     latestGap: 36,
     titleHeight: 64,
+    projectCountersStackMax: 288,
     titleMinWidth: 140,
     titleInset: 12,
     titleOpacity: 0.82,
@@ -1317,6 +1325,7 @@ export const layoutValues = {
   },
 } as const;
 export const layoutQueries = {
+  duoProjectCountersStacked: "(width <= 288px)",
   navigationCompact: "(width < 761px)",
   navigationInline: "(width >= 761px)",
   teamCompact: "(width < 960px)",

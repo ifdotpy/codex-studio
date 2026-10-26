@@ -52,6 +52,15 @@ for (const size of [
       await page.locator(".edge-rail").evaluate(
         (rail, { hinge, top }) => {
           const root = document.documentElement;
+          const state = {
+            insets: { top, right: top ? 0 : 84, bottom: 34, left: 0 },
+            keyboard: null,
+          };
+          Object.assign(globalThis, {
+            __studioNativeViewport: { version: 1, state },
+          });
+          for (const [edge, value] of Object.entries(state.insets))
+            root.style.setProperty(`--native-safe-${edge}`, `${value}px`);
           root.dataset.nativeHinge = hinge;
           if (top) root.setAttribute("data-viewport-top-strip", "");
           root.style.setProperty("--native-safe-top", `${top}px`);
@@ -66,14 +75,16 @@ for (const size of [
               width: "529px",
               height: "82px",
               flexDirection: "row",
-              // Match the native first button at x365 with this two-button fixture.
+              // Reserve the native rail button area in this fixture.
               justifyContent: "flex-start",
               paddingLeft: "365px",
               alignItems: "flex-end",
               paddingBottom: "10px",
               gap: "8px",
             });
-          window.dispatchEvent(new Event("studio-native-viewport"));
+          window.dispatchEvent(
+            new CustomEvent("studio-native-viewport", { detail: state }),
+          );
         },
         { hinge: size.hinge, top },
       );
@@ -91,7 +102,50 @@ for (const size of [
         const headerBox = (await header.boundingBox())!;
         expect.soft(headerBox.y).toBeLessThan(top);
         expect.soft(headerBox.y + headerBox.height).toBeLessThanOrEqual(top);
-        expect((await opener.boundingBox())!.x).toBe(365);
+        const heading = sidebar.locator(".projects-heading");
+        const label = (await heading
+          .locator(".projects-heading-label")
+          .boundingBox())!;
+        for (const button of await heading.locator("button").all()) {
+          const box = (await button.boundingBox())!;
+          expect.soft(label.y + label.height).toBeLessThanOrEqual(box.y);
+          const intersects =
+            label.x < box.x + box.width &&
+            box.x < label.x + label.width &&
+            label.y < box.y + box.height &&
+            box.y < label.y + label.height;
+          expect
+            .soft(
+              intersects,
+              (await button.getAttribute("aria-label")) || "heading button",
+            )
+            .toBe(false);
+        }
+        const home = sidebar.locator(".project-tree-toggle").filter({
+          has: page.locator('.project-tree-name[title="Home project"]'),
+        });
+        const project = (await home
+          .locator(".project-tree-name")
+          .boundingBox())!;
+        const counts = (await home
+          .locator(".project-state-counts")
+          .boundingBox())!;
+        expect
+          .soft(counts.y)
+          .toBeGreaterThanOrEqual(project.y + project.height);
+        expect.soft(project.width).toBeGreaterThan(60);
+        const titleSpace = await page
+          .locator(".duo-transcript-bar")
+          .evaluate((node) => {
+            const style = getComputedStyle(node);
+            return (
+              node.clientWidth -
+              Number.parseFloat(style.paddingLeft) -
+              Number.parseFloat(style.paddingRight)
+            );
+          });
+        expect(titleSpace).toBeGreaterThan(0);
+        expect(titleSpace).toBeLessThan(140);
         const title = page.locator(".duo-transcript-bar .conversation-heading");
         await expect.soft(title).toBeHidden();
         await page.screenshot({
@@ -109,10 +163,14 @@ for (const size of [
         path: test.info().outputPath(`${size.name}-native-sidebar.png`),
       });
       await opener.click();
-      await page
-        .getByRole("button", { name: "Chat actions", exact: true })
-        .click();
-      await page.getByRole("menuitem", { name: "Team", exact: true }).click();
+      const railTeam = page.locator('.edge-rail button[aria-label^="Team,"]');
+      if (await railTeam.isVisible()) await railTeam.click();
+      else {
+        await page
+          .getByRole("button", { name: "Chat actions", exact: true })
+          .click();
+        await page.getByRole("menuitem", { name: "Team", exact: true }).click();
+      }
       const panel = page.locator(
         '.workspace-panel-inline.duo-pane-panel[aria-label="Team panel"]',
       );
