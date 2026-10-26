@@ -213,7 +213,8 @@ html[data-server-view] .workspace {
   .server-sidebar-open {
     display: block;
   }
-  html[data-viewport-top-strip] .server-sidebar {
+  html[data-viewport-top-strip]:has(> body > .edge-rail[data-side="top"])
+    .server-sidebar {
     inset-block-start: var(--native-safe-top, 0px);
   }
 }
@@ -309,12 +310,16 @@ html[data-server-view] .workspace {
   font-variant-numeric: tabular-nums;
 }
 
-/* Native shell, portrait top status strip: the edge rail's sidebar button
-   opens servers and chats, so the phone bar and its space are not shown.
-   The shell selector outranks the compact navigation rule that shows the bar. */
-html[data-viewport-top-strip] .multi-server-shell {
+/* Native shell, portrait top status strip with the edge rail: its sidebar
+   button opens servers and chats, so the phone bar and its space are not
+   shown. The shell selector outranks the compact navigation rule that shows
+   the bar. */
+html[data-viewport-top-strip]:has(> body > .edge-rail[data-side="top"])
+  .multi-server-shell {
   padding-top: 0;
 }
-html[data-viewport-top-strip] .multi-server-shell .server-mobile-toggle {
+html[data-viewport-top-strip]:has(> body > .edge-rail[data-side="top"])
+  .multi-server-shell
+  .server-mobile-toggle {
   display: none;
 }
