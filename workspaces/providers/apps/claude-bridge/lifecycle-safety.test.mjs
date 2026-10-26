@@ -6,7 +6,6 @@ import { rollbackBoundary, forkAtTurn, rollbackSession } from "./controls.mjs";
 import { nativeInputIds } from "./input-messages.mjs";
 import { inputHistoryOutcome } from "./history-index.mjs";
 import { readNativeHistory } from "./native-history.mjs";
-import { waitForFile } from "./testing/file-signals.mjs";
 import { startBridge } from "./testing/bridge-harness.mjs";
 import { fixtureSessionApi } from "./testing/history-fixture.mjs";
 import { createSessionStore } from "./session-store.mjs";
@@ -666,7 +665,7 @@ test("Stop finalizes a stuck SDK whose close throws without redelivering unknown
           yield { type: "user", isReplay: true, uuid: first.value.uuid };
           yield { type: "system", subtype: "init" };
           held = (await prompt.next()).value;
-          await fs.writeFile(options.cwd + "/steer-read", "read");
+          process.send({ fixtureSignal: "steer-read" });
           await new Promise(() => {});
         },
       };
@@ -682,6 +681,16 @@ test("Stop finalizes a stuck SDK whose close throws without redelivering unknown
     },
   );
   try {
+    // The fixture reports the held steer over IPC. Listening before the steer
+    // call cannot miss it; a file watch set up after the write can.
+    const steerRead = new Promise((resolve) => {
+      const onSignal = (message) => {
+        if (message?.fixtureSignal !== "steer-read") return;
+        bridge.process.off("message", onSignal);
+        resolve();
+      };
+      bridge.process.on("message", onSignal);
+    });
     const started = await bridge.call("turn/start", {
       threadId: bridge.thread,
       clientUserMessageId: "initial",
@@ -693,7 +702,7 @@ test("Stop finalizes a stuck SDK whose close throws without redelivering unknown
       clientUserMessageId: "held",
       input: [{ type: "text", text: "held" }],
     });
-    await waitForFile(path.join(bridge.root, "steer-read"));
+    await steerRead;
     await bridge.call("turn/interrupt", {
       threadId: bridge.thread,
       turnId: started.turn.id,
