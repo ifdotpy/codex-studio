@@ -1,6 +1,9 @@
+import type { components } from "../../src/generated/api.ts";
+import { requestBody } from "../messages/helpers.ts";
+import type { PostBody, GetResult } from "../../src/apiTypes.ts";
+import { fixtureOrigin } from "../drafts/draft-fixture-helpers.ts";
 // Real components, isolated Vite server, mocked requests. No model or user state.
 import assert from "node:assert/strict";
-import { createRequire } from "node:module";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -11,34 +14,10 @@ import { test, expect } from "../playwright.ts";
 test("dialog-drafts-ui", async ({ page: fixturePage }) => {
   test.setTimeout(120_000);
   const repo = fileURLToPath(new URL("../../../../../../", import.meta.url));
-  const require = createRequire(
-    join(repo, "workspaces/client/apps/web/package.json"),
-  );
-  const { createServer } = await import(require.resolve("vite"));
+  const { createFixtureViteServer: createServer } =
+    await import("../playwright.ts");
   const cache = await mkdtemp(join(tmpdir(), "dialog-drafts-vite-"));
-  const entry = join(repo, "workspaces/client/apps/web/__ux-fixture.jsx");
-  const source = `
-  import React, {useState} from 'react';
-  import {createRoot} from 'react-dom/client';
-  import {MantineProvider} from '@mantine/core';
-  import '@mantine/core/styles.css';
-  import Picker from '/src/components/ProjectDirectoryPicker.tsx';
-  import UserMessages from '/src/components/shell/messages/UserMessages.tsx';
-  import MessageDate from '/src/components/conversation/transcript/MessageDate.tsx';
-  import Requests from '/src/components/questions/Requests.tsx';
-  const lead={id:'lead',rootId:'lead',name:'Lead',isLead:true,source:'managed'};
-  const complaint={id:'complaint',leadId:'lead',author:'lead',authorName:'Lead',recipient:'user',title:'Help needed',status:'open',needsUserResponse:true,created:1};
-  const request={id:'question',agent:'lead',method:'item/tool/requestUserInput',params:{questions:[{id:'public',question:'Public answer'},{id:'secret',question:'Private answer',isSecret:true}]}};
-  const base={stateDir:'workspace-a',token:'fixture',threads:[lead],runtime:{complaints:[complaint]}};
-  function Fixture(){const [show,setShow]=useState(false),[workspace,setWorkspace]=useState('workspace-a');
-  return <MantineProvider><button onClick={()=>setShow(!show)}>Toggle messages</button><button onClick={()=>setWorkspace(workspace==='workspace-a'?'workspace-b':'workspace-a')}>Switch workspace</button>
-  <div data-missing-date><MessageDate at={0}/></div>
-  <Requests requests={[request]} allRequests={[request]} scope={workspace} agents={[lead]} refresh={async()=>{}} notify={message=>window.notices.push(message)}/>
-  <Picker initialPath='/project' onSelect={async()=>{}}/>
-  {show&&<UserMessages data={{...base,stateDir:workspace}} refresh={async()=>{}} notify={()=>{}}/>}
-  </MantineProvider>}
-  window.notices=[];
-  createRoot(document.getElementById('root')).render(<Fixture/>);`;
+
   const server = await createServer({
     configFile: false,
     cacheDir: cache,
@@ -47,18 +26,12 @@ test("dialog-drafts-ui", async ({ page: fixturePage }) => {
     plugins: [
       {
         name: "dialog-fixture",
-        resolveId(id) {
-          if (id === "/__ux-fixture.jsx") return entry;
-        },
-        load(id) {
-          if (id === entry) return source;
-        },
         configureServer(server) {
           server.middlewares.use((req, res, next) => {
             if (req.url !== "/") return next();
             res.setHeader("Content-Type", "text/html");
             res.end(
-              '<div id="root"></div><script type="module" src="/__ux-fixture.jsx"></script>',
+              '<div id="root"></div><script type="module" src="/tests/drafts/dialog-drafts-ui.fixture.tsx"></script>',
             );
           });
         },
@@ -69,18 +42,18 @@ test("dialog-drafts-ui", async ({ page: fixturePage }) => {
     await server.listen();
     const page = fixturePage;
     await fixturePage.setViewportSize({ width: 1440, height: 960 });
-    const pageErrors = [];
+    const pageErrors: string[] = [];
     page.on("pageerror", (e) => pageErrors.push(e.message));
     let directoryReads = 0,
       detailReads = 0,
-      releaseSend;
-    const sent = [];
-    const waitForSent = async (count) => {
+      releaseSend = () => {};
+    const sent: PostBody<"/api/complaints">[] = [];
+    const waitForSent = async (count: number) => {
       for (let attempt = 0; attempt < 100 && sent.length < count; attempt++)
         await new Promise((resolve) => setTimeout(resolve, 10));
       expect(sent.length).toBe(count);
     };
-    let message = {
+    let message: GetResult<"/api/complaint"> = {
       id: "complaint",
       recipient: "user",
       author: "lead",
@@ -94,7 +67,15 @@ test("dialog-drafts-ui", async ({ page: fixturePage }) => {
       const path = new URL(route.request().url()).pathname;
       if (path === "/api/directories") {
         directoryReads++;
-        return route.fulfill({ json: { path: "/project", directories: [] } });
+        return route.fulfill({
+          json: {
+            path: "/project",
+            directories: [],
+          } satisfies Pick<
+            components["schemas"]["DirectoriesResponse"],
+            "path" | "directories"
+          >,
+        });
       }
       if (path === "/api/complaint") {
         detailReads++;
@@ -106,14 +87,15 @@ test("dialog-drafts-ui", async ({ page: fixturePage }) => {
         return route.fulfill({ json: message });
       }
       if (path === "/api/complaints") {
-        const body = route.request().postDataJSON();
+        const body = requestBody<PostBody<"/api/complaints">>(route);
+        if (!body.status) throw new Error("Expected response status");
         sent.push(body);
         if (sent.length === 1)
           return route.fulfill({
             status: 503,
             json: { error: "Lost reply response" },
           });
-        await new Promise((resolve) => {
+        await new Promise<void>((resolve) => {
           releaseSend = resolve;
         });
         message = {
@@ -135,7 +117,7 @@ test("dialog-drafts-ui", async ({ page: fixturePage }) => {
       }
       return route.fulfill({ json: {} });
     });
-    await page.goto(server.resolvedUrls.local[0]);
+    await page.goto(fixtureOrigin(server));
     await page
       .locator("[data-missing-date]")
       .getByText("Date unavailable", { exact: true })
@@ -150,11 +132,15 @@ test("dialog-drafts-ui", async ({ page: fixturePage }) => {
     });
     await useFolder.waitFor();
     await page.waitForFunction(
-      () => !document.querySelector(".directory-footer button")?.disabled,
+      () =>
+        !document.querySelector<HTMLButtonElement>(".directory-footer button")
+          ?.disabled,
     );
     await page.getByRole("button", { name: "Open path", exact: true }).click();
     await page.waitForFunction(
-      () => !document.querySelector(".directory-footer button")?.disabled,
+      () =>
+        !document.querySelector<HTMLButtonElement>(".directory-footer button")
+          ?.disabled,
     );
     assert.equal(directoryReads, 2);
     await page.getByRole("button", { name: "Answer", exact: true }).click();
@@ -198,7 +184,8 @@ test("dialog-drafts-ui", async ({ page: fixturePage }) => {
     );
     await page.evaluate(() => {
       const original = Storage.prototype.setItem;
-      window.restoreStorage = () => (Storage.prototype.setItem = original);
+      window.dialogDraft_restoreStorage = () =>
+        (Storage.prototype.setItem = original);
       Storage.prototype.setItem = function (key, value) {
         if (key.startsWith("studio-answer-draft:"))
           throw new DOMException("Full", "QuotaExceededError");
@@ -213,10 +200,10 @@ test("dialog-drafts-ui", async ({ page: fixturePage }) => {
       "Unsaved answer remains visible",
     );
     assert.match(
-      await page.evaluate(() => window.notices.at(-1)),
+      await page.evaluate(() => window.dialogDraft_notices.at(-1) ?? ""),
       /could not be saved/,
     );
-    await page.evaluate(() => window.restoreStorage());
+    await page.evaluate(() => window.dialogDraft_restoreStorage());
     const toggle = () =>
       page
         .getByRole("button", { name: "Toggle messages", exact: true })
@@ -320,7 +307,10 @@ test("dialog-drafts-ui", async ({ page: fixturePage }) => {
     );
     releaseSend();
     await page.waitForFunction(
-      () => !document.querySelector(".complaint-reply textarea")?.disabled,
+      () =>
+        !document.querySelector<HTMLTextAreaElement>(
+          ".complaint-reply textarea",
+        )?.disabled,
     );
     assert.equal(await reply.inputValue(), "");
     await detail
@@ -338,12 +328,12 @@ test("dialog-drafts-ui", async ({ page: fixturePage }) => {
       .locator(".complaint-response")
       .getByText("New reply")
       .waitFor();
-    assert.equal(sent[2].text, "New reply");
-    assert.equal(sent[0].action, "respond");
-    assert.equal(sent[0].complaint_id, "complaint");
-    assert.equal(sent[0].version, 1);
-    assert.equal(sent[2].version, 2);
-    assert.notEqual(sent[0].id, sent[2].id);
+    assert.equal(sent[2]?.text, "New reply");
+    assert.equal(sent[0]?.action, "respond");
+    assert.equal(sent[0]?.complaint_id, "complaint");
+    assert.equal(sent[0]?.version, 1);
+    assert.equal(sent[2]?.version, 2);
+    assert.notEqual(sent[0]?.id, sent[2]?.id);
     assert.deepEqual(pageErrors, []);
     console.log(
       JSON.stringify({

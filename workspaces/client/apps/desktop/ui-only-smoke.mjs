@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import frameOwners from "./frame-owner.cjs";
+import frameOwners from "./frame-owner.ts";
 import { _electron as electron } from "playwright-core";
 import { mkdtemp, access, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
