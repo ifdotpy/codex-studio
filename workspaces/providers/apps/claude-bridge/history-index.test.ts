@@ -453,8 +453,16 @@ for (const kind of ["system retry", "tool references", "non-input attachment"])
     expect(index?.outcome([f.ids[1]], [f.ids[1]])).toBe("delivered");
   });
 
-for (const content of [[{ type: "text", text: "Studio instruction" }], 42])
-  test(`an unknown input-shaped attachment remains unknown: ${JSON.stringify(content)}`, async () => {
+// Claude 2.1.310 writes CLI context attachments such as skill_listing.
+for (const attachment of [
+  {
+    type: "future-input",
+    content: [{ type: "text", text: "Studio instruction" }],
+  },
+  { type: "future-input", content: 42 },
+  { type: "skill_listing", content: "- skill: description", skillCount: 1 },
+])
+  test(`an unclassified attachment leaves absence unknown and delivery provable: ${attachment.type}`, async () => {
     const f = await fixture();
     const row = {
       ...f.rows[5],
@@ -462,7 +470,7 @@ for (const content of [[{ type: "text", text: "Studio instruction" }], 42])
       uuid: randomUUID(),
       parentUuid: f.ids[5],
       message: undefined,
-      attachment: { type: "future-input", content },
+      attachment,
     };
     await fs.writeFile(
       f.file,
@@ -474,6 +482,7 @@ for (const content of [[{ type: "text", text: "Studio instruction" }], 42])
     expect(index?.outcome([randomUUID()], [f.ids[1]]) ?? "unknown").toBe(
       "unknown",
     );
+    expect(index?.outcome([f.ids[1]], [f.ids[1]])).toBe("delivered");
   });
 
 test("a known output attachment with an input-shaped payload stays unknown", async () => {
@@ -500,6 +509,22 @@ test("a known output attachment with an input-shaped payload stays unknown", asy
   expect(index?.outcome([randomUUID()], [f.ids[1]]) ?? "unknown").toBe(
     "unknown",
   );
+  expect(index?.outcome([f.ids[1]], [f.ids[1]])).toBe("delivered");
+});
+
+// Claude records the shell's current directory on each row after a `cd`.
+test("rows recorded in another working directory keep input coverage", async () => {
+  const f = await fixture();
+  const rows = f.rows.map((row, index) =>
+    index >= 3 ? { ...row, cwd: path.join(f.cwd, "src") } : row,
+  );
+  await fs.writeFile(
+    f.file,
+    rows.map(JSON.stringify as (value: unknown) => string).join("\n") + "\n",
+  );
+  const index = await readHistoryIndex(f.session);
+  expect(index?.outcome([f.ids[4]], [f.ids[1]])).toBe("delivered");
+  expect(index?.outcome([randomUUID()], [f.ids[1]])).toBe("not_applied");
 });
 
 for (const trailing of [false, true])

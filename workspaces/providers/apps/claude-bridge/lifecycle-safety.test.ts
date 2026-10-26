@@ -826,6 +826,46 @@ test.each([null, 42, "", "not-a-uuid"])(
   },
 );
 
+test("a Claude 2.1.310 queued receipt proves steer delivery", () => {
+  const rows = [
+    {
+      type: "user",
+      uuid: inputId,
+      parentUuid: null,
+      sessionId,
+      cwd: "/project",
+      isSidechain: false,
+      message: { role: "user", content: "initial input" },
+    },
+    {
+      type: "attachment",
+      uuid: replyId,
+      parentUuid: inputId,
+      sessionId,
+      cwd: "/project",
+      isSidechain: false,
+      attachment: {
+        type: "queued_command",
+        prompt: [{ type: "text", text: "steer" }],
+        source_uuid: steerId,
+        delivery_id: "a0dda776-98f9-4ed2-9d6c-e385b0574102",
+        commandMode: "prompt",
+        origin: { kind: "unclassified" },
+        timestamp: "2026-10-26T22:13:53.933Z",
+        isMeta: true,
+      },
+    },
+  ];
+  expect(
+    inputHistoryOutcome(rows, {
+      sessionId,
+      cwd: "/project",
+      anchorIds: [inputId],
+      inputIds: [steerId],
+    }),
+  ).toBe("delivered");
+});
+
 test.each(["total_tokens_reminder", "prompt_snapshot"])(
   "native main-session %s attachments remain valid anchor ancestors",
   (type) => {
