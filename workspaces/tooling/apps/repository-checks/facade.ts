@@ -591,11 +591,9 @@ export function commandFor(
   }
   if (item.ecosystem === "cargo") {
     if (action === "test") {
-      const filters = [caseName, options.name].filter(
-        (value): value is string => Boolean(value),
-      );
+      const filters = [caseName, options.name].filter(Boolean);
       const filterset = filters
-        .map((filter) => `test(~${escapeFilterMatcher(filter)})`)
+        .map((filter) => `test(~${escapeFilterMatcher(filter!)})`)
         .join(" and ");
       return [
         [
@@ -910,200 +908,212 @@ export function gateSteps(root: string, name: string): GateStep[] {
     commands: [["cargo", args]],
     options,
   });
-  const steps: GateStep[] = [
-    {
-      id: "wasm",
-      label: "web WASM preparation",
-      lane: "rust",
-      requiresCargo: true,
-      item: web,
-      options: { script: "build:wasm", allowZeroTests: true },
-      provides: "wasm",
-    },
-    {
-      ...script("renderer", web, "build:bundle:prepared", {
-        allowZeroTests: true,
-      }),
-      label: "renderer build",
-      lane: "rust",
-      provides: "renderer",
-      requiresCargo: true,
-    },
-    {
-      ...cargo(
-        "workspace",
-        "Rust workspace build",
-        ["build", "--workspace", "--tests", "--bins", "--examples", "--locked"],
-        { buildOnly: true },
-      ),
-      requires: "renderer",
-      provides: "workspace",
-    },
-    {
-      id: "contracts",
-      label: "generated contracts",
-      lane: "rust",
-      requires: "workspace",
-      requiresCargo: true,
-      item: tooling,
-      commands: [[debugBinary(root, "studio-contracts"), ["--check"]]],
-      options: { allowZeroTests: true },
-    },
-    {
-      ...cargo("rust-tests", "Rust nextest", [
-        "nextest",
-        "run",
-        "--workspace",
-        "--profile",
-        fast ? "fast" : "ci",
-      ]),
-      requires: "workspace",
-    },
-    ...(!fast
-      ? [
-          {
-            ...cargo(
-              "clippy",
-              "Rust Clippy",
-              [
+  return (
+    [
+      {
+        id: "wasm",
+        label: "web WASM preparation",
+        lane: "rust",
+        requiresCargo: true,
+        item: web,
+        options: { script: "build:wasm", allowZeroTests: true },
+        provides: "wasm",
+      },
+      {
+        ...script("renderer", web, "build:bundle:prepared", {
+          allowZeroTests: true,
+        }),
+        label: "renderer build",
+        lane: "rust",
+        provides: "renderer",
+        requiresCargo: true,
+      },
+      {
+        ...cargo(
+          "workspace",
+          "Rust workspace build",
+          [
+            "build",
+            "--workspace",
+            "--tests",
+            "--bins",
+            "--examples",
+            "--locked",
+          ],
+          { buildOnly: true },
+        ),
+        requires: "renderer",
+        provides: "workspace",
+      },
+      {
+        id: "contracts",
+        label: "generated contracts",
+        lane: "rust",
+        requires: "workspace",
+        requiresCargo: true,
+        item: tooling,
+        commands: [[debugBinary(root, "studio-contracts"), ["--check"]]],
+        options: { allowZeroTests: true },
+      },
+      {
+        ...cargo("rust-tests", "Rust nextest", [
+          "nextest",
+          "run",
+          "--workspace",
+          "--profile",
+          fast ? "fast" : "ci",
+        ]),
+        requires: "workspace",
+      },
+      ...(!fast
+        ? [
+            {
+              ...cargo(
                 "clippy",
-                "--workspace",
-                "--all-targets",
-                "--locked",
-                "--",
-                "-D",
-                "warnings",
-              ],
-              { buildOnly: true },
+                "Rust Clippy",
+                [
+                  "clippy",
+                  "--workspace",
+                  "--all-targets",
+                  "--locked",
+                  "--",
+                  "-D",
+                  "warnings",
+                ],
+                { buildOnly: true },
+              ),
+              requires: "renderer",
+            },
+          ]
+        : []),
+      {
+        ...script("TypeScript projects", tooling, "", { allowZeroTests: true }),
+        commands: typescriptProjects(root).map((project) => [
+          "pnpm",
+          [
+            "exec",
+            "tsc",
+            "--project",
+            project,
+            "--incremental",
+            "--tsBuildInfoFile",
+            path.join(
+              typeCacheDirectory(root),
+              `${project.replaceAll(/[^a-zA-Z0-9._-]/g, "-")}.tsbuildinfo`,
             ),
-            requires: "renderer",
-          },
-        ]
-      : []),
-    {
-      ...script("TypeScript projects", tooling, "", { allowZeroTests: true }),
-      commands: typescriptProjects(root).map((project) => [
-        "pnpm",
-        [
-          "exec",
-          "tsc",
-          "--project",
-          project,
-          "--incremental",
-          "--tsBuildInfoFile",
-          path.join(
-            typeCacheDirectory(root),
-            `${project.replaceAll(/[^a-zA-Z0-9._-]/g, "-")}.tsbuildinfo`,
+          ],
+        ]),
+      },
+      {
+        ...script(
+          "web unit tests",
+          web,
+          fast ? "test:unit:fast" : "test:unit:prepared",
+        ),
+        requires: "workspace",
+        lane: "web",
+      },
+      ...["studio-claude-bridge", "codex-agents-desktop"].map(
+        (packageName) => ({
+          ...script(
+            packageName,
+            packageTarget(packages, packageName),
+            fast || packageName === "codex-agents-desktop"
+              ? "test:fast"
+              : "test",
           ),
-        ],
+          requires: null,
+          lane: "js",
+        }),
+      ),
+      nodeTest("retained-helpers", "retained Python helper boundaries", [
+        "workspaces/client/apps/desktop/retained-helper-witness.test.ts",
       ]),
-    },
-    {
-      ...script(
-        "web unit tests",
-        web,
-        fast ? "test:unit:fast" : "test:unit:prepared",
-      ),
-      requires: "workspace",
-      lane: "web",
-    },
-    ...["studio-claude-bridge", "codex-agents-desktop"].map((packageName) => ({
-      ...script(
-        packageName,
-        packageTarget(packages, packageName),
-        fast || packageName === "codex-agents-desktop" ? "test:fast" : "test",
-      ),
-      requires: null,
-      lane: "js",
-    })),
-    nodeTest("retained-helpers", "retained Python helper boundaries", [
-      "workspaces/client/apps/desktop/retained-helper-witness.test.ts",
-    ]),
-    nodeTest("mac-sync", "Mac sync chunk read witness", [
-      "workspaces/runtime/apps/vm-guest/mac-sync-witness.test.mts",
-    ]),
-    nodeTest("native-fixture", "native WebView fixture", [
-      "workspaces/client/apps/native/check-native.test.ts",
-      "workspaces/client/apps/native/recovery-package.test.ts",
-    ]),
-    nodeTest("recovery-helpers", "Rust desktop recovery witnesses", [
-      "workspaces/client/apps/desktop/recovery-helper-witness.test.ts",
-    ]),
-    nodeTest("retired-server", "retired server action witness", [
-      "workspaces/tooling/apps/repository-checks/tests/retired-server-action.test.ts",
-    ]),
-    {
-      id: "boundaries",
-      label: "workspace boundary guards",
-      lane: "js",
-      item: tooling,
-      commands: [
-        [
-          "node",
+      nodeTest("mac-sync", "Mac sync chunk read witness", [
+        "workspaces/runtime/apps/vm-guest/mac-sync-witness.test.mts",
+      ]),
+      nodeTest("native-fixture", "native WebView fixture", [
+        "workspaces/client/apps/native/check-native.test.ts",
+        "workspaces/client/apps/native/recovery-package.test.ts",
+      ]),
+      nodeTest("recovery-helpers", "Rust desktop recovery witnesses", [
+        "workspaces/client/apps/desktop/recovery-helper-witness.test.ts",
+      ]),
+      nodeTest("retired-server", "retired server action witness", [
+        "workspaces/tooling/apps/repository-checks/tests/retired-server-action.test.ts",
+      ]),
+      {
+        id: "boundaries",
+        label: "workspace boundary guards",
+        lane: "js",
+        item: tooling,
+        commands: [
           [
-            path.join(
-              root,
-              "workspaces/tooling/apps/repository-checks/facade.ts",
-            ),
-            "boundaries-check",
+            "node",
+            [
+              path.join(
+                root,
+                "workspaces/tooling/apps/repository-checks/facade.ts",
+              ),
+              "boundaries-check",
+            ],
           ],
         ],
-      ],
-      options: { allowZeroTests: true },
-    },
-    {
-      id: "javascript-policy",
-      label: "tracked JavaScript exceptions",
-      lane: "js",
-      item: tooling,
-      commands: [
-        [
-          "node",
+        options: { allowZeroTests: true },
+      },
+      {
+        id: "javascript-policy",
+        label: "tracked JavaScript exceptions",
+        lane: "js",
+        item: tooling,
+        commands: [
           [
-            path.join(
-              root,
-              "workspaces/tooling/apps/repository-checks/facade.ts",
-            ),
-            "javascript-check",
+            "node",
+            [
+              path.join(
+                root,
+                "workspaces/tooling/apps/repository-checks/facade.ts",
+              ),
+              "javascript-check",
+            ],
           ],
         ],
-      ],
-      options: { allowZeroTests: true },
-    },
-    { id: "tooling", label: "tooling tests", lane: "js", item: tooling },
-    {
-      id: "guest",
-      label: "VM guest Python suite",
-      lane: "guest",
-      requires: "workspace",
-      item: tooling,
-      commands: [
-        [
-          "node",
+        options: { allowZeroTests: true },
+      },
+      { id: "tooling", label: "tooling tests", lane: "js", item: tooling },
+      {
+        id: "guest",
+        label: "VM guest Python suite",
+        lane: "guest",
+        requires: "workspace",
+        item: tooling,
+        commands: [
           [
-            "--test",
-            "workspaces/runtime/apps/vm-guest/run-guest-suite.test.mts",
+            "node",
+            [
+              "--test",
+              "workspaces/runtime/apps/vm-guest/run-guest-suite.test.mts",
+            ],
           ],
+          ["node", ["workspaces/runtime/apps/vm-guest/run-guest-suite.mts"]],
         ],
-        ["node", ["workspaces/runtime/apps/vm-guest/run-guest-suite.mts"]],
-      ],
-    },
-    ...(name === "test-comprehensive"
-      ? [
-          {
-            ...script(
-              "browser smoke subset",
-              web,
-              "test:browser:smoke:prepared",
-              browserSmokeTestOptions(),
-            ),
-            requires: "workspace",
-            lane: "web",
-          },
-        ]
-      : []),
-  ];
-  return steps.filter((step) => !nonRust || !step.requiresCargo);
+      },
+      ...(name === "test-comprehensive"
+        ? [
+            {
+              ...script(
+                "browser smoke subset",
+                web,
+                "test:browser:smoke:prepared",
+                browserSmokeTestOptions(),
+              ),
+              requires: "workspace",
+              lane: "web",
+            },
+          ]
+        : []),
+    ] satisfies GateStep[]
+  ).filter((step) => !nonRust || !step.requiresCargo);
 }
 
 function debugBinary(root: string, name: string) {
@@ -1771,8 +1781,7 @@ export function parseSelection(
         const option = forwarded[cursor];
 
         if (["--test", "--bin", "--example", "--bench"].includes(option)) {
-          const target = forwarded[cursor + 1];
-          if (!target) fail(`${option} requires a target name`);
+          if (!forwarded[cursor + 1]) fail(`${option} requires a target name`);
           cargoTargets.push(option, forwarded[cursor + 1]);
           cursor += 1;
         } else if (
