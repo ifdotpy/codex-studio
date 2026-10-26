@@ -1,3 +1,4 @@
+import "./attachment-drafts.fixture.ts";
 type AttachmentState = ReturnType<typeof useAttachmentDrafts>;
 type FormState = ReturnType<typeof useFormDraft>;
 type RecoveryHarness = {

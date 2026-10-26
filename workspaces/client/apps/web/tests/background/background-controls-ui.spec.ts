@@ -27,6 +27,12 @@ import { createServer } from "node:http";
 import { readFile, mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, extname } from "node:path";
+/** The renderer writes these control fields through its generated API client. */
+function fixtureControlBody(
+  route: import("@playwright/test").Route,
+): RecordedBody {
+  return route.request().postDataJSON();
+}
 test("Background controls", async ({ context }, testInfo) => {
   test.setTimeout(180000);
   const testRepo = fileURLToPath(
@@ -217,7 +223,7 @@ test("Background controls", async ({ context }, testInfo) => {
         path = new URL(req.url()).pathname;
       let body: RecordedBody = {};
       if (req.method() === "POST") {
-        body = req.postDataJSON();
+        body = fixtureControlBody(route);
         assert.equal(req.headers()["x-canvas-token"], "fixture-token", path);
         writes.push({ path, body });
       }

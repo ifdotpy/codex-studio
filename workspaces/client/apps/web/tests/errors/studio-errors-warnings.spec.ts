@@ -4,6 +4,12 @@ import { mkdir } from "node:fs/promises";
 import { test, expect } from "../playwright.ts";
 import { fixture } from "../servers/multi-server-fixture.ts";
 
+/** The renderer wrote this fixture request through its generated API client. */
+function fixtureDismissBody(
+  body: unknown,
+): PostBody<"/api/studio-errors/dismiss"> {
+  return body as PostBody<"/api/studio-errors/dismiss">;
+}
 for (const width of [1440, 390, 320]) {
   for (const colorScheme of ["light", "dark"] as const) {
     test(`App errors in sidebar warnings ${width} ${colorScheme}`, async ({
@@ -36,8 +42,7 @@ for (const width of [1440, 390, 320]) {
             return true;
           }
           if (url.pathname === "/api/studio-errors/dismiss") {
-            // The renderer writes this request through its generated route contract.
-            const payload = body as PostBody<"/api/studio-errors/dismiss">;
+            const payload = fixtureDismissBody(body);
             const ids = payload.ids || [];
             dismissed.push(ids);
             items = items.filter((item) => !ids.includes(item.id));

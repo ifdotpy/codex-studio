@@ -1,3 +1,4 @@
+import type { GetResult } from "../../src/apiTypes.ts";
 import { required } from "../teams/helpers.ts";
 import { createServer } from "vite";
 import type {} from "./claude-repair-ui.fixture.tsx";
@@ -28,7 +29,8 @@ test("Claude unconfirmed turn and journal repair at 320 and 1200 pixels", async 
   });
   const writes: string[] = [],
     errors: string[] = [];
-  let reportStatus = "needs_repair";
+  let reportStatus: GetResult<"/api/claude/repair-report">["status"] =
+    "needs_repair";
   page.on("pageerror", (error) => errors.push(error.message));
   await page.route("**/check", (route) =>
     route.fulfill({
@@ -45,20 +47,20 @@ test("Claude unconfirmed turn and journal repair at 320 and 1200 pixels", async 
       headers: apiSchemaHeaders(),
       json:
         path === "/api/claude/repair-report"
-          ? {
+          ? ({
               status: reportStatus,
               skippedRows: 3,
               invalidSequence: reportStatus === "needs_repair",
               scopeConfirmed: true,
               nativeHistoryConfirmed: reportStatus === "repaired",
-            }
+            } satisfies GetResult<"/api/claude/repair-report">)
           : { items: [], turns: [], requests: [] },
     });
   });
   await server.listen();
   try {
     for (const width of [320, 1200]) {
-      for (const status of ["needs_repair", "repaired"]) {
+      for (const status of ["needs_repair", "repaired"] as const) {
         reportStatus = status;
         await page.setViewportSize({ width, height: 1000 });
         await page.goto(required(server.resolvedUrls?.local[0]) + "check");

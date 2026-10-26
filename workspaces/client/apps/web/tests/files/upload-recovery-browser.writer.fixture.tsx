@@ -1,3 +1,4 @@
+import "./attachment-drafts.fixture.ts";
 import type {} from "./upload-recovery-browser.fixture.tsx";
 declare global {
   interface Window {

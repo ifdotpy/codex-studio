@@ -63,13 +63,18 @@ test("upload owners retain distinct bytes and reject a late cancelled attachment
           refreshSession: async () => ({ token: owner }),
           syncPost: async (path, body, options) => {
             sent.push({ owner, path, body, options });
+            if (!body.id) throw new Error("Missing queued upload id");
             const asset = {
+              agent: body.agent,
+              created: 1,
+              hash: "fixture",
+              image: false,
               id: body.id,
               name: body.name,
               path: `/${owner}/asset`,
               size: 3,
               mime: "text/plain",
-            };
+            } satisfies import("../../src/apiTypes.ts").PostResult<"/api/assets">;
             if (owner === "a") {
               startedA();
               return new Promise<typeof asset>((resolve) => {

@@ -511,9 +511,7 @@ test("upload recovery browser", async ({ browser }) => {
         tabs.map((tab) =>
           tab.evaluate(() => ({
             attachments: window.uploadRecoveryBrowserWriter.attachments,
-            stored: JSON.parse(
-              localStorage.getItem("codex-agent-attachments:fixture") || "{}",
-            ),
+            stored: window.uploadRecoveryBrowserReadStoredAttachments(),
           })),
         ),
       );
@@ -523,15 +521,15 @@ test("upload recovery browser", async ({ browser }) => {
       );
     }
     const shared = await page.evaluate(() =>
-      JSON.parse(
-        localStorage.getItem("codex-agent-attachments:fixture") || "{}",
-      ).lead.map(
-        (
-          asset: import("../../src/components/ComposerAttachments.tsx").Attachment,
-        ) => asset.id,
-      ),
+      window
+        .uploadRecoveryBrowserReadStoredAttachments()
+        .lead?.map(
+          (
+            asset: import("../../src/components/ComposerAttachments.tsx").Attachment,
+          ) => asset.id,
+        ),
     );
-    assert.ok(shared.includes("tab-a") && shared.includes("tab-b"));
+    assert.ok(shared?.includes("tab-a") && shared?.includes("tab-b"));
     await other.close();
     expect(errors).toEqual([]);
     console.log(
@@ -610,13 +608,13 @@ async function setupAttachmentWriters(browser: Browser) {
     const read = (tab: Page) =>
       tab.evaluate(
         () =>
-          JSON.parse(
-            localStorage.getItem("codex-agent-attachments:fixture") || "{}",
-          ).lead?.map(
-            (
-              asset: import("../../src/components/ComposerAttachments.tsx").Attachment,
-            ) => asset.id,
-          ) || [],
+          window
+            .uploadRecoveryBrowserReadStoredAttachments()
+            .lead?.map(
+              (
+                asset: import("../../src/components/ComposerAttachments.tsx").Attachment,
+              ) => asset.id,
+            ) || [],
       );
     return {
       page,
@@ -650,7 +648,7 @@ test("sequential cross-tab attachment writes converge", async ({ browser }) => {
     for (const tab of [writers.page, writers.other]) {
       const surviving = await writers.read(tab);
       assert.ok(
-        expected.every((id) => surviving.includes(id)),
+        expected.every((id) => surviving?.includes(id)),
         `sequential writes did not converge; surviving value: ${JSON.stringify(surviving)}`,
       );
     }
@@ -682,7 +680,7 @@ test("20 concurrent cross-tab attachment pairs lose no update", async ({
       const surviving = snapshots.at(-1);
       if (
         writes.some((written) => !written) ||
-        !ids.every((id) => surviving.includes(id))
+        !ids.every((id) => surviving?.includes(id))
       )
         lost.push({ pair, writes, surviving });
     }
