@@ -291,7 +291,7 @@ async fn serve_inner(state: HttpState, request: Request<Body>) -> Response {
         };
     let publish_notifications = Arc::clone(&notifications);
     let effect_request_id = request_id.clone();
-    let tracked_route = format!("{method} {path}");
+    let tracked_route = crate::middleware::diagnostic_route_parts(&state, &method, &path, None);
     let tracked_request_id = Some(request_id.clone());
     let effect = async move {
         if is_orchestration {

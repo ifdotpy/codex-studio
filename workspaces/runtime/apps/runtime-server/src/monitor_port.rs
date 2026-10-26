@@ -13,6 +13,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 use std::sync::{Arc, Mutex, OnceLock, Weak};
 use std::time::{Duration, Instant};
+use studio_runtime_schema::studio_errors::MonitorRecoveryReason;
 use tokio::sync::Notify;
 
 use serde::Deserialize;
@@ -317,7 +318,7 @@ impl RetainedMonitorPort {
                         studio_runtime_services::monitor_runtime::settle_reattach(
                             store,
                             monitor_id,
-                            "retained_exit_unavailable",
+                            MonitorRecoveryReason::RetainedExitUnavailable.code(),
                             now,
                         )
                         .await
@@ -356,7 +357,7 @@ impl RetainedMonitorPort {
                 return match self.command_result(id, operation, response).await {
                     Ok(()) => Ok(Some(ReattachOutcome::TerminalQueued)),
                     Err(MonitorError::Refused(_)) => Ok(Some(ReattachOutcome::Gone(
-                        "invalid_terminal_receipt".into(),
+                        MonitorRecoveryReason::InvalidTerminalReceipt.code().into(),
                     ))),
                     Err(error) => Err(error),
                 };
@@ -1430,7 +1431,9 @@ impl MonitorPort for RetainedMonitorPort {
     ) -> futures_util::future::BoxFuture<'a, Result<ReattachOutcome, MonitorError>> {
         Box::pin(async move {
             let Some(operation) = snapshot.operation() else {
-                return Ok(ReattachOutcome::Gone("no_operation".into()));
+                return Ok(ReattachOutcome::Gone(
+                    MonitorRecoveryReason::NoOperation.code().into(),
+                ));
             };
             let operation_id = format!("monitor:{}", snapshot.id());
             let Some(scope) = self.session.current_scope(&operation.account_key) else {
@@ -1463,20 +1466,24 @@ impl MonitorPort for RetainedMonitorPort {
                 Some(ProviderResponse::Reply(value)) => match serde_json::from_value(value) {
                     Ok(observation) => observation,
                     Err(_) => {
-                        return Ok(ReattachOutcome::Gone("invalid_provider_observation".into()));
+                        return Ok(ReattachOutcome::Gone(
+                            MonitorRecoveryReason::InvalidProviderObservation
+                                .code()
+                                .into(),
+                        ));
                     }
                 },
                 Some(ProviderResponse::Rejected(_)) => {
-                    return Ok(ReattachOutcome::Gone("provider_rejected".into()));
+                    return Ok(ReattachOutcome::Gone(
+                        MonitorRecoveryReason::ProviderRejected.code().into(),
+                    ));
                 }
                 None => return Ok(ReattachOutcome::Pending),
             };
             if !observation.accepted {
-                return Ok(ReattachOutcome::Gone(
-                    observation
-                        .reason
-                        .unwrap_or_else(|| "operation_not_accepted".into()),
-                ));
+                return Ok(ReattachOutcome::Gone(observation.reason.unwrap_or_else(
+                    || MonitorRecoveryReason::OperationNotAccepted.code().into(),
+                )));
             }
             if let Some(response) = observation.response {
                 let response = match response {
@@ -1495,9 +1502,9 @@ impl MonitorPort for RetainedMonitorPort {
                     .await
                 {
                     Ok(()) => Ok(ReattachOutcome::TerminalQueued),
-                    Err(MonitorError::Refused(_)) => {
-                        Ok(ReattachOutcome::Gone("invalid_terminal_receipt".into()))
-                    }
+                    Err(MonitorError::Refused(_)) => Ok(ReattachOutcome::Gone(
+                        MonitorRecoveryReason::InvalidTerminalReceipt.code().into(),
+                    )),
                     Err(error) => Err(error),
                 };
             }

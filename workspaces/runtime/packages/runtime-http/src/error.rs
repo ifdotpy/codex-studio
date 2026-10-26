@@ -177,13 +177,13 @@ impl ApiError {
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
         let mut body = serde_json::json!({"error": self.message});
-        if let Some(location) = self.location {
-            body["location"] = location;
-        }
-        if let Some(outcome) = &self.outcome
+        if let Some(outcome) = self.outcome()
             && let Ok(outcome) = serde_json::to_value(outcome)
         {
             body["outcome"] = outcome;
+        }
+        if let Some(location) = self.location {
+            body["location"] = location;
         }
         let mut response = (self.status, Json(body)).into_response();
         if let Some(outcome) = self.outcome {

@@ -16,6 +16,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
+use studio_runtime_schema::studio_errors::MonitorRecoveryReason;
 
 use notify::{EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use serde_json::Value;
@@ -778,7 +779,7 @@ impl MonitorRuntime {
                             monitor_runtime::settle_reattach(
                                 &self.store,
                                 id,
-                                "termination_unconfirmed",
+                                MonitorRecoveryReason::TerminationUnconfirmed.code(),
                                 now,
                             )
                             .await?;
@@ -792,7 +793,7 @@ impl MonitorRuntime {
                         monitor_runtime::settle_reattach(
                             &self.store,
                             id,
-                            "retained_exit_unavailable",
+                            MonitorRecoveryReason::RetainedExitUnavailable.code(),
                             now,
                         )
                         .await?;
@@ -810,7 +811,7 @@ impl MonitorRuntime {
                     monitor_runtime::settle_reattach(
                         &self.store,
                         id,
-                        "reattach_window_expired",
+                        MonitorRecoveryReason::ReattachWindowExpired.code(),
                         now,
                     )
                     .await?;

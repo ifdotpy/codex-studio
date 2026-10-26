@@ -41,6 +41,14 @@ fn main() -> Result<(), Box<dyn Error>> {
     let mut analysis = analyzer.analyze()?;
     analysis
         .schemas
+        .get_mut("MonitorState")
+        .ok_or("missing monitor state schema")?
+        .schema_type = SchemaType::Primitive {
+        rust_type: "studio_runtime_schema::studio_errors::MonitorStatus".into(),
+        serde_with: None,
+    };
+    analysis
+        .schemas
         .get_mut("StudioError")
         .ok_or("missing incident schema")?
         .schema_type = SchemaType::Primitive {

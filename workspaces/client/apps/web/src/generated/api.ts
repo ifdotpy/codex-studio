@@ -15314,6 +15314,14 @@ export interface components {
        */
       text?: string | undefined;
     };
+    /** @description Public projection of the native operation identity, without open transport evidence. */
+    MonitorOperationIdentity: {
+      accountKey: string;
+      agent: string;
+      connectionId: string;
+      /** Format: int64 */
+      epoch: number;
+    };
     /** @description Public output wake budget. The monitor matcher owns the stored budget. Tokens count available output wake batches. */
     MonitorOutputWakeBudget: {
       paused: boolean;
@@ -15494,6 +15502,42 @@ export interface components {
     } & {
       [key: string]: components["schemas"]["JsonValue"] | undefined;
     };
+    MonitorRecoveryEvidence: {
+      proof: components["schemas"]["MonitorRecoveryProof"] | null;
+      /**
+       * Format: double
+       * @description Unix seconds.
+       */
+      startedAt: number;
+      status: components["schemas"]["MonitorRecoveryStatus"];
+    };
+    /** @description Unclassified text stays private in the retained record; its digest permits exact correlation. */
+    MonitorRecoveryProof:
+      | {
+          /** @constant */
+          classification: "recognized";
+          reason: components["schemas"]["MonitorRecoveryReason"];
+        }
+      | {
+          /** @constant */
+          classification: "unclassified";
+          sha256: string;
+        };
+    /**
+     * @description Studio-owned recovery proof codes. A retained native reason outside this set remains unclassified.
+     * @enum {string}
+     */
+    MonitorRecoveryReason:
+      | "no_operation"
+      | "invalid_provider_observation"
+      | "provider_rejected"
+      | "operation_not_accepted"
+      | "invalid_terminal_receipt"
+      | "termination_unconfirmed"
+      | "retained_exit_unavailable"
+      | "reattach_window_expired";
+    /** @enum {string} */
+    MonitorRecoveryStatus: "running" | "not_reattachable";
     MonitorRestartRequest: {
       accountKey: string;
       agent: string;
@@ -15512,13 +15556,10 @@ export interface components {
        */
       kind: "monitors";
     };
-    /**
-     * MonitorState
-     * @enum {string}
-     */
+    /** @enum {string} */
     MonitorState:
-      | "starting"
       | "approval"
+      | "starting"
       | "running"
       | "completed"
       | "failed"
@@ -22724,6 +22765,24 @@ export interface components {
     /** @description Only facts extracted by typed adapters belong here; never arbitrary error strings or payloads. */
     StudioErrorCause:
       | {
+          /** @constant */
+          kind: "monitor";
+          operation: components["schemas"]["MonitorOperationIdentity"] | null;
+          recovery: components["schemas"]["MonitorRecoveryEvidence"] | null;
+          status: components["schemas"]["MonitorState"];
+        }
+      | {
+          keyword: string;
+          /** @constant */
+          kind: "schema_violation";
+          pointer: string;
+        }
+      | {
+          /** @constant */
+          kind: "unclassified";
+          sha256: string;
+        }
+      | {
           id: string;
           /** @constant */
           kind: "migration";
@@ -22809,6 +22868,12 @@ export interface components {
           phase: components["schemas"]["RecoveryPhase"];
           /** @constant */
           source: "recovery";
+        }
+      | {
+          id: string;
+          object: string;
+          /** @constant */
+          source: "stored";
         };
     StudioErrorDiagnostics: {
       /** @description Ordered from the owning boundary to the underlying safe machine facts. */
@@ -22830,14 +22895,15 @@ export interface components {
     StudioErrorKind:
       | "monitor_outcome_lost"
       | "monitor_not_recorded"
-      | "input_not_sent"
       | "input_unconfirmed"
       | "input_uncertain"
       | "input_stuck"
       | "turn_disconnected"
       | "workspace_failed"
       | "http_failure"
-      | "recovery_failed";
+      | "recovery_failed"
+      | "stored_record_invalid"
+      | "unclassified_failure";
     /** StudioErrorsDismissRequest */
     StudioErrorsDismissRequest: {
       /** @description Legacy single error id. Supply either id or ids. */

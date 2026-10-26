@@ -2,6 +2,14 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+mod monitor;
+pub use monitor::{
+    MonitorOperationIdentity, MonitorRecoveryEvidence, MonitorRecoveryProof, MonitorRecoveryReason,
+    MonitorRecoveryStatus, MonitorStatus,
+};
+
+pub(crate) const MONITOR_RECORD_SCHEMA_PATH: &str =
+    "workspaces/runtime/packages/runtime-schema/src/schemas/persisted-monitor-record.schema.json";
 
 /// Why work needs attention. The service owns classification and publication.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -10,7 +18,6 @@ use serde_json::Value;
 pub enum Kind {
     MonitorOutcomeLost,
     MonitorNotRecorded,
-    InputNotSent,
     InputUnconfirmed,
     InputUncertain,
     InputStuck,
@@ -18,6 +25,8 @@ pub enum Kind {
     WorkspaceFailed,
     HttpFailure,
     RecoveryFailed,
+    StoredRecordInvalid,
+    UnclassifiedFailure,
 }
 
 impl Kind {
@@ -29,7 +38,6 @@ impl Kind {
             Self::MonitorNotRecorded => {
                 "Studio did not run this command, or did not record its end."
             }
-            Self::InputNotSent => "Studio did not send this message to the provider.",
             Self::InputUnconfirmed => {
                 "The agent did not confirm this message. It may have read it. Studio does not send it again."
             }
@@ -43,12 +51,17 @@ impl Kind {
             Self::RecoveryFailed => {
                 "Studio could not verify retained work during recovery. Its outcome remains uncertain; inspect the diagnostic details."
             }
+            Self::StoredRecordInvalid => {
+                "A retained record does not match its contract. Inspect its source identity and validation details."
+            }
+            Self::UnclassifiedFailure => {
+                "This work failed without a recognized classification. Its outcome remains uncertain; inspect the source details."
+            }
         }
     }
 
     pub fn certainty(self) -> EffectCertainty {
         match self {
-            Self::InputNotSent => EffectCertainty::NotApplied,
             Self::MonitorOutcomeLost
             | Self::MonitorNotRecorded
             | Self::InputUnconfirmed
@@ -57,7 +70,9 @@ impl Kind {
             | Self::TurnDisconnected
             | Self::WorkspaceFailed
             | Self::HttpFailure
-            | Self::RecoveryFailed => EffectCertainty::Unknown,
+            | Self::RecoveryFailed
+            | Self::StoredRecordInvalid
+            | Self::UnclassifiedFailure => EffectCertainty::Unknown,
         }
     }
 
@@ -69,13 +84,13 @@ impl Kind {
             },
             Self::MonitorOutcomeLost
             | Self::MonitorNotRecorded
-            | Self::InputNotSent
             | Self::InputUnconfirmed
-            | Self::WorkspaceFailed => Target::Check {
+            | Self::WorkspaceFailed
+            | Self::UnclassifiedFailure => Target::Check {
                 agent_id,
                 agent_name,
             },
-            Self::HttpFailure | Self::RecoveryFailed => Target::Details,
+            Self::HttpFailure | Self::RecoveryFailed | Self::StoredRecordInvalid => Target::Details,
         }
     }
 }
@@ -180,6 +195,11 @@ pub enum Context {
         phase: RecoveryPhase,
         agent_id: Option<String>,
     },
+    /// The incident timestamp is the server observation time; the source's invalid values stay private in that row.
+    Stored {
+        object: String,
+        id: String,
+    },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -199,6 +219,18 @@ pub enum RecoveryPhase {
 )]
 #[schemars(rename = "StudioErrorCause")]
 pub enum Cause {
+    Monitor {
+        status: MonitorStatus,
+        operation: Option<MonitorOperationIdentity>,
+        recovery: Option<MonitorRecoveryEvidence>,
+    },
+    SchemaViolation {
+        pointer: String,
+        keyword: String,
+    },
+    Unclassified {
+        sha256: String,
+    },
     Migration {
         id: String,
         target: MigrationTarget,
@@ -343,7 +375,6 @@ mod tests {
             Kind::MonitorOutcomeLost.certainty(),
             EffectCertainty::Unknown
         );
-        assert_eq!(Kind::InputNotSent.certainty(), EffectCertainty::NotApplied);
     }
 
     #[test]
@@ -351,6 +382,22 @@ mod tests {
         let openapi =
             serde_json::from_str(include_str!("../../runtime-http/openapi.json")).expect("OpenAPI");
         check_schema_parity(&openapi).expect("incident contract parity");
+        let monitor: Value =
+            serde_json::from_str(include_str!("schemas/persisted-monitor-record.schema.json"))
+                .expect("monitor record schema");
+        assert_eq!(
+            monitor["properties"]["status"]["anyOf"][0],
+            openapi["components"]["schemas"]["MonitorState"],
+            "persisted monitor status consumes the same owner"
+        );
+        for code in schemas().expect("schemas")["MonitorRecoveryReason"]["enum"]
+            .as_array()
+            .expect("closed reason set")
+        {
+            let reason: MonitorRecoveryReason =
+                serde_json::from_value(code.clone()).expect("owned reason code");
+            assert_eq!(code.as_str(), Some(reason.code()));
+        }
     }
 
     #[test]

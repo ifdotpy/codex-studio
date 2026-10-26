@@ -31223,6 +31223,32 @@
         "title": "MonitorInput",
         "type": "object"
       },
+      "MonitorOperationIdentity": {
+        "additionalProperties": false,
+        "description": "Public projection of the native operation identity, without open transport evidence.",
+        "properties": {
+          "accountKey": {
+            "type": "string"
+          },
+          "agent": {
+            "type": "string"
+          },
+          "connectionId": {
+            "type": "string"
+          },
+          "epoch": {
+            "format": "int64",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "agent",
+          "epoch",
+          "accountKey",
+          "connectionId"
+        ],
+        "type": "object"
+      },
       "MonitorOutputWakeBudget": {
         "additionalProperties": false,
         "description": "Public output wake budget. The monitor matcher owns the stored budget. Tokens count available output wake batches.",
@@ -31513,6 +31539,95 @@
         "title": "MonitorRecordResponse",
         "type": "object"
       },
+      "MonitorRecoveryEvidence": {
+        "additionalProperties": false,
+        "properties": {
+          "proof": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/MonitorRecoveryProof"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "startedAt": {
+            "description": "Unix seconds.",
+            "format": "double",
+            "type": "number"
+          },
+          "status": {
+            "$ref": "#/components/schemas/MonitorRecoveryStatus"
+          }
+        },
+        "required": [
+          "status",
+          "startedAt",
+          "proof"
+        ],
+        "type": "object"
+      },
+      "MonitorRecoveryProof": {
+        "description": "Unclassified text stays private in the retained record; its digest permits exact correlation.",
+        "oneOf": [
+          {
+            "additionalProperties": false,
+            "properties": {
+              "classification": {
+                "const": "recognized",
+                "type": "string"
+              },
+              "reason": {
+                "$ref": "#/components/schemas/MonitorRecoveryReason"
+              }
+            },
+            "required": [
+              "classification",
+              "reason"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "classification": {
+                "const": "unclassified",
+                "type": "string"
+              },
+              "sha256": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "classification",
+              "sha256"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "MonitorRecoveryReason": {
+        "description": "Studio-owned recovery proof codes. A retained native reason outside this set remains unclassified.",
+        "enum": [
+          "no_operation",
+          "invalid_provider_observation",
+          "provider_rejected",
+          "operation_not_accepted",
+          "invalid_terminal_receipt",
+          "termination_unconfirmed",
+          "retained_exit_unavailable",
+          "reattach_window_expired"
+        ],
+        "type": "string"
+      },
+      "MonitorRecoveryStatus": {
+        "enum": [
+          "running",
+          "not_reattachable"
+        ],
+        "type": "string"
+      },
       "MonitorRestartRequest": {
         "additionalProperties": false,
         "properties": {
@@ -31559,15 +31674,14 @@
       },
       "MonitorState": {
         "enum": [
-          "starting",
           "approval",
+          "starting",
           "running",
           "completed",
           "failed",
           "cancelled",
           "lost"
         ],
-        "title": "MonitorState",
         "type": "string"
       },
       "MonitorsResource": {
@@ -49307,6 +49421,83 @@
           {
             "additionalProperties": false,
             "properties": {
+              "kind": {
+                "const": "monitor",
+                "type": "string"
+              },
+              "operation": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/MonitorOperationIdentity"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "recovery": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/MonitorRecoveryEvidence"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "status": {
+                "$ref": "#/components/schemas/MonitorState"
+              }
+            },
+            "required": [
+              "kind",
+              "status",
+              "operation",
+              "recovery"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "keyword": {
+                "type": "string"
+              },
+              "kind": {
+                "const": "schema_violation",
+                "type": "string"
+              },
+              "pointer": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind",
+              "pointer",
+              "keyword"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "kind": {
+                "const": "unclassified",
+                "type": "string"
+              },
+              "sha256": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind",
+              "sha256"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
               "id": {
                 "type": "string"
               },
@@ -49622,6 +49813,28 @@
               "agentId"
             ],
             "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "description": "The incident timestamp is the server observation time; the source's invalid values stay private in that row.",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "object": {
+                "type": "string"
+              },
+              "source": {
+                "const": "stored",
+                "type": "string"
+              }
+            },
+            "required": [
+              "source",
+              "object",
+              "id"
+            ],
+            "type": "object"
           }
         ]
       },
@@ -49672,14 +49885,15 @@
         "enum": [
           "monitor_outcome_lost",
           "monitor_not_recorded",
-          "input_not_sent",
           "input_unconfirmed",
           "input_uncertain",
           "input_stuck",
           "turn_disconnected",
           "workspace_failed",
           "http_failure",
-          "recovery_failed"
+          "recovery_failed",
+          "stored_record_invalid",
+          "unclassified_failure"
         ],
         "type": "string"
       },

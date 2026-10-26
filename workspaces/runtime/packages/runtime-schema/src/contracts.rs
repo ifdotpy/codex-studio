@@ -1124,6 +1124,14 @@ pub fn render(root: &Path, with_api_types: bool) -> Result<Vec<Rendered>, String
             text: linux_vm_swift(),
         },
     ];
+    let monitor_path = crate::studio_errors::MONITOR_RECORD_SCHEMA_PATH;
+    let mut monitor = read_json(root, monitor_path)?;
+    monitor["properties"]["status"]["anyOf"][0] =
+        openapi["components"]["schemas"]["MonitorState"].clone();
+    rendered.push(Rendered {
+        path: monitor_path.into(),
+        text: serde_json::to_string_pretty(&monitor).map_err(|error| error.to_string())? + "\n",
+    });
     for (name, pointer) in PROVIDER_PERSISTED_RECORDS {
         let path =
             format!("workspaces/runtime/packages/runtime-schema/src/schemas/{name}.schema.json");
