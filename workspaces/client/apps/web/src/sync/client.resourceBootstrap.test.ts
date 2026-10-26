@@ -895,9 +895,18 @@ it.each([
   },
 );
 
+<<<<<<< head
 it.each(["burst", "inline removal", "staged removal"])(
   "the actual Work adapter preserves a still-active interval during %s",
+||||||| base
+it.each(["overflow", "inline removal", "staged removal"])(
+  "the actual Work adapter recovers a still-active interval discarded by %s",
+=======
+it.each(["overflow", "startup burst", "inline removal", "staged removal"])(
+  "the actual Work adapter recovers a still-active interval discarded by %s",
+>>>>>>> 686377a
   async (cause) => {
+    const { MAX_PENDING_FRAMES } = await import("./resourceEntityDelivery");
     const f = await setup();
     vi.stubGlobal("location", { origin: "http://studio.test" });
     vi.stubGlobal("BroadcastChannel", undefined);
@@ -917,7 +926,7 @@ it.each(["burst", "inline removal", "staged removal"])(
     const ref = { kind: "work", agentId: "lead" } as const;
     const stop = subscriptions.subscribe(ref, () => {}, { graceMs: 0 });
     const others = Array.from(
-      { length: 10 },
+      { length: MAX_PENDING_FRAMES + 2 },
       (_, index) =>
         ({ kind: "agentDetail", agentId: `other-${index}` }) as const,
     );
@@ -929,6 +938,7 @@ it.each(["burst", "inline removal", "staged removal"])(
     const source = mocks.sources[0];
     source.emit("api-schema", { hash: API_SCHEMA_HASH });
     let finish!: () => void;
+    vi.mocked(api.post).mockResolvedValue(undefined as never);
     source.emit("session", { sessionId: "quiet-work-discard-session" });
     const gate = new Promise<void>((resolve) => {
       finish = resolve;
@@ -1014,8 +1024,21 @@ it.each(["burst", "inline removal", "staged removal"])(
       else source.emit("resources", frame);
       await started.promise;
       expect(held).toHaveBeenCalledOnce();
+<<<<<<< head
       if (cause === "burst") {
         for (const [index, other] of others.entries())
+||||||| base
+      if (cause === "overflow") {
+        for (const [index, other] of others.entries())
+=======
+      if (cause === "overflow" || cause === "startup burst") {
+        // A startup burst sends one frame per subscribed resource while the
+        // first write still waits; it must fit without a reconnect.
+        for (const [index, other] of (cause === "overflow"
+          ? others
+          : others.slice(0, 20)
+        ).entries())
+>>>>>>> 686377a
           source.emit("resources", {
             protocol: frame.protocol,
             workspaceId: f.workspaceId,
@@ -1033,8 +1056,47 @@ it.each(["burst", "inline removal", "staged removal"])(
               },
             ],
           });
+<<<<<<< head
       } else stopOthers[0]();
       expect(source.closed).toBe(false);
+||||||| base
+      } else stopOthers[0]();
+      expect(source.closed).toBe(true);
+=======
+        if (cause === "startup burst") {
+          finish();
+          await held.mock.results[0].value;
+          for (let i = 0; i < 20; i++) await vi.advanceTimersByTimeAsync(500);
+          expect(source.closed).toBe(false);
+          expect(mocks.sources).toHaveLength(1);
+          return;
+        }
+      } else {
+        stopOthers[0]();
+        // Removing another subscription keeps the stream. The still-active
+        // resource is subscribed again on it, from no cursor.
+        finish();
+        await held.mock.results[0].value;
+        for (let i = 0; i < 20; i++) await vi.advanceTimersByTimeAsync(500);
+        expect(source.closed).toBe(false);
+        expect(mocks.sources).toHaveLength(1);
+        const readd = vi
+          .mocked(api.post)
+          .mock.calls.find(
+            ([path, body]) =>
+              path === "/api/sync/subscriptions" &&
+              (body as { add: { resource: unknown }[] }).add.some(
+                (entry) =>
+                  JSON.stringify(entry.resource) === JSON.stringify(ref),
+              ),
+          );
+        expect(readd?.[1]).toMatchObject({
+          add: [{ resource: ref, since: undefined }],
+        });
+        return;
+      }
+      expect(source.closed).toBe(true);
+>>>>>>> 686377a
       finish();
       await held.mock.results[0].value;
       await vi.advanceTimersByTimeAsync(0);
