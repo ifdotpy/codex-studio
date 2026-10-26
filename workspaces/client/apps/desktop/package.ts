@@ -1,12 +1,12 @@
-import { buildLinuxVM } from "./native/linux-vm/build.mjs";
-import { signingIdentity, signApplication, signCode } from "./signing.mjs";
-import { setBundleDisplayName } from "./bundle-name.mjs";
-import { runtimeBinaries, runtimeBinaryName } from "./runtime-binaries.mjs";
-import { pythonResources } from "./python-resources.mjs";
+import { buildLinuxVM } from "./native/linux-vm/build.ts";
+import { signingIdentity, signApplication, signCode } from "./signing.ts";
+import { setBundleDisplayName } from "./bundle-name.ts";
+import { runtimeBinaries, runtimeBinaryName } from "./runtime-binaries.ts";
+import { pythonResources } from "./python-resources.ts";
 import {
   cargoReleaseArguments,
   prebuiltReleaseDirectory,
-} from "./release-binaries.mjs";
+} from "./release-binaries.ts";
 import { execFileSync } from "node:child_process";
 import { packager } from "@electron/packager";
 import { cp, mkdir, mkdtemp, rm, access, writeFile } from "node:fs/promises";
@@ -33,7 +33,7 @@ const bridgeSource = path.join(
 );
 await access(path.join(rendererDist, "index.html"));
 // With CODEX_RELEASE_TARGET_DIR set, reuse release binaries that were built for
-// this exact commit (release-binaries.mjs verifies the commit and SHA-256 manifest);
+// this exact commit (release-binaries.ts verifies the commit and SHA-256 manifest);
 // otherwise build them here.
 const prebuiltRelease = uiOnly
   ? null
@@ -45,7 +45,7 @@ if (!uiOnly && !prebuiltRelease) {
       stdio: "inherit",
     });
   } catch (error) {
-    if (error.code === "ENOENT") {
+    if (error instanceof Error && "code" in error && error.code === "ENOENT") {
       throw new Error(
         "Desktop packaging requires Cargo; install the toolchain pinned in rust-toolchain.toml, then run `cargo build --release -p studio-runtime-server`.",
         { cause: error },
@@ -185,7 +185,7 @@ try {
       ["pnpm-workspace.yaml", "pnpm-workspace.yaml"],
       ["pnpm-lock.yaml", "pnpm-lock.yaml"],
       ["patches/rxdb@17.6.0.patch", "patches/rxdb@17.6.0.patch"],
-    ]) {
+    ] as const) {
       const target = path.join(resources, destination);
       await mkdir(path.dirname(target), { recursive: true });
       await cp(path.join(repositoryRoot, source), target);
@@ -222,7 +222,7 @@ try {
       ["README.md", "README.md"],
       ["docs/cli.md", "CLI.md"],
       ["docs/orchestration.md", "ORCHESTRATION.md"],
-    ]) {
+    ] as const) {
       await cp(
         path.join(repositoryRoot, source),
         path.join(resources, destination),
@@ -236,7 +236,7 @@ try {
   // Contents/Resources/studio-build.json: the build stamp that paired servers compare
   // (docs/peer-updates.md). A greater builtAt is a newer build.
   const buildStamp = path.join(stage, "studio-build.json");
-  const git = (...args) =>
+  const git = (...args: string[]) =>
     execFileSync("git", args, { cwd: repositoryRoot, encoding: "utf8" }).trim();
   await writeFile(
     buildStamp,
@@ -255,7 +255,7 @@ try {
     ...(uiOnly
       ? []
       : [
-          linuxVM,
+          ...(linuxVM ? [linuxVM] : []),
           fsEvents,
           ...pythonResources.map((file) => path.join(root, file)),
         ]),
@@ -295,13 +295,14 @@ try {
         /^\/assets($|\/)/,
         /^\/dist($|\/)/,
         /^\/node_modules($|\/)/,
-        /^\/test\.mjs$/,
-        /^\/multi-server-memory\.mjs$/,
-        /^\/(?:backend-test|recovery-test|recovery-renderer-test|renderer-recovery-test|window-state-test|package-test|install-update-test)\.(?:mjs|cjs|py)$/,
+        /^\/test\.ts$/,
+        /^\/(?:profile-export-fixture|sync-brotli-fixture|hidden-electron)\.ts$/,
+        /^\/multi-server-memory\.ts$/,
+        /^\/(?:backend-test|recovery-test|recovery-renderer-test|renderer-recovery-test|window-state-test|package-test|install-update-test)\.(?:ts|cts|cjs|py)$/,
         /^\/recover_backend\.py$/,
         /^\/install_update\.py$/,
         /^\/__pycache__($|\/)/,
-        /^\/package\.mjs$/,
+        /^\/package\.ts$/,
         /^\/README\.md$/,
       ],
     });

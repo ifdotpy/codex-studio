@@ -1,13 +1,13 @@
-const { test } = require("node:test");
-const { execFileSync } = require("node:child_process");
-const path = require("node:path");
+import { test } from "node:test";
+import { execFileSync } from "node:child_process";
+import path from "node:path";
 
 const HELPER_TEST_TIMEOUT_MS = 30_000;
-const root = path.resolve(__dirname, "../../../..");
+const root = path.resolve(import.meta.dirname, "../../../..");
 for (const [name, args] of [
   [
     "desktop helpers import without backend modules",
-    ["-B", path.join(__dirname, "retained-helpers-test.py")],
+    ["-B", path.join(import.meta.dirname, "retained-helpers-test.py")],
   ],
   [
     "guest uses the Rust supervisor without backend modules",
@@ -22,7 +22,7 @@ for (const [name, args] of [
       "test_retained_boundary.py",
     ],
   ],
-]) {
+] satisfies [string, string[]][]) {
   test(name, () => {
     execFileSync("python3", args, {
       env: { ...process.env, CODEX_AGENTS_PYTHON: "/nonexistent" },
