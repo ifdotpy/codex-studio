@@ -176,12 +176,13 @@ for (const kind of [
       );
       assert.equal(await fs.readFile(f.journal, "utf8"), before);
       assert.equal(Reflect.get({}, "polluted"), undefined);
-      const marker = JSON.parse(
+      const marker: unknown = JSON.parse(
         await fs.readFile(
           path.join(f.root, "sessions", id + ".repair.json"),
           "utf8",
         ),
       );
+      assert.ok(object(marker));
       assert.equal(marker.status, "needs_repair");
       assert.equal(marker.nativeHistoryConfirmed, false);
       const read = await createSessionStore(f.root, f.options).repairReport(id);
@@ -212,14 +213,17 @@ for (const confirmed of [true, false]) {
           await fs.mkdir(path.dirname(target), { recursive: true });
           await fs.copyFile(f.native, target);
         }
-        for (const method of ["thread/read", "thread/resume"]) {
+        for (const method of ["thread/read", "thread/resume"] satisfies (
+          | "thread/read"
+          | "thread/resume"
+        )[]) {
           const call = bridge.call(method, {
             threadId: id,
             includeTurns: true,
           });
           if (confirmed) {
             const result = await call;
-            assert.equal(result.thread.journalRepair.skippedRows, 1);
+            assert.equal(result.thread.journalRepair?.skippedRows, 1);
             assert.deepEqual(result.thread.turns, f.session.turns);
           } else
             await assert.rejects(

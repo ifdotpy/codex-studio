@@ -1,3 +1,5 @@
+import type { BridgeInput } from "./bridge-protocol.ts";
+import assert from "node:assert/strict";
 import { expect, test } from "vitest";
 import fs from "node:fs/promises";
 import os from "node:os";
@@ -42,7 +44,7 @@ for (const serviceFirst of [true, false])
           input: [{ type: "text", text: "anchor" }],
         });
         await bridge.note((n) => n.method === "fixture/anchor");
-        const input = [
+        const input: BridgeInput[] = [
           { type: "text", text: "service", inputOrigin: "studio_event" },
           { type: "text", text: "human", inputOrigin: "human" },
         ];
@@ -54,7 +56,8 @@ for (const serviceFirst of [true, false])
           input,
         });
         const done = await bridge.note(
-          (n) => n.method === "turn/completed" && n.params.turn.id === turn.id,
+          "turn/completed",
+          (n) => n.params.turn.id === turn.id,
         );
         expect(done.params.turn.unappliedSteers).toEqual(
           ["absent", "unknown system"].includes(damage)
@@ -67,9 +70,10 @@ for (const serviceFirst of [true, false])
             includeTurns: true,
           })
         ).thread;
-        const item = thread.turns[0].items.find(
+        const item = thread.turns[0]?.items.find(
           (item) => item.id === "exact-input",
         );
+        assert.ok(item);
         expect(item.nativeIds).toHaveLength(2);
         expect(item.deliveryStatus).toBe(
           damage === "all"

@@ -124,9 +124,9 @@ export function query({ prompt, options }: SessionFixtureQuery) {
           }) + "\n",
         );
       }
-      // @ts-expect-error conversation_reset is deliberately unsupported by the SDK; it must not become a resumable session identity.
       yield {
         type: "system",
+        // @ts-expect-error conversation_reset is deliberately unsupported by the SDK; it must not become a resumable session identity.
         subtype: "conversation_reset",
         new_conversation_id: conversationId,
       };
