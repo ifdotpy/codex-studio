@@ -52,27 +52,16 @@ export function modelDisplayName(
   const row = typeof info === "string" ? { model: info } : info;
   const id = (row?.isDefault && row.resolvedModel) || row?.model || fallback;
   const versioned = /^gpt-(\d[\d.]*)-([a-z][a-z-]*)$/i.exec(id);
-  if (versioned) {
-    const [, number, family] = versioned;
-    if (family === undefined) throw new Error("Missing model family");
-    return `${family.split("-").map(title).join(" ")} ${number}`;
-  }
+  if (versioned)
+    return `${versioned[2].split("-").map(title).join(" ")} ${versioned[1]}`;
   const daybreak = /^gpt-daybreak-(blue|red)-latest$/.exec(id);
-  if (daybreak) {
-    const [, family] = daybreak;
-    if (family === undefined) throw new Error("Missing model family");
-    return `Daybreak ${title(family)}`;
-  }
+  if (daybreak) return `Daybreak ${title(daybreak[1])}`;
   let label = (row?.displayName || id)
     .replace(/^Claude\s*[·: ]\s*/i, "")
     .replace(/^Default \(recommended\)\s*[:·]?\s*/i, "")
     .replace(/^GPT[-\s]+/i, "");
   const claudeId = /^claude-([a-z]+)-(\d+)-(\d+)$/.exec(label);
-  if (claudeId) {
-    const [, family, major, minor] = claudeId;
-    if (family === undefined) throw new Error("Missing model family");
-    label = `${title(family)} ${major}.${minor}`;
-  }
+  if (claudeId) label = `${title(claudeId[1])} ${claudeId[2]}.${claudeId[3]}`;
   // Claude aliases often carry the family/version only in their description.
   const version = /^(?:Claude )?([A-Za-z]+) (\d+(?:\.\d+)*)(?=\s|$|[·(])/.exec(
     row?.description || "",
@@ -95,11 +84,7 @@ export function modelDisplayName(
   );
 }
 
-const title = (word: string) => {
-  const first = word[0];
-  if (first === undefined) throw new Error("Missing model name word");
-  return first.toUpperCase() + word.slice(1);
-};
+const title = (word: string) => word[0].toUpperCase() + word.slice(1);
 
 export function toModelOptions<T extends CatalogModel>(
   models: T[],
