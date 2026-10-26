@@ -1,3 +1,4 @@
+import { required, fixturePostBody } from "../teams/helpers.ts";
 import {
   readTestState,
   entityPullFixtureForRequest,
@@ -16,7 +17,13 @@ import { createServer } from "node:http";
 import { readFile, mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, extname } from "node:path";
-import { createRequire } from "node:module";
+import { chromium } from "@playwright/test";
+import type { Route } from "@playwright/test";
+import type { ServerResponse } from "node:http";
+import type { components } from "../../src/generated/api.ts";
+import type { PostBody, GetResult } from "../../src/apiTypes.ts";
+import type { ResourceRef, ResourceChangeEvent } from "../playwright.ts";
+import type { Agent, BackgroundTask, Monitor } from "../../src/types.ts";
 test("Terminal dock", async () => {
   test.setTimeout(180_000);
   const testRepo = fileURLToPath(
@@ -27,9 +34,14 @@ test("Terminal dock", async () => {
   const workspaceId = "1234567890abcdef1234567890abcdef";
   const epoch = "terminal-dock-fixture";
   let resourceRevision = 0;
-  const resourceVersions = new Map();
-  const resourceStreams = new Set();
-  const writeResourceEvent = (stream, reason, resources = stream.resources) => {
+  const resourceVersions = new Map<string, number>();
+  type ResourceStream = { response: ServerResponse; resources: ResourceRef[] };
+  const resourceStreams = new Set<ResourceStream>();
+  const writeResourceEvent = (
+    stream: ResourceStream,
+    reason: ResourceChangeEvent["reason"],
+    resources = stream.resources,
+  ) => {
     if (reason !== "initial") {
       resourceRevision++;
       for (const resource of resources) {
@@ -56,7 +68,7 @@ test("Terminal dock", async () => {
       `event: resources\ndata: ${JSON.stringify(event)}\n\n`,
     );
   };
-  const publishResourceChanges = (resources) => {
+  const publishResourceChanges = (resources: ResourceRef[]) => {
     for (const stream of resourceStreams) {
       const changed = resources.filter((resource) =>
         stream.resources.some(
@@ -67,13 +79,10 @@ test("Terminal dock", async () => {
       if (changed.length) writeResourceEvent(stream, "change", changed);
     }
   };
-  const { chromium } = createRequire(
-    join(skill, "workspaces/client/apps/web/package.json"),
-  )("playwright-core");
   const root = await mkdtemp(join(tmpdir(), "codex-terminal-dock-"));
   const server = createServer(async (req, res) => {
     try {
-      const url = new URL(req.url, "http://localhost");
+      const url = new URL(req.url ?? "/", "http://localhost");
       const name = url.pathname;
       if (name === "/api/sync/identity") {
         res.setHeader("Content-Type", "application/json");
@@ -82,7 +91,7 @@ test("Terminal dock", async () => {
         return;
       }
       if (name === "/api/sync/stream") {
-        const stream = {
+        const stream: ResourceStream = {
           response: res,
           resources: JSON.parse(url.searchParams.get("resources") || "[]"),
         };
@@ -130,9 +139,11 @@ test("Terminal dock", async () => {
       );
       res.setHeader(
         "Content-Type",
-        { ".js": "text/javascript", ".css": "text/css", ".html": "text/html" }[
-          extname(path)
-        ] || "application/octet-stream",
+        new Map([
+          [".js", "text/javascript"],
+          [".css", "text/css"],
+          [".html", "text/html"],
+        ]).get(extname(path)) || "application/octet-stream",
       );
       res.end(await readFile(path));
     } catch {
@@ -140,8 +151,9 @@ test("Terminal dock", async () => {
       res.end();
     }
   });
-  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
-  const agent = {
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const agent: Agent = {
+    updated: 1,
     id: "lead",
     rootId: "lead",
     isLead: true,
@@ -153,7 +165,7 @@ test("Terminal dock", async () => {
     canSend: true,
     cwd: "/workspace/release",
   };
-  const command = {
+  const command: BackgroundTask = {
     id: "native-command",
     agent: "lead",
     kind: "command",
@@ -163,50 +175,71 @@ test("Terminal dock", async () => {
     created: Date.now() / 1000,
     tail: "Listening on localhost:3000",
   };
-  const monitor = {
+  const monitor: Monitor = {
     id: "agent-monitor",
     agent: "lead",
     kind: "monitor",
     command: "await deployment",
     status: "running",
     interactive: false,
-    created: Date.now() / 1000,
+    created: Date.now() / 1e3,
     tail: "Deployment pending",
   };
-  const state = {
+  const state: import("../playwright.ts").TestStateView = {
     token: "terminal-fixture-token",
     stateDir: root,
     threads: [agent],
     chats: [],
+    edges: [],
     runtime: {
       agents: [agent],
+      tasks: [command],
+      monitors: [monitor],
       rooms: [],
       complaints: [],
-      monitors: [monitor],
-      tasks: [command],
+      projects: [],
+      events: [],
+      peerTeams: [],
       requests: [],
+      rules: [],
+      work: [],
+      nativeNotices: undefined,
+      sidebarOrder: undefined,
+      rateLimits: null,
+      rateLimitsByAccount: {},
     },
   };
-  const shells = Array.from({ length: 250 }, (_, index) => ({
-    id: `shell-${index}`,
-    agent: "lead",
-    title: `Shell ${String(index).padStart(3, "0")}`,
-    cwd: "/workspace/release",
-    status: index % 3 ? "running" : "exited",
-    exitCode: index % 3 ? undefined : 0,
-    created: Date.now() / 1000,
-  }));
+  const shells: components["schemas"]["TerminalRecord"][] = Array.from(
+    { length: 250 },
+    (_, index) => ({
+      id: `shell-${index}`,
+      agent: "lead",
+      title: `Shell ${String(index).padStart(3, "0")}`,
+      cwd: "/workspace/release",
+      status: index % 3 ? "running" : "exited",
+      exitCode: index % 3 ? undefined : 0,
+      created: Date.now() / 1000,
+    }),
+  );
   const outputs = new Map(
     shells.map((shell) => [shell.id, `Welcome to ${shell.title}\r\n$ `]),
   );
-  const writes = [];
+  type TerminalPath = Extract<
+    import("../../src/apiTypes.ts").ApiPostPath,
+    `/api/terminals/${string}`
+  >;
+  type Write = {
+    [Path in TerminalPath]: { path: Path; body: PostBody<Path> };
+  }[TerminalPath];
+  const writes: Write[] = [];
+  const writePaths: string[] = [];
   let uncertainInput = false;
   let failOutput = false,
     truncateOutput = false;
   const archive = "Archive line λ\n".repeat(10000);
-  const archiveReads = [];
+  const archiveReads: number[] = [];
   let historyMode = "ready",
-    heldHistory;
+    heldHistory: Route | undefined;
   let browser;
   try {
     browser = await chromium.launch({
@@ -217,7 +250,7 @@ test("Terminal dock", async () => {
       viewport: { width: 1440, height: 980 },
       permissions: ["clipboard-read", "clipboard-write"],
     });
-    const errors = [];
+    const errors: string[] = [];
     page.on("pageerror", (error) => {
       errors.push(error.message);
       console.error(error.stack);
@@ -226,13 +259,13 @@ test("Terminal dock", async () => {
       const request = route.request(),
         url = new URL(request.url()),
         path = url.pathname;
-      let body = {};
       if (request.method() === "POST") {
-        body = request.postDataJSON();
+        writePaths.push(path);
         assert.equal(request.headers()["x-canvas-token"], state.token);
-        writes.push({ path, body });
       }
-      let value = {};
+      if (path === "/api/terminals/resize" && request.method() === "POST")
+        writes.push({ path, body: fixturePostBody(route, path) });
+      let value: unknown = {};
       if (path === "/api/sync/identity" || path === "/api/sync/stream")
         return route.continue();
       if (path === "/api/sync/pull")
@@ -256,16 +289,19 @@ test("Terminal dock", async () => {
       else if (path === "/api/limits") value = { data: null };
       else if (path === "/api/terminals") value = { items: shells };
       else if (path === "/api/terminals/create") {
-        value = {
+        const body = fixturePostBody(route, "/api/terminals/create");
+        writes.push({ path, body });
+        const created: components["schemas"]["TerminalRecord"] = {
           id: body.id,
           agent: body.agent,
           title: "Terminal 251",
-          cwd: agent.cwd,
+          cwd: required(agent.cwd),
           status: "running",
           created: Date.now() / 1000,
         };
-        shells.unshift(value);
-        outputs.set(value.id, "Direct shell ready\r\n$ ");
+        value = created;
+        shells.unshift(created);
+        outputs.set(created.id, "Direct shell ready\r\n$ ");
         publishResourceChanges([{ kind: "terminals" }]);
       } else if (path === "/api/terminals/output") {
         if (url.searchParams.get("history") === "1") {
@@ -302,7 +338,7 @@ test("Terminal dock", async () => {
           });
         }
         const id = url.searchParams.get("id"),
-          output = outputs.get(id) || "",
+          output = outputs.get(id ?? "") || "",
           shell = shells.find((item) => item.id === id);
         value = {
           text: output.slice(Number(url.searchParams.get("offset") || 0)),
@@ -312,6 +348,8 @@ test("Terminal dock", async () => {
         };
         truncateOutput = false;
       } else if (path === "/api/terminals/input") {
+        const body = fixturePostBody(route, "/api/terminals/input");
+        writes.push({ path, body });
         assert.ok(body.request_id);
         if (uncertainInput) {
           uncertainInput = false;
@@ -332,15 +370,17 @@ test("Terminal dock", async () => {
         if (body.text.includes("\r"))
           publishResourceChanges([{ kind: "terminal", terminalId: body.id }]);
       } else if (path === "/api/terminals/rename") {
-        Object.assign(
-          shells.find((item) => item.id === body.id),
-          { title: body.title },
-        );
+        const body = fixturePostBody(route, "/api/terminals/rename");
+        writes.push({ path, body });
+        Object.assign(required(shells.find((item) => item.id === body.id)), {
+          title: body.title,
+        });
       } else if (path === "/api/terminals/close") {
-        Object.assign(
-          shells.find((item) => item.id === body.id),
-          { status: "closed" },
-        );
+        const body = fixturePostBody(route, "/api/terminals/close");
+        writes.push({ path, body });
+        Object.assign(required(shells.find((item) => item.id === body.id)), {
+          status: "closed",
+        });
         publishResourceChanges([
           { kind: "terminals" },
           { kind: "terminal", terminalId: body.id },
@@ -348,7 +388,9 @@ test("Terminal dock", async () => {
       }
       await route.fulfill({ json: value });
     });
-    await page.goto(`http://127.0.0.1:${server.address().port}`);
+    const address = server.address();
+    assert.ok(address && typeof address !== "string");
+    await page.goto(`http://127.0.0.1:${address.port}`);
     assert.equal(
       await page.locator("#import-chat, #other-sessions").count(),
       0,
@@ -366,17 +408,17 @@ test("Terminal dock", async () => {
     const closedGeometry = await page.evaluate(() => {
       const dock = document
         .querySelector(".terminal-dock")
-        .getBoundingClientRect();
+        ?.getBoundingClientRect();
       const sidebar = document
         .querySelector("#sidebar")
-        .getBoundingClientRect();
+        ?.getBoundingClientRect();
       const workspace = document
         .querySelector(".workspace")
-        .getBoundingClientRect();
+        ?.getBoundingClientRect();
       return {
-        dock: dock.toJSON(),
-        sidebar: sidebar.toJSON(),
-        workspace: workspace.toJSON(),
+        dock: dock?.toJSON(),
+        sidebar: sidebar?.toJSON(),
+        workspace: workspace?.toJSON(),
         height: innerHeight,
       };
     });
@@ -406,16 +448,18 @@ test("Terminal dock", async () => {
     // and the page ends above it, so the bar never covers the usage line.
     const frameGeometry = await page.evaluate(async () => {
       const sidebar = document.querySelector("#sidebar");
+      if (!sidebar) throw new Error("Missing sidebar");
       const parent = sidebar.parentNode;
+      if (!parent) throw new Error("Missing sidebar parent");
       const next = sidebar.nextSibling;
       sidebar.remove();
-      await new Promise((done) => requestAnimationFrame(() => done()));
+      await new Promise<void>((done) => requestAnimationFrame(() => done()));
       const dock = document
         .querySelector(".terminal-dock")
-        .getBoundingClientRect();
-      const root = document.querySelector("#root").getBoundingClientRect();
+        ?.getBoundingClientRect();
+      const root = document.querySelector("#root")?.getBoundingClientRect();
       parent.insertBefore(sidebar, next);
-      return { dock: dock.toJSON(), root: root.toJSON(), width: innerWidth };
+      return { dock: dock?.toJSON(), root: root?.toJSON(), width: innerWidth };
     });
     assert.equal(frameGeometry.dock.left, 0, "The bar starts at the left edge");
     assert.equal(
@@ -432,12 +476,15 @@ test("Terminal dock", async () => {
     await page.waitForFunction(() => {
       const dock = document
         .querySelector(".terminal-dock")
-        .getBoundingClientRect();
+        ?.getBoundingClientRect();
       const workspace = document
         .querySelector(".workspace")
-        .getBoundingClientRect();
+        ?.getBoundingClientRect();
       return (
-        Math.abs(workspace.bottom - dock.top) <= 1 && dock.width === innerWidth
+        workspace &&
+        dock &&
+        Math.abs(workspace.bottom - dock.top) <= 1 &&
+        dock.width === innerWidth
       );
     });
     await dock
@@ -473,6 +520,7 @@ test("Terminal dock", async () => {
     const created = writes.find(
       (write) => write.path === "/api/terminals/create",
     );
+    assert.ok(created);
     assert.equal(created.body.agent, "lead");
     await dock.locator(".xterm-helper-textarea").focus();
     await page.keyboard.type("printf terminal-ok");
@@ -496,7 +544,10 @@ test("Terminal dock", async () => {
       .getByRole("button", { name: "Download saved output", exact: true })
       .click();
     const downloaded = await downloadResult;
-    assert.equal(await readFile(await downloaded.path(), "utf8"), archive);
+    assert.equal(
+      await readFile(required(await downloaded.path()), "utf8"),
+      archive,
+    );
     assert.deepEqual(archiveReads, [0, 65536, 131072]);
     historyMode = "hold";
     await dock
@@ -508,7 +559,7 @@ test("Terminal dock", async () => {
     await dock
       .getByRole("button", { name: "Cancel download", exact: true })
       .click();
-    await heldHistory.fulfill({
+    await required(heldHistory).fulfill({
       json: {
         text: "late",
         offset: 4,
@@ -534,7 +585,7 @@ test("Terminal dock", async () => {
       "A cancelled or invalid history never downloads a partial file",
     );
     historyMode = "ready";
-    const screen = await dock.locator(".xterm-screen").boundingBox();
+    const screen = required(await dock.locator(".xterm-screen").boundingBox());
     await page.mouse.move(screen.x + 1, screen.y + 7);
     await page.mouse.down();
     await page.mouse.move(screen.x + 145, screen.y + 7, { steps: 8 });
@@ -559,8 +610,8 @@ test("Terminal dock", async () => {
       writes.some(
         (write) =>
           write.path === "/api/terminals/resize" &&
-          write.body.cols > 0 &&
-          write.body.rows > 0,
+          (write.body.cols ?? 0) > 0 &&
+          (write.body.rows ?? 0) > 0,
       ),
     );
     await dock
@@ -573,10 +624,10 @@ test("Terminal dock", async () => {
     await dock
       .getByRole("button", { name: "Release logs", exact: true })
       .waitFor();
-    const before = await dock.boundingBox();
+    const before = required(await dock.boundingBox());
     await dock.getByRole("separator").focus();
     await page.keyboard.press("ArrowUp");
-    const after = await dock.boundingBox();
+    const after = required(await dock.boundingBox());
     assert.ok(after.height > before.height);
     await dock
       .getByRole("button", { name: "Hide terminals", exact: true })
@@ -595,7 +646,9 @@ test("Terminal dock", async () => {
       "Hide and reconnect must not create a shell",
     );
     failOutput = true;
-    publishResourceChanges([{ kind: "terminal", terminalId: created.body.id }]);
+    publishResourceChanges([
+      { kind: "terminal", terminalId: required(created.body.id) },
+    ]);
     await dock
       .getByText("Terminal connection interrupted", { exact: false })
       .waitFor();
@@ -641,7 +694,9 @@ test("Terminal dock", async () => {
     );
     await dock.getByRole("button", { name: "Reconnect", exact: true }).click();
     truncateOutput = true;
-    publishResourceChanges([{ kind: "terminal", terminalId: created.body.id }]);
+    publishResourceChanges([
+      { kind: "terminal", terminalId: required(created.body.id) },
+    ]);
     await dock
       .getByText(
         "Earlier output exceeded the retained buffer. The latest output is shown.",
@@ -663,8 +718,8 @@ test("Terminal dock", async () => {
       0,
     );
     assert.equal(
-      writes.filter((write) =>
-        ["/api/native-command", "/api/monitor/input"].includes(write.path),
+      writePaths.filter((path) =>
+        ["/api/native-command", "/api/monitor/input"].includes(path),
       ).length,
       0,
     );
@@ -747,11 +802,11 @@ test("Terminal dock", async () => {
     liveBrowser,
     liveOrigin,
     liveToken,
-    liveShell;
-  fixture.stderr.on("data", (data) => (fixtureLog += data));
+    liveShell: string | undefined;
+  required(fixture.stderr).on("data", (data) => (fixtureLog += data));
   try {
     const port = await new Promise((resolve, reject) => {
-      fixture.stdout.once("data", (data) =>
+      required(fixture.stdout).once("data", (data) =>
         resolve(Number(String(data).trim())),
       );
       fixture.once("exit", () => reject(new Error(fixtureLog)));
@@ -766,8 +821,8 @@ test("Terminal dock", async () => {
     const page = await liveBrowser.newPage({
       viewport: { width: 1280, height: 960 },
     });
-    const errors = [];
-    const terminalOutputReads = [];
+    const errors: string[] = [];
+    const terminalOutputReads: number[] = [];
     page.on("pageerror", (error) => errors.push(error.message));
     page.on("request", (request) => {
       if (
@@ -799,15 +854,19 @@ test("Terminal dock", async () => {
       terminalOutputReads.length > readsBeforeAppend,
       "the appended PTY output triggered a targeted output read",
     );
-    const sessions = await (await fetch(liveOrigin + "/api/terminals")).json();
+    const sessions: GetResult<"/api/terminals"> = await (
+      await fetch(liveOrigin + "/api/terminals")
+    ).json();
     assert.equal(sessions.items.length, 1);
-    liveShell = sessions.items[0].id;
-    const output = await (
+    liveShell = required(sessions.items[0]).id;
+    const output: GetResult<"/api/terminals/output"> = await (
       await fetch(
-        `${liveOrigin}/api/terminals/output?id=${encodeURIComponent(liveShell)}&offset=0`,
+        `${liveOrigin}/api/terminals/output?id=${encodeURIComponent(required(liveShell))}&offset=0`,
       )
     ).json();
-    assert.ok(output.text.includes(`PTY_RESULT:${sessions.items[0].cwd}`));
+    assert.ok(
+      output.text.includes(`PTY_RESULT:${required(sessions.items[0]).cwd}`),
+    );
     await dock
       .getByRole("button", { name: "Hide terminals", exact: true })
       .click();
@@ -826,7 +885,9 @@ test("Terminal dock", async () => {
     await page.keyboard.press("Enter");
     await dock.getByText("Session ended", { exact: true }).waitFor();
     await page.waitForFunction(async (id) => {
-      const { items } = await (await fetch("/api/terminals")).json();
+      const { items }: GetResult<"/api/terminals"> = await (
+        await fetch("/api/terminals")
+      ).json();
       return items.find((item) => item.id === id)?.status === "exited";
     }, liveShell);
     await page.waitForFunction(() =>
@@ -847,17 +908,17 @@ test("Terminal dock", async () => {
     );
     const after = await readTestState(liveOrigin);
     const ownerBefore = initial.threads.find(
-      (item) => item.id === sessions.items[0].agent,
+      (item) => item.id === required(sessions.items[0]).agent,
     );
     const ownerAfter = after.threads.find(
-      (item) => item.id === sessions.items[0].agent,
+      (item) => item.id === required(sessions.items[0]).agent,
     );
     assert.equal(
-      ownerBefore.turnId,
-      ownerAfter.turnId,
+      required(ownerBefore).turnId,
+      required(ownerAfter).turnId,
       "A user shell must not start an agent turn",
     );
-    assert.equal(ownerBefore.status, ownerAfter.status);
+    assert.equal(required(ownerBefore).status, required(ownerAfter).status);
     await page.screenshot({
       path: join(liveRoot, "terminal-live-desktop.png"),
     });
@@ -872,7 +933,9 @@ test("Terminal dock", async () => {
     // This shell already exited. Closing its saved session needs no stop confirmation.
     assert.equal((await closeResponse).status(), 200, "close request succeeds");
     await page.waitForFunction(async (id) => {
-      const { items } = await (await fetch("/api/terminals")).json();
+      const { items }: GetResult<"/api/terminals"> = await (
+        await fetch("/api/terminals")
+      ).json();
       return !items.some((item) => item.id === id);
     }, liveShell);
     await dock

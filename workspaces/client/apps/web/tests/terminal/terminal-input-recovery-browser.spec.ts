@@ -1,6 +1,10 @@
+import type { Route } from "@playwright/test";
+import type { PostBody, PostResult } from "../../src/apiTypes.ts";
+import type { ResourceRef } from "../playwright.ts";
+import { required, fixturePostBody } from "../teams/helpers.ts";
+import { createFixtureViteServer as createServer } from "../playwright.ts";
 // Actual TerminalDock input callbacks and HTTP, with an isolated xterm fixture.
 import assert from "node:assert/strict";
-import { createRequire } from "node:module";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -21,10 +25,6 @@ test("terminal-input-recovery-browser", async ({ page: fixturePage }) => {
   const root = fileURLToPath(new URL("../../../../../../", import.meta.url));
   const workspaceId = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
   const identity = syncIdentityFixture(workspaceId);
-  const require = createRequire(
-    join(root, "workspaces/client/apps/web/package.json"),
-  );
-  const { createServer } = await import(require.resolve("vite"));
   const temporary = await mkdtemp(
     join(tmpdir(), "studio-terminal-input-recovery-"),
   );
@@ -46,44 +46,12 @@ test("terminal-input-recovery-browser", async ({ page: fixturePage }) => {
         name: "terminal-input-harness",
         enforce: "pre",
         resolveId(id) {
-          if (id === "virtual:terminal-input") return "\0" + id;
-          if (id === "@xterm/xterm") return "\0terminal-stub";
-          if (id === "@xterm/addon-fit") return "\0fit-stub";
-        },
-        load(id) {
-          if (id === "\0terminal-stub")
-            return `export class Terminal {
-              constructor(options) {
-                this.options = options; this.cols = 100; this.rows = 24;
-                window.terminals.push(this); window.currentTerminal = this;
-              }
-              loadAddon() {} open() {} reset() {} write() {}
-              dispose() { this.disposed = true; }
-              onData(callback) { this.input = callback; }
-            }`;
-          if (id === "\0fit-stub") return "export class FitAddon { fit() {} }";
-          if (id === "\0virtual:terminal-input")
-            return `
-              import React from "react";
-              import {createRoot} from "react-dom/client";
-              import {MantineProvider} from "@mantine/core";
-              import TerminalDock from "/src/components/TerminalDock.tsx";
-              import {setToken} from "/src/api.ts";
-              export function mount(shell) {
-                window.reactRoot?.unmount();
-                localStorage.setItem("codex.terminal.open", "true");
-                localStorage.setItem("codex.terminal.selected", JSON.stringify("shell:" + shell));
-                setToken("fixture-token");
-                const agent = {id:"agent", name:"Fixture", source:"managed", status:"idle"};
-                const root = createRoot(document.getElementById("app"));
-                root.render(React.createElement(MantineProvider, null,
-                  React.createElement(TerminalDock, {
-                    data:{threads:[agent]}, agent,
-                    notify: value => window.notices.push(value),
-                  })));
-                window.reactRoot = root;
-              }
-            `;
+          if (id === "@xterm/xterm")
+            return fileURLToPath(
+              new URL("./terminal-stub.ts", import.meta.url),
+            );
+          if (id === "@xterm/addon-fit")
+            return fileURLToPath(new URL("./fit-stub.ts", import.meta.url));
         },
       },
     ],
@@ -93,13 +61,19 @@ test("terminal-input-recovery-browser", async ({ page: fixturePage }) => {
   try {
     const page = fixturePage;
     page.setDefaultTimeout(5000);
-    const errors = [],
-      posts = [],
-      expected = [];
-    const held = new Map(),
-      receipts = new Map(),
-      holdTexts = new Set();
-    const failOutput = new Set();
+    const errors: string[] = [],
+      posts: PostBody<"/api/terminals/input">[] = [],
+      expected: string[] = [];
+    const held = new Map<string, Route>(),
+      receipts = new Map<
+        string,
+        {
+          body: PostBody<"/api/terminals/input">;
+          reply: PostResult<"/api/terminals/input">;
+        }
+      >(),
+      holdTexts = new Set<string>();
+    const failOutput = new Set<string>();
     page.on("pageerror", (error) => errors.push(error.message));
     await page.route("**/api/sync/identity", (route) =>
       route.fulfill({
@@ -114,7 +88,7 @@ test("terminal-input-recovery-browser", async ({ page: fixturePage }) => {
       }),
     );
     await page.route("**/api/sync/stream?*", (route) => {
-      const resources = JSON.parse(
+      const resources: ResourceRef[] = JSON.parse(
         new URL(route.request().url()).searchParams.get("resources") || "[]",
       );
       return route.fulfill({
@@ -159,7 +133,7 @@ test("terminal-input-recovery-browser", async ({ page: fixturePage }) => {
     );
     await page.route(/\/api\/terminals\/output(?:\?.*)?$/, (route) => {
       const id = new URL(route.request().url()).searchParams.get("id");
-      if (failOutput.delete(id))
+      if (failOutput.delete(id ?? ""))
         return route.fulfill({
           status: 503,
           json: { error: "Output connection lost" },
@@ -174,7 +148,7 @@ test("terminal-input-recovery-browser", async ({ page: fixturePage }) => {
       route.fulfill({ json: { ok: true }, headers: apiSchemaHeaders() }),
     );
     await page.route("**/api/terminals/input", (route) => {
-      const body = route.request().postDataJSON();
+      const body = fixturePostBody(route, "/api/terminals/input");
       assert.equal(
         route.request().headers()["x-canvas-token"],
         "fixture-token",
@@ -203,54 +177,71 @@ test("terminal-input-recovery-browser", async ({ page: fixturePage }) => {
         headers: apiSchemaHeaders(),
       });
     });
-    await page.goto(server.resolvedUrls.local[0] + "check");
+    await page.goto(required(server.resolvedUrls?.local[0]) + "check");
     await page.evaluate(async () => {
-      window.terminals = [];
-      window.notices = [];
-      window.advance = 0;
+      window.terminalInputRecoveryTerminals = [];
+      window.terminalInputRecoveryNotices = [];
+      window.terminalInputRecoveryAdvance = 0;
       const now = Date.now;
-      Date.now = () => now() + window.advance;
-      window.fixture = await import("/@id/__x00__virtual:terminal-input");
+      Date.now = () => now() + window.terminalInputRecoveryAdvance;
     });
-    const until = async (check, message) => {
+    await page.addScriptTag({
+      type: "module",
+      url: "/tests/terminal/terminal-input-fixture.ts",
+    });
+    await page.waitForFunction(
+      () => typeof window.terminalInputRecoveryMount === "function",
+    );
+    const until = async (
+      check: () => boolean | Promise<boolean>,
+      message: string,
+    ) => {
       const deadline = Date.now() + 5000;
       while (!(await check())) {
         assert.ok(Date.now() < deadline, message);
         await new Promise((resolve) => setTimeout(resolve, 10));
       }
     };
-    const count = () => page.evaluate(() => window.terminals.length);
+    const count = () =>
+      page.evaluate(() => window.terminalInputRecoveryTerminals.length);
     const mount = async () => {
       const before = await count();
-      await page.evaluate(() => window.fixture.mount("shell-a"));
+      await page.evaluate(() => window.terminalInputRecoveryMount("shell-a"));
       await page.waitForFunction(
         (before) =>
-          window.terminals.length > before && window.currentTerminal.input,
+          window.terminalInputRecoveryTerminals.length > before &&
+          window.terminalInputRecoveryCurrentTerminal.input,
         before,
       );
       assert.equal(
-        await page.evaluate(() => window.currentTerminal.options.disableStdin),
+        await page.evaluate(
+          () =>
+            window.terminalInputRecoveryCurrentTerminal.options.disableStdin,
+        ),
         false,
       );
     };
-    const input = (text) =>
-      page.evaluate((text) => window.currentTerminal.input(text), text);
-    const observed = (text) =>
+    const input = (text: string) =>
+      page.evaluate(
+        (text) => window.terminalInputRecoveryCurrentTerminal.input?.(text),
+        text,
+      );
+    const observed = (text: string) =>
       until(
         () => posts.some((post) => post.text === text),
         `Input ${text} must start`,
       );
-    const accepted = async (text, hold = false) => {
+    const accepted = async (text: string, hold = false) => {
       expected.push(text);
       if (hold) holdTexts.add(text);
       await input(text);
       await observed(text);
     };
-    const reply = async (text, outcome = "success") => {
-      const route = held.get(text);
+    const reply = async (text: string, outcome = "success") => {
+      const route = required(held.get(text));
       assert.ok(route, `Expected held input ${text}`);
-      const body = route.request().postDataJSON();
-      const response =
+      const body = fixturePostBody(route, "/api/terminals/input");
+      const response: PostResult<"/api/terminals/input"> =
         outcome === "uncertain"
           ? {
               ok: false,
@@ -258,7 +249,7 @@ test("terminal-input-recovery-browser", async ({ page: fixturePage }) => {
               error: "Late input outcome unknown",
             }
           : { ok: true, delivery: "sent" };
-      receipts.get(body.request_id).reply = response;
+      required(receipts.get(body.request_id)).reply = response;
       await route.fulfill(
         outcome === "error"
           ? {
@@ -273,7 +264,10 @@ test("terminal-input-recovery-browser", async ({ page: fixturePage }) => {
     };
     const assertUnpaused = async () => {
       assert.equal(
-        await page.evaluate(() => window.currentTerminal.options.disableStdin),
+        await page.evaluate(
+          () =>
+            window.terminalInputRecoveryCurrentTerminal.options.disableStdin,
+        ),
         false,
       );
       assert.equal(
@@ -291,7 +285,8 @@ test("terminal-input-recovery-browser", async ({ page: fixturePage }) => {
         .click();
       await page.waitForFunction(
         (before) =>
-          window.terminals.length > before && window.currentTerminal.input,
+          window.terminalInputRecoveryTerminals.length > before &&
+          window.terminalInputRecoveryCurrentTerminal.input,
         before,
       );
       await assertUnpaused();
@@ -319,14 +314,16 @@ test("terminal-input-recovery-browser", async ({ page: fixturePage }) => {
     await accepted("timeout-old", true);
     await input("discard-timeout");
     await page.evaluate(() => {
-      window.advance += 16000;
+      window.terminalInputRecoveryAdvance += 16000;
       window.dispatchEvent(new Event("pageshow"));
     });
     await page
       .getByText(/Input paused\. Reconnect before you continue\./)
       .waitFor();
     assert.equal(
-      await page.evaluate(() => window.currentTerminal.options.disableStdin),
+      await page.evaluate(
+        () => window.terminalInputRecoveryCurrentTerminal.options.disableStdin,
+      ),
       true,
     );
     await page.getByText(/Previous input delivery is uncertain\./).waitFor();
@@ -335,7 +332,8 @@ test("terminal-input-recovery-browser", async ({ page: fixturePage }) => {
     await page.getByRole("button", { name: "Reconnect", exact: true }).click();
     await page.waitForFunction(
       (before) =>
-        window.terminals.length > before && window.currentTerminal.input,
+        window.terminalInputRecoveryTerminals.length > before &&
+        window.terminalInputRecoveryCurrentTerminal.input,
       beforeTimeoutReconnect,
     );
     await assertUnpaused();
@@ -350,19 +348,23 @@ test("terminal-input-recovery-browser", async ({ page: fixturePage }) => {
       await accepted(`${outcome}-old`, true);
       await input(`discard-${outcome}`);
       await page.evaluate(() => {
-        window.advance += 16000;
+        window.terminalInputRecoveryAdvance += 16000;
         window.dispatchEvent(new Event("pageshow"));
       });
       await page
         .getByText(/Input paused\. Reconnect before you continue\./)
         .waitFor();
       await page.evaluate(
-        () => (window.retiredTerminal = window.currentTerminal),
+        () =>
+          (window.terminalInputRecoveryRetiredTerminal =
+            window.terminalInputRecoveryCurrentTerminal),
       );
       await reconnect();
       await page.getByText(/Previous input delivery is uncertain\./).waitFor();
       await page.evaluate(() =>
-        window.retiredTerminal.input("discard-retired-callback"),
+        window.terminalInputRecoveryRetiredTerminal.input?.(
+          "discard-retired-callback",
+        ),
       );
       await accepted(`${outcome}-fresh`, true);
       await reply(`${outcome}-old`, outcome);
@@ -383,15 +385,18 @@ test("terminal-input-recovery-browser", async ({ page: fixturePage }) => {
     await accepted("unmount-old", true);
     await input("discard-unmount");
     await page.evaluate(() => {
-      window.retiredTerminal = window.currentTerminal;
-      window.reactRoot.unmount();
-      window.reactRoot = null;
+      window.terminalInputRecoveryRetiredTerminal =
+        window.terminalInputRecoveryCurrentTerminal;
+      window.terminalInputRecoveryRoot?.unmount();
+      window.terminalInputRecoveryRoot = null;
     });
     await mount();
     await accepted("unmount-fresh", true);
     await reply("unmount-old", "error");
     await page.evaluate(() =>
-      window.retiredTerminal.input("discard-unmounted-callback"),
+      window.terminalInputRecoveryRetiredTerminal.input?.(
+        "discard-unmounted-callback",
+      ),
     );
     await assertUnpaused();
     await reply("unmount-fresh");
@@ -407,12 +412,13 @@ test("terminal-input-recovery-browser", async ({ page: fixturePage }) => {
       .click();
     await page.waitForFunction(
       (before) =>
-        window.terminals.length > before && window.currentTerminal.input,
+        window.terminalInputRecoveryTerminals.length > before &&
+        window.terminalInputRecoveryCurrentTerminal.input,
       beforeSwitch,
     );
     await accepted("switch-fresh", true);
     assert.equal(
-      posts.find((post) => post.text === "switch-fresh").id,
+      required(posts.find((post) => post.text === "switch-fresh")).id,
       "shell-b",
     );
     await reply("switch-old");

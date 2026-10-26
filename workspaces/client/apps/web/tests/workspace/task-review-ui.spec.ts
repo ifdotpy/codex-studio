@@ -1,6 +1,10 @@
-import { createRequire } from "node:module";
-const { test, expect } = createRequire(import.meta.url)("@playwright/test");
-import { createServer } from "vite";
+import type { TaskReviewFrames } from "./task-review-stream.ts";
+import type { components } from "../../src/generated/api.ts";
+import type { PostBody } from "../../src/apiTypes.ts";
+import { required, fixturePostBody } from "../teams/helpers.ts";
+import { fileURLToPath } from "node:url";
+import { test, expect } from "../playwright.ts";
+import { createFixtureViteServer as createServer } from "../playwright.ts";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -11,7 +15,6 @@ test("Tasks show gate evidence and schema refusals and require an override reaso
 }, testInfo) => {
   const root = resolve(import.meta.dirname, "../..");
   const cacheDir = await mkdtemp(join(tmpdir(), "task-review-ui-"));
-  const entry = join(root, "task-review-fixture.tsx");
   const server = await createServer({
     configFile: false,
     root,
@@ -25,39 +28,19 @@ test("Tasks show gate evidence and schema refusals and require an override reaso
           server.middlewares.use("/check", (_req, res) => {
             res.setHeader("Content-Type", "text/html");
             res.end(
-              '<meta name="viewport" content="width=device-width, initial-scale=1"><div id="root"></div><script type="module" src="/task-review-fixture.tsx"></script>',
+              '<meta name="viewport" content="width=device-width, initial-scale=1"><div id="root"></div><script type="module" src="/tests/workspace/task-review-fixture.tsx"></script>',
             );
           });
         },
         resolveId(id) {
-          if (id === "/task-review-fixture.tsx") return entry;
           if (id.endsWith("/servers/ServerServicesContext"))
-            return "\0task-review-api";
-          if (id.endsWith("/sync/subscriptions")) return "\0task-review-stream";
-        },
-        load(id) {
-          if (id === "\0task-review-stream")
-            return `
-            import {useSyncExternalStore} from 'react';
-            const subscribe=accept=>{window.addEventListener('task-review-frame',accept);return()=>window.removeEventListener('task-review-frame',accept)};
-            export const useSubscription=ref=>useSyncExternalStore(subscribe,()=>window.taskReviewFrames[ref.kind]);`;
-          if (id === "\0task-review-api")
-            return `
-          const api={
-            get:async(path,options)=>{const response=await fetch(path+'?'+new URLSearchParams(options?.query));if(!response.ok)throw new Error('Read failed');return response.json();},
-            post:async(path,body)=>{const response=await fetch(path,{method:'POST',body:JSON.stringify(body)});const result=await response.json();if(!response.ok)throw new Error(result.error);return result;},
-            apiDownload:async()=>({blob:new Blob(['failed check']),name:'gate.log',truncated:false}),
-          };
-          export const useServerApi=()=>api;
-          export const useServerStorage=()=>localStorage;`;
-          if (id === entry)
-            return `
-          import React from 'react';
-          import {createRoot} from 'react-dom/client';
-          import {MantineProvider} from '@mantine/core';
-          import '@mantine/core/styles.css';
-          import Tasks from '/src/components/shell/Tasks.tsx';
-          createRoot(document.getElementById('root')).render(<MantineProvider><main style={{maxWidth:1100,margin:'0 auto',padding:8}}><h1>Tasks</h1><Tasks agentId="worker" rootId="lead"/></main></MantineProvider>);`;
+            return fileURLToPath(
+              new URL("./task-review-api.ts", import.meta.url),
+            );
+          if (id.endsWith("/sync/subscriptions"))
+            return fileURLToPath(
+              new URL("./task-review-stream.ts", import.meta.url),
+            );
         },
       },
     ],
@@ -78,7 +61,7 @@ test("Tasks show gate evidence and schema refusals and require an override reaso
     decisions: [],
     results: [],
   };
-  const tasks = [
+  const tasks: components["schemas"]["WorkItem"][] = [
     {
       ...common,
       id: "review-task",
@@ -144,9 +127,9 @@ test("Tasks show gate evidence and schema refusals and require an override reaso
       dependencies: ["ready-task"],
     },
   ];
-  const writes = [];
-  let taskDefaultGate = gate;
-  const frames = () => ({
+  const writes: PostBody<"/api/work">[] = [];
+  let taskDefaultGate: components["schemas"]["TaskAcceptanceGate"] = gate;
+  const frames = (): TaskReviewFrames => ({
     agentDetail: {
       data: { id: "lead", taskDefaultGate },
       status: "live",
@@ -158,7 +141,7 @@ test("Tasks show gate evidence and schema refusals and require an override reaso
       error: null,
     },
   });
-  const reads = [];
+  const reads: string[] = [];
   page.on("request", (request) => {
     if (
       request.method() === "GET" &&
@@ -167,19 +150,20 @@ test("Tasks show gate evidence and schema refusals and require an override reaso
       reads.push(request.url());
   });
   let lostAccept = true;
-  const errors = [];
+  const errors: string[] = [];
   page.on("pageerror", (error) => errors.push(error.message));
   try {
     await server.listen();
-    await page.addInitScript((value) => {
+    await page.addInitScript((json) => {
+      const value: TaskReviewFrames = JSON.parse(json);
       window.taskReviewFrames = value;
-    }, frames());
+    }, JSON.stringify(frames()));
     await page.route("**/api/work*", async (route) => {
       if (route.request().method() === "GET")
         return route.fulfill({
           json: { rootId: "lead", taskDefaultGate, items: tasks, tasks },
         });
-      const body = route.request().postDataJSON();
+      const body = fixturePostBody(route, "/api/work");
       writes.push(body);
       if (body.action === "accept") {
         if (lostAccept) {
@@ -189,52 +173,59 @@ test("Tasks show gate evidence and schema refusals and require an override reaso
             json: { error: "The reply was lost. Retry the same action." },
           });
         }
-        tasks[0].status = "accepted";
-        tasks[0].version++;
-        tasks[0].decisions.push({
+        required(tasks[0]).status = "accepted";
+        required(tasks[0]).version++;
+        required(required(tasks[0]).decisions).push({
           decision: "accept",
-          reason: body.result,
+          reason:
+            typeof body.result === "string"
+              ? body.result
+              : JSON.stringify(body.result),
           gateOverrideReason: body.override_reason,
           by: "lead",
           created: 3,
         });
       } else if (body.action === "update") {
-        if (body.result_schema?.type === "invalid")
+        if (
+          typeof body.result_schema === "object" &&
+          body.result_schema?.type === "invalid"
+        )
           return route.fulfill({
             status: 400,
             json: { error: "Invalid result_schema at /type: unknown type" },
           });
-        Object.assign(tasks[1], {
+        Object.assign(required(tasks[1]), {
           title: body.title,
           description: body.description,
-          resultSchema: body.result_schema,
+          resultSchema: fixtureResultSchema(body.result_schema),
           gate: body.gate,
-          version: tasks[1].version + 1,
+          version: required(tasks[1]).version + 1,
         });
       } else if (body.action === "set_default_gate")
-        taskDefaultGate = body.gate;
+        taskDefaultGate = required(body.gate);
       else if (body.action === "create")
-        tasks.push({
-          ...common,
-          ...body,
-          id: "created-task",
-          status: body.status,
-          resultSchema: body.result_schema,
-        });
+        tasks.push(
+          fixtureWorkItem({
+            ...common,
+            ...body,
+            id: "created-task",
+            status: required(body.status),
+            resultSchema: fixtureResultSchema(body.result_schema),
+          }),
+        );
       else if (body.action === "reject") {
-        tasks[0].status = "ready";
-        tasks[0].version++;
+        required(tasks[0]).status = "ready";
+        required(tasks[0]).version++;
       }
-      await page.evaluate((value) => {
+      await page.evaluate((json) => {
+        const value: TaskReviewFrames = JSON.parse(json);
         window.taskReviewFrames = value;
         window.dispatchEvent(new Event("task-review-frame"));
-      }, frames());
+      }, JSON.stringify(frames()));
       return route.fulfill({ json: { ok: true } });
     });
     await page.setViewportSize({ width: 320, height: 800 });
-    await page.goto(
-      `http://127.0.0.1:${server.httpServer.address().port}/check`,
-    );
+    await page.goto(required(server.resolvedUrls?.local[0]) + "check");
     await page.getByRole("button", { name: /Review the release/ }).click();
     const detail = page.getByRole("article", { name: "Task detail" });
     await expect(detail).toContainText("Gate status: failed");
@@ -306,7 +297,7 @@ test("Tasks show gate evidence and schema refusals and require an override reaso
       override_reason:
         "The check needs the staging service. I verified the release locally.",
     });
-    expect(accepts[0].id).toBeTruthy();
+    expect(required(accepts[0]).id).toBeTruthy();
 
     await page.getByLabel("Filter by status").selectOption("blocked");
     await expect(
@@ -376,3 +367,15 @@ test("Tasks show gate evidence and schema refusals and require an override reaso
     await rm(cacheDir, { recursive: true, force: true });
   }
 });
+
+/** The renderer serialized this request schema as JSON before the fixture received it. */
+function fixtureResultSchema(
+  schema: PostBody<"/api/work">["result_schema"],
+): components["schemas"]["WorkItem"]["resultSchema"] {
+  return schema === undefined ? undefined : JSON.parse(JSON.stringify(schema));
+}
+
+/** The fixture persists the renderer-authored task creation document as JSON. */
+function fixtureWorkItem(value: unknown): components["schemas"]["WorkItem"] {
+  return JSON.parse(JSON.stringify(value));
+}

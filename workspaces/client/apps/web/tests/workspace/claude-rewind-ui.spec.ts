@@ -1,6 +1,8 @@
-import { createRequire } from "node:module";
-const { test, expect } = createRequire(import.meta.url)("@playwright/test");
-import { createServer } from "vite";
+import type { PostBody } from "../../src/apiTypes.ts";
+import { required, fixturePostBody } from "../teams/helpers.ts";
+import { fileURLToPath } from "node:url";
+import { test, expect } from "../playwright.ts";
+import { createFixtureViteServer as createServer } from "../playwright.ts";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -10,7 +12,6 @@ test("Claude checkpoints show the reason and send one combined restore identity"
 }, testInfo) => {
   const root = resolve(import.meta.dirname, "../..");
   const cacheDir = await mkdtemp(join(tmpdir(), "claude-rewind-ui-"));
-  const entry = join(root, "rewind-fixture.tsx");
   const server = await createServer({
     configFile: false,
     root,
@@ -23,44 +24,25 @@ test("Claude checkpoints show the reason and send one combined restore identity"
           server.middlewares.use("/check", (_req, res) => {
             res.setHeader("Content-Type", "text/html");
             res.end(
-              '<div id="root"></div><script type="module" src="/rewind-fixture.tsx"></script>',
+              '<div id="root"></div><script type="module" src="/tests/workspace/rewind-fixture.tsx"></script>',
             );
           });
         },
         resolveId(id) {
-          if (id === "/rewind-fixture.tsx") return entry;
           if (id.endsWith("/servers/ServerServicesContext"))
-            return "\0rewind-api";
-        },
-        load(id) {
-          if (id === "\0rewind-api")
-            return `
-          const post = async (path,body) => {const response=await fetch(path,{method:'POST',body:JSON.stringify(body)});const result=await response.json();if(!response.ok)throw new Error(result.error);return result;};
-          const api={post,saved:(key,fallback)=>JSON.parse(localStorage.getItem(key)||'null')||fallback};
-          export const useServerApi=()=>api;
-          export const useServerStorage=()=>localStorage;`;
-          if (id === entry)
-            return `
-          import React,{useState} from 'react';
-          import {createRoot} from 'react-dom/client';
-          import {MantineProvider} from '@mantine/core';
-          import '@mantine/core/styles.css';
-          import Restore from '/src/components/ClaudeCheckpointRestore.tsx';
-          const agent={id:'worker',provider:'claude',imageWorkspace:true,worktreeReady:false,status:'paused'};
-          function Fixture(){const [revision,setRevision]=useState(0);return <MantineProvider><Restore agent={agent} revision={revision} onRestored={()=>setRevision(v=>v+1)}/></MantineProvider>;}
-          createRoot(document.getElementById('root')).render(<Fixture/>);`;
+            return fileURLToPath(new URL("./rewind-api.ts", import.meta.url));
         },
       },
     ],
   });
-  const writes = [];
-  const errors = [];
-  const releases = [];
+  const writes: PostBody<"/api/claude/session">[] = [];
+  const errors: string[] = [];
+  const releases: PostBody<"/api/claude/file-backups">[] = [];
   page.on("pageerror", (error) => errors.push(error.message));
   try {
     await server.listen();
     await page.route("**/api/claude/file-backups", async (route) => {
-      const body = route.request().postDataJSON();
+      const body = fixturePostBody(route, "/api/claude/file-backups");
       if (body.release) releases.push(body);
       return route.fulfill({
         json: {
@@ -73,7 +55,7 @@ test("Claude checkpoints show the reason and send one combined restore identity"
       });
     });
     await page.route("**/api/claude/session", async (route) => {
-      const body = route.request().postDataJSON();
+      const body = fixturePostBody(route, "/api/claude/session");
       if (body.action === "state")
         return route.fulfill({
           json: {
@@ -123,9 +105,7 @@ test("Claude checkpoints show the reason and send one combined restore identity"
       );
     });
     await page.setViewportSize({ width: 320, height: 800 });
-    await page.goto(
-      `http://127.0.0.1:${server.httpServer.address().port}/check`,
-    );
+    await page.goto(required(server.resolvedUrls?.local[0]) + "check");
     const select = page.getByLabel("Message to restore before");
     const button = page.getByRole("button", {
       name: "Restore files and conversation",
@@ -176,7 +156,9 @@ test("Claude checkpoints show the reason and send one combined restore identity"
       turn_id: "ready",
       restore_files: true,
     });
-    expect(writes[0].request_id).toBeTruthy();
+    const firstWrite = required(writes[0]);
+    if (firstWrite.action !== "rollback") throw new Error("Expected rollback");
+    expect(firstWrite.request_id).toBeTruthy();
     await page.setViewportSize({ width: 1200, height: 800 });
     await select.selectOption("ready");
     await expect(button).toBeEnabled();
