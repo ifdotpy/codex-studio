@@ -146,10 +146,9 @@ try {
       ];
       if (!serviceFirst) parts.reverse();
       const groups = await inputGroups(parts, async (rows) =>
-        rows.map((row) => {
-          assert(row.type === "text");
-          return { type: row.type, text: row.text };
-        }),
+        (rows as Extract<BridgeInput, { type: "text" }>[]).map(
+          ({ type, text }) => ({ type, text }),
+        ),
       );
       const messages = sdkInputMessages(session.id, identity, groups, nativeId);
       const frames: SDKMessage[] = [];
@@ -182,12 +181,12 @@ try {
       );
       session.turns.push({
         id: identity,
-        nativeMessageId: messages[0]?.uuid,
+        nativeMessageId: messages[0].uuid,
         status: "completed",
         items: [
           {
             type: "userMessage",
-            nativeId: messages.at(-1)?.uuid,
+            nativeId: messages.at(-1)!.uuid,
             nativeIds: messages.map((message) => message.uuid),
           },
         ],

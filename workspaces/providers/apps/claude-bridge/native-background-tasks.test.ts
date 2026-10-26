@@ -40,8 +40,11 @@ test.each([
     const taskEvents = () =>
       bridge.notes.filter(
         (n): n is BridgeNoteFor<"item/started" | "item/completed"> =>
-          (n.method === "item/started" || n.method === "item/completed") &&
-          n.params.item.id === "task:native-1",
+          (
+            n.params as
+              | Partial<import("./bridge-protocol.ts").BridgeItemEvent>
+              | undefined
+          )?.item?.id === "task:native-1",
       );
     assert.deepEqual(
       taskEvents().map((n) => [n.method, n.params.item.status]),

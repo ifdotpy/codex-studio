@@ -1,5 +1,5 @@
 import { afterEach, expect, test, vi } from "vitest";
-import { watchStalls, type WatchedQuery, type Stall } from "./stall-watch.ts";
+import { watchStalls, type WatchedQuery } from "./stall-watch.ts";
 
 afterEach(() => vi.useRealTimers());
 
@@ -8,12 +8,8 @@ test("the watchdog stays idle and fires the nearest deadline once", () => {
   vi.setSystemTime(0);
   const queries = new Map<string, WatchedQuery>();
   const waits = new Map();
-  const recover = vi.fn(
-    (
-      _session: WatchedQuery["session"],
-      active: WatchedQuery,
-      _stall: Stall,
-    ) => {
+  const recover = vi.fn<Parameters<typeof watchStalls>[3]>(
+    (_session: WatchedQuery["session"], active: WatchedQuery) => {
       active.stall = {};
     },
   );
@@ -28,8 +24,8 @@ test("the watchdog stays idle and fires the nearest deadline once", () => {
   vi.advanceTimersByTime(10000);
   expect(vi.getTimerCount()).toBe(0);
   const active: WatchedQuery = {
-    turn: { id: "turn", items: [] },
-    session: { id: "session", cwd: "/fixture", turns: [] },
+    turn: {} as import("./session-state.ts").Turn,
+    session: {} as import("./session-state.ts").Session,
     lastEventAt: Date.now(),
     toolClocks: new Map([
       ["later", { startedAt: Date.now(), timeoutMs: 500 }],
@@ -54,15 +50,15 @@ test("progress, results and Studio waits rearm or remove the watchdog", () => {
   vi.setSystemTime(0);
   const clock = { startedAt: 0, timeoutMs: null };
   const active: WatchedQuery = {
-    turn: { id: "turn", items: [] },
-    session: { id: "session", cwd: "/fixture", turns: [] },
+    turn: {} as import("./session-state.ts").Turn,
+    session: {} as import("./session-state.ts").Session,
     lastEventAt: 0,
     toolClocks: new Map([["tool", clock]]),
   };
   const queries = new Map([["thread", active]]);
   const waits = new Map();
-  const recover = vi.fn(
-    (_session: WatchedQuery["session"], query: WatchedQuery, _stall: Stall) => {
+  const recover = vi.fn<Parameters<typeof watchStalls>[3]>(
+    (_session: WatchedQuery["session"], query: WatchedQuery) => {
       query.stall = {};
     },
   );
@@ -94,7 +90,7 @@ test("progress, results and Studio waits rearm or remove the watchdog", () => {
   active.turn = null;
   arm();
   expect(vi.getTimerCount()).toBe(0);
-  active.turn = { id: "turn", items: [] };
+  active.turn = {} as import("./session-state.ts").Turn;
   arm();
   queries.clear();
   arm();
@@ -105,8 +101,8 @@ test("one timer follows the nearest query and preserves an unchanged deadline", 
   vi.useFakeTimers();
   vi.setSystemTime(0);
   const makeActive = (timeoutMs: number): WatchedQuery => ({
-    turn: { id: "turn", items: [] },
-    session: { id: "session", cwd: "/fixture", turns: [] },
+    turn: {} as import("./session-state.ts").Turn,
+    session: {} as import("./session-state.ts").Session,
     lastEventAt: 0,
     toolClocks: new Map([["tool", { startedAt: 0, timeoutMs }]]),
   });

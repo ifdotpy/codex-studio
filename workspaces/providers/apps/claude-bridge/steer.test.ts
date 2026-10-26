@@ -131,7 +131,7 @@ test.concurrent("an echoed steer is acknowledged once inside its running turn", 
     (
       n,
     ): n is import("./testing/bridge-harness.ts").BridgeNoteFor<"item/completed"> =>
-      n.method === "item/completed" && ack(bridge, "event-1") === n,
+      ack(bridge, "event-1") === n,
   );
   assert.equal(delivered.params.turnId, turn);
   assert.equal(delivered.params.item.id, "event-1");
@@ -958,16 +958,22 @@ test.concurrent("backpressured output waits for the prior turn's final save", as
   await bridge.call("thread/loaded/list", {});
   const premature = bridge.notes.find(
     (n): n is BridgeNoteFor<"item/started" | "item/completed"> =>
-      (n.method === "item/started" || n.method === "item/completed") &&
-      n.params.item.text === "after final save",
+      (
+        n.params as
+          | Partial<import("./bridge-protocol.ts").BridgeItemEvent>
+          | undefined
+      )?.item?.text === "after final save",
   );
   await release(bridge, ".release-final-save");
   await completed(bridge, old);
   assert.equal(premature, undefined);
   const answer = await bridge.note(
     (n): n is BridgeNoteFor<"item/started" | "item/completed"> =>
-      (n.method === "item/started" || n.method === "item/completed") &&
-      n.params.item.text === "after final save",
+      (
+        n.params as
+          | Partial<import("./bridge-protocol.ts").BridgeItemEvent>
+          | undefined
+      )?.item?.text === "after final save",
   );
   assert.notEqual(answer.params.turnId, old);
 
