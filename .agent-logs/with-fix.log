@@ -1,0 +1,17 @@
+   Compiling studio-runtime-store v0.1.0 (/Users/igor/Projects/codex-agents-uncertain-start/workspaces/runtime/packages/runtime-store)
+   Compiling studio-runtime-process v0.1.0 (/Users/igor/Projects/codex-agents-uncertain-start/workspaces/runtime/packages/runtime-process)
+   Compiling studio-runtime-services v0.1.0 (/Users/igor/Projects/codex-agents-uncertain-start/workspaces/runtime/packages/runtime-services)
+warning: linker stderr: ld: __eh_frame section too large (max 16MB) to encode dwarf unwind offsets in compact unwind table, performance of exception handling might be affected
+  |
+  = note: `#[warn(linker_messages)]` on by default
+
+warning: `studio-runtime-services` (lib test) generated 1 warning
+    Finished `test` profile [unoptimized] target(s) in 2m 08s
+     Running unittests src/lib.rs (target/debug/deps/studio_runtime_services-0762f7d398f205e9)
+
+running 2 tests
+test account_worker::tests::disconnected_unknown_start::a_disconnected_unknown_start_absent_from_history_stays_uncertain ... ok
+test account_worker::tests::disconnected_unknown_start::a_disconnect_after_an_unknown_start_checks_native_history_once ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 1596 filtered out; finished in 1.87s
+

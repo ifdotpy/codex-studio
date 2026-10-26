@@ -1,0 +1,18 @@
+Scope: all 5 workspace projects
+✓ Lockfile passes supply-chain policies (verified 5h ago)
+Lockfile is up to date, resolution step is skipped
+Packages are cloned from the content-addressable store to the virtual store.
+  Content-addressable store is at: /Users/igor/Library/pnpm/store/v11
+  Virtual store is at:             node_modules/.pnpm
+Progress: resolved 529, reused 529, downloaded 0, added 526
+Packages: +667
+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+Progress: resolved 667, reused 667, downloaded 0, added 667, done
+
+devDependencies:
++ openapi-typescript 7.13.0
++ oxfmt 0.74.0
++ oxlint 1.89.0
++ typescript 5.9.3
+
+Done in 2.8s using pnpm v12.15.0
