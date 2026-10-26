@@ -8,7 +8,7 @@ export default function AccountSignInNotice({
   errors,
   onSignIn,
 }: {
-  account?: Account;
+  account?: Account | undefined;
   errors: unknown[];
   onSignIn: (accountKey: string) => void;
 }) {

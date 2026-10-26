@@ -30,7 +30,10 @@ export function mergeSidebar(
   const identities = new Set(sources.map((source) => source.id));
   if (identities.size !== sources.length)
     throw new Error("Duplicate sidebar source identity.");
-  const single = !combined && sources.length === 1;
+  const [firstSource] = sources;
+  const singleSource =
+    !combined && sources.length === 1 ? firstSource : undefined;
+  const single = singleSource !== undefined;
   const sourceById = new Map(sources.map((source) => [source.id, source]));
   const chatReferences = new Map<string, SidebarReference>();
   const offlineServers = new Set<string>();
@@ -232,18 +235,34 @@ export function mergeSidebar(
               id,
               cwd: path,
               serverId: source.id,
-              rootId: chat.rootId
-                ? chatKey(source.id, chat.rootId)
-                : chat.rootId,
-              parentId: chat.parentId
-                ? chatKey(source.id, chat.parentId)
-                : chat.parentId,
-              sharedRoomId: chat.sharedRoomId
-                ? chatKey(source.id, chat.sharedRoomId)
-                : chat.sharedRoomId,
-              projectFolder: chat.projectFolder
-                ? folderKey(source.id, chat.cwd || "", chat.projectFolder)
-                : chat.projectFolder,
+              ...(chat.rootId === undefined
+                ? {}
+                : {
+                    rootId: chat.rootId
+                      ? chatKey(source.id, chat.rootId)
+                      : chat.rootId,
+                  }),
+              ...(chat.parentId === undefined
+                ? {}
+                : {
+                    parentId: chat.parentId
+                      ? chatKey(source.id, chat.parentId)
+                      : chat.parentId,
+                  }),
+              ...(chat.sharedRoomId === undefined
+                ? {}
+                : {
+                    sharedRoomId: chat.sharedRoomId
+                      ? chatKey(source.id, chat.sharedRoomId)
+                      : chat.sharedRoomId,
+                  }),
+              ...(chat.projectFolder === undefined
+                ? {}
+                : {
+                    projectFolder: chat.projectFolder
+                      ? folderKey(source.id, chat.cwd || "", chat.projectFolder)
+                      : chat.projectFolder,
+                  }),
             },
       );
     }
@@ -252,7 +271,12 @@ export function mergeSidebar(
     for (const project of source.sidebar.projects)
       for (const team of project.peerTeams || [])
         if (!teams.has(team.id))
-          teams.set(team.id, { ...team, projectPath: project.path });
+          teams.set(team.id, {
+            ...team,
+            ...(project.path === undefined
+              ? {}
+              : { projectPath: project.path }),
+          });
     for (const team of teams.values())
       peerTeams.push(
         single
@@ -261,7 +285,14 @@ export function mergeSidebar(
               ...team,
               id: teamKey(source.id, team.id),
               projectPath: projectKey(source.id, team.projectPath || ""),
-              members: team.members?.map((id) => chatKey(source.id, id)),
+              ...(team.members === undefined
+                ? {}
+                : {
+                    members:
+                      team.members === null
+                        ? null
+                        : team.members.map((id) => chatKey(source.id, id)),
+                  }),
             },
       );
     for (const room of source.sidebar.rooms) {
@@ -272,22 +303,41 @@ export function mergeSidebar(
           : {
               ...room,
               id,
-              rootId: room.rootId
-                ? chatKey(source.id, room.rootId)
-                : room.rootId,
-              members: room.members?.map((id) => chatKey(source.id, id)),
+              ...(room.rootId === undefined
+                ? {}
+                : {
+                    rootId: room.rootId
+                      ? chatKey(source.id, room.rootId)
+                      : room.rootId,
+                  }),
+              ...(room.members === undefined
+                ? {}
+                : {
+                    members:
+                      room.members === null
+                        ? null
+                        : room.members.map((id) => chatKey(source.id, id)),
+                  }),
               projectPath: projectKey(source.id, room.projectPath || ""),
-              peerTeamId: room.peerTeamId
-                ? teamKey(source.id, room.peerTeamId)
-                : room.peerTeamId,
-              radio: room.radio
-                ? {
-                    ...room.radio,
-                    teamId: room.radio.teamId
-                      ? teamKey(source.id, room.radio.teamId)
-                      : room.radio.teamId,
-                  }
-                : room.radio,
+              ...(room.peerTeamId === undefined
+                ? {}
+                : {
+                    peerTeamId: room.peerTeamId
+                      ? teamKey(source.id, room.peerTeamId)
+                      : room.peerTeamId,
+                  }),
+              ...(room.radio === undefined
+                ? {}
+                : {
+                    radio: room.radio
+                      ? {
+                          ...room.radio,
+                          teamId: room.radio.teamId
+                            ? teamKey(source.id, room.radio.teamId)
+                            : room.radio.teamId,
+                        }
+                      : room.radio,
+                  }),
             },
       );
     }
@@ -297,8 +347,8 @@ export function mergeSidebar(
   }
   // Single-server mode preserves every identity, including rooms and teams.
   if (single) {
-    for (const team of peerTeams) teamKey(sources[0].id, team.id);
-    for (const room of rooms) chatKey(sources[0].id, room.id);
+    for (const team of peerTeams) teamKey(singleSource.id, team.id);
+    for (const room of rooms) chatKey(singleSource.id, room.id);
   } else {
     const teamsByPath = new Map<string, PeerTeam[]>();
     for (const team of peerTeams) {
@@ -497,7 +547,7 @@ export function mergeSidebar(
         const headingOwner =
           kind === "collapsed" ? collapseOwner(mapped) : undefined;
         if (headingOwner && headingOwner !== source.id) continue;
-        result[mapped] = mapped in result ? result[mapped] && value : value;
+        result[mapped] = (result[mapped] ?? true) && value;
       }
     if (kind === "collapsed")
       for (const source of sources)
@@ -519,7 +569,7 @@ export function mergeSidebar(
     new Map(sources.map((source) => [source.id, source.sidebar.collapsed])),
   );
   const scope = single
-    ? sources[0].sidebar.stateDir
+    ? singleSource.sidebar.stateDir
     : "studio-combined-sidebar";
   const requireReference = (
     values: Map<string, SidebarReference>,
@@ -595,7 +645,7 @@ export function mergeSidebar(
         ? 1
         : undefined,
       sidebarOrder: single
-        ? sources[0].sidebar.sidebarOrder
+        ? singleSource.sidebar.sidebarOrder
         : { revision, groups: order },
     },
   };
@@ -663,9 +713,9 @@ export function createMergedSidebarSelector(combined = true) {
       sources.length === previous.sources.length &&
       sources.every(
         (source, index) =>
-          source.id === previous!.sources[index].id &&
-          source.online === previous!.sources[index].online &&
-          source.sidebar === previous!.sources[index].sidebar,
+          source.id === previous?.sources[index]?.id &&
+          source.online === previous?.sources[index]?.online &&
+          source.sidebar === previous?.sources[index]?.sidebar,
       )
     )
       return previous;

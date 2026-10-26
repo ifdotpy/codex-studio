@@ -265,6 +265,7 @@ test("pnpm Node test selection uses the native test-name filter", () => {
           "workspaces/tooling/apps/repository-checks/tests/release-binaries.test.ts",
           "workspaces/tooling/apps/repository-checks/tests/scale-verifier-teardown.test.ts",
           "workspaces/tooling/apps/repository-checks/tests/native-style-policy.test.ts",
+          "workspaces/tooling/apps/repository-checks/tests/generate-api-types.test.ts",
           "workspaces/tooling/apps/installed-smoke/tests/smoke.test.ts",
         ],
       ],
@@ -1417,4 +1418,13 @@ test("nextest suite summaries reject non-number counters", () => {
       new RegExp(`nextest suite counter ${field} must be a number`),
     );
   }
+});
+
+test("Playwright reports reject malformed suite containers", () => {
+  const result = evaluatePlaywrightReport(
+    { stats: { expected: 1, unexpected: 0, flaky: 0, skipped: 0 }, suites: {} },
+    0,
+  );
+  assert.equal(result.exitCode, 1);
+  assert.match(result.errors.join(" "), /Playwright JSON report is invalid/);
 });

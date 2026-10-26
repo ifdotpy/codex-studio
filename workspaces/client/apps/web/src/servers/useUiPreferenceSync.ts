@@ -34,7 +34,10 @@ export function useUiPreferenceSync(servers: StudioServer[]) {
   useEffect(() => {
     let applying = false;
     const identities = new Map<string, string>();
-    const snapshots = new Map<string, { alias?: string; label: string }>();
+    const snapshots = new Map<
+      string,
+      { alias?: string | undefined; label: string }
+    >();
     let previousOrder: string[] | undefined;
     for (const server of servers) {
       const identity =
@@ -119,9 +122,10 @@ export function useUiPreferenceSync(servers: StudioServer[]) {
       const paired = readServers();
       const current = [...paired];
       const localIndex = servers.findIndex((server) => server.id === "local");
-      if (localIndex >= 0)
+      const local = servers[localIndex];
+      if (local)
         current.splice(localIndex, 0, {
-          ...servers[localIndex],
+          ...local,
           alias:
             localStorage.getItem(LOCAL_ALIAS_KEY) || DEFAULT_LOCAL_SERVER_ALIAS,
         });

@@ -105,11 +105,13 @@ export function mergedSidebarPreferences(
     return backend;
   };
   for (const source of model.sources) backendFor(source.id);
+  const [firstSource] = model.sources;
   if (
+    firstSource &&
     model.data.stateDir !== "studio-combined-sidebar" &&
     model.sources.length === 1
   )
-    return backendFor(model.sources[0].id);
+    return backendFor(firstSource.id);
   const coordinator = backends.has("local") ? "local" : model.sources[0]?.id;
   if (!coordinator) throw new Error("The sidebar has no server.");
   const base = backendFor(coordinator);
@@ -145,7 +147,7 @@ export function mergedSidebarPreferences(
                 const field = model.projectKey(source.id, name);
                 if (
                   model.preferenceOwner("compact", field) === source.id &&
-                  name in saved
+                  saved[name] !== undefined
                 )
                   values[name] = saved[name];
               }

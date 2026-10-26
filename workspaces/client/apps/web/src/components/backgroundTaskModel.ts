@@ -9,7 +9,7 @@ type RendererTaskFields = {
   status: string;
   processKey?: string;
   generation?: string;
-  accountKey?: string;
+  accountKey?: string | undefined;
   epoch?: number;
   source?: "monitor" | "codex_task" | "claude_task";
   capabilities?: {

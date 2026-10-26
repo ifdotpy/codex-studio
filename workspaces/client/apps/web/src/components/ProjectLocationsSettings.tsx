@@ -28,8 +28,8 @@ export default function ProjectLocationsSettings({
   saved,
 }: {
   project: LocationProject;
-  servers?: ProjectServerChoice[];
-  initialServer?: string;
+  servers?: ProjectServerChoice[] | undefined;
+  initialServer?: string | undefined;
   saved: () => Promise<void>;
 }) {
   const { get, post, refreshSession } = useServerApi();

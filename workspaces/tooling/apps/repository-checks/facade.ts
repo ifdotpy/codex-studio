@@ -229,7 +229,7 @@ const BOUNDARY_ALLOWLIST = [
   {
     importer: "codex-studio-tooling",
     file: "workspaces/tooling/apps/repository-checks/tests/scale-verifier-teardown.test.ts",
-    specifier: "../../../../client/apps/web/scripts/uiTeamScaleAudit.mjs",
+    specifier: "../../../../client/apps/web/scripts/uiTeamScaleAudit.ts",
     reason:
       "The offline teardown witness consumes the audit concurrency helper through its owning implementation.",
   },
@@ -249,28 +249,28 @@ const BOUNDARY_ALLOWLIST = [
   },
   {
     importer: "codex-agents-desktop",
-    file: "server-access-native.mjs",
+    file: "server-access-native.ts",
     specifier: "../web/tests/servers/multi-server-fixture.mjs",
     reason:
       "The native desktop integration scenario reuses the renderer's local multi-server test fixture.",
   },
   {
     importer: "codex-agents-desktop",
-    file: "test.mjs",
+    file: "test.ts",
     specifier: "../web/tests/playwright.mjs",
     reason:
       "The native desktop scenario reuses the renderer's browser test-state helper.",
   },
   {
     importer: "codex-agents-desktop",
-    file: "multi-server-memory.mjs",
+    file: "multi-server-memory.ts",
     specifier: "../web/tests/servers/multi-server-fixture.mjs",
     reason:
       "A desktop integration scenario reuses the renderer's local multi-server test fixture.",
   },
   {
     importer: "codex-agents-desktop",
-    file: "server-frames-native.mjs",
+    file: "server-frames-native.ts",
     specifier: "../web/tests/servers/multi-server-fixture.mjs",
     reason:
       "A desktop integration scenario reuses the renderer's local multi-server test fixture.",
@@ -291,14 +291,14 @@ const BOUNDARY_ALLOWLIST = [
   },
   {
     importer: "codex-agents-desktop",
-    file: "profile-export-test.mjs",
+    file: "profile-export-test.ts",
     specifier: "../web/src/native/importBrowserProfile.mjs",
     reason:
       "The profile export scenario checks its output with the renderer's own browser profile import code.",
   },
   {
     importer: "codex-agents-desktop",
-    file: "profile-export-test.mjs",
+    file: "profile-export-test.ts",
     specifier: "../web/src/native/combineBrowserProfiles.mjs",
     reason:
       "The profile export scenario checks its output with the renderer's own browser profile import code.",
@@ -1491,20 +1491,24 @@ export function evaluatePlaywrightReport(
   };
 }
 
+function playwrightArray(value: unknown): unknown[] {
+  if (value === undefined || value === null) return [];
+  if (!Array.isArray(value)) throw new Error("Invalid Playwright array");
+  return value;
+}
+
 function playwrightFailureSummaries(report: unknown) {
   const failures: { title: string; error: string }[] = [];
   const visitSuite = (suite: unknown, parents: unknown[] = []) => {
     if (!isRecord(suite)) throw new Error("Invalid Playwright suite");
     const suiteTitles = suite.title ? [...parents, suite.title] : parents;
-    const specs: unknown[] = Array.isArray(suite.specs) ? suite.specs : [];
+    const specs = playwrightArray(suite.specs);
     for (const spec of specs) {
       if (!isRecord(spec)) throw new Error("Invalid Playwright spec");
-      const tests: unknown[] = Array.isArray(spec.tests) ? spec.tests : [];
+      const tests = playwrightArray(spec.tests);
       for (const test of tests) {
         if (!isRecord(test)) throw new Error("Invalid Playwright test");
-        const results: unknown[] = Array.isArray(test.results)
-          ? test.results
-          : [];
+        const results = playwrightArray(test.results);
         if (
           test.status !== "unexpected" &&
           test.status !== "flaky" &&
@@ -1522,11 +1526,10 @@ function playwrightFailureSummaries(report: unknown) {
               String(entry.status),
             ),
         );
-        const resultErrors: unknown[] =
-          isRecord(result) && Array.isArray(result.errors) ? result.errors : [];
-        const testErrors: unknown[] = Array.isArray(test.errors)
-          ? test.errors
+        const resultErrors = isRecord(result)
+          ? playwrightArray(result.errors)
           : [];
+        const testErrors = playwrightArray(test.errors);
         const error = resultErrors[0] ?? testErrors[0];
         const detail =
           typeof error === "string"
@@ -1544,11 +1547,11 @@ function playwrightFailureSummaries(report: unknown) {
         });
       }
     }
-    const children: unknown[] = Array.isArray(suite.suites) ? suite.suites : [];
+    const children = playwrightArray(suite.suites);
     for (const child of children) visitSuite(child, suiteTitles);
   };
   if (!isRecord(report)) throw new Error("Invalid Playwright report");
-  const suites: unknown[] = Array.isArray(report.suites) ? report.suites : [];
+  const suites = playwrightArray(report.suites);
   for (const suite of suites) visitSuite(suite);
   return failures;
 }
