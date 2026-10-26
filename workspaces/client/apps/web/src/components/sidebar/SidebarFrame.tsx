@@ -56,6 +56,7 @@ export function SidebarFrame(p: SidebarFrameProps) {
     hostWidth: 0,
     rootFontSize: 0,
     headerMinimum: 0,
+    duo: false,
   }));
   const [preference, setPreference] = useState(() => ({
     scope: p.scope,
@@ -66,7 +67,12 @@ export function SidebarFrame(p: SidebarFrameProps) {
   const policy = resolveSidebarWidth({
     ...geometry,
     preferred,
-    contract: widthContract,
+    contract: {
+      ...widthContract,
+      conversationMinRem: geometry.duo
+        ? layoutValues.duo.conversationMin
+        : widthContract.conversationMinRem,
+    },
   });
   // The static desktop render has no viewport to measure.
   const compact = typeof window !== "undefined" && policy.mode === "drawer";
@@ -131,18 +137,25 @@ export function SidebarFrame(p: SidebarFrameProps) {
         hostWidth,
         rootFontSize,
         headerMinimum: headerMinimum.current,
+        duo: document.documentElement.hasAttribute("data-duo-proportions"),
       };
       const nextCompact =
         resolveSidebarWidth({
           ...next,
           preferred: null,
-          contract: widthContract,
+          contract: {
+            ...widthContract,
+            conversationMinRem: next.duo
+              ? layoutValues.duo.conversationMin
+              : widthContract.conversationMinRem,
+          },
         }).mode === "drawer";
       if (nextCompact !== live.current.compact) restoreSidebarFocus();
       setGeometry((old) =>
         old.hostWidth === hostWidth &&
         old.rootFontSize === rootFontSize &&
-        old.headerMinimum === next.headerMinimum
+        old.headerMinimum === next.headerMinimum &&
+        old.duo === next.duo
           ? old
           : next,
       );
@@ -159,7 +172,12 @@ export function SidebarFrame(p: SidebarFrameProps) {
     const attributes = new MutationObserver(measure);
     attributes.observe(document.documentElement, {
       attributes: true,
-      attributeFilter: ["style", "class", "data-studio-typography"],
+      attributeFilter: [
+        "style",
+        "class",
+        "data-studio-typography",
+        "data-duo-proportions",
+      ],
     });
     attributes.observe(document.body, {
       attributes: true,

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   deriveWorkspaceLayout,
+  isDuoLayout,
   isCompactTools,
   resolveLayoutLength,
 } from "./deriveWorkspaceLayout";
@@ -14,6 +15,33 @@ const base = {
   teamPreferred: true,
 };
 describe("workspace layout", () => {
+  it("limits Duo proportions to its measured landscape touch range", () => {
+    for (const [width, height] of [
+      [951, 669],
+      [867, 669],
+      [951, 500],
+      [951, 699],
+      [1023, 669],
+    ] as const)
+      expect(isDuoLayout({ width, height, primaryCoarse: true })).toBe(true);
+    for (const [width, height, primaryCoarse] of [
+      [951, 499, true],
+      [951, 700, true],
+      [1024, 669, true],
+      [951, 669, false],
+      [1440, 900, false],
+      [1024, 768, true],
+      [390, 844, true],
+      [844, 390, true],
+    ] as const)
+      expect(isDuoLayout({ width, height, primaryCoarse })).toBe(false);
+  });
+  it("reserves 544 pixels for the Duo conversation only", () => {
+    expect(
+      deriveWorkspaceLayout({ ...base, duo: true }).conversationMinWidth,
+    ).toBe(544);
+    expect(deriveWorkspaceLayout(base).conversationMinWidth).toBe(640);
+  });
   it("uses complementary ranges at equality and fractional widths", () => {
     expect(layoutQueries.navigationCompact).toBe(
       `(width < ${layoutValues.navigation.inlineMin}px)`,

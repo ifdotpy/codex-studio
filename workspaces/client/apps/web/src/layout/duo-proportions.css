@@ -1,0 +1,103 @@
+/* The viewport owner applies the measured Duo rule from deriveWorkspaceLayout. */
+:root[data-duo-proportions] {
+  --studio-touch-input-min-font-size: var(--layout-duo-body-font);
+  --duo-sidebar-font: max(
+    var(--layout-duo-body-font),
+    var(--studio-sidebar-font-size, var(--studio-text-body))
+  );
+  --duo-main-font: max(
+    var(--layout-duo-body-font),
+    var(--studio-main-font-size, var(--studio-text-body))
+  );
+}
+:root[data-duo-proportions] .workspace {
+  --duo-column-width: calc(
+    var(--layout-duo-reading-max) + 2 * var(--layout-duo-message-inset) + 2 *
+      var(--studio-border-width)
+  );
+  --chat-width: var(--duo-column-width);
+  --chat-text-width: var(--duo-column-width);
+  --chat-gutter: var(--layout-duo-column-gutter);
+}
+
+/* Resolve the preference on the root before applying the Duo font floor. */
+:root[data-duo-proportions] #sidebar {
+  --studio-sidebar-font-size: var(--duo-sidebar-font);
+}
+:root[data-duo-proportions] #conversation {
+  --studio-main-font-size: var(--duo-main-font);
+}
+:root[data-duo-proportions] #sidebar .chat-row {
+  min-block-size: var(--layout-duo-row-min);
+}
+:root[data-duo-proportions]
+  #sidebar
+  :is(.chat-row, .row-copy strong, #chat-search) {
+  font-size: max(
+    var(--layout-duo-body-font),
+    var(--studio-sidebar-font-size, var(--studio-text-body))
+  );
+}
+:root[data-duo-proportions] #sidebar .sidebar-header {
+  flex-wrap: wrap;
+  gap: var(--layout-duo-header-gap);
+}
+:root[data-duo-proportions] #sidebar .sidebar-header .mantine-ActionIcon-root {
+  --ai-size: var(--layout-duo-header-control);
+  min-inline-size: var(--layout-duo-header-control);
+  min-block-size: var(--layout-duo-header-control);
+  border-radius: 50%;
+}
+
+:root[data-duo-proportions] #conversation #messages {
+  padding-inline: 0;
+  scrollbar-gutter: auto;
+}
+:root[data-duo-proportions]
+  #conversation
+  :is(
+    .message-content,
+    #composer,
+    .conversation-composer-footer,
+    .message-queue
+  ) {
+  width: min(
+    var(--duo-column-width),
+    calc(100% - 2 * var(--layout-duo-column-gutter))
+  );
+  max-width: var(--duo-column-width);
+  margin-inline: auto;
+  align-self: center;
+}
+:root[data-duo-proportions] #conversation #messages .prose {
+  font-size: max(
+    var(--layout-duo-body-font),
+    var(--studio-main-font-size, var(--studio-text-body))
+  );
+  line-height: var(--layout-duo-body-line-height);
+}
+:root[data-duo-proportions] #conversation.ai-conversation .message.assistant {
+  width: 100%;
+  padding-inline: var(--layout-duo-message-inset);
+  border-width: var(--studio-border-width);
+}
+
+:root[data-duo-proportions] #conversation .conversation-composer-footer {
+  order: 1;
+}
+:root[data-duo-proportions] #conversation #composer {
+  order: 2;
+  flex-shrink: 0;
+  min-height: var(--layout-duo-composer-min);
+  border-radius: var(--layout-duo-composer-radius);
+  margin-block: 0;
+}
+:root[data-duo-proportions] #conversation #composer #message {
+  font-size: max(
+    var(--layout-duo-body-font),
+    var(--studio-main-font-size, var(--studio-text-body))
+  );
+}
+:root[data-duo-proportions] .edge-rail {
+  gap: var(--layout-duo-rail-gap);
+}

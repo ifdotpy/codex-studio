@@ -33,6 +33,21 @@ export interface WorkspaceLayoutInput {
   preferredPanelWidthRem?: number;
   workspaceOpen?: boolean;
   teamPreferred?: boolean;
+  duo?: boolean;
+}
+/** Measured Duo shell and PWA sizes share one landscape proportions rule. */
+export function isDuoLayout(input: {
+  width: number;
+  height: number;
+  primaryCoarse: boolean;
+}) {
+  return (
+    input.primaryCoarse &&
+    input.width > input.height &&
+    input.height >= layoutValues.duo.heightMin &&
+    input.height < layoutValues.duo.heightMax &&
+    input.width < layoutValues.duo.widthMax
+  );
 }
 export const finiteNonnegative = (value: number, fallback = 0) =>
   Number.isFinite(value) && value >= 0 ? value : fallback;
@@ -77,7 +92,9 @@ export function deriveWorkspaceLayout(input: WorkspaceLayoutInput) {
         finiteNonnegative(safe?.bottom ?? 0),
     ),
   };
-  const conversationMinWidth = length("conversation.min");
+  const conversationMinWidth = length(
+    input.duo ? "duo.conversationMin" : "conversation.min",
+  );
   const minWidth = length("workspacePanel.min");
   const maximum = Math.max(
     0,

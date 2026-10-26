@@ -60,7 +60,12 @@ for (const paired of [false, true]) {
           expect(bounds.y + bounds.height).toBeLessThanOrEqual(635);
           const band = page.locator(".viewport-bottom-band");
           await expect(band).toHaveCSS("height", "34px");
-          await expect(page.locator(".usage-passive-band")).toBeVisible();
+          await expect(
+            page.locator(".viewport-bottom-band .usage-passive-band"),
+          ).toHaveCount(0);
+          await expect(
+            page.locator(".usage-footer .session-cost-summary"),
+          ).toHaveCount(1);
           const bandBounds = (await band.boundingBox())!;
           expect(bandBounds.y).toBe(635);
           expect(bandBounds.y + bandBounds.height).toBe(669);
@@ -70,13 +75,9 @@ for (const paired of [false, true]) {
             const box = await target.boundingBox();
             if (box) expect(box.y + box.height).toBeLessThanOrEqual(635);
           }
-          console.log("Duo bottom band", {
-            paired,
-            oldEmptyBand: 34,
-            newEmptyBand: 0,
-            passive: (await page.locator(".usage-passive-band").boundingBox())!,
-          });
           const composer = (await page.locator("#composer").boundingBox())!;
+          const footer = (await page.locator(".conversation-composer-footer").boundingBox())!;
+          expect(footer.y + footer.height).toBeLessThanOrEqual(composer.y);
           expect(composer.y + composer.height).toBeLessThanOrEqual(635);
           await page.screenshot({
             path: test.info().outputPath("duo-safe-layout.png"),
