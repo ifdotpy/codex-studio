@@ -1,5 +1,5 @@
 import fs from "node:fs";
-import { randomUUID } from "node:crypto";
+import { createHash } from "node:crypto";
 import assert from "node:assert/strict";
 import type {
   Options,
@@ -210,7 +210,13 @@ function message(input: FixtureMessage): Message {
 }
 /** Required SDK fields have one fixture default; scenario fields remain explicit. */
 function sdkMessage(input: FixtureFrame): SDKMessage {
-  const identity = { uuid: randomUUID(), session_id: fixtureSession };
+  // The original UUID-less frames were identified by their serialized payload.
+  // Keep identical snapshots identical while supplying the SDK-required UUID.
+  const digest = createHash("sha256")
+    .update(JSON.stringify(input))
+    .digest("hex");
+  const uuid: SDKMessage["uuid"] = `${digest.slice(0, 8)}-${digest.slice(8, 12)}-4${digest.slice(13, 16)}-8${digest.slice(17, 20)}-${digest.slice(20, 32)}`;
+  const identity = { uuid, session_id: fixtureSession };
   switch (input.type) {
     case "assistant":
       return {
@@ -376,11 +382,16 @@ export function query({
         settings: options.settings,
       }) + "\n",
     );
-  return {
-    mcpServerStatus: async () =>
+  const mcpServerStatus: Query["mcpServerStatus"] = async () => {
+    // The Rust test writes this controlled SDK status fixture before querying it.
+    const statuses: Awaited<ReturnType<Query["mcpServerStatus"]>> =
       fs.existsSync(options.cwd + "/.mcp-status.json")
         ? JSON.parse(fs.readFileSync(options.cwd + "/.mcp-status.json", "utf8"))
-        : [],
+        : [];
+    return statuses;
+  };
+  return {
+    mcpServerStatus,
     reconnectMcpServer: async () => {},
     supportedModels: async () => [
       {

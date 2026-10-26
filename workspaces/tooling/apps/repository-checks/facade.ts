@@ -1021,6 +1021,7 @@ export function gateSteps(root: string, name: string): GateStep[] {
     ]),
     nodeTest("native-fixture", "native WebView fixture", [
       "workspaces/client/apps/native/check-native.test.ts",
+      "workspaces/client/apps/native/recovery-package.test.ts",
     ]),
     nodeTest("recovery-helpers", "Rust desktop recovery witnesses", [
       "workspaces/client/apps/desktop/recovery-helper-witness.test.ts",

@@ -1,4 +1,5 @@
 // @ts-check
+/** @import { DesktopBridge } from "../../desktop/api.ts" */
 (() => {
   const updateUrl = new URL(window.location.href);
   if (updateUrl.searchParams.has("studio-update")) {
@@ -31,8 +32,10 @@
   window.addEventListener("unhandledrejection", () =>
     notice("Studio could not open."),
   );
+  /** @type {DesktopBridge | undefined} */
+  const desktop = window.codexDesktop;
   if (
-    "codexDesktop" in window ||
+    desktop ||
     !window.isSecureContext ||
     !("serviceWorker" in navigator) ||
     !document.querySelector('meta[name="studio-build"]')
