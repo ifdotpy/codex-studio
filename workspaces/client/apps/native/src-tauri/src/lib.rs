@@ -174,6 +174,16 @@ mod tests {
         assert!(request.params.get("_nativeWindow").is_none());
     }
     #[test]
+    fn native_sse_flow_control_reaches_the_existing_client_service() {
+        for method in ["view.subscribe", "view.next", "view.unsubscribe"] {
+            assert!(super::connected_view_method(method), "{method}");
+        }
+        for method in ["view.reset", "view.next.other", "views.next", "api.delete"] {
+            assert!(!super::connected_view_method(method), "{method}");
+        }
+    }
+
+    #[test]
     fn drafts_require_a_verified_matching_workspace() {
         let params = serde_json::json!({"workspace":"workspace"});
         assert!(!super::draft_workspace_allowed(None, &params));
@@ -265,6 +275,10 @@ fn approved_peer(
         return Err("The server approval or its identity changed.".into());
     }
     Ok(peer.clone())
+}
+
+fn connected_view_method(method: &str) -> bool {
+    matches!(method, "view.subscribe" | "view.next" | "view.unsubscribe")
 }
 
 #[tauri::command]
@@ -453,9 +467,8 @@ async fn client_request(
             | "desktop.saveFinish"
             | "desktop.saveCancel"
             | "api.request"
-            | "view.subscribe"
-            | "view.unsubscribe"
-    ) {
+    ) && !connected_view_method(&request.method)
+    {
         return Err("This client service is not connected yet.".into());
     }
     if request.method == "view.subscribe"

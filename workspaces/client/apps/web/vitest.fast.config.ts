@@ -66,6 +66,8 @@ export default {
       "src/components/questions/Requests.signIn.test.ts",
       "src/components/questions/openSignIn.test.ts",
       "src/native/signInProtocol.test.ts",
+      // The native producer must wait while the stream consumer saves a frame.
+      "src/native/stream.test.ts",
       "src/native/frame.test.ts",
       "src/native/externalLinks.test.ts",
       "src/api.test.ts",

@@ -14,6 +14,7 @@ use tokio::{
 
 pub struct Views {
     tasks: HashMap<String, JoinHandle<()>>,
+    flows: HashMap<String, Arc<crate::events::EventFlow>>,
     backend: Arc<Result<Backend, String>>,
     store: StoreSender,
     changes: watch::Receiver<u64>,
@@ -31,6 +32,7 @@ impl Views {
     ) -> Self {
         Self {
             tasks: HashMap::new(),
+            flows: HashMap::new(),
             backend,
             store,
             changes,
@@ -50,10 +52,26 @@ impl Views {
             );
         };
         if request.method == "view.unsubscribe" {
+            self.flows.remove(id);
             if let Some(task) = self.tasks.remove(id) {
                 task.abort();
             }
             return Response::success(request.id.clone(), json!({"closed":true}));
+        }
+        if request.method == "view.next" {
+            return if self.flows.get(id).is_some_and(|flow| {
+                request.params["credit"]
+                    .as_str()
+                    .is_some_and(|credit| flow.grant(credit))
+            }) {
+                Response::success(request.id.clone(), json!({"granted":true}))
+            } else {
+                Response::failure(
+                    request.id.clone(),
+                    "invalid_credit",
+                    "The event credit is no longer valid.",
+                )
+            };
         }
         if request.method != "view.subscribe"
             || self.tasks.contains_key(id)
@@ -85,6 +103,23 @@ impl Views {
             );
         }
         let (id, topic, params) = (id.to_owned(), topic.to_owned(), request.params.clone());
+        let flow = match params.get("flowControl") {
+            None | Some(Value::Bool(false)) => None,
+            Some(Value::Bool(true)) if topic == "sse" => match crate::events::EventFlow::new() {
+                Ok(flow) => Some(Arc::new(flow)),
+                Err(error) => return Response::failure(request.id.clone(), "event_credit", error),
+            },
+            _ => {
+                return Response::failure(
+                    request.id.clone(),
+                    "invalid_subscription",
+                    "Flow control requires a server event subscription.",
+                );
+            }
+        };
+        if let Some(flow) = &flow {
+            self.flows.insert(id.clone(), flow.clone());
+        }
         let (backend, store, changes, output) = (
             self.backend.clone(),
             self.store.clone(),
@@ -165,7 +200,7 @@ impl Views {
                         }
                     }
                 } else if topic == "sse" {
-                    crate::events::run(id, params, backend, output).await;
+                    crate::events::run_controlled(id, params, backend, output, flow).await;
                 } else {
                     run(id, topic, params, backend, store, changes, output).await;
                 }
@@ -388,6 +423,99 @@ async fn run(
         tokio::select! {
             _=interval.tick()=>refresh=true,
             result=changes.changed()=>{ if result.is_err(){return;} refresh=false; },
+        }
+    }
+}
+
+#[cfg(test)]
+mod flow_tests {
+    use super::*;
+    fn request(method: &str, params: Value) -> Request {
+        Request {
+            id: "flow-test".into(),
+            method: method.into(),
+            params,
+        }
+    }
+    fn views() -> Views {
+        let (store, _) = mpsc::channel(1);
+        let (_, changes) = watch::channel(0);
+        let (output, _) = mpsc::channel(16);
+        Views::new(
+            Arc::new(Err("No backend".into())),
+            store,
+            changes,
+            output,
+            crate::terminal::Terminals::default(),
+        )
+    }
+    #[tokio::test]
+    async fn credits_are_one_use_and_bound_to_connection_and_subscription_incarnation() {
+        let mut owner = views();
+        let mut foreign = views();
+        let subscribe = request(
+            "view.subscribe",
+            json!({"subscription":"one","topic":"sse","path":"/api/sync/stream","flowControl":true}),
+        );
+        assert!(owner.command(&subscribe).error.is_none());
+        assert!(foreign.command(&subscribe).error.is_none());
+        let token = owner.flows["one"].credit();
+        let next = request("view.next", json!({"subscription":"one","credit":token}));
+        assert!(foreign.command(&next).error.is_some());
+        assert!(
+            owner
+                .command(&request(
+                    "view.next",
+                    json!({"subscription":"other","credit":token})
+                ))
+                .error
+                .is_some()
+        );
+        assert!(owner.command(&next).error.is_none());
+        assert!(owner.command(&next).error.is_some());
+        assert!(
+            owner
+                .command(&request("view.unsubscribe", json!({"subscription":"one"})))
+                .error
+                .is_none()
+        );
+        assert!(owner.command(&next).error.is_some());
+        assert!(owner.command(&subscribe).error.is_none());
+        assert!(owner.command(&next).error.is_some());
+    }
+    #[tokio::test]
+    async fn push_views_remain_push_and_flow_control_is_sse_only() {
+        let mut owner = views();
+        assert!(
+            owner
+                .command(&request(
+                    "view.subscribe",
+                    json!({"subscription":"push","topic":"sse"})
+                ))
+                .error
+                .is_none()
+        );
+        assert!(!owner.flows.contains_key("push"));
+        assert!(
+            owner
+                .command(&request(
+                    "view.next",
+                    json!({"subscription":"push","credit":"guess"})
+                ))
+                .error
+                .is_some()
+        );
+        for params in [
+            json!({"subscription":"bad","topic":"outbox","flowControl":true}),
+            json!({"subscription":"bad","topic":"sse","flowControl":"true"}),
+        ] {
+            assert!(
+                owner
+                    .command(&request("view.subscribe", params))
+                    .error
+                    .is_some()
+            );
+            assert!(!owner.tasks.contains_key("bad"));
         }
     }
 }

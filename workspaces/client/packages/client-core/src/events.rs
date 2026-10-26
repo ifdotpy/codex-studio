@@ -1,10 +1,58 @@
 //! Server event parsing, reconnect state and HTTP lifetime belong to Rust.
 use crate::{backend::Backend, sync};
 use serde_json::{Value, json};
-use std::{sync::Arc, time::Duration};
-use tokio::sync::mpsc;
+use std::{
+    sync::{Arc, Mutex},
+    time::Duration,
+};
+use tokio::sync::{Notify, mpsc};
 
 const MAX_EVENT: usize = 4 * 1024 * 1024;
+
+// One opaque credit permits one decoded event, including all its HTTP chunks.
+pub struct EventFlow {
+    state: Mutex<(String, bool)>,
+    ready: Notify,
+}
+impl EventFlow {
+    pub fn new() -> Result<Self, String> {
+        Ok(Self {
+            state: Mutex::new((crate::server_keys::random_id()?, false)),
+            ready: Notify::new(),
+        })
+    }
+    pub fn credit(&self) -> String {
+        self.state.lock().unwrap().0.clone()
+    }
+    pub fn grant(&self, credit: &str) -> bool {
+        let mut state = self.state.lock().unwrap();
+        if state.0 != credit || state.1 {
+            return false;
+        }
+        state.1 = true;
+        self.ready.notify_one();
+        true
+    }
+    async fn wait(&self) -> String {
+        loop {
+            let notified = self.ready.notified();
+            {
+                let state = self.state.lock().unwrap();
+                if state.1 {
+                    return state.0.clone();
+                }
+            }
+            notified.await;
+        }
+    }
+    fn finish(&self) -> Result<(String, String), String> {
+        let next = crate::server_keys::random_id()?;
+        let mut state = self.state.lock().unwrap();
+        let consumed = std::mem::replace(&mut state.0, next.clone());
+        state.1 = false;
+        Ok((consumed, next))
+    }
+}
 
 #[derive(Default)]
 struct Parser {
@@ -102,6 +150,16 @@ pub async fn run(
     backend: Arc<Result<Backend, String>>,
     output: mpsc::Sender<Value>,
 ) {
+    run_controlled(id, params, backend, output, None).await;
+}
+
+pub async fn run_controlled(
+    id: String,
+    params: Value,
+    backend: Arc<Result<Backend, String>>,
+    output: mpsc::Sender<Value>,
+    flow: Option<Arc<EventFlow>>,
+) {
     let backend = match backend.as_ref() {
         Ok(backend) => backend,
         Err(error) => {
@@ -119,11 +177,17 @@ pub async fn run(
             let Some(mut response) = backend.event_stream(path, &last_id).await? else {
                 return Ok(false);
             };
-            emit(&output, &id, json!({"type":"open"}))
+            let mut open = json!({"event":id,"value":{"type":"open"}});
+            if let Some(flow) = &flow { open["credit"] = json!(flow.credit()); }
+            output.send(open)
                 .await
                 .map_err(|_| sync::error("disconnected", "The UI disconnected."))?;
             let mut parser = Parser::new(last_id.clone());
+            let mut admitted = false;
             loop {
+                if let Some(flow) = &flow {
+                    if !admitted { flow.wait().await; admitted = true; }
+                }
                 let chunk = tokio::time::timeout(Duration::from_secs(60), response.chunk())
                     .await
                     .map_err(|_| {
@@ -144,9 +208,15 @@ pub async fn run(
                     retry = value;
                 }
                 for event in events {
-                    emit(&output, &id, event)
-                        .await
-                        .map_err(|_| sync::error("disconnected", "The UI disconnected."))?;
+                    if let Some(flow) = &flow {
+                        if !admitted { flow.wait().await; }
+                        let (consumed, next) = flow.finish().map_err(|e| sync::error("event_credit", e))?;
+                        output.send(json!({"event":id,"consumedCredit":consumed,"credit":next,"value":event}))
+                            .await.map_err(|_| sync::error("disconnected", "The UI disconnected."))?;
+                        admitted = false;
+                    } else {
+                        emit(&output, &id, event).await.map_err(|_| sync::error("disconnected", "The UI disconnected."))?;
+                    }
                 }
             }
         }
@@ -174,6 +244,51 @@ pub async fn run(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    async fn controlled_loopback_waits_for_each_credit_and_aborts_while_held() {
+        use tokio::{io::AsyncWriteExt, net::TcpListener};
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let backend = Arc::new(Backend::new(&format!(
+            "http://{}",
+            listener.local_addr().unwrap()
+        )));
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            crate::backend::tests::read_http(&mut socket).await;
+            // Both events arrive in one HTTP chunk. The second must stay in Rust.
+            let body = "data: first\n\ndata: second\n\n";
+            socket.write_all(format!("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\n\r\n{body}", body.len()).as_bytes()).await.unwrap();
+        });
+        let flow = Arc::new(EventFlow::new().unwrap());
+        let (output, mut receive) = mpsc::channel(16);
+        let task = tokio::spawn(run_controlled(
+            "controlled".into(),
+            json!({"path":"/api/sync/stream"}),
+            backend,
+            output,
+            Some(flow.clone()),
+        ));
+        let open = receive.recv().await.unwrap();
+        let first_credit = open["credit"].as_str().unwrap();
+        assert!(receive.try_recv().is_err());
+        assert!(flow.grant(first_credit));
+        assert!(!flow.grant(first_credit));
+        let first = receive.recv().await.unwrap();
+        assert_eq!(first["value"]["data"], "first");
+        assert_eq!(first["consumedCredit"], first_credit);
+        // On this current-thread runtime, the producer reaches its next credit
+        // wait in the same poll as its unblocked channel send.
+        assert!(receive.try_recv().is_err());
+        assert!(!flow.grant(first_credit));
+        assert!(flow.grant(first["credit"].as_str().unwrap()));
+        let second = receive.recv().await.unwrap();
+        assert_eq!(second["value"]["data"], "second");
+        assert_eq!(second["consumedCredit"], first["credit"]);
+        assert!(receive.try_recv().is_err());
+        task.abort();
+        assert!(task.await.unwrap_err().is_cancelled());
+        server.await.unwrap();
+    }
     #[test]
     fn byte_chunks_preserve_unicode_crlf_event_names_and_reconnect_ids() {
         let stream = "\u{feff}: heartbeat\r\nid: turn-1\rdata: Привет 🦀\r\ndata: second\nevent: unavailable\nretry: 750\n\nid: invalid\0id\ndata:\n\ndata: incomplete";
