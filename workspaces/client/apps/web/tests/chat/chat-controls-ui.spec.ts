@@ -25,8 +25,7 @@ test("Chat controls", async ({ page }) => {
     stdio: ["ignore", "pipe", "pipe"],
   });
   let log = "";
-  assert.ok(fixture.stderr && fixture.stdout);
-  fixture.stderr.on("data", (data) => (log += data));
+  fixture.stderr!.on("data", (data) => (log += data));
   const poll = async (fn: () => unknown | Promise<unknown>, label: string) => {
     for (let i = 0; i < 120; i++) {
       if (await fn()) return;
@@ -52,8 +51,7 @@ test("Chat controls", async ({ page }) => {
   ).toHaveCount(0, { timeout: 2000 });
   await page.locator("[data-chat]").first().waitFor();
   const initial = await state();
-  const lead = initial.threads.find((agent) => agent.name === "Other project");
-  assert.ok(lead, "fixture lead exists");
+  const lead = initial.threads.find((agent) => agent.name === "Other project")!;
   const row = () => page.locator(`[data-chat="${lead.id}"]`);
   await row().click();
   const actions = () =>
@@ -129,7 +127,7 @@ test("Chat controls", async ({ page }) => {
   await page.unroute("**/api/sync/pull*", slowState);
   await poll(
     async () =>
-      (await state()).threads.find((agent) => agent.id === lead.id)?.pinned,
+      (await state()).threads.find((agent) => agent.id === lead.id)!.pinned,
     "pin is persisted",
   );
   const folder = join(root, "Release checks");
@@ -153,8 +151,8 @@ test("Chat controls", async ({ page }) => {
   await poll(
     async () =>
       (await state()).threads
-        .find((a) => a.id === lead.id)
-        ?.cwd?.endsWith("/Release checks"),
+        .find((a) => a.id === lead.id)!
+        .cwd!.endsWith("/Release checks"),
     "project directory is persisted",
   );
   await page
@@ -283,7 +281,7 @@ test("Chat controls", async ({ page }) => {
   await page.getByText("Test transport failure", { exact: true }).waitFor();
   await page.getByRole("button", { name: "Stop retries", exact: true }).click();
   const firstAttempt = attachmentPosts[0];
-  assert.ok(firstAttempt?.id, "Failed send has a durable message identity");
+  assert.ok(firstAttempt.id, "Failed send has a durable message identity");
   const failedMessage = page.locator("#messages .message.user").filter({
     has: page.getByRole("button", { name: "evidence.txt", exact: true }),
   });
@@ -307,7 +305,7 @@ test("Chat controls", async ({ page }) => {
   );
   await poll(
     async () =>
-      (await state()).threads.find((agent) => agent.id === lead.id)?.status ===
+      (await state()).threads.find((agent) => agent.id === lead.id)!.status ===
       "running",
     "attachment starts actual fixture turn",
   );
@@ -340,10 +338,7 @@ test("Chat controls", async ({ page }) => {
     () =>
       page
         .locator('#messages img[alt="pasted.png"]')
-        .evaluate(
-          (image) =>
-            image instanceof HTMLImageElement && image.naturalWidth > 0,
-        ),
+        .evaluate((image: HTMLImageElement) => image.naturalWidth > 0),
     "inline image decodes",
   );
   const queue = () =>

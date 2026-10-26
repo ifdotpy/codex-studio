@@ -165,40 +165,38 @@ try {
     };
   });
   assert.match(
-    await page.evaluate(() => {
-      return window
+    await page.evaluate(() =>
+      window
         .codexDesktop!.notify({
           title: "Permission test",
           body: "Test",
           target: { agentId: "fixture", section: "messages" },
         })
-        .catch((e) => e.message);
-    }),
+        .catch((e) => e.message),
+    ),
     /STUDIO_NOTIFICATIONS_DENIED/,
   );
   await desktop.evaluate(({ Notification, app }) => {
     Notification.prototype.show = app.__testNotificationShow!;
   });
   assert.match(
-    await page.evaluate(() => {
-      return (
-        window
-          .codexDesktop!
-          // @ts-expect-error target is deliberately missing to exercise runtime validation.
-          .notify({ title: "Test", body: "Invalid target" })
-          .catch((e) => e.message)
-      );
-    }),
+    await page.evaluate(() =>
+      window
+        .codexDesktop!
+        // @ts-expect-error target is deliberately missing to exercise runtime validation.
+        .notify({ title: "Test", body: "Invalid target" })
+        .catch((e) => e.message),
+    ),
     /Invalid notification target/,
   );
   assert.equal(
-    await page.evaluate(() => {
-      return window.codexDesktop!.notify({
+    await page.evaluate(() =>
+      window.codexDesktop!.notify({
         title: "Global alert",
         body: "No app opt-in",
         target: { agentId: "test-chat", section: "messages" },
-      });
-    }),
+      }),
+    ),
     true,
   );
   assert.deepEqual(
@@ -211,23 +209,24 @@ try {
     };
   });
   assert.match(
-    await page.evaluate(() => {
-      return window
+    await page.evaluate(() =>
+      window
         .codexDesktop!.notify({
           title: "Failed alert",
           body: "Failure is visible",
           target: { agentId: "test-chat", section: "messages" },
         })
-        .catch((error) => error.message);
-    }),
+        .catch((error) => error.message),
+    ),
     /Notification fixture denied/,
   );
   assert.equal(
-    await page.evaluate(() => {
-      return typeof (
-        window.codexDesktop as DesktopBridge & { setNotifications?: unknown }
-      ).setNotifications;
-    }),
+    await page.evaluate(
+      () =>
+        typeof (
+          window.codexDesktop as DesktopBridge & { setNotifications?: unknown }
+        ).setNotifications,
+    ),
     "undefined",
   );
   const file = path.join(temp, "native-picker.txt");
@@ -331,21 +330,25 @@ try {
     button.style.cssText = "position:fixed;top:0;right:0;z-index:2147483647";
     button.textContent = "Native test";
     button.onclick = () => {
-      let value: unknown = button.dataset.value;
+      type SaveValue = Parameters<NonNullable<DesktopBridge["saveFile"]>>[0];
+      // This fixture serializes its native payload directly before invoking the button.
+      let value:
+        | string
+        | (Omit<SaveValue, "data"> & { data: number[] | ArrayBuffer })
+        | undefined = button.dataset.value;
       if (["saveFile", "fileAction"].includes(button.dataset.method!)) {
-        type SaveValue = Parameters<NonNullable<DesktopBridge["saveFile"]>>[0];
-        const parsed: Omit<SaveValue, "data"> & {
-          data: number[] | ArrayBuffer;
-        } = JSON.parse(value as string);
+        value = JSON.parse(value as string);
         if (button.dataset.method === "saveFile")
-          parsed.data = Uint8Array.from(parsed.data as number[]).buffer;
-        value = parsed;
+          (value as SaveValue).data = Uint8Array.from(
+            (value as { data: number[] }).data,
+          ).buffer;
       }
-      // The fixture dispatches the same preload methods as its typed invoke() caller below.
-      const fixtureBridge = window.codexDesktop as DesktopBridge &
-        Record<string, (value: unknown) => Promise<unknown>>;
-      const result = fixtureBridge[button.dataset.method!](value);
-      return result
+      // The indexed view names the same owner methods dispatched by invoke() below.
+      return (
+        window.codexDesktop as DesktopBridge &
+          Record<string, (value: unknown) => Promise<unknown>>
+      )
+        [button.dataset.method!](value)
         .then((value) => {
           document.body.dataset.nativeResult = JSON.stringify({ value });
         })
@@ -404,8 +407,7 @@ try {
         app.__testOpen = file;
         return "";
       };
-      const main = BrowserWindow.getAllWindows()[0];
-      main!.previewFile = (file) => {
+      BrowserWindow.getAllWindows()[0].previewFile = (file) => {
         app.__testPreview = file;
       };
     },

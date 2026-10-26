@@ -57,18 +57,23 @@ function Fixture() {
     canSend: true,
     activity: { phase: "idle" },
   } satisfies Agent;
+  // This partial fixture omits account groups and deletion/disconnection capabilities.
+  const fixtureAccountsData: Partial<
+    NonNullable<
+      React.ComponentProps<typeof Conversation>["accountsState"]["data"]
+    >
+  > = {
+    accounts: [],
+    archivedAccounts: [],
+    defaultAccountKey: "default",
+    logins: [],
+  };
   const accountsState: React.ComponentProps<
     typeof Conversation
   >["accountsState"] = {
-    data: {
-      accounts: [],
-      archivedAccounts: [],
-      defaultAccountKey: "default",
-      logins: [],
-      defaultAccountGroups: [],
-      supportsDelete: true,
-      supportsDisconnect: true,
-    },
+    data: fixtureAccountsData as NonNullable<
+      React.ComponentProps<typeof Conversation>["accountsState"]["data"]
+    >,
     setData: () => {},
     error: "",
     refresh: async () => null,
@@ -128,16 +133,7 @@ function Fixture() {
           id={id}
           syncWorkspaceId={window.__uxChatSyncIdentity?.workspaceId}
           agent={agent}
-          data={{
-            stateDir: data.stateDir,
-            threads: data.threads,
-            runtime: {
-              agents: data.runtime.agents,
-              requests: data.runtime.requests,
-              projects: data.runtime.projects,
-              nativeNotices: data.runtime.nativeNotices ?? [],
-            },
-          }}
+          data={data}
           waitSource={waitSource}
           accountsState={accountsState}
           getDraft={getDraft}
