@@ -3,7 +3,7 @@
 import { afterEach, test } from "vitest";
 import assert from "node:assert/strict";
 import path from "node:path";
-import { createSessionStore } from "./session-store.mjs";
+import { createSessionStore } from "./session-store.ts";
 import { startBridge } from "./testing/bridge-harness.mjs";
 
 const FAKE_SDK = String.raw`

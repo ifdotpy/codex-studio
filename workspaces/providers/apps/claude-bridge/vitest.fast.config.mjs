@@ -10,15 +10,15 @@ export default {
       // Test-side fixture waits must preserve the worker's IPC lifetime.
       "file-signals.test.mjs",
       // Preserve unconfirmed outcomes and bounded, read-only repair evidence without a model query.
-      "restart-reconcile.test.mjs",
+      "restart-reconcile.test.ts",
       "lifecycle-safety.test.mjs",
-      "journal-repair.test.mjs",
+      "journal-repair.test.ts",
       // Check zero idle timers, exact deadline recovery, and rearming on progress, results and Studio waits.
       "stall-watch.test.mjs",
       // SDK UUID coverage, composite history controls and authoritative session transitions.
-      "history-index.test.mjs",
-      "history-recovery.test.mjs",
-      "session-identity.test.mjs",
+      "history-index.test.ts",
+      "history-recovery.test.ts",
+      "session-identity.test.ts",
       // Proven unread/cancelled transition inputs must release their guards.
       "steer.test.mjs",
       "stop-receipts.test.mjs",

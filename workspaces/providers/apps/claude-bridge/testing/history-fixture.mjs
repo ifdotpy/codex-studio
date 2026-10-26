@@ -1,5 +1,5 @@
 // SDK-shaped reads for in-memory filesystem fault injection. Installed SDK
-// coverage lives in history-index.test.mjs and cli-history-witness.mjs.
+// coverage lives in history-index.test.ts and cli-history-witness.mjs.
 export function fixtureSessionApi(rows, { sessionId, cwd, lastModified = 3 }) {
   return {
     getSessionInfo: async () => ({

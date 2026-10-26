@@ -4,12 +4,12 @@ import os from "node:os";
 import path from "node:path";
 import { rollbackBoundary, forkAtTurn, rollbackSession } from "./controls.mjs";
 import { nativeInputIds } from "./input-messages.mjs";
-import { inputHistoryOutcome } from "./history-index.mjs";
-import { readNativeHistory } from "./native-history.mjs";
+import { inputHistoryOutcome } from "./history-index.ts";
+import { readNativeHistory } from "./native-history.ts";
 import { waitForFile } from "./testing/file-signals.mjs";
 import { startBridge } from "./testing/bridge-harness.mjs";
 import { fixtureSessionApi } from "./testing/history-fixture.mjs";
-import { createSessionStore } from "./session-store.mjs";
+import { createSessionStore } from "./session-store.ts";
 
 const sessionId = "11111111-1111-4111-8111-111111111111";
 const inputId = "22222222-2222-4222-8222-222222222222";

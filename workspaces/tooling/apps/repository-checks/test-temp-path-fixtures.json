@@ -72,7 +72,7 @@
   "workspaces/providers/apps/claude-bridge/disk-full.test.mjs": [
     "cwd: \"/tmp/work\","
   ],
-  "workspaces/providers/apps/claude-bridge/session-store.test.mjs": [
+  "workspaces/providers/apps/claude-bridge/session-store.test.ts": [
     "cwd: \"/tmp/work\",",
     "cwd: \"/tmp/title\","
   ],

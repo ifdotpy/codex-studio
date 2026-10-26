@@ -9,7 +9,7 @@
     "usage.mjs",
     "usage.test.mjs",
     "usage-fixtures.mjs",
-    "history-index.mjs",
-    "session-identity.mjs"
+    "history-index.ts",
+    "session-identity.ts"
   ]
 }

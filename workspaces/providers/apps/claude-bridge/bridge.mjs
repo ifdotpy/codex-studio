@@ -4,7 +4,7 @@ import {
   cacheReport,
   idleRefusal,
   compactionEnabled,
-} from "./idle-compaction.mjs";
+} from "./idle-compaction.ts";
 import {
   prepareFileRestore,
   verifyFileRestore,
@@ -16,7 +16,7 @@ import {
   rewindSessionFiles,
 } from "./file-checkpoints.mjs";
 import { createAccountCheck } from "./account-identity.mjs";
-import { readHistoryIndex, verifiedHistoryMessages } from "./history-index.mjs";
+import { readHistoryIndex, verifiedHistoryMessages } from "./history-index.ts";
 import {
   persistNativeSession,
   guardNativeSessionInput,
@@ -26,7 +26,7 @@ import {
   guardNativeSessionStart,
   assertNativeSessionReady,
   sessionStartHook,
-} from "./session-identity.mjs";
+} from "./session-identity.ts";
 import {
   inputGroups,
   sdkInputMessages,
@@ -71,10 +71,10 @@ import {
   createSessionStore,
   ephemeralSessionOptions,
   isDiskFull,
-} from "./session-store.mjs";
+} from "./session-store.ts";
 import { claudeImage } from "./images.mjs";
 import { listSkills } from "./skills.mjs";
-import { reconcileHistoricalBash } from "./historical-bash-receipts.mjs";
+import { reconcileHistoricalBash } from "./historical-bash-receipts.ts";
 import { createCatalogCache, loadCatalog } from "./catalog-cache.mjs";
 import {
   declaredTimeoutMs,

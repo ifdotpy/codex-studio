@@ -1,5 +1,5 @@
 import { checkpointSourceMatches } from "./file-checkpoints.mjs";
-import { messageIndex } from "./history-index.mjs";
+import { messageIndex } from "./history-index.ts";
 import { nativeInputIds } from "./input-messages.mjs";
 import { randomUUID } from "node:crypto";
 

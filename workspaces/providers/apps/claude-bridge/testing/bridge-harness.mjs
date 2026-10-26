@@ -37,7 +37,7 @@ export async function startBridge(
       path.join(root, name),
       source.replaceAll(
         "@anthropic-ai/claude-agent-sdk",
-        name === "history-index.mjs"
+        name === "history-index.ts"
           ? path.join(
               BRIDGE,
               "node_modules/@anthropic-ai/claude-agent-sdk/sdk.mjs",

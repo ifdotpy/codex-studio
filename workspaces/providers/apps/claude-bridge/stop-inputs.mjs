@@ -1,7 +1,7 @@
 import {
   cancelNativeSessionInput,
   nativeInputAttempt,
-} from "./session-identity.mjs";
+} from "./session-identity.ts";
 // SDK 0.3.285 implements interrupt({cancelQueued:true}) in sdk.mjs, although
 // sdk.d.ts still declares interrupt() without arguments. The CLI receipt uses
 // native UUIDs; Studio settles only its original input identities.
