@@ -706,7 +706,7 @@ async function probe<T>(
       startedAt,
     );
   } finally {
-    clearTimeout(timer);
+    clearTimeout(timer ?? undefined);
     release();
     q.close();
   }
@@ -1008,7 +1008,7 @@ function studioTools(
 }
 
 async function currentExternalProof(
-  s: Pick<Session, "cwd" | "moveProof">,
+  s: Pick<Session, "cwd" | "moveProof"> & Partial<Pick<Session, "id">>,
   proof: import("./move.ts").MoveProof &
     Partial<Pick<BridgeMoveProof, "externalCatalog" | "externalTransports">>,
 ) {
@@ -1039,7 +1039,7 @@ async function currentExternalProof(
     return result;
   };
   try {
-    const active = queries.get(s.id);
+    const active = s.id ? queries.get(s.id) : undefined;
     return active?.q
       ? await read(active.q)
       : await probe(s.cwd, read, "teleport_catalog", true);

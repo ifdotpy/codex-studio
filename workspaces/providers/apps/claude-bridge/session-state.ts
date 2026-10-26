@@ -79,9 +79,9 @@ export interface Item {
   result?: unknown | undefined;
   server?: string | undefined;
   changes?: {
-    path: string | undefined;
+    path: unknown;
     kind: { type: string };
-    diff: string;
+    diff: unknown;
   }[];
 }
 export interface Turn {

@@ -13,7 +13,7 @@ export const resolveSettings = async () => ({ effective: {} });
 export function query({ prompt, options }: FixtureQuery) {
   const file = path.join(options.cwd, ".flag-settings.json");
   const state: {
-    initial?: typeof options.settings;
+    initial?: typeof options.settings | undefined;
     live?: Parameters<Query["applyFlagSettings"]>[0];
   } = {};
   if (options.sessionId || options.resume) {
