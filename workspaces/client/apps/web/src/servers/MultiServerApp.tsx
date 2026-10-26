@@ -1,8 +1,10 @@
 import { ScreenContext } from "./ScreenContext";
 import {
   createScreenChannel,
+  screenSearchResults,
   type ScreenChannel,
   type ScreenMessage,
+  type ScreenSearchResults,
 } from "./screenChannel";
 import { ServerServicesProvider } from "./ServerServicesContext";
 import { createServerServices, type ServerServices } from "./serverServices";
@@ -74,7 +76,6 @@ import {
   parseSidebarShortcut,
   fontFamilies,
 } from "../studioPreferences";
-import type { GetResult } from "../api";
 import { alertsSince } from "../desktop/desktopAlerts";
 import "./servers.css";
 const uiOnly =
@@ -173,9 +174,8 @@ function MultiServerShell({
   useUiPreferenceSync(servers);
   const [searchOpen, setSearchOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
-  type SearchRow = GetResult<"/api/search">["results"][number];
   const [searchResults, setSearchResults] = useState<
-    Record<string, { results: SearchRow[]; error?: string }>
+    Record<string, ScreenSearchResults>
   >({});
   const searchRequest = useRef("");
   const notificationState = useRef(
@@ -681,17 +681,8 @@ function MultiServerShell({
       data.kind === "studio-server-search-results" &&
       data.requestId === searchRequest.current
     ) {
-      const results = data.results;
-      if (results !== undefined && results !== null && !Array.isArray(results))
-        return;
-      const error = typeof data.error === "string" ? data.error : undefined;
-      setSearchResults((old) => ({
-        ...old,
-        [id]: {
-          results: (results || []) as GetResult<"/api/search">["results"],
-          ...(error === undefined ? {} : { error }),
-        },
-      }));
+      const results = screenSearchResults(data);
+      setSearchResults((old) => ({ ...old, [id]: results }));
     } else if (data.kind === "studio-server-navigation") {
       const value = data.navigation as ServerNavigation;
       publishPreferences(preferencesRef.current);
