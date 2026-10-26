@@ -4,15 +4,13 @@ import { pathToFileURL } from "node:url";
 
 async function main() {
   const [executable, resources, enabled] = process.argv.slice(2);
-  if (!enabled || !["true", "false"].includes(enabled))
+  if (!["true", "false"].includes(enabled))
     throw new Error("Invalid recovery setting.");
   if (
     path.resolve(resources || "") !==
     "/Applications/Codex Studio.app/Contents/Resources"
   )
     throw new Error("Recovery requires the installed application resources.");
-  if (!executable || !resources)
-    throw new Error("Recovery requires application paths.");
   const recovery: typeof import("../desktop/recovery.ts") = await import(
     pathToFileURL(
       path.join(import.meta.dirname, "desktop-recovery/recovery.ts"),
@@ -27,7 +25,7 @@ async function main() {
   });
   process.stdout.write(JSON.stringify({ enabled: result.enabled }));
 }
-main().catch((error: unknown) => {
-  console.error(error instanceof Error ? error.message : String(error));
+main().catch((error: Error) => {
+  console.error(error.message);
   process.exitCode = 1;
 });

@@ -12,17 +12,19 @@ import { createServer } from "node:net";
 import { readTestState } from "../web/tests/playwright.ts";
 import { ensureBackend, identity } from "./backend.ts";
 type NativeTestState = {
-  notifications: Pick<Notification, "title" | "body">[];
-  notificationShow?: Notification["show"];
-  external?: string;
-  externalActivate?: boolean | undefined;
-  reveal?: string;
-  open?: string;
-  preview?: string;
+  __testNotifications: Pick<Notification, "title" | "body">[];
+  __testNotificationShow?: Notification["show"];
+  __testExternal?: string;
+  __testExternalActivate?: boolean | undefined;
+  __testReveal?: string;
+  __testOpen?: string;
+  __testPreview?: string;
 };
 declare global {
   var __testOriginalFetch: typeof fetch;
-  var __nativeFixture: NativeTestState;
+  namespace Electron {
+    interface App extends NativeTestState {}
+  }
 }
 // Typed Studio HTTP responses follow their generated Rust route contracts.
 async function readStudioResponse<T>(
@@ -40,9 +42,7 @@ const state = path.join(temp, "state");
 const port = await new Promise<number>((resolve) => {
   const server = createServer();
   server.listen(0, "127.0.0.1", () => {
-    const address = server.address();
-    assert.ok(address && typeof address !== "string");
-    const port = address.port;
+    const port = (server.address() as import("node:net").AddressInfo).port;
     server.close(() => resolve(port));
   });
 });
@@ -53,8 +53,8 @@ const env = {
   CODEX_DESKTOP_PROFILE: path.join(temp, "profile"),
 };
 const resources = path.resolve(root, "..");
-let desktop: ElectronApplication | null = null;
-let backend: Awaited<ReturnType<typeof ensureBackend>> | undefined;
+let desktop!: ElectronApplication;
+let backend!: Awaited<ReturnType<typeof ensureBackend>>;
 const poll = async (fn: () => Promise<boolean>) => {
   for (let i = 0; i < 100; i++) {
     if (await fn()) return;
@@ -68,9 +68,8 @@ try {
     ensureBackend({ resources, port, env }),
     ensureBackend({ resources, port, env }),
   ]);
-  assert.equal(race[0]?.pid, race[1]?.pid);
+  assert.equal(race[0].pid, race[1].pid);
   backend = race[0];
-  assert.ok(backend);
   await assert.rejects(
     identity(backend.origin, path.join(temp, "different-state")),
     /different state/,
@@ -87,17 +86,8 @@ try {
   const page = await desktop.firstWindow();
   await page.waitForFunction(() => !!window.codexDesktop);
   assert.equal(
-    (
-      await page.evaluate(() => {
-        const bridge = window.codexDesktop;
-        if (!bridge) throw new Error("The desktop bridge is unavailable.");
-        if (!bridge.getBackendUpdate)
-          throw new Error(
-            "The desktop getBackendUpdate method is unavailable.",
-          );
-        return bridge.getBackendUpdate();
-      })
-    )?.updateRequired,
+    (await page.evaluate(() => window.codexDesktop!.getBackendUpdate!()))!
+      .updateRequired,
     false,
   );
   await desktop.evaluate(() => {
@@ -115,17 +105,8 @@ try {
     };
   });
   assert.equal(
-    (
-      await page.evaluate(() => {
-        const bridge = window.codexDesktop;
-        if (!bridge) throw new Error("The desktop bridge is unavailable.");
-        if (!bridge.getBackendUpdate)
-          throw new Error(
-            "The desktop getBackendUpdate method is unavailable.",
-          );
-        return bridge.getBackendUpdate();
-      })
-    )?.updateRequired,
+    (await page.evaluate(() => window.codexDesktop!.getBackendUpdate!()))!
+      .updateRequired,
     true,
   );
   await page.evaluate(() => window.dispatchEvent(new Event("focus")));
@@ -136,15 +117,12 @@ try {
   });
   const preferences = await desktop.evaluate(({ BrowserWindow }) => {
     const window = BrowserWindow.getAllWindows()[0];
-    if (!window) throw new Error("Hidden window is unavailable.");
-    const method: unknown = Reflect.get(
-      window.webContents,
-      "getLastWebPreferences",
-    );
-    if (typeof method !== "function")
-      throw new Error("Web preferences are unavailable.");
-    // Electron 44 exposes this method at runtime but omits it from its declarations.
-    const preferences: WebPreferences = method.call(window.webContents);
+    // Electron 44 implements getLastWebPreferences (shell/browser/api/electron_api_web_contents.cc), but omits its declaration.
+    const preferences = (
+      window!.webContents as typeof window.webContents & {
+        getLastWebPreferences(): WebPreferences;
+      }
+    ).getLastWebPreferences();
     return {
       sandbox: preferences.sandbox,
       contextIsolation: preferences.contextIsolation,
@@ -160,26 +138,24 @@ try {
   });
   assert.equal(await page.evaluate(() => typeof window.require), "undefined");
   assert.match(
-    await page.evaluate(() => {
-      const bridge = window.codexDesktop;
-      if (!bridge) throw new Error("The desktop bridge is unavailable.");
-      return bridge.pickDirectory().catch((e) => e.message);
-    }),
+    await page.evaluate(() =>
+      window.codexDesktop!.pickDirectory().catch((e) => e.message),
+    ),
     /desktop button/,
   );
-  await desktop.evaluate(({ Notification }) => {
-    globalThis.__nativeFixture = { notifications: [] };
+  await desktop.evaluate(({ Notification, app }) => {
+    app.__testNotifications = [];
     Notification.isSupported = () => true;
     Notification.prototype.show = function () {
-      globalThis.__nativeFixture.notifications.push({
+      app.__testNotifications.push({
         title: this.title,
         body: this.body,
       });
       this.emit("show");
     };
   });
-  await desktop.evaluate(({ Notification }) => {
-    globalThis.__nativeFixture.notificationShow = Notification.prototype.show;
+  await desktop.evaluate(({ Notification, app }) => {
+    app.__testNotificationShow = Notification.prototype.show;
     Notification.prototype.show = function () {
       this.emit(
         "failed",
@@ -190,10 +166,8 @@ try {
   });
   assert.match(
     await page.evaluate(() => {
-      const bridge = window.codexDesktop;
-      if (!bridge) throw new Error("The desktop bridge is unavailable.");
-      return bridge
-        .notify({
+      return window
+        .codexDesktop!.notify({
           title: "Permission test",
           body: "Test",
           target: { agentId: "fixture", section: "messages" },
@@ -202,17 +176,14 @@ try {
     }),
     /STUDIO_NOTIFICATIONS_DENIED/,
   );
-  await desktop.evaluate(({ Notification }) => {
-    const show = globalThis.__nativeFixture.notificationShow;
-    if (!show) throw new Error("Notification fixture is unavailable.");
-    Notification.prototype.show = show;
+  await desktop.evaluate(({ Notification, app }) => {
+    Notification.prototype.show = app.__testNotificationShow!;
   });
   assert.match(
     await page.evaluate(() => {
-      const bridge = window.codexDesktop;
-      if (!bridge) throw new Error("The desktop bridge is unavailable.");
       return (
-        bridge
+        window
+          .codexDesktop!
           // @ts-expect-error target is deliberately missing to exercise runtime validation.
           .notify({ title: "Test", body: "Invalid target" })
           .catch((e) => e.message)
@@ -222,9 +193,7 @@ try {
   );
   assert.equal(
     await page.evaluate(() => {
-      const bridge = window.codexDesktop;
-      if (!bridge) throw new Error("The desktop bridge is unavailable.");
-      return bridge.notify({
+      return window.codexDesktop!.notify({
         title: "Global alert",
         body: "No app opt-in",
         target: { agentId: "test-chat", section: "messages" },
@@ -233,9 +202,7 @@ try {
     true,
   );
   assert.deepEqual(
-    await desktop.evaluate(
-      (_electron) => globalThis.__nativeFixture.notifications,
-    ),
+    await desktop.evaluate(({ app }) => app.__testNotifications),
     [{ title: "Global alert", body: "No app opt-in" }],
   );
   await desktop.evaluate(({ Notification }) => {
@@ -245,10 +212,8 @@ try {
   });
   assert.match(
     await page.evaluate(() => {
-      const bridge = window.codexDesktop;
-      if (!bridge) throw new Error("The desktop bridge is unavailable.");
-      return bridge
-        .notify({
+      return window
+        .codexDesktop!.notify({
           title: "Failed alert",
           body: "Failure is visible",
           target: { agentId: "test-chat", section: "messages" },
@@ -259,38 +224,28 @@ try {
   );
   assert.equal(
     await page.evaluate(() => {
-      const bridge = window.codexDesktop;
-      if (!bridge) throw new Error("The desktop bridge is unavailable.");
-      return typeof Reflect.get(bridge ?? {}, "setNotifications");
+      return typeof (
+        window.codexDesktop as DesktopBridge & { setNotifications?: unknown }
+      ).setNotifications;
     }),
     "undefined",
   );
   const file = path.join(temp, "native-picker.txt");
   await writeFile(file, "Native attachment");
   await desktop.evaluate(
-    ({ dialog, shell }, value) => {
-      dialog.showOpenDialog = async (
-        windowOrOptions:
-          | import("electron").BaseWindow
-          | import("electron").OpenDialogOptions,
-        suppliedOptions?: import("electron").OpenDialogOptions,
-      ) => ({
+    ({ dialog, shell, app }, value) => {
+      dialog.showOpenDialog = (async (_window, options) => ({
         canceled: false,
-        filePaths: (suppliedOptions
-          ? suppliedOptions.properties
-          : "properties" in windowOrOptions
-            ? windowOrOptions.properties
-            : undefined
-        )?.includes("openDirectory")
+        filePaths: options.properties!.includes("openDirectory")
           ? [value.directory]
           : [value.file],
-      });
+      })) as typeof dialog.showOpenDialog;
       shell.openExternal = async (url, options) => {
-        globalThis.__nativeFixture.external = url;
-        globalThis.__nativeFixture.externalActivate = options?.activate;
+        app.__testExternal = url;
+        app.__testExternalActivate = options?.activate;
       };
       shell.showItemInFolder = (path) => {
-        globalThis.__nativeFixture.reveal = path;
+        app.__testReveal = path;
       };
     },
     { file, directory: temp },
@@ -317,9 +272,8 @@ try {
   assert.equal((await projectResponse).status(), 200);
   const uiState = await readTestState(backend.origin);
   const lead = uiState.runtime.agents.find((agent) => agent.isLead);
-  assert.ok(lead);
-  assert.ok(lead.cwd?.endsWith(path.basename(temp)));
-  assert.equal(lead.threadId, null);
+  assert.ok(lead!.cwd!.endsWith(path.basename(temp)));
+  assert.equal(lead!.threadId, null);
   const uploadResponse = page.waitForResponse(
     (response) =>
       response.url().endsWith("/api/assets") &&
@@ -357,12 +311,10 @@ try {
     document.body.append(link);
   });
   await page.locator("#native-external-link").click();
-  const activeDesktop = desktop;
   await poll(
     async () =>
-      (await activeDesktop.evaluate(
-        (_electron) => globalThis.__nativeFixture.external,
-      )) === "https://example.com/native-ui",
+      (await desktop.evaluate(({ app }) => app.__testExternal)) ===
+      "https://example.com/native-ui",
   );
   await page.locator("#native-external-link").evaluate((link) => link.remove());
   assert.equal(page.url(), `${backend.origin}/`);
@@ -374,33 +326,25 @@ try {
   );
   await page.screenshot({ path: path.join(temp, "native-react-callers.png") });
   await page.evaluate(() => {
-    const bridge = window.codexDesktop;
-    if (!bridge) throw new Error("The desktop bridge is unavailable.");
     const button = document.createElement("button");
     button.id = "native-test";
     button.style.cssText = "position:fixed;top:0;right:0;z-index:2147483647";
     button.textContent = "Native test";
     button.onclick = () => {
-      const methodName = button.dataset.method;
-      if (!methodName) throw new Error("Native fixture method is unavailable.");
       let value: unknown = button.dataset.value;
-      if (["saveFile", "fileAction"].includes(methodName)) {
-        if (typeof value !== "string")
-          throw new Error("Native fixture value is unavailable.");
-        if (methodName === "saveFile") {
-          // The fixture serializes this save value immediately before the click.
-          type SaveValue = Parameters<
-            NonNullable<DesktopBridge["saveFile"]>
-          >[0];
-          const parsed: Omit<SaveValue, "data"> & { data: number[] } =
-            JSON.parse(value);
-          value = { ...parsed, data: Uint8Array.from(parsed.data).buffer };
-        } else value = JSON.parse(value);
+      if (["saveFile", "fileAction"].includes(button.dataset.method!)) {
+        type SaveValue = Parameters<NonNullable<DesktopBridge["saveFile"]>>[0];
+        const parsed: Omit<SaveValue, "data"> & {
+          data: number[] | ArrayBuffer;
+        } = JSON.parse(value as string);
+        if (button.dataset.method === "saveFile")
+          parsed.data = Uint8Array.from(parsed.data as number[]).buffer;
+        value = parsed;
       }
-      const method: unknown = Reflect.get(bridge, methodName);
-      if (typeof method !== "function")
-        throw new Error("Native fixture method is unavailable.");
-      const result: Promise<unknown> = Reflect.apply(method, bridge, [value]);
+      // The fixture dispatches the same preload methods as its typed invoke() caller below.
+      const fixtureBridge = window.codexDesktop as DesktopBridge &
+        Record<string, (value: unknown) => Promise<unknown>>;
+      const result = fixtureBridge[button.dataset.method!](value);
       return result
         .then((value) => {
           document.body.dataset.nativeResult = JSON.stringify({ value });
@@ -431,8 +375,7 @@ try {
     await page.locator("#native-test").evaluate(
       (button, request) => {
         button.dataset.method = request.method;
-        if (request.value === undefined) delete button.dataset.value;
-        else button.dataset.value = request.value;
+        button.dataset.value = request.value!;
         delete document.body.dataset.nativeResult;
       },
       { method, value },
@@ -440,33 +383,34 @@ try {
     await page.locator("#native-test").click();
     await page.waitForFunction(() => document.body.dataset.nativeResult);
     return JSON.parse(
-      await page.evaluate(() => document.body.dataset.nativeResult ?? "null"),
+      await page.evaluate(() => document.body.dataset.nativeResult!),
     );
   };
   assert.equal((await invoke("pickDirectory")).value, temp);
   const files = (await invoke("pickFiles")).value;
-  assert.ok(files?.[0]);
   assert.equal(
-    Buffer.from(files[0].data, "base64").toString(),
+    Buffer.from(files![0].data, "base64").toString(),
     "Native attachment",
   );
-  assert.equal(files[0].mime, "text/plain");
+  assert.equal(files![0].mime, "text/plain");
   const savedCopy = path.join(temp, "saved-copy.txt");
-  await desktop.evaluate(({ dialog, shell, BrowserWindow }, destination) => {
-    dialog.showSaveDialog = async () => ({
-      canceled: false,
-      filePath: destination,
-    });
-    shell.openPath = async (file) => {
-      globalThis.__nativeFixture.open = file;
-      return "";
-    };
-    const main = BrowserWindow.getAllWindows()[0];
-    if (!main) throw new Error("Hidden window is unavailable.");
-    main.previewFile = (file) => {
-      globalThis.__nativeFixture.preview = file;
-    };
-  }, savedCopy);
+  await desktop.evaluate(
+    ({ dialog, shell, BrowserWindow, app }, destination) => {
+      dialog.showSaveDialog = async () => ({
+        canceled: false,
+        filePath: destination,
+      });
+      shell.openPath = async (file) => {
+        app.__testOpen = file;
+        return "";
+      };
+      const main = BrowserWindow.getAllWindows()[0];
+      main!.previewFile = (file) => {
+        app.__testPreview = file;
+      };
+    },
+    savedCopy,
+  );
   const nativeBytes = [0, 1, 2, 127, 255];
   assert.equal(
     (
@@ -479,7 +423,9 @@ try {
   );
   assert.deepEqual([...(await readFile(savedCopy))], nativeBytes);
   await desktop.evaluate(({ dialog }) => {
-    dialog.showSaveDialog = async () => ({ canceled: true, filePath: "" });
+    // This cancellation fixture omits filePath, which is irrelevant when canceled.
+    dialog.showSaveDialog = async () =>
+      ({ canceled: true }) as Awaited<ReturnType<typeof dialog.showSaveDialog>>;
   });
   assert.equal(
     (await invoke("saveFile", JSON.stringify({ name: "copy.txt", data: [42] })))
@@ -501,69 +447,66 @@ try {
       true,
     );
   assert.deepEqual(
-    await desktop.evaluate((_electron) => [
-      globalThis.__nativeFixture.open,
-      globalThis.__nativeFixture.reveal,
-      globalThis.__nativeFixture.preview,
+    await desktop.evaluate(({ app }) => [
+      app.__testOpen,
+      app.__testReveal,
+      app.__testPreview,
     ]),
     [resolvedAsset.path, resolvedAsset.path, resolvedAsset.path],
   );
   assert.match(
-    (await invoke("openExternal", "file:///etc/passwd")).error ?? "",
+    (await invoke("openExternal", "file:///etc/passwd")).error!,
     /HTTP/,
   );
   await invoke("openExternal", "https://example.com/");
   assert.deepEqual(
-    await desktop.evaluate((_electron) => [
-      globalThis.__nativeFixture.external,
-      globalThis.__nativeFixture.externalActivate,
+    await desktop.evaluate(({ app }) => [
+      app.__testExternal,
+      app.__testExternalActivate,
     ]),
     ["https://example.com/", false],
   );
   // An approved sign-in link brings the browser to the front; the scheme rule stays.
   assert.match(
-    (await invoke("openSignIn", "javascript:alert(1)")).error ?? "",
+    (await invoke("openSignIn", "javascript:alert(1)")).error!,
     /HTTP/,
   );
   await invoke("openSignIn", "https://accounts.example.com/authorize?x=1");
   assert.deepEqual(
-    await desktop.evaluate((_electron) => [
-      globalThis.__nativeFixture.external,
-      globalThis.__nativeFixture.externalActivate,
+    await desktop.evaluate(({ app }) => [
+      app.__testExternal,
+      app.__testExternalActivate,
     ]),
     ["https://accounts.example.com/authorize?x=1", true],
   );
   await invoke("revealPath", file);
-  assert.equal(
-    await desktop.evaluate((_electron) => globalThis.__nativeFixture.reveal),
-    file,
-  );
+  assert.equal(await desktop.evaluate(({ app }) => app.__testReveal), file);
   await page.evaluate(() => {
     const frame = document.createElement("iframe");
     frame.srcdoc = "<p>Untrusted preview</p>";
-    frame.setAttribute("sandbox", "allow-scripts");
+    // HTML sandbox forwards assignment to DOMTokenList.value; lib.dom omits that setter (HTMLIFrameElement sandbox [PutForwards=value]).
+    (
+      frame as Omit<Partial<HTMLIFrameElement>, "sandbox"> & {
+        sandbox: string | DOMTokenList;
+      }
+    ).sandbox = "allow-scripts";
     document.body.append(frame);
   });
   await poll(async () => page.frames().length === 2);
   assert.equal(
-    await page
-      .frames()
-      .at(1)
-      ?.evaluate(() => typeof window.codexDesktop),
+    await page.frames()[1].evaluate(() => typeof window.codexDesktop),
     "undefined",
   );
   assert.equal(
-    await page.frames().at(1)?.locator("p").textContent(),
+    await page.frames()[1].locator("p").textContent(),
     "Untrusted preview",
   );
   await desktop.evaluate(async ({ BrowserWindow, app }) => {
     const main = BrowserWindow.getAllWindows()[0];
-    if (!main) throw new Error("Hidden window is unavailable.");
     const { nativeAction }: typeof import("./main.ts") = await import(
       `${app.getAppPath()}/main.ts`
     );
     const frame = main.webContents.mainFrame.frames[0];
-    if (!frame) throw new Error("The preview frame is unavailable.");
     try {
       await nativeAction(
         { sender: main.webContents, senderFrame: frame },
@@ -571,14 +514,12 @@ try {
       );
       throw Error("Subframe gained native access");
     } catch (error) {
-      if (!(error instanceof Error) || !error.message.includes("main frame"))
-        throw error;
+      if (!(error as Error).message.includes("main frame")) throw error;
     }
   });
   // Exercise the actual IPC channel from a separate renderer with the same preload.
   const rogueId = await desktop.evaluate(async ({ BrowserWindow, app }) => {
     const main = BrowserWindow.getAllWindows()[0];
-    if (!main) throw new Error("Hidden window is unavailable.");
     const rogue = new BrowserWindow({
       show: false,
       webPreferences: {
@@ -592,27 +533,24 @@ try {
     return rogue.id;
   });
   const rogue = desktop.windows().find((candidate) => candidate !== page);
-  assert.ok(rogue);
-  await rogue.evaluate(() => {
-    const bridge = window.codexDesktop;
-    if (!bridge) throw new Error("The desktop bridge is unavailable.");
+  await rogue!.evaluate(() => {
     const button = document.createElement("button");
     button.id = "ipc-test";
     button.style.cssText = "position:fixed;top:0;right:0;z-index:2147483647";
     button.textContent = "IPC test";
     button.onclick = () =>
-      bridge.pickFiles().catch((e) => {
+      window.codexDesktop!.pickFiles().catch((e) => {
         document.body.dataset.ipcError = e.message;
       });
     document.body.append(button);
   });
   // Playwright dispatches a real renderer input event without OS input or window activation.
-  await rogue.locator("#ipc-test").click();
-  await rogue.waitForFunction(() =>
+  await rogue!.locator("#ipc-test").click();
+  await rogue!.waitForFunction(() =>
     document.body.dataset.ipcError?.includes("main frame"),
   );
   await desktop.evaluate(
-    ({ BrowserWindow }, id) => BrowserWindow.fromId(id)?.destroy(),
+    ({ BrowserWindow }, id) => BrowserWindow.fromId(id)!.destroy(),
     rogueId,
   );
   await page.evaluate(() => {
@@ -625,7 +563,6 @@ try {
   await page.screenshot({ path: path.join(temp, "desktop-hidden.png") });
   const savedBounds = await desktop.evaluate(({ BrowserWindow }) => {
     const window = BrowserWindow.getAllWindows()[0];
-    if (!window) throw new Error("Hidden window is unavailable.");
     const bounds = window.getBounds();
     window.setBounds(
       {
@@ -638,7 +575,7 @@ try {
     return window.getNormalBounds();
   });
   await desktop.close();
-  desktop = null;
+  desktop = null!;
   const savedWindow = readWindowState(
     await readFile(
       path.join(env.CODEX_DESKTOP_PROFILE, "window-state.json"),
@@ -651,20 +588,20 @@ try {
   await reopened.waitForFunction(() => !!window.codexDesktop);
   assert.deepEqual(
     await desktop.evaluate(({ BrowserWindow }) =>
-      BrowserWindow.getAllWindows().at(0)?.getNormalBounds(),
+      BrowserWindow.getAllWindows()[0].getNormalBounds(),
     ),
     savedBounds,
   );
   assert.equal(
     await desktop.evaluate(({ BrowserWindow }) =>
-      BrowserWindow.getAllWindows().at(0)?.isVisible(),
+      BrowserWindow.getAllWindows()[0].isVisible(),
     ),
     false,
   );
   await desktop.close();
-  desktop = null;
+  desktop = null!;
   assert.equal(
-    (await identity(backend.origin, backend.stateDir))?.pid,
+    (await identity(backend.origin, backend.stateDir))!.pid,
     backend.pid,
     "Closing Electron must preserve the backend",
   );
@@ -674,7 +611,7 @@ try {
     /Backend exited/,
   );
   assert.equal(
-    (await identity(backend.origin, backend.stateDir))?.pid,
+    (await identity(backend.origin, backend.stateDir))!.pid,
     backend.pid,
   );
   console.log(
@@ -713,14 +650,10 @@ try {
 } finally {
   if (desktop) await desktop.close();
   if (backend) {
-    const stoppedBackend = backend;
     process.kill(backend.pid, "SIGTERM");
     await poll(async () => {
       try {
-        return !(await identity(
-          stoppedBackend.origin,
-          stoppedBackend.stateDir,
-        ));
+        return !(await identity(backend.origin, backend.stateDir));
       } catch {
         return false;
       }

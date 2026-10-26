@@ -27,8 +27,7 @@ function start(t: TestContext, mode: string) {
     messages.push(message);
     events.emit("change");
   });
-  assert.ok(child.stderr);
-  child.stderr.on("data", (data: Buffer) => {
+  child.stderr!.on("data", (data: Buffer) => {
     stderr += data;
     events.emit("change");
   });
@@ -98,10 +97,8 @@ for (const mode of [
       run.release("delete");
       await run.finished();
       assertOneDelete(run);
-      assert.ok(run.exit);
-      assert.equal(run.exit.signal, null);
-      assert.ok(run.exit);
-      assert.equal(run.exit.code, mode === "normal" ? 0 : 1);
+      assert.equal(run.exit!.signal, null);
+      assert.equal(run.exit!.code, mode === "normal" ? 0 : 1);
     },
   );
 }
@@ -118,18 +115,16 @@ for (const signal of ["SIGINT", "SIGTERM"] satisfies NodeJS.Signals[]) {
       run.release("audit");
       await run.stage("delete");
       await run.signal(signal, 2);
-      assert.equal({ ...run }.exit, null);
+      assert.equal(run.exit, null);
       run.release("delete");
       await run.finished();
       assertOneDelete(run);
       assert.deepEqual(
-        run.messages.find((message) => message.stage === "cleaned")?.remaining,
+        run.messages.find((message) => message.stage === "cleaned")!.remaining,
         [],
       );
-      assert.ok(run.exit);
-      assert.equal(run.exit.signal, null);
-      assert.ok(run.exit);
-      assert.equal(run.exit.code, signal === "SIGINT" ? 130 : 143);
+      assert.equal(run.exit!.signal, null);
+      assert.equal(run.exit!.code, signal === "SIGINT" ? 130 : 143);
     },
   );
 }
@@ -149,8 +144,7 @@ test(
     run.release("delete");
     await run.finished();
     assertOneDelete(run);
-    assert.ok(run.exit);
-    assert.equal(run.exit.code, 143);
+    assert.equal(run.exit!.code, 143);
   },
 );
 
@@ -168,8 +162,7 @@ test(
     assert.ok(run.child.kill("SIGINT"));
     await run.finished();
     assertOneDelete(run);
-    assert.ok(run.exit);
-    assert.equal(run.exit.code, 130);
+    assert.equal(run.exit!.code, 130);
     assert.match(
       run.stderr,
       /Forced exit.*remaining ownership.*lead-1.*worker-1.*"deleteAttempts":1/,
@@ -178,7 +171,10 @@ test(
 );
 
 test("failed parallel audit waits for every in-flight lane before teardown", async () => {
-  const { promise: pending, resolve: release } = Promise.withResolvers<void>();
+  let release!: () => void;
+  const pending = new Promise<void>((resolve) => {
+    release = resolve;
+  });
   const stages: string[] = [];
   const audit: Promise<void[]> = mapLimited(
     ["failed", "pending"],

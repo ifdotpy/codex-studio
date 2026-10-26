@@ -1,9 +1,14 @@
-import { parsedRecord } from "./test-support.ts";
-import { nodeFixture } from "./test-support.ts";
-import { present, record } from "./test-support.ts";
+import { parsedRecord, nodeFixture, record } from "./test-support.ts";
+import type { PreloadProbe, ProbeRequest } from "./test-support.ts";
+import type { NativeFrame } from "./main.ts";
+type FixtureFrame = Pick<NativeFrame, "url"> &
+  Partial<Omit<NativeFrame, "url" | "frames" | "parent">> & {
+    parent?: FixtureFrame;
+    frames?: FixtureFrame[];
+  };
+import type { WebContents } from "electron";
 import type { RawNativeAction } from "./test-support.ts";
 import type { DesktopBridge } from "./api.ts";
-import type { NativeFrame, NativeEvent } from "./main.ts";
 import type { NotificationConstructorOptions } from "electron";
 import { transcribe } from "./speech.ts";
 import type { SpeechProgress } from "./speech.ts";
@@ -21,10 +26,10 @@ test("desktop native settings, notification and speech boundaries work with fixt
   const folder = await mkdtemp(join(tmpdir(), "studio-native-ux-"));
   const main = mainTestSource();
   async function fixture() {
-    const windows: Window[] = [];
-    const notices: Notice[] = [];
-    let handler: RawNativeAction | undefined;
-    let ready: () => void = () => {};
+    let window!: Window,
+      handler!: RawNativeAction,
+      notification!: Notice,
+      ready!: () => void;
     const display = {
       id: 1,
       workArea: { x: 0, y: 0, width: 1440, height: 960 },
@@ -37,31 +42,31 @@ test("desktop native settings, notification and speech boundaries work with fixt
     let backendBuild = "installed";
     let notificationFailure: string | null = null;
     class Window extends EventEmitter {
-      webContents = Object.assign(new EventEmitter(), {
-        mainFrame: {
-          url: "http://localhost:1234/",
-          parent: null,
-          frames: [] as NativeFrame[],
-          processId: 1,
-          routingId: 1,
-          isDestroyed: () => false,
-          send: (...args: unknown[]) => this.webContents.send(...args),
-        },
-        session: {
-          setPermissionRequestHandler() {},
-          setPermissionCheckHandler() {},
-        },
-        setWindowOpenHandler() {},
-        isDestroyed: () => false,
-        getURL: () => "http://localhost:1234/",
-        send: (...args: unknown[]) => {
-          events.push(args);
-          this.webContents.emit("sent", ...args);
-        },
-      });
+      declare webContents: EventEmitter &
+        Pick<WebContents, "isDestroyed" | "getURL" | "send"> & {
+          mainFrame: FixtureFrame;
+        };
       constructor() {
         super();
-        windows.push(this);
+        window = Object.assign(this);
+        this.webContents = Object.assign(new EventEmitter(), {
+          mainFrame: {
+            url: "http://localhost:1234/",
+            send: (...args: Parameters<WebContents["send"]>) =>
+              window.webContents.send(...args),
+          },
+          session: {
+            setPermissionRequestHandler() {},
+            setPermissionCheckHandler() {},
+          },
+          setWindowOpenHandler() {},
+          isDestroyed: () => false,
+          getURL: () => "http://localhost:1234/",
+          send: (...args: Parameters<WebContents["send"]>) => {
+            events.push(args);
+            window.webContents.emit("sent", ...args);
+          },
+        });
       }
       async loadURL() {}
       isDestroyed() {
@@ -81,10 +86,10 @@ test("desktop native settings, notification and speech boundaries work with fixt
       static isSupported() {
         return true;
       }
-      options: NotificationConstructorOptions;
+      declare options: NotificationConstructorOptions;
       constructor(options: NotificationConstructorOptions) {
         super();
-        notices.push(this);
+        notification = Object.assign(this);
         this.options = options;
       }
       show() {
@@ -159,13 +164,7 @@ test("desktop native settings, notification and speech boundaries work with fixt
                     close: async () => {},
                   }),
                 }
-              : name === "./speech.ts"
-                ? mainDependency("./speech.ts")
-                : name === "./recovery.ts"
-                  ? mainDependency("./recovery.ts")
-                  : name.startsWith("./")
-                    ? mainDependency(name)
-                    : mainDependency(name),
+              : mainDependency(name),
       process: { argv: ["--hidden"], env: {}, platform: "darwin" },
       __dirname: join(folder, "desktop"),
       module: { exports: {} },
@@ -187,20 +186,18 @@ test("desktop native settings, notification and speech boundaries work with fixt
       console: { log: ready, error: console.error },
     });
     await started;
-    const window = present(windows.at(-1));
-    const action = present(handler);
     const event = {
       sender: window.webContents,
       senderFrame: window.webContents.mainFrame,
-    } satisfies NativeEvent;
+    };
     return {
       invoke: (method: string, value?: unknown) =>
-        action(event, { method, value }),
-      handler: action,
+        handler(event, { method, value }),
+      handler,
       event,
       events,
       intervals,
-      notification: () => present(notices.at(-1)),
+      notification: () => notification,
       setBackendBuild: (value: string) => {
         backendBuild = value;
       },
@@ -215,12 +212,7 @@ test("desktop native settings, notification and speech boundaries work with fixt
       record(await f.invoke("getBackendUpdate")).updateRequired,
       false,
     );
-    const serverFrame: NativeFrame = {
-      processId: 2,
-      routingId: 2,
-      frames: [],
-      isDestroyed: () => false,
-      send() {},
+    const serverFrame = {
       url: `http://${serverFrameHost("local")}:1235/?studio-server=local&studio-parent=http%3A%2F%2Flocalhost%3A1234`,
       parent: f.event.senderFrame,
     };
@@ -326,16 +318,11 @@ test("desktop native settings, notification and speech boundaries work with fixt
       /Invalid server frame owner/,
     );
 
-    const remoteManagementFrame: NativeFrame = {
-      processId: 3,
-      routingId: 3,
-      frames: [],
-      isDestroyed: () => false,
-      send() {},
+    const remoteManagementFrame = {
       url: `http://${serverFrameHost("remote")}:1235/?studio-server=remote&studio-parent=http%3A%2F%2Flocalhost%3A1234`,
       parent: f.event.senderFrame,
     };
-    f.event.senderFrame.frames.push(remoteManagementFrame);
+    f.event.senderFrame.frames!.push(remoteManagementFrame);
     for (const [owner, origin, frame] of [
       ["local", "http://localhost:1234", serverFrame],
       ["remote", "https://remote.tailnet.ts.net", remoteManagementFrame],
@@ -493,7 +480,8 @@ test("desktop native settings, notification and speech boundaries work with fixt
       new URL("./preload.cjs", import.meta.url),
       "utf8",
     );
-    let api: DesktopBridge | undefined;
+    let api!: PreloadProbe<[string, ProbeRequest]> &
+      Partial<Record<"getNotifications" | "setNotifications", never>>;
     const ipc = Object.assign(new EventEmitter(), {
       invoke: async (...args: unknown[]) => args,
     });
@@ -514,23 +502,25 @@ test("desktop native settings, notification and speech boundaries work with fixt
       performance: { now: () => 10 },
       require: () => ({
         contextBridge: {
-          exposeInMainWorld: (_name: string, value: DesktopBridge) => {
+          exposeInMainWorld: (
+            _name: string,
+            value: PreloadProbe<[string, ProbeRequest]>,
+          ) => {
             api = value;
           },
         },
         ipcRenderer: ipc,
       }),
     });
-    assert(api);
-    const updateCall = await present(api.getBackendUpdate)();
-    assert.equal(record(updateCall)["0"], "codex-desktop");
-    assert.equal(record(record(updateCall)["1"]).method, "getBackendUpdate");
-    assert.equal(Reflect.get(api, "getNotifications"), undefined);
-    assert.equal(Reflect.get(api, "setNotifications"), undefined);
-    present(listeners.click)({ isTrusted: true });
+    const updateCall = await api.getBackendUpdate!();
+    assert.equal(updateCall[0], "codex-desktop");
+    assert.equal(updateCall[1].method, "getBackendUpdate");
+    assert.equal(api.getNotifications, undefined);
+    assert.equal(api.setNotifications, undefined);
+    listeners.click!({ isTrusted: true });
     const cancelCall = await api.cancelTranscription("a");
-    assert.equal(record(cancelCall)["0"], "codex-desktop");
-    assert.equal(record(record(cancelCall)["1"]).method, "cancelTranscription");
+    assert.equal(cancelCall[0], "codex-desktop");
+    assert.equal(cancelCall[1].method, "cancelTranscription");
     const received: Parameters<
       Parameters<DesktopBridge["onNavigate"]>[0]
     >[0][] = [];
@@ -566,7 +556,11 @@ test("desktop native settings, notification and speech boundaries work with fixt
     ] as const)
       view.setUint16(offset, value, true);
     const helper = join(folder, "helper");
-    await writeFile(helper, nodeFixture("speech-progress"), { mode: 0o700 });
+    await writeFile(
+      helper,
+      nodeFixture("speech-progress", "/usr/bin/env node"),
+      { mode: 0o700 },
+    );
     const progress: SpeechProgress[] = [];
     assert.equal(
       (
@@ -580,7 +574,7 @@ test("desktop native settings, notification and speech boundaries work with fixt
       { completed: 0, total: 2 },
       { completed: 2, total: 2 },
     ]);
-    await writeFile(helper, nodeFixture("speech-pending"));
+    await writeFile(helper, nodeFixture("speech-pending", "/usr/bin/env node"));
     await mkdir(join(folder, "desktop/native"), { recursive: true });
     await writeFile(
       join(folder, "desktop/native/studio-speech"),
@@ -633,10 +627,10 @@ test("desktop native settings, notification and speech boundaries work with fixt
       const remoteFrame = {
         url: `http://${serverFrameHost("remote")}:1235/?studio-server=remote&studio-parent=http%3A%2F%2Flocalhost%3A1234`,
         parent: f.event.senderFrame,
-        frames: [],
         processId: 12,
         routingId: 34,
-        send: (...args: unknown[]) => f.event.sender.send(...args),
+        send: (...args: Parameters<WebContents["send"]>) =>
+          f.event.sender.send(...args),
         destroyed: false,
         isDestroyed() {
           return this.destroyed;

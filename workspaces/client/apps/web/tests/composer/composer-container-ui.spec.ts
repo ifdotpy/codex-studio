@@ -1,5 +1,7 @@
+import type { BrowserRectangle } from "../chat/browser.ts";
 import type { TestAgent } from "../playwright.ts";
-import assert from "node:assert/strict";
+// The base settings fixture omits workerDefaults.fastMode.
+type PartialSettingsFixture = Partial<TestAgent>;
 import type { GetResult } from "../../src/apiTypes.ts";
 import { fixtureGetResult } from "../chat/http.ts";
 import {
@@ -28,7 +30,7 @@ test("composer keeps one tools row and readable mixed-provider execution summary
     env: { FIXTURE_HOLD: "lead" },
   });
   let log = "";
-  fixture.stderr?.on("data", (chunk) => (log += chunk));
+  fixture.stderr!.on("data", (chunk) => (log += chunk));
   const results = [];
   try {
     const port = await waitForFixturePort(fixture, { diagnostics: () => log });
@@ -37,8 +39,8 @@ test("composer keeps one tools row and readable mixed-provider execution summary
       contract = await readFixtureSyncContract(origin);
     const lead = snapshot.threads.find(
       (agent) => agent.name === "Release lead",
-    );
-    assert.ok(lead);
+    )!;
+
     Object.assign(lead, {
       provider: "claude",
       model: "claude-opus-4-6",
@@ -54,12 +56,11 @@ test("composer keeps one tools row and readable mixed-provider execution summary
         ],
       },
       workerDefaults: {
-        fastMode: false,
         model: "gpt-6.1-sol",
         effort: "medium",
         accountKey: "default",
       },
-    } satisfies Partial<TestAgent>);
+    } as PartialSettingsFixture);
     const { workspaceId } = await fixtureGetResult(
       "/api/sync/identity",
       await fetch(origin + "/api/sync/identity"),
@@ -145,7 +146,7 @@ test("composer keeps one tools row and readable mixed-provider execution summary
           await page.goto(origin);
           await page
             .getByLabel(
-              (page.viewportSize()?.width ?? 1440) <= 760
+              page.viewportSize()!.width <= 760
                 ? "Back to chats"
                 : "Toggle conversations",
               { exact: true },
@@ -154,7 +155,7 @@ test("composer keeps one tools row and readable mixed-provider execution summary
           if (!(await page.locator("#sidebar").isVisible()))
             await page
               .getByLabel(
-                (page.viewportSize()?.width ?? 1440) <= 760
+                page.viewportSize()!.width <= 760
                   ? "Back to chats"
                   : "Toggle conversations",
                 { exact: true },
@@ -199,8 +200,7 @@ test("composer keeps one tools row and readable mixed-provider execution summary
                 "data-mantine-color-scheme",
                 scheme,
               );
-              const workspace = document.querySelector(".workspace");
-              if (!workspace) throw new Error("Missing workspace");
+              const workspace = document.querySelector(".workspace")!;
               const gutter = parseFloat(
                 getComputedStyle(workspace).getPropertyValue("--chat-gutter"),
               );
@@ -244,8 +244,7 @@ test("composer keeps one tools row and readable mixed-provider execution summary
             await expect(settings).toHaveClass(/mantine-Popover-dropdown/);
             const anchor = await trigger.boundingBox();
             const popup = await settings.boundingBox();
-            assert.ok(popup && anchor);
-            expect(Math.abs(popup.x - anchor.x)).toBeLessThanOrEqual(1);
+            expect(Math.abs(popup!.x - anchor!.x)).toBeLessThanOrEqual(1);
           }
           await expect(
             settings
@@ -259,21 +258,11 @@ test("composer keeps one tools row and readable mixed-provider execution summary
           const geometry = await page
             .locator("#composer")
             .evaluate((composer) => {
-              const required = (element: Element | null) => {
-                if (!element)
-                  throw new Error("Missing composer geometry element");
-                return element;
-              };
-              const r = (element: Element | null) => {
-                const { x, y, width, height, left, right, top, bottom } =
-                  required(element).getBoundingClientRect();
-                return { x, y, width, height, left, right, top, bottom };
-              };
+              const r = (element: Element | null): BrowserRectangle =>
+                element!.getBoundingClientRect().toJSON();
               const trigger = composer.querySelector(
                 ".execution-summary-trigger",
-              );
-              if (!trigger)
-                throw new Error("Missing execution summary trigger");
+              )!;
               const visible = (node: Element) =>
                 node.getClientRects().length &&
                 getComputedStyle(node).display !== "none";
@@ -327,8 +316,8 @@ test("composer keeps one tools row and readable mixed-provider execution summary
                     name: button.getAttribute("aria-label"),
                     inRow:
                       getComputedStyle(button).position !== "absolute" &&
-                      getComputedStyle(required(button.parentElement))
-                        .position !== "absolute",
+                      getComputedStyle(button.parentElement!).position !==
+                        "absolute",
                     ...r(button),
                   })),
               };
@@ -363,8 +352,7 @@ test("composer keeps one tools row and readable mixed-provider execution summary
                     ".composer-draft-control button,.composer-tools button,.composer-submit-actions>button",
                   ),
                 ].filter((button) => {
-                  const parent = button.parentElement;
-                  if (!parent) throw new Error("Missing button parent");
+                  const parent = button.parentElement!;
                   return (
                     button.getClientRects().length &&
                     !button.closest(".attachment-list,details:not([open])") &&
@@ -374,8 +362,7 @@ test("composer keeps one tools row and readable mixed-provider execution summary
                 });
                 const attachmentList = composer.querySelector(
                   ".composer-tools .attachment-list",
-                );
-                if (!attachmentList) throw new Error("Missing attachment list");
+                )!;
                 return {
                   centers: controls.map((button) => {
                     const r = button.getBoundingClientRect();
@@ -425,7 +412,6 @@ test("composer keeps one tools row and readable mixed-provider execution summary
         for (let j = i + 1; j < result.controls.length; j++) {
           const a = result.controls[i],
             b = result.controls[j];
-          assert.ok(a && b);
           expect(
             Math.min(a.right, b.right) > Math.max(a.left, b.left) &&
               Math.min(a.bottom, b.bottom) > Math.max(a.top, b.top),
@@ -456,7 +442,6 @@ test("composer keeps one tools row and readable mixed-provider execution summary
         for (let i = 1; i < chip.segments.length; i++) {
           const current = chip.segments[i],
             previous = chip.segments[i - 1];
-          assert.ok(current && previous);
           expect(current.left, JSON.stringify(result)).toBeGreaterThanOrEqual(
             previous.right,
           );

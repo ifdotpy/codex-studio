@@ -1,4 +1,3 @@
-import { requiredFixtureValue } from "../servers/browser-fixture.ts";
 import type { Page, Locator, Browser, FrameLocator } from "playwright";
 import { mkdir, appendFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -20,9 +19,9 @@ function inspectDOM(element: Element, { omitHeader = false } = {}) {
   const visit = (node: Node): DomTree => {
     if (node === header) return null;
     if (node.nodeType === Node.TEXT_NODE) return node.textContent;
-    if (!(node instanceof Element)) return null;
+    if (node.nodeType !== Node.ELEMENT_NODE) return null;
     const attributes = Object.fromEntries(
-      [...node.attributes]
+      [...(node as Element).attributes]
         .filter(({ name }) =>
           [
             "class",
@@ -50,7 +49,7 @@ function inspectDOM(element: Element, { omitHeader = false } = {}) {
         .sort(([a], [b]) => a.localeCompare(b)),
     );
     return [
-      node.tagName,
+      (node as Element).tagName,
       attributes,
       [...node.childNodes].map(visit).filter((child) => child !== null),
     ];
@@ -64,7 +63,7 @@ async function prepareCapture(page: Page, sidebar: Locator) {
     // Compare the same idle state after each filter edit.
     const active = element.ownerDocument.activeElement;
     if (element.contains(active) && active instanceof HTMLElement)
-      active.blur();
+      (active as HTMLElement).blur();
     await element.ownerDocument.fonts.ready;
     const frame = () =>
       new Promise((resolve) => requestAnimationFrame(resolve));
@@ -101,19 +100,17 @@ async function contactSheet(
     await page.setContent(
       `<style>body{margin:0;background:#ddd;font:16px sans-serif}main{display:flex;width:max-content;gap:16px;padding:16px}figure{margin:0}figcaption{height:28px}img{display:block}</style><main><figure><figcaption>Classic</figcaption><img src="data:image/png;base64,${left.toString("base64")}"></figure><figure><figcaption>One list</figcaption><img src="data:image/png;base64,${right.toString("base64")}"></figure></main>`,
     );
-    await page.locator("img").evaluateAll((images) =>
-      Promise.all(
-        images.map((image) => {
-          if (!(image instanceof HTMLImageElement))
-            throw new Error("Expected image");
-          return image.decode();
-        }),
-      ),
-    );
+    await page
+      .locator("img")
+      .evaluateAll((images) =>
+        Promise.all(
+          images.map((image) => (image as HTMLImageElement).decode()),
+        ),
+      );
     const size = await page.locator("main").boundingBox();
     await page.setViewportSize({
-      width: Math.ceil(requiredFixtureValue(size).width),
-      height: Math.ceil(requiredFixtureValue(size).height),
+      width: Math.ceil(size!.width),
+      height: Math.ceil(size!.height),
     });
     await page.screenshot({ path: join(output, `${name}.png`) });
   } finally {
@@ -142,30 +139,15 @@ async function equalContentPixels(
             return image;
           }),
         );
-        const width = (
-          images[0] ??
-          (() => {
-            throw new Error("Missing fixture value");
-          })()
-        ).width;
+        const width = images[0]!.width;
         const height = Math.min(
           ...images.map(
             (image, index) =>
               Math.min(
                 image.height,
-                (
-                  bounds[index] ??
-                  (() => {
-                    throw new Error("Missing fixture value");
-                  })()
-                ).bottom,
-              ) -
-              (
-                bounds[index] ??
-                (() => {
-                  throw new Error("Missing fixture value");
-                })()
-              ).top,
+
+                bounds[index]!.bottom,
+              ) - bounds[index]!.top,
           ),
         );
         const pixels = images.map((image, index) => {
@@ -173,20 +155,12 @@ async function equalContentPixels(
           canvas.width = width;
           canvas.height = height;
           const ctx = canvas.getContext("2d");
-          (
-            ctx ??
-            (() => {
-              throw new Error("Missing fixture value");
-            })()
-          ).drawImage(
+
+          ctx!.drawImage(
             image,
             0,
-            (
-              bounds[index] ??
-              (() => {
-                throw new Error("Missing fixture value");
-              })()
-            ).top,
+
+            bounds[index]!.top,
             width,
             height,
             0,
@@ -194,45 +168,17 @@ async function equalContentPixels(
             width,
             height,
           );
-          return (
-            ctx ??
-            (() => {
-              throw new Error("Missing fixture value");
-            })()
-          ).getImageData(0, 0, width, height).data;
+          return ctx!.getImageData(0, 0, width, height).data;
         });
         let differences = 0;
         let maxDelta = 0;
-        for (
-          let index = 0;
-          index <
-          (
-            pixels[0] ??
-            (() => {
-              throw new Error("Missing fixture value");
-            })()
-          ).length;
-          index += 4
-        ) {
+        for (let index = 0; index < pixels[0]!.length; index += 4) {
           let delta = 0;
           for (let channel = 0; channel < 4; channel++)
             delta = Math.max(
               delta,
               Math.abs(
-                ((pixels[0] ??
-                  (() => {
-                    throw new Error("Missing fixture value");
-                  })())[index + channel] ??
-                  (() => {
-                    throw new Error("Missing fixture value");
-                  })()) -
-                  ((pixels[1] ??
-                    (() => {
-                      throw new Error("Missing fixture value");
-                    })())[index + channel] ??
-                    (() => {
-                      throw new Error("Missing fixture value");
-                    })()),
+                pixels[0]![index + channel]! - pixels[1]![index + channel]!,
               ),
             );
           if (delta) differences++;
@@ -266,9 +212,9 @@ async function equalContentPixels(
 
 function inspectLayout(element: Element) {
   const root = element.getBoundingClientRect();
-  const header = element.querySelector(".sidebar-header");
-  if (!header) throw new Error("Missing fixture header");
-  const top = header.getBoundingClientRect().bottom;
+  const top = element
+    .querySelector(".sidebar-header")!
+    .getBoundingClientRect().bottom;
   const selectors =
     ".sidebar-header,.projects-heading,input,.project-tree-heading,.sidebar-row,.project-show-more,.project-show-all,.row-copy strong,.chat-server-line";
   return [...element.querySelectorAll(selectors)].map((node) => {
@@ -382,22 +328,15 @@ test.describe("sidebar visible parity", () => {
               const root = element.getBoundingClientRect();
               return {
                 top: Math.round(
-                  (
-                    element.querySelector(".sidebar-header") ??
-                    (() => {
-                      throw new Error("Missing fixture value");
-                    })()
-                  ).getBoundingClientRect().bottom - root.top,
+                  element
+                    .querySelector(".sidebar-header")!
+                    .getBoundingClientRect().bottom - root.top,
                 ),
                 // Keep the partially rasterized clip edge outside the comparison.
                 bottom:
                   Math.floor(
-                    (
-                      element.querySelector("#chat-list") ??
-                      (() => {
-                        throw new Error("Missing fixture value");
-                      })()
-                    ).getBoundingClientRect().bottom - root.top,
+                    element.querySelector("#chat-list")!.getBoundingClientRect()
+                      .bottom - root.top,
                   ) - 1,
               };
             });
@@ -460,55 +399,41 @@ test.describe("sidebar visible parity", () => {
           await contactSheet(
             browser,
             `${scenario}-${mode.name}-comparison`,
-            requiredFixtureValue(views[0]).screenshot,
-            requiredFixtureValue(views[1]).screenshot,
+            views[0]!.screenshot,
+            views[1]!.screenshot,
           );
           await contactSheet(
             browser,
             `${scenario}-${mode.name}-archived-comparison`,
-            requiredFixtureValue(views[0]).archivedScreenshot,
-            requiredFixtureValue(views[1]).archivedScreenshot,
+            views[0]!.archivedScreenshot,
+            views[1]!.archivedScreenshot,
           );
-          expect(requiredFixtureValue(views[1]).dom).toEqual(
-            requiredFixtureValue(views[0]).dom,
-          );
-          expect(requiredFixtureValue(views[1]).menuDOM).toEqual(
-            requiredFixtureValue(views[0]).menuDOM,
-          );
-          expect(requiredFixtureValue(views[1]).archivedDOM).toEqual(
-            requiredFixtureValue(views[0]).archivedDOM,
-          );
+          expect(views[1]!.dom).toEqual(views[0]!.dom);
+          expect(views[1]!.menuDOM).toEqual(views[0]!.menuDOM);
+          expect(views[1]!.archivedDOM).toEqual(views[0]!.archivedDOM);
           let pixelReport = "";
           if (paired) {
-            expect(requiredFixtureValue(views[1]).layout).toEqual(
-              requiredFixtureValue(views[0]).layout,
-            );
-            expect(requiredFixtureValue(views[1]).archivedLayout).toEqual(
-              requiredFixtureValue(views[0]).archivedLayout,
-            );
+            expect(views[1]!.layout).toEqual(views[0]!.layout);
+            expect(views[1]!.archivedLayout).toEqual(views[0]!.archivedLayout);
             const activePixels = await equalContentPixels(
               browser,
-              requiredFixtureValue(views[0]).screenshot,
-              requiredFixtureValue(views[1]).screenshot,
+              views[0]!.screenshot,
+              views[1]!.screenshot,
               views.map((view) => view.bounds),
             );
             const archivedPixels = await equalContentPixels(
               browser,
-              requiredFixtureValue(views[0]).archivedScreenshot,
-              requiredFixtureValue(views[1]).archivedScreenshot,
+              views[0]!.archivedScreenshot,
+              views[1]!.archivedScreenshot,
               views.map((view) => view.bounds),
             );
             pixelReport = ` Active: ${activePixels.differences} pixels, max channel delta ${activePixels.maxDelta}. Archived: ${archivedPixels.differences} pixels, max channel delta ${archivedPixels.maxDelta}.`;
           } else {
+            expect(views[1]!.screenshot.equals(views[0]!.screenshot)).toBe(
+              true,
+            );
             expect(
-              requiredFixtureValue(views[1]).screenshot.equals(
-                requiredFixtureValue(views[0]).screenshot,
-              ),
-            ).toBe(true);
-            expect(
-              requiredFixtureValue(views[1]).archivedScreenshot.equals(
-                requiredFixtureValue(views[0]).archivedScreenshot,
-              ),
+              views[1]!.archivedScreenshot.equals(views[0]!.archivedScreenshot),
             ).toBe(true);
           }
           await appendFile(

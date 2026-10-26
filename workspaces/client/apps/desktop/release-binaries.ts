@@ -123,25 +123,19 @@ export async function verifyReleaseBinaries({
   arch = process.arch,
 }: ReleaseIdentity) {
   const where = `Prebuilt release binaries in ${directory}`;
-  let manifest: Record<string, unknown>;
+  let manifest: ReleaseManifest;
   try {
-    const parsed: unknown = JSON.parse(
-      await readFile(manifestPath(directory), "utf8"),
-    );
-    if (!parsed || typeof parsed !== "object")
-      throw new Error("Invalid release manifest.");
-    manifest = parsed as Record<string, unknown>;
+    // This program writes the release manifest; existing identity and hash checks follow.
+    manifest = JSON.parse(await readFile(manifestPath(directory), "utf8"));
   } catch (error) {
-    if (error instanceof Error && "code" in error && error.code === "ENOENT")
+    if ((error as NodeJS.ErrnoException).code === "ENOENT")
       throw new Error(
         `${where} have no manifest. Run \`just build-release-binaries\`.`,
         { cause: error },
       );
     throw new Error(
-      `${where} have an unreadable manifest: ${error instanceof Error ? error.message : String(error)}`,
-      {
-        cause: error,
-      },
+      `${where} have an unreadable manifest: ${(error as Error).message}`,
+      { cause: error },
     );
   }
   if (manifest?.version !== releaseManifestVersion)
@@ -156,11 +150,7 @@ export async function verifyReleaseBinaries({
     throw new Error(
       `${where} were built for ${manifest.platform}/${manifest.arch}, not ${platform}/${arch}.`,
     );
-  const files =
-    manifest.files && typeof manifest.files === "object"
-      ? (manifest.files as Record<string, unknown>)
-      : {};
-  const listed = Object.keys(files).sort();
+  const listed = Object.keys(manifest.files ?? {}).sort();
   const required = [...releaseArtifacts(platform)].sort();
   if (JSON.stringify(listed) !== JSON.stringify(required))
     throw new Error(
@@ -171,16 +161,16 @@ export async function verifyReleaseBinaries({
     try {
       actual = await sha256File(path.join(directory, "release", name));
     } catch (error) {
-      if (error instanceof Error && "code" in error && error.code === "ENOENT")
+      if ((error as NodeJS.ErrnoException).code === "ENOENT")
         throw new Error(`${where} are missing ${name}.`, { cause: error });
       throw error;
     }
-    if (actual !== files[name])
+    if (actual !== manifest.files[name])
       throw new Error(
         `${where} changed after the build: SHA-256 of ${name} differs from the manifest.`,
       );
   }
-  return manifest as ReleaseManifest;
+  return manifest;
 }
 
 // Build the release artifacts once for the current commit. The previous manifest
