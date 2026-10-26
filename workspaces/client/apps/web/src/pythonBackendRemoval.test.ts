@@ -8,10 +8,7 @@ it("keeps web tests and scripts independent of the removed Python backend", () =
   const files = ["package.json", "playwright-global-setup.ts"];
   for (const directory of ["tests", "scripts", "src"])
     files.push(
-      ...readdirSync(join(root, directory), {
-        recursive: true,
-        encoding: "utf8",
-      })
+      ...(readdirSync(join(root, directory), { recursive: true }) as string[])
         .filter((file) => /\.(?:mjs|tsx?)$/.test(file))
         .map((file) => join(directory, file)),
     );

@@ -37,7 +37,8 @@ it("builds completed reply notifications with a bounded title and body", () => {
       { ...lead, id: "no-turn", lastCompletedTurn: "" },
       { ...lead, id: "in-flight", inFlight: true },
       { ...lead, id: "deleted", deletedAt: 1 },
-      { ...lead, id: "moved", movedTo: { server: "target", move: "move" } },
+      // This partial move fixture omits the unused move receipt.
+      { ...lead, id: "moved", movedTo: { server: "target" } } as Agent,
       { ...lead, id: "imported", moveImportPending: true },
       {
         ...lead,
@@ -64,13 +65,10 @@ it("builds completed reply notifications with a bounded title and body", () => {
     target: { agentId: "lead", section: "messages" },
   });
 
-  assert.ok(alerts[1]);
   assert.equal(alerts[1].title.length, 160);
 
-  assert.ok(alerts[1] !== null && alerts[1] !== undefined);
   assert.equal(alerts[1].body, "Open the chat to read the reply.");
 
-  assert.ok(alerts[2] !== null && alerts[2] !== undefined);
   assert.equal(alerts[2].body, "b".repeat(2000));
 });
 
@@ -177,14 +175,18 @@ it("turns active requests into question or approval notifications", () => {
       id: "question",
       agent: "lead",
       status: "pending",
-      params: { questions: [{ id: "q", question: "Which scope?" }] },
+      // The question fixture omits the unused question identity.
+      params: {
+        questions: [{ question: "Which scope?" }],
+      } as Request["params"],
     },
     { id: "approval", agent: "lead", status: "pending" },
     {
       id: "empty-question",
       agent: "lead",
       status: "pending",
-      params: { questions: [{ id: "q", question: "" }] },
+      // The question fixture omits the unused question identity.
+      params: { questions: [{ question: "" }] } as Request["params"],
     },
     {
       id: "no-questions",
@@ -385,18 +387,17 @@ it("does not show a complaint from before the window started when its page arriv
   const [old] = desktopAlerts(
     snapshot([lead], [], [complaint(1, 900_000)]),
   ).filter((alert) => alert.id.startsWith("complaint:"));
-  assert.ok(old);
+
   assert.equal(old.at, 900_000);
   assert.equal(fresh(old), false);
   // A new version of the same complaint after the start is a new event.
   const [next] = desktopAlerts(
     snapshot([lead], [], [complaint(2, 1_000_010)]),
   ).filter((alert) => alert.id.startsWith("complaint:"));
-  assert.ok(next);
+
   assert.equal(fresh(next), true);
   // A record without a time keeps the earlier rule.
-  const { at: _at, ...withoutTime } = old;
-  assert.equal(fresh(withoutTime), true);
+  assert.equal(fresh({ ...old!, at: undefined }), true);
 });
 
 const signInParams = {
@@ -411,12 +412,7 @@ const signIn = (fields: Partial<Request> = {}): Request => ({
   agent: "lead",
   status: "pending",
   createdAt: 1000,
-  params: {
-    bridgeId: "b1",
-    host: "id.example.com",
-    expiresAt: 1600,
-    source: "host",
-  },
+  params: signInParams,
   ...fields,
 });
 

@@ -88,14 +88,17 @@ test("file actions preserve the native gesture and browser save paths", async ()
   try {
     const { saveFile, openFile, revealFile, previewFile, canUseNativeFiles } =
       await import("./fileActions.ts");
-    const calls: unknown[] = [];
-    const saves: Parameters<NonNullable<DesktopBridge["saveFile"]>>[0][] = [];
-    const desktop = {
+    type Call =
+      | ["save", Parameters<NonNullable<DesktopBridge["saveFile"]>>[0]]
+      | ["file", Parameters<NonNullable<DesktopBridge["fileAction"]>>[0]]
+      | ["browser-save", string];
+    const calls: Call[] = [];
+    // This browser fixture omits Window APIs unused by file actions.
+    globalThis.window = {
       codexDesktop: {
         saveFile: (
           value: Parameters<NonNullable<DesktopBridge["saveFile"]>>[0],
         ) => {
-          saves.push(value);
           calls.push(["save", value]);
           return Promise.resolve(false);
         },
@@ -106,8 +109,7 @@ test("file actions preserve the native gesture and browser save paths", async ()
           return Promise.resolve(true);
         },
       },
-    };
-    vi.stubGlobal("window", desktop);
+    } as Window & typeof globalThis;
     vi.stubGlobal("__TAURI__", undefined);
     assert.equal(canUseNativeFiles(), true);
     const bytes = Uint8Array.of(0, 1, 2, 3).subarray(1, 3);
@@ -121,47 +123,49 @@ test("file actions preserve the native gesture and browser save paths", async ()
       1,
       "Native gesture must be consumed before the first await",
     );
-    assert.equal(saves[0]?.name, "report.md");
+    assert.equal(
+      (calls[0] as Extract<Call, ["save", unknown]>)[1].name,
+      "report.md",
+    );
     assert.deepEqual(
-      [...new Uint8Array(saves[0]?.data ?? new ArrayBuffer(0))],
+      [
+        ...new Uint8Array(
+          (calls[0] as Extract<Call, ["save", unknown]>)[1].data,
+        ),
+      ],
       [1, 2],
     );
     assert.equal(await saving, false, "Cancellation must not become success");
-    const target = {
-      agent: "a",
-      path: "report.md",
-      line: 30,
-    } satisfies FileTarget & { line: number };
     for (const action of [openFile, revealFile, previewFile])
-      await action(target);
+      await action({ agent: "a", path: "report.md", line: 30 } as FileTarget & {
+        line: number;
+      });
     assert.deepEqual(
-      calls.slice(1).map((row) => {
-        assert.ok(Array.isArray(row));
-        return row[1];
-      }),
+      calls.slice(1).map((row) => row[1]),
       ["open", "reveal", "preview"].map((action) => ({
         action,
         target: { agent: "a", path: "report.md" },
       })),
     );
     await assert.rejects(saveFile({ name: "..", data: "x" }), /file name/);
-    desktop.codexDesktop.saveFile = async () => {
+    window.codexDesktop!.saveFile = async () => {
       throw new Error("fixture write failure");
     };
     await assert.rejects(
       saveFile({ name: "report.md", data: "x" }),
       /write failure/,
     );
-    vi.stubGlobal("window", {});
+    window.codexDesktop = undefined;
     assert.equal(canUseNativeFiles(), false);
     assert.equal(await openFile({ agent: "a", path: "report.md" }), false);
     let shared: File | undefined;
     Object.defineProperty(globalThis, "navigator", {
       configurable: true,
       value: {
-        canShare: ({ files }: ShareData) => files?.length === 1,
-        share: async ({ files }: ShareData) => {
-          shared = files?.[0];
+        canShare: ({ files }: Required<Pick<ShareData, "files">>) =>
+          files.length === 1,
+        share: async ({ files }: Required<Pick<ShareData, "files">>) => {
+          shared = files[0];
         },
       },
     });
@@ -173,10 +177,9 @@ test("file actions preserve the native gesture and browser save paths", async ()
       }),
       true,
     );
-    assert.ok(shared);
-    assert.equal(shared.name, "report.md");
-    assert.equal(shared.type, "text/markdown");
-    assert.equal(await shared.text(), "# Progress");
+    assert.equal(shared!.name, "report.md");
+    assert.equal(shared!.type, "text/markdown");
+    assert.equal(await shared!.text(), "# Progress");
     navigator.share = async () => {
       throw new DOMException("User cancelled", "AbortError");
     };
@@ -188,32 +191,35 @@ test("file actions preserve the native gesture and browser save paths", async ()
       saveFile({ name: "report.md", data: "x" }),
       /sharing failure/,
     );
-    const link = {
-      href: "",
-      download: "",
-      click() {
+    const link: Pick<HTMLAnchorElement, "click" | "remove"> &
+      Partial<Pick<HTMLAnchorElement, "href" | "download">> = {
+      click(this: Pick<HTMLAnchorElement, "download">) {
         calls.push(["browser-save", this.download]);
       },
       remove() {},
     };
-    vi.stubGlobal("document", {
+    // This partial Document only supplies anchor creation and append.
+    type DocumentFixture = {
+      createElement(tagName: string): Pick<HTMLElement, "click" | "remove">;
+      body: Pick<HTMLElement, "append">;
+    };
+    (globalThis as { document: DocumentFixture }).document = {
       createElement: () => link,
       body: { append() {} },
-    });
+    };
     navigator.canShare = () => false;
     const originalTimeout = globalThis.setTimeout;
     let release: (() => void) | undefined;
-    vi.stubGlobal("setTimeout", (callback: () => void, delay: number) => {
+    globalThis.setTimeout = ((callback: () => void, delay: number) => {
       assert.equal(delay, 60000);
       release = callback;
       return 0;
-    });
+    }) as typeof setTimeout;
     try {
       assert.equal(await saveFile({ name: "report.md", data: "x" }), true);
       assert.deepEqual(calls.at(-1), ["browser-save", "report.md"]);
-      assert.match(link.href, /^blob:/);
-      assert.ok(release);
-      release();
+      assert.match(link.href!, /^blob:/);
+      release!();
     } finally {
       globalThis.setTimeout = originalTimeout;
     }
@@ -227,7 +233,10 @@ test("file actions preserve the native gesture and browser save paths", async ()
       ["document", originalDocument],
     ] as const) {
       if (descriptor) Object.defineProperty(globalThis, name, descriptor);
-      else Reflect.deleteProperty(globalThis, name);
+      else
+        delete (globalThis as Partial<Pick<typeof globalThis, typeof name>>)[
+          name
+        ];
     }
   }
 });

@@ -74,6 +74,14 @@ test("the production Vite build compresses final outputs without changing shell 
     });
     const dist = join(root, "dist");
     const files = await readdir(dist, { recursive: true });
+    const entry = files.find((name) => /^assets\/index-[^/]+\.js$/.test(name));
+    assert.ok(entry, "Vite emits the fixture entry chunk");
+    assert.ok(
+      (await readFile(join(dist, entry), "utf8")).includes(
+        "compress me ".repeat(300),
+      ),
+      "the entry keeps the upstream 3300-character literal for precompression",
+    );
     for (const name of files.filter(
       (name) =>
         /\.(js|css|wasm|svg|html|json|webmanifest)$/.test(name) &&
@@ -119,9 +127,9 @@ test("the production Vite build compresses final outputs without changing shell 
     );
     assert.ok(!files.some((name) => /\.(?:br|gz)\.(?:br|gz)$/.test(name)));
     const worker = await readFile(join(dist, "studio-sw.js"), "utf8");
-    const manifest = worker.match(/^self\.STUDIO_SHELL = (.*);/)?.[1];
-    assert.ok(manifest);
-    const shell = readShellManifest(manifest);
+    const shell = readShellManifest(
+      worker.match(/^self\.STUDIO_SHELL = (.*);/)![1],
+    );
     assert.ok(shell.initial.length > 0);
     assert.ok(
       [...shell.initial, ...shell.allowed].every(
