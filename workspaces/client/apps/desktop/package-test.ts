@@ -1,4 +1,6 @@
+import type { GetResult } from "../web/src/apiTypes.ts";
 import assert from "node:assert/strict";
+import type { ElectronApplication } from "playwright-core";
 import { _electron as electron } from "playwright-core";
 import { mkdtemp, realpath, rm, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -7,10 +9,12 @@ import { fileURLToPath } from "node:url";
 import { createServer } from "node:net";
 import { execFileSync, spawnSync } from "node:child_process";
 const root = path.dirname(fileURLToPath(import.meta.url));
-const port = await new Promise((resolve) => {
+const port = await new Promise<number>((resolve) => {
   const server = createServer();
   server.listen(0, "127.0.0.1", () => {
-    const port = server.address().port;
+    const address = server.address();
+    assert.ok(address && typeof address !== "string");
+    const port = address.port;
     server.close(() => resolve(port));
   });
 });
@@ -21,7 +25,11 @@ const executable =
     "dist/Codex Studio-darwin-arm64/Codex Studio.app/Contents/MacOS/Codex Studio",
   );
 const origin = `http://127.0.0.1:${port}`;
-let desktop;
+// Rust owns this route; the generated contract is checked against the server.
+async function desktopIdentity(): Promise<GetResult<"/api/desktop">> {
+  return (await fetch(`${origin}/api/desktop`)).json();
+}
+let desktop: ElectronApplication | null = null;
 let pid;
 const temp = await mkdtemp(path.join(tmpdir(), "studio-pkg-"));
 const state = path.join(temp, "state");
@@ -45,19 +53,31 @@ try {
     () => !!window.codexDesktop && !!document.querySelector("textarea"),
   );
   assert.equal(
-    await page.evaluate(() =>
-      ["requestMicrophone", "prepareTranscription", "transcribeAudio"].every(
-        (method) => typeof window.codexDesktop[method] === "function",
-      ),
-    ),
+    await page.evaluate(() => {
+      const bridge = window.codexDesktop;
+      if (!bridge) throw new Error("The desktop bridge is unavailable.");
+      return [
+        "requestMicrophone",
+        "prepareTranscription",
+        "transcribeAudio",
+      ].every(
+        (method) => typeof Reflect.get(bridge ?? {}, method) === "function",
+      );
+    }),
     true,
   );
-  const speech = JSON.parse(
+  const speech: unknown = JSON.parse(
     execFileSync(
       path.join(path.dirname(executable), "../Resources/studio-speech"),
       ["--check"],
       { encoding: "utf8" },
     ),
+  );
+  assert.ok(
+    speech &&
+      typeof speech === "object" &&
+      "helperReady" in speech &&
+      "onDeviceOnly" in speech,
   );
   assert.equal(speech.helperReady, true);
   assert.equal(speech.onDeviceOnly, true);
@@ -92,7 +112,7 @@ try {
     );
     assert.ok(skill.includes(`name: codex-${role}`));
   }
-  const identity = await (await fetch(`${origin}/api/desktop`)).json();
+  const identity = await desktopIdentity();
   assert.equal(identity.backendKind, "rust");
   pid = identity.pid;
   assert.equal(identity.stateDir, await realpath(state));
@@ -109,14 +129,14 @@ try {
   assert.equal(await desktop.evaluate(({ app }) => app.isPackaged), true);
   assert.equal(
     await desktop.evaluate(({ BrowserWindow }) =>
-      BrowserWindow.getAllWindows()[0].isVisible(),
+      BrowserWindow.getAllWindows().at(0)?.isVisible(),
     ),
     false,
   );
   await page.screenshot({ path: path.join(temp, "packaged-desktop.png") });
   await desktop.close();
   desktop = null;
-  assert.equal((await (await fetch(`${origin}/api/desktop`)).json()).pid, pid);
+  assert.equal((await desktopIdentity()).pid, pid);
   console.log(
     JSON.stringify({
       result: "PASS",

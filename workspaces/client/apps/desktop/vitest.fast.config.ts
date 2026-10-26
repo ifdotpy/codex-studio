@@ -1,7 +1,8 @@
+import { defineProject } from "vitest/config";
 import base from "./vitest.config.ts";
 
 // Single owner of this package's short-tier witnesses; preserve file isolation.
-export default {
+export default defineProject({
   ...base,
   test: {
     ...base.test,
@@ -13,4 +14,4 @@ export default {
       "renderer-recovery.test.ts",
     ],
   },
-};
+});

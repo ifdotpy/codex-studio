@@ -1,4 +1,4 @@
-import type { Rectangle, Display, BrowserWindow, App } from "electron";
+import type { Rectangle, Display, BrowserWindow } from "electron";
 export type SavedWindowState = {
   version?: number;
   bounds?: Rectangle;
@@ -84,6 +84,7 @@ function loadWindowState(
 ) {
   let saved: SavedWindowState | undefined;
   try {
+    // This desktop writes window-state.json; rectangle checks retain the existing stale-display handling.
     saved = JSON.parse(
       fs.readFileSync(path.join(profile, "window-state.json"), "utf8"),
     );
@@ -102,10 +103,10 @@ function trackWindowState(
     | "isFullScreen"
     | "isMaximized"
     | "getNormalBounds"
-    | "on"
     | "maximize"
-  >,
-  app: Pick<App, "on" | "removeListener">,
+  > &
+    Pick<NodeJS.EventEmitter, "on">,
+  app: Pick<NodeJS.EventEmitter, "on" | "removeListener">,
   profile: string,
   initial: ReturnType<typeof windowState>,
   { hidden = false } = {},

@@ -59,7 +59,7 @@ run. A missing fact is called out instead of inferred.
   server/install/supervisor scripts exist. These are preservation paths, not
   evidence that all targets are currently released or CI-tested. Desktop
   packaging stages Python source and `requirements.txt`, not a Python
-  interpreter ([`package.mjs`](../../workspaces/client/apps/desktop/package.mjs));
+  interpreter ([`package.mjs`](../../workspaces/client/apps/desktop/package.ts));
   launch resolution uses configured, managed, then equipped system Python
   ([`codex_python.py`](../../workspaces/runtime/apps/server/src/codex_python.py),
   [`backend.ts`](../../workspaces/client/apps/desktop/backend.ts)). CLI setup
