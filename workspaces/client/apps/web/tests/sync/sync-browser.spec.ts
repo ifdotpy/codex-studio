@@ -46,7 +46,9 @@ test("Sync Browser", async ({
       failSend = true,
       sends: PostBody<"/api/messages">[] = [],
       content = "first",
-      draftPushes: components["schemas"]["DraftPushRow"][] = [];
+      draftPushes: (components["schemas"]["DraftPushRow"] & {
+        newForkState?: components["schemas"]["JsonValue"];
+      })[] = [];
     await page.route("**/api/session", (route) =>
       route.fulfill({ json: { token: "fixture" } }),
     );
@@ -227,10 +229,7 @@ test("Sync Browser", async ({
       JSON.parse(pushedDraft!.newDocumentState.payload).text,
       "draft",
     );
-    assert.equal(
-      "newForkState" in pushedDraft ? pushedDraft.newForkState : undefined,
-      undefined,
-    );
+    assert.equal(pushedDraft.newForkState, undefined);
     const result = await page.evaluate(async () =>
       (await import("/src/sync/send.ts")).durableSend({
         id: "intent-one",

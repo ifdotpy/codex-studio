@@ -35,7 +35,7 @@ test("real IndexedDB staging removes crash orphans while preserving another tab'
       },
     });
     await server.listen();
-    const address = server.httpServer?.address();
+    const address = server.httpServer!.address();
     if (!address || typeof address === "string")
       throw new Error("Fixture address unavailable");
 
@@ -52,7 +52,7 @@ test("real IndexedDB staging removes crash orphans while preserving another tab'
       const databases = await indexedDB.databases();
       const name = databases.find((database) =>
         database.name?.startsWith("studio-entity-transfer-"),
-      )?.name;
+      )!.name;
       await new Promise<void>((resolve, reject) => {
         const request = indexedDB.open("studio-entity-transfer-orphan", 1);
         request.onsuccess = () => {

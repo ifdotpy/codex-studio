@@ -60,7 +60,7 @@ test("committed entities propagate between renderer tabs @sync", async ({
   const state = await mkdtemp(join(tmpdir(), "entity-commit-propagation-"));
   const fixture = spawnFixture(process.execPath, [rustUiFixture, state], {
     stdio: ["pipe", "pipe", "pipe"],
-    env: { ...process.env },
+    env: { ...process.env, RESOURCE_FRESHNESS_UI_FIXTURE: "1" },
   });
   const protocol = fixtureProtocol(fixture);
   const port = await protocol.port;
@@ -263,11 +263,9 @@ test("committed entities propagate between renderer tabs @sync", async ({
         const created = await creationResponse;
         const responseReceivedAt = timestamp();
         const createdBody: PostResult<"/api/leads"> = await created.json();
-        assert.ok("id" in createdBody && typeof createdBody.id === "string");
         const mutationEntities = legacyMutationEntities(createdBody);
         assert.equal(created.status(), 200);
-        assert.ok(mutationEntities?.length);
-        const createdEntity = mutationEntities.find(
+        const createdEntity = mutationEntities?.find(
           (document) =>
             document.collection === "agent" && document.id === createdBody.id,
         );
@@ -275,7 +273,7 @@ test("committed entities propagate between renderer tabs @sync", async ({
           createdEntity,
           "create response must include the new agent row",
         );
-        const deliveredSequences = mutationEntities.map((doc) => doc.seq);
+        const deliveredSequences = mutationEntities!.map((doc) => doc.seq);
         await pages[0].waitForFunction(
           (sequences) =>
             window.__entityPersisterCompletions.some((completion) =>
@@ -323,7 +321,7 @@ test("committed entities propagate between renderer tabs @sync", async ({
         reply = {
           ok: true,
           entityId: createdBody.id,
-          seq: Math.max(...mutationEntities.map((doc) => doc.seq)),
+          seq: Math.max(...mutationEntities!.map((doc) => doc.seq)),
           entitySequence: createdEntity.seq,
           deliveredSequences,
           responseReceivedAt,

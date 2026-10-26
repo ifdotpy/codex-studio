@@ -30,7 +30,7 @@ async function runSnapshotOrderUi(
   const evidence = await mkdtemp(join(tmpdir(), "studio-snapshot-order-"));
   const fixture = spawn(process.execPath, [rustUiFixture, evidence], {
     stdio: ["pipe", "pipe", "pipe"],
-    env: { ...process.env },
+    env: { ...process.env, CODEX_BOARD_STATE_DIR: join(evidence, "board") },
   });
   const protocol = fixtureProtocol(fixture);
   const waitFor = async <T>(
