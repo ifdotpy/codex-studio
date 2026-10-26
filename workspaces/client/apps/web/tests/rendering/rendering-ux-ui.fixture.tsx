@@ -1,3 +1,4 @@
+import type { ComponentProps } from "react";
 import type { Attachment } from "../../src/components/ComposerAttachments";
 import type { Message } from "../../src/types";
 declare global {
@@ -46,6 +47,15 @@ function Harness() {
     }),
     createdAt: "2026-09-10",
   }));
+  // The preview fixture's no-op add callback omits its Promise result.
+  const attachmentProps = {
+    notify: () => {},
+    assets: [asset],
+    uploading: false,
+    disabled: false,
+    add: () => {},
+    remove: () => {},
+  } as ComponentProps<typeof ComposerAttachments>;
   return (
     <MantineProvider forceColorScheme={theme}>
       <main>
@@ -65,14 +75,7 @@ function Harness() {
             onJump={() => {}}
           />
         </div>
-        <ComposerAttachments
-          notify={() => {}}
-          assets={[asset]}
-          uploading={false}
-          disabled={false}
-          add={async () => {}}
-          remove={() => {}}
-        />
+        <ComposerAttachments {...attachmentProps} />
         <MessageAttachments assets={[asset]} notify={() => {}} />
       </main>
     </MantineProvider>
