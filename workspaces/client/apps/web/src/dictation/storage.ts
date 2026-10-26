@@ -6,11 +6,11 @@ export type Recording = {
   sampleRate: number;
   samples: number;
   state: "recording" | "ready";
-  transcript?: string;
-  reviewedText?: string;
-  transcriptionAttempt?: string;
-  error?: string;
-  deletedAt?: number;
+  transcript?: string | undefined;
+  reviewedText?: string | undefined;
+  transcriptionAttempt?: string | undefined;
+  error?: string | undefined;
+  deletedAt?: number | undefined;
 };
 export const DICTATION_DATABASE_NAME = "codex-studio-dictation";
 export function createRecordingStorage(databaseName: string) {
