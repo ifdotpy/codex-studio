@@ -1,3 +1,13 @@
+import type {
+  Options,
+  SDKMessage,
+  SDKUserMessage,
+} from "@anthropic-ai/claude-agent-sdk";
+import type { Session } from "../session-state.ts";
+import type { ControlDependencies } from "../controls.ts";
+import type { BridgeInput } from "../bridge-protocol.ts";
+import type { SessionFixtureStreamEvent } from "../fixtures/session-sdk-types.ts";
+import { unusedFileControls } from "./control-fixture.ts";
 // Installed CLI + SDK witness. All provider responses come from a local HTTP
 // fixture; no credentials, user settings, real sessions, or model calls are used.
 import assert from "node:assert/strict";
@@ -22,7 +32,7 @@ import {
 const base = path.join(os.homedir(), ".cache/codex-studio/pivot1-v5-history");
 await fs.mkdir(base, { recursive: true });
 const root = await fs.mkdtemp(path.join(base, "cli-"));
-const captures = [];
+const captures: unknown[] = [];
 const server = http.createServer(async (request, response) => {
   let raw = "";
   for await (const chunk of request) raw += chunk;
@@ -31,7 +41,13 @@ const server = http.createServer(async (request, response) => {
     response.end("{}");
     return;
   }
-  const body = JSON.parse(raw);
+  const body: unknown = JSON.parse(raw);
+  assert(
+    body &&
+      typeof body === "object" &&
+      "model" in body &&
+      typeof body.model === "string",
+  );
   captures.push(body);
   if (request.url.includes("count_tokens")) {
     response.writeHead(200, { "content-type": "application/json" });
@@ -39,7 +55,13 @@ const server = http.createServer(async (request, response) => {
     return;
   }
   response.writeHead(200, { "content-type": "text/event-stream" });
-  const send = (type, value) =>
+  const send = <E extends SessionFixtureStreamEvent["type"]>(
+    type: E,
+    value: Omit<
+      Extract<SessionFixtureStreamEvent, { type?: E | undefined }>,
+      "type"
+    >,
+  ) =>
     response.write(
       `event: ${type}\ndata: ${JSON.stringify({ type, ...value })}\n\n`,
     );
@@ -77,14 +99,16 @@ const server = http.createServer(async (request, response) => {
   send("message_stop", {});
   response.end();
 });
-await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+await new Promise<void>((resolve) =>
+  server.listen(0, "127.0.0.1", () => resolve()),
+);
 const address = server.address();
 assert(address && typeof address === "object");
-const nativeId = (identity) => {
+const nativeId = (identity: string): ReturnType<typeof randomUUID> => {
   const hex = createHash("sha256").update(identity).digest("hex").slice(0, 32);
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
 };
-const fixtureOptions = (cwd) => ({
+const fixtureOptions = (cwd: string): Options => ({
   cwd,
   pathToClaudeCodeExecutable: process.env.STUDIO_CLAUDE_BIN || "claude",
   model: "claude-sonnet-4-5",
@@ -112,10 +136,15 @@ try {
     const cwd = path.join(root, serviceFirst ? "service-first" : "human-first");
     await fs.mkdir(cwd);
     process.env.CLAUDE_CONFIG_DIR = path.join(cwd, "config");
-    const session = { id: randomUUID(), cwd, started: true, turns: [] };
+    const session: Session = {
+      id: randomUUID(),
+      cwd,
+      started: true,
+      turns: [],
+    };
     for (let turnIndex = 0; turnIndex < 2; turnIndex++) {
       const identity = randomUUID();
-      const parts = [
+      const parts: BridgeInput[] = [
         {
           type: "text",
           text: `service-${turnIndex}`,
@@ -125,10 +154,13 @@ try {
       ];
       if (!serviceFirst) parts.reverse();
       const groups = await inputGroups(parts, async (rows) =>
-        rows.map(({ type, text }) => ({ type, text })),
+        rows.map((row) => {
+          assert(row.type === "text");
+          return { type: row.type, text: row.text };
+        }),
       );
       const messages = sdkInputMessages(session.id, identity, groups, nativeId);
-      const frames = [];
+      const frames: SDKMessage[] = [];
       const q = query({
         prompt: (async function* () {
           yield* messages;
@@ -158,12 +190,12 @@ try {
       );
       session.turns.push({
         id: identity,
-        nativeMessageId: messages[0].uuid,
+        nativeMessageId: messages[0]?.uuid,
         status: "completed",
         items: [
           {
             type: "userMessage",
-            nativeId: messages.at(-1).uuid,
+            nativeId: messages.at(-1)?.uuid,
             nativeIds: messages.map((message) => message.uuid),
           },
         ],
@@ -186,21 +218,28 @@ try {
       );
     }
     const visible = await getSessionMessages(session.id, { dir: cwd });
-    const deps = {
+    const deps: ControlDependencies = {
+      ...unusedFileControls,
       persist: async () => {},
       forkSession,
       getSessionMessages: (id, options) =>
-        verifiedHistoryMessages({ id, cwd: options.dir }),
+        verifiedHistoryMessages({
+          id,
+          cwd: options?.dir ?? assert.fail("Missing history directory"),
+        }),
     };
     const branch = await forkAtTurn(
       session,
-      { lastTurnId: session.turns[0].id },
+      { lastTurnId: session.turns[0]?.id ?? assert.fail("Missing first turn") },
       deps,
     );
-    assert.equal(branch.turns[0].items[0].nativeIds.length, 2);
+    assert.equal(branch.turns[0]?.items[0]?.nativeIds?.length, 2);
     await rollbackSession(
       session,
-      { requestId: randomUUID(), turnId: session.turns[1].id },
+      {
+        requestId: randomUUID(),
+        turnId: session.turns[1]?.id ?? assert.fail("Missing second turn"),
+      },
       deps,
     );
     assert.equal(session.turns.length, 1);
@@ -208,8 +247,8 @@ try {
       JSON.stringify({
         order: serviceFirst ? "service/human" : "human/service",
         visibleMessages: visible.length,
-        forkParts: branch.turns[0].items[0].nativeIds.length,
-        rollbackParts: session.turns[0].items[0].nativeIds.length,
+        forkParts: branch.turns[0]?.items[0]?.nativeIds?.length,
+        rollbackParts: session.turns[0]?.items[0]?.nativeIds?.length,
         recovery: "delivered/absent verified",
       }),
     );
@@ -218,11 +257,13 @@ try {
   await fs.mkdir(clearCwd);
   process.env.CLAUDE_CONFIG_DIR = path.join(clearCwd, "config");
   const oldId = randomUUID();
-  const session = {
+  const session: Session = {
     id: oldId,
     cwd: clearCwd,
     turns: [
       {
+        id: randomUUID(),
+        items: [],
         fileCheckpointMessageId: randomUUID(),
         fileCheckpointSource: { nativeId: oldId, cwd: clearCwd },
       },
@@ -230,8 +271,8 @@ try {
   };
   const persist = () =>
     fs.writeFile(path.join(clearCwd, "session.json"), JSON.stringify(session));
-  const queue = new InputQueue();
-  const push = (text) => {
+  const queue = new InputQueue<SDKUserMessage>();
+  const push = (text: string) => {
     const id = randomUUID();
     queue.push({
       type: "user",
@@ -244,10 +285,10 @@ try {
   };
   await guardNativeSessionStart(session, persist);
   const originalInput = push("before clear");
-  const frames = [];
+  const frames: SDKMessage[] = [];
   let stage = 0,
-    conversationId,
-    afterClearInput;
+    conversationId: string | undefined,
+    afterClearInput: string | undefined;
   const q = query({
     prompt: queue,
     options: {
@@ -307,17 +348,19 @@ try {
     path.join(clearCwd, "frames.json"),
     JSON.stringify(frames, null, 2),
   );
-  const stored = JSON.parse(
+  const stored: Session = JSON.parse(
     await fs.readFile(path.join(clearCwd, "session.json"), "utf8"),
   );
   assert.notEqual(stored.nativeId, oldId);
+  assert.equal(typeof stored.nativeId, "string");
+  assert(stored.nativeId);
   assert(
     conversationId,
     "installed CLI must emit its distinct conversation reset identity",
   );
   assert.notEqual(stored.nativeId, conversationId);
-  assert.equal(stored.turns[0].fileCheckpointMessageId, undefined);
-  const resumed = [];
+  assert.equal(stored.turns[0]?.fileCheckpointMessageId, undefined);
+  const resumed: SDKMessage[] = [];
   const resumeInput = randomUUID();
   const resume = query({
     prompt: (async function* () {
@@ -348,15 +391,24 @@ try {
   const clearIndex = await readHistoryIndex(stored);
   assert(clearIndex);
   assert.equal(
-    clearIndex.outcome([afterClearInput], [afterClearInput]),
+    clearIndex.outcome(
+      [afterClearInput ?? assert.fail("Missing post-clear input")],
+      [afterClearInput ?? assert.fail("Missing post-clear input")],
+    ),
     "delivered",
   );
   assert.equal(
-    clearIndex.outcome([originalInput], [afterClearInput]),
+    clearIndex.outcome(
+      [originalInput],
+      [afterClearInput ?? assert.fail("Missing post-clear input")],
+    ),
     "not_applied",
   );
   assert.equal(
-    clearIndex.outcome([resumeInput], [afterClearInput]),
+    clearIndex.outcome(
+      [resumeInput],
+      [afterClearInput ?? assert.fail("Missing post-clear input")],
+    ),
     "delivered",
   );
   console.log(
@@ -376,5 +428,7 @@ try {
   if (previousConfig === undefined) delete process.env.CLAUDE_CONFIG_DIR;
   else process.env.CLAUDE_CONFIG_DIR = previousConfig;
   server.closeAllConnections();
-  await new Promise((resolve) => server.close(resolve));
+  await new Promise<void>((resolve, reject) =>
+    server.close((error) => (error ? reject(error) : resolve())),
+  );
 }

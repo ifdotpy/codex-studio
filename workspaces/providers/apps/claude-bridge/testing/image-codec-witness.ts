@@ -10,7 +10,7 @@ import {
 } from "../images.ts";
 
 let cases = 0;
-for (const format of ["png", "jpeg", "gif", "webp"]) {
+for (const format of ["png", "jpeg", "gif", "webp"] as const) {
   for (const side of [MAX_IMAGE_SIDE, MAX_IMAGE_SIDE + 1]) {
     const original = await sharp({
       create: { width: side, height: 2, channels: 4, background: "#2080c080" },
@@ -20,7 +20,7 @@ for (const format of ["png", "jpeg", "gif", "webp"]) {
     const image = await prepareClaudeImage(original);
     const actual = await sharp(image.bytes).metadata();
     assert.equal(actual.width, MAX_IMAGE_SIDE);
-    assert.ok(actual.height >= 1);
+    assert.ok(actual.height !== undefined && actual.height >= 1);
     assert.equal(
       image.mediaType,
       "image/" + (side > MAX_IMAGE_SIDE && format === "gif" ? "png" : format),

@@ -1,3 +1,13 @@
+import type {
+  Options,
+  SDKMessage,
+  SessionStoreEntry,
+} from "@anthropic-ai/claude-agent-sdk";
+import type { Session } from "../session-state.ts";
+import type { ControlDependencies } from "../controls.ts";
+import type { SessionFixtureStreamEvent } from "../fixtures/session-sdk-types.ts";
+import { unusedFileControls } from "./control-fixture.ts";
+import { object } from "../history-records.ts";
 // Real installed CLI/SDK; all provider requests end at this disposable HTTP
 // fixture. Retry and deferred-tool formats are provider output, not new input.
 import assert from "node:assert/strict";
@@ -18,9 +28,9 @@ import { forkAtTurn, rollbackSession } from "../controls.ts";
 const base = path.join(os.homedir(), ".cache/codex-studio/pivot1-v5-history");
 await fs.mkdir(base, { recursive: true });
 const root = await fs.mkdtemp(path.join(base, "cli-compat-"));
-let scenario,
-  requests = 0;
-const captures = [];
+let scenario: string | undefined;
+let requests = 0;
+const captures: unknown[] = [];
 const server = http.createServer(async (req, res) => {
   let raw = "";
   for await (const chunk of req) raw += chunk;
@@ -34,7 +44,13 @@ const server = http.createServer(async (req, res) => {
     res.end('{"input_tokens":10}');
     return;
   }
-  const body = JSON.parse(raw);
+  const body: unknown = JSON.parse(raw);
+  assert(
+    body &&
+      typeof body === "object" &&
+      "model" in body &&
+      typeof body.model === "string",
+  );
   captures.push({ scenario, body });
   requests++;
   if (scenario === "retry" && requests === 1) {
@@ -52,7 +68,13 @@ const server = http.createServer(async (req, res) => {
   }
   const search = scenario === "tool-search" && requests === 1;
   res.writeHead(200, { "content-type": "text/event-stream" });
-  const send = (type, value) =>
+  const send = <E extends SessionFixtureStreamEvent["type"]>(
+    type: E,
+    value: Omit<
+      Extract<SessionFixtureStreamEvent, { type?: E | undefined }>,
+      "type"
+    >,
+  ) =>
     res.write(
       `event: ${type}\ndata: ${JSON.stringify({ type, ...value })}\n\n`,
     );
@@ -104,7 +126,9 @@ const server = http.createServer(async (req, res) => {
   send("message_stop", {});
   res.end();
 });
-await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+await new Promise<void>((resolve) =>
+  server.listen(0, "127.0.0.1", () => resolve()),
+);
 const address = server.address();
 assert(address && typeof address === "object");
 const previous = process.env.CLAUDE_CONFIG_DIR;
@@ -115,8 +139,13 @@ try {
     const cwd = path.join(root, mode);
     await fs.mkdir(cwd);
     process.env.CLAUDE_CONFIG_DIR = path.join(cwd, "config");
-    const session = { id: randomUUID(), cwd, started: true, turns: [] };
-    const options = {
+    const session: Session = {
+      id: randomUUID(),
+      cwd,
+      started: true,
+      turns: [],
+    };
+    const options: Options = {
       cwd,
       pathToClaudeCodeExecutable: process.env.STUDIO_CLAUDE_BIN || "claude",
       model: "claude-sonnet-4-5",
@@ -178,7 +207,7 @@ try {
           ...(turn ? { resume: session.id } : { sessionId: session.id }),
         },
       });
-      const frames = [];
+      const frames: SDKMessage[] = [];
       const deadline = setTimeout(() => q.close(), 30_000);
       try {
         for await (const frame of q) frames.push(frame);
@@ -217,7 +246,7 @@ try {
     const rows = (await fs.readFile(file, "utf8"))
       .trim()
       .split("\n")
-      .map(JSON.parse);
+      .map((line): SessionStoreEntry => JSON.parse(line));
     if (mode === "retry")
       assert(
         rows.some(
@@ -232,12 +261,17 @@ try {
         rows.some(
           (row) =>
             row.type === "user" &&
+            object(row.message) &&
             Array.isArray(row.message.content) &&
             row.message.content.some(
-              (block) =>
+              (block: unknown) =>
+                object(block) &&
                 block.type === "tool_result" &&
                 Array.isArray(block.content) &&
-                block.content.some((inner) => inner.type === "tool_reference"),
+                block.content.some(
+                  (inner: unknown) =>
+                    object(inner) && inner.type === "tool_reference",
+                ),
             ),
         ),
       );
@@ -245,25 +279,34 @@ try {
         rows.some(
           (row) =>
             row.type === "attachment" &&
+            object(row.attachment) &&
+            typeof row.attachment.type === "string" &&
             row.attachment.type.startsWith("deferred_tools"),
         ),
       );
     }
-    const deps = {
+    const deps: ControlDependencies = {
+      ...unusedFileControls,
       persist: async () => {},
       forkSession,
-      getSessionMessages: (id, { dir }) =>
-        verifiedHistoryMessages({ id, cwd: dir }),
+      getSessionMessages: (id, options) =>
+        verifiedHistoryMessages({
+          id,
+          cwd: options?.dir ?? assert.fail("Missing history directory"),
+        }),
     };
     const branch = await forkAtTurn(
       session,
-      { lastTurnId: session.turns[0].id },
+      { lastTurnId: session.turns[0]?.id ?? assert.fail("Missing first turn") },
       deps,
     );
     assert.equal(branch.turns.length, 1);
     await rollbackSession(
       session,
-      { requestId: randomUUID(), turnId: session.turns[1].id },
+      {
+        requestId: randomUUID(),
+        turnId: session.turns[1]?.id ?? assert.fail("Missing second turn"),
+      },
       deps,
     );
     assert.equal(session.turns.length, 1);
@@ -287,5 +330,7 @@ try {
   if (previous === undefined) delete process.env.CLAUDE_CONFIG_DIR;
   else process.env.CLAUDE_CONFIG_DIR = previous;
   server.closeAllConnections();
-  await new Promise((resolve) => server.close(resolve));
+  await new Promise<void>((resolve, reject) =>
+    server.close((error) => (error ? reject(error) : resolve())),
+  );
 }
