@@ -5,6 +5,12 @@
       "unit": "px",
       "purpose": "Minimum viewport width for inline navigation"
     },
+    "duo.projectCountersStackMax": {
+      "value": 288,
+      "unit": "px",
+      "kind": "condition",
+      "purpose": "Maximum Duo chat list width for project counters below the project name"
+    },
     "sidebar.preferred": {
       "value": 19.8,
       "unit": "rem",
@@ -917,6 +923,10 @@
     }
   },
   "queries": {
+    "duoProjectCountersStacked": {
+      "key": "duo.projectCountersStackMax",
+      "operator": "<="
+    },
     "navigationCompact": {
       "key": "navigation.inlineMin",
       "operator": "<"

@@ -91,6 +91,38 @@ for (const size of [
         const headerBox = (await header.boundingBox())!;
         expect.soft(headerBox.y).toBeLessThan(top);
         expect.soft(headerBox.y + headerBox.height).toBeLessThanOrEqual(top);
+        const heading = sidebar.locator(".projects-heading");
+        const label = (await heading
+          .locator(".projects-heading-label")
+          .boundingBox())!;
+        for (const button of await heading.locator("button").all()) {
+          const box = (await button.boundingBox())!;
+          expect.soft(label.y + label.height).toBeLessThanOrEqual(box.y);
+          const intersects =
+            label.x < box.x + box.width &&
+            box.x < label.x + label.width &&
+            label.y < box.y + box.height &&
+            box.y < label.y + label.height;
+          expect
+            .soft(
+              intersects,
+              (await button.getAttribute("aria-label")) || "heading button",
+            )
+            .toBe(false);
+        }
+        const home = sidebar.locator(".project-tree-toggle").filter({
+          has: page.locator('.project-tree-name[title="Home project"]'),
+        });
+        const project = (await home
+          .locator(".project-tree-name")
+          .boundingBox())!;
+        const counts = (await home
+          .locator(".project-state-counts")
+          .boundingBox())!;
+        expect
+          .soft(counts.y)
+          .toBeGreaterThanOrEqual(project.y + project.height);
+        expect.soft(project.width).toBeGreaterThan(60);
         expect((await opener.boundingBox())!.x).toBe(365);
         const title = page.locator(".duo-transcript-bar .conversation-heading");
         await expect.soft(title).toBeHidden();
