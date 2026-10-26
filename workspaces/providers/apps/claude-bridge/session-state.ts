@@ -111,6 +111,25 @@ export interface Turn {
     | undefined;
   apiErrorInfo?: string | null | undefined;
 }
+// Disk mirrors retain optional legacy fields; newly produced values have these
+// stronger guarantees before crossing the bridge notification boundary.
+export type FreshItem = Item & { id: string; type: string };
+export type CompletedTurn = Pick<
+  Turn,
+  "id" | "error" | "clientUserMessageId"
+> & {
+  status: "completed" | "failed" | "interrupted";
+  startOutcome?: "not_applied" | undefined;
+};
+export type FreshTurn = Omit<Turn, "status" | "startOutcome" | "items"> & {
+  items: FreshItem[];
+  status: "inProgress" | CompletedTurn["status"];
+  startOutcome?: "preparing" | "accepted" | CompletedTurn["startOutcome"];
+};
+export interface MoveTurnOptions {
+  effort?: Options["effort"] | undefined;
+  serviceTier?: string | undefined;
+}
 interface ControlReceiptBase {
   kind: "rollback";
   turnId: string;
@@ -204,7 +223,7 @@ export interface Session {
   moveProof?: import("./bridge-protocol.ts").BridgeStoredMoveProof | undefined;
   dynamicToolsJson?: string | undefined;
   capabilityProfile?: unknown | undefined;
-  moveTurnOptions?: Partial<Options> | undefined;
+  moveTurnOptions?: MoveTurnOptions | undefined;
   userMcp?: boolean | undefined;
   studioImageWorkspaceTempDir?: string | undefined;
   claudeVersion?: string | undefined;
