@@ -1,3 +1,5 @@
+import { componentSnapshot, required } from "./componentTestFixtures";
+import type { BackgroundTask } from "../types";
 import assert from "node:assert/strict";
 import { it } from "vitest";
 import {
@@ -7,8 +9,8 @@ import {
 } from "./backgroundTaskModel.ts";
 
 it("projects generated monitor and task payloads for renderer use", () => {
-  const tasks = backgroundTasks({
-    runtime: {
+  const tasks = backgroundTasks(
+    componentSnapshot([], {
       monitors: [
         { id: "incomplete", status: null },
         {
@@ -27,11 +29,11 @@ it("projects generated monitor and task payloads for renderer use", () => {
           kind: "command",
         },
       ],
-    },
-  });
-  assert.equal(tasks[0].kind, "monitor");
-  assert.equal(activeTask(tasks[0]), false);
-  assert.equal(activeTask(tasks[1]), true);
+    }),
+  );
+  assert.equal(required(tasks[0]).kind, "monitor");
+  assert.equal(activeTask(required(tasks[0])), false);
+  assert.equal(activeTask(required(tasks[1])), true);
 });
 
 it("keeps a task entity visible when its optional kind is absent", () => {
@@ -49,9 +51,13 @@ it("keeps a task entity visible when its optional kind is absent", () => {
 });
 
 it("lists commands and monitors without tool calls", () => {
-  const common = { agent: "lead", created: 1, status: "running" };
-  const tasks = backgroundTasks({
-    runtime: {
+  const common: Partial<BackgroundTask> = {
+    agent: "lead",
+    created: 1,
+    status: "running",
+  };
+  const tasks = backgroundTasks(
+    componentSnapshot([], {
       monitors: [{ ...common, id: "watch" }],
       tasks: [
         { ...common, id: "command", kind: "command" },
@@ -60,8 +66,8 @@ it("lists commands and monitors without tool calls", () => {
         { ...common, id: "named-tool", name: "fileChange" },
         { ...common, id: "tool-with-command", kind: "tool", command: "pwd" },
       ],
-    },
-  });
+    }),
+  );
   assert.deepEqual(
     tasks.map((task) => task.id),
     ["watch", "command", "legacy-command"],
