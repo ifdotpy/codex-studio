@@ -18,7 +18,7 @@ export interface CardQuestion {
   multiSelect: boolean;
   isSecret: boolean;
   /** The user's answers in provider order; undefined while no answer is known. */
-  answers?: string[];
+  answers?: string[] | undefined;
 }
 
 export type QuestionCardState =
@@ -50,7 +50,10 @@ const text = (value: unknown): string | undefined =>
   typeof value === "string" ? value : undefined;
 
 const QUESTION_TOOL = "AskUserQuestion";
-const parsed = new WeakMap<Message, { text: string; value?: JsonObject }>();
+const parsed = new WeakMap<
+  Message,
+  { text: string; value?: JsonObject | undefined | undefined }
+>();
 
 /** The stored provider item of a Claude AskUserQuestion call, or undefined. */
 function questionToolPayload(item: Message): JsonObject | undefined {
@@ -180,7 +183,9 @@ export function splitJoinedAnswer(
         break;
       }
     if (!matched) {
-      other.push(parts[index]);
+      const part = parts[index];
+      if (part === undefined) throw new Error("Missing answer part");
+      other.push(part);
       index++;
       continue;
     }
@@ -278,7 +283,7 @@ export function questionHistoryIndex(entries: QuestionHistoryEntry[]) {
 }
 
 export interface QuestionLookup {
-  agentId?: string;
+  agentId?: string | undefined;
   history: Map<string, QuestionHistoryEntry>;
   /** Live pending request ids by question key; empty when unknown. */
   pending: Map<string, string>;

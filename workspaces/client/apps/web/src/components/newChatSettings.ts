@@ -66,7 +66,7 @@ export function defaultWorkspaceMode(system?: string) {
 }
 
 type ChatReadOptions = {
-  query?: { account_key?: string; workers?: "1"; retry?: "1" };
+  query?: { account_key?: string; workers?: "1"; retry?: "1" } | undefined;
   signal?: AbortSignal;
 };
 type ChatReadPath =
