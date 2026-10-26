@@ -176,7 +176,7 @@ export interface Session {
   claude?: import("./thinking.ts").ClaudeSettings | undefined;
   developerInstructions?: string | undefined;
   dynamicTools?: ToolDefinition[] | undefined;
-  moveProof?: import("./bridge-protocol.ts").BridgeMoveProof | undefined;
+  moveProof?: import("./bridge-protocol.ts").BridgeStoredMoveProof | undefined;
   dynamicToolsJson?: string | undefined;
   capabilityProfile?: unknown | undefined;
   moveTurnOptions?: Partial<Options> | undefined;

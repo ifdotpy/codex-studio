@@ -87,3 +87,29 @@ export const question = {
     ],
   },
 } satisfies BridgeServerRequest;
+
+import type {
+  BridgeMoveProof,
+  BridgeMoveSession,
+  BridgeInterruptReceipt,
+} from "./bridge-protocol.ts";
+import type { Session } from "./session-state.ts";
+export function exportedSession(
+  session: Session,
+  proof: BridgeMoveProof,
+): BridgeMoveSession {
+  const { session: _snapshot, ...storedProof } = proof;
+  return { ...session, moveProof: storedProof, dynamicToolsJson: "[]" };
+}
+export const legacyInputReceipt = {
+  cancelled: [undefined, null],
+  still_queued: [],
+} satisfies BridgeInterruptReceipt;
+export const forwardedPlan = {
+  method: "turn/plan/updated",
+  params: {
+    threadId: "thread",
+    turnId: "turn",
+    plan: [{ step: 42, status: { future: true } }, {}],
+  },
+} satisfies BridgeNotification;
