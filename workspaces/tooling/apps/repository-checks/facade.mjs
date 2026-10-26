@@ -60,6 +60,10 @@ const UNSAFE_RUST_ALLOWLIST = [
     "Single-instance flock on the native shell lock file.",
   ],
   [
+    "workspaces/client/apps/native/src-tauri/src/ios_shell.rs",
+    "UIKit and WebKit bindings of the iOS shell.",
+  ],
+  [
     "workspaces/client/packages/client-core/examples/voice_playback_check/check.rs",
     "Offline AVAudioEngine render check for the voice playback path.",
   ],
