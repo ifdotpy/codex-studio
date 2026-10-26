@@ -22,6 +22,9 @@ for (const size of [
       if (size.height > size.width) {
         await expect(sidebar).toBeFocused();
         await expect(sidebar).toHaveCSS("outline-style", "none");
+        await page.screenshot({
+          path: test.info().outputPath("sidebar-entry.png"),
+        });
         await page.keyboard.press("Tab");
         await expect(sidebar.locator(".brand")).toBeFocused();
         await expect(sidebar.locator(".brand")).not.toHaveCSS(
