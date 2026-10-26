@@ -160,7 +160,7 @@ window.fetch = async (input, options) => {
           },
         },
       },
-    } satisfies components["schemas"]["ModelCatalogResponse"];
+    } satisfies components["schemas"]["AccountRateLimitsDto"];
   } else if (u.pathname === "/api/models") {
     result = {
       data: u.searchParams.get("workers")
