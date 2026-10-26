@@ -15,7 +15,7 @@ import sys
 import time
 import urllib.error
 import urllib.request
-from desktop_process import startup_backend_birth, startup_backend_facts, STARTUP_STATE_FILES
+from desktop_process import startup_backend_birth, startup_backend_facts, recovery_interpreter_facts, STARTUP_STATE_FILES
 
 
 # Supervisor protocol version that the Rust backend uses to start providers. Owner:
@@ -211,11 +211,92 @@ def startup_supervisor_handles(state, expected):
 # Owner: recovery.cjs::recoveryPaths. startup-delivery-test.py checks parity.
 DELIVERY_RECOVERY_LABEL_PREFIX = "local.codex.agents.recovery."
 DELIVERY_RECOVERY_LABEL_HEX_LENGTH = 16
+# Limits for the owned, isolated configured-interpreter proof. Units: seconds and PID-line bytes.
+INTERPRETER_PROBE_SECONDS = 5
+INTERPRETER_PROBE_EXIT_SECONDS = 1
+INTERPRETER_PROBE_PID_BYTES = 32
+# Maximum seconds for one complete exact-image scan. Real scans took 3.148 and 4.084 seconds.
+# Keep a bounded 10-second inspection window; an expired scan remains unknown.
+IMAGE_MAPPING_INSPECTION_SECONDS = 10
+# Maximum canonical journal links checked while proving one inherited state owner. Unit: links.
+INSTALLED_STATE_CHAIN_MAX_LINKS = 32
+
+
+def protected_interpreter_image(path):
+    import stat
+    path = Path(path).resolve(strict=True)
+    descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+    with os.fdopen(descriptor, "rb") as stream:
+        info = os.fstat(stream.fileno())
+        if (not stat.S_ISREG(info.st_mode) or info.st_uid not in (0, os.geteuid())
+                or info.st_mode & 0o022):
+            raise RuntimeError("The configured interpreter image is not protected")
+        digest = hashlib.file_digest(stream, "sha256").hexdigest()
+    after = path.stat()
+    if (info.st_dev, info.st_ino, info.st_uid, info.st_mode) != (after.st_dev, after.st_ino, after.st_uid, after.st_mode):
+        raise RuntimeError("The configured interpreter image changed during observation")
+    return {"path":str(path), "device":info.st_dev, "inode":info.st_ino, "sha256":digest}
+
+
+def observed_interpreter_image(pid):
+    facts = recovery_interpreter_facts(pid)
+    if facts.get("pid") != pid or facts.get("uid") != os.geteuid():
+        raise RuntimeError("The recovery interpreter belongs to another process owner")
+    image = protected_interpreter_image(facts["executable"])
+    if ({key:image[key] for key in ("device", "inode")} not in facts["textFiles"]
+            or startup_backend_birth(pid) != facts["birth"]):
+        raise RuntimeError("The recovery interpreter image does not match its kernel mapping")
+    return {"birth":facts["birth"], "image":image}
+
+
+def configured_interpreter_image(configured):
+    """Observe only an owned isolated probe of the exact configured launcher. Never inspect user code or environment."""
+    import selectors
+    launcher = protected_interpreter_image(configured)
+    command = [str(configured), "-I", "-S", "-B", "-c",
+               "import os,sys; print(os.getpid(),flush=True); sys.stdin.buffer.read(1)"]
+    child = subprocess.Popen(command, cwd="/", env={"PATH":"/usr/bin:/bin", "LANG":"C", "LC_ALL":"C"},
+                             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                             start_new_session=True)
+    try:
+        deadline = time.monotonic() + INTERPRETER_PROBE_SECONDS
+        body = b""
+        with selectors.DefaultSelector() as ready:
+            ready.register(child.stdout, selectors.EVENT_READ)
+            while not body.endswith(b"\n"):
+                remaining = deadline - time.monotonic()
+                if remaining <= 0 or not ready.select(remaining):
+                    raise RuntimeError("The configured interpreter probe did not become ready")
+                part = os.read(child.stdout.fileno(), INTERPRETER_PROBE_PID_BYTES + 1 - len(body))
+                if not part or len(body) + len(part) > INTERPRETER_PROBE_PID_BYTES:
+                    raise RuntimeError("The configured interpreter probe returned an invalid PID")
+                body += part
+        if body != f"{child.pid}\n".encode():
+            raise RuntimeError("The configured interpreter probe does not identify its owned child")
+        observed = observed_interpreter_image(child.pid)
+        if time.monotonic() > deadline or protected_interpreter_image(configured) != launcher:
+            raise RuntimeError("The configured interpreter launcher changed during its probe")
+        if protected_interpreter_image(observed["image"]["path"]) != observed["image"]:
+            raise RuntimeError("The configured interpreter companion changed during its probe")
+        return observed["image"]
+    finally:
+        child.stdin.close()
+        child.stdout.close()
+        try:
+            child.wait(timeout=INTERPRETER_PROBE_EXIT_SECONDS)
+        except subprocess.TimeoutExpired:
+            child.kill()  # Only this owned child, never a PID read from metadata or probe output.
+            child.wait(timeout=INTERPRETER_PROBE_EXIT_SECONDS)
+            raise RuntimeError("The configured interpreter probe did not exit") from None
+        if child.returncode != 0:
+            raise RuntimeError("The configured interpreter probe failed")
 
 
 def verify_delivery_recovery_owner(config, state, installed, *, current=False):
     """Read the existing registered job and its canonical config. Never start or stop it."""
     import re
+    import plistlib
+    import desktop_delivery as delivery
     label = DELIVERY_RECOVERY_LABEL_PREFIX + hashlib.sha256(str(state).encode()).hexdigest()[:DELIVERY_RECOVERY_LABEL_HEX_LENGTH]
     result = subprocess.run(["/bin/launchctl", "print", f"gui/{os.geteuid()}/{label}"],
                             text=True, capture_output=True, timeout=2, check=False)
@@ -229,9 +310,24 @@ def verify_delivery_recovery_owner(config, state, installed, *, current=False):
     command = backend_process_arguments(pid, config["resources"])
     expected = ["-B", str(installed / "Contents/Resources/recover_backend.py"),
                 "--config", str(state / "background-recovery.json")]
-    if (birth is None or not command or len(command) != 5 or command[1:] != expected
-            or Path(command[0]).resolve() != Path(config["python"]).resolve()):
+    if birth is None or not command or len(command) != 5 or command[1:] != expected:
         raise RuntimeError("The registered delivery recovery job belongs to another launch")
+    plist = Path.home() / "Library/LaunchAgents" / (label + ".plist")
+    original_plist = delivery.read_private_bytes(plist)
+    saved = plistlib.loads(original_plist)
+    registered = [config["python"], *expected]
+    arguments = re.findall(r"^\s*arguments = \{\s*\n(.*?)^\s*\}", result.stdout, re.MULTILINE | re.DOTALL)
+    paths = re.findall(r"^\s*path = (.+?)\s*$", result.stdout, re.MULTILINE)
+    if (not isinstance(saved, dict) or saved.get("Label") != label or saved.get("ProgramArguments") != registered
+            or paths != [str(plist)] or len(arguments) != 1
+            or [line.strip() for line in arguments[0].splitlines() if line.strip()] != registered):
+        raise RuntimeError("The protected recovery registration differs from its configured launch")
+    observed = observed_interpreter_image(pid)
+    if (observed["birth"] != birth or configured_interpreter_image(config["python"]) != observed["image"]
+            or Path(command[0]).resolve() not in {Path(config["python"]).resolve(), Path(observed["image"]["path"])}
+            or observed_interpreter_image(pid) != observed
+            or delivery.read_private_bytes(plist) != original_plist):
+        raise RuntimeError("The registered recovery interpreter differs from its configured launcher proof")
     lock = state / "background-recovery.lock"
     startup_file_identity(lock)
     descriptor = os.open(lock, os.O_RDONLY | os.O_NOFOLLOW)
@@ -274,7 +370,33 @@ def installed_delivery_origin(config, state, installed, proof, handles, *, swapp
         raise RuntimeError("The prior installed artifact changed")
     if startup_supervisor_handles(state, handles) != proof["supervisorHandles"]:
         raise RuntimeError("The original retained supervisor handle identity changed")
+    installed_state_owner(state, installed, proof, handles)
     return delivery.server_path(previous)
+
+
+def installed_state_owner(state, installed, proof, handles, *, trail=frozenset()):
+    import desktop_delivery as delivery
+    if proof['priorId'] in trail or len(trail) >= INSTALLED_STATE_CHAIN_MAX_LINKS:
+        raise RuntimeError("The installed state-owner chain is cyclic or exceeds its bound")
+    prior = delivery.read_delivery_record(delivery.journal_path(state,proof['priorId']))
+    if not prior or delivery.request_hash(prior['request']) != proof['priorRequestHash']:
+        raise RuntimeError("The installed state-owner predecessor changed")
+    owner = proof.get("stateOwner") or {"id":proof["priorId"], "requestHash":proof["priorRequestHash"],
+                                        "backendBuild":proof["executable"]["sha256"]}
+    direct = {'id':proof['priorId'],'requestHash':proof['priorRequestHash'],'backendBuild':proof['executable']['sha256']}
+    inherited = prior['request'].get('installedDelivery')
+    if inherited is not None and proof['files'] != inherited['files']:
+        raise RuntimeError("The inherited state file identities changed")
+    if owner != direct:
+        if inherited is None or owner != installed_state_owner(state,installed,inherited,handles,trail=trail|{proof['priorId']}):
+            raise RuntimeError("The state owner does not belong to the exact predecessor chain")
+    record = delivery.read_delivery_record(delivery.journal_path(state, owner["id"]))
+    if (not record or delivery.request_hash(record["request"]) != owner["requestHash"]
+            or record["request"]["backendHash"] != owner["backendBuild"]
+            or record["request"]["stateDir"] != str(state) or record["request"]["installed"] != str(installed)
+            or record["handles"] != handles):
+        raise RuntimeError("The canonical state-owner journal differs from its exact chain proof")
+    return owner
 
 
 def delivery_config_scope(config):
@@ -298,17 +420,30 @@ def capture_installed_delivery(config, state, installed, operation, *, run):
             or receipt.get("from") != "local-delivery" or receipt.get("build") != prior["request"]["build"]):
         raise RuntimeError("The prior delivery has no exact installed receipt")
     updates.verify_app(installed, installed, prior["request"]["build"], run)
+    marker = delivery.read_private_json(state / STARTUP_STATE_OWNER_FILE)
+    state_owner = {"id":operation, "requestHash":delivery.request_hash(prior["request"]),
+                   "backendBuild":prior["request"]["backendHash"]}
+    inherited = prior["request"].get("installedDelivery")
+    if inherited is not None and {name:startup_file_identity(state/name) for name in STARTUP_STATE_FILES} != inherited['files']:
+        raise RuntimeError("The inherited state file identities changed")
+    if not isinstance(marker, dict) or marker.get("backendBuild") != state_owner["backendBuild"]:
+        if inherited is None:
+            raise RuntimeError("The installed delivery has no proven inherited state owner")
+        installed_delivery_origin(config, state, installed, inherited, prior["handles"], swapped=True)
+        verify_startup_state_files(state, inherited, installed_state_owner(state, installed, inherited, prior["handles"])["backendBuild"])
+        state_owner = installed_state_owner(state, installed, inherited, prior["handles"])
     proof = {"version": delivery.CONTRACT["installedRecoveryVersion"], "kind": "installed-delivery",
              "priorId": operation, "priorRequestHash": delivery.request_hash(prior["request"]),
              "priorReceiptHash": delivery.request_hash(receipt),
              "configHash": delivery.request_hash(delivery_config_scope(config)),
+             "stateOwner":state_owner,
              "previousBuild": prior["request"]["build"], "previousBundleHash": prior["request"]["bundleHash"],
              "executable": {**startup_file_identity(delivery.server_path(installed)),
                             "sha256": prior["request"]["backendHash"]},
              "files": {name: startup_file_identity(state / name) for name in STARTUP_STATE_FILES},
              "supervisorHandles": startup_supervisor_handles(state, prior["handles"])}
     installed_delivery_origin(config, state, installed, proof, prior["handles"], swapped=False)
-    verify_startup_state_files(state, proof, proof["executable"]["sha256"])
+    verify_startup_state_files(state, proof, state_owner["backendBuild"])
     verify_delivery_recovery_owner(config, state, installed)
     if startup_lease_held(state) or listener_pids(config["port"]):
         raise RuntimeError("Installed-delivery recovery requires an unoccupied runtime lease and listener")
@@ -321,7 +456,7 @@ def verify_installed_admission(config, state, installed, proof, handles):
     installed_delivery_origin(config, state, installed, proof, handles, swapped=False)
     if delivery.request_hash(delivery.read_private_json(state / updates.RECEIPT_FILE)) != proof["priorReceiptHash"]:
         raise RuntimeError("The prior installed delivery receipt changed")
-    verify_startup_state_files(state, proof, proof["executable"]["sha256"])
+    verify_startup_state_files(state, proof, installed_state_owner(state, installed, proof, handles)["backendBuild"])
     verify_delivery_recovery_owner(config, state, installed)
     if listener_pids(config["port"]):
         raise RuntimeError("The installed-delivery listener became occupied")
@@ -361,7 +496,7 @@ def mapped_backend_pids(binary, state, *, expected=None):
     if observed != expected:
         raise RuntimeError("The pinned installed-delivery executable mapping changed")
     result = subprocess.run(["/usr/sbin/lsof", "-nP", "-a", "-d", "txt", "-t", str(binary)],
-                            text=True, capture_output=True, timeout=2, check=False)
+                            text=True, capture_output=True, timeout=IMAGE_MAPPING_INSPECTION_SECONDS, check=False)
     if result.stderr.strip() or result.returncode not in (0, 1):
         raise RuntimeError("Cannot inspect the installed-delivery executable mappings")
     values = result.stdout.split()
@@ -540,7 +675,10 @@ def installed_delivery_tick(config, state, record):
                 or pending["from"] != "local-delivery"
                 or delivery.bundle_hash(Path(pending["app"])) != request["bundleHash"]):
             raise RuntimeError("Installed-delivery recovery waits for its exact pending or installed receipt")
-        verify_startup_state_files(state, proof, proof["executable"]["sha256"])
+        dispatch = record.get('installerDispatch')
+        if dispatch is not None and (not isinstance(dispatch,dict) or dispatch.get('phase') != 'waiting'):
+            return True, "installed-delivery recovery waits for its unknown installer dispatch outcome"
+        verify_startup_state_files(state, proof, installed_state_owner(state, installed, proof, record["handles"])["backendBuild"])
         return "install-pending", "installed-delivery recovery waits for the existing installer"
     if (updates.read_build(installed) != request["build"]
             or delivery.bundle_hash(installed) != request["bundleHash"]
@@ -568,7 +706,7 @@ def installed_delivery_tick(config, state, record):
             return True, "installed-delivery recovery waits for an unresolved runtime owner"
         marker = delivery.read_private_json(state / STARTUP_STATE_OWNER_FILE)
         build = marker.get("backendBuild") if isinstance(marker, dict) else None
-        if build not in (proof["executable"]["sha256"], request["backendHash"]):
+        if build not in (installed_state_owner(state, installed, proof, record["handles"])["backendBuild"], request["backendHash"]):
             raise RuntimeError("The installed-delivery state marker names another runtime")
         verify_startup_state_files(state, proof, build)
         # Recheck both exact images after the lease and state observations. The old helper
@@ -577,8 +715,14 @@ def installed_delivery_tick(config, state, record):
                 or mapped_backend_pids(delivery.server_path(installed), state)):
             return True, "installed-delivery recovery waits for a concurrent runtime launch"
     if record.get("startupRecovery") != {"phase": "stopped"}:
-        record["startupRecovery"] = {"phase": "stopped"}
-        delivery.save_journal(state, record)
+        # The CLI holds this same nonblocking lease across installer dispatch. Re-read
+        # after admission so neither writer can erase the other's durable outcome.
+        with delivery.delivery_lease(state):
+            latest = delivery.read_delivery_record(delivery.journal_path(state,record['id']))
+            if not latest or latest['request'] != request:
+                raise RuntimeError("The installed recovery journal changed before settlement")
+            latest["startupRecovery"] = {"phase": "stopped"}
+            delivery.save_journal(state, latest)
     return False, None
 
 

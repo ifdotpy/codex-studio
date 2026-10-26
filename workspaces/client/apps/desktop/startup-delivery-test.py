@@ -46,6 +46,8 @@ class StartupDeliveryTests(unittest.TestCase):
             binary.write_bytes(content)
             binary.chmod(0o700)
             updates.write_json(app / updates.BUILD_STAMP, build)
+            installer_file = app / 'Contents/Resources/install_update.py'
+            installer_file.write_bytes(Path(installer.__file__).read_bytes())
             if build == self.new:
                 resources = app / 'Contents/Resources'
                 for name in desktop_delivery.CONTRACT['startupResources']:
@@ -511,11 +513,12 @@ class StartupDeliveryTests(unittest.TestCase):
         return source
 
     def installed_stage(self, source, **options):
+        receipts = options.pop('receipts', self.root / 'recovery-receipts')
         with patch.object(recovery, 'supervisor_request', return_value=self.health), \
                 patch.object(recovery, 'listener_pids', return_value=[]), \
                 patch.object(recovery, 'verify_delivery_recovery_owner', return_value=None, create=True):
             return delivery.stage(source, self.following['commit'], self.installed,
-                                  self.root / 'recovery-receipts',
+                                  receipts,
                                   observe=lambda: self.fail('an installed-delivery recovery must not fabricate HTTP identity'),
                                   run=self.fake_tool, recover_installed=self.operation,
                                   state=self.state, port=4620, **options)
@@ -535,6 +538,161 @@ class StartupDeliveryTests(unittest.TestCase):
         self.assertEqual(self.installed_stage(source), result)
         self.assertEqual(updates.read_pending(self.state)['id'], result['id'])
         self.assertEqual(self.journal.read_bytes(), original)
+
+    def test_measured_image_inspection_completes_without_treating_timeout_as_absence(self):
+        import subprocess
+        def measured_read(command, **options):
+            # The real exact-image scan completed in 3.148 seconds, beyond the former 2-second budget.
+            if options['timeout'] < 3.148:
+                raise subprocess.TimeoutExpired(command, options['timeout'])
+            return subprocess.CompletedProcess(command,1,'','')
+        with patch.object(recovery.subprocess, 'run', side_effect=measured_read):
+            self.assertEqual(recovery.mapped_backend_pids(delivery.server_path(self.installed), self.state), [])
+        with patch.object(recovery.subprocess, 'run', side_effect=subprocess.TimeoutExpired('lsof', 10)):
+            with self.assertRaises(subprocess.TimeoutExpired):
+                recovery.mapped_backend_pids(delivery.server_path(self.installed), self.state)
+
+    def prepare_installed_chain(self):
+        source = self.prepare_installed_recovery()
+        record = self.install_recovered_delivery(source)
+        proof = record['request']['installedDelivery']
+        proof['version'] = 1
+        proof.pop('stateOwner', None)
+        updates.write_json(delivery.journal_path(self.state, record['id']), record)
+        updates.write_json(self.intent, {'version':desktop_delivery.STARTUP_INTENT_VERSION,
+                           'id':record['id'],'requestHash':desktop_delivery.request_hash(record['request'])})
+        self.operation = record['id']
+        self.record = record
+        self.journal = delivery.journal_path(self.state, record['id'])
+        self.following = {**self.following, 'builtAt':4000.5,'commit':'e'*40,'commitTime':4000}
+        following = self.root / 'chain' / updates.APP_NAME
+        following.parent.mkdir()
+        shutil.copytree(self.installed, following)
+        delivery.server_path(following).write_bytes(b'chain-fix')
+        updates.write_json(following / updates.BUILD_STAMP, self.following)
+        updates.write_json(following / 'Contents/Resources/delivery-contract.json', desktop_delivery.CONTRACT)
+        return following
+
+    def test_exact_installed_predecessor_can_be_superseded_without_changing_its_state_marker_or_journal(self):
+        source = self.prepare_installed_chain()
+        prior = self.journal.read_bytes()
+        marker = (self.state / 'rust-state-owner.json').read_bytes()
+        record = self.installed_stage(source, receipts=self.root/'chain-receipts')
+        self.assertEqual(record['phase'], 'submitted')
+        self.assertEqual(desktop_delivery.read_private_json(self.intent)['id'], record['id'])
+        self.assertEqual(self.journal.read_bytes(), prior)
+        self.assertEqual((self.state / 'rust-state-owner.json').read_bytes(), marker)
+        self.assertEqual(record['request']['installedDelivery']['stateOwner']['backendBuild'], json.loads(marker)['backendBuild'])
+
+    def test_old_v1_consumer_holds_but_official_dispatch_uses_the_exact_existing_installer_once(self):
+        import importlib.util
+        import subprocess
+        source = self.prepare_installed_chain()
+        record = self.installed_stage(source, receipts=self.root/'chain-receipts')
+        fixture = Path(__file__).parent/'fixtures/installed_delivery_c004.py'
+        namespace = dict(recovery.__dict__)
+        exec(compile(fixture.read_text(), str(fixture), 'exec'), namespace)
+        namespace['verify_delivery_recovery_owner'] = lambda *_a,**_k:None
+        with patch.object(recovery, 'verify_delivery_recovery_owner', return_value=None), \
+                patch.object(recovery, 'supervisor_request', return_value=self.health):
+            with self.assertRaisesRegex(RuntimeError, 'state owner marker'):
+                namespace['installed_delivery_tick'](self.config, self.state, record)
+        calls = []
+        def existing_installer(command, **options):
+            self.assertEqual(command, [self.config['python'],'-B',str(self.installed/'Contents/Resources/install_update.py'),
+                                       '--config',str(self.state/'background-recovery.json')])
+            self.assertFalse(recovery.startup_lease_held(self.state), 'publication must release the runtime lease before dispatch')
+            calls.append(command)
+            code, _ = installer.install(self.state, self.config, applications=self.installed.parent,
+                                         run=self.fake_tool,
+                                         verify=lambda *_: (_ for _ in ()).throw(TimeoutError('no HTTP')),
+                                         stop=lambda *_: self.fail('no unverified signal'),sleep=lambda _:None)
+            with patch.object(recovery,'mapped_backend_pids',return_value=[]), \
+                    self.assertRaisesRegex(delivery.DeliveryError,'Another local delivery is active'):
+                recovery.installed_delivery_tick(self.config,self.state,record)
+            return subprocess.CompletedProcess(command,code)
+        with patch.object(recovery, 'verify_delivery_recovery_owner', return_value=None), \
+                patch.object(recovery, 'supervisor_request', return_value=self.health), \
+                patch.object(recovery, 'listener_pids', return_value=[]):
+            done = delivery.dispatch_recovery_installer(record, self.installed, run=existing_installer)
+            delivery.dispatch_recovery_installer(record, self.installed, run=lambda *_a,**_k:self.fail('no second installer'))
+        self.assertEqual(len(calls),1)
+        self.assertEqual(done['installerDispatch']['phase'],'installed')
+        self.assertNotIn('startupRecovery',done)
+        self.assertEqual(updates.read_build(self.installed),self.following)
+        self.calls.clear()
+        self.run_once(launch=True)
+        self.assertEqual(self.calls[-1][0],'spawn')
+
+    def test_chained_publication_crash_resumes_same_request_and_late_completion_cannot_clear_it(self):
+        source = self.prepare_installed_chain()
+        predecessor = copy.deepcopy(self.record)
+        original_pointer = desktop_delivery.read_private_json(self.intent)
+        with patch.object(desktop_delivery, 'publish_startup_intent', side_effect=OSError('lost before CAS')):
+            with self.assertRaises(OSError):
+                self.installed_stage(source, receipts=self.root/'chain-receipts')
+        self.assertEqual(desktop_delivery.read_private_json(self.intent),original_pointer)
+        self.assertIsNone(delivery.resume_saved(source,self.following['commit'],self.installed,self.root/'chain-receipts',
+            lambda:self.fail('a durable publication must resume before HTTP'),recover_installed=self.operation,state=self.state))
+        with patch.object(delivery, 'publish_pending', side_effect=OSError('lost after CAS')):
+            with self.assertRaises(OSError):
+                self.installed_stage(source, receipts=self.root/'chain-receipts')
+        pointer = desktop_delivery.read_private_json(self.intent)
+        with self.assertRaises(delivery.DeliveryError):
+            desktop_delivery.clear_startup_intent(self.state, predecessor)
+        self.assertEqual(desktop_delivery.read_private_json(self.intent),pointer)
+        result = self.installed_stage(source, receipts=self.root/'chain-receipts')
+        self.assertEqual(result['id'],pointer['id'])
+        self.assertEqual(updates.read_pending(self.state)['id'],pointer['id'])
+
+    def test_valid_foreign_historical_marker_is_not_an_inherited_state_owner(self):
+        source = self.prepare_installed_chain()
+        record = self.installed_stage(source, receipts=self.root/'chain-receipts')
+        proof = record['request']['installedDelivery']
+        original = delivery.read_delivery_record(delivery.journal_path(self.state,proof['stateOwner']['id']))
+        foreign = copy.deepcopy(original)
+        foreign['request']['commit'] = 'f'*40
+        foreign['request']['build']['commit'] = 'f'*40
+        foreign['id'] = str(uuid.uuid5(uuid.NAMESPACE_URL,'studio-delivery:'+str(self.state)+':'+'f'*40))
+        updates.write_json(delivery.journal_path(self.state,foreign['id']),foreign)
+        proof['stateOwner'] = {'id':foreign['id'],'requestHash':desktop_delivery.request_hash(foreign['request']),
+                               'backendBuild':foreign['request']['backendHash']}
+        with self.assertRaisesRegex(RuntimeError,'exact predecessor chain'):
+            recovery.installed_state_owner(self.state,self.installed,proof,record['handles'])
+
+    def test_predecessor_cas_refuses_a_replaced_pointer(self):
+        source = self.prepare_installed_chain()
+        record = self.installed_stage(source,receipts=self.root/'chain-receipts')
+        expected = desktop_delivery.read_private_json(self.intent)
+        successor = {**record,'id':str(uuid.uuid4()),'request':{**record['request'],'extra':'different'}}
+        foreign = {'version':1,'id':str(uuid.uuid4()),'requestHash':'f'*64}
+        actual = desktop_delivery.read_private_json
+        reads = []
+        def competing(path):
+            if path == self.intent:
+                reads.append(True)
+                if len(reads) == 2:
+                    updates.write_json(path,foreign)
+            return actual(path)
+        with desktop_delivery.delivery_lease(self.state), patch.object(desktop_delivery,'read_private_json',side_effect=competing):
+            with self.assertRaisesRegex(delivery.DeliveryError,'predecessor changed'):
+                desktop_delivery.publish_startup_intent(self.state,successor,predecessor=expected)
+        self.assertEqual(actual(self.intent),foreign)
+
+    def test_unknown_installer_dispatch_is_durable_and_cannot_be_repeated(self):
+        import subprocess
+        source = self.prepare_installed_chain()
+        record = self.installed_stage(source, receipts=self.root/'chain-receipts')
+        with patch.object(recovery, 'verify_delivery_recovery_owner', return_value=None), \
+                patch.object(recovery, 'supervisor_request', return_value=self.health), \
+                patch.object(recovery, 'listener_pids', return_value=[]):
+            with self.assertRaises(subprocess.TimeoutExpired):
+                delivery.dispatch_recovery_installer(record,self.installed,
+                    run=lambda *_a,**_k:(_ for _ in ()).throw(subprocess.TimeoutExpired('installed installer',1800)))
+            with self.assertRaises(delivery.DeliveryPending):
+                delivery.dispatch_recovery_installer(record,self.installed,run=lambda *_a,**_k:self.fail('unknown must hold'))
+        self.run_once(install=lambda *_a:self.fail('the recovery owner must not repeat an unknown dispatch'))
+        self.assertEqual(self.calls,[])
 
     def install_recovered_delivery(self, source):
         record = self.installed_stage(source)
@@ -644,13 +802,24 @@ class StartupDeliveryTests(unittest.TestCase):
 
     def test_registered_recovery_owner_requires_exact_job_argv_birth_and_held_lease(self):
         import subprocess
+        import plistlib
         lock = self.state / 'background-recovery.lock'
         lock.touch(mode=0o600)
         command = [self.config['python'], '-B', str(self.installed / 'Contents/Resources/recover_backend.py'),
                    '--config', str(self.state / 'background-recovery.json')]
-        with lock.open('r') as lease:
+        label = recovery.DELIVERY_RECOVERY_LABEL_PREFIX + hashlib.sha256(str(self.state).encode()).hexdigest()[:recovery.DELIVERY_RECOVERY_LABEL_HEX_LENGTH]
+        home = self.root / 'home'
+        plist = home / 'Library/LaunchAgents' / (label + '.plist')
+        plist.parent.mkdir(parents=True)
+        plist.write_bytes(plistlib.dumps({'Label':label,'ProgramArguments':command}))
+        output = f'\tpath = {plist}\n\targuments = {{\n' + ''.join(f'\t\t{arg}\n' for arg in command) + '\t}\n\tpid = 99\n'
+        image = {'path':str(Path(self.config['python']).resolve()),'device':1,'inode':2,'sha256':'a'*64}
+        with lock.open('r') as lease, \
+                patch.object(recovery.Path, 'home', return_value=home), \
+                patch.object(recovery, 'configured_interpreter_image', return_value=image), \
+                patch.object(recovery, 'observed_interpreter_image', return_value={'birth':'100:123456','image':image}):
             fcntl.flock(lease, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            outputs = [subprocess.CompletedProcess([],0,'\tpid = 99\n',''),
+            outputs = [subprocess.CompletedProcess([],0,output,''),
                        subprocess.CompletedProcess([],0,'99\n','')]
             with patch.object(recovery.subprocess, 'run', side_effect=outputs), \
                     patch.object(recovery, 'startup_backend_birth', return_value='100:123456'), \
@@ -672,6 +841,151 @@ class StartupDeliveryTests(unittest.TestCase):
                     patch.object(recovery, 'backend_process_arguments', return_value=command):
                 with self.assertRaises(RuntimeError):
                     recovery.verify_delivery_recovery_owner(self.config, self.state, self.installed)
+
+    def test_configured_launcher_can_prove_its_exact_framework_interpreter_companion(self):
+        import plistlib
+        import subprocess
+        launcher = self.root / 'bin/python3'
+        launcher.parent.mkdir()
+        launcher.write_bytes(b'configured launcher')
+        launcher.chmod(0o700)
+        companion = self.root / 'Framework/Python.app/Contents/MacOS/Python'
+        companion.parent.mkdir(parents=True)
+        companion.write_bytes(b'exact interpreter image')
+        companion.chmod(0o700)
+        config = {**self.config, 'python':str(launcher)}
+        label = recovery.DELIVERY_RECOVERY_LABEL_PREFIX + hashlib.sha256(str(self.state).encode()).hexdigest()[:recovery.DELIVERY_RECOVERY_LABEL_HEX_LENGTH]
+        home = self.root / 'home'
+        plist = home / 'Library/LaunchAgents' / (label + '.plist')
+        plist.parent.mkdir(parents=True)
+        registered = [str(launcher), '-B', str(self.installed / 'Contents/Resources/recover_backend.py'),
+                      '--config', str(self.state / 'background-recovery.json')]
+        plist.write_bytes(plistlib.dumps({'Label':label,'ProgramArguments':registered}))
+        command = [str(companion), *registered[1:]]
+        output = f'\tpath = {plist}\n\targuments = {{\n' + ''.join(f'\t\t{arg}\n' for arg in registered) + '\t}\n\tpid = 99\n'
+        image = {'path':str(companion), **self.file_identity(companion), 'sha256':hashlib.sha256(companion.read_bytes()).hexdigest()}
+        lock = self.state / 'background-recovery.lock'
+        lock.touch(mode=0o600)
+        with lock.open('r') as lease:
+            fcntl.flock(lease, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            with patch.object(recovery.Path, 'home', return_value=home), \
+                    patch.object(recovery.subprocess, 'run') as process, \
+                    patch.object(recovery, 'startup_backend_birth', return_value='100:123456'), \
+                    patch.object(recovery, 'backend_process_arguments', return_value=command), \
+                    patch.object(recovery, 'configured_interpreter_image', return_value=image) as probe, \
+                    patch.object(recovery, 'observed_interpreter_image', return_value={'birth':'100:123456','image':image}) as observed:
+                def reset():
+                    process.side_effect = [subprocess.CompletedProcess([],0,output,''),subprocess.CompletedProcess([],0,'99\n','')]
+                    probe.return_value = image
+                    observed.side_effect = None
+                    observed.return_value = {'birth':'100:123456','image':image}
+                reset()
+                recovery.verify_delivery_recovery_owner(config, self.state, self.installed)
+                reset()
+                probe.return_value = {**image,'path':str(companion.with_name('OtherPython'))}
+                with self.assertRaisesRegex(RuntimeError, 'launcher proof'):
+                    recovery.verify_delivery_recovery_owner(config, self.state, self.installed)
+                reset()
+                observed.side_effect = [{'birth':'100:123456','image':image}, {'birth':'101:123456','image':image}]
+                with self.assertRaisesRegex(RuntimeError, 'launcher proof'):
+                    recovery.verify_delivery_recovery_owner(config, self.state, self.installed)
+                for value in ({'Label':label,'ProgramArguments':[str(companion),*registered[1:]]},
+                              {'Label':label + '.foreign','ProgramArguments':registered}):
+                    reset()
+                    plist.write_bytes(plistlib.dumps(value))
+                    with self.assertRaisesRegex(RuntimeError, 'protected recovery registration'):
+                        recovery.verify_delivery_recovery_owner(config, self.state, self.installed)
+                plist.write_bytes(plistlib.dumps({'Label':label,'ProgramArguments':registered}))
+                reset()
+                process.side_effect = [subprocess.CompletedProcess([],0,output.replace(str(launcher),str(companion)), '')]
+                with self.assertRaisesRegex(RuntimeError, 'protected recovery registration'):
+                    recovery.verify_delivery_recovery_owner(config, self.state, self.installed)
+                reset()
+                plist.chmod(0o666)
+                with self.assertRaisesRegex(RuntimeError, 'protected regular file'):
+                    recovery.verify_delivery_recovery_owner(config, self.state, self.installed)
+
+    def test_configured_probe_uses_only_isolated_flags_and_fixed_environment(self):
+        import subprocess
+        image = recovery.protected_interpreter_image(sys.executable)
+        children, launches = [], []
+        actual = subprocess.Popen
+        def spawn(command, **options):
+            launches.append((command, options))
+            child = actual(command, **options)
+            children.append(child)
+            return child
+        with patch.object(recovery.subprocess, 'Popen', side_effect=spawn), \
+                patch.object(recovery, 'observed_interpreter_image', side_effect=lambda pid: {'birth':'probe-birth','image':image}):
+            self.assertEqual(recovery.configured_interpreter_image(sys.executable), image)
+        self.assertEqual(launches[0][0][:5], [sys.executable,'-I','-S','-B','-c'])
+        self.assertEqual(launches[0][1]['env'], {'PATH':'/usr/bin:/bin','LANG':'C','LC_ALL':'C'})
+        self.assertEqual(launches[0][1]['cwd'], '/')
+        self.assertTrue(all(child.poll() == 0 for child in children))
+
+    def test_owned_probe_timeout_oversize_wrong_pid_and_launcher_change_clean_up(self):
+        import subprocess
+        actual = subprocess.Popen
+        programs = [
+            ('import sys; sys.stdin.buffer.read(1)', 0.05, 'did not become ready'),
+            ('import sys; print("x"*100,flush=True); sys.stdin.buffer.read(1)', 5, 'invalid PID'),
+            ('import os,sys; print(os.getpid()+1,flush=True); sys.stdin.buffer.read(1)', 5, 'owned child'),
+        ]
+        for program, timeout, reason in programs:
+            children = []
+            def spawn(command, **options):
+                child = actual([*command[:-1], program], **options)
+                children.append(child)
+                return child
+            with self.subTest(program=program), \
+                    patch.object(recovery.subprocess, 'Popen', side_effect=spawn), \
+                    patch.object(recovery, 'INTERPRETER_PROBE_SECONDS', timeout), \
+                    patch.object(recovery, 'observed_interpreter_image') as observed:
+                with self.assertRaisesRegex(RuntimeError, reason):
+                    recovery.configured_interpreter_image(sys.executable)
+                observed.assert_not_called()
+                self.assertTrue(all(child.poll() is not None for child in children))
+        image = recovery.protected_interpreter_image(sys.executable)
+        with patch.object(recovery, 'protected_interpreter_image', side_effect=[image,{**image,'inode':image['inode']+1}]), \
+                patch.object(recovery, 'observed_interpreter_image', return_value={'birth':'probe-birth','image':image}):
+            with self.assertRaisesRegex(RuntimeError, 'launcher changed'):
+                recovery.configured_interpreter_image(sys.executable)
+
+    def test_interpreter_kernel_reader_returns_only_image_identity_and_exact_birth(self):
+        image = self.root / 'Python'
+        image.write_bytes(b'framework image')
+        identity = self.file_identity(image)
+        output = f'p99\nftxt\nD{hex(identity["device"])}\ni{identity["inode"]}\nn{image}\n'
+        with patch.object(desktop_process, 'startup_backend_birth', return_value='100:123456'), \
+                patch.object(desktop_process, '_darwin_executable_path', return_value=str(image)), \
+                patch.object(desktop_process.subprocess, 'check_output', return_value=output):
+            facts = desktop_process.recovery_interpreter_facts(99)
+        self.assertEqual(set(facts), {'pid','uid','birth','executable','textFiles'})
+        self.assertEqual(facts['textFiles'], [identity])
+        self.assertEqual(facts['birth'], '100:123456')
+        with patch.object(recovery, 'recovery_interpreter_facts', return_value=facts), \
+                patch.object(recovery, 'startup_backend_birth', return_value=facts['birth']):
+            self.assertEqual(recovery.observed_interpreter_image(99)['image']['inode'], identity['inode'])
+            facts['textFiles'] = []
+            with self.assertRaisesRegex(RuntimeError, 'kernel mapping'):
+                recovery.observed_interpreter_image(99)
+        with patch.object(desktop_process, 'startup_backend_birth', side_effect=['100:123456','101:123456']), \
+                patch.object(desktop_process, '_darwin_executable_path', return_value=str(image)), \
+                patch.object(desktop_process.subprocess, 'check_output', return_value=output):
+            with self.assertRaisesRegex(RuntimeError, 'changed during observation'):
+                desktop_process.recovery_interpreter_facts(99)
+
+    @unittest.skipUnless(sys.platform == 'darwin', 'The production kernel image reader uses the native process API.')
+    def test_owned_launcher_probe_observes_its_real_kernel_companion_without_runtime_state(self):
+        import shlex
+        launcher = self.root / 'owned-python-launcher'
+        launcher.write_text('#!/bin/sh\nexec ' + shlex.quote(sys.executable) + ' "$@"\n')
+        launcher.chmod(0o700)
+        before = {str(path):path.read_bytes() for path in self.state.rglob('*') if path.is_file()}
+        image = recovery.configured_interpreter_image(launcher)
+        self.assertEqual(image, recovery.protected_interpreter_image(image['path']))
+        self.assertNotEqual(image['path'], str(launcher))
+        self.assertEqual(before, {str(path):path.read_bytes() for path in self.state.rglob('*') if path.is_file()})
 
     def test_installed_publication_lease_fences_the_actual_legacy_tick(self):
         source = self.prepare_installed_recovery()

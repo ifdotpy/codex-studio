@@ -8,7 +8,7 @@
   "journalDirectory": "local-deliveries",
   "startupIntentFile": "startup-delivery.json",
   "startupIntentVersion": 1,
-  "installedRecoveryVersion": 1,
+  "installedRecoveryVersion": 2,
   "startupResources": [
     "recover_backend.py",
     "desktop_delivery.py",
