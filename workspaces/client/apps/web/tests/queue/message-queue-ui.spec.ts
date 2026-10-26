@@ -1,5 +1,5 @@
 import { queueUiFixture } from "./queue-ui.fixture.ts";
-import { required, requestBody } from "../messages/helpers.ts";
+import { requestBody } from "../messages/helpers.ts";
 import type { PostBody } from "../../src/apiTypes.ts";
 import type { BrowserContext, Page } from "@playwright/test";
 import { test, expect, queryFixtureDatabase } from "../playwright.ts";
@@ -19,7 +19,7 @@ test("message-queue-ui", async ({ browser }) => {
     const waitForQueueMutationToSettle = (label: string) =>
       wait(
         async () =>
-          required(page).evaluate(() =>
+          page!.evaluate(() =>
             Object.keys(localStorage)
               .filter((key) => key.startsWith("studio-queue-change:"))
               .every((key) => localStorage.getItem(key) === null),
@@ -109,11 +109,7 @@ test("message-queue-ui", async ({ browser }) => {
       "First input reaches queue",
     );
     assert.equal(sent.length, 1);
-    assert.equal(
-      required(sent[0]).delivery,
-      "next_turn",
-      "Tab sends next-turn input",
-    );
+    assert.equal(sent[0]!.delivery, "next_turn", "Tab sends next-turn input");
     await panel.waitFor();
     await list.getByText("First input", { exact: true }).waitFor();
     for (const width of [1440, 390]) {
@@ -123,14 +119,14 @@ test("message-queue-ui", async ({ browser }) => {
         await expect(async () => {
           const size = await panel.evaluate((element) => {
             const panelBox = element.getBoundingClientRect();
-            const content = element.querySelector("ol");
             const preview = element.querySelector(".message-queue-preview");
-            if (!content || !preview) throw new Error("Missing queue preview");
-            const contentBox = content.getBoundingClientRect();
+            const contentBox = element
+              .querySelector("ol")!
+              .getBoundingClientRect();
             return {
               gap: panelBox.bottom - contentBox.bottom,
-              previewHeight: preview.getBoundingClientRect().height,
-              previewText: preview.textContent,
+              previewHeight: preview!.getBoundingClientRect().height,
+              previewText: preview!.textContent,
             };
           });
           assert(
@@ -146,7 +142,7 @@ test("message-queue-ui", async ({ browser }) => {
       }
     }
     await page.setViewportSize({ width: 1440, height: 960 });
-    const asset = required(required((await queue()).items[0]).assets?.[0]).id;
+    const asset = (await queue()).items[0]!.assets![0]!.id;
 
     for (const text of ["Second input", "Third input"]) {
       await composer.fill(text);
@@ -166,18 +162,14 @@ test("message-queue-ui", async ({ browser }) => {
     await editor().fill("Revised first input");
     await button("Save queued message").click();
     await wait(
-      async () =>
-        required((await queue()).items[0]).text === "Revised first input",
+      async () => (await queue()).items[0]!.text === "Revised first input",
       "Edit persists",
     );
     await waitForQueueMutationToSettle("Edit acknowledgement completes");
-    assert.equal(
-      required(required((await queue()).items[0]).assets?.[0]).id,
-      asset,
-    );
+    assert.equal((await queue()).items[0]!.assets![0]!.id, asset);
     await button("Move queued message 3 up").click();
     await wait(
-      async () => required((await queue()).items[1]).text === "Third input",
+      async () => (await queue()).items[1]!.text === "Third input",
       "Reorder persists",
     );
     await waitForQueueMutationToSettle("Reorder acknowledgement completes");
@@ -189,19 +181,19 @@ test("message-queue-ui", async ({ browser }) => {
           .evaluateAll((rows) => rows.map((row) => row.dataset.messageId)),
       )
       .toEqual(reorderedItems.map((item) => item.id));
-    const sourceId = required(
-      reorderedItems.find((item) => item.text === "Second input"),
-    ).id;
-    const targetId = required(
-      reorderedItems.find((item) => item.text === "Third input"),
-    ).id;
+    const sourceId = reorderedItems.find(
+      (item) => item.text === "Second input",
+    )!.id;
+    const targetId = reorderedItems.find(
+      (item) => item.text === "Third input",
+    )!.id;
     const grip = list
       .locator(`li[data-message-id="${sourceId}"]`)
       .locator(".message-queue-grip");
     await expect(grip).toHaveAttribute("draggable", "true");
     await grip.dragTo(list.locator(`li[data-message-id="${targetId}"]`));
     await wait(
-      async () => required((await queue()).items[1]).text === "Second input",
+      async () => (await queue()).items[1]!.text === "Second input",
       "Pointer drag reorders the durable queue",
     );
     await waitForQueueMutationToSettle("Drag acknowledgement completes");
@@ -222,16 +214,13 @@ test("message-queue-ui", async ({ browser }) => {
     await button("Expand queued message 4").click();
     await button("Collapse queued message 4").waitFor();
     const fullHeight = await list.locator("li").nth(3).boundingBox();
-    assert(
-      required(fullHeight).height > required(shortHeight).height,
-      "Long text expands",
-    );
+    assert(fullHeight!.height > shortHeight!.height, "Long text expands");
     await button("Collapse queued message 4").click();
     const sendNowRequests: PostBody<"/api/queue">[] = [];
     await page.route("**/api/queue", async (route) => {
       if (
         route.request().method() === "POST" &&
-        requestBody<PostBody<"/api/queue">>(route).action === "send_now"
+        requestBody<PostBody<"/api/queue">>(route)?.action === "send_now"
       ) {
         sendNowRequests.push(requestBody<PostBody<"/api/queue">>(route));
         if (sendNowRequests.length === 1) return route.abort("failed");
@@ -253,18 +242,17 @@ test("message-queue-ui", async ({ browser }) => {
       queryFixtureDatabase(
         root,
         "SELECT e.id,m.record FROM runtime_events e JOIN runtime_event_meta m ON m.id=e.id WHERE e.id=?",
-        required(order[0]),
+        order[0]!,
       );
     await wait(
       async () =>
-        JSON.parse(String(required(promoted()[0]).record)).delivery ===
-        "current_turn",
+        JSON.parse(String(promoted()[0]!.record)).delivery === "current_turn",
       "Send now durably promotes the original input to the current turn",
     );
     assert.equal(promoted().length, 1);
-    assert.equal(required(promoted()[0]).id, required(sendNowRequests[0]).id);
+    assert.equal(promoted()[0]!.id, sendNowRequests[0]!.id);
     assert.equal(
-      JSON.parse(String(required(promoted()[0]).record)).requestedDelivery,
+      JSON.parse(String(promoted()[0]!.record)).requestedDelivery,
       "next_turn",
     );
     await page.unrouteAll({ behavior: "wait" });

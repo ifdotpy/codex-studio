@@ -1,5 +1,5 @@
+import type { AddressInfo } from "node:net";
 import type { components } from "../../src/generated/api.ts";
-import { fixtureOrigin } from "../drafts/draft-fixture-helpers.ts";
 import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
 import { test } from "../playwright.ts";
@@ -45,7 +45,7 @@ test("malformed current-draft key does not crash hook initialization", async ({
         >,
       }),
     );
-    const origin = fixtureOrigin(server);
+    const origin = `http://127.0.0.1:${(server.httpServer!.address() as AddressInfo).port}`;
     await page.goto(`${origin}/draft-corrupt-check`);
     await page.evaluate((workspaceId) => {
       localStorage.setItem("codex-sync-workspace", JSON.stringify(workspaceId));
@@ -68,12 +68,10 @@ test("malformed current-draft key does not crash hook initialization", async ({
       await mount();
     });
     await page.waitForFunction(
-      () =>
-        window.corruptDraft_draft?.drafts.healthy ===
-        "Healthy chat remains visible",
+      () => window.draft?.drafts.healthy === "Healthy chat remains visible",
     );
     assert.match(
-      await page.evaluate(() => window.corruptDraft_draft.error),
+      await page.evaluate(() => window.draft.error),
       /saved drafts could not be read/i,
     );
     assert.deepEqual(errors, []);

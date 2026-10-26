@@ -1,15 +1,11 @@
 declare global {
   interface Window {
-    signInPhoneFixture: {
-      notes: string[];
-      opened: string[];
-      copied: string[];
-      waiting: () => void;
-    };
+    __opened: string[];
+    __copied: string[];
+    __waiting: () => void;
   }
 }
 import { signInCards, phoneSignInUrl } from "./sign-in.fixture.ts";
-import { required } from "../messages/browser-helpers.ts";
 
 import React from "react";
 import { createRoot } from "react-dom/client";
@@ -46,7 +42,8 @@ let requests = [
   ),
 ];
 
-const rootNode = createRoot(required(document.getElementById("root")));
+window.__notes = [];
+const rootNode = createRoot(document.getElementById("root")!);
 const render = () =>
   rootNode.render(
     React.createElement(
@@ -61,13 +58,13 @@ const render = () =>
           scope: "fixture",
           agents: [agent],
           refresh: async () => {},
-          notify: (s) => window.signInPhoneFixture.notes.push(s),
+          notify: (s) => window.__notes.push(s),
         }),
       ),
     ),
   );
 // The server keeps the card pending in the waiting phase after a paste-mode approval.
-window.signInPhoneFixture.waiting = () => {
+window.__waiting = () => {
   requests = requests.map((r) =>
     r.id === "redirect"
       ? {
