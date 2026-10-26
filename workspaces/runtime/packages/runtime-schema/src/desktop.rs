@@ -3,6 +3,9 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+/// Native server implementation identifier emitted by the desktop metadata route.
+pub const BACKEND_KIND: &str = "rust";
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "lowercase")]
 #[schemars(inline)]
