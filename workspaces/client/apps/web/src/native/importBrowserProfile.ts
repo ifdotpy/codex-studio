@@ -478,3 +478,14 @@ export async function importBrowserProfile(
     localStorage.setItem(marker, identity + ":complete");
   }
 }
+
+/** Archive envelope shared by the offline exporter and native import checks. */
+export type BrowserProfileArchive = {
+  version: 1 | 2;
+  parts?: string;
+  id: string;
+  profile?: string;
+  created?: number;
+  snapshots: BrowserProfileSnapshot[];
+  owners: Record<string, string>;
+};
