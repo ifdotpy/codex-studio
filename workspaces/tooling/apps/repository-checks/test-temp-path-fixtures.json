@@ -34,23 +34,23 @@
   "workspaces/client/apps/web/src/sync/entityProjection.test.ts": [
     "value: { stateDir: \"/tmp/state\" },"
   ],
-  "workspaces/client/apps/web/tests/accounts/account-project-ui.spec.mjs": [
+  "workspaces/client/apps/web/tests/accounts/account-project-ui.spec.ts": [
     "id: \"/tmp/fixture\",",
     "path: \"/tmp/fixture\",",
-    "cwd: \"/tmp/fixture\",",
-    "assert.equal(agents.find((a) => a.id === \"empty\").cwd, \"/tmp/fixture\");",
+    ") => fixtureLead(id, name, accountKey, empty, \"/tmp/fixture\");",
+    "\"/tmp/fixture\",",
     "path: \"/tmp/fixture\","
   ],
-  "workspaces/client/apps/web/tests/accounts/project-settings-ui.spec.mjs": [
+  "workspaces/client/apps/web/tests/accounts/project-settings-ui.spec.ts": [
     "id: \"/tmp/fixture\",",
     "path: \"/tmp/fixture\",",
-    "cwd: \"/tmp/fixture\",",
+    ") => fixtureLead(id, name, accountKey, empty, \"/tmp/fixture\");",
     "path: \"/tmp/fixture\","
   ],
   "workspaces/client/apps/web/tests/sync/entity-fixture-contract.browser.spec.mjs": [
     "stateDir: \"/tmp/fixture\","
   ],
-  "workspaces/client/apps/web/tests/terminal/current-command-history-ui.spec.mjs": [
+  "workspaces/client/apps/web/tests/terminal/current-command-history-ui.spec.ts": [
     "text: JSON.stringify({ type: \"imageView\", path: \"/tmp/image.png\" }),"
   ],
   "workspaces/client/packages/client-core/src/file_links.rs": [

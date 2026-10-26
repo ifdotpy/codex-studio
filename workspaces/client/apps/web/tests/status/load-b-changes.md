@@ -4,7 +4,7 @@ Base: `92794cb2` (`work/fast-browser-tests`). The production build passed.
 
 ## Findings and changes
 
-- `background/background-controls-ui.spec.mjs`: the fixture omitted
+- `background/background-controls-ui.spec.ts`: the fixture omitted
   `/api/workspace/tasks`, so the activity drawer received an empty feed and
   could not render `native-task`; the test then waited for that impossible row
   until its 60-second deadline. Serve the task feed through the fixture entity
@@ -55,7 +55,7 @@ Base: `92794cb2` (`work/fast-browser-tests`). The production build passed.
   Focused scroll restoration remains asserted before blur. The hook resets
   nonzero scroll on scale-1 updates, but returns early during pinch zoom; the
   test sets scale 2 before retaining 150px so pinch preservation is deterministic.
-- `settings/daybreak-settings-browser.spec.mjs`: the fixture model catalog is
+- `settings/daybreak-settings-browser.spec.ts`: the fixture model catalog is
   synchronous. After a reset, the generic enable helper queried controls before
   the settings view finished rendering; its count-based fallback could select
   the default model instead of preserving Terra, or target the wrong model
@@ -108,13 +108,13 @@ These commands ran from `web` with the managed browser runtime environment;
 each used one Playwright worker and three repetitions.
 
 ```sh
-node node_modules/@playwright/test/cli.js test ../workspaces/client/apps/web/tests/background/background-controls-ui.spec.mjs --project=client --reporter=list --workers=1 --repeat-each=3 --output=/dev/shm/load-b-background-fixed
+node node_modules/@playwright/test/cli.js test ../workspaces/client/apps/web/tests/background/background-controls-ui.spec.ts --project=client --reporter=list --workers=1 --repeat-each=3 --output=/dev/shm/load-b-background-fixed
 ```
 
 Result: 3/3 passed (23.2s).
 
 ```sh
-node node_modules/@playwright/test/cli.js test ../workspaces/client/apps/web/tests/settings/daybreak-settings-browser.spec.mjs --project=client --reporter=list --workers=1 --repeat-each=3 --output=/dev/shm/load-b-daybreak-finalsolo5
+node node_modules/@playwright/test/cli.js test ../workspaces/client/apps/web/tests/settings/daybreak-settings-browser.spec.ts --project=client --reporter=list --workers=1 --repeat-each=3 --output=/dev/shm/load-b-daybreak-finalsolo5
 ```
 
 Result: 3/3 passed (18.4s; 5.7–5.8s each).

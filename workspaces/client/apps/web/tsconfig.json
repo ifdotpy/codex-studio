@@ -5,16 +5,15 @@
     "module": "ESNext",
     "moduleResolution": "Bundler",
     "jsx": "react-jsx",
-    "paths": { "/src/*": ["./src/*"] },
-    // TypeScript migration: remove after ts-web-strict-sync-servers and ts-web-strict-components land.
-    "noUncheckedIndexedAccess": false,
-    "exactOptionalPropertyTypes": false
+    "paths": { "/src/*": ["./src/*"] }
   },
   "include": [
     "src",
-    ".storybook",
+    ".storybook/**/*.ts",
+    ".storybook/**/*.tsx",
     "vite.config.ts",
     "vitest.config.ts",
+    "vitest.fast.config.ts",
     "playwright.config.ts",
     "vitest.unit.config.ts"
   ]
