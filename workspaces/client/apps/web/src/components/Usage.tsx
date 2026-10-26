@@ -51,7 +51,6 @@ import type { Account } from "./Accounts";
 export type UsageAccount = Pick<Account, "label"> & {
   [Field in "email" | "plan" | "accountId"]?: Account[Field] | undefined;
 } & {
-  // "openai" is the legacy label Usage still renders.
   provider?: Account["provider"] | undefined;
   key: string;
   signedOut?: boolean;
