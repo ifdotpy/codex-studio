@@ -187,15 +187,19 @@ where
             }
         }
     });
-    // Register the observers before seeding, and finish the initial projection
-    // before the server admits requests. Router construction never owns writes.
+    // Register observers before seeding the saved summaries. Session estimates
+    // can scan analytics and local journals, so only their placeholders belong
+    // to HTTP startup. Router construction never owns writes.
     let pricing = PricingRefresh::new(state.clone(), fetch, sender.clone());
     let _refresh = pricing.request();
     let mut agent_roots = read_agent_roots(&store).await?;
     publish_accounts(state).await?;
     publish_costs(state).await?;
-    publish_session_roots(state, None, pricing.readiness()).await?;
+    seed_session_roots(state).await?;
     publish_desktop(state).await?;
+    // Use the existing ordered owner for the first estimate as well as updates.
+    // A pricing completion queued during seeding coalesces with this request.
+    let _queued = sender.send(Publication::SessionCosts(None));
     let state = state.clone();
     runtime.spawn(async move {
         while let Some(first) = receiver.recv().await {
@@ -636,6 +640,38 @@ where
     publish_session_roots(state, roots, PricingReadiness::Settled).await
 }
 
+/// Preserve saved estimates and seed absent roots without opening analytics.
+/// The ordered publisher replaces pending values after HTTP service can start.
+async fn seed_session_roots(state: &HttpState) -> Result<(), StoreError> {
+    let store = state.store.as_ref().ok_or(StoreError::ReadTaskFailed)?;
+    let rows = store
+        .read_async("bounded-entities/session-cost-seed", |tx| {
+            let mut statement = tx.prepare(
+                "SELECT a.id,s.payload FROM runtime_agents a
+             LEFT JOIN sync_entities s ON s.collection='sessionCost' AND s.id=a.id AND s.deleted=0
+             WHERE a.deleted_at IS NULL AND json_extract(a.record,'$.isLead')=1",
+            )?;
+            statement
+                .query_map([], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?))
+                })?
+                .map(|row| {
+                    let (id, saved) = row?;
+                    let value = match saved {
+                        Some(saved) => serde_json::from_str::<Value>(&saved)?["value"].clone(),
+                        None => json!({"rootId":id,"totalUSD":null,"pricedSamples":0,
+                        "breakdown":{"models":{},"providers":{}},"unknownModels":[],
+                        "estimated":true,"pricingState":"loading","cacheAgeSeconds":0,
+                        "refreshing":false,"method":"Session cost estimate is pending"}),
+                    };
+                    Ok((id, value))
+                })
+                .collect::<Result<Vec<_>, StoreError>>()
+        })
+        .await?;
+    replace(store, "sessionCost", rows).await
+}
+
 async fn publish_session_roots(
     state: &HttpState,
     roots: Option<BTreeSet<String>>,
@@ -672,7 +708,10 @@ async fn publish_session_roots(
         })
         .unwrap_or_default();
     let source = store.clone();
-    let rows=studio_runtime_process::blocking_pool::spawn_blocking("bounded-entities/session-costs",move || ids.into_iter().map(|id| {
+    let rows=studio_runtime_process::blocking_pool::spawn_blocking("bounded-entities/session-costs",move || {
+        #[cfg(test)]
+        tests::wait_for_session_cost_gate(source.root());
+        ids.into_iter().map(|id| {
         let value=studio_runtime_services::costs::session_cost_with_account_profiles(&source,&id,&profiles).unwrap_or_else(|error| {
             // A completed pricing attempt with no usable catalog is an unavailable
             // estimate (ready + null total), rather than work still loading.
@@ -686,7 +725,7 @@ async fn publish_session_roots(
             };
             json!({"rootId":id,"totalUSD":null,"pricedSamples":0,"breakdown":{"models":{},"providers":{}},"unknownModels":[],"estimated":true,"pricingState":pricing_state,"cacheAgeSeconds":0,"refreshing":false,"method":error.to_string()})});
         (id,value)
-    }).collect()).await.map_err(|_|StoreError::ReadTaskFailed)?;
+    }).collect()}).await.map_err(|_|StoreError::ReadTaskFailed)?;
     match roots {
         None => replace(&store, "sessionCost", rows).await,
         Some(roots) => {
@@ -723,6 +762,21 @@ async fn publish_desktop(state: &HttpState) -> Result<(), StoreError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    type SessionCostGate = (Arc<tokio::sync::Notify>, std::sync::mpsc::Receiver<()>);
+    static SESSION_COST_GATES: std::sync::LazyLock<
+        std::sync::Mutex<BTreeMap<std::path::PathBuf, SessionCostGate>>,
+    > = std::sync::LazyLock::new(Default::default);
+
+    pub(super) fn wait_for_session_cost_gate(root: &std::path::Path) {
+        let gate = SESSION_COST_GATES.lock().expect("cost gates").remove(root);
+        if let Some((started, release)) = gate {
+            started.notify_one();
+            release
+                .recv_timeout(std::time::Duration::from_secs(15))
+                .expect("release session cost computation");
+        }
+    }
 
     async fn state() -> (tempfile::TempDir, HttpState) {
         let root = tempfile::tempdir().expect("isolated source state");
@@ -1552,6 +1606,205 @@ mod tests {
         assert_eq!(
             value["at"], 1,
             "a failed check must not make old data look fresh"
+        );
+    }
+
+    // A fixture gate pauses the actual cost worker before its analytics read.
+    // The witness does not depend on machine speed or create contention load.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn startup_serves_http_while_large_session_cost_publication_is_pending() {
+        use axum::body::Body;
+        use axum::extract::ConnectInfo;
+        use axum::http::{Request, StatusCode};
+        use futures_util::StreamExt;
+        use std::net::SocketAddr;
+        use std::time::Duration;
+        use tower::ServiceExt;
+
+        let (root, state) = state().await;
+        let store = state.store.as_ref().expect("store");
+        store.transaction(|tx| {
+            tx.execute("INSERT INTO runtime_agents(id,record) VALUES('large-team',?1)",
+                [json!({"id":"large-team","rootId":"large-team","isLead":true,"provider":"codex"}).to_string()])?;
+            Ok(())
+        }).await.expect("lead");
+        store.analytics_transaction::<_, StoreError>(|tx, _| {
+            tx.execute_batch("WITH RECURSIVE n(i) AS (VALUES(1) UNION ALL SELECT i+1 FROM n WHERE i<32768)
+                INSERT INTO analytics_cost_rows(id,root,agent,seq,at,model,account_key,input,output,uncached,counted,counted_model,final_evidence)
+                SELECT 'usage-'||i,'large-team','large-team',i,i,'gpt-test','default',100,10,1,1,'gpt-test',1 FROM n;
+                INSERT INTO analytics_cost_groups(root,model,account,input,output,uncached,count)
+                VALUES('large-team','gpt-test','default',100,10,1,32768);")?;
+            Ok(())
+        }).await.expect("large synthetic cost table and its aggregate");
+        tokio::fs::write(
+            root.path().join("model-pricing/models-dev-v1.json"),
+            json!({"version":1,"catalog":{"providers":pricing_providers()}}).to_string(),
+        )
+        .await
+        .expect("local pricing");
+        let started = Arc::new(tokio::sync::Notify::new());
+        let (release, blocked) = std::sync::mpsc::channel();
+        SESSION_COST_GATES
+            .lock()
+            .expect("cost gates")
+            .insert(store.root().to_owned(), (started.clone(), blocked));
+        let mut changes = commits(&state);
+        let startup = state.clone();
+        let mut request = tokio::spawn(async move {
+            // Match runtime-server: summary initialization precedes HTTP service.
+            startup
+                .initialize_bounded_entities()
+                .await
+                .expect("initialize summaries");
+            let app = crate::router::router(startup).expect("router");
+            app.oneshot(
+                Request::builder()
+                    .uri("/api/desktop")
+                    .header("host", "127.0.0.1:4321")
+                    .extension(ConnectInfo(SocketAddr::from(([127, 0, 0, 1], 12345))))
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await
+            .expect("HTTP response")
+        });
+        tokio::time::timeout(Duration::from_secs(5), started.notified())
+            .await
+            .expect("session cost publication reaches the analytics gate");
+        let response = tokio::time::timeout(Duration::from_secs(2), &mut request).await;
+        let stream = if response.is_ok() {
+            Some(
+                tokio::time::timeout(Duration::from_secs(2), async {
+                    let query = form_urlencoded::Serializer::new(String::new())
+                        .append_pair(
+                            "protocol",
+                            studio_runtime_schema::SYNC_PROTOCOL_VERSION_TEXT,
+                        )
+                        .append_pair("tokenRates", "false")
+                        .append_pair(
+                            "resources",
+                            &json!([{"kind":"session-cost","agentId":"large-team"}]).to_string(),
+                        )
+                        .finish();
+                    let app = crate::router::router(state.clone()).expect("stream router");
+                    let response = app
+                        .oneshot(
+                            Request::builder()
+                                .uri(format!("/api/sync/stream?{query}"))
+                                .header("host", "127.0.0.1:4321")
+                                .header("x-canvas-token", "token")
+                                .extension(ConnectInfo(SocketAddr::from(([127, 0, 0, 1], 12345))))
+                                .body(Body::empty())
+                                .expect("stream request"),
+                        )
+                        .await
+                        .expect("stream response");
+                    assert_eq!(response.status(), StatusCode::OK);
+                    let mut stream = response.into_body().into_data_stream();
+                    let session = stream
+                        .next()
+                        .await
+                        .expect("session event")
+                        .expect("session bytes");
+                    assert!(String::from_utf8_lossy(&session).contains("event: session"));
+                    let initial = stream
+                        .next()
+                        .await
+                        .expect("initial costs")
+                        .expect("initial bytes");
+                    assert!(
+                        String::from_utf8_lossy(&initial).contains(r#""pricingState":"loading""#)
+                    );
+                    stream
+                })
+                .await,
+            )
+        } else {
+            None
+        };
+        // Always release the worker before a timeout assertion can unwind the runtime.
+        release.send(()).expect("release analytics read gate");
+        if response.is_err() {
+            request
+                .await
+                .expect("request finishes after analytics release");
+        }
+        let response = response
+            .expect("HTTP must serve before analytics cost publication finishes")
+            .expect("request task");
+        assert_eq!(response.status(), StatusCode::OK);
+        let mut stream = stream
+            .expect("opened stream")
+            .expect("SSE initial costs must not wait for analytics publication");
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                let frame = stream
+                    .next()
+                    .await
+                    .expect("cost update event")
+                    .expect("cost update bytes");
+                if String::from_utf8_lossy(&frame).contains(r#""pricedSamples":32768"#) {
+                    break;
+                }
+            }
+        })
+        .await
+        .expect("SSE receives costs after publication finishes");
+        let cost = wait_for_entity(&state, &mut changes, "sessionCost", "large-team", |value| {
+            value["pricedSamples"] == 32768
+        })
+        .await
+        .expect("costs fill in after the read gate opens");
+        assert_eq!(cost["pricingState"], "ready");
+        assert!((cost["totalUSD"].as_f64().expect("estimate") - 3.93216).abs() < 1e-9);
+        state
+            .shutdown_services()
+            .await
+            .expect("cost workers settle");
+    }
+
+    #[tokio::test]
+    async fn startup_cost_seed_preserves_saved_estimates_and_retires_removed_roots() {
+        let (_root, state) = state().await;
+        pricing_roots(&state).await;
+        // Both leads start pending. A saved result then survives the next seed.
+        seed_session_roots(&state).await.expect("initial cost seed");
+        let mut saved = entity(&state, "sessionCost", "a");
+        saved["pricingState"] = json!("ready");
+        saved["totalUSD"] = json!(7);
+        saved["pricedSamples"] = json!(3);
+        let store = state.store.as_ref().expect("store");
+        put(store, "sessionCost", vec![("a".into(), saved.clone())])
+            .await
+            .expect("saved estimate");
+        store
+            .transaction(|tx| {
+                tx.execute("DELETE FROM runtime_agents WHERE id='b'", [])?;
+                tx.execute(
+                    "INSERT INTO runtime_agents(id,record) VALUES('c',?1)",
+                    [json!({"id":"c","rootId":"c","isLead":true}).to_string()],
+                )?;
+                Ok(())
+            })
+            .await
+            .expect("replace a lead");
+        seed_session_roots(&state)
+            .await
+            .expect("seed after restart");
+        assert_eq!(entity(&state, "sessionCost", "a"), saved);
+        assert_eq!(
+            entity(&state, "sessionCost", "c")["pricingState"],
+            "loading"
+        );
+        assert!(entity(&state, "sessionCost", "c")["totalUSD"].is_null());
+        assert!(
+            store
+                .test_read_transaction(|tx| Ok(tx.query_row(
+                    "SELECT deleted FROM sync_entities WHERE collection='sessionCost' AND id='b'",
+                    [],
+                    |row| row.get::<_, bool>(0)
+                )?))
+                .expect("retired cost")
         );
     }
 
