@@ -138,6 +138,7 @@ impl NotificationEffects for RuntimeNotificationEffects {
             budget_capture_value: captured,
             usage_conflict: None,
             ledger_since: Default::default(),
+            usage_unknown: false,
         });
         if matches!(
             method,

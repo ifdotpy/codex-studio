@@ -123,28 +123,6 @@
   "additionalProperties": {
     "$ref": "#/$defs/JsonValue"
   },
-  "allOf": [
-    {
-      "if": {
-        "required": [
-          "diagnosticBoundsVersion"
-        ]
-      },
-      "then": {
-        "properties": {
-          "replayConflicts": {
-            "maxItems": 64
-          },
-          "unknownReceipts": {
-            "maxItems": 64
-          },
-          "unresolvedGaps": {
-            "maxItems": 64
-          }
-        }
-      }
-    }
-  ],
   "properties": {
     "after": {
       "maximum": 9007199254740991,
@@ -156,7 +134,6 @@
       "items": {
         "type": "string"
       },
-      "title": "Ambiguousnotices",
       "type": "array"
     },
     "before": {
@@ -186,19 +163,20 @@
       "title": "Cutoff",
       "type": "number"
     },
-    "diagnosticBoundsVersion": {
-      "const": 1
-    },
     "diagnosticOverflow": {
       "$schema": "https://json-schema.org/draft/2020-12/schema",
       "additionalProperties": false,
       "description": "Sticky loss of complete diagnostic coverage, independently for each list.",
       "properties": {
-        "replayConflicts": {
+        "ambiguousNotices": {
           "default": false,
           "type": "boolean"
         },
-        "unknownReceipts": {
+        "faults": {
+          "default": false,
+          "type": "boolean"
+        },
+        "replayConflicts": {
           "default": false,
           "type": "boolean"
         },
@@ -214,7 +192,6 @@
       "items": {
         "type": "string"
       },
-      "title": "Faults",
       "type": "array"
     },
     "floor": {
@@ -332,11 +309,8 @@
       ],
       "title": "Thread"
     },
-    "unknownReceipts": {
-      "items": {
-        "type": "string"
-      },
-      "type": "array"
+    "unknownUsage": {
+      "type": "boolean"
     },
     "unresolvedGaps": {
       "items": {

@@ -234,6 +234,10 @@ const PERSISTED_SCHEMAS: &[(&str, &[u8])] = &[
         include_bytes!("schemas/persisted-budget-state.schema.json"),
     ),
     (
+        "https://codex-studio.invalid/persisted-budget-state-write.schema.json",
+        include_bytes!("schemas/persisted-budget-state-write.schema.json"),
+    ),
+    (
         "https://codex-studio.invalid/persisted-budget-usage.schema.json",
         include_bytes!("schemas/persisted-budget-usage.schema.json"),
     ),
@@ -828,6 +832,10 @@ fn prepare_schemas() -> SchemaResult<CompiledSchemas> {
         (
             "PersistedBudgetState",
             "https://codex-studio.invalid/persisted-budget-state.schema.json",
+        ),
+        (
+            "PersistedBudgetStateWrite",
+            "https://codex-studio.invalid/persisted-budget-state-write.schema.json",
         ),
         (
             "PersistedBudgetUsage",

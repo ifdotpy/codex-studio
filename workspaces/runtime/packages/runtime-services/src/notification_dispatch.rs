@@ -863,6 +863,7 @@ pub fn dispatch_notification_with_effects(
                 if let NotificationPostCommit::Analytics {
                     usage_conflict: rejected,
                     ledger_since,
+                    usage_unknown,
                     ..
                 } = effect
                 {
@@ -875,6 +876,14 @@ pub fn dispatch_notification_with_effects(
                     } else {
                         studio_runtime_schema::usage::ledger::LedgerEpoch::Current
                     };
+                    *usage_unknown = kind == "thread/tokenUsage/updated"
+                        && crate::analytics_capture::unknown_usage_receipt(
+                            transaction,
+                            after
+                                .or(before.as_ref())
+                                .ok_or(NotificationDispatchError::InvalidNotification)?,
+                            params,
+                        )?;
                 }
                 if let NotificationPostCommit::TokenRateAssociation(observation) = effect {
                     enrich_association(transaction, agent_id, observation)?;
@@ -2467,6 +2476,7 @@ mod tests {
                 at,
                 at,
                 crate::analytics_capture::CaptureSource::Rollout,
+                studio_runtime_schema::usage::ledger::LedgerEpoch::Current,
             )
             .expect("recovered usage");
             crate::analytics_capture::capture(&store, prepared)

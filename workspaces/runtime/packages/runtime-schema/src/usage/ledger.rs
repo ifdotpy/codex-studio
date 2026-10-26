@@ -17,6 +17,10 @@ pub const LEGACY_GAP_COVERAGE_ROWS: usize = 256;
 pub const LEDGER_DIAGNOSTIC_ITEMS: usize = 64;
 /// Maximum serialized JSON storage per diagnostic kind; UTF-8 bytes.
 pub const LEDGER_DIAGNOSTIC_BYTES: usize = 16_384;
+/// Maximum native thread identifier length at capture ingress; Unicode characters.
+pub const MAX_NATIVE_THREAD_ID_CHARS: usize = 128;
+/// A durable replay receipt with no known debit; dimensionless row kind.
+pub const UNKNOWN_USAGE_KIND: &str = "unknown";
 
 /// The wire preserves missing (v4), null (v5-created), and migration Unix seconds.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -59,7 +63,8 @@ impl<'de> Deserialize<'de> for LedgerEpoch {
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(default, rename_all = "camelCase", deny_unknown_fields)]
 pub struct LedgerDiagnosticOverflow {
-    pub unknown_receipts: bool,
+    pub ambiguous_notices: bool,
+    pub faults: bool,
     pub unresolved_gaps: bool,
     pub replay_conflicts: bool,
 }
@@ -91,10 +96,19 @@ pub fn budget_state_schema() -> Value {
         "../schemas/persisted-budget-state.schema.json"
     ))
     .expect("budget schema");
-    schema["properties"]["diagnosticBoundsVersion"] = json!({"const":1});
+    schema["properties"]
+        .as_object_mut()
+        .expect("properties")
+        .remove("diagnosticBoundsVersion");
+    schema["properties"]
+        .as_object_mut()
+        .expect("properties")
+        .remove("unknownReceipts");
+    schema["properties"]["unknownUsage"] = json!({"type":"boolean"});
+    schema.as_object_mut().expect("schema").remove("allOf");
     schema["properties"]["diagnosticOverflow"] =
         schemars::schema_for!(LedgerDiagnosticOverflow).to_value();
-    for key in ["unknownReceipts", "unresolvedGaps"] {
+    for key in ["ambiguousNotices", "faults", "unresolvedGaps"] {
         schema["properties"][key] = json!({"type":"array","items":{"type":"string"}});
     }
     let mut conflict = schemars::schema_for!(UsageReplayConflict).to_value();
@@ -113,12 +127,46 @@ pub fn budget_state_schema() -> Value {
         .expect("schema object")
         .remove("$schema");
     schema["properties"]["replayConflicts"] = json!({"type":"array", "items":conflict});
-    schema["allOf"] = json!([{"if":{"required":["diagnosticBoundsVersion"]},"then":{"properties":{
-        "unknownReceipts":{"maxItems":LEDGER_DIAGNOSTIC_ITEMS},
-        "unresolvedGaps":{"maxItems":LEDGER_DIAGNOSTIC_ITEMS},
-        "replayConflicts":{"maxItems":LEDGER_DIAGNOSTIC_ITEMS}
-    }}}]);
     schema
+}
+
+/// Strict output constraints; legacy reads remain available for bounded normalization.
+pub fn budget_state_write_schema() -> Value {
+    let mut schema = budget_state_schema();
+    for key in [
+        "ambiguousNotices",
+        "faults",
+        "unresolvedGaps",
+        "replayConflicts",
+    ] {
+        schema["properties"][key]["maxItems"] = json!(LEDGER_DIAGNOSTIC_ITEMS);
+    }
+    schema
+}
+
+/// Generated ingress schema keeps native identity size with its owner.
+pub fn budget_capture_schema() -> Value {
+    let mut schema: Value =
+        serde_json::from_str(include_str!("../schemas/budget-capture.schema.json"))
+            .expect("capture schema");
+    schema["properties"]["threadId"]["maxLength"] = json!(MAX_NATIVE_THREAD_ID_CHARS);
+    schema
+}
+
+/// Unknown rows are zero-token replay receipts, never accounting evidence.
+pub fn budget_usage_schema() -> Value {
+    let mut schema: Value = serde_json::from_str(include_str!(
+        "../schemas/persisted-budget-usage.schema.json"
+    ))
+    .expect("usage schema");
+    schema["properties"]["kind"]["enum"] = json!(["response", "notice", UNKNOWN_USAGE_KIND]);
+    schema["allOf"] = json!([{"if":{"properties":{"kind":{"const":UNKNOWN_USAGE_KIND}},"required":["kind"]},"then":{"properties":{"tokens":{"const":0},"details":{"type":"null"},"breakdown":{"type":"null"}}}}]);
+    schema
+}
+
+/// An unknown receipt is immutable because its primary key is the accounting facts.
+pub fn receipt_replay(kind: &str) -> Option<UsageCorrection> {
+    (kind == UNKNOWN_USAGE_KIND).then_some(UsageCorrection::Replay)
 }
 
 /// Whether the budget knows every unresolved response identity.

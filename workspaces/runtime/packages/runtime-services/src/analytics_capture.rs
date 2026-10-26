@@ -65,6 +65,7 @@ pub struct PreparedCapture {
     legacy_usage: Option<LegacyUsageTotals>,
     rejected_usage: Option<studio_runtime_schema::usage::ledger::UsageReplayConflict>,
     ledger_since: studio_runtime_schema::usage::ledger::LedgerEpoch,
+    usage_unknown: bool,
 }
 impl PreparedCapture {
     pub fn event(
@@ -74,6 +75,7 @@ impl PreparedCapture {
         at: f64,
         recorded_at: f64,
         source: CaptureSource,
+        ledger_since: studio_runtime_schema::usage::ledger::LedgerEpoch,
     ) -> Result<Self, CaptureError> {
         CaptureTable::Agents.validate(agent)?;
         Self::event_validated(
@@ -83,6 +85,7 @@ impl PreparedCapture {
             at,
             recorded_at,
             source,
+            ledger_since,
         )
     }
 
@@ -92,6 +95,7 @@ impl PreparedCapture {
         params: &Value,
         at: f64,
         recorded_at: f64,
+        ledger_since: studio_runtime_schema::usage::ledger::LedgerEpoch,
     ) -> Result<Self, CaptureError> {
         Self::event_validated(
             Arc::new(agent.clone()),
@@ -100,6 +104,7 @@ impl PreparedCapture {
             at,
             recorded_at,
             CaptureSource::Live,
+            ledger_since,
         )
     }
 
@@ -110,9 +115,10 @@ impl PreparedCapture {
         at: f64,
         recorded_at: f64,
         source: CaptureSource,
+        ledger_since: studio_runtime_schema::usage::ledger::LedgerEpoch,
     ) -> Result<Self, CaptureError> {
         CaptureTable::Agents.validate(&agent)?;
-        Self::event_validated(agent, method, params, at, recorded_at, source)
+        Self::event_validated(agent, method, params, at, recorded_at, source, ledger_since)
     }
 
     fn event_validated(
@@ -122,6 +128,7 @@ impl PreparedCapture {
         at: f64,
         recorded_at: f64,
         source: CaptureSource,
+        ledger_since: studio_runtime_schema::usage::ledger::LedgerEpoch,
     ) -> Result<Self, CaptureError> {
         if !params.is_object() {
             return Err(CaptureError::Invalid("/params"));
@@ -167,7 +174,8 @@ impl PreparedCapture {
             usage,
             legacy_usage,
             rejected_usage: None,
-            ledger_since: studio_runtime_schema::usage::ledger::LedgerEpoch::Current,
+            ledger_since,
+            usage_unknown: false,
         })
     }
     pub(crate) fn apply_budget_conflicts(
@@ -194,14 +202,22 @@ impl PreparedCapture {
         params: &Value,
         at: f64,
         recorded_at: f64,
+        ledger_since: studio_runtime_schema::usage::ledger::LedgerEpoch,
     ) -> Result<Self, CaptureError> {
-        Self::model_payload_shared(Arc::new(agent.clone()), params, at, recorded_at)
+        Self::model_payload_shared(
+            Arc::new(agent.clone()),
+            params,
+            at,
+            recorded_at,
+            ledger_since,
+        )
     }
     pub(crate) fn model_payload_shared(
         agent: Arc<Value>,
         params: &Value,
         at: f64,
         recorded_at: f64,
+        ledger_since: studio_runtime_schema::usage::ledger::LedgerEpoch,
     ) -> Result<Self, CaptureError> {
         let mut result = Self::event_shared(
             agent,
@@ -210,6 +226,7 @@ impl PreparedCapture {
             at,
             recorded_at,
             CaptureSource::Rollout,
+            ledger_since,
         )?;
         result.model = true;
         let kind = params["type"].as_str().unwrap_or("unknown");
@@ -244,6 +261,15 @@ impl PreparedCapture {
             }
         }
         Ok(result)
+    }
+    pub(crate) fn bind_budget(
+        &mut self,
+        canvas: &Connection,
+        epoch: studio_runtime_schema::usage::ledger::LedgerEpoch,
+    ) -> Result<(), CaptureError> {
+        self.ledger_since = epoch;
+        self.usage_unknown = unknown_usage_receipt(canvas, &self.agent, &self.params)?;
+        Ok(())
     }
     fn legacy_counter_era(&self) -> bool {
         (matches!(self.usage, Some(UsageObservation::Cumulative { .. }))
@@ -574,6 +600,48 @@ impl CaptureDecision {
         Ok(())
     }
 }
+/// Primary-key-only lookup of durable zero-debit replay protection.
+pub(crate) fn unknown_usage_receipt(
+    canvas: &Connection,
+    agent: &Value,
+    params: &Value,
+) -> Result<bool, StoreError> {
+    let provider = usage_provider(agent);
+    let key = match parse_token_usage(provider, params) {
+        Ok(observation @ UsageObservation::Cumulative { .. }) => Some(
+            UsageLedgerRow::capture(
+                text(&agent["id"]),
+                params["threadId"]
+                    .as_str()
+                    .or_else(|| agent["threadId"].as_str()),
+                observation,
+            )
+            .observation_key(),
+        ),
+        _ => parse_legacy_totals(provider, params)
+            .ok()
+            .filter(|legacy| legacy.response_id.is_none())
+            .map(|legacy| {
+                studio_runtime_schema::usage::ledger::legacy_counter_observation_key(
+                    text(&agent["id"]),
+                    params["threadId"]
+                        .as_str()
+                        .or_else(|| agent["threadId"].as_str()),
+                    &legacy,
+                )
+            }),
+    };
+    key.map(|key| {
+        studio_runtime_store::budget::BudgetRepository::usage(canvas, &key).map(|row| {
+            row.is_some_and(|row| {
+                row.kind == studio_runtime_schema::usage::ledger::UNKNOWN_USAGE_KIND
+            })
+        })
+    })
+    .transpose()
+    .map(|found| found.unwrap_or(false))
+}
+
 pub async fn capture(
     store: &RuntimeStore,
     mut prepared: PreparedCapture,
@@ -585,7 +653,12 @@ pub async fn capture(
                 canvas,
                 text(&prepared.agent["id"]),
             )?;
-            let decision = decide(CaptureSnapshot::load(tx, std::sync::Arc::new(prepared))?)?;
+            let epoch = prepared.ledger_since;
+            prepared.bind_budget(canvas, epoch)?;
+            let decision = decide(
+                CaptureSnapshot::load(tx, std::sync::Arc::new(prepared))?,
+                epoch,
+            )?;
             decision.apply(tx)?;
             Ok(decision)
         })
@@ -612,12 +685,17 @@ pub(crate) fn capture_logged_effect(
         .agent
         .as_ref()
         .ok_or(CaptureError::Invalid("/agent"))?;
+    let epoch = match effect {
+        Effect::Analytics { ledger_since, .. } => *ledger_since,
+        _ => studio_runtime_schema::usage::ledger::LedgerEpoch::Current,
+    };
     let mut prepared = PreparedCapture::notification_event(
         agent,
         &observation.method,
         &observation.params,
         observation.observed_at,
         observation.observed_at,
+        epoch,
     )?;
     if let Effect::Analytics {
         usage_conflict: Some(conflict),
@@ -626,11 +704,20 @@ pub(crate) fn capture_logged_effect(
     {
         prepared.rejected_usage = Some((**conflict).clone());
     }
-    if let Effect::Analytics { ledger_since, .. } = effect {
+    if let Effect::Analytics {
+        ledger_since,
+        usage_unknown,
+        ..
+    } = effect
+    {
         prepared.ledger_since = *ledger_since;
+        prepared.usage_unknown = *usage_unknown;
     }
     let prepared = std::sync::Arc::new(prepared);
-    let mut decision = decide(CaptureSnapshot::load(tx, std::sync::Arc::clone(&prepared))?)?;
+    let mut decision = decide(
+        CaptureSnapshot::load(tx, std::sync::Arc::clone(&prepared))?,
+        prepared.ledger_since,
+    )?;
     if let Some(metrics) = metrics {
         apply_stream_metrics(&mut decision, &prepared, metrics);
     }
@@ -845,7 +932,13 @@ pub(crate) fn check_identity(canvas: &Connection, agent: &Value) -> Result<(), C
     }
     Ok(())
 }
-pub fn decide(snapshot: CaptureSnapshot) -> Result<CaptureDecision, CaptureError> {
+pub fn decide(
+    snapshot: CaptureSnapshot,
+    epoch: studio_runtime_schema::usage::ledger::LedgerEpoch,
+) -> Result<CaptureDecision, CaptureError> {
+    if snapshot.prepared.ledger_since != epoch {
+        return Err(CaptureError::Invalid("/ledgerEpoch"));
+    }
     let CaptureSnapshot {
         prepared: q,
         mut meta,
@@ -989,11 +1082,12 @@ pub fn decide(snapshot: CaptureSnapshot) -> Result<CaptureDecision, CaptureError
             legacy_usage: q.legacy_usage.clone(),
             rejected_usage: q.rejected_usage.clone(),
             ledger_since: q.ledger_since,
+            usage_unknown: q.usage_unknown,
         };
-        let recursive = decide(CaptureSnapshot::from_records(
-            std::sync::Arc::new(next),
-            rows,
-        )?)?;
+        let recursive = decide(
+            CaptureSnapshot::from_records(std::sync::Arc::new(next), rows)?,
+            q.ledger_since,
+        )?;
         result.rows.extend(
             recursive
                 .rows
@@ -1410,6 +1504,12 @@ fn old_legacy_usage_key(meta: &Value, legacy: &LegacyUsageTotals, params: &Value
     hash(&identity)
 }
 fn usage(q: &PreparedCapture, meta: &mut Value, rows: &CaptureRows, out: &mut CaptureDecision) {
+    if q.usage_unknown {
+        out.unknown_usage = Some(
+            json!({"agent":meta["agentId"],"observationKey":q.usage.as_ref().map(|observation|UsageLedgerRow::capture(text(&meta["agentId"]),meta["threadId"].as_str(),observation.clone()).observation_key()).or_else(||q.legacy_usage.as_ref().map(|legacy|legacy_usage_key(meta,legacy,&q.params))),"fault":studio_runtime_schema::usage::ledger::UNKNOWN_USAGE_RECEIPT}),
+        );
+        return;
+    }
     if let Some(conflict) = &q.rejected_usage {
         out.response_replay_conflict = true;
         out.usage_conflict = Some(conflict.clone());
@@ -1620,7 +1720,12 @@ pub async fn capture_batch(
                         canvas,
                         text(&prepared.agent["id"]),
                     )?;
-                let decision = decide(CaptureSnapshot::load(tx, std::sync::Arc::new(prepared))?)?;
+                let epoch = prepared.ledger_since;
+                prepared.bind_budget(canvas, epoch)?;
+                let decision = decide(
+                    CaptureSnapshot::load(tx, std::sync::Arc::new(prepared))?,
+                    epoch,
+                )?;
                 decision.apply(tx)?;
                 if let Some(effect) = decision.response_rate {
                     effects.push(effect)
@@ -1661,10 +1766,11 @@ mod usage_contract_tests {
     #[test]
     fn typed_usage_legacy_claude_totals_are_preserved_without_invented_categories() {
         let agent = json!({"id":"agent","name":"Agent","rootId":"root","provider":"claude","threadId":"thread"});
-        let prepared=PreparedCapture::event(&agent,"thread/tokenUsage/updated",&json!({"threadId":"thread","tokenUsage":{"total":{"totalTokens":23},"last":{"totalTokens":7}}}),1.0,2.0,CaptureSource::Live).expect("supported pre-contract notification");
+        let prepared=PreparedCapture::event(&agent,"thread/tokenUsage/updated",&json!({"threadId":"thread","tokenUsage":{"total":{"totalTokens":23},"last":{"totalTokens":7}}}),1.0,2.0,CaptureSource::Live, studio_runtime_schema::usage::ledger::LedgerEpoch::Current).expect("supported pre-contract notification");
         let decision = decide(
             CaptureSnapshot::from_records(Arc::new(prepared), CaptureRows::default())
                 .expect("snapshot"),
+            studio_runtime_schema::usage::ledger::LedgerEpoch::Current,
         )
         .expect("legacy capture");
         let row = &decision
@@ -1693,6 +1799,7 @@ mod usage_contract_tests {
                     1.0,
                     2.0,
                     CaptureSource::Live,
+                    studio_runtime_schema::usage::ledger::LedgerEpoch::Current,
                 )
                 .expect("input"),
             )
@@ -1700,6 +1807,7 @@ mod usage_contract_tests {
         let first = decide(
             CaptureSnapshot::from_records(prepare(observation.clone()), CaptureRows::default())
                 .expect("snapshot"),
+            studio_runtime_schema::usage::ledger::LedgerEpoch::Current,
         )
         .expect("first");
         let row = first
@@ -1718,6 +1826,7 @@ mod usage_contract_tests {
                     },
                 )
                 .expect("replay snapshot"),
+                studio_runtime_schema::usage::ledger::LedgerEpoch::Current,
             )
             .expect("replay")
         };
@@ -1765,11 +1874,16 @@ mod usage_contract_tests {
             1.0,
             2.0,
             CaptureSource::Live,
+            studio_runtime_schema::usage::ledger::LedgerEpoch::Current,
         )
         .expect("capture input");
         let snapshot = CaptureSnapshot::from_records(Arc::new(prepared), CaptureRows::default())
             .expect("snapshot");
-        let decision = decide(snapshot).expect("capture decision");
+        let decision = decide(
+            snapshot,
+            studio_runtime_schema::usage::ledger::LedgerEpoch::Current,
+        )
+        .expect("capture decision");
         let row = &decision
             .rows
             .iter()

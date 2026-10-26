@@ -142,11 +142,21 @@ cannot change the accounting identity.
 The journal preserves three epoch states end to end: an absent field marks a
 v4 effect as legacy, explicit null marks a v5-created ledger, and a number is
 the migration time. Projection needs no budget lookup to interpret an old effect.
-Budget diagnostics retain at most 64 entries and 16 KiB of JSON per kind,
-owned by runtime-schema. If a list overflows, a durable flag keeps its fault
-sticky even after the retained subset resolves. Gap overflow also makes coverage
-unknown. Older unbounded rows are reduced lazily; no import is blocked by adding
-a diagnostic to a near-limit record.
+Unknown accounting facts receive a durable zero-debit budget receipt under the
+canonical accounting key: kind `unknown`, zero tokens and no fabricated typed
+categories. Replay checks this receipt before legacy ownership checks, including
+a later post-epoch replay. Unknown receipts never enter analytics accounting,
+pricing or response-token aggregates. The unknown-usage fault stays sticky.
+Budget diagnostics retain at most 64 entries and 16 KiB of JSON for each of
+faults, ambiguous notices, unresolved gaps and replay conflicts. Runtime-schema
+owns both limits. Overflow keeps accounting provisional even after the retained
+subset resolves; gap overflow also makes coverage unknown. Replay protection
+lives in receipt rows and is never truncated with diagnostic presentation.
+The read schema accepts older rows; every write normalizes lists and checks the
+stricter generated write schema. This needs no version marker or startup rebuild.
+Native thread ids are bounded at capture ingress by the runtime-schema owner.
+Every prepared capture and decision requires an explicit ledger epoch. History
+commit binds it from the same durable snapshot used to validate the batch.
 Old gap coverage remains explicitly unknown when no authoritative complete
 old-era inventory exists. A bounded search can establish known pre-ledger gap
 identities, but available rows alone cannot prove that no other gap was erased.

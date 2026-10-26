@@ -63,6 +63,29 @@ pub(crate) fn log_effect(
             studio_runtime_schema::usage::ledger::LedgerEpoch::Current
         };
     }
+    if let NotificationPostCommit::Analytics {
+        observation,
+        usage_unknown,
+        ..
+    } = &mut effect
+    {
+        *usage_unknown = if observation.method == "thread/tokenUsage/updated" {
+            observation
+                .agent
+                .as_ref()
+                .map(|agent| {
+                    crate::analytics_capture::unknown_usage_receipt(
+                        canvas,
+                        agent,
+                        &observation.params,
+                    )
+                })
+                .transpose()?
+                .unwrap_or(false)
+        } else {
+            false
+        };
+    }
     let observation = match &effect {
         NotificationPostCommit::Analytics { observation, .. }
         | NotificationPostCommit::AnalyticsStream { observation, .. } => observation,
@@ -277,6 +300,7 @@ mod tests {
             budget_capture_value: None,
             usage_conflict: None,
             ledger_since: Default::default(),
+            usage_unknown: false,
         }
     }
 
@@ -442,6 +466,7 @@ mod tests {
                 observation.observed_at,
                 observation.observed_at,
                 crate::analytics_capture::CaptureSource::Live,
+                studio_runtime_schema::usage::ledger::LedgerEpoch::Current,
             )
             .expect("prepare direct capture");
             crate::analytics_capture::capture(&direct_store, prepared)

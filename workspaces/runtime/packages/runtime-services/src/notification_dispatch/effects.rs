@@ -161,6 +161,8 @@ pub enum NotificationPostCommit {
             skip_serializing_if = "studio_runtime_schema::usage::ledger::LedgerEpoch::is_legacy"
         )]
         ledger_since: studio_runtime_schema::usage::ledger::LedgerEpoch,
+        #[serde(default)]
+        usage_unknown: bool,
     },
     AnalyticsStream {
         observation: NotificationObservation,

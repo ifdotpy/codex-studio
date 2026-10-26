@@ -279,6 +279,7 @@ mod usage_contract_tests {
                 budget_capture_value: None,
                 usage_conflict: conflict.map(Box::new),
                 ledger_since: Default::default(),
+                usage_unknown: false,
             };
             store
                 .transaction(move |tx| {
@@ -304,6 +305,7 @@ mod usage_contract_tests {
                 at,
                 at,
                 crate::analytics_capture::CaptureSource::Rollout,
+                studio_runtime_schema::usage::ledger::LedgerEpoch::Current,
             )
             .expect("prepare");
             prepared.apply_budget_conflicts(&conflict.into_iter().collect::<Vec<_>>());
@@ -655,6 +657,7 @@ mod usage_contract_tests {
             budget_capture_value: None,
             usage_conflict: None,
             ledger_since: Default::default(),
+            usage_unknown: false,
         };
         let mut old = serde_json::to_value(effect).expect("serialize");
         old["Analytics"]
@@ -756,64 +759,6 @@ mod usage_contract_tests {
     }
 
     #[tokio::test]
-    async fn typed_usage_ledger_era_unknown_diagnostics_cannot_exhaust_record() {
-        let (_temp, store, agent) = ledger_store("codex").await;
-        let _params = era_old_typed(&store, &agent).await;
-        let hashes = (0..15_646).map(|i| format!("{i:064x}")).collect::<Vec<_>>();
-        let mut state = json!({"cutoff":0,"ledgerSince":100,"floor":10,"spent":10,"before":0,"after":0,"historicalNotices":10,"noticeSpent":0,"counter":null,"thread":null,"noticeAt":0,"created":0,"lastAmount":null,"ambiguousNotices":[],"faults":[],"unknownReceipts":hashes});
-        let padding = 1_048_572 - state.to_string().len() - r#""padding":"","#.len();
-        state["padding"] = json!("x".repeat(padding));
-        assert_eq!(state.to_string().len(), 1_048_572);
-        store
-            .transaction(move |tx| {
-                tx.execute("UPDATE runtime_budget SET record=?1", [state.to_string()])?;
-                Ok(())
-            })
-            .await
-            .expect("valid near-limit state");
-        let mut missed = counter_params();
-        missed["turnId"] = json!("unmatched-turn");
-        ledger_capture(
-            &store,
-            &agent,
-            missed,
-            crate::budget::CaptureSource::History,
-            1.,
-        )
-        .await;
-        assert_eq!(ledger_tokens(&store).await, 10);
-        let state = era_state(&store).await;
-        assert!(state.to_string().len() < 65_536);
-        assert_eq!(state["diagnosticOverflow"]["unknownReceipts"], true);
-        assert!(
-            state["faults"]
-                .as_array()
-                .expect("faults")
-                .contains(&json!("unknownUsageReceipt"))
-        );
-        store.transaction(|tx| {
-            tx.execute("UPDATE runtime_budget SET record=json_set(record,'$.unknownReceipts',json('[]'))", [])?;
-            Ok(())
-        }).await.expect("retained diagnostics resolved");
-        for _ in 0..2 {
-            ledger_capture(
-                &store,
-                &agent,
-                ledger_response("live", 1),
-                crate::budget::CaptureSource::Live,
-                200.,
-            )
-            .await;
-        }
-        assert!(
-            era_state(&store).await["faults"]
-                .as_array()
-                .expect("sticky faults")
-                .contains(&json!("unknownUsageReceipt"))
-        );
-    }
-
-    #[tokio::test]
     async fn typed_usage_ledger_era_gap_and_conflict_overflow_survive_restart() {
         for gaps in [true, false] {
             let (temp, store, agent) = ledger_store("claude").await;
@@ -826,10 +771,6 @@ mod usage_contract_tests {
             )
             .await;
             let mut state = era_state(&store).await;
-            state
-                .as_object_mut()
-                .expect("pre-bound state")
-                .remove("diagnosticBoundsVersion");
             if gaps {
                 state["unresolvedGaps"] =
                     json!((0..1000).map(|i| format!("{i:064x}")).collect::<Vec<_>>());
@@ -886,6 +827,272 @@ mod usage_contract_tests {
                     }))
             );
         }
+    }
+
+    #[tokio::test]
+    async fn typed_usage_ledger_delta5_unknown_receipt_keeps_every_accounting_identity() {
+        let (temp, store, agent) = ledger_store("codex").await;
+        let base = era_old_typed(&store, &agent).await;
+        let mut first = None;
+        let mut last = base.clone();
+        for index in 0..=studio_runtime_schema::usage::ledger::LEDGER_DIAGNOSTIC_ITEMS {
+            let mut missed = base.clone();
+            missed["studioUsage"]["turnId"] = json!(format!("unknown-{index}"));
+            if first.is_none() {
+                first = Some(missed.clone());
+            }
+            last = missed.clone();
+            ledger_capture(
+                &store,
+                &agent,
+                missed,
+                crate::budget::CaptureSource::History,
+                1.,
+            )
+            .await;
+        }
+        assert_eq!(ledger_tokens(&store).await, 10);
+        drop(store);
+        let store = RuntimeStore::open(Some(temp.path()))
+            .await
+            .expect("restart unknown replay receipts");
+        ledger_capture(
+            &store,
+            &agent,
+            first.expect("retained control"),
+            crate::budget::CaptureSource::History,
+            200.,
+        )
+        .await;
+        assert_eq!(ledger_tokens(&store).await, 10, "retained unknown control");
+        ledger_capture(
+            &store,
+            &agent,
+            last,
+            crate::budget::CaptureSource::History,
+            200.,
+        )
+        .await;
+        assert_eq!(
+            ledger_tokens(&store).await,
+            10,
+            "a dropped diagnostic must never lose replay protection"
+        );
+        assert_eq!(
+            era_analytics_rows(&store).await,
+            1,
+            "unknown replays create no analytics accounting effect"
+        );
+        let state = era_state(&store).await;
+        assert!(state.get("unknownReceipts").is_none());
+        assert!(state.to_string().len() < 65_536);
+    }
+
+    async fn delta5_large_existing_list_does_not_stall(field: &str) {
+        let (_temp, store, agent) = ledger_store("codex").await;
+        let base = era_old_typed(&store, &agent).await;
+        let mut state = json!({"cutoff":0,"ledgerSince":100,"floor":10,"spent":10,"before":0,"after":0,"historicalNotices":10,"noticeSpent":0,"counter":null,"thread":null,"noticeAt":0,"created":0,"lastAmount":null,"ambiguousNotices":[],"faults":[],"diagnosticBoundsVersion":1});
+        state[field] = json!((0..15_644).map(|i| format!("{i:064x}")).collect::<Vec<_>>());
+        let padding = 1_048_523 - state.to_string().len() - r#""padding":"","#.len();
+        state["padding"] = json!("x".repeat(padding));
+        assert_eq!(state.to_string().len(), 1_048_523);
+        store
+            .transaction(move |tx| {
+                tx.execute("UPDATE runtime_budget SET record=?1", [state.to_string()])?;
+                Ok(())
+            })
+            .await
+            .expect("valid existing near-limit list");
+        let mut missed = base;
+        missed["studioUsage"]["turnId"] = json!("unmatched-turn");
+        ledger_capture(
+            &store,
+            &agent,
+            missed,
+            crate::budget::CaptureSource::History,
+            1.,
+        )
+        .await;
+        assert_eq!(ledger_tokens(&store).await, 10);
+        let state = era_state(&store).await;
+        assert!(
+            state[field].as_array().expect("bounded list").len()
+                <= studio_runtime_schema::usage::ledger::LEDGER_DIAGNOSTIC_ITEMS
+        );
+        assert!(state.to_string().len() < 65_536);
+        assert_eq!(state["diagnosticOverflow"][field], true);
+        let accounting = store.transaction(|tx| Ok(studio_runtime_store::budget::BudgetRepository::agent(tx,"agent")?["tokenUsageAccounting"].clone())).await.expect("accounting");
+        assert_eq!(accounting, "provisional");
+    }
+
+    #[tokio::test]
+    async fn typed_usage_ledger_delta5_ambiguous_notice_boundary_stays_writable() {
+        delta5_large_existing_list_does_not_stall("ambiguousNotices").await;
+    }
+
+    #[tokio::test]
+    async fn typed_usage_ledger_delta5_fault_boundary_stays_writable() {
+        delta5_large_existing_list_does_not_stall("faults").await;
+    }
+
+    #[tokio::test]
+    async fn typed_usage_ledger_delta5_scalar_unknown_is_durable_and_non_accounting() {
+        let (temp, store, agent) = ledger_store("claude").await;
+        let base = json!({"threadId":"thread","turnId":"known","tokenUsage":{"total":{"totalTokens":10},"last":{"totalTokens":10}}});
+        ledger_capture(
+            &store,
+            &agent,
+            base.clone(),
+            crate::budget::CaptureSource::History,
+            1.,
+        )
+        .await;
+        store
+            .transaction(|tx| {
+                tx.execute(
+                    "UPDATE runtime_budget SET record=json_set(record,'$.ledgerSince',100)",
+                    [],
+                )?;
+                Ok(())
+            })
+            .await
+            .expect("legacy era");
+        let mut missed = base;
+        missed["turnId"] = json!("unknown");
+        ledger_capture(
+            &store,
+            &agent,
+            missed.clone(),
+            crate::budget::CaptureSource::History,
+            1.,
+        )
+        .await;
+        drop(store);
+        let store = RuntimeStore::open(Some(temp.path()))
+            .await
+            .expect("restart");
+        ledger_capture(
+            &store,
+            &agent,
+            missed.clone(),
+            crate::budget::CaptureSource::History,
+            200.,
+        )
+        .await;
+        ledger_capture(
+            &store,
+            &agent,
+            missed,
+            crate::budget::CaptureSource::Live,
+            201.,
+        )
+        .await;
+        assert_eq!(ledger_tokens(&store).await, 10);
+        assert_eq!(era_analytics_rows(&store).await, 1);
+        store.transaction(|tx| {
+            let row:(String,i64,Option<String>,Option<String>)=tx.query_row("SELECT kind,tokens,details,breakdown FROM runtime_budget_usage WHERE kind='unknown'",[],|row|Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?)))?;
+            assert_eq!(row,("unknown".into(),0,None,None));
+            assert_eq!(studio_runtime_store::budget::BudgetRepository::response_tokens(tx,"agent")?,0);
+            Ok(())
+        }).await.expect("zero-token scalar receipt and aggregate");
+        let state = era_state(&store).await;
+        assert!(state.get("unknownReceipts").is_none());
+        assert_eq!(state["unknownUsage"], true);
+        assert!(
+            state["faults"]
+                .as_array()
+                .expect("faults")
+                .contains(&json!("unknownUsageReceipt"))
+        );
+    }
+
+    #[test]
+    fn typed_usage_ledger_delta5_thread_input_bound_has_one_owner() {
+        let limit = studio_runtime_schema::usage::ledger::MAX_NATIVE_THREAD_ID_CHARS;
+        for (len, valid) in [(limit, true), (limit + 1, false)] {
+            let mut params = counter_params();
+            params["threadId"] = json!("x".repeat(len));
+            assert_eq!(
+                studio_runtime_schema::first_error("BudgetCapture", &params)
+                    .expect("validator")
+                    .is_none(),
+                valid
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn typed_usage_ledger_delta5_history_batch_binds_durable_epoch() {
+        use crate::analytics_history::{self, BatchLimits, HistorySnapshot, RolloutPath};
+        let (temp, store, agent) = ledger_store("codex").await;
+        era_old_typed(&store, &agent).await;
+        let path = temp.path().join("epoch-history.jsonl");
+        let native = json!({"input_tokens":10,"cached_input_tokens":0,"output_tokens":0,"reasoning_output_tokens":0,"total_tokens":10});
+        let records = [
+            json!({"type":"session_meta","timestamp":"1970-01-01T00:00:01Z","payload":{"id":"thread"}}),
+            json!({"type":"turn_context","timestamp":"1970-01-01T00:00:01Z","payload":{"turn_id":"turn","model":"gpt-test"}}),
+            json!({"type":"event_msg","timestamp":"1970-01-01T00:00:01Z","payload":{"type":"token_count","info":{"total_token_usage":native,"last_token_usage":native,"model_context_window":200000}}}),
+        ];
+        std::fs::write(
+            &path,
+            records
+                .iter()
+                .map(|v| v.to_string() + "\n")
+                .collect::<String>(),
+        )
+        .expect("native history");
+        let batch = analytics_history::prepare(
+            HistorySnapshot::from_records(
+                agent,
+                None,
+                studio_runtime_schema::usage::ledger::LedgerEpoch::Current,
+            )
+            .expect("snapshot"),
+            temp.path(),
+            RolloutPath::Found(path),
+            BatchLimits::default(),
+            200.,
+            &std::sync::atomic::AtomicBool::new(false),
+        )
+        .expect("real history prepare");
+        let sink = analytics_history::StoreHistoryBudgetSink::new(&store);
+        batch
+            .commit(&store, &sink, 200.)
+            .await
+            .expect("history commit");
+        assert_eq!(ledger_tokens(&store).await, 10);
+        assert_eq!(
+            era_analytics_rows(&store).await,
+            1,
+            "HistoryBatch must honor the durable ledger epoch"
+        );
+    }
+
+    #[tokio::test]
+    async fn typed_usage_ledger_delta5_v4_boundary_migration_stays_writable() {
+        let (_temp, store, _agent) = ledger_store("codex").await;
+        let state = json!({"cutoff":0,"floor":10,"spent":10,"before":0,"after":0,"historicalNotices":10,"noticeSpent":0,"counter":null,"thread":null,"noticeAt":0,"created":0,"lastAmount":null,"ambiguousNotices":(0..15_646).map(|i|format!("{i:064x}")).collect::<Vec<_>>(),"faults":[]});
+        assert_eq!(state.to_string().len(), 1_048_481);
+        store
+            .transaction(move |tx| {
+                tx.execute(
+                    "INSERT INTO runtime_budget(id,record) VALUES('agent',?1)",
+                    [state.to_string()],
+                )?;
+                Ok(())
+            })
+            .await
+            .expect("real v4 state");
+        store
+            .transaction_with(|tx| {
+                crate::budget_service::status(tx, "agent", &Default::default(), false, 100.)
+            })
+            .await
+            .expect("bounded O(1) migration");
+        let state = era_state(&store).await;
+        assert!(state.to_string().len() < 65_536);
+        assert_eq!(state["ledgerSince"], 100.);
+        assert_eq!(state["diagnosticOverflow"]["ambiguousNotices"], true);
     }
 
     #[tokio::test]

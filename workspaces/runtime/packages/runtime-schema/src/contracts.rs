@@ -974,6 +974,27 @@ pub fn render(root: &Path, with_api_types: bool) -> Result<Vec<Rendered>, String
         path: "workspaces/runtime/packages/runtime-schema/src/schemas/persisted-budget-state.schema.json".into(),
         text: serde_json::to_string_pretty(&crate::usage::ledger::budget_state_schema()).map_err(|error| error.to_string())? + "\n",
     });
+    for (path, schema) in [
+        (
+            "persisted-budget-state-write",
+            crate::usage::ledger::budget_state_write_schema(),
+        ),
+        (
+            "persisted-budget-usage",
+            crate::usage::ledger::budget_usage_schema(),
+        ),
+        (
+            "budget-capture",
+            crate::usage::ledger::budget_capture_schema(),
+        ),
+    ] {
+        rendered.push(Rendered {
+            path: format!(
+                "workspaces/runtime/packages/runtime-schema/src/schemas/{path}.schema.json"
+            ),
+            text: serde_json::to_string_pretty(&schema).map_err(|error| error.to_string())? + "\n",
+        });
+    }
     let usage_schema = schemars::schema_for!(crate::usage::UsageObservation).to_value();
     rendered.push(Rendered {
         path:

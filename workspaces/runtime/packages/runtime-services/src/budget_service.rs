@@ -210,6 +210,17 @@ fn capture_into(
         let mut ownership_unknown = false;
         for key in observation.receipt_candidates() {
             if let Some(row) = BudgetRepository::usage(tx, key)? {
+                if row.kind == studio_runtime_schema::usage::ledger::UNKNOWN_USAGE_KIND
+                    && Some(row.id.as_str()) == observation.unknown_key()
+                {
+                    if row.agent != snapshot.agent_id() {
+                        return Err(BudgetError::Invalid("runtime_budget_usage/identity".into()));
+                    }
+                    receipts.clear();
+                    receipts.push(row);
+                    ownership_unknown = false;
+                    break;
+                }
                 ownership_unknown |= observation.needs_receipt_ownership(&row);
                 if observation.accepts_receipt(&row)
                     && !receipts

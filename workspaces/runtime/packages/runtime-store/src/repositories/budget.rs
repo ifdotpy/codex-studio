@@ -194,6 +194,19 @@ fn validate_usage(value: &Value) -> StoreResult<()> {
     let row = serde_json::from_value::<BudgetUsageRow>(value.clone()).map_err(|error| {
         StoreError::SchemaMismatch(format!("invalid runtime_budget_usage/breakdown: {error}"))
     })?;
+    if row.kind == studio_runtime_schema::usage::ledger::UNKNOWN_USAGE_KIND {
+        if row.tokens != 0
+            || row.details.is_some()
+            || row.breakdown.is_some()
+            || row.id.len() != 64
+            || !row.id.bytes().all(|b| b.is_ascii_hexdigit())
+        {
+            return Err(StoreError::SchemaMismatch(
+                "invalid unknown usage receipt".into(),
+            ));
+        }
+        return Ok(());
+    }
     if let Some(details) = &row.details {
         use studio_runtime_schema::usage::{UsageObservation, ledger::UsageIdentity};
         let ledger = &details.ledger;

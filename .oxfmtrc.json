@@ -12,6 +12,9 @@
     "workspaces/runtime/packages/runtime-schema/src/schemas/usage-observation.schema.json",
     "workspaces/runtime/packages/runtime-schema/src/schemas/analytics-usage.schema.json",
     "workspaces/runtime/packages/runtime-schema/src/schemas/analytics-notice.schema.json",
-    "workspaces/runtime/packages/runtime-schema/src/schemas/persisted-budget-state.schema.json"
+    "workspaces/runtime/packages/runtime-schema/src/schemas/persisted-budget-state.schema.json",
+    "workspaces/runtime/packages/runtime-schema/src/schemas/persisted-budget-state-write.schema.json",
+    "workspaces/runtime/packages/runtime-schema/src/schemas/persisted-budget-usage.schema.json",
+    "workspaces/runtime/packages/runtime-schema/src/schemas/budget-capture.schema.json"
   ]
 }

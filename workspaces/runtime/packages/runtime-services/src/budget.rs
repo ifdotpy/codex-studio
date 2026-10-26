@@ -68,7 +68,7 @@ pub struct BudgetState {
     #[serde(default)]
     diagnostic_overflow: LedgerDiagnosticOverflow,
     #[serde(default)]
-    diagnostic_bounds_version: u8,
+    unknown_usage: bool,
     floor: u64,
     spent: u64,
     before: u64,
@@ -94,8 +94,6 @@ pub struct BudgetState {
     gap_coverage: studio_runtime_schema::usage::ledger::GapCoverage,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     replay_conflicts: Vec<studio_runtime_schema::usage::ledger::UsageReplayConflict>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    unknown_receipts: Vec<String>,
     #[serde(flatten)]
     extra: BTreeMap<String, Value>,
 }
@@ -105,11 +103,15 @@ impl BudgetState {
             GapCoverage, MISSING_FINAL_USAGE, RESPONSE_REPLAY_CONFLICT, UNKNOWN_USAGE_RECEIPT,
             bound_diagnostics,
         };
-        self.diagnostic_overflow.unknown_receipts |= bound_diagnostics(&mut self.unknown_receipts);
+        self.unknown_usage |= self
+            .faults
+            .iter()
+            .any(|fault| fault == UNKNOWN_USAGE_RECEIPT);
+        self.diagnostic_overflow.ambiguous_notices |=
+            bound_diagnostics(&mut self.ambiguous_notices);
         self.diagnostic_overflow.unresolved_gaps |= bound_diagnostics(&mut self.unresolved_gaps);
         self.diagnostic_overflow.replay_conflicts |= bound_diagnostics(&mut self.replay_conflicts);
-        self.diagnostic_bounds_version = 1;
-        if self.diagnostic_overflow.unknown_receipts {
+        if self.unknown_usage {
             self.fault(UNKNOWN_USAGE_RECEIPT);
         }
         if self.diagnostic_overflow.unresolved_gaps {
@@ -119,10 +121,11 @@ impl BudgetState {
         if self.diagnostic_overflow.replay_conflicts {
             self.fault(RESPONSE_REPLAY_CONFLICT);
         }
+        self.diagnostic_overflow.faults |= bound_diagnostics(&mut self.faults);
     }
     fn fault(&mut self, fault: &str) {
         if !self.faults.iter().any(|f| f == fault) {
-            self.faults.push(fault.into());
+            self.faults.insert(0, fault.into());
         }
     }
     fn settle(&mut self) -> Result<(), BudgetError> {
@@ -138,6 +141,9 @@ impl BudgetState {
         if self.notice_spent > self.before.saturating_add(self.after)
             || !self.faults.is_empty()
             || !self.ambiguous_notices.is_empty()
+            || self.diagnostic_overflow.ambiguous_notices
+            || self.diagnostic_overflow.faults
+            || self.unknown_usage
         {
             "provisional"
         } else {
@@ -151,7 +157,7 @@ impl BudgetState {
         let mut bounded = self.clone();
         bounded.bound_diagnostics();
         let value = serde_json::to_value(bounded).map_err(|_| invalid("runtime_budget"))?;
-        validate("PersistedBudgetState", &value, "runtime_budget")?;
+        validate("PersistedBudgetStateWrite", &value, "runtime_budget")?;
         Ok(value)
     }
 }
@@ -257,6 +263,11 @@ impl BudgetSnapshot {
         }
         let supplied: Agent = decode(agent, "runtime_agents/budget")?;
         let durable: Agent = decode(durable_agent, "runtime_agents/budget")?;
+        if durable.thread_id.as_ref().is_some_and(|id| {
+            id.chars().count() > studio_runtime_schema::usage::ledger::MAX_NATIVE_THREAD_ID_CHARS
+        }) {
+            return Err(invalid("runtime_agents/threadId"));
+        }
         if supplied.id.is_empty() || durable.id != supplied.id || !now.is_finite() {
             return Err(invalid("runtime_agents/id"));
         }
@@ -276,10 +287,8 @@ impl BudgetSnapshot {
             }
         }
         let floor = durable.tokens_used.unwrap_or(0);
-        let initialized = state.is_none()
-            || state.is_some_and(|value| {
-                value.get("ledgerSince").is_none() || value.get("diagnosticBoundsVersion").is_none()
-            });
+        let initialized =
+            state.is_none() || state.is_some_and(|value| value.get("ledgerSince").is_none());
         let legacy_unknown = state
             .map(needs_legacy_gap_coverage)
             .transpose()?
@@ -290,7 +299,7 @@ impl BudgetSnapshot {
                 cutoff: now,
                 ledger_since: LedgerEpoch::Current,
                 diagnostic_overflow: Default::default(),
-                diagnostic_bounds_version: 1,
+                unknown_usage: false,
                 floor,
                 spent: floor,
                 before: 0,
@@ -309,7 +318,6 @@ impl BudgetSnapshot {
                 unresolved_gaps: vec![],
                 gap_coverage: studio_runtime_schema::usage::ledger::GapCoverage::Complete,
                 replay_conflicts: vec![],
-                unknown_receipts: vec![],
                 extra: BTreeMap::new(),
             },
         };
@@ -552,6 +560,11 @@ impl UsageObservation {
             .map(|v| decode::<String>(v, "tokenUsage/threadId"))
             .transpose()?
             .or_else(|| a.thread_id.clone());
+        if thread.as_ref().is_some_and(|id| {
+            id.chars().count() > studio_runtime_schema::usage::ledger::MAX_NATIVE_THREAD_ID_CHARS
+        }) {
+            return Err(invalid("tokenUsage/threadId"));
+        }
         let restoring = supplied.is_some();
         let ledger = supplied.or_else(|| {
             typed.map(|observation| UsageLedgerRow::capture(&a.id, thread.as_deref(), observation))
@@ -659,8 +672,14 @@ impl UsageObservation {
             source,
         })
     }
+    pub(crate) fn unknown_key(&self) -> Option<&str> {
+        self.accounting_key.as_deref()
+    }
     pub(crate) fn receipt_candidates(&self) -> impl Iterator<Item = &str> {
-        std::iter::once(self.key.as_str())
+        self.accounting_key
+            .as_deref()
+            .into_iter()
+            .chain(std::iter::once(self.key.as_str()))
             .filter(|key| !key.is_empty())
             .chain(self.legacy_keys.iter().map(String::as_str))
     }
@@ -745,34 +764,40 @@ pub fn capture(
             changed: false,
         });
     }
-    let observation_key = p.accounting_key.clone();
-    if previous.is_some() && !p.unresolved_receipt {
-        if let Some(key) = &observation_key {
-            state.unknown_receipts.retain(|unknown| unknown != key);
-        }
-        if state.unknown_receipts.is_empty() && !state.diagnostic_overflow.unknown_receipts {
-            state.faults.retain(|fault| {
-                fault != studio_runtime_schema::usage::ledger::UNKNOWN_USAGE_RECEIPT
-            });
-        }
+    if previous.is_some_and(|row| {
+        studio_runtime_schema::usage::ledger::receipt_replay(&row.kind)
+            == Some(UsageCorrection::Replay)
+    }) {
+        state.unknown_usage = true;
+        state.fault(studio_runtime_schema::usage::ledger::UNKNOWN_USAGE_RECEIPT);
+        let changed = state != snapshot.state;
+        return Ok(CaptureDecision {
+            acceptance: UsageAcceptance::Accepted,
+            state,
+            usage: None,
+            changed,
+        });
     }
-    if p.unresolved_receipt
-        || p.legacy_era && !p.exact && !p.gap && previous.is_none()
-        || observation_key
+    if p.unresolved_receipt || p.legacy_era && !p.exact && !p.gap && previous.is_none() {
+        let key = p
+            .accounting_key
             .as_ref()
-            .is_some_and(|key| state.unknown_receipts.contains(key))
-    {
-        if let Some(key) = observation_key
-            && !state.unknown_receipts.contains(&key)
-        {
-            state.unknown_receipts.push(key);
-        }
+            .ok_or_else(|| invalid("tokenUsage/unknownIdentity"))?;
+        state.unknown_usage = true;
         state.fault(studio_runtime_schema::usage::ledger::UNKNOWN_USAGE_RECEIPT);
         state.bound_diagnostics();
         return Ok(CaptureDecision {
             acceptance: UsageAcceptance::Accepted,
             state,
-            usage: None,
+            usage: Some(UsageRow {
+                id: key.clone(),
+                agent: snapshot.agent.id.clone(),
+                kind: studio_runtime_schema::usage::ledger::UNKNOWN_USAGE_KIND.into(),
+                tokens: 0,
+                at: p.at,
+                breakdown: None,
+                details: None,
+            }),
             changed: true,
         });
     }

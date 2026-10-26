@@ -1368,6 +1368,7 @@ mod tests {
             budget_capture_value: Some(12),
             usage_conflict: None,
             ledger_since: Default::default(),
+            usage_unknown: false,
         });
         streams.queue_effect(NotificationPostCommit::AnalyticsStream {
             observation: analytics_observation("item/agentMessage/delta", 1_001),
