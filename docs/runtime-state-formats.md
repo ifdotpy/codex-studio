@@ -31,11 +31,19 @@ by applying the historical default again.
 Startup applies the conversion before strict readers and provider work. Database
 changes use their existing transactions; the account registry uses its existing
 atomic replacement. Reopening a converted state must not rewrite its records or
-replay operations. Request identities, receipts, and signed move descriptors are
-not migration targets.
+replay operations. Public request identities, receipt results, and signed move
+descriptors stay unchanged.
+
+In-progress title requests retain their original fingerprint binding through a
+dated marker on the existing title effect. When the request's full input is
+available again, the dated conversion verifies the original fingerprint before
+replacing it with the explicit-provider fingerprint and removing the marker in
+the same transaction. Changed inputs still conflict; saved results are not
+requested from the provider again.
 
 This migration supports states written before 2026-10-26. Remove it when the
-supported upgrade and backup-restore paths no longer admit that representation,
+supported upgrade and backup-restore paths no longer admit that representation
+and marked title effects have completed conversion or reached a terminal state,
 following the [provider migration removal rule](../workspaces/providers/README.md#provider-extensibility).
 The date identifies the format transition; it is not an automatic expiry date.
 
