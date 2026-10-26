@@ -673,7 +673,16 @@ it.each([
             _key: string,
             options: unknown,
             callback?: (lock: null) => unknown,
-          ) => (callback ? callback(null) : (options as () => unknown)()),
+          ) =>
+            callback
+              ? new Promise<void>((_resolve, reject) => {
+                  (options as { signal: AbortSignal }).signal.addEventListener(
+                    "abort",
+                    () => reject(new DOMException("Aborted", "AbortError")),
+                    { once: true },
+                  );
+                })
+              : (options as () => unknown)(),
         },
       });
     class Source {

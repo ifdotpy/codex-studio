@@ -24984,11 +24984,11 @@ export interface components {
       reason: string | null;
       truncated: boolean;
     };
-    /**
-     * @description Why final response accounting is unavailable.
-     * @enum {string}
-     */
-    UsageGapReason: "streamInterrupted" | "queryClosed";
+    /** @description Why final response accounting is unavailable. */
+    UsageGapReason:
+      | ("streamInterrupted" | "queryClosed")
+      | "unconfirmedStop"
+      | "noStream";
     /** @description Logical owner of usage, independent of capture time, account, turn and provenance. */
     UsageIdentity:
       | {

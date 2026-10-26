@@ -1,6 +1,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
+import { reconcileNativeSession } from "./session-identity.mjs";
 import { reconcileRestartTurns } from "./restart-reconcile.mjs";
 import {
   validJournalRecord,
@@ -569,8 +570,15 @@ export function createSessionStore(root, options = {}) {
 
   async function load(id, reused = null) {
     const saved = await readAll(id);
-    const shadow = copy(saved.session);
+    let shadow = copy(saved.session);
     const session = reused || saved.session;
+    if (
+      !reused &&
+      (await reconcileNativeSession(session, options.nativeHistory))
+    ) {
+      await atomicSnapshot(id, session, saved.sequence);
+      shadow = copy(session);
+    }
     if (!reused) await reconcileRestartTurns(session, options.nativeHistory);
     const cached = sessions.get(id);
     if (cached) {

@@ -33,6 +33,10 @@ import { ReadRecoveryBudget, retryableReadError } from "./sync/readRetry";
 import { agentChatMessages } from "./hooks/agentChatMessages";
 import { drainRoomUpdates } from "./hooks/roomUpdates";
 import {
+  selectMessageConnection,
+  type MessageConnection,
+} from "./hooks/messageConnection";
+import {
   initialSnapshotProjectionStatus,
   snapshotProjectionError,
   snapshotProjectionStatusReducer,
@@ -353,22 +357,24 @@ export function useSnapshot(
     };
     retryInitialization.current = restart;
     let interrupted = false;
-    const stopConnection = watchResourceConnection((status) => {
-      dispatchProjectionStatus({
-        type: "transport-changed",
-        error:
-          status === "degraded"
-            ? "Live updates are reconnecting."
-            : status === "offline"
-              ? "Offline. Live updates will resume when connected."
+    const stopConnection = watchResourceConnection(
+      (status, activity, detail) => {
+        dispatchProjectionStatus({
+          type: "transport-changed",
+          error:
+            status === "degraded" ||
+            status === "offline" ||
+            activity === "offline"
+              ? selectMessageConnection(status, activity, detail).message
               : "",
-      });
-      if (status === "degraded" || status === "offline") interrupted = true;
-      if (status === "live" && interrupted) {
-        interrupted = false;
-        void restart();
-      }
-    });
+        });
+        if (status === "degraded" || status === "offline") interrupted = true;
+        if (status === "live" && interrupted) {
+          interrupted = false;
+          void restart();
+        }
+      },
+    );
     void initialize();
     return () => {
       stopped = true;
@@ -602,9 +608,12 @@ export function useMessages(
     [liveAgent, setLiveAgent] = useState<TranscriptPageData["agent"] | null>(
       null,
     ),
-    [connection, setConnection] = useState(""),
+    [connection, setConnection] = useState<MessageConnection | null>(null),
     [syncId, setSyncId] = useState<string | null>(null);
-  const connectionRef = useRef({ source: watchResourceConnection, value: "" });
+  const connectionRef = useRef<{
+    source: typeof watchResourceConnection;
+    value: MessageConnection | null;
+  }>({ source: watchResourceConnection, value: null });
   const latest = useRef<{ scope: string; data: TranscriptPageData } | null>(
     null,
   );
@@ -1014,10 +1023,13 @@ export function useMessages(
     setNotice("");
   }, [id, enabled, kind, scope, roomSubscription.data, roomSubscription.error]);
   useEffect(() => {
-    const updateConnection = (next: string) => {
+    const updateConnection = (next: MessageConnection | null) => {
+      const previous = connectionRef.current.value;
       if (
         connectionRef.current.source === watchResourceConnection &&
-        connectionRef.current.value === next
+        previous?.health === next?.health &&
+        previous?.activity === next?.activity &&
+        previous?.message === next?.message
       )
         return;
       connectionRef.current = { source: watchResourceConnection, value: next };
@@ -1025,19 +1037,12 @@ export function useMessages(
     };
     if (kind !== "agent") return;
     if (!id || !enabled || !managed) {
-      updateConnection("");
+      updateConnection(null);
       return;
     }
-    // Subscription freshness also covers loading, errors and hidden screens.
-    // Only transport loss means that the chat is reconnecting.
-    return watchResourceConnection((status) => {
-      updateConnection(
-        status === "live" || status === "paused"
-          ? status
-          : status === "degraded" || status === "offline"
-            ? "reconnecting"
-            : "",
-      );
+    // Transcript freshness cannot describe the transport's current activity.
+    return watchResourceConnection((status, activity, detail) => {
+      updateConnection(selectMessageConnection(status, activity, detail));
     });
   }, [id, enabled, managed, kind, watchResourceConnection]);
   const fetchPage = async (query: {
@@ -1328,6 +1333,6 @@ export function useMessages(
       kind === "agent" &&
       connectionRef.current.source === watchResourceConnection
         ? connection
-        : "",
+        : null,
   };
 }

@@ -27,20 +27,30 @@ import {
 import "./provider-activity.css";
 import { useChatWait, type ChatWaitSource } from "../../hooks/conversationData";
 import { useVisualActivityRef } from "../../hooks/useVisualActivity";
+import type { MessageConnection } from "../../hooks/messageConnection";
 
 // Delivery can remain pending while a healthy connection awaits its receipt.
 // Choose the copy and icon together so only transport loss looks disconnected.
-function phaseNotice(connection: string, savedMessagePending: boolean) {
-  if (connection === "reconnecting")
+function phaseNotice(
+  connection: MessageConnection | null,
+  savedMessagePending: boolean,
+) {
+  const savedMessage = "Your message is saved and waiting for delivery.";
+  if (connection?.message)
     return {
       message: savedMessagePending
-        ? "Connection lost. Your message is saved and will send when connected."
-        : "Connection lost. Reconnecting…",
-      Icon: WifiOff,
+        ? `${connection.message} ${savedMessage}`
+        : connection.message,
+      Icon:
+        connection.icon === "connecting"
+          ? LoaderCircle
+          : connection.icon === "offline"
+            ? WifiOff
+            : Clock3,
     };
   if (savedMessagePending)
     return {
-      message: "Your message is saved and waiting for delivery.",
+      message: savedMessage,
       Icon: Clock3,
     };
   return null;
@@ -54,7 +64,7 @@ export default function AgentPhase({
   connectionDetails,
 }: {
   agent?: Agent;
-  connection: string;
+  connection: MessageConnection | null;
   wait?: ChatWaitState;
   savedMessagePending?: boolean;
   connectionDetails?: string;
@@ -221,13 +231,13 @@ export default function AgentPhase({
               />
             )}
           </span>
-          {(notice || (typeof details === "string" && details)) && (
+          {((savedMessagePending && connectionDetails) ||
+            (typeof details === "string" && details)) && (
             <details>
               <summary>Details</summary>
               {savedMessagePending && connectionDetails && (
                 <pre>{connectionDetails}</pre>
               )}
-              {connection === "reconnecting" && <p>{message}</p>}
               {typeof details === "string" && details && <pre>{details}</pre>}
             </details>
           )}
@@ -254,7 +264,7 @@ export function LiveAgentPhase({
 }: {
   source: ChatWaitSource;
   agent?: Agent;
-  connection: string;
+  connection: MessageConnection | null;
   savedMessagePending?: boolean;
   connectionDetails?: string;
 }) {

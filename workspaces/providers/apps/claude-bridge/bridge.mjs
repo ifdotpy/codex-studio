@@ -16,7 +16,17 @@ import {
   rewindSessionFiles,
 } from "./file-checkpoints.mjs";
 import { createAccountCheck } from "./account-identity.mjs";
-import { readNativeHistory } from "./native-history.mjs";
+import { readHistoryIndex, verifiedHistoryMessages } from "./history-index.mjs";
+import {
+  persistNativeSession,
+  guardNativeSessionInput,
+  cancelNativeSessionInput,
+  nativeInputAttempt,
+  newNativeInputAttempt,
+  guardNativeSessionStart,
+  assertNativeSessionReady,
+  sessionStartHook,
+} from "./session-identity.mjs";
 import {
   inputGroups,
   sdkInputMessages,
@@ -31,7 +41,6 @@ import {
   createSdkMcpServer,
   tool,
   forkSession,
-  getSessionMessages,
 } from "@anthropic-ai/claude-agent-sdk";
 import {
   InputQueue,
@@ -71,7 +80,6 @@ import {
   declaredTimeoutMs,
   durationText,
   watchStalls,
-  inputHistoryOutcome,
   stallLimits,
   stallMessage,
 } from "./stall-watch.mjs";
@@ -1170,6 +1178,8 @@ async function finalizeTurn(s, active, turn, result, error, state) {
     // InputQueue removes the message before yielding it to the SDK.
     turn.startOutcome = "not_applied";
   }
+  if (turn.startOutcome === "not_applied")
+    cancelNativeSessionInput(s, nativeInputAttempt(turn, turn.items[0]));
   turn.status = turn.interrupted
     ? "interrupted"
     : error || result?.is_error || result?.subtype !== "success"
@@ -1232,6 +1242,7 @@ async function finalizeTurn(s, active, turn, result, error, state) {
   const unappliedSteers = state.unappliedSteers;
   for (const item of turn.items) {
     if (item.delivery === "steer" && item.deliveryStatus === "cancelled") {
+      cancelNativeSessionInput(s, nativeInputAttempt(turn, item));
       unappliedSteers.push(item.id);
       continue;
     }
@@ -1243,6 +1254,7 @@ async function finalizeTurn(s, active, turn, result, error, state) {
     if (queued < 0) continue;
     active.input.values.splice(queued, 1);
     item.deliveryStatus = "not_applied";
+    cancelNativeSessionInput(s, nativeInputAttempt(turn, item));
     item.error = "Claude finished before reading this steer";
     unappliedSteers.push(item.id);
   }
@@ -1274,23 +1286,18 @@ async function reconcileClosedSteers(s, turn, unapplied) {
       item.deliveryStatus === "submitted",
   );
   if (!open.length) return;
-  const records = await readNativeHistory(s);
+  const index = await readHistoryIndex(s);
   const initial = turn.items.find((item) => item.type === "userMessage");
   for (const item of open) {
-    const outcome = inputHistoryOutcome(
-      records?.map(({ row }) => row),
-      {
-        sessionId: s.nativeId || s.id,
-        cwd: s.nativeHistoryCwd || s.cwd,
-        anchorIds: nativeInputIds(initial),
-        inputIds: nativeInputIds(item),
-      },
-    );
+    const outcome =
+      index?.outcome(nativeInputIds(item), nativeInputIds(initial)) ??
+      "unknown";
     if (outcome === "delivered") {
       item.deliveryStatus = "delivered";
       turnEvent(s, turn, "item/completed", { ...item, clientId: item.id });
     } else if (outcome === "not_applied") {
       item.deliveryStatus = "not_applied";
+      cancelNativeSessionInput(s, nativeInputAttempt(turn, item));
       item.error = "Claude stopped before reading this steer";
       unapplied.push(item.id);
     } else {
@@ -1452,6 +1459,11 @@ async function startSession(s, active, p) {
     const externalMcpServers = await movedExternalConfigs(s);
     const titleOptions = ephemeralSessionOptions(s);
     const mode = titleOptions.permissionMode || permissionMode(s, p);
+    await guardNativeSessionStart(
+      s,
+      persist,
+      nativeInputAttempt(initial, initial?.items[0]),
+    );
     const q = query({
       prompt: prompt(),
       options: {
@@ -1494,6 +1506,11 @@ async function startSession(s, active, p) {
         mcpServers: {
           ...externalMcpServers,
           studio: studioTools(s, () => active.turn),
+        },
+        hooks: {
+          SessionStart: [
+            { hooks: [sessionStartHook(s, () => active.turn, persist)] },
+          ],
         },
         supportedDialogKinds: ["resume_return"],
         perTaskStopAffordance: true,
@@ -1602,14 +1619,22 @@ async function startSession(s, active, p) {
       if (active.turn && finishingTurns.has(active.turn))
         await finishingTurns.get(active.turn);
       if (active.persistFailure) throw active.persistFailure;
+      assertNativeSessionReady(s);
       if (queries.get(s.id) !== active) break;
       active.lastEventAt = Date.now();
       armStallWatch();
       if (m.type === "system" && m.subtype === "init") {
+        await persistNativeSession(
+          s,
+          m.session_id,
+          "init",
+          active.turn,
+          persist,
+        );
         s.started = true;
         s.claudeVersion = m.claude_code_version;
         active.commands = m.slash_commands || [];
-        persistLater(s, active);
+        await persist(s);
         continue;
       }
       if (m.type === "system" && m.subtype === "background_tasks_changed") {
@@ -1811,8 +1836,10 @@ async function startSession(s, active, p) {
         }
       }
       if (!turn) continue;
-      if (m.type === "stream_event")
-        for (const studioUsage of active.usage.observe(m, turn.id))
+      if (m.type === "stream_event" || m.type === "assistant")
+        for (const studioUsage of m.type === "stream_event"
+          ? active.usage.observe(m, turn.id)
+          : active.usage.observeAssistant(m, turn.id))
           emit("thread/tokenUsage/updated", {
             threadId: s.id,
             turnId: studioUsage.turnId,
@@ -2178,6 +2205,9 @@ function newActive(turn) {
   return active;
 }
 function userMessage(s, turn, groups, id) {
+  turn.nativeSessionId = s.nativeId || s.id;
+  const item = turn.items.find((item) => item.id === id) || turn.items[0];
+  guardNativeSessionInput(s, groups, newNativeInputAttempt(turn, item));
   const messages = sdkInputMessages(
     s.nativeId || s.id,
     id || turn.id,
@@ -2185,7 +2215,6 @@ function userMessage(s, turn, groups, id) {
     nativeUserMessageId,
   );
   const message = messages.at(-1);
-  const item = turn.items.find((item) => item.id === id) || turn.items[0];
   if (item === turn.items[0]) turn.nativeMessageId = messages[0].uuid;
   if (messages.length > 1) {
     item.nativeIds = messages.map((part) => part.uuid);
@@ -2197,6 +2226,17 @@ function userMessage(s, turn, groups, id) {
 }
 
 async function handle(method, p) {
+  if (
+    p.threadId &&
+    [
+      "turn/start",
+      "turn/steer",
+      "thread/fork",
+      "thread/rollback",
+      "thread/compact/start",
+    ].includes(method)
+  )
+    assertNativeSessionReady(await session(p.threadId));
   if (commandMethods.has(method)) return commands.handle(method, p);
   if (
     p.threadId &&
@@ -2428,6 +2468,12 @@ async function handle(method, p) {
       tasks: [...(active?.tasks.values() || [])],
       version: s.claudeVersion,
       nativeId: s.nativeId || s.id,
+      ...(s.nativeSessionTransitionError
+        ? {
+            nativeSessionOutcome: "unknown",
+            nativeSessionError: s.nativeSessionTransitionError,
+          }
+        : {}),
       contextWindow: s.contextWindow,
       totalTokens: s.totalTokens,
     };
@@ -2461,8 +2507,9 @@ async function handle(method, p) {
     discardQuery(s.id, active);
     return rollbackSession(s, p, {
       persist,
-      getSessionMessages,
       forkSession,
+      getSessionMessages: (id, options) =>
+        verifiedHistoryMessages({ id, cwd: options.dir }),
       prepareFileRestore: (session, messages, messageId) =>
         prepareFileRestore(session, messages, messageId, root),
       verifyFileRestore,
@@ -2612,7 +2659,8 @@ async function handle(method, p) {
       );
     const s = await forkAtTurn(old, p, {
       forkSession,
-      getSessionMessages,
+      getSessionMessages: (id, options) =>
+        verifiedHistoryMessages({ id, cwd: options.dir }),
       persist,
     });
     sessions.set(s.id, s);
@@ -2857,6 +2905,10 @@ async function handle(method, p) {
       }
       s.turns = s.turns.filter((t) => t !== turn);
       pendingTurnReceipts.delete(turn.id);
+      // No SDK admission occurred; retire only this reservation's guard and
+      // save the cleanup (or defer it on a full disk) before reporting refusal.
+      if (cancelNativeSessionInput(s, nativeInputAttempt(turn, turn.items[0])))
+        await persistLive(s);
       throw isDiskFull(error) ? diskFullInputError(error) : error;
     }
     if (active) {
@@ -2866,6 +2918,7 @@ async function handle(method, p) {
         turn.status = "failed";
         turn.startOutcome = "not_applied";
         turn.error = { message: error.message };
+        cancelNativeSessionInput(s, nativeInputAttempt(turn, turn.items[0]));
         pendingTurnReceipts.delete(turn.id);
         await persistLive(s);
         throw Object.assign(error, {
@@ -2982,6 +3035,7 @@ async function handle(method, p) {
       active.pendingSteers.delete(id);
       if (item) {
         item.deliveryStatus = "not_applied";
+        cancelNativeSessionInput(s, nativeInputAttempt(turn, item));
         item.error = error.message;
         await persistLive(s);
       }

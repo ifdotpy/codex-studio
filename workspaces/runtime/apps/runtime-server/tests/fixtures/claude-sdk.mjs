@@ -291,7 +291,11 @@ export function query({ prompt, options }) {
         transcriptPrefix = [];
         turnAbort = new AbortController();
         const turnSignal = turnAbort.signal;
-        yield { type: "system", subtype: "init" };
+        yield {
+          type: "system",
+          subtype: "init",
+          session_id: options.resume || options.sessionId,
+        };
         if (text === "steer-race") {
           await raceStarted;
           yield {

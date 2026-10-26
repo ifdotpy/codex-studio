@@ -807,7 +807,7 @@ function historySdk(mode) {
     .replace(
       "fs.appendFileSync(cwd+'/.sdk-inputs',JSON.stringify(input.value)+'\\n');",
       `fs.appendFileSync(cwd+'/.sdk-inputs',JSON.stringify(input.value)+'\\n');
- if(input.value.message.content[0].text==='pulled'||'${mode}'==='all'||('${mode}'==='partial'&&input.value.shouldQuery===false)){fs.appendFileSync(history,JSON.stringify({type:'user',uuid:input.value.uuid,parentUuid:historyParent,sessionId:options.sessionId||options.resume,cwd,isSidechain:false})+'\\n');historyParent=input.value.uuid;}`,
+ if(input.value.message.content[0].text==='pulled'||'${mode}'==='all'||('${mode}'==='partial'&&input.value.shouldQuery===false)){fs.appendFileSync(history,JSON.stringify({type:'user',uuid:input.value.uuid,parentUuid:historyParent,sessionId:options.sessionId||options.resume,cwd,isSidechain:false,message:input.value.message,timestamp:new Date().toISOString()})+'\\n');historyParent=input.value.uuid;}`,
     )
     .replace(
       "close(){abort.abort();}",
@@ -916,6 +916,8 @@ for (const mode of ["empty", "partial", "all"]) {
           sessionId: bridge.thread,
           cwd: bridge.root,
           isSidechain: false,
+          message: { role: "user", content: "human-tail" },
+          timestamp: new Date().toISOString(),
         }) + "\n",
       );
     }
@@ -1093,4 +1095,162 @@ test("bridge request and notification guards are disposed after settlement", asy
   } finally {
     vi.useRealTimers();
   }
+});
+
+for (const value of ["/clear", "ordinary steer"])
+  test.concurrent(`withdrawn ${value} releases its transition guard before restart`, async ({
+    startBridge,
+  }) => {
+    const bridge = await startBridge();
+    const turn = await running(bridge, "unread-result");
+    await steer(bridge, turn, "guard-steer", value);
+    await end(bridge);
+    const done = await completed(bridge, turn);
+    assert.deepEqual(done.params.turn.unappliedSteers, ["guard-steer"]);
+    await bridge.restart();
+    const next = await bridge.call("turn/start", {
+      threadId: bridge.thread,
+      input: text("after withdrawn steer"),
+    });
+    await read(bridge, "after withdrawn steer");
+    assert.equal(next.turn.status, "inProgress");
+  });
+
+for (const value of ["/clear", "ordinary steer"])
+  test.concurrent(`Stop cancels ${value} and restart remains available`, async ({
+    startBridge,
+  }) => {
+    const bridge = await startBridge();
+    const turn = await running(bridge, "unread-result");
+    await steer(bridge, turn, "cancel-guard-steer", value);
+    const receipt = await bridge.call("turn/interrupt", {
+      threadId: bridge.thread,
+      turnId: turn,
+    });
+    assert.ok(receipt.cancelled.includes("cancel-guard-steer"));
+    await completed(bridge, turn);
+    await bridge.restart();
+    await bridge.call("turn/start", {
+      threadId: bridge.thread,
+      input: text("after cancelled steer"),
+    });
+    await read(bridge, "after cancelled steer");
+  });
+
+test.concurrent("a rejected clear steer save releases its unsubmitted transition guard", async ({
+  startBridge,
+}) => {
+  const sdk = FAKE_SDK.replace(
+    "import fs from 'node:fs';",
+    String.raw`import fs from 'node:fs';
+import fsp from 'node:fs/promises';
+const append=fsp.appendFile;
+fsp.appendFile=async(file,data,...args)=>{
+ const marker=process.cwd()+'/.reject-steer';
+ if(fs.existsSync(marker)&&String(file).includes('/sessions/')&&String(data).includes('rejected-guard-steer')){fs.rmSync(marker);throw new Error('steer save denied');}
+ return append(file,data,...args);
+};`,
+  ).replace(
+    "yield {type:'system',subtype:'init'};",
+    "yield {type:'system',subtype:'init'};mark(cwd+'/.steady-to-steer');",
+  );
+  const bridge = await startBridge({}, sdk);
+  const turn = await running(bridge, "unread-result");
+  // Resuming the generator after init proves its awaited save also settled
+  // earlier echo saves. The injected failure must belong to the steer write.
+  await bridge.note(
+    (note) =>
+      note.method === "fixture/signal" &&
+      note.params.name === path.join(bridge.root, ".steady-to-steer"),
+  );
+  await fs.writeFile(path.join(bridge.root, ".reject-steer"), "");
+  await assert.rejects(
+    steer(bridge, turn, "rejected-guard-steer", "/clear"),
+    /steer save denied/,
+  );
+  await end(bridge);
+  await completed(bridge, turn);
+  await bridge.restart();
+  await bridge.call("turn/start", {
+    threadId: bridge.thread,
+    input: text("after rejected steer"),
+  });
+  await read(bridge, "after rejected steer");
+});
+
+test.concurrent("an old withdrawn clear receipt cannot retire its consumed redelivery attempt", async ({
+  startBridge,
+}) => {
+  const sdk = FAKE_SDK.replace(
+    "}return input;};",
+    String.raw`}if(!input.done&&input.value.message.content[0].text==='/clear'){await new Promise(resolve=>process.stdout.write(JSON.stringify({method:'fixture/consumed-clear',params:{}})+'\n',resolve));process.kill(process.pid,'SIGKILL');}return input;};`,
+  );
+  const bridge = await startBridge({}, sdk);
+  const old = await running(bridge, "unread-result");
+  await steer(bridge, old, "redelivered-clear", "/clear");
+  await end(bridge);
+  assert.deepEqual((await completed(bridge, old)).params.turn.unappliedSteers, [
+    "redelivered-clear",
+  ]);
+  await release(bridge, ".release");
+  const redelivery = bridge
+    .call("turn/start", {
+      threadId: bridge.thread,
+      clientUserMessageId: "redelivered-clear",
+      input: text("/clear"),
+    })
+    .catch(() => null);
+  await bridge.note((note) => note.method === "fixture/consumed-clear");
+  await redelivery;
+  await bridge.restart();
+  const state = await bridge.call("claude/state", { threadId: bridge.thread });
+  assert.equal(state.turns.at(-1).status, "uncertain");
+  await assert.rejects(
+    bridge.call("turn/start", {
+      threadId: bridge.thread,
+      input: text("after consumed clear"),
+    }),
+    /native session.*unknown/i,
+  );
+});
+
+test("a rejected initial clear save permits its exact logical retry", async ({
+  startBridge,
+}) => {
+  const sdk = FAKE_SDK.replace(
+    "import fs from 'node:fs';",
+    String.raw`import fs from 'node:fs';
+import fsp from 'node:fs/promises';
+const append=fsp.appendFile;
+fsp.appendFile=async(file,data,...args)=>{
+ const marker=process.cwd()+'/.reject-start';
+ if(fs.existsSync(marker)&&String(file).includes('/sessions/')&&String(data).includes('rejected-clear')){fs.rmSync(marker);throw new Error('initial clear save denied');}
+ return append(file,data,...args);
+};`,
+  );
+  const bridge = await startBridge({}, sdk);
+  const warm = await running(bridge, "hold");
+  await end(bridge);
+  await completed(bridge, warm);
+  await bridge.note(
+    (n) =>
+      n.method === "fixture/signal" &&
+      n.params.name === path.join(bridge.root, ".result-sent"),
+  );
+  await fs.writeFile(path.join(bridge.root, ".reject-start"), "");
+  const params = {
+    threadId: bridge.thread,
+    clientUserMessageId: "rejected-clear",
+    input: text("/clear"),
+  };
+  await assert.rejects(
+    bridge.call("turn/start", params),
+    /initial clear save denied/,
+  );
+  assert.deepEqual(await inputs(bridge), ["hold"]);
+  const retried = await bridge.call("turn/start", params);
+  await bridge.note(
+    (n) => n.method === "fixture/input" && n.params.text === "/clear",
+  );
+  assert.equal(retried.turn.status, "inProgress");
 });

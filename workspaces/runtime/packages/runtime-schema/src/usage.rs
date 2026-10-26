@@ -93,6 +93,10 @@ pub enum UsageScope {
 pub enum UsageGapReason {
     StreamInterrupted,
     QueryClosed,
+    /// Stream stopped without a provider delta confirming completion.
+    UnconfirmedStop,
+    /// Assistant message arrived without any stream for its response identity.
+    NoStream,
 }
 /// One model's cumulative contribution to a Claude query.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -667,6 +671,23 @@ mod tests {
             assert!(parse(usage.clone()).is_err());
         }
         assert!(parse(json!({"kind":"gap","responseId":"r","reason":"queryClosed"})).is_ok());
+    }
+    #[test]
+    fn claude_finality_gaps_parse_without_inventing_tokens() {
+        for reason in ["unconfirmedStop", "noStream"] {
+            let observation = parse_token_usage(
+                UsageProvider::Claude,
+                &json!({
+                    "studioUsage": {"kind":"gap", "responseId":"r", "reason":reason}
+                }),
+            )
+            .expect("typed finality gap");
+            assert!(matches!(observation, UsageObservation::Gap { .. }));
+            assert_eq!(
+                serde_json::to_value(observation).expect("gap wire")["reason"],
+                reason
+            );
+        }
     }
     #[test]
     fn codex_serde_mirror_matches_vendored_provider_schema() {

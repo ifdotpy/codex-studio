@@ -1,5 +1,7 @@
 // @ts-check
 /** @typedef {import('@anthropic-ai/claude-agent-sdk').SDKPartialAssistantMessage} StreamMessage */
+/** @typedef {import('@anthropic-ai/claude-agent-sdk').SDKAssistantMessage} AssistantMessage */
+/** @typedef {Extract<StreamEvent, {type: 'message_delta'}>['delta']['stop_reason']} StopReason */
 /** @typedef {import('@anthropic-ai/claude-agent-sdk').SDKResultMessage} ResultMessage */
 /** @typedef {import('@anthropic-ai/claude-agent-sdk').ModelUsage} ModelUsage */
 /** @typedef {StreamMessage['event']} StreamEvent */
@@ -63,7 +65,7 @@ function mergeUsage(initial, delta) {
 
 /** One stream per parent tool (null is the main loop). SDK deltas carry no response id. */
 export class ResponseUsage {
-  /** @type {Map<StreamMessage['parent_tool_use_id'], {message: Message, turnId: string | undefined}>} */
+  /** @type {Map<StreamMessage['parent_tool_use_id'], {message: Message, stopReason: StopReason, turnId: string | undefined}>} */
   pending = new Map();
   /** @type {Map<string, string>} */
   parentTurns = new Map();
@@ -72,6 +74,11 @@ export class ResponseUsage {
   // Pricing aliases are candidates, never identities for exact model windows.
   /** @type {Map<string, Map<string, number>>} */
   aliasWindows = new Map();
+  // Query-scoped identities survive pending-stream removal and turn changes.
+  /** @type {Set<string>} */
+  started = new Set();
+  /** @type {Set<string>} */
+  gapped = new Set();
   closed = false;
 
   /** @param {string | null | undefined} parent @param {string | undefined} turnId */
@@ -121,19 +128,30 @@ export class ResponseUsage {
     const observations = [];
     if (event.type === "message_start") {
       const previous = this.pending.get(parent);
-      if (previous) observations.push(this.gap(previous, "streamInterrupted"));
+      if (previous)
+        observations.push(...this.gap(previous, "streamInterrupted"));
       if (parent !== null) this.registerTool(parent, turnId);
+      this.started.add(event.message.id);
       this.pending.set(parent, {
+        stopReason: null,
         message: structuredClone(event.message),
         turnId: this.turnFor(parent, turnId),
       });
     } else {
       const current = this.pending.get(parent);
       if (!current) return observations;
-      if (event.type === "message_delta")
+      if (event.type === "message_delta") {
         current.message.usage = mergeUsage(current.message.usage, event.usage);
+        // CLI aborts can synthesize a null delta followed by message_stop.
+        if (event.delta.stop_reason != null)
+          current.stopReason = event.delta.stop_reason;
+      }
       if (event.type === "message_stop") {
         this.pending.delete(parent);
+        if (current.stopReason == null) {
+          observations.push(...this.gap(current, "unconfirmedStop"));
+          return observations;
+        }
         const modelContextWindow = this.contextWindowFor(current.message.model);
         observations.push({
           kind: "response",
@@ -150,18 +168,37 @@ export class ResponseUsage {
     return observations;
   }
 
-  /** @param {{message:Message,turnId:string | undefined}} current
+  /** Assistant usage is provisional even when no stream was delivered.
+   * The SDK exposes no general typed marker proving local-only assistant messages.
+   * @param {AssistantMessage} frame @param {string | undefined} turnId
+   * @returns {UsageObservation[]}
+   */
+  observeAssistant(frame, turnId) {
+    const { id, model } = frame.message;
+    if (this.closed || this.started.has(id)) return [];
+    const ownerTurn = this.turnFor(frame.parent_tool_use_id, turnId);
+    return this.gap({ message: { id, model }, turnId: ownerTurn }, "noStream");
+  }
+
+  /** @param {{message:Pick<Message, 'id' | 'model'>,turnId:string | undefined}} current
    * @param {GapReason} reason
-   * @returns {UsageObservation}
+   * @returns {UsageObservation[]}
    */
   gap(current, reason) {
-    return {
-      kind: "gap",
-      responseId: current.message.id,
-      model: current.message.model,
-      reason,
-      ...(current.turnId === undefined ? {} : { turnId: current.turnId }),
-    };
+    const { id, model } = current.message;
+    // All gap paths share identity: keep the first diagnostic even if a later
+    // stream for this response also ends unfinished. Final responses remain allowed.
+    if (this.gapped.has(id)) return [];
+    this.gapped.add(id);
+    return [
+      {
+        kind: "gap",
+        responseId: id,
+        model,
+        reason,
+        ...(current.turnId === undefined ? {} : { turnId: current.turnId }),
+      },
+    ];
   }
 
   /** @param {GapReason} reason
@@ -176,7 +213,7 @@ export class ResponseUsage {
       // Background subagents may continue beyond the main Studio turn.
       if (reason === "streamInterrupted" && parent !== null) continue;
       if (turnId !== undefined && current.turnId !== turnId) continue;
-      observations.push(this.gap(current, reason));
+      observations.push(...this.gap(current, reason));
       this.pending.delete(parent);
     }
     return observations;
