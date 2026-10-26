@@ -1,3 +1,4 @@
+import type { BridgeHarness, BridgeNoteFor } from "./testing/bridge-harness.ts";
 // Moving a running Bash call to the background through the real bridge.
 // The scripted SDK follows the Claude Code task protocol; no model calls.
 import { afterEach, test } from "vitest";
@@ -16,55 +17,9 @@ import {
 // registers as a foreground local_bash task. `backgroundTasks` records each call
 // in `.background-calls`; a matching call releases the turn with Claude's
 // background tool result. `.finish` ends the background task later.
-const FAKE_SDK = String.raw`
-import fs from 'node:fs';
-export const tool=(name,description,schema,call)=>({name,description,schema,call});
-export const createSdkMcpServer=value=>({...value});
-export const forkSession=async()=>({sessionId:'22222222-2222-4222-8222-222222222222'});
-export const getSessionMessages=async()=>[];
-const until=(file,signal)=>waitForFile(file,{signal}).catch(()=>{});
-const usage={input_tokens:10,output_tokens:2};
-export function query({prompt,options}){
- const abort=new AbortController(),cwd=options.cwd;
- let moved,movedPromise=new Promise(resolve=>moved=resolve),foreground=false;
- return {
-  mcpServerStatus:async()=>[],reconnectMcpServer:async()=>{},
-  supportedModels:async()=>[{value:'default',displayName:'Default',resolvedModel:'claude-opus-5-5'}],
-  accountInfo:async()=>({email:'test@example.test',subscriptionType:'Claude Max',apiProvider:'firstParty'}),
-  initializationResult:async()=>({commands:[]}),
-  setModel:async()=>{},setPermissionMode:async()=>{},applyFlagSettings:async()=>{},stopTask:async()=>{},
-  setMcpServers:async()=>({added:[],removed:[],errors:{}}),
-  backgroundTasks:async toolUseId=>{
-   fs.appendFileSync(cwd+'/.background-calls',String(toolUseId)+'\n');
-   if(!foreground||toolUseId!=='toolu-1')return false;
-   foreground=false;moved();return true;
-  },
-  close(){abort.abort();},interrupt:async()=>abort.abort(),
-  async *[Symbol.asyncIterator](){
-   const input=await prompt.next();
-   if(input.done)return;
-   yield {type:'user',isReplay:true,uuid:input.value.uuid};
-   yield {type:'system',subtype:'init'};
-   yield {type:'stream_event',event:{type:'message_start',message:{id:'message-1'}}};
-   yield {type:'assistant',uuid:'a-1',message:{id:'message-1',model:'claude-opus-5-5',usage,content:[{type:'tool_use',id:'toolu-1',name:'Bash',input:{command:'sleep 600'}}]}};
-   await until(cwd+'/.registered',abort.signal);
-   if(abort.signal.aborted)return;
-   foreground=true;
-   yield {type:'system',subtype:'task_started',task_id:'bash-1',tool_use_id:'toolu-1',task_type:'local_bash',is_backgrounded:false,description:'sleep 600',uuid:'s-1'};
-   await movedPromise;
-   yield {type:'system',subtype:'task_updated',task_id:'bash-1',patch:{is_backgrounded:true},uuid:'s-2'};
-   yield {type:'user',uuid:'u-1',message:{role:'user',content:[{type:'tool_result',tool_use_id:'toolu-1',content:'Command running in background with ID: bash-1. Output is being written to: /tmp/bash-1.output'}]},tool_use_result:{stdout:'',stderr:'',interrupted:false,backgroundTaskId:'bash-1',backgroundedByUser:true}};
-   yield {type:'result',subtype:'success',usage,result:'continued'};
-   await until(cwd+'/.finish',abort.signal);
-   if(abort.signal.aborted)return;
-   yield {type:'system',subtype:'task_notification',task_id:'bash-1',tool_use_id:'toolu-1',status:'completed',output_file:'/tmp/bash-1.output',summary:'Background command completed (exit code 0)',uuid:'s-3'};
-   await new Promise(resolve=>abort.signal.addEventListener('abort',resolve,{once:true}));
-  }
- };
-}
-`;
+const FAKE_SDK = new URL("./command-background.fixture.mts", import.meta.url);
 
-const bridges = [];
+const bridges: BridgeHarness[] = [];
 afterEach(async () => {
   for (const bridge of bridges.splice(0)) await bridge.close();
 });
@@ -80,19 +35,20 @@ async function runningCommand() {
     })
   ).turn.id;
   await bridge.note(
-    (n) => n.method === "item/started" && n.params.item.id === "toolu-1",
+    (n): n is BridgeNoteFor<"item/started"> =>
+      n.method === "item/started" && n.params.item.id === "toolu-1",
   );
   return { bridge, turn };
 }
 
-const move = (bridge, turnId, itemId = "toolu-1") =>
+const move = (bridge: BridgeHarness, turnId: string, itemId = "toolu-1") =>
   bridge.call("thread/commandExecution/background", {
     threadId: bridge.thread,
     turnId,
     itemId,
   });
 
-async function backgroundCalls(bridge) {
+async function backgroundCalls(bridge: BridgeHarness) {
   const file = path.join(bridge.root, ".background-calls");
   return existsSync(file)
     ? (await fs.readFile(file, "utf8")).trim().split("\n")
@@ -104,7 +60,7 @@ test("a registered foreground command moves to the background and releases the t
   await assert.rejects(move(bridge, turn), /cannot move to the background yet/);
   await fs.writeFile(path.join(bridge.root, ".registered"), "");
   const offered = await bridge.note(
-    (n) =>
+    (n): n is BridgeNoteFor<"item/started"> =>
       n.method === "item/started" &&
       n.params.item.id === "toolu-1" &&
       n.params.item.canMoveToBackground === true,
@@ -112,7 +68,8 @@ test("a registered foreground command moves to the background and releases the t
   assert.equal(offered.params.turnId, turn);
   assert.deepEqual(await move(bridge, turn), { status: "backgrounded" });
   const done = await bridge.note(
-    (n) => n.method === "item/completed" && n.params.item.id === "toolu-1",
+    (n): n is BridgeNoteFor<"item/completed"> =>
+      n.method === "item/completed" && n.params.item.id === "toolu-1",
   );
   assert.equal(done.params.item.status, "completed");
   assert.equal(done.params.item.backgroundTaskId, "bash-1");
@@ -120,7 +77,8 @@ test("a registered foreground command moves to the background and releases the t
   assert.equal(done.params.item.canMoveToBackground, false);
   assert.equal("exitCode" in done.params.item, false);
   const completed = await bridge.note(
-    (n) => n.method === "turn/completed" && n.params.turn.id === turn,
+    (n): n is BridgeNoteFor<"turn/completed"> =>
+      n.method === "turn/completed" && n.params.turn.id === turn,
   );
   assert.equal(completed.params.turn.status, "completed");
   // A retry after the move cannot reach Claude again or repeat the command.
@@ -129,22 +87,23 @@ test("a registered foreground command moves to the background and releases the t
   // Claude reports the end of the background task as its own item.
   await fs.writeFile(path.join(bridge.root, ".finish"), "");
   const finished = await bridge.note(
-    (n) =>
+    (n): n is BridgeNoteFor<"item/completed"> =>
       n.method === "item/completed" &&
       n.params.item.id === "task:bash-1" &&
       n.params.item.status === "completed",
   );
-  assert.match(
-    finished.params.item.result.content[0].text,
-    /Background command completed/,
-  );
+  assert.deepEqual(finished.params.item.result, {
+    content: [
+      { type: "text", text: "Background command completed (exit code 0)" },
+    ],
+  });
 });
 
 test("a request for another turn or item never reaches Claude", async () => {
   const { bridge, turn } = await runningCommand();
   await fs.writeFile(path.join(bridge.root, ".registered"), "");
   await bridge.note(
-    (n) =>
+    (n): n is BridgeNoteFor<"item/started"> =>
       n.method === "item/started" && n.params.item.canMoveToBackground === true,
   );
   await assert.rejects(move(bridge, "other-turn"), /different Claude turn/);
@@ -158,7 +117,7 @@ test("a request for another turn or item never reaches Claude", async () => {
 });
 
 test("task events set the control only for a running foreground shell", () => {
-  const item = {
+  const item: import("./session-state.ts").Item = {
     id: "toolu-2",
     type: "commandExecution",
     status: "inProgress",
@@ -169,7 +128,8 @@ test("task events set the control only for a running foreground shell", () => {
     task_type: "local_bash",
     tool_use_id: "toolu-2",
     is_backgrounded: false,
-  };
+  } satisfies Parameters<typeof foregroundCommandUpdate>[1] &
+    Parameters<typeof foregroundCommandUpdate>[2];
   assert.equal(foregroundCommandUpdate(active, started, started), item);
   assert.equal(item.canMoveToBackground, true);
   // An unchanged flag publishes nothing.
@@ -179,7 +139,7 @@ test("task events set the control only for a running foreground shell", () => {
   const moved = {
     subtype: "task_updated",
     patch: { is_backgrounded: true },
-  };
+  } satisfies Parameters<typeof foregroundCommandUpdate>[2];
   assert.equal(
     foregroundCommandUpdate(active, { ...started, ...moved }, moved),
     item,
@@ -200,9 +160,12 @@ test("only a backgrounded result drops the exit code", () => {
 });
 
 test("an SDK without the control fails visibly", async () => {
+  const q: Partial<
+    Pick<import("@anthropic-ai/claude-agent-sdk").Query, "backgroundTasks">
+  > = {};
   const active = {
-    turn: { id: "turn" },
-    q: {},
+    turn: { id: "turn", items: [] },
+    q,
     tools: new Map([
       [
         "toolu-4",
