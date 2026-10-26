@@ -1,8 +1,10 @@
 import { layoutValues } from "./layout-contract.generated";
+import { primaryTouchPointerMedia } from "../hooks/touchCapability";
 import { useCallback, useLayoutEffect, useState } from "react";
 import {
   deriveWorkspaceLayout,
   type LayoutRect,
+  type PanePathInput,
 } from "./deriveWorkspaceLayout";
 
 const emptyRect: LayoutRect = { x: 0, y: 0, width: 0, height: 0 };
@@ -11,6 +13,7 @@ export function useWorkspaceLayout(options: {
   workspaceOpen?: boolean;
   teamPreferred?: boolean;
   preferredPanelWidthRem?: number;
+  panePath?: Omit<PanePathInput, "primaryCoarse" | "hinge" | "available">;
 }) {
   const [host, setHost] = useState<HTMLDivElement | null>(null);
   const [geometry, setGeometry] = useState<{
@@ -19,12 +22,18 @@ export function useWorkspaceLayout(options: {
     rootFontPx: number;
     shortTouchLandscape: boolean;
     duo: boolean;
+    primaryCoarse: boolean;
+    available: LayoutRect;
+    hinge: NonNullable<PanePathInput["hinge"]>;
   }>({
     host: emptyRect,
     viewport: emptyRect,
     rootFontPx: layoutValues.viewport.rootFontDefault,
     shortTouchLandscape: false,
     duo: false,
+    primaryCoarse: false,
+    available: emptyRect,
+    hinge: { status: "unknown" },
   });
   const rowRef = useCallback(
     (node: HTMLDivElement | null) => setHost(node),
@@ -36,6 +45,27 @@ export function useWorkspaceLayout(options: {
     const view = document.defaultView!;
     const update = () => {
       const bounds = host.getBoundingClientRect();
+      const root = document.documentElement;
+      const app = document.getElementById("root");
+      const appStyle = view.getComputedStyle(app || root);
+      const number = (value: string) => Number.parseFloat(value) || 0;
+      const left = number(appStyle.paddingLeft),
+        right = number(appStyle.paddingRight);
+      const top = number(appStyle.paddingTop),
+        bottom = number(appStyle.paddingBottom);
+      const status = root.dataset.nativeHinge;
+      const hinge: NonNullable<PanePathInput["hinge"]> = {
+        status:
+          status === "open" || status === "closed" || status === "partial"
+            ? status
+            : "unknown",
+        left: number(
+          view.getComputedStyle(root).getPropertyValue("--native-hinge-left"),
+        ),
+        width: number(
+          view.getComputedStyle(root).getPropertyValue("--native-hinge-width"),
+        ),
+      };
       const next = {
         host: {
           x: bounds.x,
@@ -48,7 +78,7 @@ export function useWorkspaceLayout(options: {
           x: 0,
           y: 0,
           width: view.innerWidth,
-          height: view.innerHeight,
+          height: app?.clientHeight || view.innerHeight,
         },
         rootFontPx: Number.parseFloat(
           view.getComputedStyle(document.documentElement).fontSize,
@@ -56,7 +86,21 @@ export function useWorkspaceLayout(options: {
         shortTouchLandscape: document.documentElement.hasAttribute(
           "data-viewport-short-landscape",
         ),
-        duo: document.documentElement.hasAttribute("data-duo-proportions"),
+        duo: root.hasAttribute("data-duo-proportions"),
+        primaryCoarse: primaryTouchPointerMedia().matches,
+        available: {
+          x: left,
+          y: top,
+          width: Math.max(
+            0,
+            (app?.clientWidth || view.innerWidth) - left - right,
+          ),
+          height: Math.max(
+            0,
+            (app?.clientHeight || view.innerHeight) - top - bottom,
+          ),
+        },
+        hinge,
       };
       setGeometry((old) =>
         JSON.stringify(old) === JSON.stringify(next) ? old : next,
@@ -73,14 +117,17 @@ export function useWorkspaceLayout(options: {
         "class",
         "data-viewport-short-landscape",
         "data-duo-proportions",
+        "data-native-hinge",
       ],
     });
     view.addEventListener("resize", update);
+    view.addEventListener("studio-native-viewport", update);
     update();
     return () => {
       resize.disconnect();
       preferences.disconnect();
       view.removeEventListener("resize", update);
+      view.removeEventListener("studio-native-viewport", update);
     };
   }, [host]);
   return {
@@ -91,6 +138,14 @@ export function useWorkspaceLayout(options: {
     ...deriveWorkspaceLayout({
       ...geometry,
       ...options,
+      panePath: options.panePath
+        ? {
+            ...options.panePath,
+            primaryCoarse: geometry.primaryCoarse,
+            hinge: geometry.hinge,
+            available: geometry.available,
+          }
+        : undefined,
       hostExcludesSafeInsets: true,
     }),
   };

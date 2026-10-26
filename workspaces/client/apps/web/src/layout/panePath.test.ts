@@ -10,7 +10,7 @@ const base = {
 };
 const state = {
   primaryCoarse: true,
-  panel: null as "workspace" | "team" | null,
+  panel: null as "workspace" | "team" | "terminals" | null,
   sidebarOverride: false,
   fullScreen: false,
   hinge: {
@@ -31,7 +31,7 @@ describe("Duo pane path", () => {
     expect(result?.panes.conversation?.width).toBeCloseTo(552.2);
     expect(result?.panes.panel).toBeNull();
   });
-  it.each(["workspace", "team"] as const)(
+  it.each(["workspace", "team", "terminals"] as const)(
     "pairs the conversation with the %s panel at equal widths",
     (panel) => {
       const result = layout({ panel });
@@ -52,7 +52,7 @@ describe("Duo pane path", () => {
       expect(result?.panelKind).toBe(panel);
     },
   );
-  it.each([null, "workspace", "team"] as const)(
+  it.each([null, "workspace", "team", "terminals"] as const)(
     "keeps both panes outside the partial-fold band, panel %s",
     (panel) => {
       const result = layout({
@@ -81,6 +81,18 @@ describe("Duo pane path", () => {
     expect(result?.panes.panel).toEqual(base.host);
     expect(result?.panelKind).toBe("team");
   });
+  it("keeps the same last screen on the native closed display", () => {
+    const result = deriveWorkspaceLayout({
+      ...base,
+      host: { x: 0, y: 0, width: 390, height: 810 },
+      viewport: { x: 0, y: 0, width: 390, height: 844 },
+      panePath: { ...state, panel: "team", hinge: { status: "closed" } },
+    }).panePath;
+    expect(result?.mode).toBe("single");
+    expect(result?.visible).toEqual(["panel"]);
+    expect(result?.panelKind).toBe("team");
+    expect(result?.panes.panel?.width).toBe(390);
+  });
   it("keeps the selected panel while the sidebar temporarily replaces it", () => {
     const result = layout({ panel: "team", sidebarOverride: true });
     expect(result?.visible).toEqual(["sidebar", "conversation"]);
@@ -96,6 +108,19 @@ describe("Duo pane path", () => {
     ]);
     expect(layout({ panel: "workspace" })?.visible).toEqual([
       "conversation",
+      "panel",
+    ]);
+  });
+  it("suspends full screen during partial fold and restores it when flat", () => {
+    const partial = layout({
+      panel: "team",
+      fullScreen: true,
+      hinge: { ...state.hinge, status: "partial" },
+    });
+    expect(partial?.visible).toEqual(["conversation", "panel"]);
+    expect(partial?.canFullScreen).toBe(false);
+    expect(partial?.panes.panel?.x).toBe(495.5);
+    expect(layout({ panel: "team", fullScreen: true })?.visible).toEqual([
       "panel",
     ]);
   });

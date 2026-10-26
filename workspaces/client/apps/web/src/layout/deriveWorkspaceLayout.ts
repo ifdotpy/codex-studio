@@ -26,7 +26,7 @@ export interface PanelLayout {
 export type PaneName = "sidebar" | "conversation" | "panel";
 export type PanePathInput = {
   primaryCoarse: boolean;
-  panel: "workspace" | "team" | null;
+  panel: "workspace" | "team" | "terminals" | null;
   sidebarOverride: boolean;
   fullScreen: boolean;
   /** Native hinge division coordinates in CSS pixels, including the status strip. */
@@ -45,6 +45,7 @@ export type PanePathLayout = {
   panes: Record<PaneName, LayoutRect | null>;
   divider: LayoutRect | null;
   panelKind: PanePathInput["panel"];
+  canFullScreen: boolean;
 };
 export interface WorkspaceLayoutInput {
   /** The common row already excludes any sidebar owned by its parent. */
@@ -112,13 +113,17 @@ function derivePanePath(
   rootFontSize: number,
 ): PanePathLayout | null {
   const state = input.panePath;
+  const nativeClosed =
+    state?.hinge?.status === "closed" &&
+    input.viewport.width < layoutValues.duo.widthMax;
   if (
-    !state ||
-    !isDuoLayout({
-      width: Math.max(input.viewport.width, input.viewport.height),
-      height: Math.min(input.viewport.width, input.viewport.height),
-      primaryCoarse: state.primaryCoarse,
-    })
+    !state?.primaryCoarse ||
+    (!nativeClosed &&
+      !isDuoLayout({
+        width: Math.max(input.viewport.width, input.viewport.height),
+        height: Math.min(input.viewport.width, input.viewport.height),
+        primaryCoarse: state.primaryCoarse,
+      }))
   )
     return null;
   const frame = state.available ?? usable;
@@ -166,7 +171,8 @@ function derivePanePath(
   const fits =
     leftWidth >= (hasPanel ? contentMin : sidebarMin) &&
     rightWidth >= (partial || hasPanel ? contentMin : conversationMin);
-  const pair = !state.fullScreen && state.hinge?.status !== "closed" && fits;
+  const pair =
+    (!state.fullScreen || partial) && state.hinge?.status !== "closed" && fits;
   const panes: PanePathLayout["panes"] = {
     sidebar: null,
     conversation: null,
@@ -195,6 +201,7 @@ function derivePanePath(
     divider:
       pair && partial ? { ...frame, x: frame.x + leftWidth, width: gap } : null,
     panelKind: state.panel,
+    canFullScreen: !partial,
   };
 }
 export function deriveWorkspaceLayout(input: WorkspaceLayoutInput) {

@@ -4,6 +4,7 @@ import {
   layoutQueries,
   layoutValues,
 } from "../../layout/layout-contract.generated";
+import type { LayoutRect } from "../../layout/deriveWorkspaceLayout";
 import { resolveSidebarWidth, storedSidebarWidth } from "./sidebarWidth";
 import { useSidebarResize } from "./useSidebarResize";
 import { useDuoSurface } from "../../layout/useDuoSurface";
@@ -45,6 +46,7 @@ export type SidebarFrameProps = {
   close: () => void;
   onCompactChange?: (compact: boolean) => void;
   children: ReactNode;
+  paneRect?: LayoutRect | null | undefined;
   drawerZIndex?: number;
   onEntered?: () => void;
 };
@@ -78,10 +80,13 @@ export function SidebarFrame(p: SidebarFrameProps) {
         : widthContract.conversationMinRem,
     },
   });
+  const inPath = p.paneRect !== undefined;
   // The static desktop render has no viewport to measure.
-  const compact = typeof window !== "undefined" && policy.mode === "drawer";
+  const compact =
+    !inPath && typeof window !== "undefined" && policy.mode === "drawer";
   // Measure once before paint when the saved desktop preference starts closed.
-  const probing = !compact && p.collapsed && headerMinimum.current === 0;
+  const probing =
+    !inPath && !compact && p.collapsed && headerMinimum.current === 0;
   const live = useRef({ scope, compact });
   live.current = { scope, compact };
 
@@ -229,7 +234,7 @@ export function SidebarFrame(p: SidebarFrameProps) {
   };
   const resize = useSidebarResize({
     scope,
-    enabled: !compact && !p.collapsed,
+    enabled: !inPath && !compact && !p.collapsed,
     width: policy.width,
     minimum: policy.minimum,
     maximum: policy.maximum,
@@ -238,7 +243,7 @@ export function SidebarFrame(p: SidebarFrameProps) {
     commit: save,
   });
   useLayoutEffect(() => {
-    if (compact || p.collapsed) return;
+    if (inPath || compact || p.collapsed) return;
     const root = document.documentElement;
     const previous = root.style.getPropertyValue("--studio-sidebar-width");
     root.style.setProperty("--studio-sidebar-width", `${resize.width}px`);
@@ -246,7 +251,7 @@ export function SidebarFrame(p: SidebarFrameProps) {
       if (previous) root.style.setProperty("--studio-sidebar-width", previous);
       else root.style.removeProperty("--studio-sidebar-width");
     };
-  }, [resize.width, compact, p.collapsed]);
+  }, [resize.width, compact, p.collapsed, inPath]);
   const close = () => {
     restoreSidebarFocus();
     p.close();
@@ -258,17 +263,29 @@ export function SidebarFrame(p: SidebarFrameProps) {
       className="sidebar-frame"
       tabIndex={compact && duoSurface ? -1 : undefined}
       data-autofocus={compact && duoSurface ? true : undefined}
-      data-presentation={compact ? "drawer" : "inline"}
+      data-presentation={inPath ? "path" : compact ? "drawer" : "inline"}
+      hidden={inPath && !p.paneRect}
       data-probe={probing || undefined}
       inert={probing || undefined}
       aria-hidden={probing || undefined}
       aria-label="Conversations"
       style={
-        compact ? undefined : { width: resize.width, flexBasis: resize.width }
+        inPath
+          ? {
+              position: "absolute",
+              left: 0,
+              top: p.paneRect?.y ?? 0,
+              transform: `translateX(${p.paneRect?.x ?? 0}px)`,
+              width: p.paneRect?.width ?? 0,
+              height: p.paneRect?.height ?? 0,
+            }
+          : compact
+            ? undefined
+            : { width: resize.width, flexBasis: resize.width }
       }
     >
       {p.children}
-      {!compact && (
+      {!inPath && !compact && (
         <div
           className="sidebar-resize-rail"
           role="separator"
@@ -286,6 +303,7 @@ export function SidebarFrame(p: SidebarFrameProps) {
       )}
     </aside>
   );
+  if (inPath) return content;
   if (!compact) return p.collapsed && !probing ? null : content;
   return (
     <Drawer

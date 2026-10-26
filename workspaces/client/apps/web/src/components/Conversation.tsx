@@ -529,7 +529,11 @@ export default function Conversation(p: {
     remember,
     revealRequest,
     getAnchorId,
-  } = useConversationScroll(`${p.data.stateDir}:${kind}:${p.id}`, loaded);
+  } = useConversationScroll(
+    `${p.data.stateDir}:${kind}:${p.id}`,
+    loaded,
+    p.visible ?? true,
+  );
   const loadOlderAtStart = () => {
     if (
       !before ||

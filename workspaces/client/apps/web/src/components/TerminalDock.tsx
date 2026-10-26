@@ -31,6 +31,8 @@ import { layoutValues } from "../layout/layout-contract.generated";
 import { resolveLayoutLength } from "../layout/deriveWorkspaceLayout";
 import { useTerminalHeight } from "./useTerminalHeight";
 import { TerminalResizeGesture } from "./terminalResize";
+import { panePathStyle, PanePathHeader } from "./shell/PanePathChrome";
+import type { WorkspacePanelPresentationProps } from "./shell/WorkspacePanelHost";
 
 const terminalBounds = (rootFont: number) => ({
   preferred: resolveLayoutLength("terminal.preferred", rootFont),
@@ -52,10 +54,18 @@ export default function TerminalDock({
   data,
   agent,
   notify,
+  panePath,
 }: {
   data: Snapshot | null;
   agent?: Agent | undefined;
   notify: (message: string) => void;
+  panePath?:
+    | (NonNullable<WorkspacePanelPresentationProps["panePath"]> & {
+        opened: boolean;
+        onOpen: () => void;
+        onClose: () => void;
+      })
+    | undefined;
 }) {
   const {
     screen,
@@ -69,9 +79,22 @@ export default function TerminalDock({
   const { subscribeStateProjection } = useServerSync();
   const { get, post, save, saved } = useServerApi();
 
-  const [opened, setOpened] = useState(() =>
+  const [dockOpened, storeOpened] = useState(() =>
     saved("codex.terminal.open", false),
   );
+  const opened = panePath?.opened ?? dockOpened;
+  const retainedBody = useRef(false);
+  if (opened) retainedBody.current = true;
+  const presentation = useRef({ panePath, opened });
+  presentation.current = { panePath, opened };
+  const setOpened = (next: boolean | ((value: boolean) => boolean)) => {
+    const current = presentation.current;
+    const value = typeof next === "function" ? next(current.opened) : next;
+    if (current.panePath) {
+      if (value) current.panePath.onOpen();
+      else current.panePath.onClose();
+    } else storeOpened(value);
+  };
   const [height, setHeight] = useState(() =>
     saved(
       "codex.terminal.height",
@@ -148,18 +171,21 @@ export default function TerminalDock({
   // Page layout rules read this flag instead of #root:has(.terminal-dock).
   useLayoutEffect(() => {
     const root = document.documentElement;
+    if (panePath) return;
     root.dataset.terminalDock = opened ? "open" : "closed";
     if (shellTerminal) root.dataset.terminalShell = "true";
     return () => {
       delete root.dataset.terminalDock;
       delete root.dataset.terminalShell;
     };
-  }, [opened]);
+  }, [opened, !!panePath]);
   useEffect(() => {
+    if (panePath) return;
     if (!opened) setEndTarget(null);
     save("codex.terminal.open", opened);
-  }, [opened]);
+  }, [opened, !!panePath]);
   useLayoutEffect(() => {
+    if (panePath) return;
     document.documentElement.style.setProperty(
       "--terminal-dock-height",
       `${geometry.height}px`,
@@ -167,7 +193,7 @@ export default function TerminalDock({
     return () => {
       document.documentElement.style.removeProperty("--terminal-dock-height");
     };
-  }, [geometry.height]);
+  }, [geometry.height, !!panePath]);
   useEffect(() => {
     const key = (event: KeyboardEvent) => {
       if ((event.ctrlKey || event.metaKey) && event.code === "Backquote") {
@@ -241,7 +267,7 @@ export default function TerminalDock({
     Number.parseFloat(getComputedStyle(document.documentElement).fontSize),
   );
   useEffect(() => {
-    if (!shellTerminal) return;
+    if (!shellTerminal || panePath) return;
     postToShell(
       {
         kind: "studio-server-terminal",
@@ -256,6 +282,7 @@ export default function TerminalDock({
     );
   }, [
     opened,
+    !!panePath,
     shownHeight,
     entries.length,
     activeCount,
@@ -299,17 +326,29 @@ export default function TerminalDock({
   return (
     <section
       ref={dock}
-      className={`terminal-dock ${opened ? "is-open" : ""}`}
+      className={`terminal-dock ${opened ? "is-open" : ""}${panePath ? " duo-pane-panel terminal-pane-path" : ""}`}
+      hidden={!!panePath && !panePath.rect}
       data-shell-terminal={shellTerminal || undefined}
       aria-label="Terminals"
       style={
-        {
-          height: geometry.height,
-          "--terminal-dock-height": `${geometry.height}px`,
-        } as CSSProperties
+        panePath
+          ? panePathStyle(panePath.rect)
+          : ({
+              height: geometry.height,
+              "--terminal-dock-height": `${geometry.height}px`,
+            } as CSSProperties)
       }
     >
-      {opened && (
+      {panePath && (
+        <PanePathHeader
+          title="Terminals"
+          fullScreen={panePath.fullScreen}
+          canFullScreen={panePath.canFullScreen}
+          onToggleFullScreen={panePath.onToggleFullScreen}
+          onClose={panePath.onClose}
+        />
+      )}
+      {!panePath && opened && (
         <div
           className="terminal-dock-resizer"
           role="separator"
@@ -374,6 +413,7 @@ export default function TerminalDock({
       <header className="terminal-dock-bar">
         <button
           type="button"
+          hidden={!!panePath}
           className="terminal-dock-toggle"
           onClick={() => setOpened(!opened)}
           aria-expanded={opened}
@@ -395,7 +435,7 @@ export default function TerminalDock({
           <span className="terminal-dock-current">{current.title}</span>
         )}
         <span className="terminal-dock-spacer" />
-        {opened && (
+        {!panePath && opened && (
           <Button
             size="compact-xs"
             variant="subtle"
@@ -416,7 +456,7 @@ export default function TerminalDock({
           <span className="terminal-new-label">New terminal</span>
         </Button>
       </header>
-      {opened && (
+      {(opened || (!!panePath && retainedBody.current)) && (
         <div className="terminal-dock-body">
           <aside
             className="terminal-dock-sessions"
