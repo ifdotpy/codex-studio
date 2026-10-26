@@ -63,7 +63,7 @@ class InstallLayrTests(unittest.TestCase):
         (source / "Cargo.toml").write_bytes(data)
         files = {"Cargo.toml": hashlib.sha256(data).hexdigest()}
         total = hashlib.sha256(json.dumps(files, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
-        (source / "manifest.json").write_text(json.dumps({"files": files, "sourceSha256": total}))
+        (source / "manifest.json").write_text(json.dumps({"files": files, "sourceSha256": total, "revision": "a" * 40}))
         return total
 
     @staticmethod

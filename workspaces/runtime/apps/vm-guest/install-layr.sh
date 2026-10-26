@@ -20,7 +20,7 @@ export CARGO_HOME=/var/lib/codex-studio/layr-build-cache/cargo
 
 # The identity of a vendored source (update-vm-layr.py), after each of its files matches the manifest.
 source_identity() {
-    python3 - "$1" <<'PY'
+    python3 - "$@" <<'PY'
 import hashlib, json, pathlib, sys
 root = pathlib.Path(sys.argv[1])
 manifest = json.loads((root / 'manifest.json').read_text())
@@ -29,7 +29,12 @@ for name, expected in manifest['files'].items():
     assert '..' not in path.parts and path.is_relative_to(root)
     assert hashlib.sha256(path.read_bytes()).hexdigest() == expected, name
 assert hashlib.sha256(json.dumps(manifest['files'], sort_keys=True, separators=(',', ':')).encode()).hexdigest() == manifest['sourceSha256']
-print(manifest['sourceSha256'])
+if len(sys.argv) > 2 and sys.argv[2] == 'revision':
+    revision = manifest['revision']
+    assert isinstance(revision, str) and len(revision) == 40 and all(c in '0123456789abcdef' for c in revision)
+    print(revision)
+else:
+    print(manifest['sourceSha256'])
 PY
 }
 
@@ -53,7 +58,8 @@ identity=$(source_identity "$source_dir")
 if [ "$(cat /var/lib/codex-studio/layr-build 2>/dev/null || true)" != "$identity" ] || [ ! -x /usr/local/bin/layr ]; then
     use_rust
     export CARGO_TARGET_DIR=/var/lib/codex-studio/layr-build-cache/target
-    timeout --kill-after=10 1200 cargo build --manifest-path "$source_dir/Cargo.toml" --release --locked --jobs 2
+    revision=$(source_identity "$source_dir" revision)
+    LAYR_BUILD_ID="$revision" timeout --kill-after=10 1200 cargo build --manifest-path "$source_dir/Cargo.toml" --release --locked --jobs 2
     candidate="$CARGO_TARGET_DIR/release/layr"
 else
     candidate=/usr/local/bin/layr

@@ -84,7 +84,11 @@ esac
     write(`${source}/Cargo.toml`, cargo);
     write(
       `${source}/manifest.json`,
-      JSON.stringify({ files, sourceSha256: identity }),
+      JSON.stringify({
+        files,
+        sourceSha256: identity,
+        revision: "a".repeat(40),
+      }),
     );
   }
   for (const name of ["layr", "layr-admin", "share", "share-bridge"])
@@ -118,6 +122,7 @@ esac`,
   write(
     "/opt/codex-studio/rust/bin/cargo",
     `#!/bin/sh
+printf '%s\\n' "\${LAYR_BUILD_ID:-}" >> '${file("build-environments")}'
 mkdir -p "$CARGO_TARGET_DIR/release"
 case "$*" in *layr-desk*) echo desk > "$CARGO_TARGET_DIR/release/layr-desk" ;;
 *) cp '${file("candidate")}' "$CARGO_TARGET_DIR/release/layr" ;; esac

@@ -6,6 +6,13 @@ import { test } from "node:test";
 
 import { binary, compatible, legacy, fixture } from "./install-layr-store.mts";
 
+test("only the Layr build receives the manifest upstream revision", async (t) => {
+  const f = fixture(t);
+  const run = await f.run();
+  assert.equal(run.status, 0, run.stderr);
+  assert.equal(f.read("/build-environments"), `${"a".repeat(40)}\n\n`);
+});
+
 test("the installer upgrades legacy metadata once before binary activation", async (t) => {
   const f = fixture(t);
   const first = await f.run();
