@@ -28,6 +28,7 @@ import {
   isProjectionDatabaseClosedError,
   PROJECTION_DATABASE_RELOAD_MESSAGE,
 } from "./sync/entityCacheStorage";
+import "./sync/transcriptCache";
 import type { CachedTranscript } from "./sync/transcriptCache";
 type TranscriptSnapshot = NonNullable<CachedTranscript["payload"]>;
 import { ReadRecoveryBudget, retryableReadError } from "./sync/readRetry";

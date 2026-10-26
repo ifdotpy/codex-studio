@@ -22,11 +22,11 @@ export default defineConfig({
           browser: {
             enabled: true,
             headless: true,
-            provider: playwright(
-              process.env.CHROME_BIN
-                ? { launchOptions: { executablePath: process.env.CHROME_BIN } }
-                : {},
-            ),
+            provider: playwright({
+              launchOptions: process.env.CHROME_BIN
+                ? { executablePath: process.env.CHROME_BIN }
+                : undefined,
+            }),
             instances: [{ browser: "chromium" }],
           },
         },

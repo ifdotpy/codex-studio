@@ -625,7 +625,9 @@ const sharedFixtures: import("@playwright/test").Fixtures<
       } finally {
         clearInterval(memorySampler);
         sampleMemory();
-        let workerMemorySelection: ReturnType<typeof parseWorkerSelection> = {};
+        let workerMemorySelection: Partial<
+          ReturnType<typeof parseWorkerSelection>
+        > = {};
         try {
           workerMemorySelection = parseWorkerSelection(
             process.env.CODEX_PLAYWRIGHT_WORKER_SELECTION || "{}",

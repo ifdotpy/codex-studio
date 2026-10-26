@@ -187,12 +187,12 @@ export function isApiSchemaMismatchResponse(
 }
 
 export class ApiError extends Error {
-  public readonly outcome?: string;
-  public readonly catalogPending?: boolean;
-
   public status: number;
   public readonly response: unknown;
   public readonly location: string[] | undefined;
+  public readonly outcome?: string;
+  public readonly catalogPending?: boolean;
+
   constructor(
     message: unknown,
     status: number,
@@ -546,13 +546,12 @@ export function createApiScope(options: ApiScopeOptions) {
     try {
       const result =
         method === "GET"
-          ? await accessClient.GET(
-              "/api/multi-server",
-              controller.signal ? { signal: controller.signal } : {},
-            )
+          ? await accessClient.GET("/api/multi-server", {
+              signal: controller.signal,
+            })
           : await accessClient.POST("/api/multi-server", {
               body: body!,
-              ...(controller.signal ? { signal: controller.signal } : {}),
+              signal: controller.signal,
               headers: {
                 "X-Canvas-Token": sessionToken ?? token,
                 "X-Canvas-Workspace": workspace,
