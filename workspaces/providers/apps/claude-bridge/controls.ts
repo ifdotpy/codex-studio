@@ -223,7 +223,11 @@ export function rollbackBoundary(
 // persist must atomically save the whole descriptor. Never retry an unknown fork.
 export async function rollbackSession(
   session: Session,
-  request: { requestId: string; turnId: string; restoreFiles?: boolean },
+  request: {
+    requestId: string;
+    turnId: string;
+    restoreFiles?: boolean | undefined;
+  },
   deps: ControlDependencies,
 ) {
   const { requestId, turnId } = request;
@@ -429,7 +433,7 @@ export async function forkAtTurn(
   source: Session,
   params: Partial<Session> & {
     threadId?: string | undefined;
-    lastTurnId?: string | null;
+    lastTurnId?: string | null | undefined;
   },
   deps: ControlDependencies,
 ) {
