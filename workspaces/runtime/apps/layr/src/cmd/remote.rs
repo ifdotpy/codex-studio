@@ -103,7 +103,7 @@ pub mod git {
                 continue;
             }
             let prev = repo.p.db.remote_ref(name)?;
-            let (st, fresh) = gitbridge::import_commit(ctx, repo, commit, name, ctx.caller.uid)?;
+            let (st, fresh) = gitbridge::import_commit(ctx, repo, commit, name, ctx.caller.uid, None)?;
             if prev.as_ref().map(|p| p.0 != st).unwrap_or(true) && !fresh {
                 let mut rec = Record::new("remote.ref");
                 rec.data = serde_json::json!({"ref": name, "state": st, "commit": commit});

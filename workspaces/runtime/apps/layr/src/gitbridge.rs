@@ -354,8 +354,16 @@ fn commit_info(s: &Path, c: &str) -> Result<(String, String, String, i64)> {
 }
 
 /// Write the files of `commit` for `paths` (all when `None`) into `dst`, deleting paths that
-/// are not in the commit.
-fn materialize(s: &Path, commit: &str, dst: &Path, paths: Option<&[String]>, own: Option<(u32, u32)>) -> Result<()> {
+/// are not in the commit. `source` is a private, immutable copy of the source working tree.
+fn materialize(
+    s: &Path,
+    commit: &str,
+    dst: &Path,
+    paths: Option<&[String]>,
+    own: Option<(u32, u32)>,
+    source: Option<&Path>,
+) -> Result<()> {
+    let source = source.map(crate::tree::Tree::open).transpose()?;
     let mut args = vec!["ls-tree", "-r", "-z", "--full-tree", commit];
     let owned: Vec<String>;
     if let Some(p) = paths {
@@ -449,7 +457,13 @@ fn materialize(s: &Path, commit: &str, dst: &Path, paths: Option<&[String]>, own
             }
         } else {
             let m = if mode == "100755" { 0o755 } else { 0o644 };
-            fsutil::write_file(dst, path, &data, m, own)?;
+            let cloned = match &source {
+                Some(source) => clone_matching_blob(source, path, &data, dst, m, own)?,
+                None => false,
+            };
+            if !cloned {
+                fsutil::write_file(dst, path, &data, m, own)?;
+            }
         }
     }
     writer.join().map_err(|_| anyhow!("writer thread"))??;
@@ -457,8 +471,47 @@ fn materialize(s: &Path, commit: &str, dst: &Path, paths: Option<&[String]>, own
     Ok(())
 }
 
+/// Clone only exact blob bytes. Missing files, links and working edits use the Git blob.
+fn clone_matching_blob(
+    source: &crate::tree::Tree,
+    path: &str,
+    data: &[u8],
+    dst: &Path,
+    mode: u32,
+    own: Option<(u32, u32)>,
+) -> Result<bool> {
+    use std::io::Read;
+    let mut file = match source.open_read(path) {
+        Ok(file) => file,
+        Err(_) => return Ok(false),
+    };
+    if file.metadata()?.len() != data.len() as u64 {
+        return Ok(false);
+    }
+    let mut buf = [0u8; 64 * 1024];
+    for expected in data.chunks(buf.len()) {
+        file.read_exact(&mut buf[..expected.len()])?;
+        if &buf[..expected.len()] != expected {
+            return Ok(false);
+        }
+    }
+    // The caller-owned folder was copied with caller permissions before this snapshot.
+    // It cannot change between this comparison and the descriptor-safe clone.
+    fsutil::copy_entry(source.path.as_path(), path, dst, path, own)?;
+    fsutil::set_mode(dst, path, mode)?;
+    Ok(true)
+}
+
 /// Make (or find) the state of a git commit. `prev` is the previous import of the same ref.
-pub fn import_commit(ctx: &Ctx, repo: &Repo, commit: &str, refname: &str, author_uid: u32) -> Result<(String, bool)> {
+/// `source`, when present, must be a private, immutable source snapshot.
+pub fn import_commit(
+    ctx: &Ctx,
+    repo: &Repo,
+    commit: &str,
+    refname: &str,
+    author_uid: u32,
+    source: Option<&Path>,
+) -> Result<(String, bool)> {
     let s = init_store(repo)?;
     let mapped = repo.p.db.state_of_commit(commit)?;
     if let Some(st) = mapped.iter().find(|x| repo.p.has_state(x)) {
@@ -530,12 +583,12 @@ pub fn import_commit(ctx: &Ctx, repo: &Repo, commit: &str, refname: &str, author
                     .filter(|x| !x.is_empty())
                     .map(|x| String::from_utf8_lossy(x).into_owned())
                     .collect();
-                materialize(&s, commit, &work, Some(&paths), None)?;
+                materialize(&s, commit, &work, Some(&paths), None, source)?;
                 parents.push(pst.clone());
             }
             None => {
                 crate::storage::create_subvolume(&work)?;
-                materialize(&s, commit, &work, None, None)?;
+                materialize(&s, commit, &work, None, None, source)?;
             }
         }
         // Exported states that this commit contains become parents too (good merge bases).
