@@ -49311,9 +49311,7 @@
                 "type": "string"
               },
               "kind": {
-                "enum": [
-                  "migration"
-                ],
+                "const": "migration",
                 "type": "string"
               },
               "phase": {
@@ -49342,17 +49340,17 @@
                 "type": "string"
               },
               "kind": {
-                "enum": [
-                  "stored_record"
-                ],
+                "const": "stored_record",
                 "type": "string"
               },
               "object": {
                 "type": "string"
               },
               "pointer": {
-                "nullable": true,
-                "type": "string"
+                "type": [
+                  "string",
+                  "null"
+                ]
               }
             },
             "required": [
@@ -49371,9 +49369,7 @@
                 "type": "integer"
               },
               "kind": {
-                "enum": [
-                  "sqlite"
-                ],
+                "const": "sqlite",
                 "type": "string"
               },
               "primaryCode": {
@@ -49400,9 +49396,7 @@
                 "type": "integer"
               },
               "kind": {
-                "enum": [
-                  "json"
-                ],
+                "const": "json",
                 "type": "string"
               },
               "line": {
@@ -49423,15 +49417,15 @@
             "additionalProperties": false,
             "properties": {
               "kind": {
-                "enum": [
-                  "io"
-                ],
+                "const": "io",
                 "type": "string"
               },
               "osCode": {
                 "format": "int32",
-                "nullable": true,
-                "type": "integer"
+                "type": [
+                  "integer",
+                  "null"
+                ]
               }
             },
             "required": [
@@ -49444,9 +49438,7 @@
             "additionalProperties": false,
             "properties": {
               "kind": {
-                "enum": [
-                  "schema_object"
-                ],
+                "const": "schema_object",
                 "type": "string"
               },
               "object": {
@@ -49466,9 +49458,7 @@
                 "$ref": "#/components/schemas/HttpErrorKind"
               },
               "kind": {
-                "enum": [
-                  "runtime"
-                ],
+                "const": "runtime",
                 "type": "string"
               }
             },
@@ -49487,22 +49477,26 @@
             "properties": {
               "epoch": {
                 "format": "int64",
-                "nullable": true,
-                "type": "integer"
+                "type": [
+                  "integer",
+                  "null"
+                ]
               },
               "requestId": {
-                "nullable": true,
-                "type": "string"
+                "type": [
+                  "string",
+                  "null"
+                ]
               },
               "source": {
-                "enum": [
-                  "monitor"
-                ],
+                "const": "monitor",
                 "type": "string"
               },
               "turnId": {
-                "nullable": true,
-                "type": "string"
+                "type": [
+                  "string",
+                  "null"
+                ]
               }
             },
             "required": [
@@ -49521,14 +49515,14 @@
                 "type": "integer"
               },
               "source": {
-                "enum": [
-                  "input"
-                ],
+                "const": "input",
                 "type": "string"
               },
               "turnId": {
-                "nullable": true,
-                "type": "string"
+                "type": [
+                  "string",
+                  "null"
+                ]
               }
             },
             "required": [
@@ -49543,18 +49537,20 @@
             "properties": {
               "epoch": {
                 "format": "int64",
-                "nullable": true,
-                "type": "integer"
+                "type": [
+                  "integer",
+                  "null"
+                ]
               },
               "source": {
-                "enum": [
-                  "agent"
-                ],
+                "const": "agent",
                 "type": "string"
               },
               "turnId": {
-                "nullable": true,
-                "type": "string"
+                "type": [
+                  "string",
+                  "null"
+                ]
               }
             },
             "required": [
@@ -49571,16 +49567,16 @@
                 "$ref": "#/components/schemas/HttpErrorKind"
               },
               "requestId": {
-                "nullable": true,
-                "type": "string"
+                "type": [
+                  "string",
+                  "null"
+                ]
               },
               "route": {
                 "type": "string"
               },
               "source": {
-                "enum": [
-                  "http"
-                ],
+                "const": "http",
                 "type": "string"
               },
               "status": {
@@ -49606,16 +49602,16 @@
                 "type": "string"
               },
               "agentId": {
-                "nullable": true,
-                "type": "string"
+                "type": [
+                  "string",
+                  "null"
+                ]
               },
               "phase": {
                 "$ref": "#/components/schemas/RecoveryPhase"
               },
               "source": {
-                "enum": [
-                  "recovery"
-                ],
+                "const": "recovery",
                 "type": "string"
               }
             },

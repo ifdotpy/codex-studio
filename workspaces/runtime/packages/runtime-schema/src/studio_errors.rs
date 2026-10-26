@@ -300,7 +300,10 @@ pub struct StudioError {
 
 /// Derive all referenced components from this owner, including flattened action variants.
 pub(crate) fn schemas() -> Result<serde_json::Map<String, Value>, String> {
-    let mut generator = schemars::generate::SchemaSettings::openapi3()
+    // The API is OpenAPI 3.1 and the runtime validates JSON Schema: nullable
+    // evidence must stay an actual null type, not OpenAPI 3.0's nullable annotation.
+    let mut generator = schemars::generate::SchemaSettings::draft2020_12()
+        .with(|settings| settings.definitions_path = "/components/schemas".into())
         .for_serialize()
         .into_generator();
     let schema = StudioError::json_schema(&mut generator).to_value();
@@ -348,5 +351,53 @@ mod tests {
         let openapi =
             serde_json::from_str(include_str!("../../runtime-http/openapi.json")).expect("OpenAPI");
         check_schema_parity(&openapi).expect("incident contract parity");
+    }
+
+    #[test]
+    fn emitted_monitor_incidents_validate_through_the_real_sync_payload_owner() {
+        let incident = StudioError {
+            id: "monitor:watch".into(),
+            kind: Kind::MonitorOutcomeLost,
+            reason: Kind::MonitorOutcomeLost.reason().into(),
+            target: Target::Check {
+                agent_id: "agent".into(),
+                agent_name: "Agent".into(),
+            },
+            detail: String::new(),
+            subject: String::new(),
+            at: 1.0,
+            monitor_id: Some("watch".into()),
+            event_id: None,
+            diagnostics: Diagnostics {
+                context: Context::Monitor {
+                    request_id: Some("original".into()),
+                    turn_id: None,
+                    epoch: Some(0),
+                },
+                certainty: EffectCertainty::Unknown,
+                causes: Vec::new(),
+            },
+        };
+        let value = serde_json::to_value(incident).expect("typed incident");
+        let openapi: Value =
+            serde_json::from_str(include_str!("../../runtime-http/openapi.json")).expect("OpenAPI");
+        let registry = crate::registry_for_document(&openapi).expect("registry");
+        let validator = jsonschema::options()
+            .with_registry(&registry)
+            .build(
+                &json!({"$ref":format!("{}#/components/schemas/StudioError",crate::OPENAPI_URI)}),
+            )
+            .expect("incident schema");
+        let errors: Vec<_> = validator
+            .iter_errors(&value)
+            .map(|error| format!("{}: {}", error.instance_path(), error.kind().keyword()))
+            .collect();
+        assert!(errors.is_empty(), "{errors:?}: {value}");
+        let payload = json!({"collection":"studioError","id":"monitor:watch","value":value});
+        assert_eq!(
+            crate::first_error("SyncEntityPayload", &payload).expect("entity schema"),
+            None,
+            "{payload}"
+        );
     }
 }

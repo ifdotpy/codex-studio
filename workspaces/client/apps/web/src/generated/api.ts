@@ -22725,7 +22725,7 @@ export interface components {
     StudioErrorCause:
       | {
           id: string;
-          /** @enum {string} */
+          /** @constant */
           kind: "migration";
           phase: components["schemas"]["MigrationPhase"];
           rollback: components["schemas"]["MigrationRollbackOutcome"];
@@ -22733,7 +22733,7 @@ export interface components {
         }
       | {
           id: string;
-          /** @enum {string} */
+          /** @constant */
           kind: "stored_record";
           object: string;
           pointer: string | null;
@@ -22741,7 +22741,7 @@ export interface components {
       | {
           /** Format: int32 */
           extendedCode: number;
-          /** @enum {string} */
+          /** @constant */
           kind: "sqlite";
           /** Format: int32 */
           primaryCode: number;
@@ -22750,25 +22750,25 @@ export interface components {
           category: components["schemas"]["StudioErrorJsonCategory"];
           /** Format: uint */
           column: number;
-          /** @enum {string} */
+          /** @constant */
           kind: "json";
           /** Format: uint */
           line: number;
         }
       | {
-          /** @enum {string} */
+          /** @constant */
           kind: "io";
           /** Format: int32 */
           osCode: number | null;
         }
       | {
-          /** @enum {string} */
+          /** @constant */
           kind: "schema_object";
           object: string;
         }
       | {
           class: components["schemas"]["HttpErrorKind"];
-          /** @enum {string} */
+          /** @constant */
           kind: "runtime";
         };
     StudioErrorContext:
@@ -22776,21 +22776,21 @@ export interface components {
           /** Format: int64 */
           epoch: number | null;
           requestId: string | null;
-          /** @enum {string} */
+          /** @constant */
           source: "monitor";
           turnId: string | null;
         }
       | {
           /** Format: int64 */
           epoch: number;
-          /** @enum {string} */
+          /** @constant */
           source: "input";
           turnId: string | null;
         }
       | {
           /** Format: int64 */
           epoch: number | null;
-          /** @enum {string} */
+          /** @constant */
           source: "agent";
           turnId: string | null;
         }
@@ -22798,7 +22798,7 @@ export interface components {
           class: components["schemas"]["HttpErrorKind"];
           requestId: string | null;
           route: string;
-          /** @enum {string} */
+          /** @constant */
           source: "http";
           /** Format: uint16 */
           status: number;
@@ -22807,7 +22807,7 @@ export interface components {
           account: string;
           agentId: string | null;
           phase: components["schemas"]["RecoveryPhase"];
-          /** @enum {string} */
+          /** @constant */
           source: "recovery";
         };
     StudioErrorDiagnostics: {

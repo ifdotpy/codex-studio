@@ -3,7 +3,6 @@
 
 pub mod agent_limits;
 pub mod agent_progress;
-pub mod studio_errors;
 pub mod api_schema;
 mod codex_generated;
 pub mod complaints;
@@ -24,6 +23,7 @@ pub mod provider_method_policy;
 pub mod provider_rate_limits;
 pub mod queue_command;
 pub mod shared_values;
+pub mod studio_errors;
 pub mod supervisor_contract;
 pub mod task_results;
 pub mod usage;
