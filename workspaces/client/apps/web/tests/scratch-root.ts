@@ -151,7 +151,9 @@ export function choosePlaywrightScratchRoot(
 }
 
 function createScratchRoot(
-  chosen: Extract<ReturnType<typeof probeCandidate>, { passed: true }>,
+  chosen: Extract<ReturnType<typeof probeCandidate>, { passed: true }> & {
+    inheritedProbe?: boolean;
+  },
   tested: ReturnType<typeof probeCandidate>[] = [chosen],
   probeBytes: number,
   options: { root?: string; ownedRoot?: boolean } = {},
@@ -165,8 +167,7 @@ function createScratchRoot(
     availableBytes: chosen.availableBytes,
     probeBytes,
     writeFsyncMs: chosen.writeFsyncMs,
-    inheritedProbe:
-      "inheritedProbe" in chosen ? chosen.inheritedProbe === true : false,
+    inheritedProbe: chosen.inheritedProbe ?? false,
     tested,
   });
 }

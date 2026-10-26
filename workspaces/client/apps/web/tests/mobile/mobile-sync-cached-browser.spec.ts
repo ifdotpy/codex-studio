@@ -43,7 +43,7 @@ test("mobile sync cached browser", async ({ browser: _browser }) => {
     let holdIdentity = false,
       pullCount = 0,
       pushCount = 0;
-    const identity: { route?: Route } = {};
+    let identityRoute!: Route;
     const pullLog: {
       scope: string | null;
       after: number;
@@ -59,7 +59,7 @@ test("mobile sync cached browser", async ({ browser: _browser }) => {
     await page.route("**/api/sync/identity", (route) => {
       identityCalls++;
       if (holdIdentity) {
-        identity.route = route;
+        identityRoute = route;
         return;
       }
       return route.fulfill({
@@ -154,22 +154,20 @@ test("mobile sync cached browser", async ({ browser: _browser }) => {
     const startWatchers = () =>
       page.evaluate(async () => {
         const client = await import("/src/sync/client.ts");
-        window.mobileCached.syncErrors = [];
-        window.mobileCached.stopState = client.subscribeStateProjection(
-          (value) => (window.mobileCached.state = value),
+        window.syncErrors = [];
+        window.stopState = client.subscribeStateProjection(
+          (value) => (window.state = value),
           (error) => {
-            if (error) window.mobileCached.syncErrors.push(String(error));
+            if (error) window.syncErrors.push(String(error));
           },
         );
-        window.mobileCached.stopDrafts = await client.startDraftReplication(
-          (error) => {
-            if (error) window.mobileCached.syncErrors.push(String(error));
-          },
-        );
+        window.stopDrafts = await client.startDraftReplication((error) => {
+          if (error) window.syncErrors.push(String(error));
+        });
       });
     await startWatchers();
     await page.waitForFunction(
-      () => window.mobileCached.state?.runtime?.agents?.[0]?.name === "Cached",
+      () => window.state?.runtime?.agents?.[0]?.name === "Cached",
     );
     const cachedMs = Date.now() - started;
     assert.ok(
@@ -190,19 +188,17 @@ test("mobile sync cached browser", async ({ browser: _browser }) => {
       0,
       "Unverified cached identity permits no draft writes",
     );
-    assert.ok(identity.route);
+    assert.ok(identityRoute);
     holdIdentity = false;
     currentWorkspace = "a".repeat(32);
-    await identity.route.fulfill({
+    await identityRoute.fulfill({
       json: { workspaceId: "a".repeat(32), chatState: true } satisfies Pick<
         SyncIdentityResponse,
         "workspaceId"
       > & { chatState: boolean },
     });
     await page.waitForFunction(() =>
-      window.mobileCached.syncErrors.some((error) =>
-        error.includes("workspace changed"),
-      ),
+      window.syncErrors.some((error) => error.includes("workspace changed")),
     );
     assert.equal(
       pullCount,
@@ -215,14 +211,12 @@ test("mobile sync cached browser", async ({ browser: _browser }) => {
       "A different server cannot receive cached drafts",
     );
     assert.equal(
-      await page.evaluate(
-        () => window.mobileCached.state?.runtime.agents[0]?.name,
-      ),
+      await page.evaluate(() => window.state!.runtime.agents[0].name),
       "Cached",
     );
     assert.ok(
-      (await page.evaluate(() => window.mobileCached.syncErrors)).some(
-        (error) => error.includes("workspace changed"),
+      (await page.evaluate(() => window.syncErrors)).some((error) =>
+        error.includes("workspace changed"),
       ),
       "A workspace identity mismatch blocks cached data access",
     );
@@ -233,7 +227,7 @@ test("mobile sync cached browser", async ({ browser: _browser }) => {
     await startWatchers();
     await page
       .waitForFunction(
-        () => window.mobileCached.state?.runtime?.agents?.[0]?.name === "Fresh",
+        () => window.state?.runtime?.agents?.[0]?.name === "Fresh",
         null,
         {
           timeout: 10000,
@@ -253,8 +247,8 @@ test("mobile sync cached browser", async ({ browser: _browser }) => {
             ).syncDatabase();
             const rows = await db.projections.find().exec();
             return {
-              value: window.mobileCached.state,
-              errors: window.mobileCached.syncErrors,
+              value: window.state,
+              errors: window.syncErrors,
               hidden: document.hidden,
               online: navigator.onLine,
               entities: rows
@@ -262,7 +256,7 @@ test("mobile sync cached browser", async ({ browser: _browser }) => {
                 .map((row) => [
                   row.id,
                   row.seq,
-                  window.mobileSync.readCachedEntity(row.payload).value?.name,
+                  window.mobileSyncReadCachedEntity(row.payload).value?.name,
                 ]),
               ready: (
                 await db.projections.findOne("state:entities:ready").exec()
