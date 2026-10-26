@@ -1,3 +1,4 @@
+import { required } from "../componentTestFixtures";
 import { describe, expect, it, vi } from "vitest";
 import {
   chipWithVault,
@@ -79,7 +80,9 @@ describe("vault menu", () => {
         );
         await vi.advanceTimersByTimeAsync(10_000);
         expect(post).toHaveBeenCalledTimes(1);
-        const resource = resources.watchResourceChanges.mock.calls[0][0];
+        const resource = required(
+          required(resources.watchResourceChanges.mock.calls[0])[0],
+        );
         changed({ epoch: "e", revision: 2 });
         changed({
           epoch: "e",
@@ -122,7 +125,7 @@ describe("vault menu", () => {
     const done = await pullVault({ post } as never, "p1", "/Downloads", {
       requestId: "r1",
     });
-    expect(post.mock.calls.map((call) => call[1])).toEqual(
+    expect(post.mock.calls.map((call) => required(call[1]))).toEqual(
       Array(2).fill({ projectId: "p1", requestId: "r1", to: "/Downloads" }),
     );
     expect(pullText(done)).toBe(
