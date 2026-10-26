@@ -322,7 +322,7 @@ for (const [name, steps] of Object.entries({
                 composer: rect("#composer"),
                 padding: parseFloat(
                   getComputedStyle(
-                    document.querySelector<HTMLTextAreaElement>("#messages") ??
+                    document.querySelector<HTMLElement>("#messages") ??
                       (() => {
                         throw new Error("Missing fixture element");
                       })(),

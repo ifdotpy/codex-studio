@@ -68,7 +68,7 @@ for (const paired of [false, true]) {
           for (const target of await page
             .locator("#usage-footer button")
             .all()) {
-            const box = await visibleBounds(target);
+            const box = await target.boundingBox();
             if (box) expect(box.y + box.height).toBeLessThanOrEqual(635);
           }
           console.log("Duo bottom band", {

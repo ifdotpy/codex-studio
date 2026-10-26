@@ -324,7 +324,7 @@ Owner C:
 - `S/components/shell/Workspace.tsx`, `Workspace.css`, `DeferredWorkspace.tsx`.
 - New `WorkspaceSurface.tsx`, `WorkspacePanelHost.tsx`, and panel-local styles beside Workspace.
 - Panel width state and focused tests beside the panel host.
-- Existing `tests/workspace/workspace-ui.spec.mjs` cases.
+- Existing `tests/workspace/workspace-ui.spec.ts` cases.
 
 Work:
 
@@ -365,7 +365,7 @@ Owner D:
 
 - `S/components/TerminalDock.tsx`, `S/components/terminal-dock.css`.
 - New terminal height policy and resize lifecycle modules beside TerminalDock.
-- Existing terminal tests and `tests/sidebar/combined-terminal-under-sidebar.spec.mjs`.
+- Existing terminal tests and `tests/sidebar/combined-terminal-under-sidebar.spec.ts`.
 
 Work:
 
@@ -479,12 +479,12 @@ Expected fit boundaries come from the owner contract and measured borders, not d
 
 Relevant existing suites:
 
-- `tests/layout/text-clipping.spec.mjs`.
-- `tests/mobile/mobile-client-ui.spec.mjs` and `mobile-keyboard-ui.spec.mjs`.
-- `tests/workspace/workspace-ui.spec.mjs`.
-- `tests/terminal/terminal-dock-ui.spec.mjs` and terminal input cases.
-- `tests/sidebar/combined-terminal-under-sidebar.spec.mjs`.
-- `tests/servers/multi-server-ui.spec.mjs`.
+- `tests/layout/text-clipping.spec.ts`.
+- `tests/mobile/mobile-client-ui.spec.ts` and `mobile-keyboard-ui.spec.ts`.
+- `tests/workspace/workspace-ui.spec.ts`.
+- `tests/terminal/terminal-dock-ui.spec.ts` and terminal input cases.
+- `tests/sidebar/combined-terminal-under-sidebar.spec.ts`.
+- `tests/servers/multi-server-ui.spec.ts`.
 
 These paths are relative to `workspaces/client/apps/web`.
 Existing manual browser suites remain separate from the short deterministic tier.

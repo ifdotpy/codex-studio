@@ -792,10 +792,10 @@ test("Terminal dock transport", async () => {
     await dock
       .getByRole("button", { name: "Release logs", exact: true })
       .waitFor();
-    const before = required(await visibleBounds(dock));
+    const before = await visibleBounds(dock);
     await dock.getByRole("separator").focus();
     await page.keyboard.press("ArrowUp");
-    const after = required(await visibleBounds(dock));
+    const after = await visibleBounds(dock);
     assert.ok(after.height > before.height);
     await dock
       .getByRole("button", { name: "Hide terminals", exact: true })
@@ -846,11 +846,9 @@ test("Terminal dock transport", async () => {
       button.scrollIntoView({ block: "center", inline: "center" }),
     );
     await page.waitForFunction(() => {
-      const button =
-        document.querySelector<HTMLElement>(".terminal-dock-error button") ??
-        (() => {
-          throw new Error("Missing fixture element");
-        })();
+      const button = document.querySelector<HTMLElement>(
+        ".terminal-dock-error button",
+      );
       if (!button) return false;
       const rect = button.getBoundingClientRect();
       const target = document.elementFromPoint(
