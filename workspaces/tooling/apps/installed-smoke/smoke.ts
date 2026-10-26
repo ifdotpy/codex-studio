@@ -60,6 +60,9 @@ import type {
   Optional,
 } from "./usage.ts";
 
+import type { PricingArtifact } from "../../../client/apps/web/src/generated/pricing.ts";
+import type { RendererManifest } from "../../../client/apps/web/scripts/build-manifests.ts";
+
 type Options = {
   app: string;
   url: string;
@@ -251,25 +254,26 @@ export function elapsedSeconds(value: string) {
  */
 export function cheapestModel(
   models: Schema["ProviderModel"][],
-  pricing: unknown,
+  pricing: Pick<PricingArtifact, "catalog">,
   provider: Provider,
 ) {
   const priced = pricingModels(pricing, provider);
-  let best = null;
+  let best: {
+    model: string;
+    price: number;
+    efforts: Schema["JsonValue"][];
+  } | null = null;
   for (const row of models) {
     if (row?.hidden || typeof row?.model !== "string") {
       continue;
     }
-    const primary = priced[row.model];
-    const resolved =
-      typeof row.resolvedModel === "string"
-        ? priced[row.resolvedModel]
-        : undefined;
     const cost =
-      (isRecord(primary) ? primary.cost : undefined) ??
-      (isRecord(resolved) ? resolved.cost : undefined);
+      priced[row.model]?.cost ??
+      (typeof row.resolvedModel === "string"
+        ? priced[row.resolvedModel]?.cost
+        : undefined);
     if (
-      !isRecord(cost) ||
+      !cost ||
       typeof cost.input !== "number" ||
       typeof cost.output !== "number"
     ) {
@@ -868,7 +872,6 @@ export class Smoke {
     if (
       desktop?.application !== "codex-agents" ||
       desktop.protocol !== 1 ||
-      !("backendKind" in desktop) ||
       desktop.backendKind !== "rust"
     ) {
       throw new CheckFailed(
@@ -980,7 +983,7 @@ export class Smoke {
     const served = await this.backend.get<{ build: string; apiSchema: string }>(
       "/studio-renderer.json",
     );
-    const installed: { build: string; apiSchema: string } = JSON.parse(
+    const installed: RendererManifest = JSON.parse(
       fs.readFileSync(installationPaths(this.app).renderer, "utf8"),
     );
     if (
@@ -1058,7 +1061,7 @@ export class Smoke {
     if (this.model?.[provider]) {
       return { model: this.model[provider], efforts: [] };
     }
-    const pricing: unknown = JSON.parse(
+    const pricing: PricingArtifact = JSON.parse(
       fs.readFileSync(path.join(this.state, PRICING_ARTIFACT), "utf8"),
     );
     const listing = await this.backend.get<Schema["ModelCatalogResponse"]>(

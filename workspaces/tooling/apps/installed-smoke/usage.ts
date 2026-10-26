@@ -6,7 +6,13 @@ import { isDeepStrictEqual } from "node:util";
 import { execFileSync } from "node:child_process";
 
 import type { components } from "../../../client/apps/web/src/generated/api.ts";
+import type {
+  PricingArtifact,
+  RawCost,
+  RawProvider,
+} from "../../../client/apps/web/src/generated/pricing.ts";
 
+/** A sparse saved view permits explicit clearing as well as absent properties. */
 export type Optional<T> = { [K in keyof T]?: T[K] | undefined };
 export type Schema = components["schemas"];
 export type Provider = Schema["Account"]["provider"];
@@ -20,7 +26,7 @@ export type Transcript = Optional<
     "id" | "role" | "text" | "at" | "turnId" | "toolStatus" | "clientMessageId"
   >
 > & {
-  inputs?: Optional<Schema["TranscriptInput"]>[] | null;
+  inputs?: Optional<Schema["TranscriptInput"]>[] | null | undefined;
 };
 export type LegacyUsageRow = Optional<
   Pick<
@@ -34,13 +40,14 @@ export type LegacyUsageRow = Optional<
     | "last"
     | "inputTokensAreUncached"
     | "usageSource"
+    | "studioUsage"
   >
-> & { studioUsage?: Schema["UsageObservation"] | null };
+>;
 export type Analytics = Omit<
   Optional<Schema["AnalyticsResponse"]>,
   "timeline"
 > & {
-  timeline?: LegacyUsageRow[] | null;
+  timeline?: LegacyUsageRow[] | null | undefined;
   source?: string;
 };
 export type Cost = Omit<Optional<Schema["SessionCostResponse"]>, "rootId"> &
@@ -103,7 +110,7 @@ export type SavedProvider = {
   truth: {
     tokens: Optional<Tokens>;
     responses?: Response[];
-    prices?: { responseId?: string | null | undefined; rates: unknown }[];
+    prices?: { responseId?: string | null | undefined; rates: RawCost }[];
     costUsd?: number;
     recomputedCostUsd?: number | null;
   };
@@ -542,7 +549,7 @@ export function usageTable(evidence: Evidence, label: string) {
 export function compareEvidence(oldEvidence: Evidence, newEvidence: Evidence) {
   // One common basis for both runs: OLD's saved per-response rates, joined to
   // their native models. Missing or inconsistent rates cannot produce a price.
-  const modelsByProvider = new Map<Provider, Map<string, unknown>>();
+  const modelsByProvider = new Map<Provider, Map<string, RawCost | null>>();
   for (const row of oldEvidence.providers) {
     const models = modelsByProvider.get(row.provider) ?? new Map();
     modelsByProvider.set(row.provider, models);
@@ -644,41 +651,31 @@ export function compareEvidence(oldEvidence: Evidence, newEvidence: Evidence) {
 
 /** Independent base-rate arithmetic; refuse tiered requests rather than guess. */
 export function pricingModels(
-  catalog: unknown,
+  catalog: Pick<PricingArtifact, "catalog">,
   provider: Provider,
-): Record<string, unknown> {
-  if (
-    !isRecord(catalog) ||
-    !isRecord(catalog.catalog) ||
-    !isRecord(catalog.catalog.providers)
-  )
-    return {};
-  const entry =
-    catalog.catalog.providers[provider === "claude" ? "anthropic" : "openai"];
-  return isRecord(entry) && isRecord(entry.models) ? entry.models : {};
+): RawProvider["models"] {
+  return (
+    catalog.catalog.providers[provider === "claude" ? "anthropic" : "openai"]
+      ?.models ?? {}
+  );
 }
 
 export function priceResponses(
   responses: Response[],
-  catalog: unknown,
+  catalog: Pick<PricingArtifact, "catalog">,
   provider: Provider,
 ) {
   const models = pricingModels(catalog, provider);
   const rows = responses.map((response) => {
-    const model = models[String(response.model)];
-    const cost = isRecord(model) ? model.cost : undefined;
-    if (!isRecord(cost))
-      throw new Error(`No price for native model ${response.model}`);
+    const cost = models[String(response.model)]?.cost;
+    if (!cost) throw new Error(`No price for native model ${response.model}`);
     const tokens = response.tokens;
     const context =
       Number(tokens.uncachedInput) +
       Number(tokens.cacheReadInput) +
       Number(tokens.cacheWriteInput);
-    const tiers: unknown[] = Array.isArray(cost.tiers) ? cost.tiers : [];
-    const thresholds = tiers.flatMap((entry) =>
-      isRecord(entry) &&
-      isRecord(entry.tier) &&
-      entry.tier.type === "context" &&
+    const thresholds = (cost.tiers ?? []).flatMap((entry) =>
+      entry.tier?.type === "context" &&
       typeof entry.tier.size === "number" &&
       Number.isFinite(entry.tier.size)
         ? [entry.tier.size]
@@ -690,7 +687,7 @@ export function priceResponses(
     )
       throw new Error("Usage smoke exceeds base-rate pricing scope");
     const hour = tokens.cacheWriteInput1h ?? 0;
-    const parts: [number, unknown][] = [
+    const parts: [number, number | null | undefined][] = [
       [Number(tokens.uncachedInput), cost.input],
       [Number(tokens.cacheReadInput), cost.cache_read],
       [Number(tokens.cacheWriteInput) - hour, cost.cache_write],
