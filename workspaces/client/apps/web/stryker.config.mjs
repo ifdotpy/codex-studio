@@ -1,4 +1,5 @@
-/** @type {import('@stryker-mutator/api/core').PartialStrykerOptions} */
+// @ts-check
+/** @type {ConstructorParameters<typeof import('@stryker-mutator/core').Stryker>[0]} */
 const config = {
   plugins: ["@stryker-mutator/vitest-runner"],
   testRunner: "vitest",

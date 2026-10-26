@@ -17,7 +17,7 @@ if (!application) throw new Error("Supply the packaged .app path.");
 const bundle = path.resolve(application);
 const resources = path.join(bundle, "Contents/Resources");
 const workspace = path.join(resources, "workspace");
-const plist = (key) =>
+const plist = (key: string) =>
   execFileSync(
     "plutil",
     [

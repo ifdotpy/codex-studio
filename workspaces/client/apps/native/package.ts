@@ -9,7 +9,7 @@ import {
   prebuiltReleaseDirectory,
   releaseTargetEnvironment,
 } from "../desktop/release-binaries.mjs";
-import { pruneBridgeImageCodecs } from "./bridge-image-package.mjs";
+import { pruneBridgeImageCodecs } from "./bridge-image-package.ts";
 
 const root = path.dirname(fileURLToPath(import.meta.url));
 const repository = path.resolve(root, "../../../..");

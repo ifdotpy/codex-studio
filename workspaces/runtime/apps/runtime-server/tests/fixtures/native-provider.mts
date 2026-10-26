@@ -1,15 +1,19 @@
 #!/usr/bin/env node
 import fs from "node:fs";
+import assert from "node:assert/strict";
+import type { JsonValue } from "../../../../../client/apps/web/src/generated/api.ts";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import readline from "node:readline";
 
-const root = path.dirname(fs.realpathSync(process.argv[1]));
+const executable = process.argv[1];
+assert.ok(executable);
+const root = path.dirname(fs.realpathSync(executable));
 let turnCount = 0;
 fs.writeFileSync(path.join(root, "startup-cwd"), process.cwd());
-async function reportSocket(socketPath, value) {
-  await new Promise((resolve, reject) => {
+async function reportSocket(socketPath: string, value: JsonValue) {
+  await new Promise<void>((resolve, reject) => {
     const socket = net.createConnection(socketPath);
     socket.once("error", reject);
     socket.once("connect", () => socket.end(`${JSON.stringify(value)}\n`));
@@ -20,11 +24,11 @@ async function reportSocket(socketPath, value) {
     });
   });
 }
-async function report(name, value) {
+async function report(name: string, value: JsonValue) {
   const socketPath = path.join(root, `${name}.sock`);
   if (fs.existsSync(socketPath)) await reportSocket(socketPath, value);
 }
-function increment(name) {
+function increment(name: string) {
   const file = path.join(root, name);
   const count = fs.existsSync(file)
     ? Number(fs.readFileSync(file, "utf8")) + 1
@@ -32,7 +36,7 @@ function increment(name) {
   fs.writeFileSync(file, String(count));
   return count;
 }
-function notify(method, params) {
+function notify(method: string, params: JsonValue) {
   console.log(JSON.stringify({ method, params }));
 }
 if (process.env.FIXTURE_CWD_SOCKET) {
@@ -42,10 +46,15 @@ if (process.env.FIXTURE_CWD_SOCKET) {
   });
 }
 for await (const line of readline.createInterface({ input: process.stdin })) {
-  const request = JSON.parse(line);
+  const request: { [key: string]: JsonValue } = JSON.parse(line);
+  const params = request.params ?? {};
+  assert.ok(params && typeof params === "object" && !Array.isArray(params));
   const method = request.method;
   const accountProvider =
-    request.params?.clientInfo?.name === "codex_agents_canvas";
+    params.clientInfo &&
+    typeof params.clientInfo === "object" &&
+    !Array.isArray(params.clientInfo) &&
+    params.clientInfo.name === "codex_agents_canvas";
   if (method === "initialize" && accountProvider) {
     const count = increment("account-launch-count");
     await report("launch", { pid: process.pid, count });
@@ -54,8 +63,7 @@ for await (const line of readline.createInterface({ input: process.stdin })) {
   }
   if (!Object.hasOwn(request, "id")) continue;
   let result = {};
-  if (method === "thread/resume")
-    result = { thread: { id: request.params.threadId } };
+  if (method === "thread/resume") result = { thread: { id: params.threadId } };
   else if (method === "turn/start") {
     turnCount = increment("turn-count");
     await report("turn", {
@@ -100,9 +108,11 @@ for await (const line of readline.createInterface({ input: process.stdin })) {
     method === "turn/start" &&
     process.env.STUDIO_W7_P01_COMPLETE_TURN === "1"
   ) {
-    const threadId = request.params.threadId,
+    const threadId = params.threadId,
       turnId = "fixture-turn",
       itemId = "fixture-assistant-item";
+    assert.equal(typeof threadId, "string");
+    assert.ok(threadId !== undefined);
     notify("turn/started", {
       threadId,
       turn: { id: turnId, status: "inProgress" },
