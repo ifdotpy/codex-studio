@@ -53,6 +53,7 @@ for (const capability of [
               e(EdgeRail,{geometry,
                 sidebar:{expanded:true,onClick:()=>setLast('Toggle conversations')},
                 messages:{count:3,onClick:()=>setLast('Messages')},
+                team:{active:1,total:3,onClick:()=>setLast('Team')},
                 menu:e(Menu.Item,{onClick:()=>setLast('Existing action')},'Existing action')}));
           }
           createRoot(document.querySelector('#root')).render(e(Fixture));
@@ -113,7 +114,11 @@ for (const capability of [
         path: test.info().outputPath("edge-rail-right.png"),
         animations: "disabled",
       });
-      for (const label of ["Toggle conversations", "Messages, 3 need you"]) {
+      for (const label of [
+        "Toggle conversations",
+        "Team, 1 of 3 working",
+        "Messages, 3 need you",
+      ]) {
         const button = rail.getByRole("button", { name: label, exact: true });
         const rect = await button.boundingBox();
         expect(rect.width).toBeGreaterThanOrEqual(44);
@@ -121,7 +126,11 @@ for (const capability of [
         expect(rect.y + rect.height).toBeLessThanOrEqual(635);
         await button.click();
         await expect(page.locator("#last-action")).toHaveText(
-          label.startsWith("Messages") ? "Messages" : label,
+          label.startsWith("Messages")
+            ? "Messages"
+            : label.startsWith("Team")
+              ? "Team"
+              : label,
         );
       }
       // Buttons center on the system status column (edgeRail.statusColumnCenter).

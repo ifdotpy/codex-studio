@@ -89,3 +89,14 @@ test("attention adds just the messages button with its badge", () => {
   expect(html).toContain('aria-label="Messages, 3 need you"');
   expect(html).toContain("edge-rail-badge");
 });
+
+test("shows the team button with its counts only for chats with a team", () => {
+  const withTeam = render({
+    ...props,
+    team: { active: 1, total: 3, onClick: action },
+  });
+  expect(withTeam).toContain('aria-label="Team, 1 of 3 working"');
+  expect(withTeam).toContain(">1/3<");
+  expect(withTeam.match(/<button/g)).toHaveLength(4);
+  expect(render(props)).not.toContain("Team,");
+});
