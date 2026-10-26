@@ -2,6 +2,9 @@
 
 Owns external model-provider process integrations used by Studio.
 
+Follow [Type contracts](../../docs/type-contracts.md) for vendor and Studio
+contract ownership, normalization boundaries, and current migration coverage.
+
 ## Apps and navigation
 
 - [`apps/claude-bridge/`](apps/claude-bridge): the Node Claude Agent SDK
