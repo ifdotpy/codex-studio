@@ -27,7 +27,7 @@ function memory(pid: number | undefined) {
           pid: Number(parts[1]),
           parent: Number(parts[2]),
           bytes: Number(parts[3]) * 1024,
-          args: parts[4],
+          args: parts[4] ?? "",
         }
       );
     })
@@ -97,11 +97,11 @@ try {
   );
   const page = await desktop.firstWindow();
   page.setDefaultTimeout(15000);
-  assert.equal(
+  assert.deepEqual(
     await desktop.evaluate(({ BrowserWindow }) =>
-      BrowserWindow.getAllWindows()[0].isVisible(),
+      BrowserWindow.getAllWindows().map((window) => window.isVisible()),
     ),
-    false,
+    [false],
   );
   const pair = async (server: (typeof servers)[number]) => {
     await page.locator("body").click({ position: { x: 1, y: 1 }, force: true });

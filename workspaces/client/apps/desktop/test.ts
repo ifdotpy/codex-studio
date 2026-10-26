@@ -117,9 +117,10 @@ try {
   });
   const preferences = await desktop.evaluate(({ BrowserWindow }) => {
     const window = BrowserWindow.getAllWindows()[0];
+    if (!window) throw new Error("Expected the hidden desktop window.");
     // Electron 44 implements getLastWebPreferences (shell/browser/api/electron_api_web_contents.cc), but omits its declaration.
     const preferences = (
-      window!.webContents as typeof window.webContents & {
+      window.webContents as typeof window.webContents & {
         getLastWebPreferences(): WebPreferences;
       }
     ).getLastWebPreferences();
@@ -344,7 +345,9 @@ try {
       // The fixture dispatches the same preload methods as its typed invoke() caller below.
       const fixtureBridge = window.codexDesktop as DesktopBridge &
         Record<string, (value: unknown) => Promise<unknown>>;
-      const result = fixtureBridge[button.dataset.method!](value);
+      const method = fixtureBridge[button.dataset.method!];
+      if (!method) throw new Error("Expected the fixture's native method.");
+      const result = method(value);
       return result
         .then((value) => {
           document.body.dataset.nativeResult = JSON.stringify({ value });
@@ -388,11 +391,13 @@ try {
   };
   assert.equal((await invoke("pickDirectory")).value, temp);
   const files = (await invoke("pickFiles")).value;
+  const [attachment] = files ?? [];
+  assert.ok(attachment, "The picker must return the fixture attachment.");
   assert.equal(
-    Buffer.from(files![0].data, "base64").toString(),
+    Buffer.from(attachment.data, "base64").toString(),
     "Native attachment",
   );
-  assert.equal(files![0].mime, "text/plain");
+  assert.equal(attachment.mime, "text/plain");
   const savedCopy = path.join(temp, "saved-copy.txt");
   await desktop.evaluate(
     ({ dialog, shell, BrowserWindow, app }, destination) => {
@@ -493,20 +498,21 @@ try {
     document.body.append(frame);
   });
   await poll(async () => page.frames().length === 2);
+  const [, preview] = page.frames();
+  assert.ok(preview, "Expected the untrusted preview frame.");
   assert.equal(
-    await page.frames()[1].evaluate(() => typeof window.codexDesktop),
+    await preview.evaluate(() => typeof window.codexDesktop),
     "undefined",
   );
-  assert.equal(
-    await page.frames()[1].locator("p").textContent(),
-    "Untrusted preview",
-  );
+  assert.equal(await preview.locator("p").textContent(), "Untrusted preview");
   await desktop.evaluate(async ({ BrowserWindow, app }) => {
     const main = BrowserWindow.getAllWindows()[0];
+    if (!main) throw new Error("Expected the hidden desktop window.");
     const { nativeAction }: typeof import("./main.ts") = await import(
       `${app.getAppPath()}/main.ts`
     );
     const frame = main.webContents.mainFrame.frames[0];
+    if (!frame) throw new Error("Expected the untrusted preview frame.");
     try {
       await nativeAction(
         { sender: main.webContents, senderFrame: frame },
@@ -520,6 +526,7 @@ try {
   // Exercise the actual IPC channel from a separate renderer with the same preload.
   const rogueId = await desktop.evaluate(async ({ BrowserWindow, app }) => {
     const main = BrowserWindow.getAllWindows()[0];
+    if (!main) throw new Error("Expected the hidden desktop window.");
     const rogue = new BrowserWindow({
       show: false,
       webPreferences: {
@@ -563,6 +570,7 @@ try {
   await page.screenshot({ path: path.join(temp, "desktop-hidden.png") });
   const savedBounds = await desktop.evaluate(({ BrowserWindow }) => {
     const window = BrowserWindow.getAllWindows()[0];
+    if (!window) throw new Error("Expected the hidden desktop window.");
     const bounds = window.getBounds();
     window.setBounds(
       {
@@ -588,15 +596,15 @@ try {
   await reopened.waitForFunction(() => !!window.codexDesktop);
   assert.deepEqual(
     await desktop.evaluate(({ BrowserWindow }) =>
-      BrowserWindow.getAllWindows()[0].getNormalBounds(),
+      BrowserWindow.getAllWindows().map((window) => window.getNormalBounds()),
     ),
-    savedBounds,
+    [savedBounds],
   );
-  assert.equal(
+  assert.deepEqual(
     await desktop.evaluate(({ BrowserWindow }) =>
-      BrowserWindow.getAllWindows()[0].isVisible(),
+      BrowserWindow.getAllWindows().map((window) => window.isVisible()),
     ),
-    false,
+    [false],
   );
   await desktop.close();
   desktop = null!;

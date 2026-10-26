@@ -7,7 +7,6 @@ import {
 } from "../generated/apiSchema";
 import type { StudioServer } from "./registry";
 import { serverCredentialAdapter } from "./transport";
-import type { CredentialResponse } from "./desktopCredentials";
 import type { ServerNavigation } from "./navigation";
 import type { ServerAccount } from "./navigation";
 export function isSummaryRequest(request: Request, server: StudioServer) {
@@ -46,15 +45,15 @@ export async function fetchServerSummary(
   if (!isSummaryRequest(request, server))
     throw new Error("Invalid shell summary request.");
   let response: Response;
-  if (window.codexDesktop) {
-    const value = (await window.codexDesktop.serverCredentialAction!({
+  if (window.codexDesktop?.serverCredentialAction) {
+    const value = await window.codexDesktop.serverCredentialAction({
       action: "summary",
       serverId: server.id,
       credentialId: server.credentialId,
       url: request.url,
       method: "GET",
       headers: [...request.headers],
-    })) as CredentialResponse;
+    });
     response = new Response(value.body, {
       status: value.status,
       headers: value.headers,

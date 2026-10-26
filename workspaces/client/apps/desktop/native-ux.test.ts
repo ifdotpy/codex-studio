@@ -120,7 +120,13 @@ test("desktop native settings, notification and speech boundaries work with fixt
           ? {
               app,
               BrowserWindow: Window,
-              dialog: { showErrorBox() {} },
+              dialog: {
+                showErrorBox() {},
+                showOpenDialog: async () => ({
+                  canceled: false,
+                  filePaths: [],
+                }),
+              },
               ipcMain: {
                 handle: (_key: string, value: RawNativeAction) => {
                   handler = value;
@@ -208,6 +214,7 @@ test("desktop native settings, notification and speech boundaries work with fixt
   }
   try {
     let f = await fixture();
+    assert.equal(await f.invoke("pickDirectory"), null);
     assert.equal(
       record(await f.invoke("getBackendUpdate")).updateRequired,
       false,
@@ -245,6 +252,13 @@ test("desktop native settings, notification and speech boundaries work with fixt
       f.handler(serverEvent, {
         method: "serverNativeAction",
         value: { serverId: "local", method: "notify" },
+      }),
+      /Unknown server native action/,
+    );
+    await assert.rejects(
+      f.handler(serverEvent, {
+        method: "serverNativeAction",
+        value: { serverId: "local", method: "showVaultKeys", value: "fixture" },
       }),
       /Unknown server native action/,
     );
