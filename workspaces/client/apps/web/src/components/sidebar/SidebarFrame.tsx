@@ -62,8 +62,10 @@ export function SidebarFrame(p: SidebarFrameProps) {
     scope: p.scope,
     width: readWidth(p.scope),
   }));
+  // A desktop width constrained by the old Duo maximum is not a Duo choice.
+  const scope = geometry.duo ? `${p.scope}:duo` : p.scope;
   const preferred =
-    preference.scope === p.scope ? preference.width : readWidth(p.scope);
+    preference.scope === scope ? preference.width : readWidth(scope);
   const policy = resolveSidebarWidth({
     ...geometry,
     preferred,
@@ -78,8 +80,8 @@ export function SidebarFrame(p: SidebarFrameProps) {
   const compact = typeof window !== "undefined" && policy.mode === "drawer";
   // Measure once before paint when the saved desktop preference starts closed.
   const probing = !compact && p.collapsed && headerMinimum.current === 0;
-  const live = useRef({ scope: p.scope, compact });
-  live.current = { scope: p.scope, compact };
+  const live = useRef({ scope, compact });
+  live.current = { scope, compact };
 
   useLayoutEffect(() => {
     const host =
@@ -208,15 +210,15 @@ export function SidebarFrame(p: SidebarFrameProps) {
   }, [compact, p.collapsed, p.opened]);
 
   const save = (width: number | null) => {
-    if (live.current.scope !== p.scope) return;
+    if (live.current.scope !== scope) return;
     if (width !== null && storedSidebarWidth(width) === null) return;
-    setPreference({ scope: p.scope, width });
+    setPreference({ scope, width });
     try {
       if (width === null)
-        localStorage.removeItem(sidebarWidthStorageKey(p.scope));
+        localStorage.removeItem(sidebarWidthStorageKey(scope));
       else
         localStorage.setItem(
-          sidebarWidthStorageKey(p.scope),
+          sidebarWidthStorageKey(scope),
           JSON.stringify(width),
         );
     } catch {
@@ -224,7 +226,7 @@ export function SidebarFrame(p: SidebarFrameProps) {
     }
   };
   const resize = useSidebarResize({
-    scope: p.scope,
+    scope,
     enabled: !compact && !p.collapsed,
     width: policy.width,
     minimum: policy.minimum,
