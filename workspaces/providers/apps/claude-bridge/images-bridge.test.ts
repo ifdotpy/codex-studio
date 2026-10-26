@@ -4,34 +4,12 @@ import path from "node:path";
 import sharp from "sharp";
 import { test } from "vitest";
 import { startBridge } from "./testing/bridge-harness.ts";
-import { MAX_IMAGE_SIDE, MAX_IMAGE_BASE64_BYTES } from "./images.mjs";
+import { MAX_IMAGE_SIDE, MAX_IMAGE_BASE64_BYTES } from "./images.ts";
 
-const SDK = String.raw`
-import fs from 'node:fs';
-export const tool=(name,description,schema,call)=>({name,description,schema,call});
-export const createSdkMcpServer=value=>({...value});
-export const forkSession=async()=>({sessionId:'22222222-2222-4222-8222-222222222222'});
-export const getSessionMessages=async()=>[];
-export function query({prompt,options}){
- fs.appendFileSync(options.cwd+'/.queries','q');
- return {
-  supportedModels:async()=>[{value:'default',displayName:'Default',resolvedModel:'claude-opus-5-5'}],
-  accountInfo:async()=>({email:'test@example.test',subscriptionType:'Claude Max',apiProvider:'firstParty'}),
-  initializationResult:async()=>({commands:[]}),mcpServerStatus:async()=>[],
-  setModel:async()=>{},setPermissionMode:async()=>{},applyFlagSettings:async()=>{},
-  setMcpServers:async()=>({added:[],removed:[],errors:{}}),
-  close(){},interrupt:async()=>{},
-  async *[Symbol.asyncIterator](){
-   for await(const input of prompt){
-    process.stdout.write(JSON.stringify({method:'fixture/input',params:input.message})+'\n');
-    yield {type:'user',isReplay:true,uuid:input.uuid};
-    if(input.message.content[0]?.text==='hold')await waitForFile(options.cwd+'/release');
-    yield {type:'result',subtype:'success',usage:{input_tokens:1,output_tokens:1},result:'done'};
-   }
-  }
- };
-}
-`;
+const SDK = await fs.readFile(
+  new URL("./images-bridge.fixture.mts", import.meta.url),
+  "utf8",
+);
 
 test("image refusal reaches the caller before a turn or SDK query exists", async () => {
   const bridge = await startBridge(SDK, "claude-image-refusal-");

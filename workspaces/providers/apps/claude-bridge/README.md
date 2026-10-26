@@ -21,7 +21,7 @@ and guest installs must retain the TypeScript sources alongside the launcher.
 
 ## Image input
 
-The [image module](images.mjs) owns the default Claude image limits: 2000 pixels
+The [image module](images.ts) owns the default Claude image limits: 2000 pixels
 per side, 5,242,880 base64 bytes, and the derived 3,932,160 raw bytes. The source
 is Claude Code 2.1.302, `chunk-sp5b4hyj.js:475` and `chunk-hqtnbrjd.js:124661`.
 Its separate 512,000-byte budget is best effort (`chunk-sp5b4hyj.js:453`).
@@ -190,7 +190,7 @@ Codex identity and the existing Claude `accountId` remain unchanged.
 
 The bridge emits `thread/tokenUsage/updated` observations using the
 [generated usage contract](usage-contract.generated.ts). The
-[SDK-typed normalizer](usage.mjs) finalizes response usage from stream events
+[SDK-typed normalizer](usage.ts) finalizes response usage from stream events
 at `message_stop` only after a non-null `message_delta.delta.stop_reason` proves
 completion. Stops without that evidence produce an `unconfirmedStop` gap.
 Assistant messages without a preceding stream produce one `noStream` gap per

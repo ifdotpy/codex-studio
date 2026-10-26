@@ -5,7 +5,7 @@ import path from "node:path";
 import { randomUUID } from "node:crypto";
 import * as sdk from "@anthropic-ai/claude-agent-sdk";
 import { readHistoryIndex, verifiedHistoryMessages } from "./history-index.mjs";
-import { forkAtTurn, rollbackSession } from "./controls.mjs";
+import { forkAtTurn, rollbackSession } from "./controls.ts";
 
 const roots = [];
 const previous = process.env.CLAUDE_CONFIG_DIR;

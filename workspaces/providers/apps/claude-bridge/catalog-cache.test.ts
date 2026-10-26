@@ -1,21 +1,33 @@
 import assert from "node:assert/strict";
 import { test } from "vitest";
-import { createCatalogCache, loadCatalog } from "./catalog-cache.mjs";
+import { createCatalogCache, loadCatalog } from "./catalog-cache.ts";
 
 const settle = async () => {
   for (let i = 0; i < 8; i++) await Promise.resolve();
 };
 
+type CatalogValue = { models?: string[]; account?: string };
+type Timer = {
+  fn: () => void;
+  due: number;
+  unreferenced?: boolean;
+  unref(): void;
+};
 function fixture() {
   let at = 0;
   let active = true;
-  const timers = new Set();
-  const calls = [];
-  const cache = createCatalogCache({
+  const timers = new Set<Timer>();
+  const calls: {
+    resolve(value: CatalogValue): void;
+    reject(reason: Error): void;
+    at: number;
+    background: boolean;
+  }[] = [];
+  const cache = createCatalogCache<CatalogValue, Timer>({
     now: () => at,
     isActive: () => active,
     setTimer(fn, delay) {
-      const timer = {
+      const timer: Timer = {
         fn,
         due: at + delay,
         unref() {
@@ -29,7 +41,7 @@ function fixture() {
       timers.delete(timer);
     },
     load: (background) =>
-      new Promise((resolve, reject) =>
+      new Promise<CatalogValue>((resolve, reject) =>
         calls.push({ resolve, reject, at, background }),
       ),
   });
@@ -37,7 +49,7 @@ function fixture() {
     cache,
     calls,
     timers,
-    move(value) {
+    move(value: number) {
       at = value;
       for (const timer of timers) {
         if (timer.due <= at) {
@@ -46,13 +58,16 @@ function fixture() {
         }
       }
     },
-    activity(value) {
+    activity(value: boolean) {
       active = value;
       cache.activityChanged();
     },
-    async prime(value = { models: ["original"], account: "original" }) {
+    async prime(
+      value: CatalogValue = { models: ["original"], account: "original" },
+    ) {
       const read = cache.read();
       await settle();
+      assert.ok(calls[0]);
       calls[0].resolve(value);
       assert.equal(await read, value);
       await settle();
@@ -68,6 +83,7 @@ test("foreground metadata requests share one exact probe", async () => {
   assert.equal(a, b);
   await settle();
   assert.equal(f.calls.length, 1);
+  assert.ok(f.calls[0]);
   f.calls[0].resolve({ models: [] });
   assert.equal(await a, await b);
   f.cache.close();
@@ -77,8 +93,8 @@ test("background refresh serves only unexpired proof and joins after expiry", as
   const f = fixture();
   const old = await f.prime();
   assert.equal(f.timers.size, 1);
-  assert.equal([...f.timers][0].due, 240000);
-  assert.equal([...f.timers][0].unreferenced, true);
+  assert.equal([...f.timers][0]?.due, 240000);
+  assert.equal([...f.timers][0]?.unreferenced, true);
   f.move(240000);
   await settle();
   assert.equal(f.calls.length, 2);
@@ -93,6 +109,7 @@ test("background refresh serves only unexpired proof and joins after expiry", as
   await settle();
   assert.equal(finished, false);
   const next = { models: ["new"], account: "original" };
+  assert.ok(f.calls[1]);
   f.calls[1].resolve(next);
   assert.equal(await expired, next);
   assert.equal(f.calls.length, 2);
@@ -104,6 +121,7 @@ test("failed background refresh never extends TTL or enters a retry loop", async
   const old = await f.prime();
   f.move(240000);
   await settle();
+  assert.ok(f.calls[1]);
   f.calls[1].reject(new Error("native unavailable"));
   await settle();
   assert.equal(await f.cache.read(), old);
@@ -117,6 +135,7 @@ test("failed background refresh never extends TTL or enters a retry loop", async
   const rejection = assert.rejects(expired, /native unavailable/);
   await settle();
   assert.equal(f.calls.length, 3);
+  assert.ok(f.calls[2]);
   f.calls[2].reject(new Error("native unavailable"));
   await rejection;
   f.cache.close();
@@ -127,6 +146,7 @@ test("proven account rejection invalidates an unexpired proof", async () => {
   const old = await f.prime();
   f.move(240000);
   await settle();
+  assert.ok(f.calls[1]);
   f.calls[1].reject(
     Object.assign(new Error("account changed"), {
       claudeAccountValidationFailed: true,
@@ -137,6 +157,7 @@ test("proven account rejection invalidates an unexpired proof", async () => {
   const rejection = assert.rejects(read, /account changed/);
   await settle();
   assert.equal(f.calls.length, 3);
+  assert.ok(f.calls[2]);
   f.calls[2].reject(new Error("account changed"));
   await rejection;
   assert.equal(old.account, "original");
@@ -147,6 +168,7 @@ test("idle or closed queries cancel refresh and resume only on active work", asy
   const f = fixture();
   await f.prime();
   const oldTimer = [...f.timers][0];
+  assert.ok(oldTimer);
   f.activity(false);
   assert.equal(f.timers.size, 0);
   f.move(250000);
@@ -163,6 +185,7 @@ test("idle or closed queries cancel refresh and resume only on active work", asy
   await settle();
   assert.equal(f.calls.length, 2);
   f.cache.close();
+  assert.ok(f.calls[1]);
   f.calls[1].resolve({ models: ["late"] });
   await settle();
   assert.equal(f.timers.size, 0);
@@ -174,9 +197,10 @@ test("each successful proof permits one next background refresh", async () => {
   await f.prime();
   f.move(240000);
   await settle();
+  assert.ok(f.calls[1]);
   f.calls[1].resolve({ models: ["next"] });
   await settle();
-  assert.equal([...f.timers][0].due, 480000);
+  assert.equal([...f.timers][0]?.due, 480000);
   f.activity(true);
   f.activity(true);
   assert.equal(f.timers.size, 1);
@@ -184,6 +208,7 @@ test("each successful proof permits one next background refresh", async () => {
   await settle();
   assert.equal(f.calls.length, 3);
   f.cache.close();
+  assert.ok(f.calls[2]);
   f.calls[2].resolve({ models: ["last"] });
   await settle();
 });
@@ -193,6 +218,7 @@ test("proof freshness starts at request time, not slow completion time", async (
   const read = f.cache.read();
   await settle();
   f.move(310000);
+  assert.ok(f.calls[0]);
   f.calls[0].resolve({ models: ["old"] });
   await read;
   await settle();
@@ -200,6 +226,7 @@ test("proof freshness starts at request time, not slow completion time", async (
   const next = f.cache.read();
   await settle();
   assert.equal(f.calls.length, 2);
+  assert.ok(f.calls[1]);
   f.calls[1].resolve({ models: ["new"] });
   await next;
   f.cache.close();
@@ -226,8 +253,9 @@ test("an expired passive read refreshes existing queries and shares its proof", 
   assert.equal(a, b);
   await settle();
   assert.equal(f.calls.length, 2);
-  assert.equal(f.calls[1].background, true);
+  assert.equal(f.calls[1]?.background, true);
   const value = { account: "fresh" };
+  assert.ok(f.calls[1]);
   f.calls[1].resolve(value);
   assert.equal(await a, value);
   assert.equal(await f.cache.readPassive(), value);
@@ -242,6 +270,7 @@ test("a passive read cannot create its initial proof or accept a rejected accoun
   await f.prime();
   f.move(240000);
   await settle();
+  assert.ok(f.calls[1]);
   f.calls[1].reject(
     Object.assign(new Error("account changed"), {
       claudeAccountValidationFailed: true,
@@ -255,7 +284,7 @@ test("a passive read cannot create its initial proof or accept a rejected accoun
 
 test("a failed live refresh falls back to a probe for a foreground read", async () => {
   const live = { id: "live" };
-  const calls = [];
+  const calls: unknown[][] = [];
   const result = await loadCatalog({
     background: false,
     live,
