@@ -190,8 +190,8 @@ test("radio create browser", async ({ page: runnerPage }) => {
       return r.fulfill({ json: { room: state.runtime.rooms[0] } });
     });
     await page.goto(`${fixtureOrigin(server)}/check`);
-    await page.waitForFunction(() => window.radioCreateFixture.fixture);
-    state = await page.evaluate(() => window.radioCreateFixture.fixture);
+    await page.waitForFunction(() => window.fixture);
+    state = await page.evaluate(() => window.fixture);
     const form = page.getByRole("form", { name: "Create shared chat" });
     const create = form.getByRole("button", {
       name: "Create",
@@ -322,16 +322,11 @@ test("radio create browser", async ({ page: runnerPage }) => {
     await page.setViewportSize({ width: 1100, height: 950 });
     await create.click();
     await page.getByRole("button", { name: "Retry creation" }).waitFor();
-    assert.equal(
-      await page.evaluate(() => window.radioCreateFixture.opened),
-      null,
-    );
+    assert.equal(await page.evaluate(() => window.opened), null);
     assert.equal(await form.getByLabel("Chat name").isDisabled(), true);
     await page.reload();
     await page.getByRole("button", { name: "Retry creation" }).click();
-    await page.waitForFunction(
-      () => window.radioCreateFixture.opened === "radio:direct",
-    );
+    await page.waitForFunction(() => window.opened === "radio:direct");
     assert.equal(requests.length, 2);
     assert.deepEqual(requests[0], requests[1]);
     const { request_id, ...body } = requests[0]!;
@@ -357,10 +352,7 @@ test("radio create browser", async ({ page: runnerPage }) => {
       "Architecture discussion",
     );
     await page.getByRole("button", { name: "New chat", exact: true }).click();
-    assert.equal(
-      await page.evaluate(() => window.radioCreateFixture.ordinary),
-      true,
-    );
+    assert.equal(await page.evaluate(() => window.ordinary), true);
     await page
       .getByRole("button", { name: "New shared chat", exact: true })
       .click();
@@ -369,11 +361,11 @@ test("radio create browser", async ({ page: runnerPage }) => {
         document.querySelector<HTMLButtonElement>("form button[type=submit]")
           ?.disabled === false,
     );
-    await page.evaluate(() => (window.radioCreateFixture.failRefresh = true));
+    await page.evaluate(() => (window.failRefresh = true));
     await create.click();
     await page.getByRole("button", { name: "Refresh", exact: true }).waitFor();
     const posted = requests.length;
-    await page.evaluate(() => (window.radioCreateFixture.failRefresh = false));
+    await page.evaluate(() => (window.failRefresh = false));
     await page.getByRole("button", { name: "Refresh", exact: true }).click();
     await form.waitFor({ state: "detached" });
     assert.equal(requests.length, posted);

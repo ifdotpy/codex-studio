@@ -165,7 +165,7 @@ test("Rust model decisions and safe Claude organizations at 320 and 1200 pixels"
       ] as const) {
         mode = value;
         await page.clock.fastForward(1000);
-        await page.evaluate(() => window.limitsOrgFixture.refresh());
+        await page.evaluate(() => window.refreshLimits());
         await page
           .getByText(label, { exact: true })
           .first()
@@ -194,10 +194,7 @@ test("Rust model decisions and safe Claude organizations at 320 and 1200 pixels"
         .getByRole("button", { name: "Sign in to Claude", exact: true })
         .first()
         .click();
-      assert.equal(
-        await page.evaluate(() => window.limitsOrgFixture.signedInAccount),
-        "claude",
-      );
+      assert.equal(await page.evaluate(() => window.signedInAccount), "claude");
       await page
         .getByRole("button", {
           name: "Limit details for research@example.test",

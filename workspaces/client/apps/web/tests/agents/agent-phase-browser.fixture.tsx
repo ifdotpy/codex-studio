@@ -25,31 +25,22 @@ type ConnectionListener = Parameters<
 >[0];
 declare global {
   interface Window {
-    chatConnectionFixture: {
-      reads: unknown[][];
-      renders: Record<string, number>;
-      setConnection: (
-        value: "offline" | "connecting" | "live",
-      ) => void | Promise<void>;
-      connectionListeners: () => number;
-      repeatLive: () => void;
-      phase: (id: string, phase: string) => void;
-      selectChat: (id: string) => void;
-      selectServer: (other: boolean) => void;
-    };
+    reads: unknown[][];
+    renders: Record<string, number>;
+    setConnection: (
+      value: "offline" | "connecting" | "live",
+    ) => void | Promise<void>;
+    connectionListeners: () => number;
+    repeatLive: () => void;
+    phase: (id: string, phase: string) => void;
+    selectChat: (id: string) => void;
+    selectServer: (other: boolean) => void;
   }
 }
-window.chatConnectionFixture = {
-  reads: [],
-  renders: { first: 0, second: 0 },
-  setConnection: () => {},
-  connectionListeners: () => 0,
-  repeatLive: () => {},
-  phase: () => {},
-  selectChat: () => {},
-  selectServer: () => {},
-};
-const harness = window.chatConnectionFixture;
+window.reads = [];
+window.renders = { first: 0, second: 0 };
+window.connectionListeners = () => 0;
+
 const refs: Record<string, TranscriptRef> = Object.fromEntries(
   ["first", "second"].map((agentId) => [
     agentId,
@@ -126,16 +117,15 @@ function scope(ownerId: string, hold = false) {
     }
   }
   const sources: Source[] = [];
-  const latest = () => sources.at(-1)!;
   const options: ResourceEventsOptions = {
     api: {
       get: (...args: unknown[]) => {
-        harness.reads.push(args);
+        window.reads.push(args);
         throw new Error("Unexpected transport read");
       },
       post: async (path, body) => {
         const update = fixturePostBody<"/api/sync/subscriptions">(body);
-        const source = latest();
+        const source = sources.at(-1)!;
         source.resources = [
           ...source.resources.filter(
             (ref) =>
@@ -208,7 +198,7 @@ function scope(ownerId: string, hold = false) {
     resources,
     api: {
       syncGet: (...args: unknown[]) => {
-        harness.reads.push(args);
+        window.reads.push(args);
         throw new Error("Unexpected read");
       },
     },
@@ -221,27 +211,27 @@ function scope(ownerId: string, hold = false) {
     setConnection(value: "offline" | "connecting" | "live") {
       if (value === "offline") {
         hold = true;
-        latest().onerror?.();
+        sources.at(-1)!.onerror?.();
       } else if (value === "connecting") {
-        if (latest().closed)
+        if (sources.at(-1)!.closed)
           return new Promise<void>((resolve) => {
             retryReady = resolve;
           });
       } else if (value === "live") {
         hold = false;
-        latest().baseline();
+        sources.at(-1)!.baseline();
       }
     },
   };
 }
 const firstScope = scope("fixture"),
   otherScope = scope("other-server", true);
-harness.setConnection = (value) => firstScope.setConnection(value);
-harness.connectionListeners = () => firstScope.connections.size;
-harness.repeatLive = () => {
+window.setConnection = (value) => firstScope.setConnection(value);
+window.connectionListeners = () => firstScope.connections.size;
+window.repeatLive = () => {
   for (const accept of firstScope.connections) accept("live", "open", {});
 };
-harness.phase = (id, phase) => {
+window.phase = (id, phase) => {
   const old = payloads[id],
     ref = refs[id];
   const next = { ...old, agent: { ...old.agent!, activity: { phase } } };
@@ -257,7 +247,7 @@ function liveAgentView(
   return agent as Agent;
 }
 function Chat({ id, visible }: { id: string; visible: boolean }) {
-  harness.renders[id] = (harness.renders[id] ?? 0) + 1;
+  window.renders[id] = (window.renders[id] ?? 0) + 1;
   const messages = useMessages(
     id,
     "agent",
@@ -287,8 +277,8 @@ function Chat({ id, visible }: { id: string; visible: boolean }) {
 function Harness() {
   const [selected, select] = useState("first");
   const [other, selectServer] = useState(false);
-  harness.selectChat = select;
-  harness.selectServer = selectServer;
+  window.selectChat = select;
+  window.selectServer = selectServer;
   return (
     <ServerServicesProvider
       services={other ? otherScope.services : firstScope.services}

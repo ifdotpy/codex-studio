@@ -95,29 +95,24 @@ test("Realtime voice ux", async ({ context }, testInfo) => {
         .click();
     }
     async function start() {
-      await page.waitForFunction(
-        () => window.realtimeVoiceFixture.voiceTransport === "live",
-        null,
-        {
-          timeout: 10000,
-        },
-      );
+      await page.waitForFunction(() => window.voiceTransport === "live", null, {
+        timeout: 10000,
+      });
       await page
         .getByRole("button", { name: "Start voice", exact: true })
         .click();
       await page.waitForFunction(() =>
-        window.realtimeVoiceFixture.calls.some((c) => c[0] === "start"),
+        window.voiceCalls.some((c) => c[0] === "start"),
       );
     }
     await reset();
     await start();
-    await page.waitForFunction(
-      () => window.realtimeVoiceFixture.answer?.sdp === "answer",
-    );
-    assert.deepEqual(
-      await page.evaluate(() => window.realtimeVoiceFixture.order),
-      ["status", "permission", "capture"],
-    );
+    await page.waitForFunction(() => window.answer?.sdp === "answer");
+    assert.deepEqual(await page.evaluate(() => window.order), [
+      "status",
+      "permission",
+      "capture",
+    ]);
     assert.equal(
       await page
         .getByRole("button", { name: "Send transcript", exact: true })
@@ -125,17 +120,14 @@ test("Realtime voice ux", async ({ context }, testInfo) => {
       0,
     );
     const readsBeforeTranscriptChange = await page.evaluate(
-      () =>
-        window.realtimeVoiceFixture.calls.filter(
-          (call) => call[0] === "records",
-        ).length,
+      () => window.voiceCalls.filter((call) => call[0] === "records").length,
     );
     await page.evaluate(async () => {
-      window.realtimeVoiceFixture.emit({
+      window.emit({
         type: "delegation.created",
         item: { id: "task" },
       });
-      window.realtimeVoiceFixture.records = [
+      window.records = [
         {
           id: "one",
           seq: 1,
@@ -143,13 +135,11 @@ test("Realtime voice ux", async ({ context }, testInfo) => {
           text: "Native canonical transcript",
         },
       ];
-      await window.realtimeVoiceFixture.resourceChange();
+      await window.resourceChange();
     });
     await page.waitForFunction(
       (count) =>
-        window.realtimeVoiceFixture.calls.filter(
-          (call) => call[0] === "records",
-        ).length ===
+        window.voiceCalls.filter((call) => call[0] === "records").length ===
         count + 1,
       readsBeforeTranscriptChange,
     );
@@ -169,7 +159,7 @@ test("Realtime voice ux", async ({ context }, testInfo) => {
     assert.equal(
       await page.evaluate(
         () =>
-          window.realtimeVoiceFixture.calls.filter((c) =>
+          window.voiceCalls.filter((c) =>
             ["submit", "record", "speech", "approve"].includes(c[0]),
           ).length,
       ),
@@ -182,28 +172,19 @@ test("Realtime voice ux", async ({ context }, testInfo) => {
     });
     await page.getByRole("button", { name: "End voice", exact: true }).click();
     await page.waitForFunction(
-      () =>
-        window.realtimeVoiceFixture.stops === 1 &&
-        window.realtimeVoiceFixture.calls.some((c) => c[0] === "end"),
+      () => window.stops === 1 && window.voiceCalls.some((c) => c[0] === "end"),
     );
     await reset();
     await start();
     await page.waitForFunction(() =>
-      window.realtimeVoiceFixture.calls.some((call) => call[0] === "records"),
+      window.voiceCalls.some((call) => call[0] === "records"),
     );
-    await page.waitForFunction(
-      () => window.realtimeVoiceFixture.voiceTransport === "live",
-    );
+    await page.waitForFunction(() => window.voiceTransport === "live");
     const readsBeforeOffline = await page.evaluate(
-      () =>
-        window.realtimeVoiceFixture.calls.filter(
-          (call) => call[0] === "records",
-        ).length,
+      () => window.voiceCalls.filter((call) => call[0] === "records").length,
     );
     const statusBeforeOffline = await page.evaluate(
-      () =>
-        window.realtimeVoiceFixture.calls.filter((call) => call[0] === "status")
-          .length,
+      () => window.voiceCalls.filter((call) => call[0] === "status").length,
     );
     await context.setOffline(true);
     await page.waitForFunction(() =>
@@ -211,167 +192,119 @@ test("Realtime voice ux", async ({ context }, testInfo) => {
         alert.textContent?.includes("The microphone is off."),
       ),
     );
-    assert.equal(
-      await page.evaluate(() => window.realtimeVoiceFixture.stops),
-      1,
-    );
+    assert.equal(await page.evaluate(() => window.stops), 1);
     assert.equal(
       await page.evaluate(
-        () =>
-          window.realtimeVoiceFixture.calls.filter(
-            (call) => call[0] === "status",
-          ).length,
+        () => window.voiceCalls.filter((call) => call[0] === "status").length,
       ),
       statusBeforeOffline,
     );
     assert.equal(
       await page.evaluate(
-        () =>
-          window.realtimeVoiceFixture.calls.filter(
-            (call) => call[0] === "records",
-          ).length,
+        () => window.voiceCalls.filter((call) => call[0] === "records").length,
       ),
       readsBeforeOffline,
     );
     await context.setOffline(false);
     await page.waitForFunction(
       (count) =>
-        window.realtimeVoiceFixture.calls.filter(
-          (call) => call[0] === "records",
-        ).length ===
+        window.voiceCalls.filter((call) => call[0] === "records").length ===
         count + 1,
       readsBeforeOffline,
     );
-    await page.waitForFunction(
-      () => window.realtimeVoiceFixture.voiceTransport === "live",
-    );
+    await page.waitForFunction(() => window.voiceTransport === "live");
     assert.equal(
       await page.evaluate(
-        () =>
-          window.realtimeVoiceFixture.calls.filter(
-            (call) => call[0] === "records",
-          ).length,
+        () => window.voiceCalls.filter((call) => call[0] === "records").length,
       ),
       readsBeforeOffline + 1,
-      JSON.stringify(
-        await page.evaluate(() => window.realtimeVoiceFixture.calls),
-      ),
+      JSON.stringify(await page.evaluate(() => window.voiceCalls)),
     );
     await reset();
-    await page.evaluate(() => (window.realtimeVoiceFixture.pending = true));
+    await page.evaluate(() => (window.pending = true));
     await start();
-    assert.equal(
-      await page.evaluate(() => window.realtimeVoiceFixture.answer),
-      undefined,
-    );
+    assert.equal(await page.evaluate(() => window.answer), undefined);
     await page.evaluate(async () => {
-      window.realtimeVoiceFixture.pending = false;
-      await window.realtimeVoiceFixture.resourceChange();
+      window.pending = false;
+      await window.resourceChange();
     });
-    await page.waitForFunction(
-      () => window.realtimeVoiceFixture.answer?.sdp === "answer",
-    );
+    await page.waitForFunction(() => window.answer?.sdp === "answer");
     await reset();
     await page.evaluate(() => {
-      window.realtimeVoiceFixture.pending = true;
-      window.realtimeVoiceFixture.holdStart = true;
+      window.pending = true;
+      window.holdStart = true;
     });
     const recordsBeforeEarlyAnswer = await page.evaluate(
-      () =>
-        window.realtimeVoiceFixture.calls.filter(
-          (call) => call[0] === "records",
-        ).length,
+      () => window.voiceCalls.filter((call) => call[0] === "records").length,
     );
     await start();
     await page.evaluate(async () => {
-      window.realtimeVoiceFixture.pending = false;
-      await window.realtimeVoiceFixture.resourceChange();
+      window.pending = false;
+      await window.resourceChange();
     });
     await page.waitForFunction(
       (count) =>
-        window.realtimeVoiceFixture.calls.filter(
-          (call) => call[0] === "records",
-        ).length ===
+        window.voiceCalls.filter((call) => call[0] === "records").length ===
         count + 1,
       recordsBeforeEarlyAnswer,
     );
-    assert.equal(
-      await page.evaluate(() => window.realtimeVoiceFixture.answer),
-      undefined,
-    );
+    assert.equal(await page.evaluate(() => window.answer), undefined);
     await page.evaluate(() => {
-      window.realtimeVoiceFixture.holdStart = false;
-      window.realtimeVoiceFixture.releaseStart!();
+      window.holdStart = false;
+      window.releaseStart!();
     });
-    await page.waitForFunction(
-      () => window.realtimeVoiceFixture.answer?.sdp === "answer",
-    );
+    await page.waitForFunction(() => window.answer?.sdp === "answer");
     assert.equal(
-      await page.evaluate(() => window.realtimeVoiceFixture.answers),
+      await page.evaluate(() => window.answers),
       1,
       "the buffered records answer is applied once after the stale start response",
     );
-    assert.equal(
-      await page.evaluate(() => window.realtimeVoiceFixture.stops),
-      0,
-    );
+    assert.equal(await page.evaluate(() => window.stops), 0);
     await page.evaluate(async () => {
-      window.realtimeVoiceFixture.voiceError = "Voice connection failed";
-      await window.realtimeVoiceFixture.resourceChange();
+      window.voiceError = "Voice connection failed";
+      await window.resourceChange();
     });
     await page.waitForFunction(() =>
       [...document.querySelectorAll('[role="alert"]')].some((alert) =>
         alert.textContent?.includes("Voice connection failed"),
       ),
     );
-    assert.equal(
-      await page.evaluate(() => window.realtimeVoiceFixture.stops),
-      1,
-    );
+    assert.equal(await page.evaluate(() => window.stops), 1);
     await reset();
-    await page.evaluate(
-      () => (window.realtimeVoiceFixture.holdPermission = true),
-    );
+    await page.evaluate(() => (window.holdPermission = true));
     await page
       .getByRole("button", { name: "Start voice", exact: true })
       .click();
-    await page.waitForFunction(
-      () => !!window.realtimeVoiceFixture.releasePermission,
-    );
+    await page.waitForFunction(() => !!window.releasePermission);
     await page.getByRole("button", { name: "End voice", exact: true }).click();
-    await page.evaluate(() => window.realtimeVoiceFixture.releasePermission!());
+    await page.evaluate(() => window.releasePermission!());
     assert.equal(
-      await page.evaluate(() =>
-        window.realtimeVoiceFixture.order.includes("capture"),
-      ),
+      await page.evaluate(() => window.order.includes("capture")),
       false,
     );
     await reset();
-    await page.evaluate(() => (window.realtimeVoiceFixture.holdStart = true));
+    await page.evaluate(() => (window.holdStart = true));
     await start();
-    const sid = await page.evaluate(() => window.realtimeVoiceFixture.sid);
+    const sid = await page.evaluate(() => window.sid);
     await page.getByRole("button", { name: "End voice", exact: true }).click();
-    await page.evaluate(() => window.realtimeVoiceFixture.releaseStart!());
+    await page.evaluate(() => window.releaseStart!());
     await page.waitForFunction(() =>
-      window.realtimeVoiceFixture.calls.some((c) => c[0] === "end"),
+      window.voiceCalls.some((c) => c[0] === "end"),
     );
     assert.ok(
       (
         await page.evaluate(() =>
-          window.realtimeVoiceFixture.calls.filter((c) => c[0] === "end"),
+          window.voiceCalls.filter((c) => c[0] === "end"),
         )
       ).every((c) => c[1].session_id === sid),
     );
     await reset();
     await start();
-    await page.evaluate(() => window.realtimeVoiceFixture.render("chat-two"));
-    await page.waitForFunction(() => window.realtimeVoiceFixture.stops === 1);
+    await page.evaluate(() => window.render("chat-two"));
+    await page.waitForFunction(() => window.stops === 1);
     assert.equal(
       await page.evaluate(
-        () =>
-          window.realtimeVoiceFixture.calls
-            .filter((c) => c[0] === "end")
-            .at(-1)?.[1].agent,
+        () => window.voiceCalls.filter((c) => c[0] === "end").at(-1)?.[1].agent,
       ),
       "chat-one",
     );
@@ -382,59 +315,36 @@ test("Realtime voice ux", async ({ context }, testInfo) => {
       .getByRole("group", { name: "Active voice conversation" })
       .waitFor();
     await page.getByRole("button", { name: "Mute", exact: true }).click();
-    assert.equal(
-      await page.evaluate(() => window.realtimeVoiceFixture.track.enabled),
-      false,
-    );
+    assert.equal(await page.evaluate(() => window.track.enabled), false);
     await page.getByRole("button", { name: "Unmute", exact: true }).click();
-    assert.equal(
-      await page.evaluate(() => window.realtimeVoiceFixture.track.enabled),
-      true,
-    );
+    assert.equal(await page.evaluate(() => window.track.enabled), true);
     await page.evaluate(async () => {
-      window.realtimeVoiceFixture.failRecords = true;
-      await window.realtimeVoiceFixture.resourceChange();
+      window.failRecords = true;
+      await window.resourceChange();
     });
     await page.waitForFunction(() =>
       [...document.querySelectorAll('[role="alert"]')].some((alert) =>
         alert.textContent?.includes("The microphone is off."),
       ),
     );
-    assert.equal(
-      await page.evaluate(() => window.realtimeVoiceFixture.stops),
-      1,
-    );
+    assert.equal(await page.evaluate(() => window.stops), 1);
     await reset();
     await start();
-    await page.waitForFunction(
-      () => window.realtimeVoiceFixture.answer?.sdp === "answer",
-    );
+    await page.waitForFunction(() => window.answer?.sdp === "answer");
     await page.clock.pauseAt(await page.evaluate(() => Date.now() + 1000));
     await page.evaluate(() => {
-      window.realtimeVoiceFixture.disconnect();
+      window.disconnect();
     });
-    assert.equal(
-      await page.evaluate(() => window.realtimeVoiceFixture.track.enabled),
-      false,
-    );
-    assert.equal(
-      await page.evaluate(() => window.realtimeVoiceFixture.stops),
-      0,
-    );
+    assert.equal(await page.evaluate(() => window.track.enabled), false);
+    assert.equal(await page.evaluate(() => window.stops), 0);
     await page.clock.runFor(11999);
-    assert.equal(
-      await page.evaluate(() => window.realtimeVoiceFixture.stops),
-      0,
-    );
+    assert.equal(await page.evaluate(() => window.stops), 0);
     await page.clock.runFor(1);
     await page
       .getByRole("alert")
       .filter({ hasText: "Voice could not reconnect" })
       .waitFor();
-    assert.equal(
-      await page.evaluate(() => window.realtimeVoiceFixture.stops),
-      1,
-    );
+    assert.equal(await page.evaluate(() => window.stops), 1);
     await page.clock.resume();
     await reset();
     await page.evaluate(() =>

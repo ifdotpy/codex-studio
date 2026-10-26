@@ -75,7 +75,7 @@ function Fixture() {
   return (
     <MantineProvider
       theme={theme}
-      forceColorScheme={query.get("theme") === "light" ? "light" : "dark"}
+      forceColorScheme={(query.get("theme") || "dark") as "light" | "dark"}
     >
       <ModelCatalogReader.Provider value={reader}>
         <main

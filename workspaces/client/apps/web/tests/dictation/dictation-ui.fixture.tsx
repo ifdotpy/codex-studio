@@ -1,35 +1,31 @@
 declare global {
   interface Window {
-    dictationFixture: {
-      speechProgress?: Parameters<DesktopBridge["onTranscriptionProgress"]>[0];
-      rejectTranscription?: (reason: Error) => void;
-      attemptId: string;
-      audioBytes: number;
-      deferTranscription: boolean;
-      finishTranscription:
-        | ((
-            value: Awaited<ReturnType<DesktopBridge["transcribeAudio"]>>,
-          ) => void)
-        | null;
-      retryOK: boolean;
-      emitAudio: () => void;
-      captureStopped: number;
-      failStop: boolean;
-    };
+    speechProgress:
+      | Parameters<DesktopBridge["onTranscriptionProgress"]>[0]
+      | undefined;
+    rejectTranscription: (reason: Error) => void | undefined;
+    attemptId: string;
+    audioBytes: number;
+    deferTranscription: boolean;
+    finishTranscription:
+      | ((value: Awaited<ReturnType<DesktopBridge["transcribeAudio"]>>) => void)
+      | null;
+    retryOK: boolean;
+    emitAudio: () => void;
+    captureStopped: number;
+    failStop: boolean;
   }
 }
-window.dictationFixture = {
-  attemptId: "",
-  audioBytes: 0,
-  deferTranscription: false,
-  finishTranscription: null,
-  retryOK: false,
-  emitAudio: () => {
-    throw new Error("Audio fixture unavailable");
-  },
-  captureStopped: 0,
-  failStop: false,
+window.attemptId = "";
+window.audioBytes = 0;
+window.deferTranscription = false;
+window.finishTranscription = null;
+window.retryOK = false;
+window.emitAudio = () => {
+  throw new Error("Audio fixture unavailable");
 };
+window.captureStopped = 0;
+window.failStop = false;
 const root = document.getElementById("root")!;
 import { desktopBridgeFixture } from "../desktop-bridge-fixture.ts";
 import type { DesktopBridge } from "../../src/desktop.ts";
@@ -44,24 +40,24 @@ window.codexDesktop = desktopBridgeFixture({
   requestMicrophone: async () => true,
   prepareTranscription: async () => "permit",
   onTranscriptionProgress: (callback) => {
-    window.dictationFixture.speechProgress = callback;
+    window.speechProgress = callback;
     return () => {};
   },
   cancelTranscription: async () => {
-    window.dictationFixture.rejectTranscription?.(
+    window.rejectTranscription?.(
       Error("Transcription cancelled. Your recording is saved."),
     );
     return true;
   },
   transcribeAudio: async (value) => {
-    window.dictationFixture.attemptId = value.id;
-    window.dictationFixture.audioBytes = value.audio.byteLength;
-    if (window.dictationFixture.deferTranscription)
+    window.attemptId = value.id;
+    window.audioBytes = value.audio.byteLength;
+    if (window.deferTranscription)
       return new Promise((resolve, reject) => {
-        window.dictationFixture.finishTranscription = resolve;
-        window.dictationFixture.rejectTranscription = reject;
+        window.finishTranscription = resolve;
+        window.rejectTranscription = reject;
       });
-    if (!window.dictationFixture.retryOK)
+    if (!window.retryOK)
       throw Error("Recognition unavailable; recording preserved.");
     return {
       text: "Recovered spoken instruction",

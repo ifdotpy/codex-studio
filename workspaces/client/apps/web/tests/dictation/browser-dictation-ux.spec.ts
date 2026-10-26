@@ -36,7 +36,7 @@ test("browser dictation ux", async ({ page: runnerPage }) => {
     await page.getByRole("button", { name: "Dictation", exact: true }).click();
     await page.getByRole("button", { name: "Record", exact: true }).click();
     await page.evaluate(() =>
-      window.browserDictationFixture.speech!.onresult!({
+      window.speech!.onresult!({
         results: [
           { isFinal: true, 0: { transcript: "Recognized text" } },
           { isFinal: false, 0: { transcript: "unfinished" } },
@@ -54,9 +54,7 @@ test("browser dictation ux", async ({ page: runnerPage }) => {
       .getByRole("button", { name: "Stop dictation", exact: true })
       .click();
     assert.ok(
-      (
-        await page.evaluate(() => window.browserDictationFixture.calls)
-      ).includes("stop"),
+      (await page.evaluate(() => window.dictationCalls)).includes("stop"),
     );
     await page.getByRole("button", { name: "Dictation", exact: true }).click();
     assert.equal(
@@ -86,9 +84,7 @@ test("browser dictation ux", async ({ page: runnerPage }) => {
     await page.getByRole("button", { name: "Record", exact: true }).click();
     await page.getByRole("button", { name: "Switch chat" }).click();
     assert.ok(
-      (
-        await page.evaluate(() => window.browserDictationFixture.calls)
-      ).includes("abort"),
+      (await page.evaluate(() => window.dictationCalls)).includes("abort"),
     );
     await page.goto(url + "?unsupported");
     await page.getByRole("button", { name: "Dictation", exact: true }).click();
@@ -101,10 +97,7 @@ test("browser dictation ux", async ({ page: runnerPage }) => {
         .isDisabled(),
       true,
     );
-    assert.deepEqual(
-      await page.evaluate(() => window.browserDictationFixture.calls),
-      [],
-    );
+    assert.deepEqual(await page.evaluate(() => window.dictationCalls), []);
     expect(errors).toEqual([]);
     console.log(
       "PASS: browser/mobile speech capability, final text review, explicit insert, storage, stop outside panel, chat cleanup, unsupported browser.",

@@ -115,7 +115,7 @@ test("Radio browser", async ({
     );
     await page.route("**/snapshot", async (r) =>
       r.fulfill({
-        json: await page.evaluate(() => window.radioFixture.currentRoom),
+        json: await page.evaluate(() => window.currentRoom),
       }),
     );
     await page.route("**/api/peer-teams", async (r) => {
@@ -154,9 +154,9 @@ test("Radio browser", async ({
       .click();
     await page.getByRole("menuitem", { name: "Open shared chat" }).click();
     await page.getByRole("button", { name: "Retry", exact: true }).waitFor();
-    assert.equal(await page.evaluate(() => window.radioFixture.opened), null);
+    assert.equal(await page.evaluate(() => window.opened), null);
     await page.getByRole("button", { name: "Retry", exact: true }).click();
-    await page.waitForFunction(() => window.radioFixture.opened === "radio:t");
+    await page.waitForFunction(() => window.opened === "radio:t");
     assert.equal(requests.length, 2);
     assert.deepEqual(requests[0], requests[1]);
     requests.length = 0;
@@ -177,8 +177,8 @@ test("Radio browser", async ({
     assert.equal(requests[0].target, "both");
     mode = "held";
     await page.evaluate(() => {
-      window.radioFixture.holdRefresh = true;
-      window.radioFixture.refreshCalls = 0;
+      window.holdRefresh = true;
+      window.refreshCalls = 0;
     });
     await input.fill("Confirmed send");
     const beforeTranscript = transcriptReads;
@@ -186,10 +186,7 @@ test("Radio browser", async ({
     await expect.poll(() => typeof releaseResponse).toBe("function");
     assert.equal(await input.inputValue(), "Confirmed send");
     assert.equal(await input.isDisabled(), true);
-    assert.equal(
-      await page.evaluate(() => window.radioFixture.refreshCalls),
-      0,
-    );
+    assert.equal(await page.evaluate(() => window.refreshCalls), 0);
     const acceptedPosts = requests.length;
     assert.ok(releaseResponse, "The fixture captured the held response");
     releaseResponse();
@@ -197,16 +194,16 @@ test("Radio browser", async ({
     assert.equal(await input.inputValue(), "");
     await expect.poll(() => transcriptReads).toBeGreaterThan(beforeTranscript);
     await page.waitForFunction(
-      () => typeof window.radioFixture.rejectRefresh === "function",
+      () => typeof window.rejectRefresh === "function",
     );
     await page.evaluate(() => {
-      window.radioFixture.holdRefresh = false;
-      const reject = window.radioFixture.rejectRefresh;
+      window.holdRefresh = false;
+      const reject = window.rejectRefresh;
 
       reject!(Error("Refresh unavailable"));
     });
     await page.waitForFunction(() =>
-      window.radioFixture.notifications?.includes("Refresh unavailable"),
+      window.notifications?.includes("Refresh unavailable"),
     );
     assert.equal(requests.length, acceptedPosts);
     assert.equal(
@@ -220,17 +217,17 @@ test("Radio browser", async ({
     );
     mode = "ok";
     await input.fill("Discuss tradeoffs");
-    await page.evaluate(() => (window.radioFixture.failRefresh = true));
+    await page.evaluate(() => (window.failRefresh = true));
     await page
       .getByRole("button", { name: "Discuss (4 replies)", exact: true })
       .click();
     await expect(input).toBeEnabled();
     await page.waitForFunction(() =>
-      window.radioFixture.notifications?.includes("Refresh failed"),
+      window.notifications?.includes("Refresh failed"),
     );
     assert.equal(await input.inputValue(), "");
     const posted = requests.length;
-    await page.evaluate(() => (window.radioFixture.failRefresh = false));
+    await page.evaluate(() => (window.failRefresh = false));
     assert.equal(await page.locator(".radio-retry").count(), 0);
     assert.equal(requests.length, posted);
     assert.equal(
@@ -253,10 +250,10 @@ test("Radio browser", async ({
     assert.equal(await input.inputValue(), "Stale proposal");
     mode = "ok";
     await page.evaluate(() =>
-      window.radioFixture.setRoom({
-        ...window.radioFixture.currentRoom,
+      window.setRoom({
+        ...window.currentRoom,
         radio: {
-          ...window.radioFixture.radio(),
+          ...window.currentRoom.radio!,
           status: "speaking",
           speaker: "a",
         },
@@ -286,10 +283,10 @@ test("Radio browser", async ({
     assert.equal(lastCommand5.radio_action, "send");
     await input.fill("New instruction");
     await page.evaluate(() =>
-      window.radioFixture.setRoom({
-        ...window.radioFixture.currentRoom,
+      window.setRoom({
+        ...window.currentRoom,
         radio: {
-          ...window.radioFixture.radio(),
+          ...window.currentRoom.radio!,
           status: "blocked",
           error: "Reply interrupted. Send a new message.",
           active: null,
@@ -302,10 +299,10 @@ test("Radio browser", async ({
       true,
     );
     await page.evaluate(() =>
-      window.radioFixture.setRoom({
-        ...window.radioFixture.currentRoom,
+      window.setRoom({
+        ...window.currentRoom,
         radio: {
-          ...window.radioFixture.radio(),
+          ...window.currentRoom.radio!,
           status: "blocked",
           active: {
             eventId: "e",
@@ -330,10 +327,10 @@ test("Radio browser", async ({
       true,
     );
     await page.evaluate(() =>
-      window.radioFixture.setRoom({
-        ...window.radioFixture.currentRoom,
+      window.setRoom({
+        ...window.currentRoom,
         radio: {
-          ...window.radioFixture.radio(),
+          ...window.currentRoom.radio!,
           status: "speaking",
           error: null,
           active: {
@@ -352,7 +349,7 @@ test("Radio browser", async ({
       .getByRole("button", { name: "Options for team Research" })
       .click();
     await page.getByRole("menuitem", { name: "Open shared chat" }).click();
-    await page.waitForFunction(() => window.radioFixture.opened === "radio:t");
+    await page.waitForFunction(() => window.opened === "radio:t");
     await page.getByRole("menu").waitFor({ state: "hidden" });
     for (const width of [1100, 375]) {
       await page.setViewportSize({ width, height: 850 });

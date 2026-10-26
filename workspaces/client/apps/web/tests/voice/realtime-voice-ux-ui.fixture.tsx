@@ -41,7 +41,26 @@ type VoiceHarness = {
 };
 declare global {
   interface Window {
-    realtimeVoiceFixture: VoiceHarness;
+    voiceCalls: VoiceHarness["calls"];
+    order: VoiceHarness["order"];
+    stops: VoiceHarness["stops"];
+    records: VoiceHarness["records"];
+    pending: VoiceHarness["pending"];
+    voiceError: VoiceHarness["voiceError"];
+    voiceTransport: VoiceHarness["voiceTransport"];
+    holdPermission: VoiceHarness["holdPermission"];
+    releasePermission: VoiceHarness["releasePermission"];
+    holdStart: VoiceHarness["holdStart"];
+    releaseStart: VoiceHarness["releaseStart"];
+    failRecords: VoiceHarness["failRecords"];
+    sid: VoiceHarness["sid"];
+    answer: VoiceHarness["answer"];
+    answers: VoiceHarness["answers"];
+    track: VoiceHarness["track"];
+    emit: VoiceHarness["emit"];
+    resourceChange: VoiceHarness["resourceChange"];
+    render: VoiceHarness["render"];
+    disconnect: VoiceHarness["disconnect"];
   }
 }
 type FixtureTrack = VoiceHarness["track"];
@@ -79,42 +98,40 @@ function voiceWindow(value: unknown): FixtureWindow {
 const fixtureWindow = voiceWindow(window);
 const nativeFetch = window.fetch.bind(window);
 const root = createRoot(fixtureRoot());
-const harness: VoiceHarness = (window.realtimeVoiceFixture = {
-  calls: [],
-  order: [],
-  stops: 0,
-  records: [],
-  pending: false,
-  voiceError: "",
-  track: undefined!,
-  emit(event) {
-    fixtureWindow.dc!.onmessage!({ data: JSON.stringify(event) });
-  },
-  resourceChange: () =>
-    nativeFetch("/audit/resource-change", { method: "POST" }),
-  render: (id) =>
-    root.render(
-      <MantineProvider defaultColorScheme="dark">
-        <RealtimeVoice agentId={id} notify={() => {}} />
-      </MantineProvider>,
-    ),
-  disconnect() {
-    fixtureWindow.pc!.connectionState = "disconnected";
-    fixtureWindow.pc!.onconnectionstatechange!();
-  },
-});
+window.voiceCalls = [];
+window.order = [];
+window.stops = 0;
+window.records = [];
+window.pending = false;
+window.voiceError = "";
+window.track = undefined!;
+window.emit = function (event) {
+  fixtureWindow.dc!.onmessage!({ data: JSON.stringify(event) });
+};
+window.resourceChange = () =>
+  nativeFetch("/audit/resource-change", { method: "POST" });
+window.render = (id) =>
+  root.render(
+    <MantineProvider defaultColorScheme="dark">
+      <RealtimeVoice agentId={id} notify={() => {}} />
+    </MantineProvider>,
+  );
+window.disconnect = function () {
+  fixtureWindow.pc!.connectionState = "disconnected";
+  fixtureWindow.pc!.onconnectionstatechange!();
+};
 watchVoiceTransport(
   (state) => {
-    harness.voiceTransport = state;
+    window.voiceTransport = state;
   },
   () => {},
 );
 fixtureWindow.codexDesktop = {
   requestMicrophone: async () => {
-    harness.order.push("permission");
-    if (harness.holdPermission)
+    window.order.push("permission");
+    if (window.holdPermission)
       await new Promise<void>((resolve) => {
-        harness.releasePermission = resolve;
+        window.releasePermission = resolve;
       });
   },
 };
@@ -138,22 +155,22 @@ fixtureWindow.RTCPeerConnection = class {
   }
   async setLocalDescription() {}
   async setRemoteDescription(sdp: RTCSessionDescriptionInit) {
-    harness.answers = (harness.answers || 0) + 1;
-    harness.answer = sdp;
-    harness.emit({ type: "session.started" });
+    window.answers = (window.answers || 0) + 1;
+    window.answer = sdp;
+    window.emit({ type: "session.started" });
   }
   close() {}
 };
-const track = (harness.track = {
+const track = (window.track = {
   enabled: true,
   stop() {
-    harness.stops++;
+    window.stops++;
   },
 });
 Object.defineProperty(navigator, "mediaDevices", {
   value: {
     getUserMedia: async () => {
-      harness.order.push("capture");
+      window.order.push("capture");
       return {
         getTracks: () => [track],
         getAudioTracks: () => [track],
@@ -169,14 +186,14 @@ function session(): Pick<
   "session_id" | "state" | "sdp" | "error"
 > {
   return {
-    session_id: harness.sid!,
-    state: harness.voiceError
+    session_id: window.sid!,
+    state: window.voiceError
       ? "failed"
-      : harness.pending
+      : window.pending
         ? "connecting"
         : "ready",
-    sdp: harness.pending ? null : "answer",
-    error: harness.voiceError,
+    sdp: window.pending ? null : "answer",
+    error: window.voiceError,
   };
 }
 /** The renderer under test owns the voice JSON request bodies. */
@@ -191,7 +208,7 @@ window.fetch = async (input, opts) => {
     .split("/")
     .at(-1)!;
   const payload = voiceBody(body as string);
-  harness.calls.push([action, payload]);
+  window.voiceCalls.push([action, payload]);
   let data: unknown = {};
   if (action === "identity")
     data = {
@@ -199,7 +216,7 @@ window.fetch = async (input, opts) => {
       syncProtocol: 2,
     } satisfies Schemas["SyncIdentityResponse"];
   if (action === "status") {
-    harness.order.push("status");
+    window.order.push("status");
     data = {
       configured: true,
       transport: "native",
@@ -208,23 +225,23 @@ window.fetch = async (input, opts) => {
       "configured" | "transport"
     >;
   }
-  if (action === "records" && harness.failRecords)
+  if (action === "records" && window.failRecords)
     throw new Error("Connection unavailable");
   if (action === "records")
     data = {
-      records: harness.records,
-      cursor: harness.records.length,
-      session: harness.sid ? session() : null,
+      records: window.records,
+      cursor: window.records.length,
+      session: window.sid ? session() : null,
     } satisfies {
       records: VoiceHarness["records"];
       cursor: Schemas["VoiceRecordsResponse"]["cursor"];
       session: ReturnType<typeof session> | null;
     };
   if (action === "start") {
-    harness.sid = payload.session_id;
-    const stale = harness.holdStart
+    window.sid = payload.session_id;
+    const stale = window.holdStart
       ? ({
-          session_id: harness.sid!,
+          session_id: window.sid!,
           state: "connecting",
           sdp: null,
         } satisfies Pick<
@@ -232,14 +249,14 @@ window.fetch = async (input, opts) => {
           "session_id" | "state" | "sdp"
         >)
       : null;
-    if (harness.holdStart)
+    if (window.holdStart)
       await new Promise<void>((resolve) => {
-        harness.releaseStart = resolve;
+        window.releaseStart = resolve;
       });
     data = stale || {
-      session_id: harness.sid,
-      state: harness.pending ? "connecting" : "ready",
-      sdp: harness.pending ? null : "answer",
+      session_id: window.sid,
+      state: window.pending ? "connecting" : "ready",
+      sdp: window.pending ? null : "answer",
     };
   }
   if (action === "session") data = session();
@@ -247,4 +264,4 @@ window.fetch = async (input, opts) => {
     headers: { [API_SCHEMA_HASH_HEADER]: API_SCHEMA_HASH },
   });
 };
-harness.render("chat-one");
+window.render("chat-one");

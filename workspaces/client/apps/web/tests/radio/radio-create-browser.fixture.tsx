@@ -1,12 +1,10 @@
 declare global {
   interface Window {
-    radioCreateFixture: {
-      fixture: Snapshot;
-      opened: string | null;
-      reopen: () => void;
-      failRefresh: boolean;
-      ordinary: boolean;
-    };
+    fixture: Snapshot;
+    opened: string | null;
+    reopen: () => void;
+    failRefresh: boolean;
+    ordinary: boolean;
   }
 }
 const rootElement = document.getElementById("root")!;
@@ -82,25 +80,22 @@ const initial: Snapshot = {
     peerTeams: [],
   },
 };
-window.radioCreateFixture = {
-  fixture: initial,
-  opened: null,
-  reopen: () => {},
-  failRefresh: false,
-  ordinary: false,
-};
+window.fixture = initial;
+window.opened = null;
+window.reopen = () => {};
+window.failRefresh = false;
+window.ordinary = false;
 function Fixture() {
   const [data, setData] = useState(initial);
   const [show, setShow] = useState<{ path?: string | undefined } | null>({
     path: "/p",
   });
   const [opened, open] = useState<string | null>(null);
-  window.radioCreateFixture.fixture = data;
-  window.radioCreateFixture.opened = opened;
-  window.radioCreateFixture.reopen = () => setShow({ path: "/p" });
+  window.fixture = data;
+  window.opened = opened;
+  window.reopen = () => setShow({ path: "/p" });
   const refresh = async () => {
-    if (window.radioCreateFixture.failRefresh)
-      throw Error("Snapshot unavailable");
+    if (window.failRefresh) throw Error("Snapshot unavailable");
     const result = await fetch("/snapshot");
     setData(radioSnapshot(await result.json()));
   };
@@ -110,7 +105,7 @@ function Fixture() {
         data={data}
         opened={opened}
         open={open}
-        newChat={() => (window.radioCreateFixture.ordinary = true)}
+        newChat={() => (window.ordinary = true)}
         newSharedChat={(path) => setShow({ path })}
         addProject={() => {}}
         changeProject={() => {}}

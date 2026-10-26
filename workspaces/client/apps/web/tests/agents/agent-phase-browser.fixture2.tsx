@@ -19,13 +19,11 @@ import "../../src/workspace-layout.css";
 
 declare global {
   interface Window {
-    agentPhaseFixture: {
-      base: Agent;
-      worker: (index: number) => Agent;
-      command: (index: number) => BackgroundTask;
-      monitor: (index: number) => Monitor;
-      setData: (value: Pick<Snapshot, "threads" | "runtime">) => void;
-    };
+    base: Agent;
+    worker: (index: number) => Agent;
+    command: (index: number) => BackgroundTask;
+    monitor: (index: number) => Monitor;
+    setData: (value: Pick<Snapshot, "threads" | "runtime">) => void;
   }
 }
 const lead = {
@@ -37,44 +35,36 @@ const lead = {
   inFlight: false,
   epoch: 2,
 } satisfies Agent;
-window.agentPhaseFixture = {
-  base: lead,
-  worker: (i) => ({
-    ...lead,
-    id: "child-" + i,
-    name: "Worker " + i,
-    parentId: "lead",
-    status: "running",
-    inFlight: true,
-  }),
-  command: (i) => ({
-    id: "cmd-" + i,
-    agent: "lead",
-    kind: "command",
-    command: "npm run check " + i,
-    status: "running",
-    epoch: 2,
-  }),
-  monitor: (i) => ({
-    id: "monitor-" + i,
-    agent: "lead",
-    command: "watch build " + i,
-    status: "running",
-    epoch: 2,
-  }),
-  setData: () => {},
-};
-const initial = snapshotFixture([
-  lead,
-  window.agentPhaseFixture.worker(1),
-  window.agentPhaseFixture.worker(2),
-]);
+window.base = lead;
+window.worker = (i) => ({
+  ...lead,
+  id: "child-" + i,
+  name: "Worker " + i,
+  parentId: "lead",
+  status: "running",
+  inFlight: true,
+});
+window.command = (i) => ({
+  id: "cmd-" + i,
+  agent: "lead",
+  kind: "command",
+  command: "npm run check " + i,
+  status: "running",
+  epoch: 2,
+});
+window.monitor = (i) => ({
+  id: "monitor-" + i,
+  agent: "lead",
+  command: "watch build " + i,
+  status: "running",
+  epoch: 2,
+});
+const initial = snapshotFixture([lead, window.worker(1), window.worker(2)]);
 function Fixture() {
   const [data, setData] =
     useState<Pick<Snapshot, "threads" | "runtime">>(initial);
-  window.agentPhaseFixture.setData = (value) => flushSync(() => setData(value));
-  const agent = data.threads[0];
-  if (!agent) throw new Error("Missing agent phase lead");
+  window.setData = (value) => flushSync(() => setData(value));
+  const agent = data.threads[0]!;
   const full = { ...initial, ...data };
   const wait = chatWaitState(full, agent);
   const indicator = chatIndicators(full).get(agent.id);

@@ -78,10 +78,11 @@ test("Limit Recovery State Ui", async ({
             agentId: identity.agentId || "lumina",
           },
         };
-      await page.evaluate(
-        (serialized) => window.limitRecoveryFixture.applySerialized(serialized),
-        JSON.stringify({ label, limits, ...identity } satisfies LimitSnapshot),
-      );
+      await page.evaluate((snapshot) => window.applyLimitSnapshot(snapshot), {
+        label,
+        limits,
+        ...identity,
+      } satisfies LimitSnapshot);
       await page.locator(`main[data-case="${label}"]`).waitFor();
       await assertBanner(visible);
     };
@@ -187,10 +188,7 @@ test("Limit Recovery State Ui", async ({
       threadId: "another-thread",
       mountKey: 3,
     });
-    assert.deepEqual(
-      await page.evaluate(() => window.limitRecoveryFixture.actions),
-      [],
-    );
+    assert.deepEqual(await page.evaluate(() => window.fixtureActions), []);
     await page.evaluate(
       (snapshot) => {
         sessionStorage.setItem("fixture-initial", JSON.stringify(snapshot));
@@ -202,10 +200,7 @@ test("Limit Recovery State Ui", async ({
     await assertBanner(false);
     await apply("new-quota-error", available, true, { episode: now });
     assert.deepEqual(writes, []);
-    assert.deepEqual(
-      await page.evaluate(() => window.limitRecoveryFixture.actions),
-      [],
-    );
+    assert.deepEqual(await page.evaluate(() => window.fixtureActions), []);
     assert.deepEqual(errors, []);
     console.log(
       JSON.stringify({

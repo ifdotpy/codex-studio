@@ -177,9 +177,7 @@ test("usage accounts ui", async ({ browser: _browser }) => {
     assert.match(await ownLimitsPanel.innerText(), /80%\s*left/);
     await page.getByRole("button", { name: "Refresh", exact: true }).click();
     await page.waitForFunction(() =>
-      window.usageAccountsFixture.reloadCalls.some(
-        ([key, force]) => key === "own" && force,
-      ),
+      window.reloadCalls.some(([key, force]) => key === "own" && force),
     );
 
     await page.goto(fixtureOrigin(server) + `?multi&now=${now}`);
@@ -214,9 +212,7 @@ test("usage accounts ui", async ({ browser: _browser }) => {
       "ArrowRight selects the next account tile",
     );
     await page.waitForFunction(() =>
-      window.usageAccountsFixture.reloadCalls.some(
-        ([key, force]) => key === "team" && !force,
-      ),
+      window.reloadCalls.some(([key, force]) => key === "team" && !force),
     );
     const selectedTeamLimit = accountPanel.getByText("8% left", {
       exact: false,
@@ -239,9 +235,7 @@ test("usage accounts ui", async ({ browser: _browser }) => {
     );
     await page.getByRole("button", { name: "Refresh", exact: true }).click();
     await page.waitForFunction(() =>
-      window.usageAccountsFixture.reloadCalls.some(
-        ([key, force]) => key === "team" && force,
-      ),
+      window.reloadCalls.some(([key, force]) => key === "team" && force),
     );
     await page
       .getByRole("button", { name: "Apply reset", exact: true })
@@ -304,9 +298,7 @@ test("usage accounts ui", async ({ browser: _browser }) => {
     );
     await page.getByRole("button", { name: "Refresh", exact: true }).click();
     await page.waitForFunction(() =>
-      window.usageAccountsFixture.reloadCalls.some(
-        ([key, force]) => key === "claude" && force,
-      ),
+      window.reloadCalls.some(([key, force]) => key === "claude" && force),
     );
     await page
       .getByRole("radio", { name: "Codex", exact: true })

@@ -14,38 +14,40 @@ export type ModelSnapshot = Parameters<
 >[0];
 declare global {
   interface Window {
-    modelCatalogFixture: {
-      snapshot: ModelSnapshot;
-      gets: number;
-      accept?: ((snapshot: ModelSnapshot) => void) | undefined;
-      result?: ReturnType<typeof useWorkerModels>;
-      root?: Root | undefined;
-      mount: (account?: string, workers?: boolean) => void;
-      publish: (snapshot: ModelSnapshot) => void;
-    };
+    unmountCatalog: () => void;
+    modelSnapshot: ModelSnapshot;
+    modelGets: number;
+    acceptModelSnapshot:
+      | ((snapshot: ModelSnapshot) => void)
+      | undefined
+      | undefined;
+    catalogResult: ReturnType<typeof useWorkerModels> | undefined;
+    catalogRoot: Root | undefined | undefined;
+    mountCatalog: (account?: string, workers?: boolean) => void;
+    publishModelSnapshot: (snapshot: ModelSnapshot) => void;
   }
 }
-const harness = window.modelCatalogFixture;
+
 const reader: Reader = {
   scope: "fixture",
   cacheOwner: {},
   read: (options) => get("/api/models", options),
   subscribeState: (accept) => {
-    harness.accept = accept;
-    accept(harness.snapshot);
+    window.acceptModelSnapshot = accept;
+    accept(window.modelSnapshot);
     return () => {
-      harness.accept = undefined;
+      window.acceptModelSnapshot = undefined;
     };
   },
 };
 function Fixture({ account, workers }: { account: string; workers: boolean }) {
   const result = useWorkerModels(account, true, workers);
-  harness.result = result;
+  window.catalogResult = result;
   return <pre>{JSON.stringify(result)}</pre>;
 }
-harness.mount = (account = "default", workers = false) => {
+window.mountCatalog = (account = "default", workers = false) => {
   const element = document.getElementById("app")!;
-  const root = (harness.root ??= createRoot(element));
+  const root = (window.catalogRoot ||= createRoot(element));
   flushSync(() =>
     root.render(
       <ModelCatalogReader.Provider value={reader}>
@@ -54,7 +56,12 @@ harness.mount = (account = "default", workers = false) => {
     ),
   );
 };
-harness.publish = (snapshot) => {
-  harness.snapshot = snapshot;
-  harness.accept?.(snapshot);
+window.publishModelSnapshot = (snapshot) => {
+  window.modelSnapshot = snapshot;
+  window.acceptModelSnapshot?.(snapshot);
+};
+
+window.unmountCatalog = () => {
+  flushSync(() => window.catalogRoot?.unmount());
+  window.catalogRoot = undefined;
 };
