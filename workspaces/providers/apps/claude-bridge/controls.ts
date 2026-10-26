@@ -8,6 +8,7 @@ import type {
   RewindFilesResult,
 } from "@anthropic-ai/claude-agent-sdk";
 import type { Session, Turn, FileRestorePlan } from "./session-state.ts";
+import type { BridgeParams, BridgeSessionParams } from "./bridge-protocol.ts";
 export interface ControlDependencies {
   persist(session: Session): Promise<unknown>;
   getSessionMessages(
@@ -431,10 +432,13 @@ export async function rollbackSession(
 // The Runtime workspace operation owns submission identity and unknown outcomes.
 export async function forkAtTurn(
   source: Session,
-  params: { [K in keyof Session]?: Session[K] | undefined } & {
-    threadId?: string | undefined;
-    lastTurnId?: string | null | undefined;
-  },
+  params: BridgeSessionParams &
+    Partial<
+      Pick<
+        BridgeParams<"thread/fork">,
+        "threadId" | "lastTurnId" | "excludeTurns"
+      >
+    >,
   deps: ControlDependencies,
 ) {
   // Native reads can wait while the source receives more output. Keep the
@@ -523,6 +527,7 @@ export async function forkAtTurn(
   const target = {
     ...base,
     ...settings,
+    cwd: settings.cwd ?? source.cwd,
     id: targetNativeId,
     nativeId: targetNativeId,
     nativeHistoryCwd:

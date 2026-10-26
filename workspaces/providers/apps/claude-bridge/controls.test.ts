@@ -239,7 +239,7 @@ test("branch selected turn includes its steer but excludes later turns and recei
   assert.equal(target.cwd, "/branch");
   assert.equal(target.turns.length, 1);
   assert.equal(target.turns[0]?.nativeMessageId, "fork0");
-  assert.equal(target.controlRequests, undefined);
+  assert.equal("controlRequests" in target, false);
 });
 test("empty branch creates separate identity without native mutation", async () => {
   const f = fixture();
@@ -406,4 +406,13 @@ test("branch from completed turn preserves a running source and refuses its acti
       /completed Claude turn/,
     );
   assert.equal(f.calls(), 1);
+});
+
+test("fork retains the source folder when optional cwd is explicitly undefined", async () => {
+  const f = fixture();
+  f.session.turns = [];
+  f.session.started = false;
+  const target = await forkAtTurn(f.session, { cwd: undefined }, f.deps);
+  assert.equal(target.cwd, f.session.cwd);
+  assert.equal(target.nativeHistoryCwd, f.session.cwd);
 });
