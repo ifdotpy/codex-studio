@@ -20,7 +20,7 @@ for (const format of ["png", "jpeg", "gif", "webp"] as const) {
     const image = await prepareClaudeImage(original);
     const actual = await sharp(image.bytes).metadata();
     assert.equal(actual.width, MAX_IMAGE_SIDE);
-    assert.ok(actual.height !== undefined && actual.height >= 1);
+    assert.ok(actual.height! >= 1);
     assert.equal(
       image.mediaType,
       "image/" + (side > MAX_IMAGE_SIDE && format === "gif" ? "png" : format),

@@ -1,3 +1,4 @@
+import type { BridgeNote } from "./testing/bridge-harness.ts";
 // A Claude subscription limit through the real bridge with a scripted SDK. No
 // model calls. The messages follow what Claude Code writes to its stream when a
 // request is refused at the limit: a rate_limit_event, then a synthetic
@@ -6,8 +7,7 @@ import { afterEach, test } from "vitest";
 import assert from "node:assert/strict";
 import { startBridge } from "./testing/bridge-harness.ts";
 
-const RESET = 1_900_000_000;
-const LIMIT_TEXT = "You've hit your session limit · resets 3:40am (UTC)";
+import { RESET, LIMIT_TEXT } from "./usage-limit.fixture.mts";
 
 // Input "work": one completed turn, then Claude starts a turn of its own (as for
 // a background task notification) and the limit refuses its first request. The
@@ -36,13 +36,13 @@ async function start(text: string) {
 test("a limit that refuses a turn Claude started itself reports the provider reset", async () => {
   const { bridge, turn } = await start("work");
   const first = await bridge.note(
-    "turn/completed",
-    (n) => n.method === "turn/completed" && n.params.turn.id === turn,
+    (n): n is Extract<BridgeNote, { method: "turn/completed" }> =>
+      n.method === "turn/completed" && n.params.turn.id === turn,
   );
   assert.equal(first.params.turn.status, "completed");
   const own = await bridge.note(
-    "turn/completed",
-    (n) => n.method === "turn/completed" && n.params.turn.id !== turn,
+    (n): n is Extract<BridgeNote, { method: "turn/completed" }> =>
+      n.method === "turn/completed" && n.params.turn.id !== turn,
   );
   assert.equal(own.params.turn.status, "failed");
   assert.deepEqual(own.params.turn.error, {
@@ -51,16 +51,14 @@ test("a limit that refuses a turn Claude started itself reports the provider res
     resetsAt: RESET,
   });
   const shown = await bridge.note(
-    "item/completed",
-    (n) =>
+    (n): n is Extract<BridgeNote, { method: "item/completed" }> =>
       n.method === "item/completed" &&
       n.params.turnId === own.params.turn.id &&
       n.params.item.id ===
         "limit:" + own.params.turn.id + ":five_hour:" + RESET,
   );
-  assert.ok(shown.params.item.text !== undefined);
   assert.match(
-    shown.params.item.text,
+    shown.params.item.text!,
     new RegExp(
       "^Claude usage limit reached \\(five_hour\\)\\. Resets at " +
         new Date(RESET * 1000).toISOString().replaceAll(".", "\\."),
@@ -71,8 +69,8 @@ test("a limit that refuses a turn Claude started itself reports the provider res
 test("a limit without rate-limit details still reports a usage wait", async () => {
   const { bridge, turn } = await start("plain");
   const done = await bridge.note(
-    "turn/completed",
-    (n) => n.method === "turn/completed" && n.params.turn.id === turn,
+    (n): n is Extract<BridgeNote, { method: "turn/completed" }> =>
+      n.method === "turn/completed" && n.params.turn.id === turn,
   );
   assert.equal(done.params.turn.status, "failed");
   assert.deepEqual(done.params.turn.error, {
