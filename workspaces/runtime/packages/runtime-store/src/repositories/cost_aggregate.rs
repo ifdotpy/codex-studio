@@ -476,8 +476,18 @@ fn contributions(
             continue;
         };
         let candidate = winners.entry((&row.agent, response)).or_insert(row);
-        if (row.final_evidence && !candidate.final_evidence)
-            || (row.final_evidence == candidate.final_evidence && row.seq < candidate.seq)
+        if studio_runtime_schema::usage::ledger::supersedes(
+            if candidate.final_evidence {
+                UsageEvidence::Live
+            } else {
+                UsageEvidence::Legacy
+            },
+            if row.final_evidence {
+                UsageEvidence::Live
+            } else {
+                UsageEvidence::Legacy
+            },
+        ) || (row.final_evidence == candidate.final_evidence && row.seq < candidate.seq)
         {
             *candidate = row;
         }

@@ -39,8 +39,11 @@ const PROJECTION_REFUSED: &str = "invalidInput";
 /// before). Any other effect passes through unchanged.
 pub(crate) fn log_effect(
     canvas: &Connection,
-    effect: NotificationPostCommit,
+    mut effect: NotificationPostCommit,
 ) -> Result<Option<NotificationPostCommit>, StoreError> {
+    if let NotificationPostCommit::Analytics { ledger_since, .. } = &mut effect {
+        *ledger_since = studio_runtime_schema::usage::ledger::LedgerEpoch::Current;
+    }
     let observation = match &effect {
         NotificationPostCommit::Analytics { observation, .. }
         | NotificationPostCommit::AnalyticsStream { observation, .. } => observation,
@@ -253,6 +256,9 @@ mod tests {
                 provider_at: 10.0 + cursor as f64,
             },
             budget_capture_value: None,
+            usage_conflict: None,
+            ledger_since: Default::default(),
+            usage_unknown: false,
         }
     }
 
@@ -418,6 +424,7 @@ mod tests {
                 observation.observed_at,
                 observation.observed_at,
                 crate::analytics_capture::CaptureSource::Live,
+                studio_runtime_schema::usage::ledger::LedgerEpoch::Current,
             )
             .expect("prepare direct capture");
             crate::analytics_capture::capture(&direct_store, prepared)

@@ -225,13 +225,18 @@ impl Default for BatchLimits {
     }
 }
 pub struct HistorySnapshot {
+    ledger_since: studio_runtime_schema::usage::ledger::LedgerEpoch,
     agent: Arc<Value>,
     previous: Option<Value>,
     state: Value,
     context: RolloutContext,
 }
 impl HistorySnapshot {
-    pub fn from_records(agent: Value, previous: Option<Value>) -> Result<Self, HistoryError> {
+    pub fn from_records(
+        agent: Value,
+        previous: Option<Value>,
+        ledger_since: studio_runtime_schema::usage::ledger::LedgerEpoch,
+    ) -> Result<Self, HistoryError> {
         CaptureTable::Agents.validate(&agent)?;
         let agent = Arc::new(agent);
         let thread = agent["threadId"]
@@ -255,6 +260,7 @@ impl HistorySnapshot {
         }
         let context = RolloutContext::from_record(state["context"].clone())?;
         Ok(Self {
+            ledger_since,
             agent,
             previous,
             state,
@@ -298,9 +304,11 @@ impl HistoryBatch {
                 if current != self.previous {
                     return Err(HistoryError::StaleCheckpoint);
                 }
+                let epoch = studio_runtime_schema::usage::ledger::LedgerEpoch::Current;
                 let mut effects = Vec::new();
-                for prepared in self.captures {
-                    let decision = decide(CaptureSnapshot::load(tx, Arc::new(prepared))?)?;
+                for mut prepared in self.captures {
+                    prepared.bind_budget(tx, epoch)?;
+                    let decision = decide(CaptureSnapshot::load(tx, Arc::new(prepared))?, epoch)?;
                     decision.apply(tx)?;
                     if let Some(effect) = decision.response_rate {
                         effects.push(effect)
@@ -372,7 +380,11 @@ async fn collect_path(
     let batch = studio_runtime_process::blocking_pool::spawn_blocking(
         "runtime-services/analytics_history_prepare",
         move || {
-            let snapshot = HistorySnapshot::from_records(agent, previous)?;
+            let snapshot = HistorySnapshot::from_records(
+                agent,
+                previous,
+                studio_runtime_schema::usage::ledger::LedgerEpoch::Current,
+            )?;
             prepare(
                 snapshot,
                 &profile,
@@ -1000,11 +1012,18 @@ pub fn prepare(
                         at,
                         now,
                         CaptureSource::Rollout,
+                        snapshot.ledger_since,
                     )?);
                 }
-                RolloutAction::Payload { params, at } => captures.push(
-                    PreparedCapture::model_payload_shared(Arc::clone(&agent), &params, at, now)?,
-                ),
+                RolloutAction::Payload { params, at } => {
+                    captures.push(PreparedCapture::model_payload_shared(
+                        Arc::clone(&agent),
+                        &params,
+                        at,
+                        now,
+                        studio_runtime_schema::usage::ledger::LedgerEpoch::Current,
+                    )?)
+                }
                 RolloutAction::WrongThread => {
                     increment(&mut snapshot.state, "wrongThreadRecord", 1)?
                 }
@@ -1331,7 +1350,11 @@ impl HistoryCollector {
         let batch = studio_runtime_process::blocking_pool::spawn_blocking(
             "runtime-services/analytics_history_prepare",
             move || {
-                let snapshot = HistorySnapshot::from_records(prepare_agent, previous)?;
+                let snapshot = HistorySnapshot::from_records(
+                    prepare_agent,
+                    previous,
+                    studio_runtime_schema::usage::ledger::LedgerEpoch::Current,
+                )?;
                 prepare(
                     snapshot,
                     &home,
@@ -1503,7 +1526,12 @@ mod native_validation_tests {
         let path = profile.join("sessions/2026/10/25/rollout-test-thread.jsonl");
         let agent = json!({"id":"agent","rootId":"agent","threadId":"thread","accountKey":"default","provider":"codex"});
         let batch = prepare(
-            HistorySnapshot::from_records(agent, None).expect("snapshot"),
+            HistorySnapshot::from_records(
+                agent,
+                None,
+                studio_runtime_schema::usage::ledger::LedgerEpoch::Current,
+            )
+            .expect("snapshot"),
             &profile,
             RolloutPath::Found(path),
             BatchLimits::default(),

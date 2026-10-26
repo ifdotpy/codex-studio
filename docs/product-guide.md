@@ -174,7 +174,14 @@ and review; its title contains the full settings. On narrow layouts it keeps the
 wider layouts name all three roles. Click it or submit `/model` to open the role picker anchored above the composer on desktop or in a bottom sheet on phones. Escape closes the picker and returns focus to the summary.
 Accounts use a compact grid with remaining limits. Chat settings is one compact Team panel without tabs. It contains
 permissions, subagent parallelism, delegation depth, and account eligibility; zero parallelism
-uses a single agent. Account eligibility is always visible in compact provider groups with remaining limits; long names and emails are ellipsized, with full values in the account title and accessible description.
+uses a single agent. Permissions stay available during running turns and pending
+approvals. Claude applies Ask and Full live in both directions. Codex Full answers
+pending tool approvals through the normal user-approval path and automatically
+approves new callbacks while Full is saved; Ask stops automatic approvals, with
+the provider's Ask policy starting from the next turn. An approval already in
+flight can still finish just after Ask is selected, so the turn can briefly retain
+Full for a fraction of a second. Quick-create inherits settings only from a live
+previous chat; an archived chat uses the defaults for a new chat. Account eligibility is always visible in compact provider groups with remaining limits; long names and emails are ellipsized, with full values in the account title and accessible description.
 Automatic account selection prefers a free slot, project order, then fewer
 active agents. Eligibility is separate from each role's selected account.
 Project actions are available in the shared dialog footer. Hidden catalog models stay hidden. A proposed plan waits for a
@@ -399,10 +406,15 @@ A ready history appears immediately on selection, including its saved scroll pos
 After a network change or a return to Studio, sync restores updates when needed.
 Browser network hints do not interrupt a working server stream. A hidden tab
 pauses its updates deliberately; this pause is not reported as a lost connection.
-`Reconnecting` means that the live update connection needs recovery. A saved
-message awaiting delivery confirmation has its own notice, so it does not imply
-that the connection is lost. The notice clears after the server acknowledges
-the message.
+`No network.` takes precedence when the browser reports that it is offline.
+When it reports online, the notice distinguishes the observed failure from the
+current recovery action. An unknown cause is stated as unknown. `Reconnecting`
+means that a new live update connection is being opened. Preparation, a scheduled
+retry with its retry time, and waiting for another window have distinct notices;
+interrupted updates alone do not imply an active connection attempt. Switching chats keeps the shared connection and reconciles
+the current subscriptions. A saved message awaiting delivery confirmation has
+its own notice, so it does not imply that the connection is lost. The notice
+clears after the server acknowledges the message.
 A cached workspace cannot send drafts to a different workspace before verification.
 
 Run `pnpm --filter codex-agents-web run test:mobile` for the mobile regression suite.
@@ -450,6 +462,10 @@ Use **New folder** and **New subfolder** to add folders for chats.
 Use **Move to folder** in the chat menu. These folders exist only in Studio.
 A chat keeps its directory and account.
 
+The active sidebar hides unregistered directory groups that contain only archived
+chats. Use **Show archived chats** to find those chats and their directory groups.
+Registered projects remain visible even when empty.
+
 Use **Delete project…** in either project sidebar menu to delete a registered
 project, including all its chats, archived chats, workers and shared rooms.
 Confirmation stops running agents. History, cost accounting, the project folder
@@ -489,7 +505,7 @@ The main agent's model selector includes every available model from the selected
 
 The main agent has the orchestrator role. Subagents ask it for help.
 Only the main agent sends conversational messages or tasks to you.
-Native tool permissions still require your approval.
+In Ask mode, native tool permissions require your approval.
 
 Use a stable `request_id` with `orchestration_send` to recover a lost reply.
 An exact retry returns the saved receipt without another instruction.

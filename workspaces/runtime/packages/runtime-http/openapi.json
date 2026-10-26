@@ -41712,6 +41712,12 @@
             "title": "Revision",
             "type": "integer"
           },
+          "terminalBaseOffset": {
+            "description": "Required for terminal-output delta entries: the persisted base offset in Unicode scalars. The client applies the delta only when this equals its persisted terminal output offset. Omitted for snapshots.",
+            "maximum": 9007199254740991,
+            "minimum": 0,
+            "type": "integer"
+          },
           "transcriptChanges": {
             "anyOf": [
               {
@@ -48276,6 +48282,12 @@
         "description": "Last fully applied durable sequence for one resource ref. Workspace identity survives server restarts; a different identity requires a fresh snapshot.",
         "properties": {
           "seq": {
+            "maximum": 9007199254740991,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "terminalGeneration": {
+            "description": "Terminal output reset counter, owned by TerminalsRepository. Set and checked only for terminal-output. Missing or mismatched counters require a snapshot; offsets are resumable only within the same generation.",
             "maximum": 9007199254740991,
             "minimum": 0,
             "type": "integer"
@@ -56138,11 +56150,107 @@
       },
       "UsageGapReason": {
         "description": "Why final response accounting is unavailable.",
-        "enum": [
-          "streamInterrupted",
-          "queryClosed"
+        "oneOf": [
+          {
+            "enum": [
+              "streamInterrupted",
+              "queryClosed"
+            ],
+            "type": "string"
+          },
+          {
+            "const": "unconfirmedStop",
+            "description": "Stream stopped without a provider delta confirming completion.",
+            "type": "string"
+          },
+          {
+            "const": "noStream",
+            "description": "Assistant message arrived without any stream for its response identity.",
+            "type": "string"
+          }
+        ]
+      },
+      "UsageIdentity": {
+        "description": "Logical owner of usage, independent of capture time, account, turn and provenance.",
+        "oneOf": [
+          {
+            "additionalProperties": false,
+            "description": "A provider response (including a gap awaiting its final usage).",
+            "properties": {
+              "agent": {
+                "type": "string"
+              },
+              "kind": {
+                "const": "response",
+                "type": "string"
+              },
+              "responseId": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind",
+              "agent",
+              "responseId"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "description": "A running counter, whose individual observations have separate receipts.",
+            "properties": {
+              "agent": {
+                "type": "string"
+              },
+              "kind": {
+                "const": "cumulative",
+                "type": "string"
+              },
+              "scope": {
+                "$ref": "#/components/schemas/UsageScope"
+              },
+              "threadId": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "kind",
+              "agent",
+              "threadId",
+              "scope"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "UsageLedgerRow": {
+        "description": "Durable typed receipt. Analytics stores these fields alongside presentation metadata;\nbudget stores the same value alongside its accounting placement.",
+        "properties": {
+          "receiptKey": {
+            "description": "First-capture deduplication key; retained across restore and re-import.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "studioUsage": {
+            "$ref": "#/components/schemas/UsageObservation",
+            "description": "Provider-neutral evidence; token fields have units of tokens."
+          },
+          "usageIdentity": {
+            "$ref": "#/components/schemas/UsageIdentity",
+            "description": "Immutable logical usage identity; dimensionless."
+          }
+        },
+        "required": [
+          "usageIdentity",
+          "receiptKey",
+          "studioUsage"
         ],
-        "type": "string"
+        "type": "object"
       },
       "UsageLimitsData": {
         "additionalProperties": {
@@ -56581,6 +56689,12 @@
             },
             "type": "array"
           },
+          "replayConflicts": {
+            "items": {
+              "$ref": "#/components/schemas/UsageReplayConflict"
+            },
+            "type": "array"
+          },
           "responses": {
             "items": {
               "$ref": "#/components/schemas/UsageReconciliationRow"
@@ -56743,6 +56857,53 @@
           "evidenceCostUsd",
           "journalConflict",
           "mismatched"
+        ],
+        "type": "object"
+      },
+      "UsageReplayConflict": {
+        "additionalProperties": false,
+        "description": "A rejected replay, preserving both totals without inventing missing legacy categories.",
+        "properties": {
+          "identity": {
+            "$ref": "#/components/schemas/UsageIdentity"
+          },
+          "incomingTokens": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/UsageTokens"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "incomingTotalTokens": {
+            "description": "Rejected billable total; tokens.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "retainedTokens": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/UsageTokens"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "retainedTotalTokens": {
+            "description": "Retained billable total; tokens.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "identity",
+          "retainedTotalTokens",
+          "incomingTotalTokens"
         ],
         "type": "object"
       },

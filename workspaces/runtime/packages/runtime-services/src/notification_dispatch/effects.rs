@@ -152,6 +152,16 @@ pub enum NotificationPostCommit {
         /// The team token budget total of older builds. Stored batches still
         /// decode; current builds write `None` and read nothing from it.
         budget_capture_value: Option<u64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        usage_conflict: Option<Box<studio_runtime_schema::usage::ledger::UsageReplayConflict>>,
+        /// Budget migration epoch bound when this effect is durably logged.
+        #[serde(
+            default,
+            skip_serializing_if = "studio_runtime_schema::usage::ledger::LedgerEpoch::is_legacy"
+        )]
+        ledger_since: studio_runtime_schema::usage::ledger::LedgerEpoch,
+        #[serde(default)]
+        usage_unknown: bool,
     },
     AnalyticsStream {
         observation: NotificationObservation,

@@ -117,6 +117,8 @@ export type SidebarProps = {
   settings?: () => void;
   notice?: string;
   data: Snapshot;
+  /** Registered project paths when data also contains inferred view projects. */
+  registeredProjectPaths?: ReadonlySet<string>;
   opened: string | null;
   selectionIdentity?: string;
   lead?: Agent;
@@ -736,7 +738,7 @@ function SidebarContents(p: SidebarProps & { services: SidebarServices }) {
       groups.set(project.path, {
         ...project,
         chats: [],
-        registered: true,
+        registered: p.registeredProjectPaths?.has(project.path) ?? true,
         hasChats:
           byProject.has(project.path) || sharedProjectPaths.has(project.path),
       });
@@ -778,6 +780,7 @@ function SidebarContents(p: SidebarProps & { services: SidebarServices }) {
     return groups;
   }, [
     projects,
+    p.registeredProjectPaths,
     agents,
     sharedRooms,
     sharedProjectPaths,
@@ -831,10 +834,15 @@ function SidebarContents(p: SidebarProps & { services: SidebarServices }) {
   const allProjectGroups = projectPaths.map((path) => groupMap.get(path)!);
   const projectGroups = allProjectGroups.filter(
     (group) =>
-      !query ||
-      group.chats.length ||
-      visibleSharedRooms.some((r) => r.projectPath === group.path) ||
-      `${group.path} ${group.name}`.toLowerCase().includes(query.toLowerCase()),
+      (group.registered ||
+        viewChatCounts.has(group.path) ||
+        visibleSharedRooms.some((r) => r.projectPath === group.path)) &&
+      (!query ||
+        group.chats.length ||
+        visibleSharedRooms.some((r) => r.projectPath === group.path) ||
+        `${group.path} ${group.name}`
+          .toLowerCase()
+          .includes(query.toLowerCase())),
   );
   const attention = needsYou(filtered, p.indicators);
   const renderRow = (row: Agent, priority = false) => (

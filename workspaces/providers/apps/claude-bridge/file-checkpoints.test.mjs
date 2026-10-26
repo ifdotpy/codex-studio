@@ -28,11 +28,13 @@ export function query({prompt,options}){
    if(input.done)return;
    messages.set(options.sessionId,[{type:'user',uuid:input.value.uuid,message:input.value.message,parent_tool_use_id:null}]);
    const config=process.env.CLAUDE_CONFIG_DIR;
-   mkdirSync(path.join(config,'projects','fixture'),{recursive:true});
+   const project=path.join(config,'projects',options.cwd.replace(/[^a-zA-Z0-9]/g,'-'));
+   mkdirSync(project,{recursive:true});
+   writeFileSync(path.join(project,options.sessionId+'.jsonl'),JSON.stringify({type:'user',uuid:input.value.uuid,parentUuid:null,sessionId:options.sessionId,cwd:options.cwd,isSidechain:false,timestamp:new Date().toISOString(),message:input.value.message})+'\n');
    mkdirSync(path.join(config,'file-history',options.sessionId),{recursive:true});
    writeFileSync(path.join(config,'file-history',options.sessionId,'0123456789abcdef@v1'),'checkpoint');
    writeFileSync(path.join(options.cwd,'file.txt'),'later user edit');
-   writeFileSync(path.join(config,'projects','fixture',options.sessionId+'.jsonl'),JSON.stringify({type:'file-history-snapshot',messageId:input.value.uuid,snapshot:{messageId:input.value.uuid,trackedFileBackups:{'file.txt':{backupFileName:'0123456789abcdef@v1',version:1}}}})+'\n');
+   appendFileSync(path.join(project,options.sessionId+'.jsonl'),JSON.stringify({type:'file-history-snapshot',messageId:input.value.uuid,snapshot:{messageId:input.value.uuid,trackedFileBackups:{'file.txt':{backupFileName:'0123456789abcdef@v1',version:1}}}})+'\n');
    log({kind:'input',messageId:input.value.uuid});
    yield {type:'system',subtype:'init',claude_code_version:'fixture'};
    yield {type:'user',isReplay:true,uuid:input.value.uuid};

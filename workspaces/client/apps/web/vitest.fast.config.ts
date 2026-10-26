@@ -9,6 +9,7 @@ export default {
     include: [
       "src/precompressedAssets.test.mjs",
       "src/platformNeutralCopy.test.ts",
+      "src/App.connection.test.ts",
       "src/scrollbars.test.mjs",
       "src/sync/subscriptions/store.test.ts",
       "src/sync/subscriptions/viewData.test.ts",

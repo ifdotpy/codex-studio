@@ -26,7 +26,7 @@ const refused=(id,details)=>({type:'assistant',uuid:'a-'+id,parent_tool_use_id:n
  error:'rate_limit',is_api_error_message:true,api_error_status:429,
  ...(details?{api_error:'usage_limit_reached',api_error_params:{rate_limit_info:info}}:{})});
 const failed={type:'result',subtype:'success',is_error:true,usage:none,result:${JSON.stringify(LIMIT_TEXT)}};
-export function query({prompt}){
+export function query({prompt,options}){
  const abort=new AbortController();
  return {
   mcpServerStatus:async()=>[],reconnectMcpServer:async()=>{},

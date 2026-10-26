@@ -1,6 +1,5 @@
-import { randomUUID } from "../uuid";
+import { clearSettingsRequest, settingsRequestId } from "./settingsRequestId";
 import ClaudeFileBackups from "./ClaudeFileBackups";
-import { useServerStorage } from "../servers/ServerServicesContext";
 import { useServerApi } from "../servers/ServerServicesContext";
 import { accountCanStart } from "../accountName";
 import { createPortal } from "react-dom";
@@ -119,8 +118,7 @@ export function ClaudeSettings({
     mode: ClaudeValues["permissionMode"] | null,
   ) => void;
 }) {
-  const localStorage = useServerStorage();
-  const { post, saved } = useServerApi();
+  const { post, saved, save } = useServerApi();
 
   const permissionsTarget = permissionsTargetId
     ? document.getElementById(permissionsTargetId)
@@ -165,11 +163,14 @@ export function ClaudeSettings({
         body.action === "rollback" && body.restore_files ? 120000 : 15000,
     });
   const mutate = async (body: ClaudeSessionMutation) => {
-    const storageKey = `claude-control:${agent.accountKey}:${agent.id}:${body.action}:${JSON.stringify({ ...body, id: undefined, action: undefined })}`;
-    const requestId = saved<string | null>(storageKey, null) || randomUUID();
-    localStorage.setItem(storageKey, JSON.stringify(requestId));
+    const storageKey = `claude-control:${agent.accountKey}:${agent.id}`;
+    const requestId = settingsRequestId(
+      { saved, save },
+      storageKey,
+      JSON.stringify(body),
+    );
     const result = await call({ ...body, request_id: requestId });
-    localStorage.removeItem(storageKey);
+    clearSettingsRequest({ saved, save }, storageKey, requestId);
     return result;
   };
   const load = async () => {
@@ -294,6 +295,11 @@ export function ClaudeSettings({
   useEffect(() => {
     if (turn && !historyTurns.some((item) => item.id === turn)) setTurn("");
   }, [state, turn]);
+  const permissionsLocked =
+    !stateLoaded ||
+    (!!account && !accountCanStart(account)) ||
+    busyAction ||
+    !!savingField;
   const locked =
     !stateLoaded ||
     (!!account && !accountCanStart(account)) ||
@@ -329,7 +335,7 @@ export function ClaudeSettings({
             <SegmentedControl
               aria-label="Permission mode"
               value={values.permissionMode}
-              disabled={locked}
+              disabled={permissionsLocked}
               data={[
                 { value: "default", label: "Ask" },
                 { value: "acceptEdits", label: "Edits" },
@@ -352,7 +358,7 @@ export function ClaudeSettings({
         <NativeSelect
           label="Permission mode"
           value={values.permissionMode}
-          disabled={locked}
+          disabled={permissionsLocked}
           onChange={(event) => {
             const selected = permissionMode(event.currentTarget.value);
             if (selected)
@@ -372,7 +378,7 @@ export function ClaudeSettings({
           <NativeSelect
             label="Permission mode"
             value={values.permissionMode}
-            disabled={locked}
+            disabled={permissionsLocked}
             onChange={(event) => {
               const selected = permissionMode(event.currentTarget.value);
               if (selected)

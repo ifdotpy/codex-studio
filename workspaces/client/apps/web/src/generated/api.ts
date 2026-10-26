@@ -18739,6 +18739,8 @@ export interface components {
       resource?: components["schemas"]["ResourceRef"] | null;
       /** Revision */
       revision: number;
+      /** @description Required for terminal-output delta entries: the persisted base offset in Unicode scalars. The client applies the delta only when this equals its persisted terminal output offset. Omitted for snapshots. */
+      terminalBaseOffset?: number;
       transcriptChanges?: components["schemas"]["TranscriptChangeBatch"] | null;
       /** @description Newest transcript history window sent immediately after a subscription acknowledgement, with older-history cursors. The server shrinks it to fit the stream event byte limit; a single oversized newest item requires scoped recovery. */
       transcriptSnapshot?:
@@ -21385,6 +21387,8 @@ export interface components {
      */
     SubscriptionCursor: {
       seq: number;
+      /** @description Terminal output reset counter, owned by TerminalsRepository. Set and checked only for terminal-output. Missing or mismatched counters require a snapshot; offsets are resumable only within the same generation. */
+      terminalGeneration?: number;
       workspaceId: string;
     };
     /** @description Authoritative resource kind to domain data mapping for the screen subscription API. Keys must equal ResourceRef kinds. Transport metadata never belongs in this map. */
@@ -24489,11 +24493,38 @@ export interface components {
       reason: string | null;
       truncated: boolean;
     };
+    /** @description Why final response accounting is unavailable. */
+    UsageGapReason:
+      | ("streamInterrupted" | "queryClosed")
+      | "unconfirmedStop"
+      | "noStream";
+    /** @description Logical owner of usage, independent of capture time, account, turn and provenance. */
+    UsageIdentity:
+      | {
+          agent: string;
+          /** @constant */
+          kind: "response";
+          responseId: string;
+        }
+      | {
+          agent: string;
+          /** @constant */
+          kind: "cumulative";
+          scope: components["schemas"]["UsageScope"];
+          threadId: string | null;
+        };
     /**
-     * @description Why final response accounting is unavailable.
-     * @enum {string}
+     * @description Durable typed receipt. Analytics stores these fields alongside presentation metadata;
+     *     budget stores the same value alongside its accounting placement.
      */
-    UsageGapReason: "streamInterrupted" | "queryClosed";
+    UsageLedgerRow: {
+      /** @description First-capture deduplication key; retained across restore and re-import. */
+      receiptKey: string | null;
+      /** @description Provider-neutral evidence; token fields have units of tokens. */
+      studioUsage: components["schemas"]["UsageObservation"];
+      /** @description Immutable logical usage identity; dimensionless. */
+      usageIdentity: components["schemas"]["UsageIdentity"];
+    };
     /**
      * UsageLimitsData
      * @description Known usage projection plus account-service fields passed through unchanged.
@@ -24646,6 +24677,7 @@ export interface components {
         model: string;
         providerCostUsd: number;
       }[];
+      replayConflicts?: components["schemas"]["UsageReplayConflict"][];
       responses: components["schemas"]["UsageReconciliationRow"][];
       totals: {
         evidenceCostUsd: number | null;
@@ -24665,6 +24697,22 @@ export interface components {
       recordedEvidence: components["schemas"]["UsageEvidence"] | null;
       recordedTokens: components["schemas"]["UsageTokens"] | null;
       responseId: string;
+    };
+    /** @description A rejected replay, preserving both totals without inventing missing legacy categories. */
+    UsageReplayConflict: {
+      identity: components["schemas"]["UsageIdentity"];
+      incomingTokens?: components["schemas"]["UsageTokens"] | null;
+      /**
+       * Format: uint64
+       * @description Rejected billable total; tokens.
+       */
+      incomingTotalTokens: number;
+      retainedTokens?: components["schemas"]["UsageTokens"] | null;
+      /**
+       * Format: uint64
+       * @description Retained billable total; tokens.
+       */
+      retainedTotalTokens: number;
     };
     /**
      * UsageResumeCause

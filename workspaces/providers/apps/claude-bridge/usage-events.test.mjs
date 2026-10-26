@@ -12,7 +12,7 @@ export const tool=(name,description,schema,call)=>({name,description,schema,call
 export const createSdkMcpServer=value=>({...value});
 export const forkSession=async()=>({sessionId:'22222222-2222-4222-8222-222222222222'});
 export const getSessionMessages=async()=>[];
-export function query({prompt}) {
+export function query({prompt,options}) {
  const abort=new AbortController();
  return {
   supportedModels:async()=>[{value:'sonnet',displayName:'Sonnet',resolvedModel:'claude-sonnet-4-6'}],

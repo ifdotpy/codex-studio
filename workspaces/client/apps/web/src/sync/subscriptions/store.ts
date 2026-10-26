@@ -1,5 +1,6 @@
 import type {
   ResourceConnectionState,
+  ResourceConnectionDetail,
   ResourceStreamState,
   ResourceVersion,
 } from "../resourceEvents";
@@ -24,6 +25,7 @@ export type SubscriptionTransport = {
     accept: (
       status: ResourceConnectionState,
       stream: ResourceStreamState,
+      detail: ResourceConnectionDetail,
     ) => void,
   ): () => void;
 };

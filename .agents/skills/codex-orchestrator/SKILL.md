@@ -120,6 +120,14 @@ Base reports of continued work on an active worker, command, or automatic contin
 
 ## Decisions, quality, and progress
 
+For a project with a Layr Cloud remote (`layr+https://` in
+`layr remote list --json`), use the [Layr skill](../layr/SKILL.md) to inspect
+changes, read checks and comments, reply, approve the reviewed state, and merge
+through its queue. Keep the exact ChangeId, state, comment, request, and queue
+entry IDs in the assignment evidence. A Git mirror does not change this route.
+Use `gh` for review and merge only for GitHub-only projects. Cloud queue completion
+and Studio task acceptance are separate; verify each required result.
+
 Make routine design decisions within the user's task and project constraints.
 Inspect existing code before introducing a replacement for an available mechanism.
 When authorized to fix confirmed defects, arrange the fixes as you confirm them.

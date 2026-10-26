@@ -15,6 +15,13 @@ to resolve or forward conversational questions, complaints, and requests.
 
 ## Choose the interface
 
+For source review and delivery in a project with a Layr Cloud remote, use the
+[Layr skill](../layr/SKILL.md) and the real Layr 0.3.0 CLI: changes, JSON checks
+and comments, replies, exact-state approvals, and the merge queue. Inspect
+`layr remote list --json` for a `layr+https://` URL. Use `gh` only for GitHub-only
+projects. A Cloud project with a Git mirror still uses Layr for review and merge.
+The older bundled Layr CLI does not implement these 0.3.0 recipes; check the selected version first.
+
 In a managed session, use the advertised `orchestration_*` tools. The application
 owns their queue, permissions, state, and worker lifecycle.
 From a terminal, `studio-runtime-server --help` lists the server, user service and

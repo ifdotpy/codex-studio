@@ -56,11 +56,21 @@ unknown outcome and is never automatically resent. Before completing a turn
 with such input, the bridge closes the CLI and reconciles its final native
 history. A split input is delivered only if every part is recorded; no recorded
 parts proves it unapplied, while partial or unavailable evidence stays unknown.
-Malformed, torn, or changed native history and a bounded tail without the
-opening input anchor, unique record UUIDs, or ancestry to the session root
-remain uncertain. Malformed queued-command UUIDs also stay unknown.
-Main-session attachments remain valid links in the native parent chain, and
-complete large records use the [native reader](native-history.mjs) tail budget.
+The [history index](history-index.mjs) owns input identity for stall recovery,
+restart, fork, and rollback. It reads the current native session through SDK
+metadata and conversation APIs, and the SDK's typed transcript-store import.
+The import preserves hidden service parts that the conversation API omits;
+each part keeps its original SDK UUID and prompt framing. A pinned complete
+file read guards against the SDK silently skipping malformed or unknown rows.
+The [record schemas](history-records.mjs) strictly validate input-bearing prompt,
+queue-operation and queued-command payloads, including every known queue field.
+Assistant/system/progress/summary records, tool-result-only user messages and
+non-input attachments receive basic identity checks; their evolving payloads do
+not change input presence. Unknown top-level record types remain unknown.
+Missing sessions, unsupported structures, torn or changed files, broken ancestry,
+and files outside the [reader's coverage](native-history.mjs) remain unknown.
+Only complete authoritative absence permits redelivery. Each snapshot builds
+one UUID index that all retained inputs reuse.
 The bridge shows an uncertainty notice
 and never authorizes redelivery from that evidence.
 The next start resumes a fresh CLI, and retries reuse recorded user-message
@@ -88,6 +98,46 @@ across an unverified fork. Every retained input mapping is checked before a
 native fork is submitted. Legacy delivered inputs without supported provenance
 require recovery instead of creating an unvalidated native branch.
 
+`system/init` and the typed `SessionStart` clear/fork hook own native session
+transitions. A durable guard precedes transition-capable input submission and
+query initialization. Every new-ID SessionStart hook awaits both the durable
+target intent and identity save before returning, including unsolicited
+transitions; the CLI awaits the hook before continuing work.
+The bridge saves target intent before changing identity,
+then persists the new native ID before continuing; conversation
+reset IDs are never used for resume. Checkpoints from the previous session are
+invalidated. Restart verifies an unresolved target against the SDK history before
+resuming it. A missing or unproven target stays visibly unknown and blocks native
+input/history operations; the old session is never silently resumed. A proven
+unread or cancelled input releases its matching guard without submitting it,
+including finalization, Stop, rejected steer saves and saved-receipt recovery.
+An unrelated receipt cannot release another input's guard. There is no query-lifetime
+guard: an unclean ordinary restart still uses the last confirmed session. If an
+unsolicited transition crashes before its hook reaches Studio, that last
+persisted session remains the fallback; the new session has not continued work
+after the awaited hook. Once the target intent is saved, restart verifies or
+blocks that target and never silently substitutes the old session.
+Earlier mirror turns remain visible, while new native history
+controls use only turns belonging to the current session. A local clear command
+has no native input boundary and cannot be selected for a history operation.
+
+Run `node testing/cli-history-witness.mjs` from this directory for the installed
+SDK/CLI witness. It uses disposable configuration below the user's cache and a
+local HTTP provider fixture, verifies both composite orders through fork,
+rollback and recovery, and proves clear/resume with three distinct identities.
+It makes no real model request and prints its retained evidence directory.
+`node testing/cli-history-compatibility-witness.mjs` also checks a local 503 retry
+and a real ToolSearch session with tool references and deferred-tool attachments;
+both must retain exact input coverage through recovery, fork and rollback.
+
+The pinned SDK exposes hidden-part provenance only through the alpha
+`importSessionToStore` API. The ordinary non-alpha conversation API filters it
+out, as the installed-SDK fast witness demonstrates. Every import checks the
+return value, batch and project/session scope against the pinned file; a throw,
+changed shape or incomplete import stays unknown. The fast suite pins exact
+ordered meta-part retention against the installed SDK so an incompatible SDK
+upgrade fails verification.
+
 ## Restart recovery
 
 Session load checks stale `inProgress` turns against the native transcript.
@@ -98,8 +148,8 @@ Unreadable, changed, unrelated, or unsupported native evidence becomes
 Recovery also accepts an initial input receipt or marks a steer delivered only
 when all its native UUIDs appear in order on the proven transcript chain. Partial
 or unproven inputs keep their ambiguous receipts, including after another restart.
-The reader shares the bounded file and identity checks used for historical
-Bash receipts. The mirror journal still discards a torn final record.
+Input receipts use the same verified SDK history index as stall recovery.
+Reply reconstruction stays in [restart reconciliation](restart-reconcile.mjs). The mirror journal still discards a torn final record.
 
 A malformed complete journal row requires native transcript evidence before
 repair. Automatic repair supports complete text histories with exact message
@@ -133,9 +183,22 @@ Codex identity and the existing Claude `accountId` remain unchanged.
 The bridge emits `thread/tokenUsage/updated` observations using the
 [generated usage contract](usage-contract.generated.d.mts). The
 [SDK-typed normalizer](usage.mjs) finalizes response usage from stream events
-at `message_stop`, publishes cumulative model totals immediately on each SDK
-result, and reports unfinished responses as gaps. Assistant message usage is
-provisional and serves only the idle-compaction cache report.
+at `message_stop` only after a non-null `message_delta.delta.stop_reason` proves
+completion. Stops without that evidence produce an `unconfirmedStop` gap.
+Assistant messages without a preceding stream produce one `noStream` gap per
+response identity. All gap paths share that identity and preserve the first
+reason, including when a later stream ends unfinished. A later complete stream
+may still supply the final response.
+The normalizer publishes cumulative model totals immediately on each SDK result
+and reports unfinished responses as gaps. Assistant message usage is provisional
+and serves only the idle-compaction cache report.
+
+The installed SDK exposes no general typed marker proving an assistant or stream
+message was generated without a provider call. Local synthetic messages, including
+hook messages, follow the same gap rules; response id prefixes never suppress
+accounting evidence. Gap reasons are owned by the runtime-schema
+[usage module](../../../runtime/packages/runtime-schema/src/usage.rs) and consumed
+through the generated contract.
 
 `pnpm --filter studio-claude-bridge run typecheck` checks the normalizer and its
 SDK fixtures with the [strict configuration](tsconfig.json). Package checks

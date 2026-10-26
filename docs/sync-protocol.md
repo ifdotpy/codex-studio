@@ -213,17 +213,33 @@ uses Unicode-scalar offsets. Each live subscription sends an initial snapshot,
 then only output since its last sent cursor, including status updates with no new
 text. Buffer loss, an output reset, or an oversized interval sends a bounded
 replacement snapshot. Removing a terminal selector releases its live cursor.
-The renderer merges intervals and stores retained output and its resume cursor
-under the projection write lock before notifying readers. A fresh transport or
-new stream owner always requests a bounded authoritative snapshot, even when an
-older output cursor is cached. A reconnect under the same owner reuses its
-proven applied base or receives a replacement snapshot. If a replacement snapshot
-cannot be persisted or is skipped during cancellation or overflow, later intervals
-retain only a recovery hint. Re-add and reconnect omit the saved cursor until a
-fresh snapshot commits, so stale output cannot become the new base. The stream
-owner shares its complete merged terminal view with followers as a snapshot only
-after cursor persistence succeeds; cached replay and ordinary appends require no
-terminal output GETs in those followers. Raw server intervals retain delta semantics.
+The renderer applies every resource frame through one FIFO per stream source,
+including hints, overflow frames, and completed staged entity intervals.
+Transfer completion reserves its queue position on arrival; staging prerequisites
+settle before the persistence deadline starts. Each frame is persisted before dispatch;
+its reason does not select a persistence path. Terminal deltas declare
+`terminalBaseOffset` in the OpenAPI-owned resource entry, in Unicode scalars.
+The terminal cursor also carries the OpenAPI-owned `terminalGeneration` reset
+counter. `TerminalsRepository` increments it whenever replacement output reduces
+the output end offset. An additive migration initializes existing rows to zero.
+A missing or mismatched generation on resume always produces a snapshot, even
+when output has grown past the old offset after a reset. Under the projection
+write lock, persistence compares both generation and base offset with the saved
+cursor, then stores the merged output and cursor together. Entity and
+transcript deltas use their existing `after` bases. Reconnect and ownership
+changes read persisted cursors; they need no in-memory terminal baseline proof.
+Persisted terminal revisions prevent late snapshots from restoring pre-reset output.
+
+The reply-kind and cursor contract applies to entries carrying those fields.
+Legacy entity and transcript batches without them retain their existing
+persistence paths. Requiring cursors for those producers and removing the legacy
+paths is deferred work; frame reasons do not decide their validity.
+
+Persistence errors, deadlines, and exhausted queue capacity stop delivery and
+request recovery for the affected resources. Subscription removal strips only
+removed entries; source close silently drops pending frames. The stream owner
+shares its complete merged terminal view with followers as a snapshot only after
+persistence succeeds. Raw server intervals retain delta semantics.
 Saved terminal history and explicit retries remain user actions.
 
 The existing native EventSource transport and RxDB projection cache remain in
@@ -314,6 +330,12 @@ cursor; a follower asks that owner through browser coordination. Queued deltas
 cannot confirm readiness after their base failed, and a cancelled subscription
 cannot request recovery for its replacement.
 
+The server may split a reconnect baseline into separate resource frames.
+A same-epoch passive notification for another resource must not cancel a
+pending entity write. The entity cursor becomes applied only after that write
+commits; state resets, epoch changes, and failed application retain their
+recovery behavior.
+
 Project deletion uses the dedicated `POST /api/projects/delete` contract in
 [OpenAPI](../workspaces/runtime/packages/runtime-http/openapi.json). The confirmation
 captures the project entity's own `seq` and the applied baseline's `workspaceId`;
@@ -345,6 +367,34 @@ owns connection states and peer-health validation. The subscription store owns
 whether a resource has an applied baseline; the outbox owns whether a message has
 a server receipt. Neither stale resource data nor an unacknowledged message alone
 means that the connection is lost.
+
+Transport activity is distinct from connection health. The connection module
+owns the closed activity states: stopped, preparing, waiting for an owner,
+retry scheduled, connecting, open, paused, and offline. Activity is derived from
+the current opening attempt, lock request, retry timer, and stream. Presentation
+must not infer an active attempt from degraded health alone. Browser offline
+activity takes precedence in presentation, including while server health is
+still fresh. Both offline and online transitions notify listeners even when
+health has not changed.
+
+The same connection module owns the closed failure reasons and optional retry
+deadline. Failure reasons describe observed boundaries, not an inferred remote
+cause; an unclassified interruption is unknown. A validated server frame clears
+the failure. The retry deadline is Unix epoch milliseconds belonging to the
+actual retry timer and is cleared when that timer fires or is canceled. UI copy
+consumes this detail without maintaining a second recovery state machine.
+
+Only one stream-opening attempt may prepare durable cursors at a time. Peer
+heartbeats and subscription changes coalesce with that attempt rather than
+canceling it. Opening uses the current resource union. Late subscriptions read
+their available cursors within the same original preparation budget, once per
+selector; they never renew that budget. Resources without a prepared cursor
+receive a baseline. Cursor preparation for opening and
+subscription changes is bounded by the connection module's named preparation
+budget. If optional cursor reads do not finish, the stream requests an
+authoritative SSE baseline without a cursor. This is not an HTTP polling fallback
+and does not bypass the durable application receipt. Closing the attempt cancels
+its preparation; late results cannot reopen a superseded stream.
 
 An intentionally hidden tab releases its stream with a `paused` connection state.
 Returning to the tab resumes coordination without reporting that pause as a

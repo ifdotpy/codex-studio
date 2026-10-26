@@ -18,7 +18,36 @@ export type ResourceConnectionState =
   | "offline"
   | "paused"
   | "schema-mismatch";
-export type ResourceStreamState = "stopped" | "connecting" | "open";
+/** Current local recovery work, independently of validated server health. */
+export type ResourceStreamState =
+  | "stopped"
+  | "preparing"
+  | "waiting-owner"
+  | "retry-scheduled"
+  | "connecting"
+  | "open"
+  | "paused"
+  | "offline";
+
+/** Observed failure boundaries; browsers do not expose a stream error's cause. */
+export type ResourceConnectionFailure =
+  | "stream-error"
+  | "heartbeat-timeout"
+  | "schema-handshake-timeout"
+  | "subscription-timeout"
+  | "subscription-rejected"
+  | "invalid-frame"
+  | "local-state-error"
+  | "unknown";
+
+export type ResourceConnectionDetail = {
+  failure?: ResourceConnectionFailure;
+  /** Deadline of the current scheduled retry, in Unix epoch milliseconds. */
+  retryAt?: number;
+};
+
+/** Maximum wait for optional local resume cursors, in milliseconds. */
+export const RESOURCE_CURSOR_PREPARATION_TIMEOUT_MS = 5_000;
 
 /** Maximum silence after a validated server frame, in milliseconds. */
 export const RESOURCE_HEARTBEAT_TIMEOUT_MS = 45_000;

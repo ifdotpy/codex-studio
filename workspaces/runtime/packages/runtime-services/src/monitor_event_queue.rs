@@ -81,7 +81,7 @@ pub fn enqueue_output_with_scope_in_transaction(
     }
     let agent = record["agent"]
         .as_str()
-        .ok_or(NotificationDispatchError::InvalidNotification)?;
+        .ok_or(NotificationDispatchError::invalid())?;
     let owner_account = tx
         .query_row(
             "SELECT COALESCE(account_key,'default') FROM runtime_agents WHERE id=?1",
@@ -95,14 +95,14 @@ pub fn enqueue_output_with_scope_in_transaction(
         .is_some_and(|account| account != scope.account)
     {
         let operation = serde_json::from_value::<Operation>(record["operation"].clone())
-            .map_err(|_| NotificationDispatchError::InvalidNotification)?;
+            .map_err(|_| NotificationDispatchError::invalid())?;
         let original =
             crate::account_worker::retained::monitor_command_scope(tx, process_id, &operation)
                 .map_err(|error| match error {
                     crate::account_worker::WorkerError::Store(error) => {
                         NotificationDispatchError::Store(error)
                     }
-                    _ => NotificationDispatchError::InvalidNotification,
+                    _ => NotificationDispatchError::invalid(),
                 })?;
         if original.is_none_or(|original| {
             original.generation != scope.generation || original.account != scope.account
@@ -111,13 +111,13 @@ pub fn enqueue_output_with_scope_in_transaction(
         }
     }
     let Some(encoded) = params["deltaBase64"].as_str() else {
-        return Err(NotificationDispatchError::InvalidNotification);
+        return Err(NotificationDispatchError::invalid());
     };
     let bytes = base64::engine::general_purpose::STANDARD
         .decode(encoded)
-        .map_err(|_| NotificationDispatchError::InvalidNotification)?;
+        .map_err(|_| NotificationDispatchError::invalid())?;
     if bytes.len() > crate::monitor_policy::CHUNK_BYTES {
-        return Err(NotificationDispatchError::InvalidNotification);
+        return Err(NotificationDispatchError::invalid());
     }
     let mut queue = record
         .get("streamQueue")
@@ -163,7 +163,7 @@ pub fn enqueue_output_with_scope_in_transaction(
     let operation = record
         .get("operation")
         .cloned()
-        .ok_or(NotificationDispatchError::InvalidNotification)?;
+        .ok_or(NotificationDispatchError::invalid())?;
     queue.push(json!({
         "cursor": key,
         "offset": offset,
@@ -175,6 +175,18 @@ pub fn enqueue_output_with_scope_in_transaction(
     record["streamQueue"] = Value::Array(queue);
     Table::<MonitorRecord>::new(tx).put(&MonitorRecord::from_value(record)?)?;
     Ok(true)
+}
+
+/// The agent that owns the running monitor `process_id`, whose output deltas
+/// [`enqueue_output_with_scope_in_transaction`] appends.
+pub fn output_agent(
+    tx: &Transaction<'_>,
+    process_id: &str,
+) -> Result<Option<String>, NotificationDispatchError> {
+    Ok(Table::<MonitorRecord>::new(tx)
+        .get(&process_id.to_owned())?
+        .and_then(|record| record.value()["agent"].as_str().map(str::to_owned))
+        .filter(|agent| !agent.is_empty()))
 }
 
 /// Return the monitor's durable event queue. A command that never wrote output

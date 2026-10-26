@@ -8,14 +8,20 @@ Export a copy only when the user asks for it.
 
 Use `layr` for all local version control commands.
 Use `layr status`, `layr diff`, `layr log`, and `layr show` to inspect the work.
-Use `layr add <paths>` and `layr save -m "<message>"` to save the task result.
+For Layr 0.3.0, use `layr add` and `layr save -m "<message>"` to save the task result.
 Submit the full state ID from `layr rev-parse head` as the task revision.
 Use Git only for the remote bridge and tools that call Git themselves.
-Use `layr git push --squash -m "<task title>" origin <branch>` to export one task commit to the remote when authorized.
+For a Layr Cloud remote, follow the [Layr skill](../../layr/SKILL.md): open and
+update changes with named saves and pushes, fetch checks and comments as JSON,
+reply, approve exact states, and merge through the queue. Use `gh` for review
+and merge only for GitHub-only projects. Cloud completion does not replace
+Studio task acceptance.
+Use `layr git push --squash -m <task title>` for an authorized Git mirror export.
 In a project synced with the Mac, Git lives on the Mac: `layr git push` from the VM is off and
 agents may not add remotes. Accepted work reaches the Mac folder as uncommitted changes.
 In a project with a Git store, layr updates Git HEAD when the line head moves.
-Use `layr git sync` to update the local Git mirror without a push.
+If a tool in the VM needs git HEAD at the current layr state, run `layr git sync`; it does not
+push.
 
 The lead owns the main line and may save named states in it.
 Each worker has its own line and Linux user.
@@ -78,4 +84,7 @@ Use the source manifest to check both the saved state and restored cloud files.
 
 Use the configured layr store remote for backups.
 The 0.2.0 store writer supports multipart uploads.
-Check the saved state and restored files against the source manifest.
+
+These command names require the real Layr 0.3.0 CLI. Existing VM sessions with
+the older bundled CLI retain their frozen guidance. Check the selected binary
+before applying the 0.3.0 skill.

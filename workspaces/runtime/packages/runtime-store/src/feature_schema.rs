@@ -300,6 +300,15 @@ pub(crate) fn prepare(transaction: &Transaction<'_>) -> StoreResult<()> {
         transaction.execute_batch(schema)?;
     }
     crate::entity_publication::prepare_work_change_journal(transaction)?;
+    let has_terminal_generation: bool = transaction.query_row(
+        "SELECT EXISTS(SELECT 1 FROM pragma_table_info('user_terminals') WHERE name='output_generation')",
+        [], |row| row.get(0),
+    )?;
+    if !has_terminal_generation {
+        transaction.execute_batch(
+            "ALTER TABLE user_terminals ADD COLUMN output_generation INTEGER NOT NULL DEFAULT 0",
+        )?;
+    }
     transaction.execute_batch("CREATE INDEX IF NOT EXISTS runtime_receipt_transcript_item ON runtime_event_meta(json_extract(record,'$.transcriptItemId'))")?;
     // A deleted row is no longer readable by the writer journal. Its source
     // trigger owns the corresponding summary tombstone in the same transaction.
@@ -346,6 +355,44 @@ mod tests {
     use crate::repositories::schema_registrations;
     use rusqlite::Connection;
     use std::collections::BTreeSet;
+
+    #[test]
+    fn terminal_generation_upgrade_preserves_output_and_counts_resets() {
+        use crate::TerminalsRepository;
+        let mut db = crate::fresh_state::test_canvas();
+        db.execute_batch("ALTER TABLE user_terminals DROP COLUMN output_generation")
+            .expect("legacy schema");
+        let record = serde_json::json!({"id":"terminal","agent":"a","title":"Terminal","cwd":std::env::temp_dir(),"status":"running","created":1});
+        db.execute(
+            "INSERT INTO user_terminals(id,record,output,offset) VALUES('terminal',?1,'a🙂',0)",
+            [record.to_string()],
+        )
+        .expect("legacy output");
+        let tx = db.transaction().expect("upgrade");
+        super::prepare(&tx).expect("additive upgrade");
+        super::prepare(&tx).expect("idempotent upgrade");
+        let row = TerminalsRepository::get(&tx, "terminal")
+            .expect("read")
+            .expect("terminal");
+        assert_eq!(
+            (row.output.as_str(), row.offset, row.output_generation),
+            ("a🙂", 0, 0)
+        );
+        for (text, start, generation) in [
+            ("a🙂中", 0, 0),
+            ("中", 2, 0),
+            ("x", 0, 1),
+            ("", 0, 2),
+            ("y", 0, 2),
+        ] {
+            TerminalsRepository::put(&tx, "terminal", &row.record, text, start).expect("write");
+            let saved = TerminalsRepository::get(&tx, "terminal")
+                .expect("read generation")
+                .expect("row");
+            assert_eq!(saved.output_generation, generation);
+        }
+        tx.commit().expect("persist resets");
+    }
 
     #[test]
     fn feature_tables_are_not_core_repository_requirements() {

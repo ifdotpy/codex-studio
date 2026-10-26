@@ -6,20 +6,19 @@ import { startBridge } from "./testing/bridge-harness.mjs";
 
 const SDK = String.raw`
 import fs from 'node:fs';
+import path from 'node:path';
 import {randomUUID} from 'node:crypto';
 export const tool=(name,description,schema,call)=>({name,description,schema,call});
 export const createSdkMcpServer=value=>({...value});
 const histories=new Map();
 export const getSessionMessages=async(id)=>structuredClone(histories.get(id)||[]);
-export async function forkSession(id,options){
- const source=histories.get(id),end=source.findIndex(m=>m.uuid===options.upToMessageId);
- if(end<0)throw new Error('Explicit fork boundary required');
- const sessionId=randomUUID();
- histories.set(sessionId,source.slice(0,end+1).map(m=>({...m,uuid:randomUUID()})));
- return {sessionId};
-}
+export {forkSession} from '@anthropic-ai/claude-agent-sdk';
 export function query({prompt,options}){
  const abort=new AbortController(),id=options.resume||options.sessionId;
+ const history=path.join(process.env.CLAUDE_CONFIG_DIR,'projects',options.cwd.replace(/[^a-zA-Z0-9]/g,'-'),id+'.jsonl');
+ fs.mkdirSync(path.dirname(history),{recursive:true});
+ let parent=fs.existsSync(history)?JSON.parse(fs.readFileSync(history,'utf8').trim().split('\n').at(-1)).uuid:null;
+ const record=row=>{fs.appendFileSync(history,JSON.stringify({...row,parentUuid:parent,sessionId:id,cwd:options.cwd,isSidechain:false,timestamp:new Date().toISOString()})+'\n');parent=row.uuid;};
  const log=event=>fs.appendFileSync(options.cwd+'/.query-log',JSON.stringify({id,...event})+'\n');
  if(id)log({start:true});
  return {
@@ -34,14 +33,14 @@ export function query({prompt,options}){
     const input=await prompt.next(); if(input.done)return;
     const text=input.value.message.content[0].text;
     const messages=histories.get(id)||[];histories.set(id,messages);
-    messages.push({type:'user',uuid:input.value.uuid,message:input.value.message,parent_tool_use_id:null});
+    const user={type:'user',uuid:input.value.uuid,message:input.value.message,parent_tool_use_id:null};messages.push(user);record(user);
     yield {type:'user',isReplay:true,uuid:input.value.uuid};
     yield {type:'system',subtype:'init'};
     if(text==='running') {
       await new Promise(resolve=>abort.signal.addEventListener('abort',resolve,{once:true}));return;
     }
     const reply={type:'assistant',uuid:randomUUID(),message:{id:randomUUID(),role:'assistant',content:[{type:'text',text:'reply'}]},parent_tool_use_id:null};
-    messages.push(reply);yield reply;
+    messages.push(reply);record(reply);yield reply;
     if(text==='background')yield {type:'system',subtype:'background_tasks_changed',tasks:[{task_id:'bg'}]};
     yield {type:'result',subtype:'success',usage:{input_tokens:10,output_tokens:2},result:'reply'};
    }

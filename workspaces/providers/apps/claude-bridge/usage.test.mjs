@@ -6,7 +6,12 @@ import {
   modelTokens,
   responseTokens,
 } from "./usage.mjs";
-import { events, modelUsage } from "./usage-fixtures.mjs";
+import {
+  events,
+  modelUsage,
+  interruptedDelta,
+  assistant,
+} from "./usage-fixtures.mjs";
 /** @typedef {import('@anthropic-ai/claude-agent-sdk').SDKPartialAssistantMessage} StreamMessage */
 /** @typedef {import('@anthropic-ai/claude-agent-sdk').SDKResultMessage} ResultMessage */
 /** @param {StreamMessage['event']} event @param {string | null} [parent] @returns {StreamMessage} */
@@ -86,6 +91,9 @@ test("interleaved subagent streams have independent identities and unfinished ga
     frame({ ...start, message: { ...start.message, id: "child" } }, "tool"),
     "main-turn",
   );
+  const delta = events.find((e) => e.type === "message_delta");
+  if (!delta) throw new Error("missing SDK fixture");
+  usage.observe(frame(delta, "tool"), "main-turn");
   expect(
     usage.observe(frame({ type: "message_stop" }, "tool"), "main-turn"),
   ).toMatchObject([
@@ -168,8 +176,14 @@ test("tool identity keeps its original turn across responses and nested tool own
   usage.registerTool("parent", "original");
   const start = events.find((e) => e.type === "message_start");
   if (!start) throw new Error("missing SDK fixture");
+  const delta = events.find((e) => e.type === "message_delta");
+  if (!delta) throw new Error("missing SDK fixture");
   for (const turn of ["later", "even-later"]) {
-    usage.observe(frame(start, "parent"), turn);
+    usage.observe(
+      frame({ ...start, message: { ...start.message, id: turn } }, "parent"),
+      turn,
+    );
+    usage.observe(frame(delta, "parent"), turn);
     expect(
       usage.observe(frame({ type: "message_stop" }, "parent"), turn),
     ).toMatchObject([{ turnId: "original" }]);
@@ -177,6 +191,33 @@ test("tool identity keeps its original turn across responses and nested tool own
   usage.registerTool("nested", usage.turnFor("parent", "current"));
   expect(usage.turnFor("nested", "current")).toBe("original");
 });
+test("unfinished subagent responses keep their original turn and repeated ids add no gap", () => {
+  const usage = new ResponseUsage();
+  usage.registerTool("parent", "original");
+  const start = events.find((e) => e.type === "message_start");
+  if (!start) throw new Error("missing SDK fixture");
+  for (const turn of ["later", "even-later"]) {
+    const responseId = "unfinished-" + turn;
+    const message = { ...start.message, id: responseId };
+    usage.observe(frame({ ...start, message }, "parent"), turn);
+    expect(
+      usage.observe(frame({ type: "message_stop" }, "parent"), turn),
+    ).toEqual([
+      {
+        kind: "gap",
+        responseId,
+        model: message.model,
+        reason: "unconfirmedStop",
+        turnId: "original",
+      },
+    ]);
+    usage.observe(frame({ ...start, message }, "parent"), "replay-turn");
+    expect(
+      usage.observe(frame({ type: "message_stop" }, "parent"), "replay-turn"),
+    ).toEqual([]);
+  }
+});
+
 test("context windows use the response model and its SDK canonical alias", () => {
   const usage = new ResponseUsage();
   usage.recordModels({
@@ -265,4 +306,85 @@ test("one-hour writes are clamped against final stream write totals", () => {
   expect(responseTokens({ ...initial, cache_creation: null })).toMatchObject({
     cacheWriteInput1h: 0,
   });
+});
+
+for (const stop of ["end_turn", "tool_use"]) {
+  test(`provider ${stop} proves finality with final usage`, () => {
+    const usage = new ResponseUsage();
+    for (const event of events) {
+      const next =
+        event.type === "message_delta"
+          ? {
+              ...event,
+              delta: {
+                ...event.delta,
+                stop_reason: /** @type {"end_turn" | "tool_use"} */ (stop),
+              },
+            }
+          : event;
+      const observations = usage.observe(frame(next), "turn");
+      if (event.type === "message_stop")
+        expect(observations).toMatchObject([
+          { kind: "response", tokens: { output: 720 } },
+        ]);
+    }
+  });
+}
+test("CLI synthetic null completion is a gap and a later proper stream can finalize the same id", () => {
+  const usage = new ResponseUsage();
+  const start = events.find((e) => e.type === "message_start");
+  if (!start) throw new Error("missing SDK fixture");
+  usage.observe(frame(start), "turn");
+  usage.observe(frame(interruptedDelta), "turn");
+  expect(usage.observe(frame({ type: "message_stop" }), "turn")).toMatchObject([
+    { kind: "gap", responseId: "response-1", reason: "unconfirmedStop" },
+  ]);
+  expect(usage.finish("streamInterrupted")).toEqual([]);
+  for (const event of events) {
+    const observations = usage.observe(frame(event), "turn");
+    if (event.type === "message_stop")
+      expect(observations).toMatchObject([
+        { kind: "response", responseId: "response-1", tokens: { output: 720 } },
+      ]);
+  }
+});
+test("message_start stop reason alone is not provider delta evidence", () => {
+  const usage = new ResponseUsage();
+  usage.observe(
+    frame({ type: "message_start", message: assistant.message }),
+    "turn",
+  );
+  expect(usage.observe(frame({ type: "message_stop" }), "turn")).toMatchObject([
+    { kind: "gap", reason: "unconfirmedStop" },
+  ]);
+});
+test("assistant-only fallback deduplicates without accounting assistant usage; later stream can finalize", () => {
+  const usage = new ResponseUsage();
+  expect(usage.observeAssistant(assistant, "turn")).toEqual([
+    {
+      kind: "gap",
+      responseId: "response-1",
+      model: "claude-opus-5-5",
+      turnId: "turn",
+      reason: "noStream",
+    },
+  ]);
+  expect(usage.observeAssistant(assistant, "turn")).toEqual([]);
+  for (const event of events) {
+    const observations = usage.observe(frame(event), "turn");
+    expect(usage.observeAssistant(assistant, "turn")).toEqual([]);
+    if (event.type === "message_stop")
+      expect(observations).toMatchObject([{ kind: "response" }]);
+  }
+});
+test("a hook-shaped id cannot prove a provider call was skipped", () => {
+  const usage = new ResponseUsage();
+  expect(
+    usage.observeAssistant(
+      { ...assistant, message: { ...assistant.message, id: "msg_hook_local" } },
+      "turn",
+    ),
+  ).toMatchObject([
+    { kind: "gap", reason: "noStream", responseId: "msg_hook_local" },
+  ]);
 });

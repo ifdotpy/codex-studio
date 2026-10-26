@@ -16,8 +16,8 @@ function fixture() {
   const store = createSubscriptionStore({
     watchResourceChanges: add,
     watchResourceConnection: (accept) => {
-      connection = (status) => accept(status, "open");
-      accept("live", "open");
+      connection = (status) => accept(status, "open", {});
+      accept("live", "open", {});
       return () => {};
     },
   });
@@ -141,7 +141,7 @@ describe("screen subscription ownership", () => {
         return () => {};
       },
       watchResourceConnection: (accept) => {
-        accept("live", "open");
+        accept("live", "open", {});
         return () => {};
       },
     });

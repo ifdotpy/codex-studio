@@ -1,8 +1,15 @@
 import { afterEach, expect, it, vi } from "vitest";
 import type { ComponentProps, ReactElement } from "react";
+import type {
+  ResourceConnectionDetail,
+  ResourceConnectionState,
+  ResourceStreamState,
+} from "../sync/resourceConnection";
 
 const h = vi.hoisted(() => ({
-  connection: "live",
+  health: "live" as ResourceConnectionState,
+  activity: "open" as ResourceStreamState,
+  detail: {} as ResourceConnectionDetail,
   online: false,
   feedback: false,
   cursor: 0,
@@ -50,9 +57,17 @@ vi.mock("@mantine/hooks", async (original) => ({
   useMediaQuery: () => false,
   useNetwork: () => ({ online: h.online }),
 }));
-vi.mock("../hooks", () => ({
-  useMessages: () => ({ items: [], loaded: true, connection: h.connection }),
-}));
+vi.mock("../hooks", async () => {
+  const { selectMessageConnection } =
+    await import("../hooks/messageConnection");
+  return {
+    useMessages: () => ({
+      items: [],
+      loaded: true,
+      connection: selectMessageConnection(h.health, h.activity, h.detail),
+    }),
+  };
+});
 vi.mock("./useMessageReceipts", () => ({
   useMessageReceipts: () => new Map(),
 }));
@@ -89,6 +104,7 @@ import { createElement, isValidElement, type ReactNode } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import Conversation from "./Conversation";
 import { LiveAgentPhase } from "./agents/AgentPhase";
+import { localTime } from "../local-time";
 import { useOfflineSendFeedback } from "./message-delivery/useOfflineSendFeedback";
 import { createOutbox, type OutgoingMessage } from "../sync/send";
 
@@ -148,7 +164,9 @@ function renderActivity(pending: boolean, currentAgent = agent) {
   return renderToStaticMarkup(createElement(LiveAgentPhase, phases[0].props));
 }
 afterEach(() => {
-  h.connection = "live";
+  h.health = "live";
+  h.activity = "open";
+  h.detail = {};
   h.online = false;
   h.feedback = false;
   h.state = [];
@@ -168,25 +186,84 @@ it("renders a saved message with neutral text and icon through the conversation 
   expect(markup).not.toContain("lucide-wifi-off");
   expect(saved.status).toBe("queued");
 });
-it("keeps loss wording and icon when transport is reconnecting with a saved message", () => {
-  h.connection = "reconnecting";
+it("keeps actual retry activity beside the saved-message notice", () => {
+  h.health = "degraded";
+  h.activity = "connecting";
+  h.detail = { failure: "stream-error" };
   const markup = renderActivity(feedback([saved], ["Failed to fetch"]).pending);
   expect(markup).toContain(
-    "Connection lost. Your message is saved and will send when connected.",
+    "Connection failed. Reconnecting… Your message is saved and waiting for delivery.",
   );
-  expect(markup).toContain("lucide-wifi-off");
+  expect(markup).toContain("lucide-loader-circle");
   expect(markup).toContain("Failed to fetch");
 });
 it("retains the reconnecting notice without a saved message", () => {
-  h.connection = "reconnecting";
+  h.health = "degraded";
+  h.activity = "connecting";
+  h.detail = { failure: "stream-error" };
   const markup = renderActivity(false);
-  expect(markup).toContain("Connection lost. Reconnecting…");
+  expect(markup).toContain("Reconnecting…");
+  expect(markup).toContain("lucide-loader-circle");
+  expect(markup).not.toContain("<details>");
+});
+it.each([
+  ["preparing", "Preparing connection…", "lucide-clock"],
+  ["waiting-owner", "Waiting for the shared connection…", "lucide-clock"],
+  ["retry-scheduled", "Reason unknown. Retry scheduled.", "lucide-clock"],
+  ["connecting", "Reason unknown. Reconnecting…", "lucide-loader-circle"],
+  ["open", "Reason unknown. Waiting for server updates…", "lucide-clock"],
+  ["offline", "No network.", "lucide-wifi-off"],
+  ["stopped", "Reason unknown. Connection interrupted.", "lucide-wifi-off"],
+] as const)(
+  "renders %s activity through the Conversation caller",
+  (activity, copy, icon) => {
+    h.health = "degraded";
+    h.activity = activity;
+    const markup = renderActivity(false);
+    expect(markup).toContain(copy);
+    expect(markup).toContain(icon);
+    if (activity !== "connecting") expect(markup).not.toContain("Reconnecting");
+    expect(markup).not.toContain("<details>");
+    expect(markup).toContain('role="status"');
+  },
+);
+it("shows no network even while the last validated server health is live", () => {
+  h.health = "live";
+  h.activity = "offline";
+  const markup = renderActivity(false);
+  expect(markup).toContain("No network.");
+  expect(markup).not.toContain("Reconnecting");
   expect(markup).toContain("lucide-wifi-off");
 });
+it.each([
+  ["stream-error", "Connection failed."],
+  ["heartbeat-timeout", "Server updates timed out."],
+  ["schema-handshake-timeout", "Server compatibility check timed out."],
+  ["subscription-timeout", "Server updates did not start in time."],
+  ["subscription-rejected", "Could not confirm live updates."],
+  ["invalid-frame", "Received invalid server updates."],
+  ["local-state-error", "Could not prepare or apply local sync data."],
+  ["unknown", "Reason unknown."],
+] as const)(
+  "renders the known %s cause and scheduled retry time",
+  (failure, cause) => {
+    h.health = "degraded";
+    h.activity = "retry-scheduled";
+    h.detail = { failure, retryAt: 1_792_965_000_000 };
+    const markup = renderActivity(false);
+    expect(markup).toContain(cause);
+    expect(markup).toContain(
+      `Retry scheduled for ${localTime(new Date(h.detail.retryAt!), { hour: "2-digit", minute: "2-digit", second: "2-digit" })}.`,
+    );
+    expect(markup).not.toContain("Reconnecting");
+    expect(markup).not.toContain("<details>");
+  },
+);
 it.each([true, false])(
   "keeps intentional paused transport neutral (saved=%s)",
   (pending) => {
-    h.connection = "paused";
+    h.health = "paused";
+    h.activity = "paused";
     const markup = renderActivity(pending);
     expect(markup).not.toContain("Connection lost");
     expect(markup).not.toContain("lucide-wifi-off");

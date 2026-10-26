@@ -83,7 +83,12 @@ async fn restart_after_ack_loss_retains_exact_effects_and_cursor() {
     let cancel = AtomicBool::new(false);
     let store = RuntimeStore::open(Some(root.path())).await.expect("store");
     let first = history::prepare(
-        HistorySnapshot::from_records(agent.clone(), None).expect("snapshot"),
+        HistorySnapshot::from_records(
+            agent.clone(),
+            None,
+            studio_runtime_schema::usage::ledger::LedgerEpoch::Current,
+        )
+        .expect("snapshot"),
         root.path(),
         RolloutPath::Found(path.clone()),
         BatchLimits::default(),
@@ -92,7 +97,12 @@ async fn restart_after_ack_loss_retains_exact_effects_and_cursor() {
     )
     .expect("batch");
     let stale = history::prepare(
-        HistorySnapshot::from_records(agent.clone(), None).expect("snapshot"),
+        HistorySnapshot::from_records(
+            agent.clone(),
+            None,
+            studio_runtime_schema::usage::ledger::LedgerEpoch::Current,
+        )
+        .expect("snapshot"),
         root.path(),
         RolloutPath::Found(path.clone()),
         BatchLimits::default(),
@@ -118,7 +128,12 @@ async fn restart_after_ack_loss_retains_exact_effects_and_cursor() {
         .await
         .expect("restart");
     let batch = history::prepare(
-        HistorySnapshot::from_records(agent, checkpoint(&store)).expect("snapshot"),
+        HistorySnapshot::from_records(
+            agent,
+            checkpoint(&store),
+            studio_runtime_schema::usage::ledger::LedgerEpoch::Current,
+        )
+        .expect("snapshot"),
         root.path(),
         RolloutPath::Found(path),
         BatchLimits::default(),
@@ -239,7 +254,12 @@ async fn main_store_write_runs_between_separately_scheduled_history_batches() {
     let cancel = AtomicBool::new(false);
     let store = Arc::new(RuntimeStore::open(Some(root.path())).await.expect("store"));
     let first = history::prepare(
-        HistorySnapshot::from_records(agent.clone(), checkpoint(&store)).expect("snapshot"),
+        HistorySnapshot::from_records(
+            agent.clone(),
+            checkpoint(&store),
+            studio_runtime_schema::usage::ledger::LedgerEpoch::Current,
+        )
+        .expect("snapshot"),
         root.path(),
         RolloutPath::Found(path.clone()),
         BatchLimits::new(1024 * 1024, 1).expect("batch limits"),
@@ -279,7 +299,12 @@ async fn main_store_write_runs_between_separately_scheduled_history_batches() {
         .expect("main write commits before next batch");
 
     let second = history::prepare(
-        HistorySnapshot::from_records(agent, checkpoint(&store)).expect("next snapshot"),
+        HistorySnapshot::from_records(
+            agent,
+            checkpoint(&store),
+            studio_runtime_schema::usage::ledger::LedgerEpoch::Current,
+        )
+        .expect("next snapshot"),
         root.path(),
         RolloutPath::Found(path),
         BatchLimits::new(1024 * 1024, 1).expect("batch limits"),
@@ -301,7 +326,12 @@ fn partial_tail_and_changed_anchor_never_acknowledge_unread_bytes() {
     let (root, agent) = fixture();
     let path = file(root.path(), &records()[..2], b"{\"type\":");
     let cancel = AtomicBool::new(false);
-    let snapshot = HistorySnapshot::from_records(agent.clone(), None).expect("snapshot");
+    let snapshot = HistorySnapshot::from_records(
+        agent.clone(),
+        None,
+        studio_runtime_schema::usage::ledger::LedgerEpoch::Current,
+    )
+    .expect("snapshot");
     let batch = history::prepare(
         snapshot,
         root.path(),
@@ -321,7 +351,12 @@ fn partial_tail_and_changed_anchor_never_acknowledge_unread_bytes() {
     bytes[10] = b'x';
     fs::write(&path, bytes).expect("change checkpoint byte");
     let refused = history::prepare(
-        HistorySnapshot::from_records(agent, Some(previous.clone())).expect("snapshot"),
+        HistorySnapshot::from_records(
+            agent,
+            Some(previous.clone()),
+            studio_runtime_schema::usage::ledger::LedgerEpoch::Current,
+        )
+        .expect("snapshot"),
         root.path(),
         RolloutPath::Found(path),
         BatchLimits::default(),
@@ -358,7 +393,12 @@ async fn store_failure_rolls_back_each_effect_and_the_checkpoint() {
             let before = common::actual(&db, &common::tables());
             drop(db);
             let batch = history::prepare(
-                HistorySnapshot::from_records(agent.clone(), None).expect("snapshot"),
+                HistorySnapshot::from_records(
+                    agent.clone(),
+                    None,
+                    studio_runtime_schema::usage::ledger::LedgerEpoch::Current,
+                )
+                .expect("snapshot"),
                 root.path(),
                 RolloutPath::Found(path.clone()),
                 BatchLimits::default(),
@@ -385,7 +425,12 @@ async fn store_failure_rolls_back_each_effect_and_the_checkpoint() {
                 before
             );
             let batch = history::prepare(
-                HistorySnapshot::from_records(agent, None).expect("snapshot"),
+                HistorySnapshot::from_records(
+                    agent,
+                    None,
+                    studio_runtime_schema::usage::ledger::LedgerEpoch::Current,
+                )
+                .expect("snapshot"),
                 root.path(),
                 RolloutPath::Found(path),
                 BatchLimits::default(),
@@ -408,7 +453,12 @@ async fn stale_agent_and_cancellation_write_nothing() {
     let before = common::actual(&common::analytics(root.path()), &common::tables());
     assert!(matches!(
         history::prepare(
-            HistorySnapshot::from_records(agent.clone(), None).expect("snapshot"),
+            HistorySnapshot::from_records(
+                agent.clone(),
+                None,
+                studio_runtime_schema::usage::ledger::LedgerEpoch::Current
+            )
+            .expect("snapshot"),
             root.path(),
             RolloutPath::Found(path.clone()),
             BatchLimits::default(),
@@ -423,7 +473,12 @@ async fn stale_agent_and_cancellation_write_nothing() {
         before
     );
     let batch = history::prepare(
-        HistorySnapshot::from_records(agent, None).expect("snapshot"),
+        HistorySnapshot::from_records(
+            agent,
+            None,
+            studio_runtime_schema::usage::ledger::LedgerEpoch::Current,
+        )
+        .expect("snapshot"),
         root.path(),
         RolloutPath::Found(path),
         BatchLimits::default(),
@@ -609,6 +664,7 @@ async fn terminal_error_repair_is_idempotent_for_exact_and_ambiguous_notices() {
                 1.,
                 200.,
                 CaptureSource::Live,
+                studio_runtime_schema::usage::ledger::LedgerEpoch::Current,
             )
             .expect("prepared"),
         )
@@ -710,6 +766,7 @@ async fn notification_batch_and_account_limit_consumers_commit_or_refuse_atomica
         1.,
         200.,
         CaptureSource::Live,
+        studio_runtime_schema::usage::ledger::LedgerEpoch::Current,
     )
     .expect("prepare");
     let mut stale = agent.clone();
@@ -721,6 +778,7 @@ async fn notification_batch_and_account_limit_consumers_commit_or_refuse_atomica
         2.,
         200.,
         CaptureSource::Live,
+        studio_runtime_schema::usage::ledger::LedgerEpoch::Current,
     )
     .expect("stale");
     assert!(
@@ -784,7 +842,14 @@ async fn checked_history_identity_and_state_check_refuse_malformed_rows() {
     ] {
         let mut invalid = base.clone();
         invalid[field] = value;
-        assert!(HistorySnapshot::from_records(agent.clone(), Some(invalid)).is_err());
+        assert!(
+            HistorySnapshot::from_records(
+                agent.clone(),
+                Some(invalid),
+                studio_runtime_schema::usage::ledger::LedgerEpoch::Current
+            )
+            .is_err()
+        );
     }
     let db = rusqlite::Connection::open(root.path().join("analytics.sqlite3")).expect("db");
     db.execute("INSERT INTO analytics_history VALUES ('bad','a','{}')", [])
@@ -825,7 +890,12 @@ fn conflicting_header_alias_does_not_authorize_a_foreign_file() {
         b"",
     );
     let batch = history::prepare(
-        HistorySnapshot::from_records(agent, None).expect("snapshot"),
+        HistorySnapshot::from_records(
+            agent,
+            None,
+            studio_runtime_schema::usage::ledger::LedgerEpoch::Current,
+        )
+        .expect("snapshot"),
         root.path(),
         RolloutPath::Found(path),
         BatchLimits::default(),
@@ -848,7 +918,12 @@ async fn changed_consumed_range_is_refused_before_any_effect() {
         let original = fs::read(&path).expect("original");
         let store = RuntimeStore::open(Some(root.path())).await.expect("store");
         let batch = history::prepare(
-            HistorySnapshot::from_records(agent, None).expect("snapshot"),
+            HistorySnapshot::from_records(
+                agent,
+                None,
+                studio_runtime_schema::usage::ledger::LedgerEpoch::Current,
+            )
+            .expect("snapshot"),
             root.path(),
             RolloutPath::Found(path.clone()),
             BatchLimits::default(),
