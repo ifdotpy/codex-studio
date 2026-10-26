@@ -44,8 +44,8 @@ export function projectReaderScope(
   agents: readonly Agent[],
   rooms: readonly {
     id: string;
-    projectPath?: string | null;
-    rootId?: string | null;
+    projectPath?: string | null | undefined;
+    rootId?: string | null | undefined;
   }[],
 ): Set<string> {
   const paths = new Set([
