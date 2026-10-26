@@ -14,8 +14,8 @@ test("skill discovery and frontmatter parsing", async () => {
   const config = path.join(root, "config");
   const previousConfigDir = process.env.CLAUDE_CONFIG_DIR;
   process.env.CLAUDE_CONFIG_DIR = config;
-  const { listSkills, frontmatter } = await import("./skills.mjs");
-  const skill = async (dir, name, body) => {
+  const { listSkills, frontmatter } = await import("./skills.ts");
+  const skill = async (dir: string, name: string, body: string) => {
     await fs.mkdir(path.join(dir, name), { recursive: true });
     await fs.writeFile(path.join(dir, name, "SKILL.md"), body);
   };
@@ -56,15 +56,16 @@ test("skill discovery and frontmatter parsing", async () => {
     );
     const { data } = await listSkills([project]);
     assert.equal(data.length, 1);
+    assert.ok(data[0]);
     assert.equal(data[0].cwd, project);
     const byName = Object.fromEntries(data[0].skills.map((s) => [s.name, s]));
     assert.equal(
-      byName.deploy.description,
+      byName.deploy?.description,
       "Project deploy steps",
       "Project skills take precedence",
     );
-    assert.equal(byName.review.description, "Folded line one line two");
-    assert.equal(byName["warp:notify"].description, "Quoted");
+    assert.equal(byName.review?.description, "Folded line one line two");
+    assert.equal(byName["warp:notify"]?.description, "Quoted");
     assert.ok(
       data[0].skills.every((s) => s.enabled && s.path.endsWith("SKILL.md")),
     );
@@ -86,10 +87,10 @@ test("plugin skills use each project's install scope and local enable override",
   const previous = process.env.CLAUDE_CONFIG_DIR;
   const config = path.join(root, "config");
   process.env.CLAUDE_CONFIG_DIR = config;
-  const { listSkills } = await import("./skills.mjs");
+  const { listSkills } = await import("./skills.ts");
   const a = path.join(root, "a"),
     b = path.join(root, "b");
-  const write = async (file, value) => {
+  const write = async (file: string, value: unknown) => {
     await fs.mkdir(path.dirname(file), { recursive: true });
     await fs.writeFile(
       file,
@@ -137,12 +138,14 @@ test("plugin skills use each project's install scope and local enable override",
       },
     });
     const { data } = await listSkills([a, b]);
+    assert.ok(data[0]);
+    assert.ok(data[1]);
     assert.equal(
-      data[0].skills.find((s) => s.name === "tool:check").description,
+      data[0].skills.find((s) => s.name === "tool:check")?.description,
       a,
     );
     assert.equal(
-      data[0].skills.find((s) => s.name === "tool:check").enabled,
+      data[0].skills.find((s) => s.name === "tool:check")?.enabled,
       false,
     );
     assert.equal(
@@ -150,11 +153,11 @@ test("plugin skills use each project's install scope and local enable override",
       false,
     );
     assert.equal(
-      data[1].skills.find((s) => s.name === "tool:check").enabled,
+      data[1].skills.find((s) => s.name === "tool:check")?.enabled,
       true,
     );
     assert.equal(
-      data[1].skills.find((s) => s.name === "other:check").enabled,
+      data[1].skills.find((s) => s.name === "other:check")?.enabled,
       false,
     );
   } finally {
@@ -224,8 +227,9 @@ test("plugin scope follows Git worktrees and reports malformed local policy", as
         },
       }),
     );
-    const { listSkills } = await import("./skills.mjs");
+    const { listSkills } = await import("./skills.ts");
     const result = await listSkills([worktree]);
+    assert.ok(result.data[0]);
     assert.deepEqual(
       result.data[0].skills.map((s) => [s.name, s.enabled]),
       [
@@ -239,6 +243,7 @@ test("plugin scope follows Git worktrees and reports malformed local policy", as
       "{broken",
     );
     const broken = (await listSkills([worktree])).data[0];
+    assert.ok(broken);
     assert.ok(
       broken.errors.some((e) => e.message.includes("settings.local.json")),
     );
@@ -248,6 +253,7 @@ test("plugin scope follows Git worktrees and reports malformed local policy", as
       "null",
     );
     const invalid = (await listSkills([worktree])).data[0];
+    assert.ok(invalid);
     assert.ok(
       invalid.errors.some((e) => e.message.includes("settings.local.json")),
     );
@@ -262,9 +268,9 @@ test("plugin scope follows Git worktrees and reports malformed local policy", as
       path.join(nested, ".claude/settings.json"),
       JSON.stringify({ enabledPlugins: { "tool@market": true } }),
     );
-    const nestedSkills = (await listSkills([nested])).data[0].skills;
+    const nestedSkills = (await listSkills([nested])).data[0]?.skills ?? [];
     assert.equal(
-      nestedSkills.find((s) => s.name === "tool:check").enabled,
+      nestedSkills.find((s) => s.name === "tool:check")?.enabled,
       false,
     );
   } finally {

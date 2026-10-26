@@ -5,7 +5,10 @@ import type {
   McpServerStatus,
   ModelInfo,
   Options,
-  SDKMessage,
+  SDKTaskStartedMessage,
+  SDKTaskUpdatedMessage,
+  SDKTaskNotificationMessage,
+  SDKBackgroundTasksChangedMessage,
   SDKRateLimitInfo,
   Settings,
   SlashCommand,
@@ -22,7 +25,7 @@ import type {
   ControlReceipt,
   JournalRepairReport,
 } from "./session-state.ts";
-import type { UsageObservation } from "./usage-contract.generated.mjs";
+import type { UsageObservation } from "./usage-contract.generated.ts";
 import type {
   CacheReport,
   ToolDefinition,
@@ -30,7 +33,7 @@ import type {
 import type {
   HUMAN_INPUT,
   STUDIO_EVENT_INPUT,
-} from "./input-origin.generated.mjs";
+} from "./input-origin.generated.ts";
 import type { MoveProof } from "./move.ts";
 import type { ExternalServer, CatalogDependencies } from "./move-external.ts";
 
@@ -104,16 +107,14 @@ export type BridgeTurnResult = {
   turn: Pick<Turn, "id" | "status">;
   steered?: true | undefined;
 };
-export type BridgeTask = Extract<
-  SDKMessage,
-  {
-    subtype:
-      | "task_started"
-      | "task_updated"
-      | "task_progress"
-      | "task_notification";
-  }
->;
+// The bridge merges task events and their patches into one mutable task view.
+export type BridgeTask =
+  | Partial<
+      Omit<SDKTaskStartedMessage, "subtype"> &
+        SDKTaskUpdatedMessage["patch"] &
+        Pick<SDKTaskNotificationMessage, "output_file">
+    >
+  | SDKBackgroundTasksChangedMessage["tasks"][number];
 export type BridgeCommand = Required<
   Pick<
     SlashCommand,
@@ -305,7 +306,7 @@ export interface BridgeMethods {
   ];
   "thread/start": [
     BridgeSessionParams & { cwd: string },
-    BridgeSessionParams & {
+    Omit<BridgeSessionParams, "sandbox" | "model"> & {
       thread: Thread;
       model: Session["model"];
       sandbox: null;
