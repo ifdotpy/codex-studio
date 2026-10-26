@@ -18,24 +18,7 @@ pub const NOTICE: &str = "Compacted while idle, before the prompt cache expired.
 pub const REQUEST_PREFIX: &str = "idle-compaction:";
 const FAILURE_RETRY_SECONDS: u64 = 30;
 
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
-#[serde(rename_all = "camelCase")]
-pub struct CacheReport {
-    pub request_id: String,
-    pub ttl: String,
-    pub warm: bool,
-    /// Provider request activity time, in Unix milliseconds.
-    pub last_activity_at: f64,
-    pub context_tokens: u64,
-    pub prefix: String,
-    #[serde(default = "enabled")]
-    pub compaction_enabled: bool,
-    #[serde(default = "enabled")]
-    pub idle_compaction_enabled: bool,
-}
-fn enabled() -> bool {
-    true
-}
+pub use studio_runtime_schema::idle_compaction::CacheReport;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
