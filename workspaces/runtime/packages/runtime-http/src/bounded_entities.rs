@@ -772,10 +772,41 @@ mod tests {
         let gate = SESSION_COST_GATES.lock().expect("cost gates").remove(root);
         if let Some((started, release)) = gate {
             started.notify_one();
-            release
-                .recv_timeout(std::time::Duration::from_secs(15))
-                .expect("release session cost computation");
+            release.recv().expect("release session cost computation");
         }
+    }
+
+    struct ReleaseGate(Option<std::sync::mpsc::Sender<()>>);
+
+    impl ReleaseGate {
+        fn new() -> (Self, std::sync::mpsc::Receiver<()>) {
+            let (sender, receiver) = std::sync::mpsc::channel();
+            (Self(Some(sender)), receiver)
+        }
+
+        fn release(&mut self) {
+            if let Some(sender) = self.0.take() {
+                let _sent = sender.send(());
+            }
+        }
+    }
+
+    impl Drop for ReleaseGate {
+        fn drop(&mut self) {
+            self.release();
+        }
+    }
+
+    async fn startup_preflight() {
+        // Match runtime-server before testing the ordering of summary startup.
+        studio_runtime_schema::initialize().expect("startup schemas");
+        studio_runtime_process::blocking_pool::spawn_blocking(
+            "bounded-entities/test-startup-identity",
+            crate::initialize_backend_identity,
+        )
+        .await
+        .expect("identity worker")
+        .expect("startup backend identity");
     }
 
     async fn state() -> (tempfile::TempDir, HttpState) {
@@ -983,16 +1014,27 @@ mod tests {
         id: &str,
         matches: impl Fn(&Value) -> bool,
     ) -> Result<Value, tokio::time::error::Elapsed> {
-        tokio::time::timeout(std::time::Duration::from_secs(2), async {
-            loop {
-                let value = entity(state, collection, id);
-                if matches(&value) {
-                    return value;
-                }
-                changes.recv().await.expect("commit observer");
-            }
-        })
+        tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            entity_after_commit(state, changes, collection, id, matches),
+        )
         .await
+    }
+
+    async fn entity_after_commit(
+        state: &HttpState,
+        changes: &mut mpsc::UnboundedReceiver<()>,
+        collection: &str,
+        id: &str,
+        matches: impl Fn(&Value) -> bool,
+    ) -> Value {
+        loop {
+            let value = entity(state, collection, id);
+            if matches(&value) {
+                return value;
+            }
+            changes.recv().await.expect("commit observer");
+        }
     }
 
     async fn pricing_roots(state: &HttpState) {
@@ -1015,46 +1057,43 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn startup_pricing_refresh_seeds_while_fetch_is_pending_then_republishes() {
+        startup_preflight().await;
         for response in [Some(pricing_providers()), None] {
             let (root, state) = state().await;
             pricing_roots(&state).await;
             tokio::fs::remove_file(root.path().join("model-pricing/refresh-state.json"))
                 .await
                 .expect("missing pricing at startup");
-            let (release, blocked) = std::sync::mpsc::channel();
+            let (mut release, blocked) = ReleaseGate::new();
             let blocked = Arc::new(std::sync::Mutex::new(blocked));
+            let started = Arc::new(tokio::sync::Notify::new());
+            let fetch_started = started.clone();
             let mut changes = commits(&state);
-            let seeded = tokio::time::timeout(
-                std::time::Duration::from_secs(2),
-                start_with_pricing_fetch(&state, move || {
-                    blocked
-                        .lock()
-                        .expect("release receiver")
-                        .recv_timeout(std::time::Duration::from_secs(5))
-                        .expect("release startup fetch");
-                    response.clone()
-                }),
-            )
-            .await;
-            if seeded.is_ok() {
-                assert_eq!(
-                    entity(&state, "sessionCost", "b")["pricingState"],
-                    "loading"
-                );
-                assert_eq!(
-                    entity(&state, "desktop", "current")["application"],
-                    "codex-agents"
-                );
-            }
-            release.send(()).expect("finish startup fetch");
-            seeded
-                .expect("startup must finish seeding while the pricing fetch is gated")
-                .expect("seeded source publisher");
-            wait_for_entity(&state, &mut changes, "sessionCost", "b", |value| {
-                value["pricingState"] == "ready"
+            start_with_pricing_fetch(&state, move || {
+                fetch_started.notify_one();
+                blocked
+                    .lock()
+                    .expect("release receiver")
+                    .recv()
+                    .expect("release startup fetch");
+                response.clone()
             })
             .await
-            .expect("refresh completion reprices the seeded roots");
+            .expect("startup seeds while the pricing fetch remains gated");
+            started.notified().await;
+            assert_eq!(
+                entity(&state, "sessionCost", "b")["pricingState"],
+                "loading"
+            );
+            assert_eq!(
+                entity(&state, "desktop", "current")["application"],
+                "codex-agents"
+            );
+            release.release();
+            entity_after_commit(&state, &mut changes, "sessionCost", "b", |value| {
+                value["pricingState"] == "ready"
+            })
+            .await;
             state
                 .shutdown_services()
                 .await
@@ -1618,9 +1657,9 @@ mod tests {
         use axum::http::{Request, StatusCode};
         use futures_util::StreamExt;
         use std::net::SocketAddr;
-        use std::time::Duration;
         use tower::ServiceExt;
 
+        startup_preflight().await;
         let (root, state) = state().await;
         let store = state.store.as_ref().expect("store");
         store.transaction(|tx| {
@@ -1643,14 +1682,14 @@ mod tests {
         .await
         .expect("local pricing");
         let started = Arc::new(tokio::sync::Notify::new());
-        let (release, blocked) = std::sync::mpsc::channel();
+        let (mut release, blocked) = ReleaseGate::new();
         SESSION_COST_GATES
             .lock()
             .expect("cost gates")
             .insert(store.root().to_owned(), (started.clone(), blocked));
         let mut changes = commits(&state);
         let startup = state.clone();
-        let mut request = tokio::spawn(async move {
+        let request = tokio::spawn(async move {
             // Match runtime-server: summary initialization precedes HTTP service.
             startup
                 .initialize_bounded_entities()
@@ -1668,93 +1707,70 @@ mod tests {
             .await
             .expect("HTTP response")
         });
-        tokio::time::timeout(Duration::from_secs(5), started.notified())
+        let response = request
             .await
-            .expect("session cost publication reaches the analytics gate");
-        let response = tokio::time::timeout(Duration::from_secs(2), &mut request).await;
-        let stream = if response.is_ok() {
-            Some(
-                tokio::time::timeout(Duration::from_secs(2), async {
-                    let query = form_urlencoded::Serializer::new(String::new())
-                        .append_pair(
-                            "protocol",
-                            studio_runtime_schema::SYNC_PROTOCOL_VERSION_TEXT,
-                        )
-                        .append_pair("tokenRates", "false")
-                        .append_pair(
-                            "resources",
-                            &json!([{"kind":"session-cost","agentId":"large-team"}]).to_string(),
-                        )
-                        .finish();
-                    let app = crate::router::router(state.clone()).expect("stream router");
-                    let response = app
-                        .oneshot(
-                            Request::builder()
-                                .uri(format!("/api/sync/stream?{query}"))
-                                .header("host", "127.0.0.1:4321")
-                                .header("x-canvas-token", "token")
-                                .extension(ConnectInfo(SocketAddr::from(([127, 0, 0, 1], 12345))))
-                                .body(Body::empty())
-                                .expect("stream request"),
-                        )
-                        .await
-                        .expect("stream response");
-                    assert_eq!(response.status(), StatusCode::OK);
-                    let mut stream = response.into_body().into_data_stream();
-                    let session = stream
-                        .next()
-                        .await
-                        .expect("session event")
-                        .expect("session bytes");
-                    assert!(String::from_utf8_lossy(&session).contains("event: session"));
-                    let initial = stream
-                        .next()
-                        .await
-                        .expect("initial costs")
-                        .expect("initial bytes");
-                    assert!(
-                        String::from_utf8_lossy(&initial).contains(r#""pricingState":"loading""#)
-                    );
-                    stream
-                })
-                .await,
-            )
-        } else {
-            None
-        };
-        // Always release the worker before a timeout assertion can unwind the runtime.
-        release.send(()).expect("release analytics read gate");
-        if response.is_err() {
-            request
-                .await
-                .expect("request finishes after analytics release");
-        }
-        let response = response
-            .expect("HTTP must serve before analytics cost publication finishes")
-            .expect("request task");
+            .expect("HTTP serves while analytics remains gated");
+        started.notified().await;
         assert_eq!(response.status(), StatusCode::OK);
-        let mut stream = stream
-            .expect("opened stream")
-            .expect("SSE initial costs must not wait for analytics publication");
-        tokio::time::timeout(Duration::from_secs(2), async {
-            loop {
-                let frame = stream
-                    .next()
-                    .await
-                    .expect("cost update event")
-                    .expect("cost update bytes");
-                if String::from_utf8_lossy(&frame).contains(r#""pricedSamples":32768"#) {
-                    break;
-                }
+        let mut stream = {
+            let query = form_urlencoded::Serializer::new(String::new())
+                .append_pair(
+                    "protocol",
+                    studio_runtime_schema::SYNC_PROTOCOL_VERSION_TEXT,
+                )
+                .append_pair("tokenRates", "false")
+                .append_pair(
+                    "resources",
+                    &json!([{"kind":"session-cost","agentId":"large-team"}]).to_string(),
+                )
+                .finish();
+            let app = crate::router::router(state.clone()).expect("stream router");
+            let response = app
+                .oneshot(
+                    Request::builder()
+                        .uri(format!("/api/sync/stream?{query}"))
+                        .header("host", "127.0.0.1:4321")
+                        .header("x-canvas-token", "token")
+                        .extension(ConnectInfo(SocketAddr::from(([127, 0, 0, 1], 12345))))
+                        .body(Body::empty())
+                        .expect("stream request"),
+                )
+                .await
+                .expect("stream response");
+            assert_eq!(response.status(), StatusCode::OK);
+            let mut stream = response.into_body().into_data_stream();
+            let session = stream
+                .next()
+                .await
+                .expect("session event")
+                .expect("session bytes");
+            assert!(String::from_utf8_lossy(&session).contains("event: session"));
+            let initial = stream
+                .next()
+                .await
+                .expect("initial costs")
+                .expect("initial bytes");
+            assert!(String::from_utf8_lossy(&initial).contains(r#""pricingState":"loading""#));
+            stream
+        };
+        // The HTTP response and initial SSE placeholder precede this release.
+        // The guard also releases the worker if an assertion unwinds the test.
+        release.release();
+        loop {
+            let frame = stream
+                .next()
+                .await
+                .expect("cost update event")
+                .expect("cost update bytes");
+            if String::from_utf8_lossy(&frame).contains(r#""pricedSamples":32768"#) {
+                break;
             }
-        })
-        .await
-        .expect("SSE receives costs after publication finishes");
-        let cost = wait_for_entity(&state, &mut changes, "sessionCost", "large-team", |value| {
-            value["pricedSamples"] == 32768
-        })
-        .await
-        .expect("costs fill in after the read gate opens");
+        }
+        let cost =
+            entity_after_commit(&state, &mut changes, "sessionCost", "large-team", |value| {
+                value["pricedSamples"] == 32768
+            })
+            .await;
         assert_eq!(cost["pricingState"], "ready");
         assert!((cost["totalUSD"].as_f64().expect("estimate") - 3.93216).abs() < 1e-9);
         state
