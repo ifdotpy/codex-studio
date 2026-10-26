@@ -177,7 +177,11 @@ try {
           serverId: receipt.id,
           credentialId: receipt.credentialId,
           url: origin + "/api/sync/stream?client=signed",
-          headers: { Accept: "text/event-stream", "Accept-Encoding": "br" },
+          method: "GET",
+          headers: [
+            ["Accept", "text/event-stream"],
+            ["Accept-Encoding", "br"],
+          ],
         },
         controller.signal,
       );

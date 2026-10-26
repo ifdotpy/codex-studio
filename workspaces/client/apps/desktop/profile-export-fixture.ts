@@ -112,7 +112,7 @@ export async function restoreStorage(
   importer: typeof importBrowserProfile,
   capture: typeof exportBrowserProfile,
 ) {
-  const restore = (snapshot, id) =>
+  const restore = (snapshot: BrowserProfileSnapshot, id: string) =>
     importer(snapshot, id, (chunk) => JSON.stringify(chunks[chunk.sha256]));
   let corruptRefused = false;
   try {
@@ -130,7 +130,9 @@ export async function restoreStorage(
         return false;
       } catch (error) {
         return (
-          error.message.includes("Another view") && localStorage.length === 0
+          error instanceof Error &&
+          error.message.includes("Another view") &&
+          localStorage.length === 0
         );
       }
     },
@@ -138,7 +140,8 @@ export async function restoreStorage(
   if (!busyRefused) throw new Error("Concurrent import was not rejected");
   const count = snapshot.databases.reduce(
     (total, db) =>
-      total + db.stores.reduce((sum, store) => sum + store.chunks.length, 0),
+      total +
+      db.stores.reduce((sum, store) => sum + (store.chunks?.length ?? 0), 0),
     0,
   );
   let reads = 0;
@@ -149,7 +152,9 @@ export async function restoreStorage(
       return JSON.stringify(chunks[chunk.sha256]);
     });
   } catch (error) {
-    chunkInterrupted = error.message.includes("interrupted chunk read");
+    chunkInterrupted =
+      error instanceof Error &&
+      error.message.includes("interrupted chunk read");
   }
   if (
     !chunkInterrupted ||
@@ -171,18 +176,19 @@ export async function restoreStorage(
   try {
     await restore(snapshot, "archive-1");
   } catch (error) {
-    interrupted = error.message.includes("interrupted");
+    interrupted =
+      error instanceof Error && error.message.includes("interrupted");
   }
   Storage.prototype.setItem = original;
   if (!interrupted) throw new Error("Expected incomplete import");
-  const held = await new Promise((resolve, reject) => {
-    const opened = indexedDB.open(snapshot.databases[0].name);
+  const held = await new Promise<IDBDatabase>((resolve, reject) => {
+    const opened = indexedDB.open(snapshot.databases[0]?.name ?? "");
     opened.onsuccess = () => resolve(opened.result);
     opened.onerror = () => reject(opened.error);
   });
   const originalDelete = indexedDB.deleteDatabase.bind(indexedDB);
-  let signalBlocked;
-  const blocked = new Promise((resolve) => {
+  let signalBlocked: (event: Event) => void = () => {};
+  const blocked = new Promise<Event>((resolve) => {
     signalBlocked = resolve;
   });
   indexedDB.deleteDatabase = (name) => {
@@ -199,7 +205,7 @@ export async function restoreStorage(
   try {
     await restore(snapshot, "archive-1");
   } catch (error) {
-    locked = error.message.includes("Another view");
+    locked = error instanceof Error && error.message.includes("Another view");
   }
   held.close();
   if (!(await waiting) || !locked)

@@ -104,13 +104,19 @@ try {
         throw new Error(
           "The desktop serverCredentialAction method is unavailable.",
         );
-      return bridge
-        .serverCredentialAction({
-          action: "pair",
-          origin: "https://remote.tailnet.ts.net",
-          requestId: "manual-without-gesture",
-        })
-        .catch((error) => error.message);
+      return (
+        bridge
+          // @ts-expect-error invitation is deliberately absent to check gesture validation first.
+          .serverCredentialAction({
+            action: "pair",
+            origin: "https://remote.tailnet.ts.net",
+            requestId: "manual-without-gesture",
+          })
+          .catch((error: unknown) =>
+            error instanceof Error ? error.message : String(error),
+          )
+          .then((value) => String(value))
+      );
     }),
     /desktop button/,
   );

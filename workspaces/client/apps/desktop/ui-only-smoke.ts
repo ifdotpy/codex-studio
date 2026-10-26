@@ -87,6 +87,8 @@ try {
   assert.ok(attacker);
   const parentDenied = await attacker.evaluate(async () => {
     try {
+      if (!parent.codexDesktop?.getBackendUpdate)
+        throw new Error("The parent bridge is unavailable.");
       await parent.codexDesktop.getBackendUpdate();
       return false;
     } catch (error) {
@@ -115,6 +117,7 @@ try {
     for (const request of [
       {
         action: "request",
+        method: "GET",
         serverId: "other",
         streamId: "omitted-owner",
         credentialId: "missing",
@@ -123,6 +126,7 @@ try {
       },
       {
         action: "request",
+        method: "GET",
         serverId: "other",
         frameOwner: "other",
         streamId: "spoofed-owner",
@@ -132,6 +136,7 @@ try {
       },
       {
         action: "request",
+        method: "GET",
         serverId: "other",
         frameOwner: "unpaired",
         streamId: "once",
@@ -141,6 +146,7 @@ try {
       },
       {
         action: "request",
+        method: "GET",
         serverId: "unpaired",
         frameOwner: "unpaired",
         streamId: "once",
@@ -148,7 +154,7 @@ try {
         url: "https://unpaired.tailnet.ts.net/api/session",
         requestId: "once",
       },
-    ]) {
+    ] satisfies import("./api.ts").CredentialRequest[]) {
       try {
         await bridge.serverCredentialAction(request);
       } catch (error) {
@@ -157,10 +163,10 @@ try {
     }
     return errors;
   });
-  assert.match(denied[0], /Invalid server frame owner/);
-  assert.match(denied[1], /Invalid server frame owner/);
-  assert.match(denied[2], /Invalid server frame owner/);
-  assert.match(denied[3], /server key|Secure key storage/);
+  assert.match(denied[0] ?? "", /Invalid server frame owner/);
+  assert.match(denied[1] ?? "", /Invalid server frame owner/);
+  assert.match(denied[2] ?? "", /Invalid server frame owner/);
+  assert.match(denied[3] ?? "", /server key|Secure key storage/);
   const spoofedNative = await attacker.evaluate(async () => {
     const bridge = window.codexDesktop;
     if (!bridge) throw new Error("The desktop bridge is unavailable.");

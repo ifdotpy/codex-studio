@@ -3,7 +3,10 @@ import {
   captureSourceProfile,
 } from "./profile-export-reader.ts";
 import type { WebContents, WebFrameMain } from "electron";
-import type { BrowserProfileSnapshot } from "../web/src/native/importBrowserProfile.ts";
+import type {
+  BrowserProfileSnapshot,
+  BrowserProfileArchive,
+} from "../web/src/native/importBrowserProfile.ts";
 import { app, BrowserWindow, session, safeStorage } from "electron";
 import { execFileSync } from "node:child_process";
 import { open, link, unlink, mkdir, rm } from "node:fs/promises";
@@ -13,15 +16,7 @@ import path from "node:path";
 import { exportServerCredentials } from "./export-server-credentials.ts";
 import { exportBrowserProfile } from "./export-browser-profile.ts";
 
-export type BrowserProfileArchive = {
-  version: 1 | 2;
-  parts?: string;
-  id: string;
-  profile?: string;
-  created?: number;
-  snapshots: BrowserProfileSnapshot[];
-  owners: Record<string, string>;
-};
+export type { BrowserProfileArchive } from "../web/src/native/importBrowserProfile.ts";
 export type ExportManifest = {
   profile: string;
   output: string;

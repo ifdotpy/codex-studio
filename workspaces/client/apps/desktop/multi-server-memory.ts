@@ -145,7 +145,13 @@ try {
       .locator(`[data-server="${server.invitation.serverId}"] .server-chat`)
       .waitFor();
   };
-  const measurements = [];
+  type Measurement = ReturnType<typeof memory> & {
+    servers: number;
+    stage: string;
+    frames: number;
+    quietSeconds?: number;
+  };
+  const measurements: Measurement[] = [];
   const [first, second, third] = servers;
   assert.ok(first && second && third);
   await pair(first);
@@ -163,7 +169,7 @@ try {
       (count) => document.querySelectorAll(".server-chat").length === count,
       count,
     );
-    const mounted = {
+    const mounted: Measurement = {
       servers: count,
       stage: "mounted",
       frames: await page.locator("iframe").count(),
@@ -175,7 +181,7 @@ try {
           Object.keys(
             BrowserWindow.getAllWindows()
               .at(0)
-              ?.webContents.session.serviceWorkers.getAllRunning(),
+              ?.webContents.session.serviceWorkers.getAllRunning() ?? {},
           ).length,
       ),
       0,
@@ -188,7 +194,7 @@ try {
       JSON.stringify({ waitingForQuietSeconds: 60, servers: count, mounted }),
     );
     await new Promise((resolve) => setTimeout(resolve, 60000));
-    const idle = {
+    const idle: Measurement = {
       servers: count,
       stage: "idle-unloaded",
       quietSeconds: 60,

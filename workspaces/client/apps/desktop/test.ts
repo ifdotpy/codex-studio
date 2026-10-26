@@ -9,19 +9,18 @@ import path from "node:path";
 import { createServer } from "node:net";
 import { readTestState } from "../web/tests/playwright.ts";
 import { ensureBackend, identity } from "./backend.ts";
-declare module "electron" {
-  interface App {
-    __testNotifications: Pick<Notification, "title" | "body">[];
-    __testNotificationShow: Notification["show"];
-    __testExternal: string;
-    __testExternalActivate: boolean | undefined;
-    __testReveal: string;
-    __testOpen: string;
-    __testPreview: string;
-  }
-}
+type NativeTestState = {
+  notifications: Pick<Notification, "title" | "body">[];
+  notificationShow?: Notification["show"];
+  external?: string;
+  externalActivate?: boolean | undefined;
+  reveal?: string;
+  open?: string;
+  preview?: string;
+};
 declare global {
   var __testOriginalFetch: typeof fetch;
+  var __nativeFixture: NativeTestState;
 }
 const root = import.meta.dirname;
 const temp = await mkdtemp(path.join(tmpdir(), "codex-desktop-test-"));
@@ -156,16 +155,19 @@ try {
     }),
     /desktop button/,
   );
-  await desktop.evaluate(({ Notification, app }) => {
-    app.__testNotifications = [];
+  await desktop.evaluate(({ Notification }) => {
+    globalThis.__nativeFixture = { notifications: [] };
     Notification.isSupported = () => true;
     Notification.prototype.show = function () {
-      app.__testNotifications.push({ title: this.title, body: this.body });
+      globalThis.__nativeFixture.notifications.push({
+        title: this.title,
+        body: this.body,
+      });
       this.emit("show");
     };
   });
-  await desktop.evaluate(({ Notification, app }) => {
-    app.__testNotificationShow = Notification.prototype.show;
+  await desktop.evaluate(({ Notification }) => {
+    globalThis.__nativeFixture.notificationShow = Notification.prototype.show;
     Notification.prototype.show = function () {
       this.emit(
         "failed",
@@ -188,17 +190,21 @@ try {
     }),
     /STUDIO_NOTIFICATIONS_DENIED/,
   );
-  await desktop.evaluate(({ Notification, app }) => {
-    Notification.prototype.show = app.__testNotificationShow;
+  await desktop.evaluate(({ Notification }) => {
+    const show = globalThis.__nativeFixture.notificationShow;
+    if (!show) throw new Error("Notification fixture is unavailable.");
+    Notification.prototype.show = show;
   });
   assert.match(
     await page.evaluate(() => {
       const bridge = window.codexDesktop;
       if (!bridge) throw new Error("The desktop bridge is unavailable.");
-      // @ts-expect-error target is deliberately missing to exercise runtime validation.
-      return bridge
-        .notify({ title: "Test", body: "Invalid target" })
-        .catch((e) => e.message);
+      return (
+        bridge
+          // @ts-expect-error target is deliberately missing to exercise runtime validation.
+          .notify({ title: "Test", body: "Invalid target" })
+          .catch((e) => e.message)
+      );
     }),
     /Invalid notification target/,
   );
@@ -215,7 +221,9 @@ try {
     true,
   );
   assert.deepEqual(
-    await desktop.evaluate(({ app }) => app.__testNotifications),
+    await desktop.evaluate(
+      (_electron) => globalThis.__nativeFixture.notifications,
+    ),
     [{ title: "Global alert", body: "No app opt-in" }],
   );
   await desktop.evaluate(({ Notification }) => {
@@ -248,22 +256,29 @@ try {
   const file = path.join(temp, "native-picker.txt");
   await writeFile(file, "Native attachment");
   await desktop.evaluate(
-    ({ dialog, shell, app }, value) => {
-      dialog.showOpenDialog = async (windowOrOptions, suppliedOptions?) => ({
+    ({ dialog, shell }, value) => {
+      dialog.showOpenDialog = async (
+        windowOrOptions:
+          | import("electron").BaseWindow
+          | import("electron").OpenDialogOptions,
+        suppliedOptions?: import("electron").OpenDialogOptions,
+      ) => ({
         canceled: false,
-        filePaths: (
-          suppliedOptions ??
-          ("properties" in windowOrOptions ? windowOrOptions : {})
-        ).properties?.includes("openDirectory")
+        filePaths: (suppliedOptions
+          ? suppliedOptions.properties
+          : "properties" in windowOrOptions
+            ? windowOrOptions.properties
+            : undefined
+        )?.includes("openDirectory")
           ? [value.directory]
           : [value.file],
       });
       shell.openExternal = async (url, options) => {
-        app.__testExternal = url;
-        app.__testExternalActivate = options?.activate;
+        globalThis.__nativeFixture.external = url;
+        globalThis.__nativeFixture.externalActivate = options?.activate;
       };
       shell.showItemInFolder = (path) => {
-        app.__testReveal = path;
+        globalThis.__nativeFixture.reveal = path;
       };
     },
     { file, directory: temp },
@@ -291,7 +306,7 @@ try {
   const uiState = await readTestState(backend.origin);
   const lead = uiState.runtime.agents.find((agent) => agent.isLead);
   assert.ok(lead);
-  assert.ok(lead.cwd.endsWith(path.basename(temp)));
+  assert.ok(lead.cwd?.endsWith(path.basename(temp)));
   assert.equal(lead.threadId, null);
   const uploadResponse = page.waitForResponse(
     (response) =>
@@ -333,8 +348,9 @@ try {
   const activeDesktop = desktop;
   await poll(
     async () =>
-      (await activeDesktop.evaluate(({ app }) => app.__testExternal)) ===
-      "https://example.com/native-ui",
+      (await activeDesktop.evaluate(
+        (_electron) => globalThis.__nativeFixture.external,
+      )) === "https://example.com/native-ui",
   );
   await page.locator("#native-external-link").evaluate((link) => link.remove());
   assert.equal(page.url(), `${backend.origin}/`);
@@ -421,24 +437,21 @@ try {
   );
   assert.equal(files[0].mime, "text/plain");
   const savedCopy = path.join(temp, "saved-copy.txt");
-  await desktop.evaluate(
-    ({ dialog, shell, BrowserWindow, app }, destination) => {
-      dialog.showSaveDialog = async () => ({
-        canceled: false,
-        filePath: destination,
-      });
-      shell.openPath = async (file) => {
-        app.__testOpen = file;
-        return "";
-      };
-      const main = BrowserWindow.getAllWindows()[0];
-      if (!main) throw new Error("Hidden window is unavailable.");
-      main.previewFile = (file) => {
-        app.__testPreview = file;
-      };
-    },
-    savedCopy,
-  );
+  await desktop.evaluate(({ dialog, shell, BrowserWindow }, destination) => {
+    dialog.showSaveDialog = async () => ({
+      canceled: false,
+      filePath: destination,
+    });
+    shell.openPath = async (file) => {
+      globalThis.__nativeFixture.open = file;
+      return "";
+    };
+    const main = BrowserWindow.getAllWindows()[0];
+    if (!main) throw new Error("Hidden window is unavailable.");
+    main.previewFile = (file) => {
+      globalThis.__nativeFixture.preview = file;
+    };
+  }, savedCopy);
   const nativeBytes = [0, 1, 2, 127, 255];
   assert.equal(
     (
@@ -473,10 +486,10 @@ try {
       true,
     );
   assert.deepEqual(
-    await desktop.evaluate(({ app }) => [
-      app.__testOpen,
-      app.__testReveal,
-      app.__testPreview,
+    await desktop.evaluate((_electron) => [
+      globalThis.__nativeFixture.open,
+      globalThis.__nativeFixture.reveal,
+      globalThis.__nativeFixture.preview,
     ]),
     [resolvedAsset.path, resolvedAsset.path, resolvedAsset.path],
   );
@@ -486,27 +499,30 @@ try {
   );
   await invoke("openExternal", "https://example.com/");
   assert.deepEqual(
-    await desktop.evaluate(({ app }) => [
-      app.__testExternal,
-      app.__testExternalActivate,
+    await desktop.evaluate((_electron) => [
+      globalThis.__nativeFixture.external,
+      globalThis.__nativeFixture.externalActivate,
     ]),
     ["https://example.com/", false],
   );
   // An approved sign-in link brings the browser to the front; the scheme rule stays.
   assert.match(
-    (await invoke("openSignIn", "javascript:alert(1)")).error,
+    (await invoke("openSignIn", "javascript:alert(1)")).error ?? "",
     /HTTP/,
   );
   await invoke("openSignIn", "https://accounts.example.com/authorize?x=1");
   assert.deepEqual(
-    await desktop.evaluate(({ app }) => [
-      app.__testExternal,
-      app.__testExternalActivate,
+    await desktop.evaluate((_electron) => [
+      globalThis.__nativeFixture.external,
+      globalThis.__nativeFixture.externalActivate,
     ]),
     ["https://accounts.example.com/authorize?x=1", true],
   );
   await invoke("revealPath", file);
-  assert.equal(await desktop.evaluate(({ app }) => app.__testReveal), file);
+  assert.equal(
+    await desktop.evaluate((_electron) => globalThis.__nativeFixture.reveal),
+    file,
+  );
   await page.evaluate(() => {
     const frame = document.createElement("iframe");
     frame.srcdoc = "<p>Untrusted preview</p>";
@@ -634,7 +650,7 @@ try {
   await desktop.close();
   desktop = null;
   assert.equal(
-    (await identity(backend.origin, backend.stateDir)).pid,
+    (await identity(backend.origin, backend.stateDir))?.pid,
     backend.pid,
     "Closing Electron must preserve the backend",
   );
@@ -644,7 +660,7 @@ try {
     /Backend exited/,
   );
   assert.equal(
-    (await identity(backend.origin, backend.stateDir)).pid,
+    (await identity(backend.origin, backend.stateDir))?.pid,
     backend.pid,
   );
   console.log(
