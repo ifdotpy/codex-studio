@@ -15,14 +15,14 @@ function uiOnlyInstallation({
     return true;
   if (!packaged) return false;
   try {
-    return (
-      JSON.parse(
-        fs.readFileSync(
-          path.join(resourcesPath ?? "", "workspace/studio-install.json"),
-          "utf8",
-        ),
-      ).mode === "ui-only"
+    // The packager writes this install-mode marker in the application resources.
+    const marker: { mode?: unknown } = JSON.parse(
+      fs.readFileSync(
+        path.join(resourcesPath ?? "", "workspace/studio-install.json"),
+        "utf8",
+      ),
     );
+    return marker.mode === "ui-only";
   } catch (caughterror) {
     if (!(caughterror instanceof Error)) throw caughterror;
     const error: NodeJS.ErrnoException = caughterror;

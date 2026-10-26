@@ -84,6 +84,7 @@ function loadWindowState(
 ) {
   let saved: SavedWindowState | undefined;
   try {
+    // This desktop writes window-state.json; rectangle checks retain the existing stale-display handling.
     saved = JSON.parse(
       fs.readFileSync(path.join(profile, "window-state.json"), "utf8"),
     );

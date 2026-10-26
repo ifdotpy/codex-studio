@@ -3,13 +3,16 @@ export type BackendIdentity = Pick<
   components["schemas"]["DesktopResponse"],
   "application" | "backendBuild" | "pid" | "protocol" | "stateDir"
 > &
-  Partial<components["schemas"]["DesktopResponse"]> & { backendKind?: unknown };
+  Partial<components["schemas"]["DesktopResponse"]>;
 import * as fs from "node:fs";
 import * as path from "node:path";
 import * as os from "node:os";
 import { createHash } from "node:crypto";
 import { spawn } from "node:child_process";
-import { savedLaunchEnvironment } from "./restart-environment.ts";
+import {
+  readRecoveryConfig,
+  savedLaunchEnvironment,
+} from "./restart-environment.ts";
 // Desktop wire contract; Rust startup.rs is checked for parity in backend.test.ts.
 const desktopProtocolVersion = 1;
 const backendBuildHexLength = 64;
@@ -244,15 +247,10 @@ async function ensureBackend({
   fs.mkdirSync(state, { recursive: true });
   const canonicalState = fs.realpathSync(state);
   let persistedSupervisorMode = false;
-  let saved: import("./restart-environment.ts").SavedEnvironment & {
-    supervisorEnabled?: unknown;
-  } = {};
+  let saved: import("./restart-environment.ts").SavedRecovery = {};
   try {
-    saved = JSON.parse(
-      fs.readFileSync(
-        path.join(canonicalState, "background-recovery.json"),
-        "utf8",
-      ),
+    saved = readRecoveryConfig(
+      path.join(canonicalState, "background-recovery.json"),
     );
     if (
       saved.supervisorEnabled !== undefined &&
