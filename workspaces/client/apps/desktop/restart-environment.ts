@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 // Owner of persisted launch-environment version and allowed keys; Rust parity is checked by backend.test.ts.
 const restartEnvironmentVersion = 1;
 const restartKeys = [
@@ -67,3 +68,17 @@ export {
   restartEnvironmentVersion,
   savedLaunchEnvironment,
 };
+
+export type SavedRecovery = SavedEnvironment & {
+  supervisorEnabled?: unknown;
+  python?: string;
+  runtimeServer?: string;
+  processSupervisor?: string;
+  backend?: string;
+  enabled?: boolean;
+};
+
+/** Read the recovery document written by this desktop's configureRecovery. Existing launch validators check the persisted policy before use. */
+export function readRecoveryConfig(filename: string): SavedRecovery {
+  return JSON.parse(readFileSync(filename, "utf8")) as SavedRecovery;
+}

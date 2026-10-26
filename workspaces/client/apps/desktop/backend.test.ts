@@ -1,3 +1,11 @@
+import { parsedRecord } from "./test-support.ts";
+import { desktopProtocolVersion, backendBuildHexLength } from "./backend.ts";
+import {
+  restartKeys,
+  retiredRestartKeys,
+  restartEnvironmentVersion,
+} from "./restart-environment.ts";
+import { portOf, present, nodeFixture } from "./test-support.ts";
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import { afterEach, test, vi } from "vitest";
@@ -12,9 +20,12 @@ import {
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
-import { createRequire } from "node:module";
-const { identity, ensureBackend, updateStatus, backendExitStatus } =
-  createRequire(import.meta.url)("./backend.cjs");
+import {
+  identity,
+  ensureBackend,
+  updateStatus,
+  backendExitStatus,
+} from "./backend.ts";
 const repositoryRoot = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
   "../../../..",
@@ -50,9 +61,10 @@ function virtualTimeouts() {
     return controller.signal;
   });
 }
-const aborted = (signal) =>
-  new Promise((_, reject) => {
-    signal.addEventListener("abort", () => reject(signal.reason), {
+const aborted = (signal: AbortSignal | null | undefined) =>
+  new Promise<never>((_, reject) => {
+    const activeSignal = present(signal);
+    activeSignal.addEventListener("abort", () => reject(activeSignal.reason), {
       once: true,
     });
   });
@@ -66,14 +78,17 @@ test("desktop recognizes backend exit by signal during startup", () => {
   assert.equal(backendExitStatus({ exitCode: null, signalCode: null }), null);
 });
 
-async function serve(handler, run) {
+async function serve(
+  handler: import("node:http").RequestListener,
+  run: (origin: string) => Promise<void>,
+) {
   const server = createServer(handler);
-  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
   try {
-    await run(`http://127.0.0.1:${server.address().port}`);
+    await run(`http://127.0.0.1:${portOf(server)}`);
   } finally {
     server.closeAllConnections();
-    await new Promise((resolve) => server.close(resolve));
+    await new Promise<void>((resolve) => server.close(() => resolve()));
   }
 }
 
@@ -81,7 +96,7 @@ test.each(["headers", "body"])(
   "retry a timeout while reading identity %s",
   async (phase) => {
     virtualTimeouts();
-    const fetch = vi.fn(async (_url, { signal }) => {
+    const fetch = vi.fn(async (_url: unknown, { signal }: RequestInit) => {
       if (fetch.mock.calls.length === 1) {
         if (phase === "headers") return aborted(signal);
         return { ok: true, json: () => aborted(signal) };
@@ -100,7 +115,9 @@ test.each(["headers", "body"])(
 
 test("a server that never responds reaches a bounded failure", async () => {
   virtualTimeouts();
-  vi.stubGlobal("fetch", async (_url, { signal }) => aborted(signal));
+  vi.stubGlobal("fetch", async (_url: unknown, { signal }: RequestInit) =>
+    aborted(signal),
+  );
   const pending = assert.rejects(
     identity("http://backend.invalid", state, timing),
     /No replacement backend was started/,
@@ -113,7 +130,7 @@ test("a server that never responds reaches a bounded failure", async () => {
 test("a refusal after a timeout cannot authorize a replacement", async () => {
   virtualTimeouts();
   let calls = 0;
-  vi.stubGlobal("fetch", async (_url, { signal }) => {
+  vi.stubGlobal("fetch", async (_url: unknown, { signal }: RequestInit) => {
     if (++calls > 1)
       throw new TypeError("fetch failed", { cause: { code: "ECONNREFUSED" } });
     return aborted(signal);
@@ -153,12 +170,15 @@ test("a slow existing backend attaches without spawning a process", async () => 
   const canonicalState = realpathSync(tmpdir());
   const data = { ...record, stateDir: canonicalState };
   virtualTimeouts();
-  const requested = Promise.withResolvers();
-  let reply;
+  let requestedReady = () => {};
+  const requested = new Promise<void>((resolve) => {
+    requestedReady = resolve;
+  });
+  let reply = () => {};
   await serve(
     (_req, res) => {
       reply = () => res.end(JSON.stringify(data));
-      requested.resolve();
+      requestedReady();
     },
     async (origin) => {
       const pending = ensureBackend({
@@ -170,7 +190,7 @@ test("a slow existing backend attaches without spawning a process", async () => 
             "/missing-desktop-assets/bin/studio-runtime-server",
         },
       });
-      await requested.promise;
+      await requested;
       await vi.advanceTimersByTimeAsync(1200);
       reply();
       const result = await pending;
@@ -248,24 +268,13 @@ test.each([true, false])(
     mkdirSync(path.join(root, "web/dist"), { recursive: true });
     writeFileSync(path.join(root, "web/dist/index.html"), "fixture");
     const runtime = path.join(root, "fixture-runtime");
-    writeFileSync(
-      runtime,
-      `#!${process.execPath}
-const http = require("node:http"), fs = require("node:fs"), path = require("node:path");
-const state = process.env.CODEX_AGENTS_STATE_DIR;
-fs.writeFileSync(path.join(state, "fixture.pid"), String(process.pid));
-http.createServer((request, response) => response.end(JSON.stringify({
-  application:"codex-agents", protocol:1, backendKind:"rust", backendBuild:process.env.CODEX_BACKEND_BUILD,
-  pid:process.pid, stateDir:state,
-  restartEnvironment:Object.fromEntries(["CODEX_HOME", "CODEX_CANVAS_CWD"].filter(key => key in process.env).map(key => [key, process.env[key]]))
-}))).listen(Number(process.argv.at(-1)), "127.0.0.1");
-`,
-      { mode: 0o700 },
-    );
+    writeFileSync(runtime, nodeFixture("runtime-environment"), { mode: 0o700 });
     const portServer = createServer();
-    await new Promise((resolve) => portServer.listen(0, "127.0.0.1", resolve));
-    const port = portServer.address().port;
-    await new Promise((resolve) => portServer.close(resolve));
+    await new Promise<void>((resolve) =>
+      portServer.listen(0, "127.0.0.1", resolve),
+    );
+    const port = portOf(portServer);
+    await new Promise<void>((resolve) => portServer.close(() => resolve()));
     const saved = {
       version: 1,
       stateDir: canonicalState,
@@ -302,7 +311,7 @@ http.createServer((request, response) => response.end(JSON.stringify({
       );
       assert.equal(env.CODEX_HOME, "/foreign-command-executor");
       if (hasSavedEnvironment)
-        assert.deepEqual(JSON.parse(readFileSync(config)), saved);
+        assert.deepEqual(parsedRecord(readFileSync(config, "utf8")), saved);
     } finally {
       try {
         const pid = Number(
@@ -392,16 +401,6 @@ test("unavailable source cannot be reported as a current backend", () => {
 });
 
 test("Rust startup consumes the desktop identity and restart environment contracts", () => {
-  const require = createRequire(import.meta.url);
-  const {
-    desktopProtocolVersion,
-    backendBuildHexLength,
-  } = require("./backend.cjs");
-  const {
-    restartKeys,
-    retiredRestartKeys,
-    restartEnvironmentVersion,
-  } = require("./restart-environment.cjs");
   const rust = readFileSync(
     path.join(
       repositoryRoot,
@@ -409,7 +408,7 @@ test("Rust startup consumes the desktop identity and restart environment contrac
     ),
     "utf8",
   );
-  const constant = (name) =>
+  const constant = (name: string) =>
     Number(rust.match(new RegExp(`const ${name}: \\w+ = (\\d+);`))?.[1]);
   assert.equal(constant("DESKTOP_PROTOCOL_VERSION"), desktopProtocolVersion);
   assert.equal(constant("BACKEND_BUILD_HEX_LENGTH"), backendBuildHexLength);
@@ -418,15 +417,17 @@ test("Rust startup consumes the desktop identity and restart environment contrac
     restartEnvironmentVersion,
   );
   const keys = [
-    ...rust
-      .match(/const RESTART_KEYS:[\s\S]*?= &\[([\s\S]*?)\];/)[1]
-      .matchAll(/"([^"]+)"/g),
+    ...present(
+      present(rust.match(/const RESTART_KEYS:[\s\S]*?= &\[([\s\S]*?)\];/))[1],
+    ).matchAll(/"([^"]+)"/g),
   ].map((match) => match[1]);
   assert.deepEqual(keys, restartKeys);
   const retired = [
-    ...rust
-      .match(/const RETIRED_RESTART_KEYS:[\s\S]*?= &\[([\s\S]*?)\];/)[1]
-      .matchAll(/"([^"]+)"/g),
+    ...present(
+      present(
+        rust.match(/const RETIRED_RESTART_KEYS:[\s\S]*?= &\[([\s\S]*?)\];/),
+      )[1],
+    ).matchAll(/"([^"]+)"/g),
   ].map((match) => match[1]);
   assert.deepEqual(retired, retiredRestartKeys);
 });

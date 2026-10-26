@@ -1,3 +1,8 @@
+import type {
+  LocatedPackage,
+  WorkspacePackage,
+  PackageManifest,
+} from "../facade.ts";
 import { spawnSync } from "node:child_process";
 import test from "node:test";
 import assert from "node:assert/strict";
@@ -48,7 +53,7 @@ test("short and comprehensive recipes preserve their owned test boundaries", () 
     assert.match(recipe.command, /'nextest' 'run' '--workspace'/);
     assert.match(recipe.command, /studio-contracts/);
     assert.match(recipe.command, /boundaries-check/);
-    assert.match(recipe.command, /vm-guest\/run-guest-suite\.mjs/);
+    assert.match(recipe.command, /vm-guest\/run-guest-suite\.mts/);
     assert.doesNotMatch(
       recipe.command,
       /--release|test-server-load|runtime_load|mutations/,
@@ -56,7 +61,7 @@ test("short and comprehensive recipes preserve their owned test boundaries", () 
   }
   assert.match(fast.command, /'--profile' 'fast'/);
   assert.match(fast.command, /test:unit:fast/);
-  assert.match(fast.command, /native\/check-native\.test\.mjs/);
+  assert.match(fast.command, /native\/check-native\.test\.ts/);
   assert.doesNotMatch(fast.command, /test:browser/);
   assert.match(comprehensive.command, /'--profile' 'ci'/);
   assert.match(comprehensive.command, /'clippy' '--workspace'/);
@@ -72,14 +77,17 @@ test("real IndexedDB staging belongs to provisioned browser smoke, not Node unit
   );
   const title = spec.match(/test\(\s*"([^"]+)"/)?.[1];
   assert.ok(title, "the real IndexedDB witness must remain registered");
-  const scripts = JSON.parse(
+  const manifest: PackageManifest = JSON.parse(
     readFileSync(`${web}/package.json`, "utf8"),
-  ).scripts;
+  );
+  const scripts = manifest.scripts;
+  assert.ok(scripts);
   const smoke = scripts["test:browser:smoke:prepared"];
+  assert.ok(smoke);
   const grep = smoke.match(/--grep "([^"]+)"/)?.[1];
   assert.ok(grep, "package.json owns the smoke selector");
   assert.match(title, new RegExp(grep));
-  assert.match(spec, /from "\.\.\/playwright\.mjs"/);
+  assert.match(spec, /from "\.\.\/playwright\.ts"/);
   assert.equal(
     existsSync(`${web}/src/sync/entityTransfer.storage.test.ts`),
     false,
@@ -89,6 +97,7 @@ test("real IndexedDB staging belongs to provisioned browser smoke, not Node unit
   assert.match(fast, /"src\/sync\/entityTransfer\.test\.ts"/);
   const workflow = readFileSync(".github/workflows/ci.yml", "utf8");
   const browserJob = workflow.split("  fast-browser-smoke:")[1];
+  assert.ok(browserJob);
   assert.match(
     browserJob,
     /playwright install chromium[\s\S]+just test-browser-smoke --prepared/,
@@ -256,7 +265,8 @@ test("pnpm Node test selection uses the native test-name filter", () => {
           "workspaces/tooling/apps/repository-checks/tests/release-binaries.test.ts",
           "workspaces/tooling/apps/repository-checks/tests/scale-verifier-teardown.test.ts",
           "workspaces/tooling/apps/repository-checks/tests/native-style-policy.test.ts",
-          "workspaces/tooling/apps/installed-smoke/tests/smoke.test.mjs",
+          "workspaces/tooling/apps/repository-checks/tests/generate-api-types.test.ts",
+          "workspaces/tooling/apps/installed-smoke/tests/smoke.test.ts",
         ],
       ],
     ],
@@ -316,7 +326,7 @@ test("Cargo uses nextest filters and keeps package and test selectors narrow", (
   assert.deepEqual(
     commandFor("/repo", item, "test", "cli::tests::help", {
       name: "help renders",
-    })[0][1].slice(-2),
+    })[0]?.[1].slice(-2),
     ["--filterset", "test(~cli::tests::help) and test(~help renders)"],
   );
   assert.deepEqual(
@@ -360,6 +370,7 @@ test("nextest empty-selection and missing-runner errors stay actionable", () => 
   );
   assert.equal(nextestSelectionError(0), null);
   const missing = nextestError("error: no such command: `nextest`");
+  assert.ok(missing);
   assert.match(missing, /cargo-nextest 0\.9\.146 is required/);
   assert.match(
     missing,
@@ -423,7 +434,7 @@ esac
     const absent = await execute(root, item, "", true);
     assert.equal(absent.exitCode, 1);
     assert.match(
-      absent.errors[0],
+      absent.errors?.[0] ?? "",
       /cargo install cargo-nextest --version 0\.9\.146 --locked/,
     );
     assert.ok(absent.logPath);
@@ -511,7 +522,7 @@ test("composed package checks invoke only mapped local scripts, never install or
       },
       "test",
     ],
-  ]) {
+  ] satisfies [WorkspacePackage, string][]) {
     const commands = commandFor(process.cwd(), item, action);
     assert.ok(commands.length > 0);
     for (const [bin, args] of commands) {
@@ -551,7 +562,8 @@ test("hosted non-Rust checks consume prepared inputs and cannot compile Cargo", 
   const workflow = readFileSync(".github/workflows/ci.yml", "utf8");
   const remaining = workflow
     .split("  fast-rest:\n")[1]
-    .split("  fast-rust:\n")[0];
+    ?.split("  fast-rust:\n")[0];
+  assert.ok(remaining);
   assert.match(remaining, /needs: rust-build-tests/);
   assert.match(remaining, /name: prepared-check-inputs/);
   assert.doesNotMatch(remaining, /client-build-setup|cargo build|clippy/);
@@ -601,7 +613,7 @@ test("Vitest summaries count test cases rather than test files", () => {
 });
 
 test("Playwright JSON reports enforce process and test outcome status", () => {
-  const evaluate = (stats, exitCode = 0) =>
+  const evaluate = (stats: unknown, exitCode = 0) =>
     evaluatePlaywrightReport(JSON.stringify({ stats }), exitCode);
   const passed = evaluate({ expected: 4, unexpected: 0, flaky: 0, skipped: 1 });
   assert.equal(passed.exitCode, 0);
@@ -700,7 +712,10 @@ test("Playwright JSON reports enforce process and test outcome status", () => {
 
   const malformed = evaluatePlaywrightReport("{bad json", 0);
   assert.equal(malformed.exitCode, 1);
-  assert.match(malformed.errors[0], /^Playwright JSON report is invalid:/);
+  assert.match(
+    malformed.errors[0] ?? "",
+    /^Playwright JSON report is invalid:/,
+  );
 
   const invalidStats = evaluatePlaywrightReport(
     JSON.stringify({ stats: { expected: -1 } }),
@@ -743,9 +758,15 @@ process.exit(1);`;
     assert.equal(result.passed, 322);
     assert.equal(result.skipped, 11);
     assert.ok(
-      readFileSync(result.reportPath, "utf8").includes('"unexpected":1'),
+      readFileSync(
+        result.reportPath ?? assert.fail("missing report path"),
+        "utf8",
+      ).includes('"unexpected":1'),
     );
-    assert.match(result.errors.join(" "), /Playwright exited with code 1/);
+    assert.match(
+      (result.errors ?? []).join(" "),
+      /Playwright exited with code 1/,
+    );
   } finally {
     if (originalCache === undefined)
       delete process.env.CODEX_STUDIO_CHECKS_CACHE;
@@ -770,7 +791,9 @@ test("browser wrapper rejects a missing JSON report even after process success",
       },
     );
     assert.equal(result.exitCode, 1);
-    assert.ok(result.errors.includes("Playwright JSON report is missing"));
+    assert.ok(
+      (result.errors ?? []).includes("Playwright JSON report is missing"),
+    );
   } finally {
     if (originalCache === undefined)
       delete process.env.CODEX_STUDIO_CHECKS_CACHE;
@@ -792,7 +815,7 @@ test("zero-test package command is a failure unless explicitly allowed", async (
     },
   );
   assert.equal(result.exitCode, 1);
-  assert.ok(result.errors.includes("native runner executed zero tests"));
+  assert.ok(result.errors?.includes("native runner executed zero tests"));
 });
 
 test("composed runs name and log a failed constituent step", async () => {
@@ -855,8 +878,8 @@ test("Node test runner summaries count executed and skipped cases", () => {
 
 function workspaceFixture() {
   const root = mkdtempSync(path.join(os.tmpdir(), "codex-boundaries-test-"));
-  const packages = [];
-  function add(name, dir, manifest = {}) {
+  const packages: LocatedPackage[] = [];
+  function add(name: string, dir: string, manifest: PackageManifest = {}) {
     const absolute = path.join(root, dir);
     mkdirSync(absolute, { recursive: true });
     const manifestPath = path.join(absolute, "package.json");
@@ -978,6 +1001,7 @@ test("check-affected selects a changed package and transitive workspace dependen
     });
     fixture.add("unrelated-d", "workspaces/client/apps/d");
     const aItem = fixture.packages[0];
+    assert.ok(aItem);
     aItem.manifest = path.join(a, "package.json");
     assert.deepEqual(
       affectedPlan(fixture.root, "origin/main", fixture.packages, [
@@ -1063,16 +1087,17 @@ test("check-affected adds Cargo workspace dependents from cargo metadata", () =>
 // no compiler, generated files, or installed host CLI can affect these cases.
 test("WASM preparation locates only the pinned CLI and builds before binding", () => {
   const root = mkdtempSync(path.join(os.tmpdir(), "studio-wasm-preparation-"));
-  const script = "workspaces/client/apps/web/scripts/build-client-wasm.mjs";
+  const script = "workspaces/client/apps/web/scripts/build-client-wasm.ts";
   const manifest = "workspaces/client/packages/client-wasm/Cargo.toml";
   const version = readFileSync(manifest, "utf8").match(
     /^wasm-bindgen\s*=\s*"=([^"\s]+)"/m,
-  )[1];
+  )?.[1];
+  assert.ok(version);
   const bin = path.join(root, "bin");
   const cache = path.join(root, "cache");
   const cargoHome = path.join(root, "cargo-home");
   const log = path.join(root, "commands.jsonl");
-  function executable(file, body) {
+  function executable(file: string, body: string) {
     mkdirSync(path.dirname(file), { recursive: true });
     writeFileSync(file, `#!${process.execPath}\n${body}`);
     chmodSync(file, 0o755);
@@ -1123,7 +1148,10 @@ test("WASM preparation locates only the pinned CLI and builds before binding", (
     );
     const prepared = run();
     assert.equal(prepared.status, 0, prepared.stderr);
-    const calls = readFileSync(log, "utf8").trim().split("\n").map(JSON.parse);
+    const calls: string[][] = readFileSync(log, "utf8")
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line));
     assert.deepEqual(calls[0], [
       "build",
       "-p",
@@ -1134,7 +1162,7 @@ test("WASM preparation locates only the pinned CLI and builds before binding", (
       "--locked",
     ]);
     assert.equal(
-      calls[1][0],
+      calls[1]?.[0],
       path.join(
         env.CARGO_TARGET_DIR,
         "wasm32-unknown-unknown/release/studio_client_wasm.wasm",
@@ -1324,10 +1352,14 @@ test("repository gates use manifest packages without the retired backend", () =>
       /apps\/server|studio-operations-python|codex_python|test-server\.py/,
     );
   }
-  const scripts = JSON.parse(readFileSync("package.json", "utf8")).scripts;
+  const manifest: PackageManifest = JSON.parse(
+    readFileSync("package.json", "utf8"),
+  );
+  const scripts = manifest.scripts;
+  assert.ok(scripts);
   assert.equal(scripts["typecheck:runtime"], undefined);
   assert.equal(scripts["test:server:python"], undefined);
-  assert.match(scripts["test:server:bridge"], /studio-claude-bridge/);
+  assert.match(scripts["test:server:bridge"] ?? "", /studio-claude-bridge/);
   const workflow = readFileSync(".github/workflows/ci.yml", "utf8");
   assert.doesNotMatch(
     workflow,
@@ -1373,4 +1405,102 @@ test("short profile commands retain native nextest summary and zero-test guards"
     ).executed,
     0,
   );
+});
+
+test("nextest suite summaries reject non-number counters", () => {
+  for (const field of ["passed", "failed", "ignored"]) {
+    assert.throws(
+      () =>
+        parseCounts(
+          { ecosystem: "cargo" },
+          JSON.stringify({ type: "suite", event: "ok", [field]: "4" }),
+        ),
+      new RegExp(`nextest suite counter ${field} must be a number`),
+    );
+  }
+});
+
+test("Playwright reports reject malformed suite containers", () => {
+  const result = evaluatePlaywrightReport(
+    { stats: { expected: 1, unexpected: 0, flaky: 0, skipped: 0 }, suites: {} },
+    0,
+  );
+  assert.equal(result.exitCode, 1);
+  assert.match(result.errors.join(" "), /Playwright JSON report is invalid/);
+});
+
+test("native startup check stays within temporary-state coverage", async () => {
+  const { testSource } = await import("../test-temp-state.ts");
+  assert.equal(
+    testSource(
+      "workspaces/client/apps/native/check-package-start.ts",
+      "fixture source",
+    ),
+    "fixture source",
+  );
+});
+
+test("boundary type imports share generated contracts and named type owners without allowing runtime imports", () => {
+  const fixture = workspaceFixture();
+  try {
+    const desktop = fixture.add(
+      "desktop-app",
+      "workspaces/client/apps/desktop",
+    );
+    const web = fixture.add("web-app", "workspaces/client/apps/web");
+    const shared = fixture.add(
+      "shared-package",
+      "workspaces/client/packages/shared",
+    );
+    const cases: [string, string, boolean][] = [
+      [
+        desktop,
+        'import type { Row } from "../web/src/generated/api.ts";',
+        true,
+      ],
+      [
+        desktop,
+        'export type { Row } from "../web/src/generated/api.ts";',
+        true,
+      ],
+      [
+        desktop,
+        'import { type Row } from "../web/src/generated/api.ts";',
+        true,
+      ],
+      [desktop, 'import { Row } from "../web/src/generated/api.ts";', false],
+      [
+        desktop,
+        'import { type Row, value } from "../web/src/generated/api.ts";',
+        false,
+      ],
+      [desktop, 'import type { Row } from "../web/src/private.ts";', false],
+      [web, 'import type { DesktopApi } from "../desktop/api.ts";', true],
+      [web, 'export type { DesktopApi } from "../desktop/api.ts";', true],
+      [web, 'import { DesktopApi } from "../desktop/api.ts";', false],
+      [
+        desktop,
+        'import type { Row } from "../web/src/shared.generated.ts";',
+        true,
+      ],
+      [
+        shared,
+        'import type { Row } from "../../apps/web/src/generated/api.ts";',
+        true,
+      ],
+      [
+        shared,
+        'import { Row } from "../../apps/web/src/generated/api.ts";',
+        false,
+      ],
+    ];
+    for (const [directory, source, allowed] of cases) {
+      const file = path.join(directory, "entry.ts");
+      writeFileSync(file, source);
+      const findings = boundaryFindings(fixture.root, fixture.packages, [file]);
+      assert.equal(findings.length === 0, allowed, source);
+    }
+  } finally {
+    rmSync(fixture.root, { recursive: true, force: true });
+  }
 });

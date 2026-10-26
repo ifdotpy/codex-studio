@@ -10,10 +10,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { createRequire } from "node:module";
-const { layrDesk, vaultKeysScript } = createRequire(import.meta.url)(
-  "./vault-keys.cjs",
-);
+import { layrDesk, vaultKeysScript } from "./vault-keys.ts";
 
 test("the packaged app runs its own layr-desk", () => {
   assert.equal(
