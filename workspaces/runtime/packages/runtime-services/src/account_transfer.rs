@@ -156,7 +156,9 @@ impl Snapshot {
         let mut bytes = raw.len();
         for (id, raw) in agents {
             bytes = bytes.saturating_add(raw.len());
-            if records.len() >= MAX_TRANSFER_AGENT_RECORDS || bytes > 64 * 1024 * 1024 {
+            if records.len() >= MAX_TRANSFER_AGENT_RECORDS
+                || bytes > studio_runtime_store::AccountTransferRepository::MAX_SNAPSHOT_BYTES
+            {
                 return Err(invalid("transfer snapshot", "/resourceLimit"));
             }
             // `runtime_agents` uses the table schema. Keep the open record as JSON;

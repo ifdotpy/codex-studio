@@ -8,7 +8,7 @@ use serde_json::{Value, json};
 use std::future::Future;
 use std::pin::Pin;
 use studio_runtime_store::{
-    AccountTransferRepository as Repository, AgentRepository, RuntimeStore, Transaction,
+    AccountTransferRepository as Repository, AgentId, AgentRepository, RuntimeStore, Transaction,
 };
 
 pub fn load(tx: &Transaction<'_>, id: &str) -> Result<Snapshot, TransferError> {
@@ -184,7 +184,7 @@ pub async fn recover(store: &RuntimeStore, now: f64) -> Result<usize, TransferEr
                 return Ok(0);
             }
             let mut changed = 0;
-            for id in Repository::ids(tx)? {
+            for id in Repository::recovery_ids(tx)? {
                 let snapshot = load(tx, &id)?;
                 let decision = snapshot.decide(Command::Restart)?;
                 changed += usize::from(decision.changed);
@@ -259,7 +259,7 @@ pub async fn request(
                     "This account is disabled for this chat",
                 ));
             }
-            for key in Repository::ids(tx)? {
+            if let Some(key) = Repository::request_operation(tx, &id)? {
                 let snapshot = load(tx, &key)?;
                 if snapshot.replay(&id, &lead, &target, &scope)? {
                     return snapshot.public_view();
@@ -285,41 +285,18 @@ pub async fn request(
                 let snapshot = load(tx, active_id)?;
                 let mut operation = snapshot.operation().clone();
                 let mut agents = snapshot_agents(&snapshot)?;
-                let ids = {
-                    let mut statement = tx
-                        .prepare("SELECT id FROM runtime_agents ORDER BY rowid LIMIT 4097")
-                        .map_err(studio_runtime_store::StoreError::from)?;
-                    statement
-                        .query_map([], |row| row.get::<_, String>(0))
-                        .map_err(studio_runtime_store::StoreError::from)?
-                        .collect::<Result<Vec<_>, _>>()
-                        .map_err(studio_runtime_store::StoreError::from)?
-                };
-                if ids.len() > 4096 {
-                    return Err(TransferError::Refused(
-                        "Transfer member scan exceeds the supported limit",
-                    ));
-                }
                 let target_provider = operation["targetProvider"]
                     .as_str()
                     .unwrap_or(&target_provider)
                     .to_owned();
-                for member_id in ids {
+                for member in Repository::team_agents(tx, &AgentId::from(lead.as_str()))? {
+                    let member_id = member.id.0.clone();
                     if operation["members"].get(&member_id).is_some()
                         || (scope == "subagents" && member_id == lead)
                     {
                         continue;
                     }
-                    let Some(raw) = Repository::agent(tx, &member_id)? else {
-                        continue;
-                    };
-                    let mut value: Value = serde_json::from_str(&raw)
-                        .map_err(studio_runtime_store::StoreError::from)?;
-                    if studio_runtime_store::truthy(value.get("deletedAt"))
-                        || (member_id != lead && value["rootId"].as_str() != Some(lead.as_str()))
-                    {
-                        continue;
-                    }
+                    let mut value = member.into_value();
                     operation["members"][&member_id] = crate::account_transfer::enroll(
                         &mut value,
                         active_id,
@@ -329,9 +306,12 @@ pub async fn request(
                     )?;
                     agents.insert(member_id, value);
                 }
-                if agents.get(&lead).is_some_and(|lead_agent| {
-                    lead_agent.get("accountKey").and_then(Value::as_str) == Some(target.as_str())
-                }) {
+                if scope == "subagents"
+                    || agents.get(&lead).is_some_and(|lead_agent| {
+                        lead_agent.get("accountKey").and_then(Value::as_str)
+                            == Some(target.as_str())
+                    })
+                {
                     let lead_agent = agents
                         .get_mut(&lead)
                         .ok_or(TransferError::Refused("Unknown transfer lead"))?;
@@ -358,41 +338,17 @@ pub async fn request(
                 return persist(tx, decision, now);
             }
 
-            let ids = {
-                let mut statement = tx
-                    .prepare("SELECT id FROM runtime_agents ORDER BY rowid LIMIT 4097")
-                    .map_err(studio_runtime_store::StoreError::from)?;
-                statement
-                    .query_map([], |row| row.get::<_, String>(0))
-                    .map_err(studio_runtime_store::StoreError::from)?
-                    .collect::<Result<Vec<_>, _>>()
-                    .map_err(studio_runtime_store::StoreError::from)?
-            };
-            if ids.len() > 4096 {
-                return Err(TransferError::Refused(
-                    "Transfer member scan exceeds the supported limit",
-                ));
-            }
-            let mut agents = std::collections::BTreeMap::new();
-            for id in ids {
-                let Some(raw) = Repository::agent(tx, &id)? else {
-                    continue;
-                };
-                let value: Value =
-                    serde_json::from_str(&raw).map_err(studio_runtime_store::StoreError::from)?;
-                if studio_runtime_store::truthy(value.get("deletedAt"))
-                    || (id != lead && value["rootId"].as_str() != Some(lead.as_str()))
-                    || (scope == "subagents" && id == lead)
-                {
-                    continue;
-                }
-                agents.insert(id, value);
-            }
+            let mut agents: std::collections::BTreeMap<_, _> =
+                Repository::team_agents(tx, &AgentId::from(lead.as_str()))?
+                    .into_iter()
+                    .map(|agent| (agent.id.0.clone(), agent.into_value()))
+                    .collect();
             if !agents.contains_key(&lead) {
                 return Err(TransferError::Refused("Unknown managed agent"));
             }
-            if agents.values().any(|agent| {
-                agent["environment"] == "linux"
+            if agents.iter().any(|(id, agent)| {
+                !(scope == "subagents" && id == &lead)
+                    && agent["environment"] == "linux"
                     && agent
                         .get("accountKey")
                         .and_then(Value::as_str)
@@ -413,6 +369,16 @@ pub async fn request(
             "targetProvider":target_provider,"status":"pending","scope":scope,"created":now,
             "members":{},"requests":Value::Object(requests)});
             for (agent_id, value) in &mut agents {
+                if scope == "subagents" && agent_id == &lead {
+                    let mut defaults = value
+                        .get("workerDefaults")
+                        .and_then(Value::as_object)
+                        .cloned()
+                        .unwrap_or_default();
+                    defaults.insert("accountKey".into(), json!(target));
+                    value["workerDefaults"] = Value::Object(defaults);
+                    continue;
+                }
                 operation["members"][agent_id] = crate::account_transfer::enroll(
                     value,
                     &operation_id,
@@ -1048,6 +1014,329 @@ mod request_tests {
             Ok::<_, studio_runtime_store::StoreError>(())
         })).expect("test fixture operation succeeds");
         (root, store)
+    }
+
+    fn add_agents(store: &RuntimeStore, root: &str, count: usize) {
+        let root = root.to_owned();
+        run_async(store.transaction(move |tx| {
+            let template = AgentRecord::from_value(json!({
+                "id":"template", "rootId":root, "epoch":1, "status":"idle",
+                "isLead":false, "accountKey":"source", "provider":"codex",
+                "model":"gpt-6-astra", "cwd":"/tmp/work"
+            }))?.value().to_string();
+            tx.execute(
+                "WITH RECURSIVE members(n) AS (SELECT 1 WHERE ?1>0 UNION ALL SELECT n+1 FROM members WHERE n<?1)
+                 INSERT INTO runtime_agents(id,record)
+                 SELECT 'fixture-'||n,json_set(?2,'$.id','fixture-'||n) FROM members",
+                rusqlite::params![i64::try_from(count).expect("fixture count fits SQLite"), template],
+            )?;
+            Ok(())
+        })).expect("seed scoped fixture agents");
+    }
+
+    #[test]
+    fn new_request_ignores_more_than_4096_unrelated_agents() {
+        let (_root, store) = store_with_agents();
+        add_agents(&store, "another-team", 4097);
+        let unrelated = stored(&store, "fixture-4097");
+        let id = "5a300f72-4ea6-4d30-8a0e-9b2c13c42280";
+        let result = request(&store, id, "lead", "target", "team", "codex", 10.0)
+            .expect("unrelated database size cannot prevent a team transfer");
+        assert_eq!(result["members"].as_object().expect("members").len(), 2);
+        assert_eq!(stored(&store, "fixture-4097"), unrelated);
+        assert_eq!(
+            request(&store, id, "lead", "target", "team", "codex", 11.0).expect("exact replay"),
+            result
+        );
+        assert!(request(&store, id, "lead", "changed", "team", "codex", 12.0).is_err());
+    }
+
+    #[test]
+    fn active_request_ignores_more_than_4096_unrelated_agents() {
+        let (_root, store) = store_with_agents();
+        let original = "5a300f72-4ea6-4d30-8a0e-9b2c13c42281";
+        request(&store, original, "lead", "target", "team", "codex", 10.0)
+            .expect("initial request");
+        add_agents(&store, "another-team", 4097);
+        run_async(store.transaction(|tx| {
+            let late =
+                AgentRecord::from_value(json!({"id":"late","rootId":"lead","parentId":"child",
+                "epoch":3,"status":"idle","isLead":false,"accountKey":"source","provider":"codex",
+                "model":"gpt-6-astra","cwd":"/tmp/work"}))?;
+            AgentRepository::put(tx, &late)
+        }))
+        .expect("late descendant");
+        let alias = "5a300f72-4ea6-4d30-8a0e-9b2c13c42282";
+        let result = request(&store, alias, "lead", "target", "team", "codex", 11.0)
+            .expect("active transfer selects only its own team");
+        assert_eq!(result["id"], original);
+        assert_eq!(result["members"]["late"]["phase"], "lazy");
+        assert_eq!(result["members"].as_object().expect("members").len(), 3);
+        assert_eq!(
+            request(&store, alias, "lead", "target", "team", "codex", 12.0).expect("alias replay"),
+            result
+        );
+        assert!(request(&store, alias, "lead", "target", "subagents", "codex", 13.0).is_err());
+    }
+
+    #[test]
+    fn subagents_request_keeps_lead_as_summary_owner_without_enrolling_it() {
+        let (_root, store) = store_with_agents();
+        add_agents(&store, "another-team", 4097);
+        let before = stored(&store, "lead");
+        let result = request(
+            &store,
+            "5a300f72-4ea6-4d30-8a0e-9b2c13c42283",
+            "lead",
+            "target",
+            "subagents",
+            "codex",
+            10.0,
+        )
+        .expect("subagents request retains the lead snapshot");
+        assert_eq!(result["members"].as_object().expect("members").len(), 1);
+        assert_eq!(result["members"]["child"]["phase"], "lazy");
+        let lead = stored(&store, "lead");
+        assert_eq!(lead["accountKey"], before["accountKey"]);
+        assert_eq!(lead["provider"], before["provider"]);
+        assert_eq!(lead["threadId"], before["threadId"]);
+        assert_eq!(lead["workerDefaults"]["accountKey"], "target");
+        assert!(lead.get("accountTransferId").is_none());
+        assert_eq!(lead["accountTransfer"]["id"], result["id"]);
+        assert_eq!(stored(&store, "child")["accountKey"], "target");
+        run_async(store.transaction(|tx| {
+            let late = AgentRecord::from_value(json!({"id":"late", "rootId":"lead", "epoch":3,
+                "status":"idle", "provider":"codex", "accountKey":"source"}))?;
+            AgentRepository::put(tx, &late)
+        }))
+        .expect("late subagent");
+        let adopted = request(
+            &store,
+            "5a300f72-4ea6-4d30-8a0e-9b2c13c42287",
+            "lead",
+            "target",
+            "subagents",
+            "codex",
+            11.0,
+        )
+        .expect("active subagents request adopts late workers");
+        assert_eq!(adopted["id"], result["id"]);
+        assert_eq!(adopted["members"].as_object().expect("members").len(), 2);
+        assert_eq!(adopted["members"]["late"]["phase"], "lazy");
+        assert_eq!(stored(&store, "lead")["accountKey"], "source");
+    }
+
+    #[test]
+    fn scoped_membership_keeps_nested_workers_and_excludes_deleted_or_other_roots() {
+        let (_root, store) = store_with_agents();
+        run_async(store.transaction(|tx| {
+            let mut lead = AgentRepository::get(tx, &AgentId::from("lead"))?.expect("lead");
+            lead.root_id = AgentId::from("legacy-root");
+            AgentRepository::put(tx, &lead)?;
+            let mut child = AgentRepository::get(tx, &AgentId::from("child"))?.expect("child");
+            child.extra.insert("deletedAt".into(), json!(0));
+            AgentRepository::put(tx, &child)?;
+            for value in [
+                json!({"id":"nested", "rootId":"lead", "parentId":"child", "provider":"codex"}),
+                json!({"id":"other-root", "rootId":"other", "parentId":"lead", "provider":"codex", "environment":"linux"}),
+                json!({"id":"deleted", "rootId":"lead", "provider":"codex", "deletedAt":1.0, "environment":"linux"}),
+                json!({"id":"other-provider", "rootId":"lead", "provider":"claude"}),
+            ] {
+                let mut value = value;
+                value["epoch"] = json!(3);
+                value["status"] = json!("idle");
+                value["accountKey"] = json!("source");
+                AgentRepository::put(tx, &AgentRecord::from_value(value)?)?;
+            }
+            Ok(())
+        })).expect("membership fixture");
+        let id = "5a300f72-4ea6-4d30-8a0e-9b2c13c42288";
+        let result =
+            request(&store, id, "lead", "target", "team", "codex", 10.0).expect("scoped transfer");
+        assert_eq!(
+            result["members"]
+                .as_object()
+                .expect("members")
+                .keys()
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
+            ["child", "lead", "nested", "other-provider"]
+        );
+        assert_eq!(result["members"]["other-provider"]["phase"], "left");
+        for member in ["child", "lead", "nested"] {
+            assert_eq!(stored(&store, member)["accountKey"], "target");
+        }
+        for member in ["other-root", "deleted", "other-provider"] {
+            assert_eq!(stored(&store, member)["accountKey"], "source");
+        }
+    }
+
+    #[test]
+    fn vm_member_guard_applies_only_to_enrolled_members() {
+        for scope in ["team", "subagents"] {
+            let (_root, store) = store_with_agents();
+            run_async(store.transaction(|tx| {
+                let mut lead = AgentRepository::get(tx, &AgentId::from("lead"))?.expect("lead");
+                lead.extra.insert("environment".into(), json!("linux"));
+                AgentRepository::put(tx, &lead)
+            }))
+            .expect("VM lead fixture");
+            let before = stored(&store, "lead");
+            let result = request(
+                &store,
+                "5a300f72-4ea6-4d30-8a0e-9b2c13c42289",
+                "lead",
+                "target",
+                scope,
+                "codex",
+                10.0,
+            );
+            if scope == "team" {
+                assert_eq!(
+                    result.expect_err("VM transfer guard").to_string(),
+                    "Archive VM workers before changing the team account"
+                );
+                assert_eq!(stored(&store, "lead"), before);
+                assert_eq!(stored(&store, "child")["accountKey"], "source");
+            } else {
+                assert_eq!(
+                    result.expect("VM lead stays outside subagent enrollment")["members"]["child"]
+                        ["phase"],
+                    "lazy"
+                );
+                assert_eq!(stored(&store, "lead")["accountKey"], "source");
+            }
+        }
+    }
+
+    #[test]
+    fn recovery_does_not_hide_unknown_or_missing_operation_status() {
+        for status in [json!("future-status"), Value::Null] {
+            let (_root, store) = store_with_agents();
+            run_async(store.transaction(move |tx| {
+                let record = json!({"id":"invalid", "leadId":"lead", "targetAccountKey":"target",
+                    "status":status, "created":1.0, "members":{}})
+                .to_string();
+                tx.execute(
+                    "INSERT INTO runtime_account_transfers(id,record) VALUES('invalid',?1)",
+                    [record],
+                )?;
+                Ok(())
+            }))
+            .expect("invalid operation fixture");
+            let before = stored(&store, "lead");
+            assert!(
+                run_async(recover(&store, 10.0)).is_err(),
+                "invalid status must reach the validator"
+            );
+            assert_eq!(stored(&store, "lead"), before);
+        }
+    }
+
+    #[test]
+    fn unrelated_transfer_history_does_not_block_requests_or_pending_recovery() {
+        let (_root, store) = store_with_agents();
+        run_async(store.transaction(|tx| {
+            let template = json!({"id":"history", "leadId":"lead", "targetAccountKey":"target",
+                "status":"completed", "scope":"team", "created":1.0, "members":{}, "requests":{}}).to_string();
+            tx.execute(
+                "WITH RECURSIVE history(n) AS (SELECT 1 UNION ALL SELECT n+1 FROM history WHERE n<4097)
+                 INSERT INTO runtime_account_transfers(id,record)
+                 SELECT 'history-'||n,json_set(?1,'$.id','history-'||n) FROM history",
+                [template],
+            )?;
+            Ok(())
+        })).expect("seed completed transfer history");
+        let id = "5a300f72-4ea6-4d30-8a0e-9b2c13c42285";
+        let result = request(&store, id, "lead", "target", "team", "codex", 10.0)
+            .expect("history size cannot prevent a new transfer");
+        assert_eq!(
+            request(&store, id, "lead", "target", "team", "codex", 11.0).expect("exact replay"),
+            result
+        );
+        assert_eq!(
+            run_async(recover(&store, 12.0)).expect("pending recovery ignores completed history"),
+            0
+        );
+    }
+
+    #[test]
+    fn request_identity_is_global_even_between_leads() {
+        let (_root, store) = store_with_agents();
+        let id = "5a300f72-4ea6-4d30-8a0e-9b2c13c42286";
+        let original =
+            request(&store, id, "lead", "target", "team", "codex", 10.0).expect("original request");
+        run_async(store.transaction(|tx| {
+            let other = AgentRecord::from_value(json!({"id":"other", "rootId":"other", "epoch":1,
+                "status":"idle", "isLead":true, "provider":"codex", "accountKey":"source"}))?;
+            AgentRepository::put(tx, &other)
+        }))
+        .expect("other lead");
+        let before = stored(&store, "other");
+        let error = request(&store, id, "other", "target", "team", "codex", 11.0)
+            .expect_err("request identity cannot cross leads");
+        assert_eq!(error.to_string(), "This transfer id has different content");
+        assert_eq!(stored(&store, "other"), before);
+        assert_eq!(
+            request(&store, id, "lead", "target", "team", "codex", 12.0).expect("original replay"),
+            original
+        );
+    }
+
+    #[test]
+    fn own_team_transfer_boundary_is_enforced_without_partial_enrollment() {
+        let (_root, store) = store_with_agents();
+        let max = studio_runtime_schema::agent_limits::MAX_TRANSFER_AGENT_RECORDS;
+        add_agents(&store, "lead", max - 1);
+        let before = stored(&store, "lead");
+        let id = "5a300f72-4ea6-4d30-8a0e-9b2c13c42284";
+        for scope in ["team", "subagents"] {
+            assert!(request(&store, id, "lead", "target", scope, "codex", 10.0).is_err());
+        }
+        assert_eq!(stored(&store, "lead"), before);
+        assert_eq!(stored(&store, "child")["accountKey"], "source");
+        assert!(
+            Repository::get(&store.test_reader().expect("reader"), id)
+                .expect("transfer lookup")
+                .is_none()
+        );
+        run_async(store.transaction(|tx| {
+            let mut deleted =
+                AgentRepository::get(tx, &AgentId::from("fixture-1"))?.expect("fixture member");
+            deleted.extra.insert("deletedAt".into(), json!(1.0));
+            AgentRepository::put(tx, &deleted)
+        }))
+        .expect("deleted own-team records do not consume the snapshot boundary");
+        let result = request(&store, id, "lead", "target", "team", "codex", 11.0)
+            .expect("exact team boundary succeeds");
+        assert_eq!(result["members"].as_object().expect("members").len(), max);
+        run_async(store.transaction(|tx| {
+            let mut restored =
+                AgentRepository::get(tx, &AgentId::from("fixture-1"))?.expect("fixture member");
+            restored.extra.insert("deletedAt".into(), json!(0));
+            AgentRepository::put(tx, &restored)
+        }))
+        .expect("restore a member beyond the active transfer boundary");
+        let before = Repository::get(&store.test_reader().expect("reader"), id).expect("operation");
+        let lead = stored(&store, "lead");
+        assert!(
+            request(
+                &store,
+                "5a300f72-4ea6-4d30-8a0e-9b2c13c42290",
+                "lead",
+                "target",
+                "team",
+                "codex",
+                12.0
+            )
+            .is_err()
+        );
+        assert_eq!(
+            Repository::get(&store.test_reader().expect("reader"), id).expect("operation"),
+            before
+        );
+        assert_eq!(stored(&store, "lead"), lead);
+        assert_eq!(stored(&store, "fixture-1")["accountKey"], "source");
     }
 
     #[test]
