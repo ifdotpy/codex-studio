@@ -10,12 +10,11 @@ export type RendererCrash = {
 };
 export type RecoveryContents = Pick<
   WebContents,
-  "isDestroyed" | "loadURL" | "getURL" | "getOSProcessId" | "isCrashed" | "on"
-> & { mainFrame: unknown };
-export type RecoveryWindow = Pick<
-  BrowserWindow,
-  "isDestroyed" | "setTitle" | "on"
-> & { webContents: RecoveryContents };
+  "isDestroyed" | "loadURL" | "getURL" | "getOSProcessId" | "isCrashed"
+> &
+  Pick<NodeJS.EventEmitter, "on"> & { mainFrame: unknown };
+export type RecoveryWindow = Pick<BrowserWindow, "isDestroyed" | "setTitle"> &
+  Pick<NodeJS.EventEmitter, "on"> & { webContents: RecoveryContents };
 export type RecoveryNavigation = {
   preventDefault(): void;
   url: string;
