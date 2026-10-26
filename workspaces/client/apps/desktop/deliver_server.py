@@ -216,6 +216,8 @@ def stage(source, commit, installed, receipts, *, observe, run=updates.run_tool,
     previous = durable or cached
     if previous is not None and (previous.get('request') != request or previous.get('id') != operation):
         raise DeliveryError('The saved delivery request names a different package or target')
+    if previous is not None and superseded_install(previous, installed):
+        previous = None  # A later install replaced this build, so start a new delivery.
     pending_path = state / updates.PENDING_FILE
     if previous:
         pending = updates.read_pending(state)
@@ -308,6 +310,11 @@ def stage(source, commit, installed, receipts, *, observe, run=updates.run_tool,
         record = {**record, 'phase': PHASES['submitted']}
         save_record(state, record_path, record)
         return record
+
+
+def superseded_install(record, installed):
+    """An installed record is history once the installed app carries another build."""
+    return record.get('phase') == PHASES['installed'] and updates.read_build(installed) != record['request']['build']
 
 
 def verify_completion(record, installed, observe):
@@ -434,6 +441,8 @@ def resume_saved(source, commit, installed, receipts, observe, *, starting_pid=N
             or request.get('build') != updates.read_build(source)
             or request.get('bundleHash') != bundle_hash(source)):
         raise DeliveryError('The saved delivery request names a different package or target')
+    if superseded_install(saved, installed.resolve()):
+        return None  # A later install replaced this build, so the caller starts a new delivery.
     if recover_installed is not None and saved.get('phase') == PHASES['publishing'] and updates.read_pending(Path(request['stateDir'])) is None and saved.get('installerDispatch') is None:
         receipt = desktop_delivery.read_private_json(Path(request['stateDir']) / updates.RECEIPT_FILE)
         if desktop_delivery.request_hash(receipt) == request['installedDelivery']['priorReceiptHash']:
