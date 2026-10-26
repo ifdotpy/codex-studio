@@ -32,7 +32,7 @@ export type CanonicalReset = {
 declare global {
   interface Window {
     catalogRequests: string[];
-    calls: PostBody<"/api/conversation">[];
+    settingsCalls: PostBody<"/api/conversation">[];
     transfers: PostBody<"/api/agents/account-transfer">[];
     transferFail: boolean;
     transferHold: boolean;
@@ -109,7 +109,7 @@ const models = ["gpt-6-astra", "gpt-5.6-sol", "gpt-5.6-luna", "gpt-6-luna"].map(
   }),
 );
 window.catalogRequests = [];
-window.calls = [];
+window.settingsCalls = [];
 window.transfers = [];
 window.transferFail = false;
 window.transferHold = false;
@@ -191,10 +191,12 @@ window.fetch = async (input, options) => {
     return fixtureResponse(result);
   }
   if (url != "/api/conversation") return nativeFetch(url, requestOptions);
-  window.calls.push(fixturePostBody<"/api/conversation">(requestOptions?.body));
+  window.settingsCalls.push(
+    fixturePostBody<"/api/conversation">(requestOptions?.body),
+  );
   if (
     window.serverAccount &&
-    window.calls.at(-1)!.expected_account_key !== window.serverAccount
+    window.settingsCalls.at(-1)!.expected_account_key !== window.serverAccount
   )
     return fixtureResponse(
       { error: "The account changed. Select the model again" },
@@ -246,7 +248,7 @@ function Fixture() {
       setDefaults(!!options?.defaults);
       setMount((value) => value + 1);
       window.catalogRequests = [];
-      window.calls = [];
+      window.settingsCalls = [];
       window.transfers = [];
       window.transferFail = false;
       window.transferHold = false;

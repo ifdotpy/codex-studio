@@ -122,12 +122,12 @@ test("Daybreak settings", async ({ context }) => {
     const settled = async () =>
       page.waitForFunction(
         () =>
-          window.refreshCount === window.calls.length &&
-          window.calls.length > 0,
+          window.refreshCount === window.settingsCalls.length &&
+          window.settingsCalls.length > 0,
       );
     const clearActivity = () =>
       page.evaluate(() => {
-        window.calls = [];
+        window.settingsCalls = [];
         window.refreshCount = 0;
       });
 
@@ -156,7 +156,7 @@ test("Daybreak settings", async ({ context }) => {
     assert.equal(await modelOptionDisabled(model(), "daybreak-only"), true);
     await enable();
     await settled();
-    assert.deepEqual(await page.evaluate(() => window.calls[0]), {
+    assert.deepEqual(await page.evaluate(() => window.settingsCalls[0]), {
       id: "first",
       expected_account_key: "default",
       model: "gpt-5.6-sol",
@@ -219,7 +219,7 @@ test("Daybreak settings", async ({ context }) => {
     await settled();
     assert.equal(await modelValue(model()), "gpt-5.6-sol");
     assert.equal(
-      await page.evaluate(() => window.calls[0]!.daybreak_enabled),
+      await page.evaluate(() => window.settingsCalls[0]!.daybreak_enabled),
       false,
     );
     await reset({ agent: { model: "gpt-5.6-terra" } });
@@ -263,7 +263,7 @@ test("Daybreak settings", async ({ context }) => {
     });
     assert.equal(await mode().count(), 0);
     assert.equal(await modelOptionDisabled(model(), "gpt-6-astra"), false);
-    assert.deepEqual(await page.evaluate(() => window.calls), []);
+    assert.deepEqual(await page.evaluate(() => window.settingsCalls), []);
     await reset({ agent: { model: "gpt-daybreak-blue-latest" } });
     assert.equal(
       await modelOptionDisabled(model(), "gpt-daybreak-blue-latest"),
@@ -284,12 +284,12 @@ test("Daybreak settings", async ({ context }) => {
 
     await reset({ agent: { status: "running" } });
     await page.getByRole("switch", { name: "Daybreak", exact: true }).waitFor();
-    await page.evaluate(() => (window.fail = "network"));
+    await page.evaluate(() => (window.daybreakFail = "network"));
     await mode().check();
     await page
       .getByRole("button", { name: "Check settings save", exact: true })
       .waitFor();
-    const request = await page.evaluate(() => window.calls[0]);
+    const request = await page.evaluate(() => window.settingsCalls[0]);
     assert.equal(request!.next_turn, true);
     assert.equal(request!.daybreak_enabled, true);
     assert.equal(
@@ -309,7 +309,7 @@ test("Daybreak settings", async ({ context }) => {
       .click();
     await settled();
     assert.deepEqual(
-      await page.evaluate(() => window.calls[0]),
+      await page.evaluate(() => window.settingsCalls[0]),
       request,
       "Retry retains the exact mode and request identity",
     );
@@ -320,7 +320,7 @@ test("Daybreak settings", async ({ context }) => {
 
     await reset({ agent: { status: "running" } });
     await page.getByRole("switch", { name: "Daybreak", exact: true }).waitFor();
-    await page.evaluate(() => (window.fail = "network"));
+    await page.evaluate(() => (window.daybreakFail = "network"));
     await mode().check();
     await page
       .getByRole("button", { name: "Check settings save", exact: true })
@@ -353,7 +353,7 @@ test("Daybreak settings", async ({ context }) => {
       },
     });
     assert.equal(await mode().isChecked(), false);
-    await page.evaluate(() => (window.fail = "rejected"));
+    await page.evaluate(() => (window.daybreakFail = "rejected"));
     await enable();
     await page
       .getByRole("alert")
@@ -379,7 +379,7 @@ test("Daybreak settings", async ({ context }) => {
     });
     await enable(true);
     await settled();
-    assert.deepEqual(await page.evaluate(() => window.calls[0]), {
+    assert.deepEqual(await page.evaluate(() => window.settingsCalls[0]), {
       id: "first",
       expected_account_key: "default",
       worker_defaults: {

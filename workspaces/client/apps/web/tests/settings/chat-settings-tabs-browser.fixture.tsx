@@ -10,7 +10,7 @@ import {
 
 declare global {
   interface Window {
-    calls: PostBody<"/api/conversation">[];
+    settingsCalls: PostBody<"/api/conversation">[];
     agent: Agent;
     updateAgent: (agent: Agent) => void;
   }
@@ -92,7 +92,7 @@ const initial = {
   },
   reviewDefaults: { model: null, effort: null },
 } as Agent;
-window.calls = [];
+window.settingsCalls = [];
 const nativeFetch = window.fetch;
 window.fetch = async (input, options) => {
   const { url, options: requestOptions } = await fixtureFetchInput(
@@ -130,7 +130,7 @@ window.fetch = async (input, options) => {
   else if (u.pathname === "/api/accounts") result = accountsData;
   else if (u.pathname === "/api/conversation") {
     const body = fixturePostBody<"/api/conversation">(requestOptions?.body);
-    window.calls.push(body);
+    window.settingsCalls.push(body);
     const next = { ...window.agent };
     if (body.worker_defaults)
       next.workerDefaults = {

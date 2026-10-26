@@ -155,7 +155,7 @@ test("execution settings canonical browser", async ({ page }) => {
         console.error(
           JSON.stringify(
             await page.evaluate(() => ({
-              calls: window.calls,
+              calls: window.settingsCalls,
               transfers: window.transfers,
               refreshCount: window.refreshCount,
               catalogRequests: window.catalogRequests,
@@ -533,7 +533,7 @@ test("execution settings canonical browser", async ({ page }) => {
       await page.evaluate(() => (window.canonicalFail = "network"));
       await effort().selectOption("high");
       await page.getByRole("button", { name: "Check settings save" }).waitFor();
-      const request = await page.evaluate(() => window.calls[0]);
+      const request = await page.evaluate(() => window.settingsCalls[0]);
       await page.reload();
       await page.waitForFunction(() => !!window.canonicalReset);
       await page
@@ -553,7 +553,10 @@ test("execution settings canonical browser", async ({ page }) => {
       );
       await page.getByRole("button", { name: "Check settings save" }).click();
       await value("max");
-      assert.deepEqual(await page.evaluate(() => window.calls[0]), request);
+      assert.deepEqual(
+        await page.evaluate(() => window.settingsCalls[0]),
+        request,
+      );
       assert.equal(
         await page.getByRole("button", { name: "Check settings save" }).count(),
         0,
@@ -672,9 +675,9 @@ test("execution settings canonical browser", async ({ page }) => {
         };
       });
       await account.selectOption("claude");
-      await page.waitForFunction(() => window.calls.length === 1);
+      await page.waitForFunction(() => window.settingsCalls.length === 1);
       assert.deepEqual(
-        await page.evaluate(() => window.calls[0]!.worker_defaults),
+        await page.evaluate(() => window.settingsCalls[0]!.worker_defaults),
         {
           account_key: "claude",
           model: "claude-opus-4-6",
@@ -782,10 +785,14 @@ test("execution settings canonical browser", async ({ page }) => {
       });
       await account.selectOption("");
       await page.waitForFunction(() =>
-        window.calls.some((call) => call.worker_defaults?.account_key === null),
+        window.settingsCalls.some(
+          (call) => call.worker_defaults?.account_key === null,
+        ),
       );
       const automaticSave = await page.evaluate(() =>
-        window.calls.find((call) => call.worker_defaults?.account_key === null),
+        window.settingsCalls.find(
+          (call) => call.worker_defaults?.account_key === null,
+        ),
       );
       assert.ok(automaticSave);
       assert.equal(automaticSave.worker_defaults!.account_key, null);
@@ -841,7 +848,9 @@ test("execution settings canonical browser", async ({ page }) => {
       await effort(true).selectOption("max");
       await value("medium", true);
       assert.equal(
-        await page.evaluate(() => window.calls[0]!.expected_account_key),
+        await page.evaluate(
+          () => window.settingsCalls[0]!.expected_account_key,
+        ),
         "default",
       );
       await page
@@ -885,9 +894,9 @@ test("execution settings canonical browser", async ({ page }) => {
       await page
         .locator('input[type="radio"][data-value="gpt-5.6-luna"]:visible')
         .click();
-      await page.waitForFunction(() => window.calls.length === 1);
+      await page.waitForFunction(() => window.settingsCalls.length === 1);
       assert.deepEqual(
-        await page.evaluate(() => window.calls[0]!.review_defaults),
+        await page.evaluate(() => window.settingsCalls[0]!.review_defaults),
         {
           model: "gpt-5.6-luna",
           effort: null,
@@ -908,9 +917,9 @@ test("execution settings canonical browser", async ({ page }) => {
         page.getByLabel("Default review reasoning", { exact: true }),
         "high",
       );
-      await page.waitForFunction(() => window.calls.length === 2);
+      await page.waitForFunction(() => window.settingsCalls.length === 2);
       assert.deepEqual(
-        await page.evaluate(() => window.calls[1]!.review_defaults),
+        await page.evaluate(() => window.settingsCalls[1]!.review_defaults),
         {
           model: "gpt-5.6-luna",
           effort: "high",
@@ -987,7 +996,9 @@ test("execution settings canonical browser", async ({ page }) => {
         .waitFor();
       await value("low");
       assert.equal(
-        await page.evaluate(() => window.calls[0]!.expected_account_key),
+        await page.evaluate(
+          () => window.settingsCalls[0]!.expected_account_key,
+        ),
         "default",
       );
       assert.equal(
@@ -1022,7 +1033,7 @@ test("execution settings canonical browser", async ({ page }) => {
         await page.getByRole("button", { name: "Check settings save" }).count(),
         0,
       );
-      assert.deepEqual(await page.evaluate(() => window.calls), []);
+      assert.deepEqual(await page.evaluate(() => window.settingsCalls), []);
       assert.deepEqual(
         await page.evaluate(() =>
           JSON.parse(
@@ -1060,7 +1071,9 @@ test("execution settings canonical browser", async ({ page }) => {
         .waitFor();
       assert.equal(await permission.isChecked(), true);
       assert.equal(
-        await page.evaluate(() => window.calls[0]!.expected_account_key),
+        await page.evaluate(
+          () => window.settingsCalls[0]!.expected_account_key,
+        ),
         "default",
       );
       await page.evaluate(() =>
@@ -1093,7 +1106,10 @@ test("execution settings canonical browser", async ({ page }) => {
       });
       await permission.click();
       await page.waitForFunction(() => window.refreshCount === 2);
-      assert.equal(await page.evaluate(() => window.calls[1]!.yolo_mode), true);
+      assert.equal(
+        await page.evaluate(() => window.settingsCalls[1]!.yolo_mode),
+        true,
+      );
       assert.equal(await permission.isChecked(), false);
     });
     expect(errors).toEqual([]);

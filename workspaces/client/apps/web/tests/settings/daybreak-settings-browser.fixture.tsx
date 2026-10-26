@@ -23,8 +23,8 @@ export type DaybreakReset = {
 
 declare global {
   interface Window {
-    calls: PostBody<"/api/conversation">[];
-    fail: "network" | "rejected" | null;
+    settingsCalls: PostBody<"/api/conversation">[];
+    daybreakFail: "network" | "rejected" | null;
     reply: Agent | null;
     refreshCount: number;
     retries: number;
@@ -94,8 +94,8 @@ const initialModels = [
   row("gpt-daybreak-blue-latest", ["daybreakBlue"]),
   row("gpt-daybreak-red-latest", ["daybreakRed"]),
 ];
-window.calls = [];
-window.fail = null;
+window.settingsCalls = [];
+window.daybreakFail = null;
 window.reply = null;
 window.refreshCount = 0;
 window.retries = 0;
@@ -113,11 +113,11 @@ window.fetch = async (input, options) => {
     });
   if (url != "/api/conversation") return nativeFetch(url, requestOptions);
   const request = fixturePostBody<"/api/conversation">(requestOptions?.body);
-  window.calls.push(request);
+  window.settingsCalls.push(request);
   if (window.hold)
     await new Promise<void>((resolve) => (window.release = resolve));
-  if (window.fail === "network") throw new TypeError("Connection lost");
-  if (window.fail === "rejected")
+  if (window.daybreakFail === "network") throw new TypeError("Connection lost");
+  if (window.daybreakFail === "rejected")
     return new Response(JSON.stringify({ error: "Mode not supported" }), {
       status: 422,
       headers: fixtureSchemaHeaders,
@@ -160,8 +160,8 @@ function Fixture() {
       setModels(options?.models || initialModels);
       setDefaults(!!options?.defaults);
       setMount((value) => value + 1);
-      window.calls = [];
-      window.fail = null;
+      window.settingsCalls = [];
+      window.daybreakFail = null;
       window.reply = null;
       window.hold = false;
       window.refreshCount = 0;
