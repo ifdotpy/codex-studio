@@ -38,8 +38,9 @@ test("Scroll restart", async () => {
         name: "scroll-restart",
         resolveId(id) {
           if (id === "/scroll-restart.fixture.tsx")
-            return new URL("./scroll-restart.fixture.tsx", import.meta.url)
-              .pathname;
+            return fileURLToPath(
+              new URL("./scroll-restart.fixture.tsx", import.meta.url),
+            );
         },
       },
     ],

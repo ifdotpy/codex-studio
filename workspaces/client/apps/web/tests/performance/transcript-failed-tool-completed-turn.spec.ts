@@ -22,10 +22,12 @@ test("failed tool limit remains visible in a completed turn @performance", async
   const { createFixtureViteServer: createServer } =
     await import("../playwright.ts");
   const cacheDir = await mkdtemp(join(tmpdir(), "studio-turn-limit-"));
-  const entry = new URL(
-    "./transcript-failed-tool-completed-turn.fixture.tsx",
-    import.meta.url,
-  ).pathname;
+  const entry = fileURLToPath(
+    new URL(
+      "./transcript-failed-tool-completed-turn.fixture.tsx",
+      import.meta.url,
+    ),
+  );
   const server = await createServer({
     configFile: false,
     root,

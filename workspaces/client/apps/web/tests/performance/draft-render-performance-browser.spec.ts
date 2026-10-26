@@ -29,10 +29,12 @@ test("Draft Render Performance Browser @performance", async ({
         name: "draft-fixture",
         resolveId(id) {
           if (id === "/draft-render-performance.fixture.tsx")
-            return new URL(
-              "./draft-render-performance.fixture.tsx",
-              import.meta.url,
-            ).pathname;
+            return fileURLToPath(
+              new URL(
+                "./draft-render-performance.fixture.tsx",
+                import.meta.url,
+              ),
+            );
         },
       },
     ],

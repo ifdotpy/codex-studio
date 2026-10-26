@@ -13,8 +13,9 @@ test("long history mounts a bounded viewport and preserves navigation and anchor
   const root = fileURLToPath(new URL("../..//", import.meta.url));
   const { createServer } = await import("vite");
   const cacheDir = await mkdtemp(join(tmpdir(), "studio-history-window-vite-"));
-  const entry = new URL("./history-window.fixture.tsx", import.meta.url)
-    .pathname;
+  const entry = fileURLToPath(
+    new URL("./history-window.fixture.tsx", import.meta.url),
+  );
   const server = await createServer({
     configFile: false,
     root,

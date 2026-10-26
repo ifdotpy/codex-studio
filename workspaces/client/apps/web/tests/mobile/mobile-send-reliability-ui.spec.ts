@@ -377,6 +377,7 @@ test("mobile-send-reliability-ui", async ({ browser }) => {
     );
     await page.reload();
     await input.waitFor();
+    await installSendHarness();
     await page.waitForFunction(
       (name) =>
         document.querySelector("#conversation-title")?.textContent?.trim() ===

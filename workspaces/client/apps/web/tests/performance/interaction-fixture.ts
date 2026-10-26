@@ -1,3 +1,4 @@
+import { fileURLToPath } from "node:url";
 import type { components } from "../../src/generated/api.ts";
 import type { PerformanceTranscriptItem as TranscriptWireItem } from "./performance-fixture.ts";
 import type { TranscriptPageResponse } from "../playwright.ts";
@@ -137,7 +138,9 @@ instance.setChats(
   })),
 );
 const scenario = await build({
-  entryPoints: [new URL("./interaction-scenario.ts", import.meta.url).pathname],
+  entryPoints: [
+    fileURLToPath(new URL("./interaction-scenario.ts", import.meta.url)),
+  ],
   bundle: true,
   write: false,
   format: "iife",

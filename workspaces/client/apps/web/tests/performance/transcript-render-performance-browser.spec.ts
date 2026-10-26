@@ -19,10 +19,9 @@ test("Transcript render performance @performance", async () => {
   const { createFixtureViteServer: createServer } =
     await import("../playwright.ts");
   const cacheDir = await mkdtemp(join(tmpdir(), "studio-render-audit-"));
-  const entry = new URL(
-    "./transcript-render-performance.fixture.tsx",
-    import.meta.url,
-  ).pathname;
+  const entry = fileURLToPath(
+    new URL("./transcript-render-performance.fixture.tsx", import.meta.url),
+  );
   const server = await createServer({
     configFile: false,
     root,

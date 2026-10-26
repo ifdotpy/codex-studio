@@ -1,3 +1,4 @@
+import { fileURLToPath } from "node:url";
 import type { components } from "../../src/generated/api.ts";
 import { build } from "esbuild";
 import { createFixtureViteServer as createServer } from "../playwright.ts";
@@ -23,8 +24,9 @@ test("Sidebar incremental rows and current callbacks @performance", async ({
   try {
     await build({
       entryPoints: [
-        new URL("./sidebar-incremental-render.fixture.tsx", import.meta.url)
-          .pathname,
+        fileURLToPath(
+          new URL("./sidebar-incremental-render.fixture.tsx", import.meta.url),
+        ),
       ],
       absWorkingDir: root,
       bundle: true,
