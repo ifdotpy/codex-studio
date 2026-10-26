@@ -8,7 +8,7 @@ const teardownUrl = new URL(
   import.meta.url,
 ).href;
 const auditUrl = new URL(
-  "../../../../client/apps/web/scripts/uiTeamScaleAudit.mjs",
+  "../../../../client/apps/web/scripts/uiTeamScaleAudit.ts",
   import.meta.url,
 ).href;
 

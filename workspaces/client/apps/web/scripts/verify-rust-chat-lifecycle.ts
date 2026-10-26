@@ -1,12 +1,134 @@
 #!/usr/bin/env node
 import assert from "node:assert/strict";
-import { createRequire } from "node:module";
+import type { Page, Request, Response } from "playwright";
+import type {
+  components,
+  AgentEntityDto,
+  JsonValue,
+} from "../src/generated/api.ts";
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
-import { dirname, isAbsolute, join, resolve } from "node:path";
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { isAbsolute, join, resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 
 import { SCALE_PROVIDER, requireScaleModel } from "./scaleVerifierHelpers.ts";
 
+type ApiSchemas = components["schemas"];
+type Options = {
+  [key: string]: string | boolean | undefined;
+  resume?: boolean;
+  help?: boolean;
+} & Partial<
+  Record<
+    "url" | "project" | "evidence-dir" | "profile-dir" | "model" | "chromium",
+    string
+  >
+>;
+type TrafficRecord = {
+  at: string;
+  method: string;
+  url: string;
+  observedMs?: number;
+  status?: number;
+  stage: string;
+  error?: string;
+  detail?: string | undefined;
+  review409Separately?: boolean;
+};
+type PageError = { at: string; stage: string; message: string };
+type StreamAbort = { at: string; url: string; error: string; stage: string };
+type AgentState = {
+  at: string;
+  seq: number;
+  status: AgentEntityDto["status"];
+  inFlight: AgentEntityDto["inFlight"];
+};
+type Traffic = {
+  requests: (TrafficRecord & { observedMs: number; status: number })[];
+  allRequests: TrafficRecord[];
+  failures: TrafficRecord[];
+  expectedStreamAborts: StreamAbort[];
+  pageErrors: PageError[];
+  agentStates: AgentState[];
+  stage: string;
+};
+type Stage = {
+  state?: string;
+  request?:
+    | JsonValue
+    | ApiSchemas["CreateLeadRequest"]
+    | ApiSchemas["ManagedMessageBody"]
+    | ApiSchemas["IdRequest"];
+  response?: unknown;
+  sentAt?: string | undefined;
+  navigation?: {
+    signal: string;
+    previousAgentId: unknown;
+    chatId: string | undefined;
+    observedAt: string;
+  };
+  confirmation?: string;
+  confirmedAt?: string;
+  status?: number | string | null | undefined;
+  inFlight?: AgentEntityDto["inFlight"];
+  seq?: number;
+  receipt?: unknown;
+  at?: string;
+  elapsedMs?: number;
+  ackElapsedMs?: number;
+  acknowledgedAt?: string;
+  text?: string;
+  observedAt?: string;
+  durationMs?: number;
+  revalidationSettleMs?: number;
+  revalidationSettleRequestCount?: number;
+  revalidationSettleRequestsByEndpoint?: Record<string, number>;
+  requestCount?: number;
+  requests?: TrafficRecord[];
+  requestsByEndpoint?: Record<string, number>;
+  failures?: TrafficRecord[];
+  http409Count?: number;
+  resources?: Awaited<ReturnType<typeof pageMetrics>>;
+  quietObservation?: Stage;
+};
+type Journal = {
+  version: number;
+  origin: string;
+  project: string | null;
+  model: string;
+  createdAt: string;
+  updatedAt?: string;
+  stages: {
+    create?: Stage;
+    prompt?: Stage;
+    answer?: Stage;
+    delete?: Stage;
+    terminal?: Stage;
+    idle?: Stage;
+    startup?: Stage;
+    receiptInspection?: Stage;
+  };
+  http: TrafficRecord[];
+  failures: TrafficRecord[];
+  expectedReply?: string;
+  chatId?: string;
+  messageId?: string;
+  projectPath?: string;
+  ownershipBaseline?: Awaited<ReturnType<typeof ownershipBaseline>>;
+  result?: string;
+  completedAt?: string;
+  summary?: Record<string, unknown>;
+  expectedStreamAborts?: StreamAbort[];
+  failure?: {
+    at: string;
+    stage: string;
+    message: string;
+    requestCount: number;
+    failures: TrafficRecord[];
+    pageErrors: PageError[];
+    expectedStreamAborts: StreamAbort[];
+    screenshot: string;
+  };
+};
 const DEFAULT_MODEL = SCALE_PROVIDER.model;
 const DEFAULT_EFFORT = SCALE_PROVIDER.effort;
 const EXPECTED_REPLY = "STUDIO_RUST_LUNA_OK";
@@ -38,12 +160,14 @@ const ACCEPTED_MESSAGE_RECEIPT_STATUSES = new Set([
   "sent",
 ]);
 
-export function isAcceptedMessageReceiptStatus(status) {
-  return ACCEPTED_MESSAGE_RECEIPT_STATUSES.has(status);
+export function isAcceptedMessageReceiptStatus(
+  status: string | null | undefined,
+) {
+  return ACCEPTED_MESSAGE_RECEIPT_STATUSES.has(status ?? "");
 }
 
-function argumentsFrom(argv) {
-  const options = {};
+function argumentsFrom(argv: string[]) {
+  const options: Options = {};
   for (let index = 0; index < argv.length; index += 1) {
     const value = argv[index];
     if (value === "--resume") {
@@ -54,7 +178,7 @@ function argumentsFrom(argv) {
       options.help = true;
       continue;
     }
-    if (!value.startsWith("--"))
+    if (!value?.startsWith("--"))
       throw new Error(`Unexpected argument: ${value}`);
     const key = value.slice(2);
     const next = argv[index + 1];
@@ -69,8 +193,8 @@ function argumentsFrom(argv) {
 function usage() {
   return [
     "Usage:",
-    "  node scripts/verify-rust-chat-lifecycle.mjs --url HTTPS_URL --project NAME_OR_PATH --evidence-dir DIR",
-    "  node scripts/verify-rust-chat-lifecycle.mjs --url HTTPS_URL --evidence-dir DIR --resume",
+    "  node scripts/verify-rust-chat-lifecycle.ts --url HTTPS_URL --project NAME_OR_PATH --evidence-dir DIR",
+    "  node scripts/verify-rust-chat-lifecycle.ts --url HTTPS_URL --evidence-dir DIR --resume",
     "",
     "Options:",
     "  --profile-dir DIR   Persistent Chromium profile (defaults to EVIDENCE_DIR/profile)",
@@ -80,16 +204,20 @@ function usage() {
   ].join("\n");
 }
 
-function readJournal(path) {
+// This evidence journal is written only by saveJournal in this verifier.
+function readJournal(path: string): Journal | null {
   try {
     return JSON.parse(readFileSync(path, "utf8"));
   } catch (error) {
-    if (error?.code === "ENOENT") return null;
-    throw new Error(`Cannot read journal ${path}: ${error.message}`);
+    if (error instanceof Error && "code" in error && error.code === "ENOENT")
+      return null;
+    throw new Error(
+      `Cannot read journal ${path}: ${error instanceof Error ? error.message : error}`,
+    );
   }
 }
 
-function saveJournal(path, journal) {
+function saveJournal(path: string, journal: Journal) {
   journal.updatedAt = new Date().toISOString();
   const tempPath = `${path}.next`;
   writeFileSync(tempPath, `${JSON.stringify(journal, null, 2)}\n`, {
@@ -99,17 +227,17 @@ function saveJournal(path, journal) {
   renameSync(tempPath, path);
 }
 
-function elapsed(start) {
+function elapsed(start: number) {
   return Math.round(performance.now() - start);
 }
 
-function ensureHttps(origin) {
+function ensureHttps(origin: string) {
   const url = new URL(origin);
   assert.equal(url.protocol, "https:", "The target URL must use HTTPS.");
   return url.origin;
 }
 
-function routePath(request) {
+function routePath(request: Request) {
   try {
     return new URL(request.url()).pathname;
   } catch {
@@ -117,7 +245,8 @@ function routePath(request) {
   }
 }
 
-function chatSelector(id) {
+function chatSelector(id: string | undefined) {
+  assert.ok(typeof id === "string", "Chat ID is missing.");
   assert.match(
     id,
     /^[A-Za-z0-9_-]+$/,
@@ -126,12 +255,12 @@ function chatSelector(id) {
   return `[data-chat="${id}"]`;
 }
 
-export function selectedChatRowSelector(id) {
+export function selectedChatRowSelector(id: string | undefined) {
   const row = chatSelector(id);
   return `${row}[aria-current="true"], ${row}[aria-current="page"]`;
 }
 
-function redactUrl(url) {
+function redactUrl(url: string) {
   const parsed = new URL(url);
   for (const key of parsed.searchParams.keys())
     if (/token|secret|auth|credential/i.test(key))
@@ -139,7 +268,7 @@ function redactUrl(url) {
   return parsed.href;
 }
 
-function redactValue(value) {
+function redactValue(value: JsonValue): JsonValue {
   if (Array.isArray(value)) return value.map(redactValue);
   if (!value || typeof value !== "object") return value;
   return Object.fromEntries(
@@ -152,7 +281,7 @@ function redactValue(value) {
   );
 }
 
-function apiRecord(response) {
+function apiRecord(response: Response) {
   const request = response.request();
   return {
     at: new Date().toISOString(),
@@ -163,26 +292,26 @@ function apiRecord(response) {
   };
 }
 
-function endpointCounts(requests) {
+function endpointCounts(requests: TrafficRecord[]) {
   return Object.fromEntries(
     requests.reduce((counts, request) => {
       const key = `${request.method} ${new URL(request.url).pathname}`;
       counts.set(key, (counts.get(key) || 0) + 1);
       return counts;
-    }, new Map()),
+    }, new Map<string, number>()),
   );
 }
 
-function failureCountsByStage(failures) {
+function failureCountsByStage(failures: TrafficRecord[]) {
   return Object.fromEntries(
     failures.reduce((counts, failure) => {
       counts.set(failure.stage, (counts.get(failure.stage) || 0) + 1);
       return counts;
-    }, new Map()),
+    }, new Map<string, number>()),
   );
 }
 
-function assertTrafficHealthy(traffic, journal) {
+function assertTrafficHealthy(traffic: Traffic, journal: Journal) {
   const unexpectedFailures = traffic.failures;
   const nonResetHttpErrors = unexpectedFailures.filter(
     (item) => item.status !== 409,
@@ -220,7 +349,7 @@ function assertTrafficHealthy(traffic, journal) {
   return reset409s;
 }
 
-async function jsonResponse(response) {
+async function jsonResponse<T>(response: Response): Promise<T | null> {
   try {
     return await response.json();
   } catch {
@@ -228,7 +357,7 @@ async function jsonResponse(response) {
   }
 }
 
-async function inspectReceipt(page, chatId, messageId) {
+async function inspectReceipt(page: Page, chatId: string, messageId: string) {
   const url = new URL("/api/messages/receipts", page.url());
   url.searchParams.set("agent", chatId);
   url.searchParams.set("ids", JSON.stringify([messageId]));
@@ -238,7 +367,7 @@ async function inspectReceipt(page, chatId, messageId) {
         credentials: "same-origin",
         signal: AbortSignal.timeout(timeoutMs),
       });
-      let body;
+      let body: ApiSchemas["MessageReceipts"] | null;
       try {
         body = await response.json();
       } catch {
@@ -251,20 +380,20 @@ async function inspectReceipt(page, chatId, messageId) {
   return result;
 }
 
-async function ownershipBaseline(page) {
+async function ownershipBaseline(page: Page) {
   const existingChatIds = await page
     .locator("[data-chat]")
     .evaluateAll((rows) =>
       rows.map((row) => row.getAttribute("data-chat")).filter(Boolean),
     );
   const pendingCreationIds = await page.evaluate(() => {
-    const ids = [];
+    const ids: string[] = [];
     for (let index = 0; index < localStorage.length; index += 1) {
       const key = localStorage.key(index);
       if (!key?.startsWith("codex-pending-creation:")) continue;
       const raw = localStorage.getItem(key);
       if (!raw) continue;
-      const request = JSON.parse(raw);
+      const request: ApiSchemas["CreateLeadRequest"] = JSON.parse(raw);
       if (typeof request?.id === "string" && request.id) ids.push(request.id);
     }
     return ids;
@@ -276,7 +405,7 @@ async function ownershipBaseline(page) {
   };
 }
 
-async function visibleAnswer(page) {
+async function visibleAnswer(page: Page) {
   const messages = page.locator(".message.assistant");
   const count = await messages.count();
   const visible = [];
@@ -289,7 +418,7 @@ async function visibleAnswer(page) {
   return visible.find((text) => text.includes(EXPECTED_REPLY)) || null;
 }
 
-async function promptAlreadyVisible(page) {
+async function promptAlreadyVisible(page: Page) {
   const prompts = page.locator(".message.user");
   const count = await prompts.count();
   for (let index = 0; index < count; index += 1) {
@@ -302,28 +431,44 @@ async function promptAlreadyVisible(page) {
   return false;
 }
 
-async function recordCreateNavigation(page, journal, journalPath) {
+async function recordCreateNavigation(
+  page: Page,
+  journal: Journal,
+  journalPath: string,
+) {
   const selectedRow = page.locator(selectedChatRowSelector(journal.chatId));
   await selectedRow.waitFor({ timeout: CHAT_ROW_TIMEOUT_MS });
+  assert.ok(journal.stages.create);
   journal.stages.create.navigation ||= {
     signal: "selected-chat-row",
-    previousAgentId: journal.stages.create.request?.previous || null,
+    previousAgentId:
+      (journal.stages.create.request &&
+      typeof journal.stages.create.request === "object" &&
+      !Array.isArray(journal.stages.create.request) &&
+      "previous" in journal.stages.create.request
+        ? journal.stages.create.request.previous
+        : null) || null,
     chatId: journal.chatId,
     observedAt: new Date().toISOString(),
   };
   saveJournal(journalPath, journal);
 }
 
-async function pageMetrics(page) {
+async function pageMetrics(page: Page) {
   return page.evaluate((maxRecordedResources) => {
-    const entries = performance.getEntriesByType("resource");
+    const entries = performance
+      .getEntriesByType("resource")
+      .filter(
+        (entry): entry is PerformanceResourceTiming =>
+          entry.entryType === "resource",
+      );
     const resources = entries.slice(-maxRecordedResources).map((entry) => ({
       name: new URL(entry.name, location.href).pathname,
       initiatorType: entry.initiatorType,
       durationMs: Math.round(entry.duration),
       transferSize: entry.transferSize || 0,
     }));
-    const memory = performance.memory;
+    const memory = "memory" in performance ? performance.memory : null;
     return {
       resourceCount: resources.length,
       totalResourceCount: entries.length,
@@ -331,8 +476,14 @@ async function pageMetrics(page) {
         (total, resource) => total + resource.transferSize,
         0,
       ),
-      jsHeapUsedBytes: memory?.usedJSHeapSize ?? null,
-      jsHeapLimitBytes: memory?.jsHeapSizeLimit ?? null,
+      jsHeapUsedBytes:
+        (memory && typeof memory === "object" && "usedJSHeapSize" in memory
+          ? memory.usedJSHeapSize
+          : null) ?? null,
+      jsHeapLimitBytes:
+        (memory && typeof memory === "object" && "jsHeapSizeLimit" in memory
+          ? memory.jsHeapSizeLimit
+          : null) ?? null,
       domNodeCount: document.getElementsByTagName("*").length,
       resources,
     };
@@ -362,7 +513,7 @@ async function main() {
     options["profile-dir"] || join(evidenceDir, "profile"),
   );
   const journalPath = join(evidenceDir, "rust-chat-lifecycle.json");
-  const journal = readJournal(journalPath) || {
+  const journal: Journal = readJournal(journalPath) || {
     version: 1,
     origin,
     project: options.project || null,
@@ -391,7 +542,7 @@ async function main() {
     options.resume &&
     (!journal.chatId ||
       !journal.stages.create ||
-      !["sent", "confirmed"].includes(journal.stages.create.state))
+      !["sent", "confirmed"].includes(journal.stages.create.state ?? ""))
   )
     throw new Error(
       "Resume requires a journaled create request for the exact chat ID; an ID alone does not prove ownership.",
@@ -418,12 +569,7 @@ async function main() {
   mkdirSync(profileDir, { recursive: true, mode: 0o700 });
   saveJournal(journalPath, journal);
 
-  const webPackage = resolve(
-    dirname(fileURLToPath(import.meta.url)),
-    "../package.json",
-  );
-  const require = createRequire(webPackage);
-  const { chromium } = require("playwright");
+  const { chromium } = await import("playwright");
   const executablePath =
     options.chromium || process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE || undefined;
   const context = await chromium.launchPersistentContext(profileDir, {
@@ -435,7 +581,7 @@ async function main() {
   const page = context.pages()[0] || (await context.newPage());
   page.setDefaultTimeout(ACTION_TIMEOUT_MS);
   page.setDefaultNavigationTimeout(NAVIGATION_TIMEOUT_MS);
-  const traffic = {
+  const traffic: Traffic = {
     requests: [],
     allRequests: [],
     failures: [...journal.http, ...journal.failures],
@@ -470,7 +616,7 @@ async function main() {
     if (response.status() >= 400) {
       let detail;
       try {
-        const body = await response.json();
+        const body: ApiSchemas["ErrorResponse"] = await response.json();
         if (typeof body.error === "string") detail = body.error.slice(0, 1500);
       } catch {}
       const failure = {
@@ -487,11 +633,17 @@ async function main() {
       response.status() < 400
     ) {
       try {
-        const body = await response.json();
+        const body: ApiSchemas["SyncPullResponse"] = await response.json();
         for (const document of body.documents || []) {
-          if (document._deleted || typeof document.payload !== "string")
+          if (
+            !("payload" in document) ||
+            document._deleted ||
+            typeof document.payload !== "string"
+          )
             continue;
-          const entity = JSON.parse(document.payload);
+          const entity: ApiSchemas["SyncEntityPayload"] = JSON.parse(
+            document.payload,
+          );
           if (entity.collection !== "agent" || entity.id !== journal.chatId)
             continue;
           traffic.agentStates.push({
@@ -532,7 +684,9 @@ async function main() {
 
   await page.route("**/api/leads", async (route) => {
     if (route.request().method() !== "POST") return route.continue();
-    const body = route.request().postDataJSON();
+    const body: ApiSchemas["CreateLeadRequest"] = route
+      .request()
+      .postDataJSON();
     assert.equal(
       body.account_key,
       SCALE_PROVIDER.accountKey,
@@ -591,7 +745,9 @@ async function main() {
   });
   await page.route("**/api/messages", async (route) => {
     if (route.request().method() !== "POST") return route.continue();
-    const body = route.request().postDataJSON();
+    const body: ApiSchemas["ManagedMessageBody"] = route
+      .request()
+      .postDataJSON();
     assert.equal(
       journal.model,
       SCALE_PROVIDER.model,
@@ -612,7 +768,7 @@ async function main() {
   });
   await page.route("**/api/conversation/delete", async (route) => {
     if (route.request().method() !== "POST") return route.continue();
-    const body = route.request().postDataJSON();
+    const body: ApiSchemas["IdRequest"] = route.request().postDataJSON();
     if (body.id !== journal.chatId)
       throw new Error("Refused to delete a chat outside this lifecycle.");
     if (
@@ -732,7 +888,7 @@ async function main() {
       }
     } else {
       traffic.stage = "create";
-      const catalog = await page.evaluate(
+      const catalog: ApiSchemas["ModelCatalogResponse"] = await page.evaluate(
         async ({ account, timeoutMs }) => {
           const response = await fetch(
             `/api/models?account_key=${encodeURIComponent(account)}`,
@@ -770,7 +926,7 @@ async function main() {
         projectPath,
         `Project ${options.project} was not found in the UI or has no project path.`,
       );
-      if (isAbsolute(options.project))
+      if (options.project && isAbsolute(options.project))
         assert.equal(
           projectPath,
           options.project,
@@ -876,7 +1032,7 @@ async function main() {
         .getByRole("button", { name: "Start chat", exact: true })
         .click();
       const response = await createResponse;
-      const body = await jsonResponse(response);
+      const body = await jsonResponse<ApiSchemas["AgentEntityDto"]>(response);
       assert.equal(
         response.status(),
         200,
@@ -928,7 +1084,10 @@ async function main() {
         .getByRole("button", { name: "Send message", exact: true })
         .click();
       const response = await messageResponse;
-      const body = await jsonResponse(response);
+      const body =
+        await jsonResponse<
+          ApiSchemas["studio_api__work__models__MessageReceipt"]
+        >(response);
       assert.equal(
         response.status(),
         200,
@@ -939,6 +1098,7 @@ async function main() {
         journal.messageId,
         "Message receipt did not confirm the exact submitted ID.",
       );
+      assert.ok(body, "Message response has no body.");
       assert.ok(
         !body.room || body.room === journal.chatId,
         "Message receipt belongs to another room.",
@@ -952,7 +1112,7 @@ async function main() {
         `Message receipt did not confirm acceptance (status ${body.status}).`,
       );
       journal.stages.prompt = {
-        ...journal.stages.prompt,
+        ...Object.assign<Stage, Stage | undefined>({}, journal.stages.prompt),
         state: "accepted",
         receipt: body,
         ackElapsedMs: elapsed(promptStarted),
@@ -1001,7 +1161,7 @@ async function main() {
     let terminalState = latestAgentState();
     while (
       (!terminalState ||
-        !["idle", "completed"].includes(terminalState.status) ||
+        !["idle", "completed"].includes(terminalState.status ?? "") ||
         terminalState.inFlight !== false ||
         terminalState.at < promptSentAt) &&
       elapsed(terminalStarted) < TERMINAL_STATE_TIMEOUT_MS
@@ -1011,7 +1171,7 @@ async function main() {
     }
     assert.ok(
       terminalState &&
-        ["idle", "completed"].includes(terminalState.status) &&
+        ["idle", "completed"].includes(terminalState.status ?? "") &&
         terminalState.inFlight === false &&
         terminalState.at >= promptSentAt,
       "No post-prompt sync state confirmed the agent idle or completed with inFlight=false.",
@@ -1075,7 +1235,7 @@ async function main() {
         .getByRole("button", { name: "Delete chat", exact: true })
         .click();
       const response = await deleteResponse;
-      const body = await jsonResponse(response);
+      const body = await jsonResponse<ApiSchemas["DeletedResponse"]>(response);
       assert.equal(
         response.status(),
         200,
@@ -1086,7 +1246,7 @@ async function main() {
           ? [body.deleted]
           : body?.deleted || [];
       assert.ok(
-        deleted.includes(journal.chatId),
+        deleted.some((id) => id === journal.chatId),
         "Delete response did not confirm this chat ID.",
       );
       await page.locator(chatSelector(journal.chatId)).waitFor({
@@ -1161,7 +1321,7 @@ async function main() {
     journal.failure = {
       at: new Date().toISOString(),
       stage: traffic.stage,
-      message: String(error?.stack || error),
+      message: String(error instanceof Error ? error.stack : error),
       requestCount: traffic.requests.length,
       failures: traffic.failures,
       pageErrors: traffic.pageErrors,
@@ -1184,7 +1344,7 @@ async function main() {
 
 if (import.meta.url === pathToFileURL(process.argv[1] || "").href) {
   main().catch((error) => {
-    process.stderr.write(`${error?.stack || error}\n`);
+    process.stderr.write(`${error instanceof Error ? error.stack : error}\n`);
     process.exitCode = 1;
   });
 }

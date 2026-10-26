@@ -331,7 +331,7 @@ composite actions. Heavy and load checks remain outside hosted CI.
 
 ## Live UI team acceptance
 
-`workspaces/client/apps/web/scripts/verify-ui-team-scale.mjs` drives a live Studio
+`workspaces/client/apps/web/scripts/verify-ui-team-scale.ts` drives a live Studio
 backend through headless Chromium: it creates a lead chat in the dialog, types one
 prompt, and measures agent visibility, UI responsiveness, API latency, SQLite lock
 counters and process load while the team runs. It deletes the chat and its agents
@@ -345,7 +345,7 @@ required transfers make the audit inconclusive and fail the run. Cleanup reports
 agents and owned processes separately from the unverified owned-thread boundary.
 It is a manual, announced live run, outside every test tier. A small run:
 `PLAYWRIGHT_BROWSERS_PATH=~/.cache/ms-playwright node
-workspaces/client/apps/web/scripts/verify-ui-team-scale.mjs --workers 3`; `--help`
+workspaces/client/apps/web/scripts/verify-ui-team-scale.ts --workers 3`; `--help`
 lists the options. Evidence goes to a directory outside the checkout.
 
 Both scale verifiers keep their signal handlers active until teardown settles.
@@ -358,7 +358,7 @@ evidence write still permits the UI verifier's single conversation-delete
 attempt, and in-flight audit reads settle before deletion. Offline signal and
 stub-API coverage runs in the short tooling tier.
 
-Before the cleanup, a strict audit (`scripts/uiTeamScaleAudit.mjs`) reads the
+Before the cleanup, a strict audit (`scripts/uiTeamScaleAudit.ts`) reads the
 lead and worker transcripts, the lead's tool requests, the backend journal of the
 run window (`journalctl --user --unit codex-studio`, `--journal-unit` changes it)
 and diagnostics counters. The run fails on a failed or interrupted turn, a worker

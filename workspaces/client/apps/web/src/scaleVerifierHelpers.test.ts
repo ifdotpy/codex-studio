@@ -8,7 +8,7 @@ import type {
 import {
   auditTeamDiagnostics,
   pendingTeamInputs,
-} from "../scripts/uiTeamScaleAudit.mjs";
+} from "../scripts/uiTeamScaleAudit.ts";
 import { mkdirSync, mkdtempSync, realpathSync, writeFileSync } from "node:fs";
 import { spawn, spawnSync } from "node:child_process";
 import { DatabaseSync } from "node:sqlite";
