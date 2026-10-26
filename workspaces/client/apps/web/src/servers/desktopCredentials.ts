@@ -11,43 +11,12 @@ import {
 } from "./pairing";
 import { serverViewId } from "./environment";
 import type { DesktopBridge } from "../desktop";
-export type CredentialRequest = {
-  action:
-    | "pair"
-    | "pairApproved"
-    | "request"
-    | "summary"
-    | "cancel"
-    | "forget"
-    | "pairAttempt";
-  approval?: AutomaticPairApproval;
-  serverId?: string;
-  credentialId?: string;
-  origin?: string;
-  invitation?: unknown;
-  inviteId?: string;
-  requestId?: string;
-  url?: string;
-  method?: string;
-  headers?: [string, string][];
-  body?: ArrayBuffer;
-  streamId?: string;
-  frameOwner?: string;
-};
-export type CredentialResponse = {
-  status: number;
-  statusText: string;
-  headers: [string, string][];
-  body?: ArrayBuffer;
-  streamId?: string;
-};
-export type StreamChunk = {
-  serverId: string;
-  streamId: string;
-  bytes?: ArrayBuffer;
-  done?: boolean;
-  error?: string;
-};
+export type {
+  CredentialRequest,
+  CredentialResponse,
+  StreamChunk,
+} from "../../../desktop/api.ts";
+import type { CredentialResponse, StreamChunk } from "../../../desktop/api.ts";
 export class DesktopServerCredentials implements ServerCredentialAdapter {
   constructor(private bridge: DesktopBridge) {}
   async hasPairAttempt(attempt: PairAttemptIdentity): Promise<boolean> {

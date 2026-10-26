@@ -41,7 +41,7 @@ rename to Codex Studio. The bundle identifier and state paths stay unchanged.
 
 People see the name LAYR Studio. The runtime identities keep the name Codex
 Studio: the bundle file `Codex Studio.app`, its executable, the bundle
-identifier, and the Electron app name in `main.cjs`. Electron names the macOS
+identifier, and the Electron app name in `main.ts`. Electron names the macOS
 Keychain item `<app name> Safe Storage` from the app name. That item encrypts
 the saved server credentials, so a new app name would lose them. `CFBundleName`
 in `Info.plist` also stays: Electron finds its helper apps as

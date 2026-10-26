@@ -821,7 +821,7 @@ export function gateSteps(root, name) {
       lane: "js",
     })),
     nodeTest("retained-helpers", "retained Python helper boundaries", [
-      "workspaces/client/apps/desktop/retained-helper-witness.test.cjs",
+      "workspaces/client/apps/desktop/retained-helper-witness.test.ts",
     ]),
     nodeTest("mac-sync", "Mac sync chunk read witness", [
       "workspaces/runtime/apps/vm-guest/mac-sync-witness.test.mjs",
@@ -830,7 +830,7 @@ export function gateSteps(root, name) {
       "workspaces/client/apps/native/check-native.test.mjs",
     ]),
     nodeTest("recovery-helpers", "Rust desktop recovery witnesses", [
-      "workspaces/client/apps/desktop/recovery-helper-witness.test.cjs",
+      "workspaces/client/apps/desktop/recovery-helper-witness.test.ts",
     ]),
     nodeTest("retired-server", "retired server action witness", [
       "workspaces/tooling/apps/repository-checks/tests/retired-server-action.test.mjs",

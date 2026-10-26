@@ -1,21 +1,35 @@
-const fs = require("node:fs");
-const path = require("node:path");
-const os = require("node:os");
-const { createHash } = require("node:crypto");
-const { spawn } = require("node:child_process");
-const { savedLaunchEnvironment } = require("./restart-environment.cjs");
-// Desktop wire contract; Rust startup.rs is checked for parity in backend.test.mjs.
+import type { components } from "../web/src/generated/api.ts";
+export type BackendIdentity = Pick<
+  components["schemas"]["DesktopResponse"],
+  "application" | "backendBuild" | "pid" | "protocol" | "stateDir"
+> &
+  Partial<components["schemas"]["DesktopResponse"]> & { backendKind?: unknown };
+import * as fs from "node:fs";
+import * as path from "node:path";
+import * as os from "node:os";
+import { createHash } from "node:crypto";
+import { spawn } from "node:child_process";
+import { savedLaunchEnvironment } from "./restart-environment.ts";
+// Desktop wire contract; Rust startup.rs is checked for parity in backend.test.ts.
 const desktopProtocolVersion = 1;
 const backendBuildHexLength = 64;
-const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
-function backendExitStatus(child) {
+function backendExitStatus(
+  child: Pick<
+    import("node:child_process").ChildProcess,
+    "exitCode" | "signalCode"
+  >,
+) {
   if (child.exitCode !== null) return child.exitCode;
   if (child.signalCode !== null) return child.signalCode;
   return null;
 }
 
-function runtimeServer(resources, env = process.env) {
+function runtimeServer(
+  resources: string,
+  env: NodeJS.ProcessEnv = process.env,
+) {
   const configured = env.CODEX_RUNTIME_SERVER;
   const candidates = configured
     ? [configured]
@@ -28,14 +42,14 @@ function runtimeServer(resources, env = process.env) {
             : "studio-runtime-server",
         ),
         path.join(
-          __dirname,
+          import.meta.dirname,
           "../../../../target/release",
           process.platform === "win32"
             ? "studio-runtime-server.exe"
             : "studio-runtime-server",
         ),
         path.join(
-          __dirname,
+          import.meta.dirname,
           "../../../../target/debug",
           process.platform === "win32"
             ? "studio-runtime-server.exe"
@@ -56,7 +70,10 @@ function runtimeServer(resources, env = process.env) {
   );
 }
 
-function runtimeServerBuild(resources, env = process.env) {
+function runtimeServerBuild(
+  resources: string,
+  env: NodeJS.ProcessEnv = process.env,
+) {
   const file = runtimeServer(resources, env);
   const descriptor = fs.openSync(file, "r");
   try {
@@ -74,17 +91,23 @@ function runtimeServerBuild(resources, env = process.env) {
   }
 }
 
-function backendBuild(resources, env = process.env) {
+function backendBuild(resources: string, env: NodeJS.ProcessEnv = process.env) {
   return runtimeServerBuild(resources, env);
 }
-function updateStatus(resources, running, env = process.env) {
+function updateStatus(
+  resources: string,
+  running: Pick<BackendIdentity, "backendBuild">,
+  env: NodeJS.ProcessEnv = process.env,
+) {
   let availableBackendBuild;
   try {
     availableBackendBuild = backendBuild(resources, env);
-  } catch (error) {
+  } catch (caughterror) {
+    if (!(caughterror instanceof Error)) throw caughterror;
+    const error: NodeJS.ErrnoException = caughterror;
     console.error(
       "Cannot compute the installed backend identity:",
-      error.stderr?.toString().trim() || error.message,
+      ("stderr" in error ? String(error.stderr).trim() : "") || error.message,
     );
     return { availableBackendBuild: null, updateRequired: null };
   }
@@ -93,7 +116,7 @@ function updateStatus(resources, running, env = process.env) {
     updateRequired: running.backendBuild !== availableBackendBuild,
   };
 }
-function stateDirectory(env = process.env) {
+function stateDirectory(env: NodeJS.ProcessEnv = process.env) {
   return path.resolve(
     env.CODEX_AGENTS_STATE_DIR ||
       path.join(
@@ -102,7 +125,7 @@ function stateDirectory(env = process.env) {
       ),
   );
 }
-function executable(name, env = process.env) {
+function executable(name: string, env: NodeJS.ProcessEnv = process.env) {
   const configured = name === "codex" ? env.CODEX_BIN : undefined;
   const candidates = configured
     ? [configured]
@@ -122,18 +145,23 @@ function executable(name, env = process.env) {
   );
 }
 async function identity(
-  origin,
-  state,
+  origin: string,
+  state: string,
   {
     attemptTimeoutMs = 5000,
     timeoutMs = 15000,
     retryDelayMs = 200,
     expectedBackendBuild,
+  }: {
+    attemptTimeoutMs?: number;
+    timeoutMs?: number;
+    retryDelayMs?: number;
+    expectedBackendBuild?: string;
   } = {},
 ) {
   const deadline = performance.now() + timeoutMs;
   let uncertain = false;
-  let response, data;
+  let response: Response, data: BackendIdentity;
   for (;;) {
     const remaining = Math.max(1, Math.ceil(deadline - performance.now()));
     const signal = AbortSignal.timeout(Math.min(attemptTimeoutMs, remaining));
@@ -144,15 +172,24 @@ async function identity(
       });
       try {
         data = await response.json();
-      } catch (error) {
+      } catch (caughterror) {
+        if (!(caughterror instanceof Error)) throw caughterror;
+        const error: NodeJS.ErrnoException = caughterror;
         if (signal.aborted) throw error;
         throw new Error(
           "Port is occupied by an incompatible server. Update or stop that server first.",
         );
       }
       break;
-    } catch (error) {
-      const refused = error.cause?.code === "ECONNREFUSED";
+    } catch (caughterror) {
+      if (!(caughterror instanceof Error)) throw caughterror;
+      const error: NodeJS.ErrnoException = caughterror;
+      const cause = error.cause;
+      const refused =
+        !!cause &&
+        typeof cause === "object" &&
+        "code" in cause &&
+        cause.code === "ECONNREFUSED";
       if (refused && !uncertain) return null;
       if (!signal.aborted && !refused)
         throw new Error(`Cannot verify the local backend: ${error.message}`);
@@ -192,14 +229,24 @@ async function identity(
   process.kill(data.pid, 0);
   return data;
 }
-async function ensureBackend({ resources, port = 4620, env = process.env }) {
+async function ensureBackend({
+  resources,
+  port = 4620,
+  env = process.env,
+}: {
+  resources: string;
+  port?: number;
+  env?: NodeJS.ProcessEnv;
+}) {
   if (!Number.isInteger(port) || port < 1024 || port > 65535)
     throw new Error("Backend port must be between 1024 and 65535.");
   const state = stateDirectory(env);
   fs.mkdirSync(state, { recursive: true });
   const canonicalState = fs.realpathSync(state);
   let persistedSupervisorMode = false;
-  let saved = {};
+  let saved: import("./restart-environment.ts").SavedEnvironment & {
+    supervisorEnabled?: unknown;
+  } = {};
   try {
     saved = JSON.parse(
       fs.readFileSync(
@@ -213,7 +260,9 @@ async function ensureBackend({ resources, port = 4620, env = process.env }) {
     )
       throw new Error("The saved supervisor setting is invalid.");
     persistedSupervisorMode = saved.supervisorEnabled === true;
-  } catch (error) {
+  } catch (caughterror) {
+    if (!(caughterror instanceof Error)) throw caughterror;
+    const error: NodeJS.ErrnoException = caughterror;
     if (error.code !== "ENOENT") throw error;
   }
   const supervisorMode =
@@ -278,7 +327,7 @@ async function ensureBackend({ resources, port = 4620, env = process.env }) {
   } finally {
     fs.closeSync(fd);
   }
-  let failure;
+  let failure: Error | undefined;
   child.on("error", (error) => {
     failure = error;
   });
@@ -312,7 +361,7 @@ async function ensureBackend({ resources, port = 4620, env = process.env }) {
     `Backend startup has not completed. Read ${log}. The process is ${child.pid}.`,
   );
 }
-module.exports = {
+export {
   ensureBackend,
   identity,
   executable,

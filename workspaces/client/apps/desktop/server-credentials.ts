@@ -1,7 +1,36 @@
-const fs = require("node:fs/promises");
-const path = require("node:path");
-const crypto = require("node:crypto");
-function serveOrigin(value) {
+import type { components } from "../web/src/generated/api.ts";
+import type { SafeStorage } from "electron";
+import type { ServerRequest, PairRequest } from "./api.ts";
+export type Invitation = components["schemas"]["AccessInvitation"];
+export type PairReceipt = {
+  id: string;
+  origin: string;
+  label: string;
+  credentialId: string;
+};
+export type PairInput = PairRequest;
+type Draft = {
+  origin: string;
+  serverId: string;
+  clientId: string;
+  inviteId: string;
+  publicKey: string;
+  privateKey?: string | undefined;
+  body?: string | undefined;
+  receipt?: PairReceipt;
+  rejected?: boolean;
+  targetPublicKey?: string;
+  tailscaleUser?: string;
+};
+type CredentialState = {
+  drafts: Record<string, Draft>;
+  servers: Record<string, Draft>;
+};
+export type CredentialFetch = (request: Request) => Promise<Response>;
+import * as fs from "node:fs/promises";
+import * as path from "node:path";
+import * as crypto from "node:crypto";
+function serveOrigin(value: string) {
   const url = new URL(value);
   if (
     url.protocol !== "https:" ||
@@ -17,14 +46,14 @@ function serveOrigin(value) {
   return url.origin;
 }
 function canonicalRequest(
-  method,
-  target,
-  serverId,
-  clientId,
-  timestamp,
-  nonce,
-  requestId,
-  bytes,
+  method: string,
+  target: string,
+  serverId: string,
+  clientId: string,
+  timestamp: string,
+  nonce: string,
+  requestId: string,
+  bytes: Parameters<import("node:crypto").Hash["update"]>[0],
 ) {
   return [
     "studio-multi-server-v1",
@@ -42,10 +71,21 @@ function createServerCredentials({
   profile,
   safeStorage,
   fetchRequest = fetch,
+}: {
+  profile: string;
+  safeStorage: Pick<
+    SafeStorage,
+    "isEncryptionAvailable" | "encryptString" | "decryptString"
+  > &
+    Partial<Pick<SafeStorage, "getSelectedStorageBackend">>;
+  fetchRequest?: CredentialFetch;
 }) {
   const filename = path.join(profile, "paired-servers.json");
-  let writing = Promise.resolve();
-  const pairing = new Map();
+  let writing: Promise<unknown> = Promise.resolve();
+  const pairing = new Map<
+    string,
+    { identity: string; promise: Promise<PairReceipt> }
+  >();
   function secure() {
     if (
       !safeStorage.isEncryptionAvailable() ||
@@ -55,11 +95,13 @@ function createServerCredentials({
         "Secure key storage is unavailable. Enable the system key store before pairing.",
       );
   }
-  async function read() {
+  async function read(): Promise<CredentialState> {
     let encrypted;
     try {
       encrypted = await fs.readFile(filename, "utf8");
-    } catch (error) {
+    } catch (caughterror) {
+      if (!(caughterror instanceof Error)) throw caughterror;
+      const error: NodeJS.ErrnoException = caughterror;
       if (error.code === "ENOENT") return { drafts: {}, servers: {} };
       throw error;
     }
@@ -68,7 +110,7 @@ function createServerCredentials({
       safeStorage.decryptString(Buffer.from(encrypted, "base64")),
     );
   }
-  function change(update) {
+  function change<T>(update: (state: CredentialState) => T | Promise<T>) {
     const work = writing.then(async () => {
       const state = await read();
       secure();
@@ -90,7 +132,11 @@ function createServerCredentials({
     writing = work.catch(() => {});
     return work;
   }
-  async function signed(credential, request, requestId) {
+  async function signed(
+    credential: Draft,
+    request: Request,
+    requestId: string,
+  ) {
     const url = new URL(request.url);
     if (url.origin !== credential.origin || !url.pathname.startsWith("/api/"))
       throw new Error("The request does not belong to this server.");
@@ -123,7 +169,7 @@ function createServerCredentials({
               bytes,
             ),
           ),
-          credential.privateKey,
+          credential.privateKey ?? "",
         )
         .toString("base64"),
     );
@@ -132,7 +178,17 @@ function createServerCredentials({
     );
   }
   return {
-    async hasPairAttempt({ origin, serverId, requestId, inviteId }) {
+    async hasPairAttempt({
+      origin,
+      serverId,
+      requestId,
+      inviteId,
+    }: {
+      origin: string;
+      serverId: string;
+      requestId: string;
+      inviteId?: string | undefined;
+    }) {
       origin = serveOrigin(origin);
       const state = await read();
       const draft = state.drafts[requestId];
@@ -147,7 +203,7 @@ function createServerCredentials({
         );
       return !!draft.receipt || (!draft.rejected && !!draft.body);
     },
-    pair(inputValue) {
+    pair(inputValue: PairInput) {
       const identity = JSON.stringify(inputValue);
       const existing = pairing.get(inputValue.requestId);
       if (existing) {
@@ -163,17 +219,30 @@ function createServerCredentials({
         let { origin } = inputValue;
         const { invitation: input, requestId } = inputValue;
         origin = serveOrigin(origin);
-        const invitation = input.invitation || input;
+        const raw =
+          input && typeof input === "object" && "invitation" in input
+            ? input.invitation
+            : input;
+        if (!raw || typeof raw !== "object")
+          throw new Error("The pairing invitation is invalid.");
+        const invitation = raw as Record<string, unknown>;
         if (
           invitation.protocol !== 1 ||
+          typeof invitation.inviteId !== "string" ||
           !invitation.inviteId ||
+          typeof invitation.token !== "string" ||
           !invitation.token ||
+          typeof invitation.serverId !== "string" ||
           !invitation.serverId ||
           invitation.serverId === "local" ||
+          typeof invitation.publicKey !== "string" ||
           !invitation.publicKey ||
+          typeof invitation.origin !== "string" ||
           serveOrigin(invitation.origin) !== origin
         )
           throw new Error("The pairing invitation is invalid.");
+        const serverId = invitation.serverId,
+          inviteId = invitation.inviteId;
         const draft = await change((state) => {
           if (state.drafts[requestId]) {
             const existing = state.drafts[requestId];
@@ -194,7 +263,7 @@ function createServerCredentials({
             .toString();
           const body = JSON.stringify({
             protocol: 1,
-            inviteId: invitation.inviteId,
+            inviteId,
             token: invitation.token,
             clientId,
             label: "Studio UI",
@@ -202,11 +271,11 @@ function createServerCredentials({
             publicKey,
             requestId,
           });
-          const value = {
+          const value: Draft = {
             origin,
-            serverId: invitation.serverId,
+            serverId,
             clientId,
-            inviteId: invitation.inviteId,
+            inviteId,
             publicKey,
             privateKey: keys.privateKey
               .export({ type: "pkcs8", format: "pem" })
@@ -221,21 +290,26 @@ function createServerCredentials({
           draft,
           new Request(origin + "/api/multi-server/v1/pair", {
             method: "POST",
-            body: draft.body,
+            body: draft.body ?? null,
             headers: { "Content-Type": "application/json" },
             signal: AbortSignal.timeout(15000),
           }),
           requestId,
         );
-        const value = await response.json();
+        const value: components["schemas"]["DevicePairResponse"] & {
+          error?: string;
+          code?: string;
+        } = await response.json();
         if (!response.ok) {
-          const error = new Error(
+          const error: NodeJS.ErrnoException = new Error(
             value.error ||
               `Pairing failed (${response.status}). Retry the same invitation.`,
           );
           if (response.status === 403 && value.code === "invite_unavailable") {
             await change((state) => {
-              state.drafts[requestId].rejected = true;
+              const current = state.drafts[requestId];
+              if (!current) throw error;
+              current.rejected = true;
             });
             error.code = "invite_unavailable";
           }
@@ -256,7 +330,10 @@ function createServerCredentials({
         const receipt = {
           id: value.serverId,
           origin,
-          label: value.label || invitation.label || new URL(origin).hostname,
+          label:
+            value.label ||
+            (typeof invitation.label === "string" ? invitation.label : "") ||
+            new URL(origin).hostname,
           credentialId: draft.clientId,
         };
         await change((state) => {
@@ -278,7 +355,7 @@ function createServerCredentials({
       pairing.set(inputValue.requestId, { identity, promise });
       return promise;
     },
-    async owns(serverId) {
+    async owns(serverId: string) {
       return !!(await read()).servers[serverId];
     },
     async request(
@@ -287,11 +364,11 @@ function createServerCredentials({
         credentialId,
         url,
         method = "GET",
-        headers = {},
+        headers = [],
         body,
         requestId,
-      },
-      signal,
+      }: ServerRequest,
+      signal: AbortSignal,
     ) {
       const credential = (await read()).servers[serverId];
       if (!credential || credential.clientId !== credentialId)
@@ -317,7 +394,7 @@ function createServerCredentials({
         requestId,
       );
     },
-    async forget(serverId) {
+    async forget(serverId: string) {
       await change((state) => {
         delete state.servers[serverId];
         for (const [id, row] of Object.entries(state.drafts))
@@ -326,4 +403,4 @@ function createServerCredentials({
     },
   };
 }
-module.exports = { createServerCredentials, canonicalRequest, serveOrigin };
+export { createServerCredentials, canonicalRequest, serveOrigin };
