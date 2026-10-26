@@ -1,11 +1,11 @@
-import { waitForFile } from "./testing/file-signals.mjs";
+import { waitForFile } from "./testing/file-signals.ts";
 // Preserve the Stop receipt contracts after removal of the Python bridge tests.
 import { afterEach, test } from "vitest";
 import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import { existsSync } from "node:fs";
 import path from "node:path";
-import { startBridge } from "./testing/bridge-harness.mjs";
+import { startBridge } from "./testing/bridge-harness.ts";
 
 const SDK = String.raw`
 import fs from 'node:fs';

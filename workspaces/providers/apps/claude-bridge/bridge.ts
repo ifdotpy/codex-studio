@@ -1,5 +1,5 @@
 import { ResponseUsage, cumulativeUsage } from "./usage.mjs";
-import { isThreadSerialized } from "./provider-method-policy.generated.mjs";
+import { isThreadSerialized } from "./provider-method-policy.generated.ts";
 import {
   cacheReport,
   idleRefusal,
@@ -31,10 +31,10 @@ import {
   inputGroups,
   sdkInputMessages,
   nativeInputIds,
-} from "./input-messages.mjs";
+} from "./input-messages.ts";
 // Claude Agent SDK adapter for Studio's existing local session protocol.
-import { interruptInputQueue } from "./stop-inputs.mjs";
-import { browserEnvironment } from "./browser-environment.mjs";
+import { interruptInputQueue } from "./stop-inputs.ts";
+import { browserEnvironment } from "./browser-environment.ts";
 import {
   query,
   resolveSettings,
@@ -64,9 +64,9 @@ import { createInterface } from "node:readline";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { stripVTControlCharacters } from "node:util";
-import { createCommandTransport, commandMethods } from "./commands.mjs";
+import { createCommandTransport, commandMethods } from "./commands.ts";
 
-import { thinkingFlag } from "./thinking.mjs";
+import { thinkingFlag } from "./thinking.ts";
 import {
   createSessionStore,
   ephemeralSessionOptions,
@@ -82,12 +82,12 @@ import {
   watchStalls,
   stallLimits,
   stallMessage,
-} from "./stall-watch.mjs";
+} from "./stall-watch.ts";
 import {
   foregroundCommandUpdate,
   backgroundedCommandFields,
   moveCommandToBackground,
-} from "./command-background.mjs";
+} from "./command-background.ts";
 
 import {
   movePrompt,

@@ -1,4 +1,4 @@
-import { nativeInputIds } from "./input-messages.mjs";
+import { nativeInputIds } from "./input-messages.ts";
 import { nativeUuid } from "./native-history.mjs";
 import { readHistoryIndex } from "./history-index.mjs";
 

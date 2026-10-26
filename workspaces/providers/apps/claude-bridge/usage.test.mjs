@@ -28,7 +28,7 @@ const result = (models, is_error = false) => ({ modelUsage: models, is_error });
 
 test("message deltas replace input, cache and output categories; stop finalizes once", () => {
   const usage = new ResponseUsage();
-  /** @type {import('./usage-contract.generated.d.mts').UsageObservation[]} */
+  /** @type {import('./usage-contract.generated.ts').UsageObservation[]} */
   const observations = [];
   for (const event of events)
     observations.push(...usage.observe(frame(event), "turn"));

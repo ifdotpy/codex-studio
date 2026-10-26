@@ -4,14 +4,14 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, test } from "vitest";
-import { PATH_SCRIPT, browserEnvironment } from "./browser-environment.mjs";
+import { PATH_SCRIPT, browserEnvironment } from "./browser-environment.ts";
 
-const roots = [];
+const roots: string[] = [];
 afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true });
 });
 
-function root(value) {
+function root(value?: string) {
   const folder = mkdtempSync(path.join(tmpdir(), "studio-browser-env-"));
   roots.push(folder);
   if (value !== undefined)
@@ -53,6 +53,7 @@ test("the Bash command script puts the link folder first after the shell startup
   const script = browserEnvironment(folder, "s", {
     PATH: "/usr/bin",
   }).CLAUDE_ENV_FILE;
+  assert(script);
   const before = readFileSync(script, "utf8");
   // A second session keeps the same script.
   browserEnvironment(folder, "t", { PATH: "/usr/bin" });

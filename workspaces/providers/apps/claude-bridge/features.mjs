@@ -1,4 +1,4 @@
-import usagePolicyJson from "./usage-policy.mjs";
+import usagePolicyJson from "./usage-policy.ts";
 const usagePolicy = JSON.parse(usagePolicyJson);
 
 // Native Claude values normalized to Studio's existing public protocol.
