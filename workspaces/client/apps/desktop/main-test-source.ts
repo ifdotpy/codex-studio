@@ -27,10 +27,7 @@ const modules: Record<string, unknown> = {
 };
 const require = createRequire(import.meta.url);
 export function mainDependency(name: string): unknown {
-  if (name in modules) return modules[name];
-  if (name.startsWith("./"))
-    throw new Error(`Unknown main dependency: ${name}`);
-  return require(name);
+  return name.startsWith("./") ? modules[name] : require(name);
 }
 // Run the real ESM body with VM-injected dependencies. Only import bindings and
 // import.meta need adapting to the script context; Node owns type removal.

@@ -1,3 +1,6 @@
+import type { JsonValue } from "../web/src/generated/api.ts";
+import type { HealthResult } from "../web/src/generated/rustOwned.ts";
+import type { ExecFileException } from "node:child_process";
 import { execFileSync } from "node:child_process";
 import type { App } from "electron";
 import type { SavedRecovery } from "./restart-environment.ts";
@@ -165,11 +168,9 @@ function recoveryPreference(env = process.env) {
   const { config } = recoveryPaths(env);
   try {
     return readRecoveryConfig(config).enabled === true;
-  } catch (caughterror) {
-    if (!(caughterror instanceof Error)) throw caughterror;
-    const error: NodeJS.ErrnoException = caughterror;
-    if (error.code === "ENOENT") return true;
-    throw error;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return true;
+    throw error as NodeJS.ErrnoException;
   }
 }
 function supervisorPreference(env = process.env) {
@@ -184,11 +185,9 @@ function supervisorPreference(env = process.env) {
     )
       throw new Error("The saved supervisor setting is invalid.");
     return saved.supervisorEnabled === true;
-  } catch (caughterror) {
-    if (!(caughterror instanceof Error)) throw caughterror;
-    const error: NodeJS.ErrnoException = caughterror;
-    if (error.code === "ENOENT") return false;
-    throw error;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
+    throw error as NodeJS.ErrnoException;
   }
 }
 function xml(value: unknown) {
@@ -203,7 +202,7 @@ function xml(value: unknown) {
           '"': "&quot;",
           "'": "&apos;",
         } as Record<string, string>
-      )[char] ?? char,
+      )[char]!,
   );
 }
 function launchAgent({
@@ -272,27 +271,21 @@ async function assertRecoveryBootoutSafe({
   const jobPid = Number(serviceOutput.match(/^\s*pid\s*=\s*(\d+)\s*$/m)?.[1]);
   if (!Number.isSafeInteger(jobPid) || jobPid <= 0) return;
 
-  let owner: unknown;
+  // The supervisor owns this lock document; retain its existing identity checks.
+  let owner: Record<string, JsonValue>;
   try {
     owner = JSON.parse(
       fs.readFileSync(path.join(files.state, "supervisor.lock"), "utf8"),
     );
-  } catch (caughterror) {
-    if (!(caughterror instanceof Error)) throw caughterror;
-    const error: NodeJS.ErrnoException = caughterror;
-    if (error.code === "ENOENT") return;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
     throw new Error(
-      `Cannot verify the supervisor owner before stopping recovery: ${error.message}`,
+      `Cannot verify the supervisor owner before stopping recovery: ${(error as NodeJS.ErrnoException).message}`,
     );
   }
   if (
-    !owner ||
-    typeof owner !== "object" ||
-    !("pid" in owner) ||
-    typeof owner.pid !== "number" ||
-    !("startTime" in owner) ||
     !Number.isSafeInteger(owner.pid) ||
-    owner.pid <= 0 ||
+    (owner.pid as number) <= 0 ||
     typeof owner.startTime !== "string"
   )
     throw new Error(
@@ -307,17 +300,14 @@ async function assertRecoveryBootoutSafe({
       "ppid=",
     ]);
     parentOutput = typeof result?.stdout === "string" ? result.stdout : "";
-  } catch (caughterror) {
-    if (!(caughterror instanceof Error)) throw caughterror;
-    const error: NodeJS.ErrnoException = caughterror;
+  } catch (error) {
     if (
-      "code" in caughterror &&
-      caughterror.code === 1 &&
-      !("stdout" in error && String(error.stdout || "").trim())
+      (error as ExecFileException).code === 1 &&
+      !String((error as ExecFileException).stdout || "").trim()
     )
       return;
     throw new Error(
-      `Cannot verify whether the supervisor belongs to recovery: ${error.message}`,
+      `Cannot verify whether the supervisor belongs to recovery: ${(error as NodeJS.ErrnoException).message}`,
     );
   }
   if (!parentOutput.trim()) return;
@@ -327,7 +317,8 @@ async function assertRecoveryBootoutSafe({
     );
   if (Number(parentOutput.trim()) !== jobPid) return;
 
-  let health: unknown;
+  // The supervisor command returns its generated health contract.
+  let health: HealthResult;
   try {
     const result = await run(python, [
       "-B",
@@ -337,19 +328,12 @@ async function assertRecoveryBootoutSafe({
       files.state,
     ]);
     health = JSON.parse(result?.stdout || "");
-  } catch (caughterror) {
-    if (!(caughterror instanceof Error)) throw caughterror;
-    const error: NodeJS.ErrnoException = caughterror;
+  } catch (error) {
     throw new Error(
-      `Cannot safely stop the recovery LaunchAgent while its supervisor is live: ${error.message}`,
+      `Cannot safely stop the recovery LaunchAgent while its supervisor is live: ${(error as NodeJS.ErrnoException).message}`,
     );
   }
-  if (
-    !health ||
-    typeof health !== "object" ||
-    !("handles" in health) ||
-    !Array.isArray(health.handles)
-  )
+  if (!Array.isArray(health.handles))
     throw new Error(
       "Cannot safely stop the recovery LaunchAgent while its supervisor status is unavailable.",
     );
@@ -414,10 +398,7 @@ async function configureRecovery({
   env = process.env,
   restartEnvironment,
   home = os.homedir(),
-  uid = process.getuid?.() ??
-    (() => {
-      throw new Error("Process identity is unavailable.");
-    })(),
+  uid = process.getuid!(),
   run = runFile,
   checkInterpreter = checkRecoveryInterpreter,
 }: RecoveryOptions) {
@@ -435,10 +416,9 @@ async function configureRecovery({
   let saved: SavedRecovery = {};
   try {
     saved = readRecoveryConfig(files.config);
-  } catch (caughterror) {
-    if (!(caughterror instanceof Error)) throw caughterror;
-    const error: NodeJS.ErrnoException = caughterror;
-    if (error.code !== "ENOENT") throw error;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT")
+      throw error as NodeJS.ErrnoException;
   }
   if (
     saved.supervisorEnabled !== undefined &&
@@ -499,7 +479,7 @@ async function configureRecovery({
   if (supervisorEnabled && saved.backend !== "rust")
     await ensureSupervisorAgent({
       files,
-      binary: rustSelection.processSupervisor ?? "",
+      binary: rustSelection.processSupervisor!,
       uid,
       run,
     });
@@ -542,7 +522,7 @@ async function configureRecovery({
     rustSelection.runtimeServer,
     rendererIndex(resources),
   ])
-    fs.accessSync(filename ?? "", fs.constants.R_OK);
+    fs.accessSync(filename!, fs.constants.R_OK);
   const environment: NodeJS.ProcessEnv = {};
   for (const key of restartKeys)
     if (key !== "CODEX_AGENTS_SUPERVISOR_MODE" && launchEnv[key] !== undefined)
@@ -570,10 +550,9 @@ async function configureRecovery({
   let previousPlist;
   try {
     previousPlist = fs.readFileSync(files.plist, "utf8");
-  } catch (caughterror) {
-    if (!(caughterror instanceof Error)) throw caughterror;
-    const error: NodeJS.ErrnoException = caughterror;
-    if (error.code !== "ENOENT") throw error;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT")
+      throw error as NodeJS.ErrnoException;
   }
   const nextPlist = launchAgent({
     ...files,
@@ -630,35 +609,27 @@ async function configureRecovery({
   if (!registered) {
     try {
       await run("/bin/launchctl", ["bootstrap", domain, files.plist]);
-    } catch (caughterror) {
-      if (!(caughterror instanceof Error)) throw caughterror;
-      const error: NodeJS.ErrnoException = caughterror;
+    } catch (error) {
       try {
         // A failed response does not prove that registration failed.
         await run("/bin/launchctl", ["print", service]);
-      } catch (caughtstatusError) {
-        if (!(caughtstatusError instanceof Error)) throw caughtstatusError;
-        if (
-          !restartRecovery ||
-          !("code" in caughtstatusError && caughtstatusError.code === 113)
-        )
-          throw error;
-        fs.writeFileSync(temporary, previousPlist ?? "", { mode: 0o600 });
+      } catch (statusError) {
+        if (!restartRecovery || (statusError as ExecFileException).code !== 113)
+          throw error as NodeJS.ErrnoException;
+        fs.writeFileSync(temporary, previousPlist!, { mode: 0o600 });
         fs.renameSync(temporary, files.plist);
         try {
           await run("/bin/launchctl", ["bootstrap", domain, files.plist]);
           await run("/bin/launchctl", ["print", service]);
-        } catch (caughtrestoreError) {
-          if (!(caughtrestoreError instanceof Error)) throw caughtrestoreError;
-          const restoreError: NodeJS.ErrnoException = caughtrestoreError;
+        } catch (restoreError) {
           throw new Error(
-            `Cannot update or restore background recovery: ${restoreError.message}`,
-            { cause: error },
+            `Cannot update or restore background recovery: ${(restoreError as NodeJS.ErrnoException).message}`,
+            { cause: error as NodeJS.ErrnoException },
           );
         }
         throw new Error(
           "Cannot update background recovery. The previous recovery service was restored.",
-          { cause: error },
+          { cause: error as NodeJS.ErrnoException },
         );
       }
     }
@@ -706,14 +677,15 @@ export function trackDesktopRecovery({
   const closeExplicitly = () => {
     try {
       atomicJSON(filename, { ...intent, desiredOpen: false });
-    } catch (caughterror) {
-      if (!(caughterror instanceof Error)) throw caughterror;
-      const error: NodeJS.ErrnoException = caughterror;
+    } catch (error) {
       // A missing intent is safer than reopening after an unsaved explicit Quit.
       try {
         fs.unlinkSync(filename);
       } catch {}
-      console.error("Cannot save desktop close intent:", error.message);
+      console.error(
+        "Cannot save desktop close intent:",
+        (error as NodeJS.ErrnoException).message,
+      );
     }
   };
   // Electron does not identify every macOS Quit reason. A graceful exit always

@@ -510,10 +510,7 @@ export function createOutbox(options: {
       await Promise.all(
         Array.from({ length: Math.min(4, roomBatches.length) }, async () => {
           while (nextRoom < roomBatches.length) {
-            const batch = roomBatches[nextRoom++];
-            if (batch === undefined)
-              throw new Error("The receipt batch is missing.");
-            const { room, batches } = batch;
+            const { room, batches } = roomBatches[nextRoom++];
             const controller = controllers.get(room)!;
             for (const ids of batches) {
               if (deletedRooms.has(room) || controller.signal.aborted) break;

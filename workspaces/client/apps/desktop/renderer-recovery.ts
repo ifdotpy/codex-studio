@@ -31,7 +31,7 @@ function escapeHTML(value: unknown) {
     (char) =>
       ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[
         char
-      ] ?? char,
+      ]!,
   );
 }
 function fallbackPage(workspaceURL: string, crash: RendererCrash | undefined) {
@@ -69,10 +69,11 @@ function createRendererRecovery({
       fs.appendFileSync(filename, `${JSON.stringify(record)}\n`, {
         mode: 0o600,
       });
-    } catch (caughterror) {
-      if (!(caughterror instanceof Error)) throw caughterror;
-      const error: NodeJS.ErrnoException = caughterror;
-      console.error("Cannot save renderer recovery event:", error.message);
+    } catch (error) {
+      console.error(
+        "Cannot save renderer recovery event:",
+        (error as NodeJS.ErrnoException).message,
+      );
     }
   };
   const clearTimers = () => {
@@ -92,10 +93,10 @@ function createRendererRecovery({
     try {
       await contents.loadURL(fallbackURL);
       return true;
-    } catch (caughterror) {
-      if (!(caughterror instanceof Error)) throw caughterror;
-      const error: NodeJS.ErrnoException = caughterror;
-      log("renderer-fallback-failed", { message: error.message });
+    } catch (error) {
+      log("renderer-fallback-failed", {
+        message: (error as NodeJS.ErrnoException).message,
+      });
       return false;
     }
   };
@@ -109,12 +110,16 @@ function createRendererRecovery({
     try {
       await contents.loadURL(workspaceURL);
       return true;
-    } catch (caughterror) {
-      if (!(caughterror instanceof Error)) throw caughterror;
-      const error: NodeJS.ErrnoException = caughterror;
+    } catch (error) {
       if (!usable() || attempt !== generation) return false;
-      log("renderer-load-failed", { message: error.message, code: error.code });
-      lastCrash = { reason: error.code || "load failed", exitCode: null };
+      log("renderer-load-failed", {
+        message: (error as NodeJS.ErrnoException).message,
+        code: (error as NodeJS.ErrnoException).code,
+      });
+      lastCrash = {
+        reason: (error as NodeJS.ErrnoException).code || "load failed",
+        exitCode: null,
+      };
       return showFallback();
     }
   };

@@ -1,6 +1,6 @@
 import type { Session } from "./session-state.ts";
 import type { StoreOptions } from "./session-store.ts";
-import { object } from "./history-records.ts";
+import type { JournalRepairReport } from "./session-state.ts";
 import assert from "node:assert/strict";
 import { test } from "vitest";
 import fs from "node:fs/promises";
@@ -107,10 +107,10 @@ test("malformed complete journal row repairs only with exact native history and 
     const restored = await createSessionStore(f.root, f.options).get(id);
     assert.deepEqual(restored.turns, f.session.turns);
     assert.equal(restored.name, "Saved name");
-    assert.equal(restored.journalRepair?.status, "repaired");
-    assert.equal(restored.journalRepair?.skippedRows, 1);
-    assert.equal(restored.journalRepair?.scopeConfirmed, true);
-    assert.equal(restored.journalRepair?.nativeHistoryConfirmed, true);
+    assert.equal(restored.journalRepair!.status, "repaired");
+    assert.equal(restored.journalRepair!.skippedRows, 1);
+    assert.equal(restored.journalRepair!.scopeConfirmed, true);
+    assert.equal(restored.journalRepair!.nativeHistoryConfirmed, true);
     assert.match(
       await fs.readFile(f.journal + ".corrupt", "utf8"),
       /broken complete row/,
@@ -161,28 +161,24 @@ for (const kind of [
       const before = await fs.readFile(f.journal, "utf8");
       await assert.rejects(
         createSessionStore(f.root, f.options).get(id),
-        (error: unknown) => {
-          assert.ok(object(error));
+        (caught: unknown) => {
+          const error = caught as NodeJS.ErrnoException & {
+            data: JournalRepairReport;
+          };
           assert.equal(error.code, "CLAUDE_SESSION_REPAIR_REQUIRED");
-          assert.ok(typeof error.message === "string");
           assert.match(error.message, /needs repair/);
-          assert.ok(object(error.data));
-          assert.ok(
-            typeof error.data.skippedRows === "number" &&
-              error.data.skippedRows >= 1,
-          );
+          assert.ok(error.data.skippedRows >= 1);
           return true;
         },
       );
       assert.equal(await fs.readFile(f.journal, "utf8"), before);
-      assert.equal(Reflect.get({}, "polluted"), undefined);
-      const marker: unknown = JSON.parse(
+      assert.equal(({} as Record<string, unknown>).polluted, undefined);
+      const marker: JournalRepairReport = JSON.parse(
         await fs.readFile(
           path.join(f.root, "sessions", id + ".repair.json"),
           "utf8",
         ),
       );
-      assert.ok(object(marker));
       assert.equal(marker.status, "needs_repair");
       assert.equal(marker.nativeHistoryConfirmed, false);
       const read = await createSessionStore(f.root, f.options).repairReport(id);
@@ -223,7 +219,7 @@ for (const confirmed of [true, false]) {
           });
           if (confirmed) {
             const result = await call;
-            assert.equal(result.thread.journalRepair?.skippedRows, 1);
+            assert.equal(result.thread.journalRepair!.skippedRows, 1);
             assert.deepEqual(result.thread.turns, f.session.turns);
           } else
             await assert.rejects(

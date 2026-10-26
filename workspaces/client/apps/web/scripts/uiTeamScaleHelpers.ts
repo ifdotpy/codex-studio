@@ -55,17 +55,19 @@ export type RoleSettings = {
   model: string;
 };
 // Recursive locator view: only operations used by this dialog driver are
-// required of its fixture; argument and result types stay owned by Playwright.
-export type DialogControl = Pick<
+// required of its fixture. Arguments come from Playwright; the driver discards
+// the setChecked result, including the original fixture's numeric result.
+export type DialogControl<Selector = Pick<Locator, "click">> = Pick<
   Locator,
-  "getAttribute" | "count" | "setChecked" | "click" | "waitFor"
+  "getAttribute" | "count" | "click" | "waitFor"
 > & {
-  getByRole(...args: Parameters<Locator["getByRole"]>): DialogControl;
+  setChecked(...args: Parameters<Locator["setChecked"]>): Promise<unknown>;
+  getByRole(...args: Parameters<Locator["getByRole"]>): DialogControl<Selector>;
   locator(
     ...args: Parameters<Locator["locator"]>
-  ): Pick<DialogControl, "click">;
-  and(locator: Pick<DialogControl, "click">): DialogControl;
-  first(): DialogControl;
+  ): Pick<DialogControl<Selector>, "click">;
+  and(locator: Selector): DialogControl<Selector>;
+  first(): DialogControl<Selector>;
 };
 export type FrameArgs =
   | [name: "resources", frame: components["schemas"]["ResourceChangeEvent"]]
@@ -290,44 +292,29 @@ export async function openEntityStream({
   } finally {
     clearTimeout(timer);
   }
-  const body = response.body;
-  assert.ok(body);
   const done = (async () => {
     const decoder = new TextDecoder();
     let buffer = "";
-    const reader = body.getReader();
-    try {
-      while (true) {
-        const { value: chunk, done } = await reader.read();
-        if (done) break;
-        buffer += decoder
-          .decode(chunk, { stream: true })
-          .replaceAll("\r\n", "\n");
-        let end;
-        while ((end = buffer.indexOf("\n\n")) >= 0) {
-          const block = buffer.slice(0, end);
-          buffer = buffer.slice(end + 2);
-          const lines = block.split("\n");
-          const name = lines
-            .find((line) => line.startsWith("event:"))
-            ?.slice(6)
-            .trim();
-          const data = lines
-            .filter((line) => line.startsWith("data:"))
-            .map((line) => line.slice(5).trimStart())
-            .join("\n");
-          if (name === "resources" && data) receive(name, JSON.parse(data));
-          else if (name === "entity-transfer" && data)
-            receive(name, JSON.parse(data));
-          else if (name === "api-schema" && data)
-            receive(name, JSON.parse(data));
-        }
+    for await (const chunk of response.body! as ReadableStream<Uint8Array> &
+      AsyncIterable<Uint8Array>) {
+      buffer += decoder
+        .decode(chunk, { stream: true })
+        .replaceAll("\r\n", "\n");
+      let end;
+      while ((end = buffer.indexOf("\n\n")) >= 0) {
+        const block = buffer.slice(0, end);
+        buffer = buffer.slice(end + 2);
+        const lines = block.split("\n");
+        const name = lines
+          .find((line) => line.startsWith("event:"))
+          ?.slice(6)
+          .trim();
+        const data = lines
+          .filter((line) => line.startsWith("data:"))
+          .map((line) => line.slice(5).trimStart())
+          .join("\n");
+        if (name && data) receive(...([name, JSON.parse(data)] as FrameArgs));
       }
-    } catch (error) {
-      await reader.cancel(error).catch(() => {});
-      throw error;
-    } finally {
-      reader.releaseLock();
     }
     if (!controller.signal.aborted)
       throw new Error("Sync stream ended before teardown.");
@@ -494,17 +481,16 @@ export function readTeamUiCounts(
         : 0),
     sidebarChats: document.querySelectorAll("#sidebar [data-chat]").length,
     teamPanelClosed:
-      document
-        .querySelector("#team-toggle")
-        ?.getAttribute?.("aria-expanded") === "false",
+      document.querySelector("#team-toggle")?.getAttribute!("aria-expanded") ===
+      "false",
   };
 }
 
 // The New chat draft is an inline role picker. Keep every action inside its
 // dialog: Escape would close the whole draft, and settings popovers belong to
 // existing chats. Radio labels are clicked because native inputs are styled.
-async function chooseSegment(
-  dialog: Pick<DialogControl, "getByRole" | "locator">,
+async function chooseSegment<Selector>(
+  dialog: Pick<DialogControl<Selector>, "getByRole">,
   label: string,
   name: string,
 ) {
@@ -527,8 +513,8 @@ export function approvedModelUiValues(
   const identity = candidate.resolvedModel ?? candidate.model;
   return [
     ...new Set(
-      (catalog.data ?? [])
-        .filter((row) => (row.resolvedModel ?? row.model) === identity)
+      catalog
+        .data!.filter((row) => (row.resolvedModel ?? row.model) === identity)
         .map((row) => row.model),
     ),
   ];
@@ -539,8 +525,7 @@ export function approvedStoredModel(
   role: Pick<RoleSettings, "model"> & { uiModelValues: string[] },
 ) {
   assert.ok(
-    value === role.model ||
-      (typeof value === "string" && role.uiModelValues.includes(value)),
+    value === role.model || role.uiModelValues.includes(value!),
     `Stored model ${value} does not resolve to the approved ${role.model}.`,
   );
   return role.model;
@@ -587,8 +572,10 @@ export function assertCreatedTeamProfiles(
   );
 }
 
-export async function configureNewChat(
-  dialog: Pick<DialogControl, "getByRole" | "locator">,
+export async function configureNewChat<Selector>(
+  dialog: Pick<DialogControl<Selector>, "getByRole"> & {
+    locator(...args: Parameters<Locator["locator"]>): Selector;
+  },
   lead: Omit<RoleSettings, "model">,
   worker: Omit<RoleSettings, "model">,
 ) {
@@ -630,7 +617,7 @@ export async function configureNewChat(
     await chooseSegment(
       dialog,
       `${prefix} reasoning`,
-      settings.effort.charAt(0).toUpperCase() + settings.effort.slice(1),
+      settings.effort[0].toUpperCase() + settings.effort.slice(1),
     );
     const fast = dialog.getByRole("switch", { name: "Fast mode", exact: true });
     if (await fast.count()) await fast.setChecked(settings.profile.fastMode);
@@ -777,12 +764,11 @@ export function createTeamTracker(
           waitMs: 0,
         };
         retries.set(value.id, retry);
-        const status = value.nativeStatus;
-        if (
-          status &&
-          typeof status === "object" &&
-          status.phase === "retrying"
-        ) {
+        const status = value.nativeStatus as
+          | Exclude<AgentEntityDto["nativeStatus"], string | null | undefined>
+          | null
+          | undefined;
+        if (status?.phase === "retrying") {
           retry.events.add(status.at ?? atMs);
           retry.sinceMs ??= atMs;
         } else if (retry.sinceMs !== null) {
@@ -920,9 +906,7 @@ export function sqliteLockErrors(
     | undefined,
 ) {
   const count = diagnostics?.sqliteContention?.lockError?.lockErrors;
-  return typeof count === "number" && Number.isSafeInteger(count) && count >= 0
-    ? count
-    : null;
+  return Number.isSafeInteger(count) && count! >= 0 ? count : null;
 }
 
 export function sqliteWriteWaits(
@@ -962,9 +946,7 @@ export function evaluateCriteria(metrics: CriteriaMetrics, workers: number) {
     ],
     [
       `apiP95Under${API_P95_LIMIT_MS}ms`,
-      metrics.apiP95Ms !== null &&
-        metrics.apiP95Ms !== undefined &&
-        metrics.apiP95Ms <= API_P95_LIMIT_MS,
+      metrics.apiP95Ms !== null && metrics.apiP95Ms! <= API_P95_LIMIT_MS,
     ],
   ];
   return {

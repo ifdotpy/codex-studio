@@ -57,21 +57,18 @@ test("rendering ux ui", async ({ page: runnerPage }) => {
     await page.route("https://external.invalid/**", (r) =>
       r.fulfill({ status: 404, body: "missing" }),
     );
-    const baseUrl = server.resolvedUrls?.local[0];
-    if (!baseUrl) throw new Error("Missing rendering fixture URL");
+    const baseUrl = server.resolvedUrls!.local[0]!;
     await page.goto(`${baseUrl}${name}.html`);
     await page.getByText("Partial", { exact: true }).waitFor();
     await page.locator("#text .sentence-enter").count();
     await page.evaluate(() => {
       const span = [...document.querySelectorAll("#text span")].find(
         (n) => n.textContent === "First sentence. ",
-      );
-      if (!span) throw new Error("Missing first sentence span");
+      )!;
       window.retained = span;
       const range = document.createRange();
       range.selectNodeContents(span);
-      const selection = window.getSelection();
-      if (!selection) throw new Error("Missing text selection");
+      const selection = window.getSelection()!;
       selection.removeAllRanges();
       selection.addRange(range);
       window.setText("First sentence. Partial response continues");
@@ -81,7 +78,7 @@ test("rendering ux ui", async ({ page: runnerPage }) => {
       .waitFor();
     assert.equal(await page.evaluate(() => window.retained.isConnected), true);
     assert.equal(
-      await page.evaluate(() => window.getSelection()?.toString()),
+      await page.evaluate(() => window.getSelection()!.toString()),
       "First sentence. ",
     );
     for (const id of ["activity", "turn"]) {
@@ -206,8 +203,7 @@ test("rendering ux ui", async ({ page: runnerPage }) => {
       );
       const colors = await page.evaluate(() => {
         const read = (selector: string) => {
-          const element = document.querySelector(selector);
-          if (!element) throw new Error(`Missing ${selector}`);
+          const element = document.querySelector(selector)!;
           return getComputedStyle(element);
         };
         return {
@@ -218,9 +214,7 @@ test("rendering ux ui", async ({ page: runnerPage }) => {
         };
       });
       const luminance = (color: string) => {
-        const channels = color.match(/[\d.]+/g);
-        if (!channels || channels.length < 3)
-          throw new Error(`Invalid color ${color}`);
+        const channels = color.match(/[\d.]+/g)!;
         const rgb = channels
           .slice(0, 3)
           .map(Number)
@@ -228,7 +222,7 @@ test("rendering ux ui", async ({ page: runnerPage }) => {
           .map((n) =>
             n <= 0.04045 ? n / 12.92 : ((n + 0.055) / 1.055) ** 2.4,
           );
-        const [red = 0, green = 0, blue = 0] = rgb;
+        const [red, green, blue] = rgb;
         return red * 0.2126 + green * 0.7152 + blue * 0.0722;
       };
       const contrast = (a: string, b: string) =>

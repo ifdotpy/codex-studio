@@ -1,3 +1,4 @@
+import type { AddressInfo } from "node:net";
 import { parsedRecord } from "./test-support.ts";
 import { desktopProtocolVersion, backendBuildHexLength } from "./backend.ts";
 import {
@@ -5,7 +6,7 @@ import {
   retiredRestartKeys,
   restartEnvironmentVersion,
 } from "./restart-environment.ts";
-import { portOf, present, nodeFixture } from "./test-support.ts";
+import { nodeFixture } from "./test-support.ts";
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import { afterEach, test, vi } from "vitest";
@@ -63,8 +64,7 @@ function virtualTimeouts() {
 }
 const aborted = (signal: AbortSignal | null | undefined) =>
   new Promise<never>((_, reject) => {
-    const activeSignal = present(signal);
-    activeSignal.addEventListener("abort", () => reject(activeSignal.reason), {
+    signal!.addEventListener("abort", () => reject(signal!.reason), {
       once: true,
     });
   });
@@ -85,10 +85,10 @@ async function serve(
   const server = createServer(handler);
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
   try {
-    await run(`http://127.0.0.1:${portOf(server)}`);
+    await run(`http://127.0.0.1:${(server.address() as AddressInfo).port}`);
   } finally {
     server.closeAllConnections();
-    await new Promise<void>((resolve) => server.close(() => resolve()));
+    await new Promise<Error | undefined>((resolve) => server.close(resolve));
   }
 }
 
@@ -170,15 +170,12 @@ test("a slow existing backend attaches without spawning a process", async () => 
   const canonicalState = realpathSync(tmpdir());
   const data = { ...record, stateDir: canonicalState };
   virtualTimeouts();
-  let requestedReady = () => {};
-  const requested = new Promise<void>((resolve) => {
-    requestedReady = resolve;
-  });
-  let reply = () => {};
+  const requested = Promise.withResolvers<void>();
+  let reply!: () => void;
   await serve(
     (_req, res) => {
       reply = () => res.end(JSON.stringify(data));
-      requestedReady();
+      requested.resolve();
     },
     async (origin) => {
       const pending = ensureBackend({
@@ -190,7 +187,7 @@ test("a slow existing backend attaches without spawning a process", async () => 
             "/missing-desktop-assets/bin/studio-runtime-server",
         },
       });
-      await requested;
+      await requested.promise;
       await vi.advanceTimersByTimeAsync(1200);
       reply();
       const result = await pending;
@@ -273,8 +270,10 @@ test.each([true, false])(
     await new Promise<void>((resolve) =>
       portServer.listen(0, "127.0.0.1", resolve),
     );
-    const port = portOf(portServer);
-    await new Promise<void>((resolve) => portServer.close(() => resolve()));
+    const port = (portServer.address() as AddressInfo).port;
+    await new Promise<Error | undefined>((resolve) =>
+      portServer.close(resolve),
+    );
     const saved = {
       version: 1,
       stateDir: canonicalState,
@@ -417,17 +416,15 @@ test("Rust startup consumes the desktop identity and restart environment contrac
     restartEnvironmentVersion,
   );
   const keys = [
-    ...present(
-      present(rust.match(/const RESTART_KEYS:[\s\S]*?= &\[([\s\S]*?)\];/))[1],
-    ).matchAll(/"([^"]+)"/g),
+    ...rust
+      .match(/const RESTART_KEYS:[\s\S]*?= &\[([\s\S]*?)\];/)![1]!
+      .matchAll(/"([^"]+)"/g),
   ].map((match) => match[1]);
   assert.deepEqual(keys, restartKeys);
   const retired = [
-    ...present(
-      present(
-        rust.match(/const RETIRED_RESTART_KEYS:[\s\S]*?= &\[([\s\S]*?)\];/),
-      )[1],
-    ).matchAll(/"([^"]+)"/g),
+    ...rust
+      .match(/const RETIRED_RESTART_KEYS:[\s\S]*?= &\[([\s\S]*?)\];/)![1]!
+      .matchAll(/"([^"]+)"/g),
   ].map((match) => match[1]);
   assert.deepEqual(retired, retiredRestartKeys);
 });

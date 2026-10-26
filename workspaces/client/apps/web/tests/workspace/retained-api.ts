@@ -1,4 +1,14 @@
-import { get } from "./fixture-api.ts";
+import type { ApiGetPath, GetResult } from "../../src/apiTypes.ts";
+import type { GetOptions } from "../../src/api.ts";
+async function get<Path extends ApiGetPath>(
+  path: Path,
+  options: GetOptions<Path>,
+): Promise<GetResult<Path>> {
+  const response = await fetch(
+    path + "?" + new URLSearchParams(options.query as Record<string, string>),
+  );
+  return response.json();
+}
 import type { watchResourceReads } from "../../src/sync/subscriptions/reads.ts";
 declare global {
   interface Window {
@@ -8,7 +18,8 @@ declare global {
 }
 const api = { get };
 export const useServerApi = () => api;
-const watch: typeof watchResourceReads = (_resource, read, failed) => {
+// This one-off watcher fixture omits the unused refresh method on its disposer.
+const watch = ((_resource, read, failed) => {
   let active = true;
   window.retainedWorktreesRefresh = async () => {
     if (active) await read().catch(failed);
@@ -16,17 +27,10 @@ const watch: typeof watchResourceReads = (_resource, read, failed) => {
   queueMicrotask(() => {
     if (active) void window.retainedWorktreesRefresh();
   });
-  return Object.assign(
-    () => {
-      active = false;
-    },
-    {
-      refresh: () => {
-        void window.retainedWorktreesRefresh();
-      },
-    },
-  );
-};
+  return () => {
+    active = false;
+  };
+}) as typeof watchResourceReads;
 export const useServerResourceReads = () => watch;
 export const useServerFileDialogs = () => ({
   canRevealPath: () => true,
