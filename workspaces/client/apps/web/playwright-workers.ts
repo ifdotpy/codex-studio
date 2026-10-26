@@ -148,15 +148,18 @@ export function persistWorkerMemorySample({
   );
 }
 
+type WorkerMemoryEstimateOptions = {
+  profile:
+    | Partial<
+        Pick<WorkerMemoryProfile, "processTreeP90PssBytes" | "workerCount">
+      >
+    | undefined;
+  fallbackPssBytes: number;
+};
 export function estimateWorkerMemoryBytes({
   profile,
   fallbackPssBytes,
-}: {
-  profile:
-    | { processTreeP90PssBytes?: number; workerCount?: number }
-    | undefined;
-  fallbackPssBytes: number;
-}) {
+}: WorkerMemoryEstimateOptions) {
   return Number.isSafeInteger(profile?.processTreeP90PssBytes) &&
     profile!.processTreeP90PssBytes! > 0 &&
     Number.isSafeInteger(profile!.workerCount) &&
@@ -483,7 +486,9 @@ function workerSelection(environment = process.env) {
   };
 }
 
-export function getPlaywrightWorkerSelection(environment = process.env) {
+export function getPlaywrightWorkerSelection(
+  environment = process.env,
+): ReturnType<typeof workerSelection> & { cached?: boolean } {
   const cachedSelection = environment.CODEX_PLAYWRIGHT_WORKER_SELECTION;
   if (cachedSelection !== undefined) {
     try {

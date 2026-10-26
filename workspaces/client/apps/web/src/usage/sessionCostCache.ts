@@ -1,6 +1,8 @@
 import { serverLocalStorage as localStorage } from "../servers/storage";
-import type { Json } from "../types";
-export type SessionCostValue = Json;
+import type { components } from "../generated/api";
+export type SessionCostValue = Partial<
+  components["schemas"]["SessionCostResponse"]
+>;
 type Entry = { scope: string; value: SessionCostValue; storedAt: number };
 
 const prefix = "studio-session-cost:";
