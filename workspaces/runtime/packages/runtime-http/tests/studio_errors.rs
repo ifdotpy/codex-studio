@@ -678,56 +678,104 @@ async fn startup_models_http_reports_pending_and_refuses_an_unknown_explicit_acc
 }
 
 #[tokio::test]
-async fn studio_errors_sync_pull_carries_upserts_and_bulk_dismissal_tombstones() {
+async fn studio_errors_sse_carries_upserts_and_bulk_dismissal_tombstones() {
+    use futures_util::StreamExt;
+
+    async fn next_errors(
+        stream: &mut (impl futures_util::Stream<Item = Result<axum::body::Bytes, axum::Error>> + Unpin),
+    ) -> (Vec<Value>, i64) {
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            while let Some(bytes) = stream.next().await {
+                let bytes = bytes.unwrap();
+                let text = std::str::from_utf8(&bytes).unwrap();
+                let Some(data) = text.lines().find_map(|line| line.strip_prefix("data: ")) else {
+                    continue;
+                };
+                let frame: Value = serde_json::from_str(data).unwrap();
+                for entry in frame["resourceVersions"].as_array().into_iter().flatten() {
+                    if entry["resource"]["kind"] != "state" {
+                        continue;
+                    }
+                    let batch = &entry["entityChanges"];
+                    let errors = batch["documents"]
+                        .as_array()
+                        .into_iter()
+                        .flatten()
+                        .filter(|row| row["collection"] == "studioError")
+                        .cloned()
+                        .collect::<Vec<_>>();
+                    if !errors.is_empty() {
+                        assert_eq!(entry["cursor"]["workspaceId"], "fixture");
+                        assert_eq!(entry["cursor"]["seq"], batch["through"]);
+                        return (errors, batch["through"].as_i64().unwrap());
+                    }
+                }
+            }
+            panic!("the entity stream closed before the Studio error batch");
+        })
+        .await
+        .expect("the committed Studio error batch arrives through SSE")
+    }
+
     let (_root, store, app) = batch_fixture().await;
     studio_runtime_services::entity_publication::install(&store)
         .await
         .unwrap();
-    let (status, page) = call(
-        &app,
-        "GET",
-        "/api/sync/pull?scope=state:entities:v1&after=0&fresh=1&limit=500",
-        None,
-    )
-    .await;
-    assert_eq!(
-        status, 200,
-        "published errors must cross the HTTP boundary: {page}"
-    );
-    let rows: Vec<_> = page["documents"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .filter(|row| row["collection"] == "studioError")
-        .collect();
+    let query = form_urlencoded::Serializer::new(String::new())
+        .append_pair(
+            "protocol",
+            studio_runtime_schema::SYNC_PROTOCOL_VERSION_TEXT,
+        )
+        .append_pair("resources", r#"[{"kind":"state"}]"#)
+        .append_pair("tokenRates", "false")
+        .finish();
+    let request = Request::builder()
+        .uri(format!("/api/sync/stream?{query}"))
+        .header("host", "127.0.0.1:49171")
+        .header("x-canvas-token", "fixture-token")
+        .header(
+            studio_runtime_http::API_SCHEMA_HASH_HEADER,
+            studio_runtime_http::api_schema_hash(),
+        )
+        .extension(ConnectInfo(
+            "127.0.0.1:12345".parse::<std::net::SocketAddr>().unwrap(),
+        ))
+        .body(Body::empty())
+        .unwrap();
+    let response = app.clone().oneshot(request).await.unwrap();
+    assert_eq!(response.status(), 200);
+    let mut stream = response.into_body().into_data_stream();
+    let (rows, after) = next_errors(&mut stream).await;
     assert_eq!(rows.len(), 3);
     assert!(rows.iter().all(|row| row["op"] == "upsert"));
-    let after = page["checkpoint"]["seq"].as_i64().unwrap();
+    let [one, two, three] = ["one", "two", "three"].map(|monitor| {
+        let row = rows
+            .iter()
+            .find(|row| row["value"]["monitorId"] == monitor)
+            .unwrap_or_else(|| panic!("missing published monitor {monitor}: {rows:?}"));
+        assert_eq!(row["id"], row["value"]["id"]);
+        row["id"].as_str().unwrap().to_owned()
+    });
     let (status, result) = call(
         &app,
         "POST",
         "/api/studio-errors/dismiss",
-        Some(json!({"ids":["monitor:one", "monitor:three"]})),
+        Some(json!({"ids":[one, three]})),
     )
     .await;
     assert_eq!(status, 200, "{result}");
-    let (status, page) = call(
-        &app,
-        "GET",
-        &format!("/api/sync/pull?scope=state:entities:v1&after={after}&limit=500"),
-        None,
-    )
-    .await;
-    assert_eq!(
-        status, 200,
-        "dismissal tombstones must cross the HTTP boundary: {page}"
-    );
-    let rows: Vec<_> = page["documents"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .filter(|row| row["collection"] == "studioError")
-        .collect();
+    assert_eq!(result["dismissedIds"], json!([one, three]));
+    assert_eq!(result["unknownIds"], json!([]));
+    assert_eq!(result["items"].as_array().unwrap().len(), 1);
+    assert_eq!(result["items"][0]["id"], two);
+    let (rows, through) = next_errors(&mut stream).await;
+    assert!(through > after);
     assert_eq!(rows.len(), 2);
     assert!(rows.iter().all(|row| row["op"] == "delete"));
+    assert!(rows.iter().all(|row| row["seq"].as_i64().unwrap() > after));
+    let ids = rows
+        .iter()
+        .map(|row| row["id"].as_str().unwrap().to_owned())
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(ids, std::collections::BTreeSet::from([one, three]));
 }
