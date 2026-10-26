@@ -1,3 +1,4 @@
+import { hiddenElectronArguments } from "./hidden-electron.ts";
 import assert from "node:assert/strict";
 import type { ElectronApplication } from "playwright-core";
 import { serverFrameHost } from "./frame-owner.ts";
@@ -13,7 +14,9 @@ try {
   desktop = await electron.launch({
     ...(process.env.CODEX_UI_EXECUTABLE
       ? { executablePath: process.env.CODEX_UI_EXECUTABLE, args: ["--hidden"] }
-      : { args: [root, "--hidden", "--ui-only"] }),
+      : {
+          args: [root, "--hidden", "--ui-only", ...hiddenElectronArguments],
+        }),
     env: {
       ...process.env,
       CODEX_DESKTOP_PROFILE: path.join(folder, "profile"),
@@ -22,6 +25,10 @@ try {
     },
   });
   const page = await desktop.firstWindow();
+  await desktop.evaluate(({ BrowserWindow }) => {
+    for (const win of BrowserWindow.getAllWindows())
+      win.setBounds({ width: 1440, height: 960 });
+  });
   page.setDefaultTimeout(15000);
   const apiRequests: string[] = [];
   page.on("request", (request) => {

@@ -52,8 +52,15 @@ function run(
     let previous = -1;
     lines.on("line", (line) => {
       try {
-        const value = JSON.parse(line);
+        const value: unknown = JSON.parse(line);
         if (
+          !!value &&
+          typeof value === "object" &&
+          "type" in value &&
+          "completed" in value &&
+          typeof value.completed === "number" &&
+          "total" in value &&
+          typeof value.total === "number" &&
           value.type === "progress" &&
           Number.isInteger(value.completed) &&
           Number.isInteger(value.total) &&
@@ -105,6 +112,12 @@ function validateAudio(value: unknown) {
     throw Error("Invalid WAV recording or duration exceeds 30 minutes.");
   return data;
 }
+/** The bundled speech child writes this result using the preload API's transcription contract. */
+function readSpeechResult(
+  output: string,
+): Awaited<ReturnType<DesktopBridge["transcribeAudio"]>> & { error?: string } {
+  return JSON.parse(output);
+}
 async function transcribe(
   {
     audio,
@@ -138,7 +151,7 @@ async function transcribe(
       const error: NodeJS.ErrnoException = caughterror;
       if (options.signal?.aborted) throw error;
       try {
-        const detail: { error?: string } = JSON.parse(
+        const detail = readSpeechResult(
           "stdout" in error && typeof error.stdout === "string"
             ? error.stdout
             : "",
@@ -154,9 +167,7 @@ async function transcribe(
         throw parsed;
       }
     }
-    const result: Awaited<ReturnType<DesktopBridge["transcribeAudio"]>> & {
-      error?: string;
-    } = JSON.parse(stdout ?? "");
+    const result = readSpeechResult(stdout ?? "");
     if (typeof result.text !== "string" || !result.text.trim())
       throw Error(
         result.error || "No speech was recognized. Your recording is saved.",

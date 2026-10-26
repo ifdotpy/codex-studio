@@ -54,6 +54,10 @@ try {
     { origin: remote.invitation.origin, destination: remote.origin },
   );
   const page = await desktop.firstWindow();
+  await desktop.evaluate(({ BrowserWindow }) => {
+    for (const win of BrowserWindow.getAllWindows())
+      win.setBounds({ width: 1440, height: 960 });
+  });
   page.setDefaultTimeout(15000);
   assert.equal(
     await desktop.evaluate(({ BrowserWindow }) =>
