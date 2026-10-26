@@ -9,7 +9,6 @@ export default {
     include: [
       "launcher.test.ts",
       "live-permissions.test.ts",
-      // Native tool plan fields retain their raw wire values.
       // Test-side fixture waits must preserve the worker's IPC lifetime.
       "file-signals.test.ts",
       // Preserve unconfirmed outcomes and bounded, read-only repair evidence without a model query.
