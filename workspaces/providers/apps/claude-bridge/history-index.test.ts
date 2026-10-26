@@ -282,6 +282,21 @@ for (const [kind, change] of [
     );
   });
 
+test("a symlinked project cwd reads the real-path history the CLI wrote", async () => {
+  // The CLI and the SDK key and record the project by its real path.
+  const f = await fixture();
+  const alias = f.cwd + "-link";
+  roots.push(alias);
+  await fs.symlink(f.cwd, alias);
+  const real = await readHistoryIndex(f.session);
+  const linked = await readHistoryIndex({ ...f.session, cwd: alias });
+  expect(real?.messages.length).toBeGreaterThan(0);
+  expect(linked?.messages).toEqual(real?.messages);
+  expect(
+    await readHistoryIndex({ ...f.session, nativeHistoryCwd: alias }),
+  ).not.toBeNull();
+});
+
 test("installed alpha import retains exact ordered meta provenance", async () => {
   const f = await fixture();
   const entries: sdk.SessionStoreEntry[] = [];

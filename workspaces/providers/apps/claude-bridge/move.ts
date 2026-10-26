@@ -26,6 +26,7 @@ export const isRecord = (value: unknown): value is Record<string, unknown> =>
   value !== null && typeof value === "object" && !Array.isArray(value);
 // Native session files move without credentials or a model request.
 import fs from "node:fs/promises";
+import { nativeProjectCwd } from "./native-history.ts";
 import path from "node:path";
 import os from "node:os";
 import { execFile } from "node:child_process";
@@ -475,7 +476,7 @@ export async function nativeFile(
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
     }
   }
-  const current = cwd && nativeDestination(sessionId, cwd, configDir);
+  const current = cwd && (await nativeDestination(sessionId, cwd, configDir));
   if (current && found.includes(current)) return current;
   if (found.length !== 1)
     throw new Error(
@@ -483,7 +484,7 @@ export async function nativeFile(
     );
   return found[0]!;
 }
-export function nativeDestination(
+export async function nativeDestination(
   sessionId: string,
   cwd: string,
   configDir = process.env.CLAUDE_CONFIG_DIR ||
@@ -494,7 +495,7 @@ export function nativeDestination(
   return path.join(
     configDir,
     "projects",
-    cwd.replace(/[^a-zA-Z0-9]/g, "-"),
+    (await nativeProjectCwd(cwd)).replace(/[^a-zA-Z0-9]/g, "-"),
     sessionId + ".jsonl",
   );
 }

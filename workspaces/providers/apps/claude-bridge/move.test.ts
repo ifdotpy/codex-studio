@@ -40,7 +40,7 @@ test("move exports only its native session, preserves bytes and refuses conflict
     const source = path.join(dir, id + ".jsonl");
     const bytes = Buffer.from('{"old":"café","uuid":"original"}\n');
     await fs.writeFile(source, bytes);
-    const destination = nativeDestination(id, "/target", root);
+    const destination = await nativeDestination(id, "/target", root);
     assert.equal(await nativeFile(id, root), source);
     await publishNative(source, destination);
     assert.deepEqual(await fs.readFile(destination), bytes);
@@ -61,8 +61,8 @@ test("a return move extends only an exact native prefix and selects the current 
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "claude-move-return-"));
   try {
     const id = randomUUID();
-    const first = nativeDestination(id, "/first", root);
-    const second = nativeDestination(id, "/second", root);
+    const first = await nativeDestination(id, "/first", root);
+    const second = await nativeDestination(id, "/second", root);
     await fs.mkdir(path.dirname(first), { recursive: true });
     await fs.mkdir(path.dirname(second), { recursive: true });
     await fs.writeFile(first, '{"old":1}\n');
@@ -73,6 +73,30 @@ test("a return move extends only an exact native prefix and selects the current 
     assert.deepEqual(await fs.readFile(first), await fs.readFile(second));
     await fs.writeFile(second, '{"changed":1}\n');
     await assert.rejects(publishNative(second, first, true), /different bytes/);
+  } finally {
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});
+
+test("a symlinked destination folder uses the real-path key that Claude resumes", async () => {
+  const root = await fs.realpath(
+    await fs.mkdtemp(path.join(os.tmpdir(), "claude-move-link-")),
+  );
+  try {
+    const id = randomUUID();
+    const project = path.join(root, "project");
+    const alias = path.join(root, "link");
+    await fs.mkdir(project);
+    await fs.symlink(project, alias);
+    const config = path.join(root, "config");
+    const real = await nativeDestination(id, project, config);
+    assert.equal(await nativeDestination(id, alias, config), real);
+    const other = await nativeDestination(id, "/other", config);
+    for (const file of [real, other]) {
+      await fs.mkdir(path.dirname(file), { recursive: true });
+      await fs.writeFile(file, '{"old":1}\n');
+    }
+    assert.equal(await nativeFile(id, config, alias), real);
   } finally {
     await fs.rm(root, { recursive: true, force: true });
   }

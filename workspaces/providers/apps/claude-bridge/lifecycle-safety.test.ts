@@ -148,7 +148,10 @@ test.each([
   "valid absent",
   "valid delivered",
 ])("closed steer history: %s", async (kind) => {
-  root = await fs.mkdtemp(path.join(os.tmpdir(), "claude-lifecycle-"));
+  // Claude records the real project path.
+  root = await fs.realpath(
+    await fs.mkdtemp(path.join(os.tmpdir(), "claude-lifecycle-")),
+  );
   const session = { id: sessionId, cwd: root };
   const initial = { id: "initial", type: "userMessage", nativeId: inputId };
   const steer: Item = {
@@ -275,7 +278,10 @@ test.each([
 test.each(["complete", "partial initial", "partial steer", "reversed steer"])(
   "restart promotes chain-proven receipts: %s",
   async (kind) => {
-    root = await fs.mkdtemp(path.join(os.tmpdir(), "claude-receipts-"));
+    // Claude records the real project path.
+    root = await fs.realpath(
+      await fs.mkdtemp(path.join(os.tmpdir(), "claude-receipts-")),
+    );
     const session: Session = {
       id: sessionId,
       cwd: root,
@@ -930,7 +936,10 @@ test.each(["total_tokens_reminder", "prompt_snapshot"])(
 test.each([false, true])(
   "a complete large native tool result preserves steer evidence: delivered=%s",
   async (delivered) => {
-    root = await fs.mkdtemp(path.join(os.tmpdir(), "claude-large-history-"));
+    // Claude records the real project path.
+    root = await fs.realpath(
+      await fs.mkdtemp(path.join(os.tmpdir(), "claude-large-history-")),
+    );
     const rootId = "66666666-6666-4666-8666-666666666666";
     const resultId = "55555555-5555-4555-8555-555555555555";
     const row = (

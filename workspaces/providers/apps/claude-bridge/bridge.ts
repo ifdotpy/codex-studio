@@ -2944,7 +2944,7 @@ async function handle(
       discardQuery(p.session.id, active);
       await publishNative(
         p.path,
-        nativeDestination(s.nativeId || s.id, p.cwd),
+        await nativeDestination(s.nativeId || s.id, p.cwd),
         !!existing,
       );
       if (existing) {
