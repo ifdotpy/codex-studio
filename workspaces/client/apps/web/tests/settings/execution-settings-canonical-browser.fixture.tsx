@@ -47,7 +47,7 @@ declare global {
     catalogHold: boolean;
     catalogRelease: (() => void) | null;
     canonicalRelease: (() => void) | null;
-    refreshRelease: (() => void) | null;
+    canonicalRefreshRelease: (() => void) | null;
     transferRelease: (() => void) | null;
     serverAccount: string | null;
     agent: Agent;
@@ -262,7 +262,7 @@ function Fixture() {
       window.refreshHold = false;
       window.refreshCount = 0;
       window.canonicalRelease = null;
-      window.refreshRelease = null;
+      window.canonicalRefreshRelease = null;
       window.transferRelease = null;
       window.serverAccount = null;
     });
@@ -308,7 +308,7 @@ function Fixture() {
             window.refreshCount++;
             if (window.refreshHold)
               await new Promise<void>(
-                (resolve) => (window.refreshRelease = resolve),
+                (resolve) => (window.canonicalRefreshRelease = resolve),
               );
             if (window.refreshFailure) throw new Error("Snapshot unavailable");
             if (window.pendingTransferProjection) {
@@ -326,7 +326,7 @@ function Fixture() {
               window.refreshCount++;
               if (window.refreshHold)
                 await new Promise<void>(
-                  (resolve) => (window.refreshRelease = resolve),
+                  (resolve) => (window.canonicalRefreshRelease = resolve),
                 );
               if (window.refreshFailure)
                 throw new Error("Snapshot unavailable");

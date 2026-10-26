@@ -209,14 +209,14 @@ test("execution settings canonical browser", async ({ page }) => {
         window.refreshHold = true;
       });
       await effort().selectOption("high");
-      await page.waitForFunction(() => !!window.refreshRelease);
+      await page.waitForFunction(() => !!window.canonicalRefreshRelease);
       await value("medium");
       assert.equal(await effort().isDisabled(), false);
       assert.equal(await page.getByText("Saving…", { exact: true }).count(), 0);
       assert.equal(await page.evaluate(() => window.refreshCount), 1);
       await page.evaluate(() => {
         window.refreshFailure = true;
-        window.refreshRelease!();
+        window.canonicalRefreshRelease!();
       });
       await page
         .getByRole("alert")
@@ -257,7 +257,7 @@ test("execution settings canonical browser", async ({ page }) => {
               [field]: target,
             };
             window.canonicalRelease = null;
-            window.refreshRelease = null;
+            window.canonicalRefreshRelease = null;
           },
           { field, target },
         );
@@ -274,13 +274,13 @@ test("execution settings canonical browser", async ({ page }) => {
         else await expect(toggle).not.toBeChecked();
         assert.equal(await page.evaluate(() => window.refreshCount), 0);
         await page.evaluate(() => window.canonicalRelease!());
-        await page.waitForFunction(() => !!window.refreshRelease);
+        await page.waitForFunction(() => !!window.canonicalRefreshRelease);
         if (field === "model")
           await expect.poll(() => modelValue(model)).toBe(target);
         else await expect(toggle).toBeChecked();
         await expect(model).not.toHaveAttribute("aria-disabled", "true");
         assert.equal(await effort().isDisabled(), false);
-        await page.evaluate(() => window.refreshRelease!());
+        await page.evaluate(() => window.canonicalRefreshRelease!());
       }
     });
     await check("review-and-permissions-confirmation-required", async () => {
@@ -290,7 +290,7 @@ test("execution settings canonical browser", async ({ page }) => {
         window.hold = true;
         window.refreshHold = true;
         window.canonicalRelease = null;
-        window.refreshRelease = null;
+        window.canonicalRefreshRelease = null;
         window.reply = {
           ...window.agent,
           reviewDefaults: { model: "gpt-5.6-sol", effort: "high" },
@@ -303,10 +303,10 @@ test("execution settings canonical browser", async ({ page }) => {
       await page.waitForFunction(() => !!window.canonicalRelease);
       assert.equal(await modelValue(reviewModel), "__model_default__");
       await page.evaluate(() => window.canonicalRelease!());
-      await page.waitForFunction(() => !!window.refreshRelease);
+      await page.waitForFunction(() => !!window.canonicalRefreshRelease);
       await expect.poll(() => modelValue(reviewModel)).toBe("gpt-5.6-sol");
       await expect(reviewModel).not.toHaveAttribute("aria-disabled", "true");
-      await page.evaluate(() => window.refreshRelease!());
+      await page.evaluate(() => window.canonicalRefreshRelease!());
       await reset();
       await page.keyboard.press("Escape");
       await page.getByText("Permissions", { exact: true }).click();
@@ -314,7 +314,7 @@ test("execution settings canonical browser", async ({ page }) => {
         window.hold = true;
         window.refreshHold = true;
         window.canonicalRelease = null;
-        window.refreshRelease = null;
+        window.canonicalRefreshRelease = null;
         window.reply = {
           ...window.agent,
           yoloMode: true,
@@ -329,10 +329,10 @@ test("execution settings canonical browser", async ({ page }) => {
       await expect(permission).not.toBeChecked();
       await expect(permission).toBeDisabled();
       await page.evaluate(() => window.canonicalRelease!());
-      await page.waitForFunction(() => !!window.refreshRelease);
+      await page.waitForFunction(() => !!window.canonicalRefreshRelease);
       await expect(permission).toBeChecked();
       await expect(permission).toBeEnabled();
-      await page.evaluate(() => window.refreshRelease!());
+      await page.evaluate(() => window.canonicalRefreshRelease!());
     });
     await check("account-default-transfer-confirmation", async () => {
       // Moving existing subagents is an explicit action of its own; the receipt
@@ -355,7 +355,7 @@ test("execution settings canonical browser", async ({ page }) => {
         window.transferHold = true;
         window.refreshHold = true;
         window.transferRelease = null;
-        window.refreshRelease = null;
+        window.canonicalRefreshRelease = null;
       });
       await move.click();
       await page.waitForFunction(() => !!window.transferRelease);
@@ -380,7 +380,7 @@ test("execution settings canonical browser", async ({ page }) => {
         };
         window.transferRelease!();
       });
-      await page.waitForFunction(() => !!window.refreshRelease);
+      await page.waitForFunction(() => !!window.canonicalRefreshRelease);
       assert.equal(await account.inputValue(), "second");
       assert.equal(await account.isDisabled(), false);
       await expect(page.getByText("2 waiting", { exact: true })).toBeVisible();
@@ -390,7 +390,7 @@ test("execution settings canonical browser", async ({ page }) => {
         await page.getByText(/Account transfer complete/).count(),
         0,
       );
-      await page.evaluate(() => window.refreshRelease!());
+      await page.evaluate(() => window.canonicalRefreshRelease!());
       // Replay confirms the old operation with the saved request id.
       await reset({
         defaults: true,
@@ -499,7 +499,7 @@ test("execution settings canonical browser", async ({ page }) => {
       await page.waitForFunction(() => !!window.transferRelease);
       await expect(page.getByText("2 waiting", { exact: true })).toBeVisible();
       await page.evaluate(() => window.transferRelease!());
-      await page.waitForFunction(() => !!window.refreshRelease);
+      await page.waitForFunction(() => !!window.canonicalRefreshRelease);
       await expect(
         page.getByRole("button", { name: "Cancel remaining", exact: true }),
       ).toHaveCount(0);
@@ -526,7 +526,7 @@ test("execution settings canonical browser", async ({ page }) => {
         });
       });
       await expect(page.getByText("1 waiting", { exact: true })).toBeVisible();
-      await page.evaluate(() => window.refreshRelease!());
+      await page.evaluate(() => window.canonicalRefreshRelease!());
     });
     await check("replay", async () => {
       await reset({ agent: { status: "running" } });
