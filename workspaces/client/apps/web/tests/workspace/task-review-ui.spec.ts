@@ -376,6 +376,9 @@ test("Tasks show gate evidence and schema refusals and require an override reaso
 /** The renderer serialized this request schema as JSON before the fixture received it. */
 function fixtureResultSchema(
   schema: PostBody<"/api/work">["result_schema"],
-): components["schemas"]["WorkItem"]["resultSchema"] {
+):
+  | (components["schemas"]["WorkItem"]["resultSchema"] &
+      components["schemas"]["JsonValue"])
+  | undefined {
   return schema === undefined ? undefined : JSON.parse(JSON.stringify(schema));
 }
