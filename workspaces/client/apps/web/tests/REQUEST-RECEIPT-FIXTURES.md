@@ -10,7 +10,7 @@ or stored receipt using a request body field such as `id`, `request_id`, or
 - `claude/claude-login-ui.spec.mjs`
 - `drafts/dialog-drafts-ui.spec.ts`
 - `drafts/draft-push-coalescing-browser.spec.ts`
-- `files/upload-recovery-browser.spec.mjs`
+- `files/upload-recovery-browser.spec.ts`
 - `messages/message-delivery-ui.spec.ts`
 - `messages/mobile-send-reliability-browser.spec.ts`
 - `messages/send-session-token-browser.spec.ts`
@@ -27,7 +27,7 @@ or stored receipt using a request body field such as `id`, `request_id`, or
 - `settings/unified-agent-picker-browser.spec.ts`
 - `shell/shell-ux-ui.spec.mjs`
 - `sidebar/sidebar-parity-fixture.mjs`
-- `teams/peer-teams-browser.spec.mjs`
-- `teams/subagent-concurrency-ui.spec.mjs`
-- `terminal/terminal-dock-ui.spec.mjs`
-- `terminal/terminal-input-recovery-browser.spec.mjs`
+- `teams/peer-teams-browser.spec.ts`
+- `teams/subagent-concurrency-ui.spec.ts`
+- `terminal/terminal-dock-ui.spec.ts`
+- `terminal/terminal-input-recovery-browser.spec.ts`
