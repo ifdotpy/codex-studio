@@ -46,11 +46,7 @@ export function isVisibleSidebarAgent(
 
 /** Select the most recent activity, with ascending ID for timestamp ties. */
 export function mostRecentActivity<
-  T extends {
-    id: string;
-    updated?: number | null;
-    created?: number | null;
-  },
+  T extends Pick<Agent, "id" | "updated" | "created">,
 >(rows: T[]) {
   let selected: T | undefined;
   for (const row of rows) {

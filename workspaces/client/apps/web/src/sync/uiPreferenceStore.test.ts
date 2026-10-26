@@ -139,12 +139,12 @@ it("adopts the server clock correction without replacing a newer local edit", ()
   const accepted = { [key]: { ...sent[key], timestamp: 1000 } };
   receivePreferenceFields("user", sent);
   acknowledgePreferenceFields("user", sent, accepted);
-  expect(readPreferenceFields("user")[key].timestamp).toBe(1000);
+  expect(readPreferenceFields("user")[key]?.timestamp).toBe(1000);
   receivePreferenceFields("user", {
     [key]: { ...sent[key], value: "light", timestamp: 2000 },
   });
   acknowledgePreferenceFields("user", sent, accepted);
-  expect(readPreferenceFields("user")[key].value).toBe("light");
+  expect(readPreferenceFields("user")[key]?.value).toBe("light");
 });
 
 it("shows the server value when it wins over a clamped edit", () => {

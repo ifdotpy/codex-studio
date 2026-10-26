@@ -9,7 +9,7 @@ const fixturePaths = new URL("./test-temp-path-fixtures.json", import.meta.url);
 export function testSource(file: string, source: string) {
   if (!/\.(rs|py|mjs|[cm]?[jt]sx?|sh)$/.test(file)) return "";
   if (
-    /(?:^|\/)check-package-start\.mjs$|(^|\/)(tests?|fixtures|support)(\/|\.)|(^|\/)test[_-]|[._-]test[._-]|[_-](tests?|oracle|contract)\./.test(
+    /(?:^|\/)check-package-start\.ts$|(^|\/)(tests?|fixtures|support)(\/|\.)|(^|\/)test[_-]|[._-]test[._-]|[_-](tests?|oracle|contract)\./.test(
       file,
     )
   )

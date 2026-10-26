@@ -100,13 +100,12 @@ export function automaticAccessStore(
           );
           if (!attempt?.needsPairCheck) continue;
           const started = await hasPairAttempt(attempt);
-          const { needsPairCheck: _needsPairCheck, ...checkedAttempt } =
-            attempt;
           await rawAccess("readwrite", (store) =>
             store.put(
               attemptMetadata({
-                ...checkedAttempt,
+                ...attempt,
                 pairStarted: started,
+                needsPairCheck: undefined,
               }),
               key,
             ),

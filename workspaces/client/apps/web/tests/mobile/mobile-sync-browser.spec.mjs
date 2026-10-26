@@ -8,7 +8,7 @@ import {
   readApiSchemaHash,
   test,
   expect,
-} from "../playwright.mjs";
+} from "../playwright.ts";
 
 test("mobile sync browser", async ({ page }) => {
   const { createServer } = await import(

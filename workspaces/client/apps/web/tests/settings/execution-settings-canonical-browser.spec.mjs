@@ -3,16 +3,16 @@ import {
   readApiSchemaHash,
   apiSchemaHeaders,
   apiSchemaHandshakeSse,
-} from "../playwright.mjs";
-import { setupControl, chooseSetupValue } from "../fixtures/setup-controls.mjs";
+} from "../playwright.ts";
+import { setupControl, chooseSetupValue } from "../fixtures/setup-controls.ts";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { createRequire } from "node:module";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { modelValue, selectModel } from "../fixtures/model-picker.mjs";
-import { test, expect } from "../playwright.mjs";
+import { modelValue, selectModel } from "../fixtures/model-picker.ts";
+import { test, expect } from "../playwright.ts";
 
 test("execution settings canonical browser", async ({ page }) => {
   test.setTimeout(180000);

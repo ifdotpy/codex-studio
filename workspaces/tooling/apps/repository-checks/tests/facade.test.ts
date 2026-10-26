@@ -53,7 +53,7 @@ test("short and comprehensive recipes preserve their owned test boundaries", () 
     assert.match(recipe.command, /'nextest' 'run' '--workspace'/);
     assert.match(recipe.command, /studio-contracts/);
     assert.match(recipe.command, /boundaries-check/);
-    assert.match(recipe.command, /vm-guest\/run-guest-suite\.mjs/);
+    assert.match(recipe.command, /vm-guest\/run-guest-suite\.mts/);
     assert.doesNotMatch(
       recipe.command,
       /--release|test-server-load|runtime_load|mutations/,
@@ -61,7 +61,7 @@ test("short and comprehensive recipes preserve their owned test boundaries", () 
   }
   assert.match(fast.command, /'--profile' 'fast'/);
   assert.match(fast.command, /test:unit:fast/);
-  assert.match(fast.command, /native\/check-native\.test\.mjs/);
+  assert.match(fast.command, /native\/check-native\.test\.ts/);
   assert.doesNotMatch(fast.command, /test:browser/);
   assert.match(comprehensive.command, /'--profile' 'ci'/);
   assert.match(comprehensive.command, /'clippy' '--workspace'/);
@@ -87,7 +87,7 @@ test("real IndexedDB staging belongs to provisioned browser smoke, not Node unit
   const grep = smoke.match(/--grep "([^"]+)"/)?.[1];
   assert.ok(grep, "package.json owns the smoke selector");
   assert.match(title, new RegExp(grep));
-  assert.match(spec, /from "\.\.\/playwright\.mjs"/);
+  assert.match(spec, /from "\.\.\/playwright\.ts"/);
   assert.equal(
     existsSync(`${web}/src/sync/entityTransfer.storage.test.ts`),
     false,
@@ -1190,7 +1190,7 @@ test("Playwright launcher clears BROWSER and removes state after success and fai
       chmodSync(witness, 0o755);
       const result = spawnSync(
         process.execPath,
-        ["workspaces/client/apps/web/scripts/run-browser-tests.mjs", "--list"],
+        ["workspaces/client/apps/web/scripts/run-browser-tests.ts", "--list"],
         {
           encoding: "utf8",
           env: {
@@ -1427,4 +1427,80 @@ test("Playwright reports reject malformed suite containers", () => {
   );
   assert.equal(result.exitCode, 1);
   assert.match(result.errors.join(" "), /Playwright JSON report is invalid/);
+});
+
+test("native startup check stays within temporary-state coverage", async () => {
+  const { testSource } = await import("../test-temp-state.ts");
+  assert.equal(
+    testSource(
+      "workspaces/client/apps/native/check-package-start.ts",
+      "fixture source",
+    ),
+    "fixture source",
+  );
+});
+
+test("boundary type imports share generated contracts and named type owners without allowing runtime imports", () => {
+  const fixture = workspaceFixture();
+  try {
+    const desktop = fixture.add(
+      "desktop-app",
+      "workspaces/client/apps/desktop",
+    );
+    const web = fixture.add("web-app", "workspaces/client/apps/web");
+    const shared = fixture.add(
+      "shared-package",
+      "workspaces/client/packages/shared",
+    );
+    const cases: [string, string, boolean][] = [
+      [
+        desktop,
+        'import type { Row } from "../web/src/generated/api.ts";',
+        true,
+      ],
+      [
+        desktop,
+        'export type { Row } from "../web/src/generated/api.ts";',
+        true,
+      ],
+      [
+        desktop,
+        'import { type Row } from "../web/src/generated/api.ts";',
+        true,
+      ],
+      [desktop, 'import { Row } from "../web/src/generated/api.ts";', false],
+      [
+        desktop,
+        'import { type Row, value } from "../web/src/generated/api.ts";',
+        false,
+      ],
+      [desktop, 'import type { Row } from "../web/src/private.ts";', false],
+      [web, 'import type { DesktopApi } from "../desktop/api.ts";', true],
+      [web, 'export type { DesktopApi } from "../desktop/api.ts";', true],
+      [web, 'import { DesktopApi } from "../desktop/api.ts";', false],
+      [
+        desktop,
+        'import type { Row } from "../web/src/shared.generated.ts";',
+        true,
+      ],
+      [
+        shared,
+        'import type { Row } from "../../apps/web/src/generated/api.ts";',
+        true,
+      ],
+      [
+        shared,
+        'import { Row } from "../../apps/web/src/generated/api.ts";',
+        false,
+      ],
+    ];
+    for (const [directory, source, allowed] of cases) {
+      const file = path.join(directory, "entry.ts");
+      writeFileSync(file, source);
+      const findings = boundaryFindings(fixture.root, fixture.packages, [file]);
+      assert.equal(findings.length === 0, allowed, source);
+    }
+  } finally {
+    rmSync(fixture.root, { recursive: true, force: true });
+  }
 });

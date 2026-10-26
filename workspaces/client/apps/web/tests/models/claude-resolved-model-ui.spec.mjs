@@ -7,8 +7,8 @@ import {
   rustUiFixture,
   test,
   expect,
-} from "../playwright.mjs";
-import { waitForFixturePort } from "../fixture-readiness.mjs";
+} from "../playwright.ts";
+import { waitForFixturePort } from "../fixture-readiness.ts";
 
 // Run the production renderer against disposable runtime state. Claude account
 // and catalog projections reproduce the real CLI's stored resolved model ID.

@@ -10,7 +10,7 @@ import {
   protocol3SseEvent,
   readApiSchemaHash,
   test,
-} from "../../tests/playwright.mjs";
+} from "../../tests/playwright.ts";
 
 for (const writerTab of [0, 1]) {
   test(`projection reset fences an accepted write from tab ${writerTab + 1}`, async ({
@@ -18,7 +18,7 @@ for (const writerTab of [0, 1]) {
   }) => {
     test.setTimeout(45_000);
     const { createFixtureViteServer: createServer } =
-      await import("../../tests/playwright.mjs");
+      await import("../../tests/playwright.ts");
     const workspaceId = "e".repeat(32);
     const streams = new Set();
     const rows = new Map();

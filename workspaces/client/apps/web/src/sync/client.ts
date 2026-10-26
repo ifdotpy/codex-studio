@@ -80,7 +80,7 @@ import {
   subscribeTranscript,
 } from "./transcriptCache";
 
-import { DRAFT_SYNC_TIMING_MS } from "./draftSyncTiming.mjs";
+import { DRAFT_SYNC_TIMING_MS } from "./draftSyncTiming.ts";
 
 import { API_SCHEMA_HASH } from "../generated/apiSchema";
 
@@ -99,7 +99,7 @@ import {
   holdEntityProjectionDatabaseLock,
 } from "./entityCacheStorage";
 
-export { DRAFT_SYNC_TIMING_MS } from "./draftSyncTiming.mjs";
+export { DRAFT_SYNC_TIMING_MS } from "./draftSyncTiming.ts";
 
 addRxPlugin(RxDBLeaderElectionPlugin);
 
@@ -182,6 +182,24 @@ export type SyncClientOptions = {
   >;
   databaseSuffix: string;
 };
+/** Local draft/outbox cache schema; the document sequence is a server-owned integer. */
+export const SYNC_DOCUMENT_SCHEMA = {
+  version: 0,
+  primaryKey: "id",
+  type: "object",
+  properties: {
+    id: { type: "string", maxLength: 300 },
+    payload: { type: "string" },
+    seq: {
+      type: "integer",
+      minimum: 0,
+      maximum: MAX_SAFE_INTEGER,
+      multipleOf: 1,
+    },
+  },
+  required: ["id", "payload", "seq"],
+} as const;
+
 export function createSyncClient(options: SyncClientOptions) {
   const {
     syncGet,
@@ -220,22 +238,7 @@ export function createSyncClient(options: SyncClientOptions) {
     }
   }
 
-  const schema = {
-    version: 0,
-    primaryKey: "id",
-    type: "object",
-    properties: {
-      id: { type: "string", maxLength: 300 },
-      payload: { type: "string" },
-      seq: {
-        type: "integer",
-        minimum: 0,
-        maximum: MAX_SAFE_INTEGER,
-        multipleOf: 1,
-      },
-    },
-    required: ["id", "payload", "seq"],
-  } as const;
+  const schema = SYNC_DOCUMENT_SCHEMA;
 
   let pending: ReturnType<typeof open> | undefined;
 
@@ -2499,7 +2502,7 @@ export function createSyncClient(options: SyncClientOptions) {
         throw new Error("The entity projection is not ready yet.");
       const snapshot = applyEntityRows(
         emptyEntityProjection(),
-        documents.map((document) => document.toMutableJSON()),
+        documents.map((document) => document.toJSON()),
         true,
       );
       if (!snapshot) throw new Error("The entity projection is unavailable.");

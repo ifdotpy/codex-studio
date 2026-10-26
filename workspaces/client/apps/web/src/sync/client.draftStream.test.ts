@@ -1,7 +1,8 @@
+import assert from "node:assert/strict";
 import { afterEach, expect, it, vi } from "vitest";
 import type { RxDatabase } from "rxdb";
 import { firstValueFrom, filter } from "rxjs";
-import { DRAFT_SYNC_TIMING_MS } from "./draftSyncTiming.mjs";
+import { DRAFT_SYNC_TIMING_MS } from "./draftSyncTiming.ts";
 import type {
   ResourceChangeEvent,
   ResourceVersion,
@@ -156,6 +157,7 @@ async function setup() {
     ],
   });
   const deliver = async (frame: ResourceChangeEvent, wait = true) => {
+    assert.ok(frame.resourceVersions[0] != null);
     mocks.invalidate?.({
       epoch: frame.epoch,
       revision: frame.resourceVersions[0].revision,
@@ -195,7 +197,9 @@ it("recovers an accepted draft from the durable RxDB checkpoint after persistenc
   await deliver(event(0, 1));
   expect(!!(await db.drafts.findOne("phone:chat").exec())).toBe(true);
   const changed = event(1, 2);
+  assert.ok(changed.resourceVersions[0] != null);
   const documents = changed.resourceVersions[0].draftChanges!.documents;
+  assert.ok(documents[0] != null);
   documents[0].payload = documents[0].payload.replace("remote", "recovered");
   mocks.syncGet.mockImplementation(
     async (path: string, options?: { query: { after: number } }) =>
@@ -221,7 +225,9 @@ it("recovers an accepted draft from the durable RxDB checkpoint after persistenc
   expect((await db.drafts.findOne("phone:chat").exec())?.payload).toContain(
     "recovered",
   );
-  expect(pulls()[1][1]).toMatchObject({ query: { scope: "drafts", after: 1 } });
+  expect(pulls()[1]?.[1]).toMatchObject({
+    query: { scope: "drafts", after: 1 },
+  });
   write.mockRestore();
 });
 
@@ -230,7 +236,9 @@ it("admits streamed changes during a pending push and keeps both conflicting tex
   await deliver(event(0, 1));
   expect(!!(await db.drafts.findOne("phone:chat").exec())).toBe(true);
   const remote = event(1, 2);
+  assert.ok(remote.resourceVersions[0] != null);
   const documents = remote.resourceVersions[0].draftChanges!.documents;
+  assert.ok(documents[0] != null);
   documents[0].payload = JSON.stringify({
     device: "phone",
     session: "chat",
@@ -284,12 +292,16 @@ it("admits streamed changes during a pending push and keeps both conflicting tex
 
   await mocks.replication!.awaitInSync();
   expect(mocks.syncPost).toHaveBeenCalledTimes(2);
+  assert.ok(mocks.syncPost.mock.calls[1] != null);
   const pushed = mocks.syncPost.mock.calls[1][1];
+  assert.ok(pushed.rows[0] != null);
   const merged = pushed.rows[0].newDocumentState;
   expect(merged.payload).toContain("remote-new");
   expect(merged.payload).toContain("local-unsent");
   // A successful merged push publishes its own newer draft sequence.
   const confirmed = event(2, 3);
+  assert.ok(confirmed.resourceVersions[0] != null);
+  assert.ok(confirmed.resourceVersions[0].draftChanges!.documents[0] != null);
   confirmed.resourceVersions[0].draftChanges!.documents[0].payload =
     merged.payload;
   const confirmedWrite = firstValueFrom(

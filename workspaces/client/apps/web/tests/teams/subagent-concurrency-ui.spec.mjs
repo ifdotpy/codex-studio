@@ -4,7 +4,7 @@ import {
   test,
   expect,
   rustUiFixture,
-} from "../playwright.mjs";
+} from "../playwright.ts";
 import assert from "node:assert/strict";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";

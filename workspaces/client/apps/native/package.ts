@@ -9,6 +9,7 @@ import {
   prebuiltReleaseDirectory,
   releaseTargetEnvironment,
 } from "../desktop/release-binaries.mjs";
+import { packageRecoveryHelpers } from "./recovery-package.ts";
 import { pruneBridgeImageCodecs } from "./bridge-image-package.ts";
 
 const root = path.dirname(fileURLToPath(import.meta.url));
@@ -75,23 +76,7 @@ try {
     path.join(resources, "studio-speech"),
     path.join(resources, "helpers/studio-speech"),
   );
-  await mkdir(path.join(resources, "helpers/desktop-recovery"), {
-    recursive: true,
-  });
-  await cp(
-    path.join(root, "recovery.cjs"),
-    path.join(resources, "helpers/recovery.cjs"),
-  );
-  for (const name of [
-    "recovery.cjs",
-    "backend.cjs",
-    "restart-environment.cjs",
-  ]) {
-    await cp(
-      path.join(root, "../desktop", name),
-      path.join(resources, "helpers/desktop-recovery", name),
-    );
-  }
+  await packageRecoveryHelpers(resources);
   setBundleDisplayName(application, "LAYR Studio");
   signApplication(application, identity);
   console.log(application);

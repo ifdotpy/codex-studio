@@ -4,7 +4,7 @@ import {
   protocol3SseEvent,
   syncIdentityFixture,
   test,
-} from "../playwright.mjs";
+} from "../playwright.ts";
 // Exercise reconnect and delivery state in real React/RxDB browser hooks.
 import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
@@ -15,7 +15,7 @@ test("Sync recovery browser", async ({
 }) => {
   test.setTimeout(180_000);
   const { createFixtureViteServer: createServer } =
-    await import("../playwright.mjs");
+    await import("../playwright.ts");
   const server = await createServer({
     configFile: false,
     optimizeDeps: { noDiscovery: true },

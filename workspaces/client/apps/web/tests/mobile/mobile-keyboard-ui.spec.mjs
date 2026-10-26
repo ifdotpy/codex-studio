@@ -10,7 +10,7 @@ import {
   spawnFixture as spawn,
   rustUiFixture,
   queryFixtureDatabase,
-} from "../playwright.mjs";
+} from "../playwright.ts";
 
 const mobileBrowsers = [
   [

@@ -1,5 +1,5 @@
 import { expect, test, vi } from "vitest";
-import { streamTranscriptFixture } from "../tests/fixtures/streaming-transcript.mjs";
+import { streamTranscriptFixture } from "../tests/fixtures/streaming-transcript.ts";
 
 test("the scroll fixture publishes only when the witness requests a commit", async () => {
   const publish = vi.fn(async () => "first delta");
@@ -12,9 +12,9 @@ test("the scroll fixture publishes only when the witness requests a commit", asy
 });
 
 test("the scroll fixture waits for the requested delta to render", async () => {
-  const admission = Promise.withResolvers();
+  const admission = Promise.withResolvers<void>();
   const publish = vi.fn(async () => "first delta");
-  const entered = Promise.withResolvers();
+  const entered = Promise.withResolvers<void>();
   const rendered = vi.fn(() => {
     entered.resolve();
     return admission.promise;

@@ -74,8 +74,10 @@ export default defineConfig({
         };
         for (const match of String(html.source).matchAll(
           /(?:src|href)="\.\/([^"?#]+)"/g,
-        ))
-          visit(match[1]);
+        )) {
+          const name = match[1];
+          if (name) visit(name);
+        }
         // The shared Rust parser must be available on the first offline load.
         for (const name of Object.keys(bundle)) {
           if (name.endsWith(".wasm")) visit(name);

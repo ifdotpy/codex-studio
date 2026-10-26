@@ -1,3 +1,6 @@
+import assert from "node:assert/strict";
+import type { createSyncClient } from "./client";
+import type { OutgoingTabMessage } from "./resourceEvents";
 import { afterEach, expect, it, vi } from "vitest";
 import { createResourceEvents } from "./resourceEvents";
 import {
@@ -121,7 +124,7 @@ async function fixture(
   });
   vi.stubGlobal("location", { origin: "http://studio.test" });
   let deliverPeer: ((event: MessageEvent) => void) | undefined;
-  const posted: any[] = [];
+  const posted: OutgoingTabMessage[] = [];
   vi.stubGlobal(
     "BroadcastChannel",
     follower || peerOwner
@@ -131,7 +134,7 @@ async function fixture(
             channelNames.push(name);
             deliverPeer = (event) => this.onmessage?.(event);
           }
-          postMessage(message: unknown) {
+          postMessage(message: OutgoingTabMessage) {
             posted.push(structuredClone(message));
           }
           close() {}
@@ -1057,6 +1060,8 @@ it("T28 recently viewed chat switching sends no subscription changes within grac
       }
       await vi.advanceTimersByTimeAsync(50);
     };
+    assert.ok(refs[0]);
+    assert.ok(refs[1]);
     let stop = events.watchResourceChanges(refs[0], () => {});
     await settle();
     stop();
@@ -1065,7 +1070,9 @@ it("T28 recently viewed chat switching sends no subscription changes within grac
     const baseline = f.post.mock.calls.length;
     for (let step = 0; step < 10; step++) {
       stop();
-      stop = events.watchResourceChanges(refs[step % refs.length], () => {});
+      const ref = refs[step % refs.length];
+      assert.ok(ref);
+      stop = events.watchResourceChanges(ref, () => {});
       await settle();
     }
     expect(f.sources).toHaveLength(1);
@@ -1299,6 +1306,7 @@ it("takes terminal ownership with a snapshot and resumes only its proven baselin
   });
   await vi.advanceTimersByTimeAsync(0);
   const reset = frame(11, "new", 3);
+  assert.ok(reset.resourceVersions[0]);
   // This is what an owner's failed snapshot dispatch broadcasts to a follower.
   const {
     cursor: _cursor,
@@ -1392,7 +1400,11 @@ it("a late terminal follower consumes owner merged views without repeated recove
   const recover = vi.fn(async () => merged);
   const accept = vi.fn();
   const stop = createDataObserver(
-    () => ({}) as any,
+    () => ({
+      subscribeTranscriptProjection: vi.fn<
+        ReturnType<typeof createSyncClient>["subscribeTranscriptProjection"]
+      >(() => () => {}),
+    }),
     follower.transport,
     undefined,
     recover,
@@ -2140,6 +2152,7 @@ it("connection: owner health snapshots retain server freshness and invalidate re
   const first = [...f.posted]
     .reverse()
     .find((message) => message.kind === "leader-heartbeat");
+  assert.ok(first != null);
   expect(first.health).toMatchObject({
     status: "live",
     validatedAt: expect.any(Number),
@@ -2148,12 +2161,17 @@ it("connection: owner health snapshots retain server freshness and invalidate re
   const quiet = [...f.posted]
     .reverse()
     .find((message) => message.kind === "leader-heartbeat");
+  assert.ok(quiet != null);
+  assert.ok(quiet.health != null);
+  assert.ok(first.health != null);
   expect(quiet.health.validatedAt).toBe(first.health.validatedAt);
   expect(quiet.health.sequence).toBeGreaterThan(first.health.sequence);
   f.source.onerror?.();
   const failed = [...f.posted]
     .reverse()
     .find((message) => message.kind === "status");
+  assert.ok(failed != null);
+  assert.ok(failed.health != null);
   expect(failed.health.status).toBe("degraded");
   expect(failed.health.validatedAt).toBeUndefined();
   expect(failed.health.generation).toBeGreaterThan(first.health.generation);
@@ -2270,6 +2288,8 @@ it("connection: cancelling a pending server frame cannot publish live proof for 
   const failed = [...f.posted]
     .reverse()
     .find((message) => message.kind === "status");
+  assert.ok(failed != null);
+  assert.ok(failed.health != null);
   expect(failed.health.validatedAt).toBeUndefined();
 });
 
@@ -2316,6 +2336,7 @@ it("connection: validated progress keeps owner health fresh through a false offl
     const relay = [...f.posted]
       .reverse()
       .find((message) => message.kind === "resource-progress");
+    assert.ok(relay);
     follower.control("resource-progress", relay);
     expect(followerStatus.mock.lastCall?.[0]).toBe("live");
   }
@@ -2326,6 +2347,8 @@ it("connection: validated progress keeps owner health fresh through a false offl
   const proof = [...f.posted]
     .reverse()
     .find((message) => message.kind === "resource-progress");
+  assert.ok(proof != null);
+  assert.ok(proof.health != null);
   expect(proof.health.validatedAt).toBe(Date.now());
 });
 

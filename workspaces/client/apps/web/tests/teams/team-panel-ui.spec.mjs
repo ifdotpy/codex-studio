@@ -6,7 +6,7 @@ import {
   expect,
   spawnFixture as spawn,
   rustUiFixture,
-} from "../playwright.mjs";
+} from "../playwright.ts";
 // Production bundle, isolated backend, no model calls.
 import assert from "node:assert/strict";
 import { mkdtemp } from "node:fs/promises";

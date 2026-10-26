@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
-import { test } from "../playwright.mjs";
+import { test } from "../playwright.ts";
 
 test("malformed current-draft key does not crash hook initialization", async ({
   browser,

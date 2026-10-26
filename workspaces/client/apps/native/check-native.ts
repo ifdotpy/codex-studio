@@ -1,4 +1,6 @@
 // Exercise the native host through hidden WebViews and disposable fixtures.
+import type { BackendIdentity } from "../desktop/backend.ts";
+import type { components } from "../web/src/generated/api.ts";
 import type { BrowserProfileArchive } from "../web/src/native/importBrowserProfile.ts";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
@@ -119,13 +121,23 @@ export async function createFixture(directory: string) {
           { "Content-Type": "text/event-stream" },
         );
       if (request.url === "/api/sync/identity")
-        return json({ workspaceId: "a".repeat(32), chatState: true });
+        return json({
+          workspaceId: "a".repeat(32),
+          chatState: true,
+        } satisfies Pick<
+          components["schemas"]["SyncIdentityResponse"],
+          "workspaceId"
+        > &
+          Record<string, unknown>);
       if (request.url?.startsWith("/api/sync/pull?scope=drafts&"))
         return json({
           workspaceId: "a".repeat(32),
           documents: [],
           checkpoint: { seq: 0 },
-        });
+        } satisfies Pick<
+          components["schemas"]["SyncPullResponse"],
+          "workspaceId" | "documents" | "checkpoint"
+        >);
       if (request.url === "/api/desktop")
         return json({
           application: "codex-agents",
@@ -134,9 +146,11 @@ export async function createFixture(directory: string) {
           pid: process.pid,
           stateDir: identityState,
           backendBuild: "a".repeat(64),
-        });
+        } satisfies BackendIdentity);
       if (request.url === "/api/session")
-        return json({ token: "fixture-native-token" });
+        return json({
+          token: "fixture-native-token",
+        } satisfies components["schemas"]["SessionResponse"]);
       return send(404, '{"error":"Unknown fixture path"}');
     }
     if (request.method === "POST") {

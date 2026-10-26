@@ -6,7 +6,7 @@ import {
   rustUiFixture,
   readFixtureSyncContract,
   stubEntityState,
-} from "../playwright.mjs";
+} from "../playwright.ts";
 // Real production React, isolated HTTP fixture, controlled status and delivery timing.
 import assert from "node:assert/strict";
 import { mkdtemp, writeFile } from "node:fs/promises";

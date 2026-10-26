@@ -409,6 +409,16 @@ type EntityProjectionRow = Readonly<
 export function applyEntityChanges(
   state: EntityProjection,
   rows: Iterable<EntityProjectionRow>,
+  ready: true,
+): Snapshot;
+export function applyEntityChanges(
+  state: EntityProjection,
+  rows: Iterable<EntityProjectionRow>,
+  ready: boolean,
+): Snapshot | null;
+export function applyEntityChanges(
+  state: EntityProjection,
+  rows: Iterable<EntityProjectionRow>,
   ready: boolean,
 ): Snapshot | null {
   const changed = state.changed;
@@ -610,6 +620,16 @@ export function applyEntityChanges(
 }
 
 /** Reconcile a complete RxDB query, including rows omitted after a delete. */
+export function applyEntityRows(
+  state: EntityProjection,
+  rows: readonly EntityProjectionRow[],
+  ready: true,
+): Snapshot;
+export function applyEntityRows(
+  state: EntityProjection,
+  rows: readonly EntityProjectionRow[],
+  ready: boolean,
+): Snapshot | null;
 export function applyEntityRows(
   state: EntityProjection,
   rows: readonly EntityProjectionRow[],

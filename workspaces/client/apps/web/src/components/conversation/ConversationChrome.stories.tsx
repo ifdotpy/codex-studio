@@ -12,7 +12,7 @@ import {
 import ConversationTitle from "../shell/ConversationTitle";
 import ConversationStart from "./ConversationStart";
 import { ExecutionSettings } from "../agents/ExecutionSettings";
-import Usage from "../Usage";
+import Usage, { type UsageAccount } from "../Usage";
 import { createServerServices } from "../../servers/serverServices";
 import { ServerServicesProvider } from "../../servers/ServerServicesContext";
 import type { Agent, Json } from "../../types";
@@ -85,7 +85,7 @@ const limits: Json = {
   },
 };
 const observedAt = Date.now() / 1000;
-const usageAccounts = [10, 15, 40].map((usedPercent, index) => {
+const usageAccounts = [10, 15, 40].map((usedPercent, index): UsageAccount => {
   const key = index === 0 ? "default" : `account-${index}`;
   const label = ["Engineering", "Research", "Review"][index];
   if (label === undefined) throw new Error("Missing account label fixture");

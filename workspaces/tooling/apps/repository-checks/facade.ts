@@ -203,20 +203,58 @@ const DECLARATION_SECTIONS = [
   "peerDependencies",
   "optionalDependencies",
 ] as const;
-const BOUNDARY_ALLOWLIST = [
+// Only erased type imports may use these shared owners across workspace boundaries.
+const SHARED_TYPE_OWNERS = [
   {
-    importer: "codex-studio-tooling",
-    file: "workspaces/tooling/apps/repository-checks/measure-sync-stream.ts",
-    specifier: "../../../client/apps/web/src/generated/api.ts",
-    reason:
-      "The read-only traffic sampler consumes the Rust-generated resource and entity types.",
+    file: "workspaces/client/apps/desktop/backend.ts",
+    purpose: "Backend identity type consumed by native startup checks.",
   },
   {
-    importer: "codex-studio-tooling",
-    file: "workspaces/tooling/apps/repository-checks/replay-view-scoped.ts",
-    specifier: "../../../client/apps/web/src/generated/api.ts",
+    file: "workspaces/client/apps/desktop/recovery.ts",
+    purpose:
+      "Recovery closure type shared by the staged native recovery entrypoint.",
+  },
+  {
+    file: "workspaces/client/apps/web/src/native/host.ts",
+    purpose:
+      "Native host and HTTP response interfaces shared by native fixture checks.",
+  },
+  {
+    file: "workspaces/client/apps/desktop/api.ts",
+    purpose:
+      "Self-contained desktop bridge types shared by the host and renderer.",
+  },
+  {
+    file: "workspaces/client/apps/web/src/native/importBrowserProfile.ts",
+    purpose:
+      "Browser profile document types shared by profile export fixtures and importers.",
+  },
+  {
+    file: "workspaces/client/apps/web/src/apiTypes.ts",
+    purpose:
+      "Generated route aliases and JSON input views shared by client checks.",
+  },
+  {
+    file: "workspaces/client/apps/web/src/servers/serverIdentity.ts",
+    purpose:
+      "Server identity fields shared by renderer discovery and desktop pairing.",
+  },
+];
+
+const BOUNDARY_ALLOWLIST = [
+  {
+    importer: "codex-agents-web",
+    file: "src/dictation/storage.test.ts",
+    specifier: "../../../desktop/speech.ts",
     reason:
-      "The offline replay consumes the Rust-generated resource and entity types.",
+      "The existing WAV encoding and helper-error witness consumes the desktop speech implementation, previously loaded from speech.cjs.",
+  },
+  {
+    importer: "codex-agents-desktop",
+    file: "profile-export-fixture.ts",
+    specifier: "../web/src/native/importBrowserProfile.ts",
+    reason:
+      "The extracted hidden profile fixture retains the profile-export-test runtime witness against the renderer import owner.",
   },
   {
     importer: "codex-studio-tooling",
@@ -242,36 +280,29 @@ const BOUNDARY_ALLOWLIST = [
   },
   {
     importer: "codex-agents-desktop",
-    file: "bridge.d.ts",
-    specifier: "../web/src/desktop",
-    reason:
-      "The desktop bridge declaration re-exports the renderer's single bridge owner until it has a public package owner.",
-  },
-  {
-    importer: "codex-agents-desktop",
     file: "server-access-native.ts",
-    specifier: "../web/tests/servers/multi-server-fixture.mjs",
+    specifier: "../web/tests/servers/multi-server-fixture.ts",
     reason:
       "The native desktop integration scenario reuses the renderer's local multi-server test fixture.",
   },
   {
     importer: "codex-agents-desktop",
     file: "test.ts",
-    specifier: "../web/tests/playwright.mjs",
+    specifier: "../web/tests/playwright.ts",
     reason:
       "The native desktop scenario reuses the renderer's browser test-state helper.",
   },
   {
     importer: "codex-agents-desktop",
     file: "multi-server-memory.ts",
-    specifier: "../web/tests/servers/multi-server-fixture.mjs",
+    specifier: "../web/tests/servers/multi-server-fixture.ts",
     reason:
       "A desktop integration scenario reuses the renderer's local multi-server test fixture.",
   },
   {
     importer: "codex-agents-desktop",
     file: "server-frames-native.ts",
-    specifier: "../web/tests/servers/multi-server-fixture.mjs",
+    specifier: "../web/tests/servers/multi-server-fixture.ts",
     reason:
       "A desktop integration scenario reuses the renderer's local multi-server test fixture.",
   },
@@ -292,14 +323,14 @@ const BOUNDARY_ALLOWLIST = [
   {
     importer: "codex-agents-desktop",
     file: "profile-export-test.ts",
-    specifier: "../web/src/native/importBrowserProfile.mjs",
+    specifier: "../web/src/native/importBrowserProfile.ts",
     reason:
       "The profile export scenario checks its output with the renderer's own browser profile import code.",
   },
   {
     importer: "codex-agents-desktop",
     file: "profile-export-test.ts",
-    specifier: "../web/src/native/combineBrowserProfiles.mjs",
+    specifier: "../web/src/native/combineBrowserProfiles.ts",
     reason:
       "The profile export scenario checks its output with the renderer's own browser profile import code.",
   },
@@ -983,7 +1014,7 @@ export function gateSteps(root: string, name: string): GateStep[] {
       lane: "js",
     })),
     nodeTest("retained-helpers", "retained Python helper boundaries", [
-      "workspaces/client/apps/desktop/retained-helper-witness.test.cjs",
+      "workspaces/client/apps/desktop/retained-helper-witness.test.ts",
     ]),
     nodeTest("mac-sync", "Mac sync chunk read witness", [
       "workspaces/runtime/apps/vm-guest/mac-sync-witness.test.mts",
@@ -992,7 +1023,7 @@ export function gateSteps(root: string, name: string): GateStep[] {
       "workspaces/client/apps/native/check-native.test.ts",
     ]),
     nodeTest("recovery-helpers", "Rust desktop recovery witnesses", [
-      "workspaces/client/apps/desktop/recovery-helper-witness.test.cjs",
+      "workspaces/client/apps/desktop/recovery-helper-witness.test.ts",
     ]),
     nodeTest("retired-server", "retired server action witness", [
       "workspaces/tooling/apps/repository-checks/tests/retired-server-action.test.ts",
@@ -1947,6 +1978,19 @@ function maskRustCommentsAndStrings(source: string) {
   return chars.join("");
 }
 
+interface ModuleReference {
+  specifier: string;
+  typeOnly: boolean;
+}
+
+function sharedTypeTarget(root: string, target: string) {
+  const file = path.relative(root, target).split(path.sep).join("/");
+  return (
+    /(?:^|\/)generated\/|\.generated\.ts$/.test(file) ||
+    SHARED_TYPE_OWNERS.some((owner) => owner.file === file)
+  );
+}
+
 function packageImports(root: string, file: string, source: string) {
   try {
     const require = createRequire(import.meta.url);
@@ -1963,14 +2007,45 @@ function packageImports(root: string, file: string, source: string) {
       true,
       kind,
     );
-    const specs: string[] = [];
+    const specs: ModuleReference[] = [];
     function visit(node: ts.Node) {
       if (
         (ts.isImportDeclaration(node) || ts.isExportDeclaration(node)) &&
         node.moduleSpecifier &&
         ts.isStringLiteral(node.moduleSpecifier)
+      ) {
+        let typeOnly = false;
+        if (ts.isImportDeclaration(node)) {
+          const clause = node.importClause;
+          typeOnly =
+            clause?.isTypeOnly === true ||
+            Boolean(
+              clause &&
+              !clause.name &&
+              clause.namedBindings &&
+              ts.isNamedImports(clause.namedBindings) &&
+              clause.namedBindings.elements.length > 0 &&
+              clause.namedBindings.elements.every((item) => item.isTypeOnly),
+            );
+        } else {
+          const clause = node.exportClause;
+          typeOnly =
+            node.isTypeOnly ||
+            Boolean(
+              clause &&
+              ts.isNamedExports(clause) &&
+              clause.elements.length > 0 &&
+              clause.elements.every((item) => item.isTypeOnly),
+            );
+        }
+        specs.push({ specifier: node.moduleSpecifier.text, typeOnly });
+      }
+      if (
+        ts.isImportTypeNode(node) &&
+        ts.isLiteralTypeNode(node.argument) &&
+        ts.isStringLiteral(node.argument.literal)
       )
-        specs.push(node.moduleSpecifier.text);
+        specs.push({ specifier: node.argument.literal.text, typeOnly: true });
       if (
         ts.isCallExpression(node) &&
         node.arguments[0] &&
@@ -1988,18 +2063,18 @@ function packageImports(root: string, file: string, source: string) {
           (name === "resolve" &&
             expression.getText(script) === "require.resolve")
         )
-          specs.push(node.arguments[0].text);
+          specs.push({ specifier: node.arguments[0].text, typeOnly: false });
       }
       ts.forEachChild(node, visit);
     }
     visit(script);
     return specs;
   } catch {
-    const specs: string[] = [];
+    const specs: ModuleReference[] = [];
     const pattern =
       /\b(?:from\s*|import\s*\(|import\s+|export\s+[^;]*?\sfrom\s*|require\s*\()\s*["']([^"']+)["']/g;
     for (const match of source.matchAll(pattern))
-      if (match[1]) specs.push(match[1]);
+      if (match[1]) specs.push({ specifier: match[1], typeOnly: false });
     return specs;
   }
 }
@@ -2100,9 +2175,10 @@ export function boundaryFindings(
       .join("/");
     const declared = declaredDependencies(importer);
     const source = readFileSync(file, "utf8");
-    for (const specifier of packageImports(root, file, source)) {
+    for (const { specifier, typeOnly } of packageImports(root, file, source)) {
       if (specifier.startsWith(".")) {
         const targetPath = path.resolve(path.dirname(file), specifier);
+        if (typeOnly && sharedTypeTarget(root, targetPath)) continue;
         const target = packageRootFor(targetPath, rooted);
         const destinationApp = appPackages.find((app) => {
           const dir = path.resolve(root, app.dir);
@@ -2136,6 +2212,15 @@ export function boundaryFindings(
       const name = packageName(specifier);
       if (!name || builtins.has(name) || name.startsWith("node:")) continue;
       const destination = byName.get(name);
+      if (
+        typeOnly &&
+        destination &&
+        sharedTypeTarget(
+          root,
+          path.resolve(root, destination.dir, specifier.slice(name.length + 1)),
+        )
+      )
+        continue;
       if (
         importer.dir.includes("/packages/") &&
         destination?.dir.includes("/apps/")

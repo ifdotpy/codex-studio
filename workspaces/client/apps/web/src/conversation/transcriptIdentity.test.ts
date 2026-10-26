@@ -1,16 +1,34 @@
+import type { Message, JsonValue } from "../types";
 import assert from "node:assert/strict";
 import { retainTranscriptItems } from "./transcriptIdentity.ts";
 
 import { it } from "vitest";
 
 it("retains identity for unchanged transcript items and replaces changed data", () => {
-  const previous = [
+  const previous: [Message, Message, Message] = [
     {
       id: "user",
       role: "user",
       text: "Saved input",
-      inputs: [{ id: "request", pending: true }],
-      assets: [{ id: "image" }],
+      inputs: [
+        {
+          id: "request",
+          pending: true,
+          text: "Saved input",
+          kind: "user",
+          truncated: false,
+        },
+      ],
+      assets: [
+        {
+          id: "image",
+          name: "image",
+          mime: "image/png",
+          image: true,
+          size: 0,
+          preview: "",
+        },
+      ],
     },
     {
       id: "answer",
@@ -27,31 +45,35 @@ it("retains identity for unchanged transcript items and replaces changed data", 
     },
   ];
   assert.equal(
-    retainTranscriptItems(previous, JSON.parse(JSON.stringify(previous))),
+    retainTranscriptItems(previous, structuredClone(previous)),
     previous,
   );
   for (const mutate of [
-    (rows) => {
-      rows[0].inputs[0].pending = false;
+    (rows: typeof previous) => {
+      const input = rows[0].inputs?.[0];
+      assert.ok(input);
+      input.pending = false;
     },
-    (rows) => {
-      rows[0].assets[0].id = "new-image";
+    (rows: typeof previous) => {
+      const asset = rows[0].assets?.[0];
+      assert.ok(asset);
+      asset.id = "new-image";
     },
-    (rows) => {
+    (rows: typeof previous) => {
       rows[1].text = "New answer";
     },
-    (rows) => {
+    (rows: typeof previous) => {
       rows[1].streaming = false;
       rows[1].turnStatus = "completed";
     },
-    (rows) => {
+    (rows: typeof previous) => {
       delete rows[1].streaming;
     },
-    (rows) => {
-      rows[2].nativeError.metadata.retry = true;
+    (rows: typeof previous) => {
+      rows[2].nativeError = { message: "Failed", metadata: { retry: true } };
     },
-    (rows) => {
-      rows[2].nativeError.metadata = [false];
+    (rows: typeof previous) => {
+      rows[2].nativeError = { message: "Failed", metadata: [false] };
     },
   ]) {
     const incoming = structuredClone(previous);
@@ -70,7 +92,7 @@ it("retains identity for unchanged transcript items and replaces changed data", 
   assert.equal(reordered[0], previous[2]);
   assert.equal(reordered[2], previous[0]);
   assert.deepEqual(retainTranscriptItems(previous, []), []);
-  const extended = [
+  const extended: Message[] = [
     ...structuredClone(previous),
     { id: "new", role: "system", text: "New notice" },
   ];
@@ -82,8 +104,10 @@ it("retains identity for unchanged transcript items and replaces changed data", 
 });
 
 it("keeps changed JSON shapes and deeply nested projections authoritative", () => {
-  const row = (value) => [{ id: "message", role: "assistant", value }];
-  const changed = [
+  const row = (value: JsonValue): (Message & { value: JsonValue })[] => [
+    { id: "message", role: "assistant", text: "", value },
+  ];
+  const changed: [JsonValue, JsonValue][] = [
     [null, {}],
     [{}, null],
     [false, {}],
@@ -118,7 +142,7 @@ it("keeps changed JSON shapes and deeply nested projections authoritative", () =
   );
   assert.equal(inheritedResult[0], incomingWithInheritedKey[0]);
 
-  const nest = (value, levels) => {
+  const nest = (value: JsonValue, levels: number) => {
     for (let level = 0; level < levels; level++) value = { child: value };
     return value;
   };

@@ -3,7 +3,12 @@ import { serializePrimitiveParam } from "openapi-fetch";
 import { post } from "./api";
 import type { LocalQueueItem, QueueItem } from "./components/MessageQueue";
 import type { components } from "./generated/api";
-import type { JsonValue, Message } from "./types";
+import type {
+  JsonValue,
+  JsonInput,
+  Message,
+  TranscriptWireItem,
+} from "./types";
 import type { OperationRequestBodyContent } from "openapi-typescript-helpers";
 import type { ApiGetContract, ApiSuccessBodyFor } from "./apiContracts";
 import type { paths } from "./generated/api";
@@ -202,14 +207,14 @@ type TranscriptTurnId =
 type AnalyticsTurnError = components["schemas"]["AnalyticsTurnRecord"]["error"];
 type MessageWireAssertions = [
   Assert<Equal<Message["turnId"], TranscriptTurnId>>,
-  Assert<Equal<Message["nativeError"], AnalyticsTurnError>>,
+  Assert<Equal<TranscriptWireItem["nativeError"], AnalyticsTurnError>>,
 ];
 const messageWireAssertions: MessageWireAssertions = [true, true];
 void messageWireAssertions;
 
 const nullableTranscriptTurnId: Message["turnId"] = null;
 const nullableAnalyticsError: Message["nativeError"] = null;
-const jsonAnalyticsError: Message["nativeError"] = {
+const jsonAnalyticsError: TranscriptWireItem["nativeError"] = {
   message: "provider error",
   details: ["context"],
 };
@@ -329,7 +334,7 @@ void invalidMarkdownBlock;
 void markdownParserContract;
 
 // Desktop and local storage adapters consume their existing contract owners.
-type DesktopDeclaration = import("../../desktop/bridge").CodexDesktop;
+type DesktopDeclaration = import("../../desktop/api.ts").DesktopBridge;
 type WebDesktopDeclaration = import("./desktop").DesktopBridge;
 type PreferenceDeclaration =
   import("./components/accountPreference").PreferenceAccount;
@@ -401,3 +406,8 @@ const tupleResponsePreserved: Assert<
   Equal<TupleResponse["identity"], [string | null, number | null, number]>
 > = true;
 void tupleResponsePreserved;
+
+const rendererNativeError: Message["nativeError"] = {
+  message: undefined,
+} satisfies JsonInput;
+void rendererNativeError;

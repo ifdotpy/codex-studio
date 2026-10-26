@@ -4,5 +4,5 @@
     "allowJs": true,
     "checkJs": false
   },
-  "include": ["*.ts", "recovery.cjs"]
+  "include": ["*.ts"]
 }

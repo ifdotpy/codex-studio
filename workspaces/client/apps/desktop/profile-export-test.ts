@@ -13,8 +13,8 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import electron from "electron";
 import { exportBrowserProfile } from "./export-browser-profile.mjs";
-import { importBrowserProfile } from "../web/src/native/importBrowserProfile.mjs";
-import { combineBrowserProfiles } from "../web/src/native/combineBrowserProfiles.mjs";
+import { importBrowserProfile } from "../web/src/native/importBrowserProfile.ts";
+import { combineBrowserProfiles } from "../web/src/native/combineBrowserProfiles.ts";
 
 const run = promisify(execFile);
 const fixture = await mkdtemp(path.join(tmpdir(), "studio-profile-export-"));

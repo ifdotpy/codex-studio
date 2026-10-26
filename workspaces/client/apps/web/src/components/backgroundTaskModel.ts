@@ -7,30 +7,30 @@ type RendererTaskFields = {
   created: number;
   kind: string;
   status: string;
-  processKey?: string;
-  generation?: string;
+  processKey?: string | undefined;
+  generation?: string | undefined;
   accountKey?: string | undefined;
-  epoch?: number;
-  source?: "monitor" | "codex_task" | "claude_task";
+  epoch?: number | undefined;
+  source?: "monitor" | "codex_task" | "claude_task" | undefined;
   capabilities?: {
     readOutput: boolean;
     sendInput: boolean;
     resize: boolean;
     stop: boolean;
   };
-  outputFile?: string | null;
-  outputWakeBudget?: Monitor["outputWakeBudget"];
-  outputPatterns?: string[];
-  tail?: string | null;
-  error?: string | null;
-  stdinError?: string | null;
-  stdinClosed?: boolean | null;
-  stdinCloseRequested?: boolean | string | null;
-  bytes?: number | null;
-  outputTruncated?: boolean | null;
-  log?: string | null;
-  timeout_ms?: number | null;
-  cancelRequested?: boolean | null;
+  outputFile?: string | null | undefined;
+  outputWakeBudget?: Monitor["outputWakeBudget"] | undefined;
+  outputPatterns?: string[] | undefined;
+  tail?: string | null | undefined;
+  error?: string | null | undefined;
+  stdinError?: string | null | undefined;
+  stdinClosed?: boolean | null | undefined;
+  stdinCloseRequested?: boolean | string | null | undefined;
+  bytes?: number | null | undefined;
+  outputTruncated?: boolean | null | undefined;
+  log?: string | null | undefined;
+  timeout_ms?: number | null | undefined;
+  cancelRequested?: boolean | null | undefined;
 };
 type DisplayTask<T> = Omit<T, keyof RendererTaskFields> & RendererTaskFields;
 export type DisplayBackgroundTask =
@@ -44,8 +44,8 @@ export const activeTask = (task: DisplayBackgroundTask) =>
   );
 
 export function isCommandTask(task: {
-  kind?: string | null;
-  command?: string | null;
+  kind?: string | null | undefined;
+  command?: string | null | undefined;
 }) {
   return task.kind === "command" || (task.kind == null && !!task.command);
 }

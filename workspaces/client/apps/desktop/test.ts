@@ -6,9 +6,9 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { createServer } from "node:net";
-import { readTestState } from "../web/tests/playwright.mjs";
+import { readTestState } from "../web/tests/playwright.ts";
 const require = createRequire(import.meta.url);
-const { ensureBackend, identity } = require("./backend.cjs");
+const { ensureBackend, identity } = require("./backend.ts");
 const root = path.dirname(fileURLToPath(import.meta.url));
 const temp = await mkdtemp(path.join(tmpdir(), "codex-desktop-test-"));
 const state = path.join(temp, "state");
@@ -431,7 +431,7 @@ try {
   await desktop.evaluate(async ({ BrowserWindow, app }) => {
     const main = BrowserWindow.getAllWindows()[0];
     const { nativeAction } = process.mainModule.require(
-      `${app.getAppPath()}/main.cjs`,
+      `${app.getAppPath()}/main.ts`,
     );
     const frame = main.webContents.mainFrame.frames[0];
     try {

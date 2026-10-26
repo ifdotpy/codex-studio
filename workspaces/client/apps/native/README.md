@@ -7,6 +7,8 @@ verified behavior and remaining limitations. The current mobile target is the we
 WebAssembly module. Generated iOS files and mobile CLI commands are retained as
 experiments, not release targets.
 
+Background recovery requires the [Node runtime described in the TypeScript policy](../../../../docs/typescript.md#how-typescript-runs).
+
 Desktop artwork is owned by `../desktop/assets/codex-studio.icns`. Run
 `pnpm --filter studio-native-client run icons` on macOS to regenerate the
 native icon variants after changing that source.

@@ -1,4 +1,8 @@
 import { addRxPlugin, createRxDatabase } from "rxdb";
+import type {
+  ExtractDocumentTypeFromTypedRxJsonSchema,
+  RxCollection,
+} from "rxdb";
 import { getRxStorageDexie } from "rxdb/plugins/storage-dexie";
 import { RxDBLeaderElectionPlugin } from "rxdb/plugins/leader-election";
 
@@ -16,9 +20,15 @@ const schema = {
   required: ["id", "payload", "seq"],
 } as const;
 
+type FixtureDocument = ExtractDocumentTypeFromTypedRxJsonSchema<typeof schema>;
+type FixtureCollections = Record<
+  "projections" | "drafts" | "outbox",
+  RxCollection<FixtureDocument>
+>;
+
 /** Opens either the pre-change stable collection set or the new stable set. */
 export async function openBuildDatabase(name: string, legacy: boolean) {
-  const db = await createRxDatabase({
+  const db = await createRxDatabase<FixtureCollections>({
     name,
     storage: getRxStorageDexie(),
     multiInstance: true,

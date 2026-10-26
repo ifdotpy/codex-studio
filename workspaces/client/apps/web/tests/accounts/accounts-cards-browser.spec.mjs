@@ -9,7 +9,7 @@ import {
   readApiSchemaHash,
   apiSchemaHandshakeSse,
   protocol3SseEvent,
-} from "../playwright.mjs";
+} from "../playwright.ts";
 
 // Exercise the Accounts manager through its Studio settings host and native menus.
 async function fixture(page) {

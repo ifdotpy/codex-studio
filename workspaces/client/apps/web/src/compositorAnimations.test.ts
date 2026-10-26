@@ -1,6 +1,6 @@
+import { cssFiles } from "./cssFixtureFiles";
 import assert from "node:assert/strict";
-import { readFileSync, readdirSync } from "node:fs";
-import { join } from "node:path";
+import { readFileSync } from "node:fs";
 import { it } from "vitest";
 
 // An infinite animation runs on every frame for as long as it is shown. With
@@ -8,16 +8,8 @@ import { it } from "vitest";
 // and a repaint of the page on each frame.
 const compositorProperties = new Set(["opacity", "transform"]);
 
-function cssFiles(directory) {
-  return readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {
-    const path = join(directory, entry.name);
-    if (entry.isDirectory()) return cssFiles(path);
-    return entry.name.endsWith(".css") ? [path] : [];
-  });
-}
-
-function keyframeProperties(css) {
-  const blocks = new Map();
+function keyframeProperties(css: string) {
+  const blocks = new Map<string, Set<string>>();
   const start = /@keyframes\s+([\w-]+)\s*\{/g;
   for (let match; (match = start.exec(css));) {
     let depth = 1;
@@ -29,9 +21,9 @@ function keyframeProperties(css) {
     }
     const body = css.slice(start.lastIndex, index - 1);
     const properties = new Set(
-      [...body.matchAll(/([a-z-]+)\s*:/g)].map(([, name]) => name),
+      [...body.matchAll(/([a-z-]+)\s*:/g)].map((match) => match[1] ?? ""),
     );
-    blocks.set(match[1], properties);
+    blocks.set(match[1] ?? "", properties);
   }
   return blocks;
 }
@@ -46,7 +38,7 @@ it("runs every infinite animation on compositor properties only", () => {
   const infinite = new Set(
     files.flatMap((css) =>
       [...css.matchAll(/animation\s*:\s*([\w-]+)[^;}]*\binfinite\b/g)].map(
-        ([, name]) => name,
+        (match) => match[1] ?? "",
       ),
     ),
   );

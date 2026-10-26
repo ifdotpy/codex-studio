@@ -8,7 +8,7 @@ import {
   test,
   browserExecutablePath,
   installApiSchemaFixtureHeaders,
-} from "../playwright.mjs";
+} from "../playwright.ts";
 
 test("Transcript render performance @performance", async () => {
   test.setTimeout(180_000);
@@ -17,7 +17,7 @@ test("Transcript render performance @performance", async () => {
   const { chromium, webkit } = require("playwright-core");
   const browserType = process.env.BROWSER === "webkit" ? webkit : chromium;
   const { createFixtureViteServer: createServer } =
-    await import("../playwright.mjs");
+    await import("../playwright.ts");
   const cacheDir = await mkdtemp(join(tmpdir(), "studio-render-audit-"));
   const entry = join(root, "transcript-audit.tsx");
   const server = await createServer({

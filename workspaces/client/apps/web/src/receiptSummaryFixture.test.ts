@@ -1,17 +1,22 @@
+import assert from "node:assert/strict";
+import type { components } from "./generated/api";
 import { afterEach, expect, it, vi } from "vitest";
-import { readEntities } from "../tests/fixtures/rust-ui-fixture.mjs";
-import { readResourceBaselines } from "../tests/fixtures/resource-baselines.mjs";
+import { readEntities } from "../tests/fixtures/rust-ui-fixture.ts";
+import { readResourceBaselines } from "../tests/fixtures/resource-baselines.ts";
 
 afterEach(() => vi.unstubAllGlobals());
 it("reads scoped fixture baselines from fragmented SSE and closes the stream", async () => {
-  const resource = { kind: "agentDetail", agentId: "lead" };
+  const resource = {
+    kind: "agentDetail",
+    agentId: "lead",
+  } satisfies components["schemas"]["ResourceRef"];
   const entry = {
     resource: { agentId: "lead", kind: "agentDetail" },
     revision: 3,
     cursor: { workspaceId: "fixture", seq: 3 },
     replyKind: "snapshot",
     entityChanges: { after: 0, through: 3, documents: [] },
-  };
+  } satisfies components["schemas"]["ResourceRevisionEntry"];
   const cancel = vi.fn();
   const frame = `event: resources\ndata: ${JSON.stringify({ resources: [resource], resourceVersions: [entry] })}\n\n`;
   const stream = new ReadableStream({
@@ -25,14 +30,19 @@ it("reads scoped fixture baselines from fragmented SSE and closes the stream", a
     },
     cancel,
   });
-  const fetch = vi.fn().mockResolvedValue(new Response(stream));
+  const fetch = vi
+    .fn<typeof globalThis.fetch>()
+    .mockResolvedValue(new Response(stream));
   vi.stubGlobal("fetch", fetch);
   expect(
     await readResourceBaselines("http://fixture.test", [resource]),
   ).toEqual([entry]);
-  expect(
-    JSON.parse(new URL(fetch.mock.calls[0][0]).searchParams.get("resources")),
-  ).toEqual([resource]);
+
+  const input = fetch.mock.calls[0]?.[0];
+  assert.ok(typeof input === "string" || input instanceof URL);
+  const resources = new URL(input).searchParams.get("resources");
+  assert.ok(resources);
+  expect(JSON.parse(resources)).toEqual([resource]);
   expect(cancel).toHaveBeenCalledOnce();
 });
 it("fixture recovery retries a projection race and consumes an explicit reset", async () => {

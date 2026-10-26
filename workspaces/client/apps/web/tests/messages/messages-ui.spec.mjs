@@ -6,7 +6,7 @@ import {
   readTestState,
   rustUiFixture,
   queryFixtureDatabase,
-} from "../playwright.mjs";
+} from "../playwright.ts";
 // Real runtime records, lost HTTP response, and responsive message navigation.
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";

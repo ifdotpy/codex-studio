@@ -8,7 +8,7 @@ import {
   installApiSchemaFixtureHeaders,
   spawnFixture as spawn,
   rustUiFixture,
-} from "../playwright.mjs";
+} from "../playwright.ts";
 
 const measured = new Set([
   "/api/models",

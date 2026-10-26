@@ -109,7 +109,11 @@ Use the root [`justfile`](../justfile) for the three independent scopes:
 
 The repository checks add three focused commands: `just contracts-check` runs
 the generated API and persisted-state checks in read-only mode; `just boundaries-check`
-checks manifest-declared imports and workspace direction; and
+checks manifest-declared imports and workspace direction. Type-only imports may cross
+workspace boundaries for generated contracts and the shared type owners listed with
+their purposes in the [facade](../workspaces/tooling/apps/repository-checks/facade.ts);
+runtime imports retain the declared-dependency and documented-exception rules.
+
 `just check-affected <base>` checks changed packages and reverse dependents
 discovered from workspace manifests. It widens to all packages for root policy
 or unowned-file changes and prints the reason per selected package.
@@ -182,9 +186,9 @@ Install dependencies once with `pnpm install --frozen-lockfile`. Root package
 scripts select client unit, browser, desktop, and provider bridge checks. Browser
 checks build the renderer, use isolated state and a Rust HTTP fixture, and reap
 fixture process groups after success, failure, or timeout. Browser scratch and
-parallelism are owned by the [launcher](../workspaces/client/apps/web/scripts/run-browser-tests.mjs).
+parallelism are owned by the [launcher](../workspaces/client/apps/web/scripts/run-browser-tests.ts).
 Read-only layout and navigation specs can opt into `readOnlyRust` in the
-[shared browser fixtures](../workspaces/client/apps/web/tests/playwright.mjs).
+[shared browser fixtures](../workspaces/client/apps/web/tests/playwright.ts).
 It reuses one minimal backend per worker, mocks preference and read acknowledgements
 per browser context, and rejects other persistent writes. Tests that exercise
 mutations keep disposable backends. The scroll-follow smoke covers the phone
@@ -198,6 +202,20 @@ packaging; see the [package cycle](../workspaces/client/apps/native/README.md#pa
 The native WebView harness uses Node and preserves hidden-window checks. Its HTTP
 fixture witness runs in the short tier. A passing unit fixture is not
 installed-build evidence.
+
+## Typed browser fixtures
+
+Follow the [TypeScript policy](typescript.md) for test code and contracts. Put
+page code in a real `.tsx` or `.ts` module next to its spec, so the tests project
+checks it against the live components. Serve that path from Vite (or use it as
+an esbuild entry point), instead of returning fixture source strings from a
+`resolveId`/`load` plugin. Declare the exposed page harness with `declare global`
+in its owning module; import its types in the spec and access the typed harness
+inside `page.evaluate`. Mock API payloads use generated types with `satisfies`.
+The [schema header spec](../workspaces/client/apps/web/tests/playwright-schema-headers.browser.spec.ts)
+and [scrollbar spec](../workspaces/client/apps/web/tests/scrollbars-ui.spec.ts)
+are the root reference examples. Keep runner selectors extension-neutral
+(for example `scrollbars-ui.spec`) while specs migrate.
 
 ## Installed scenario smoke
 
