@@ -68,7 +68,8 @@ async function pairApproved({
     return peer;
   };
   const peer = await check();
-  const session = await read<{ token: string }>("/api/session");
+  const session =
+    await read<components["schemas"]["SessionResponse"]>("/api/session");
   if (typeof session.token !== "string" || !session.token)
     throw new Error("The local server session is unavailable.");
   const result = await read<components["schemas"]["InvitationResponse"]>(
