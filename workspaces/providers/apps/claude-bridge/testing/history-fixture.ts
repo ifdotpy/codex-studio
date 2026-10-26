@@ -1,6 +1,8 @@
+import type { HistoryReadOptions } from "../history-index.ts";
 import type {
   SessionStoreEntry,
   SessionStore,
+  SessionMessage,
 } from "@anthropic-ai/claude-agent-sdk";
 // SDK-shaped reads for in-memory filesystem fault injection. Installed SDK
 // coverage lives in history-index.test.ts and cli-history-witness.ts.
@@ -11,7 +13,7 @@ export function fixtureSessionApi(
     cwd,
     lastModified = 3,
   }: { sessionId: string; cwd: string; lastModified?: number },
-) {
+): NonNullable<HistoryReadOptions["sessionApi"]> {
   return {
     getSessionInfo: async () => ({
       sessionId,
@@ -28,20 +30,25 @@ export function fixtureSessionApi(
         rows,
       ),
     getSessionMessages: async () =>
-      rows
-        .filter(
-          (row) =>
-            ["user", "assistant"].includes(row.type) &&
-            !row.isSidechain &&
-            !row.isMeta,
+      rows.flatMap((row): SessionMessage[] => {
+        if (
+          (row.type !== "user" && row.type !== "assistant") ||
+          row.isSidechain ||
+          row.isMeta ||
+          typeof row.uuid !== "string" ||
+          typeof row.sessionId !== "string"
         )
-        .map((row) => ({
-          type: row.type,
-          uuid: row.uuid,
-          session_id: row.sessionId,
-          message: row.message,
-          parent_tool_use_id: null,
-          parent_agent_id: null,
-        })),
+          return [];
+        return [
+          {
+            type: row.type,
+            uuid: row.uuid,
+            session_id: row.sessionId,
+            message: row.message,
+            parent_tool_use_id: null,
+            parent_agent_id: null,
+          },
+        ];
+      }),
   };
 }
