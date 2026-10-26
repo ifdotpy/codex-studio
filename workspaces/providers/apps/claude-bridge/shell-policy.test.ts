@@ -1,3 +1,5 @@
+import { tmpdir } from "node:os";
+import path from "node:path";
 import { describe, it, expect } from "vitest";
 import type { BridgeTask } from "./bridge-protocol.ts";
 import {
@@ -194,13 +196,15 @@ describe("native output and lifecycle boundaries", () => {
   });
 
   it("retains Bash output paths across replace snapshots, but not across runs", () => {
+    const outputFile = path.join(tmpdir(), "a.output");
+    const remoteOutputFile = path.join(tmpdir(), "remote.output");
     const first = new Map<string, BridgeTask>([
       [
         "shell",
         {
           task_id: "shell",
           run_id: "run-a",
-          output_file: "/tmp/a.output",
+          output_file: outputFile,
           is_backgrounded: true,
         },
       ],
@@ -209,7 +213,7 @@ describe("native output and lifecycle boundaries", () => {
       replaceBackgroundTasks(first, [
         { task_id: "shell", run_id: "run-a", task_type: "local_bash" },
       ]).get("shell")?.output_file,
-    ).toBe("/tmp/a.output");
+    ).toBe(outputFile);
     expect(
       replaceBackgroundTasks(first, [
         { task_id: "shell", run_id: "run-b", task_type: "local_bash" },
@@ -218,12 +222,14 @@ describe("native output and lifecycle boundaries", () => {
     expect(
       backgroundOutputPath(
         {},
-        "Command running in background with ID: a. Output is being written to: /tmp/a.output. You will be notified when it completes.",
+        "Command running in background with ID: a. Output is being written to: " +
+          outputFile +
+          ". You will be notified when it completes.",
       ),
-    ).toBe("/tmp/a.output");
+    ).toBe(outputFile);
     expect(
-      backgroundOutputPath({ backgroundOutputPath: "/tmp/remote.output" }, ""),
-    ).toBe("/tmp/remote.output");
+      backgroundOutputPath({ backgroundOutputPath: remoteOutputFile }, ""),
+    ).toBe(remoteOutputFile);
   });
 
   it("keeps defaults off for quiet checks and supports the cleanup opt-out", async () => {
