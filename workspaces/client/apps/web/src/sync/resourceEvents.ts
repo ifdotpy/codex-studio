@@ -80,7 +80,7 @@ export type ResourceTokenRatesEvent =
   components["schemas"]["ResourceTokenRatesEvent"];
 
 export type ResourceVersion = {
-  viewSnapshot?: components["schemas"]["SubscriptionViewSnapshot"];
+  viewSnapshot?: components["schemas"]["SubscriptionViewSnapshot"] | undefined;
   cursor?: components["schemas"]["SubscriptionCursor"] | undefined;
   replyKind?: components["schemas"]["SubscriptionReplyKind"] | undefined;
   /** Transient subscribed value; never sent through the entity persister. */
