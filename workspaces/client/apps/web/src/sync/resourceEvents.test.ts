@@ -37,7 +37,10 @@ class Source {
   closed = false;
   schemaEmitted = false;
   autoHandshake: boolean;
-  constructor(readonly url: string) {
+  readonly url: string;
+  constructor(url: string) {
+    this.url = url;
+
     Source.instances.push(this);
     this.autoHandshake = !Source.skipNextAutoHandshake;
     Source.skipNextAutoHandshake = false;
@@ -102,7 +105,10 @@ class Channel {
   static instances: Channel[] = [];
   onmessage: ((event: MessageEvent) => void) | null = null;
   messages: unknown[] = [];
-  constructor(readonly name: string) {
+  readonly name: string;
+  constructor(name: string) {
+    this.name = name;
+
     Channel.instances.push(this);
   }
   postMessage(value: unknown) {
