@@ -1,4 +1,4 @@
-// @ts-check
+import type { SessionStoreEntry } from "@anthropic-ai/claude-agent-sdk";
 import { z } from "zod";
 import { nativeUuid } from "./native-history.ts";
 
@@ -195,15 +195,14 @@ const metadataTypes = new Set([
   "api-request-blob",
   "api-request",
 ]);
-/** @typedef {"input" | "nonInput" | "metadata" | "queue"} HistoryRecordKind */
-/** @param {unknown} value @returns {value is Record<string, unknown>} */
-const object = (value) =>
+export type HistoryRecordKind = "input" | "nonInput" | "metadata" | "queue";
+export const object = (value: unknown): value is Record<string, unknown> =>
   !!value && typeof value === "object" && !Array.isArray(value);
 /** Tool receipts cannot carry a Studio instruction, including ToolSearch's new
  * inner block types. Do not validate their provider-owned payloads as prompts.
  * @param {import("@anthropic-ai/claude-agent-sdk").SessionStoreEntry} row
  */
-function onlyToolResults(row) {
+function onlyToolResults(row: SessionStoreEntry) {
   const body = row.message;
   return (
     object(body) &&
@@ -215,7 +214,9 @@ function onlyToolResults(row) {
 /** @param {import("@anthropic-ai/claude-agent-sdk").SessionStoreEntry} row
  * @returns {HistoryRecordKind | null}
  */
-export function historyRecordKind(row) {
+export function historyRecordKind(
+  row: SessionStoreEntry,
+): HistoryRecordKind | null {
   if (row.type === "queue-operation")
     return queueRecord.safeParse(row).success ? "queue" : null;
   if (row.type === "user") {

@@ -1,21 +1,37 @@
+import type { Session } from "./session-state.ts";
+import type { NativeHistoryOptions } from "./native-history.ts";
+import { object } from "./history-records.ts";
 import { readNativeHistory, nativeUuid } from "./native-history.ts";
 
-export function validJournalRecord(record) {
+export interface JournalChange {
+  op: "set" | "delete" | "append";
+  path: (string | number)[];
+  value?: unknown;
+}
+export interface JournalRecord {
+  sequence: number;
+  changes: JournalChange[];
+}
+export function validJournalRecord(record: unknown): record is JournalRecord {
   return (
-    record &&
+    object(record) &&
+    typeof record.sequence === "number" &&
     Number.isSafeInteger(record.sequence) &&
     record.sequence > 0 &&
     Array.isArray(record.changes) &&
     record.changes.every(
-      (change) =>
-        change &&
+      (change: unknown) =>
+        object(change) &&
+        typeof change.op === "string" &&
         ["set", "delete", "append"].includes(change.op) &&
         Array.isArray(change.path) &&
         change.path.every(
-          (key) =>
+          (key: unknown) =>
             (typeof key === "string" ||
-              (Number.isSafeInteger(key) && key >= 0)) &&
-            !["__proto__", "prototype", "constructor"].includes(key),
+              (typeof key === "number" &&
+                Number.isSafeInteger(key) &&
+                key >= 0)) &&
+            !["__proto__", "prototype", "constructor"].includes(String(key)),
         ) &&
         (change.op === "delete" || Object.hasOwn(change, "value")) &&
         (change.op !== "append" ||
@@ -25,21 +41,29 @@ export function validJournalRecord(record) {
   );
 }
 
-function textContent(content) {
+function textContent(content: unknown) {
   if (typeof content === "string") return content;
   if (
     !Array.isArray(content) ||
     content.some(
-      (block) => block?.type !== "text" || typeof block.text !== "string",
+      (block: unknown) =>
+        !object(block) ||
+        block.type !== "text" ||
+        typeof block.text !== "string",
     )
   )
     return null;
-  return content.map((block) => block.text).join("\n");
+  return content
+    .map((block: unknown) => (object(block) ? block.text : undefined))
+    .join("\n");
 }
 
 // Repair requires complete, exact native message coverage. Tool receipts,
 // compaction and unresolved control operations need a separate manual repair.
-export async function nativeConfirmsJournal(session, options) {
+export async function nativeConfirmsJournal(
+  session: Session,
+  options?: NativeHistoryOptions,
+) {
   if (
     !Array.isArray(session.turns) ||
     !session.turns.length ||
@@ -48,7 +72,7 @@ export async function nativeConfirmsJournal(session, options) {
     )
   )
     return false;
-  const expected = [];
+  const expected: { type: string; uuid: string; text: string }[] = [];
   for (const turn of session.turns) {
     if (
       turn.status !== "completed" ||
@@ -77,7 +101,7 @@ export async function nativeConfirmsJournal(session, options) {
   }
   const records = await readNativeHistory(session, options);
   if (!records) return false;
-  const messages = [];
+  const messages: { type: unknown; uuid: unknown; text: string }[] = [];
   for (const { row } of records) {
     if (row.isSidechain === true) continue;
     if (
@@ -93,11 +117,11 @@ export async function nativeConfirmsJournal(session, options) {
         "file-history-snapshot",
         "queue-operation",
         "last-prompt",
-      ].includes(row.type)
+      ].some((type) => type === row.type)
     )
       continue;
     if (
-      !["user", "assistant"].includes(row.type) ||
+      !["user", "assistant"].some((type) => type === row.type) ||
       row.isSidechain !== false ||
       row.isMeta ||
       row.isApiErrorMessage ||
@@ -109,12 +133,16 @@ export async function nativeConfirmsJournal(session, options) {
       return false;
     if (
       row.type === "assistant" &&
-      ![undefined, null, "end_turn", "stop_sequence"].includes(
-        row.message?.stop_reason,
+      ![undefined, null, "end_turn", "stop_sequence"].some(
+        (reason) =>
+          reason ===
+          (object(row.message) ? row.message.stop_reason : undefined),
       )
     )
       return false;
-    const text = textContent(row.message?.content);
+    const text = textContent(
+      object(row.message) ? row.message.content : undefined,
+    );
     if (text === null) return false;
     messages.push({ type: row.type, uuid: row.uuid, text });
   }
