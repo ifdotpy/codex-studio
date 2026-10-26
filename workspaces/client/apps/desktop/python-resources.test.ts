@@ -10,7 +10,7 @@ import {
 } from "./python-resources.ts";
 
 const source = path.dirname(fileURLToPath(import.meta.url));
-const directories = [];
+const directories: string[] = [];
 
 async function directory() {
   const created = await mkdtemp(path.join(tmpdir(), "studio-python-"));

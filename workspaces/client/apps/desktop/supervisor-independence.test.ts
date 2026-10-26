@@ -1,3 +1,11 @@
+import { parsedRecord } from "./test-support.ts";
+import type { HealthResult } from "../web/src/generated/rustOwned.ts";
+import { present, record, portOf } from "./test-support.ts";
+import type { RecoveryRun } from "./recovery.ts";
+import type { ChildProcess, ChildProcessByStdio } from "node:child_process";
+import type { Readable } from "node:stream";
+import type { Socket } from "node:net";
+import type { Server } from "node:http";
 import assert from "node:assert/strict";
 import { test } from "vitest";
 import { spawn, execFileSync } from "node:child_process";
@@ -18,7 +26,6 @@ import {
 import path from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
-import { createRequire } from "node:module";
 import { pythonResources } from "./python-resources.ts";
 
 const root = path.resolve(
@@ -29,10 +36,14 @@ const desktopSource = path.join(root, "workspaces/client/apps/desktop");
 const python = "python3";
 const supervisorBinary = process.env.STUDIO_SUPERVISOR_BINARY;
 const recoveryScript = path.join(desktopSource, "recover_backend.py");
-const { configureRecovery, recoveryPaths, trackDesktopRecovery } =
-  createRequire(import.meta.url)("./recovery.cjs");
+import {
+  configureRecovery,
+  recoveryPaths,
+  trackDesktopRecovery,
+} from "./recovery.ts";
 
-function status(state) {
+// The fixture asks the Rust health producer; its generated schema owns the result.
+function status(state: string): HealthResult {
   return JSON.parse(
     execFileSync(
       python,
@@ -43,8 +54,13 @@ function status(state) {
 }
 
 // Observe first, then inspect; passing paths advance only on fixture events.
-function waitForChange(emitter, event, check, message) {
-  return new Promise((resolve, reject) => {
+function waitForChange<T>(
+  emitter: Pick<NodeJS.EventEmitter, "on" | "off">,
+  event: string,
+  check: () => T | false | undefined,
+  message: string,
+) {
+  return new Promise<T>((resolve, reject) => {
     const cleanup = () => {
       clearTimeout(deadline);
       emitter.off(event, changed);
@@ -70,7 +86,12 @@ function waitForChange(emitter, event, check, message) {
   });
 }
 
-async function stateChange(state, check, message, action = () => {}) {
+async function stateChange<T>(
+  state: string,
+  check: () => T | false | undefined,
+  message: string,
+  action = () => {},
+) {
   const watcher = watch(state);
   try {
     const changed = waitForChange(watcher, "change", check, message);
@@ -84,6 +105,7 @@ async function stateChange(state, check, message, action = () => {}) {
 test.skipIf(!supervisorBinary)(
   "desktop and recovery lifecycle changes preserve an active Rust supervisor owner",
   async () => {
+    assert(supervisorBinary);
     const fixture = mkdtempSync(path.join(tmpdir(), "svo-"));
     const statePath = path.join(fixture, "state");
     mkdirSync(statePath);
@@ -108,11 +130,14 @@ test.skipIf(!supervisorBinary)(
     writeFileSync(updatedRecoveryScript, readFileSync(recoveryScript));
     writeFileSync(path.join(resources, "web/dist/index.html"), "fixture");
 
-    let owner;
-    let childPid;
-    let socket;
-    let recoveryProcess;
-    let backendServer;
+    let owner: ChildProcess | undefined;
+    let childPid: number | undefined;
+    let socket: Socket | undefined;
+    let recoveryProcess:
+      | ChildProcessByStdio<null, Readable, Readable>
+      | null
+      | undefined;
+    let backendServer: Server | undefined;
     try {
       owner = spawn(supervisorBinary, ["--state", state], {
         stdio: "ignore",
@@ -127,14 +152,14 @@ test.skipIf(!supervisorBinary)(
         () => existsSync(path.join(state, "supervisor.sock")) && status(state),
         "owner did not start",
       );
-      const ownerPid = JSON.parse(
+      const ownerPid = parsedRecord(
         readFileSync(path.join(state, "supervisor.lock"), "utf8"),
       ).pid;
 
       socket = createConnection(path.join(state, "supervisor.sock"));
       let buffered = "";
-      const messages = [];
-      const waiters = [];
+      const messages: unknown[] = [];
+      const waiters: ((value: unknown) => void)[] = [];
       socket.on("data", (chunk) => {
         buffered += chunk.toString();
         for (;;) {
@@ -150,10 +175,10 @@ test.skipIf(!supervisorBinary)(
       const nextMessage = () =>
         messages.length
           ? Promise.resolve(messages.shift())
-          : new Promise((resolve) => waiters.push(resolve));
-      await new Promise((resolve, reject) => {
-        socket.once("connect", resolve);
-        socket.once("error", reject);
+          : new Promise<unknown>((resolve) => waiters.push(resolve));
+      await new Promise<void>((resolve, reject) => {
+        present(socket).once("connect", resolve);
+        present(socket).once("error", reject);
       });
       socket.write(
         `${JSON.stringify({
@@ -180,25 +205,27 @@ test.skipIf(!supervisorBinary)(
           cwd: fixture,
         })}\n`,
       );
-      const opened = await nextMessage();
+      const opened = record(await nextMessage());
       assert.equal(opened.requestId, 1);
       assert.equal(opened.error, undefined);
-      childPid = status(state).handles[0].pid;
+      const activeChildPid = present(status(state).handles[0]).pid;
+      assert(typeof activeChildPid === "number");
+      childPid = activeChildPid;
       assert.equal(initialHealth.handles.length, 0);
-      assert.equal(status(state).handles[0].pid, childPid);
+      assert.equal(record(present(status(state).handles[0])).pid, childPid);
 
       const files = recoveryPaths({ CODEX_AGENTS_STATE_DIR: state }, fixture);
       const registered = new Set([
         `gui/501/${files.label}`,
         `gui/501/${files.supervisorLabel}`,
       ]);
-      const calls = [];
-      const run = async (_file, args) => {
+      const calls: string[][] = [];
+      const run: RecoveryRun = async (_file, args) => {
         calls.push(args);
         const [action, target] = args;
-        if (action === "print" && !registered.has(target))
+        if (action === "print" && !registered.has(present(target)))
           throw new Error("service is not loaded");
-        if (action === "bootout") registered.delete(target);
+        if (action === "bootout") registered.delete(present(target));
         if (action === "bootstrap")
           registered.add(
             args[2] === files.supervisorPlist
@@ -225,10 +252,10 @@ test.skipIf(!supervisorBinary)(
           }),
         );
       });
-      await new Promise((resolve) =>
-        backendServer.listen(0, "127.0.0.1", resolve),
+      await new Promise<void>((resolve) =>
+        present(backendServer).listen(0, "127.0.0.1", resolve),
       );
-      const port = backendServer.address().port;
+      const port = portOf(backendServer);
       const appArgs = {
         applicationPath:
           "/Applications/Codex Studio.app/Contents/Resources/app.asar",
@@ -256,7 +283,7 @@ test.skipIf(!supervisorBinary)(
       assert.ok(
         calls.every(
           ([action, target]) =>
-            !["bootout", "kickstart"].includes(action) ||
+            !["bootout", "kickstart"].includes(present(action)) ||
             target !== `gui/501/${files.supervisorLabel}`,
         ),
         "recovery updates must not stop or kick the supervisor service",
@@ -288,6 +315,7 @@ test.skipIf(!supervisorBinary)(
           "recovery did not attach to the independent owner",
         );
       } catch (error) {
+        assert(error instanceof Error);
         let log = "";
         try {
           log = readFileSync(
@@ -301,11 +329,14 @@ test.skipIf(!supervisorBinary)(
       }
       // A launchctl kickstart -k replaces only the recovery job process.
       recoveryProcess.kill("SIGTERM");
-      await new Promise((resolve) => recoveryProcess.once("exit", resolve));
+      await new Promise((resolve) =>
+        present(recoveryProcess).once("exit", resolve),
+      );
       recoveryProcess = null;
 
-      const app = new EventEmitter();
-      app.getPath = () => path.join(fixture, "profile");
+      const app = Object.assign(new EventEmitter(), {
+        getPath: () => path.join(fixture, "profile"),
+      });
       const desktop = trackDesktopRecovery({
         app,
         env: { CODEX_AGENTS_STATE_DIR: state },
@@ -313,42 +344,44 @@ test.skipIf(!supervisorBinary)(
       desktop.closeExplicitly();
       app.emit("before-quit");
       assert.equal(
-        JSON.parse(readFileSync(desktop.filename)).desiredOpen,
+        parsedRecord(readFileSync(desktop.filename, "utf8")).desiredOpen,
         false,
       );
       const afterQuit = status(state);
       assert.equal(
-        JSON.parse(readFileSync(path.join(state, "supervisor.lock"), "utf8"))
+        parsedRecord(readFileSync(path.join(state, "supervisor.lock"), "utf8"))
           .pid,
         ownerPid,
       );
-      assert.equal(afterQuit.handles[0].pid, childPid);
+      assert.equal(present(afterQuit.handles[0]).pid, childPid);
       assert.equal(afterQuit.recovery.blocked, null);
     } finally {
-      if (recoveryProcess && recoveryProcess.exitCode === null) {
+      if (recoveryProcess && present(recoveryProcess).exitCode === null) {
         recoveryProcess.kill("SIGTERM");
-        await new Promise((resolve) => recoveryProcess.once("exit", resolve));
+        await new Promise((resolve) =>
+          present(recoveryProcess).once("exit", resolve),
+        );
       }
       if (backendServer)
-        await new Promise((resolve) => backendServer.close(resolve));
+        await new Promise((resolve) => present(backendServer).close(resolve));
       if (childPid) {
         await stateChange(
           state,
           () => {
             try {
-              process.kill(childPid, 0);
+              process.kill(present(childPid), 0);
               return false;
             } catch (error) {
-              if (error.code === "ESRCH") return true;
+              if (record(error).code === "ESRCH") return true;
               throw error;
             }
           },
           "fake child did not exit",
           () => {
             try {
-              process.kill(childPid, "SIGTERM");
+              process.kill(present(childPid), "SIGTERM");
             } catch (error) {
-              if (error.code !== "ESRCH") throw error;
+              if (record(error).code !== "ESRCH") throw error;
             }
           },
         );
@@ -356,7 +389,7 @@ test.skipIf(!supervisorBinary)(
       socket?.destroy();
       if (owner && owner.exitCode === null) {
         owner.kill("SIGTERM");
-        await new Promise((resolve) => owner.once("exit", resolve));
+        await new Promise((resolve) => present(owner).once("exit", resolve));
       }
       rmSync(fixture, { recursive: true, force: true, maxRetries: 10 });
     }

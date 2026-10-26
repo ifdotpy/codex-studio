@@ -1,35 +1,38 @@
+import { parsedRecord } from "./test-support.ts";
+import { present } from "./test-support.ts";
 import assert from "node:assert/strict";
 import { afterEach, test, vi } from "vitest";
 import { EventEmitter } from "node:events";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { createRequire } from "node:module";
-const { createRendererRecovery } = createRequire(import.meta.url)(
-  "./renderer-recovery.cjs",
-);
+import { createRendererRecovery } from "./renderer-recovery.ts";
 afterEach(() => vi.useRealTimers());
 
-function fixture(options = {}) {
+function fixture(
+  options: Partial<Parameters<typeof createRendererRecovery>[0]> = {},
+) {
   const profile = mkdtempSync(path.join(tmpdir(), "studio-renderer-contract-"));
   const workspaceURL = "http://127.0.0.1:4620/";
-  const win = new EventEmitter();
-  const contents = new EventEmitter();
-  win.webContents = contents;
-  win.isDestroyed = () => false;
-  win.setTitle = () => {};
-  contents.isDestroyed = () => false;
-  contents.mainFrame = {};
-  contents.getOSProcessId = () => 42;
-  contents.isCrashed = () => false;
   let url = workspaceURL;
-  const loads = [];
-  contents.getURL = () => url;
-  contents.loadURL = async (value) => {
-    loads.push(value);
-    url = value;
-    contents.emit("did-finish-load");
-  };
+  const loads: string[] = [];
+  const contents = Object.assign(new EventEmitter(), {
+    isDestroyed: () => false,
+    mainFrame: {},
+    getOSProcessId: () => 42,
+    isCrashed: () => false,
+    getURL: () => url,
+    loadURL: async (value: string) => {
+      loads.push(value);
+      url = value;
+      contents.emit("did-finish-load");
+    },
+  });
+  const win = Object.assign(new EventEmitter(), {
+    webContents: contents,
+    isDestroyed: () => false,
+    setTitle: () => {},
+  });
   const controller = createRendererRecovery({
     win,
     profile,
@@ -60,16 +63,17 @@ test("an unexpected clean renderer exit reaches fallback; window close suppresse
       {},
       { reason: "clean-exit", exitCode: 0 },
     );
-    assert.match(f.loads[0], /^data:text\/html/);
+    assert.match(present(f.loads[0]), /^data:text\/html/);
     const records = readFileSync(
       path.join(f.profile, "renderer-recovery.jsonl"),
       "utf8",
     )
       .trim()
       .split("\n")
-      .map(JSON.parse);
+      .map((line) => parsedRecord(line));
     assert.equal(
-      records.find((record) => record.event === "renderer-crash").reason,
+      present(records.find((record) => record.event === "renderer-crash"))
+        .reason,
       "clean-exit",
     );
     f.win.emit("close");
@@ -99,7 +103,10 @@ test("an initial load failure gives a reloadable fallback with no foreign-frame 
       return load(url);
     };
     assert.equal(await f.controller.reload({ manual: false }), true);
-    assert.match(decodeURIComponent(f.loads[0]), /ERR_CONNECTION_RESET/);
+    assert.match(
+      decodeURIComponent(present(f.loads[0])),
+      /ERR_CONNECTION_RESET/,
+    );
     const event = {
       preventDefault() {},
       url: f.workspaceURL,
@@ -137,7 +144,7 @@ test("only a continuously healthy renderer resets the automatic retry budget", a
     assert.deepEqual(f.loads, [f.workspaceURL]);
     await vi.advanceTimersByTimeAsync(59_999);
     crash();
-    assert.match(f.loads.at(-1), /^data:text\/html/);
+    assert.match(present(f.loads.at(-1)), /^data:text\/html/);
     await f.controller.reload();
     crash();
     await vi.advanceTimersByTimeAsync(1_000);
@@ -148,9 +155,9 @@ test("only a continuously healthy renderer resets the automatic retry budget", a
     )
       .trim()
       .split("\n")
-      .map(JSON.parse);
+      .map((line) => parsedRecord(line));
     assert.equal(
-      records.find((record) => record.event === "renderer-healthy")
+      present(records.find((record) => record.event === "renderer-healthy"))
         .previousFailures,
       1,
     );

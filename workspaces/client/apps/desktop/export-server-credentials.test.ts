@@ -1,3 +1,4 @@
+import { nodeFixture } from "./test-support.ts";
 import { test } from "vitest";
 import assert from "node:assert/strict";
 import { mkdtemp, writeFile, readFile, rm } from "node:fs/promises";
@@ -13,7 +14,7 @@ test("credential migration uses stdin and leaves the encrypted source intact", a
     await writeFile(source, encrypted);
     const safeStorage = {
       isEncryptionAvailable: () => true,
-      decryptString: (bytes) => {
+      decryptString: (bytes: Buffer) => {
         assert.equal(bytes.toString(), "encrypted fixture");
         return JSON.stringify({
           drafts: {},
@@ -22,15 +23,13 @@ test("credential migration uses stdin and leaves the encrypted source intact", a
       },
     };
     await assert.rejects(
-      exportServerCredentials({ profile, safeStorage }),
+      exportServerCredentials({ profile, destination: undefined, safeStorage }),
       /destination/,
     );
     const executable = path.join(profile, "importer");
-    await writeFile(
-      executable,
-      `#!${process.execPath}\nimport fs from 'node:fs';\nconst value=JSON.parse(fs.readFileSync(0,'utf8'));\nif(process.argv[2]!=='--import-server-credentials'||value.servers.fixture.privateKey!=='private-fixture')process.exit(2);\nfs.writeFileSync(process.argv[3]+'/proof','received through stdin');\n`,
-      { mode: 0o700 },
-    );
+    await writeFile(executable, nodeFixture("import-credentials"), {
+      mode: 0o700,
+    });
     const destination = { executable, profile };
     await exportServerCredentials({ profile, destination, safeStorage });
     assert.equal(
@@ -38,14 +37,13 @@ test("credential migration uses stdin and leaves the encrypted source intact", a
       "received through stdin",
     );
     assert.equal(await readFile(source, "utf8"), encrypted);
-    await writeFile(
-      executable,
-      `#!${process.execPath}\nconsole.error('private-fixture');process.exit(2);\n`,
-      { mode: 0o700 },
-    );
+    await writeFile(executable, nodeFixture("import-credentials-failure"), {
+      mode: 0o700,
+    });
     await assert.rejects(
       exportServerCredentials({ profile, destination, safeStorage }),
-      (error) => {
+      (error: unknown) => {
+        assert(error instanceof Error);
         assert.match(error.message, /Native key import failed/);
         assert.ok(!error.message.includes("private-fixture"));
         return true;
