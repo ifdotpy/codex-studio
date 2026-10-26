@@ -1,0 +1,190 @@
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+   Compiling studio-runtime-store v0.1.0 (/Users/igor/Projects/codex-agents-input-delivery/workspaces/runtime/packages/runtime-store)
+   Compiling studio-runtime-process v0.1.0 (/Users/igor/Projects/codex-agents-input-delivery/workspaces/runtime/packages/runtime-process)
+   Compiling studio-runtime-services v0.1.0 (/Users/igor/Projects/codex-agents-input-delivery/workspaces/runtime/packages/runtime-services)
+warning: linker stderr: ld: __eh_frame section too large (max 16MB) to encode dwarf unwind offsets in compact unwind table, performance of exception handling might be affected
+  |
+  = note: `#[warn(linker_messages)]` on by default
+
+warning: `studio-runtime-services` (lib test) generated 1 warning
+    Finished `test` profile [unoptimized] target(s) in 1m 55s
+     Running unittests src/lib.rs (target/debug/deps/studio_runtime_services-0762f7d398f205e9)
+
+running 4 tests
+test account_worker::tests::unsent_start::a_start_that_stays_unsent_fails_with_its_cause_and_keeps_its_input ... ok
+test account_worker::tests::unsent_start::a_submitted_turn_start_that_stays_unsent_keeps_its_input_pending ... ok
+test linux_vm_provider::tests::proven_unsent_start_retries_same_identity_without_info_reconciliation ... ok
+test account_worker::tests::unsent_start::an_expired_unwritten_thread_request_returns_its_input_and_starts_again ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 1593 filtered out; finished in 1.44s
+
+   Compiling libc v0.2.191
+   Compiling syn v3.0.9
+   Compiling smallvec v1.16.3
+   Compiling rustix v1.1.5
+   Compiling rusqlite v0.40.2
+   Compiling parking_lot_core v0.9.12
+   Compiling getrandom v0.3.4
+   Compiling errno v0.3.14
+   Compiling mio v1.2.4
+   Compiling signal-hook-registry v1.4.8
+   Compiling parking_lot v0.12.5
+   Compiling serde_derive_internals v0.30.0
+   Compiling string_cache v0.11.0
+   Compiling cpufeatures v0.3.1
+   Compiling web_atoms v0.3.0
+   Compiling getrandom v0.4.3
+   Compiling socket2 v0.6.5
+   Compiling sha2 v0.11.1
+   Compiling markup5ever v0.40.0
+   Compiling uuid v1.29.0
+   Compiling html5ever v0.40.1
+   Compiling serde_derive v1.0.229
+   Compiling ref-cast-impl v1.0.27
+   Compiling schemars_derive v1.2.3
+   Compiling ref-cast v1.0.27
+   Compiling tokio-macros v2.7.2
+   Compiling thiserror-impl v2.0.21
+   Compiling tokio v1.54.1
+   Compiling thiserror v2.0.21
+   Compiling serde v1.0.229
+   Compiling tempfile v3.27.0
+   Compiling ahash v0.8.12
+   Compiling fluent-uri v0.4.1
+   Compiling schemars v1.2.3
+   Compiling jsonschema-value v0.60.0
+   Compiling referencing v0.60.0
+   Compiling email_address v0.2.9
+   Compiling studio-runtime-providers v0.1.0 (/Users/igor/Projects/codex-agents-input-delivery/workspaces/runtime/packages/runtime-providers)
+   Compiling jsonschema v0.60.0
+   Compiling studio-client-domain v0.1.0 (/Users/igor/Projects/codex-agents-input-delivery/workspaces/client/packages/client-domain)
+   Compiling tokio-rusqlite v0.8.0
+   Compiling studio-runtime-schema v0.1.0 (/Users/igor/Projects/codex-agents-input-delivery/workspaces/runtime/packages/runtime-schema)
+   Compiling studio-runtime-store v0.1.0 (/Users/igor/Projects/codex-agents-input-delivery/workspaces/runtime/packages/runtime-store)
+    Finished `test` profile [unoptimized] target(s) in 25.14s
+     Running unittests src/lib.rs (target/debug/deps/studio_runtime_store-7e7227976462b758)
+
+running 92 tests
+test repositories::scheduler::idle_unload::tests::input_for_an_agent_without_a_loaded_thread_holds_only_the_account ... ok
+test repositories::scheduler::idle_unload::tests::a_pending_transfer_or_source_cleanup_holds_the_thread ... ok
+test repositories::scheduler::idle_unload::tests::a_settled_agent_or_an_unowned_thread_releases_the_thread ... ok
+test repositories::scheduler::idle_unload::tests::missing_transfer_table_is_a_clear_idle_state ... ok
+test repositories::scheduler::idle_unload::tests::one_usage_snapshot_checks_only_the_supplied_threads_and_their_account ... ok
+test repositories::scheduler::idle_unload::tests::only_a_live_lead_or_unfinished_worker_keeps_its_thread_for_the_idle_setting ... ok
+test repositories::scheduler::idle_unload::tests::unsettled_input_requests_and_monitors_hold_the_thread ... ok
+test repositories::scheduler::idle_unload::tests::every_in_use_condition_holds_the_thread_and_the_account ... ok
+test repositories::scheduler::lifecycle::account_scope_tests::account_agents_search_the_account_scope_index ... ok
+test repositories::scheduler::lifecycle::tests::a_finished_python_restart_marker_does_not_interrupt_a_waiting_agent ... ok
+test repositories::scheduler::lifecycle::tests::a_finished_python_turn_reserved_during_activity_stays_settled ... ok
+test repositories::scheduler::lifecycle::tests::a_held_restart_is_not_applied_again_after_the_user_sends_a_message ... ok
+test repositories::scheduler::lifecycle::tests::a_park_requested_during_a_turn_takes_effect_when_the_turn_ends ... ok
+test repositories::scheduler::lifecycle::tests::a_finished_turn_with_only_an_old_uncertain_input_waits_instead_of_queueing ... ok
+test repositories::scheduler::lifecycle::tests::a_later_finished_turn_closes_a_pending_restart_marker ... ok
+test repositories::scheduler::lifecycle::tests::a_turn_outcome_settles_every_run_that_bound_the_turn ... ok
+test repositories::scheduler::lifecycle::tests::an_old_uncertain_input_does_not_block_a_new_message ... ok
+test repositories::scheduler::lifecycle::tests::an_observed_turn_without_acceptance_stays_unknown_after_a_restart ... ok
+test repositories::scheduler::policy_tests::child_results_share_a_turn_only_on_the_preparation_path ... ok
+test repositories::scheduler::lifecycle::tests::stored_incident_runs_that_share_a_turn_settle_without_an_edit ... ok
+test repositories::scheduler::policy_tests::idle_batch_selection_combines_eligible_composer_inputs ... ok
+test repositories::scheduler::lifecycle::tests::a_settled_turn_of_any_terminal_status_is_not_interrupted_again ... ok
+test repositories::scheduler::lifecycle::tests::an_unapplied_disk_full_start_returns_the_exact_input_to_the_queue ... ok
+test repositories::scheduler::policy_tests::deleted_agent_is_skipped_at_claim_and_refused_at_submission_recheck ... ok
+test repositories::scheduler::policy_tests::mixed_batch_splits_only_at_the_owned_attachment_admission_budget ... ok
+test repositories::scheduler::policy_tests::malformed_radio_metadata_names_its_stored_object ... ok
+test repositories::scheduler::policy_tests::malformed_metadata_after_the_32_event_prefix_does_not_block_admission ... ok
+test repositories::scheduler::policy_tests::malformed_complaint_and_work_policy_fields_name_the_table_and_id ... ok
+test repositories::scheduler::policy_tests::queued_orchestration_messages_share_one_turn_on_the_preparation_path ... ok
+test repositories::scheduler::policy_tests::named_policy_refusal_leaves_every_table_unchanged ... ok
+test repositories::scheduler::policy_tests::null_radio_answer_metadata_is_ordinary_input ... ok
+test repositories::scheduler::policy_tests::radio_turn_precedes_the_ordinary_32_event_prefix_without_writes ... ok
+test repositories::scheduler::policy_tests::resolved_complaint_and_decided_work_review_retire_before_claiming_the_remaining_input ... ok
+test repositories::scheduler::policy_tests::terminal_pending_ownership_includes_unresolved_non_initial_inputs ... ok
+test repositories::scheduler::policy_tests::submission_recheck_retires_decided_work_review_and_keeps_reconciliation_fields ... ok
+test repositories::scheduler::selection::account_wake_index_tests::a_queued_native_review_child_wakes_without_an_input_event ... ok
+test repositories::scheduler::selection::account_wake_index_tests::account_wake_index_predicate_keeps_invalid_agent_receipt_exclusion_outside_index ... ok
+test repositories::scheduler::selection::account_wake_index_tests::account_wake_capacity_retry_uses_only_queued_input ... ok
+test repositories::scheduler::selection::account_wake_index_tests::child_result_hold_queries_use_their_indexes ... ok
+test repositories::scheduler::selection::account_wake_index_tests::account_wake_index_query_uses_candidate_index_and_rejects_invalid_json ... ok
+test repositories::scheduler::selection::account_wake_index_tests::account_wake_candidates_preserve_pending_recovery_and_cursor_semantics_after_upgrade ... ok
+test repositories::scheduler::steer::tests::a_later_turn_end_drops_earlier_unconfirmed_receipts ... ok
+test repositories::scheduler::steer::tests::acknowledgement_before_the_response_is_final ... ok
+test repositories::scheduler::selection::account_wake_index_tests::strict_account_wake_pages_reach_agent_after_full_page_without_wrapping ... ok
+test repositories::scheduler::policy_tests::preparation_claims_one_thousand_small_mixed_events_and_replays_exact_batch ... ok
+test repositories::scheduler::steer::tests::acknowledgement_must_match_thread_turn_and_first_input ... ok
+test repositories::scheduler::steer::tests::business_notification_resolved_during_busy_preparation_releases_the_exact_batch ... ok
+test repositories::scheduler::steer::tests::claim_takes_eligible_current_turn_input_in_order_once ... ok
+test repositories::scheduler::steer::tests::claimable_check_matches_the_claim_without_writing ... ok
+test repositories::scheduler::steer::tests::closed_generation_unconfirms_only_older_submissions ... ok
+test repositories::scheduler::steer::tests::current_user_behind_mixed_notifications_and_next_turn_keeps_exact_batch ... ok
+test repositories::scheduler::steer::tests::codex_and_unlabelled_turns_are_steered_like_claude ... ok
+test repositories::scheduler::steer::tests::definite_rejection_after_unconfirmed_requeues_once ... ok
+test repositories::scheduler::steer::tests::claim_refuses_every_ineligible_agent_state ... ok
+test repositories::scheduler::steer::tests::frozen_projection_survives_response_loss_and_rejects_payload_changes ... ok
+test repositories::scheduler::steer::tests::every_terminal_settlement_resolves_open_steers ... ok
+test repositories::scheduler::steer::tests::invalid_delivery_metadata_fails_closed_and_next_turn_only_is_read_only ... ok
+test repositories::scheduler::steer::tests::late_acknowledgement_keeps_a_user_change_to_unconfirmed_input ... ok
+test repositories::scheduler::steer::tests::late_acknowledgement_of_withdrawn_input_changes_nothing ... ok
+test repositories::scheduler::steer::tests::generation_recovery_unconfirms_steers_before_disconnecting_the_turn ... ok
+test repositories::scheduler::steer::tests::lost_response_keeps_input_dispatching_until_the_acknowledgement ... ok
+test repositories::scheduler::steer::tests::native_commands_assets_and_radio_answers_wait_without_blocking_current_input ... ok
+test repositories::scheduler::steer::tests::restart_before_submission_returns_the_reservation ... ok
+test repositories::scheduler::steer::tests::rejection_requeues_once_and_blocks_this_turn ... ok
+test repositories::scheduler::steer::tests::stop_before_turn_end_cancels_unread_input ... ok
+test repositories::scheduler::steer::tests::stop_receipt_cancels_the_initial_prompt_in_pending_dispatch ... ok
+test repositories::scheduler::steer::tests::stop_receipt_refines_unconfirmed_input_and_rejects_wrong_scope ... ok
+test repositories::scheduler::steer::tests::one_thousand_small_mixed_events_are_one_busy_batch ... ok
+test repositories::scheduler::steer::tests::terminal_between_claim_and_submission_releases_the_reservation ... ok
+test repositories::scheduler::steer::tests::steer_acknowledgement_work_is_independent_of_delivered_history ... ok
+test repositories::scheduler::steer::tests::stop_receipt_survivor_stays_uncertain_until_cancellation_or_acknowledgement ... ok
+test repositories::scheduler::steer::tests::transport_not_sent_returns_input_once ... ok
+test repositories::scheduler::steer::tests::turn_change_before_submission_releases_without_writing ... ok
+test repositories::scheduler::steer::tests::turn_end_with_unread_input_requeues_it_once ... ok
+test repositories::scheduler::steer::tests::turn_end_without_ack_is_visibly_unconfirmed_and_never_resent ... ok
+test repositories::scheduler::selection::account_wake_index_tests::exact_account_capacity_query_is_independent_of_global_account_cursor ... ok
+test repositories::scheduler::tests::claim_replays_saved_result_and_refuses_changed_input_after_recovery ... ok
+test repositories::scheduler::steer::tests::wake_page_selects_running_turns_of_every_provider_with_queued_user_input ... ok
+test repositories::scheduler::tests::claims_ordered_pending_events_and_updates_agent_in_one_transaction ... ok
+test repositories::scheduler::tests::invalid_agent_hold_receipt_excludes_agent_from_wake_page ... ok
+test repositories::scheduler::tests::recovery_and_interrupt_policies_keep_exact_scope ... ok
+test repositories::scheduler::tests::malformed_attempt_event_ids_are_refused_without_requeueing ... ok
+test repositories::scheduler::tests::native_failure_hold_blocks_claim_without_writes ... ok
+test repositories::scheduler::tests::native_failure_hold_added_after_claim_blocks_submission ... ok
+test repositories::scheduler::tests::refusal_to_claim_does_not_change_agent_or_events ... ok
+test repositories::scheduler::tests::recovery_cancels_exact_stale_claim_and_recovers_other_agents ... ok
+test repositories::scheduler::tests::recovery_does_not_override_a_same_epoch_stop_state ... ok
+test repositories::scheduler::tests::restart_requeues_only_an_exact_unsubmitted_reservation ... ok
+test repositories::scheduler::tests::settled_unsubmitted_attempt_is_not_requeued_again ... ok
+test repositories::scheduler::tests::submitted_attempt_is_not_recovered ... ok
+test repositories::scheduler::tests::stop_revocation_cancels_only_the_exact_unsubmitted_claim ... ok
+test repositories::scheduler::tests::submitted_claim_is_not_recovered_or_admitted_again ... ok
+
+test result: ok. 92 passed; 0 failed; 0 ignored; 0 measured; 166 filtered out; finished in 1.04s
+
+   Compiling studio-runtime-services v0.1.0 (/Users/igor/Projects/codex-agents-input-delivery/workspaces/runtime/packages/runtime-services)
+    Finished `test` profile [unoptimized] target(s) in 1m 24s
+     Running tests/integration.rs (target/debug/deps/integration-8dfd81569ff81e6e)
+
+running 2 tests
+test turn_lifecycle_corpus::fast_witnesses_cover_transitions_states_and_review_findings ... ok
+test turn_lifecycle_corpus::python_written_turn_lifecycle_corpus ... FAILED
+
+failures:
+
+---- turn_lifecycle_corpus::python_written_turn_lifecycle_corpus stdout ----
+not_sent_after_submit: 3 unexpected differences; error=None
+
+thread 'turn_lifecycle_corpus::python_written_turn_lifecycle_corpus' (407624878) panicked at workspaces/runtime/packages/runtime-services/tests/turn_lifecycle_corpus.rs:1154:5:
+assertion `left == right` failed: 11 green / 1 red; field differences: /private/var/folders/29/8pytxrvn6qlcm4384bmy9n6m0000gn/T/turn-corpus-98986/turn-lifecycle-corpus-report.json
+  left: 11
+ right: 12
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    turn_lifecycle_corpus::python_written_turn_lifecycle_corpus
+
+test result: FAILED. 1 passed; 1 failed; 0 ignored; 0 measured; 582 filtered out; finished in 1.41s
+
+error: test failed, to rerun pass `-p studio-runtime-services --test integration`

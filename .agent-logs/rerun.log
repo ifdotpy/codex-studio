@@ -1,0 +1,39 @@
+warning: linker stderr: ld: __eh_frame section too large (max 16MB) to encode dwarf unwind offsets in compact unwind table, performance of exception handling might be affected
+  |
+  = note: `#[warn(linker_messages)]` on by default
+
+warning: `studio-runtime-services` (lib test) generated 1 warning
+    Finished `test` profile [unoptimized] target(s) in 0.46s
+     Running unittests src/lib.rs (target/debug/deps/studio_runtime_services-0762f7d398f205e9)
+
+running 10 tests
+test account_worker::tests::auth_hold::changed_account_start_is_held_and_starts_once_after_restore ... ok
+test account_worker::tests::auth_hold::held_start_survives_restart_and_starts_once_after_login ... ok
+test account_worker::tests::auth_hold::held_start_wakes_nothing_until_an_account_change ... ok
+test account_worker::tests::auth_hold::retired_claude_auth_probe_wait_becomes_a_held_start_once ... ok
+test account_worker::tests::auth_hold::signed_out_start_is_held_and_starts_once_after_login ... ok
+test account_worker::tests::auth_hold::two_held_starts_of_one_account_start_once_in_order ... ok
+test account_worker::tests::publication_off_path::analytics_are_logged_in_the_journal_commit_and_projected_off_the_writer ... ok
+test account_worker::tests::publication_off_path::blocked_sink_does_not_delay_the_worker_and_order_is_kept ... ok
+test account_worker::tests::publication_off_path::delivered_receipts_are_deleted_by_the_next_journal_commit ... ok
+test account_worker::tests::publication_off_path::restart_replays_undelivered_publications_once ... ok
+
+test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 1587 filtered out; finished in 8.01s
+
+   Compiling studio-runtime-services v0.1.0 (/Users/igor/Projects/codex-agents-input-delivery/workspaces/runtime/packages/runtime-services)
+    Finished `test` profile [unoptimized] target(s) in 29.93s
+     Running tests/integration.rs (target/debug/deps/integration-8dfd81569ff81e6e)
+
+running 9 tests
+test scheduler_python_parity::named_team_and_radio_refusals_match_python_preparation_and_preserve_whole_state ... ok
+test scheduler_python_parity::late_acceptance_preserves_a_stopped_agent_and_delivers_exact_input ... ok
+test scheduler_python_parity::pending_selection_matches_python_and_claims_rust_event_write_events ... ok
+test scheduler_python_parity::proven_not_submitted_preserves_failed_projection_and_pending_input ... ok
+test scheduler_python_parity::restart_keeps_a_scoped_receipt_without_replaying_events ... ok
+test scheduler_python_parity::startup_recovers_valid_submitted_agent_while_skipping_malformed_neighbor ... ok
+test turn_lifecycle_corpus::fast_witnesses_cover_transitions_states_and_review_findings ... ok
+test scheduler_python_parity::submitted_marker_survives_settlement_write_failure ... ok
+test turn_lifecycle_corpus::python_written_turn_lifecycle_corpus ... ok
+
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 575 filtered out; finished in 8.96s
+

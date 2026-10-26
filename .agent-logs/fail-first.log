@@ -1,0 +1,32 @@
+   Compiling studio-runtime-services v0.1.0 (/Users/igor/Projects/codex-agents-input-delivery/workspaces/runtime/packages/runtime-services)
+warning: linker stderr: ld: __eh_frame section too large (max 16MB) to encode dwarf unwind offsets in compact unwind table, performance of exception handling might be affected
+  |
+  = note: `#[warn(linker_messages)]` on by default
+
+warning: `studio-runtime-services` (lib test) generated 1 warning
+    Finished `test` profile [unoptimized] target(s) in 2m 09s
+     Running unittests src/lib.rs (target/debug/deps/studio_runtime_services-0762f7d398f205e9)
+
+running 4 tests
+test account_worker::tests::unsent_start::a_start_that_stays_unsent_fails_with_its_cause_and_keeps_its_input ... ok
+test account_worker::tests::unsent_start::a_submitted_turn_start_that_stays_unsent_keeps_its_input_pending ... FAILED
+test linux_vm_provider::tests::proven_unsent_start_retries_same_identity_without_info_reconciliation ... ok
+test account_worker::tests::unsent_start::an_expired_unwritten_thread_request_returns_its_input_and_starts_again ... ok
+
+failures:
+
+---- account_worker::tests::unsent_start::a_submitted_turn_start_that_stays_unsent_keeps_its_input_pending stdout ----
+
+thread 'account_worker::tests::unsent_start::a_submitted_turn_start_that_stays_unsent_keeps_its_input_pending' (399416961) panicked at workspaces/runtime/packages/runtime-services/src/account_worker/tests/unsent_start.rs:148:5:
+assertion `left == right` failed
+  left: "failed"
+ right: "pending"
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    account_worker::tests::unsent_start::a_submitted_turn_start_that_stays_unsent_keeps_its_input_pending
+
+test result: FAILED. 3 passed; 1 failed; 0 ignored; 0 measured; 1593 filtered out; finished in 1.73s
+
+error: test failed, to rerun pass `-p studio-runtime-services --lib`

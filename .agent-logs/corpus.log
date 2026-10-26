@@ -1,0 +1,24 @@
+    Finished `test` profile [unoptimized] target(s) in 0.24s
+     Running tests/integration.rs (target/debug/deps/integration-8dfd81569ff81e6e)
+
+running 1 test
+test turn_lifecycle_corpus::python_written_turn_lifecycle_corpus ... FAILED
+
+failures:
+
+---- turn_lifecycle_corpus::python_written_turn_lifecycle_corpus stdout ----
+not_sent_after_submit: 3 unexpected differences; error=None
+
+thread 'turn_lifecycle_corpus::python_written_turn_lifecycle_corpus' (407778774) panicked at workspaces/runtime/packages/runtime-services/tests/turn_lifecycle_corpus.rs:1154:5:
+assertion `left == right` failed: 0 green / 1 red; field differences: /private/tmp/claude-501/-Users-igor-Projects-codex-agents/dc4a8ab3-ce83-42ae-8b99-5a627b94be94/scratchpad/pr1/corpus-report.json
+  left: 0
+ right: 1
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    turn_lifecycle_corpus::python_written_turn_lifecycle_corpus
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 583 filtered out; finished in 0.80s
+
+error: test failed, to rerun pass `-p studio-runtime-services --test integration`
