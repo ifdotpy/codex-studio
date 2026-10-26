@@ -1,3 +1,6 @@
+import type { GetResult } from "../../src/apiTypes.ts";
+import type { components } from "../../src/generated/api.ts";
+import { SYNC_PROTOCOL_VERSION } from "../../src/generated/api.ts";
 import type {} from "./team-room-bounds-ui.fixture.tsx";
 import { required } from "./helpers.ts";
 import { createFixtureViteServer as createServer } from "../playwright.ts";
@@ -25,7 +28,7 @@ test("team room bounds ui", async ({ page: runnerPage }) => {
     kind: "private",
     members: ["lead", "worker"],
     name: "Worker",
-  };
+  } satisfies components["schemas"]["RoomEntityDto"];
   const server = await createServer({
     configFile: false,
     root,
@@ -66,7 +69,7 @@ test("team room bounds ui", async ({ page: runnerPage }) => {
       }),
     );
     await page.route("**/api/sync/stream?*", (route) => {
-      const resources = JSON.parse(
+      const resources: components["schemas"]["ResourceRef"][] = JSON.parse(
         new URL(route.request().url()).searchParams.get("resources") || "[]",
       );
       return route.fulfill({
@@ -74,7 +77,7 @@ test("team room bounds ui", async ({ page: runnerPage }) => {
         headers: apiSchemaHeaders(),
         body: apiSchemaHandshakeSse(
           protocol3SseEvent("resources", {
-            protocol: 4,
+            protocol: SYNC_PROTOCOL_VERSION,
             workspaceId,
             epoch: "room-bounds",
             revision: 1,
@@ -119,7 +122,7 @@ test("team room bounds ui", async ({ page: runnerPage }) => {
           messages,
           nextBefore: lo > 1 ? lo : null,
           nextAfter: hi < 1391 ? hi : null,
-        },
+        } satisfies GetResult<"/api/agent-chat">,
       });
     });
     await page.goto(`${required(server.resolvedUrls?.local[0])}check`);

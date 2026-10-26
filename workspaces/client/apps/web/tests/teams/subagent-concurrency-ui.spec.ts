@@ -5,7 +5,13 @@ declare global {
 }
 import type { Page, BrowserContext, TestInfo } from "@playwright/test";
 import type { components } from "../../src/generated/api.ts";
-import { required, fixturePostBody, fixturePostResult } from "./helpers.ts";
+import {
+  required,
+  fixturePostBody,
+  fixturePostResult,
+  fixtureGetResult,
+  legacySyncEntities,
+} from "./helpers.ts";
 import { waitForFixturePort } from "../playwright.ts";
 import {
   readTestState,
@@ -68,7 +74,10 @@ test("subagent concurrency ui", async ({ browser: _browser }) => {
     const snapshot = async () => readTestState(origin);
     const initial = await snapshot();
     const syncWorkspaceId = (
-      await (await fetch(origin + "/api/sync/identity")).json()
+      await fixtureGetResult(
+        await fetch(origin + "/api/sync/identity"),
+        "/api/sync/identity",
+      )
     ).workspaceId;
     const lead = required(
       initial.threads.find((agent) => agent.name === "Release lead"),
@@ -304,6 +313,8 @@ test("subagent concurrency ui", async ({ browser: _browser }) => {
         if (!key) throw Error("No scoped setting record");
         if (!key) throw Error("Missing stored setting");
         if (!key) throw Error("Missing stored setting");
+        if (!key) throw Error("Missing stored setting");
+        if (!key) throw Error("Missing stored setting");
         localStorage.setItem(
           key,
           JSON.stringify({
@@ -364,6 +375,7 @@ test("subagent concurrency ui", async ({ browser: _browser }) => {
             key.startsWith("studio-agent-mode:") &&
             JSON.parse(key.slice("studio-agent-mode:".length))[2] === leadId,
         );
+        if (!key) throw Error("Missing stored setting");
         localStorage.setItem(
           key,
           JSON.stringify({
@@ -495,13 +507,20 @@ test("subagent concurrency ui", async ({ browser: _browser }) => {
         if (url.searchParams.get("scope") !== "state:entities:v1")
           return route.continue();
         const response = await route.fetch();
-        const projection = await response.json();
+        const projection = await fixtureGetResult(response, "/api/sync/pull");
+        if (projection.reset) throw Error("Unexpected projection reset");
         oldProjectionResponses += 1;
         for (const document of projection.documents) {
-          if (document.id !== `entity:agent:${lead.id}` || document._deleted)
+          if (
+            !("payload" in document) ||
+            document.id !== `entity:agent:${lead.id}` ||
+            document._deleted
+          )
             continue;
           oldLeadProjectionResponses += 1;
-          const projectedLead = JSON.parse(document.payload);
+          // This payload was written by the fixture server using the generated legacy entity envelope.
+          const projectedLead: components["schemas"]["SyncAgentEntityPayload"] =
+            JSON.parse(document.payload);
           assert.equal(projectedLead.collection, "agent");
           assert.equal(projectedLead.id, lead.id);
           delete projectedLead.value.subagentConcurrencyVersion;

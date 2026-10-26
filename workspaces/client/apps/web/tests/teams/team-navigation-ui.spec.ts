@@ -1,5 +1,10 @@
-import type { SyncEntity, AgentEntityDto } from "../playwright.ts";
-import { required } from "./helpers.ts";
+import type { SyncPullResponse, AgentEntityDto } from "../playwright.ts";
+import {
+  required,
+  fixtureGetResult,
+  fixturePostResult,
+  legacySyncEntities,
+} from "./helpers.ts";
 import { waitForFixturePort } from "../playwright.ts";
 import {
   readTestState,
@@ -74,7 +79,9 @@ test("team-navigation-ui", async ({ page: fixturePage }) => {
     await fixturePage.setViewportSize({ width: 1440, height: 980 });
     const errors: string[] = [];
     page.on("pageerror", (error) => errors.push(error.message));
-    const scriptWorkerStates = (documents: SyncEntity[] | undefined) => {
+    const scriptWorkerStates = (
+      documents: SyncPullResponse["documents"] | undefined,
+    ) => {
       // The server seeds idle workers; the roster's mix of states is scripted here.
       const desiredStatus = new Map<string, AgentEntityDto["status"]>(
         workers.map((agent, index) => [
@@ -88,7 +95,12 @@ test("team-navigation-ui", async ({ page: fixturePage }) => {
         ]),
       );
       for (const change of documents ?? []) {
-        if (change.op !== "upsert" || change.collection !== "agent") continue;
+        if (
+          !("op" in change) ||
+          change.op !== "upsert" ||
+          change.collection !== "agent"
+        )
+          continue;
         if (change.id === worker(2).id) {
           change.value.name = longName;
           change.value.status = "approval";
@@ -104,7 +116,7 @@ test("team-navigation-ui", async ({ page: fixturePage }) => {
       if (url.searchParams.get("scope") !== "state:entities:v1")
         return route.fallback();
       const response = await route.fetch();
-      const data = await response.json();
+      const data = await fixtureGetResult(response, "/api/sync/pull");
       if (data.reset || !data.documents?.length)
         return route.fulfill({ response, json: data });
       scriptWorkerStates(data.documents);
@@ -116,8 +128,8 @@ test("team-navigation-ui", async ({ page: fixturePage }) => {
     // presentation in both transports without changing receipts or checkpoints.
     await page.route("**/api/organization", async (route) => {
       const response = await route.fetch();
-      const data = await response.json();
-      scriptWorkerStates(data._syncEntities);
+      const data = await fixturePostResult(response, "/api/organization");
+      scriptWorkerStates(legacySyncEntities(data));
       await route.fulfill({ response, json: data });
     });
     await page.goto(origin);

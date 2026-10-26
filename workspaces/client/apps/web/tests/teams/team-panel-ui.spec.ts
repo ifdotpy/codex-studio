@@ -39,7 +39,7 @@ test("Team panel ui", async ({
     await page.setViewportSize({ width: 1440, height: 960 });
     page.setDefaultTimeout(12000);
     const errors: string[] = [],
-      actions = [];
+      actions: import("../../src/apiTypes.ts").PostBody<"/api/action">[] = [];
     page.on("pageerror", (error) => errors.push(error.message));
     await page.route("**/api/action", (route) => {
       actions.push(fixturePostBody(route, "/api/action"));
@@ -76,7 +76,7 @@ test("Team panel ui", async ({
         task: "Research current official government sources for filing a notification.",
         result: "",
       },
-    });
+    } satisfies Partial<TestAgent>);
     const active: TestAgent = {
       ...member,
       id: "worker-active",

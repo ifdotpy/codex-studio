@@ -1,3 +1,4 @@
+import type { SyncEntity } from "../playwright.ts";
 /** Require a fixture member or measured element before using it. */
 export function required<T>(value: T | null | undefined): T {
   if (value === null || value === undefined)
@@ -25,14 +26,27 @@ export async function fixturePostResult<Path extends ApiPostPath>(
 }
 
 /** Preserve old mutation-extension fixtures; current Studio responses omit this field. */
-export function legacySyncEntities(response: unknown): unknown[] | undefined {
+export function legacySyncEntities(
+  response: unknown,
+): SyncEntity[] | undefined {
   if (
     !response ||
     typeof response !== "object" ||
     !("_syncEntities" in response)
   )
     return undefined;
+  // Legacy fixture extensions used the generated entity DTOs before their removal.
   return Array.isArray(response._syncEntities)
-    ? response._syncEntities
+    ? (response._syncEntities as SyncEntity[])
     : undefined;
+}
+
+import type { ApiGetPath, GetResult } from "../../src/apiTypes.ts";
+
+/** The prepared fixture server owns GET response shapes, generated from its runtime schema. */
+export async function fixtureGetResult<Path extends ApiGetPath>(
+  response: Pick<APIResponse | Response, "json">,
+  _path: Path,
+): Promise<GetResult<Path>> {
+  return response.json();
 }
