@@ -121,7 +121,7 @@ test("persistOrDefer saves again when space returns and rejects other errors", a
     });
     const session = makeSession();
     await store.persist(session);
-    assert.ok(session.turns[0]);
+
     session.turns[0].items.push({ id: "answer-1", text: "kept in memory" });
     const originalAppend = fs.appendFile;
     let full = true;
@@ -184,8 +184,7 @@ test("a disk-full session save does not fail the running turn and loses nothing"
     (n): n is BridgeNoteFor<"item/completed"> =>
       n.method === "item/completed" && n.params.item.id === "disk-full:" + turn,
   );
-  assert.ok(held.params.item.text);
-  assert.match(held.params.item.text, /^Disk is full\./);
+  assert.match(held.params.item.text!, /^Disk is full\./);
   assert.equal(held.params.item.studioNotice, true);
   // Saves run beside the stream and keep failing while the disk is full, so
   // a temporary file may exist now by design. The turn's end waits for its
@@ -201,10 +200,10 @@ test("a disk-full session save does not fail the running turn and loses nothing"
     path.join(bridge.root, "state"),
   ).readAll(bridge.thread);
   const savedTurn = saved.session.turns.find((item) => item.id === turn);
-  assert.ok(savedTurn);
-  assert.equal(savedTurn.status, "completed");
+
+  assert.equal(savedTurn!.status, "completed");
   assert.ok(
-    savedTurn.items.some((item) => item.text === "still working"),
+    savedTurn!.items.some((item) => item.text === "still working"),
     "the answer given while the disk was full is saved",
   );
   assert.deepEqual(

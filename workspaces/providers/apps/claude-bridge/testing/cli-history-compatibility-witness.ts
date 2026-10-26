@@ -6,7 +6,6 @@ import type {
 import type { Session } from "../session-state.ts";
 import type { ControlDependencies } from "../controls.ts";
 import type { SessionFixtureStreamEvent } from "../fixtures/session-sdk-types.ts";
-import { unusedFileControls } from "./control-fixture.ts";
 import { object } from "../history-records.ts";
 // Real installed CLI/SDK; all provider requests end at this disposable HTTP
 // fixture. Retry and deferred-tool formats are provider output, not new input.
@@ -44,13 +43,8 @@ const server = http.createServer(async (req, res) => {
     res.end('{"input_tokens":10}');
     return;
   }
-  const body: unknown = JSON.parse(raw);
-  assert(
-    body &&
-      typeof body === "object" &&
-      "model" in body &&
-      typeof body.model === "string",
-  );
+  // The local CLI fixture owns this captured request document.
+  const body: Pick<Options, "model"> = JSON.parse(raw);
   captures.push({ scenario, body });
   requests++;
   if (scenario === "retry" && requests === 1) {
@@ -126,9 +120,7 @@ const server = http.createServer(async (req, res) => {
   send("message_stop", {});
   res.end();
 });
-await new Promise<void>((resolve) =>
-  server.listen(0, "127.0.0.1", () => resolve()),
-);
+await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
 const address = server.address();
 assert(address && typeof address === "object");
 const previous = process.env.CLAUDE_CONFIG_DIR;
@@ -285,19 +277,18 @@ try {
         ),
       );
     }
-    const deps: ControlDependencies = {
-      ...unusedFileControls,
+    const deps = {
       persist: async () => {},
       forkSession,
       getSessionMessages: (id, options) =>
         verifiedHistoryMessages({
           id,
-          cwd: options?.dir ?? assert.fail("Missing history directory"),
+          cwd: options!.dir!,
         }),
-    };
+    } as Partial<ControlDependencies> as ControlDependencies;
     const branch = await forkAtTurn(
       session,
-      { lastTurnId: session.turns[0]?.id ?? assert.fail("Missing first turn") },
+      { lastTurnId: session.turns[0].id },
       deps,
     );
     assert.equal(branch.turns.length, 1);
@@ -305,7 +296,7 @@ try {
       session,
       {
         requestId: randomUUID(),
-        turnId: session.turns[1]?.id ?? assert.fail("Missing second turn"),
+        turnId: session.turns[1].id,
       },
       deps,
     );
@@ -330,7 +321,5 @@ try {
   if (previous === undefined) delete process.env.CLAUDE_CONFIG_DIR;
   else process.env.CLAUDE_CONFIG_DIR = previous;
   server.closeAllConnections();
-  await new Promise<void>((resolve, reject) =>
-    server.close((error) => (error ? reject(error) : resolve())),
-  );
+  await new Promise<void>((resolve) => server.close(resolve as () => void));
 }

@@ -9,7 +9,7 @@ export const HANG_GUARD_MS = 10_000;
 export function waitForFile(
   file: string,
   {
-    signal: suppliedSignal,
+    signal,
     matches = () => true,
     absent = false,
     childIpc = false,
@@ -22,23 +22,24 @@ export function waitForFile(
 ) {
   return new Promise<void>((resolve, reject) => {
     const controller = new AbortController();
-    const signal = suppliedSignal ?? controller.signal;
-    const deadline = suppliedSignal
+
+    const deadline = signal
       ? undefined
       : setTimeout(
           () => controller.abort(new Error(`File signal missing: ${file}`)),
           HANG_GUARD_MS,
         );
+    signal ??= controller.signal;
     const watcher = watch(path.dirname(file), check);
     const cleanup = () => {
       watcher.close();
       clearTimeout(deadline);
-      signal.removeEventListener("abort", abort);
+      signal!.removeEventListener("abort", abort);
       process.off("message", notified);
     };
     function abort() {
       cleanup();
-      reject(signal.reason);
+      reject(signal!.reason);
     }
     function check() {
       try {
@@ -50,14 +51,8 @@ export function waitForFile(
         reject(error);
       }
     }
-    function notified(message: unknown) {
-      if (
-        message &&
-        typeof message === "object" &&
-        "fixtureFile" in message &&
-        message.fixtureFile === file
-      )
-        check();
+    function notified(message: { fixtureFile?: string }) {
+      if (message?.fixtureFile === file) check();
     }
     // Only scripted children opt in: test workers also have process.send, but
     // their IPC reference belongs to the test runner. A publisher notification

@@ -67,7 +67,7 @@ test("missing native codecs refuse images while the bridge can still accept text
       threadId: bridge.thread,
       input: [{ type: "text", text: "hello" }],
     });
-    const input = await bridge.note("fixture/input");
+    const input = await bridge.note((note) => note.method === "fixture/input");
     assert.ok("content" in input.params);
     assert.deepEqual(input.params.content, [{ type: "text", text: "hello" }]);
   } finally {
@@ -89,8 +89,10 @@ test("the real image caller sends a bounded base64 image with its actual MIME ty
       input: [{ type: "localImage", path: file }],
     });
     const input = await bridge.note(
-      "fixture/input",
-      (note) => note.method === "fixture/input",
+      (
+        note,
+      ): note is import("./testing/bridge-harness.ts").BridgeNoteFor<"fixture/input"> =>
+        note.method === "fixture/input",
     );
     assert.ok("content" in input.params && Array.isArray(input.params.content));
     const [block] = input.params.content;
@@ -103,8 +105,9 @@ test("the real image caller sends a bounded base64 image with its actual MIME ty
     ).metadata();
     assert.equal(metadata.width, MAX_IMAGE_SIDE);
     await bridge.note(
-      "turn/completed",
-      (note) =>
+      (
+        note,
+      ): note is import("./testing/bridge-harness.ts").BridgeNoteFor<"turn/completed"> =>
         note.method === "turn/completed" &&
         note.params.turn.id === result.turn.id,
     );
@@ -121,8 +124,10 @@ test("a refused image steer leaves the active turn unchanged", async () => {
       input: [{ type: "text", text: "hold" }],
     });
     await bridge.note(
-      "fixture/input",
-      (note) => note.method === "fixture/input",
+      (
+        note,
+      ): note is import("./testing/bridge-harness.ts").BridgeNoteFor<"fixture/input"> =>
+        note.method === "fixture/input",
     );
     const file = path.join(bridge.root, "broken.gif");
     await fs.writeFile(file, "broken");
@@ -147,8 +152,9 @@ test("a refused image steer leaves the active turn unchanged", async () => {
     );
     await bridge.writeSignal("release");
     const finished = await bridge.note(
-      "turn/completed",
-      (note) =>
+      (
+        note,
+      ): note is import("./testing/bridge-harness.ts").BridgeNoteFor<"turn/completed"> =>
         note.method === "turn/completed" && note.params.turn.id === turn.id,
     );
     assert.equal(finished.params.turn.status, "completed");

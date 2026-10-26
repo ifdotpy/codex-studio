@@ -43,7 +43,7 @@ test("the watchdog stays idle and fires the nearest deadline once", () => {
   expect(recover).not.toHaveBeenCalled();
   vi.advanceTimersByTime(1);
   expect(recover).toHaveBeenCalledTimes(1);
-  expect(recover.mock.calls[0]?.[2].id).toBe("nearest");
+  expect(recover.mock.calls[0][2].id).toBe("nearest");
   expect(vi.getTimerCount()).toBe(0);
   vi.advanceTimersByTime(10000);
   expect(recover).toHaveBeenCalledTimes(1);
@@ -131,13 +131,13 @@ test("one timer follows the nearest query and preserves an unchanged deadline", 
   expect(schedule).toHaveBeenCalledTimes(1);
   vi.advanceTimersByTime(300);
   expect(recover).toHaveBeenCalledTimes(1);
-  expect(recover.mock.calls[0]?.[1]).toBe(nearest);
+  expect(recover.mock.calls[0][1]).toBe(nearest);
   expect(vi.getTimerCount()).toBe(1);
   vi.advanceTimersByTime(299);
   expect(recover).toHaveBeenCalledTimes(1);
   vi.advanceTimersByTime(1);
   expect(recover).toHaveBeenCalledTimes(2);
-  expect(recover.mock.calls[1]?.[1]).toBe(later);
+  expect(recover.mock.calls[1][1]).toBe(later);
   expect(vi.getTimerCount()).toBe(0);
   schedule.mockRestore();
 });

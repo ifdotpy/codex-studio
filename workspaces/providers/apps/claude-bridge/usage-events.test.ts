@@ -19,8 +19,10 @@ async function run(events: readonly SessionFixtureMessage[], model = "sonnet") {
     input: [{ type: "text", text: "Continue" }],
   });
   const done = await bridge.note(
-    "turn/completed",
-    (n) => n.method === "turn/completed",
+    (
+      n,
+    ): n is import("./testing/bridge-harness.ts").BridgeNoteFor<"turn/completed"> =>
+      n.method === "turn/completed",
   );
   return { bridge, turn: done.params.turn };
 }

@@ -26,8 +26,10 @@ async function start(b: Awaited<ReturnType<typeof startBridge>>, text: string) {
 }
 async function done(b: Awaited<ReturnType<typeof startBridge>>, id: string) {
   await b.note(
-    "turn/completed",
-    (n) => n.method === "turn/completed" && n.params.turn.id === id,
+    (
+      n,
+    ): n is import("./testing/bridge-harness.ts").BridgeNoteFor<"turn/completed"> =>
+      n.method === "turn/completed" && n.params.turn.id === id,
   );
 }
 function observations(b: Awaited<ReturnType<typeof startBridge>>) {
@@ -39,8 +41,9 @@ test("final stream usage is emitted before turn completion and replaces provisio
   const b = await setup();
   const id = await start(b, "hold-final");
   await b.note(
-    "thread/tokenUsage/updated",
-    (n) =>
+    (
+      n,
+    ): n is import("./testing/bridge-harness.ts").BridgeNoteFor<"thread/tokenUsage/updated"> =>
       n.method === "thread/tokenUsage/updated" &&
       n.params.studioUsage.kind === "response",
   );
@@ -72,8 +75,10 @@ test("every result is published before a steer echo can discard a deferred resul
   const b = await setup();
   const id = await start(b, "steer");
   await b.note(
-    "provider/generationStarted",
-    (n) => n.method === "provider/generationStarted",
+    (
+      n,
+    ): n is import("./testing/bridge-harness.ts").BridgeNoteFor<"provider/generationStarted"> =>
+      n.method === "provider/generationStarted",
   );
   await b.call("turn/steer", {
     threadId: b.thread,
@@ -82,8 +87,9 @@ test("every result is published before a steer echo can discard a deferred resul
     input: [{ type: "text", text: "continue" }],
   });
   await b.note(
-    "item/completed",
-    (n) =>
+    (
+      n,
+    ): n is import("./testing/bridge-harness.ts").BridgeNoteFor<"item/completed"> =>
       n.method === "item/completed" && n.params.item.clientId === "steer-1",
   );
   expect(observations(b).filter((o) => o?.kind === "cumulative")).toHaveLength(
@@ -151,8 +157,9 @@ test("background subagent final usage survives completion of its owning Studio t
   await done(b, turn);
   await b.writeSignal(".finish");
   await b.note(
-    "item/completed",
-    (n) =>
+    (
+      n,
+    ): n is import("./testing/bridge-harness.ts").BridgeNoteFor<"item/completed"> =>
       n.method === "item/completed" &&
       n.params.item.text === "Subagent: background-finished",
   );
@@ -234,8 +241,10 @@ test("shutdown waits for delayed SDK close and flushes one unfinished response g
   const b = await setup();
   const turn = await start(b, "shutdown");
   await b.note(
-    "provider/generationStarted",
-    (n) => n.method === "provider/generationStarted",
+    (
+      n,
+    ): n is import("./testing/bridge-harness.ts").BridgeNoteFor<"provider/generationStarted"> =>
+      n.method === "provider/generationStarted",
   );
   await b.close();
   expect(observations(b)).toEqual([
@@ -261,8 +270,10 @@ test("turn interrupt reports unfinished usage as a gap rather than zero tokens",
   const b = await setup();
   const turn = await start(b, "interrupt");
   await b.note(
-    "provider/generationStarted",
-    (n) => n.method === "provider/generationStarted",
+    (
+      n,
+    ): n is import("./testing/bridge-harness.ts").BridgeNoteFor<"provider/generationStarted"> =>
+      n.method === "provider/generationStarted",
   );
   await b.call("turn/interrupt", { threadId: b.thread, turnId: turn });
   await done(b, turn);
@@ -281,8 +292,10 @@ test("shutdown bounds a stuck SDK consumer and still reports its gap once", asyn
   const b = await setup({}, { STUDIO_CLAUDE_STALL_EXIT_WAIT_MS: "50" });
   const turn = await start(b, "shutdown-stuck");
   await b.note(
-    "provider/generationStarted",
-    (n) => n.method === "provider/generationStarted",
+    (
+      n,
+    ): n is import("./testing/bridge-harness.ts").BridgeNoteFor<"provider/generationStarted"> =>
+      n.method === "provider/generationStarted",
   );
   await b.close();
   expect(observations(b)).toEqual([
@@ -311,8 +324,10 @@ test("virtual-clock harness advances the bounded shutdown of a stuck SDK", async
   bridges.push(b);
   const turn = await start(b, "shutdown-stuck");
   await b.note(
-    "provider/generationStarted",
-    (n) => n.method === "provider/generationStarted",
+    (
+      n,
+    ): n is import("./testing/bridge-harness.ts").BridgeNoteFor<"provider/generationStarted"> =>
+      n.method === "provider/generationStarted",
   );
   await b.close();
   expect(observations(b)).toEqual([
@@ -337,15 +352,18 @@ test("discarding a stuck query drains unfinished subagent usage exactly once", a
   bridges.push(b);
   const turn = await start(b, "discard-stuck");
   await b.note(
-    "item/completed",
-    (n) =>
+    (
+      n,
+    ): n is import("./testing/bridge-harness.ts").BridgeNoteFor<"item/completed"> =>
       n.method === "item/completed" &&
       n.params.item.text === "Subagent: child-started",
   );
   await b.call("turn/interrupt", { threadId: b.thread, turnId: turn });
   await b.advanceUntil(
-    "turn/completed",
-    (n) => n.method === "turn/completed" && n.params.turn.id === turn,
+    (
+      n,
+    ): n is import("./testing/bridge-harness.ts").BridgeNoteFor<"turn/completed"> =>
+      n.method === "turn/completed" && n.params.turn.id === turn,
   );
   expect(
     observations(b).filter(
@@ -396,13 +414,17 @@ test("shutdown never spends the full CLI exit timeout on a stuck consumer", asyn
   bridges.push(b);
   await start(b, "shutdown-timing");
   await b.note(
-    "provider/generationStarted",
-    (n) => n.method === "provider/generationStarted",
+    (
+      n,
+    ): n is import("./testing/bridge-harness.ts").BridgeNoteFor<"provider/generationStarted"> =>
+      n.method === "provider/generationStarted",
   );
   await b.close();
   const timing = await b.note(
-    "fixture/shutdownTiming",
-    (n) => n.method === "fixture/shutdownTiming",
+    (
+      n,
+    ): n is import("./testing/bridge-harness.ts").BridgeNoteFor<"fixture/shutdownTiming"> =>
+      n.method === "fixture/shutdownTiming",
   );
   expect(timing.params.durationMs).toBeLessThanOrEqual(2000);
 });
@@ -457,8 +479,10 @@ test("intentional shutdown preserves an unfinished turn for reconciliation inste
   const b = await setup();
   await start(b, "shutdown");
   await b.note(
-    "provider/generationStarted",
-    (n) => n.method === "provider/generationStarted",
+    (
+      n,
+    ): n is import("./testing/bridge-harness.ts").BridgeNoteFor<"provider/generationStarted"> =>
+      n.method === "provider/generationStarted",
   );
   await b.close();
   expect(b.notes.filter((n) => n.method === "turn/completed")).toEqual([]);
@@ -481,13 +505,17 @@ for (const scenario of [
       bridges.push(b);
       const turn = await start(b, scenario);
       await b.note(
-        "provider/generationStarted",
-        (n) => n.method === "provider/generationStarted",
+        (
+          n,
+        ): n is import("./testing/bridge-harness.ts").BridgeNoteFor<"provider/generationStarted"> =>
+          n.method === "provider/generationStarted",
       );
       if (scenario === "shutdown-persist")
         await b.note(
-          "fixture/persistFailureSettled",
-          (n) => n.method === "fixture/persistFailureSettled",
+          (
+            n,
+          ): n is import("./testing/bridge-harness.ts").BridgeNoteFor<"fixture/persistFailureSettled"> =>
+            n.method === "fixture/persistFailureSettled",
         );
       if (scenario === "shutdown-deferred") {
         await b.call("turn/steer", {
@@ -498,8 +526,9 @@ for (const scenario of [
         });
         await b.writeSignal(".finish");
         await b.note(
-          "thread/tokenUsage/updated",
-          (n) =>
+          (
+            n,
+          ): n is import("./testing/bridge-harness.ts").BridgeNoteFor<"thread/tokenUsage/updated"> =>
             n.method === "thread/tokenUsage/updated" &&
             n.params.studioUsage.kind === "cumulative",
         );
@@ -543,8 +572,10 @@ test("harness restart drives a virtual clock until the bridge exits", async () =
   bridges.push(b);
   await start(b, "shutdown-deferred");
   await b.note(
-    "provider/generationStarted",
-    (n) => n.method === "provider/generationStarted",
+    (
+      n,
+    ): n is import("./testing/bridge-harness.ts").BridgeNoteFor<"provider/generationStarted"> =>
+      n.method === "provider/generationStarted",
   );
   const first = b.process;
   await b.restart();
@@ -559,8 +590,10 @@ test("harness close reaps a bridge whose virtual clock cannot be driven", async 
   bridges.push(b);
   await start(b, "shutdown-deferred");
   await b.note(
-    "provider/generationStarted",
-    (n) => n.method === "provider/generationStarted",
+    (
+      n,
+    ): n is import("./testing/bridge-harness.ts").BridgeNoteFor<"provider/generationStarted"> =>
+      n.method === "provider/generationStarted",
   );
   const child = b.process;
   child.disconnect();
@@ -640,14 +673,18 @@ for (const scenario of ["shutdown-watchdog", "shutdown-watchdog-inflight"])
       bridges.push(b);
       const turn = await start(b, scenario);
       await b.note(
-        "item/started",
-        (n) => n.method === "item/started" && n.params.item.id === "watch-tool",
+        (
+          n,
+        ): n is import("./testing/bridge-harness.ts").BridgeNoteFor<"item/started"> =>
+          n.method === "item/started" && n.params.item.id === "watch-tool",
       );
       if (scenario === "shutdown-watchdog-inflight") {
         await b.advanceTime(100);
         await b.note(
-          "fixture/stallSaveBlocked",
-          (n) => n.method === "fixture/stallSaveBlocked",
+          (
+            n,
+          ): n is import("./testing/bridge-harness.ts").BridgeNoteFor<"fixture/stallSaveBlocked"> =>
+            n.method === "fixture/stallSaveBlocked",
         );
       }
       const before = b.notes.length;

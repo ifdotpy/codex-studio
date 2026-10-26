@@ -53,14 +53,13 @@ test("the Bash command script puts the link folder first after the shell startup
   const script = browserEnvironment(folder, "s", {
     PATH: "/usr/bin",
   }).CLAUDE_ENV_FILE;
-  assert(script);
-  const before = readFileSync(script, "utf8");
+  const before = readFileSync(script!, "utf8");
   // A second session keeps the same script.
   browserEnvironment(folder, "t", { PATH: "/usr/bin" });
-  assert.equal(readFileSync(script, "utf8"), before);
+  assert.equal(readFileSync(script!, "utf8"), before);
   const value = execFileSync(
     "/bin/sh",
-    ["-c", '. "$1"; printf %s "$PATH"', "sh", script],
+    ["-c", '. "$1"; printf %s "$PATH"', "sh", script!],
     { env: { PATH: "/usr/bin:/bin" }, encoding: "utf8" },
   );
   assert.equal(value, `${links}:/usr/bin:/bin`);

@@ -47,15 +47,17 @@ test("a long streamed answer keeps every delta, line and the saved text", async 
     (n): n is BridgeNoteFor<"item/completed"> =>
       n.method === "item/completed" && n.params.item.id === "message-1",
   );
-  assert.ok(answer);
-  assert.equal(answer.params.item.text, expected);
+
+  assert.equal(answer!.params.item.text, expected);
   const saved = await createSessionStore(
     path.join(bridge.root, "state"),
   ).readAll(bridge.thread);
   const savedTurn = saved.session.turns.find((item) => item.id === turn);
-  assert.ok(savedTurn);
-  const savedAnswer = savedTurn.items.filter((item) => item.id === "message-1");
+
+  const savedAnswer = savedTurn!.items.filter(
+    (item) => item.id === "message-1",
+  );
   assert.equal(savedAnswer.length, 1);
-  assert.ok(savedAnswer[0]);
+
   assert.equal(savedAnswer[0].text, expected);
 });

@@ -56,8 +56,10 @@ for (const serviceFirst of [true, false])
           input,
         });
         const done = await bridge.note(
-          "turn/completed",
-          (n) => n.params.turn.id === turn.id,
+          (
+            n,
+          ): n is import("./testing/bridge-harness.ts").BridgeNoteFor<"turn/completed"> =>
+            n.method === "turn/completed" && n.params.turn.id === turn.id,
         );
         expect(done.params.turn.unappliedSteers).toEqual(
           ["absent", "unknown system"].includes(damage)
