@@ -166,6 +166,7 @@ function FollowLatest(p: {
   return (
     <div className="jump-slot">
       <Button
+        type="button"
         id="jump-latest"
         className="jump"
         variant="default"
@@ -227,6 +228,7 @@ export default function Conversation(p: {
   headerToolsInMenu?: boolean | undefined;
   onRailToolsChange?: ((tools: ReactNode) => void) | undefined;
   transcriptHeading?: ReactNode;
+  duo?: boolean;
   projectName?: string | undefined;
   recentChats?: RecentProjectChat[] | undefined;
   syncWorkspaceId?: string | undefined;
@@ -1858,11 +1860,13 @@ export default function Conversation(p: {
           onQuote={quote}
         />
       )}
-      <FollowLatest
-        subscribe={subscribeFollow}
-        getSnapshot={getFollow}
-        onClick={returnToLatest}
-      />
+      {(!p.duo || p.room) && (
+        <FollowLatest
+          subscribe={subscribeFollow}
+          getSnapshot={getFollow}
+          onClick={returnToLatest}
+        />
+      )}
       {p.room ? (
         <p className="room-footer">
           {p.room.kind === "private"
@@ -2012,6 +2016,13 @@ export default function Conversation(p: {
                 );
               return (
                 <>
+                  {p.duo && (
+                    <FollowLatest
+                      subscribe={subscribeFollow}
+                      getSnapshot={getFollow}
+                      onClick={returnToLatest}
+                    />
+                  )}
                   {managed &&
                     p.agent?.isLead &&
                     p.agent.accountTransfer?.scope !== "subagents" && (

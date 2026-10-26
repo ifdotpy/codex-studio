@@ -86,6 +86,7 @@ export function useWorkspaceLayout(options: {
   return {
     rowRef,
     row: host,
+    duo: geometry.duo,
     shortTouchLandscape: geometry.shortTouchLandscape,
     ...deriveWorkspaceLayout({
       ...geometry,

@@ -101,3 +101,15 @@
 :root[data-duo-proportions] .edge-rail {
   gap: var(--layout-duo-rail-gap);
 }
+
+/* The child shares the composer's CSS or native Web Animation transform. */
+:root[data-duo-proportions] #composer > .jump-slot {
+  position: absolute;
+  bottom: calc(100% + var(--studio-border-width));
+  left: 0;
+  width: 100%;
+  height: 0;
+}
+:root[data-duo-proportions] #composer > .jump-slot .jump {
+  bottom: var(--layout-duo-latest-gap);
+}

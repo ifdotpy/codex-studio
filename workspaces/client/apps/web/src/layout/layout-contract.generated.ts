@@ -932,6 +932,13 @@ export const layoutTokens = {
       "Minimum outer Duo card and composer gutter; both share the reading width plus the card padding and border",
     kind: "spacing",
   },
+  "duo.latestGap": {
+    value: 36,
+    unit: "px",
+    purpose:
+      "Duo Latest button gap above the composer outer top, clear of its context row",
+    kind: "spacing",
+  },
 } as const;
 export const layoutValues = {
   navigation: {
@@ -1232,6 +1239,7 @@ export const layoutValues = {
     railGap: 13,
     messageInset: 6,
     columnGutter: 20,
+    latestGap: 36,
   },
 } as const;
 export const layoutQueries = {

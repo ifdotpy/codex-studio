@@ -3100,6 +3100,7 @@ export default function App({ active = true }: { active?: boolean }) {
               />
             ) : (
               <SelectedConversation
+                duo={rowLayout.duo}
                 headerToolsInMenu={menuHeaderTools}
                 onRailToolsChange={railTools.publish}
                 transcriptHeading={railGeometry ? conversationTitle : undefined}
