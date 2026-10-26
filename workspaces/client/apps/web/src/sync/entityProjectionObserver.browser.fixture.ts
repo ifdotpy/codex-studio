@@ -36,16 +36,19 @@ export async function openProjection() {
       ).map((row) => [row.id, row]),
     );
     const result = await storage.bulkWrite(
-      rows.map((row) => ({
-        previous: previous.get(row.id),
-        document: {
-          ...row,
-          _deleted: row._deleted ?? false,
-          _attachments: {},
-          _meta: { lwt: 1 },
-          _rev: "",
-        },
-      })),
+      rows.map((row) => {
+        const prior = previous.get(row.id);
+        return {
+          ...(prior ? { previous: prior } : {}),
+          document: {
+            ...row,
+            _deleted: row._deleted ?? false,
+            _attachments: {},
+            _meta: { lwt: 1 },
+            _rev: "",
+          },
+        };
+      }),
       "observer-browser-check",
     );
     if (result.error.length) throw new Error(JSON.stringify(result.error));
