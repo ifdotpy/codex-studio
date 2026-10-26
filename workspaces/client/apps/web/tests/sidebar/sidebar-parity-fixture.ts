@@ -1,4 +1,9 @@
-import type { GetResult, PostResult, JsonInput } from "../../src/apiTypes.ts";
+import type {
+  GetResult,
+  PostResult,
+  JsonInput,
+  JsonInputOf,
+} from "../../src/apiTypes.ts";
 import { sidebarFixtureRadio } from "./sidebar-fixture-values.ts";
 import type { TestRuntimeView } from "../playwright.ts";
 import type { ApiPostPath, PostBody } from "../../src/apiTypes.ts";
@@ -20,35 +25,8 @@ import {
   validateSyncPullRequest,
 } from "../playwright.ts";
 
-type LegacyDocument = Partial<components["schemas"]["SyncDocument"]> &
-  Pick<components["schemas"]["SyncDocument"], "id">;
-// This fixture still reads the legacy payload format. V4 entities intentionally
-// retain their absent payload here; aligning this stale fixture is separate work.
-function legacyDocument(value: unknown): LegacyDocument {
-  assert.ok(
-    value &&
-      typeof value === "object" &&
-      "id" in value &&
-      typeof value.id === "string",
-  );
-  const payload =
-    "payload" in value && typeof value.payload === "string"
-      ? value.payload
-      : undefined;
-  const deleted =
-    "_deleted" in value && typeof value._deleted === "boolean"
-      ? value._deleted
-      : undefined;
-  const seq =
-    "seq" in value && typeof value.seq === "number" ? value.seq : undefined;
-  return {
-    id: value.id,
-    ...(payload === undefined ? {} : { payload }),
-    ...(deleted === undefined ? {} : { _deleted: deleted }),
-    ...(seq === undefined ? {} : { seq }),
-  };
-}
-
+import type { SyncEntity } from "../playwright.ts";
+type FixtureEntity = JsonInputOf<SyncEntity>;
 export const scope = "/same/state";
 export type Owner = "local" | "remote";
 type HandleContext = Parameters<
@@ -255,10 +233,10 @@ export async function sidebarParityFixture(
     local: { user: {}, server: {} },
     remote: { user: {}, server: {} },
   };
-  const documents: Record<
-    Owner,
-    Map<string, components["schemas"]["SyncDocument"]>
-  > = { local: new Map(), remote: new Map() };
+  const documents: Record<Owner, Map<string, FixtureEntity>> = {
+    local: new Map(),
+    remote: new Map(),
+  };
   const sequences = { local: 0, remote: 0 };
   const servers: Partial<Record<Owner, ServerFixture>> = {};
   // `hold` makes a server slow. It returns a delay in milliseconds before the server reads
@@ -310,6 +288,11 @@ export async function sidebarParityFixture(
         return true;
       };
       const workspaceId = workspaceIds[owner];
+      if (path === "/api/retained-worktrees")
+        return reply({
+          rootId: url.searchParams.get("agent"),
+          retainedWorktrees: [],
+        });
       if (path === "/api/sync/identity")
         return reply(syncIdentityFixture(workspaceId));
       if (path === "/api/sync/preferences") {
@@ -334,45 +317,43 @@ export async function sidebarParityFixture(
       ) {
         const pull = entityPullFixture(snapshot);
         assert.ok("documents" in pull);
-        const next: LegacyDocument[] = pull.documents.map(legacyDocument);
+        const next = pull.documents.filter(
+          (value): value is FixtureEntity => "op" in value,
+        );
         for (const kind of ["user", "server"] as const)
           next.push({
-            id: `entity:uiPreferences:${kind}`,
-            payload: JSON.stringify({
-              collection: "uiPreferences",
-              id: kind,
-              value: { scope: kind, fields: preferences[owner][kind] },
-            }),
-            _deleted: false,
+            op: "upsert",
+            seq: 0,
+            collection: "uiPreferences",
+            id: kind,
+            value: { fields: preferences[owner][kind] },
           });
+        const identity = (value: FixtureEntity) =>
+          `${value.collection}:${value.id}`;
         const saved = documents[owner];
-        const ids = new Set(next.map((value) => value.id));
+        const ids = new Set(next.map(identity));
         for (const [id, value] of saved)
-          if (!ids.has(id) && !("_deleted" in value && value._deleted))
+          if (!ids.has(id) && value.op !== "delete")
             saved.set(id, {
-              ...value,
-              _deleted: true,
-              seq: ++sequences[owner],
-            });
-        for (const value of next)
-          if (
-            saved.get(value.id)?.payload !==
-              ("payload" in value ? value.payload : undefined) ||
-            saved.get(value.id)?._deleted
-          ) {
-            assert.ok(
-              value.payload !== undefined && value._deleted !== undefined,
-            );
-            saved.set(value.id, {
+              op: "delete",
+              collection: value.collection,
               id: value.id,
-              payload: value.payload,
-              _deleted: value._deleted,
               seq: ++sequences[owner],
             });
-          }
+        for (const value of next) {
+          const id = identity(value);
+          if (
+            !saved.has(id) ||
+            JSON.stringify(
+              saved.get(id)?.op === "upsert" ? saved.get(id) : undefined,
+            ) !== JSON.stringify({ ...value, seq: saved.get(id)?.seq }) ||
+            saved.get(id)?.op === "delete"
+          )
+            saved.set(id, { ...value, seq: ++sequences[owner] });
+        }
         const parsed = validateSyncPullRequest(url);
         assert.ok(parsed.ok);
-        // Preserve legacy paging; the shared v4 helper accepts structured entities.
+        // Keep stable sequence numbers for the structured entity fixture.
         const {
           after,
           limit,

@@ -1,7 +1,13 @@
-import { MantineProvider } from "@mantine/core";
+import {
+  MantineProvider,
+  TextInput,
+  Textarea,
+  NativeSelect,
+} from "@mantine/core";
 import { createRoot } from "react-dom/client";
 import { useRef, useState } from "react";
 import PromptInput from "./PromptInput";
+import { theme } from "../../theme";
 
 type InputStatePatch = {
   text?: string;
@@ -73,4 +79,18 @@ export function mount() {
   const root = document.getElementById("root");
   if (!root) throw new Error("Missing prompt input harness root");
   createRoot(root).render(<IsolatedInputHarness />);
+}
+
+export function mountControls() {
+  createRoot(document.getElementById("controls")!).render(
+    <MantineProvider theme={theme}>
+      <TextInput id="form-input" size="xs" />
+      <Textarea id="form-textarea" size="xs" />
+      <NativeSelect id="form-select" size="xs" data={["Test"]} />
+      <TextInput id="worker-search" size="xs" />
+      <div className="analytics-toolbar">
+        <NativeSelect id="analytics-select" size="xs" data={["Test"]} />
+      </div>
+    </MantineProvider>,
+  );
 }

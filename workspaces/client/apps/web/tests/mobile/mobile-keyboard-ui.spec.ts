@@ -357,9 +357,9 @@ for (const [platform, userAgent] of mobileBrowsers) {
       await page.setViewportSize({ width: 844, height: 390 });
       await page.waitForFunction(
         () =>
-          !document.documentElement.style.getPropertyValue(
+          document.documentElement.style.getPropertyValue(
             "--mobile-viewport-height",
-          ),
+          ) === "390px",
       );
       assert.deepEqual(
         await composer.evaluate((node: HTMLTextAreaElement) => ({
@@ -436,23 +436,45 @@ for (const [platform, userAgent] of mobileBrowsers) {
         }),
       );
       await settle(844, 0);
-      // Desktop must regain its normal document layout and terminal space.
+      // Desktop and fine-primary touch laptops keep their normal document layout.
       await page.setViewportSize({ width: 1440, height: 960 });
-      await page.waitForFunction(
-        () =>
-          getComputedStyle(window.mobileKeyboardUi.element("#root"))
-            .position !== "fixed" &&
-          !document.documentElement.style.getPropertyValue(
-            "--mobile-viewport-height",
+      for (const touch of [false, true]) {
+        await page.evaluate((touch) => {
+          window.mobileKeyboardUi.setTestPointer(false, touch);
+          window.mobileKeyboardUi.setTestViewport({
+            width: 1440,
+            height: 960,
+            offsetTop: 0,
+          });
+        }, touch);
+        await expect
+          .poll(() =>
+            page.evaluate(() =>
+              document.documentElement.hasAttribute("data-viewport-surface"),
+            ),
+          )
+          .toBe(false);
+        assert.equal(
+          await page.evaluate(() =>
+            document.documentElement.style.getPropertyValue(
+              "--mobile-viewport-height",
+            ),
           ),
-      );
-      assert.equal(
-        await page.evaluate(() =>
-          document.documentElement.style.getPropertyValue(
-            "--mobile-viewport-height",
-          ),
-        ),
-        "",
+          "",
+          "Desktop must regain its normal document layout",
+        );
+        await expect
+          .poll(() =>
+            page.evaluate(() =>
+              document.documentElement.hasAttribute(
+                "data-viewport-short-landscape",
+              ),
+            ),
+          )
+          .toBe(false);
+      }
+      await page.evaluate(() =>
+        window.mobileKeyboardUi.setTestPointer(true, true),
       );
       await page.setViewportSize({ width: 390, height: 844 });
       await page.evaluate(() =>
@@ -490,7 +512,7 @@ for (const [platform, userAgent] of mobileBrowsers) {
         (await visibleBounds(page.locator("#composer"))).height,
         shortDraftComposerHeight,
       );
-      assert.equal(minimumViewport.footerBottom, 378);
+      assert.equal(minimumViewport.footerBottom, 394);
 
       await page.getByLabel("Back to chats").click();
       await page

@@ -1,4 +1,31 @@
 export function installMobileKeyboardUi() {
+  let primary = true,
+    anyTouch = true;
+  const media = window.matchMedia.bind(window);
+  const pointers = new Map<string, MediaQueryList>();
+  window.matchMedia = (query) => {
+    if (query !== "(pointer: coarse)" && query !== "(any-pointer: coarse)")
+      return media(query);
+    let item = pointers.get(query);
+    if (!item) {
+      item = media(query);
+      Object.defineProperty(item, "matches", {
+        get: () => (query === "(pointer: coarse)" ? primary : anyTouch),
+      });
+      pointers.set(query, item);
+    }
+    return item;
+  };
+  Object.defineProperty(navigator, "maxTouchPoints", {
+    configurable: true,
+    get: () => (anyTouch ? 5 : 0),
+  });
+  const setTestPointer = (coarse: boolean, touch: boolean) => {
+    primary = coarse;
+    anyTouch = touch;
+    for (const item of pointers.values())
+      item.dispatchEvent(new Event("change"));
+  };
   const viewport = new EventTarget();
   Object.assign(viewport, {
     width: 390,
@@ -51,6 +78,7 @@ export function installMobileKeyboardUi() {
   };
   const harness = {
     setTestViewport,
+    setTestPointer,
     retainTestScroll,
     composerFocusCalls: focusCalls,
     composerBlurCount: 0,

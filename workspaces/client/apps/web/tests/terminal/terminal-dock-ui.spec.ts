@@ -1,3 +1,4 @@
+import { visibleBounds } from "../mobile/mobile-ui-fixture.ts";
 import { required, fixturePostBody } from "../teams/helpers.ts";
 import {
   readTestState,
@@ -12,6 +13,7 @@ import {
   rustUiFixture,
 } from "../playwright.ts";
 import assert from "node:assert/strict";
+import { layoutValues } from "../../src/layout/layout-contract.generated.ts";
 import { fileURLToPath } from "node:url";
 import { createServer } from "node:http";
 import { readFile, mkdtemp } from "node:fs/promises";
@@ -24,7 +26,7 @@ import type { components } from "../../src/generated/api.ts";
 import type { PostBody, GetResult } from "../../src/apiTypes.ts";
 import type { ResourceRef, ResourceChangeEvent } from "../playwright.ts";
 import type { Agent, BackgroundTask, Monitor } from "../../src/types.ts";
-test("Terminal dock", async () => {
+test("Terminal dock transport", async () => {
   test.setTimeout(180_000);
   const testRepo = fileURLToPath(
     new URL("../../../../../../", import.meta.url),
@@ -282,6 +284,7 @@ test("Terminal dock", async () => {
       else if (path === "/api/voice/records")
         value = { records: [], cursor: 0, delivered: [] };
       else if (path === "/api/session") value = { token: state.token };
+      else if (path === "/api/queue") value = { items: [], revision: 0 };
       else if (path === "/api/transcript") value = { items: [], agent };
       else if (path === "/api/transcript/stream")
         return route.fulfill({ status: 503, body: "fixture polling" });
@@ -387,6 +390,19 @@ test("Terminal dock", async () => {
       }
       await route.fulfill({ json: value });
     });
+    await page.addInitScript(
+      ({ stateDir, preferred }) => {
+        localStorage.setItem(
+          `codex-desktop-opened:${stateDir}`,
+          JSON.stringify("lead"),
+        );
+        localStorage.setItem(
+          "codex.terminal.height",
+          JSON.stringify(preferred),
+        );
+      },
+      { stateDir: root, preferred: layoutValues.terminal.preferred * 16 },
+    );
     const address = server.address();
     assert.ok(address && typeof address !== "string");
     await page.goto(`http://127.0.0.1:${address.port}`);
@@ -446,8 +462,11 @@ test("Terminal dock", async () => {
     // A server view in the combined window has no sidebar: the closed dock is a full-width bar,
     // and the page ends above it, so the bar never covers the usage line.
     const frameGeometry = await page.evaluate(async () => {
-      const sidebar = document.querySelector("#sidebar");
-      if (!sidebar) throw new Error("Missing sidebar");
+      const sidebar =
+        document.querySelector<HTMLElement>("#sidebar") ??
+        (() => {
+          throw new Error("Missing fixture element");
+        })();
       const parent = sidebar.parentNode;
       if (!parent) throw new Error("Missing sidebar parent");
       const next = sidebar.nextSibling;
@@ -521,6 +540,156 @@ test("Terminal dock", async () => {
     );
     assert.ok(created);
     assert.equal(created.body.agent, "lead");
+    await page
+      .locator("#composer")
+      .waitFor({ timeout: 5000 })
+      .catch(async (error) => {
+        console.error(
+          await page.locator(".ui-error-boundary pre").allTextContents(),
+        );
+        throw error;
+      });
+    // A smaller host changes the grid of this session, not its identity.
+    const terminalNode = await dock.locator(".xterm").elementHandle();
+    const largeResize = () =>
+      writes
+        .filter(
+          (write): write is Extract<Write, { path: "/api/terminals/resize" }> =>
+            write.path === "/api/terminals/resize" &&
+            write.body.id === created.body.id,
+        )
+        .at(-1);
+    await page.waitForFunction(
+      () => (document.querySelector(".xterm-screen")?.clientHeight ?? 0) > 0,
+    );
+    await page.waitForTimeout(200);
+    const largeRows = largeResize()?.body.rows;
+    assert.ok(typeof largeRows === "number");
+    const resizeStart = writes.length;
+    const preferredHeight = await page.evaluate(() =>
+      localStorage.getItem("codex.terminal.height"),
+    );
+    await page.setViewportSize({ width: 1440, height: 420 });
+    await page.waitForTimeout(300);
+    const short = await dock.evaluate((node) => ({
+      dock: node.getBoundingClientRect().toJSON(),
+      composer: (
+        document.querySelector("#composer") ??
+        (() => {
+          throw new Error("Missing fixture element");
+        })()
+      )
+        .getBoundingClientRect()
+        .toJSON(),
+      header: (
+        document.querySelector(".workspace-header") ??
+        (() => {
+          throw new Error("Missing fixture element");
+        })()
+      )
+        .getBoundingClientRect()
+        .toJSON(),
+      reserved: Number.parseFloat(
+        document.documentElement.style.getPropertyValue(
+          "--terminal-dock-height",
+        ),
+      ),
+    }));
+    assert.ok(
+      short.composer.top >= short.header.bottom,
+      "The composer stays below the header in a short host",
+    );
+    assert.ok(
+      short.composer.bottom <= short.dock.top + 1,
+      "The dock leaves the composer visible",
+    );
+    assert.equal(
+      short.dock.height,
+      short.reserved,
+      "The dock and root use the same effective height",
+    );
+    assert.ok(
+      writes
+        .slice(resizeStart)
+        .some(
+          (write) =>
+            write.path === "/api/terminals/resize" &&
+            write.body.id === created.body.id &&
+            typeof write.body.rows === "number" &&
+            write.body.rows < largeRows,
+        ),
+      "The existing resize request changes this terminal grid",
+    );
+    assert.equal(
+      await terminalNode.evaluate(
+        (node) => node === document.querySelector(".terminal-dock .xterm"),
+      ),
+      true,
+      "Host resize preserves the xterm instance",
+    );
+    assert.equal(
+      writes.filter((write) => write.path === "/api/terminals/create").length,
+      1,
+    );
+    assert.equal(
+      await page.evaluate(() => localStorage.getItem("codex.terminal.height")),
+      preferredHeight,
+      "A temporary height limit preserves the preference",
+    );
+    await page.screenshot({ path: join(root, "terminal-short.png") });
+    await page.setViewportSize({ width: 1440, height: 980 });
+    await page.waitForTimeout(200);
+    const resizer = dock.getByRole("separator");
+    const dragStart = await visibleBounds(dock);
+    const beginDrag = async () => {
+      const box = await visibleBounds(resizer);
+      await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+      await page.mouse.down();
+      await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2 - 40);
+    };
+    await beginDrag();
+    await page.waitForFunction(
+      (height) =>
+        (
+          document.querySelector(".terminal-dock") ??
+          (() => {
+            throw new Error("Missing fixture element");
+          })()
+        ).getBoundingClientRect().height > height,
+      dragStart.height,
+    );
+    assert.equal(
+      await page.evaluate(() => localStorage.getItem("codex.terminal.height")),
+      preferredHeight,
+      "A pointer move does not persist its draft height",
+    );
+    await resizer.dispatchEvent("lostpointercapture");
+    await page.mouse.up();
+    await page.waitForFunction(
+      (height) =>
+        (
+          document.querySelector(".terminal-dock") ??
+          (() => {
+            throw new Error("Missing fixture element");
+          })()
+        ).getBoundingClientRect().height === height,
+      dragStart.height,
+    );
+    assert.equal(
+      await page.evaluate(() => localStorage.getItem("codex.terminal.height")),
+      preferredHeight,
+      "Lost capture cancels the height preference write",
+    );
+    await beginDrag();
+    await page.mouse.up();
+    assert.ok(
+      Number(
+        await page.evaluate(() =>
+          localStorage.getItem("codex.terminal.height"),
+        ),
+      ) > dragStart.height,
+      "Pointer completion persists the chosen preference",
+    );
     await dock.locator(".xterm-helper-textarea").focus();
     await page.keyboard.type("printf terminal-ok");
     await page.keyboard.press("Enter");
@@ -584,7 +753,7 @@ test("Terminal dock", async () => {
       "A cancelled or invalid history never downloads a partial file",
     );
     historyMode = "ready";
-    const screen = required(await dock.locator(".xterm-screen").boundingBox());
+    const screen = await visibleBounds(dock.locator(".xterm-screen"));
     await page.mouse.move(screen.x + 1, screen.y + 7);
     await page.mouse.down();
     await page.mouse.move(screen.x + 145, screen.y + 7, { steps: 8 });
@@ -623,14 +792,32 @@ test("Terminal dock", async () => {
     await dock
       .getByRole("button", { name: "Release logs", exact: true })
       .waitFor();
-    const before = required(await dock.boundingBox());
+    const before = await visibleBounds(dock);
     await dock.getByRole("separator").focus();
     await page.keyboard.press("ArrowUp");
-    const after = required(await dock.boundingBox());
+    const after = await visibleBounds(dock);
     assert.ok(after.height > before.height);
     await dock
       .getByRole("button", { name: "Hide terminals", exact: true })
       .click();
+    await page.evaluate(() => {
+      document.documentElement.style.fontSize = "20px";
+    });
+    await page.waitForFunction(
+      (expected) =>
+        Math.abs(
+          (
+            document.querySelector(".terminal-dock") ??
+            (() => {
+              throw new Error("Missing fixture element");
+            })()
+          ).getBoundingClientRect().height - expected,
+        ) < 0.1,
+      layoutValues.terminal.closedBar * 20,
+    );
+    await page.evaluate(() => {
+      document.documentElement.style.removeProperty("font-size");
+    });
     await dock
       .getByRole("button", { name: "Show terminals", exact: true })
       .click();
@@ -659,7 +846,9 @@ test("Terminal dock", async () => {
       button.scrollIntoView({ block: "center", inline: "center" }),
     );
     await page.waitForFunction(() => {
-      const button = document.querySelector(".terminal-dock-error button");
+      const button = document.querySelector<HTMLElement>(
+        ".terminal-dock-error button",
+      );
       if (!button) return false;
       const rect = button.getBoundingClientRect();
       const target = document.elementFromPoint(
@@ -789,8 +978,10 @@ test("Terminal dock", async () => {
     await browser?.close();
     await new Promise((resolve) => server.close(resolve));
   }
+});
 
-  if (process.argv.includes("--fixture-only")) process.exit(0);
+test("Terminal dock live shell", async () => {
+  test.setTimeout(180_000);
 
   // The same dock also exercises real shell input and saved output through the HTTP server.
   const liveRoot = await mkdtemp(join(tmpdir(), "codex-terminal-live-"));

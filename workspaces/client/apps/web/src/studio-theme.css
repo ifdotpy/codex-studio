@@ -2,6 +2,7 @@
 
 /* Owner of the application type scale and legacy surface aliases. */
 :root {
+  --studio-touch-input-min-font-size: 16px;
   --studio-text-meta: 0.75rem;
   --studio-text-body: 0.875rem;
   --studio-text-title: 1rem;
