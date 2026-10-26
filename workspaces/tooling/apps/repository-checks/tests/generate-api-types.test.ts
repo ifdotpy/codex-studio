@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
@@ -10,7 +11,9 @@ const schema = {
   info: { title: "Optional property witness", version: "1" },
   components: {
     schemas: {
-      Witness: {
+      JsonValue: { type: "string" },
+      WitnessEntityDto: {
+        additionalProperties: { $ref: "#/components/schemas/JsonValue" },
         type: "object",
         required: ["required"],
         properties: {
@@ -45,9 +48,11 @@ test("generated optional properties allow undefined and required properties stay
     ts.ScriptKind.TS,
   );
   const properties = new Map<string, ts.PropertySignature>();
+  const indexes: ts.IndexSignatureDeclaration[] = [];
   const visit = (node: ts.Node) => {
     if (ts.isPropertySignature(node))
       properties.set(node.name.getText(source), node);
+    if (ts.isIndexSignatureDeclaration(node)) indexes.push(node);
     ts.forEachChild(node, visit);
   };
   visit(source);
@@ -63,8 +68,60 @@ test("generated optional properties allow undefined and required properties stay
       `${name} explicitly allows undefined`,
     );
   }
+  assert.equal(indexes.length, 1);
+  assert.ok(
+    indexes[0]?.type &&
+      ts.isUnionTypeNode(indexes[0].type) &&
+      indexes[0].type.types.some(
+        (type) => type.kind === ts.SyntaxKind.UndefinedKeyword,
+      ),
+    "extension map allows undefined optional members",
+  );
   const required = properties.get("required");
   assert.ok(required?.type);
   assert.equal(required.questionToken, undefined);
   assert.equal(required.type.kind, ts.SyntaxKind.StringKeyword);
+});
+
+test("the recursive JsonValue alias stays strict", () => {
+  // The checked-in Rust OpenAPI output owns the recursive schema used by this fixture.
+  const document: OpenAPI3 = JSON.parse(
+    readFileSync(
+      new URL(
+        "../../../../runtime/packages/runtime-http/openapi.json",
+        import.meta.url,
+      ),
+      "utf8",
+    ),
+  );
+  const jsonValue = document.components?.schemas?.JsonValue;
+  assert.ok(jsonValue);
+  const input = {
+    ...schema,
+    components: {
+      schemas: { ...schema.components.schemas, JsonValue: jsonValue },
+    },
+  } satisfies OpenAPI3;
+  const result = spawnSync(
+    process.execPath,
+    [fileURLToPath(new URL("../generate-api-types.ts", import.meta.url)), "-"],
+    { input: JSON.stringify(input), encoding: "utf8" },
+  );
+  assert.equal(result.status, 0, result.stderr);
+  const source = ts.createSourceFile(
+    "generated.ts",
+    result.stdout,
+    ts.ScriptTarget.Latest,
+    true,
+    ts.ScriptKind.TS,
+  );
+  const alias = source.statements.find(
+    (node) => ts.isTypeAliasDeclaration(node) && node.name.text === "JsonValue",
+  );
+  assert.ok(alias && ts.isTypeAliasDeclaration(alias));
+  const visit = (node: ts.Node) => {
+    assert.notEqual(node.kind, ts.SyntaxKind.UndefinedKeyword);
+    ts.forEachChild(node, visit);
+  };
+  visit(alias.type);
 });
