@@ -49,8 +49,8 @@ Use a closed enum or discriminated union for a closed domain. Each variant
 carries its required fields, so a successful result cannot lack its payload and
 a command cannot lack its required arguments. Do not widen a closed domain to
 `string`, copy an optional-field bag, or introduce an arbitrary unknown variant
-to silence a compiler error. An external extension or retained legacy value may
-be open only when its owner defines how it is preserved and consumed.
+to silence a compiler error. An external extension may be open only when its
+owner defines how it is preserved and consumed.
 
 Represent failure with `Result` or the language's typed error result. Use
 `Option`, nullable values, or optional fields only for meaningful absence;
@@ -62,14 +62,37 @@ recovery evidence remains an explicit uncertain outcome.
 Convert domain values to storage or wire strings at the boundary through their
 owner's `Display`, `toString`, serde codec, or equivalent conversion. Parse them
 through that owner on entry. Internal dispatch uses the typed value, rather than
-repeated string comparisons. Compatibility parsing is explicit and belongs at
-ingress; it must preserve existing request identities, historical records, and
-uncertainty after lost responses.
+repeated string comparisons.
 
 Handle every variant explicitly. Rust matches must expose new enum variants to
 the compiler; TypeScript switches use a `never` proof and complete lookup tables
 use `satisfies Record<Domain, Value>`. Do not add wildcard success paths, casts,
 or fallbacks to make an incomplete dispatch compile.
+
+## Migrate Studio-owned persisted formats
+
+Prefer a dated, lossless one-time migration over permanent compatibility readers
+for old Studio-owned formats. Use the format owner's existing version or
+migration mechanism, then let current readers accept only the current format.
+The [store guide](../workspaces/runtime/packages/runtime-store/README.md) identifies
+existing feature migration markers; it does not provide a database-wide version
+or a general migration runner.
+
+Record the migration date and format or migration version, affected data, required
+support floor (the oldest source format or application version still supported),
+and the condition for removing the migration. Remove it only after supported
+upgrade paths no longer need it; its date alone does not make deletion safe.
+An older installation must have an explicit supported upgrade path or a visible
+refusal. Preserve historical meaning, exact request and receipt identities, and
+unsettled or uncertain outcomes; conversion must not replay an operation or
+invent evidence of completion.
+
+Unknown future vendor inputs are external protocol changes, not old Studio-owned
+formats. Handle them at the vendor adapter's declared extension or unsupported
+boundary, retaining the evidence needed for recovery. Do not coerce them into a
+known variant or run a Studio storage migration against vendor-owned history.
+These are migration requirements, not a claim that every existing format has
+already been migrated.
 
 ## Enforcement owners
 
@@ -104,6 +127,6 @@ completed repository-wide migration.
 | Threads, turns, and items   | [Bridge session state](../workspaces/providers/apps/claude-bridge/session-state.ts) keeps permissive legacy disk records and stronger fresh/completed turn types. Fresh items still use a string kind and an optional-field record. A shared normalized domain with exhaustive provider-specific variants is not yet universal.                                                                                                                                                                                                                                                                                                                                          |
 
 When migrating a boundary, update its owner, adapters, generated consumers, and
-caller tests together. Preserve supported legacy reads through named adapters;
-do not rewrite historical data or erase uncertain outcomes to satisfy the new
-type. Update this coverage section when the cited source changes ownership.
+caller tests together, following the [persisted-format migration policy](#migrate-studio-owned-persisted-formats)
+for stored data. Update this coverage section when the cited source changes
+ownership.
