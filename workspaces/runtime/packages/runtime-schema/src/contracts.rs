@@ -517,6 +517,7 @@ pub fn check_schema_parity(openapi: &Value, account_transfer: &Value) -> Result<
     crate::task_results::check_schema_parity(openapi)?;
     check_account_group_parity(openapi)?;
     crate::agent_progress::check_schema_parity(openapi)?;
+    crate::queue_command::check_schema_parity(openapi)?;
     crate::task_gate::check_api_contract(openapi)?;
     for (suffix, value) in [
         ("minimum", values::IDLE_COMPACTION_MIN_TOKENS),
@@ -886,6 +887,7 @@ pub fn render(root: &Path, with_api_types: bool) -> Result<Vec<Rendered>, String
     for (name, schema) in crate::agent_progress::schemas()
         .into_iter()
         .chain(crate::desktop::schemas())
+        .chain(crate::queue_command::schemas())
     {
         *openapi
             .pointer_mut(&format!("/components/schemas/{name}"))

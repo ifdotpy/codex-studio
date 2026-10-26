@@ -18851,42 +18851,17 @@ export interface components {
       /** Label */
       label: string;
     };
-    /** QueueCancelBody */
     QueueCancelBody: {
       /**
        * @description discriminator enum property added by openapi-typescript
        * @enum {string}
        */
       action: "cancel";
-      /**
-       * Agent
-       * @default null
-       */
-      agent?: null | string | undefined;
-      /**
-       * Expected Revision
-       * @default null
-       */
-      expected_revision?: null | string | undefined;
-      /**
-       * Expectedtext
-       * @default null
-       */
-      expectedText?: null | string | undefined;
-      /**
-       * Id
-       * @default null
-       */
-      id?: null | string | undefined;
-      /**
-       * Message Id
-       * @default null
-       */
-      message_id?: null | string | undefined;
-      /**
-       * Request Id
-       * @default null
-       */
+      agent?: string | null | undefined;
+      expected_revision?: string | null | undefined;
+      expectedText?: string | null | undefined;
+      id?: string | null | undefined;
+      message_id?: string | null | undefined;
       request_id?: string | null | undefined;
     };
     /** QueueCapabilities */
@@ -18896,44 +18871,18 @@ export interface components {
       /** Reorder */
       reorder: boolean;
     };
-    /** QueueEditBody */
     QueueEditBody: {
       /**
        * @description discriminator enum property added by openapi-typescript
        * @enum {string}
        */
       action: "edit";
-      /**
-       * Agent
-       * @default null
-       */
-      agent?: null | string | undefined;
-      /**
-       * Expected Revision
-       * @default null
-       */
-      expected_revision?: null | string | undefined;
-      /**
-       * Expectedtext
-       * @default null
-       */
-      expectedText?: null | string | undefined;
-      /**
-       * Id
-       * @default null
-       */
-      id?: null | string | undefined;
-      /**
-       * Message Id
-       * @default null
-       */
-      message_id?: null | string | undefined;
-      /**
-       * Request Id
-       * @default null
-       */
+      agent?: string | null | undefined;
+      expected_revision?: string | null | undefined;
+      expectedText?: string | null | undefined;
+      id?: string | null | undefined;
+      message_id?: string | null | undefined;
       request_id?: string | null | undefined;
-      /** Text */
       text: string;
     };
     /** QueueEntityDto */
@@ -18944,42 +18893,17 @@ export interface components {
       /** Revision */
       revision: string;
     };
-    /** QueueFirstBody */
     QueueFirstBody: {
       /**
        * @description discriminator enum property added by openapi-typescript
        * @enum {string}
        */
       action: "first" | "send_now";
-      /**
-       * Agent
-       * @default null
-       */
-      agent?: null | string | undefined;
-      /**
-       * Expected Revision
-       * @default null
-       */
-      expected_revision?: null | string | undefined;
-      /**
-       * Expectedtext
-       * @default null
-       */
-      expectedText?: null | string | undefined;
-      /**
-       * Id
-       * @default null
-       */
-      id?: null | string | undefined;
-      /**
-       * Message Id
-       * @default null
-       */
-      message_id?: null | string | undefined;
-      /**
-       * Request Id
-       * @default null
-       */
+      agent?: string | null | undefined;
+      expected_revision?: string | null | undefined;
+      expectedText?: string | null | undefined;
+      id?: string | null | undefined;
+      message_id?: string | null | undefined;
       request_id?: string | null | undefined;
     };
     /** QueueItem */
@@ -19020,31 +18944,16 @@ export interface components {
       /** Text */
       text: string;
     };
-    /** QueueReorderBody */
     QueueReorderBody: {
       /**
        * @description discriminator enum property added by openapi-typescript
        * @enum {string}
        */
       action: "reorder";
-      /**
-       * Agent
-       * @default null
-       */
-      agent?: null | string | undefined;
-      /** Expected Revision */
+      agent?: string | null | undefined;
       expected_revision: string;
-      /**
-       * Id
-       * @default null
-       */
-      id?: null | string | undefined;
-      /** Ordered Ids */
+      id?: string | null | undefined;
       ordered_ids: string[];
-      /**
-       * Request Id
-       * @default null
-       */
       request_id?: string | null | undefined;
     };
     /** QueueResource */

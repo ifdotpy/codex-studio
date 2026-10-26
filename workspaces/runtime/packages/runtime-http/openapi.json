@@ -39502,68 +39502,37 @@
         "properties": {
           "action": {
             "const": "cancel",
-            "title": "Action",
             "type": "string"
           },
           "agent": {
-            "anyOf": [
-              {
-                "type": "null"
-              },
-              {
-                "type": "string"
-              }
-            ],
-            "default": null,
-            "title": "Agent"
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "expectedText": {
-            "anyOf": [
-              {
-                "type": "null"
-              },
-              {
-                "type": "string"
-              }
-            ],
-            "default": null,
-            "title": "Expectedtext"
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "expected_revision": {
-            "anyOf": [
-              {
-                "type": "null"
-              },
-              {
-                "type": "string"
-              }
-            ],
-            "default": null,
-            "title": "Expected Revision"
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "id": {
-            "anyOf": [
-              {
-                "type": "null"
-              },
-              {
-                "type": "string"
-              }
-            ],
-            "default": null,
-            "title": "Id"
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "message_id": {
-            "anyOf": [
-              {
-                "type": "null"
-              },
-              {
-                "type": "string"
-              }
-            ],
-            "default": null,
-            "title": "Message Id"
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "request_id": {
             "anyOf": [
@@ -39574,15 +39543,12 @@
               {
                 "type": "null"
               }
-            ],
-            "default": null,
-            "title": "Request Id"
+            ]
           }
         },
         "required": [
           "action"
         ],
-        "title": "QueueCancelBody",
         "type": "object"
       },
       "QueueCapabilities": {
@@ -39609,68 +39575,37 @@
         "properties": {
           "action": {
             "const": "edit",
-            "title": "Action",
             "type": "string"
           },
           "agent": {
-            "anyOf": [
-              {
-                "type": "null"
-              },
-              {
-                "type": "string"
-              }
-            ],
-            "default": null,
-            "title": "Agent"
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "expectedText": {
-            "anyOf": [
-              {
-                "type": "null"
-              },
-              {
-                "type": "string"
-              }
-            ],
-            "default": null,
-            "title": "Expectedtext"
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "expected_revision": {
-            "anyOf": [
-              {
-                "type": "null"
-              },
-              {
-                "type": "string"
-              }
-            ],
-            "default": null,
-            "title": "Expected Revision"
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "id": {
-            "anyOf": [
-              {
-                "type": "null"
-              },
-              {
-                "type": "string"
-              }
-            ],
-            "default": null,
-            "title": "Id"
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "message_id": {
-            "anyOf": [
-              {
-                "type": "null"
-              },
-              {
-                "type": "string"
-              }
-            ],
-            "default": null,
-            "title": "Message Id"
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "request_id": {
             "anyOf": [
@@ -39681,13 +39616,10 @@
               {
                 "type": "null"
               }
-            ],
-            "default": null,
-            "title": "Request Id"
+            ]
           },
           "text": {
             "maxLength": 32000,
-            "title": "Text",
             "type": "string"
           }
         },
@@ -39695,7 +39627,6 @@
           "action",
           "text"
         ],
-        "title": "QueueEditBody",
         "type": "object"
       },
       "QueueEntityDto": {
@@ -39732,68 +39663,37 @@
               "first",
               "send_now"
             ],
-            "title": "Action",
             "type": "string"
           },
           "agent": {
-            "anyOf": [
-              {
-                "type": "null"
-              },
-              {
-                "type": "string"
-              }
-            ],
-            "default": null,
-            "title": "Agent"
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "expectedText": {
-            "anyOf": [
-              {
-                "type": "null"
-              },
-              {
-                "type": "string"
-              }
-            ],
-            "default": null,
-            "title": "Expectedtext"
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "expected_revision": {
-            "anyOf": [
-              {
-                "type": "null"
-              },
-              {
-                "type": "string"
-              }
-            ],
-            "default": null,
-            "title": "Expected Revision"
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "id": {
-            "anyOf": [
-              {
-                "type": "null"
-              },
-              {
-                "type": "string"
-              }
-            ],
-            "default": null,
-            "title": "Id"
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "message_id": {
-            "anyOf": [
-              {
-                "type": "null"
-              },
-              {
-                "type": "string"
-              }
-            ],
-            "default": null,
-            "title": "Message Id"
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "request_id": {
             "anyOf": [
@@ -39804,15 +39704,12 @@
               {
                 "type": "null"
               }
-            ],
-            "default": null,
-            "title": "Request Id"
+            ]
           }
         },
         "required": [
           "action"
         ],
-        "title": "QueueFirstBody",
         "type": "object"
       },
       "QueueItem": {
@@ -39913,42 +39810,27 @@
         "properties": {
           "action": {
             "const": "reorder",
-            "title": "Action",
             "type": "string"
           },
           "agent": {
-            "anyOf": [
-              {
-                "type": "null"
-              },
-              {
-                "type": "string"
-              }
-            ],
-            "default": null,
-            "title": "Agent"
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "expected_revision": {
-            "title": "Expected Revision",
             "type": "string"
           },
           "id": {
-            "anyOf": [
-              {
-                "type": "null"
-              },
-              {
-                "type": "string"
-              }
-            ],
-            "default": null,
-            "title": "Id"
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "ordered_ids": {
             "items": {
               "type": "string"
             },
-            "title": "Ordered Ids",
             "type": "array"
           },
           "request_id": {
@@ -39960,9 +39842,7 @@
               {
                 "type": "null"
               }
-            ],
-            "default": null,
-            "title": "Request Id"
+            ]
           }
         },
         "required": [
@@ -39970,7 +39850,6 @@
           "expected_revision",
           "ordered_ids"
         ],
-        "title": "QueueReorderBody",
         "type": "object"
       },
       "QueueResource": {

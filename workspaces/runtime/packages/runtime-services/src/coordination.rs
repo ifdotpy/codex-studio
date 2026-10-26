@@ -1430,7 +1430,7 @@ mod tests {
         crate::queue_write::action(
             &transaction,
             "lead",
-            &json!({"action":"send_now", "message_id":"promoted-message", "request_id":"promote"}),
+            &serde_json::from_value(json!({"action":"send_now", "message_id":"promoted-message", "request_id":"promote"})).expect("typed queue command"),
             "promotion-fixture",
             |tx, _| {
                 let event = studio_runtime_store::QueueEventRepository::get(

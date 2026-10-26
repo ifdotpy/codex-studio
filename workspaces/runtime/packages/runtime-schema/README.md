@@ -39,6 +39,11 @@ with schemars, through the same contract commands. `AgentCommandProgress` and
 `AgentStall` in `src/agent_progress.rs` also derive their OpenAPI fragments;
 the renderer refreshes those two components before generating API types and identity.
 
+[`src/queue_command.rs`](src/queue_command.rs) owns queue mutation commands.
+The HTTP adapter and service consume its strict tagged enum; the contract renderer
+derives the queue request components from it. Nullable field presence survives
+serialization so existing request signatures and receipt replays stay compatible.
+
 `DeliveryMoment` controls when user sends and agent messages or sends may reach
 the recipient. Serialization always uses the canonical spelling. Request and
 persisted-event readers call `parse_legacy` to accept historical spellings

@@ -16,6 +16,7 @@ pub mod pricing;
 pub mod provider_diagnostics;
 pub mod provider_input;
 pub mod provider_method_policy;
+pub mod queue_command;
 pub mod shared_values;
 pub mod supervisor_contract;
 pub mod task_results;
