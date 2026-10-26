@@ -117,6 +117,10 @@ fn shared_values_ts() -> String {
                 values::SYNC_STREAM_EVENT_MAX_BYTES.to_string(),
             ),
             (
+                "NATIVE_SSE_EVENT_MAX_BYTES",
+                values::NATIVE_SSE_EVENT_MAX_BYTES.to_string(),
+            ),
+            (
                 "SYNC_ENTITY_STREAM_MAX_DOCUMENTS",
                 values::SYNC_ENTITY_STREAM_MAX_DOCUMENTS.to_string(),
             ),

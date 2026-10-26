@@ -1,8 +1,6 @@
 import { randomUUID } from "../uuid";
 import { listenNativeEvents, nativeRequest } from "./client";
-
-// Maximum bytes in one encoded native SSE event, independent of read demand.
-export const NATIVE_EVENT_MAX_BYTES = 4 * 1024 * 1024;
+import { NATIVE_SSE_EVENT_MAX_BYTES } from "../generated/sharedValues";
 
 // The core owns HTTP and SSE framing. This adapter carries its decoded events
 // through the existing per-server stream bridge without exposing credentials.
@@ -147,7 +145,7 @@ export async function nativeEventResponse(
             .map((line) => `data: ${line}\n`)
             .join("")}\n`,
         );
-        if (bytes.byteLength > NATIVE_EVENT_MAX_BYTES) {
+        if (bytes.byteLength > NATIVE_SSE_EVENT_MAX_BYTES) {
           fail(new Error("The native event exceeds its size limit."));
           return;
         }

@@ -7,7 +7,7 @@ use std::{
 };
 use tokio::sync::{Notify, mpsc};
 
-const MAX_EVENT: usize = 4 * 1024 * 1024;
+use studio_client_domain::NATIVE_SSE_EVENT_MAX_BYTES;
 
 // One opaque credit permits one decoded event, including all its HTTP chunks.
 pub struct EventFlow {
@@ -86,7 +86,7 @@ impl Parser {
                     events.push(event);
                 }
             } else {
-                if self.line.len() + self.data.len() >= MAX_EVENT {
+                if self.line.len() + self.data.len() >= NATIVE_SSE_EVENT_MAX_BYTES {
                     return Err("The server event exceeds its size limit.".into());
                 }
                 self.line.push(byte);
@@ -390,6 +390,10 @@ mod tests {
     #[test]
     fn parser_rejects_unbounded_event_buffers() {
         let mut parser = Parser::new(String::new());
-        assert!(parser.feed(&vec![b'a'; MAX_EVENT + 1]).is_err());
+        assert!(
+            parser
+                .feed(&vec![b'a'; NATIVE_SSE_EVENT_MAX_BYTES + 1])
+                .is_err()
+        );
     }
 }

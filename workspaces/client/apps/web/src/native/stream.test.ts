@@ -1,7 +1,10 @@
 import { afterEach, expect, it, vi } from "vitest";
-import { nativeEventResponse, NATIVE_EVENT_MAX_BYTES } from "./stream";
+import { nativeEventResponse } from "./stream";
 import { SignedEventSource } from "../servers/eventSource";
-import { SYNC_STREAM_EVENT_MAX_BYTES } from "../generated/sharedValues";
+import {
+  NATIVE_SSE_EVENT_MAX_BYTES,
+  SYNC_STREAM_EVENT_MAX_BYTES,
+} from "../generated/sharedValues";
 import { SYNC_PROTOCOL_VERSION } from "../generated/api";
 
 afterEach(() => vi.unstubAllGlobals());
@@ -141,7 +144,7 @@ it("keeps a native initial transfer larger than the queue bound while its consum
       (size, frame) => size + new TextEncoder().encode(frame).byteLength,
       0,
     ),
-  ).toBeGreaterThan(NATIVE_EVENT_MAX_BYTES);
+  ).toBeGreaterThan(NATIVE_SSE_EVENT_MAX_BYTES);
   const source = new SignedEventSource("/api/sync/stream", async (request) => {
     const response = await nativeEventResponse(request, "/api/sync/stream");
     const getReader = response.body!.getReader.bind(
@@ -208,7 +211,10 @@ it("rejects an oversized individual event without increasing the stream buffer",
   host.event({ type: "open" });
   const reader = (await result).body!.getReader();
   const read = reader.read();
-  host.event({ type: "message", data: "x".repeat(NATIVE_EVENT_MAX_BYTES) });
+  host.event({
+    type: "message",
+    data: "x".repeat(NATIVE_SSE_EVENT_MAX_BYTES),
+  });
   await expect(read).rejects.toThrow(
     "The native event exceeds its size limit.",
   );

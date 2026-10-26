@@ -31,6 +31,8 @@ pub const NATIVE_TERMINAL_MAX_PAGES: usize = 100;
 
 /// Largest integer a JavaScript number holds exactly (2^53 - 1).
 pub use studio_client_domain::MAX_SAFE_INTEGER;
+/// Largest native SSE event of any type, in UTF-8 bytes; owner in client-domain.
+pub use studio_client_domain::NATIVE_SSE_EVENT_MAX_BYTES;
 /// Largest user attachment, in bytes.
 pub const MAX_USER_ATTACHMENT_BYTES: usize = 20971520;
 /// Maximum attachment items admitted across one provider turn's input batch.
