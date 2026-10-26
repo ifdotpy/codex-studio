@@ -3,8 +3,8 @@
   "sources": {
     "workspaces/providers/apps/claude-bridge/rate-limit-input.ts": "827b083cc735e93e622b840874ccf31a5e4d2259902ad06d6a0dacc0137853af",
     "workspaces/providers/apps/claude-bridge/usage-policy.ts": "14a8801a4e371cf576bfcdf78a8341f29f101f6cc5c98f3c640d0abfd886fb72",
-    "workspaces/providers/apps/claude-bridge/package.json": "2b43743aef03d4d807d5bf8db7037270b9aa905103169e1ae0b40631cfa049c4",
-    "pnpm-lock.yaml": "bd75caaf9a2612a6a5369f1e130ce33dc86bbb54bfe401058e1944acffc5c8f8",
+    "workspaces/providers/apps/claude-bridge/package.json": "b0b9c1e00582c04831b197b6780149221a532c897119f6e474913db21bbb7b07",
+    "pnpm-lock.yaml": "b049a91f27b593caae105ab69fdbecee396299d6679a419841c42a6b7dbb5d2d",
     "workspaces/tooling/apps/repository-checks/generate-provider-contracts.ts": "c68c268970eeb3da38393d17b3c9772bf4f3b2dfc30d9499fa83413443a7d100"
   },
   "sdk": {

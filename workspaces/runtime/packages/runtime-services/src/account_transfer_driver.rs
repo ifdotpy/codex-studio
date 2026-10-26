@@ -985,28 +985,32 @@ mod request_tests {
         let root = tempfile::tempdir().expect("test fixture operation succeeds");
         let store = run_async(RuntimeStore::open(Some(root.path())))
             .expect("test fixture operation succeeds");
-        run_async(store.transaction_with_error(|tx| {
+        let cwd = store.root().to_path_buf();
+        run_async(store.transaction_with_error(move |tx| {
             for value in [
                 json!({"id":"lead","rootId":"lead","epoch":1,"status":"idle","isLead":true,
-                    "accountKey":"source","provider":"codex","model":"gpt-6-astra","cwd":"/tmp/work"}),
+                    "accountKey":"source","provider":"codex","model":"gpt-6-astra","cwd":cwd}),
                 json!({"id":"child","rootId":"lead","epoch":2,"status":"idle","isLead":false,
-                    "accountKey":"source","provider":"codex","model":"gpt-6-astra","cwd":"/tmp/work"}),
+                    "accountKey":"source","provider":"codex","model":"gpt-6-astra","cwd":cwd}),
             ] {
-                let agent = AgentRecord::from_value(value).expect("test fixture operation succeeds");
+                let agent =
+                    AgentRecord::from_value(value).expect("test fixture operation succeeds");
                 AgentRepository::put(tx, &agent).expect("test fixture operation succeeds");
             }
             Ok::<_, studio_runtime_store::StoreError>(())
-        })).expect("test fixture operation succeeds");
+        }))
+        .expect("test fixture operation succeeds");
         (root, store)
     }
 
     fn add_agents(store: &RuntimeStore, root: &str, count: usize) {
         let root = root.to_owned();
+        let cwd = store.root().to_path_buf();
         run_async(store.transaction(move |tx| {
             let template = AgentRecord::from_value(json!({
                 "id":"template", "rootId":root, "epoch":1, "status":"idle",
                 "isLead":false, "accountKey":"source", "provider":"codex",
-                "model":"gpt-6-astra", "cwd":"/tmp/work"
+                "model":"gpt-6-astra", "cwd":cwd
             }))?.value().to_string();
             tx.execute(
                 "WITH RECURSIVE members(n) AS (SELECT 1 WHERE ?1>0 UNION ALL SELECT n+1 FROM members WHERE n<?1)
@@ -1042,11 +1046,12 @@ mod request_tests {
         request(&store, original, "lead", "target", "team", "codex", 10.0)
             .expect("initial request");
         add_agents(&store, "another-team", 4097);
-        run_async(store.transaction(|tx| {
+        let cwd = store.root().to_path_buf();
+        run_async(store.transaction(move |tx| {
             let late =
                 AgentRecord::from_value(json!({"id":"late","rootId":"lead","parentId":"child",
                 "epoch":3,"status":"idle","isLead":false,"accountKey":"source","provider":"codex",
-                "model":"gpt-6-astra","cwd":"/tmp/work"}))?;
+                "model":"gpt-6-astra","cwd":cwd}))?;
             AgentRepository::put(tx, &late)
         }))
         .expect("late descendant");
@@ -1543,10 +1548,11 @@ mod request_tests {
             10.0,
         )
         .expect("test fixture operation succeeds");
-        run_async(store.transaction_with_error(|tx| {
+        let cwd = store.root().to_path_buf();
+        run_async(store.transaction_with_error(move |tx| {
             let late = AgentRecord::from_value(json!({"id":"late","rootId":"lead","epoch":3,
                 "status":"idle","isLead":false,"accountKey":"source","provider":"codex",
-                "model":"gpt-6-astra","cwd":"/tmp/work"}))
+                "model":"gpt-6-astra","cwd":cwd}))
             .expect("test fixture operation succeeds");
             AgentRepository::put(tx, &late)
         }))

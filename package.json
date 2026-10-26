@@ -33,11 +33,13 @@
     "test:provider-contracts": "node --test workspaces/tooling/apps/repository-checks/tests/provider-contracts.test.ts workspaces/tooling/apps/repository-checks/tests/provider-cargo-mutations.test.ts"
   },
   "devDependencies": {
+    "@anthropic-ai/claude-agent-sdk": "0.3.308",
     "@playwright/test": "1.64.1",
     "@types/node": "26.6.5",
     "openapi-typescript": "7.13.0",
     "oxfmt": "0.74.0",
     "oxlint": "1.89.0",
+    "studio-claude-bridge": "workspace:*",
     "typescript": "5.9.3"
   },
   "packageManager": "pnpm@12.15.0",

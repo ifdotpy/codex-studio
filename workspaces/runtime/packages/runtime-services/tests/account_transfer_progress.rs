@@ -110,7 +110,7 @@ async fn subagents_summary_does_not_hold_the_excluded_leads_native_preparation()
             AgentRepository::put(tx, &lead)?;
             let child = AgentRecord::from_value(json!({
                 "id":"child", "rootId":"lead", "epoch":1, "status":"idle", "isLead":false,
-                "accountKey":"source", "provider":"codex", "cwd":"/tmp/work"
+                "accountKey":"source", "provider":"codex", "cwd":lead.extra.get("cwd")
             }))?;
             AgentRepository::put(tx, &child)
         })
