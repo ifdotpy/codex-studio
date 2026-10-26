@@ -3453,7 +3453,7 @@ mod tests {
             &NotificationStreamBuffer::default(),
             &identity(1),
             &frame(
-                &json!({"method":"thread/tokenUsage/updated","params":{"threadId":"thread","tokenUsage":{"total":{"totalTokens":5},"last":{"totalTokens":5},"modelContextWindow":1000}}}),
+                &json!({"method":"thread/tokenUsage/updated","params":{"threadId":"thread","turnId":"turn","tokenUsage":{"total":{"totalTokens":5,"inputTokens":5,"cachedInputTokens":0,"outputTokens":0,"reasoningOutputTokens":0},"last":{"totalTokens":5,"inputTokens":5,"cachedInputTokens":0,"outputTokens":0,"reasoningOutputTokens":0},"modelContextWindow":1000}}}),
             ),
             1234.5,
         );
