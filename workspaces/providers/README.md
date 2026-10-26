@@ -2,6 +2,29 @@
 
 Owns external model-provider process integrations used by Studio.
 
+## Provider extensibility
+
+Shared application code works with provider-neutral contracts. Provider identity
+has one Rust owner, [`ProviderKind`](../runtime/packages/runtime-schema/src/provider_kind.rs).
+Rust consumers import that enum; TypeScript and schema consumers use its generated
+contract. Do not maintain a second provider enum, union, or list in a consumer.
+
+Parse external provider names at the boundary. Unknown or malformed names must
+remain unsupported, never select an existing provider by default. The identity
+owner alone handles the documented missing/null field in legacy account records.
+
+Provider dispatch must be exhaustive: use an enum `match` or a typed mapping that
+requires every supported provider. Do not use `if provider == "codex" ... else ...`,
+a wildcard arm, or a fallback that gives a new provider another provider's behavior.
+Keep native SDK, credentials, transcript formats, and provider-specific semantics
+in their owning adapters. Shared callers consume normalized values or the
+adapter's explicit capabilities.
+
+To add a provider, extend the identity owner and its adapter, regenerate contracts,
+and implement the cases exposed by exhaustive checks. Verify the new boundary
+alongside existing providers and unknown input. Reuse the existing adapter and
+generation mechanisms; provider support does not require a new framework.
+
 ## Apps and navigation
 
 - [`apps/claude-bridge/`](apps/claude-bridge): the Node Claude Agent SDK

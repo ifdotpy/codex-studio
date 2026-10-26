@@ -266,7 +266,7 @@ When the registry is absent, Python creates an implicit default Codex row from `
 
 The public account projection always includes the required `provider` field,
 including archived accounts and mutation responses. It resolves legacy stored
-rows through [`ProviderKind`](../runtime-providers/src/provider_kind.rs) without
+rows through [`ProviderKind`](../runtime-schema/src/provider_kind.rs) without
 rewriting the registry. This lets account cards select their provider's turn
 start limits.
 
