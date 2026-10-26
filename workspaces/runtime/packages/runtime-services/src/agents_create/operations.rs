@@ -2237,7 +2237,9 @@ pub async fn conversation(
                 crate::event_write::request_signature(&json!({
                     "operation":"live_permissions", "agent":request.id,
                     "yolo":request.yolo_mode, "account":request.expected_account,
-                    "cwd":request.cwd, "model":request.model, "effort":request.effort,
+                    "cwd":request.cwd, "model":request.model,
+                    // Explicit null resets effort; omission preserves it.
+                    "effort":[request.effort_present, request.effort],
                     "fastMode":request.fast_mode, "daybreak":request.daybreak_enabled,
                     "excluded":request.excluded,
                 })),

@@ -502,7 +502,7 @@ The main agent's model selector includes every available model from the selected
 
 The main agent has the orchestrator role. Subagents ask it for help.
 Only the main agent sends conversational messages or tasks to you.
-Native tool permissions still require your approval.
+In Ask mode, native tool permissions require your approval.
 
 Use a stable `request_id` with `orchestration_send` to recover a lost reply.
 An exact retry returns the saved receipt without another instruction.

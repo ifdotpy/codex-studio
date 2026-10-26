@@ -67,7 +67,10 @@ vi.mock("react", async (load) => ({
   useCallback: (callback: unknown) => callback,
 }));
 vi.mock("../../servers/ServerServicesContext", () => ({
-  useServerStorage: () => ({ setItem: vi.fn(), removeItem: vi.fn() }),
+  useServerStorage: () => ({
+    setItem: (key: string, raw: string) => h.storage.set(key, JSON.parse(raw)),
+    removeItem: (key: string) => h.storage.delete(key),
+  }),
   useServerApi: () => ({
     post: h.post,
     saved: (key: string, fallback: unknown) => h.storage.get(key) ?? fallback,
@@ -454,3 +457,52 @@ test("a superseding Ask intent prevents reuse of a lost Full request identity", 
   await vi.waitFor(() => expect(h.post).toHaveBeenCalledTimes(3));
   expect(h.post.mock.calls[2][1].request_id).not.toBe(lostFullId);
 });
+
+for (const [first, opposite] of [
+  ["bypassPermissions", "default"],
+  ["default", "bypassPermissions"],
+]) {
+  test(`Claude replaces a superseded lost ${first} intent after reopening`, async () => {
+    let persisted = opposite;
+    let loseResponse = true;
+    const mutations: any[] = [];
+    h.post.mockImplementation(async (_path, body) => {
+      if (body.action === "settings") {
+        mutations.push(body);
+        persisted = body.settings.permissionMode;
+        if (loseResponse) throw new Error("response lost");
+        return {};
+      }
+      return { settings: { permissionMode: persisted }, turns: [], tasks: [] };
+    });
+    const element = createElement(ClaudeSettings, {
+      agent: { ...initial, provider: "claude" },
+    });
+    const control = () =>
+      children(invoke(element)).find(
+        (node) => node.props.label === "Permission mode",
+      )!;
+    const reopen = async () => {
+      for (const cell of h.cells.get("ClaudeSettings") || []) cell.cleanup?.();
+      h.cells.delete("ClaudeSettings");
+      invoke(element);
+      for (const effect of h.effects.splice(0)) effect();
+      await vi.waitFor(() => expect(control().props.disabled).toBe(false));
+    };
+    const choose = async (mode: string) => {
+      control().props.onChange({ currentTarget: { value: mode } });
+      await vi.waitFor(() => expect(control().props.disabled).toBe(false));
+    };
+    await reopen();
+    await choose(first);
+    await choose(first); // The same unresolved click retains its request identity.
+    expect(mutations[1].request_id).toBe(mutations[0].request_id);
+    await reopen();
+    loseResponse = false;
+    await choose(opposite);
+    await choose(first);
+    expect(mutations[2].request_id).not.toBe(mutations[0].request_id);
+    expect(mutations[3].request_id).not.toBe(mutations[0].request_id);
+    expect(mutations[3].request_id).not.toBe(mutations[2].request_id);
+  });
+}

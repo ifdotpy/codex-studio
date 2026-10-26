@@ -361,3 +361,28 @@ async fn live_permissions_failed_auto_answer_stays_pending_for_the_user() {
     assert_eq!(stored(&store, &id)["status"], "pending");
     assert_eq!(port.calls.lock().unwrap().len(), 1);
 }
+
+#[tokio::test]
+async fn live_permissions_receipt_distinguishes_omitted_effort_from_null() {
+    let (root, store, context) = fixture().await;
+    let actor = context.agent.clone();
+    store
+        .transaction(move |tx| {
+            tx.execute(
+                "UPDATE runtime_agents SET record=json_set(record,'$.effort','high') WHERE id=?1",
+                [&actor],
+            )?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    let app = permission_app(root.path(), store, Arc::new(Port::default())).await;
+    let mut body = json!({"id":context.agent,"yolo_mode":true,"request_id":"presence"});
+    let (status, value) = call(&app, "/api/conversation", body.clone(), "token").await;
+    assert_eq!(status, 200, "{value}");
+    assert_eq!(value["effort"], "high");
+    body["effort"] = Value::Null;
+    let (status, value) = call(&app, "/api/conversation", body, "token").await;
+    assert_eq!(status, 400, "changed content must conflict: {value}");
+    assert_eq!(value["error"], "This request id has different content");
+}

@@ -1,5 +1,5 @@
+import { settingsRequestId } from "./settingsRequestId";
 import ClaudeFileBackups from "./ClaudeFileBackups";
-import { useServerStorage } from "../servers/ServerServicesContext";
 import { useServerApi } from "../servers/ServerServicesContext";
 import { accountCanStart } from "../accountName";
 import { createPortal } from "react-dom";
@@ -118,8 +118,7 @@ export function ClaudeSettings({
     mode: ClaudeValues["permissionMode"] | null,
   ) => void;
 }) {
-  const localStorage = useServerStorage();
-  const { post, saved } = useServerApi();
+  const { post, saved, save } = useServerApi();
 
   const permissionsTarget = permissionsTargetId
     ? document.getElementById(permissionsTargetId)
@@ -164,12 +163,14 @@ export function ClaudeSettings({
         body.action === "rollback" && body.restore_files ? 120000 : 15000,
     });
   const mutate = async (body: ClaudeSessionMutation) => {
-    const storageKey = `claude-control:${agent.accountKey}:${agent.id}:${body.action}:${JSON.stringify({ ...body, id: undefined, action: undefined })}`;
-    const requestId =
-      saved<string | null>(storageKey, null) || crypto.randomUUID();
-    localStorage.setItem(storageKey, JSON.stringify(requestId));
+    const storageKey = `claude-control:${agent.accountKey}:${agent.id}`;
+    const requestId = settingsRequestId(
+      { saved, save },
+      storageKey,
+      JSON.stringify(body),
+    );
     const result = await call({ ...body, request_id: requestId });
-    localStorage.removeItem(storageKey);
+    save(storageKey, null);
     return result;
   };
   const load = async () => {
