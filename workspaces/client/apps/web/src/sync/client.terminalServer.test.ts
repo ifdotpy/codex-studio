@@ -287,7 +287,7 @@ it("streams terminal intervals through RxDB and the screen consumer with zero ou
         expect.objectContaining({ text: "a🙂" }),
         expect.objectContaining({
           replyKind: "snapshot",
-          cursor: { workspaceId, seq: 2 },
+          cursor: { workspaceId, seq: 2, terminalGeneration: 0 },
         }),
       ),
     );
@@ -295,6 +295,7 @@ it("streams terminal intervals through RxDB and the screen consumer with zero ou
     const delta = await waitRaw(3);
     expect(delta.resourceVersions[0]).toMatchObject({
       replyKind: "delta",
+      terminalBaseOffset: 2,
       viewSnapshot: { terminalOutput: { text: "中", offset: 3 } },
     });
     await waitApplied(3, "a🙂中");
@@ -305,6 +306,7 @@ it("streams terminal intervals through RxDB and the screen consumer with zero ou
     expect(await client.readSubscriptionCursor(resource)).toEqual({
       workspaceId,
       seq: 3,
+      terminalGeneration: 0,
     });
     const late = await waitRaw(2);
     assert.ok(late.resourceVersions[0]);
@@ -318,6 +320,7 @@ it("streams terminal intervals through RxDB and the screen consumer with zero ou
     expect(await client.readSubscriptionCursor(resource)).toEqual({
       workspaceId,
       seq: 3,
+      terminalGeneration: 0,
     });
     await client.persistResourceEntityChanges(
       structuredClone(delta),
@@ -326,6 +329,7 @@ it("streams terminal intervals through RxDB and the screen consumer with zero ou
     expect(await client.readSubscriptionCursor(resource)).toEqual({
       workspaceId,
       seq: 3,
+      terminalGeneration: 0,
     });
     await write("tail", 20);
     expect((await waitRaw(24)).resourceVersions[0]?.replyKind).toBe("snapshot");
@@ -350,7 +354,7 @@ it("streams terminal intervals through RxDB and the screen consumer with zero ou
         expect.objectContaining({ text: "new", status: "exited" }),
         expect.objectContaining({
           replyKind: "delta",
-          cursor: { workspaceId, seq: 3 },
+          cursor: { workspaceId, seq: 3, terminalGeneration: 1 },
         }),
       ),
     );

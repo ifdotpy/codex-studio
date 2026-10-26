@@ -636,8 +636,7 @@ export function createResourceEvents(options: ResourceEventsOptions) {
       !output ||
       !cursor ||
       cursor.workspaceId !== workspaceId ||
-      cursor.seq !== output.offset ||
-      entityDelivery.requiresSnapshot(resource)
+      cursor.seq !== output.offset
     )
       return undefined;
     // Only the owner's post-persistence complete view can establish a follower base.
@@ -659,9 +658,13 @@ export function createResourceEvents(options: ResourceEventsOptions) {
       lastEpoch = event.epoch;
       lastRevision = undefined;
       lastHeartbeatRevision = undefined;
-      lastTokenEpoch = undefined;
-      lastTokenRevision = undefined;
-      lastTokenEvent = undefined;
+      // Token frames may arrive while this resource frame awaits persistence.
+      // Its delayed dispatch must retain an already received same-epoch snapshot.
+      if (lastTokenEpoch !== event.epoch) {
+        lastTokenEpoch = undefined;
+        lastTokenRevision = undefined;
+        lastTokenEvent = undefined;
+      }
       resourceValues.clear();
       progressValues.clear();
       deliveredEntitySequenceBatches.clear();
@@ -702,12 +705,7 @@ export function createResourceEvents(options: ResourceEventsOptions) {
         version.viewSnapshot = revisionEntry.viewSnapshot;
       if (revisionEntry?.cursor) version.cursor = revisionEntry.cursor;
       if (revisionEntry?.replyKind) version.replyKind = revisionEntry.replyKind;
-      if (
-        resource.kind === "transcript" &&
-        (event.reason === "change" || revisionEntry?.replyKind === "delta") &&
-        (!epochChanged || !!revisionEntry?.cursor) &&
-        revisionEntry?.transcriptChanges
-      )
+      if (resource.kind === "transcript" && revisionEntry?.transcriptChanges)
         version.transcriptSequence = revisionEntry.transcriptChanges.through;
       if (
         resource.kind === "transcript" &&
@@ -719,8 +717,8 @@ export function createResourceEvents(options: ResourceEventsOptions) {
         version.transcriptSequence = revisionEntry.revision;
       if (
         resource.kind === "transcript" &&
-        event.reason === "change" &&
         revisionEntry &&
+        !revisionEntry.cursor &&
         !revisionEntry.transcriptChanges &&
         !revisionEntry?.transcriptSnapshot
       )
@@ -931,13 +929,9 @@ export function createResourceEvents(options: ResourceEventsOptions) {
   }
   const entityDelivery = new ResourceEntityDelivery(
     (event, isCurrent) => {
-      const generation = subscriptionGeneration;
       return persistResourceEntityChanges(
         event,
-        () =>
-          isCurrent() &&
-          event.workspaceId === workspaceId &&
-          generation === subscriptionGeneration,
+        () => isCurrent() && event.workspaceId === workspaceId,
       );
     },
     dispatchEvent,
@@ -952,9 +946,28 @@ export function createResourceEvents(options: ResourceEventsOptions) {
     string,
     { ref: ResourceRef; transferId: string }
   >();
-  function cancelEntityTransfers(recover = false) {
+  const transferSubscriptions = new Map<string, { cancelled: boolean }>();
+  function removeEntityTransfers(resources: ResourceRef[]) {
+    for (const resource of resources) {
+      const key = resourceKey(resource);
+      const subscription = transferSubscriptions.get(key);
+      if (subscription) subscription.cancelled = true;
+      transferSubscriptions.delete(key);
+      transferResources.delete(key);
+    }
+    const assembler = transferAssembler;
+    if (assembler)
+      transferTail = transferTail
+        .then(() => assembler.remove(resources))
+        .catch((error) => {
+          console.error("Entity staging cleanup failed", error);
+        });
+  }
+  function cancelEntityTransfers() {
     const previous = transferAssembler;
-    const discarded = [...transferResources.values()].map((entry) => entry.ref);
+    for (const subscription of transferSubscriptions.values())
+      subscription.cancelled = true;
+    transferSubscriptions.clear();
     transferResources.clear();
     transferAssembler = undefined;
     transferEpoch = undefined;
@@ -966,11 +979,6 @@ export function createResourceEvents(options: ResourceEventsOptions) {
         .catch((error) =>
           console.error("Entity staging cleanup failed", error),
         );
-    if (recover && discarded.length)
-      recoverResourceApplication(
-        discarded,
-        new Error("Subscribed staged entity interval was discarded"),
-      );
   }
   function receiveEntityTransfer(value: unknown) {
     if (!hasRevisionFrame(value) || value.workspaceId !== workspaceId)
@@ -981,6 +989,12 @@ export function createResourceEvents(options: ResourceEventsOptions) {
     if (transferEpoch && frame.epoch !== transferEpoch) cancelEntityTransfers();
     transferEpoch = frame.epoch;
     const assembler = (transferAssembler ??= new EntityTransferAssembler());
+    let subscription = transferSubscriptions.get(key);
+    if (!subscription) {
+      subscription = { cancelled: false };
+      transferSubscriptions.set(key, subscription);
+    }
+    const activeSubscription = subscription;
     const generation = subscriptionGeneration;
     const receivedAt = Date.now();
     const transferSource = source;
@@ -989,68 +1003,77 @@ export function createResourceEvents(options: ResourceEventsOptions) {
       transferId: frame.transferId,
     });
     transferPending++;
+    let interval: Awaited<ReturnType<EntityTransferAssembler["receive"]>>;
+    const current = () =>
+      !activeSubscription.cancelled &&
+      generation === subscriptionGeneration &&
+      assembler === transferAssembler &&
+      frame.workspaceId === workspaceId;
     const work = transferTail
       .then(async () => {
-        if (
-          generation !== subscriptionGeneration ||
-          assembler !== transferAssembler
-        )
-          return;
-        const interval = await assembler.receive(frame);
-        if (
-          generation !== subscriptionGeneration ||
-          assembler !== transferAssembler
-        ) {
+        if (!current()) throw new Error("Entity transfer cancelled");
+        interval = await assembler.receive(frame);
+        if (!current()) {
           await interval?.dispose();
-          return;
+          interval = undefined;
+          throw new Error("Entity transfer cancelled");
         }
         refreshHeartbeatTimeout();
         confirmConnectionActivity(receivedAt);
-        if (!interval) return;
-        const current = () =>
-          generation === subscriptionGeneration &&
-          assembler === transferAssembler &&
-          interval.workspaceId === workspaceId;
-        try {
-          if (!options.sync.persistStagedEntityTransfer)
-            throw new Error("Entity staging persistence unavailable");
-          await options.sync.persistStagedEntityTransfer(interval, current);
-          if (!current()) return;
-          const event: ResourceChangeEvent = {
-            protocol: frame.protocol,
-            workspaceId: frame.workspaceId,
-            epoch: frame.epoch,
-            revision: frame.revision,
-            reason: frame.reason,
-            resources: [frame.resource],
-            resourceVersions: [
-              {
-                resource: frame.resource,
-                revision: frame.cursor.seq,
-                cursor: frame.cursor,
-                replyKind: "delta",
-              },
-            ],
-          };
-          serverFrames.set(event, { generation, receivedAt });
-          dispatchEvent(event);
-        } finally {
-          if (
-            assembler === transferAssembler &&
-            generation === subscriptionGeneration &&
-            transferResources.get(key)?.transferId === frame.transferId
-          )
-            transferResources.delete(key);
-          await interval.dispose();
-        }
       })
       .finally(() => {
         if (generation === subscriptionGeneration) transferPending--;
       });
     transferTail = work.catch((error) => {
-      if (generation === subscriptionGeneration && source === transferSource)
-        frameFailed(error);
+      if (current() && source === transferSource) frameFailed(error);
     });
+    if (frame.complete) {
+      const event: ResourceChangeEvent = {
+        protocol: frame.protocol,
+        workspaceId: frame.workspaceId,
+        epoch: frame.epoch,
+        revision: frame.revision,
+        reason: frame.reason,
+        resources: [frame.resource],
+        resourceVersions: [
+          {
+            resource: frame.resource,
+            revision: frame.cursor.seq,
+            cursor: frame.cursor,
+            replyKind: "delta",
+          },
+        ],
+      };
+      serverFrames.set(event, { generation, receivedAt });
+      // Reserve the completion frame's position immediately. Staging can finish
+      // asynchronously, but its application shares the ordinary frame FIFO.
+      let application: Promise<void> | undefined;
+      entityDelivery.receive(event, work, {
+        async persist(isCurrent) {
+          if (!current() || !interval) return;
+          if (!options.sync.persistStagedEntityTransfer)
+            throw new Error("Entity staging persistence unavailable");
+          application = options.sync.persistStagedEntityTransfer(
+            interval,
+            () => isCurrent() && current(),
+          );
+          await application;
+        },
+        dispose() {
+          void work
+            .then(async () => {
+              // A deadline cancels publication, but cleanup waits for the writer.
+              await application?.catch(() => {});
+              if (transferResources.get(key)?.transferId === frame.transferId)
+                transferResources.delete(key);
+              await interval?.dispose();
+            })
+            .catch((error) =>
+              console.error("Entity staging cleanup failed", error),
+            );
+        },
+      });
+    }
     source?.holdUntil?.(transferTail);
   }
 
@@ -1159,14 +1182,9 @@ export function createResourceEvents(options: ResourceEventsOptions) {
         generation: subscriptionGeneration,
         receivedAt: Date.now(),
       });
-    if (transferPending) {
-      const generation = subscriptionGeneration;
-      transferTail = transferTail.then(() => {
-        if (generation === subscriptionGeneration)
-          entityDelivery.receive(currentResourceEvent(event));
-      });
-      source?.holdUntil?.(transferTail);
-    } else entityDelivery.receive(currentResourceEvent(event));
+    const prerequisite = transferPending ? transferTail : undefined;
+    if (prerequisite) source?.holdUntil?.(prerequisite);
+    entityDelivery.receive(currentResourceEvent(event), prerequisite);
   }
 
   function acceptHeartbeat(value: unknown, fromPeer = false) {
@@ -1408,7 +1426,7 @@ export function createResourceEvents(options: ResourceEventsOptions) {
 
   function scheduleOwnerStreamUpdate() {
     const active = new Set(aggregateResources().map(resourceKey));
-    let removed = false;
+    const removed: ResourceRef[] = [];
     for (const resource of pendingSubscription?.resources ?? wireResources) {
       const key = resourceKey(resource);
       if (!active.has(key) && !blockedResources.has(key)) {
@@ -1416,14 +1434,13 @@ export function createResourceEvents(options: ResourceEventsOptions) {
         blockedResources.set(key, resource);
         resourceValues.delete(key);
         progressValues.delete(key);
-        subscriptionGeneration++;
-        removed = true;
+        removed.push(resource);
       }
     }
-    if (removed) {
+    if (removed.length) {
       blockedSelectors = [...blockedResources.values()];
-      entityDelivery.invalidate(true);
-      cancelEntityTransfers(true);
+      entityDelivery.remove(removed);
+      removeEntityTransfers(removed);
       if (!source && reconnectTimer !== undefined) return;
     }
     const generation = ++streamUpdateGeneration;
@@ -1571,17 +1588,12 @@ export function createResourceEvents(options: ResourceEventsOptions) {
             for (const resource of pending) seen.add(resourceKey(resource));
             prepared.push(
               ...(await Promise.all(
-                pending.map(async (resource) => {
-                  const since = entityDelivery.requiresSnapshot(resource)
-                    ? undefined
-                    : await options.sync
-                        .readSubscriptionCursor?.(resource)
-                        .catch(() => undefined);
-                  return {
-                    resource,
-                    since,
-                  };
-                }),
+                pending.map(async (resource) => ({
+                  resource,
+                  since: await options.sync
+                    .readSubscriptionCursor?.(resource)
+                    .catch(() => undefined),
+                })),
               )),
             );
             pending = (currentResources?.() ?? []).filter(
@@ -2000,7 +2012,7 @@ export function createResourceEvents(options: ResourceEventsOptions) {
 
   function startIndependent() {
     if (!coordinatorActive || owner || independent) return;
-    entityDelivery.beginOwnership();
+    entityDelivery.invalidate();
     independent = true;
     startPeerHeartbeat();
     scheduleOwnerStreamUpdate();
@@ -2042,7 +2054,7 @@ export function createResourceEvents(options: ResourceEventsOptions) {
           )
             return;
           requireBaselineReconciliation();
-          entityDelivery.beginOwnership();
+          entityDelivery.invalidate();
           owner = true;
           startPeerHeartbeat();
           broadcast({ kind: "discover-subscriptions" });
@@ -2318,9 +2330,8 @@ export function createResourceEvents(options: ResourceEventsOptions) {
         resourceRefs.delete(key);
         baselineReconciliations.delete(key);
         if (!owner && !independent) {
-          subscriptionGeneration++;
-          entityDelivery.invalidate(true);
-          cancelEntityTransfers(true);
+          entityDelivery.remove([resource]);
+          removeEntityTransfers([resource]);
         }
       }
       if (

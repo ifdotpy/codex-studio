@@ -140,6 +140,26 @@ pub async fn listing(store: &RuntimeStore) -> Result<Value, TerminalError> {
 }
 
 pub async fn output(store: &RuntimeStore, id: &str, offset: i64) -> Result<Value, TerminalError> {
+    Ok(read_output(store, id, offset, None, false).await?.0)
+}
+
+/// Read generation and output atomically; an unknown generation receives the full base.
+pub async fn subscription_output(
+    store: &RuntimeStore,
+    id: &str,
+    offset: i64,
+    generation: Option<i64>,
+) -> Result<(Value, i64), TerminalError> {
+    read_output(store, id, offset, generation, true).await
+}
+
+async fn read_output(
+    store: &RuntimeStore,
+    id: &str,
+    offset: i64,
+    generation: Option<i64>,
+    check_generation: bool,
+) -> Result<(Value, i64), TerminalError> {
     if offset < 0 {
         return Err(TerminalError::InvalidCursor);
     }
@@ -153,6 +173,12 @@ pub async fn output(store: &RuntimeStore, id: &str, offset: i64) -> Result<Value
     let record = row.record;
     let start = row.offset;
     let end = start + row.output.chars().count() as i64;
+    let offset =
+        if !check_generation || (generation == Some(row.output_generation) && offset <= end) {
+            offset
+        } else {
+            0
+        };
     let cursor = offset.clamp(start, end);
     let text = slice_chars(&row.output, (cursor - start) as usize, usize::MAX);
     let mut result = json!({
@@ -161,7 +187,7 @@ pub async fn output(store: &RuntimeStore, id: &str, offset: i64) -> Result<Value
         "truncated": offset < start,
     });
     add_status(&mut result, &record);
-    Ok(result)
+    Ok((result, row.output_generation))
 }
 
 pub async fn history_output(
@@ -2657,9 +2683,9 @@ mod tests {
         }
 
         fn snapshot(store: &RuntimeStore) -> Value {
-            fn rows(connection: &rusqlite::Connection, table: &str) -> Value {
+            fn rows(connection: &rusqlite::Connection, table: &str, columns: &str) -> Value {
                 let mut statement = connection
-                    .prepare(&format!("SELECT * FROM \"{table}\" ORDER BY rowid"))
+                    .prepare(&format!("SELECT {columns} FROM \"{table}\" ORDER BY rowid"))
                     .expect("prepare action corpus table");
                 let count = statement.column_count();
                 let rows = statement
@@ -2686,11 +2712,12 @@ mod tests {
             }
             let connection = store.test_reader().expect("read action corpus rows");
             serde_json::json!({
-                "user_terminals":rows(&connection,"user_terminals"),
-                "user_terminal_receipts":rows(&connection,"user_terminal_receipts"),
-                "user_terminal_output":rows(&connection,"user_terminal_output"),
-                "user_terminal_event_cursor":rows(&connection,"user_terminal_event_cursor"),
-                "user_terminal_decoder_state":rows(&connection,"user_terminal_decoder_state"),
+                // The Python oracle predates the Rust-owned output_generation column.
+                "user_terminals":rows(&connection,"user_terminals","id,record,output,offset"),
+                "user_terminal_receipts":rows(&connection,"user_terminal_receipts","*"),
+                "user_terminal_output":rows(&connection,"user_terminal_output","*"),
+                "user_terminal_event_cursor":rows(&connection,"user_terminal_event_cursor","*"),
+                "user_terminal_decoder_state":rows(&connection,"user_terminal_decoder_state","*"),
             })
         }
 

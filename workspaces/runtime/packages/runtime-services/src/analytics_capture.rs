@@ -7,9 +7,12 @@ use crate::notification_dispatch::NotificationStreamMetrics;
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use serde_json::{Value, json};
 use std::sync::Arc;
+use studio_runtime_schema::usage::ledger::{
+    UsageCorrection, UsageIdentity, UsageLedgerRow, correction,
+};
 use studio_runtime_schema::usage::{
-    LegacyUsageTotals, UsageEvidence, UsageObservation, UsageParseError, UsageProvider, UsageScope,
-    UsageTokens, parse_analytics_usage_row, parse_legacy_totals, parse_token_usage,
+    LegacyUsageTotals, UsageObservation, UsageParseError, UsageProvider, UsageScope, UsageTokens,
+    parse_analytics_usage_row, parse_legacy_totals, parse_token_usage,
 };
 use studio_runtime_store::CachedSql;
 use studio_runtime_store::analytics_capture::{AnalyticsCaptureRepository as Repo, CaptureTable};
@@ -60,6 +63,9 @@ pub struct PreparedCapture {
     model: bool,
     usage: Option<UsageObservation>,
     legacy_usage: Option<LegacyUsageTotals>,
+    rejected_usage: Option<studio_runtime_schema::usage::ledger::UsageReplayConflict>,
+    ledger_since: studio_runtime_schema::usage::ledger::LedgerEpoch,
+    usage_unknown: bool,
 }
 impl PreparedCapture {
     pub fn event(
@@ -69,6 +75,7 @@ impl PreparedCapture {
         at: f64,
         recorded_at: f64,
         source: CaptureSource,
+        ledger_since: studio_runtime_schema::usage::ledger::LedgerEpoch,
     ) -> Result<Self, CaptureError> {
         CaptureTable::Agents.validate(agent)?;
         Self::event_validated(
@@ -78,6 +85,7 @@ impl PreparedCapture {
             at,
             recorded_at,
             source,
+            ledger_since,
         )
     }
 
@@ -87,6 +95,7 @@ impl PreparedCapture {
         params: &Value,
         at: f64,
         recorded_at: f64,
+        ledger_since: studio_runtime_schema::usage::ledger::LedgerEpoch,
     ) -> Result<Self, CaptureError> {
         Self::event_validated(
             Arc::new(agent.clone()),
@@ -95,6 +104,7 @@ impl PreparedCapture {
             at,
             recorded_at,
             CaptureSource::Live,
+            ledger_since,
         )
     }
 
@@ -105,9 +115,10 @@ impl PreparedCapture {
         at: f64,
         recorded_at: f64,
         source: CaptureSource,
+        ledger_since: studio_runtime_schema::usage::ledger::LedgerEpoch,
     ) -> Result<Self, CaptureError> {
         CaptureTable::Agents.validate(&agent)?;
-        Self::event_validated(agent, method, params, at, recorded_at, source)
+        Self::event_validated(agent, method, params, at, recorded_at, source, ledger_since)
     }
 
     fn event_validated(
@@ -117,6 +128,7 @@ impl PreparedCapture {
         at: f64,
         recorded_at: f64,
         source: CaptureSource,
+        ledger_since: studio_runtime_schema::usage::ledger::LedgerEpoch,
     ) -> Result<Self, CaptureError> {
         if !params.is_object() {
             return Err(CaptureError::Invalid("/params"));
@@ -161,21 +173,51 @@ impl PreparedCapture {
             model: false,
             usage,
             legacy_usage,
+            rejected_usage: None,
+            ledger_since,
+            usage_unknown: false,
         })
+    }
+    pub(crate) fn apply_budget_conflicts(
+        &mut self,
+        conflicts: &[studio_runtime_schema::usage::ledger::UsageReplayConflict],
+    ) {
+        if let Some(observation @ UsageObservation::Response { tokens, .. }) = &self.usage {
+            let identity = UsageIdentity::new(
+                text(&self.agent["id"]),
+                self.params["threadId"].as_str(),
+                observation,
+            );
+            self.rejected_usage = conflicts
+                .iter()
+                .find(|conflict| {
+                    conflict.identity == identity
+                        && conflict.incoming_tokens.as_ref() == Some(tokens)
+                })
+                .cloned();
+        }
     }
     pub fn model_payload(
         agent: &Value,
         params: &Value,
         at: f64,
         recorded_at: f64,
+        ledger_since: studio_runtime_schema::usage::ledger::LedgerEpoch,
     ) -> Result<Self, CaptureError> {
-        Self::model_payload_shared(Arc::new(agent.clone()), params, at, recorded_at)
+        Self::model_payload_shared(
+            Arc::new(agent.clone()),
+            params,
+            at,
+            recorded_at,
+            ledger_since,
+        )
     }
     pub(crate) fn model_payload_shared(
         agent: Arc<Value>,
         params: &Value,
         at: f64,
         recorded_at: f64,
+        ledger_since: studio_runtime_schema::usage::ledger::LedgerEpoch,
     ) -> Result<Self, CaptureError> {
         let mut result = Self::event_shared(
             agent,
@@ -184,6 +226,7 @@ impl PreparedCapture {
             at,
             recorded_at,
             CaptureSource::Rollout,
+            ledger_since,
         )?;
         result.model = true;
         let kind = params["type"].as_str().unwrap_or("unknown");
@@ -219,6 +262,28 @@ impl PreparedCapture {
         }
         Ok(result)
     }
+    pub(crate) fn bind_budget(
+        &mut self,
+        canvas: &Connection,
+        epoch: studio_runtime_schema::usage::ledger::LedgerEpoch,
+    ) -> Result<(), CaptureError> {
+        self.ledger_since = epoch;
+        self.usage_unknown = unknown_usage_receipt(canvas, &self.agent, &self.params)?;
+        Ok(())
+    }
+    fn legacy_counter_era(&self) -> bool {
+        (matches!(self.usage, Some(UsageObservation::Cumulative { .. }))
+            || self
+                .legacy_usage
+                .as_ref()
+                .is_some_and(|legacy| legacy.response_id.is_none()))
+            && studio_runtime_schema::usage::ledger::legacy_era(
+                self.ledger_since,
+                self.at,
+                self.params["_analyticsTimestampSource"] == "fileModifiedEstimate",
+            )
+    }
+
     pub fn agent(&self) -> &Value {
         &self.agent
     }
@@ -351,6 +416,9 @@ impl CaptureSnapshot {
         ] {
             if let Some(row) = row {
                 table.validate(row)?;
+                if table == CaptureTable::Usage && row.get("studioUsage").is_some() {
+                    UsageLedgerRow::from_analytics(usage_provider(&prepared.agent), row)?;
+                }
             }
         }
         let meta = prepared.meta();
@@ -411,6 +479,14 @@ impl CaptureSnapshot {
         if let Some(observation) = &prepared.usage {
             let id = usage_key(&meta, observation);
             rows.usage = Repo::read(db, CaptureTable::Usage, &id)?;
+            if rows.usage.is_none() && prepared.legacy_counter_era() {
+                let old_id = hash(&json!([
+                    meta["agentId"],
+                    meta["threadId"],
+                    fingerprint(observation)
+                ]));
+                rows.usage = Repo::read(db, CaptureTable::Usage, &old_id)?;
+            }
             if let UsageObservation::Response { response_id, .. }
             | UsageObservation::Gap { response_id, .. } = observation
             {
@@ -443,6 +519,13 @@ impl CaptureSnapshot {
                 CaptureTable::Usage,
                 &legacy_usage_key(&meta, legacy, &prepared.params),
             )?;
+            if rows.usage.is_none() && prepared.legacy_counter_era() {
+                rows.usage = Repo::read(
+                    db,
+                    CaptureTable::Usage,
+                    &old_legacy_usage_key(&meta, legacy, &prepared.params),
+                )?;
+            }
         }
         if prepared.method == "analytics/rateLimits" {
             rows.last_limit = Repo::last_limit(db, &meta["accountKey"])?;
@@ -460,6 +543,8 @@ pub struct ResponseRateAssociation {
 }
 #[derive(Default)]
 pub struct CaptureDecision {
+    pub unknown_usage: Option<Value>,
+    pub usage_conflict: Option<studio_runtime_schema::usage::ledger::UsageReplayConflict>,
     pub rows: Vec<(CaptureTable, Value)>,
     pub notifications: Vec<Value>,
     pub limit: Option<Value>,
@@ -469,13 +554,28 @@ pub struct CaptureDecision {
 }
 impl CaptureDecision {
     pub fn apply(&self, tx: &Transaction<'_>) -> Result<(), CaptureError> {
+        if let Some(unknown) = &self.unknown_usage {
+            tx.execute_cached(
+                "INSERT INTO analytics_meta(key,value) VALUES (?1,?2) ON CONFLICT(key) DO NOTHING",
+                params![
+                    format!("unknownUsageReceipt:{}", text(&unknown["observationKey"])),
+                    unknown.to_string()
+                ],
+            )?;
+        }
         if self.response_replay_conflict {
             record_capture_errors(
                 tx,
                 1,
                 "analytics_usage",
-                "responseReplayConflict",
-                "Response replay changed final usage; first evidence retained",
+                studio_runtime_schema::usage::ledger::RESPONSE_REPLAY_CONFLICT,
+                &self
+                    .usage_conflict
+                    .as_ref()
+                    .map(|conflict| json!(conflict).to_string())
+                    .unwrap_or_else(|| {
+                        "Response replay changed final usage; first evidence retained".into()
+                    }),
             )?;
         }
         for (table, row) in &self.rows {
@@ -500,14 +600,65 @@ impl CaptureDecision {
         Ok(())
     }
 }
+/// Primary-key-only lookup of durable zero-debit replay protection.
+pub(crate) fn unknown_usage_receipt(
+    canvas: &Connection,
+    agent: &Value,
+    params: &Value,
+) -> Result<bool, StoreError> {
+    let provider = usage_provider(agent);
+    let key = match parse_token_usage(provider, params) {
+        Ok(observation @ UsageObservation::Cumulative { .. }) => Some(
+            UsageLedgerRow::capture(
+                text(&agent["id"]),
+                params["threadId"]
+                    .as_str()
+                    .or_else(|| agent["threadId"].as_str()),
+                observation,
+            )
+            .observation_key(),
+        ),
+        _ => parse_legacy_totals(provider, params)
+            .ok()
+            .filter(|legacy| legacy.response_id.is_none())
+            .map(|legacy| {
+                studio_runtime_schema::usage::ledger::legacy_counter_observation_key(
+                    text(&agent["id"]),
+                    params["threadId"]
+                        .as_str()
+                        .or_else(|| agent["threadId"].as_str()),
+                    &legacy,
+                )
+            }),
+    };
+    key.map(|key| {
+        studio_runtime_store::budget::BudgetRepository::usage(canvas, &key).map(|row| {
+            row.is_some_and(|row| {
+                row.kind == studio_runtime_schema::usage::ledger::UNKNOWN_USAGE_KIND
+            })
+        })
+    })
+    .transpose()
+    .map(|found| found.unwrap_or(false))
+}
+
 pub async fn capture(
     store: &RuntimeStore,
-    prepared: PreparedCapture,
+    mut prepared: PreparedCapture,
 ) -> Result<CaptureDecision, CaptureError> {
     store
         .analytics_transaction(move |tx, canvas| {
             check_identity(canvas, prepared.agent())?;
-            let decision = decide(CaptureSnapshot::load(tx, std::sync::Arc::new(prepared))?)?;
+            prepared.ledger_since = studio_runtime_store::budget::BudgetRepository::ledger_since(
+                canvas,
+                text(&prepared.agent["id"]),
+            )?;
+            let epoch = prepared.ledger_since;
+            prepared.bind_budget(canvas, epoch)?;
+            let decision = decide(
+                CaptureSnapshot::load(tx, std::sync::Arc::new(prepared))?,
+                epoch,
+            )?;
             decision.apply(tx)?;
             Ok(decision)
         })
@@ -534,14 +685,39 @@ pub(crate) fn capture_logged_effect(
         .agent
         .as_ref()
         .ok_or(CaptureError::Invalid("/agent"))?;
-    let prepared = std::sync::Arc::new(PreparedCapture::notification_event(
+    let epoch = match effect {
+        Effect::Analytics { ledger_since, .. } => *ledger_since,
+        _ => studio_runtime_schema::usage::ledger::LedgerEpoch::Current,
+    };
+    let mut prepared = PreparedCapture::notification_event(
         agent,
         &observation.method,
         &observation.params,
         observation.observed_at,
         observation.observed_at,
-    )?);
-    let mut decision = decide(CaptureSnapshot::load(tx, std::sync::Arc::clone(&prepared))?)?;
+        epoch,
+    )?;
+    if let Effect::Analytics {
+        usage_conflict: Some(conflict),
+        ..
+    } = effect
+    {
+        prepared.rejected_usage = Some((**conflict).clone());
+    }
+    if let Effect::Analytics {
+        ledger_since,
+        usage_unknown,
+        ..
+    } = effect
+    {
+        prepared.ledger_since = *ledger_since;
+        prepared.usage_unknown = *usage_unknown;
+    }
+    let prepared = std::sync::Arc::new(prepared);
+    let mut decision = decide(
+        CaptureSnapshot::load(tx, std::sync::Arc::clone(&prepared))?,
+        prepared.ledger_since,
+    )?;
     if let Some(metrics) = metrics {
         apply_stream_metrics(&mut decision, &prepared, metrics);
     }
@@ -756,7 +932,13 @@ pub(crate) fn check_identity(canvas: &Connection, agent: &Value) -> Result<(), C
     }
     Ok(())
 }
-pub fn decide(snapshot: CaptureSnapshot) -> Result<CaptureDecision, CaptureError> {
+pub fn decide(
+    snapshot: CaptureSnapshot,
+    epoch: studio_runtime_schema::usage::ledger::LedgerEpoch,
+) -> Result<CaptureDecision, CaptureError> {
+    if snapshot.prepared.ledger_since != epoch {
+        return Err(CaptureError::Invalid("/ledgerEpoch"));
+    }
     let CaptureSnapshot {
         prepared: q,
         mut meta,
@@ -898,11 +1080,14 @@ pub fn decide(snapshot: CaptureSnapshot) -> Result<CaptureDecision, CaptureError
             model: q.model,
             usage: q.usage.clone(),
             legacy_usage: q.legacy_usage.clone(),
+            rejected_usage: q.rejected_usage.clone(),
+            ledger_since: q.ledger_since,
+            usage_unknown: q.usage_unknown,
         };
-        let recursive = decide(CaptureSnapshot::from_records(
-            std::sync::Arc::new(next),
-            rows,
-        )?)?;
+        let recursive = decide(
+            CaptureSnapshot::from_records(std::sync::Arc::new(next), rows)?,
+            q.ledger_since,
+        )?;
         result.rows.extend(
             recursive
                 .rows
@@ -1262,18 +1447,24 @@ fn fingerprint(observation: &UsageObservation) -> String {
     hash(&json!(observation))
 }
 fn usage_key(meta: &Value, observation: &UsageObservation) -> String {
-    match observation {
-        UsageObservation::Response { response_id, .. } => {
-            hash(&json!([meta["agentId"], response_id]))
+    match UsageIdentity::new(
+        text(&meta["agentId"]),
+        meta["threadId"].as_str(),
+        observation,
+    ) {
+        UsageIdentity::Response { agent, response_id } => {
+            if matches!(observation, UsageObservation::Gap { .. }) {
+                hash(&json!([agent, "gap", response_id]))
+            } else {
+                hash(&json!([agent, response_id]))
+            }
         }
-        UsageObservation::Gap { response_id, .. } => {
-            hash(&json!([meta["agentId"], "gap", response_id]))
-        }
-        UsageObservation::Cumulative { .. } => hash(&json!([
-            meta["agentId"],
-            meta["threadId"],
-            fingerprint(observation)
-        ])),
+        UsageIdentity::Cumulative { .. } => UsageLedgerRow::capture(
+            text(&meta["agentId"]),
+            meta["threadId"].as_str(),
+            observation.clone(),
+        )
+        .observation_key(),
     }
 }
 /// Compatibility presentation for existing analytics charts; accounting uses studioUsage.
@@ -1283,6 +1474,16 @@ pub(crate) fn analytics_tokens(tokens: &UsageTokens) -> Value {
         "outputTokens":tokens.output,"reasoningOutputTokens":tokens.reasoning_output,"totalTokens":tokens.total()})
 }
 fn legacy_usage_key(meta: &Value, legacy: &LegacyUsageTotals, params: &Value) -> String {
+    if legacy.response_id.is_none() {
+        return studio_runtime_schema::usage::ledger::legacy_counter_observation_key(
+            text(&meta["agentId"]),
+            meta["threadId"].as_str(),
+            legacy,
+        );
+    }
+    old_legacy_usage_key(meta, legacy, params)
+}
+fn old_legacy_usage_key(meta: &Value, legacy: &LegacyUsageTotals, params: &Value) -> String {
     if let Some(response) = &legacy.response_id {
         return hash(&json!([meta["agentId"], response]));
     }
@@ -1303,9 +1504,26 @@ fn legacy_usage_key(meta: &Value, legacy: &LegacyUsageTotals, params: &Value) ->
     hash(&identity)
 }
 fn usage(q: &PreparedCapture, meta: &mut Value, rows: &CaptureRows, out: &mut CaptureDecision) {
+    if q.usage_unknown {
+        out.unknown_usage = Some(
+            json!({"agent":meta["agentId"],"observationKey":q.usage.as_ref().map(|observation|UsageLedgerRow::capture(text(&meta["agentId"]),meta["threadId"].as_str(),observation.clone()).observation_key()).or_else(||q.legacy_usage.as_ref().map(|legacy|legacy_usage_key(meta,legacy,&q.params))),"fault":studio_runtime_schema::usage::ledger::UNKNOWN_USAGE_RECEIPT}),
+        );
+        return;
+    }
+    if let Some(conflict) = &q.rejected_usage {
+        out.response_replay_conflict = true;
+        out.usage_conflict = Some(conflict.clone());
+        return;
+    }
     let Some(mut observation) = q.usage.clone() else {
         if let Some(legacy) = &q.legacy_usage {
             if rows.usage.is_some() {
+                return;
+            }
+            if q.legacy_counter_era() {
+                out.unknown_usage = Some(
+                    json!({"identity":UsageIdentity::Cumulative {agent:text(&meta["agentId"]).into(),thread_id:meta["threadId"].as_str().map(str::to_owned),scope:legacy.scope},"observationKey":legacy_usage_key(meta,legacy,&q.params),"fault":studio_runtime_schema::usage::ledger::UNKNOWN_USAGE_RECEIPT}),
+                );
                 return;
             }
             let mut last = json!({});
@@ -1355,48 +1573,61 @@ fn usage(q: &PreparedCapture, meta: &mut Value, rows: &CaptureRows, out: &mut Ca
         });
     }
     let existing = rows.exact_response.as_ref().or(rows.usage.as_ref());
-    if let Some(previous) = existing {
-        match (
-            parse_analytics_usage_row(usage_provider(&q.agent), previous),
-            &observation,
-        ) {
-            (
-                Ok(UsageObservation::Response {
-                    tokens: old,
-                    evidence,
-                    ..
-                }),
-                UsageObservation::Response {
-                    tokens,
-                    evidence: incoming,
-                    ..
-                },
-            ) => {
-                if evidence != UsageEvidence::Legacy || *incoming == UsageEvidence::Legacy {
-                    out.response_replay_conflict = old != *tokens;
-                    if let Some(rate) = &mut out.response_rate {
-                        rate.output_tokens = old.output as f64;
-                    }
-                    return;
+    if existing.is_none() && q.legacy_counter_era() {
+        let ledger = UsageLedgerRow::capture(
+            text(&meta["agentId"]),
+            meta["threadId"].as_str(),
+            observation,
+        );
+        out.unknown_usage = Some(
+            json!({"identity":ledger.usage_identity,"observationKey":ledger.observation_key(),"fault":studio_runtime_schema::usage::ledger::UNKNOWN_USAGE_RECEIPT}),
+        );
+        return;
+    }
+    if let Some(previous) = existing
+        && let Ok(old) = UsageLedgerRow::from_analytics(usage_provider(&q.agent), previous)
+    {
+        match correction(&old.studio_usage, &observation) {
+            UsageCorrection::Apply | UsageCorrection::UnresolvedGap => {}
+            decision => {
+                out.response_replay_conflict = decision == UsageCorrection::ResponseReplayConflict;
+                if let (Some(rate), UsageObservation::Response { tokens, .. }) =
+                    (&mut out.response_rate, &old.studio_usage)
+                {
+                    rate.output_tokens = tokens.output as f64;
                 }
+                return;
             }
-            (Ok(UsageObservation::Response { .. }), UsageObservation::Gap { .. }) => return,
-            (Ok(old), incoming) if old == *incoming => return,
-            _ => {}
         }
     }
-    let id = if matches!(&observation, UsageObservation::Response { .. }) {
-        usage_key(meta, &observation)
+
+    let id = if matches!(&observation, UsageObservation::Gap { .. }) {
+        rows.usage
+            .as_ref()
+            .map(|row| text(&row["id"]).to_owned())
+            .unwrap_or_else(|| usage_key(meta, &observation))
     } else {
         existing
             .map(|row| text(&row["id"]).to_owned())
             .unwrap_or_else(|| usage_key(meta, &observation))
     };
+    let mut ledger = UsageLedgerRow::capture(
+        text(&meta["agentId"]),
+        meta["threadId"].as_str(),
+        observation.clone(),
+    );
+    if let Some(old) =
+        existing.and_then(|row| UsageLedgerRow::from_analytics(usage_provider(&q.agent), row).ok())
+        && old.receipt_key.is_some()
+    {
+        ledger.receipt_key = old.receipt_key;
+    }
     let mut row = merge(
         meta,
         json!({"id":id,"at":q.at,"recordedAt":q.recorded_at,"source":q.source.name(),
         "timestampSource":timestamp_source(q),"counterDomain":domain(&observation),"fingerprint":fingerprint(&observation),
-        "last":{},"total":{},"delta":{},"studioUsage":observation}),
+        "last":{},"total":{},"delta":{},"studioUsage":observation,
+        "usageIdentity":ledger.usage_identity,"receiptKey":ledger.receipt_key}),
     );
     match &observation {
         UsageObservation::Response {
@@ -1482,9 +1713,19 @@ pub async fn capture_batch(
     store
         .analytics_transaction(move |tx, canvas| {
             let mut effects = Vec::new();
-            for prepared in prepared {
+            for mut prepared in prepared {
                 check_identity(canvas, prepared.agent())?;
-                let decision = decide(CaptureSnapshot::load(tx, std::sync::Arc::new(prepared))?)?;
+                prepared.ledger_since =
+                    studio_runtime_store::budget::BudgetRepository::ledger_since(
+                        canvas,
+                        text(&prepared.agent["id"]),
+                    )?;
+                let epoch = prepared.ledger_since;
+                prepared.bind_budget(canvas, epoch)?;
+                let decision = decide(
+                    CaptureSnapshot::load(tx, std::sync::Arc::new(prepared))?,
+                    epoch,
+                )?;
                 decision.apply(tx)?;
                 if let Some(effect) = decision.response_rate {
                     effects.push(effect)
@@ -1525,10 +1766,11 @@ mod usage_contract_tests {
     #[test]
     fn typed_usage_legacy_claude_totals_are_preserved_without_invented_categories() {
         let agent = json!({"id":"agent","name":"Agent","rootId":"root","provider":"claude","threadId":"thread"});
-        let prepared=PreparedCapture::event(&agent,"thread/tokenUsage/updated",&json!({"threadId":"thread","tokenUsage":{"total":{"totalTokens":23},"last":{"totalTokens":7}}}),1.0,2.0,CaptureSource::Live).expect("supported pre-contract notification");
+        let prepared=PreparedCapture::event(&agent,"thread/tokenUsage/updated",&json!({"threadId":"thread","tokenUsage":{"total":{"totalTokens":23},"last":{"totalTokens":7}}}),1.0,2.0,CaptureSource::Live, studio_runtime_schema::usage::ledger::LedgerEpoch::Current).expect("supported pre-contract notification");
         let decision = decide(
             CaptureSnapshot::from_records(Arc::new(prepared), CaptureRows::default())
                 .expect("snapshot"),
+            studio_runtime_schema::usage::ledger::LedgerEpoch::Current,
         )
         .expect("legacy capture");
         let row = &decision
@@ -1557,6 +1799,7 @@ mod usage_contract_tests {
                     1.0,
                     2.0,
                     CaptureSource::Live,
+                    studio_runtime_schema::usage::ledger::LedgerEpoch::Current,
                 )
                 .expect("input"),
             )
@@ -1564,6 +1807,7 @@ mod usage_contract_tests {
         let first = decide(
             CaptureSnapshot::from_records(prepare(observation.clone()), CaptureRows::default())
                 .expect("snapshot"),
+            studio_runtime_schema::usage::ledger::LedgerEpoch::Current,
         )
         .expect("first");
         let row = first
@@ -1582,6 +1826,7 @@ mod usage_contract_tests {
                     },
                 )
                 .expect("replay snapshot"),
+                studio_runtime_schema::usage::ledger::LedgerEpoch::Current,
             )
             .expect("replay")
         };
@@ -1629,11 +1874,16 @@ mod usage_contract_tests {
             1.0,
             2.0,
             CaptureSource::Live,
+            studio_runtime_schema::usage::ledger::LedgerEpoch::Current,
         )
         .expect("capture input");
         let snapshot = CaptureSnapshot::from_records(Arc::new(prepared), CaptureRows::default())
             .expect("snapshot");
-        let decision = decide(snapshot).expect("capture decision");
+        let decision = decide(
+            snapshot,
+            studio_runtime_schema::usage::ledger::LedgerEpoch::Current,
+        )
+        .expect("capture decision");
         let row = &decision
             .rows
             .iter()
