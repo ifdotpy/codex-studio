@@ -1,3 +1,7 @@
+import {
+  initialConfirmedLead,
+  confirmedWorkspaceId,
+} from "./concurrency-fixture-data.ts";
 import type { Agent } from "../../src/types.ts";
 import { required } from "./helpers.ts";
 declare global {
@@ -29,16 +33,7 @@ window.confirmedConcurrencyFixture = {
   },
 };
 function Fixture() {
-  const [lead, setLead] = useState<Agent>({
-    id: "lead",
-    accountKey: "default",
-    name: "Lead",
-    isLead: true,
-    status: "idle",
-    subagentConcurrencyVersion: 2,
-    concurrency: 32,
-    agentModeRevision: 0,
-  });
+  const [lead, setLead] = useState<Agent>(initialConfirmedLead);
   window.confirmedConcurrencyFixture.setLead = (value) =>
     flushSync(() => setLead(value));
   return (
@@ -47,7 +42,7 @@ function Fixture() {
         compact
         lead={lead}
         stateDir="fixture-state"
-        workspaceId="1234567890abcdef1234567890abcdef"
+        workspaceId={confirmedWorkspaceId}
         refresh={async () => {
           window.confirmedConcurrencyFixture.refreshCount++;
           if (window.confirmedConcurrencyFixture.refreshHold)

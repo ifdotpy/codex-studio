@@ -1,3 +1,7 @@
+import {
+  initialConfirmedLead,
+  confirmedWorkspaceId,
+} from "./concurrency-fixture-data.ts";
 import type { components } from "../../src/generated/api.ts";
 import type {} from "./subagent-concurrency-confirmed-browser.fixture.tsx";
 import { required, fixturePostBody } from "./helpers.ts";
@@ -21,17 +25,8 @@ test("subagent concurrency uses the confirmed response", async ({ page }) => {
   const cacheDir = await mkdtemp(
     join(tmpdir(), "studio-concurrency-confirmed-"),
   );
-  const workspaceId = "1234567890abcdef1234567890abcdef";
-  const initial = {
-    id: "lead",
-    accountKey: "default",
-    name: "Lead",
-    isLead: true,
-    status: "idle",
-    subagentConcurrencyVersion: 2,
-    concurrency: 32,
-    agentModeRevision: 0,
-  } satisfies components["schemas"]["AgentEntityDto"];
+  const workspaceId = confirmedWorkspaceId;
+  const initial = initialConfirmedLead;
   const server = await createServer({
     configFile: false,
     root,
