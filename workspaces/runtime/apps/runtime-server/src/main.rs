@@ -1267,13 +1267,14 @@ async fn run(shutdown_requested: Sender<()>) -> Result<(), Box<dyn std::error::E
             }
         }
     });
-    // Withdrawn when this guard drops at the end of serving.
+    // Withdrawn when remote access turns off, or when this guard drops at
+    // the end of serving.
     #[cfg(unix)]
     let _bonjour = bonjour::start(
+        Arc::clone(&remote_access),
         public_origin.as_deref(),
-        remote_access.bonjour_enabled(),
+        state_root.as_path(),
         &server_label,
-        studio_runtime_http::api_schema_hash(),
     );
     startup_trace("readiness-output-started");
     println!("Codex Canvas: http://{}:{}", address.ip(), address.port());

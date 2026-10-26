@@ -19,10 +19,9 @@ pub const TXT_URL_KEY: &str = "url";
 pub const TXT_URL_HOST_SUFFIX: &str = ".ts.net";
 /// TXT key of the server name that people see.
 pub const TXT_NAME_KEY: &str = "name";
-/// TXT key of the API schema hash of the server.
-pub const TXT_SCHEMA_KEY: &str = "schema";
-/// Key in the remote access file (`REMOTE_ACCESS_FILE`). `false` stops the
-/// advertisement at the next server start.
+/// Key in the remote access file (`REMOTE_ACCESS_FILE`). Only `true` turns
+/// the advertisement on (opt-in); it starts at the next server start, and a
+/// change away from `true` withdraws it at once.
 pub const REMOTE_ACCESS_BONJOUR_KEY: &str = "bonjour";
 /// Maximum UTF-8 bytes of a DNS-SD service instance name.
 pub const INSTANCE_NAME_MAX_BYTES: usize = 63;

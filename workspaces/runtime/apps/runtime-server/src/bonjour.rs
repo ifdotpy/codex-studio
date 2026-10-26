@@ -1,5 +1,6 @@
 //! Bonjour (DNS-SD) advertisement of this server on the local network, so the
-//! iOS shell finds it without a typed address. The TXT record carries the
+//! iOS shell finds it without a typed address. The advertisement is opt-in:
+//! `"bonjour": true` in `remote-access.json`. The TXT record carries the
 //! HTTPS remote access origin (`RemoteAccess`). A WKWebView needs a secure
 //! context, so the server does not advertise without that origin. Contract
 //! owner: `studio_runtime_schema::bonjour_protocol`.
@@ -7,16 +8,21 @@
 //! The system responder publishes the record: `dns-sd -R` on macOS and
 //! `avahi-publish-service` on Linux, as a child process (like the `tailscale`
 //! CLI adapter). A shell wrapper stops that child when this process closes the
-//! wrapper's stdin, also after a crash. The advertisement uses the startup
-//! configuration; a change takes effect at the next server start.
+//! wrapper's stdin, also after a crash. A watch on `remote-access.json`
+//! withdraws the record when remote access or the opt-in turns off; turning
+//! them on again takes effect at the next server start.
 
+use notify::{RecommendedWatcher, RecursiveMode, Watcher};
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use std::process::{ChildStdin, Command, Stdio};
+use std::sync::{Arc, Mutex};
 use studio_runtime_schema::bonjour_protocol::{
-    INSTANCE_NAME_MAX_BYTES, SERVICE_TYPE, TXT_ENTRY_MAX_BYTES, TXT_NAME_KEY, TXT_SCHEMA_KEY,
-    TXT_URL_HOST_SUFFIX, TXT_URL_KEY, TXT_VERSION, TXT_VERSION_KEY,
+    INSTANCE_NAME_MAX_BYTES, SERVICE_TYPE, TXT_ENTRY_MAX_BYTES, TXT_NAME_KEY, TXT_URL_HOST_SUFFIX,
+    TXT_URL_KEY, TXT_VERSION, TXT_VERSION_KEY,
 };
+use studio_runtime_schema::multi_server_protocol::REMOTE_ACCESS_FILE;
+use studio_runtime_services::remote_access::RemoteAccess;
 
 /// Instance name when the server label has no printable characters.
 const FALLBACK_NAME: &str = "Studio server";
@@ -32,7 +38,7 @@ pub struct Advertisement {
 /// Why the server does not advertise.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Refusal {
-    /// The remote access file sets the Bonjour key to `false`.
+    /// The remote access file does not set the Bonjour key to `true`.
     Disabled,
     /// No HTTPS remote access origin is configured.
     NoSecureOrigin,
@@ -41,7 +47,9 @@ pub enum Refusal {
 impl Refusal {
     pub fn reason(self) -> &'static str {
         match self {
-            Self::Disabled => "remote-access.json sets \"bonjour\" to false",
+            Self::Disabled => {
+                "remote-access.json does not set \"bonjour\" to true (the advertisement is opt-in)"
+            }
             Self::NoSecureOrigin => {
                 "no HTTPS remote access origin (remote-access.json or CODEX_CANVAS_PUBLIC_ORIGIN); \
                  the iOS app needs a secure origin"
@@ -56,7 +64,6 @@ pub fn advertisement(
     origin: Option<&str>,
     enabled: bool,
     label: &str,
-    schema: &str,
 ) -> Result<Advertisement, Refusal> {
     if !enabled {
         return Err(Refusal::Disabled);
@@ -83,7 +90,6 @@ pub fn advertisement(
             format!("{TXT_VERSION_KEY}={TXT_VERSION}"),
             format!("{TXT_URL_KEY}={origin}/"),
             truncate(&format!("{TXT_NAME_KEY}={name}"), TXT_ENTRY_MAX_BYTES),
-            format!("{TXT_SCHEMA_KEY}={schema}"),
         ],
     })
 }
@@ -147,7 +153,13 @@ impl Tool {
                 "local".into(),
                 port,
             ],
-            Self::Avahi => vec![advertisement.instance.clone(), SERVICE_TYPE.into(), port],
+            // `--` ends the options, so a name that starts with `-` stays a name.
+            Self::Avahi => vec![
+                "--".into(),
+                advertisement.instance.clone(),
+                SERVICE_TYPE.into(),
+                port,
+            ],
         };
         arguments.extend(advertisement.txt.iter().cloned());
         arguments
@@ -213,9 +225,89 @@ pub fn run(program: &Path, arguments: &[String]) -> std::io::Result<Running> {
     Ok(Running { _stdin: stdin })
 }
 
-/// Advertise this server, or log why not.
-pub fn start(origin: Option<&str>, enabled: bool, label: &str, schema: &str) -> Option<Running> {
-    let advertisement = match advertisement(origin, enabled, label, schema) {
+/// True while the startup origin is still the remote access origin and the
+/// opt-in is still on.
+fn still_advertised(access: &RemoteAccess, startup_origin: Option<&str>) -> bool {
+    access.still_allows(startup_origin).is_some() && access.bonjour_enabled()
+}
+
+/// A running advertisement and the watch that withdraws it. Drop it to
+/// withdraw the record.
+pub struct Advertiser {
+    running: Arc<Mutex<Option<Running>>>,
+    _watcher: RecommendedWatcher,
+}
+
+impl Advertiser {
+    pub fn is_running(&self) -> bool {
+        self.running
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .is_some()
+    }
+}
+
+/// Run the tool and watch `remote-access.json` in `state_dir`. Without a
+/// watch, the server cannot withdraw the record, so it does not advertise.
+fn advertise(
+    program: &Path,
+    arguments: &[String],
+    access: Arc<RemoteAccess>,
+    startup_origin: Option<String>,
+    state_dir: &Path,
+) -> std::io::Result<Advertiser> {
+    let running = Arc::new(Mutex::new(None::<Running>));
+    let shared = Arc::clone(&running);
+    let current = Arc::clone(&access);
+    let origin = startup_origin.clone();
+    let mut watcher = notify::recommended_watcher(move |event: notify::Result<notify::Event>| {
+        let ours = event.as_ref().map_or(true, |event| {
+            event
+                .paths
+                .iter()
+                .any(|path| path.file_name() == Some(REMOTE_ACCESS_FILE.as_ref()))
+        });
+        if !ours || still_advertised(&access, startup_origin.as_deref()) {
+            return;
+        }
+        let withdrawn = shared
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .take();
+        if withdrawn.is_some() {
+            eprintln!(
+                "bonjour: advertisement withdrawn: remote access or \"bonjour\" turned off in remote-access.json"
+            );
+        }
+    })
+    .map_err(std::io::Error::other)?;
+    watcher
+        .watch(state_dir, RecursiveMode::NonRecursive)
+        .map_err(std::io::Error::other)?;
+    // A change before the watch started has no event.
+    if !still_advertised(&current, origin.as_deref()) {
+        return Err(std::io::Error::other(
+            "remote access or \"bonjour\" turned off during start",
+        ));
+    }
+    *running
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(run(program, arguments)?);
+    Ok(Advertiser {
+        running,
+        _watcher: watcher,
+    })
+}
+
+/// Advertise this server, or log why not. `startup_origin` is the remote
+/// access origin that the server accepted at startup.
+pub fn start(
+    access: Arc<RemoteAccess>,
+    startup_origin: Option<&str>,
+    state_dir: &Path,
+    label: &str,
+) -> Option<Advertiser> {
+    let advertisement = match advertisement(startup_origin, access.bonjour_enabled(), label) {
         Ok(advertisement) => advertisement,
         Err(refusal) => {
             eprintln!("bonjour: no advertisement: {}", refusal.reason());
@@ -233,15 +325,21 @@ pub fn start(origin: Option<&str>, enabled: bool, label: &str, schema: &str) -> 
         );
         return None;
     };
-    match run(&program, &tool.arguments(&advertisement)) {
-        Ok(running) => {
+    match advertise(
+        &program,
+        &tool.arguments(&advertisement),
+        access,
+        startup_origin.map(str::to_owned),
+        state_dir,
+    ) {
+        Ok(advertiser) => {
             eprintln!(
                 "bonjour: advertising \"{}\" {SERVICE_TYPE} port {} ({})",
                 advertisement.instance,
                 advertisement.port,
                 advertisement.txt.join(" ")
             );
-            Some(running)
+            Some(advertiser)
         }
         Err(error) => {
             eprintln!("bonjour: no advertisement: {error}");
@@ -258,9 +356,8 @@ mod tests {
     const ORIGIN: &str = "https://studio.example.ts.net:8444";
 
     #[test]
-    fn the_txt_record_carries_the_https_origin_name_and_schema() {
-        let advertisement =
-            advertisement(Some(ORIGIN), true, "Home Mac", "abc123").expect("advertised");
+    fn the_txt_record_carries_the_https_origin_and_name_only() {
+        let advertisement = advertisement(Some(ORIGIN), true, "Home Mac").expect("advertised");
         assert_eq!(
             advertisement,
             Advertisement {
@@ -270,24 +367,20 @@ mod tests {
                     "txtvers=1".into(),
                     "url=https://studio.example.ts.net:8444/".into(),
                     "name=Home Mac".into(),
-                    "schema=abc123".into(),
                 ],
             }
         );
-        let default_port = advertisement_port("https://studio.example.ts.net");
+        let default_port =
+            super::advertisement(Some("https://studio.example.ts.net"), true, "Studio")
+                .ok()
+                .map(|a| a.port);
         assert_eq!(default_port, Some(443));
     }
 
-    fn advertisement_port(origin: &str) -> Option<u16> {
-        advertisement(Some(origin), true, "Studio", "s")
-            .ok()
-            .map(|a| a.port)
-    }
-
     #[test]
-    fn no_secure_origin_or_the_off_switch_refuses_the_advertisement() {
+    fn no_secure_origin_or_no_opt_in_refuses_the_advertisement() {
         assert_eq!(
-            advertisement(None, true, "Studio", "s"),
+            advertisement(None, true, "Studio"),
             Err(Refusal::NoSecureOrigin)
         );
         for origin in [
@@ -299,13 +392,13 @@ mod tests {
             "studio.example.ts.net",
         ] {
             assert_eq!(
-                advertisement(Some(origin), true, "Studio", "s"),
+                advertisement(Some(origin), true, "Studio"),
                 Err(Refusal::NoSecureOrigin),
                 "{origin}"
             );
         }
         assert_eq!(
-            advertisement(Some(ORIGIN), false, "Studio", "s"),
+            advertisement(Some(ORIGIN), false, "Studio"),
             Err(Refusal::Disabled)
         );
     }
@@ -313,7 +406,7 @@ mod tests {
     #[test]
     fn the_name_fits_dns_sd_limits() {
         let long = "Ж".repeat(80);
-        let advertisement = advertisement(Some(ORIGIN), true, &long, "s").expect("advertised");
+        let advertisement = advertisement(Some(ORIGIN), true, &long).expect("advertised");
         assert!(advertisement.instance.len() <= INSTANCE_NAME_MAX_BYTES);
         assert_eq!(advertisement.instance, "Ж".repeat(31));
         assert!(
@@ -322,15 +415,15 @@ mod tests {
                 .iter()
                 .all(|t| t.len() <= TXT_ENTRY_MAX_BYTES)
         );
-        let cleaned = super::advertisement(Some(ORIGIN), true, " a\\b\nc ", "s").expect("ok");
+        let cleaned = super::advertisement(Some(ORIGIN), true, " a\\b\nc ").expect("ok");
         assert_eq!(cleaned.instance, "abc");
-        let empty = super::advertisement(Some(ORIGIN), true, "\n", "s").expect("ok");
+        let empty = super::advertisement(Some(ORIGIN), true, "\n").expect("ok");
         assert_eq!(empty.instance, FALLBACK_NAME);
     }
 
     #[test]
     fn both_tools_receive_the_name_type_port_and_txt() {
-        let advertisement = advertisement(Some(ORIGIN), true, "Mac", "s").expect("advertised");
+        let advertisement = advertisement(Some(ORIGIN), true, "Mac").expect("advertised");
         let txt = &advertisement.txt;
         assert_eq!(
             Tool::DnsSd.arguments(&advertisement)[..5],
@@ -338,10 +431,22 @@ mod tests {
         );
         assert_eq!(Tool::DnsSd.arguments(&advertisement)[5..], txt[..]);
         assert_eq!(
-            Tool::Avahi.arguments(&advertisement)[..3],
-            ["Mac", "_layr-studio._tcp", "8444"]
+            Tool::Avahi.arguments(&advertisement)[..4],
+            ["--", "Mac", "_layr-studio._tcp", "8444"]
         );
-        assert_eq!(Tool::Avahi.arguments(&advertisement)[3..], txt[..]);
+        assert_eq!(Tool::Avahi.arguments(&advertisement)[4..], txt[..]);
+    }
+
+    #[test]
+    fn a_name_that_starts_with_a_dash_stays_a_name_for_avahi() {
+        let advertisement = advertisement(Some(ORIGIN), true, "-f /tmp/x").expect("advertised");
+        let arguments = Tool::Avahi.arguments(&advertisement);
+        let end_of_options = arguments.iter().position(|a| a == "--").expect("--");
+        let name = arguments
+            .iter()
+            .position(|a| a == "-f /tmp/x")
+            .expect("name");
+        assert_eq!((end_of_options, name), (0, 1));
     }
 
     fn alive(pid: &str) -> bool {
@@ -356,7 +461,7 @@ mod tests {
     // A plain test thread, not a Tokio worker, waits here.
     #[allow(clippy::disallowed_methods)]
     fn wait_until(mut done: impl FnMut() -> bool) -> bool {
-        let deadline = Instant::now() + Duration::from_secs(5);
+        let deadline = Instant::now() + Duration::from_secs(10);
         while Instant::now() < deadline {
             if done() {
                 return true;
@@ -366,11 +471,10 @@ mod tests {
         false
     }
 
-    #[test]
-    fn closing_stdin_stops_the_responder_tool() {
-        let dir = tempfile::tempdir().expect("temp dir");
-        let pid_file = dir.path().join("pid");
-        let tool = dir.path().join("fake-dns-sd");
+    /// A tool that writes its process ID to `pid` and waits.
+    fn fake_tool(dir: &Path) -> (PathBuf, PathBuf) {
+        let pid_file = dir.join("pid");
+        let tool = dir.join("fake-dns-sd");
         std::fs::write(
             &tool,
             format!(
@@ -381,14 +485,61 @@ mod tests {
         .expect("fake tool");
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(&tool, std::fs::Permissions::from_mode(0o755)).expect("chmod");
-        let running = run(&tool, &["-R".into(), "name=a b".into()]).expect("started");
+        (tool, pid_file)
+    }
+
+    fn started_pid(pid_file: &Path) -> String {
         assert!(wait_until(
-            || std::fs::read_to_string(&pid_file).is_ok_and(|pid| !pid.trim().is_empty())
+            || std::fs::read_to_string(pid_file).is_ok_and(|pid| !pid.trim().is_empty())
         ));
-        let pid = std::fs::read_to_string(&pid_file).expect("pid");
-        let pid = pid.trim();
-        assert!(alive(pid), "the tool runs while the server holds stdin");
+        std::fs::read_to_string(pid_file)
+            .expect("pid")
+            .trim()
+            .to_owned()
+    }
+
+    #[test]
+    fn closing_stdin_stops_the_responder_tool() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let (tool, pid_file) = fake_tool(dir.path());
+        let running = run(&tool, &["-R".into(), "name=a b".into()]).expect("started");
+        let pid = started_pid(&pid_file);
+        assert!(alive(&pid), "the tool runs while the server holds stdin");
         drop(running);
-        assert!(wait_until(|| !alive(pid)), "closing stdin stops the tool");
+        assert!(wait_until(|| !alive(&pid)), "closing stdin stops the tool");
+    }
+
+    #[test]
+    fn turning_remote_access_or_the_opt_in_off_withdraws_the_record() {
+        for off in [
+            r#"{"enabled":false,"origin":"https://studio.example.ts.net:8444","bonjour":true}"#,
+            r#"{"enabled":true,"origin":"https://studio.example.ts.net:8444","bonjour":false}"#,
+        ] {
+            let tools = tempfile::tempdir().expect("tool dir");
+            let state = tempfile::tempdir().expect("state dir");
+            let file = state.path().join(REMOTE_ACCESS_FILE);
+            std::fs::write(
+                &file,
+                r#"{"enabled":true,"origin":"https://studio.example.ts.net:8444","bonjour":true}"#,
+            )
+            .expect("remote access");
+            let access = Arc::new(RemoteAccess::new(state.path(), None).expect("access"));
+            let (tool, pid_file) = fake_tool(tools.path());
+            let advertiser = advertise(
+                &tool,
+                &["-R".into()],
+                access,
+                Some(ORIGIN.into()),
+                state.path(),
+            )
+            .expect("advertised");
+            let pid = started_pid(&pid_file);
+            assert!(advertiser.is_running());
+            // Another file in the state directory changes nothing.
+            std::fs::write(state.path().join("runtime.sqlite-wal"), "x").expect("other file");
+            std::fs::write(&file, off).expect("turn off");
+            assert!(wait_until(|| !alive(&pid)), "{off}");
+            assert!(!advertiser.is_running());
+        }
     }
 }

@@ -335,13 +335,15 @@ Rust replacement in this change. Preserve existing Tailscale Serve configuration
 
 The server accepts the exact origin in `remote-access.json` in its state directory.
 Set `enabled` to `false` there to revoke remote access without a restart.
-While it runs with that HTTPS origin, the server advertises it on the local
-network as the Bonjour service `_layr-studio._tcp`, so the iOS app finds it
-without a typed address. macOS uses `dns-sd`; Linux needs
-`avahi-publish-service` (Avahi utilities). Without an HTTPS origin, the server
-does not advertise and logs the reason. Set `bonjour` to `false` in
-`remote-access.json` to turn the advertisement off; this takes effect at the
-next server start.
+The server can advertise that HTTPS origin on the local network as the Bonjour
+service `_layr-studio._tcp`, so the iOS app lists it on its start page. This
+is off by default. To turn it on, set `bonjour` to `true` in
+`remote-access.json` and restart the server. The record carries the origin and
+the server name. Every device on the local network can read it. Without an
+HTTPS origin, the server does not advertise and logs the reason. When
+`enabled` or `bonjour` changes away from `true`, the server withdraws the
+record at once. macOS uses `dns-sd`; Linux needs `avahi-publish-service`
+(Avahi utilities).
 Tailscale access rules control who can open Studio. The phone uses the existing
 Serve session and token flow. Cross-server clients use signed device pairing.
 See the [multi-server access contract](multi-server.md).
