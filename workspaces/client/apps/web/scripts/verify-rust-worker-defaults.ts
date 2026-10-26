@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import assert from "node:assert/strict";
+import { decodeLegacyAgentDocument } from "./scaleVerifierHelpers.ts";
 import type { Page, Response } from "playwright";
 import type { components, AgentEntityDto } from "../src/generated/api.ts";
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
@@ -190,12 +191,6 @@ function safeChatSelector(chatId: string) {
   return `[data-chat=${JSON.stringify(chatId)}]`;
 }
 
-export function requireAgentPayload(text: string) {
-  const entity = parseApiJson<"SyncEntityPayload">(text);
-  assert.ok(entity?.collection === "agent", "Sync payload is not an agent.");
-  return entity;
-}
-
 function agentSnapshot(
   document:
     | (components["schemas"]["SyncEntityPayload"] & {
@@ -321,9 +316,8 @@ async function readAuthoritativeLead(
   const body = parseApiJson<"SyncPullResponse">(result.body);
   const document = body?.documents.find((item) => {
     if (item.id === chatId || item.id?.endsWith(`:${chatId}`)) return true;
-    if (!("payload" in item) || typeof item.payload !== "string") return false;
     try {
-      const entity = parseApiJson<"SyncEntityPayload">(item.payload);
+      const entity = decodeLegacyAgentDocument(item);
       return entity?.collection === "agent" && entity.id === chatId;
     } catch {
       return false;
@@ -333,8 +327,10 @@ async function readAuthoritativeLead(
   assert.ok("payload" in document, "Lead read has no legacy payload.");
   assert.equal(document._deleted, false, "The target lead is deleted.");
   assert.equal(typeof document.payload, "string", "Lead read has no payload.");
+  const entity = decodeLegacyAgentDocument(document);
+  assert.ok(entity, "Sync payload is not an agent.");
   return agentSnapshot({
-    ...requireAgentPayload(document.payload),
+    ...entity,
     seq: document.seq,
   });
 }

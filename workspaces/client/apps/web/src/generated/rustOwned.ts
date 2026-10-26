@@ -146,12 +146,13 @@ export interface components {
       /** Format: uint128 */
       stdinFlushedAtNs: number;
     };
+    /** SupervisorHandshakeV2Result */
     SupervisorHandshakeV2Result: {
-      error: string | null;
+      error?: string | null | undefined;
       /** @default false */
-      ok: boolean;
+      ok?: boolean | undefined;
       /** Format: uint64 */
-      protocol: number | null;
+      protocol?: number | null | undefined;
     };
   };
   responses: never;

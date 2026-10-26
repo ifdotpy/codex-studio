@@ -1,0 +1,14 @@
+{
+  "extends": "../../../../tsconfig.base.json",
+  "compilerOptions": {
+    "paths": {
+      "@modelcontextprotocol/sdk/*": [
+        "../../../providers/apps/claude-bridge/node_modules/@modelcontextprotocol/sdk/dist/esm/*"
+      ],
+      "@anthropic-ai/claude-agent-sdk": [
+        "../../../providers/apps/claude-bridge/node_modules/@anthropic-ai/claude-agent-sdk/sdk.d.ts"
+      ]
+    }
+  },
+  "include": ["tests/fixtures/*.mts"]
+}

@@ -42,33 +42,33 @@ const POLL_MS = 100;
 const guest = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(guest, "../../../..");
 
-function fail(message) {
+function fail(message: string): never {
   console.error(`run-guest-suite: ${message}`);
   process.exit(1);
 }
 
-function within(file, folders) {
+function within(file: string, folders: string[]) {
   return folders.some(
     (folder) => file === folder || file.startsWith(folder + path.sep),
   );
 }
 
-function alive(pid) {
+function alive(pid: number) {
   try {
     process.kill(pid, 0);
     return true;
   } catch (error) {
-    return error.code === "EPERM";
+    return error instanceof Error && "code" in error && error.code === "EPERM";
   }
 }
 
-function pause(milliseconds) {
+function pause(milliseconds: number) {
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, milliseconds);
 }
 
 /** The working folder of each process of this user, by PID. */
 function workingFolders() {
-  const folders = new Map();
+  const folders = new Map<number, string>();
   if (existsSync("/proc/self/cwd")) {
     for (const name of readdirSync("/proc")) {
       if (!/^\d+$/.test(name)) continue;
@@ -98,7 +98,7 @@ function workingFolders() {
  * The processes that belong to a suite run in `folder`: they name the folder in their
  * arguments, or they work in it.
  */
-export function suiteProcesses(folder) {
+export function suiteProcesses(folder: string) {
   const folders = [...new Set([folder, realpathSync(folder)])];
   const listed = spawnSync("ps", ["-A", "-ww", "-o", "pid=", "-o", "args="], {
     encoding: "utf8",
@@ -112,7 +112,7 @@ export function suiteProcesses(folder) {
   const found = [];
   for (const line of listed.stdout.split("\n")) {
     const match = line.match(/^\s*(\d+)\s+(.*)$/);
-    if (!match) continue;
+    if (!match?.[1] || match[2] === undefined) continue;
     const pid = +match[1];
     if (pid === process.pid) continue;
     const command = match[2];
@@ -126,7 +126,10 @@ export function suiteProcesses(folder) {
 }
 
 /** Wait until every process has ended or the time is over; returns the processes alive. */
-function waitForExit(processes, milliseconds) {
+function waitForExit(
+  processes: ReturnType<typeof suiteProcesses>,
+  milliseconds: number,
+) {
   const deadline = Date.now() + milliseconds;
   let living = processes.filter(({ pid }) => alive(pid));
   while (living.length && Date.now() < deadline) {
@@ -141,7 +144,7 @@ function waitForExit(processes, milliseconds) {
  * TERM, then KILL. Returns the processes that had to be stopped.
  */
 export function stopSuiteProcesses(
-  folder,
+  folder: string,
   { exitGrace = EXIT_GRACE_MS, stopGrace = STOP_GRACE_MS } = {},
 ) {
   const leaked = waitForExit(suiteProcesses(folder), exitGrace);
@@ -218,7 +221,7 @@ function main() {
   const ran = +(output.match(/^Ran (\d+) tests? in /m)?.[1] ?? NaN);
   if (!Number.isInteger(ran)) fail("unittest printed no summary");
   const result = output.match(/^(OK|FAILED)(?: \((.*)\))?$/m);
-  const field = (name) =>
+  const field = (name: string) =>
     +(result?.[2]?.match(new RegExp(`${name}=(\\d+)`))?.[1] ?? 0);
   const skipped = field("skipped");
   const failed =

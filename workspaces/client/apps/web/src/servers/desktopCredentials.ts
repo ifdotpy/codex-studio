@@ -25,10 +25,7 @@ export class DesktopServerCredentials implements ServerCredentialAdapter {
   async hasPairAttempt(attempt: PairAttemptIdentity): Promise<boolean> {
     const result = await this.bridge.serverCredentialAction!({
       action: "pairAttempt",
-      requestId: attempt.requestId,
-      serverId: attempt.serverId,
-      origin: attempt.origin,
-      ...(attempt.inviteId === undefined ? {} : { inviteId: attempt.inviteId }),
+      ...attempt,
     });
     if (typeof result !== "boolean")
       throw new Error("The credential state response is invalid.");
@@ -41,8 +38,7 @@ export class DesktopServerCredentials implements ServerCredentialAdapter {
     approval?: AutomaticPairApproval,
   ): Promise<StudioServer> {
     const result = await this.bridge.serverCredentialAction!({
-      action: approval ? "pairApproved" : "pair",
-      ...(approval ? { approval } : {}),
+      ...(approval ? { action: "pairApproved", approval } : { action: "pair" }),
       origin,
       invitation: parseInvitation(code, origin),
       requestId,
@@ -84,7 +80,7 @@ export class DesktopServerCredentials implements ServerCredentialAdapter {
         action: "cancel",
         serverId: server.id,
         streamId,
-        ...(serverViewId ? { frameOwner: serverViewId } : {}),
+        frameOwner: serverViewId || undefined,
       }).catch(() => {});
     };
     const abort = () => {
@@ -102,16 +98,14 @@ export class DesktopServerCredentials implements ServerCredentialAdapter {
       const result = (await this.bridge.serverCredentialAction!({
         action: "request",
         serverId: server.id,
-        ...(server.credentialId === undefined
-          ? {}
-          : { credentialId: server.credentialId }),
+        credentialId: server.credentialId,
         url: request.url,
         method: request.method,
         headers: [...request.headers],
         body: await request.clone().arrayBuffer(),
         requestId: await requestIdentity(request),
         streamId,
-        ...(serverViewId ? { frameOwner: serverViewId } : {}),
+        frameOwner: serverViewId || undefined,
       })) as CredentialResponse;
       if (request.signal.aborted) {
         cancel();

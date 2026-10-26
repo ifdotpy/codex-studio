@@ -510,7 +510,6 @@ export default memo(function Activity({
   const visualRef = useVisualActivityRef<HTMLDetailsElement>();
   const summary = activitySummary(items);
   const [first] = items;
-  if (!first) throw new Error("Activity has no messages");
   const running = summary.running;
   const reads = items.flatMap((item) => readActivity(payload(item)).targets);
   const failed = summary.failed;
@@ -549,7 +548,7 @@ export default memo(function Activity({
           {hasLimit && (
             <strong className="activity-limit">Account limit reached · </strong>
           )}
-          {items.length === 1
+          {items.length === 1 && first
             ? describe(first, payload(first)).label
             : summary.label}
         </span>

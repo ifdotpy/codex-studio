@@ -3,7 +3,6 @@
   "compilerOptions": {
     "allowJs": true,
     "checkJs": false,
-    "lib": ["ES2023", "DOM", "DOM.Iterable"],
     "module": "ESNext",
     "moduleResolution": "Bundler",
     "types": ["node"],
