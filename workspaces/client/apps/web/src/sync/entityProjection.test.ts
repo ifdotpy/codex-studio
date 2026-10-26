@@ -732,14 +732,8 @@ it("projects entity rows and preserves server sequence ordering", () => {
   const initial = applyEntityRows(
     state,
     [
-      { id: "state:ready", payload: "ignored", seq: 1 } satisfies Omit<
-        EntityRow,
-        "payload"
-      >,
-      { id: "other:agent", payload: "ignored", seq: 1 } satisfies Omit<
-        EntityRow,
-        "payload"
-      >,
+      { id: "state:ready", seq: 1 } satisfies Omit<EntityRow, "payload">,
+      { id: "other:agent", seq: 1 } satisfies Omit<EntityRow, "payload">,
       entityRow(
         { collection: "agent", id: "a", value: { id: "a", name: "A" } },
         2,
@@ -774,10 +768,7 @@ it("projects entity rows and preserves server sequence ordering", () => {
         { collection: "agent", id: "a", value: { id: "a", name: "A" } },
         2,
       ),
-      { id: "other:agent", payload: "ignored", seq: 3 } satisfies Omit<
-        EntityRow,
-        "payload"
-      >,
+      { id: "other:agent", seq: 3 } satisfies Omit<EntityRow, "payload">,
     ],
     true,
   );
@@ -2211,12 +2202,10 @@ for (const { entity, select } of sourceCases)
       state,
       [
         row,
-        {
-          id: row.id,
-          seq: 2,
-          payload: "{}",
-          _deleted: true,
-        } satisfies Omit<EntityRow, "payload">,
+        { id: row.id, seq: 2, _deleted: true } satisfies Omit<
+          EntityRow,
+          "payload"
+        >,
       ],
       true,
     );
