@@ -4551,6 +4551,17 @@
             ],
             "title": "Nativeerror"
           },
+          "nativeLayrReady": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Nativelayrready"
+          },
           "nativeLimitErrorAt": {
             "anyOf": [
               {
@@ -5133,11 +5144,15 @@
           "workspaceMode": {
             "anyOf": [
               {
+                "const": "shared",
+                "type": "string"
+              },
+              {
                 "enum": [
                   "layr",
+                  "layr-native",
                   "image",
-                  "worktree",
-                  "shared"
+                  "worktree"
                 ],
                 "type": "string"
               },
@@ -6558,6 +6573,43 @@
             "default": null,
             "title": "Nativefailurehold"
           },
+          "nativeLayrFolder": {
+            "default": null,
+            "title": "Nativelayrfolder",
+            "type": "string"
+          },
+          "nativeLayrLineId": {
+            "default": null,
+            "title": "Nativelayrlineid",
+            "type": "string"
+          },
+          "nativeLayrProject": {
+            "default": null,
+            "title": "Nativelayrproject",
+            "type": "string"
+          },
+          "nativeLayrReady": {
+            "default": null,
+            "title": "Nativelayrready",
+            "type": "boolean"
+          },
+          "nativeLayrRoot": {
+            "default": null,
+            "title": "Nativelayrroot",
+            "type": "string"
+          },
+          "nativeLayrSocket": {
+            "anyOf": [
+              {
+                "type": "null"
+              },
+              {
+                "type": "string"
+              }
+            ],
+            "default": null,
+            "title": "Nativelayrsocket"
+          },
           "nativeLimitErrorAt": {
             "default": null,
             "title": "Nativelimiterrorat",
@@ -7227,11 +7279,15 @@
           "workspaceMode": {
             "anyOf": [
               {
+                "const": "shared",
+                "type": "string"
+              },
+              {
                 "enum": [
                   "layr",
+                  "layr-native",
                   "image",
-                  "worktree",
-                  "shared"
+                  "worktree"
                 ],
                 "type": "string"
               },
@@ -8357,6 +8413,18 @@
             "default": null,
             "title": "Nativeerror"
           },
+          "nativeLayrReady": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Nativelayrready"
+          },
           "nativeLimitErrorAt": {
             "anyOf": [
               {
@@ -8992,11 +9060,15 @@
           "workspaceMode": {
             "anyOf": [
               {
+                "const": "shared",
+                "type": "string"
+              },
+              {
                 "enum": [
                   "layr",
+                  "layr-native",
                   "image",
-                  "worktree",
-                  "shared"
+                  "worktree"
                 ],
                 "type": "string"
               },
@@ -15739,6 +15811,18 @@
             "default": null,
             "title": "Nativeerror"
           },
+          "nativeLayrReady": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Nativelayrready"
+          },
           "nativeLimitErrorAt": {
             "anyOf": [
               {
@@ -16374,11 +16458,15 @@
           "workspaceMode": {
             "anyOf": [
               {
+                "const": "shared",
+                "type": "string"
+              },
+              {
                 "enum": [
                   "layr",
+                  "layr-native",
                   "image",
-                  "worktree",
-                  "shared"
+                  "worktree"
                 ],
                 "type": "string"
               },
@@ -22803,6 +22891,7 @@
             "default": "worktree",
             "enum": [
               "layr",
+              "layr-native",
               "image",
               "worktree"
             ],
@@ -23118,6 +23207,7 @@
             "default": "worktree",
             "enum": [
               "layr",
+              "layr-native",
               "image",
               "worktree"
             ],

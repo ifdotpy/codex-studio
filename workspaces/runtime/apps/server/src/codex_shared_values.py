@@ -1,6 +1,10 @@
 """Authoritative cross-language values for generated consumers."""
 
-from typing import Final
+from typing import Final, Literal, get_args
+
+# Stored chat modes. Image remains valid for existing chats and API clients.
+ChatWorkspaceMode = Literal["layr", "layr-native", "image", "worktree"]
+CHAT_WORKSPACE_MODES = get_args(ChatWorkspaceMode)
 
 PROCESS_SUPERVISOR_PROTOCOL_VERSION = 1
 OPERATIONS_PYTHON_PROTOCOL_VERSION: Final = 4

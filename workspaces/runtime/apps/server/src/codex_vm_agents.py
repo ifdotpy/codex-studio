@@ -11,6 +11,7 @@ import subprocess
 import sys
 import time
 from typing import Any, Mapping
+from codex_shared_values import CHAT_WORKSPACE_MODES
 
 
 def workspace_mode(data: Mapping[str, Any], root: Mapping[str, Any] | None = None,
@@ -21,10 +22,10 @@ def workspace_mode(data: Mapping[str, Any], root: Mapping[str, Any] | None = Non
         return str(data.get("_workspaceMode") or root.get("workspaceMode") or "worktree")
     default = "layr" if creation and platform.system() == "Darwin" else "worktree"
     mode = data.get("workspaceMode", default)
-    if mode not in {"layr", "image", "worktree"}:
-        raise ValueError('workspaceMode must be "layr", "image", or "worktree"')
-    if mode != "worktree" and platform.system() != "Darwin":
-        raise ValueError("This server supports only worktree chats")
+    if mode not in CHAT_WORKSPACE_MODES:
+        raise ValueError("Invalid workspaceMode: " + str(mode))
+    if mode in {"layr", "image"} and platform.system() != "Darwin":
+        raise ValueError("This server supports Worktree and Layr Native chats; its VM launcher is not available")
     return str(mode)
 
 
@@ -247,7 +248,9 @@ def ensure(runtime: Any, agent: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def queue_turn(runtime: Any, db: Any, agent: Any, turn_id: str | None) -> None:
-    if not turn_id or not is_vm(agent) or not agent.get("layrReady"):
+    ready = ((is_vm(agent) and agent.get("layrReady"))
+             or (agent.get("workspaceMode") == "layr-native" and agent.get("nativeLayrReady")))
+    if not turn_id or not ready or (agent.get("workspaceMode") == "layr-native" and agent.get("role") == "reviewer"):
         return
     pending = agent.setdefault("layrTurnSaves", {})
     pending.setdefault(turn_id, {"status": "pending"})
@@ -256,6 +259,15 @@ def queue_turn(runtime: Any, db: Any, agent: Any, turn_id: str | None) -> None:
 def _save_turn(runtime: Any, agent: Mapping[str, Any], turn: str, key: str) -> str:
     """Save the line state after one turn; its state ID."""
     from codex_linux_vm import LinuxVMError
+    if agent.get("workspaceMode") == "layr-native":
+        from codex_native_layr_agents import client
+        native = client(runtime)
+        info = json.loads(native.command("workspace", "inspect", agent["nativeLayrProject"],
+                                         "--line", agent["layrLine"]))
+        if info.get("line_id") != agent["nativeLayrLineId"] or info.get("path") != agent["nativeLayrFolder"]:
+            raise ValueError("The native turn save destination changed")
+        return native.save_turn(agent["nativeLayrProject"], agent["layrLine"],
+                                Path(agent["nativeLayrFolder"]), agent["id"], turn)
     try:
         return str(request(runtime, "line.save", {"agentId": agent["id"], "turnId": turn}, key)["stateId"])
     except LinuxVMError as error:
@@ -354,11 +366,12 @@ def tick(runtime: Any) -> None:
     with runtime.lock:
         if runtime.closed or runtime.__dict__.get("_layr_turn_busy"):
             return
-        # Filter in SQLite: native chats must not add an agent decode to each scheduler pass.
+        # Filter in SQLite: decode only Layr chats that have a pending turn save.
         from codex_agent_modes import mode_fields
         with runtime.read_db() as db:
             agents = [mode_fields(json.loads(row[0])) for row in db.execute(
-                "SELECT record FROM runtime_agents WHERE json_extract(record, '$.executionMode') = 'vm' "
+                "SELECT record FROM runtime_agents WHERE (json_extract(record, '$.executionMode') = 'vm' "
+                "OR json_extract(record, '$.workspaceMode') = 'layr-native') "
                 "AND COALESCE(json_extract(record, '$.layrTurnRetryAt'), 0) <= ? "
                 "AND EXISTS (SELECT 1 FROM json_each(record, '$.layrTurnSaves') "
                 "WHERE COALESCE(json_extract(value, '$.status'), '') != 'saved')", (time.time(),))]

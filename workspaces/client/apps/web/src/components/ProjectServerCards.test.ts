@@ -29,7 +29,9 @@ describe("new chat actions", () => {
     );
     expect(markup).toContain("Workspace");
     expect(markup).toContain("layr");
-    expect(markup).toContain("ASIF");
+    expect(markup).toContain("Layr VM");
+    expect(markup).toContain("Layr Native");
+    expect(markup).not.toContain("ASIF");
     expect(markup).toContain("worktree");
     expect(markup).toContain("Model");
     expect(markup).toContain("Workers");

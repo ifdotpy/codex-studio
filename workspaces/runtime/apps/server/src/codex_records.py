@@ -9,6 +9,7 @@ remain separate contracts; known disagreements are checked in
 # Helpers use this narrow Protocol when they need only record-store operations.
 
 from typing import Annotated, Literal, Protocol, TYPE_CHECKING, overload
+from codex_shared_values import ChatWorkspaceMode
 from typing_extensions import NotRequired, TypedDict
 from pydantic import ConfigDict, Field
 from studio_api.models import Int64, MAX_SAFE_INTEGER, MIN_SAFE_INTEGER, SafeInt, SignedSafeInt, UInt64
@@ -1358,10 +1359,16 @@ class AgentRecord(TypedDict):
     nativeTeleportTool: NotRequired[str]
     nativeRoleGuidance: NotRequired[str]
     nativeToolSource: NotRequired[Literal["legacy", "current"]]
-    workspaceMode: NotRequired[Literal["layr", "image", "worktree", "shared"] | None]
+    workspaceMode: NotRequired[ChatWorkspaceMode | Literal["shared"] | None]
     executionMode: NotRequired[Literal["vm", "native"]]
     hostProjectPath: NotRequired[str]
     layrReady: NotRequired[bool]
+    nativeLayrReady: NotRequired[bool]
+    nativeLayrProject: NotRequired[str]
+    nativeLayrLineId: NotRequired[str]
+    nativeLayrRoot: NotRequired[str]
+    nativeLayrFolder: NotRequired[str]
+    nativeLayrSocket: NotRequired[str | None]
     layrTurnRetryAt: NotRequired[float]
     layrProjectId: NotRequired[str]
     layrLine: NotRequired[str]

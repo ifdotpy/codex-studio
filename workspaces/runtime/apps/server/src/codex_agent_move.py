@@ -349,6 +349,8 @@ class AgentMoves:
         self._native_owner(db, agent['id'], thread, descriptor['target']['accountKey'], preflight['provider'])
 
     def _idle_checks(self, db: Any, agent: dict[str, Any], key: str) -> None:
+        if agent.get('workspaceMode') == 'layr-native':
+            raise ValueError('Native Layr chats cannot move between servers; the store and folder binding stay on this server')
         if agent.get('provider', 'codex') not in {'codex', 'claude'}:
             raise ValueError('Only Codex and Claude support moves')
         if not agent.get('threadId'):

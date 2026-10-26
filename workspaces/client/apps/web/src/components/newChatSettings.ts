@@ -11,6 +11,7 @@ import {
 } from "../generated/apiSchema";
 import { serverCredentialAdapter } from "../servers/transport";
 import type { StudioServer } from "../servers/registry";
+import { CHAT_WORKSPACE_MODES } from "../generated/sharedValues";
 
 export type NewChatSettings = Pick<
   PostBody<"/api/conversation">,
@@ -20,7 +21,7 @@ export type NewChatSettings = Pick<
   | "daybreak_enabled"
   | "worker_defaults"
   | "review_defaults"
-> & { account_key?: string; workspaceMode: "layr" | "image" | "worktree" };
+> & { account_key?: string; workspaceMode: (typeof CHAT_WORKSPACE_MODES)[number] };
 
 export function defaultWorkspaceMode(system?: string) {
   return system === "Darwin" ? "layr" : "worktree";
@@ -95,7 +96,7 @@ export function isNewChatSettings(value: unknown): value is NewChatSettings {
     "review_defaults",
   ];
   if (Object.keys(value).some((key) => !allowed.includes(key))) return false;
-  if (!["layr", "image", "worktree"].includes(String(value.workspaceMode)))
+  if (!(CHAT_WORKSPACE_MODES as readonly string[]).includes(String(value.workspaceMode)))
     return false;
   if (
     value.account_key !== undefined &&

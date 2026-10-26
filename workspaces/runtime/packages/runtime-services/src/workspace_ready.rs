@@ -35,6 +35,10 @@ pub struct WorkspaceActor {
     #[serde(default)]
     pub layr_ready: bool,
     #[serde(default)]
+    pub native_layr_ready: bool,
+    #[serde(default)]
+    pub native_layr_line_id: Option<String>,
+    #[serde(default)]
     pub layr_line: Option<String>,
     #[serde(default)]
     pub workspace_operation: Option<String>,
@@ -96,10 +100,18 @@ pub enum WorkspaceDecision {
 }
 
 pub fn unsupported(actor: &WorkspaceActor) -> Option<WorkspaceRefusal> {
+    let native_layr = actor.workspace_mode.as_deref() == Some("layr-native");
+    if native_layr && (actor.worktree || actor.worktree_ready || !actor.native_layr_ready || actor.native_layr_line_id.as_deref().is_none_or(str::is_empty)) {
+        return Some(WorkspaceRefusal::WorkspaceRecoveryRequired {
+            operation: None,
+            path: actor.cwd.clone(),
+            reason: "Native Layr preparation is incomplete",
+        });
+    }
     if actor.execution_mode.as_deref() == Some("vm")
         || actor.workspace_mode.as_deref() == Some("layr")
         || actor.layr_ready
-        || actor.layr_line.is_some()
+        || (actor.layr_line.is_some() && !native_layr)
     {
         Some(WorkspaceRefusal::VmWorkspaceUnsupported)
     } else if actor.environment.as_deref() == Some("linux") {

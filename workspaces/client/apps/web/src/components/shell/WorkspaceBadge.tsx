@@ -11,7 +11,7 @@ export function workspaceBadgeInfo(agent?: Agent): WorkspaceBadgeInfo | null {
     const mode = (agent as { workspaceMode?: string }).workspaceMode;
     if (!mode) return null;
     const label =
-      mode === "layr"
+      mode === "layr" || mode === "layr-native"
         ? "LAYR"
         : mode === "image"
           ? "ASIF"
@@ -22,11 +22,13 @@ export function workspaceBadgeInfo(agent?: Agent): WorkspaceBadgeInfo | null {
       ? {
           label,
           title:
-            label === "LAYR"
-              ? "Linux VM with layr"
-              : label === "ASIF"
-                ? "Apple Sparse Image Format workspace"
-                : "Git worktree",
+            mode === "layr-native"
+              ? "Layr Native"
+              : label === "LAYR"
+                ? "Linux VM with layr"
+                : label === "ASIF"
+                  ? "Apple Sparse Image Format workspace"
+                  : "Git worktree",
         }
       : null;
   }
@@ -43,7 +45,7 @@ export function workspaceBadgeInfo(agent?: Agent): WorkspaceBadgeInfo | null {
   if (!mode) return null;
 
   const label =
-    mode === "layr"
+    mode === "layr" || mode === "layr-native"
       ? "LAYR"
       : mode === "image"
         ? "ASIF"
@@ -51,13 +53,15 @@ export function workspaceBadgeInfo(agent?: Agent): WorkspaceBadgeInfo | null {
           ? "WT"
           : "SHARED";
   const name =
-    label === "LAYR"
-      ? "Linux VM with layr"
-      : label === "ASIF"
-        ? "Apple Sparse Image Format workspace"
-        : label === "WT"
-          ? "Git worktree"
-          : "Shared folder";
+    mode === "layr-native"
+      ? "Layr Native"
+      : label === "LAYR"
+        ? "Linux VM with layr"
+        : label === "ASIF"
+          ? "Apple Sparse Image Format workspace"
+          : label === "WT"
+            ? "Git worktree"
+            : "Shared folder";
   const path =
     agent.imageWorkspace && !agent.imageWorkspaceReady
       ? agent.imageWorkspaceRepo || agent.cwd

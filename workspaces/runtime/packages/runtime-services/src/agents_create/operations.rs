@@ -253,6 +253,7 @@ fn create(
         if let Some(prior) = previous_lead(tx, request.previous.as_deref(), &validate)?
             && request.reuse_empty.unwrap_or(true)
             && !truthy(prior.get("layrReady"))
+            && !truthy(prior.get("nativeLayrReady"))
             && prior
                 .get("workspaceMode")
                 .and_then(Value::as_str)

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Annotated, Literal, TypeAlias
 
+from codex_shared_values import ChatWorkspaceMode
 from pydantic import ConfigDict, Field, field_validator, model_validator
 
 from studio_api.models import ContractModel, ContractStrEnum, JsonValue, ResponseModel, SafeInt
@@ -207,7 +208,7 @@ class TransferRequestReceipt(ResponseModel):
 
 
 class CreateLeadRequest(ContractModel):
-    workspaceMode: Literal["layr", "image", "worktree"] = "worktree"
+    workspaceMode: ChatWorkspaceMode = "worktree"
     project_id: str | None = Field(default=None, min_length=1, max_length=4096)
     project_server_id: str | None = Field(default=None, min_length=1, max_length=128)
     id: str | None = Field(
@@ -250,7 +251,7 @@ class ReviewDefaults(ContractModel):
 
 
 class CreateAgentRequest(ContractModel):
-    workspaceMode: Literal["layr", "image", "worktree"] = "worktree"
+    workspaceMode: ChatWorkspaceMode = "worktree"
     id: str | None = Field(
         default=None,
         min_length=36,

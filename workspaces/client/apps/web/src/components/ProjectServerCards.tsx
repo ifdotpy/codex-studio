@@ -67,7 +67,7 @@ export default function ProjectServerCards({
   fetchedKey.current = fetched?.key || "";
   const [modeChoice, setModeChoice] = useState<{
     server: string;
-    mode: "layr" | "image" | "worktree";
+    mode: NewChatSettings["workspaceMode"];
   } | null>(null);
   const mode =
     modeChoice?.server === selected
@@ -150,7 +150,7 @@ export default function ProjectServerCards({
           );
         })}
       </div>
-      {system === "Darwin" && (
+      {(system === "Darwin" || system === "Linux") && (
         <div className="new-chat-run-mode">
           <Text component="label" id="new-chat-run-mode-label" size="sm">
             Workspace
@@ -165,17 +165,33 @@ export default function ProjectServerCards({
                 mode:
                   value === "layr"
                     ? "layr"
-                    : value === "image"
-                      ? "image"
+                    : value === "layr-native"
+                      ? "layr-native"
                       : "worktree",
               })
             }
             data={[
-              { value: "layr", label: "layr" },
-              { value: "image", label: "ASIF" },
-              { value: "worktree", label: "worktree" },
+              {
+                value: "layr",
+                label: "Layr VM",
+                disabled: system !== "Darwin",
+              },
+              { value: "layr-native", label: "Layr Native" },
+              { value: "worktree", label: "Worktree" },
             ]}
           />
+          <Text size="xs" c="dimmed">
+            {mode === "layr-native"
+              ? "Use the original folder. Workers use separate Layr lines."
+              : mode === "layr"
+                ? "Use btrfs in a Linux VM."
+                : "Use Git worktrees on this server."}
+          </Text>
+          {system === "Linux" && (
+            <Text size="xs" c="dimmed">
+              The VM launcher is not yet available on Linux hosts.
+            </Text>
+          )}
         </div>
       )}
       {platformError && (
@@ -212,7 +228,7 @@ export default function ProjectServerCards({
               { ...location, serverId: selected },
               {
                 ...models,
-                workspaceMode: system === "Darwin" ? mode : "worktree",
+                workspaceMode: mode,
               },
             )
           }

@@ -141,6 +141,31 @@ class Contract(unittest.TestCase):
         restored=self.call('restore');self.assertEqual(restored['status'],'restored')
         self.assertFalse(restored['agent']['inFlight']);self.assertEqual(restored['agent']['status'],'paused')
         self.assertEqual(self.call('restore')['status'],'not_archived');self.assertEqual(self.rt.calls,[('thread/read','worker')])
+    def test_native_layr_archive_keeps_the_line_and_restores_paused(self):
+        folder = Path(self.tmp.name) / 'native-line'
+        folder.mkdir()
+        (folder / 'uncommitted').write_text('keep this')
+        self.worker(workspaceMode='layr-native', nativeLayrReady=True,
+                    nativeLayrLineId='same-line', nativeLayrFolder=str(folder),
+                    cwd=str(folder), worktree=False, worktreeReady=False)
+        with patch('codex_agent_management._cleanup_worktree', side_effect=AssertionError('Native line is not a worktree')):
+            result = self.call('archive')
+            self.assertEqual(result['status'], 'archived')
+            self.assertEqual(result['workspace']['state'], 'kept')
+            self.assertIsNone(result['worktree'])
+            self.assertEqual(self.call('archive')['workspace']['state'], 'kept')
+            restored = self.call('restore')
+        self.assertEqual(restored['agent']['status'], 'paused')
+        self.assertEqual((folder / 'uncommitted').read_text(), 'keep this')
+        with self.rt.db() as db:
+            self.assertEqual(self.rt.agent('worker', db)['nativeLayrLineId'], 'same-line')
+
+    def test_native_layr_pending_save_blocks_archive(self):
+        self.worker(workspaceMode='layr-native', layrTurnSaves={'turn': {'status': 'pending'}})
+        result = self.call('archive')
+        self.assertEqual(result['status'], 'blocked')
+        self.assertIn('turn_state', [item['kind'] for item in result['blockers']])
+
     def test_only_active_lead_can_manage_its_own_workers(self):
         for actor,target,epoch in [('worker','worker',1),('lead','foreign',1),('lead','lead',1),('lead','worker',0)]:
             with self.assertRaises(ValueError):manage_agent(self.rt,actor,{'action':'archive','agent_id':target,'reason':'x'},epoch)

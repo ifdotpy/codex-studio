@@ -1,7 +1,7 @@
 import { test, expect } from "../playwright.mjs";
 import { fixture } from "./multi-server-fixture.mjs";
 
-async function projectFixtures(offline = false) {
+async function projectFixtures(offline = false, system = "Darwin") {
   const leads = [];
   const browses = [];
   const registrations = [];
@@ -38,6 +38,7 @@ async function projectFixtures(offline = false) {
     },
   });
   const local = await fixture("Local", false, {
+    system,
     handle({ url, body, request, json, snapshot }) {
       if (url.pathname === "/api/leads") {
         leads.push({
@@ -168,6 +169,59 @@ async function openFixtures(page, context, local, remote) {
 function logicalProjectGroup(page) {
   return page.locator(".sidebar-project").filter({
     has: page.locator(".project-tree-toggle", { hasText: "attar" }),
+  });
+}
+
+for (const system of ["Darwin", "Linux"]) {
+  test(`Layr Native chat preserves the source folder on ${system}`, async ({
+    page,
+    context,
+  }, testInfo) => {
+    const { leads, local, remote } = await projectFixtures(false, system);
+    try {
+      await openFixtures(page, context, local, remote);
+      await logicalProjectGroup(page).locator(".project-tree-heading").hover();
+      await logicalProjectGroup(page)
+        .getByRole("button", { name: "New chat in attar", exact: true })
+        .click();
+      const dialog = page.getByRole("dialog", {
+        name: "New chat",
+        exact: true,
+      });
+      await dialog
+        .getByRole("button", { name: /Local.*Active.*chrompile/ })
+        .click();
+      await expect(
+        dialog.getByText("Layr VM", { exact: true }),
+      ).toBeVisible();
+      if (system === "Linux") {
+        await expect(
+          dialog.getByRole("radio", { name: "Layr VM", exact: true }),
+        ).toBeDisabled();
+      }
+      await dialog.getByText("Layr Native", { exact: true }).click();
+      await expect(
+        dialog.getByRole("radio", { name: "Layr Native", exact: true }),
+      ).toBeChecked();
+      await expect(
+        dialog.getByText(
+          "Use the original folder. Workers use separate Layr lines.",
+        ),
+      ).toBeVisible();
+      await page.screenshot({
+        animations: "disabled",
+        path: testInfo.outputPath("native-workspace-choice.png"),
+      });
+      await dialog
+        .getByRole("button", { name: "Start chat", exact: true })
+        .click();
+      await expect.poll(() => leads.length).toBe(1);
+      expect(leads[0].workspaceMode).toBe("layr-native");
+      expect(leads[0].cwd).toBe("/Projects/chrompile");
+    } finally {
+      await local.close();
+      await remote.close();
+    }
   });
 }
 

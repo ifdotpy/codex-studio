@@ -3828,6 +3828,8 @@ export interface components {
       name?: null | string;
       /** Nativeerror */
       nativeError?: null | string;
+      /** Nativelayrready */
+      nativeLayrReady?: boolean | null;
       /** Nativelimiterrorat */
       nativeLimitErrorAt?: null | number;
       nativeRelease?: components["schemas"]["AgentNativeRelease"] | null;
@@ -3917,7 +3919,10 @@ export interface components {
       /** Workspacebackend */
       workspaceBackend?: ("asif" | "vm") | null;
       /** Workspacemode */
-      workspaceMode?: ("layr" | "image" | "worktree" | "shared") | null;
+      workspaceMode?:
+        | "shared"
+        | ("layr" | "layr-native" | "image" | "worktree")
+        | null;
       /** Workspaceoperation */
       workspaceOperation?: null | string;
       /** Worktree */
@@ -4674,6 +4679,36 @@ export interface components {
        */
       nativeFailureHold?: components["schemas"]["JsonObjectResponse"] | boolean;
       /**
+       * Nativelayrfolder
+       * @default null
+       */
+      nativeLayrFolder?: string;
+      /**
+       * Nativelayrlineid
+       * @default null
+       */
+      nativeLayrLineId?: string;
+      /**
+       * Nativelayrproject
+       * @default null
+       */
+      nativeLayrProject?: string;
+      /**
+       * Nativelayrready
+       * @default null
+       */
+      nativeLayrReady?: boolean;
+      /**
+       * Nativelayrroot
+       * @default null
+       */
+      nativeLayrRoot?: string;
+      /**
+       * Nativelayrsocket
+       * @default null
+       */
+      nativeLayrSocket?: null | string;
+      /**
        * Nativelimiterrorat
        * @default null
        */
@@ -5097,7 +5132,10 @@ export interface components {
        * Workspacemode
        * @default null
        */
-      workspaceMode?: ("layr" | "image" | "worktree" | "shared") | null;
+      workspaceMode?:
+        | "shared"
+        | ("layr" | "layr-native" | "image" | "worktree")
+        | null;
       /**
        * Workspacemodeexplicit
        * @default null
@@ -5550,6 +5588,11 @@ export interface components {
        */
       nativeError?: null | string;
       /**
+       * Nativelayrready
+       * @default null
+       */
+      nativeLayrReady?: boolean | null;
+      /**
        * Nativelimiterrorat
        * @default null
        */
@@ -5756,7 +5799,10 @@ export interface components {
        * Workspacemode
        * @default null
        */
-      workspaceMode?: ("layr" | "image" | "worktree" | "shared") | null;
+      workspaceMode?:
+        | "shared"
+        | ("layr" | "layr-native" | "image" | "worktree")
+        | null;
       /**
        * Workspaceoperation
        * @default null
@@ -8096,6 +8142,11 @@ export interface components {
        */
       nativeError?: null | string;
       /**
+       * Nativelayrready
+       * @default null
+       */
+      nativeLayrReady?: boolean | null;
+      /**
        * Nativelimiterrorat
        * @default null
        */
@@ -8302,7 +8353,10 @@ export interface components {
        * Workspacemode
        * @default null
        */
-      workspaceMode?: ("layr" | "image" | "worktree" | "shared") | null;
+      workspaceMode?:
+        | "shared"
+        | ("layr" | "layr-native" | "image" | "worktree")
+        | null;
       /**
        * Workspaceoperation
        * @default null
@@ -11173,7 +11227,7 @@ export interface components {
        * @default worktree
        * @enum {string}
        */
-      workspaceMode?: "layr" | "image" | "worktree";
+      workspaceMode?: "layr" | "layr-native" | "image" | "worktree";
       /**
        * Yolo Mode
        * @default true
@@ -11302,7 +11356,7 @@ export interface components {
        * @default worktree
        * @enum {string}
        */
-      workspaceMode?: "layr" | "image" | "worktree";
+      workspaceMode?: "layr" | "layr-native" | "image" | "worktree";
       /**
        * Yolo Mode
        * @default true

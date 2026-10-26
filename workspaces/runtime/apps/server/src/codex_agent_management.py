@@ -199,7 +199,7 @@ def _blockers(rt: "Runtime", db: "sqlite3.Connection", a: "AgentRecord", *, unas
     if a.get('parkedEvent'):
         add('parked_event', [a['parkedEvent']])
     if a.get('workspaceOperation'): add('workspace_operation', [key])
-    if a.get('executionMode') == 'vm':
+    if a.get('executionMode') == 'vm' or a.get('workspaceMode') == 'layr-native':
         add('turn_state', [turn for turn, saved in a.get('layrTurnSaves', {}).items() if saved.get('status') != 'saved'])
     preparation = rt.preparations.get(key)
     if preparation and not preparation['future'].done(): add('thread_preparation', [key])
@@ -1102,7 +1102,8 @@ def manage_agent(rt: "Runtime", actor_id: str, args: dict[str, "Any"], epoch: in
                             if cleaned else
                             {'state': 'kept', 'reason': 'already archived', 'bytes': 0})
                 return {'status': 'archived', 'agent': _brief(target), 'replayed': True,
-                        'workspace': (target.get('imageWorkspaceCleanupResult')
+                        'workspace': ({'state': 'kept', 'reason': 'Native Layr line retained for restoration'}
+                                      if target.get('workspaceMode') == 'layr-native' else target.get('imageWorkspaceCleanupResult')
                                       or ({'state': 'archived', 'bytes': cleaned_image.get('bytes', 0)}
                                           if cleaned_image else None)), 'worktree': worktree,
                         'unassignedWork': archived.get('unassignedWork', [])}
@@ -1171,6 +1172,8 @@ def manage_agent(rt: "Runtime", actor_id: str, args: dict[str, "Any"], epoch: in
                     rt.put(db, 'agents', current)
             except Exception as error:
                 cleanup = {'state': 'kept', 'reason': str(error)[:500]}
+        elif target.get('workspaceMode') == 'layr-native':
+            cleanup = {'state': 'kept', 'reason': 'Native Layr line retained for restoration'}
         elif target.get('imageWorkspaceReady') or image_archive.get('phase') == 'archiving':
             cleanup = _cleanup_image_workspace(rt, target['id'])
         elif target.get('imageWorkspace'):
@@ -1193,8 +1196,8 @@ def manage_agent(rt: "Runtime", actor_id: str, args: dict[str, "Any"], epoch: in
                 current['agentArchive']['cleanupPending'] = False
                 rt.put(db, 'agents', current)
         return {'status': 'archived', 'agent': archived_agent,
-                'workspace': cleanup if target.get('imageWorkspace') or target.get('executionMode') == 'vm' else None,
-                'worktree': cleanup if not target.get('imageWorkspace') and target.get('executionMode') != 'vm' else None,
+                'workspace': cleanup if target.get('imageWorkspace') or target.get('executionMode') == 'vm' or target.get('workspaceMode') == 'layr-native' else None,
+                'worktree': cleanup if not target.get('imageWorkspace') and target.get('executionMode') != 'vm' and target.get('workspaceMode') != 'layr-native' else None,
                 'unassignedWork': archived_agent['agentArchive'].get('unassignedWork', [])}
     if action == 'restore':
         if target.get('executionMode') == 'vm':

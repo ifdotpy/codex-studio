@@ -29,6 +29,7 @@ import { fileURLToPath } from "node:url";
 import { createCommandTransport, commandMethods } from "./commands.mjs";
 
 import { thinkingFlag } from "./thinking.mjs";
+import { nativeLayrEnvironment } from "./native-layr.mjs";
 import { createSessionStore } from "./session-store.mjs";
 import { claudeImage } from "./images.mjs";
 import { listSkills } from "./skills.mjs";
@@ -261,6 +262,7 @@ const settings = (s) => ({
   env: {
     ...process.env,
     ...browserEnvironment(s),
+    ...nativeLayrEnvironment(s),
     ...(s.moveProof
       ? {
           ENABLE_CLAUDEAI_MCP_SERVERS: s.moveProof.externalCatalog?.some(

@@ -47,6 +47,12 @@ pub fn workspace_generation(actor: &Value) -> Value {
         "imageWorkspacePhase",
         "layrReady",
         "layrLine",
+        "nativeLayrReady",
+        "nativeLayrProject",
+        "nativeLayrLineId",
+        "nativeLayrRoot",
+        "nativeLayrFolder",
+        "nativeLayrSocket",
         "checkpointHistoryHead",
         "lastCompletedTurn",
     ];

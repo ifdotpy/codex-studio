@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Annotated, Literal
 from typing_extensions import NotRequired, TypedDict
+from codex_shared_values import ChatWorkspaceMode
 from pydantic import ConfigDict, Field, TypeAdapter, field_validator, model_validator
 
 from codex_shared_values import SYNC_BATCH_LIMIT
@@ -582,10 +583,11 @@ class AgentEntityDto(ContractModel):
     accountKey: str | None = None
     excludedAccountKeys: list[str] | None = None
     cwd: str | None = None
-    workspaceMode: Literal["layr", "image", "worktree", "shared"] | None = None
+    workspaceMode: ChatWorkspaceMode | Literal["shared"] | None = None
     executionMode: Literal["vm", "native"] | None = None
     hostProjectPath: str | None = None
     layrReady: bool | None = None
+    nativeLayrReady: bool | None = None
     layrProjectId: str | None = None
     layrLine: str | None = None
     layrStateId: str | None = None

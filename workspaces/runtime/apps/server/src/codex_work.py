@@ -202,7 +202,7 @@ class WorkMixin:
                 leader = self.checked_actor(db, agent_id, actor)
                 row = db.execute('SELECT record FROM runtime_work WHERE id=?', (data.get('task_id'),)).fetchone()
                 work = json.loads(row[0]) if row else None
-                vm_merge = leader.get('executionMode') == 'vm' and work and work.get('status') == 'review'
+                vm_merge = (leader.get('executionMode') == 'vm' or leader.get('workspaceMode') == 'layr-native') and work and work.get('status') == 'review'
                 if vm_merge and work is not None:
                     if not leader.get('isLead') or leader['id'] != work['rootId'] or (epoch is not None and leader['epoch'] != epoch):
                         raise ValueError('Only the active lead can accept a layr result')
@@ -213,8 +213,12 @@ class WorkMixin:
                     latest = work['results'][-1]
                     version = work['version']
             if vm_merge and work is not None:
-                from codex_vm_agents import merge_result
-                merge_result(self, leader, owner, latest, latest['id'])
+                if leader.get('workspaceMode') == 'layr-native':
+                    from codex_native_layr_agents import merge_result as native_merge_result
+                    native_merge_result(self, leader, owner, latest, latest['id'])
+                else:
+                    from codex_vm_agents import merge_result
+                    merge_result(self, leader, owner, latest, latest['id'])
                 with self.lock, self.db() as db:
                     current = json.loads(db.execute('SELECT record FROM runtime_work WHERE id=?', (work['id'],)).fetchone()[0])
                     if current['version'] != version or current['results'][-1]['id'] != latest['id']:
@@ -507,6 +511,8 @@ class WorkMixin:
             return {'status': 'kept', 'reason': 'The owner is already removed'}
         if work.get('owner') != owner_id or work.get('status') != 'accepted':
             return {'status': 'kept', 'reason': 'The accepted task owner changed'}
+        if owner.get('workspaceMode') == 'layr-native':
+            return {'status': 'kept', 'reason': 'The native Layr line is retained for restoration'}
         if owner.get('executionMode') == 'vm':
             archived = manage_agent(cast('Runtime', self), agent_id, {'action': 'archive', 'agent_id': owner_id,
                 'reason': 'Accepted task result is on main'}, epoch)
@@ -1180,9 +1186,13 @@ class WorkMixin:
                     ),
                 }
                 owner = self.agent(submitter, db)
-                if owner.get('executionMode') == 'vm':
-                    from codex_vm_agents import validate_submission
-                    evidence = validate_submission(self, owner, result['revision'])
+                if owner.get('executionMode') == 'vm' or owner.get('workspaceMode') == 'layr-native':
+                    if owner.get('workspaceMode') == 'layr-native':
+                        from codex_native_layr_agents import validate_submission as native_submission
+                        evidence = native_submission(self, owner, result['revision'])
+                    else:
+                        from codex_vm_agents import validate_submission
+                        evidence = validate_submission(self, owner, result['revision'])
                     result['layrProjectId'] = evidence['layrProjectId']
                     result['layrLine'] = evidence['layrLine']
                     result['layrStateId'] = evidence['layrStateId']

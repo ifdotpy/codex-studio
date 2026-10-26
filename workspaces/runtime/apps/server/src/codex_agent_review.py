@@ -3,6 +3,7 @@ import copy
 import json
 import time
 import uuid
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from codex_agent_modes import assert_delegation
@@ -113,6 +114,39 @@ def _existing(
 
 def request(rt: "Runtime", actor: "AgentRecord", args: dict[str, Any], key: str) -> dict[str, Any]:
     target = validate(args)
+    if actor.get('workspaceMode') == 'layr-native':
+        if not actor.get('isLead'):
+            raise ValueError('Only the lead can create a Layr reviewer')
+        assert_delegation(actor)
+        if not actor.get('nativeLayrReady'):
+            raise ValueError('Prepare the native Layr workspace before review')
+        from codex_native_layr_agents import client
+        from codex_vm_agents import _save_turn
+        if target['type'] == 'baseBranch':
+            raise ValueError('Native Layr review needs an exact state or custom instructions')
+        state = target.get('sha')
+        if state is None:
+            state = _save_turn(rt, actor, 'review:' + key, 'layr-review-state:' + key)
+        else:
+            resolved = client(rt).command('--project', actor['nativeLayrProject'], 'rev-parse', state,
+                                          cwd=Path(actor['nativeLayrFolder']))
+            if resolved != state:
+                raise ValueError('Review the exact Layr state ID')
+        prompt = ('Review Layr state ' + state + '. Use layr show and layr diff. '
+                  'Your provider sandbox is read-only. Report defects with file paths and evidence. '
+                  'Review target: ' + json.dumps(target, ensure_ascii=False))
+        with rt.lock, rt.db() as db:
+            defaults = rt.review_defaults(rt.agent(actor['rootId'], db))
+        model = args.get('model') or defaults['model'] or actor['model']
+        effort = (args['effort'] if 'effort' in args else defaults['effort']
+                  if 'model' not in args and defaults['model'] else actor.get('effort')
+                  if model == actor['model'] else None)
+        spec = {'name': 'Review', 'role': 'reviewer', 'prompt': prompt[:32000], 'base_ref': state,
+                'model': model, 'effort': effort,
+                **({'cwd': args['cwd']} if 'cwd' in args else {})}
+        response = rt.spawn_agents(actor, {'agents': [spec]}, key)
+        return {**response, 'agentId': response['agents'][0]['id'], 'stateId': state,
+                'delivery': 'The Layr review result wakes you automatically.'}
     if actor.get('executionMode') == 'vm':
         if not actor.get('isLead'):
             raise ValueError('Only the lead can create a layr reviewer')

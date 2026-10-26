@@ -31,6 +31,24 @@ fn complete(plan: &ProvisionIdentity) -> GitObservation {
 }
 
 #[test]
+fn native_layr_requires_a_prepared_line_identity() {
+    let mut record = json!({"id":"lead", "epoch":1, "cwd":"/source", "autoWake":true,
+        "workspaceMode":"layr-native", "executionMode":"native", "environment":"host",
+        "worktree":false, "layrLine":"main"});
+    for ready in [false, true] {
+        record["nativeLayrReady"] = json!(ready);
+        let actor = serde_json::from_value(record.clone()).expect("actor");
+        assert!(matches!(unsupported(&actor), Some(WorkspaceRefusal::WorkspaceRecoveryRequired { .. })));
+    }
+    record["nativeLayrLineId"] = json!("exact-line-id");
+    let actor = serde_json::from_value(record.clone()).expect("actor");
+    assert_eq!(unsupported(&actor), None);
+    let generation = workspace_generation(&record);
+    record["nativeLayrLineId"] = json!("replacement");
+    assert_ne!(generation, workspace_generation(&record));
+}
+
+#[test]
 fn journal_recovery_requires_absent_or_exact_complete_evidence() {
     let (record, actor, plan) = input();
     let cwd = actor.cwd.clone();

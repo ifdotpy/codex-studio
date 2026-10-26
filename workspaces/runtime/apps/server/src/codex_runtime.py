@@ -5163,7 +5163,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                     raise ValueError("Reconnect this account before creating a chat")
                 from codex_project_folders import folder_for
                 project_folder = folder_for(self, db, project_key, data.get('project_folder'))
-                if previous and not previous.get("layrReady") and previous.get("workspaceMode", "worktree") == selected_workspace and not any(field in data for field in execution_fields) and data.get("reuse_empty", True) and self.empty_lead(db, previous) and previous.get("provider", "codex") == self.accounts.get(account_key).get("provider", "codex"):
+                if previous and not previous.get("layrReady") and not previous.get("nativeLayrReady") and previous.get("workspaceMode", "worktree") == selected_workspace and not any(field in data for field in execution_fields) and data.get("reuse_empty", True) and self.empty_lead(db, previous) and previous.get("provider", "codex") == self.accounts.get(account_key).get("provider", "codex"):
                     if data.get("model"):
                         effort, native_effort = self.validate_execution(catalog, data["model"], previous.get("effort"),
                             previous.get("fastMode", False), fallback_effort=True)
@@ -5800,6 +5800,24 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                     definition = {**definition, "description": definition["description"] +
                         " Approved remote rooms appear only when you are an explicit local room member."}
             definitions.append(definition)
+        if actor.get("workspaceMode") == "layr-native":
+            definitions = copy.deepcopy(definitions)
+            for definition in definitions:
+                if definition["name"] == "orchestration_spawn":
+                    definition["description"] = (
+                        "Delegate workers to separate native Layr lines on this server. "
+                        "base_ref selects a Layr state. cwd stays within the parent line. "
+                        "Reviewers use a read-only provider sandbox. Each completion wakes you.")
+                    fields = definition["inputSchema"]["properties"]["agents"]["items"]["properties"]
+                    fields["workspace"]["enum"] = ["layr-native"]
+                    fields["environment"]["enum"] = ["host"]
+                    fields.pop("server", None)
+                    definition["inputSchema"]["properties"].pop("server", None)
+                elif definition["name"] == "orchestration_review":
+                    definition["description"] = (
+                        "Review an exact native Layr state in a separate line with a read-only provider sandbox. "
+                        "target commit.sha names the state. The default saves and reviews the current work. "
+                        "Use custom.instructions for review instructions. The result wakes the lead.")
         if actor.get("executionMode") == "vm":
             definitions = copy.deepcopy(definitions)
             for definition in definitions:
@@ -5854,7 +5872,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                     "type": "workspaceWrite", "writableRoots": [temp_dir],
                     "networkAccess": False}}
             return {"approvalPolicy": "never", "sandboxPolicy": {"type": "readOnly"}}
-        if a.get("executionMode") == "vm" and a.get("role") == "reviewer":
+        if (a.get("executionMode") == "vm" or a.get("workspaceMode") == "layr-native") and a.get("role") == "reviewer":
             return {"approvalPolicy": "never", "sandboxPolicy": {"type": "readOnly"}}
         if a.get("yoloMode") is True:
             return {"approvalPolicy": "never", "sandboxPolicy": {"type": "dangerFullAccess"}}
@@ -6187,6 +6205,12 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         }
         if a.get("isLead"):
             params["config"]["features.realtime_conversation"] = True
+        if a.get("workspaceMode") == "layr-native":
+            from codex_native_layr_agents import command_environment
+            for name, value in command_environment(a).items():
+                params["config"]["shell_environment_policy.set." + name] = value
+            if a.get("provider") == "claude":
+                params["studioNativeLayrEnvironment"] = command_environment(a)
         if a.get("fastMode", False):
             params["config"]["features.fast_mode"] = True
         native_effort = a.get("nativeEffort", a.get("effort"))
@@ -6209,7 +6233,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             else:
                 params.update(approvalPolicy="never", sandbox="workspace-write")
                 params["cwd"] = self.image_workspace_temp(a)
-        elif a.get("executionMode") == "vm" and a.get("role") == "reviewer":
+        elif (a.get("executionMode") == "vm" or a.get("workspaceMode") == "layr-native") and a.get("role") == "reviewer":
             params.update(approvalPolicy="never", sandbox="read-only")
         elif a.get("yoloMode") is True:
             params.update(approvalPolicy="never", sandbox="danger-full-access")
@@ -6398,6 +6422,9 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         if a.get("executionMode") == "vm":
             from codex_vm_agents import prepare
             a = prepare(self, a)
+        elif a.get("workspaceMode") == "layr-native":
+            from codex_native_layr_agents import prepare as prepare_native_layr
+            a = prepare_native_layr(self, a)
         if a.get("environment") == "linux" and a.get("executionMode") != "vm":
             raise ValueError("This legacy VM image workspace is unsupported. Create a layr chat.")
         server = self.connect_agent(a)
@@ -8475,7 +8502,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                                "error", turnId=turn.get("id"), threadId=tid, nativeError=turn["error"],
                                cyberAccessProgram=a.get("cyberAccessProgram"))
                     from codex_vm_agents import is_vm, queue_turn
-                    if is_vm(a):
+                    if is_vm(a) or a.get("workspaceMode") == "layr-native":
                         queue_turn(self, db, a, turn.get("id"))
                         self.put(db, "agents", a)
                     db.execute("INSERT OR IGNORE INTO runtime_completed_turns VALUES (?)", (completion,))
@@ -8819,9 +8846,9 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 isinstance(spec, dict) and "task_id" in spec
                 for spec in (args.get("agents") if isinstance(args.get("agents"), list) else []))):
             raise ValueError("Only the lead can delegate an existing task; ask the lead to assign it")
-        if actor.get("executionMode") == "vm" and (
+        if (actor.get("executionMode") == "vm" or actor.get("workspaceMode") == "layr-native") and (
                 args.get("server") or any(spec.get("server") for spec in args.get("agents", []) if isinstance(spec, dict))):
-            raise ValueError("VM chat workers must run on the chat server")
+            raise ValueError("Layr chat workers must run on the chat server")
         if (args.get('server') or any(spec.get('server') for spec in (args.get('agents') or []) if isinstance(spec, dict))):
             service = self.multi_server()
             targets = {spec.get('server', args.get('server')) for spec in args.get('agents', []) if isinstance(spec, dict)}
@@ -8854,6 +8881,10 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             if actor.get("executionMode") == "vm":
                 from codex_vm_agents import spawn_spec
                 resolved.append(spawn_spec(actor, spec))
+                continue
+            if actor.get("workspaceMode") == "layr-native":
+                from codex_native_layr_agents import spawn_spec as native_spawn_spec
+                resolved.append(native_spawn_spec(actor, spec))
                 continue
             if spec.get("role", "implementer") == "implementer" and "workspace" not in spec and actor.get("workspaceMode") in {"image", "worktree"}:
                 spec = {**spec, "_defaultWorkspaceMode": actor["workspaceMode"]}
@@ -10348,7 +10379,8 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 shell_config = configuration["config"]
             if not isinstance(shell_config, dict):
                 raise ValueError("Monitor configuration is invalid; command was not submitted")
-            params = {"command": monitor_command(server, m["command"], a["cwd"], config=shell_config, **({"guest": True} if a.get("executionMode") == "vm" else {})), "cwd": a["cwd"],
+            from codex_native_layr_agents import managed_command
+            params = {"command": monitor_command(server, managed_command(a, m["command"]), a["cwd"], config=shell_config, **({"guest": True} if a.get("executionMode") == "vm" else {})), "cwd": a["cwd"],
                       "processId": key, "streamStdoutStderr": True, "timeoutMs": m["timeout_ms"]}
             if m.get("interactive"):
                 params.update(tty=True, streamStdin=True)
@@ -10547,7 +10579,8 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             server = self.connect_agent(a)
             config = server.wait(self.submit_reserved(server, "config/read",
                 {"cwd": a["cwd"], "includeLayers": False}))
-            native_command = monitor_command(server, command, a["cwd"], config=config["config"], **({"guest": True} if a.get("executionMode") == "vm" else {}))
+            from codex_native_layr_agents import managed_command
+            native_command = monitor_command(server, managed_command(a, command), a["cwd"], config=config["config"], **({"guest": True} if a.get("executionMode") == "vm" else {}))
             params = {"command": native_command, "cwd": a["cwd"],
                 "processId": f"liveness:{key}:{generation}", "streamStdoutStderr": True,
                 "timeoutMs": 60000}

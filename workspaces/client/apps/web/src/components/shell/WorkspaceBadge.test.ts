@@ -13,6 +13,7 @@ const agent = (values: Partial<Agent>) =>
   }) as Agent;
 
 test.each([
+  ["layr-native", "LAYR", "Layr Native"],
   ["image", "ASIF", "Apple Sparse Image Format workspace"],
   ["worktree", "WT", "Git worktree"],
   ["shared", "SHARED", "Shared folder"],
@@ -58,6 +59,7 @@ test.each([
 
 test.each([
   ["layr", "LAYR"],
+  ["layr-native", "LAYR"],
   ["image", "ASIF"],
   ["worktree", "WT"],
 ])("shows the chat workspace %s as %s", (mode, label) => {

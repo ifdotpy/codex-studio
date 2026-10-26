@@ -240,7 +240,7 @@ export async function fixture(
       json({
         ready: true,
         busy: !!agent.inFlight,
-        system: "Darwin",
+        system: options.system || "Darwin",
         agentsRunning: agent.inFlight ? 1 : 0,
         projects: snapshot.runtime.projects,
         chats: snapshot.threads

@@ -25,6 +25,9 @@ test("accepts the actual selector values and rejects receipt overrides", () => {
     review_defaults: { model: null, effort: null },
   };
   expect(isNewChatSettings(settings)).toBe(true);
+  for (const workspaceMode of ["layr-native", "image", "worktree"]) {
+    expect(isNewChatSettings({ ...settings, workspaceMode })).toBe(true);
+  }
   expect(isServerCommand({ action: "new-chat", settings })).toBe(true);
   for (const patch of [
     { id: "other" },

@@ -5,7 +5,7 @@ commands work on fixture apps in temporary folders; nothing touches /Application
 """
 from __future__ import annotations
 
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 import base64
 import copy
@@ -298,7 +298,7 @@ class PeerUpdates(unittest.TestCase):
         # The offering app passes its own check; the archive breaks the seal on the way.
         original = updates._make_export
 
-        def broken_export(root: Path, app: Path, build: dict[str, Any], export: str, run: Any) -> None:
+        def broken_export(root: Path, app: Path, build: dict[str, Any], export: str, run: Callable[[list[str], float], subprocess.CompletedProcess[str]]) -> None:
             def run_and_break(argv: list[str], timeout: float) -> subprocess.CompletedProcess[str]:
                 if Path(argv[0]).name == 'ditto' and argv[1:2] == ['-c']:
                     (app / 'Contents' / 'BAD_SIGNATURE').write_text('')
