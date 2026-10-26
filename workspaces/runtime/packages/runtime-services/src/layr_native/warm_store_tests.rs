@@ -126,6 +126,16 @@ fn real_native_preparation_reuses_an_existing_projects_saved_rust_cache() {
     .expect("existing project");
     let main = root.join("projects/studio/lines/main");
     run(&state, &main, &["protect", "main", "--direct"]).expect("main owner");
+    settings::configure(&state, Some(&root)).expect("select existing store");
+    let mut lead = json!({"id":"warm-lead","isLead":true,"autoWake":true});
+    configure_new_chat(&mut lead, source.to_str().expect("source"));
+    let cold_ready = runtime::prepare_files(&state, &lead).expect("main without saved caches");
+    assert!(
+        cold_ready["layrCacheWarning"]
+            .as_str()
+            .expect("missing cache warning")
+            .contains("save --caches")
+    );
     let (cold, cold_artifacts) = cargo_build(&main);
     assert!(
         cold_artifacts
@@ -139,12 +149,46 @@ fn real_native_preparation_reuses_an_existing_projects_saved_rust_cache() {
     )
     .expect("cache witness");
     run(&state, &main, &["cache", "add", "target"]).expect("register cache");
+    run(&state, &main, &["protect", "main", "--remove"]).expect("unprotected main fixture");
+    run(&state, &main, &["save", "--caches"]).expect("automatic cache with equal tracked content");
+    let automatic = run(&state, &main, &["rev-parse", "main@{0}"]).expect("automatic state");
+    let (start, warning) =
+        mapping::cached_main_start(&state, &main).expect("equal automatic state");
+    assert_eq!(start, automatic);
+    assert!(warning.is_none());
+    let equal_lead =
+        runtime::prepare_files(&state, &lead).expect("main with equal automatic caches");
+    let mut equal_parent = lead.clone();
+    for (key, value) in equal_lead.as_object().expect("parent") {
+        equal_parent[key] = value.clone();
+    }
+    let mut equal_worker =
+        json!({"id":"equal-cache-worker","isLead":false,"role":"implementer","autoWake":true});
+    configure_child(&mut equal_worker, &equal_parent, &equal_parent);
+    let equal_ready =
+        runtime::prepare_files(&state, &equal_worker).expect("worker from equal automatic state");
+    assert_eq!(equal_ready["layrStateId"], automatic);
+    assert!(
+        Path::new(equal_ready["cwd"].as_str().expect("worker"))
+            .join("target/studio-test-results/warm-proof.json")
+            .is_file()
+    );
+    let original = fs::read(main.join("src/main.rs")).expect("original source");
+    fs::write(main.join("src/main.rs"), "fn main() {}\n").expect("different tracked content");
+    run(&state, &main, &["save", "--caches"]).expect("automatic cache with different content");
+    let (start, warning) =
+        mapping::cached_main_start(&state, &main).expect("different automatic state");
+    assert_eq!(
+        start,
+        run(&state, &main, &["rev-parse", "main"]).expect("main head")
+    );
+    assert!(warning.is_some());
+    fs::write(main.join("src/main.rs"), original).expect("restore tracked content");
+    run(&state, &main, &["protect", "main", "--direct"]).expect("protected main");
     run(&state, &main, &["save", "--caches"]).expect("save cache");
-    settings::configure(&state, Some(&root)).expect("select existing store");
-    let mut lead = json!({"id":"warm-lead","isLead":true,"autoWake":true});
-    configure_new_chat(&mut lead, source.to_str().expect("source"));
     let ready = runtime::prepare_files(&state, &lead).expect("real lead preparation");
     assert_eq!(ready["layrProjectId"], "studio");
+    assert!(ready["layrCacheWarning"].is_null());
     for (key, value) in ready.as_object().expect("ready") {
         lead[key] = value.clone();
     }

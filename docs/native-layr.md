@@ -97,6 +97,18 @@ An existing project supplies its saved main line and caches. Studio does not imp
 New implementer lines receive the caches from that main line.
 The original source folder stays separate from main.
 
+Studio uses saved caches on main's named head.
+If that head has no cache record, Studio checks up to 200 recent history records for main's newest automatic state with caches.
+Studio uses that state only when `layr diff --name-only main STATE` returns no paths.
+It never selects a cache state from another line or changes the tracked content of main.
+Otherwise, the prepared chat records `layrCacheWarning` with the main state ID and an operator command.
+For a one-time cache setup, build in the existing store's main folder.
+Keep tracked content unchanged, including the dependency lockfile.
+Then run `layr -C /path/to/store/projects/studio/lines/main save --caches` on the protected main line.
+Layr attaches these caches to the unchanged main head.
+If tracked content changes, Layr saves caches on a separate automatic state instead.
+Those caches do not automatically belong to named main.
+
 Studio requires a compatible Layr store format before it prepares a line.
 `layr store-version --json` reports the store format, package version, and build identity.
 An incompatible store returns an error that names the root and both versions.

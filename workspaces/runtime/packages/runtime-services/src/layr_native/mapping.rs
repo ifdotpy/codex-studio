@@ -200,6 +200,86 @@ pub fn bind(state: &Path, source: &Path, project: &str) -> Result<Value> {
     Ok(result)
 }
 
+/// Inspect at most 200 recent history records when selecting a saved cache on main's line.
+const CACHE_HISTORY_RECORDS: &str = "200";
+
+pub(super) fn cached_main_start(state: &Path, main: &Path) -> Result<(String, Option<String>)> {
+    let output = super::runtime::run(state, main, &["log", "--json", "-n", "1", "main"])?;
+    let head: Value = serde_json::from_str(&output).map_err(|error| {
+        NativeLayrError::Refused(format!("Cannot inspect main caches: {error}"))
+    })?;
+    let warning = cache_warning_for_head(main, &head)?;
+    let id = head["id"].as_str().expect("validated state ID").to_owned();
+    if warning.is_none() {
+        return Ok((id, None));
+    }
+    let lines: Value = serde_json::from_str(&super::runtime::run(
+        state,
+        main,
+        &["line", "list", "--json"],
+    )?)
+    .map_err(|error| NativeLayrError::Refused(format!("Cannot inspect main line: {error}")))?;
+    let line = lines
+        .as_array()
+        .and_then(|lines| lines.iter().find(|line| line["name"] == "main"))
+        .and_then(|line| line["id"].as_str())
+        .ok_or_else(|| NativeLayrError::Refused("Cannot find main line identity".into()))?;
+    let output = super::runtime::run(
+        state,
+        main,
+        &["log", "--auto", "--json", "-n", CACHE_HISTORY_RECORDS],
+    )?;
+    let records = output
+        .lines()
+        .map(serde_json::from_str::<Value>)
+        .collect::<std::result::Result<Vec<_>, _>>()
+        .map_err(|error| {
+            NativeLayrError::Refused(format!("Cannot inspect main cache history: {error}"))
+        })?;
+    let candidate = newest_main_cache(&records, line);
+    if let Some(candidate) = candidate {
+        let differences =
+            super::runtime::run(state, main, &["diff", "--name-only", "main", candidate])?;
+        if differences.is_empty() {
+            return Ok((candidate.to_owned(), None));
+        }
+    }
+    Ok((id, warning))
+}
+
+fn has_caches(head: &Value) -> bool {
+    head.get("layers")
+        .or_else(|| head.get("caches"))
+        .and_then(Value::as_object)
+        .is_some_and(|caches| !caches.is_empty())
+}
+
+fn newest_main_cache<'a>(records: &'a [Value], line: &str) -> Option<&'a str> {
+    records
+        .iter()
+        .filter(|record| record["kind"] == "auto" && record["line"] == line && has_caches(record))
+        .max_by_key(|record| {
+            (
+                record["time"].as_i64().unwrap_or_default(),
+                record["id"].as_str().unwrap_or_default(),
+            )
+        })
+        .and_then(|record| record["id"].as_str())
+}
+
+fn cache_warning_for_head(main: &Path, head: &Value) -> Result<Option<String>> {
+    let id = head["id"]
+        .as_str()
+        .filter(|id| !id.is_empty())
+        .ok_or_else(|| {
+            NativeLayrError::Refused("Main cache inspection returned no state ID".into())
+        })?;
+    let quoted = format!("'{}'", main.to_string_lossy().replace('\'', "'\\''"));
+    Ok((!has_caches(head)).then(|| format!(
+        "Main head {id} has no saved cache record. Caches on another line do not warm this head. Build once in {}, keep tracked content unchanged, then run `layr -C {quoted} save --caches`. See docs/native-layr.md.", main.display(),
+    )))
+}
+
 pub(super) fn resolve(state: &Path, root: &Path, record: &Value) -> Result<String> {
     if record["layrProjectId"].is_string() {
         return project_id(record);
@@ -261,6 +341,35 @@ pub(super) fn resolve(state: &Path, root: &Path, record: &Value) -> Result<Strin
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn native_layr_cached_start_considers_only_main_lines_newest_automatic_cache() {
+        let records = vec![
+            json!({"id":"old-main","kind":"auto","line":"main-line","time":1,"layers":{"target":"old"}}),
+            json!({"id":"new-main","kind":"auto","line":"main-line","time":2,"layers":{"target":"new"}}),
+            json!({"id":"other-line","kind":"auto","line":"worker-line","time":3,"layers":{"target":"other"}}),
+        ];
+        assert_eq!(newest_main_cache(&records, "main-line"), Some("new-main"));
+        assert_eq!(newest_main_cache(&records, "unknown-line"), None);
+    }
+
+    #[test]
+    fn native_layr_mapped_main_reports_missing_caches_and_accepts_saved_caches() {
+        let main = Path::new("/store/projects/studio/lines/main");
+        let warning = cache_warning_for_head(main, &json!({"id":"main-state"}))
+            .expect("inspection")
+            .expect("missing cache warning");
+        assert!(warning.contains("main-state") && warning.contains("save --caches"));
+        for field in ["layers", "caches"] {
+            let mut head = json!({"id":"main-state"});
+            head[field] = json!({"target":"saved-target"});
+            assert!(
+                cache_warning_for_head(main, &head)
+                    .expect("saved cache")
+                    .is_none()
+            );
+        }
+    }
 
     #[test]
     fn native_layr_github_renames_require_equal_repository_ids_and_a_successful_lookup() {

@@ -401,6 +401,13 @@ pub(super) fn prepare_files_with_git_policy(
             },
         )?;
     }
+    let imported: Value = serde_json::from_slice(&fs::read(&ready_path)?)
+        .map_err(|error| NativeLayrError::Refused(error.to_string()))?;
+    let (start, cache_warning) = if imported["mapped"] == true {
+        super::mapping::cached_main_start(state_dir, &main)?
+    } else {
+        ("main".to_owned(), None)
+    };
     let reviewer = record["role"] == "reviewer";
     let lead = record["isLead"] == true;
     let line = if lead || reviewer {
@@ -422,7 +429,7 @@ pub(super) fn prepare_files_with_git_policy(
             &format!("line:{}", text(record, "id")?),
             &json!({"project":project,"line":line}),
             || {
-                run(state_dir, &main, &["line", "new", &line, "main"])?;
+                run(state_dir, &main, &["line", "new", &line, &start])?;
                 Ok(json!({"path":cwd,"line":line}))
             },
         )?;
@@ -434,6 +441,10 @@ pub(super) fn prepare_files_with_git_policy(
         eprintln!("Native Layr warning: {warning}");
     }
     result["layrVersionWarning"] = json!(version_warning);
+    if let Some(warning) = &cache_warning {
+        eprintln!("Native Layr warning: {warning}");
+    }
+    result["layrCacheWarning"] = json!(cache_warning);
     if reviewer {
         let scratch = state_dir.join(NATIVE_LAYR_DIRECTORY).join("scratch").join(
             studio_runtime_store::sha256_hex(text(record, "id")?.as_bytes()),
