@@ -1,5 +1,6 @@
+import { fixtureOrigin } from "./performance-fixture.ts";
+import type {} from "./transcript-failed-tool-completed-turn.fixture.tsx";
 import assert from "node:assert/strict";
-import { createRequire } from "node:module";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -17,12 +18,14 @@ test("failed tool limit remains visible in a completed turn @performance", async
   );
   test.setTimeout(30_000);
   const root = fileURLToPath(new URL("../../", import.meta.url));
-  const require = createRequire(join(root, "package.json"));
-  const { chromium } = require("playwright-core");
+  const { chromium } = await import("playwright-core");
   const { createFixtureViteServer: createServer } =
     await import("../playwright.ts");
   const cacheDir = await mkdtemp(join(tmpdir(), "studio-turn-limit-"));
-  const entry = join(root, "transcript-audit.tsx");
+  const entry = new URL(
+    "./transcript-failed-tool-completed-turn.fixture.tsx",
+    import.meta.url,
+  ).pathname;
   const server = await createServer({
     configFile: false,
     root,
@@ -55,43 +58,6 @@ test("failed tool limit remains visible in a completed turn @performance", async
         resolveId(id) {
           if (id === "/transcript-audit.tsx") return entry;
         },
-        load(id) {
-          if (id !== entry) return;
-          return `import React, { useState } from "react";
-import { createRoot } from "react-dom/client";
-import { flushSync } from "react-dom";
-import { MantineProvider } from "@mantine/core";
-import { marked } from "marked";
-import DOMPurify from "dompurify";
-import TurnHistory from "/src/components/conversation/transcript/TurnHistory.tsx";
-import StreamingText from "/src/components/conversation/transcript/StreamingText.tsx";
-
-const initial = [
-  { id: "user", role: "user", text: "Run the command", turnId: "complete-turn", turnStatus: "completed" },
-  {
-    id: "failed-command",
-    role: "output",
-    title: "Command finished",
-    toolStatus: "completed",
-    turnId: "complete-turn",
-    turnStatus: "completed",
-    text: JSON.stringify({ type: "commandExecution", status: "completed", exitCode: 0 }),
-  },
-  { id: "answer", role: "assistant", text: "The task is complete.", turnId: "complete-turn", turnStatus: "completed", phase: "final_answer" },
-];
-
-function App() {
-  const [items, setItems] = useState(initial);
-  window.failCompletedTurnTool = () => flushSync(() => setItems((old) => old.map((item) =>
-    item.id === "failed-command"
-      ? { ...item, toolStatus: "failed", text: JSON.stringify({ type: "commandExecution", status: "failed", error: { message: "Usage limit reached", codexErrorInfo: "usageLimitExceeded" } }) }
-      : item,
-  )));
-  return <MantineProvider><TurnHistory items={items} enabled storageKey="completed-turn-limit" renderMessage={(item) => <StreamingText text={item.text} streaming={false} agentId="fixture" />} onJump={() => {}} /></MantineProvider>;
-}
-
-createRoot(document.getElementById("root")).render(<App />);`;
-        },
       },
     ],
   });
@@ -106,11 +72,9 @@ createRoot(document.getElementById("root")).render(<App />);`;
     page.setDefaultTimeout(5000);
     installApiSchemaFixtureHeaders(page);
     await page.route("**/api/**", (route) => route.fulfill({ json: {} }));
-    await page.goto(
-      `http://127.0.0.1:${server.httpServer.address().port}/audit`,
-    );
+    await page.goto(`${fixtureOrigin(server)}/audit`);
     await page.locator('[data-turn="complete-turn"]').waitFor();
-    await page.evaluate(() => window.failCompletedTurnTool());
+    await page.evaluate(() => window.failedToolFailCompletedTurnTool());
     await page.getByText("Account limit reached", { exact: false }).waitFor();
     assert.match(
       await page.locator('[data-turn="complete-turn"]').innerText(),

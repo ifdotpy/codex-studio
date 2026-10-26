@@ -4,6 +4,8 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { isAbsolute, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createHash } from "node:crypto";
+import type { InlineConfig } from "vite";
+import { required } from "./performance-fixture.ts";
 import { build, loadConfigFromFile, mergeConfig } from "vite";
 
 const root = fileURLToPath(new URL("../../", import.meta.url));
@@ -45,7 +47,10 @@ const before = new Map(
 );
 const current = new Map(
   await Promise.all(
-    files.map(async (path) => [path, await readFile(join(root, path), "utf8")]),
+    files.map(async (path): Promise<[string, string]> => [
+      path,
+      await readFile(join(root, path), "utf8"),
+    ]),
   ),
 );
 const supportPath = "src/components/shell/DeferredWorkspace.tsx";
@@ -74,12 +79,12 @@ for (const [stage, label] of labels.entries()) {
   const sources = new Map(
     files.map((path) => [
       join(root, path),
-      (changed.has(path) ? current : before).get(path),
+      required((changed.has(path) ? current : before).get(path)),
     ]),
   );
   const dist = join(output, label);
   await build(
-    mergeConfig(loaded.config, {
+    mergeConfig(required(loaded).config, {
       configFile: false,
       root,
       build: { outDir: dist, emptyOutDir: false },
@@ -88,12 +93,12 @@ for (const [stage, label] of labels.entries()) {
           name: "interaction-variant",
           enforce: "pre",
           transform(_code, id) {
-            const code = sources.get(id.split("?")[0]);
+            const code = sources.get(id.split("?")[0] ?? id);
             if (code !== undefined) return { code, map: null };
           },
         },
       ],
-    }),
+    } satisfies InlineConfig),
   );
   variants.push({
     label,

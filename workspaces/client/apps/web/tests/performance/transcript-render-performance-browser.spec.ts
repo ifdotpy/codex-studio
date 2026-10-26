@@ -1,6 +1,7 @@
+import { fixtureOrigin } from "./performance-fixture.ts";
+import type {} from "./transcript-render-performance.fixture.tsx";
 import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
-import { createRequire } from "node:module";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -13,13 +14,15 @@ import {
 test("Transcript render performance @performance", async () => {
   test.setTimeout(180_000);
   const root = fileURLToPath(new URL("../..//", import.meta.url));
-  const require = createRequire(join(root, "package.json"));
-  const { chromium, webkit } = require("playwright-core");
+  const { chromium, webkit } = await import("playwright-core");
   const browserType = process.env.BROWSER === "webkit" ? webkit : chromium;
   const { createFixtureViteServer: createServer } =
     await import("../playwright.ts");
   const cacheDir = await mkdtemp(join(tmpdir(), "studio-render-audit-"));
-  const entry = join(root, "transcript-audit.tsx");
+  const entry = new URL(
+    "./transcript-render-performance.fixture.tsx",
+    import.meta.url,
+  ).pathname;
   const server = await createServer({
     configFile: false,
     root,
@@ -52,152 +55,6 @@ test("Transcript render performance @performance", async () => {
         resolveId(id) {
           if (id === "/transcript-audit.tsx") return entry;
         },
-        load(id) {
-          if (id !== entry) return;
-          return `import React, { useState, Profiler } from "react";
-  import { createRoot } from "react-dom/client";
-  import { flushSync } from "react-dom";
-  import { MantineProvider } from "@mantine/core";
-  import { marked } from "marked";
-  import DOMPurify from "dompurify";
-  import TurnHistory from "/src/components/conversation/transcript/TurnHistory.tsx";
-  import StreamingText from "/src/components/conversation/transcript/StreamingText.tsx";
-  import { NativeNotice } from "/src/components/NativeNotice.tsx";
-  const counters = {
-    lex: 0,
-    lexChars: 0,
-    sanitize: 0,
-    sanitizeChars: 0,
-    toolParse: 0,
-    renders: 0,
-    duration: 0,
-  };
-  window.counters = counters;
-  const lex = marked.lexer;
-  marked.lexer = function (t, ...args) {
-    counters.lex++;
-    counters.lexChars += t.length;
-    return lex.call(this, t, ...args);
-  };
-  const sanitize = DOMPurify.sanitize;
-  DOMPurify.sanitize = function (t, ...args) {
-    counters.sanitize++;
-    counters.sanitizeChars += t.length;
-    return sanitize.call(this, t, ...args);
-  };
-  const parse = JSON.parse;
-  JSON.parse = function (t, ...args) {
-    if (typeof t === "string" && t.includes("audit_tool_payload"))
-      counters.toolParse++;
-    return parse.call(this, t, ...args);
-  };
-  const prose = Array.from(
-    { length: 10 },
-    (_, i) =>
-      "Paragraph " +
-      i +
-      ". " +
-      "Text with **strong words** and [source](./src/main.ts). ".repeat(12),
-  ).join("\\n\\n");
-  const tooltext = JSON.stringify({
-    type: "commandExecution",
-    status: "completed",
-    command: "audit_tool_payload",
-    aggregatedOutput: "x".repeat(8192),
-  });
-  const initial = Array.from({ length: 30 }, (_, i) => [
-    {
-      id: "u" + i,
-      role: "user",
-      text: "Question",
-      turnId: "t" + i,
-      turnStatus: "completed",
-    },
-    ...Array.from({ length: 3 }, (_, j) => ({
-      id: "tool" + i + "-" + j,
-      role: "output",
-      text: tooltext,
-      turnId: "t" + i,
-      turnStatus: "completed",
-      toolStatus: "completed",
-    })),
-    {
-      id: "a" + i,
-      role: "assistant",
-      text: prose,
-      turnId: "t" + i,
-      turnStatus: "completed",
-      phase: "final_answer",
-    },
-  ]).flat();
-  const render = (m) =>
-    m.nativeNotice ? (
-      <NativeNotice item={m} />
-    ) : (
-      <StreamingText text={m.text} streaming={m.streaming} agentId="fixture" />
-    );
-  const jump = () => {};
-  function Harness() {
-    const [tick, setTick] = useState(0);
-    const [mode, setMode] = useState("history");
-    const [suffix, setSuffix] = useState("");
-    const [items, setItems] = useState(initial);
-    const [stream, setStream] = useState(null);
-    window.replaceLast = () =>
-      flushSync(() =>
-        setItems((old) =>
-          old.map((m) =>
-            m.id === "a29"
-              ? { ...m, text: m.text + "\\n\\n[Updated report](./changed.md)" }
-              : m,
-          ),
-        ),
-      );
-    window.diagnostic = (error) =>
-      flushSync(() =>
-        setItems((old) =>
-          old.map((m) =>
-            m.id === "a29" ? { ...m, turnStatus: "failed", turnError: error } : m,
-          ),
-        ),
-      );
-    window.stream = (text) => flushSync(() => setStream(text));
-    window.tick = () => flushSync(() => setTick((v) => v + 1));
-    window.mode = (v) => flushSync(() => setMode(v));
-    window.append = () =>
-      flushSync(() => setSuffix((v) => v + " Next sentence."));
-    return (
-      <MantineProvider>
-        <input value={tick} readOnly />
-        <Profiler
-          id="history"
-          onRender={(_id, _phase, d) => {
-            counters.renders++;
-            counters.duration += d;
-          }}
-        >
-          {mode === "history" ? (
-            <TurnHistory
-              items={items.slice()}
-              enabled
-              storageKey="audit-only"
-              renderMessage={(m) => render(m)}
-              onJump={jump}
-            />
-          ) : (
-            <StreamingText
-              text={stream ?? prose + suffix}
-              streaming
-              agentId="fixture"
-            />
-          )}
-        </Profiler>
-      </MantineProvider>
-    );
-  }
-  createRoot(document.getElementById("root")).render(<Harness />);
-  `;
-        },
       },
     ],
   });
@@ -213,31 +70,39 @@ test("Transcript render performance @performance", async () => {
         : {}),
     });
     const page = await browser.newPage();
-    const errors = [];
+    const errors: string[] = [];
     page.on("pageerror", (e) => {
       errors.push(e.message);
       console.error("Browser error:", e.message);
     });
     installApiSchemaFixtureHeaders(page);
     await page.route("**/api/**", (r) => r.fulfill({ json: {} }));
-    await page.goto(
-      "http://127.0.0.1:" + server.httpServer.address().port + "/audit",
-    );
+    await page.goto(fixtureOrigin(server) + "/audit");
     await page.waitForSelector(".turn-history");
     await page.waitForTimeout(250);
     const reset = () =>
       page.evaluate(() =>
-        Object.keys(counters).forEach((k) => (counters[k] = 0)),
+        Object.assign(
+          window.transcriptPerformanceCounters,
+          Object.fromEntries(
+            Object.keys(window.transcriptPerformanceCounters).map((k) => [
+              k,
+              0,
+            ]),
+          ),
+        ),
       );
     await page
       .locator(".turn-history")
       .first()
-      .evaluate((el) => (window.originalTurn = el));
+      .evaluate((el) => (window.transcriptPerformanceOriginalTurn = el));
     await reset();
     await page.evaluate(() => {
-      for (let i = 0; i < 10; i++) window.tick();
+      for (let i = 0; i < 10; i++) window.transcriptPerformanceTick();
     });
-    const unchanged = await page.evaluate(() => ({ ...counters }));
+    const unchanged = await page.evaluate(() => ({
+      ...window.transcriptPerformanceCounters,
+    }));
     assert.equal(
       unchanged.lex,
       0,
@@ -249,9 +114,11 @@ test("Transcript render performance @performance", async () => {
       "Unchanged tool diagnostics do not reparse",
     );
     assert.equal(unchanged.sanitize, 0);
-    await page.evaluate(() => window.replaceLast());
+    await page.evaluate(() => window.transcriptPerformanceReplaceLast());
     await page.getByRole("button", { name: "Updated report" }).waitFor();
-    const changed = await page.evaluate(() => ({ ...counters }));
+    const changed = await page.evaluate(() => ({
+      ...window.transcriptPerformanceCounters,
+    }));
     assert.equal(
       changed.lex,
       2,
@@ -261,19 +128,25 @@ test("Transcript render performance @performance", async () => {
       await page
         .locator(".turn-history")
         .first()
-        .evaluate((el) => el === window.originalTurn),
+        .evaluate((el) => el === window.transcriptPerformanceOriginalTurn),
       true,
       "Earlier turn retains its DOM node",
     );
     await page.evaluate(() =>
-      window.diagnostic({ message: "First diagnostic", code: "first" }),
+      window.transcriptPerformanceDiagnostic({
+        message: "First diagnostic",
+        code: "first",
+      }),
     );
     await page
       .getByText("First diagnostic", { exact: false })
       .first()
       .waitFor();
     await page.evaluate(() =>
-      window.diagnostic({ message: "Updated diagnostic", code: "second" }),
+      window.transcriptPerformanceDiagnostic({
+        message: "Updated diagnostic",
+        code: "second",
+      }),
     );
     await page
       .getByText("Updated diagnostic", { exact: false })
@@ -283,12 +156,14 @@ test("Transcript render performance @performance", async () => {
       await page.getByText("First diagnostic", { exact: false }).count(),
       0,
     );
-    await page.evaluate(() => window.mode("stream"));
+    await page.evaluate(() => window.transcriptPerformanceMode("stream"));
     await reset();
     await page.evaluate(() => {
-      for (let i = 0; i < 20; i++) window.append();
+      for (let i = 0; i < 20; i++) window.transcriptPerformanceAppend();
     });
-    const streaming = await page.evaluate(() => ({ ...counters }));
+    const streaming = await page.evaluate(() => ({
+      ...window.transcriptPerformanceCounters,
+    }));
     assert.equal(
       streaming.lex,
       20,
@@ -300,13 +175,15 @@ test("Transcript render performance @performance", async () => {
       "Only changed final HTML requires sanitizing",
     );
     await page.evaluate(() =>
-      window.stream("Read [report][ref].\n\nStable paragraph."),
+      window.transcriptPerformanceStream(
+        "Read [report][ref].\n\nStable paragraph.",
+      ),
     );
     await page
       .getByText("Stable paragraph.", { exact: true })
-      .evaluate((el) => (window.originalSentence = el));
+      .evaluate((el) => (window.transcriptPerformanceOriginalSentence = el));
     await page.evaluate(() =>
-      window.stream(
+      window.transcriptPerformanceStream(
         "Read [report][ref].\n\nStable paragraph.\n\n[ref]: ./first.md",
       ),
     );
@@ -317,11 +194,11 @@ test("Transcript render performance @performance", async () => {
     assert.equal(
       await page
         .getByText("Stable paragraph.", { exact: true })
-        .evaluate((el) => el === window.originalSentence),
+        .evaluate((el) => el === window.transcriptPerformanceOriginalSentence),
       true,
     );
     await page.evaluate(() =>
-      window.stream(
+      window.transcriptPerformanceStream(
         "Read [report][ref].\n\nStable paragraph.\n\n[ref]: ./second.md",
       ),
     );
@@ -330,10 +207,14 @@ test("Transcript render performance @performance", async () => {
       "./second.md",
       "Later reference definition updates earlier block",
     );
-    await page.evaluate(() => window.stream("```ts\nconst x = 1;"));
+    await page.evaluate(() =>
+      window.transcriptPerformanceStream("```ts\nconst x = 1;"),
+    );
     await page.locator(".prose pre").waitFor();
     await page.evaluate(() =>
-      window.stream("```ts\nconst x = 1;\n```\n\nAfter code."),
+      window.transcriptPerformanceStream(
+        "```ts\nconst x = 1;\n```\n\nAfter code.",
+      ),
     );
     await page.getByText("After code.", { exact: true }).waitFor();
     assert.equal(await page.locator(".prose pre").count(), 1);
@@ -355,3 +236,10 @@ test("Transcript render performance @performance", async () => {
     await rm(cacheDir, { recursive: true, force: true });
   }
 });
+
+declare global {
+  interface Window {
+    transcriptPerformanceOriginalTurn: Element;
+    transcriptPerformanceOriginalSentence: Element;
+  }
+}

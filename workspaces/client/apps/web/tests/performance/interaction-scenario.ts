@@ -1,5 +1,7 @@
+import type { Host } from "../../src/native/host.ts";
+import { required } from "./performance-fixture.ts";
 (async () => {
-  const report = async (result) => {
+  const report = async (result: InteractionResult) => {
     const output = document.createElement("output");
     output.id = "benchmark-result";
     output.textContent = JSON.stringify(result);
@@ -9,7 +11,7 @@
       body: JSON.stringify(result),
     });
   };
-  const storageWrites = [];
+  const storageWrites: { duplicate: boolean; bytes: number }[] = [];
   const setItem = Storage.prototype.setItem;
   Storage.prototype.setItem = function (key, value) {
     const duplicate = this.getItem(String(key)) === String(value);
@@ -25,20 +27,39 @@
       .slice(start)
       .reduce((sum, write) => sum + write.bytes, 0),
   });
-  const calls = [];
+  const calls: string[] = [];
   const preferenceValues = new Map();
   let repeatedPreferenceWrites = 0;
   const invoke = window.__TAURI__?.core.invoke;
-  if (invoke)
+  if (invoke && window.__TAURI__)
     window.__TAURI__.core.invoke = (command, args) => {
       if (command === "client_request") {
-        calls.push(args.request.method);
-        if (args.request.method === "preferences.raw_set") {
-          const { key, raw } = args.request.params;
+        const request = args.request;
+        if (
+          !request ||
+          typeof request !== "object" ||
+          !("method" in request) ||
+          typeof request.method !== "string"
+        )
+          throw new Error("Invalid native request fixture");
+        calls.push(request.method);
+        if (request.method === "preferences.raw_set") {
+          const params = "params" in request ? request.params : null;
+          if (
+            !params ||
+            typeof params !== "object" ||
+            !("key" in params) ||
+            !("raw" in params)
+          )
+            throw new Error("Missing preference parameters");
+          const { key, raw } = params;
           if (preferenceValues.get(key) === raw) repeatedPreferenceWrites++;
           preferenceValues.set(key, raw);
-        } else if (args.request.method === "preferences.raw_remove") {
-          preferenceValues.delete(args.request.params.key);
+        } else if (request.method === "preferences.raw_remove") {
+          const params = "params" in request ? request.params : null;
+          if (!params || typeof params !== "object" || !("key" in params))
+            throw new Error("Missing preference key");
+          preferenceValues.delete(params.key);
         }
       }
       return invoke(command, args);
@@ -50,13 +71,18 @@
         calls.slice(start).filter((value) => value === method).length,
       ]),
     );
-  const results = { startup: {}, actions: [] };
-  const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+  const results: { startup: InteractionStartup; actions: InteractionAction[] } =
+    { startup: {}, actions: [] };
+  const delay = (ms: number) =>
+    new Promise((resolve) => setTimeout(resolve, ms));
   const paint = () =>
     new Promise((resolve) =>
       requestAnimationFrame(() => requestAnimationFrame(resolve)),
     );
-  const wait = async (read, label) => {
+  const wait = async <T>(
+    read: () => T,
+    label: string,
+  ): Promise<NonNullable<T>> => {
     const deadline = performance.now() + 8000;
     while (performance.now() < deadline) {
       const value = read();
@@ -67,29 +93,37 @@
       `Timed out: ${label}; ${document.body.innerText.slice(-1800)}`,
     );
   };
-  const button = (name) =>
-    [...document.querySelectorAll('button,[role="tab"]')].find(
+  const button = (name: string) =>
+    [...document.querySelectorAll<HTMLElement>('button,[role="tab"]')].find(
       (node) =>
         (node.getAttribute("aria-label") || node.textContent.trim()) === name,
     );
-  const formattedMessage = (matches) =>
+  const formattedMessage = (matches: (id: string) => boolean) =>
     [...document.querySelectorAll("[data-message] .markdown-block p")].some(
       (node) =>
-        matches(node.closest("[data-message]").getAttribute("data-message")),
+        matches(
+          required(
+            node.closest("[data-message]")?.getAttribute("data-message"),
+          ),
+        ),
     );
   const messages = () =>
     [...document.querySelectorAll("[data-message]")].map((node) =>
       node.getAttribute("data-message"),
     );
-  const measure = async (name, action, ready) => {
+  const measure = async (
+    name: string,
+    action: () => unknown | Promise<unknown>,
+    ready: () => unknown,
+  ) => {
     const start = performance.now();
     const callStart = calls.length;
     const storageStart = storageWrites.length;
     const repeatedStart = repeatedPreferenceWrites;
     let stopped = false,
       previous = start;
-    const frames = [];
-    const sample = (now) => {
+    const frames: number[] = [];
+    const sample = (now: number) => {
       frames.push(now - previous);
       previous = now;
       if (!stopped) requestAnimationFrame(sample);
@@ -119,7 +153,8 @@
     await wait(() => document.querySelector("#message"), "composer");
     results.startup.composerMs = performance.now();
     const initialChat = await wait(
-      () => document.querySelector('#chat-list [data-chat="long"]'),
+      () =>
+        document.querySelector<HTMLElement>('#chat-list [data-chat="long"]'),
       "fixture chat",
     );
     initialChat.click();
@@ -136,14 +171,17 @@
     const chats = [...document.querySelectorAll("#chat-list .chat-row")];
     if (!chats.every((node) => /conversation/.test(node.textContent)))
       throw new Error("Not the isolated performance fixture");
-    if (button("Show old (2)")) button("Show old (2)").click();
+    if (button("Show old (2)")) required(button("Show old (2)")).click();
     for (const id of ["short", "long", "short", "long"]) {
       await measure(
         `chat-${id}`,
         async () =>
           (
             await wait(
-              () => document.querySelector(`#chat-list [data-chat="${id}"]`),
+              () =>
+                document.querySelector<HTMLElement>(
+                  `#chat-list [data-chat="${id}"]`,
+                ),
               `chat row ${id}`,
             )
           ).click(),
@@ -169,7 +207,7 @@
         `settings-${tab}`,
         async () => {
           if (!document.querySelector('[role="dialog"]'))
-            button("Studio settings").click();
+            required(button("Studio settings")).click();
           (await wait(() => button(tab), `settings tab ${tab}`)).click();
         },
         () => {
@@ -178,7 +216,9 @@
           );
           const panel =
             selected &&
-            document.getElementById(selected.getAttribute("aria-controls"));
+            document.getElementById(
+              selected.getAttribute("aria-controls") ?? "",
+            );
           return (
             selected?.textContent?.trim() === tab &&
             panel?.getClientRects().length
@@ -186,9 +226,11 @@
         },
       );
     }
-    document
-      .querySelector('[role="dialog"] button[aria-label="Close"]')
-      .click();
+    required(
+      document.querySelector<HTMLElement>(
+        '[role="dialog"] button[aria-label="Close"]',
+      ),
+    ).click();
     await wait(
       () => !document.querySelector('[role="dialog"]'),
       "close settings",
@@ -197,7 +239,7 @@
       (
         await wait(
           () =>
-            document.querySelector(
+            document.querySelector<HTMLElement>(
               '[role="dialog"] button[aria-label="Close"]',
             ),
           "close dialog button",
@@ -210,13 +252,13 @@
     };
     await measure(
       "chat-settings",
-      () => button("Chat settings").click(),
+      () => required(button("Chat settings")).click(),
       () => document.querySelector('[role="dialog"] .chat-settings-panel'),
     );
     await closeDialog();
     await measure(
       "team-messages",
-      () => button("Messages").click(),
+      () => required(button("Messages")).click(),
       () => document.querySelector('[role="dialog"] .workspace-message-body'),
     );
     await closeDialog();
@@ -233,11 +275,13 @@
         `workspace-${section}`,
         async () => {
           if (!document.querySelector('[role="dialog"]')) {
-            button("Chat actions").click();
+            required(button("Chat actions")).click();
             (
               await wait(
                 () =>
-                  document.querySelector('[data-workspace-section="changes"]'),
+                  document.querySelector<HTMLElement>(
+                    '[data-workspace-section="changes"]',
+                  ),
                 "changes menu",
               )
             ).click();
@@ -245,9 +289,11 @@
           (
             await wait(
               () =>
-                [...document.querySelectorAll(".workspace-nav button")].find(
-                  (node) => node.textContent.trim() === section,
-                ),
+                [
+                  ...document.querySelectorAll<HTMLElement>(
+                    ".workspace-nav button",
+                  ),
+                ].find((node) => node.textContent.trim() === section),
               `workspace ${section}`,
             )
           ).click();
@@ -261,7 +307,7 @@
       );
     }
     await closeDialog();
-    const scroller = document.querySelector("#messages");
+    const scroller = required(document.querySelector("#messages"));
     scroller.dispatchEvent(
       new WheelEvent("wheel", { deltaY: -10000, bubbles: true }),
     );
@@ -271,7 +317,7 @@
     await measure(
       "older-page",
       async () => {
-        button("Earlier messages").click();
+        required(button("Earlier messages")).click();
         await delay(50);
         scroller.dispatchEvent(
           new WheelEvent("wheel", { deltaY: -10000, bubbles: true }),
@@ -307,9 +353,45 @@
       mode: "renderer-performance",
       calls: counts(),
       error: String(error),
-      stack: error?.stack,
+      stack: error instanceof Error ? error.stack : undefined,
       storage: storageCounts(),
       ...results,
     });
   }
 })();
+
+export type InteractionStartup = {
+  composerMs?: number;
+  contentPaintedMs?: number;
+  calls?: Record<string, number>;
+  storage?: { writes: number; duplicateWrites: number; bytes: number };
+  repeatedPreferenceWrites?: number;
+};
+export type InteractionAction = {
+  name: string;
+  contentMs: number;
+  paintedMs: number;
+  maxFrameMs: number;
+  framesOver50: number;
+  domNodes: number;
+  messages: number;
+  calls: Record<string, number>;
+  storage: NonNullable<InteractionStartup["storage"]>;
+  repeatedPreferenceWrites: number;
+};
+export type InteractionResult = {
+  passed: boolean;
+  mode: "renderer-performance";
+  startup: InteractionStartup;
+  actions: InteractionAction[];
+  calls?: Record<string, number>;
+  error?: string;
+  stack?: string | undefined;
+  storage?: NonNullable<InteractionStartup["storage"]>;
+};
+export type InteractionVariant = { label: string; dist: string };
+declare global {
+  interface Window {
+    __TAURI__?: Host;
+  }
+}

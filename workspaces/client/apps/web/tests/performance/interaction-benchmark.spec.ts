@@ -1,3 +1,8 @@
+import type {
+  InteractionVariant,
+  InteractionResult,
+} from "./interaction-scenario.ts";
+import { required } from "./performance-fixture.ts";
 import { test, expect, spawnFixture } from "../playwright.ts";
 import { mkdtemp, writeFile, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -20,7 +25,7 @@ test(
     );
     const current = fileURLToPath(new URL("../../dist", import.meta.url));
     const results = [];
-    const variants = process.env.STUDIO_BENCHMARK_VARIANTS
+    const variants: InteractionVariant[] = process.env.STUDIO_BENCHMARK_VARIANTS
       ? JSON.parse(
           await readFile(process.env.STUDIO_BENCHMARK_VARIANTS, "utf8"),
         )
@@ -34,7 +39,7 @@ test(
       throw new Error("Benchmark samples must be an integer between 1 and 9.");
     const runs = Array.from({ length: samples }, (_, sample) =>
       variants.map((_, index) => ({
-        ...variants[(index + sample) % variants.length],
+        ...required(variants[(index + sample) % variants.length]),
         sample,
       })),
     ).flat();
@@ -48,14 +53,14 @@ test(
       let log = "";
       const exited = new Promise((resolve) => child.once("exit", resolve));
       try {
-        const origin = await new Promise((resolve, reject) => {
+        const origin = await new Promise<string>((resolve, reject) => {
           let text = "";
-          child.stdout.on("data", (chunk) => {
+          required(child.stdout).on("data", (chunk) => {
             text += chunk;
             const match = text.match(/http:\/\/127\.0\.0\.1:\d+/);
             if (match) resolve(match[0]);
           });
-          child.stderr.on("data", (chunk) => (log += chunk));
+          required(child.stderr).on("data", (chunk) => (log += chunk));
           child.once("exit", (code) =>
             reject(new Error(`Fixture exited ${code}: ${log}`)),
           );
@@ -66,12 +71,15 @@ test(
         });
         try {
           const page = await context.newPage();
-          const errors = [];
+          const errors: string[] = [];
           page.on("pageerror", (error) => errors.push(error.message));
           await page.goto(origin + "/?benchmark=" + label);
           const result = page.locator("#benchmark-result");
           await result.waitFor({ state: "attached", timeout: 25000 });
-          const value = JSON.parse(await result.textContent());
+          // The browser fixture writes this same-program result document.
+          const value: InteractionResult = JSON.parse(
+            required(await result.textContent()),
+          );
           await writeFile(
             output + ".latest.json",
             JSON.stringify(value, null, 2),
@@ -79,7 +87,7 @@ test(
           expect(value.passed, value.stack || value.error).toBe(true);
           expect(errors).toEqual([]);
           results.push({ label, sample, ...value });
-          await writeFile(output, JSON.stringify(results, null, 2));
+          await writeFile(required(output), JSON.stringify(results, null, 2));
         } finally {
           await context.close();
         }

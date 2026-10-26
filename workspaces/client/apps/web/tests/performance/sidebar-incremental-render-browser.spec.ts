@@ -1,5 +1,8 @@
+import { build } from "esbuild";
+import { createFixtureViteServer as createServer } from "../playwright.ts";
+import { fixtureOrigin } from "./performance-fixture.ts";
+import type {} from "./sidebar-incremental-render.fixture.tsx";
 import assert from "node:assert/strict";
-import { createRequire } from "node:module";
 import { readFile, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -10,78 +13,18 @@ test("Sidebar incremental rows and current callbacks @performance", async ({
 }) => {
   test.setTimeout(60_000);
   const root = join(import.meta.dirname, "../../");
-  const require = createRequire(join(root, "package.json"));
-  const { build } = require("esbuild");
-  const { createFixtureViteServer: createServer } =
-    await import("../playwright.ts");
   const directory = await mkdtemp(
     join(tmpdir(), "studio-sidebar-incremental-"),
   );
   const workspaceId = "c".repeat(32);
   const bundle = join(directory, "fixture.js");
-  const fixture = `
-import React, {useMemo} from "react";
-import {createRoot} from "react-dom/client";
-import {MantineProvider} from "@mantine/core";
-import Sidebar from "/src/components/Sidebar.tsx";
-import SidebarRow from "/src/components/SidebarRow.tsx";
-import {useSnapshot} from "/src/hooks.ts";
-import {syncDatabase,persistProjection} from "/src/sync/client.ts";
-import {chatIndicators} from "/src/components/chat-status/chatStatusModel.ts";
-const noop=()=>{};
-window.fixtureRows=0;window.fixtureJsonReads=0;window.fixtureRenders=0;
-window.fixtureActions=[];
-const row=(collection,id,value,seq)=>({id:"entity:"+collection+":"+id,seq,
- payload:JSON.stringify({collection,id,value})});
-const agents=Array.from({length:20},(_,i)=>({id:"agent-"+i,name:"Chat "+i,
- kind:"agent",source:"managed",isLead:true,rootId:"agent-"+i,cwd:"/fixture",
- status:"completed",created:i,threadId:"thread-"+i,epoch:0,
- lastCompletedTurn:"turn-"+i,lastCompletedTurnStatus:"completed",readStateSupported:true}));
-const {db}=await syncDatabase();
-await db.projections.bulkInsert([
- ...agents.map((a,i)=>row("agent",a.id,a,i+1)),
- row("rule","r",{id:"r",checks:0},21),
- row("workspace","current",{stateDir:"/private-fixture",projectOrganizationVersion:1,
- sidebarOrder:{revision:1,groups:{}},peerTeamsVersion:1},22),
- {id:"state:entities:ready",seq:1,payload:"ready"},
-]);
-const oldDocument=await db.projections.findOne("entity:rule:r").exec();
-const oldPayload=oldDocument.toJSON().payload;
-window.sameDocumentVersion=oldDocument===await db.projections.findOne("entity:rule:r").exec();
-window.documentVersionProof=async()=>{
- const current=await db.projections.findOne("entity:rule:r").exec();
- return {sameVersion:window.sameDocumentVersion,newVersion:current!==oldDocument,
-  stableNewVersion:current===await db.projections.findOne("entity:rule:r").exec(),
-  immutableOldVersion:oldDocument.toJSON().payload===oldPayload};
-};
-window.write=async(collection,id,value,seq,deleted=false)=>{
- await persistProjection(db.projections,{...row(collection,id,value,seq),_deleted:deleted});
-};
-window.readyAgain=()=>persistProjection(db.projections,{id:"state:entities:ready",seq:2,payload:"ready"});
-function Harness(){
- const {data}=useSnapshot();window.fixtureRenders++;
- const indicators=useMemo(()=>data?chatIndicators(data):new Map(),[data]);
- window.fixtureData=data;
- const checks=data?.runtime?.rules?.[0]?.checks||0;
- return data?<><Sidebar data={data} opened={null} open={id=>window.fixtureActions.push([id,checks])}
- prepareChat={id=>window.fixtureActions.push(["prepare",id,checks])}
- newChat={noop} addProject={noop} changeProject={noop} projectAccount={noop} creating={false}
- rename={async()=>{}} remove={noop} mobile={false} onSearch={noop} close={noop}
- indicators={indicators} markUnread={a=>window.fixtureActions.push(["unread",a.id,checks])}
- markingRead={new Set()}/><SidebarRow row={agents[0]} selected={false}
- renaming={false} name="" organizing={false} compact={false} markingRead={false}
- bindings={{"data-sidebar-id":"key-row",onKeyDown:()=>window.fixtureActions.push(["key",checks]),
-  onDragOver:()=>window.fixtureActions.push(["drag",checks])}}
- actions={{prepare:noop,open:noop,pin:noop,rename:noop,name:noop,cancelRename:noop,
-  beginRename:noop,unread:noop,move:noop,changeProject:noop,archive:noop,remove:noop}}/></>:null;
-}
-createRoot(document.getElementById("root")).render(<MantineProvider><Harness/></MantineProvider>);
-window.fixtureAgent=agents[19];window.fixtureReady=true;
-`;
   let server;
   try {
     await build({
-      stdin: { contents: fixture, loader: "tsx", resolveDir: root },
+      entryPoints: [
+        new URL("./sidebar-incremental-render.fixture.tsx", import.meta.url)
+          .pathname,
+      ],
       absWorkingDir: root,
       bundle: true,
       jsx: "automatic",
@@ -114,15 +57,15 @@ window.fixtureAgent=agents[19];window.fixtureReady=true;
                 // builds every row; the memoized view builds changed rows only.
                 source = source.replace(
                   "const renderRow = (row: Agent) => {",
-                  "const renderRow = (row: Agent) => {window.fixtureRows++;",
+                  "const renderRow = (row: Agent) => {window.sidebarIncrementalFixtureRows++;",
                 );
                 source = source.replace(
                   "  const a = row;\n  return (",
-                  "  window.fixtureRows++; const a = row;\n  return (",
+                  "  window.sidebarIncrementalFixtureRows++; const a = row;\n  return (",
                 );
                 source = source.replaceAll(
                   "document.toJSON()",
-                  "(window.fixtureJsonReads++, document.toJSON())",
+                  "(window.sidebarIncrementalFixtureJsonReads++, document.toJSON())",
                 );
                 return {
                   contents: source,
@@ -144,7 +87,8 @@ window.fixtureAgent=agents[19];window.fixtureReady=true;
           name: "isolated-fixture-api",
           configureServer(vite) {
             vite.middlewares.use((request, response, next) => {
-              const path = new URL(request.url, "http://fixture").pathname;
+              const path = new URL(request.url ?? "", "http://fixture")
+                .pathname;
               response.setHeader("X-Studio-API-Schema", readApiSchemaHash());
               if (path === "/") {
                 response.setHeader("Content-Type", "text/html");
@@ -181,8 +125,8 @@ window.fixtureAgent=agents[19];window.fixtureReady=true;
       ],
     });
     await server.listen();
-    const origin = `http://127.0.0.1:${server.httpServer.address().port}`;
-    const errors = [];
+    const origin = fixtureOrigin(server);
+    const errors: string[] = [];
     page.on("pageerror", (error) => errors.push(error.message));
     await page.route("**/*", (route) => {
       if (
@@ -193,28 +137,37 @@ window.fixtureAgent=agents[19];window.fixtureReady=true;
       return route.continue();
     });
     await page.goto(origin);
-    await page.waitForFunction(() => window.fixtureReady && window.fixtureData);
+    await page.waitForFunction(
+      () =>
+        window.sidebarIncrementalFixtureReady &&
+        window.sidebarIncrementalFixtureData,
+    );
     await page.locator('[data-chat="agent-19"]').waitFor();
     await page.waitForTimeout(100);
     const before = await page.evaluate(() => ({
-      rows: window.fixtureRows,
-      json: window.fixtureJsonReads,
-      renders: window.fixtureRenders,
+      rows: window.sidebarIncrementalFixtureRows,
+      json: window.sidebarIncrementalFixtureJsonReads,
+      renders: window.sidebarIncrementalFixtureRenders,
     }));
     for (let checks = 1; checks <= 3; checks++) {
       await page.evaluate(async (checks) => {
-        await window.write("rule", "r", { id: "r", checks }, 100 + checks);
+        await window.sidebarIncrementalWrite(
+          "rule",
+          "r",
+          { id: "r", checks },
+          100 + checks,
+        );
       }, checks);
-      await page.waitForFunction(
-        (checks) => window.fixtureData.runtime.rules[0].checks === checks,
-        checks,
-      );
+      await page.waitForFunction((checks) => {
+        const rule = window.sidebarIncrementalFixtureData?.runtime.rules[0];
+        return rule && "checks" in rule && rule.checks === checks;
+      }, checks);
       await page.waitForTimeout(30);
     }
     const after = await page.evaluate(() => ({
-      rows: window.fixtureRows,
-      json: window.fixtureJsonReads,
-      renders: window.fixtureRenders,
+      rows: window.sidebarIncrementalFixtureRows,
+      json: window.sidebarIncrementalFixtureJsonReads,
+      renders: window.sidebarIncrementalFixtureRenders,
     }));
     assert.equal(
       after.rows - before.rows,
@@ -232,7 +185,9 @@ window.fixtureAgent=agents[19];window.fixtureReady=true;
       "empty creation reconciliation does not add a render",
     );
     assert.deepEqual(
-      await page.evaluate(() => window.documentVersionProof()),
+      await page.evaluate(() =>
+        window.sidebarIncrementalDocumentVersionProof(),
+      ),
       {
         sameVersion: true,
         newVersion: true,
@@ -242,62 +197,73 @@ window.fixtureAgent=agents[19];window.fixtureReady=true;
       "RxDB caches immutable document instances per revision",
     );
     await page.locator('[data-sidebar-id="key-row"]').press("ArrowDown");
-    assert.deepEqual(await page.evaluate(() => window.fixtureActions.at(-1)), [
-      "key",
-      3,
-    ]);
+    assert.deepEqual(
+      await page.evaluate(() => window.sidebarIncrementalFixtureActions.at(-1)),
+      ["key", 3],
+    );
     await page.locator('[data-sidebar-id="key-row"]').dispatchEvent("dragover");
-    assert.deepEqual(await page.evaluate(() => window.fixtureActions.at(-1)), [
-      "drag",
-      3,
-    ]);
+    assert.deepEqual(
+      await page.evaluate(() => window.sidebarIncrementalFixtureActions.at(-1)),
+      ["drag", 3],
+    );
     await page.locator('[data-chat="agent-19"]').click();
     assert.deepEqual(
-      await page.evaluate(() => window.fixtureActions.at(-1)),
+      await page.evaluate(() => window.sidebarIncrementalFixtureActions.at(-1)),
       ["agent-19", 3],
       "an unchanged row calls the current committed callback",
     );
-    const unchanged = await page.evaluate(() => window.fixtureRenders);
-    const conversionsBeforeReady = await page.evaluate(
-      () => window.fixtureJsonReads,
+    const unchanged = await page.evaluate(
+      () => window.sidebarIncrementalFixtureRenders,
     );
-    await page.evaluate(() => window.readyAgain());
+    const conversionsBeforeReady = await page.evaluate(
+      () => window.sidebarIncrementalFixtureJsonReads,
+    );
+    await page.evaluate(() => window.sidebarIncrementalReadyAgain());
     await page.waitForFunction(
-      (prior) => window.fixtureRenders > prior,
+      (prior) => window.sidebarIncrementalFixtureRenders > prior,
       unchanged,
     );
     assert.equal(
-      await page.evaluate(() => window.fixtureRenders),
+      await page.evaluate(() => window.sidebarIncrementalFixtureRenders),
       unchanged + 1,
       "a changed ready marker republishes the same projection once",
     );
     assert.equal(
-      await page.evaluate(() => window.fixtureJsonReads),
+      await page.evaluate(() => window.sidebarIncrementalFixtureJsonReads),
       conversionsBeforeReady,
       "republishing the same projection reuses cached RxDB documents",
     );
-    const rowsBeforeAgent = await page.evaluate(() => window.fixtureRows);
+    const rowsBeforeAgent = await page.evaluate(
+      () => window.sidebarIncrementalFixtureRows,
+    );
     await page.evaluate(async () => {
       const value = {
-        ...window.fixtureAgent,
+        ...window.sidebarIncrementalFixtureAgent,
         name: "Current chat",
         status: "failed",
       };
-      await window.write("agent", value.id, value, 200);
+      await window.sidebarIncrementalWrite("agent", value.id, value, 200);
     });
     await page
       .locator('[data-chat="agent-19"]')
       .getByText("Current chat", { exact: true })
       .waitFor();
     assert.equal(
-      await page.evaluate(() => window.fixtureRows),
+      await page.evaluate(() => window.sidebarIncrementalFixtureRows),
       rowsBeforeAgent + 1,
       "the changed agent immediately replaces exactly its row view",
     );
-    await page.evaluate(() => window.write("agent", "agent-19", {}, 201, true));
+    await page.evaluate(() =>
+      window.sidebarIncrementalWrite("agent", "agent-19", {}, 201, true),
+    );
     await page.locator('[data-chat="agent-19"]').waitFor({ state: "detached" });
     await page.evaluate(() =>
-      window.write("agent", "agent-19", window.fixtureAgent, 200),
+      window.sidebarIncrementalWrite(
+        "agent",
+        "agent-19",
+        window.sidebarIncrementalFixtureAgent,
+        200,
+      ),
     );
     await page.waitForTimeout(50);
     assert.equal(
@@ -306,10 +272,10 @@ window.fixtureAgent=agents[19];window.fixtureReady=true;
       "a stale sequence cannot restore a deleted agent",
     );
     await page.evaluate(() =>
-      window.write(
+      window.sidebarIncrementalWrite(
         "agent",
         "agent-19",
-        { ...window.fixtureAgent, name: "Restored" },
+        { ...window.sidebarIncrementalFixtureAgent, name: "Restored" },
         202,
       ),
     );
