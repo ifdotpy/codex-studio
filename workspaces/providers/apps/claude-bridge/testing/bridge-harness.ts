@@ -11,19 +11,31 @@ import { fileURLToPath } from "node:url";
 const VIRTUAL_NOTIFICATION_BUDGET_MS = 10_000;
 const VIRTUAL_STEP_MS = 10;
 const BRIDGE = path.join(path.dirname(fileURLToPath(import.meta.url)), "..");
-import { HANG_GUARD_MS } from "./file-signals.mjs";
+import { HANG_GUARD_MS } from "./file-signals.ts";
 export { HANG_GUARD_MS };
 
 // Copies the bridge sources to a temporary folder, replaces the SDK import with
 // `fakeSdk` (module source text) and starts the bridge with one new thread.
 export async function startBridge(
-  fakeSdk,
+  fakeSdk: string | URL,
   prefix = "claude-bridge-",
-  { env = {}, thread = {}, clock = false, temporaryBase = os.tmpdir() } = {},
+  {
+    env = {},
+    thread = {},
+    clock = false,
+    temporaryBase = os.tmpdir(),
+  }: {
+    env?: NodeJS.ProcessEnv;
+    thread?: Record<string, unknown>;
+    clock?: boolean;
+    temporaryBase?: string;
+  } = {},
 ) {
   // SDK init always carries a native session id. Keep older scripted fixtures
   // faithful to that declaration; an explicit session_id still takes precedence.
-  fakeSdk = fakeSdk.replace(
+  fakeSdk = (
+    fakeSdk instanceof URL ? await fs.readFile(fakeSdk, "utf8") : fakeSdk
+  ).replace(
     /subtype:\s*(["'])init\1/g,
     "subtype:'init',session_id:options.resume||options.sessionId",
   );
@@ -31,7 +43,11 @@ export async function startBridge(
     await fs.mkdtemp(path.join(temporaryBase, prefix)),
   );
   for (const name of await fs.readdir(BRIDGE)) {
-    if (!name.endsWith(".mjs") || name.endsWith(".test.mjs")) continue;
+    if (
+      (!name.endsWith(".mjs") && !name.endsWith(".ts")) ||
+      /\.test\.(mjs|ts)$/.test(name)
+    )
+      continue;
     const source = await fs.readFile(path.join(BRIDGE, name), "utf8");
     await fs.writeFile(
       path.join(root, name),
@@ -42,13 +58,13 @@ export async function startBridge(
               BRIDGE,
               "node_modules/@anthropic-ai/claude-agent-sdk/sdk.mjs",
             )
-          : "./fake.mjs",
+          : "./fake.ts",
       ),
     );
   }
   await fs.writeFile(
-    path.join(root, "fake.mjs"),
-    `import { waitForFile as waitForFileSignal } from ${JSON.stringify(path.join(BRIDGE, "testing/file-signals.mjs"))};\n` +
+    path.join(root, "fake.ts"),
+    `import { waitForFile as waitForFileSignal } from ${JSON.stringify(path.join(BRIDGE, "testing/file-signals.ts"))};\n` +
       `const waitForFile=(file,options)=>waitForFileSignal(file,{...options,childIpc:true});\n` +
       (fakeSdk.includes("export const resolveSettings") ||
       fakeSdk.includes("export function resolveSettings")
@@ -60,12 +76,16 @@ export async function startBridge(
     path.join(BRIDGE, "node_modules"),
     path.join(root, "node_modules"),
   );
+  await fs.writeFile(
+    path.join(root, "package.json"),
+    JSON.stringify({ type: "module" }),
+  );
   const launch = () =>
     spawn(
       process.execPath,
       [
         ...(clock
-          ? ["--import", path.join(BRIDGE, "testing/virtual-time.mjs")]
+          ? ["--import", path.join(BRIDGE, "testing/virtual-time.ts")]
           : []),
         path.join(root, "bridge.mjs"),
         path.join(root, "state"),
@@ -82,30 +102,35 @@ export async function startBridge(
         },
       },
     );
-  let child;
+  let child: ReturnType<typeof launch>;
   // One exit observation per launched child, registered at spawn so cleanup can
   // never miss an exit that already happened (including a signal exit).
-  let exited;
+  let exited: Promise<void>;
   let stderr = "";
   const notes = [];
   const waiting = new Map();
-  const notifications = new Set();
+  const notifications = new Set<() => void>();
   const attach = () => {
     child = launch();
     const attached = child;
-    exited = new Promise((resolve) => attached.once("exit", resolve));
-    child.stderr.on("data", (chunk) => (stderr += chunk));
+    exited = new Promise<void>((resolve) =>
+      attached.once("exit", () => resolve()),
+    );
+    child.stderr?.on("data", (chunk) => (stderr += chunk));
     child.once("close", () => {
       if (child !== attached) return;
       for (const { reject } of waiting.values())
         reject(new Error("bridge closed before replying\n" + stderr));
     });
-    createInterface({ input: child.stdout }).on("line", (line) => {
-      const message = JSON.parse(line);
-      if (message.method) notes.push(message);
-      else waiting.get(message.id)?.resolve(message);
-      for (const notify of notifications) notify();
-    });
+    createInterface({ input: child.stdout ?? process.stdin }).on(
+      "line",
+      (line) => {
+        const message = JSON.parse(line);
+        if (message.method) notes.push(message);
+        else waiting.get(message.id)?.resolve(message);
+        for (const notify of notifications) notify();
+      },
+    );
   };
   attach();
   let sequence = 0;
@@ -113,21 +138,22 @@ export async function startBridge(
   const bridge = {
     root,
     notes,
+    thread: "",
     get process() {
       return child;
     },
-    async writeSignal(name, content = "") {
+    async writeSignal(name: string, content = "") {
       const file = path.join(root, name);
       const temporary = path.join(root, `.signal-${++signalSequence}.tmp`);
       await fs.writeFile(temporary, content);
       await fs.rename(temporary, file);
-      await new Promise((resolve, reject) => {
+      await new Promise<void>((resolve, reject) => {
         child.send({ fixtureFile: file }, (error) =>
           error ? reject(error) : resolve(),
         );
       });
     },
-    async advanceTime(ms) {
+    async advanceTime(ms: number) {
       if (child.exitCode !== null) return;
       const controller = new AbortController();
       const timer = setTimeout(
@@ -161,7 +187,7 @@ export async function startBridge(
     },
     async call(method, params) {
       const id = ++sequence;
-      let timer;
+      let timer: ReturnType<typeof setTimeout> | undefined;
       try {
         const message = await new Promise((resolve, reject) => {
           waiting.set(id, { resolve, reject });
@@ -178,7 +204,7 @@ export async function startBridge(
               ),
             HANG_GUARD_MS,
           );
-          child.stdin.write(JSON.stringify({ id, method, params }) + "\n");
+          child.stdin?.write(JSON.stringify({ id, method, params }) + "\n");
         });
         if (message.error)
           throw Object.assign(new Error(message.error.message), {
@@ -194,7 +220,8 @@ export async function startBridge(
       child.stdin.write(JSON.stringify({ id, result }) + "\n");
     },
     async note(predicate) {
-      let timer, notify;
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      let notify = () => {};
       try {
         return await new Promise((resolve, reject) => {
           notify = () => {
@@ -241,7 +268,7 @@ export async function startBridge(
   // until exit, reaps a child whose clock can no longer be driven, and always
   // observes the exit registered at spawn.
   async function stop() {
-    child.stdin.end();
+    child.stdin?.end();
     // A failed virtual-clock scenario can leave teardown waiting on a frozen timer.
     // Always reap this fixture's child, including when the test itself timed out.
     const guard = setTimeout(() => child.kill("SIGKILL"), HANG_GUARD_MS);

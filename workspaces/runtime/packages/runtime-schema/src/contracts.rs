@@ -49,7 +49,7 @@ fn ts_strings(lines: &mut String, constants: &[(&str, &str)]) {
     }
 }
 
-fn provider_method_policy_mjs() -> String {
+fn provider_method_policy_ts() -> String {
     let rules = crate::provider_method_policy::THREAD_SERIALIZATION_RULES
         .iter()
         .map(|rule| {
@@ -62,7 +62,7 @@ fn provider_method_policy_mjs() -> String {
         })
         .collect::<String>();
     format!(
-        "// {HEADER}\nconst rules = [\n{rules}];\nexport function isThreadSerialized(method, params) {{\n  return rules.some(\n    ([name, parameter]) =>\n      name === method && (parameter === null || params[parameter] === true),\n  );\n}}\n"
+        "// {HEADER}\nconst rules = [\n{rules}] as const;\nexport function isThreadSerialized(\n  method: string,\n  params: Record<string, unknown>,\n) {{\n  return rules.some(\n    ([name, parameter]) =>\n      name === method && (parameter === null || params[parameter] === true),\n  );\n}}\n"
     )
 }
 
@@ -864,9 +864,9 @@ pub fn render(root: &Path, with_api_types: bool) -> Result<Vec<Rendered>, String
     let scopes = crate::sync_protocol::entity_scopes_from_document(&openapi)?;
     let mut rendered = vec![
         Rendered {
-            path: "workspaces/providers/apps/claude-bridge/provider-method-policy.generated.mjs"
+            path: "workspaces/providers/apps/claude-bridge/provider-method-policy.generated.ts"
                 .into(),
-            text: provider_method_policy_mjs(),
+            text: provider_method_policy_ts(),
         },
         Rendered {
             path: web("subscriptionEntities.ts"),
@@ -898,7 +898,7 @@ pub fn render(root: &Path, with_api_types: bool) -> Result<Vec<Rendered>, String
             ),
         },
         Rendered {
-            path: "workspaces/providers/apps/claude-bridge/input-origin.generated.mjs".into(),
+            path: "workspaces/providers/apps/claude-bridge/input-origin.generated.ts".into(),
             text: format!(
                 "// {HEADER}\nexport const HUMAN_INPUT = {};\nexport const STUDIO_EVENT_INPUT = {};\n",
                 json_string(crate::provider_input::ProviderInputOrigin::Human.as_str()),
@@ -972,6 +972,22 @@ pub fn render(root: &Path, with_api_types: bool) -> Result<Vec<Rendered>, String
             + "\n",
     });
     if with_api_types {
+        let mut generator = schemars::generate::SchemaSettings::draft2020_12()
+            .for_serialize()
+            .with(|settings| settings.definitions_path = "/components/schemas".into())
+            .into_generator();
+        generator.subschema_for::<crate::provider_input::ToolDefinition>();
+        generator.subschema_for::<crate::idle_compaction::CacheReport>();
+        let document = serde_json::json!({
+            "openapi":"3.1.0", "info":{"title":"Bridge runtime contracts","version":"1"},
+            "paths":{}, "components":{"schemas":generator.take_definitions(true)}
+        });
+        rendered.push(Rendered {
+            path: "workspaces/providers/apps/claude-bridge/runtime-contract.generated.ts".into(),
+            text: api_types(root, &document, "--rust-owned")?,
+        });
+    }
+    if with_api_types {
         let mut usage_generator = schemars::generate::SchemaSettings::draft2020_12()
             .for_serialize()
             .with(|settings| settings.definitions_path = "/components/schemas".into())
@@ -982,7 +998,7 @@ pub fn render(root: &Path, with_api_types: bool) -> Result<Vec<Rendered>, String
             "paths":{}, "components":{"schemas":usage_generator.take_definitions(true)}
         });
         rendered.push(Rendered {
-            path: "workspaces/providers/apps/claude-bridge/usage-contract.generated.d.mts".into(),
+            path: "workspaces/providers/apps/claude-bridge/usage-contract.generated.ts".into(),
             text: api_types(root, &usage_document, "--rust-owned")?,
         });
     }
@@ -1063,7 +1079,7 @@ mod tests {
     #[test]
     fn provider_method_policy_matches_generated_bridge_for_parameter_shapes() {
         let root = repository_root();
-        let script = r#"import { isThreadSerialized } from './workspaces/providers/apps/claude-bridge/provider-method-policy.generated.mjs';
+        let script = r#"import { isThreadSerialized } from './workspaces/providers/apps/claude-bridge/provider-method-policy.generated.ts';
 let input = ''; for await (const chunk of process.stdin) input += chunk;
 process.stdout.write(JSON.stringify(JSON.parse(input).map(([method, params]) => isThreadSerialized(method, params))));"#;
         let mut cases = Vec::new();
