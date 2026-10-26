@@ -95,10 +95,10 @@ The daemon uses the same managed binary, store, and socket as the runtime.
 | ----------------------------------------- | ----------------------------------------------------------------------------------------------- |
 | Prepare Linux                             | Install the managed binary first. Start that binary as root with the assigned store and socket. |
 | Start a native chat or migration          | Keep the daemon active before setup.                                                            |
-| Check an installed Linux binary's version | Keep the daemon active. The version check also uses it.                                         |
+| Check an installed Linux binary's version | Run the version command directly. It does not need a daemon.                                    |
 
 Studio does not change mounts or install the root service.
-The `layr_native::socket_path` function owns the Linux socket path.
+The `layr_native::selected_socket_path` function resolves the socket for the selected store.
 macOS uses direct execution and needs no daemon.
 
 Existing sessions retain their saved role and tool contracts.
