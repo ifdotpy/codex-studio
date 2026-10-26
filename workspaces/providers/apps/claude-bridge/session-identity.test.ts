@@ -1,5 +1,5 @@
 import { expect, test } from "vitest";
-import { startBridge } from "./testing/bridge-harness.mjs";
+import { startBridge } from "./testing/bridge-harness.ts";
 import fs from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";

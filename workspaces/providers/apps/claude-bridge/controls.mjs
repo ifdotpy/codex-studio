@@ -1,6 +1,6 @@
 import { checkpointSourceMatches } from "./file-checkpoints.mjs";
 import { messageIndex } from "./history-index.ts";
-import { nativeInputIds } from "./input-messages.mjs";
+import { nativeInputIds } from "./input-messages.ts";
 import { randomUUID } from "node:crypto";
 
 // Initialization is the CLI's authoritative list after native skill policy.

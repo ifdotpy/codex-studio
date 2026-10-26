@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "vitest";
-import { requiresThinking, thinkingFlag } from "./thinking.mjs";
+import { requiresThinking, thinkingFlag } from "./thinking.ts";
 
 test("aliases follow each account catalog and explicit IDs keep their own version", () => {
   const current = [

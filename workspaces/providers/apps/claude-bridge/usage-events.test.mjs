@@ -1,6 +1,6 @@
 import { afterEach, test } from "vitest";
 import assert from "node:assert/strict";
-import { startBridge } from "./testing/bridge-harness.mjs";
+import { startBridge } from "./testing/bridge-harness.ts";
 
 const bridges = [];
 afterEach(async () => {

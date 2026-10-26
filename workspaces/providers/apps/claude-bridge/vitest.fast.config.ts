@@ -1,4 +1,4 @@
-import base from "./vitest.config.mjs";
+import base from "./vitest.config.ts";
 
 // Single owner of this package's short-tier witnesses; preserve file isolation.
 export default {
@@ -7,21 +7,22 @@ export default {
     ...base.test,
     name: "fast",
     include: [
+      "launcher.test.ts",
       // Test-side fixture waits must preserve the worker's IPC lifetime.
-      "file-signals.test.mjs",
+      "file-signals.test.ts",
       // Preserve unconfirmed outcomes and bounded, read-only repair evidence without a model query.
       "restart-reconcile.test.ts",
-      "lifecycle-safety.test.mjs",
+      "lifecycle-safety.test.ts",
       "journal-repair.test.ts",
       // Check zero idle timers, exact deadline recovery, and rearming on progress, results and Studio waits.
-      "stall-watch.test.mjs",
+      "stall-watch.test.ts",
       // SDK UUID coverage, composite history controls and authoritative session transitions.
       "history-index.test.ts",
       "history-recovery.test.ts",
       "session-identity.test.ts",
       // Proven unread/cancelled transition inputs must release their guards.
-      "steer.test.mjs",
-      "stop-receipts.test.mjs",
+      "steer.test.ts",
+      "stop-receipts.test.ts",
       // Final stream accounting, deferred result totals and explicit unfinished-response gaps.
       "usage.test.mjs",
       "usage-bridge.test.mjs",
