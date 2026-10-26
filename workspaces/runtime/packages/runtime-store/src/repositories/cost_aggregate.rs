@@ -873,8 +873,8 @@ fn scope_rows(
     }
     // Every selected response must bring all its counterparts, including responses
     // merely sharing the touched turn; otherwise a suppressed legacy row can revive.
-    // Seek touched turns through the existing scope index, then scan this agent
-    // once for their response counterparts, not once for every receipt.
+    // One statement serves every touched turn: each turn seeks the scope index and
+    // each response seeks the agent/response index, so no turn repeats an agent scan.
     let requested = serde_json::to_string(turns)
         .map_err(|error| rusqlite::Error::ToSqlConversionFailure(Box::new(error)))?;
     let mut statement = db.prepare_cached(&format!(
@@ -884,11 +884,13 @@ fn scope_rows(
          ), touched(id,response) AS MATERIALIZED (
             SELECT c.id,c.response FROM requested t CROSS JOIN analytics_cost_rows c
             WHERE c.root=?1 AND c.agent=?2 AND c.thread IS t.thread AND c.turn IS t.turn
-         ), affected(response) AS (
-            SELECT response FROM touched UNION SELECT response FROM requested
+         ), affected(response) AS MATERIALIZED (
+            SELECT response FROM touched WHERE response IS NOT NULL
+            UNION SELECT response FROM requested WHERE response IS NOT NULL
          )
-         SELECT {ROW_COLUMNS} FROM analytics_cost_rows WHERE root=?1 AND agent=?2
-         AND (id IN (SELECT id FROM touched) OR response IN (SELECT response FROM affected))"
+         SELECT {ROW_COLUMNS} FROM analytics_cost_rows WHERE id IN (SELECT id FROM touched)
+         UNION ALL SELECT {ROW_COLUMNS} FROM analytics_cost_rows WHERE root=?1 AND agent=?2
+         AND response IN (SELECT response FROM affected)"
     ))?;
     let mut rows = BTreeMap::new();
     for row in statement.query_map(params![root, agent, requested], CostRow::from_sql)? {
@@ -1204,7 +1206,7 @@ mod tests {
             SCOPES.set(0);
             tx.trace_v2(rusqlite::trace::TraceEventCodes::SQLITE_TRACE_STMT, Some(|event| {
                 if let rusqlite::trace::TraceEvent::Stmt(_, sql) = event
-                    && sql.contains("WITH affected AS") {
+                    && sql.contains("WITH requested(thread,turn,response)") {
                     SCOPES.set(SCOPES.get() + 1);
                 }
             }));
@@ -1283,11 +1285,13 @@ mod tests {
                     observed.fetch_add(1, Ordering::Relaxed);
                     false
                 })).expect("install fixture VM-step counter");
+                let measure = |steps: &AtomicUsize| -> rusqlite::Result<(Vec<super::CostRow>, usize)> {
+                    steps.store(0, Ordering::Relaxed);
+                    let rows = super::scope_rows(tx, "root", "agent", &(0..16).map(scope).collect())?;
+                    Ok((rows, steps.load(Ordering::Relaxed)))
+                };
+                let (all, batch_steps) = measure(&steps)?;
                 let single = super::scope_rows(tx, "root", "agent", &BTreeSet::from([scope(0)]))?;
-                let single_steps = steps.swap(0, Ordering::Relaxed);
-                let all = super::scope_rows(tx, "root", "agent", &(0..16).map(scope).collect())?;
-                let batch_steps = steps.load(Ordering::Relaxed);
-                tx.progress_handler(0, None::<fn() -> bool>).expect("remove fixture VM-step counter");
                 assert_eq!(single.iter().map(|row| row.id.as_str()).collect::<Vec<_>>(), vec!["row-0"]);
                 assert_eq!(all.iter().map(|row| row.id.clone()).collect::<BTreeSet<_>>(),
                     (0..16).map(|index| format!("row-{index}")).collect());
@@ -1320,9 +1324,17 @@ mod tests {
                 assert_eq!(other_root.len(), 1);
                 assert_eq!(other_root[0].count, 1);
                 assert_eq!(other_root[0].tokens.input_tokens, Some(30.0));
-                assert!(single_steps > 0);
-                assert!(batch_steps <= 6 * single_steps,
-                    "16 touched turns must batch the agent scan, not repeat it: single={single_steps}, batch={batch_steps}");
+                // Untouched turns of the same agent must not add work to the 16 touched turns.
+                for index in 16..64 {
+                    write(&format!("row-{index}"), "root", "agent", "acct", index, 10)?;
+                }
+                let (larger, larger_steps) = measure(&steps)?;
+                tx.progress_handler(0, None::<fn() -> bool>).expect("remove fixture VM-step counter");
+                assert_eq!(larger.len(), 16);
+                assert!(batch_steps > 0);
+                // Index depth may add a few steps; any agent scan adds at least one per added row.
+                assert!(larger_steps < batch_steps + 48,
+                    "16 touched turns must seek their scopes, not scan the agent: {batch_steps} -> {larger_steps}");
                 Ok(())
             })
             .await
