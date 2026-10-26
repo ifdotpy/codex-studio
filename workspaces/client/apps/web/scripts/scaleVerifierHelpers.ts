@@ -867,7 +867,7 @@ async function readRunLock(path: string): Promise<RunLock> {
 }
 
 export async function acquireRunLock(path: string, runId: string) {
-  const owner = { runId, pid: process.pid, token: randomUUID() };
+  const owner: RunLock = { runId, pid: process.pid, token: randomUUID() };
   for (;;) {
     try {
       const handle = await open(path, "wx", 0o600);
