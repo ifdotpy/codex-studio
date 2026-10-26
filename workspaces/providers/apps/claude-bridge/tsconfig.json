@@ -14,7 +14,7 @@
     "usage.ts",
     "usage.test.ts",
     "usage-fixtures.ts",
-    "history-index.mjs",
-    "session-identity.mjs"
+    "history-index.ts",
+    "session-identity.ts"
   ]
 }

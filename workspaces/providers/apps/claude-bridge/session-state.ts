@@ -1,4 +1,8 @@
 import type {
+  CacheReport,
+  ToolDefinition,
+} from "./runtime-contract.generated.ts";
+import type {
   Options,
   RewindFilesResult,
   SessionMessage,
@@ -43,7 +47,7 @@ export interface TurnError {
 export interface Item {
   id?: string;
   type?: string;
-  nativeId?: string;
+  nativeId?: string | undefined;
   nativeIds?: string[];
   nativeSubmissionAttemptId?: string;
   delivery?: string;
@@ -97,7 +101,7 @@ export interface ControlReceipt {
   kind: "rollback";
   turnId: string;
   restoreFiles?: boolean;
-  fileMessageId?: string;
+  fileMessageId?: string | undefined;
   status: "submitted" | "forked" | "rewind_submitted" | "rewound" | "completed";
   sourceNativeId: string;
   targetNativeId?: string;
@@ -106,8 +110,8 @@ export interface ControlReceipt {
   sourceMessages?: SessionMessage[];
   previousTurns?: Turn[];
   upToMessageId: string | null;
-  filePlan?: FileRestorePlan;
-  fileResult?: RewindFilesResult;
+  filePlan?: FileRestorePlan | undefined;
+  fileResult?: RewindFilesResult | undefined;
   fileBackupReleaseAuthorized?: boolean;
   fileBackupReleased?: boolean;
   result?: {
@@ -115,7 +119,7 @@ export interface ControlReceipt {
     nativeId: string;
     removedTurns: number;
     filesRestored?: boolean;
-    fileResult?: RewindFilesResult;
+    fileResult?: RewindFilesResult | undefined;
   };
 }
 export interface JournalRepairReport {
@@ -129,8 +133,8 @@ export interface Session {
   id: string;
   cwd: string;
   turns: Turn[];
-  nativeId?: string;
-  nativeHistoryCwd?: string;
+  nativeId?: string | undefined;
+  nativeHistoryCwd?: string | undefined;
   started?: boolean;
   ephemeral?: boolean;
   pendingNativeSession?: PendingTransition;
@@ -153,7 +157,9 @@ export interface Session {
   sandbox?: string;
   claude?: Settings;
   developerInstructions?: string;
-  dynamicTools?: unknown[];
+  dynamicTools?: ToolDefinition[];
+  idleCache?: CacheReport;
+  moveProof?: unknown;
   dynamicToolsJson?: string;
   capabilityProfile?: unknown;
   moveTurnOptions?: Partial<Options>;

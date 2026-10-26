@@ -36,7 +36,7 @@ export interface ControlDependencies {
 }
 type Command = Pick<SlashCommand, "name"> & Partial<SlashCommand>;
 import { checkpointSourceMatches } from "./file-checkpoints.ts";
-import { messageIndex } from "./history-index.mjs";
+import { messageIndex } from "./history-index.ts";
 import { nativeInputIds } from "./input-messages.ts";
 import { randomUUID } from "node:crypto";
 
