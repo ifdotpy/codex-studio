@@ -238,7 +238,10 @@ function turnsOf(items: AuditItem[]) {
 }
 
 function badTurns(items: AuditItem[]) {
-  const found = new Map();
+  const found = new Map<
+    NonNullable<AuditItem["turnId"]>,
+    AuditItem["turnStatus"]
+  >();
   for (const item of items)
     if (BAD_TURN_STATUSES.has(item.turnStatus ?? "") && item.turnId)
       found.set(item.turnId, item.turnStatus);
@@ -254,7 +257,7 @@ function inputsOf(items: AuditItem[]) {
 }
 
 function repeated<T>(values: T[]) {
-  const counts = new Map();
+  const counts = new Map<T, number>();
   for (const value of values) counts.set(value, (counts.get(value) ?? 0) + 1);
   return [...counts].filter(([, count]) => count > 1).map(([value]) => value);
 }
@@ -667,7 +670,7 @@ export function mergeAudits(parts: Partial<Audit>[]) {
 // Summary lines: failure kinds with counts, then anomaly kinds.
 export function auditSummaryLines(audit: Audit) {
   const tally = (list: AuditEntry[]) => {
-    const counts = new Map();
+    const counts = new Map<AuditEntry["kind"], number>();
     for (const entry of list)
       counts.set(entry.kind, (counts.get(entry.kind) ?? 0) + 1);
     return [...counts].map(([kind, count]) => `${kind}×${count}`).join(", ");
