@@ -297,6 +297,7 @@ test("Mobile client ui", async ({
     });
     await startProjectChat("New chat in this project");
     const { originalBody, created } = await serverCreated;
+    assert.ok(created.cwd, "Created fixture chat must have a project folder");
     await page
       .getByRole("button", { name: "Retry chat request", exact: true })
       .waitFor();
