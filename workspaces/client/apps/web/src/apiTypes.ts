@@ -17,7 +17,7 @@ export type TranscriptWireItem = Omit<
   KnownApiFields<TranscriptApiItem>,
   "inputs"
 > & {
-  inputs?: Array<KnownApiFields<TranscriptApiInput>> | null;
+  inputs?: Array<KnownApiFields<TranscriptApiInput>> | null | undefined;
 };
 export type TranscriptPageData = Omit<
   components["schemas"]["TranscriptPageResponse"],
