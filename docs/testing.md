@@ -13,6 +13,15 @@ model requests, or interrupt active agents. Automated desktop checks use hidden
 windows without operating-system input. Fixture success does not prove a live
 model request or a real reset-credit redemption.
 
+Compiler policy has shared owners: [tsconfig.base.json](../tsconfig.base.json)
+for TypeScript and the workspace lint tables in [Cargo.toml](../Cargo.toml)
+for Rust. Every program and crate inherits them. The root
+[Clippy configuration](../clippy.toml) owns configuration values, including the
+test-only unwrap convention; nested configurations must match those values.
+Tooling witnesses check inheritance and configuration parity. Closed domains
+use exhaustive dispatch so adding a variant requires updating its consumers.
+Root Oxlint runs in both local tiers and the hosted gate composition.
+
 ## Fast, comprehensive, and manual checks
 
 `just test-fast` runs the [`fast` nextest profile](../.config/nextest.toml), desktop

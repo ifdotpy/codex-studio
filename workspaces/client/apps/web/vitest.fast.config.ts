@@ -27,6 +27,7 @@ export default {
       "src/hooks/snapshotRecovery.test.ts",
       "src/servers/serverNames.test.ts",
       "src/servers/serverRows.test.ts",
+      "src/servers/desktopCredentials.test.ts",
       "src/renameRequest.test.ts",
       "src/components/shell/messages/complaintReplyRequest.test.ts",
       "src/sync/drafts.publication.test.ts",
