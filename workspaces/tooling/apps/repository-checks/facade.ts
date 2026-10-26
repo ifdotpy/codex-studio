@@ -132,28 +132,28 @@ const BOUNDARY_ALLOWLIST = [
   },
   {
     importer: "codex-agents-desktop",
-    file: "server-access-native.mjs",
+    file: "server-access-native.ts",
     specifier: "../web/tests/servers/multi-server-fixture.ts",
     reason:
       "The native desktop integration scenario reuses the renderer's local multi-server test fixture.",
   },
   {
     importer: "codex-agents-desktop",
-    file: "test.mjs",
+    file: "test.ts",
     specifier: "../web/tests/playwright.ts",
     reason:
       "The native desktop scenario reuses the renderer's browser test-state helper.",
   },
   {
     importer: "codex-agents-desktop",
-    file: "multi-server-memory.mjs",
+    file: "multi-server-memory.ts",
     specifier: "../web/tests/servers/multi-server-fixture.ts",
     reason:
       "A desktop integration scenario reuses the renderer's local multi-server test fixture.",
   },
   {
     importer: "codex-agents-desktop",
-    file: "server-frames-native.mjs",
+    file: "server-frames-native.ts",
     specifier: "../web/tests/servers/multi-server-fixture.ts",
     reason:
       "A desktop integration scenario reuses the renderer's local multi-server test fixture.",
@@ -174,15 +174,15 @@ const BOUNDARY_ALLOWLIST = [
   },
   {
     importer: "codex-agents-desktop",
-    file: "profile-export-test.mjs",
-    specifier: "../web/src/native/importBrowserProfile.mjs",
+    file: "profile-export-test.ts",
+    specifier: "../web/src/native/importBrowserProfile.ts",
     reason:
       "The profile export scenario checks its output with the renderer's own browser profile import code.",
   },
   {
     importer: "codex-agents-desktop",
-    file: "profile-export-test.mjs",
-    specifier: "../web/src/native/combineBrowserProfiles.mjs",
+    file: "profile-export-test.ts",
+    specifier: "../web/src/native/combineBrowserProfiles.ts",
     reason:
       "The profile export scenario checks its output with the renderer's own browser profile import code.",
   },
@@ -821,7 +821,7 @@ export function gateSteps(root, name) {
       lane: "js",
     })),
     nodeTest("retained-helpers", "retained Python helper boundaries", [
-      "workspaces/client/apps/desktop/retained-helper-witness.test.cjs",
+      "workspaces/client/apps/desktop/retained-helper-witness.test.ts",
     ]),
     nodeTest("mac-sync", "Mac sync chunk read witness", [
       "workspaces/runtime/apps/vm-guest/mac-sync-witness.test.mjs",
@@ -830,7 +830,7 @@ export function gateSteps(root, name) {
       "workspaces/client/apps/native/check-native.test.mjs",
     ]),
     nodeTest("recovery-helpers", "Rust desktop recovery witnesses", [
-      "workspaces/client/apps/desktop/recovery-helper-witness.test.cjs",
+      "workspaces/client/apps/desktop/recovery-helper-witness.test.ts",
     ]),
     nodeTest("retired-server", "retired server action witness", [
       "workspaces/tooling/apps/repository-checks/tests/retired-server-action.test.ts",
