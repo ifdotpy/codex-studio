@@ -20,6 +20,7 @@ export default {
       "src/components/edge-rail/useEdgeRail.test.ts",
       "src/rootSelectors.test.ts",
 
+      "src/nativeErrors.schema.test.ts",
       "src/precompressedAssets.test.ts",
       "src/platformNeutralCopy.test.ts",
       "src/App.connection.test.ts",

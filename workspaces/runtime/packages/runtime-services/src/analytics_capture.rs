@@ -1018,6 +1018,7 @@ pub fn decide(
                     } else {
                         Value::Null
                     };
+                    studio_runtime_schema::claude_failure::sanitize_error(&mut row["error"]);
                     row["terminalSource"] = json!(q.source.name());
                 }
                 for (source, target) in [

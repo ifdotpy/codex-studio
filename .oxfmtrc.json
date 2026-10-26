@@ -16,6 +16,7 @@
     "workspaces/runtime/packages/runtime-schema/src/schemas/persisted-budget-state.schema.json",
     "workspaces/runtime/packages/runtime-schema/src/schemas/persisted-budget-state-write.schema.json",
     "workspaces/runtime/packages/runtime-schema/src/schemas/persisted-budget-usage.schema.json",
-    "workspaces/runtime/packages/runtime-schema/src/schemas/budget-capture.schema.json"
+    "workspaces/runtime/packages/runtime-schema/src/schemas/budget-capture.schema.json",
+    "workspaces/providers/apps/claude-bridge/claude-failure.generated.ts"
   ]
 }

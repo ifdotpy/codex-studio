@@ -49,6 +49,11 @@ test("a limit that refuses a turn Claude started itself reports the provider res
     message: LIMIT_TEXT,
     codexErrorInfo: "rateLimitExceeded",
     resetsAt: RESET,
+    claudeFailure: {
+      error: "rate_limit",
+      apiError: "usage_limit_reached",
+      apiErrorStatus: 429,
+    },
   });
   const shown = await bridge.note(
     "item/completed",
@@ -78,5 +83,6 @@ test("a limit without rate-limit details still reports a usage wait", async () =
   assert.deepEqual(done.params.turn.error, {
     message: LIMIT_TEXT,
     codexErrorInfo: "rateLimitExceeded",
+    claudeFailure: { error: "rate_limit", apiErrorStatus: 429 },
   });
 });

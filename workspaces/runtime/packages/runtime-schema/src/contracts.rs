@@ -953,6 +953,9 @@ pub fn render(root: &Path, with_api_types: bool) -> Result<Vec<Rendered>, String
     identity_version.remove("minimum");
     identity_version.remove("maximum");
     openapi["components"]["schemas"]["UsageReconciliationResponse"]["properties"]["replayConflicts"] = serde_json::json!({"type":"array","items":{"$ref":"#/components/schemas/UsageReplayConflict"}});
+    openapi["components"]["schemas"]["ClaudeFailure"] = crate::claude_failure::schema();
+    openapi["components"]["schemas"]["NativeProviderError"]["properties"]["claudeFailure"] =
+        serde_json::json!({"$ref":"#/components/schemas/ClaudeFailure"});
     check_schema_parity(&openapi, &read_json(root, ACCOUNT_TRANSFER_SCHEMA_PATH)?)?;
     for (name, fields) in [
         (
@@ -982,6 +985,14 @@ pub fn render(root: &Path, with_api_types: bool) -> Result<Vec<Rendered>, String
         Rendered {
             path: web("workspaceModes.ts"),
             text: workspace_modes_ts(),
+        },
+        Rendered {
+            path: "workspaces/providers/apps/claude-bridge/claude-failure.generated.ts".into(),
+            text: format!(
+                "// {HEADER}\nexport const claudeFailureSchema = {} as const;\n",
+                serde_json::to_string(&crate::claude_failure::schema())
+                    .expect("failure schema"),
+            ),
         },
         Rendered {
             path: "workspaces/providers/apps/claude-bridge/session-policy.generated.ts".into(),
@@ -1149,6 +1160,7 @@ pub fn render(root: &Path, with_api_types: bool) -> Result<Vec<Rendered>, String
             "JsonValue",
             "ClaudeSessionSettings",
             "ClaudeCustomModel",
+            "ClaudeFailure",
         ] {
             schemas.insert(name.into(), openapi["components"]["schemas"][name].clone());
         }

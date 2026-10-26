@@ -4,6 +4,7 @@
 pub mod agent_limits;
 pub mod agent_progress;
 pub mod api_schema;
+pub mod claude_failure;
 pub mod contracts;
 pub mod delivery;
 pub mod desktop;

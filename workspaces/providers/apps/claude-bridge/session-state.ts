@@ -43,6 +43,9 @@ export interface TurnError {
   resetsAt?: number | undefined;
   message: string;
   codexErrorInfo?: string | undefined;
+  claudeFailure?:
+    | import("./runtime-contract.generated.ts").ClaudeFailure
+    | undefined;
   data?:
     | (Record<string, unknown> & {
         claudeToolStall?: StallReport | undefined;
@@ -110,6 +113,9 @@ export interface Turn {
     | { codexErrorInfo: string | undefined; resetsAt?: number }
     | undefined;
   apiErrorInfo?: string | null | undefined;
+  claudeFailure?:
+    | import("./runtime-contract.generated.ts").ClaudeFailure
+    | undefined;
 }
 // Disk mirrors retain optional legacy fields; newly produced values have these
 // stronger guarantees before crossing the bridge notification boundary.

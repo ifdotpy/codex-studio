@@ -97,6 +97,7 @@ export interface ActiveQuery {
 }
 
 import { ResponseUsage, cumulativeUsage } from "./usage.ts";
+import { claudeFailure, terminalClaudeFailure } from "./failure-causes.ts";
 import { isThreadSerialized } from "./provider-method-policy.generated.ts";
 import {
   cacheReport,
@@ -1518,6 +1519,7 @@ async function finalizeTurn(
         : undefined,
       errorMessage,
     );
+  const failureCause = terminalClaudeFailure(turn.claudeFailure, error, result);
   if (turn.stallError) turn.error = turn.stallError;
   else if (error || turn.status === "failed")
     turn.error = {
@@ -1551,6 +1553,7 @@ async function finalizeTurn(
           }
         : {}),
       ...turn.limitError,
+      ...(failureCause ? { claudeFailure: failureCause } : {}),
     };
   const answer = turn.items
     .filter(
@@ -2346,6 +2349,7 @@ async function startSession(
             .map((b) => b.text)
             .join("\n");
           turn.apiErrorInfo = claudeErrorInfo(m.error, errorText) ?? null;
+          turn.claudeFailure = claudeFailure(m);
           // A turn that Claude starts itself has no Studio turn when its
           // rate_limit_event arrives. The refused request names the limit.
           const params =
