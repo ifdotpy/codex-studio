@@ -9,15 +9,28 @@ import {
 // The phone "Servers and chats" bar shows only where no edge rail exists.
 // The rail's sidebar button opens servers and chats on the iPhone Duo.
 const cases = [
-  { name: "ordinary phone portrait", width: 390, height: 844, rail: "" },
+  {
+    name: "ordinary phone portrait",
+    width: 390,
+    height: 844,
+    rail: "",
+    drawerTop: 0,
+  },
   {
     name: "Duo portrait with a top rail",
     width: 669,
     height: 951,
-    rail: "top",
+    rail: "top&strip",
+    drawerTop: 82,
   },
-  { name: "Duo open landscape", width: 951, height: 669, rail: "right" },
-  { name: "Duo closed", width: 402, height: 874, rail: "right" },
+  {
+    name: "Duo open landscape",
+    width: 951,
+    height: 669,
+    rail: "right",
+    drawerTop: 0,
+  },
+  { name: "Duo closed", width: 402, height: 874, rail: "right", drawerTop: 0 },
 ];
 
 test("the phone servers bar hides whenever the edge rail shows", async ({
@@ -57,6 +70,11 @@ test("the phone servers bar hides whenever the edge rail shows", async ({
       const padding = await page
         .locator(".multi-server-shell")
         .evaluate((node) => getComputedStyle(node).paddingTop);
+      // Drawers start below the native portrait top strip and its rail row.
+      const drawerTop = await page
+        .locator(".mantine-Drawer-inner")
+        .evaluate((node) => node.getBoundingClientRect().top);
+      expect(drawerTop, entry.name).toBe(entry.drawerTop);
       if (entry.rail) {
         await expect(bar, entry.name).toBeHidden();
         expect(padding, entry.name).toBe("0px");
