@@ -1,43 +1,23 @@
+import { initialAgent, fixtureReadState } from "./chat-read-state.fixture.ts";
+import type { EntityFixtureState } from "../playwright.ts";
+import type { Connect } from "vite";
+import { fixtureOrigin, trackBrowserContexts } from "./browser.ts";
 import { handleEntitySyncFixtureRequest, test } from "../playwright.ts";
 import assert from "node:assert/strict";
-import { createRequire } from "node:module";
+import { createFixtureViteServer as createServer } from "../playwright.ts";
+import type {} from "./chat-read-client-browser.fixture.tsx";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-const browserContextsByTest = new WeakMap();
-test.beforeEach(async ({ browser }, testInfo) => {
-  browserContextsByTest.set(testInfo, new Set(browser.contexts()));
-});
-test.afterEach(async ({ browser }, testInfo) => {
-  const initialContexts = browserContextsByTest.get(testInfo) ?? new Set();
-  await Promise.all(
-    browser
-      .contexts()
-      .filter((context) => !initialContexts.has(context))
-      .map((context) => context.close()),
-  );
-});
+trackBrowserContexts();
 
 test("chat read client browser", async ({ browser: _browser }) => {
   test.setTimeout(120_000);
   const root = join(import.meta.dirname, "../../");
-  const require = createRequire(join(root, "package.json"));
-  const { createServer } = await import(require.resolve("vite"));
   const workspaceId = "c".repeat(32);
-  const syncAgent = {
-    id: "one",
-    threadId: "thread",
-    lastCompletedTurn: "turn",
-    lastCompletedTurnStatus: "completed",
-    source: "managed",
-    status: "completed",
-    name: "One",
-    model: "sol",
-    created: 1,
-    readStateSupported: true,
-  };
-  const syncSnapshot = {
+  const syncAgent = { ...initialAgent };
+  const syncSnapshot: EntityFixtureState = {
     stateDir: "/state",
     chats: [],
     edges: [],
@@ -54,14 +34,19 @@ test("chat read client browser", async ({ browser: _browser }) => {
       rules: [],
       work: [],
       nativeNotices: [],
-      sidebarOrder: [],
-      rateLimits: [],
+      sidebarOrder: { groups: null, revision: 0 },
+      rateLimits: null,
       rateLimitsByAccount: {},
     },
   };
-  let notifyState;
+  let notifyState:
+    | Parameters<
+        NonNullable<
+          Parameters<typeof handleEntitySyncFixtureRequest>[2]["onStreamReady"]
+        >
+      >[0]
+    | undefined;
   const cacheDir = await mkdtemp(join(tmpdir(), "studio-chat-read-"));
-  const entry = join(root, "chat-read-fixture.tsx");
   const server = await createServer({
     configFile: false,
     root,
@@ -84,8 +69,12 @@ test("chat read client browser", async ({ browser: _browser }) => {
         configureServer(server) {
           server.middlewares.stack.unshift({
             route: "",
-            handle(req, res, next) {
-              const url = new URL(req.url, "http://fixture.local");
+            handle(
+              req: Parameters<Connect.NextHandleFunction>[0],
+              res: Parameters<Connect.NextHandleFunction>[1],
+              next: Connect.NextFunction,
+            ) {
+              const url = new URL(req.url ?? "", "http://fixture.local");
               if (
                 req.method === "POST" &&
                 url.pathname === "/api/test/read-state"
@@ -93,7 +82,7 @@ test("chat read client browser", async ({ browser: _browser }) => {
                 let text = "";
                 req.on("data", (chunk) => (text += chunk));
                 req.on("end", () => {
-                  syncAgent.readState = JSON.parse(text);
+                  syncAgent.readState = fixtureReadState(text);
                   notifyState?.([{ kind: "state" }]);
                   res.writeHead(204);
                   res.end();
@@ -116,21 +105,9 @@ test("chat read client browser", async ({ browser: _browser }) => {
           server.middlewares.use("/check", (_req, res) => {
             res.setHeader("Content-Type", "text/html");
             res.end(
-              '<div id="root"></div><script type="module" src="/chat-read-fixture.tsx"></script>',
+              '<div id="root"></div><script type="module" src="/tests/chat/chat-read-client-browser.fixture.tsx"></script>',
             );
           });
-        },
-        resolveId(id) {
-          if (id === "/chat-read-fixture.tsx") return entry;
-        },
-        load(id) {
-          if (id !== entry) return;
-          return `import React,{useState,useRef} from 'react';import{createRoot}from'react-dom/client';import{flushSync}from'react-dom';import{useChatReadState,useVisibleChatResult}from'/src/components/useChatReadState.ts';
-  window.foreground=false;window.visible=true;Object.defineProperty(document,'visibilityState',{configurable:true,get:()=>window.visible?'visible':'hidden'});document.hasFocus=()=>window.foreground;
-  const initial={id:'one',threadId:'thread',lastCompletedTurn:'turn',lastCompletedTurnStatus:'completed',source:'managed',status:'completed',name:'One',model:'sol',created:1,readStateSupported:true};
-window.calls=[];window.notifications=[];window.refreshes=0;window.hold=false;window.fail=false;window.serverState=JSON.parse(localStorage.getItem('server-read-state')||'null');
-  const nativeFetch=window.fetch;window.fetch=async(input,options)=>{const request=input instanceof Request?input:new Request(input,options);const url=new URL(request.url);if(url.pathname!='/api/organization')return nativeFetch(input,options);const body=JSON.parse(await request.clone().text());window.calls.push({...body,workspace:request.headers.get('X-Canvas-Workspace')});if(window.hold)await new Promise(resolve=>window.release=resolve);if(window.fail)return new Response(JSON.stringify({error:'Read state changed'}),{status:409});const value=body.read_state;window.serverState={threadId:value.thread_id,turnId:value.turn_id,read:value.read,revision:value.expected_revision+1};localStorage.setItem('server-read-state',JSON.stringify(window.serverState));await nativeFetch('/api/test/read-state',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(window.serverState)});return new Response(JSON.stringify({...initial,readState:window.serverState}),{headers:{'Content-Type':'application/json'}})};
-  function Fixture(){const[agent,setAgent]=useState({...initial,readState:window.serverState}),[opened,setOpened]=useState('one'),[workspace,setWorkspace]=useState('first'),[loaded,setLoaded]=useState(true),[message,setMessage]=useState('turn'),[offset,setOffset]=useState(900),[streaming,setStreaming]=useState(false),[phase,setPhase]=useState("final_answer"),[nodeVersion,setNodeVersion]=useState(0),[turnStatus,setTurnStatus]=useState(undefined),[latestPage,setLatestPage]=useState(true),[resultText,setResultText]=useState("Completed result"),[groupTurn,setGroupTurn]=useState('turn'),[groupTurns,setGroupTurns]=useState('turn'),[nativeRows,setNativeRows]=useState(null),[rowsOpen,setRowsOpen]=useState(true);const scroll=useRef(null);const data={stateDir:'/state',threads:[agent],runtime:{agents:[agent]}};const controls=useChatReadState(data,opened,text=>window.notifications.push(text),async()=>{window.refreshes++},workspace);window.controls=controls;window.agent=agent;window.state=controls.readStateFor(agent);window.marking=[...controls.marking];window.markUnread=()=>controls.markUnread(agent);window.setAgent=value=>flushSync(()=>setAgent(value));window.setOpened=value=>flushSync(()=>setOpened(value));window.setWorkspace=value=>flushSync(()=>setWorkspace(value));window.setLoaded=value=>flushSync(()=>setLoaded(value));window.setMessage=value=>flushSync(()=>setMessage(value));window.setOffset=value=>flushSync(()=>setOffset(value));window.setStreaming=value=>flushSync(()=>setStreaming(value));window.setPhase=value=>flushSync(()=>setPhase(value));window.replaceResult=()=>flushSync(()=>setNodeVersion(v=>v+1));window.setTurnStatus=value=>flushSync(()=>setTurnStatus(value));window.setLatestPage=value=>flushSync(()=>setLatestPage(value));window.setResultText=value=>flushSync(()=>setResultText(value));window.setGroupTurn=value=>flushSync(()=>setGroupTurn(value));window.setGroupTurns=value=>flushSync(()=>setGroupTurns(value));window.setNativeRows=value=>flushSync(()=>setNativeRows(value));window.setRowsOpen=value=>flushSync(()=>setRowsOpen(value));window.observe=proof=>controls.observeRead(proof);useVisibleChatResult(scroll,agent,nativeRows||[{id:'result',role:'assistant',turnId:message,phase,streaming,turnStatus,text:resultText}],loaded,controls.observeRead,workspace,latestPage);return <><div id="messages" ref={scroll} style={{height:180,overflow:'auto'}}><div style={{height:offset}}/><section key={nodeVersion} data-turn={groupTurn} data-turns={groupTurns} data-outcome={turnStatus}><>{nativeRows?<details open={rowsOpen}><summary>Joined work</summary>{nativeRows.map(row=><div key={row.id} data-message={row.id} style={{height:row.height,marginTop:row.marginTop||0}}>{row.text}</div>)}</details>:<article data-message="result" style={{height:80}}>Completed result</article>}</></section></div><button onClick={()=>void controls.markUnread(agent)}>Unread</button></>};const appRoot=createRoot(document.getElementById('root'));window.unmount=()=>appRoot.unmount();appRoot.render(<Fixture/>);`;
         },
       },
     ],
@@ -142,260 +119,334 @@ window.calls=[];window.notifications=[];window.refreshes=0;window.hold=false;win
     const page = await browser.newPage({
       viewport: { width: 390, height: 700 },
     });
-    const errors = [];
+    const errors: string[] = [];
     page.on("pageerror", (error) => errors.push(error.message));
-    const ready = async () => page.waitForFunction(() => !!window.setAgent);
+    const ready = async () =>
+      page.waitForFunction(() => !!window.chatReadFixture.setAgent);
     const settle = () =>
       page.evaluate(
         () =>
-          new Promise((resolve) =>
-            requestAnimationFrame(() => requestAnimationFrame(resolve)),
+          new Promise<void>((resolve) =>
+            requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
           ),
       );
     await page.clock.install();
-    await page.goto(
-      `http://127.0.0.1:${server.httpServer.address().port}/check`,
-    );
+    await page.goto(`${fixtureOrigin(server)}/check`);
     await ready();
     await settle();
-    assert.equal(await page.evaluate(() => window.calls.length), 0);
+    assert.equal(
+      await page.evaluate(() => window.chatReadFixture.calls.length),
+      0,
+    );
     await page.evaluate(() => {
-      window.foreground = true;
+      window.chatReadFixture.foreground = true;
       window.dispatchEvent(new Event("focus"));
     });
     await settle();
     assert.equal(
-      await page.evaluate(() => window.calls.length),
+      await page.evaluate(() => window.chatReadFixture.calls.length),
       0,
       "Offscreen result is unread",
     );
     await page.evaluate(() => {
-      window.visible = false;
-      window.setOffset(0);
+      window.chatReadFixture.visible = false;
+      window.chatReadFixture.setOffset(0);
       document.dispatchEvent(new Event("visibilitychange"));
     });
     await settle();
     assert.equal(
-      await page.evaluate(() => window.calls.length),
+      await page.evaluate(() => window.chatReadFixture.calls.length),
       0,
       "Hidden page is unread",
     );
     await page.evaluate(() => {
-      window.visible = true;
-      window.foreground = false;
+      window.chatReadFixture.visible = true;
+      window.chatReadFixture.foreground = false;
       document.dispatchEvent(new Event("visibilitychange"));
     });
     await settle();
     assert.equal(
-      await page.evaluate(() => window.calls.length),
+      await page.evaluate(() => window.chatReadFixture.calls.length),
       0,
       "Unfocused page is unread",
     );
     await page.evaluate(() => {
-      window.foreground = true;
-      window.setLoaded(false);
+      window.chatReadFixture.foreground = true;
+      window.chatReadFixture.setLoaded(false);
       window.dispatchEvent(new Event("focus"));
     });
     await settle();
     assert.equal(
-      await page.evaluate(() => window.calls.length),
+      await page.evaluate(() => window.chatReadFixture.calls.length),
       0,
       "Unloaded transcript is unread",
     );
     await page.evaluate(() => {
-      window.setStreaming(true);
-      window.setLoaded(true);
+      window.chatReadFixture.setStreaming(true);
+      window.chatReadFixture.setLoaded(true);
     });
     await settle();
     assert.equal(
-      await page.evaluate(() => window.calls.length),
+      await page.evaluate(() => window.chatReadFixture.calls.length),
       0,
       "Streaming final is not yet a complete result",
     );
     await page.evaluate(() => {
-      window.setPhase("commentary");
-      window.setStreaming(false);
+      window.chatReadFixture.setPhase("commentary");
+      window.chatReadFixture.setStreaming(false);
     });
     await settle();
     assert.equal(
-      await page.evaluate(() => window.calls.length),
+      await page.evaluate(() => window.chatReadFixture.calls.length),
       0,
       "Visible commentary cannot acknowledge an absent final answer",
     );
-    await page.evaluate(() => window.setPhase("final_answer"));
-    await page.waitForFunction(() => window.state?.read === true);
-    assert.equal(await page.evaluate(() => window.calls.length), 1);
-    assert.equal(await page.evaluate(() => window.calls[0].workspace), "first");
+    await page.evaluate(() => window.chatReadFixture.setPhase("final_answer"));
+    await page.waitForFunction(
+      () => window.chatReadFixture.state?.read === true,
+    );
+    assert.equal(
+      await page.evaluate(() => window.chatReadFixture.calls.length),
+      1,
+    );
+    assert.equal(
+      await page.evaluate(() => window.chatReadFixture.calls[0]?.workspace),
+      "first",
+    );
     await page.evaluate(() => {
-      window.previousControls = window.controls;
-      window.setAgent({ ...window.agent, tail: "Old replica update" });
+      window.chatReadFixture.previousControls = window.chatReadFixture.controls;
+      window.chatReadFixture.setAgent({
+        ...window.chatReadFixture.agent,
+        tail: "Old replica update",
+      });
     });
     await settle();
-    assert.equal(await page.evaluate(() => window.state.read), true);
-    assert.equal(await page.evaluate(() => window.calls.length), 1);
+    assert.equal(
+      await page.evaluate(() => window.chatReadFixture.state?.read),
+      true,
+    );
+    assert.equal(
+      await page.evaluate(() => window.chatReadFixture.calls.length),
+      1,
+    );
     assert.equal(
       await page.evaluate(
         () =>
-          window.previousControls.observeRead === window.controls.observeRead &&
-          window.previousControls.markUnread === window.controls.markUnread &&
-          window.previousControls.readStateFor === window.controls.readStateFor,
+          window.chatReadFixture.previousControls?.observeRead ===
+            window.chatReadFixture.controls.observeRead &&
+          window.chatReadFixture.previousControls?.markUnread ===
+            window.chatReadFixture.controls.markUnread &&
+          window.chatReadFixture.previousControls?.readStateFor ===
+            window.chatReadFixture.controls.readStateFor,
       ),
       true,
       "Unrelated updates preserve callback identities",
     );
-    await page.evaluate(() => window.markUnread());
+    await page.evaluate(() => window.chatReadFixture.markUnread());
     await page.waitForFunction(
-      () => window.state?.read === false && window.marking.length === 0,
+      () =>
+        window.chatReadFixture.state?.read === false &&
+        window.chatReadFixture.marking.length === 0,
     );
-    assert.equal(await page.evaluate(() => window.calls.length), 2);
+    assert.equal(
+      await page.evaluate(() => window.chatReadFixture.calls.length),
+      2,
+    );
     await page.evaluate(() => window.dispatchEvent(new Event("focus")));
     await settle();
-    assert.equal(await page.evaluate(() => window.calls.length), 2);
+    assert.equal(
+      await page.evaluate(() => window.chatReadFixture.calls.length),
+      2,
+    );
     await page.reload();
     await ready();
-    assert.equal(await page.evaluate(() => window.state.read), false);
-    assert.equal(await page.evaluate(() => window.calls.length), 0);
+    assert.equal(
+      await page.evaluate(() => window.chatReadFixture.state?.read),
+      false,
+    );
+    assert.equal(
+      await page.evaluate(() => window.chatReadFixture.calls.length),
+      0,
+    );
     await page.evaluate(() => {
-      window.foreground = true;
-      window.setOffset(0);
+      window.chatReadFixture.foreground = true;
+      window.chatReadFixture.setOffset(0);
       window.dispatchEvent(new Event("focus"));
     });
-    await page.waitForFunction(() => window.state?.read === true);
-    await page.evaluate(() =>
-      window.setAgent({
-        ...window.agent,
-        readState: {
-          ...window.state,
-          read: false,
-          revision: window.state.revision + 1,
-        },
-      }),
+    await page.waitForFunction(
+      () => window.chatReadFixture.state?.read === true,
     );
+    await page.evaluate(() => {
+      const state = window.chatReadFixture.state;
+      if (!state) throw new Error("Missing read state");
+      window.chatReadFixture.setAgent({
+        ...window.chatReadFixture.agent,
+        readState: { ...state, read: false, revision: state.revision + 1 },
+      });
+    });
     await settle();
-    assert.equal(await page.evaluate(() => window.state.read), false);
     assert.equal(
-      await page.evaluate(() => window.calls.length),
+      await page.evaluate(() => window.chatReadFixture.state?.read),
+      false,
+    );
+    assert.equal(
+      await page.evaluate(() => window.chatReadFixture.calls.length),
       1,
       "Another device's Unread does not trigger auto-read on the unchanged visible result",
     );
-    await page.evaluate(() =>
-      window.setAgent({
-        ...window.agent,
-        readState: {
-          ...window.state,
-          read: true,
-          revision: window.state.revision + 1,
-        },
-      }),
-    );
     await page.evaluate(() => {
-      window.setAgent({ ...window.agent, lastCompletedTurn: "new-turn" });
-      window.observe({ id: "one", threadId: "thread", turnId: "turn" });
+      const state = window.chatReadFixture.state;
+      if (!state) throw new Error("Missing read state");
+      window.chatReadFixture.setAgent({
+        ...window.chatReadFixture.agent,
+        readState: { ...state, read: true, revision: state.revision + 1 },
+      });
+    });
+    await page.evaluate(() => {
+      window.chatReadFixture.setAgent({
+        ...window.chatReadFixture.agent,
+        lastCompletedTurn: "new-turn",
+      });
+      window.chatReadFixture.observe({
+        id: "one",
+        threadId: "thread",
+        turnId: "turn",
+      });
     });
     await settle();
     assert.equal(
-      await page.evaluate(() => window.calls.length),
+      await page.evaluate(() => window.chatReadFixture.calls.length),
       1,
       "Old visible result cannot acknowledge newer result",
     );
     await page.evaluate(() => {
-      window.setMessage("new-turn");
-      window.hold = true;
-      window.setOffset(0);
+      window.chatReadFixture.setMessage("new-turn");
+      window.chatReadFixture.hold = true;
+      window.chatReadFixture.setOffset(0);
     });
-    await page.waitForFunction(() => window.calls.length === 2);
+    await page.waitForFunction(() => window.chatReadFixture.calls.length === 2);
     await page.evaluate(() => {
-      window.foreground = false;
-      window.setWorkspace("second");
+      window.chatReadFixture.foreground = false;
+      window.chatReadFixture.setWorkspace("second");
     });
     await settle();
-    const refreshes = await page.evaluate(() => window.refreshes);
+    const refreshes = await page.evaluate(
+      () => window.chatReadFixture.refreshes,
+    );
     const staleWrite = page.waitForResponse("**/api/test/read-state");
     await page.evaluate(() => {
-      window.release();
-      window.hold = false;
+      window.chatReadFixture.release();
+      window.chatReadFixture.hold = false;
     });
     await (await staleWrite).finished();
     await settle();
     assert.equal(
-      await page.evaluate(() => window.refreshes),
+      await page.evaluate(() => window.chatReadFixture.refreshes),
       refreshes,
       "Old workspace response cannot refresh current scope",
     );
     assert.equal(
-      await page.evaluate(() => window.state?.turnId),
+      await page.evaluate(() => window.chatReadFixture.state?.turnId),
       "turn",
       "Old workspace response cannot set canonical state",
     );
     await page.evaluate(() => {
-      window.foreground = false;
-      window.setAgent({ ...window.agent, readStateSupported: false });
-      window.setWorkspace("third");
+      window.chatReadFixture.foreground = false;
+      window.chatReadFixture.setAgent({
+        ...window.chatReadFixture.agent,
+        readStateSupported: false,
+      });
+      window.chatReadFixture.setWorkspace("third");
     });
     await settle();
-    const count = await page.evaluate(() => window.calls.length);
-    await page.evaluate(() => window.markUnread());
-    await settle();
-    assert.equal(await page.evaluate(() => window.calls.length), count);
-    await page.evaluate(() => {
-      window.setAgent({ ...window.agent, readStateSupported: true });
-      window.setWorkspace("fourth");
-      window.fail = true;
-      window.foreground = true;
-      window.dispatchEvent(new Event("focus"));
-    });
-    await page.waitForFunction(() => window.notifications.length > 0);
-    await settle();
-    const failed = await page.evaluate(() => window.calls.length);
+    const count = await page.evaluate(
+      () => window.chatReadFixture.calls.length,
+    );
+    await page.evaluate(() => window.chatReadFixture.markUnread());
     await settle();
     assert.equal(
-      await page.evaluate(() => window.calls.length),
+      await page.evaluate(() => window.chatReadFixture.calls.length),
+      count,
+    );
+    await page.evaluate(() => {
+      window.chatReadFixture.setAgent({
+        ...window.chatReadFixture.agent,
+        readStateSupported: true,
+      });
+      window.chatReadFixture.setWorkspace("fourth");
+      window.chatReadFixture.fail = true;
+      window.chatReadFixture.foreground = true;
+      window.dispatchEvent(new Event("focus"));
+    });
+    await page.waitForFunction(
+      () => window.chatReadFixture.notifications.length > 0,
+    );
+    await settle();
+    const failed = await page.evaluate(
+      () => window.chatReadFixture.calls.length,
+    );
+    await settle();
+    assert.equal(
+      await page.evaluate(() => window.chatReadFixture.calls.length),
       failed,
       "A rejected acknowledgement cannot loop",
     );
     await page.evaluate(() => {
-      window.foreground = false;
-      window.fail = false;
-      window.hold = true;
-      window.setWorkspace("last");
-      void window.markUnread();
+      window.chatReadFixture.foreground = false;
+      window.chatReadFixture.fail = false;
+      window.chatReadFixture.hold = true;
+      window.chatReadFixture.setWorkspace("last");
+      void window.chatReadFixture.markUnread();
     });
-    await page.waitForFunction(() => window.marking.length > 0);
-    const beforeUnmount = await page.evaluate(() => window.refreshes);
+    await page.waitForFunction(() => window.chatReadFixture.marking.length > 0);
+    const beforeUnmount = await page.evaluate(
+      () => window.chatReadFixture.refreshes,
+    );
     const unmountedWrite = page.waitForResponse("**/api/test/read-state");
     await page.evaluate(() => {
-      window.unmount();
-      window.release();
+      window.chatReadFixture.unmount();
+      window.chatReadFixture.release();
     });
     await (await unmountedWrite).finished();
     await settle();
-    assert.equal(await page.evaluate(() => window.refreshes), beforeUnmount);
+    assert.equal(
+      await page.evaluate(() => window.chatReadFixture.refreshes),
+      beforeUnmount,
+    );
     await page.evaluate(() => localStorage.clear());
     await page.reload();
     await ready();
     await page.evaluate(() => {
-      window.hold = true;
-      window.foreground = true;
-      window.setOffset(0);
+      window.chatReadFixture.hold = true;
+      window.chatReadFixture.foreground = true;
+      window.chatReadFixture.setOffset(0);
       window.dispatchEvent(new Event("focus"));
     });
-    await page.waitForFunction(() => window.calls.length === 1);
+    await page.waitForFunction(() => window.chatReadFixture.calls.length === 1);
     await page.evaluate(() => {
-      void window.markUnread();
+      void window.chatReadFixture.markUnread();
     });
     await settle();
-    assert.equal(await page.evaluate(() => window.calls.length), 1);
+    assert.equal(
+      await page.evaluate(() => window.chatReadFixture.calls.length),
+      1,
+    );
     await page.evaluate(() => {
-      window.hold = false;
-      window.release();
+      window.chatReadFixture.hold = false;
+      window.chatReadFixture.release();
     });
     await page.waitForFunction(
-      () => window.state?.read === false && window.marking.length === 0,
+      () =>
+        window.chatReadFixture.state?.read === false &&
+        window.chatReadFixture.marking.length === 0,
     );
-    assert.equal(await page.evaluate(() => window.calls.length), 2);
+    assert.equal(
+      await page.evaluate(() => window.chatReadFixture.calls.length),
+      2,
+    );
     assert.deepEqual(
       await page.evaluate(() =>
-        window.calls.map((call) => call.read_state.read),
+        window.chatReadFixture.calls.map((call) => call.read_state.read),
       ),
       [true, false],
     );
@@ -405,47 +456,53 @@ window.calls=[];window.notifications=[];window.refreshes=0;window.hold=false;win
     await ready();
     await settle();
     await page.evaluate(() => {
-      window.foreground = true;
-      window.replaceResult();
+      window.chatReadFixture.foreground = true;
+      window.chatReadFixture.replaceResult();
     });
     await settle();
-    await page.evaluate(() => window.setOffset(0));
-    await page.waitForFunction(() => window.state?.read === true, undefined, {
-      timeout: 2000,
-    });
+    await page.evaluate(() => window.chatReadFixture.setOffset(0));
+    await page.waitForFunction(
+      () => window.chatReadFixture.state?.read === true,
+      undefined,
+      {
+        timeout: 2000,
+      },
+    );
 
     await page.evaluate(() => localStorage.clear());
     await page.reload();
     await ready();
     await page.evaluate(() => {
-      window.foreground = true;
-      window.setPhase("commentary");
-      window.setTurnStatus("completed");
-      window.setLatestPage(false);
-      window.setOffset(0);
+      window.chatReadFixture.foreground = true;
+      window.chatReadFixture.setPhase("commentary");
+      window.chatReadFixture.setTurnStatus("completed");
+      window.chatReadFixture.setLatestPage(false);
+      window.chatReadFixture.setOffset(0);
     });
     await settle();
     assert.equal(
-      await page.evaluate(() => window.calls.length),
+      await page.evaluate(() => window.chatReadFixture.calls.length),
       0,
       "Partial history cannot acknowledge an absent final answer",
     );
-    await page.evaluate(() => window.setLatestPage(true));
-    await page.waitForFunction(() => window.state?.read === true);
+    await page.evaluate(() => window.chatReadFixture.setLatestPage(true));
+    await page.waitForFunction(
+      () => window.chatReadFixture.state?.read === true,
+    );
 
     await page.evaluate(() => localStorage.clear());
     await page.reload();
     await ready();
     await page.evaluate(() => {
-      window.foreground = true;
-      window.setPhase("commentary");
-      window.setTurnStatus("completed");
-      window.setLatestPage(true);
-      window.setGroupTurn("historical-a");
-      window.setGroupTurns("historical-a silent-b");
-      window.setMessage("silent-b");
-      window.setOffset(0);
-      window.setNativeRows([
+      window.chatReadFixture.foreground = true;
+      window.chatReadFixture.setPhase("commentary");
+      window.chatReadFixture.setTurnStatus("completed");
+      window.chatReadFixture.setLatestPage(true);
+      window.chatReadFixture.setGroupTurn("historical-a");
+      window.chatReadFixture.setGroupTurns("historical-a silent-b");
+      window.chatReadFixture.setMessage("silent-b");
+      window.chatReadFixture.setOffset(0);
+      window.chatReadFixture.setNativeRows([
         ...Array.from({ length: 12 }, (_, index) => ({
           id: `history-a-${index}`,
           role: "tool",
@@ -463,23 +520,23 @@ window.calls=[];window.notifications=[];window.refreshes=0;window.hold=false;win
           text: "Latest tool activity",
         },
       ]);
-      window.setRowsOpen(false);
-      window.setAgent({
-        ...window.agent,
+      window.chatReadFixture.setRowsOpen(false);
+      window.chatReadFixture.setAgent({
+        ...window.chatReadFixture.agent,
         lastCompletedTurn: "silent-b",
         lastCompletedTurnStatus: "completed",
       });
     });
     await settle();
     assert.equal(
-      await page.evaluate(() => window.calls.length),
+      await page.evaluate(() => window.chatReadFixture.calls.length),
       0,
       "a collapsed joined disclosure does not acknowledge hidden latest-turn rows",
     );
-    await page.evaluate(() => window.setRowsOpen(true));
+    await page.evaluate(() => window.chatReadFixture.setRowsOpen(true));
     await settle();
     assert.equal(
-      await page.evaluate(() => window.calls.length),
+      await page.evaluate(() => window.chatReadFixture.calls.length),
       0,
       "visible historical rows cannot acknowledge latest-turn activity below the viewport",
     );
@@ -490,12 +547,14 @@ window.calls=[];window.notifications=[];window.refreshes=0;window.hold=false;win
     );
     assert.equal(
       await page.evaluate(() => {
-        const root = document
-          .querySelector("#messages")
-          .getBoundingClientRect();
-        const latest = document
-          .querySelector('[data-message="activity-silent-b"]')
-          .getBoundingClientRect();
+        const rootNode = document.querySelector("#messages");
+        if (!rootNode) throw new Error("Missing messages root");
+        const root = rootNode.getBoundingClientRect();
+        const latestNode = document.querySelector(
+          '[data-message="activity-silent-b"]',
+        );
+        if (!latestNode) throw new Error("Missing latest message");
+        const latest = latestNode.getBoundingClientRect();
         return (
           Math.min(root.bottom, latest.bottom) > Math.max(root.top, latest.top)
         );
@@ -505,15 +564,18 @@ window.calls=[];window.notifications=[];window.refreshes=0;window.hold=false;win
     );
     await page.evaluate(() => {
       const root = document.querySelector("#messages");
+      if (!root) throw new Error("Missing messages root");
       root.scrollTop = root.scrollHeight;
       root.dispatchEvent(new Event("scroll"));
     });
     await page.waitForFunction(() =>
-      window.calls.some((call) => call.read_state.turn_id === "silent-b"),
+      window.chatReadFixture.calls.some(
+        (call) => call.read_state.turn_id === "silent-b",
+      ),
     );
     assert.deepEqual(
       await page.evaluate(() =>
-        window.calls.map((call) => call.read_state.turn_id),
+        window.chatReadFixture.calls.map((call) => call.read_state.turn_id),
       ),
       ["silent-b"],
       "a visible tool-only latest turn is acknowledged through joined historical membership",
@@ -524,108 +586,140 @@ window.calls=[];window.notifications=[];window.refreshes=0;window.hold=false;win
     await ready();
     await page.evaluate(() => {
       const fetch = window.fetch;
-      window.transientFailure = true;
+      window.chatReadFixture.transientFailure = true;
       window.fetch = (input, options) => {
         const request =
           input instanceof Request ? input : new Request(input, options);
         if (
           new URL(request.url).pathname === "/api/organization" &&
-          window.transientFailure
+          window.chatReadFixture.transientFailure
         ) {
-          window.transientFailure = false;
+          window.chatReadFixture.transientFailure = false;
           return Promise.reject(new TypeError("Network disconnected"));
         }
         return fetch(input, options);
       };
-      window.foreground = true;
-      window.setOffset(0);
+      window.chatReadFixture.foreground = true;
+      window.chatReadFixture.setOffset(0);
     });
-    await page.waitForFunction(() => !window.transientFailure);
+    await page.waitForFunction(() => !window.chatReadFixture.transientFailure);
     await page.clock.fastForward(1000);
-    await page.waitForFunction(() => window.state?.read === true);
-    assert.equal(await page.evaluate(() => window.calls.length), 1);
+    await page.waitForFunction(
+      () => window.chatReadFixture.state?.read === true,
+    );
+    assert.equal(
+      await page.evaluate(() => window.chatReadFixture.calls.length),
+      1,
+    );
 
     await page.evaluate(() => localStorage.clear());
     await page.reload();
     await ready();
     await page.evaluate(() => {
-      window.foreground = true;
-      window.setResultText("");
-      window.setTurnStatus("completed");
-      window.setOffset(0);
+      window.chatReadFixture.foreground = true;
+      window.chatReadFixture.setResultText("");
+      window.chatReadFixture.setTurnStatus("completed");
+      window.chatReadFixture.setOffset(0);
     });
-    await page.waitForFunction(() => window.state?.read === true);
+    await page.waitForFunction(
+      () => window.chatReadFixture.state?.read === true,
+    );
 
     await page.evaluate(() => localStorage.clear());
     await page.reload();
     await ready();
     await page.evaluate(() => {
-      window.foreground = true;
-      window.setPhase("commentary");
-      window.setTurnStatus("completed");
-      document.querySelector("[data-turn]").dataset.outcome = "active";
-      window.setOffset(0);
+      window.chatReadFixture.foreground = true;
+      window.chatReadFixture.setPhase("commentary");
+      window.chatReadFixture.setTurnStatus("completed");
+      const turn = document.querySelector<HTMLElement>("[data-turn]");
+      if (!turn) throw new Error("Missing turn");
+      turn.dataset.outcome = "active";
+      window.chatReadFixture.setOffset(0);
     });
     await settle();
-    assert.equal(await page.evaluate(() => window.calls.length), 0);
+    assert.equal(
+      await page.evaluate(() => window.chatReadFixture.calls.length),
+      0,
+    );
     await page.evaluate(() => {
-      document.querySelector("[data-turn]").dataset.outcome = "completed";
+      const turn = document.querySelector<HTMLElement>("[data-turn]");
+      if (!turn) throw new Error("Missing turn");
+      turn.dataset.outcome = "completed";
     });
-    await page.waitForFunction(() => window.state?.read === true);
+    await page.waitForFunction(
+      () => window.chatReadFixture.state?.read === true,
+    );
 
     await page.evaluate(() => localStorage.clear());
     await page.reload();
     await ready();
     await page.evaluate(() => {
       const fetch = window.fetch;
-      window.lostWrites = [];
-      window.lostReplies = 0;
-      window.releaseLost = null;
+      window.chatReadFixture.lostWrites = [];
+      window.chatReadFixture.lostReplies = 0;
+      window.chatReadFixture.releaseLost = null;
       window.fetch = async (input, options) => {
         const request =
           input instanceof Request ? input : new Request(input, options);
         if (new URL(request.url).pathname !== "/api/organization")
           return fetch(input, options);
-        const body = JSON.parse(await request.clone().text());
+        const body = window.chatReadFixture.readWrite(
+          JSON.parse(await request.clone().text()),
+        );
         if (!body.read_state.read) return fetch(input, options);
-        window.lostWrites.push(body);
+        window.chatReadFixture.lostWrites.push(body);
         // The first request commits. All three replies are lost.
-        if (window.lostWrites.length === 1) await fetch(input, options);
-        if (window.lostWrites.length === 3)
-          await new Promise((resolve) => (window.releaseLost = resolve));
-        window.lostReplies++;
+        if (window.chatReadFixture.lostWrites.length === 1)
+          await fetch(input, options);
+        if (window.chatReadFixture.lostWrites.length === 3)
+          await new Promise<void>(
+            (resolve) => (window.chatReadFixture.releaseLost = resolve),
+          );
+        window.chatReadFixture.lostReplies++;
         throw new TypeError("Response lost");
       };
-      window.foreground = true;
-      window.setOffset(0);
+      window.chatReadFixture.foreground = true;
+      window.chatReadFixture.setOffset(0);
     });
     for (const [replies, backoff] of [
       [1, 1000],
       [2, 2000],
-    ]) {
+    ] as const) {
       await page.waitForFunction(
-        (count) => window.lostReplies === count,
+        (count) => window.chatReadFixture.lostReplies === count,
         replies,
       );
       await page.clock.fastForward(backoff);
     }
-    await page.waitForFunction(() => !!window.releaseLost);
+    await page.waitForFunction(() => !!window.chatReadFixture.releaseLost);
     await page.evaluate(() => {
-      void window.markUnread();
-      window.releaseLost();
+      void window.chatReadFixture.markUnread();
+      const release = window.chatReadFixture.releaseLost;
+      if (!release) throw new Error("Missing held reply");
+      release();
     });
     await page.waitForFunction(
-      () => window.marking.length === 0 && window.state?.read === false,
+      () =>
+        window.chatReadFixture.marking.length === 0 &&
+        window.chatReadFixture.state?.read === false,
     );
-    assert.equal(await page.evaluate(() => window.serverState.read), false);
+    assert.equal(
+      await page.evaluate(() => window.chatReadFixture.serverState?.read),
+      false,
+    );
     assert.deepEqual(
       await page.evaluate(() =>
-        window.lostWrites.map((v) => v.read_state.expected_revision),
+        window.chatReadFixture.lostWrites.map(
+          (v) => v.read_state.expected_revision,
+        ),
       ),
       [0, 0, 0],
     );
     assert.deepEqual(
-      await page.evaluate(() => window.calls.map((v) => v.read_state.read)),
+      await page.evaluate(() =>
+        window.chatReadFixture.calls.map((v) => v.read_state.read),
+      ),
       [true, false],
     );
     assert.deepEqual(errors, []);

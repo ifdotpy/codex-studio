@@ -1,32 +1,19 @@
+import { fixtureOrigin, trackBrowserContexts } from "./browser.ts";
 import assert from "node:assert/strict";
-import { createRequire } from "node:module";
+import { createFixtureViteServer as createServer } from "../playwright.ts";
+import type {} from "./session-activity-browser.fixture.tsx";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { test } from "../playwright.ts";
 
-const browserContextsByTest = new WeakMap();
-test.beforeEach(async ({ browser }, testInfo) => {
-  browserContextsByTest.set(testInfo, new Set(browser.contexts()));
-});
-test.afterEach(async ({ browser }, testInfo) => {
-  const initialContexts = browserContextsByTest.get(testInfo) ?? new Set();
-  await Promise.all(
-    browser
-      .contexts()
-      .filter((context) => !initialContexts.has(context))
-      .map((context) => context.close()),
-  );
-});
+trackBrowserContexts();
 
 test("session activity browser", async ({ browser: _browser }) => {
   test.setTimeout(120_000);
   const root = join(import.meta.dirname, "../../");
-  const require = createRequire(join(root, "package.json"));
-  const { createServer } = await import(require.resolve("vite"));
   const cacheDir = await mkdtemp(join(tmpdir(), "studio-session-activity-"));
-  const entry = join(root, "session-activity-fixture.tsx");
   const server = await createServer({
     configFile: false,
     root,
@@ -49,19 +36,9 @@ test("session activity browser", async ({ browser: _browser }) => {
           server.middlewares.use("/check", (_req, res) => {
             res.setHeader("Content-Type", "text/html");
             res.end(
-              '<style>:root{--surface:#1b1b20;--text:#e9e9ee;--muted:#9696a5;--line:#ffffff0d}body{margin:0;font:14px system-ui;color:var(--text);background:var(--surface)}header,main{padding:16px}*{box-sizing:border-box}</style><div id="root"></div><script type="module" src="/session-activity-fixture.tsx"></script>',
+              '<style>:root{--surface:#1b1b20;--text:#e9e9ee;--muted:#9696a5;--line:#ffffff0d}body{margin:0;font:14px system-ui;color:var(--text);background:var(--surface)}header,main{padding:16px}*{box-sizing:border-box}</style><div id="root"></div><script type="module" src="/tests/chat/session-activity-browser.fixture.tsx"></script>',
             );
           });
-        },
-        resolveId(id) {
-          if (id === "/session-activity-fixture.tsx") return entry;
-        },
-        load(id) {
-          if (id !== entry) return;
-          return `import React,{useState}from'react';import{createRoot}from'react-dom/client';import{flushSync}from'react-dom';import SessionActivity from'/src/components/agents/SessionActivity.tsx';
-  const now=Date.now()/1000;window.opened=[];window.time=Date.now();Date.now=()=>window.time;
-  const items=[{id:'long-command',kind:'task',agentId:'paused-child',agentName:'webcrypto-globals',label:'Running command',command:'find /Users/igor '+ 'directory/'.repeat(35),created:now-14*3600,status:'running'},{id:'monitor-one',kind:'monitor',agentId:'lead',agentName:'Main chat',label:'Waiting for a monitor',command:'watch build',created:now-120,status:'running'},{id:'worker-one',kind:'agent',agentId:'worker-one',agentName:'Worker one',label:'Working',status:'running'},{id:'tool-two',kind:'task',agentId:'worker-two',agentName:'Worker with a very long name that must fit the mobile viewport',label:'Using tools',created:now-30,status:'starting'}];
-  function Fixture(){const[activities,setActivities]=useState(items);window.setActivities=value=>flushSync(()=>setActivities(value));window.activities=activities;return <><header>Main chat</header><SessionActivity activities={activities} onOpen={value=>window.opened.push(value)}/><main>Conversation</main></>};createRoot(document.getElementById('root')).render(<Fixture/>);`;
         },
       },
     ],
@@ -73,11 +50,9 @@ test("session activity browser", async ({ browser: _browser }) => {
     const page = await browser.newPage({
       viewport: { width: 1280, height: 900 },
     });
-    const errors = [];
+    const errors: string[] = [];
     page.on("pageerror", (error) => errors.push(error.message));
-    await page.goto(
-      `http://127.0.0.1:${server.httpServer.address().port}/check`,
-    );
+    await page.goto(`${fixtureOrigin(server)}/check`);
     const strip = page.getByRole("region", { name: "Session activity" });
     await strip.waitFor();
     assert.equal(await strip.locator("[data-activity-id]").count(), 1);
@@ -100,8 +75,8 @@ test("session activity browser", async ({ browser: _browser }) => {
     });
     await strip.locator('[data-activity-id="long-command"]').click();
     assert.deepEqual(
-      await page.evaluate(() => window.opened[0]),
-      await page.evaluate(() => window.activities[0]),
+      await page.evaluate(() => window.sessionActivityFixture.opened[0]),
+      await page.evaluate(() => window.sessionActivityFixture.activities[0]),
     );
     await strip
       .getByRole("button", { name: "Show 3 more", exact: true })
@@ -110,7 +85,9 @@ test("session activity browser", async ({ browser: _browser }) => {
     for (const id of ["monitor-one", "worker-one", "tool-two"])
       await strip.locator(`[data-activity-id="${id}"]`).click();
     assert.deepEqual(
-      await page.evaluate(() => window.opened.map((item) => item.id)),
+      await page.evaluate(() =>
+        window.sessionActivityFixture.opened.map((item) => item.id),
+      ),
       ["long-command", "monitor-one", "worker-one", "tool-two"],
     );
     await page.setViewportSize({ width: 390, height: 844 });
@@ -126,9 +103,13 @@ test("session activity browser", async ({ browser: _browser }) => {
       path: join(cacheDir, "session-activity-mobile.png"),
     });
     await page.evaluate(() =>
-      window.setActivities(
+      window.sessionActivityFixture.setActivities(
         Array.from({ length: 40 }, (_, index) => ({
-          ...window.activities[index % 4],
+          ...(() => {
+            const item = window.sessionActivityFixture.activities[index % 4];
+            if (!item) throw new Error("Missing activity");
+            return item;
+          })(),
           id: `many-${index}`,
         })),
       ),
@@ -146,13 +127,17 @@ test("session activity browser", async ({ browser: _browser }) => {
     await strip.getByRole("button", { name: "Show less", exact: true }).click();
     assert.equal(await strip.locator("[data-activity-id]").count(), 1);
     await page.evaluate(() => {
-      window.time += 120000;
+      window.sessionActivityFixture.time += 120000;
       document.dispatchEvent(new Event("visibilitychange"));
     });
     await strip.getByText("14h 2m", { exact: true }).waitFor();
-    await page.evaluate(() => window.setActivities([window.activities[0]]));
+    await page.evaluate(() =>
+      window.sessionActivityFixture.setActivities(
+        window.sessionActivityFixture.activities.slice(0, 1),
+      ),
+    );
     assert.equal(await strip.getByRole("button", { name: /Show/ }).count(), 0);
-    await page.evaluate(() => window.setActivities([]));
+    await page.evaluate(() => window.sessionActivityFixture.setActivities([]));
     await strip.waitFor({ state: "detached" });
     assert.deepEqual(errors, []);
     console.log(
