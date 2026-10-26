@@ -77,7 +77,7 @@ async fn auth_repair_regression_post_login_allows_only_fresh_safe_continuation()
         .register_claude_verified(
             json!({"binaryPath":"/fixture/scripted","configDir":config,"customModels":[]})
                 .as_object()
-                .unwrap()
+                .expect("scripted account object")
                 .clone(),
             "Fixture",
             &f.directory,

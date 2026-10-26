@@ -4176,7 +4176,7 @@ exit 0
             invalid[key] = value;
             assert!(
                 !claude::auth_status_probe_from_output(
-                    &serde_json::to_vec(&invalid).unwrap(),
+                    &serde_json::to_vec(&invalid).expect("invalid authentication fixture"),
                     Some(1)
                 )
                 .1,
