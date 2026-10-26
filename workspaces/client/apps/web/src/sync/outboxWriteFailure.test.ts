@@ -9,7 +9,6 @@ import {
   type GetResult,
   type PostResult,
 } from "../api";
-import { SYNC_PROTOCOL_VERSION } from "../generated/api";
 import { createMutationJournal } from "../servers/mutationIdentity";
 import {
   API_SCHEMA_HASH,
@@ -133,7 +132,7 @@ it("sends, removes and cancels after one outbox write failed", async () => {
       if (path === "/api/sync/identity")
         value = {
           workspaceId: WORKSPACE_ID,
-          syncProtocol: SYNC_PROTOCOL_VERSION,
+          syncProtocol: 2,
         } satisfies GetResult<"/api/sync/identity">;
       else if (path === "/api/session")
         value = { token: "session" } satisfies GetResult<"/api/session">;
