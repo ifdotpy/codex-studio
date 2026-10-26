@@ -168,6 +168,8 @@ describe("custom answer permission", () => {
       },
     };
     const [closed, open] = requestQuestions(request);
+    if (!closed) throw new Error("Expected closed fixture result");
+    if (!open) throw new Error("Expected open fixture result");
     expect(closed.isOther).toBe(false);
     expect(open.isOther).toBe(true);
     expect(answerList(closed, { selected: ["One"], other: "Custom" })).toEqual([
@@ -206,7 +208,7 @@ describe("browserOpenDetails", () => {
   });
 
   it("reads the waiting phase, its deadline, and a sent paste", () => {
-    const request: RequestDto = {
+    const request = {
       id: "request-waiting",
       method: "browser/open",
       status: "pending",
@@ -220,7 +222,7 @@ describe("browserOpenDetails", () => {
         paste: { at: 1_800_000_100 },
         outcome: null,
       },
-    };
+    } satisfies RequestDto;
     expect(browserOpenDetails(request)).toMatchObject({
       port: 40645,
       redirectPath: "/oauth/callback",
