@@ -1,3 +1,4 @@
+import type { SessionFixtureMessage } from "./fixtures/session-sdk-types.ts";
 import { afterEach, test } from "vitest";
 import assert from "node:assert/strict";
 import { startBridge } from "./testing/bridge-harness.ts";
@@ -7,7 +8,7 @@ afterEach(async () => {
   for (const bridge of bridges.splice(0)) await bridge.close();
 });
 const sdk = new URL("./usage-events.fixture.mts", import.meta.url);
-async function run(events: readonly unknown[], model = "sonnet") {
+async function run(events: readonly SessionFixtureMessage[], model = "sonnet") {
   const bridge = await startBridge(sdk, "claude-usage-", {
     env: { STUDIO_FIXTURE_EVENTS: JSON.stringify(events) },
   });
@@ -28,13 +29,14 @@ const failed = {
   subtype: "error_during_execution",
   is_error: true,
   errors: ["429 Too Many Requests"],
-};
+} satisfies SessionFixtureMessage;
 
 test("plain 429 without a rate limit event has a typed terminal cause", async () => {
   const { turn } = await run([
     {
       type: "assistant",
       error: "rate_limit",
+      // @ts-expect-error This legacy fixture intentionally uses a non-UUID message identity.
       uuid: "error",
       message: {
         id: "error",
@@ -60,6 +62,7 @@ test("retry and fallback details survive as readable thread items", async () => 
     {
       type: "system",
       subtype: "api_retry",
+      // @ts-expect-error This legacy fixture intentionally uses a non-UUID message identity.
       uuid: "retry-1",
       attempt: 2,
       max_retries: 5,
@@ -69,7 +72,9 @@ test("retry and fallback details survive as readable thread items", async () => 
     },
     {
       type: "system",
+      // @ts-expect-error This legacy CLI subtype intentionally exercises bridge compatibility outside the current SDK union.
       subtype: "model_fallback",
+      // @ts-expect-error This legacy fixture intentionally uses a non-UUID message identity.
       uuid: "fallback-1",
       original_model: "claude-opus-4-6",
       fallback_model: "claude-sonnet-4-6",
@@ -77,7 +82,9 @@ test("retry and fallback details survive as readable thread items", async () => 
     },
     {
       type: "system",
+      // @ts-expect-error This legacy CLI subtype intentionally exercises bridge compatibility outside the current SDK union.
       subtype: "model_consent_fallback",
+      // @ts-expect-error This legacy fixture intentionally uses a non-UUID message identity.
       uuid: "consent-1",
       original_model: "claude-opus-4-6",
       fallback_model: "claude-sonnet-4-6",
