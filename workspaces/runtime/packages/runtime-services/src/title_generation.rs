@@ -18,6 +18,7 @@ use std::{
 use rusqlite::{Connection, OptionalExtension, params};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
+use studio_runtime_schema::ProviderKind;
 use studio_runtime_store::{AgentRecord, AgentRepository, RuntimeStore, StoreError};
 use thiserror::Error;
 
@@ -333,6 +334,15 @@ enum Admission {
 
 /// Select the model and optional low reasoning effort with Python's priority.
 pub fn title_model(catalog: &Value, agent: &Value) -> Result<(String, Option<String>), TitleError> {
+    let provider = ProviderKind::of_record(agent).map_err(|_| {
+        invalid(
+            "runtime_agents",
+            agent
+                .get("id")
+                .and_then(Value::as_str)
+                .unwrap_or("<missing-id>"),
+        )
+    })?;
     let rows = catalog
         .get("data")
         .and_then(Value::as_array)
@@ -350,15 +360,13 @@ pub fn title_model(catalog: &Value, agent: &Value) -> Result<(String, Option<Str
     if available.is_empty() {
         return Err(TitleError::NoModel);
     }
-    let provider = agent.get("provider").and_then(Value::as_str);
-    let preferred = if provider == Some("claude") {
-        available.iter().find(|row| {
+    let preferred = match provider {
+        ProviderKind::Claude => available.iter().find(|row| {
             row.get("model")
                 .and_then(Value::as_str)
                 .is_some_and(|model| model.to_lowercase().contains("haiku"))
-        })
-    } else {
-        available
+        }),
+        ProviderKind::Codex => available
             .iter()
             .find(|row| {
                 row.get("model")
@@ -371,7 +379,7 @@ pub fn title_model(catalog: &Value, agent: &Value) -> Result<(String, Option<Str
                         .and_then(Value::as_str)
                         .is_some_and(|m| m.to_lowercase().contains("luna"))
                 })
-            })
+            }),
     };
     let own_model = agent.get("model").and_then(Value::as_str);
     let own = available.iter().find(|row| {
@@ -380,7 +388,7 @@ pub fn title_model(catalog: &Value, agent: &Value) -> Result<(String, Option<Str
                 || row.get("resolvedModel").and_then(Value::as_str) == Some(model)
         })
     });
-    if provider == Some("claude") && preferred.is_none() && own.is_none() {
+    if provider == ProviderKind::Claude && preferred.is_none() && own.is_none() {
         return Err(TitleError::ChatModelUnavailable);
     }
     let selected = preferred.or(own).unwrap_or(&available[0]);
@@ -1131,6 +1139,34 @@ fn invalid(table: &'static str, id: &str) -> TitleError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn provider_identity_title_model_rejects_unknown_before_selection() {
+        let catalog = json!({"data":[{"model":"gpt-mini"},{"model":"claude-haiku"}]});
+        for provider in [
+            None,
+            Some(Value::Null),
+            Some(json!("future")),
+            Some(json!(7)),
+        ] {
+            let mut agent = json!({"id":"a","model":"gpt-mini"});
+            if let Some(provider) = provider {
+                agent["provider"] = provider;
+            }
+            assert!(
+                matches!(title_model(&catalog, &agent), Err(TitleError::InvalidStoredObject { table: "runtime_agents", id }) if id == "a"),
+                "{agent}"
+            );
+        }
+        for (provider, expected) in [("codex", "gpt-mini"), ("claude", "claude-haiku")] {
+            assert_eq!(
+                title_model(&catalog, &json!({"provider":provider}))
+                    .expect("known provider")
+                    .0,
+                expected
+            );
+        }
+    }
 
     #[test]
     fn title_model_prioritizes_provider_preference_and_low_effort() {

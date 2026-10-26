@@ -34,6 +34,51 @@ fn deadline() -> SystemTime {
     SystemTime::UNIX_EPOCH + Duration::from_secs(2_000_000_000)
 }
 
+#[tokio::test]
+async fn provider_identity_title_generation_refuses_before_request_or_receipt() {
+    let (_root, store) = fixture().await;
+    for provider in [json!("future"), json!(7)] {
+        store.transaction(move |db| {
+            db.execute("UPDATE runtime_agents SET record=json_set(record,'$.provider',json(?1)) WHERE id='title-agent'", [provider.to_string()])?;
+            Ok(())
+        }).await.expect("unknown provider");
+        let before = agent_and_projection(&store);
+        let port = FixedPort::new(vec![TitleReceipt {
+            request_id: "provider-identity".into(),
+            agent_id: "title-agent".into(),
+            epoch: 0,
+            account_key: "default".into(),
+            outcome: WriteOutcome::NotSent,
+            title: None,
+        }]);
+        let error = generate(
+            &store,
+            &port,
+            "title-agent",
+            &catalog(),
+            "provider-identity",
+            deadline(),
+        )
+        .await
+        .expect_err("unknown provider refused");
+        assert!(
+            matches!(error, studio_runtime_services::title_generation::TitleError::InvalidStoredObject { table: "runtime_agents", id } if id == "title-agent")
+        );
+        assert_eq!(port.calls.load(Ordering::SeqCst), 0);
+        assert_eq!(agent_and_projection(&store), before);
+        let receipts: i64 = store
+            .test_reader()
+            .expect("reader")
+            .query_row(
+                "SELECT count(*) FROM runtime_operation_receipts",
+                [],
+                |row| row.get(0),
+            )
+            .expect("receipts");
+        assert_eq!(receipts, 0, "no request intent created");
+    }
+}
+
 struct FixedPort {
     calls: AtomicUsize,
     replies: Mutex<Vec<TitleReceipt>>,

@@ -1863,16 +1863,20 @@ impl<R: ProviderAuthReader> AccountDriver<R> {
     }
 
     /// The account's turn start throttle, read under the registry lock
-    /// without copying the row; the Codex defaults for an unknown account,
-    /// like a row without a provider.
-    pub fn start_throttle(&self, account: &str) -> crate::account_start_gate::StartThrottle {
+    /// without copying the row. Unknown accounts or providers are refused.
+    pub fn start_throttle(
+        &self,
+        account: &str,
+    ) -> Result<crate::account_start_gate::StartThrottle, AccountDriverError> {
         let state = self
             .state
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        crate::account_start_gate::StartThrottle::of_record(
-            registry_account(&state.value, account).unwrap_or(&Value::Null),
-        )
+            .map_err(|_| AccountDriverError::Poisoned)?;
+        crate::account_start_gate::StartThrottle::of_record(registry_account(
+            &state.value,
+            account,
+        )?)
+        .ok_or(AccountDriverError::InvalidRegistry)
     }
 
     /// Stable, non-secret identity selected for a retained account session.
