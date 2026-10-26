@@ -138,7 +138,7 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn an_unguarded_developer_probe_never_receives_the_selected_root() {
+    fn native_layr_an_unguarded_developer_probe_never_receives_the_selected_root() {
         use std::{fs, os::unix::fs::PermissionsExt};
         let fixture = tempfile::tempdir().expect("fixture");
         let root = fixture.path().join("developer-store");
@@ -160,7 +160,7 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn owned_store_adopts_metadata_once_and_selected_store_remains_untouched() {
+    fn native_layr_owned_store_adopts_metadata_once_and_selected_store_remains_untouched() {
         use std::{fs, os::unix::fs::PermissionsExt};
         let fixture = tempfile::tempdir().expect("fixture");
         let state = fixture.path().join("state");
@@ -213,7 +213,7 @@ esac
         );
     }
     #[test]
-    fn package_mismatch_refuses_but_build_difference_is_visible() {
+    fn native_layr_package_mismatch_refuses_but_build_difference_is_visible() {
         let bundled = Identity {
             format: 1,
             version: "0.4.0".into(),

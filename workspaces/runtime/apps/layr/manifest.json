@@ -1,7 +1,7 @@
 {
-  "revision": "d426c321943d851b0389fbddc055f178d6504f6e",
-  "tree": "f4388666cdaae7b7394a0e993068a8bb51683d24",
-  "sourceSha256": "f15a70e86f874b748e19fb8e43c72e588ef04a1f2d899f597044eadbc9a406bb",
+  "revision": "716921067629f87df7baff17882781966dff711e",
+  "tree": "02d7094a459b6734f509037852f2c9ae604cc386",
+  "sourceSha256": "d5abf94c1f351d64e11b451f66197a62b8c2ca02b13d326931c08215bf6c64fd",
   "files": {
     "Cargo.lock": "e919d24bf477cb0567e48152f74d15654433920c25323374530139c0e53c3a69",
     "Cargo.toml": "b0b07f425049146e998d428ba117c3e407f01e2221d1616f4cbd3aa66ba301e7",
@@ -130,7 +130,7 @@
     "src/store_remote/reader.rs": "09f5f75f6d11d15817863ef8eccfcf6bd19239727c55c73110fb454e8523b032",
     "src/store_remote/release.rs": "1b831e0d7b665651fc813e4a5c89409b2e90c2ef9bc4c0a4d058d3e321673e58",
     "src/store_remote/writer.rs": "cf9fc9c8278368eff0f4bd1517b75c54fe60d9e5d3ca1f3c6081cd76d3934f64",
-    "src/store_version.rs": "67869893734f818aae003ea3bc9a69d4d5e360e4c30d79eb67f1cab8244da941",
+    "src/store_version.rs": "de4d412c04d2e3047503b478cafb856db6ac7531ce7b55be8525f988aa7c51e8",
     "src/stream.rs": "04c1ea24bea8bc56ae37f0380417472cfcd232aca35c421930874eb66d72ca88",
     "src/stream_fs.rs": "4ad0a89a7c29c11e14a8102f54ce03b801532b613fbcb1e6ec4a44cb486832f7",
     "src/sys.rs": "6fc96524050fd370a6f2d6fb42b50a63660f0355bf4da344cd149b352e19536e",

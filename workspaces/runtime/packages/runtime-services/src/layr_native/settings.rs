@@ -130,7 +130,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn owned_store_detection_resolves_aliases_before_first_import() {
+    fn native_layr_owned_store_detection_resolves_aliases_before_first_import() {
         let fixture = tempfile::tempdir().expect("fixture");
         let root = store_path(fixture.path());
         assert!(!root.exists());
@@ -139,7 +139,7 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn a_default_path_symlink_does_not_make_a_developer_store_owned() {
+    fn native_layr_a_default_path_symlink_does_not_make_a_developer_store_owned() {
         let fixture = tempfile::tempdir().expect("fixture");
         let state = fixture.path().join("state");
         let developer = fixture.path().join("developer");
@@ -151,7 +151,7 @@ mod tests {
     }
 
     #[test]
-    fn root_switch_keeps_existing_chats_on_their_original_store() {
+    fn native_layr_root_switch_keeps_existing_chats_on_their_original_store() {
         let state = tempfile::tempdir().expect("state");
         let old = store_path(state.path());
         let other = tempfile::tempdir().expect("other store");
@@ -189,7 +189,7 @@ mod tests {
     }
 
     #[test]
-    fn invalid_settings_never_select_the_default_store() {
+    fn native_layr_invalid_settings_never_select_the_default_store() {
         let state = tempfile::tempdir().expect("state");
         fs::create_dir_all(state.path().join(NATIVE_LAYR_DIRECTORY)).expect("folder");
         fs::write(path(state.path()), "{broken").expect("settings");
@@ -198,7 +198,7 @@ mod tests {
     }
 
     #[test]
-    fn selected_store_has_its_own_service_socket() {
+    fn native_layr_selected_store_has_its_own_service_socket() {
         let state = tempfile::tempdir().expect("state");
         let other = tempfile::tempdir().expect("store");
         configure(state.path(), Some(other.path())).expect("configure");

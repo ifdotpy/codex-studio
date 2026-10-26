@@ -263,7 +263,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn github_renames_require_equal_repository_ids_and_a_successful_lookup() {
+    fn native_layr_github_renames_require_equal_repository_ids_and_a_successful_lookup() {
         let old = "git@github.com:ifdotpy/codex-studio.git";
         let new = "https://github.com/ifdotpy/layr-studio";
         assert_eq!(
@@ -326,7 +326,7 @@ mod tests {
     }
 
     #[test]
-    fn mapping_reuses_matching_history_and_refuses_an_unrelated_project() {
+    fn native_layr_mapping_reuses_matching_history_and_refuses_an_unrelated_project() {
         let fixture = tempfile::tempdir().expect("fixture");
         let state = fixture.path().join("state");
         let root = fixture.path().join("store");

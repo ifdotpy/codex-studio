@@ -59,11 +59,11 @@ fn marker(root: &Path) -> Result<Option<Version>> {
     ))
 }
 
-fn lock_file(root: &Path) -> Result<File> {
+fn lock_file(root: &Path, create: bool) -> Result<File> {
     let file = OpenOptions::new()
         .read(true)
         .write(true)
-        .create(true)
+        .create(create)
         .truncate(false)
         .mode(0o600)
         .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
@@ -77,7 +77,9 @@ fn lock_file(root: &Path) -> Result<File> {
 
 fn empty(root: &Path) -> Result<bool> {
     for entry in fs::read_dir(root)? {
-        if entry?.file_name() != LOCK {
+        let name = entry?.file_name();
+        let marker_temporary = name.to_str().is_some_and(|name| name.starts_with(".store-version.json.tmp-"));
+        if name != LOCK && !marker_temporary {
             return Ok(false);
         }
     }
@@ -97,16 +99,20 @@ impl Guard {
         if let Some(stored) = marker(root)? {
             // Refuse before opening a lock file or changing machine/project data.
             binary.require_compatible(&stored, "store")?;
-            let file = lock_file(root)?;
+            let file = lock_file(root, true)?;
             rustix::fs::flock(&file, rustix::fs::FlockOperation::LockShared)?;
             let stored = marker(root)?.context("the store version disappeared; refuse access")?;
             binary.require_compatible(&stored, "store")?;
             return Ok(Self { _file: file });
         }
-        if !empty(root)? && marker(root)?.is_none() {
+        let create_lock = empty(root)?;
+        if !create_lock && !root.join(LOCK).try_exists()? {
             return Err(legacy_error());
         }
-        let file = lock_file(root)?;
+        // A concurrent initializer can have its temporary marker present already.
+        // Wait on its existing lease before classifying the root as legacy.
+        // An unversioned legacy root never gets a new lock from an ordinary open.
+        let file = lock_file(root, create_lock)?;
         rustix::fs::flock(&file, rustix::fs::FlockOperation::LockExclusive)?;
         match marker(root)? {
             Some(stored) => binary.require_compatible(&stored, "store")?,
@@ -179,7 +185,7 @@ fn upgrade(root: &Path) -> Result<()> {
             Version::binary().require_compatible(stored, "store")?;
         }
     }
-    let file = lock_file(root)?;
+    let file = lock_file(root, true)?;
     rustix::fs::flock(&file, rustix::fs::FlockOperation::NonBlockingLockExclusive)
         .context("the store is in use; stop all layr commands and daemons before the format upgrade")?;
     // Recheck after the lease. Never downgrade a store that changed while we waited.
