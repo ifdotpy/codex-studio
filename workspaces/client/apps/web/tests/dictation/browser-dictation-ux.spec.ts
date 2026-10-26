@@ -1,0 +1,115 @@
+import { fixtureOrigin } from "../misc-fixture.ts";
+import type {} from "./browser-dictation-ux.fixture.tsx";
+// Real React and storage, simulated browser speech. No audio or service requests.
+import assert from "node:assert/strict";
+import { resolve } from "node:path";
+import { createFixtureViteServer, test, expect } from "../playwright.ts";
+
+test("browser dictation ux", async ({ page: runnerPage }) => {
+  const root = resolve(import.meta.dirname, "../../");
+  const server = await createFixtureViteServer({
+    configFile: false,
+    root,
+    server: { host: "127.0.0.1", port: 0 },
+    plugins: [
+      {
+        name: "browser-speech-fixture",
+        configureServer(s) {
+          s.middlewares.use("/audit", (_, r) => {
+            r.setHeader("Content-Type", "text/html");
+            r.end(
+              '<div id="root" style="padding:140px 8px"></div><script type="module" src="/tests/dictation/browser-dictation-ux.fixture.tsx"></script>',
+            );
+          });
+        },
+      },
+    ],
+  });
+  await server.listen();
+  try {
+    const page = runnerPage;
+    await page.setViewportSize({ width: 390, height: 740 });
+    const errors: string[] = [];
+    page.on("pageerror", (e) => errors.push(e.message));
+    const url = fixtureOrigin(server) + "/audit";
+    await page.goto(url);
+    await page.getByRole("button", { name: "Dictation", exact: true }).click();
+    await page.getByRole("button", { name: "Record", exact: true }).click();
+    await page.evaluate(() =>
+      window.browserDictationFixture.speech?.onresult?.({
+        results: [
+          { isFinal: true, 0: { transcript: "Recognized text" } },
+          { isFinal: false, 0: { transcript: "unfinished" } },
+        ],
+      }),
+    );
+    assert.equal(
+      await page
+        .getByRole("textbox", { name: "Draft", exact: true })
+        .inputValue(),
+      "",
+    );
+    await page.getByRole("button", { name: "Dictation", exact: true }).click();
+    await page
+      .getByRole("button", { name: "Stop dictation", exact: true })
+      .click();
+    assert.ok(
+      (
+        await page.evaluate(() => window.browserDictationFixture.calls)
+      ).includes("stop"),
+    );
+    await page.getByRole("button", { name: "Dictation", exact: true }).click();
+    assert.equal(
+      await page
+        .getByRole("textbox", { name: "Review dictated text" })
+        .inputValue(),
+      "Recognized text",
+    );
+    await page
+      .getByRole("textbox", { name: "Review dictated text" })
+      .fill("Corrected text");
+    await page.getByRole("button", { name: "Insert into message" }).click();
+    assert.equal(
+      await page
+        .getByRole("textbox", { name: "Draft", exact: true })
+        .inputValue(),
+      "Corrected text",
+    );
+    await page.reload();
+    await page.getByRole("button", { name: "Dictation", exact: true }).click();
+    assert.equal(
+      await page
+        .getByRole("textbox", { name: "Review dictated text" })
+        .inputValue(),
+      "Corrected text",
+    );
+    await page.getByRole("button", { name: "Record", exact: true }).click();
+    await page.getByRole("button", { name: "Switch chat" }).click();
+    assert.ok(
+      (
+        await page.evaluate(() => window.browserDictationFixture.calls)
+      ).includes("abort"),
+    );
+    await page.goto(url + "?unsupported");
+    await page.getByRole("button", { name: "Dictation", exact: true }).click();
+    await page
+      .getByText("Dictation is unavailable in this browser.", { exact: false })
+      .waitFor();
+    assert.equal(
+      await page
+        .getByRole("button", { name: "Record", exact: true })
+        .isDisabled(),
+      true,
+    );
+    assert.deepEqual(
+      await page.evaluate(() => window.browserDictationFixture.calls),
+      [],
+    );
+    expect(errors).toEqual([]);
+    console.log(
+      "PASS: browser/mobile speech capability, final text review, explicit insert, storage, stop outside panel, chat cleanup, unsupported browser.",
+    );
+  } finally {
+    await server.close();
+  }
+});

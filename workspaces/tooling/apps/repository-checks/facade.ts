@@ -1,5 +1,6 @@
 #!/usr/bin/env node
-import { spawnSync } from "node:child_process";
+import { spawnSync, execFileSync } from "node:child_process";
+import { javascriptFindings } from "./javascript-policy.ts";
 import { builtinModules, createRequire } from "node:module";
 import {
   appendFileSync,
@@ -205,6 +206,11 @@ const DECLARATION_SECTIONS = [
 ] as const;
 // Only erased type imports may use these shared owners across workspace boundaries.
 const SHARED_TYPE_OWNERS = [
+  {
+    file: "workspaces/client/apps/native/src-tauri/tauri.conf.json",
+    purpose:
+      "Native application configuration shape shared by policy witnesses.",
+  },
   {
     file: "workspaces/client/apps/desktop/backend.ts",
     purpose: "Backend identity type consumed by native startup checks.",
@@ -1048,6 +1054,25 @@ export function gateSteps(root: string, name: string): GateStep[] {
       ],
       options: { allowZeroTests: true },
     },
+    {
+      id: "javascript-policy",
+      label: "tracked JavaScript exceptions",
+      lane: "js",
+      item: tooling,
+      commands: [
+        [
+          "node",
+          [
+            path.join(
+              root,
+              "workspaces/tooling/apps/repository-checks/facade.ts",
+            ),
+            "javascript-check",
+          ],
+        ],
+      ],
+      options: { allowZeroTests: true },
+    },
     { id: "tooling", label: "tooling tests", lane: "js", item: tooling },
     {
       id: "guest",
@@ -1764,7 +1789,7 @@ export async function execute(
 
 function usage() {
   process.stdout.write(
-    "Usage: facade.ts packages | test <package> [file-or-case] [--name <pattern>] [-- <cargo args>] [--json] | test-plan <package> [file-or-case] [--name <pattern>] [-- <cargo args>] [--json] | test-fast | test-comprehensive | test-fast-rest | test-fast-rest-non-rust | test-heavy | test-browser | test-browser-smoke | check <package> [--dry-run] [--json] | contracts-check | boundaries-check | check-affected <base> [--dry-run]\n",
+    "Usage: facade.ts packages | test <package> [file-or-case] [--name <pattern>] [-- <cargo args>] [--json] | test-plan <package> [file-or-case] [--name <pattern>] [-- <cargo args>] [--json] | test-fast | test-comprehensive | test-fast-rest | test-fast-rest-non-rust | test-heavy | test-browser | test-browser-smoke | check <package> [--dry-run] [--json] | contracts-check | boundaries-check | javascript-check | check-affected <base> [--dry-run]\n",
   );
 }
 
@@ -2227,6 +2252,21 @@ export function boundaryFindings(
   return findings;
 }
 
+export function checkJavaScript(root = rootFrom()) {
+  const tracked = execFileSync("git", ["ls-files", "-z"], {
+    cwd: root,
+    encoding: "utf8",
+  })
+    .split("\0")
+    .filter(Boolean);
+  const findings = javascriptFindings(root, tracked);
+  for (const finding of findings)
+    process.stderr.write(`javascript-policy: ${finding}\n`);
+  if (!findings.length)
+    process.stdout.write("Tracked JavaScript exception policy passed.\n");
+  return findings.length ? 1 : 0;
+}
+
 export function checkBoundaries(root = rootFrom(), packages = discover(root)) {
   const findings = boundaryFindings(root, packages);
   const unsafeFindings = unsafeRustFindings(root);
@@ -2423,6 +2463,7 @@ export async function main(argv = process.argv.slice(2)) {
     return 0;
   }
   if (action === "contracts-check") return runContractsCheck(rootFrom());
+  if (action === "javascript-check") return checkJavaScript(rootFrom());
   if (action === "boundaries-check") return checkBoundaries(rootFrom());
   if (action === "check-affected") {
     if (!packageName || packageName.startsWith("-"))

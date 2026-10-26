@@ -16,9 +16,9 @@ or stored receipt using a request body field such as `id`, `request_id`, or
 - `messages/send-session-token-browser.spec.ts`
 - `mobile/mobile-send-reliability-ui.spec.ts`
 - `outbox/send-preflight-browser.spec.ts`
-- `projects/new-chat-workspace-ui.spec.mjs`
+- `projects/new-chat-workspace-ui.spec.ts`
 - `queue/queue-mutation-deadline-browser.spec.ts`
-- `radio/radio-create-browser.spec.mjs`
+- `radio/radio-create-browser.spec.ts`
 - `servers/multi-server-fixture.ts`
 - `servers/project-locations-ui.spec.mjs`
 - `settings/claude-settings-auth-ui.spec.ts`

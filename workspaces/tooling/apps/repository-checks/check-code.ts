@@ -1,5 +1,12 @@
 #!/usr/bin/env node
 
+import {
+  JAVASCRIPT_EXCEPTIONS,
+  isJavaScript,
+  isTypeScriptProject,
+  javascriptFindings,
+} from "./javascript-policy.ts";
+
 import { execFileSync, spawnSync } from "node:child_process";
 import {
   existsSync,
@@ -88,6 +95,12 @@ function main() {
   }
 
   const selectedPaths = getPaths();
+  const changedPaths = listPaths(
+    git(["diff", "--cached", "--name-only", "-z"]),
+  );
+  const projectsChanged = changedPaths.some(
+    (file) => isTypeScriptProject(file) || file === "tsconfig.base.json",
+  );
   const lintPaths = selectedPaths.filter((relativePath) =>
     isCheckable(relativePath, codeExtensions),
   );
@@ -100,7 +113,7 @@ function main() {
     lintPaths.length = 0;
   }
 
-  if (lintPaths.length === 0 && formatPaths.length === 0) {
+  if (lintPaths.length === 0 && formatPaths.length === 0 && !projectsChanged) {
     console.log("No staged source or supported text files to check.");
     return 0;
   }
@@ -112,7 +125,24 @@ function main() {
   );
   try {
     const indexPaths = getIndexPaths();
-    for (const relativePath of new Set([...lintPaths, ...formatPaths])) {
+    const policyPaths = [
+      ...new Set([
+        ...selectedPaths.filter(isJavaScript),
+        ...(projectsChanged
+          ? JAVASCRIPT_EXCEPTIONS.map((entry) => entry.file).filter((file) =>
+              indexPaths.has(file),
+            )
+          : []),
+      ]),
+    ];
+    for (const relativePath of new Set([
+      ...lintPaths,
+      ...formatPaths,
+      ...policyPaths,
+      ...[...indexPaths].filter(
+        (file) => isTypeScriptProject(file) || file === "tsconfig.base.json",
+      ),
+    ])) {
       const destination = path.join(temporaryRoot, relativePath);
       mkdirSync(path.dirname(destination), { recursive: true });
       const content = git(["cat-file", "blob", `:${relativePath}`]);
@@ -124,6 +154,17 @@ function main() {
         path.join(temporaryRoot, relativePath),
         git(["cat-file", "blob", `:${relativePath}`]),
       );
+    }
+
+    const policyFindings = javascriptFindings(
+      temporaryRoot,
+      [...indexPaths],
+      policyPaths,
+    );
+    if (policyFindings.length) {
+      for (const finding of policyFindings)
+        console.error(`JavaScript policy: ${finding}`);
+      return 1;
     }
 
     const binDirectory = path.join(repositoryRoot, "node_modules", ".bin");
