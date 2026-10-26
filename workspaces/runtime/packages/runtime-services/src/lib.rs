@@ -152,8 +152,6 @@ pub mod questions_write;
 pub mod queue_write;
 pub mod radio;
 pub mod radio_runtime;
-pub mod shell_policy;
-pub mod shell_pressure;
 pub use radio_runtime::{
     Interrupt, InterruptOutcome, InterruptReceipt, InterruptTransport, NativeAcceptanceReceipt,
     RadioCreation, handoff_interrupt,
@@ -176,6 +174,8 @@ pub mod scheduler;
 pub mod server_exec;
 pub mod server_git;
 pub mod shell_command;
+pub mod shell_policy;
+pub mod shell_pressure;
 pub mod sign_in;
 pub mod storage_retention;
 pub mod studio_errors;
