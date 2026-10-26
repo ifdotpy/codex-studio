@@ -397,5 +397,9 @@ fn only_a_claude_worker_turns_user_mcp_servers_off() {
             expected.as_ref(),
             "{provider} {parent:?}"
         );
+        let mut s = snapshot(&value);
+        s.settings.model = None;
+        let turn = turn_params(&s, &TurnInput::default()).expect("turn params");
+        assert_eq!(turn.get("model"), Some(&Value::Null));
     }
 }

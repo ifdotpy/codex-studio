@@ -7,7 +7,7 @@ import type {
   BrowserContext,
 } from "@playwright/test";
 import { _electron } from "playwright";
-import type { PostBody } from "../../src/api.ts";
+import type { PostBody, PostResult } from "../../src/api.ts";
 import {
   readTestState,
   spawnFixture as spawn,
@@ -471,6 +471,32 @@ test("execution settings ui", async ({ browser: _browser }) => {
         exact: true,
       }),
     ).toBeVisible();
+    const reviewFastMode = reviewDialog.getByRole("switch", {
+      name: "Fast mode",
+      exact: true,
+    });
+    await expect(
+      reviewDialog.getByLabel("Default review reasoning", { exact: true }),
+    ).toHaveCount(0);
+    await expect(reviewFastMode).toBeChecked();
+    for (const enabled of [false, true, false]) {
+      const saved = settingsResponse(
+        lead.id,
+        (body) => body.review_defaults?.fast_mode === enabled,
+      );
+      await reviewFastMode.click();
+      const response = await saved;
+      assert.ok(response.ok());
+      const canonical: PostResult<"/api/conversation"> = await response.json();
+      assert.equal(canonical.reviewDefaults?.fastMode, enabled);
+      await expect(reviewFastMode).toBeChecked({ checked: enabled });
+      await expect(reviewFastMode).toBeEnabled();
+      await waitFor(
+        async () =>
+          required((await state()).find((a) => a.id === lead.id)).reviewDefaults
+            ?.fastMode === enabled,
+      );
+    }
     await openTeam();
     const delegationDepth = page.getByRole("combobox", {
       name: "Delegation depth",

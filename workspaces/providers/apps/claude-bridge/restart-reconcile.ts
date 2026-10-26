@@ -1,6 +1,9 @@
 import type { Session, Turn, Item } from "./session-state.ts";
 import type { SessionStoreEntry } from "@anthropic-ai/claude-agent-sdk";
-import type { HistoryReadOptions } from "./history-index.ts";
+import type {
+  HistoryReadOptions,
+  VerifiedHistoryRecord,
+} from "./history-index.ts";
 import { nativeInputIds } from "./input-messages.ts";
 import { nativeUuid } from "./native-history.ts";
 import { readHistoryIndex } from "./history-index.ts";
@@ -8,33 +11,27 @@ import { readHistoryIndex } from "./history-index.ts";
 // A native user UUID binds the mirror turn to one transcript chain. Text and
 // timestamps alone cannot distinguish an earlier reply or a different branch.
 function outcome(
-  session: Session,
   turn: Turn,
-  records: { row: SessionStoreEntry }[] | undefined,
+  records: readonly VerifiedHistoryRecord[] | undefined,
 ): { status: "interrupted" } | { status: "completed"; item: Item } | null {
   const initial = turn.items.find((item) => item.type === "userMessage");
   const userId = nativeInputIds(initial)?.[0];
   if (!nativeUuid(userId) || !records) return null;
-  const rows = records.map(({ row }) => row);
-  const anchors = rows.filter((row) => row.uuid === userId);
-  if (anchors.length !== 1) return null;
-  const anchor = anchors[0];
+  const start = records.findIndex(({ row }) => row.uuid === userId);
+  const anchor = records[start]?.row;
   if (
+    !anchor ||
     anchor.type !== "user" ||
     anchor.isSidechain !== false ||
     anchor.isCompactSummary
   )
     return null;
-  const seen = new Set();
-  const counts = new Map<string, number>();
-  for (const row of rows)
-    if (row.uuid) counts.set(row.uuid, (counts.get(row.uuid) || 0) + 1);
   const pending = new Set<unknown>();
   let previous: string | undefined,
     last: SessionStoreEntry | undefined,
     responseId: string | undefined;
   let texts: string[] = [];
-  for (const row of rows.slice(rows.indexOf(anchor))) {
+  for (const { row, kind, parentMessageId } of records.slice(start)) {
     if (row.isSidechain === true) continue;
     if (
       row.isCompactSummary ||
@@ -42,24 +39,12 @@ function outcome(
       row.subtype === "compact_boundary"
     )
       return null;
-    if (
-      [
-        "system",
-        "progress",
-        "file-history-snapshot",
-        "queue-operation",
-        "last-prompt",
-      ].includes(row.type)
-    )
+    if (kind === "metadata" || kind === "queue") continue;
+    if (row.type !== "assistant" && row.type !== "user") {
+      if (kind === "input") return null;
       continue;
+    }
     if (
-      !["assistant", "user"].includes(row.type) ||
-      !nativeUuid(row.uuid) ||
-      seen.has(row.uuid) ||
-      counts.get(row.uuid) !== 1 ||
-      row.sessionId !== (session.nativeId || session.id) ||
-      row.cwd !== (session.nativeHistoryCwd || session.cwd) ||
-      row.isSidechain !== false ||
       (row.isMeta &&
         !turn.items.some(
           (item) =>
@@ -67,10 +52,9 @@ function outcome(
             nativeInputIds(item)?.includes(row.uuid!),
         )) ||
       row.isVisibleInTranscriptOnly ||
-      (previous && row.parentUuid !== previous)
+      (previous && parentMessageId !== previous)
     )
       return null;
-    seen.add(row.uuid);
     previous = row.uuid;
     last = row;
     if (row === anchor) {
@@ -169,9 +153,9 @@ export async function reconcileRestartTurns(
   const stale = session.turns.filter((turn) => turn.status === "inProgress");
   if (!stale.length) return;
   const index = await readHistoryIndex(session, options);
-  const records = index?.entries.map((row) => ({ row }));
+  const records = index?.records;
   for (const turn of stale) {
-    const result = outcome(session, turn, records);
+    const result = outcome(turn, records);
     const initial = turn.items.find((item) => item.type === "userMessage");
     for (const [itemIndex, item] of turn.items.entries()) {
       if (item.type !== "userMessage") continue;

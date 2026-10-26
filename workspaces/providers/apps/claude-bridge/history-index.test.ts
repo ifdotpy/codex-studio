@@ -6,7 +6,7 @@ import os from "node:os";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import * as sdk from "@anthropic-ai/claude-agent-sdk";
-import { readHistoryIndex, verifiedHistoryMessages } from "./history-index.ts";
+import { readHistoryIndex, verifiedHistoryIndex } from "./history-index.ts";
 import { forkAtTurn, rollbackSession } from "./controls.ts";
 
 const noRestore = async () => {
@@ -16,8 +16,8 @@ function controls(): ControlDependencies {
   return {
     ...sdk,
     persist: async () => {},
-    getSessionMessages: (id, options) =>
-      verifiedHistoryMessages({ id, cwd: options!.dir! }),
+    getHistoryIndex: (id, options) =>
+      verifiedHistoryIndex({ id, cwd: options!.dir! }),
     rewindFiles: noRestore,
     prepareFileRestore: noRestore,
     verifyFileRestore: noRestore,
@@ -482,3 +482,35 @@ test("a known output attachment with an input-shaped payload stays unknown", asy
     "unknown",
   );
 });
+
+for (const trailing of [false, true])
+  test(`verified reader preserves input coverage through an attachment before a final reply${trailing ? " with trailing metadata" : ""}`, async () => {
+    const f = await fixture();
+    const attachmentId = randomUUID();
+    const rows: sdk.SessionStoreEntry[] = [
+      ...f.rows.slice(0, 2),
+      {
+        type: "attachment",
+        uuid: attachmentId,
+        parentUuid: f.ids[1],
+        sessionId: f.session.nativeId,
+        cwd: f.cwd,
+        isSidechain: false,
+        attachment: {
+          type: "deferred_tools_delta",
+          addedNames: [],
+          addedLines: [],
+          removedNames: [],
+        },
+      },
+      { ...f.rows[2], parentUuid: attachmentId },
+      ...(trailing ? [{ type: "cost-state", totalCost: 0 }] : []),
+    ];
+    await fs.writeFile(
+      f.file,
+      rows.map((row) => JSON.stringify(row) + "\n").join(""),
+    );
+    const index = await readHistoryIndex(f.session);
+    expect(index?.outcome([f.ids[1]], [f.ids[0]])).toBe("delivered");
+    expect(index?.messages.at(-1)?.uuid).toBe(f.ids[2]);
+  });

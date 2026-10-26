@@ -68,7 +68,8 @@ export function SidebarFrame(p: SidebarFrameProps) {
     preferred,
     contract: widthContract,
   });
-  const compact = policy.mode === "drawer";
+  // The static desktop render has no viewport to measure.
+  const compact = typeof window !== "undefined" && policy.mode === "drawer";
   // Measure once before paint when the saved desktop preference starts closed.
   const probing = !compact && p.collapsed && headerMinimum.current === 0;
   const live = useRef({ scope: p.scope, compact });

@@ -3,6 +3,7 @@ import type {
   BridgeNotification,
   BridgeMethodResult,
   BridgeServerRequest,
+  BridgeParams,
 } from "./bridge-protocol.ts";
 
 export const start = {
@@ -13,6 +14,22 @@ export const start = {
     input: [{ type: "text", text: "Hello", inputOrigin: "human" }],
   },
 } satisfies BridgeRequest;
+
+// Runtime producers preserve an unset model as JSON null and suppress user MCP
+// servers for managed workers (provider_adapter.rs / thread_prepare.rs).
+export const managedStart = {
+  method: "thread/start",
+  params: { cwd: "/project", userMcp: false },
+} satisfies BridgeRequest;
+export const unsetTurnModel = {
+  method: "turn/start",
+  params: { threadId: "thread", model: null, input: [] },
+} satisfies BridgeRequest;
+export const invalidUserMcp = {
+  cwd: "/project",
+  // @ts-expect-error The generated session field permits omission, not null.
+  userMcp: null,
+} satisfies BridgeParams<"thread/start">;
 export const accepted = {
   method: "turn/start",
   result: { turn: { id: "turn", status: "inProgress" } },

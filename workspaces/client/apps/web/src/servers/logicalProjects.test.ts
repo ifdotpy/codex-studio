@@ -13,6 +13,8 @@ import {
   ProjectReceiptRefused,
 } from "./projectLocations";
 import type { ServerNavigation } from "./navigation";
+import { navigationSnapshot } from "./navigation";
+import { snapshotFixture } from "../snapshotFixture";
 const view = (
   projects: ServerNavigation["projects"],
   chats: ServerNavigation["chats"] = [],
@@ -40,6 +42,58 @@ const project = {
   ],
 };
 describe("project locations", () => {
+  it("does not offer deletion for an unregistered lead-chat folder projected into navigation", () => {
+    const data = snapshotFixture([
+      { id: "lead", source: "managed", isLead: true, cwd: "/lead-only" },
+    ]);
+    const groups = logicalProjects({
+      local: navigationSnapshot(data, null, ""),
+    });
+    expect(groups).toHaveLength(1);
+    expect(groups[0]?.path).toBe("/lead-only");
+    expect(groups[0]?.deleteTarget).toBeUndefined();
+  });
+  it("does not offer deletion for an unregistered shared-room folder projected into navigation", () => {
+    const data = snapshotFixture([], {
+      rooms: [
+        {
+          id: "room",
+          projectPath: "/shared-only",
+          members: [],
+          radio: {
+            direct: true,
+            active: null,
+            error: null,
+            next: [],
+            revision: 0,
+            status: "idle",
+            speaker: null,
+            teamId: "",
+          },
+        },
+      ],
+    });
+    const groups = logicalProjects({
+      local: navigationSnapshot(data, null, ""),
+    });
+    expect(groups).toHaveLength(1);
+    expect(groups[0]?.path).toBe("/shared-only");
+    expect(groups[0]?.deleteTarget).toBeUndefined();
+  });
+  it("offers deletion for a registered path-only project projected into navigation", () => {
+    const data = snapshotFixture([], {
+      projects: [
+        { id: "/registered", path: "/registered", name: "Registered" },
+      ],
+    });
+    const navigation = navigationSnapshot(data, null, "");
+    // Older navigation rows may omit IDs; the sidebar projection retains registration.
+    for (const project of navigation.projects) delete project.id;
+    const groups = logicalProjects({ local: navigation });
+    expect(
+      groups.find((group) => group.path === "/registered")?.deleteTarget,
+    ).toBe("/registered");
+  });
   it("groups both registered folders and bound chats under one project", () => {
     const navigation = {
       local: view(

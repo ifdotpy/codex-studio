@@ -39,19 +39,17 @@ import { messageRenderKey } from "../../message-delivery/messageDelivery";
 import ReasoningDuration from "./ReasoningDuration";
 import HistoryWindow from "./HistoryWindow";
 import { windowHistoryRows } from "./historyWindowModel";
-import type { components } from "../../../generated/api";
 import QuestionCard from "../../questions/QuestionCard";
 import { openRequestAnswer } from "../../questions/Requests";
 import {
   isQuestionToolItem,
+  questionCard,
   type QuestionCardModel,
 } from "../../questions/questionCardModel";
-import { useQuestionCards } from "../../questions/useQuestionCards";
 
 type CommandVisibility = boolean | ReadonlyMap<string, boolean>;
 type QuestionCards = (item: Message) => QuestionCardModel | undefined;
-type RequestDto = components["schemas"]["RequestEntityDto"];
-const NO_REQUESTS: RequestDto[] = [];
+type RequestCards = ReadonlyMap<string, ReactNode>;
 
 const answerQuestion = (requestId: string) => {
   openRequestAnswer(requestId);
@@ -64,7 +62,9 @@ function row(
   questions: QuestionCards,
   agentId?: string,
   cwd?: string,
+  requestCards?: RequestCards,
 ) {
+  if (requestCards?.has(item.id)) return requestCards.get(item.id);
   if (isFileChange(item))
     return <ToolCard item={item} agentId={agentId} cwd={cwd} />;
   if (item.role === "reasoning") return <ReasoningDuration item={item} />;
@@ -98,7 +98,11 @@ function messageGroups(
   showCompletedCommands: CommandVisibility = false,
   includeReasoning = false,
   revealedMessage?: string,
+  requestCards?: RequestCards,
 ) {
+  const joinsWork = (item: Message) =>
+    !requestCards?.has(item.id) &&
+    (workRow(item) || (includeReasoning && item.role === "reasoning"));
   const showItem = (item: Message) =>
     item.id === revealedMessage ||
     (typeof showCompletedCommands === "boolean"
@@ -110,22 +114,24 @@ function messageGroups(
   for (let index = 0; index < items.length; index++) {
     const item = items[index];
     if (!item) throw new Error("Missing transcript message");
-    if (isEmptyAssistantMessage(item)) continue;
-    if (!showItem(item) && isPastCommand(item)) continue;
-    if (workRow(item) || (includeReasoning && item.role === "reasoning")) {
+    if (!requestCards?.has(item.id) && isEmptyAssistantMessage(item)) continue;
+    if (!requestCards?.has(item.id) && !showItem(item) && isPastCommand(item))
+      continue;
+    if (joinsWork(item)) {
       const run: [Message, ...Message[]] = [item];
       while (index + 1 < items.length) {
         const next = items[index + 1];
         if (!next) throw new Error("Missing next transcript message");
         if (
-          isEmptyAssistantMessage(next) ||
-          (!showItem(next) && isPastCommand(next))
+          (!requestCards?.has(next.id) && isEmptyAssistantMessage(next)) ||
+          (!requestCards?.has(next.id) &&
+            !showItem(next) &&
+            isPastCommand(next))
         ) {
           index++;
           continue;
         }
-        if (!((includeReasoning && next.role === "reasoning") || workRow(next)))
-          break;
+        if (!joinsWork(next)) break;
         run.push(next);
         index++;
       }
@@ -144,15 +150,17 @@ function messages(
   agentId?: string,
   cwd?: string,
   revealedMessage?: string,
+  requestCards?: RequestCards,
 ) {
-  return messageGroups(items, false, false, revealedMessage).map((item) =>
-    Array.isArray(item) ? (
-      <Activity key={item[0].id} items={item} agentId={agentId} />
-    ) : (
-      <Fragment key={messageRenderKey(item)}>
-        {row(item, render, questions, agentId, cwd)}
-      </Fragment>
-    ),
+  return messageGroups(items, false, false, revealedMessage, requestCards).map(
+    (item) =>
+      Array.isArray(item) ? (
+        <Activity key={item[0].id} items={item} agentId={agentId} />
+      ) : (
+        <Fragment key={messageRenderKey(item)}>
+          {row(item, render, questions, agentId, cwd, requestCards)}
+        </Fragment>
+      ),
   );
 }
 
@@ -269,11 +277,13 @@ function Turn({
   retryFailure,
   revealedMessage,
   questions,
+  requestCards,
 }: {
   group: HistoryGroup;
   storageKey: string;
   render: (message: Message) => ReactNode;
   questions: QuestionCards;
+  requestCards?: RequestCards | undefined;
   agentId?: string | undefined;
   cwd?: string | undefined;
   onJump: (id: string) => void;
@@ -302,8 +312,15 @@ function Turn({
   if (commandVisibility !== savedCommandVisibility)
     setSavedCommandVisibility(commandVisibility);
   const groupedMessages = useMemo(
-    () => messageGroups(group.items, commandVisibility, true, revealedMessage),
-    [group.items, commandVisibility, revealedMessage],
+    () =>
+      messageGroups(
+        group.items,
+        commandVisibility,
+        true,
+        revealedMessage,
+        requestCards,
+      ),
+    [group.items, commandVisibility, revealedMessage, requestCards],
   );
   const visibleError = group.items.some(
     (item) =>
@@ -349,7 +366,7 @@ function Turn({
             key={item.id}
             className={item.id === result?.id ? "turn-answer" : undefined}
           >
-            {row(item, render, questions, agentId, cwd)}
+            {row(item, render, questions, agentId, cwd, requestCards)}
           </div>
         ),
       )}
@@ -420,12 +437,13 @@ export default function TurnHistory({
   scrollContainer,
   rememberScroll,
   hasRecentScrollInput,
-  requests = NO_REQUESTS,
+  questionCards = questionCard,
+  requestCards,
 }: {
   items: Message[];
   agent?: Agent | undefined;
-  /** Live request entities; pending questions get an Answer action. */
-  requests?: RequestDto[];
+  questionCards?: QuestionCards;
+  requestCards?: RequestCards;
   currentTurn?: string | undefined;
   enabled: boolean;
   storageKey: string;
@@ -441,12 +459,6 @@ export default function TurnHistory({
     sourceItems,
     enabled ? agent : undefined,
     storageKey,
-  );
-  const questions = useQuestionCards(
-    enabled ? agentId : undefined,
-    storageKey,
-    items,
-    requests,
   );
   const previousGroups = useRef<{
     items: Message[];
@@ -501,9 +513,17 @@ export default function TurnHistory({
   useLayoutEffect(() => {
     previousRows.current = rows;
   }, [rows]);
+  const requiredRows = useMemo(
+    () =>
+      rows
+        .filter((row) => row.items.some((item) => requestCards?.has(item.id)))
+        .map((row) => row.id),
+    [rows, requestCards],
+  );
   return (
     <HistoryWindow
       rows={rows}
+      requiredRows={requiredRows}
       storageKey={storageKey}
       rememberScroll={rememberScroll}
       hasRecentScrollInput={hasRecentScrollInput}
@@ -524,10 +544,11 @@ export default function TurnHistory({
               {messages(
                 group.items,
                 renderMessage,
-                questions,
+                questionCards,
                 agentId,
                 agent?.cwd ?? undefined,
                 revealedMessage,
+                requestCards,
               )}
             </Fragment>
           );
@@ -542,7 +563,8 @@ export default function TurnHistory({
             failureReason={failureReasons.get(turnId) || ""}
             storageKey={storageKey}
             render={renderMessage}
-            questions={questions}
+            questions={questionCards}
+            requestCards={requestCards}
             agentId={agentId}
             cwd={agent?.cwd ?? undefined}
             onJump={onJump}

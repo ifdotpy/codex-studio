@@ -793,10 +793,18 @@ pub fn turn_params(s: &Snapshot, input: &TurnInput) -> Result<Map<String, Value>
     }
     let mut params = Map::from_iter([
         ("threadId".into(), json!(s.actor.thread_id)),
-        ("model".into(), json!(s.settings.model)),
         ("cwd".into(), json!(s.actor.cwd)),
         ("serviceTier".into(), json!(service_tier(&s.settings))),
     ]);
+    let Value::Object(wire) = json!(
+        studio_runtime_schema::provider_input::ClaudeBridgeTurnWire {
+            model: Some(s.settings.model.clone()),
+        }
+    ) else {
+        // The wire owner is a struct, so serialization always produces an object.
+        unreachable!("Claude turn wire object");
+    };
+    params.extend(wire);
     let effort = if s.actor.native_effort_present {
         &s.settings.native_effort
     } else {

@@ -37,6 +37,93 @@ function rawReplies(bridge: BridgeHarness, requests: object[]) {
 }
 
 const fixture = new URL("./stop-receipts.fixture.mts", import.meta.url);
+
+// Boundary hardening: these deliberately malformed envelopes are test inputs,
+// not evidence that the Rust caller produces them.
+for (const malformed of [
+  {},
+  { result: null, error: { code: -1, message: "ambiguous" } },
+  { error: null },
+  { error: { code: -1 } },
+]) {
+  test(`a malformed callback keeps its waiter: ${JSON.stringify(malformed)}`, async () => {
+    const bridge = await startBridge(
+      new URL("./callback.fixture.mts", import.meta.url),
+    );
+    try {
+      await bridge.call("turn/start", {
+        threadId: bridge.thread,
+        input: [{ type: "text", text: "callback" }],
+      });
+      const request = await bridge.note("mcpServer/elicitation/request");
+      bridge.process.stdin?.write(
+        JSON.stringify({ id: request.id, ...malformed }) + "\n",
+      );
+      // A subsequent RPC is an ordered stdin barrier, without a timing sleep.
+      await bridge.call("thread/loaded/list", {});
+      assert.equal(
+        bridge.notes.some((note) => note.method === "fixture/callback"),
+        false,
+      );
+      bridge.process.stdin?.write(
+        JSON.stringify({
+          id: request.id,
+          result: null,
+          fixtureCallback: true,
+        }) + "\n",
+      );
+      assert.deepEqual((await bridge.note("fixture/callback")).params, {
+        value: null,
+        decodes: 1,
+      });
+    } finally {
+      await bridge.close();
+    }
+  });
+}
+
+test("callback success and errors decode once and ignore unmatched ids", async () => {
+  for (const reply of [
+    { result: null },
+    { result: { action: "accept", content: {} } },
+    { error: { code: -1, message: "fixture refusal" } },
+  ]) {
+    const bridge = await startBridge(
+      new URL("./callback.fixture.mts", import.meta.url),
+    );
+    try {
+      await bridge.call("turn/start", {
+        threadId: bridge.thread,
+        input: [{ type: "text", text: "callback" }],
+      });
+      const request = await bridge.note("mcpServer/elicitation/request");
+      bridge.process.stdin?.write(
+        JSON.stringify({ id: { invalid: true }, ...reply }) + "\n",
+      );
+      bridge.process.stdin?.write(
+        JSON.stringify({ id: "unknown", ...reply }) + "\n",
+      );
+      await bridge.call("thread/loaded/list", {});
+      assert.equal(
+        bridge.notes.some((note) => note.method === "fixture/callback"),
+        false,
+      );
+      bridge.process.stdin?.write(
+        JSON.stringify({ id: request.id, ...reply, fixtureCallback: true }) +
+          "\n",
+      );
+      assert.deepEqual(
+        (await bridge.note("fixture/callback")).params,
+        reply.error
+          ? { error: reply.error.message, decodes: 1 }
+          : { value: reply.result, decodes: 1 },
+      );
+    } finally {
+      await bridge.close();
+    }
+  }
+});
+
 test("requests without params retain the empty parameter default", async () => {
   const bridge = await startBridge(fixture);
   try {

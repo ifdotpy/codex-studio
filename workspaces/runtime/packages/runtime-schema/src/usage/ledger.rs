@@ -271,7 +271,7 @@ impl UsageLedgerRow {
     pub fn from_analytics(provider: UsageProvider, row: &Value) -> Result<Self, UsageParseError> {
         let agent = row["agentId"].as_str().unwrap_or_default();
         if row.get("usageIdentity").is_some() || row.get("receiptKey").is_some() {
-            let ledger: Self = serde_json::from_value(row.clone())?;
+            let ledger = Self::deserialize(row)?;
             let identity =
                 UsageIdentity::new(agent, row["threadId"].as_str(), &ledger.studio_usage);
             if ledger.usage_identity != identity

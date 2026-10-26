@@ -11,6 +11,15 @@ are owned by this app's source and [`package.json`](package.json). Focused check
 `pnpm run test:server:bridge` from the repository root, as defined by the
 [root manifest](../../../../package.json).
 
+The small Rust-owned request extensions in
+[`provider_input.rs`](../../../runtime/packages/runtime-schema/src/provider_input.rs)
+are used by the producers and generated into `runtime-contract.generated.ts`.
+[`bridge-protocol.ts`](bridge-protocol.ts) owns fresh notification types, while
+[`session-state.ts`](session-state.ts) retains permissive legacy disk records.
+Legacy items without identity remain readable but produce no item notification.
+Move overrides contain only the bridge's effort and service tier; omitted fields
+stay omitted in the saved session and move proof.
+
 ## Installation requirements
 
 The bridge uses the [shared Node requirement](../../../../docs/typescript.md#how-typescript-runs). The stable

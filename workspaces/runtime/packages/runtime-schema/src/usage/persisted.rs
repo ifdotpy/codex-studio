@@ -2,6 +2,7 @@
 use super::{
     UsageEvidence, UsageObservation, UsageParseError, UsageProvider, UsageScope, UsageTokens,
 };
+use serde::Deserialize;
 use serde_json::Value;
 
 /// Compatibility reader for pre-contract analytics rows only. Typed rows use the ledger.
@@ -121,7 +122,7 @@ pub fn parse_analytics_usage_row(
         if row.get("usageIdentity").is_some() || row.get("receiptKey").is_some() {
             return Ok(super::ledger::UsageLedgerRow::from_analytics(provider, row)?.studio_usage);
         }
-        return Ok(serde_json::from_value(value.clone())?);
+        return Ok(UsageObservation::deserialize(value)?);
     }
     let text = |key: &str| row.get(key).and_then(Value::as_str).map(str::to_owned);
     let turn_id = text("turnId");

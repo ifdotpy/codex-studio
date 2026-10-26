@@ -1,3 +1,4 @@
+import { messageIndex } from "./history-index.ts";
 import type { Session, ControlReceipt } from "./session-state.ts";
 import type { NativeFileRecord } from "./file-restore.ts";
 import type {
@@ -91,7 +92,7 @@ async function createFixture(root: string) {
     forkSession: async () => {
       throw new Error("first-turn rollback must not fork");
     },
-    getSessionMessages: async () => messages,
+    getHistoryIndex: async () => messageIndex(messages),
     persist: async (
       _session: Pick<Session, "controlRequests">,
     ): Promise<void> => {},
@@ -119,26 +120,45 @@ async function createFixture(root: string) {
     status: ControlReceipt["status"],
     filePlan: NonNullable<ControlReceipt["filePlan"]>,
     filesRestored = false,
-  ): ControlReceipt => ({
-    kind: "rollback",
-    turnId: message,
-    sourceNativeId: native,
-    createdAt: "2026-09-01T00:00:00Z",
-    retainedCount: 0,
-    upToMessageId: null,
-    status,
-    filePlan,
-    ...(filesRestored
-      ? {
-          result: {
-            threadId: native,
-            nativeId: native,
-            removedTurns: 0,
-            filesRestored,
-          },
-        }
-      : {}),
-  });
+  ): ControlReceipt => {
+    const base = {
+      kind: "rollback",
+      turnId: message,
+      sourceNativeId: native,
+      createdAt: "2026-09-01T00:00:00Z",
+      retainedCount: 0,
+      upToMessageId: null,
+      filePlan,
+    } satisfies Partial<ControlReceipt>;
+    if (status === "completed")
+      return {
+        ...base,
+        status,
+        targetNativeId: native,
+        result: {
+          threadId: native,
+          nativeId: native,
+          removedTurns: 0,
+          filesRestored,
+        },
+      };
+    const pending = {
+      ...base,
+      sourceMessages: messages,
+      previousTurns: session.turns,
+    };
+    if (status === "submitted") return { ...pending, status };
+    if (status === "forked")
+      return { ...pending, status, targetNativeId: native };
+    return {
+      ...pending,
+      status,
+      targetNativeId: native,
+      restoreFiles: true,
+      fileMessageId: message,
+      fileResult: { canRewind: true },
+    };
+  };
   return {
     receipt,
     cwd,

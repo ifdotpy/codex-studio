@@ -195,7 +195,15 @@ function ModelDraft({ server, projectId, path, onChange }: Props) {
       daybreakEnabled: !!worker?.daybreak_enabled,
       accountKey: worker?.account_key,
     },
-    reviewDefaults: settings.review_defaults,
+    reviewDefaults: settings.review_defaults
+      ? {
+          model: settings.review_defaults.model,
+          effort: settings.review_defaults.effort,
+          ...(settings.review_defaults.fast_mode !== undefined
+            ? { fastMode: settings.review_defaults.fast_mode }
+            : {}),
+        }
+      : undefined,
   };
   const modelError =
     catalog.error ||

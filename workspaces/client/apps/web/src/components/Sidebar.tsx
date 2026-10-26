@@ -223,7 +223,9 @@ function SidebarContents(p: SidebarProps & { services: SidebarServices }) {
   const runtime = p.data.runtime;
   const aliases = useServerAliases(readServerAliases);
   const [compact, setCompact] = useState(
-    () => window.matchMedia(layoutQueries.navigationCompact).matches,
+    () =>
+      typeof window !== "undefined" &&
+      window.matchMedia(layoutQueries.navigationCompact).matches,
   );
   const reportCompact = useCallback(
     (value: boolean) => {
@@ -1346,11 +1348,11 @@ function SidebarContents(p: SidebarProps & { services: SidebarServices }) {
             <Settings size={18} />
           </ActionIcon>
         )}
-        {
+        {compact && (
           <ActionIcon aria-label="Close conversations" onClick={closeSidebar}>
             <X size={20} />
           </ActionIcon>
-        }
+        )}
       </div>
       {p.notice && (
         <p role="alert" className="notice">
