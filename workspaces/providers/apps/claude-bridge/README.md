@@ -65,6 +65,11 @@ the repository root to verify the Mac prune and its native codec load.
 
 ## Steer completion and Stop
 
+A steer is acknowledged when its replay or the SDK's consumed-message UUIDs
+confirm its native input. For a split input, the consumed UUIDs must cover every
+part in order. Some running turns report a mid-turn input only in their result,
+so the input can remain waiting until the turn ends.
+
 A successful result waits briefly for pending steer echoes. An echo during the
 grace keeps the continuation in the same turn. When the grace expires, the turn
 completes: unread input is withdrawn and reported for server redelivery with its

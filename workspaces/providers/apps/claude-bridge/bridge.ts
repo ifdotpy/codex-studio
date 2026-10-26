@@ -1213,6 +1213,19 @@ function submittedSteer(s: Session, nativeId: string | undefined) {
   }
   return null;
 }
+
+// SDK reply frames report consumed native input UUIDs in order. A partial
+// composite input is not enough to confirm delivery of the logical input.
+function consumedSteerOutcome(
+  item: Item,
+  consumed: readonly string[],
+): "delivered" | "unknown" {
+  const ids = nativeInputIds(item);
+  if (!ids) return "unknown";
+  let position = 0;
+  for (const id of consumed) if (id === ids[position]) position++;
+  return position === ids.length ? "delivered" : "unknown";
+}
 function finishItem(
   s: Session,
   turn: Turn | null | undefined,
@@ -2012,6 +2025,31 @@ async function startSession(
       active.lastEventAt = Date.now();
       if (active.toolClocks.size) armStallWatch();
       if (handledSdkMessages[m.type] === false) continue;
+      if (
+        active.turn &&
+        (m.type === "assistant" ||
+          m.type === "stream_event" ||
+          m.type === "result") &&
+        m.user_message_uuids
+      ) {
+        for (const item of active.turn.items) {
+          if (
+            item.type === "userMessage" &&
+            item.delivery === "steer" &&
+            item.deliveryStatus === "submitted" &&
+            consumedSteerOutcome(item, m.user_message_uuids) === "delivered"
+          ) {
+            item.deliveryStatus = "delivered";
+            active.pendingSteers.delete(item.id);
+            clearDeferredResult(active);
+            turnEvent(s, active.turn, "item/completed", {
+              ...item,
+              clientId: item.id,
+            });
+            persistLater(s, active);
+          }
+        }
+      }
       if (m.type === "system" && m.subtype === "init") {
         await persistNativeSession(
           s,
