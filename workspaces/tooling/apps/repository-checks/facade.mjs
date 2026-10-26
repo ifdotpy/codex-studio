@@ -1036,6 +1036,8 @@ export async function executeRecipe(root, name, steps, options = {}) {
           ],
         };
       } else if (
+        // A test executor stands in for real runs; it never reuses or records results.
+        !options.execute &&
         (cacheKey = stepKey(root, step)) &&
         (result = reusedResult(root, step, cacheKey))
       ) {
