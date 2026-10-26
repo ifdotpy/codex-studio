@@ -475,38 +475,35 @@ pub fn migrate_with_options(
                     .as_ref()
                     .map(|saved| super::private_tree::Directory::open(saved.path()))
                     .transpose()?;
-                if let Some(saved) = &saved_directory {
-                    destination.rename(Path::new(".git"), saved, Path::new("git"))?;
-                }
-                let mut cache_roots: BTreeSet<PathBuf> = run(state_dir, &cwd, &["cache", "list"])?
-                    .lines()
-                    .filter_map(|line| line.split_once('\t'))
-                    .filter(|(_, kind)| *kind == "cache")
-                    .map(|(path, _)| PathBuf::from(path))
-                    .collect();
-                let versioned_roots: Vec<_> = cache_roots
-                    .iter()
-                    .filter(|cache| {
-                        cache
-                            .strip_prefix(&relative)
-                            .is_ok_and(|local| plan.has_versioned_files_under(local))
-                    })
-                    .cloned()
-                    .collect();
-                for cache in versioned_roots {
-                    discard_inherited_cache(&line_directory, &cache)?;
-                    cache_roots.remove(&cache);
-                }
-                let cache_roots = cache_roots
-                    .iter()
-                    .filter_map(|cache| cache.strip_prefix(&relative).ok().map(Path::to_owned))
-                    .collect();
-                clear_at(&destination, &cache_roots)?;
-                // Reuse the pinned subtree even if its pathname was replaced after opening it.
-                plan.stage_open(&destination, &line_directory, &relative)?;
-                if let Some(saved) = &saved_directory {
-                    saved.rename(Path::new("git"), &destination, Path::new(".git"))?;
-                }
+                with_git_aside(&destination, saved_directory.as_ref(), || {
+                    let mut cache_roots: BTreeSet<PathBuf> =
+                        run(state_dir, &cwd, &["cache", "list"])?
+                            .lines()
+                            .filter_map(|line| line.split_once('\t'))
+                            .filter(|(_, kind)| *kind == "cache")
+                            .map(|(path, _)| PathBuf::from(path))
+                            .collect();
+                    let versioned_roots: Vec<_> = cache_roots
+                        .iter()
+                        .filter(|cache| {
+                            cache
+                                .strip_prefix(&relative)
+                                .is_ok_and(|local| plan.has_versioned_files_under(local))
+                        })
+                        .cloned()
+                        .collect();
+                    for cache in versioned_roots {
+                        discard_inherited_cache(&line_directory, &cache)?;
+                        cache_roots.remove(&cache);
+                    }
+                    let cache_roots = cache_roots
+                        .iter()
+                        .filter_map(|cache| cache.strip_prefix(&relative).ok().map(Path::to_owned))
+                        .collect();
+                    clear_at(&destination, &cache_roots)?;
+                    // Reuse the pinned subtree even if its pathname was replaced after opening it.
+                    plan.stage_open(&destination, &line_directory, &relative)
+                })?;
                 // A top-level line is a private container, distinct from a nested repository root.
                 if relative.as_os_str().is_empty() {
                     destination.set_mode(root_mode)?;
@@ -528,12 +525,51 @@ pub fn migrate_with_options(
     Ok(report)
 }
 
+/// Runs `work` with the line's `.git` moved into `saved` and puts it back
+/// afterwards, also when `work` fails: `saved` is a temporary folder that is
+/// deleted on drop.
+fn with_git_aside<T>(
+    destination: &super::private_tree::Directory,
+    saved: Option<&super::private_tree::Directory>,
+    work: impl FnOnce() -> Result<T>,
+) -> Result<T> {
+    if let Some(saved) = saved {
+        destination.rename(Path::new(".git"), saved, Path::new("git"))?;
+    }
+    let result = work();
+    if let Some(saved) = saved {
+        saved.rename(Path::new("git"), destination, Path::new(".git"))?;
+    }
+    result
+}
+
 mod clear;
 use clear::{clear_at, discard_inherited_cache};
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_failed_import_step_puts_the_line_git_folder_back() {
+        let fixture = tempfile::tempdir().expect("fixture");
+        let line = fixture.path().join("line");
+        fs::create_dir_all(line.join(".git")).expect("git folder");
+        fs::write(line.join(".git/HEAD"), "ref: refs/heads/main\n").expect("head");
+        let saved = tempfile::tempdir_in(fixture.path()).expect("saved");
+        let destination = super::super::private_tree::Directory::open(&line).expect("line");
+        let aside = super::super::private_tree::Directory::open(saved.path()).expect("aside");
+        let failed: Result<()> = with_git_aside(&destination, Some(&aside), || {
+            assert!(!line.join(".git").exists());
+            Err(NativeLayrError::Refused("cache list failed".into()))
+        });
+        assert!(failed.is_err());
+        drop(saved);
+        assert_eq!(
+            fs::read_to_string(line.join(".git/HEAD")).expect("git folder is back"),
+            "ref: refs/heads/main\n"
+        );
+    }
 
     #[test]
     fn without_git_omits_only_root_metadata_and_records_operator_choice() {

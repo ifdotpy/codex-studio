@@ -18,6 +18,7 @@ import { CARGO_BUILD_JOBS, scrubAgentEnvironment } from "./gate-config.mjs";
 import { homedir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { recordPass, reusedResult, stepKey } from "./test-result-cache.mjs";
 
 const MIN_JUST = [1, 58, 0];
 const COST = {
@@ -791,6 +792,16 @@ export function gateSteps(root, name) {
       ),
       requires: null,
       lane: "js",
+      // Whole areas, because these tests also read fixtures and contracts there.
+      inputs:
+        packageName === "studio-claude-bridge"
+          ? [
+              "workspaces/providers",
+              "workspaces/client/contracts",
+              "workspaces/runtime",
+              "workspaces/tooling",
+            ]
+          : ["workspaces/client", "workspaces/runtime"],
     })),
     nodeTest("retained-helpers", "retained Python helper boundaries", [
       "workspaces/client/apps/desktop/retained-helper-witness.test.cjs",
@@ -826,7 +837,12 @@ export function gateSteps(root, name) {
       ],
       options: { allowZeroTests: true },
     },
-    { id: "tooling", label: "tooling tests", lane: "js", item: tooling },
+    {
+      id: "tooling",
+      label: "tooling tests",
+      lane: "js",
+      item: tooling,
+    },
     {
       id: "guest",
       label: "VM guest Python suite",
@@ -995,6 +1011,7 @@ export async function executeRecipe(root, name, steps, options = {}) {
           ? await readiness.get(step.requires).promise
           : external[step.requires]);
       let result;
+      let cacheKey;
       if (controller.signal.aborted || !ready) {
         result = {
           status: controller.signal.aborted ? "cancelled" : "skipped",
@@ -1006,6 +1023,11 @@ export async function executeRecipe(root, name, steps, options = {}) {
               : `missing prerequisite: ${step.requires}; prepare the gate artifacts first`,
           ],
         };
+      } else if (
+        (cacheKey = stepKey(root, step)) &&
+        (result = reusedResult(root, step, cacheKey))
+      ) {
+        // Same inputs as an earlier passing run: reuse it like a build artifact.
       } else {
         try {
           result = await (options.execute ?? execute)(
@@ -1038,6 +1060,7 @@ export async function executeRecipe(root, name, steps, options = {}) {
           };
         }
       }
+      if (cacheKey && !result.reused) recordPass(root, step, cacheKey, result);
       results[index] = { ...result, id: step.id, lane, label: step.label };
       if (step.provides)
         readiness.get(step.provides).resolve(result.exitCode === 0);
