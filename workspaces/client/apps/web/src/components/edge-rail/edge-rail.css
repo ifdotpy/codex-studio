@@ -28,6 +28,17 @@
   backdrop-filter: blur(12px);
 }
 
+/* Items sit inside the dropdown padding; their corners stay concentric. */
+.edge-rail-menu .mantine-Menu-item {
+  border-radius: max(
+    0px,
+    calc(
+      var(--popover-radius, var(--mantine-radius-default)) -
+        calc(0.25rem * var(--mantine-scale))
+    )
+  );
+}
+
 .edge-rail .edge-rail-button:focus-visible {
   outline: 2px solid var(--mantine-primary-color-filled);
   outline-offset: -2px;
@@ -73,8 +84,8 @@ html:has(.workspace[data-edge-rail="true"])
   content: "";
   position: absolute;
   top: 0;
-  right: calc(-1 * env(safe-area-inset-right, 0px));
-  width: env(safe-area-inset-right, 0px);
+  right: calc(-1 * var(--viewport-safe-right));
+  width: var(--viewport-safe-right);
   height: calc(100% + var(--viewport-safe-bottom));
   background: var(--mantine-color-body);
   pointer-events: none;

@@ -5,6 +5,7 @@
   "singleQuote": false,
   "trailingComma": "all",
   "ignorePatterns": [
+    "workspaces/client/apps/native/src-tauri/gen/",
     "workspaces/runtime/apps/layr/",
     "workspaces/runtime/apps/layr-desk/",
     "workspaces/runtime/packages/runtime-http/openapi.json",

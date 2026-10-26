@@ -483,3 +483,67 @@
     pointer-events: auto;
   }
 }
+
+/* A narrow list (the iPhone Duo sidebar) cannot fit the label beside four
+   touch targets; the label takes its own row instead of sitting under them. */
+.chat-scroll {
+  container: chat-list / inline-size;
+}
+@container chat-list (max-width: 280px) {
+  .projects-heading {
+    flex-wrap: wrap;
+    row-gap: 0;
+  }
+  .projects-heading-label {
+    flex-basis: 100%;
+  }
+  .projects-heading-label + * {
+    margin-inline-start: auto;
+  }
+}
+
+/* The list end fades instead of showing a cut text row; the end padding
+   lets the last row scroll clear of the fade. */
+.chat-scroll {
+  padding-block-end: var(--mantine-spacing-md);
+  mask-image: linear-gradient(
+    to bottom,
+    #000 calc(100% - var(--mantine-spacing-md)),
+    transparent
+  );
+}
+
+/* A narrow sidebar header (the iPhone Duo) cannot fit the brand and four
+   touch targets in one row: the brand and the close button share the first
+   row, the other actions take the second, and the notice count sits beside
+   its icon instead of over it. */
+.sidebar-header {
+  container: sidebar-header / inline-size;
+}
+@container sidebar-header (max-width: 240px) {
+  .sidebar-header > .brand {
+    flex: 1 1
+      calc(
+        100% - var(--studio-touch-target, 2.75rem) - var(--mantine-spacing-xs)
+      );
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+  }
+  .sidebar-header > [aria-label="Close conversations"] {
+    order: 1;
+  }
+  .sidebar-header > :not(.brand, [aria-label="Close conversations"]) {
+    order: 2;
+  }
+  .sidebar-header .sidebar-warnings-target:has(.conversation-warning-count) {
+    margin-inline-end: 2rem;
+  }
+  .sidebar-header .conversation-warning-count {
+    inset-block-start: 50%;
+    inset-inline-start: calc(100% - 0.375rem);
+    inset-inline-end: auto;
+    inline-size: max-content;
+    transform: translateY(-50%);
+  }
+}
