@@ -4,7 +4,7 @@
   "private": true,
   "description": "Native desktop host for the LAYR Studio workspace",
   "type": "module",
-  "main": "main.cjs",
+  "main": "main.ts",
   "scripts": {
     "start": "pnpm exec install-electron && pnpm exec electron .",
     "dev": "pnpm --filter codex-agents-web run build && pnpm exec install-electron && pnpm exec electron .",
@@ -12,17 +12,17 @@
     "package": "pnpm exec install-electron && pnpm exec node package.ts",
     "package:ui": "pnpm exec install-electron && pnpm exec node package.ts --ui-only",
     "start:ui": "pnpm exec install-electron && pnpm exec electron . --ui-only",
-    "test": "pnpm exec vitest run --config vitest.config.mjs && python3 -B recovery-test.py && python3 -B recovery-reload-test.py && python3 -B install-update-test.py",
+    "test": "pnpm exec vitest run --config vitest.config.ts && python3 -B recovery-test.py && python3 -B recovery-reload-test.py && python3 -B install-update-test.py",
     "test:native": "pnpm exec install-electron && pnpm exec node test.ts",
     "test:sync-brotli": "pnpm exec install-electron && pnpm exec node sync-brotli-native.ts",
     "test:server-frames": "pnpm exec install-electron && pnpm exec node server-frames-native.ts",
     "test:server-access": "pnpm exec install-electron && pnpm exec node server-access-native.ts",
     "test:package": "pnpm exec node package-test.ts",
-    "test:unit": "vitest run --config vitest.config.mjs",
-    "check:focused": "vitest run --config vitest.config.mjs",
+    "test:unit": "vitest run --config vitest.config.ts",
+    "check:focused": "vitest run --config vitest.config.ts",
     "test:profile-migration": "pnpm exec install-electron && pnpm exec node profile-export-test.ts",
     "profile:export": "pnpm exec install-electron && pnpm exec electron export-profile.ts",
-    "test:fast": "vitest run --config vitest.fast.config.mjs --project fast"
+    "test:fast": "vitest run --config vitest.fast.config.ts --project fast"
   },
   "devDependencies": {
     "@electron/packager": "20.3.0",

@@ -1,16 +1,33 @@
-const fs = require("node:fs");
-const path = require("node:path");
+import type {
+  BrowserWindow,
+  WebFrameMain,
+  Event,
+  RenderProcessGoneDetails,
+} from "electron";
+export type RendererCrash = {
+  reason: string | number;
+  exitCode: number | null;
+};
+export type RecoveryNavigation = {
+  preventDefault(): void;
+  url: string;
+  isMainFrame?: boolean | undefined;
+  frame?: WebFrameMain | null | undefined;
+  initiator?: WebFrameMain | null | undefined;
+};
+import * as fs from "node:fs";
+import * as path from "node:path";
 
-function escapeHTML(value) {
+function escapeHTML(value: unknown) {
   return String(value).replace(
     /[&<>"']/g,
     (char) =>
       ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[
         char
-      ],
+      ] ?? char,
   );
 }
-function fallbackPage(workspaceURL, crash) {
+function fallbackPage(workspaceURL: string, crash: RendererCrash | undefined) {
   return `data:text/html;charset=utf-8,${encodeURIComponent(`<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'; frame-src 'none'"><title>Studio needs to reload</title><style>html{color-scheme:dark;background:#18181b;color:#f4f4f5;font:16px system-ui}body{max-width:540px;margin:15vh auto;padding:32px}h1{font-size:26px;font-weight:600}p{color:#a1a1aa;line-height:1.6}a{display:inline-block;margin-top:12px;border-radius:8px;padding:12px 18px;background:#e4e4e7;color:#18181b;text-decoration:none;font-weight:600}a:focus-visible{outline:3px solid #a78bfa;outline-offset:4px}small{display:block;margin-top:28px;color:#a1a1aa}</style></head><body><h1>Studio needs to reload</h1><p>The workspace closed unexpectedly. Reload to return to your chats.</p><a id="reload-workspace" href="${escapeHTML(workspaceURL)}">Reload workspace</a><small>Reason: ${escapeHTML(crash?.reason || "load failed")}. Exit code: ${escapeHTML(crash?.exitCode ?? "unavailable")}.</small></body></html>`)}`;
 }
 function createRendererRecovery({
@@ -20,25 +37,34 @@ function createRendererRecovery({
   maxRetries = 3,
   healthyMs = 60000,
   retryDelayMs = 1000,
+}: {
+  win: Pick<BrowserWindow, "webContents" | "isDestroyed" | "setTitle" | "on">;
+  workspaceURL: string;
+  profile: string;
+  maxRetries?: number;
+  healthyMs?: number;
+  retryDelayMs?: number;
 }) {
   const contents = win.webContents;
   const filename = path.join(profile, "renderer-recovery.jsonl");
   let failures = 0;
   let generation = 0;
   let phase = "loading";
-  let fallbackURL;
-  let lastCrash;
-  let retryTimer;
-  let healthyTimer;
+  let fallbackURL: string | undefined;
+  let lastCrash: RendererCrash | undefined;
+  let retryTimer: ReturnType<typeof setTimeout> | undefined;
+  let healthyTimer: ReturnType<typeof setTimeout> | undefined;
   let closing = false;
-  const log = (event, extra = {}) => {
+  const log = (event: string, extra: Record<string, unknown> = {}) => {
     const record = { at: new Date().toISOString(), event, failures, ...extra };
     try {
       fs.mkdirSync(profile, { recursive: true });
       fs.appendFileSync(filename, `${JSON.stringify(record)}\n`, {
         mode: 0o600,
       });
-    } catch (error) {
+    } catch (caughterror) {
+      if (!(caughterror instanceof Error)) throw caughterror;
+      const error: NodeJS.ErrnoException = caughterror;
       console.error("Cannot save renderer recovery event:", error.message);
     }
   };
@@ -59,7 +85,9 @@ function createRendererRecovery({
     try {
       await contents.loadURL(fallbackURL);
       return true;
-    } catch (error) {
+    } catch (caughterror) {
+      if (!(caughterror instanceof Error)) throw caughterror;
+      const error: NodeJS.ErrnoException = caughterror;
       log("renderer-fallback-failed", { message: error.message });
       return false;
     }
@@ -74,14 +102,16 @@ function createRendererRecovery({
     try {
       await contents.loadURL(workspaceURL);
       return true;
-    } catch (error) {
+    } catch (caughterror) {
+      if (!(caughterror instanceof Error)) throw caughterror;
+      const error: NodeJS.ErrnoException = caughterror;
       if (!usable() || attempt !== generation) return false;
       log("renderer-load-failed", { message: error.message, code: error.code });
       lastCrash = { reason: error.code || "load failed", exitCode: null };
       return showFallback();
     }
   };
-  const crashed = (_event, details) => {
+  const crashed = (_event: Event, details: RenderProcessGoneDetails) => {
     if (!usable()) return;
     clearTimers();
     ++generation;
@@ -133,7 +163,7 @@ function createRendererRecovery({
   win.on("closed", clearTimers);
   return {
     reload,
-    handleNavigation(event) {
+    handleNavigation(event: RecoveryNavigation) {
       event.preventDefault();
       if (
         phase === "fallback" &&
@@ -150,4 +180,4 @@ function createRendererRecovery({
     },
   };
 }
-module.exports = { createRendererRecovery, fallbackPage };
+export { createRendererRecovery, fallbackPage };

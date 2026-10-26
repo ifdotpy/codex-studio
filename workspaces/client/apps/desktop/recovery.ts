@@ -1,19 +1,44 @@
-const fs = require("node:fs");
-const path = require("node:path");
-const os = require("node:os");
-const { createHash } = require("node:crypto");
-const { execFile } = require("node:child_process");
-const { promisify } = require("node:util");
+import { execFileSync } from "node:child_process";
+import type { App } from "electron";
+import type { SavedEnvironment } from "./restart-environment.ts";
+export type SavedRecovery = SavedEnvironment & {
+  supervisorEnabled?: unknown;
+  python?: string;
+  runtimeServer?: string;
+  processSupervisor?: string;
+  backend?: string;
+  enabled?: boolean;
+};
+export type RecoveryRun = (
+  file: string,
+  args: string[],
+) => Promise<{ stdout?: string } | void>;
+export type RecoveryOptions = {
+  applicationPath: string;
+  resources: string;
+  supervisor: string;
+  enabled: boolean;
+  port?: number;
+  env?: NodeJS.ProcessEnv;
+  restartEnvironment?: NodeJS.ProcessEnv | undefined;
+  home?: string;
+  uid?: number;
+  run?: RecoveryRun;
+  checkInterpreter?: typeof checkRecoveryInterpreter;
+};
+import * as fs from "node:fs";
+import * as path from "node:path";
+import * as os from "node:os";
+import { createHash } from "node:crypto";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 const installedApplicationPath =
   "/Applications/Codex Studio.app/Contents/Resources/app.asar";
-const { executable, stateDirectory, runtimeServer } = require("./backend.cjs");
-const {
-  restartKeys,
-  savedLaunchEnvironment,
-} = require("./restart-environment.cjs");
+import { executable, stateDirectory, runtimeServer } from "./backend.ts";
+import { restartKeys, savedLaunchEnvironment } from "./restart-environment.ts";
 const runFile = promisify(execFile);
 
-function processSupervisor(resources, env) {
+function processSupervisor(resources: string, env: NodeJS.ProcessEnv) {
   const binary =
     env.CODEX_PROCESS_SUPERVISOR ||
     path.join(resources, "bin", "codex-process-supervisor");
@@ -27,15 +52,15 @@ function processSupervisor(resources, env) {
 const INTERPRETER_CHECK_MS = 15000;
 // The packaged recover_backend.py imports enum.StrEnum, so it needs Python 3.11 or newer.
 // An interpreter counts only when it runs the script's own check (its imports and helpers).
-async function checkRecoveryInterpreter(python, script) {
+async function checkRecoveryInterpreter(python: string, script: string) {
   await runFile(python, ["-B", script, "--check-interpreter"], {
     timeout: INTERPRETER_CHECK_MS,
   });
 }
 // Every python3 on PATH in order, then the saved interpreter and the usual install folders.
-function interpreterCandidates(env, saved) {
-  const candidates = [];
-  const add = (file) => {
+function interpreterCandidates(env: NodeJS.ProcessEnv, saved: SavedRecovery) {
+  const candidates: string[] = [];
+  const add = (file: string) => {
     if (!path.isAbsolute(file) || candidates.includes(file)) return;
     try {
       fs.accessSync(file, fs.constants.X_OK);
@@ -49,7 +74,11 @@ function interpreterCandidates(env, saved) {
     add(path.join(dir, "python3"));
   return candidates;
 }
-async function interpreterRuns(checkInterpreter, python, script) {
+async function interpreterRuns(
+  checkInterpreter: typeof checkRecoveryInterpreter,
+  python: string,
+  script: string,
+) {
   try {
     await checkInterpreter(python, script);
     return true;
@@ -58,7 +87,17 @@ async function interpreterRuns(checkInterpreter, python, script) {
   }
 }
 // Never save or register an interpreter that cannot run the recovery script.
-async function supportedPython({ env, saved, script, checkInterpreter }) {
+async function supportedPython({
+  env,
+  saved,
+  script,
+  checkInterpreter,
+}: {
+  env: NodeJS.ProcessEnv;
+  saved: SavedRecovery;
+  script: string;
+  checkInterpreter: typeof checkRecoveryInterpreter;
+}) {
   const refused = [];
   for (const candidate of interpreterCandidates(env, saved)) {
     if (await interpreterRuns(checkInterpreter, candidate, script))
@@ -72,7 +111,7 @@ async function supportedPython({ env, saved, script, checkInterpreter }) {
   );
 }
 
-function rendererIndex(resources) {
+function rendererIndex(resources: string) {
   const development = path.join(
     resources,
     "workspaces/client/apps/web/dist/index.html",
@@ -82,7 +121,7 @@ function rendererIndex(resources) {
     : path.join(resources, "web/dist/index.html");
 }
 
-function atomicJSON(filename, data) {
+function atomicJSON(filename: string, data: unknown) {
   fs.mkdirSync(path.dirname(filename), { recursive: true });
   const temporary = `${filename}.${process.pid}.tmp`;
   const fd = fs.openSync(temporary, "w", 0o600);
@@ -129,7 +168,9 @@ function recoveryPreference(env = process.env) {
   const { config } = recoveryPaths(env);
   try {
     return JSON.parse(fs.readFileSync(config, "utf8")).enabled === true;
-  } catch (error) {
+  } catch (caughterror) {
+    if (!(caughterror instanceof Error)) throw caughterror;
+    const error: NodeJS.ErrnoException = caughterror;
     if (error.code === "ENOENT") return true;
     throw error;
   }
@@ -146,25 +187,38 @@ function supervisorPreference(env = process.env) {
     )
       throw new Error("The saved supervisor setting is invalid.");
     return saved.supervisorEnabled === true;
-  } catch (error) {
+  } catch (caughterror) {
+    if (!(caughterror instanceof Error)) throw caughterror;
+    const error: NodeJS.ErrnoException = caughterror;
     if (error.code === "ENOENT") return false;
     throw error;
   }
 }
-function xml(value) {
+function xml(value: unknown) {
   return String(value).replace(
     /[&<>"']/g,
     (char) =>
-      ({
-        "&": "&amp;",
-        "<": "&lt;",
-        ">": "&gt;",
-        '"': "&quot;",
-        "'": "&apos;",
-      })[char],
+      (
+        {
+          "&": "&amp;",
+          "<": "&lt;",
+          ">": "&gt;",
+          '"': "&quot;",
+          "'": "&apos;",
+        } as Record<string, string>
+      )[char] ?? char,
   );
 }
-function launchAgent({ label, python, supervisor, config, state }) {
+function launchAgent({
+  label,
+  python,
+  supervisor,
+  config,
+  state,
+}: Pick<ReturnType<typeof recoveryPaths>, "label" | "config" | "state"> & {
+  python: string;
+  supervisor: string;
+}) {
   // HTTP requests and native pipes need app resource limits. Adaptive needs XPC.
   const args = [python, "-B", supervisor, "--config", config];
   return `<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n<plist version="1.0"><dict>
@@ -180,7 +234,15 @@ function launchAgent({ label, python, supervisor, config, state }) {
 <key>StandardErrorPath</key><string>${xml(path.join(state, "background-recovery.log"))}</string>
 </dict></plist>\n`;
 }
-function supervisorLaunchAgent({ label, supervisor, state }) {
+function supervisorLaunchAgent({
+  label,
+  supervisor,
+  state,
+}: {
+  label: string;
+  supervisor: string;
+  state: string;
+}) {
   const args = [supervisor, "--state", state, "--wait-for-lease"];
   return `<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n<plist version="1.0"><dict>
 <key>Label</key><string>${xml(label)}</string>
@@ -201,6 +263,12 @@ async function assertRecoveryBootoutSafe({
   python,
   supervisor,
   run,
+}: {
+  serviceInfo: Awaited<ReturnType<RecoveryRun>>;
+  files: ReturnType<typeof recoveryPaths>;
+  python: string;
+  supervisor: string;
+  run: RecoveryRun;
 }) {
   const serviceOutput =
     typeof serviceInfo?.stdout === "string" ? serviceInfo.stdout : "";
@@ -212,7 +280,9 @@ async function assertRecoveryBootoutSafe({
     owner = JSON.parse(
       fs.readFileSync(path.join(files.state, "supervisor.lock"), "utf8"),
     );
-  } catch (error) {
+  } catch (caughterror) {
+    if (!(caughterror instanceof Error)) throw caughterror;
+    const error: NodeJS.ErrnoException = caughterror;
     if (error.code === "ENOENT") return;
     throw new Error(
       `Cannot verify the supervisor owner before stopping recovery: ${error.message}`,
@@ -235,8 +305,15 @@ async function assertRecoveryBootoutSafe({
       "ppid=",
     ]);
     parentOutput = typeof result?.stdout === "string" ? result.stdout : "";
-  } catch (error) {
-    if (error.code === 1 && !String(error.stdout || "").trim()) return;
+  } catch (caughterror) {
+    if (!(caughterror instanceof Error)) throw caughterror;
+    const error: NodeJS.ErrnoException = caughterror;
+    if (
+      "code" in caughterror &&
+      caughterror.code === 1 &&
+      !("stdout" in error && String(error.stdout || "").trim())
+    )
+      return;
     throw new Error(
       `Cannot verify whether the supervisor belongs to recovery: ${error.message}`,
     );
@@ -258,7 +335,9 @@ async function assertRecoveryBootoutSafe({
       files.state,
     ]);
     health = JSON.parse(result?.stdout || "");
-  } catch (error) {
+  } catch (caughterror) {
+    if (!(caughterror instanceof Error)) throw caughterror;
+    const error: NodeJS.ErrnoException = caughterror;
     throw new Error(
       `Cannot safely stop the recovery LaunchAgent while its supervisor is live: ${error.message}`,
     );
@@ -272,7 +351,17 @@ async function assertRecoveryBootoutSafe({
       `Cannot stop the recovery LaunchAgent while supervisor pid ${owner.pid} owns ${health.handles.length} live handle(s). Wait for the owner to exit or all handles to close.`,
     );
 }
-async function ensureSupervisorAgent({ files, binary, uid, run }) {
+async function ensureSupervisorAgent({
+  files,
+  binary,
+  uid,
+  run,
+}: {
+  files: ReturnType<typeof recoveryPaths>;
+  binary: string;
+  uid: number;
+  run: RecoveryRun;
+}) {
   fs.mkdirSync(path.dirname(files.supervisorPlist), { recursive: true });
   const nextPlist = supervisorLaunchAgent({
     label: files.supervisorLabel,
@@ -296,7 +385,7 @@ async function ensureSupervisorAgent({ files, binary, uid, run }) {
     await run("/bin/launchctl", ["bootstrap", domain, files.supervisorPlist]);
   await run("/bin/launchctl", ["print", service]);
 }
-function isInstalledApplication(applicationPath) {
+function isInstalledApplication(applicationPath: string) {
   return (
     typeof applicationPath === "string" &&
     [
@@ -305,7 +394,7 @@ function isInstalledApplication(applicationPath) {
     ].includes(path.resolve(applicationPath))
   );
 }
-function recoveryStatusLabel(enabled, available = true) {
+function recoveryStatusLabel(enabled: boolean, available = true) {
   if (!available) return "Background recovery: Unavailable";
   return `Background recovery: ${enabled ? "On" : "Off"}`;
 }
@@ -318,10 +407,13 @@ async function configureRecovery({
   env = process.env,
   restartEnvironment,
   home = os.homedir(),
-  uid = process.getuid(),
+  uid = process.getuid?.() ??
+    (() => {
+      throw new Error("Process identity is unavailable.");
+    })(),
   run = runFile,
   checkInterpreter = checkRecoveryInterpreter,
-}) {
+}: RecoveryOptions) {
   if (!Number.isInteger(port) || port < 1024 || port > 65535)
     throw new Error("Invalid recovery port.");
   if (!isInstalledApplication(applicationPath))
@@ -333,10 +425,12 @@ async function configureRecovery({
   const service = `${domain}/${files.label}`;
   const authoritative =
     restartEnvironment && typeof restartEnvironment === "object";
-  let saved = {};
+  let saved: SavedRecovery = {};
   try {
     saved = JSON.parse(fs.readFileSync(files.config, "utf8"));
-  } catch (error) {
+  } catch (caughterror) {
+    if (!(caughterror instanceof Error)) throw caughterror;
+    const error: NodeJS.ErrnoException = caughterror;
     if (error.code !== "ENOENT") throw error;
   }
   if (
@@ -360,7 +454,7 @@ async function configureRecovery({
       ? saved.supervisorEnabled === true
       : requestedSupervisorMode === "1";
   // Python runs only the desktop helpers; backend binaries have their own owners.
-  const interpreterEnv = { ...launchEnv, PATH: env.PATH };
+  const interpreterEnv: NodeJS.ProcessEnv = { ...launchEnv, PATH: env.PATH };
   delete interpreterEnv.CODEX_AGENTS_PYTHON;
   // Turning recovery off never needs a supported interpreter.
   const python = enabled
@@ -371,7 +465,11 @@ async function configureRecovery({
         checkInterpreter,
       })
     : executable("python3", interpreterEnv);
-  const rustSelection =
+  const rustSelection: {
+    backend?: string;
+    runtimeServer?: string;
+    processSupervisor?: string;
+  } =
     enabled || supervisorEnabled
       ? {
           backend: "rust",
@@ -394,7 +492,7 @@ async function configureRecovery({
   if (supervisorEnabled && saved.backend !== "rust")
     await ensureSupervisorAgent({
       files,
-      binary: rustSelection.processSupervisor,
+      binary: rustSelection.processSupervisor ?? "",
       uid,
       run,
     });
@@ -437,8 +535,8 @@ async function configureRecovery({
     rustSelection.runtimeServer,
     rendererIndex(resources),
   ])
-    fs.accessSync(filename, fs.constants.R_OK);
-  const environment = {};
+    fs.accessSync(filename ?? "", fs.constants.R_OK);
+  const environment: NodeJS.ProcessEnv = {};
   for (const key of restartKeys)
     if (key !== "CODEX_AGENTS_SUPERVISOR_MODE" && launchEnv[key] !== undefined)
       environment[key] = launchEnv[key];
@@ -465,7 +563,9 @@ async function configureRecovery({
   let previousPlist;
   try {
     previousPlist = fs.readFileSync(files.plist, "utf8");
-  } catch (error) {
+  } catch (caughterror) {
+    if (!(caughterror instanceof Error)) throw caughterror;
+    const error: NodeJS.ErrnoException = caughterror;
     if (error.code !== "ENOENT") throw error;
   }
   const nextPlist = launchAgent({
@@ -523,18 +623,27 @@ async function configureRecovery({
   if (!registered) {
     try {
       await run("/bin/launchctl", ["bootstrap", domain, files.plist]);
-    } catch (error) {
+    } catch (caughterror) {
+      if (!(caughterror instanceof Error)) throw caughterror;
+      const error: NodeJS.ErrnoException = caughterror;
       try {
         // A failed response does not prove that registration failed.
         await run("/bin/launchctl", ["print", service]);
-      } catch (statusError) {
-        if (!restartRecovery || statusError.code !== 113) throw error;
-        fs.writeFileSync(temporary, previousPlist, { mode: 0o600 });
+      } catch (caughtstatusError) {
+        if (!(caughtstatusError instanceof Error)) throw caughtstatusError;
+        if (
+          !restartRecovery ||
+          !("code" in caughtstatusError && caughtstatusError.code === 113)
+        )
+          throw error;
+        fs.writeFileSync(temporary, previousPlist ?? "", { mode: 0o600 });
         fs.renameSync(temporary, files.plist);
         try {
           await run("/bin/launchctl", ["bootstrap", domain, files.plist]);
           await run("/bin/launchctl", ["print", service]);
-        } catch (restoreError) {
+        } catch (caughtrestoreError) {
+          if (!(caughtrestoreError instanceof Error)) throw caughtrestoreError;
+          const restoreError: NodeJS.ErrnoException = caughtrestoreError;
           throw new Error(
             `Cannot update or restore background recovery: ${restoreError.message}`,
             { cause: error },
@@ -551,7 +660,7 @@ async function configureRecovery({
   await run("/bin/launchctl", ["print", service]);
   return { enabled: true, ...files };
 }
-module.exports = {
+export {
   atomicJSON,
   configureRecovery,
   recoveryPreference,
@@ -563,10 +672,15 @@ module.exports = {
   recoveryStatusLabel,
 };
 
-function trackDesktopRecovery({ app, env = process.env }) {
+export function trackDesktopRecovery({
+  app,
+  env = process.env,
+}: {
+  app: Pick<App, "getPath" | "on">;
+  env?: NodeJS.ProcessEnv;
+}) {
   const { state } = recoveryPaths(env);
   const filename = path.join(state, "desktop-recovery.json");
-  const { execFileSync } = require("node:child_process");
   const startedAt = execFileSync(
     "/bin/ps",
     ["-p", String(process.pid), "-o", "lstart="],
@@ -585,7 +699,9 @@ function trackDesktopRecovery({ app, env = process.env }) {
   const closeExplicitly = () => {
     try {
       atomicJSON(filename, { ...intent, desiredOpen: false });
-    } catch (error) {
+    } catch (caughterror) {
+      if (!(caughterror instanceof Error)) throw caughterror;
+      const error: NodeJS.ErrnoException = caughterror;
       // A missing intent is safer than reopening after an unsaved explicit Quit.
       try {
         fs.unlinkSync(filename);
@@ -599,4 +715,3 @@ function trackDesktopRecovery({ app, env = process.env }) {
   app.on("window-all-closed", closeExplicitly);
   return { filename, closeExplicitly, windowClosing: closeExplicitly };
 }
-module.exports.trackDesktopRecovery = trackDesktopRecovery;

@@ -79,14 +79,10 @@ try {
     recursive: true,
   });
   await cp(
-    path.join(root, "recovery.cjs"),
-    path.join(resources, "helpers/recovery.cjs"),
+    path.join(root, "recovery.ts"),
+    path.join(resources, "helpers/recovery.ts"),
   );
-  for (const name of [
-    "recovery.cjs",
-    "backend.cjs",
-    "restart-environment.cjs",
-  ]) {
+  for (const name of ["recovery.ts", "backend.ts", "restart-environment.ts"]) {
     await cp(
       path.join(root, "../desktop", name),
       path.join(resources, "helpers/desktop-recovery", name),

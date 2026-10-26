@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import type { ElectronApplication } from "playwright-core";
-import frameOwners from "./frame-owner.cjs";
+import { serverFrameHost } from "./frame-owner.ts";
 import { _electron as electron } from "playwright-core";
 import { mkdtemp, access, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -75,7 +75,7 @@ try {
       frame.title = "unpaired";
       document.body.append(frame);
     },
-    { serverHost: frameOwners.serverFrameHost("unpaired") },
+    { serverHost: serverFrameHost("unpaired") },
   );
   const serverFrame = await page
     .locator('iframe[title="unpaired"]')
