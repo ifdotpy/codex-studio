@@ -142,3 +142,31 @@ html[data-viewport-short-landscape] #conversation #messages {
     transition: none;
   }
 }
+
+/* Drawer backgrounds reach the physical bottom; Home space is inside the scroll content. */
+html[data-touch-input] body .mantine-Drawer-inner {
+  height: calc(var(--viewport-surface-height) + var(--viewport-safe-bottom));
+}
+html[data-touch-input] body .mantine-Drawer-body:not(:has(#sidebar, #team)) {
+  padding-bottom: calc(
+    var(--mb-padding, var(--mantine-spacing-md)) + var(--viewport-safe-bottom)
+  );
+}
+html[data-touch-input]
+  .mantine-Drawer-content
+  #sidebar:not(:has(.sidebar-utility-footer))
+  .chat-scroll {
+  padding-bottom: var(--viewport-safe-bottom);
+  scroll-padding-bottom: var(--viewport-safe-bottom);
+}
+html[data-touch-input] .mantine-Drawer-content .sidebar-utility-footer {
+  padding-bottom: var(--viewport-safe-bottom);
+}
+html[data-touch-input] .mantine-Drawer-content #team {
+  padding-bottom: calc(var(--mantine-spacing-md) + var(--viewport-safe-bottom));
+  scroll-padding-bottom: var(--viewport-safe-bottom);
+}
+/* The usage portal belongs to the conversation, never to the modal backdrop. */
+body[data-scroll-locked] .usage-passive-band {
+  visibility: hidden;
+}
