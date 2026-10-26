@@ -3,7 +3,6 @@ import type {
   RewindFilesResult,
   SessionMessage,
   SessionStartHookInput,
-  Settings,
 } from "@anthropic-ai/claude-agent-sdk";
 
 // The bridge owns its mutable mirror and recovery receipts. Native messages,
@@ -151,15 +150,16 @@ export interface Session {
   approvalPolicy?: string;
   activePermissionProfile?: unknown;
   sandbox?: string;
-  claude?: Settings;
+  claude?: import("./thinking.ts").ClaudeSettings;
   developerInstructions?: string;
-  dynamicTools?: unknown[];
+  dynamicTools?: import("./runtime-contract.generated.ts").ToolDefinition[];
   dynamicToolsJson?: string;
   capabilityProfile?: unknown;
   moveTurnOptions?: Partial<Options>;
   userMcp?: boolean;
   studioImageWorkspaceTempDir?: string;
   claudeVersion?: string;
+  idleCache?: import("./runtime-contract.generated.ts").CacheReport;
   contextWindow?: number;
   totalTokens?: number;
 }
