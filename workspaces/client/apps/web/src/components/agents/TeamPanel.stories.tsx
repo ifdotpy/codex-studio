@@ -519,6 +519,9 @@ function rowStory(width: number): Story {
       </div>
     ),
     play: async ({ canvasElement }) => {
+      // Rows use content-visibility: auto; measure after their first rendered frame.
+      for (let frame = 0; frame < 2; frame++)
+        await new Promise((resolve) => requestAnimationFrame(resolve));
       const panel = canvasElement.querySelector("#team")!;
       await expect(panel.getBoundingClientRect().width).toBeCloseTo(width, 0);
       await expect(panel.scrollWidth).toBeLessThanOrEqual(panel.clientWidth);

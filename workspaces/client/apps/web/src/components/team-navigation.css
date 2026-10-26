@@ -303,6 +303,20 @@
   display: flex;
   margin-block-start: var(--studio-strip-step);
 }
+/* Secondary row action: outlined on the panel surface, compact on every pointer. */
+#team .worker-result {
+  --button-height-compact-xs: var(--studio-secondary-touch-target);
+  border: var(--studio-border-width) solid var(--line);
+  background: transparent;
+  color: var(--text);
+  font-weight: 500;
+}
+#team .worker-result:hover {
+  background: var(--hover);
+}
+#team .worker-result svg {
+  color: var(--muted);
+}
 #team .worker-options {
   position: absolute;
   inset-block-start: calc(var(--studio-strip-step) / 2);
@@ -412,6 +426,22 @@
     inset-inline-end: calc(
       (var(--studio-control-size) - var(--studio-touch-target)) / 2
     );
+  }
+  /* The compact result button keeps a full touch target outside its border. */
+  #team .worker-actions {
+    margin-block: calc(
+      (var(--studio-touch-target) - var(--studio-secondary-touch-target)) / 2
+    );
+  }
+  #team .worker-result {
+    overflow: visible;
+  }
+  #team .worker-result::before {
+    content: "";
+    position: absolute;
+    inset-block: calc((100% - var(--studio-touch-target)) / 2);
+    inset-inline: 0;
+    pointer-events: auto;
   }
   .team-summary-filters button {
     min-block-size: var(--studio-touch-target);

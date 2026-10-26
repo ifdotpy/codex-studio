@@ -416,7 +416,7 @@ const WorkerCardView = memo(function WorkerCardView({
             className="worker-result"
             href={overview.resultFile}
             size="compact-xs"
-            variant="light"
+            variant="subtle"
             color="gray"
             leftSection={<FileCheck size={12} aria-hidden="true" />}
             onClick={(event) => {
