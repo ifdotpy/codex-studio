@@ -74,7 +74,11 @@ export function scanSource(
   if (path.endsWith(".css")) {
     const dimensions = new Set(
       Object.values(contract.tokens)
-        .filter((t) => ["px", "rem"].includes(t.unit))
+        .filter(
+          (t) =>
+            ["px", "rem"].includes(t.unit) &&
+            (t.kind === undefined || t.kind === "dimension"),
+        )
         .map((t) => t.value * (t.unit === "rem" ? 16 : 1)),
     );
     for (const match of source.matchAll(

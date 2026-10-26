@@ -41,10 +41,57 @@ test("rejects an added query consumer", () => {
     /unregistered.*src\/new.css/,
   );
 });
+test("does not claim unrelated dimensions from spacing or condition values", () => {
+  const isolated = structuredClone(contract);
+  isolated.tokens = {
+    "fixture.inset": {
+      value: 6,
+      unit: "px",
+      purpose: "Fixture side inset",
+      kind: "spacing",
+    },
+    "fixture.heightMin": {
+      value: 500,
+      unit: "px",
+      purpose: "Fixture height condition",
+      kind: "condition",
+    },
+    "fixture.width": {
+      value: 321,
+      unit: "px",
+      purpose: "Fixture content width",
+      kind: "dimension",
+    },
+  };
+  isolated.queries = {};
+  isolated.legacyConsumers = [];
+  const errors = checkConsumers(
+    isolated,
+    new Map([
+      [
+        "src/fixture.css",
+        ".handle { width: 6px; height: 6px; } .preview { max-width: 500px; }",
+      ],
+    ]),
+    { requireAllLegacy: false },
+  );
+  assert.deepEqual(errors, []);
+  assert.match(
+    checkConsumers(
+      isolated,
+      new Map([["src/fixture.css", ".column { width: 321px; }"]]),
+      { requireAllLegacy: false },
+    ).join("\n"),
+    /unregistered dimension.*src\/fixture.css/,
+  );
+});
 test("rejects invalid units and duplicate generated owners", () => {
   const bad = structuredClone(contract);
   bad.tokens["navigation.inlineMin"].unit = "pt";
   assert.throws(() => validateContract(bad), /navigation.inlineMin/);
+  const badKind = structuredClone(contract);
+  Object.assign(badKind.tokens["navigation.inlineMin"], { kind: "colour" });
+  assert.throws(() => validateContract(badKind), /navigation.inlineMin/);
   const duplicate = structuredClone(contract);
   duplicate.tokens["workspace-panel.min"] =
     duplicate.tokens["workspacePanel.min"];
