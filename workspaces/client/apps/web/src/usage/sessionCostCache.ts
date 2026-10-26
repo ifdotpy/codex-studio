@@ -1,6 +1,5 @@
 import { serverLocalStorage as localStorage } from "../servers/storage";
-import type { Json, JsonInput } from "../types";
-import { jsonObject } from "./accountUsage";
+import type { Json } from "../types";
 export type SessionCostValue = Json;
 type Entry = { scope: string; value: SessionCostValue; storedAt: number };
 
@@ -9,25 +8,23 @@ const maxEntries = 16;
 const maxStoredBytes = 64 * 1024;
 
 // These records are written by this cache; valid() still checks legacy cache eligibility.
-function readSessionCostEntry(raw: string): JsonInput {
-  return JSON.parse(raw) as JsonInput;
+function readSessionCostEntry(raw: string): Entry | null {
+  return JSON.parse(raw) as Entry | null;
 }
 
 export const sessionCostScope = (stateDir: string, rootId: string) =>
   JSON.stringify([stateDir, rootId]);
 
-function valid(input: JsonInput, scope: string): input is Entry {
-  const value = jsonObject(input);
-  const cost = jsonObject(value?.value);
+function valid(value: Entry | null, scope: string): value is Entry {
   return (
     value?.scope === scope &&
     Number.isFinite(value?.storedAt) &&
-    cost?.pricingState === "ready" &&
-    cost?.estimated === true &&
-    (cost.totalUSD === null || Number.isFinite(cost.totalUSD)) &&
-    Array.isArray(cost.unknownModels) &&
-    cost.breakdown !== null &&
-    typeof cost.breakdown === "object"
+    value?.value?.pricingState === "ready" &&
+    value?.value?.estimated === true &&
+    (value.value.totalUSD === null || Number.isFinite(value.value.totalUSD)) &&
+    Array.isArray(value.value.unknownModels) &&
+    value.value.breakdown !== null &&
+    typeof value.value.breakdown === "object"
   );
 }
 
@@ -36,11 +33,8 @@ export function createSessionCostCache(localStorage: Storage) {
   function remember(entry: Entry) {
     entries.delete(entry.scope);
     entries.set(entry.scope, entry);
-    while (entries.size > maxEntries) {
-      const oldest = entries.keys().next();
-      if (oldest.done) break;
-      entries.delete(oldest.value);
-    }
+    while (entries.size > maxEntries)
+      entries.delete(entries.keys().next().value!);
     return entry;
   }
 
@@ -107,7 +101,7 @@ export function createSessionCostCache(localStorage: Storage) {
         const raw = localStorage.getItem(candidate) || "";
         let at = 0;
         try {
-          at = Number(jsonObject(readSessionCostEntry(raw))?.storedAt) || 0;
+          at = Number(readSessionCostEntry(raw)!.storedAt) || 0;
         } catch {
           /* Invalid cache records are evicted first. */
         }
