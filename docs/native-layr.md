@@ -142,6 +142,9 @@ An earlier import in the default store retains its project ID, receipts, lines, 
 Legacy default-store projects reuse their ready import receipt, which records the original source path.
 New external or named project mappings always verify the origin and shared Git history.
 Chats created before a switch retain their recorded root, including records created before this setting existed.
+Their descendants use that same root. A new independent chat uses the currently selected root.
+The prepared state includes `layrStoreRoot` and `layrProjectId` for that chat.
+Unmerged work in the old root stays there until you merge or move it.
 Each store must pass the version check when Studio prepares its next native line.
 On Linux, the configured daemon must serve the selected root and compatible format.
 Each selected root has its own daemon socket under the Studio native metadata folder.
