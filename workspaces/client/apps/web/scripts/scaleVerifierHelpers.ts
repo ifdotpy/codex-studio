@@ -1,3 +1,12 @@
+import type {
+  StdinTimingDiagnostic,
+  ReplyTimingDiagnostic,
+} from "../src/generated/rustOwned.ts";
+import {
+  STDIN_TIMING_DIAGNOSTIC_PREFIX as PROVIDER_STDIN_JOURNAL_PREFIX,
+  REPLY_TIMING_DIAGNOSTIC_PREFIX as PROVIDER_REPLY_JOURNAL_PREFIX,
+} from "../src/generated/rustOwned.ts";
+export { PROVIDER_STDIN_JOURNAL_PREFIX, PROVIDER_REPLY_JOURNAL_PREFIX };
 import type { components } from "../src/generated/api.ts";
 import type { ChildProcess } from "node:child_process";
 import type { EventEmitter } from "node:events";
@@ -235,8 +244,6 @@ export function requireScaleModel(
   return candidate;
 }
 
-export const PROVIDER_STDIN_JOURNAL_PREFIX = "studio_provider_stdin_write ";
-export const PROVIDER_REPLY_JOURNAL_PREFIX = "studio_provider_reply ";
 // Requests whose stdin write and reply are journaled besides turn/start. Their
 // lines never join an exact input event.
 export const THREAD_REQUEST_METHODS = ["thread/start", "thread/resume"];
@@ -253,7 +260,9 @@ export function canonicalJournalBootId(value: unknown) {
   return value.replaceAll("-", "").toLowerCase();
 }
 
-export function parseProviderStdinJournalMessage(message: string) {
+export function parseProviderStdinJournalMessage(
+  message: string,
+): StdinTimingDiagnostic | null {
   if (!message.startsWith(PROVIDER_STDIN_JOURNAL_PREFIX)) return null;
   const entry: Record<string, unknown> = JSON.parse(
     message.slice(PROVIDER_STDIN_JOURNAL_PREFIX.length),
@@ -311,7 +320,9 @@ export function parseProviderStdinJournalMessage(message: string) {
   };
 }
 
-export function parseProviderReplyJournalMessage(message: string) {
+export function parseProviderReplyJournalMessage(
+  message: string,
+): ReplyTimingDiagnostic | null {
   if (!message.startsWith(PROVIDER_REPLY_JOURNAL_PREFIX)) return null;
   const entry: Record<string, unknown> = JSON.parse(
     message.slice(PROVIDER_REPLY_JOURNAL_PREFIX.length),
@@ -849,6 +860,12 @@ export function createBoundedEventQueue<T>(limit: number) {
   };
 }
 
+type RunLock = { runId: string; pid: number; token: string };
+async function readRunLock(path: string): Promise<RunLock> {
+  // The verifier owns this lock document; its exclusive create writes RunLock.
+  return JSON.parse(await readFile(path, "utf8"));
+}
+
 export async function acquireRunLock(path: string, runId: string) {
   const owner = { runId, pid: process.pid, token: randomUUID() };
   for (;;) {
@@ -857,7 +874,7 @@ export async function acquireRunLock(path: string, runId: string) {
       await handle.writeFile(`${JSON.stringify(owner)}\n`);
       await handle.close();
       return async () => {
-        const current: typeof owner = JSON.parse(await readFile(path, "utf8"));
+        const current = await readRunLock(path);
         assert.deepEqual(current, owner, "Run lock ownership changed.");
         await unlink(path);
       };
@@ -866,7 +883,7 @@ export async function acquireRunLock(path: string, runId: string) {
     }
     let current: typeof owner;
     try {
-      current = JSON.parse(await readFile(path, "utf8"));
+      current = await readRunLock(path);
     } catch (error) {
       throw new Error(`Existing run lock is unreadable; inspect ${path}.`, {
         cause: error,
