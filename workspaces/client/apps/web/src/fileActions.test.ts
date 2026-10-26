@@ -127,12 +127,13 @@ test("file actions preserve the native gesture and browser save paths", async ()
       [1, 2],
     );
     assert.equal(await saving, false, "Cancellation must not become success");
+    const target = {
+      agent: "a",
+      path: "report.md",
+      line: 30,
+    } satisfies FileTarget & { line: number };
     for (const action of [openFile, revealFile, previewFile])
-      await action({
-        agent: "a",
-        path: "report.md",
-        line: 30,
-      } satisfies FileTarget & { line: number });
+      await action(target);
     assert.deepEqual(
       calls.slice(1).map((row) => {
         assert.ok(Array.isArray(row));

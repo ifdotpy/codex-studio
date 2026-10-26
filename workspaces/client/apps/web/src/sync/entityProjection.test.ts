@@ -805,12 +805,12 @@ it("projects every collection and preserves other collection identities", () => 
     {
       collection: "complaint",
       id: "complaint",
-      value: { id: "complaint", name: "complaint" },
+      value: { id: "complaint" },
     },
     {
       collection: "request",
       id: "request",
-      value: { id: "request", name: "request" },
+      value: { id: "request" },
     },
     {
       collection: "rule",
@@ -835,23 +835,23 @@ it("projects every collection and preserves other collection identities", () => 
     {
       collection: "edge",
       id: "edge",
-      value: { id: "edge", name: "edge" },
+      value: { id: "edge" },
     },
     {
       collection: "event",
       id: "event",
-      value: { id: "event", name: "event" },
+      value: { id: "event" },
     },
     {
       collection: "work",
       id: "work",
-      value: { id: "work", name: "work" },
+      value: { id: "work" },
     },
-    // @ts-expect-error workspace deliberately retains unknown id and name fields.
+
     {
       collection: "workspace",
       id: "current",
-      value: { id: "workspace", name: "workspace" },
+      value: { stateDir: "" },
     },
   ] satisfies SyncEntityPayload[];
   const collections = fixtureEntities.map((entity) => entity.collection);
@@ -874,13 +874,7 @@ it("projects every collection and preserves other collection identities", () => 
   const state = emptyEntityProjection();
   const first = applyEntityRows(
     state,
-    fixtureEntities.map((entity, index) =>
-      entityRow(
-        // @ts-expect-error the workspace row intentionally contains only extension fields.
-        entity,
-        index + 1,
-      ),
-    ),
+    fixtureEntities.map((entity, index) => entityRow(entity, index + 1)),
     true,
   );
   for (const [collection, runtimeName] of collections.map(
@@ -1518,6 +1512,7 @@ it("does not reapply unchanged workspace fields over a changed collection", () =
 
 it("maps all runtime collections and carries workspace and edge data into snapshots", () => {
   const state = emptyEntityProjection();
+  const workspace = { stateDir: "/workspace", custom: "value" };
   const entries = [
     { collection: "agent", id: "a", value: { id: "a" } },
     { collection: "chat", id: "c", value: { id: "c" } },
@@ -1535,7 +1530,7 @@ it("maps all runtime collections and carries workspace and edge data into snapsh
     {
       collection: "workspace",
       id: "current",
-      value: { stateDir: "/workspace", custom: "value" },
+      value: workspace,
     },
   ] satisfies SyncEntityPayload[];
   const snapshot = applyEntityRows(
@@ -1836,8 +1831,8 @@ it("keeps extra and wrong-typed known DTO fields after envelope validation", () 
         },
         1,
       ),
-      // @ts-expect-error name is deliberately numeric to witness envelope-only validation.
       entityRow(
+        // @ts-expect-error name is deliberately numeric to witness envelope-only validation.
         {
           collection: "agent",
           id: "wrong-type",
@@ -1894,8 +1889,6 @@ it("applies v4 structured entity rows without parsing JSON strings", () => {
       {
         id: upsert.id,
         payload: "",
-        collection: "agent",
-        entityId: "a",
         seq: 2,
         _deleted: true,
       },
