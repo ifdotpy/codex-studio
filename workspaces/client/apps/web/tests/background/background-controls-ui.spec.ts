@@ -183,7 +183,9 @@ test("Background controls", async ({ context }, testInfo) => {
   syncFixture = {
     snapshot: state,
     workspaceId,
-    onStreamReady: (publish) => streamListeners.add(publish),
+    onStreamReady: (publish) => {
+      streamListeners.add(publish);
+    },
   };
   const writes: { path: string; body: RecordedBody }[] = [];
   const processReceipts = new Map<
