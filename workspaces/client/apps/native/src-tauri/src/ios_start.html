@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1, viewport-fit=cover"
+    />
+    <title>LAYR Studio</title>
+    <style>
+      :root {
+        color-scheme: light dark;
+        font:
+          17px -apple-system,
+          system-ui,
+          sans-serif;
+      }
+      body {
+        margin: 0;
+        min-height: 100vh;
+        display: grid;
+        place-items: center;
+        padding: env(safe-area-inset-top) env(safe-area-inset-right)
+          env(safe-area-inset-bottom) env(safe-area-inset-left);
+      }
+      form {
+        display: grid;
+        gap: 12px;
+        width: min(420px, 90vw);
+      }
+      input,
+      button {
+        font: inherit;
+        padding: 10px 12px;
+        border-radius: 10px;
+      }
+      p {
+        margin: 0;
+        opacity: 0.7;
+        font-size: 15px;
+      }
+    </style>
+  </head>
+  <body>
+    <form action="studio-shell://localhost/connect" method="get">
+      <h1>LAYR Studio</h1>
+      <label for="url">Studio server address</label>
+      <input
+        id="url"
+        name="url"
+        type="url"
+        required
+        autocapitalize="off"
+        autocorrect="off"
+        placeholder="https://your-mac.your-tailnet.ts.net"
+        value="{{saved}}"
+      />
+      <input type="hidden" name="token" value="{{token}}" />
+      <button type="submit">Connect</button>
+      <p>The app saves this address. Reinstall the app to change it.</p>
+    </form>
+  </body>
+</html>
