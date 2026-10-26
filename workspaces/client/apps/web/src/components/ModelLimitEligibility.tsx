@@ -10,7 +10,7 @@ export default function ModelLimitEligibility({
   eligibility,
   now,
 }: {
-  eligibility?: UsageEligibility | null;
+  eligibility?: UsageEligibility | null | undefined;
   now: number;
 }) {
   const [clock, setClock] = useState(now);

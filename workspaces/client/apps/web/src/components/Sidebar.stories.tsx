@@ -287,11 +287,11 @@ export const Interactions: Story = {
     await expect(
       page.getAllByRole("img", { name: "1 working, 1 needs you, 1 failed" }),
     ).toHaveLength(3);
-    await userEvent.click(
-      within(lane).getAllByRole("button", {
-        name: /Review deployment permissions/,
-      })[0],
-    );
+    const [review] = within(lane).getAllByRole("button", {
+      name: /Review deployment permissions/,
+    });
+    if (!review) throw new Error("Missing review deployment button");
+    await userEvent.click(review);
     await expect(args.open).toHaveBeenCalledWith("codex-studio-0");
     await expect(page.getByRole("navigation", { name: "Chats" })).toBeVisible();
     await userEvent.type(
@@ -307,11 +307,11 @@ export const Interactions: Story = {
     await userEvent.clear(
       page.getByRole("searchbox", { name: "Filter projects and chats" }),
     );
-    await userEvent.click(
-      page.getAllByRole("button", {
-        name: "Actions for Review deployment permissions",
-      })[0],
-    );
+    const [actions] = page.getAllByRole("button", {
+      name: "Actions for Review deployment permissions",
+    });
+    if (!actions) throw new Error("Missing review deployment actions");
+    await userEvent.click(actions);
     const unread = await within(document.body).findByRole("menuitem", {
       name: "Mark unread",
     });

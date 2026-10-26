@@ -1,6 +1,5 @@
-import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { expect, test } from "vitest";
+import { assert, expect, test } from "vitest";
 
 const css = (path: string) =>
   readFileSync(new URL(path, import.meta.url), "utf8");
@@ -33,20 +32,20 @@ test("voice surfaces follow the active scheme instead of hard-coded dark colors"
 test("the composer and submit action consume the shared surface and primary tokens", () => {
   const source = css("../style.css");
   for (const selector of ["#composer", "#send", "#send:disabled"]) {
-    const declaration = source.split(`${selector} {`)[1];
-    assert.ok(declaration);
-    const block = declaration.split("}")[0];
-    assert.ok(block);
+    const section = source.split(`${selector} {`)[1];
+    assert(section !== undefined);
+    const block = section.split("}")[0];
+    assert(block !== undefined);
     expect(/#[\da-f]{3,8}\b/i.test(block), selector).toBe(false);
   }
 });
 
 test("navigation links inherit the neutral text color in both schemes", () => {
   const source = css("../style.css");
-  const declaration = source.split("\na {")[1];
-  assert.ok(declaration);
-  const links = declaration.split("}")[0];
-  assert.ok(links);
+  const section = source.split("\na {")[1];
+  assert(section !== undefined);
+  const links = section.split("}")[0];
+  assert(links !== undefined);
   expect(links.includes("color: inherit")).toBe(true);
   expect(css("../appearance.css").includes('color-scheme="light"] a {')).toBe(
     false,

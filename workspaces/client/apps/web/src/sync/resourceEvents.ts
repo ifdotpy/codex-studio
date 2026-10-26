@@ -80,19 +80,19 @@ export type ResourceTokenRatesEvent =
   components["schemas"]["ResourceTokenRatesEvent"];
 
 export type ResourceVersion = {
-  viewSnapshot?: components["schemas"]["SubscriptionViewSnapshot"];
-  cursor?: components["schemas"]["SubscriptionCursor"];
-  replyKind?: components["schemas"]["SubscriptionReplyKind"];
+  viewSnapshot?: components["schemas"]["SubscriptionViewSnapshot"] | undefined;
+  cursor?: components["schemas"]["SubscriptionCursor"] | undefined;
+  replyKind?: components["schemas"]["SubscriptionReplyKind"] | undefined;
   /** Transient subscribed value; never sent through the entity persister. */
   progress?: ResourceProgress;
   epoch: string;
   revision: number;
   reason?: ResourceChangeEvent["reason"];
-  draftChanges?: components["schemas"]["DraftChangeBatch"];
+  draftChanges?: components["schemas"]["DraftChangeBatch"] | undefined;
   /** Transient access metadata; never written to the entity cache. */
-  discoverySnapshot?: components["schemas"]["AccessSnapshot"];
+  discoverySnapshot?: components["schemas"]["AccessSnapshot"] | undefined;
   /** Transient cursor interval and media session state. */
-  voiceRecords?: components["schemas"]["VoiceRecordBatch"];
+  voiceRecords?: components["schemas"]["VoiceRecordBatch"] | undefined;
   /** Highest entity row represented by this StateResource revision, when present. */
   entitySequence?: number;
   /** Transcript cursor persisted before this notification; readers verify local coverage. */
@@ -168,7 +168,7 @@ type TabResourceRecovery = {
   resources: ResourceRef[];
 };
 
-type TabMessage = (
+export type TabMessage = (
   | TabSubscriptions
   | TabEvent
   | TabTokenRates
@@ -1072,7 +1072,7 @@ export function createResourceEvents(options: ResourceEventsOptions) {
   function receiveResourceProgress(value: unknown, fromPeer = false) {
     if (!hasRevisionFrame(value))
       throw new TypeError("Invalid resource progress frame");
-    const candidate = value as unknown as Record<string, unknown>;
+    const candidate = value as Record<string, unknown>;
     const resource = candidate.resource as ResourceRef | undefined;
     if (
       !resource ||
@@ -1586,14 +1586,17 @@ export function createResourceEvents(options: ResourceEventsOptions) {
             for (const resource of pending) seen.add(resourceKey(resource));
             prepared.push(
               ...(await Promise.all(
-                pending.map(async (resource) => ({
-                  resource,
-                  since: entityDelivery.requiresSnapshot(resource)
+                pending.map(async (resource) => {
+                  const since = entityDelivery.requiresSnapshot(resource)
                     ? undefined
                     : await options.sync
                         .readSubscriptionCursor?.(resource)
-                        .catch(() => undefined),
-                })),
+                        .catch(() => undefined);
+                  return {
+                    resource,
+                    ...(since === undefined ? {} : { since }),
+                  };
+                }),
               )),
             );
             pending = (currentResources?.() ?? []).filter(

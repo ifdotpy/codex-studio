@@ -1,4 +1,3 @@
-import assert from "node:assert/strict";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   ApiError,
@@ -235,11 +234,12 @@ describe("OpenAPI transport facade", () => {
     const newer = refreshSession();
     await bothStarted;
     expect(resolvers).toHaveLength(2);
-    assert.ok(resolvers[1]);
-    resolvers[1](Response.json({ token: "newer-token" }));
+    const [resolveOlder, resolveNewer] = resolvers;
+    if (!resolveOlder || !resolveNewer)
+      throw new Error("Both requests must have started.");
+    resolveNewer(Response.json({ token: "newer-token" }));
     await expect(newer).resolves.toMatchObject({ token: "newer-token" });
-    assert.ok(resolvers[0]);
-    resolvers[0](Response.json({ token: "older-token" }));
+    resolveOlder(Response.json({ token: "older-token" }));
     await expect(older).resolves.toMatchObject({ token: "newer-token" });
   });
 

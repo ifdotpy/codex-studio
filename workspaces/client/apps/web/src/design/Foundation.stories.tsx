@@ -170,10 +170,12 @@ async function verifyFoundation(canvasElement: HTMLElement) {
       .map(Number)
       .map((v) => v / 255)
       .map((v) => (v <= 0.04045 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4));
-    return channels.reduce(
-      (sum, channel, index) => sum + channel * [0.2126, 0.7152, 0.0722][index],
-      0,
-    );
+    return channels.reduce((sum, channel, index) => {
+      const weight = [0.2126, 0.7152, 0.0722][index];
+      if (weight === undefined)
+        throw new Error("Expected three color channels.");
+      return sum + channel * weight;
+    }, 0);
   };
   const foreground = luminance(getComputedStyle(action).color);
   const background = luminance(getComputedStyle(action).backgroundColor);
