@@ -1,3 +1,4 @@
+import type { BridgeMoveProof } from "./bridge-protocol.ts";
 import type {
   CacheReport,
   ToolDefinition,
@@ -160,7 +161,7 @@ export interface Session {
   developerInstructions?: string;
   dynamicTools?: ToolDefinition[];
   idleCache?: CacheReport;
-  moveProof?: unknown;
+  moveProof?: BridgeMoveProof;
   dynamicToolsJson?: string;
   capabilityProfile?: unknown;
   moveTurnOptions?: Partial<Options>;
