@@ -233,7 +233,7 @@ export async function importBrowserProfile(
 
     if (!record(snapshot.preferences) || !list(snapshot.databases))
       throw new Error("Invalid browser profile contents.");
-    const preferences: Record<string, string> = {};
+    const preferences: Record<string, string> = Object.create(null);
     for (const [key, value] of Object.entries(snapshot.preferences)) {
       if (key === marker || typeof value !== "string")
         throw new Error("Invalid saved preference.");
