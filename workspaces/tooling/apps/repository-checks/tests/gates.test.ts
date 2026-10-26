@@ -231,7 +231,9 @@ test("interrupt waits for running children and cancels unstarted dependents", as
     },
   );
   assert.ok(stopped);
-  assert.equal(result.steps[2].status, "cancelled");
+  const [, , cancelled] = result.steps;
+  assert.ok(cancelled);
+  assert.equal(cancelled.status, "cancelled");
   assert.equal(result.exitCode, 1);
 });
 
@@ -261,7 +263,7 @@ test(
               captured += text;
               const match = captured.match(/READY (\d+)/);
               if (match) {
-                pid = +match[1];
+                pid = Number(match[1]);
                 if (cancel) controller.abort();
               }
             },
@@ -296,7 +298,9 @@ test("Cargo compilation is confined to the fixed Rust lane and both tiers use on
       steps.filter((s) => s.requiresCargo).every((s) => s.lane === "rust"),
     );
     const rust = steps.find((s) => s.id === "rust-tests");
-    assert.deepEqual(rust!.commands![0][1].slice(0, 4), [
+    const [rustCommand] = rust?.commands ?? [];
+    assert.ok(rustCommand);
+    assert.deepEqual(rustCommand[1].slice(0, 4), [
       "nextest",
       "run",
       "--workspace",
@@ -308,11 +312,10 @@ test("Cargo compilation is confined to the fixed Rust lane and both tiers use on
       steps.find((s) => s.id === "web unit tests")!.requires,
       "workspace",
     );
-    assert.ok(
-      steps
-        .find((s) => s.id === "workspace")!
-        .commands![0][1].includes("--examples"),
-    );
+    const [workspaceCommand] =
+      steps.find((s) => s.id === "workspace")?.commands ?? [];
+    assert.ok(workspaceCommand);
+    assert.ok(workspaceCommand[1].includes("--examples"));
   }
   assert.ok(
     gateSteps(process.cwd(), "test-fast-rest-non-rust").every(

@@ -615,7 +615,7 @@ export async function configureNewChat<Selector>(
     await chooseSegment(
       dialog,
       `${prefix} reasoning`,
-      settings.effort[0].toUpperCase() + settings.effort.slice(1),
+      settings.effort.charAt(0).toUpperCase() + settings.effort.slice(1),
     );
     const fast = dialog.getByRole("switch", { name: "Fast mode", exact: true });
     if (await fast.count()) await fast.setChecked(settings.profile.fastMode);

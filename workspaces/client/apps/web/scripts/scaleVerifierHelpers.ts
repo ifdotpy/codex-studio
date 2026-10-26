@@ -154,7 +154,7 @@ export function scaleAccountKeys(
   accounts: (Pick<Schema["Account"], "id" | "status"> &
     Partial<Pick<Schema["Account"], "provider">>)[],
   profile: ScaleProfile,
-) {
+): [string, ...string[]] {
   const keys = accounts
     .filter(
       (row) =>
@@ -163,11 +163,12 @@ export function scaleAccountKeys(
     )
     .map((row) => row.id)
     .sort();
+  const [first, ...rest] = keys;
   assert.ok(
-    keys.length > 0,
+    first !== undefined,
     `No ready ${profile.provider} account is available.`,
   );
-  return keys;
+  return [first, ...rest];
 }
 
 // With several accounts the lead's defaults must not pin one: the create path
@@ -483,7 +484,7 @@ export function createStateResourceAdapter(
     const latestById = new Map<string, StateDocument>();
     for (const document of batch.documents) {
       const match = /^entity:agent:(.+)$/.exec(document.id);
-      if (match && observedAgentIds.has(match[1]))
+      if (match && observedAgentIds.has(String(match[1])))
         latestById.set(document.id, document);
     }
     return {
@@ -1093,6 +1094,7 @@ export async function watchReadinessMarkers(
     if (!Number.isSafeInteger(index) || index >= tokens.length) {
       if (!temporary) fail(new Error(`Unknown readiness marker name: ${name}`));
     } else return check(index);
+    return undefined;
   };
   const watcher = watchDirectory(directory, (_eventType, filename) => {
     inspectName(filename);

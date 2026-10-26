@@ -1,4 +1,5 @@
 /** Read-only browser audit. Only the audited tab's sync subscription POST is allowed. */
+import assert from "node:assert/strict";
 import { chromium } from "playwright";
 import type { Request } from "playwright";
 import type { components } from "../src/generated/api.ts";
@@ -222,7 +223,9 @@ try {
   });
   const select = (chat: string) =>
     page.locator(`[data-chat="${chat}"]`).first().click({ timeout: 20_000 });
-  await select(values.chat![0]);
+  const [firstChat] = values.chat ?? [];
+  assert.ok(firstChat);
+  await select(firstChat);
   await page.waitForTimeout(WARMUP_MS);
   for (const scenario of ["idle", "switching"] as const) {
     phase = scenario;
@@ -235,6 +238,7 @@ try {
     ) {
       if (scenario === "switching") {
         const chat = values.chat![(index + 1) % values.chat!.length];
+        assert.ok(chat);
         report.switches.push({ chat, at: new Date().toISOString() });
         await select(chat);
       }

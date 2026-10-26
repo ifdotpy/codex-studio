@@ -85,7 +85,8 @@ test("real IndexedDB staging belongs to provisioned browser smoke, not Node unit
   const scripts: NonNullable<PackageManifest["scripts"]> = JSON.parse(
     readFileSync(`${web}/package.json`, "utf8"),
   ).scripts;
-  const smoke = scripts!["test:browser:smoke:prepared"];
+  const smoke = scripts["test:browser:smoke:prepared"];
+  assert.ok(smoke);
   const grep = smoke.match(/--grep "([^"]+)"/)?.[1];
   assert.ok(grep, "package.json owns the smoke selector");
   assert.match(title, new RegExp(grep));
@@ -98,7 +99,8 @@ test("real IndexedDB staging belongs to provisioned browser smoke, not Node unit
   assert.doesNotMatch(fast, /entityTransfer\.storage\.test/);
   assert.match(fast, /"src\/sync\/entityTransfer\.test\.ts"/);
   const workflow = readFileSync(".github/workflows/ci.yml", "utf8");
-  const browserJob = workflow.split("  fast-browser-smoke:")[1];
+  const [, browserJob] = workflow.split("  fast-browser-smoke:");
+  assert.ok(browserJob);
   assert.match(
     browserJob,
     /playwright install chromium[\s\S]+just test-browser-smoke --prepared/,
@@ -324,12 +326,14 @@ test("Cargo uses nextest filters and keeps package and test selectors narrow", (
       ],
     ],
   );
-  assert.deepEqual(
-    commandFor("/repo", item, "test", "cli::tests::help", {
-      name: "help renders",
-    })[0][1].slice(-2),
-    ["--filterset", "test(~cli::tests::help) and test(~help renders)"],
-  );
+  const [filtered] = commandFor("/repo", item, "test", "cli::tests::help", {
+    name: "help renders",
+  });
+  assert.ok(filtered);
+  assert.deepEqual(filtered[1].slice(-2), [
+    "--filterset",
+    "test(~cli::tests::help) and test(~help renders)",
+  ]);
   assert.deepEqual(
     parseCounts(
       item,
@@ -433,8 +437,10 @@ esac
     process.env.FIXTURE_CARGO_MODE = "missing";
     const absent = await execute(root, item, "", true);
     assert.equal(absent.exitCode, 1);
+    const [error] = absent.errors ?? [];
+    assert.ok(error);
     assert.match(
-      absent.errors![0],
+      error,
       /cargo install cargo-nextest --version 0\.9\.146 --locked/,
     );
     assert.ok(absent.logPath);
@@ -560,9 +566,10 @@ test("focused log cache prunes runs older than fourteen days and retains recent 
 
 test("hosted non-Rust checks consume prepared inputs and cannot compile Cargo", () => {
   const workflow = readFileSync(".github/workflows/ci.yml", "utf8");
-  const remaining = workflow
-    .split("  fast-rest:\n")[1]
-    .split("  fast-rust:\n")[0];
+  const [, rest] = workflow.split("  fast-rest:\n");
+  assert.ok(rest);
+  const [remaining] = rest.split("  fast-rust:\n");
+  assert.ok(remaining);
   assert.match(remaining, /needs: rust-build-tests/);
   assert.match(remaining, /name: prepared-check-inputs/);
   assert.doesNotMatch(remaining, /client-build-setup|cargo build|clippy/);
@@ -711,7 +718,9 @@ test("Playwright JSON reports enforce process and test outcome status", () => {
 
   const malformed = evaluatePlaywrightReport("{bad json", 0);
   assert.equal(malformed.exitCode, 1);
-  assert.match(malformed.errors[0], /^Playwright JSON report is invalid:/);
+  const [malformedError] = malformed.errors;
+  assert.ok(malformedError);
+  assert.match(malformedError, /^Playwright JSON report is invalid:/);
 
   const invalidStats = evaluatePlaywrightReport(
     JSON.stringify({ stats: { expected: -1 } }),
@@ -988,7 +997,8 @@ test("check-affected selects a changed package and transitive workspace dependen
       dependencies: { "desktop-b": "workspace:*" },
     });
     fixture.add("unrelated-d", "workspaces/client/apps/d");
-    const aItem = fixture.packages[0];
+    const [aItem] = fixture.packages;
+    assert.ok(aItem);
     aItem.manifest = path.join(a, "package.json");
     assert.deepEqual(
       affectedPlan(fixture.root, "origin/main", fixture.packages, [
@@ -1147,15 +1157,17 @@ test("WASM preparation locates only the pinned CLI and builds before binding", (
       "wasm32-unknown-unknown",
       "--locked",
     ]);
+    const [, bindgen] = calls;
+    assert.ok(bindgen);
     assert.equal(
-      calls[1][0],
+      bindgen[0],
       path.join(
         env.CARGO_TARGET_DIR,
         "wasm32-unknown-unknown/release/studio_client_wasm.wasm",
       ),
     );
     assert.ok(
-      calls[1].includes("workspaces/client/apps/web/src/wasm/generated"),
+      bindgen.includes("workspaces/client/apps/web/src/wasm/generated"),
     );
   } finally {
     rmSync(root, { recursive: true, force: true });

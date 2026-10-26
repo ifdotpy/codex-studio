@@ -773,7 +773,8 @@ async function main() {
       1,
       `Expected one local server card labeled ${localServer.label}.`,
     );
-    const matchingCard = matchingLocalCards[0];
+    const [matchingCard] = matchingLocalCards;
+    assert.ok(matchingCard);
 
     const localCardLines = (await matchingCard.innerText())
       .split("\n")
