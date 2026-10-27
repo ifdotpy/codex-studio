@@ -813,11 +813,13 @@ mod tests {
             let mut buffer = [0; 64];
             LocalPtyHost.read(&mut reader_session, &mut buffer)
         });
+        // A dedicated test thread observes the idle window; there is no runtime to yield to.
+        #[allow(clippy::disallowed_methods)]
         thread::sleep(Duration::from_millis(150));
         let attempts = session.0.read_attempts.load(Ordering::Relaxed);
         host.write(&mut session, b"\n").unwrap();
         host.close(session).unwrap();
-        let _ = reader.join().unwrap();
+        assert!(reader.join().is_ok(), "reader thread panicked");
         assert!(attempts <= 3, "idle reader attempted {attempts} reads");
     }
 
