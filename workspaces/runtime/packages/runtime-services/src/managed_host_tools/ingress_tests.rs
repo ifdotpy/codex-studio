@@ -104,6 +104,7 @@ async fn fixture() -> (tempfile::TempDir, Arc<RuntimeStore>, CallbackContext) {
         .unwrap();
     let actor = &template.value["agents"][0];
     let context = CallbackContext {
+        stream_id: "default".into(),
         agent: actor["id"].as_str().unwrap().into(),
         account: "default".into(),
         connection: "connection".into(),
@@ -674,6 +675,7 @@ async fn production_monitor_adapter_authorizes_before_callback_writes_and_preser
     let (_root, store, _lead_context) = fixture_arc().await;
     let worker = &template().value["agents"][1];
     let worker_context = CallbackContext {
+        stream_id: "default".into(),
         agent: worker["id"].as_str().unwrap().to_owned(),
         account: "default".into(),
         connection: "connection".into(),
@@ -948,6 +950,7 @@ async fn managed_monitor_input_checks_owner_and_preserves_delivery_receipts_on_r
     let (_root, store, _lead_context) = fixture().await;
     let worker = &template().value["agents"][1];
     let worker_context = CallbackContext {
+        stream_id: "default".into(),
         agent: worker["id"].as_str().unwrap().to_owned(),
         account: "default".into(),
         connection: "connection".into(),
@@ -1189,6 +1192,7 @@ async fn dispatch_case(
         .find(|actor| actor["id"] == expected["actor"])
         .unwrap();
     let context = CallbackContext {
+        stream_id: "default".into(),
         agent: actor["id"].as_str().unwrap().to_owned(),
         account: "default".into(),
         connection: "connection".into(),
@@ -2516,6 +2520,7 @@ async fn managed_reviewer_defaults_reach_public_spawn_tool() {
             .unwrap();
         let context = if label.starts_with("nested-") {
             CallbackContext {
+                stream_id: "default".into(),
                 agent: WORKER.into(),
                 thread: "thread-1".into(),
                 turn: "turn-1".into(),
