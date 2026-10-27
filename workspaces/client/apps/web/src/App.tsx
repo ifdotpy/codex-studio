@@ -10,6 +10,7 @@ import { useEdgeRail } from "./components/edge-rail/useEdgeRail";
 import { useWorkspacePanelWidth } from "./components/shell/workspacePanelWidth";
 import { useWorkspaceLayout } from "./layout/useWorkspaceLayout";
 import { useDuoSurface } from "./layout/useDuoSurface";
+import { usePanePathFocus } from "./layout/usePanePathFocus";
 import { usePublishPanePath } from "./layout/PanePathShell";
 import { layoutQueries } from "./layout/layout-contract.generated";
 import { restoreSidebarFocus } from "./components/sidebar/SidebarFrame";
@@ -718,6 +719,7 @@ export default function App({ active = true }: { active?: boolean }) {
     },
   });
   const panePath = rowLayout.panePath;
+  usePanePathFocus(panePath);
   const sidebarExpanded = panePath
     ? !!panePath.panes.sidebar
     : sidebarCompact
@@ -742,10 +744,14 @@ export default function App({ active = true }: { active?: boolean }) {
         }
       : null,
   );
-  const closePane = () => {
+  const closeTeam = () => {
     setTeamOpen(false);
     setWideTeamOpen(false);
     setPanePanel(null);
+    save("codex-team-open", false);
+  };
+  const closePane = () => {
+    closeTeam();
     storeWorkspaceOpen(false);
     setPaneSidebar(false);
     setPaneFullScreen(false);
@@ -1304,6 +1310,7 @@ export default function App({ active = true }: { active?: boolean }) {
             }
           : undefined,
       );
+      if (!navigationTarget.itemId) closeTeam();
       setWorkspaceOpen(!!navigationTarget.itemId);
     }
     setNavigationTarget(undefined);
@@ -3351,17 +3358,11 @@ export default function App({ active = true }: { active?: boolean }) {
                   ? teamOpen
                   : wideTeamOpen
             }
-            onClose={
-              panePath
-                ? closePane
-                : () => {
-                    setTeamOpen(false);
-                    setWideTeamOpen(false);
-                    setPanePanel(null);
-                  }
-            }
+            onClose={panePath ? closePane : closeTeam}
           >
-            {teamPanel}
+            {panePath || (narrowTeam ? teamOpen : wideTeamOpen)
+              ? teamPanel
+              : null}
           </WorkspacePanelHost>
         )}
       </div>

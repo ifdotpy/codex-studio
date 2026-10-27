@@ -36,6 +36,10 @@
   background: var(--surface);
   border-left: var(--studio-border-width) solid var(--line);
 }
+/* The lazy host stylesheet must not replace the pane surface. */
+.workspace-panel-inline.duo-pane-panel {
+  background: var(--surface);
+}
 .duo-pane-header {
   display: flex;
   align-items: center;

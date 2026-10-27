@@ -1,7 +1,12 @@
+import { duoPhoneUserAgent } from "./duo-fixture.ts";
 import { test, expect } from "../playwright.ts";
 import { sidebarParityFixture } from "../sidebar/sidebar-parity-fixture.ts";
 
-test.use({ hasTouch: true });
+test.use({
+  userAgent: duoPhoneUserAgent,
+  hasTouch: true,
+  reducedMotion: "reduce",
+});
 for (const check of [
   "buttons",
   "header",
@@ -153,9 +158,10 @@ for (const check of [
             .click();
           await expect(
             page.locator(
-              ".workspace-drawer .mantine-Drawer-content, .workspace-panel-inline:not([hidden])",
+              ".workspace-drawer .mantine-Drawer-content:visible, .workspace-panel-inline:not([hidden])",
             ),
           ).toBeVisible();
+          await expect(page.getByRole("menu")).toBeHidden();
         }
         const png = (await page.screenshot()).toString("base64");
         const colors = await page.evaluate(async (png) => {
@@ -169,8 +175,8 @@ for (const check of [
           if (!ctx) throw new Error("Missing fixture canvas context");
           ctx.drawImage(image, 0, 0);
           return [
-            [850, 300],
-            [911, 300],
+            [850, 500],
+            [911, 500],
             [850, 650],
             [911, 650],
           ].map(([x, y]) => [...ctx.getImageData(x, y, 1, 1).data]);

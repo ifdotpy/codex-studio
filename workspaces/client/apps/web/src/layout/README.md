@@ -56,3 +56,20 @@ at the viewport top; its header uses the band area left of the rail.
 A closed sidebar and all side panels keep the native top clearance. The conversation keeps its title
 band at the viewport top. A previous desktop collapse preference does not
 hide a sidebar selected by the pane path.
+
+## Pane device and hinge inputs
+
+`mobileViewport` owns `data-duo-device`. It accepts a published native hinge
+state or a phone browser identity. The browser identity is an iPhone user agent
+or `userAgentData.mobile`. iPad, iPadOS desktop identity and unknown browsers
+keep the existing layout. `isDuoSurface` owns the geometry conditions.
+
+`useWorkspaceLayout` preserves absent or invalid native hinge coordinates.
+`deriveWorkspaceLayout` uses equal available cells when partial fold has no
+position. It uses the hinge band only when vertical, regardless of its active
+flag. A horizontal band keeps the normal portrait layout.
+
+The active screen publishes its layout during loading and error states too.
+`usePanePathFocus` moves focus into a visible pane when a pane becomes hidden.
+Outside the pane path, Team mounts only while open. The desktop panel slot is
+a flex row, with Workspace before Team when both are open.
