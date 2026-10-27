@@ -63,19 +63,55 @@ pub(crate) struct JournalSettlement {
     notification: Option<crate::notification_dispatch::NotificationSettlement>,
 }
 
-#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "family", content = "payload", rename_all = "snake_case")]
 pub(super) enum ProviderCall {
     Account(AccountCall),
     Retained(super::retained::storage::RetainedCall),
 }
 
-#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub(super) struct AccountCall {
     pub context: Pending,
     pub request: super::retained::storage::TransportRequest,
     pub written: Option<super::retained::storage::TransportRequest>,
     pub restarted: bool,
+}
+
+pub(super) fn account_submission(tx: &rusqlite::Connection, operation: &str) -> Result<Option<AccountCall>, WorkerError> {
+    match Outbox::get::<ProviderCall>(tx, operation).map_err(outbox_error)? {
+        Some(OutboxRow { payload: ProviderCall::Account(call), .. }) => Ok(Some(call)),
+        Some(_) => Err(invalid(operation)),
+        None => Ok(None),
+    }
+}
+
+pub(super) fn save_account_submission(tx: &studio_runtime_store::Transaction<'_>, context: &Pending, request: &RecoveredRequest) -> Result<(), WorkerError> {
+    if account_submission(tx, &context.operation)?.is_some() { return Err(invalid(&context.operation)); }
+    let vm = AgentRepository::get(tx, &AgentId::from(context.intent.agent_id.as_str()))?
+        .is_some_and(|agent| agent.extra.get("executionMode").and_then(Value::as_str) == Some("vm"));
+    let account = &context.intent.account_key;
+    let request = super::retained::storage::TransportRequest::from(request);
+    let signature = studio_runtime_store::sha256_hex(&serde_json::to_vec(&json!({"context":context,"request":request})).map_err(StoreError::from)?);
+    Outbox::put(tx, &OutboxRow {
+        id: context.operation.clone(), kind: OutboxKind::ProviderCall,
+        owner_kind: OwnerKind::Agent, owner_id: context.intent.agent_id.clone(), request_id:None,
+        signature, status:OutboxStatus::Unknown, account:Some(account.clone()),
+        stream_id:Some(if vm {super::vm_journal_scope(account,&context.intent.agent_id)} else {account.clone()}),
+        generation:Some(request.generation as i64), ordinal:None,next_at:None,
+        payload:ProviderCall::Account(AccountCall {context:context.clone(),request,written:None,restarted:false}),
+        created:(now()*1000.0) as i64,
+    }).map_err(outbox_error)
+}
+
+fn account_written(tx: &studio_runtime_store::Transaction<'_>, operation: &str, request: &RecoveredRequest) -> Result<(), WorkerError> {
+    let Some(mut row) = Outbox::get::<ProviderCall>(tx,operation).map_err(outbox_error)? else {return Err(invalid(operation));};
+    let ProviderCall::Account(call) = &mut row.payload else {return Err(invalid(operation));};
+    let written = super::retained::storage::TransportRequest::from(request);
+    if call.written.as_ref().is_some_and(|old| old != &written) {return Err(invalid(operation));}
+    call.written = Some(written);
+    row.status = OutboxStatus::Submitted;
+    Outbox::put(tx,&row).map_err(outbox_error)
 }
 
 fn save_journal(
@@ -129,6 +165,49 @@ fn save_journal(
     };
     row.next_at = if committed { None } else { Some(0) };
     Outbox::put(tx, &row).map_err(outbox_error)
+}
+
+fn notification_scope(identity: &ProviderDeliveryIdentity) -> studio_runtime_store::StoreResult<&str> {
+    identity.provider_handle.strip_prefix("account:").ok_or(StoreError::RecordContract("notification provider handle is not an account stream"))
+}
+
+pub(crate) fn notification_acknowledged(tx: &rusqlite::Connection, identity: &ProviderDeliveryIdentity) -> studio_runtime_store::StoreResult<bool> {
+    let scope = notification_scope(identity)?;
+    checkpoint(tx, scope, identity.generation)
+        .map(|cursor| identity.cursor <= cursor)
+        .map_err(|error| match error { WorkerError::Store(error) => error, _ => StoreError::RecordContract("notification checkpoint could not be read") })
+}
+
+pub(crate) fn get_notification(tx: &rusqlite::Connection, identity: &ProviderDeliveryIdentity) -> studio_runtime_store::StoreResult<Option<crate::notification_dispatch::NotificationSettlement>> {
+    let scope = notification_scope(identity)?;
+    Ok(Outbox::get::<JournalSettlement>(tx, &journal_operation(scope, identity.generation, identity.cursor))
+        .map_err(outbox_store_error)?.and_then(|row| row.payload.notification))
+}
+
+pub(crate) fn put_notification(tx: &studio_runtime_store::Transaction<'_>, identity: &ProviderDeliveryIdentity, notification: crate::notification_dispatch::NotificationSettlement) -> studio_runtime_store::StoreResult<()> {
+    let scope = notification_scope(identity)?;
+    let id = journal_operation(scope, identity.generation, identity.cursor);
+    let mut row = if let Some(row) = Outbox::get::<JournalSettlement>(tx, &id).map_err(outbox_store_error)? { row } else {
+        let (account, actor) = scope.rsplit_once(":vm:").map_or((scope,None), |(account,actor)| (account,Some(actor)));
+        OutboxRow {
+            signature: studio_runtime_store::sha256_hex(id.as_bytes()), id,
+            kind: OutboxKind::JournalEntry, owner_kind: if actor.is_some() {OwnerKind::Agent} else {OwnerKind::Account},
+            owner_id: actor.unwrap_or(account).to_owned(),request_id:None,status:OutboxStatus::Pending,
+            account:Some(account.to_owned()),stream_id:Some(scope.to_owned()),generation:Some(identity.generation as i64),ordinal:Some(identity.cursor as i64),next_at:Some(0),
+            payload: JournalSettlement {cursor:identity.cursor,digest:String::new(),ready:false,committed:false,notification:None},created:(now()*1000.0) as i64,
+        }
+    };
+    if let Some(old) = &row.payload.notification && old != &notification { return Err(StoreError::RecordContract("notification identity conflicts with its committed payload")); }
+    row.payload.notification = Some(notification);
+    Outbox::put(tx,&row).map_err(outbox_store_error)
+}
+
+fn outbox_store_error(error: studio_runtime_store::outbox::OutboxError) -> StoreError {
+    match error {
+        studio_runtime_store::outbox::OutboxError::Sql(error) => error.into(),
+        studio_runtime_store::outbox::OutboxError::Json(error) => error.into(),
+        studio_runtime_store::outbox::OutboxError::Conflict(id) => StoreError::InvalidSyncObject {scope:"runtime_outbox".into(),id},
+    }
 }
 
 pub(super) struct SubmissionEvidence {
