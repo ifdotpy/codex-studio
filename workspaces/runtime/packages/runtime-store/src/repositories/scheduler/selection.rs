@@ -2,6 +2,11 @@ use super::*;
 use crate::CachedSql;
 use std::sync::LazyLock;
 
+#[cfg(test)]
+thread_local! {
+    pub(super) static COMPLAINT_DECODES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 /// `_v5` removes the obsolete capacity-start predicate. The 2026-10-21
 /// migration drops v4 before removing its generated column.
 const ACCOUNT_WAKE_INDEX: &str = "runtime_agent_account_wake_candidates_v5";
@@ -975,8 +980,7 @@ impl SchedulerRepository {
 
         let (complaints, _work) = load_policy_records(transaction, &agent, &events)?;
         let obsolete_work = obsolete_work_review_ids(transaction, &agent, &events)?;
-        let prepared =
-            prepare_pending_batch(&agent, events, metadata, &complaints, &obsolete_work)?;
+        let prepared = prepare_pending_batch(events, metadata, &complaints, &obsolete_work)?;
         if single_event.is_none()
             && !preparation
             && let Some((kind, dependency)) = prepared.events.iter().find_map(|event| {
@@ -1175,7 +1179,7 @@ impl SchedulerRepository {
         let obsolete_work = obsolete_work_review_ids(transaction, &agent, &rows)?;
         // Submission reconciliation retires resolved business notifications only.
         // Progress coalescing belongs to selection and must not run a second time.
-        let obsolete = obsolete_events(&agent, &rows, &complaints, &obsolete_work);
+        let obsolete = obsolete_events(&rows, &complaints, &obsolete_work);
         let mut changes = BTreeMap::new();
         let mut retired = Vec::new();
         for event in &rows {
@@ -1462,17 +1466,21 @@ pub(super) fn load_policy_records(
     transaction: &Transaction<'_>,
     agent: &AgentRecord,
     events: &[QueueEvent],
-) -> StoreResult<(BTreeMap<String, Value>, BTreeMap<String, Value>)> {
+) -> StoreResult<(BTreeSet<String>, BTreeMap<String, Value>)> {
     let mut complaints = BTreeMap::new();
+    let mut resolved = BTreeSet::new();
     let mut work = BTreeMap::new();
     if table_exists(transaction, "runtime_complaints")? {
         for event in events.iter().filter(|event| event.kind == "complaint") {
-            for id in complaint_ids(&event.text).unwrap_or_default() {
-                if complaints.contains_key(&id) {
+            let Some(ids) = complaint_ids(&event.text) else {
+                continue;
+            };
+            for id in &ids {
+                if complaints.contains_key(id) {
                     continue;
                 }
                 if let Some(value) =
-                    get_json_record::<Value>(transaction, "runtime_complaints", &id)?
+                    get_json_record::<Value>(transaction, "runtime_complaints", id)?
                 {
                     let valid = value.get("leadId").and_then(Value::as_str).is_some()
                         && value.get("status").and_then(Value::as_str).is_some()
@@ -1486,13 +1494,16 @@ pub(super) fn load_policy_records(
                                 })
                             });
                     if !valid {
-                        return Err(invalid_object("runtime_complaints", &id));
+                        return Err(invalid_object("runtime_complaints", id));
                     }
                     if value["leadId"] != agent.id.0 {
                         continue;
                     }
-                    complaints.insert(id, value);
+                    complaints.insert(id.clone(), value);
                 }
+            }
+            if complaints_resolved(agent, &ids, &complaints) {
+                resolved.insert(event.id.0.clone());
             }
         }
     }
@@ -1529,10 +1540,12 @@ pub(super) fn load_policy_records(
             }
         }
     }
-    Ok((complaints, work))
+    Ok((resolved, work))
 }
 
 pub(super) fn complaint_ids(text: &str) -> Option<Vec<String>> {
+    #[cfg(test)]
+    COMPLAINT_DECODES.with(|count| count.set(count.get() + 1));
     let value: Value = serde_json::from_str(text).ok()?;
     let entries = value.get("complaints")?.as_array()?;
     if entries.is_empty() {
@@ -1549,12 +1562,9 @@ pub(super) fn complaint_ids(text: &str) -> Option<Vec<String>> {
 
 pub(super) fn complaints_resolved(
     agent: &AgentRecord,
-    event: &QueueEvent,
+    ids: &[String],
     records: &BTreeMap<String, Value>,
 ) -> bool {
-    let Some(ids) = complaint_ids(&event.text) else {
-        return false;
-    };
     ids.iter().all(|id| {
         records.get(id).is_some_and(|record| {
             let status = record["status"].as_str().unwrap_or_default();
@@ -1596,14 +1606,13 @@ pub(super) fn progress_update(text: &str) -> Option<((String, String, String), u
 }
 
 pub(super) fn obsolete_events(
-    agent: &AgentRecord,
     events: &[QueueEvent],
-    complaints: &BTreeMap<String, Value>,
+    complaints: &BTreeSet<String>,
     obsolete_work: &BTreeSet<String>,
 ) -> BTreeMap<String, String> {
     let mut retired = BTreeMap::new();
     for event in events.iter().filter(|event| event.kind == "complaint") {
-        if complaints_resolved(agent, event, complaints) {
+        if complaints.contains(&event.id.0) {
             retired.insert(
                 event.id.0.clone(),
                 "Every referenced complaint already has a response".to_owned(),
@@ -1623,10 +1632,9 @@ pub(super) fn obsolete_events(
 }
 
 pub(super) fn prepare_pending_batch(
-    agent: &AgentRecord,
     events: Vec<QueueEvent>,
     mut metadata: BTreeMap<String, Value>,
-    complaints: &BTreeMap<String, Value>,
+    complaints: &BTreeSet<String>,
     obsolete_work: &BTreeSet<String>,
 ) -> StoreResult<PreparedBatch> {
     let mut metadata_updates = BTreeMap::new();
@@ -1638,7 +1646,7 @@ pub(super) fn prepare_pending_batch(
             "Scheduled chat reviews have been removed".to_owned(),
         );
     }
-    retired.extend(obsolete_events(agent, &events, complaints, obsolete_work));
+    retired.extend(obsolete_events(&events, complaints, obsolete_work));
     let mut groups: BTreeMap<(String, String, String), Vec<(usize, u64)>> = BTreeMap::new();
     let mut preserved = Vec::with_capacity(events.len());
     for (index, event) in events.iter().enumerate() {

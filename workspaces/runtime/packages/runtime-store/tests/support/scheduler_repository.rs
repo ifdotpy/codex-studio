@@ -269,9 +269,14 @@ fn resolved_complaint_and_decided_work_review_retire_before_claiming_the_remaini
         )
         .expect("resolved policy fixtures write");
     let transaction = connection.transaction().expect("claim begins");
+    super::selection::COMPLAINT_DECODES.with(|count| count.set(0));
     let claim = SchedulerRepository::claim(&transaction, "agent", 4, "policy", 10.0, 3)
         .expect("resolved notices reconcile")
         .expect("remaining input is claimed");
+    assert_eq!(
+        super::selection::COMPLAINT_DECODES.with(std::cell::Cell::get),
+        1
+    );
     assert_eq!(
         claim
             .events

@@ -336,8 +336,7 @@ impl SchedulerRepository {
         let (events, metadata) = pending_steer_events(tx, agent_id, epoch)?;
         let (complaints, _work) = load_policy_records(tx, &agent, &events)?;
         let obsolete_work = obsolete_work_review_ids(tx, &agent, &events)?;
-        let prepared =
-            prepare_pending_batch(&agent, events, metadata, &complaints, &obsolete_work)?;
+        let prepared = prepare_pending_batch(events, metadata, &complaints, &obsolete_work)?;
         apply_preparation(tx, &prepared)?;
         let mut events = prepared.events;
         let metadata = prepared.metadata;
@@ -420,7 +419,7 @@ impl SchedulerRepository {
         let obsolete_work = obsolete_work_review_ids(tx, &agent, &rows)?;
         // Coalescing already ran at selection. Submission only retires resolved
         // business input; it must preserve the exact remaining metadata.
-        let obsolete = obsolete_events(&agent, &rows, &complaints, &obsolete_work);
+        let obsolete = obsolete_events(&rows, &complaints, &obsolete_work);
         if obsolete.is_empty() {
             return Ok(true);
         }
