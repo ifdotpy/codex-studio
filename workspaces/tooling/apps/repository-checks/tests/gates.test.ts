@@ -553,6 +553,64 @@ test("hosted shards omit native binaries while the prepared builder runs them", 
   }
 });
 
+test("native dependency setup selects the Ubuntu archive before every apt operation", () => {
+  const actionPath = path.resolve(".github/actions/native-linux-deps");
+  const action = readFileSync(path.join(actionPath, "action.yml"), "utf8");
+  const script = action.split("      run: |\n")[1];
+  assert.ok(script);
+  const directory = mkdtempSync(path.join(tmpdir(), "studio-apt-mirror-"));
+  try {
+    writeFileSync(
+      path.join(directory, "apt-mirrors.txt"),
+      "http://azure.archive.ubuntu.com/ubuntu/\tpriority:1\nhttps://archive.ubuntu.com/ubuntu/\tpriority:2\n",
+    );
+    // Run the real action with isolated filesystem and apt stand-ins. No sudo or
+    // package manager on the test host is invoked.
+    const result = spawnSync(
+      "bash",
+      [
+        "-euc",
+        `
+        sudo() {
+          if [ "$1" = install ]; then
+            test "$2" = -m
+            test "$3" = 644
+            test "$5" = /etc/apt/apt-mirrors.txt
+            command install -m "$3" "$4" "$MIRROR_CAPTURE"
+          elif [ "$1" = apt-get ]; then
+            test "$(cat "$MIRROR_CAPTURE")" = https://archive.ubuntu.com/ubuntu/
+            printf '%s\\n' "$*" >> "$APT_CAPTURE"
+          else
+            return 1
+          fi
+        }
+        ${script}
+        `,
+      ],
+      {
+        encoding: "utf8",
+        timeout: 10_000,
+        env: {
+          ...process.env,
+          GITHUB_ACTION_PATH: actionPath,
+          MIRROR_CAPTURE: path.join(directory, "apt-mirrors.txt"),
+          APT_CAPTURE: path.join(directory, "apt.log"),
+        },
+      },
+    );
+    assert.equal(result.status, 0, result.stderr);
+    assert.deepEqual(
+      readFileSync(path.join(directory, "apt.log"), "utf8").trim().split("\n"),
+      [
+        "apt-get update",
+        "apt-get install -y --no-install-recommends libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf",
+      ],
+    );
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
 test("native platform filter keeps every common clause identical", () => {
   const source = readFileSync(".config/nextest.toml", "utf8");
   const [common, linux] = [

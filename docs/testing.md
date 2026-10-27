@@ -55,6 +55,8 @@ run once in their owning jobs. The hosted test builder runs native tests with it
 installed WebView libraries. It builds the full workspace but archives only the
 remaining test binaries, so the Rust partitions need no WebView installation.
 The complementary selections are owned by the [Just recipes](../justfile).
+The Linux compiler jobs use the official Ubuntu archive through the hosted
+image's APT mirror list, configured by the [native dependency action](../.github/actions/native-linux-deps/action.yml).
 Rust compiler policy witnesses run in the Rust lane after workspace dependencies
 are available; hosted CI runs them after Clippy. The standalone `test:tooling`
 script still includes them, while the prepared non-Rust gate selects
