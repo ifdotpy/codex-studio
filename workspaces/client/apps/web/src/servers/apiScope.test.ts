@@ -13,6 +13,7 @@ import {
 } from "../generated/apiSchema";
 import { createMutationJournal } from "./mutationIdentity";
 import { scopedStorage } from "./storage";
+import { cacheFixture } from "../../tests/cacheFixture.ts";
 
 function memory(): Storage {
   const values = new Map<string, string>();
@@ -126,7 +127,7 @@ describe("concurrent servers in one interface", () => {
     expect(write).toHaveBeenCalledTimes(2);
     a.save("studio-chat-scroll:chat", { ...position, top: 121 });
     expect(write).toHaveBeenCalledTimes(3);
-    disk.setItem("a:studio-chat-scroll:chat", "null");
+    disk.setItem("a:studio-chat-scroll:chat", cacheFixture(null));
     a.save("studio-chat-scroll:chat", { ...position, top: 121 });
     expect(write).toHaveBeenCalledTimes(5);
     expect(b.saved("studio-chat-scroll:chat", null)).toEqual(position);

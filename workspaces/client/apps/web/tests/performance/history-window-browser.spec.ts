@@ -1,4 +1,5 @@
 import { fixtureOrigin } from "./performance-fixture.ts";
+import { readCachedStorage } from "../cacheFixture.ts";
 import type {} from "./history-window.fixture.tsx";
 import { mkdtemp, rm, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -262,20 +263,17 @@ test("long history mounts a bounded viewport and preserves navigation and anchor
         document.querySelector("#messages")!.getBoundingClientRect().top,
     );
     await expect
-      .poll(() =>
-        page.evaluate(() => {
-          // The scroll fixture writes this anchor using the history-window owner.
-          const anchor:
-            | (Pick<import("../../src/types.ts").Message, "id"> & {
-                kind?: string;
-              })
-            | null = JSON.parse(
-            localStorage.getItem("history-window-browser:window-anchor") ||
-              "null",
-          );
-          return anchor?.kind === "message" && anchor.id.startsWith("large-");
-        }),
-      )
+      .poll(async () => {
+        const anchor:
+          | (Pick<import("../../src/types.ts").Message, "id"> & {
+              kind?: string;
+            })
+          | null = await page.evaluate(
+          readCachedStorage,
+          "history-window-browser:window-anchor",
+        );
+        return anchor?.kind === "message" && anchor.id.startsWith("large-");
+      })
       .toBe(true);
     await page.reload();
     await expect(sameTurnTarget).toBeVisible();
