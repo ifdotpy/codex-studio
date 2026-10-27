@@ -1,3 +1,4 @@
+import { AgentSource, StudioErrorEffectCertainty } from "../generated/api";
 import { required } from "../components/componentTestFixtures.ts";
 import assert from "node:assert/strict";
 import { decodeSidebarRanks } from "./sidebarOrderRanks";
@@ -34,7 +35,7 @@ const agent = (id: string, patch: Partial<Agent> = {}): Agent => ({
   id,
   name: id,
   cwd: path,
-  source: "managed",
+  source: AgentSource.managed,
   isLead: true,
   rootId: id,
   created: 1,
@@ -202,7 +203,7 @@ describe("complete multi-server sidebar projection", () => {
         kind: "input_uncertain",
         diagnostics: {
           context: { source: "input", turnId: null, epoch: 0 },
-          certainty: "unknown",
+          certainty: StudioErrorEffectCertainty.unknown,
           causes: [],
         },
         action: "resume",

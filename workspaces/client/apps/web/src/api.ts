@@ -1,3 +1,8 @@
+import {
+  ProcessActionStatus,
+  MonitorInputKind,
+  MonitorInputStatus,
+} from "./generated/api";
 import { randomUUID } from "./uuid";
 import { hasNativeClient } from "./native/client";
 
@@ -915,12 +920,13 @@ export function createApiScope(options: ApiScopeOptions) {
     if (
       !receipt.found ||
       result?.requestId !== pending.requestId ||
-      result.status !== "completed" ||
+      result.status !== ProcessActionStatus.completed ||
       !response ||
       !("kind" in response) ||
-      response.kind !== "monitor_input" ||
+      response.kind !== MonitorInputKind.monitor_input ||
       response.monitorId !== id ||
-      (response.status !== "acknowledged" && response.status !== "rejected")
+      (response.status !== MonitorInputStatus.acknowledged &&
+        response.status !== MonitorInputStatus.rejected)
     )
       return "unknown";
     return (await finishMonitorInput(

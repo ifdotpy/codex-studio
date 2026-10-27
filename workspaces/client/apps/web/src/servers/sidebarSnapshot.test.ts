@@ -1,3 +1,8 @@
+import {
+  AgentSource,
+  AgentStatus,
+  StudioErrorEffectCertainty,
+} from "../generated/api";
 import assert from "node:assert/strict";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Snapshot } from "../types";
@@ -46,7 +51,7 @@ describe("server sidebar projection", () => {
     data.threads = [
       {
         id: "lead",
-        source: "managed",
+        source: AgentSource.managed,
         isLead: true,
         name: "Original chat",
         cwd: "/work",
@@ -56,7 +61,7 @@ describe("server sidebar projection", () => {
         projectFolderRevision: 4,
         pinned: true,
         archived: true,
-        status: "completed",
+        status: AgentStatus.completed,
         updated: 8,
         created: 2,
         tail: "Short search text",
@@ -74,12 +79,17 @@ describe("server sidebar projection", () => {
       },
       {
         id: "worker",
-        source: "managed",
+        source: AgentSource.managed,
         isLead: false,
         parentId: "lead",
         rootId: "lead",
       },
-      { id: "hidden", source: "managed", deletedAt: 10, sharedRoomId: "room" },
+      {
+        id: "hidden",
+        source: AgentSource.managed,
+        deletedAt: 10,
+        sharedRoomId: "room",
+      },
     ];
     data.runtime.projects = [
       {
@@ -324,7 +334,7 @@ describe("server sidebar projection", () => {
       kind: "turn_disconnected",
       diagnostics: {
         context: { source: "agent", turnId: "turn", epoch: 0 },
-        certainty: "unknown",
+        certainty: StudioErrorEffectCertainty.unknown,
         causes: [],
       },
       action: "resume",
@@ -346,7 +356,7 @@ describe("server sidebar projection", () => {
     data.threads = [
       {
         id: "lead",
-        source: "managed",
+        source: AgentSource.managed,
         isLead: true,
         cwd: "/work",
         inFlight: true,

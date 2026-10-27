@@ -1,3 +1,4 @@
+import { AccountStatus } from "./generated/api";
 import { ProviderKind } from "./generated/providerKind.ts";
 import type { Account } from "./components/Accounts";
 
@@ -18,9 +19,9 @@ export function accountCanStart(account: Account | undefined): boolean {
     !!account &&
     !account.deleted &&
     !account.disconnected &&
-    (account.status === "ready" ||
+    (account.status === AccountStatus.ready ||
       (account.provider === ProviderKind.Claude &&
-        account.status === "error" &&
+        account.status === AccountStatus.error &&
         account.canAttemptNativeProof === true))
   );
 }

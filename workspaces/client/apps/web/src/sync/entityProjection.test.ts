@@ -1,3 +1,8 @@
+import {
+  AgentSource,
+  AgentStatus,
+  StudioErrorEffectCertainty,
+} from "../generated/api";
 import { required } from "../components/componentTestFixtures.ts";
 import type { EntityRow } from "./entityProjection.ts";
 import type { Agent, Message, Request, Snapshot } from "../types";
@@ -146,8 +151,8 @@ it("renders the list from summaries and adds detail without losing unread state"
     id: "a",
     name: "Current",
     kind: "agent",
-    source: "managed",
-    status: "completed",
+    source: AgentSource.managed,
+    status: AgentStatus.completed,
     threadId: "thread",
     lastCompletedTurn: "turn",
     lastCompletedTurnStatus: "completed",
@@ -1718,7 +1723,7 @@ it("projects Studio error entities and removes dismissed rows by tombstone", () 
     kind: "turn_disconnected",
     diagnostics: {
       context: { source: "agent", turnId: "turn-1", epoch: 0 },
-      certainty: "unknown",
+      certainty: StudioErrorEffectCertainty.unknown,
       causes: [],
     },
     reason: "The provider connection ended during the turn.",

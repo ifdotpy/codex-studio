@@ -1,3 +1,4 @@
+import { RequestStatus, AgentStatus } from "../generated/api";
 import {
   SIGN_IN_ALERT_GRACE_SECONDS,
   SIGN_IN_REMINDER_SECONDS,
@@ -31,7 +32,7 @@ function signInTimes(
 ): SignInTimes | null {
   if (
     request.method !== SIGN_IN_METHOD ||
-    request.status !== "pending" ||
+    request.status !== RequestStatus.pending ||
     request.deferred
   )
     return null;
@@ -125,7 +126,7 @@ export function desktopAlerts(
       continue;
     const turn = agent.lastCompletedTurn;
     if (
-      agent.status === "completed" &&
+      agent.status === AgentStatus.completed &&
       turn &&
       agent.lastCompletedTurnStatus === "completed"
     )
@@ -135,7 +136,10 @@ export function desktopAlerts(
         "Reply ready",
         agent.tail || "Open the chat to read the reply.",
       );
-    if (agent.status === "failed" || agent.status === "interrupted")
+    if (
+      agent.status === AgentStatus.failed ||
+      agent.status === AgentStatus.interrupted
+    )
       add(
         `failed:${agent.id}:${turn || agent.turnId || agent.status}`,
         agent.id,
@@ -182,7 +186,7 @@ export function desktopAlerts(
         );
       continue;
     }
-    if (request.status !== "pending" || request.deferred) continue;
+    if (request.status !== RequestStatus.pending || request.deferred) continue;
     const question = request.params?.questions?.[0]?.question;
     add(
       `request:${request.id}`,

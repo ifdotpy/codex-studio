@@ -1,3 +1,4 @@
+import { RoomKind } from "./generated/api";
 import type { Agent, Room, Snapshot } from "./types";
 
 // Private rooms predate rootId metadata. Their participants define the scope.
@@ -7,7 +8,7 @@ import type { Agent, Room, Snapshot } from "./types";
 const agentPositions = new WeakMap<Agent[], Map<string, number>>();
 
 export function roomLeadIds(room: Room, agents: Agent[]): string[] {
-  if (room.kind === "broadcast")
+  if (room.kind === RoomKind.broadcast)
     return room.rootId && room.rootId !== "all" ? [room.rootId] : [];
   let positions = agentPositions.get(agents);
   if (!positions) {

@@ -1,3 +1,4 @@
+import { AgentStatus, AgentSource } from "../generated/api";
 import type { LegacySyncIdentityResponse } from "./syncBrowserFixture.ts";
 import type { components } from "../generated/api";
 import type { ResourceChangeEvent } from "./resourceEvents";
@@ -42,7 +43,12 @@ for (const writerTab of [0, 1]) {
       op: "upsert",
       collection: "agent",
       id,
-      value: { id, name, status: "running", source: "managed" },
+      value: {
+        id,
+        name,
+        status: AgentStatus.running,
+        source: AgentSource.managed,
+      },
       seq: seq,
     });
     rows.set("lead", row("lead", "Lead", 1));

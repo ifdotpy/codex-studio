@@ -1,18 +1,19 @@
+import { AgentSource, AgentStatus } from "../generated/api";
 import { describe, expect, it } from "vitest";
 import { createChatSnapshotSelector } from "./snapshotSelection";
 import type { Agent, Snapshot } from "../types";
 
 function fixture(): Snapshot {
   const threads: Agent[] = [
-    { id: "lead", name: "Lead", source: "managed", isLead: true },
+    { id: "lead", name: "Lead", source: AgentSource.managed, isLead: true },
     {
       id: "worker",
       name: "Worker",
-      source: "managed",
+      source: AgentSource.managed,
       rootId: "lead",
       parentId: "lead",
     },
-    { id: "other", name: "Other", source: "managed", isLead: true },
+    { id: "other", name: "Other", source: AgentSource.managed, isLead: true },
   ];
   return {
     token: "token",
@@ -61,11 +62,11 @@ describe("chat snapshot selection", () => {
     const chosen = select(initial, "lead")!;
     const other = changeAgent(initial, "other", {
       name: "Other updated",
-      status: "running",
+      status: AgentStatus.running,
     });
     expect(select(other, "lead")).toBe(chosen);
     const updated = changeAgent(other, "worker", {
-      status: "failed",
+      status: AgentStatus.failed,
       error: "A real failure",
     });
     const next = select(updated, "lead")!;

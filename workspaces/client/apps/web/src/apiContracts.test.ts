@@ -1,3 +1,4 @@
+import { DeliveryMoment } from "./generated/api";
 import { expect, it } from "vitest";
 import { readFileSync } from "node:fs";
 import {
@@ -235,7 +236,7 @@ void jsonValueAssertion;
 const localOutboxQueueRow: QueueItem = {
   id: "local-message",
   text: "unsent locally",
-  requestedDelivery: "next_turn",
+  requestedDelivery: DeliveryMoment.next_turn,
   localDelivery: true,
 };
 const serverQueueRow: QueueItem = {

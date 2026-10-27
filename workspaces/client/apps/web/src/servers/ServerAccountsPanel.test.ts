@@ -1,3 +1,4 @@
+import { ProviderKind } from "../generated/providerKind";
 import { createElement, type ComponentProps } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { MantineProvider } from "@mantine/core";
@@ -32,7 +33,7 @@ const remote = {
 };
 const account = {
   accountKey: "profile-exact",
-  provider: "claude",
+  provider: ProviderKind.Claude,
   label: "Work",
   email: "work@example.test",
   plan: "Max",

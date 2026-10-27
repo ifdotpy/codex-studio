@@ -1,3 +1,4 @@
+import { RoomKind } from "./generated/api";
 import { expect, it } from "vitest";
 import { roomLeadIds } from "./chatScope";
 import type { Agent, Room } from "./types";
@@ -38,7 +39,7 @@ it("resolves room leads by member without scanning the whole team", () => {
   });
   reads = 0;
   for (const { members, leads } of rooms) {
-    const room = { kind: "private", members } as Room;
+    const room = { kind: RoomKind.private, members } as Room;
     expect(roomLeadIds(room, agents)).toEqual(leads);
   }
   expect(reads).toBeLessThanOrEqual(

@@ -1,3 +1,8 @@
+import {
+  SubscriptionReplyKind,
+  AgentStatus,
+  AgentSource,
+} from "../generated/api";
 import assert from "node:assert/strict";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
@@ -246,7 +251,7 @@ describe("entity pull dispatch gate", () => {
             {
               revision: 103,
               cursor: { workspaceId, seq: 103 },
-              replyKind: "delta",
+              replyKind: SubscriptionReplyKind.delta,
               entityChanges: {
                 after: 100,
                 through: 103,
@@ -316,8 +321,8 @@ describe("entity pull dispatch gate", () => {
                   value: {
                     id: "streamed",
                     name: "Streamed",
-                    status: "idle",
-                    source: "managed",
+                    status: AgentStatus.idle,
+                    source: AgentSource.managed,
                   },
                   seq: 101,
                 },
@@ -370,8 +375,8 @@ describe("entity pull dispatch gate", () => {
                 value: {
                   id: "inline",
                   name: "Streamed",
-                  status: "idle",
-                  source: "managed",
+                  status: AgentStatus.idle,
+                  source: AgentSource.managed,
                 },
                 seq: 101,
               },

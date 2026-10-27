@@ -1,3 +1,4 @@
+import { AgentStatus, RequestStatus } from "../generated/api";
 import { snapshotFixture } from "../snapshotFixture";
 import type { Agent, Snapshot, Request, Complaint } from "../types";
 import assert from "node:assert/strict";
@@ -15,7 +16,7 @@ const lead = {
   id: "lead",
   name: "Main",
   isLead: true,
-  status: "completed",
+  status: AgentStatus.completed,
   lastCompletedTurn: "turn-1",
   lastCompletedTurnStatus: "completed",
   tail: "The checks pass.",
@@ -32,7 +33,7 @@ it("builds completed reply notifications with a bounded title and body", () => {
     snapshot([
       lead,
       { ...lead, id: "worker", isLead: false },
-      { ...lead, id: "running", status: "running" },
+      { ...lead, id: "running", status: AgentStatus.running },
       { ...lead, id: "old-turn", lastCompletedTurnStatus: "failed" },
       { ...lead, id: "no-turn", lastCompletedTurn: "" },
       { ...lead, id: "in-flight", inFlight: true },
@@ -80,7 +81,7 @@ it("reports failed and interrupted work using readable error fallbacks", () => {
     snapshot([
       {
         ...lead,
-        status: "failed",
+        status: AgentStatus.failed,
         lastCompletedTurn: "",
         turnId: "turn-2",
         error: "Network failed",
@@ -88,7 +89,7 @@ it("reports failed and interrupted work using readable error fallbacks", () => {
       {
         ...lead,
         id: "interrupted",
-        status: "interrupted",
+        status: AgentStatus.interrupted,
         lastCompletedTurn: "",
         turnId: "turn-3",
         error: { message: "Stopped by user" },
@@ -96,7 +97,7 @@ it("reports failed and interrupted work using readable error fallbacks", () => {
       {
         ...lead,
         id: "fallback",
-        status: "failed",
+        status: AgentStatus.failed,
         lastCompletedTurn: "",
         turnId: "",
         // @ts-expect-error message is deliberately numeric in a malformed native error.
@@ -105,14 +106,14 @@ it("reports failed and interrupted work using readable error fallbacks", () => {
       {
         ...lead,
         id: "null-error",
-        status: "failed",
+        status: AgentStatus.failed,
         lastCompletedTurn: "",
         error: null,
       },
       {
         ...lead,
         id: "false-error",
-        status: "failed",
+        status: AgentStatus.failed,
         lastCompletedTurn: "",
         // @ts-expect-error error is deliberately boolean instead of a diagnostic.
         error: false,
@@ -120,7 +121,7 @@ it("reports failed and interrupted work using readable error fallbacks", () => {
       {
         ...lead,
         id: "numeric-error",
-        status: "failed",
+        status: AgentStatus.failed,
         lastCompletedTurn: "",
         // @ts-expect-error error is deliberately numeric instead of a diagnostic.
         error: 7,
@@ -128,14 +129,14 @@ it("reports failed and interrupted work using readable error fallbacks", () => {
       {
         ...lead,
         id: "empty-error",
-        status: "failed",
+        status: AgentStatus.failed,
         lastCompletedTurn: "",
         error: "",
       },
       {
         ...lead,
         id: "not-object-message",
-        status: "failed",
+        status: AgentStatus.failed,
         lastCompletedTurn: "",
         // @ts-expect-error error is deliberately an array instead of a diagnostic.
         error: [],
@@ -177,49 +178,59 @@ it("turns active requests into question or approval notifications", () => {
     {
       id: "question",
       agent: "lead",
-      status: "pending",
+      status: RequestStatus.pending,
       // The question fixture omits the unused question identity.
       params: {
         questions: [{ question: "Which scope?" }],
       } as Request["params"],
     },
-    { id: "approval", agent: "lead", status: "pending" },
+    { id: "approval", agent: "lead", status: RequestStatus.pending },
     {
       id: "empty-question",
       agent: "lead",
-      status: "pending",
+      status: RequestStatus.pending,
       // The question fixture omits the unused question identity.
       params: { questions: [{ question: "" }] } as Request["params"],
     },
     {
       id: "no-questions",
       agent: "lead",
-      status: "pending",
+      status: RequestStatus.pending,
       params: { questions: [] },
     },
     {
       id: "null-question",
       agent: "lead",
-      status: "pending",
+      status: RequestStatus.pending,
       // @ts-expect-error questions deliberately contains a null question.
       params: { questions: [null] },
     },
     {
       id: "null-questions",
       agent: "lead",
-      status: "pending",
+      status: RequestStatus.pending,
       params: { questions: null },
     },
-    { id: "null-params", agent: "lead", status: "pending", params: null },
-    { id: "deferred", agent: "lead", status: "pending", deferred: true },
-    { id: "answered", agent: "lead", status: "answered" },
-    { id: "unknown-agent", agent: "missing", status: "pending" },
-    { id: "deleted-agent", agent: "gone", status: "pending" },
+    {
+      id: "null-params",
+      agent: "lead",
+      status: RequestStatus.pending,
+      params: null,
+    },
+    {
+      id: "deferred",
+      agent: "lead",
+      status: RequestStatus.pending,
+      deferred: true,
+    },
+    { id: "answered", agent: "lead", status: RequestStatus.answered },
+    { id: "unknown-agent", agent: "missing", status: RequestStatus.pending },
+    { id: "deleted-agent", agent: "gone", status: RequestStatus.pending },
   ];
   const alerts = desktopAlerts(
     snapshot(
       [
-        { ...lead, status: "running" },
+        { ...lead, status: AgentStatus.running },
         { ...lead, id: "gone", deletedAt: 1 },
       ],
       requests,
@@ -332,7 +343,7 @@ it("uses the server's user-response flag for complaint alerts", () => {
     },
   ];
   const alerts = desktopAlerts(
-    snapshot([{ ...lead, status: "running" }], [], complaints),
+    snapshot([{ ...lead, status: AgentStatus.running }], [], complaints),
   );
 
   assert.deepEqual(alerts, [
@@ -415,7 +426,7 @@ const signIn = (fields: Partial<Request> = {}): Request => ({
   id: "card-1",
   method: "browser/open",
   agent: "lead",
-  status: "pending",
+  status: RequestStatus.pending,
   createdAt: 1000,
   params: signInParams,
   ...fields,

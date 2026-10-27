@@ -1,3 +1,9 @@
+import {
+  SubscriptionReplyKind,
+  AgentSource,
+  AgentStatus,
+  TaskStatus,
+} from "../generated/api";
 import assert from "node:assert/strict";
 import { DRAFT_SERVER_READY_TIMEOUT_MS } from "./draftServerFixture";
 import { afterAll, beforeAll, expect, it, vi } from "vitest";
@@ -222,7 +228,7 @@ async function* resourceFrames(
             resource: interval.resource,
             revision: interval.cursor.seq,
             cursor: interval.cursor,
-            replyKind: "delta",
+            replyKind: SubscriptionReplyKind.delta,
           },
         ],
       };
@@ -277,7 +283,11 @@ it("stages a cold >512 entity SSE interval before projection deletion or cursor 
     entity: {
       collection: "agentSummary",
       id: "stale",
-      value: { id: "stale", source: "managed", status: "idle" },
+      value: {
+        id: "stale",
+        source: AgentSource.managed,
+        status: AgentStatus.idle,
+      },
     },
   });
   const assembler = new EntityTransferAssembler(new FixtureTransferStorage());
@@ -469,7 +479,7 @@ it("revives moved rows after inline and staged local eviction in either scope or
                   resource,
                   revision: through,
                   cursor: { workspaceId, seq: through },
-                  replyKind: "snapshot",
+                  replyKind: SubscriptionReplyKind.snapshot,
                   entityChanges: { after: 0, through, documents },
                 },
               ],
@@ -853,11 +863,11 @@ it("applies source commits beyond a full entity page through real SSE and RxDB w
         value.threads.some(
           (agent) =>
             agent.id === "worker" &&
-            agent.status === "running" &&
+            agent.status === AgentStatus.running &&
             agent.model === "model-after",
         ) &&
         value.runtime.tasks.some(
-          (task) => task.id === "command" && task.status === "running",
+          (task) => task.id === "command" && task.status === TaskStatus.running,
         ),
     );
     expect(running.threads).toHaveLength(shown.threads.length);
@@ -886,7 +896,7 @@ it("applies source commits beyond a full entity page through real SSE and RxDB w
     });
     await waitSnapshot((value) =>
       value.threads.some(
-        (agent) => agent.id === "lead" && agent.status === "running",
+        (agent) => agent.id === "lead" && agent.status === AgentStatus.running,
       ),
     );
     const beforeProject = latest!.threads;

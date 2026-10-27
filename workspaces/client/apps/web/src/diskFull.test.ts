@@ -1,3 +1,4 @@
+import { AgentSource, AgentStatus } from "./generated/api";
 import { snapshotFixture as snapshot } from "./snapshotFixture";
 import type { Agent } from "./types";
 // A turn that failed because the disk was full shows a held agent, not a failure.
@@ -15,9 +16,9 @@ const held = (overrides: Partial<Agent> = {}) =>
     id: "lead",
     rootId: "lead",
     name: "Lead",
-    source: "managed",
+    source: AgentSource.managed,
     isLead: true,
-    status: "failed",
+    status: AgentStatus.failed,
     autoWake: true,
     epoch: 2,
     threadId: "thread",
