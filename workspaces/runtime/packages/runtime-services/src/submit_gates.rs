@@ -20,42 +20,45 @@ struct AgentAuthority {
     pub resolved_cwd: Option<LexicalPath>,
 }
 
-#[derive(Deserialize)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
 #[serde(untagged)]
-enum Deletion {
+pub enum Deletion {
     Bool(bool),
     Number(f64),
 }
 impl Deletion {
-    fn is_deleted(&self) -> bool {
+    pub fn is_deleted(&self) -> bool {
         match self {
             Self::Bool(value) => *value,
             Self::Number(value) => *value != 0.0,
         }
     }
 }
-#[derive(Deserialize)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
-struct AgentAuthorityRow {
-    id: Option<String>,
-    root_id: Option<String>,
-    parent_id: Option<String>,
-    is_lead: Option<bool>,
-    deleted_at: Option<Deletion>,
-    cwd: Option<String>,
+pub struct AgentAuthorityRow {
+    pub id: Option<String>,
+    pub root_id: Option<String>,
+    pub parent_id: Option<String>,
+    pub is_lead: Option<bool>,
+    pub deleted_at: Option<Deletion>,
+    pub cwd: Option<String>,
+    pub name: Option<String>,
+    pub shared_room_id: Option<String>,
 }
-#[derive(Deserialize)]
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
-struct ProjectAuthorityRow {
-    path: Option<String>,
+pub struct ProjectAuthorityRow {
+    pub id: Option<String>,
+    pub path: Option<String>,
     #[serde(default)]
-    peer_teams: Vec<PeerTeamRow>,
+    pub peer_teams: Vec<PeerTeamRow>,
 }
-#[derive(Deserialize)]
-struct PeerTeamRow {
-    id: String,
-    name: String,
-    members: Vec<String>,
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
+pub struct PeerTeamRow {
+    pub id: String,
+    pub name: String,
+    pub members: Vec<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
