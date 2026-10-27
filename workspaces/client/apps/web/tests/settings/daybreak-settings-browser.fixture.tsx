@@ -182,20 +182,14 @@ function Fixture() {
         runtime: {
           modelsByAccount: {
             default: models.map((model, catalogPosition) => ({
-              model: model.model,
-              displayName: model.displayName ?? model.model,
-              isDefault: !!model.isDefault,
+              ...model,
+              availableAccessPrograms: model.availableAccessPrograms?.cyber
+                ? { cyber: model.availableAccessPrograms.cyber }
+                : undefined,
               serviceTiers: model.serviceTiers.map(({ id }) => ({ id })),
               supportedReasoningEfforts: model.supportedReasoningEfforts.map(
                 ({ reasoningEffort }) => ({ reasoningEffort }),
               ),
-              ...(model.availableAccessPrograms?.cyber
-                ? {
-                    availableAccessPrograms: {
-                      cyber: model.availableAccessPrograms.cyber,
-                    },
-                  }
-                : {}),
               accountKey: "default",
               catalogPosition,
               provider: "codex",
