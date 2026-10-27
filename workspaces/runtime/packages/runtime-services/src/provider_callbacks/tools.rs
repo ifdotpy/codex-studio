@@ -61,6 +61,7 @@ impl From<tool_requests::ToolRequestError> for CallbackError {
     fn from(error: tool_requests::ToolRequestError) -> Self {
         match error {
             tool_requests::ToolRequestError::Store(error) => Self::Store(error),
+            tool_requests::ToolRequestError::RequestResult(error) => error.into(),
             tool_requests::ToolRequestError::Payload(_) => {
                 Self::Stored("runtime_tool_requests payload".into())
             }
@@ -244,7 +245,41 @@ pub(super) async fn dispatch_with_ports(
     now: f64,
     ports: Arc<dyn crate::managed_host_tools::Ports<Prepared = ()>>,
 ) -> Result<CallbackDecision, CallbackError> {
-    let call = ToolCall::parse(input, context)?;
+    let mut call = ToolCall::parse(input, context)?;
+    let origin = ReplyIdentity::new(context, &input.id);
+    let input_for_owner = input.clone();
+    let call_for_owner = call.clone();
+    let origin_for_owner = origin.clone();
+    let owner_id = store
+        .transaction_with(move |tx| {
+            storage::snapshot(tx, &origin_for_owner.context)?.active()?;
+            let mut owner =
+                storage::admit_owner(tx, &origin_for_owner, &input_for_owner.signature())?;
+            let id = if let Some(id) = &owner.payload.tool_request { id.clone() } else {
+                let alias = call_for_owner.alias.as_deref().unwrap_or(&call_for_owner.call);
+                let existing = tool_requests::resolve(tx, &origin_for_owner.context.agent, alias)?;
+                let id = if let Some(existing) = existing {
+                    if existing["stage"] == "ambiguous" { return Err(CallbackError::Unknown); }
+                    if existing["signature"] != call_for_owner.signature { return Err(CallbackError::Conflict); }
+                    if existing["accountKey"] != origin_for_owner.context.account || existing["threadId"] != origin_for_owner.context.thread { return Err(CallbackError::Stale); }
+                    existing["id"].as_str().ok_or(CallbackError::Unknown)?.to_owned()
+                } else {
+                    if let Some(alias) = &call_for_owner.alias {
+                        let identity = studio_runtime_schema::persistence::RequestIdentity::new("managed_tool", &[], alias, &[])
+                            .map_err(|_| CallbackError::Invalid("Request id expired"))?;
+                        identity.validate(chrono::Utc::now().timestamp_millis(), studio_runtime_store::request_results::RequestResults::expired_before_ms(tx)?)
+                            .map_err(|_| CallbackError::Invalid("Request id expired"))?;
+                    }
+                    studio_runtime_schema::persistence::RequestIdentity::issue_root()
+                };
+                owner.payload.tool_request = Some(id.clone());
+                id
+            };
+            storage::put_owner(tx, &owner)?;
+            Ok::<_, CallbackError>(id)
+        })
+        .await?;
+    call.id = owner_id;
     // A durable claim prevents duplicate execution across restart. Within one
     // process, serialize the same request so a concurrent replay can observe
     // the first request's committed result instead of racing its service call.
@@ -288,7 +323,7 @@ pub(super) async fn dispatch_with_ports(
                 "rpcId":input.id, "turnId":context.turn, "epoch":context.epoch,
                 "accountKey":context.account, "connectionId":context.connection,
                 "supervisor":{"generation":context.generation},
-                "created":now, "updated":now,
+                "created":chrono::Utc::now().timestamp_millis() as f64 / 1000.0, "updated":now,
                 "readOnly":services::read_only(&call.name,&call.args),
                 "stage":"queued", "outcome":"pending", "cancelRequested":false
             });
@@ -325,7 +360,7 @@ pub(super) async fn dispatch_with_ports(
             {
                 return Err(CallbackError::Stale);
             }
-            let cached = records::get(tx, "runtime_tool_results", &call.id)?
+            let cached = tool_requests::saved_result(tx, &call.id)?
                 .or_else(|| record.get("result").filter(|v| v.is_object()).cloned());
             if let Some(saved) = cached {
                 return Ok(DispatchState::Result(saved));
@@ -408,8 +443,6 @@ pub(super) async fn dispatch_with_ports(
     if !signals.is_empty() && ports.release(&signals).is_err() {
         eprintln!("Could not wake owners of managed tool request {}", call.id);
     }
-    // The durable tool result is the only copy of the answer: a replay of this
-    // request rebuilds the same reply from it, so no reply row is kept.
     let call_id = call.id.clone();
     let outcome = store
         .transaction_with(move |tx| {
@@ -419,13 +452,21 @@ pub(super) async fn dispatch_with_ports(
         })
         .await?;
     let projected = super::project_tool_result(&result, &call.id, &outcome)?;
-    // Every replay rebuilds the identical reply: its attempt is the tool request.
-    let mut identity = ReplyIdentity::new(context, &input.id);
-    identity.attempt = call.id;
-    Ok(CallbackDecision::Answer(Reply {
-        identity,
-        body: ResponseBody::Result(projected),
-    }))
+    let input = input.clone();
+    store
+        .transaction_with(move |tx| {
+            if let Some(decision) = storage::saved_decision(tx, &origin, &input)? {
+                return Ok(decision);
+            }
+            let reply = Reply::new(origin, ResponseBody::Result(projected))?;
+            storage::save_reply(tx, &input, &reply)?;
+            let mut response =
+                storage::response(tx, &reply.identity)?.ok_or(CallbackError::Unknown)?;
+            response.payload.tool_request = Some(call.id);
+            storage::put_response(tx, &response)?;
+            Ok(CallbackDecision::Answer(reply))
+        })
+        .await
 }
 
 pub(super) async fn production_ports(
@@ -579,7 +620,7 @@ async fn run_claimed(
                 let mut record = records::get(tx, "runtime_tool_requests", &call.id)?
                     .ok_or(CallbackError::Invalid("Unknown tool receipt"))?;
                 check_claim_owner(&record, &context_for_finish, call)?;
-                if let Some(saved) = records::get(tx, "runtime_tool_results", &call.id)? {
+                if let Some(saved) = tool_requests::saved_result(tx, &call.id)? {
                     return Ok((saved, Vec::new()));
                 }
                 finalize_dispatched(tx, &call.id, &mut record, now, dispatched)
@@ -634,7 +675,7 @@ async fn run_claimed(
                 let mut record = records::get(tx, "runtime_tool_requests", &call.id)?
                     .ok_or(CallbackError::Invalid("Unknown tool receipt"))?;
                 check_claim_owner(&record, context, call)?;
-                if let Some(saved) = records::get(tx, "runtime_tool_results", &call.id)? {
+                if let Some(saved) = tool_requests::saved_result(tx, &call.id)? {
                     return Ok((saved, Vec::new()));
                 }
                 if let Ok(Some(payloads)) = &payloads {
@@ -680,7 +721,7 @@ fn settle_claim(
     now: f64,
     operation: crate::managed_host_tools::DispatchedOperation,
 ) -> Result<(Value, Vec<crate::managed_host_tools::WakeSignal>), CallbackError> {
-    if let Some(saved) = records::get(tx, "runtime_tool_results", id)? {
+    if let Some(saved) = tool_requests::saved_result(tx, id)? {
         return Ok((saved, Vec::new()));
     }
     let mut record = records::get(tx, "runtime_tool_requests", id)?
@@ -835,11 +876,7 @@ fn execute_once(
     record["updated"] = json!(now);
     record["finished"] = json!(now);
     put(tx, record)?;
-    records::validate("runtime_tool_results", &call.id, value.clone())?;
-    tx.execute(
-        "INSERT INTO runtime_tool_results(id,result) VALUES(?1,?2)",
-        params![call.id, value.to_string()],
-    )?;
+    tool_requests::settle_result(tx, &call.id, &value)?;
     Ok((value, signals))
 }
 
@@ -902,14 +939,11 @@ fn finalize_dispatched(
         lifecycle::settle(record, &value, true)?;
     }
     record["result"] = value.clone();
+    record["result"] = value.clone();
     record["updated"] = json!(now);
     record["finished"] = json!(now);
     put(tx, record)?;
-    records::validate("runtime_tool_results", id, value.clone())?;
-    tx.execute(
-        "INSERT INTO runtime_tool_results(id,result) VALUES(?1,?2)",
-        params![id, value.to_string()],
-    )?;
+    tool_requests::settle_result(tx, id, &value)?;
     Ok((value, result.signals))
 }
 

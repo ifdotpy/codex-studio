@@ -1,4 +1,4 @@
-//! Bounded provider view; the complete result remains in runtime_tool_results.
+//! Bounded provider view; the complete result remains in request_results.
 use super::{CallbackError, tool_result};
 use serde_json::{Value, json};
 
