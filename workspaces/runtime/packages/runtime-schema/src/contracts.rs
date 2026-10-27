@@ -1538,6 +1538,7 @@ pub fn render(root: &Path, with_api_types: bool) -> Result<Vec<Rendered>, String
         generator.subschema_for::<studio_client_domain::protocol::Response>();
         generator.subschema_for::<studio_client_domain::drafts::DraftVersion>();
         generator.subschema_for::<studio_client_domain::drafts::DraftView>();
+        generator.subschema_for::<studio_client_domain::drafts::DraftSnapshot>();
         generator.subschema_for::<studio_client_domain::markdown::MarkdownBlock>();
         let mut schemas = generator.take_definitions(true);
         schemas.insert(
