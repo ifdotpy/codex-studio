@@ -2049,10 +2049,12 @@ mod resource_tests {
             .expect("selection");
         let resources = PreparationResources::bundled(String::new(), ModelCatalogService::new())
             .expect("resources");
+        // A selected store is canonicalized by settings::configure; a recorded root is kept as given.
+        let canonical_custom = std::fs::canonicalize(custom.path()).expect("canonical custom");
         for (root, ready, expected_root) in [
             (json!(alias), false, alias.clone()),
             (json!(custom.path()), false, custom.path().to_owned()),
-            (Value::Null, false, custom.path().to_owned()),
+            (Value::Null, false, canonical_custom),
             (Value::Null, true, default_root.clone()),
         ] {
             let record = json!({"id":"reviewer", "rootId":"reviewer", "epoch":1,
@@ -2700,10 +2702,15 @@ mod workspace_fence_tests {
         let captured = resources
             .native_layr(state.path(), &record)
             .expect("association");
-        assert_eq!(
-            captured.environment["LAYR_SOCKET"],
-            json!(crate::layr_native::socket_path(state.path()))
-        );
+        if cfg!(target_os = "linux") {
+            assert_eq!(
+                captured.environment["LAYR_SOCKET"],
+                json!(crate::layr_native::socket_path(state.path()))
+            );
+        } else {
+            assert_eq!(captured.environment["LAYR_DIRECT"], "1");
+            assert_eq!(captured.environment["LAYR_ROOT"], json!(alias));
+        }
         let changed = json!({"workspaceMode":"layr-native", "layrStoreRoot":root});
         assert!(resources.native_layr(state.path(), &changed).is_err());
 

@@ -8,11 +8,21 @@ import {
   useState,
   type ReactNode,
 } from "react";
-import { Button, Checkbox, Group, Stack, Text } from "@mantine/core";
+import { Badge, Button, Checkbox, Group, Stack, Text } from "@mantine/core";
 import { errorText, type GetResult } from "../api";
+import { clearAppLog, useAppLog } from "../appLog";
+import type { components } from "../generated/api";
 import { STUDIO_ERRORS_DISMISS_MAX_IDS } from "../generated/sharedValues";
 
 export type StudioErrorItem = GetResult<"/api/studio-errors">["items"][number];
+type Level = components["schemas"]["StudioErrorLevel"];
+export const LEVELS: Level[] = ["critical", "error", "warning", "log"];
+export const LEVEL_COLORS: Record<Level, string> = {
+  critical: "grape",
+  error: "red",
+  warning: "orange",
+  log: "blue",
+};
 const EMPTY_ERRORS: StudioErrorItem[] = [];
 
 export function actionLabel(item: StudioErrorItem) {
@@ -58,18 +68,66 @@ export function StudioErrorList({
   busy: string | null;
   selected: ReadonlySet<string>;
   onSelect: (id: string, checked: boolean) => void;
-  onSelectAll: () => void;
+  onSelectAll: (ids: string[]) => void;
   onDelete: () => void;
   onAction: (item: StudioErrorItem) => void;
 }) {
+  const logs = useAppLog();
+  const [filter, setFilter] = useState<Level | null>(null);
+  const rows = [
+    ...items.map((item) => ({
+      type: "server" as const,
+      level: item.level,
+      at: item.at * 1000,
+      item,
+    })),
+    ...logs.map((item) => ({
+      type: "local" as const,
+      level: item.level,
+      at: item.at,
+      item,
+    })),
+  ].sort(
+    (a, b) => LEVELS.indexOf(a.level) - LEVELS.indexOf(b.level) || b.at - a.at,
+  );
+  const visible = filter ? rows.filter((row) => row.level === filter) : rows;
+  const visibleServerIds = visible
+    .filter((row) => row.type === "server")
+    .map((row) => row.item.id);
   return (
     <Stack gap="sm">
+      <Group gap="xs" aria-label="Filter by level">
+        <Button
+          size="xs"
+          variant={filter === null ? "filled" : "light"}
+          onClick={() => setFilter(null)}
+        >
+          All ({rows.length})
+        </Button>
+        {LEVELS.map((level) => (
+          <Button
+            key={level}
+            size="xs"
+            color={LEVEL_COLORS[level]}
+            variant={filter === level ? "filled" : "light"}
+            onClick={() => setFilter(level)}
+          >
+            {level.toUpperCase()} (
+            {rows.filter((row) => row.level === level).length})
+          </Button>
+        ))}
+        {logs.length > 0 && (
+          <Button size="xs" variant="default" onClick={clearAppLog}>
+            Clear local logs
+          </Button>
+        )}
+      </Group>
       <Group gap="xs">
         <Button
           size="xs"
           variant="default"
-          disabled={busy !== null || items.length === 0}
-          onClick={onSelectAll}
+          disabled={busy !== null || visibleServerIds.length === 0}
+          onClick={() => onSelectAll(visibleServerIds)}
         >
           Select all
         </Button>
@@ -90,66 +148,89 @@ export function StudioErrorList({
         Only selected errors are removed from this list. Chats, commands, and
         history are kept.
       </Text>
-      {items.length === 0 ? (
-        <Text size="sm">No agent work ended because of a Studio error.</Text>
+      {visible.length === 0 ? (
+        <Text size="sm">
+          {filter
+            ? "No entries at this level."
+            : "No agent work ended because of a Studio error."}
+        </Text>
       ) : (
         <Stack gap="sm" aria-label="Studio errors">
-          {items.map((item) => (
-            <article
-              className="studio-error-row"
-              key={item.id}
-              data-kind={item.kind}
-            >
-              <Checkbox
-                label={ownerLabel(item)}
-                aria-label={`Select error ${item.id} for ${ownerLabel(item)}`}
-                checked={selected.has(item.id)}
-                disabled={
-                  busy !== null ||
-                  (!selected.has(item.id) &&
-                    selected.size >= STUDIO_ERRORS_DISMISS_MAX_IDS)
-                }
-                onChange={(event) =>
-                  onSelect(item.id, event.currentTarget.checked)
-                }
-              />
-              <Text size="sm">{item.reason}</Text>
-              {item.subject && (
-                <Text size="xs" c="dimmed" lineClamp={2}>
-                  {item.subject}
-                </Text>
-              )}
-              {item.detail && (
-                <Text size="xs" c="dimmed" lineClamp={2}>
-                  {item.detail}
-                </Text>
-              )}
-              <details>
-                <summary>Details</summary>
-                <pre className="studio-error-details">
-                  {JSON.stringify(item, null, 2)}
-                </pre>
-              </details>
-              <Group gap="xs" mt="xs">
-                {period(item) && (
+          {visible.map((row) =>
+            row.type === "local" ? (
+              <article className="studio-error-row" key={row.item.id}>
+                <Badge color={LEVEL_COLORS.log}>LOG</Badge>
+                <Text size="sm">{row.item.title}</Text>
+                <Text size="sm">{row.item.reason}</Text>
+                {row.item.detail && (
                   <Text size="xs" c="dimmed">
-                    {period(item)}
+                    {row.item.detail}
                   </Text>
                 )}
-                {item.action !== "details" && (
-                  <Button
-                    size="xs"
-                    variant="light"
-                    loading={busy === item.id}
-                    disabled={busy !== null}
-                    onClick={() => onAction(item)}
-                  >
-                    {actionLabel(item)}
-                  </Button>
+                <Text size="xs" c="dimmed">
+                  {new Date(row.item.at).toLocaleString()}
+                </Text>
+              </article>
+            ) : (
+              <article
+                className="studio-error-row"
+                key={row.item.id}
+                data-kind={row.item.kind}
+              >
+                <Badge color={LEVEL_COLORS[row.level]}>
+                  {row.level.toUpperCase()}
+                </Badge>
+                <Checkbox
+                  label={ownerLabel(row.item)}
+                  aria-label={`Select error ${row.item.id} for ${ownerLabel(row.item)}`}
+                  checked={selected.has(row.item.id)}
+                  disabled={
+                    busy !== null ||
+                    (!selected.has(row.item.id) &&
+                      selected.size >= STUDIO_ERRORS_DISMISS_MAX_IDS)
+                  }
+                  onChange={(event) =>
+                    onSelect(row.item.id, event.currentTarget.checked)
+                  }
+                />
+                <Text size="sm">{row.item.reason}</Text>
+                {row.item.subject && (
+                  <Text size="xs" c="dimmed" lineClamp={2}>
+                    {row.item.subject}
+                  </Text>
                 )}
-              </Group>
-            </article>
-          ))}
+                {row.item.detail && (
+                  <Text size="xs" c="dimmed" lineClamp={2}>
+                    {row.item.detail}
+                  </Text>
+                )}
+                <details>
+                  <summary>Details</summary>
+                  <pre className="studio-error-details">
+                    {JSON.stringify(row.item, null, 2)}
+                  </pre>
+                </details>
+                <Group gap="xs" mt="xs">
+                  {period(row.item) && (
+                    <Text size="xs" c="dimmed">
+                      {period(row.item)}
+                    </Text>
+                  )}
+                  {row.item.action !== "details" && (
+                    <Button
+                      size="xs"
+                      variant="light"
+                      loading={busy === row.item.id}
+                      disabled={busy !== null}
+                      onClick={() => onAction(row.item)}
+                    >
+                      {actionLabel(row.item)}
+                    </Button>
+                  )}
+                </Group>
+              </article>
+            ),
+          )}
         </Stack>
       )}
     </Stack>
@@ -187,13 +268,9 @@ export function useStudioErrorsState(
       return next;
     });
   };
-  const selectAll = () => {
+  const selectAll = (ids: string[]) => {
     if (!pending.current)
-      setSelected(
-        new Set(
-          items.slice(0, STUDIO_ERRORS_DISMISS_MAX_IDS).map((item) => item.id),
-        ),
-      );
+      setSelected(new Set(ids.slice(0, STUDIO_ERRORS_DISMISS_MAX_IDS)));
   };
   const remove = async () => {
     if (pending.current || !selected.size) return;

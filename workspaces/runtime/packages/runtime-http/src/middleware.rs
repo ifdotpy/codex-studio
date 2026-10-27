@@ -585,6 +585,7 @@ pub(crate) fn http_failure(
     Some(StudioError {
         id: format!("http:{identity}"),
         kind: Kind::HttpFailure,
+        level: Kind::HttpFailure.level(),
         reason: Kind::HttpFailure.reason().into(),
         target: Target::Details,
         detail: class.log_class().into(),

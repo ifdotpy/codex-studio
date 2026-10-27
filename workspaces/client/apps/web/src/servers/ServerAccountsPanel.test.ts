@@ -1,5 +1,10 @@
 import { ProviderKind } from "../generated/providerKind";
-import { createElement, type ComponentProps } from "react";
+import {
+  createElement,
+  Fragment,
+  type ComponentProps,
+  type ReactNode,
+} from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { MantineProvider } from "@mantine/core";
 import { beforeEach, expect, it, vi } from "vitest";
@@ -19,6 +24,41 @@ vi.mock("../components/ui/primitives", async (original) => {
       return createElement(actual.ActionButton, props);
     },
   };
+});
+
+const menuItems = vi.hoisted(
+  () =>
+    [] as { children?: unknown; disabled?: boolean; onClick?: () => void }[],
+);
+// A closed Mantine menu renders no dropdown in static markup; list every item instead.
+vi.mock("@mantine/core", async (original) => {
+  const actual = await original<typeof import("@mantine/core")>();
+  const Menu = Object.assign(
+    ({ children }: { children?: ReactNode }) =>
+      createElement("div", null, children),
+    {
+      extend: actual.Menu.extend,
+      Target: ({ children }: { children?: ReactNode }) =>
+        createElement(Fragment, null, children),
+      Dropdown: ({ children }: { children?: ReactNode }) =>
+        createElement("div", null, children),
+      Label: ({ children }: { children?: ReactNode }) =>
+        createElement("span", null, children),
+      Item: (props: {
+        children?: unknown;
+        disabled?: boolean;
+        onClick?: () => void;
+      }) => {
+        menuItems.push(props);
+        return createElement(
+          "button",
+          { type: "button", disabled: props.disabled },
+          props.children as ReactNode,
+        );
+      },
+    },
+  );
+  return { ...actual, Menu };
 });
 
 const local = {
@@ -62,6 +102,7 @@ const render = (
 };
 beforeEach(() => {
   controls.length = 0;
+  menuItems.length = 0;
 });
 
 it("marks only the exact restored account action for the dialog focus owner", () => {
@@ -116,7 +157,7 @@ it("does not treat a local fallback record as a remote account source", () => {
     accountSources(row, [remote], { remote: [cached] }, () => undefined),
   ).toEqual([]);
   const { html } = render({
-    accountsByServer: { remote: [account] },
+    accountsByServer: { remote: [{ ...account, status: "signedOut" }] },
     servicesFor: () => undefined,
   });
   expect(html).toContain("Build server: Connection unknown");
@@ -127,7 +168,9 @@ it("does not treat a local fallback record as a remote account source", () => {
 });
 
 it("shows an exact-account sign-in action without opening account details", () => {
-  const { html, startAccount } = render();
+  const { html, startAccount } = render({
+    accountsByServer: { local: [{ ...account, status: "signedOut" }] },
+  });
   expect(html).toContain('aria-expanded="false"');
   expect(html).toContain('aria-label="Sign in to Work on Workstation"');
   expect(html).toContain("Sign in");
@@ -153,8 +196,20 @@ it("binds each visible duplicate profile label to that profile's exact sign-in k
   const { startAccount } = render({
     accountsByServer: {
       local: [
-        { ...account, accountKey: "personal", label: "Personal", plan: "Max" },
-        { ...account, accountKey: "team", label: "Team", plan: "Team" },
+        {
+          ...account,
+          accountKey: "personal",
+          label: "Personal",
+          plan: "Max",
+          status: "signedOut",
+        },
+        {
+          ...account,
+          accountKey: "team",
+          label: "Team",
+          plan: "Team",
+          status: "signedOut",
+        },
       ],
     },
   });
@@ -208,6 +263,50 @@ it("does not send a login from an older row before its exact account identity is
   expect(startAccount).not.toHaveBeenCalled();
 });
 
+it.each(["signedOut", "changed", "error"])(
+  "shows the inline sign-in button for a %s account",
+  (status) => {
+    const { startAccount } = render({
+      accountsByServer: { local: [{ ...account, status }] },
+    });
+    const login = controls.find(
+      (button) => button["aria-label"] === "Sign in to Work on Workstation",
+    );
+    expect(login).toBeDefined();
+    expect(login?.disabled).not.toBe(true);
+    login?.onClick?.(
+      {} as Parameters<NonNullable<ActionButtonProps["onClick"]>>[0],
+    );
+    expect(startAccount).toHaveBeenCalledOnce();
+  },
+);
+
+it("hides the inline sign-in button for a healthy account and keeps sign-in in the account menu", () => {
+  const { startAccount } = render();
+  expect(
+    controls.find(
+      (button) => button["aria-label"] === "Sign in to Work on Workstation",
+    ),
+  ).toBeUndefined();
+  const again = menuItems.find(
+    (item) => item.children === "Sign in again on Workstation",
+  );
+  expect(again).toBeDefined();
+  expect(again?.disabled).not.toBe(true);
+  expect(
+    menuItems.some((item) => item.children === "Sign in again on Build server"),
+  ).toBe(false);
+  again?.onClick?.();
+  expect(startAccount).toHaveBeenCalledExactlyOnceWith("local", {
+    action: "account-sign-in",
+    accountKey: "profile-exact",
+    provider: "claude",
+    email: account.email,
+    label: account.label,
+    serverLabel: local.label,
+  });
+});
+
 it("shows Offline only on the offline peer, not on the live local account", () => {
   const { html } = render({
     accountsByServer: { local: [account], remote: [account] },
@@ -219,7 +318,10 @@ it("shows Offline only on the offline peer, not on the live local account", () =
 it.each([undefined, "idle", "connecting"])(
   "does not report unknown or %s transport as offline",
   (status) => {
-    const { html } = render({ statuses: status ? { local: status } : {} });
+    const { html } = render({
+      accountsByServer: { local: [{ ...account, status: "signedOut" }] },
+      statuses: status ? { local: status } : {},
+    });
     expect(html).not.toContain("Workstation: Offline");
     expect(
       controls.find(
@@ -234,7 +336,10 @@ it.each([
   ["degraded", "Workstation: Connection degraded"],
   ["schema-mismatch", "Workstation: Update required"],
 ])("names the server and the exact %s transport condition", (status, label) => {
-  const { html } = render({ statuses: { local: status } });
+  const { html } = render({
+    accountsByServer: { local: [{ ...account, status: "signedOut" }] },
+    statuses: { local: status },
+  });
   expect(html).toContain(label);
   const login = controls.find(
     (button) => button["aria-label"] === "Sign in to Work on Workstation",

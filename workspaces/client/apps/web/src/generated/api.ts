@@ -22447,6 +22447,7 @@ export interface components {
       firstAt?: number | null | undefined;
       id: string;
       kind: components["schemas"]["StudioErrorKind"];
+      level: components["schemas"]["StudioErrorLevel"];
       monitorId?: string | null | undefined;
       reason: string;
       /** @description Rule of a grouped monitor row; its failures share one row. */
@@ -22615,6 +22616,11 @@ export interface components {
       | "input_not_started"
       | "session_not_started"
       | "schedule_stalled";
+    /**
+     * @description Severity of an app error or local log entry.
+     * @enum {string}
+     */
+    StudioErrorLevel: "critical" | "error" | "warning" | "log";
     /** StudioErrorsDismissRequest */
     StudioErrorsDismissRequest: {
       /** @description Legacy single error id. Supply either id or ids. */
@@ -40310,6 +40316,13 @@ export const StudioErrorJsonCategory = {
 } as const;
 export type StudioErrorJsonCategory =
   components["schemas"]["StudioErrorJsonCategory"];
+export const StudioErrorLevel = {
+  critical: "critical",
+  error: "error",
+  warning: "warning",
+  log: "log",
+} as const;
+export type StudioErrorLevel = components["schemas"]["StudioErrorLevel"];
 export const SubscriptionReplyKind = {
   delta: "delta",
   snapshot: "snapshot",
