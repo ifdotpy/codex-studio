@@ -498,7 +498,7 @@ async fn scheduler_probes_use_bounded_indexes() {
             "runtime_accepted_archive_due",
         ),
         (
-            "EXPLAIN QUERY PLAN SELECT EXISTS(SELECT 1 FROM runtime_agents WHERE (json_extract(record,'$.workspaceMode')='image' OR json_extract(record,'$.imageWorkspace')=1) AND COALESCE(json_extract(record,'$.legacyWorkspaceSettled'),0)=0)",
+            "EXPLAIN QUERY PLAN SELECT EXISTS(SELECT 1 FROM runtime_agents WHERE legacy_unsettled=1)",
             "runtime_agent_unsettled_legacy",
         ),
     ] {
