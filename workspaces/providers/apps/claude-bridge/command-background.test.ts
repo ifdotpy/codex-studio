@@ -58,7 +58,7 @@ async function backgroundCalls(bridge: BridgeHarness) {
 test("a registered foreground command moves to the background and releases the turn", async () => {
   const { bridge, turn } = await runningCommand();
   await assert.rejects(move(bridge, turn), /cannot move to the background yet/);
-  await fs.writeFile(path.join(bridge.root, ".registered"), "");
+  await bridge.writeSignal(".registered");
   const offered = await bridge.note(
     (n): n is BridgeNoteFor<"item/started"> =>
       n.method === "item/started" &&
@@ -85,7 +85,7 @@ test("a registered foreground command moves to the background and releases the t
   await assert.rejects(move(bridge, turn), /different Claude turn/);
   assert.deepEqual(await backgroundCalls(bridge), ["toolu-1"]);
   // Claude reports the end of the background task as its own item.
-  await fs.writeFile(path.join(bridge.root, ".finish"), "");
+  await bridge.writeSignal(".finish");
   const finished = await bridge.note(
     (n): n is BridgeNoteFor<"item/completed"> =>
       n.method === "item/completed" &&
@@ -101,7 +101,7 @@ test("a registered foreground command moves to the background and releases the t
 
 test("a request for another turn or item never reaches Claude", async () => {
   const { bridge, turn } = await runningCommand();
-  await fs.writeFile(path.join(bridge.root, ".registered"), "");
+  await bridge.writeSignal(".registered");
   await bridge.note(
     (n): n is BridgeNoteFor<"item/started"> =>
       n.method === "item/started" && n.params.item.canMoveToBackground === true,

@@ -1,6 +1,5 @@
 import { test } from "vitest";
 import assert from "node:assert/strict";
-import fs from "node:fs/promises";
 import path from "node:path";
 import { createInterface } from "node:readline";
 import { startBridge } from "./testing/bridge-harness.ts";
@@ -65,7 +64,7 @@ test("concurrent interrupts revalidate a reserved turn after session lookup", as
       "turn/completed",
       (note) => note.params.turn.id === warm.turn.id,
     );
-    await fs.writeFile(path.join(bridge.root, ".hold-save"), "");
+    await bridge.writeSignal(".hold-save");
     pending = bridge
       .call("turn/start", {
         threadId: bridge.thread,
@@ -87,7 +86,7 @@ test("concurrent interrupts revalidate a reserved turn after session lookup", as
     assert.ok(failure && typeof failure === "object" && "message" in failure);
     assert.equal(failure.message, "no active turn to interrupt");
   } finally {
-    await fs.writeFile(path.join(bridge.root, ".release-save"), "");
+    await bridge.writeSignal(".release-save");
     await pending;
     await bridge.close();
   }
