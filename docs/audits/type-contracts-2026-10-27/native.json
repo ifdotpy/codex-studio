@@ -1,0 +1,2415 @@
+{
+  "authorityAndEvidence": "No edits, installs, builds, tests, browser/desktop activation, live HTTP requests or runtime-state reads. All source evidence came from pinned git objects. Known baseline Linux compile failure was neither investigated nor used. No finding is claimed as a runtime defect: all witnesses below are proposals. Lead-reported DraftSnapshot implementation is tracked only as coordination, not verified here.",
+  "checks": "Not run, explicitly prohibited. Source searches/reads only; no claim of passing test-fast or comprehensive, no runtime reproduction.",
+  "classificationLegend": {
+    "A": "Already typed at the relevant owner, or typed pure/foreign boundary; TS annotations alone are explicitly NOT claimed to prove runtime JSON validity. Preserve semantic checks.",
+    "O": "Retain a justified opaque/raw boundary or intentionally generic serializer/fixture/FFI input.",
+    "R": "Remove structural Value/dynamic tree via direct typed Deserialize at Rust ingress and typed Serialize at output. For existing Swift/TS helpers, use the equivalent owner-generated typed codec (Codable/runtime decoder or existing named typed projection); Rust Deserialize is not a TS feature. Keep genuinely opaque nested payload where stated. These are refactoring candidates, not demonstrated bugs.",
+    "U": "Unresolved: candidate inspected, but complete replacement needs deeper producer/version/persisted-data proof. Do not delete checks yet."
+  },
+  "completedAtUtc": "2026-10-27T12:52:00Z",
+  "coverage": {
+    "auxiliaryTextFilesMechanicallyScanned": 41,
+    "binaryAssetsInventoriedButNotDecoded": 76,
+    "broadCandidatePattern": "\\bValue\\b|serde_json|JSON\\.parse|\\bunknown\\b|\\bany\\b|json\\.loads?|JSONSerialization|Deserialize|deserialize|from_(?:str|slice|value)|\\.json\\(",
+    "dedicatedTestOrWitnessSourceFiles": 67,
+    "exclusions": "Exact excluded paths below are excluded only from the executable-source denominator. 41 text configuration/doc/contract files received an auxiliary mechanical scan; referenced owners such as delivery-contract.json, package manifests and README were consulted. 76 binary icons/image/PDF fixtures were inventoried only. No source-extension file was omitted. All untracked paths and other roots are outside this census.",
+    "executableSourceFiles": 176,
+    "executableSourceLines": 44300,
+    "generatedSourceFiles": 4,
+    "inlineRustTestFiles": 45,
+    "inspectionDepth": "Boundary-producing, decoding and consuming slices in all 83 candidate-bearing production files are represented in the 49-family table, with current caller-gating traced separately. This is not a claim to have manually read every source line or every test. All 176 executable source files were mechanically scanned; 22 production files without a broad match were inventoried, with selected pure/host adapters inspected. Four unresolved family rows explicitly stop short of full historical/schema/producer proof. Supporting web/runtime source was read only as needed for actual caller or contract ownership, not censused as additional assigned roots.",
+    "mechanicalCaveat": "Broad matches include comments, cfg(any), iterator any, to/from_slice binary operations, annotations, and inline test code. These are not 991 defects or an exact serde_json::Value-use count. Production line totals include inline tests. The attached per-file list preserves every matched line.",
+    "mechanicalCounts": [
+      "production: 83/105 files, 991 matching lines",
+      "dedicated tests/witnesses: 40/67 files, 133 matching lines",
+      "generated: 0/4 matching files/lines"
+    ],
+    "mechanicalSearch": "git ls-tree -r --name-only at exact commit for inventory; git show for every selected source blob; full-file broad line scan; git grep at exact commit for callers/producers and supporting owners. No directory or top-N candidate cap.",
+    "nonExecutablePaths": 117,
+    "perRoot": [
+      {
+        "excluded": 3,
+        "generated": 0,
+        "production": 39,
+        "root": "workspaces/client/packages/client-core",
+        "test": 4,
+        "total": 46,
+        "vendor": 0
+      },
+      {
+        "excluded": 1,
+        "generated": 0,
+        "production": 4,
+        "root": "workspaces/client/packages/client-domain",
+        "test": 1,
+        "total": 6,
+        "vendor": 0
+      },
+      {
+        "excluded": 1,
+        "generated": 0,
+        "production": 1,
+        "root": "workspaces/client/packages/client-wasm",
+        "test": 0,
+        "total": 2,
+        "vendor": 0
+      },
+      {
+        "excluded": 96,
+        "generated": 3,
+        "production": 22,
+        "root": "workspaces/client/apps/native",
+        "test": 9,
+        "total": 130,
+        "vendor": 0
+      },
+      {
+        "excluded": 16,
+        "generated": 1,
+        "production": 39,
+        "root": "workspaces/client/apps/desktop",
+        "test": 53,
+        "total": 109,
+        "vendor": 0
+      }
+    ],
+    "productionSourceFiles": 105,
+    "sourceSelection": "extensions rs,[cm]?tsx?,[cm]?jsx?,py,swift,html,mm,h; exact filename Podfile",
+    "testGeneratedPolicy": "Dedicated test files include test/type-test suites, fixtures, examples/check programs, hidden-electron/test support, four native integration/memory witnesses, vitest configs and feature-gated native-check harness files. profile-export-reader.ts is production. Inline cfg(test) modules remain within their production-file count; a first cfg(test) is NOT treated as the end of production. Four generated source files are listed separately. No tracked vendor source in assigned roots.",
+    "trackedPaths": 293,
+    "vendorSourceFiles": 0
+  },
+  "currentCallerReachability": "N/lib.rs:436-489 explicitly enables system.info; preferences.raw_all/import/raw_set/raw_remove; markdown.parse; identity.get/sync.open; drafts.view/import/edit/dismiss/refresh; desktop external/sign-in/directory/attachment/file action/reveal/vault/microphone/transcription/save methods; media.captureStart/Stop; voice.create/answer/mute/close; speech upload/transcribe/cancel; api.request; connected view commands with sse/microphone/transcription/voice topics. servers.* and profile branches run earlier in N/lib.rs. Core upload/outbox/actions/dictation storage/terminal/preview/rich-document/additional pure/store handlers exist and have internal/tests or migration callers, but are NOT thereby demonstrated current renderer-exposed Tauri flows. Electron has its separately typed API map. No runtime behavior inferred from source reachability alone.",
+  "exactExcludedPaths": [
+    {
+      "kind": "text config/document/contract",
+      "matchLines": [],
+      "path": "workspaces/client/apps/desktop/.gitignore"
+    },
+    {
+      "kind": "text config/document/contract",
+      "matchLines": [],
+      "path": "workspaces/client/apps/desktop/README.md"
+    },
+    {
+      "kind": "binary asset",
+      "matchLines": [],
+      "path": "workspaces/client/apps/desktop/assets/codex-icon-ultrarealistic.png"
+    },
+    {
+      "kind": "binary asset",
+      "matchLines": [],
+      "path": "workspaces/client/apps/desktop/assets/codex-studio-icon-v1.png"
+    },
+    {
+      "kind": "binary asset",
+      "matchLines": [],
+      "path": "workspaces/client/apps/desktop/assets/codex-studio-icon-v3.png"
+    },
+    {
+      "kind": "binary asset",
+      "matchLines": [],
+      "path": "workspaces/client/apps/desktop/assets/codex-studio-icon-v4.png"
+    },
+    {
+      "kind": "binary asset",
+      "matchLines": [],
+      "path": "workspaces/client/apps/desktop/assets/codex-studio-icon-v5-concept.png"
+    },
+    {
+      "kind": "binary asset",
+      "matchLines": [],
+      "path": "workspaces/client/apps/desktop/assets/codex-studio-icon-v6.png"
+    },
+    {
+      "kind": "binary asset",
+      "matchLines": [],
+      "path": "workspaces/client/apps/desktop/assets/codex-studio.icns"
+    },
+    {
+      "kind": "text config/document/contract",
+      "matchLines": [],
+      "path": "workspaces/client/apps/desktop/delivery-contract.json"
+    },
+    {
+      "kind": "text config/document/contract",
+      "matchLines": [],
+      "path": "workspaces/client/apps/desktop/native/.gitignore"
+    },
+    {
+      "kind": "text config/document/contract",
+      "matchLines": [],
+      "path": "workspaces/client/apps/desktop/native/linux-vm/.gitignore"
+    },
+    {
+      "kind": "text config/document/contract",
+      "matchLines": [],
+      "path": "workspaces/client/apps/desktop/native/linux-vm/entitlements.plist"
+    },
+    {
+      "kind": "text config/document/contract",
+      "matchLines": [],
+      "path": "workspaces/client/apps/desktop/native/speech-info.plist"
+    },
+    {
+      "kind": "text config/document/contract",
+      "matchLines": [],
+      "path": "workspaces/client/apps/desktop/package.json"
+    },
+    {
+      "kind": "text config/document/contract",
+      "matchLines": [],
+      "path": "workspaces/client/apps/desktop/tsconfig.json"
+    },
+    {
+      "kind": "text config/document/contract",
+      "matchLines": [123, 262],
+      "path": "workspaces/client/apps/native/README.md"
+    },
+    {
+      "kind": "text config/document/contract",
+      "matchLines": [],
+      "path": "workspaces/client/apps/native/package.json"
+    },
+    {
+      "kind": "text config/document/contract",
+      "matchLines": [],
+      "path": "workspaces/client/apps/native/src-tauri/.gitignore"
+    },
+    {
+      "kind": "text config/document/contract",
+      "matchLines": [25],
+      "path": "workspaces/client/apps/native/src-tauri/Cargo.toml"
+    },
+    {
+      "kind": "text config/document/contract",
+      "matchLines": [],
+      "path": "workspaces/client/apps/native/src-tauri/Info.ios.plist"
+    },
+    {
+      "kind": "text config/document/contract",
+      "matchLines": [],
+      "path": "workspaces/client/apps/native/src-tauri/Info.plist"
+    },
+    {
+      "kind": "text config/document/contract",
+      "matchLines": [],
+      "path": "workspaces/client/apps/native/src-tauri/capabilities/main.json"
+    },
+    {
+      "kind": "text config/document/contract",
+      "matchLines": [],
+      "path": "workspaces/client/apps/native/src-tauri/gen/apple/.gitignore"
+    },
+    {
+      "kind": "binary asset",
+      "matchLines": [],
+      "path": "workspaces/client/apps/native/src-tauri/gen/apple/Assets.xcassets/AppIcon.appiconset/AppIcon-20x20@1x.png"
+    },
+    {
+      "kind": "binary asset",
+      "matchLines": [],
+      "path": "workspaces/client/apps/native/src-tauri/gen/apple/Assets.xcassets/AppIcon.appiconset/AppIcon-20x20@2x-1.png"
+    },
+    {
+      "kind": "binary asset",
+      "matchLines": [],
+      "path": "workspaces/client/apps/native/src-tauri/gen/apple/Assets.xcassets/AppIcon.appiconset/AppIcon-20x20@2x.png"
+    },
+    {
+      "kind": "binary asset",
+      "matchLines": [],
+      "path": "workspaces/client/apps/native/src-tauri/gen/apple/Assets.xcassets/AppIcon.appiconset/AppIcon-20x20@3x.png"
+    },
+    {
+      "kind": "binary asset",
+      "matchLines": [],
+      "path": "workspaces/client/apps/native/src-tauri/gen/apple/Assets.xcassets/AppIcon.appiconset/AppIcon-29x29@1x.png"
+    },
+    {
+      "kind": "binary asset",
+      "matchLines": [],
+      "path": "workspaces/client/apps/native/src-tauri/gen/apple/Assets.xcassets/AppIcon.appiconset/AppIcon-29x29@2x-1.png"
+    },
+    {
+      "kind": "binary asset",
+      "matchLines": [],
+      "path": "workspaces/client/apps/native/src-tauri/gen/apple/Assets.xcassets/AppIcon.appiconset/AppIcon-29x29@2x.png"
+    },
+    {
+      "kind": "binary asset",
+      "matchLines": [],
+      "path": "workspaces/client/apps/native/src-tauri/gen/apple/Assets.xcassets/AppIcon.appiconset/AppIcon-29x29@3x.png"
+    },
+    {
+      "kind": "binary asset",
+      "matchLines": [],
+      "path": "workspaces/client/apps/native/src-tauri/gen/apple/Assets.xcassets/AppIcon.appiconset/AppIcon-40x40@1x.png"
+    },
+    {
+      "kind": "binary asset",
+      "matchLines": [],
+      "path": "workspaces/client/apps/native/src-tauri/gen/apple/Assets.xcassets/AppIcon.appiconset/AppIcon-40x40@2x-1.png"
+    },
+    {
+      "kind": "binary asset",
+      "matchLines": [],
+      "path": "workspaces/client/apps/native/src-tauri/gen/apple/Assets.xcassets/AppIcon.appiconset/AppIcon-40x40@2x.png"
+    },
+    {
+      "kind": "binary asset",
+      "matchLines": [],
+      "path": "workspaces/client/apps/native/src-tauri/gen/apple/Assets.xcassets/AppIcon.appiconset/AppIcon-40x40@3x.png"
+    },
+    {
+      "kind": "binary asset",
+      "matchLines": [],
+      "path": "workspaces/client/apps/native/src-tauri/gen/apple/Assets.xcassets/AppIcon.appiconset/AppIcon-512@2x.png"
+    },
+    {
+      "kind": "binary asset",
+      "matchLines": [],
+      "path": "workspaces/client/apps/native/src-tauri/gen/apple/Assets.xcassets/AppIcon.appiconset/AppIcon-60x60@2x.png"
+    },
+    {
+      "kind": "binary asset",
+      "matchLines": [],
+      "path": "workspaces/client/apps/native/src-tauri/gen/apple/Assets.xcassets/AppIcon.appiconset/AppIcon-60x60@3x.png"
+    },
+    {
+      "kind": "binary asset",
+      "matchLines": [],
+      "path": "workspaces/client/apps/native/src-tauri/gen/apple/Assets.xcassets/AppIcon.appiconset/AppIcon-76x76@1x.png"
+    },
+    {
+      "kind": "binary asset",
+      "matchLines": [],
+      "path": "workspaces/client/apps/native/src-tauri/gen/apple/Assets.xcassets/AppIcon.appiconset/AppIcon-76x76@2x.png"
+    },
+    {
+      "kind": "binary asset",
+      "matchLines": [],
+      "path": "workspaces/client/apps/native/src-tauri/gen/apple/Assets.xcassets/AppIcon.appiconset/AppIcon-83.5x83.5@2x.png"
+    },
+    {
+      "kind": "text config/document/contract",
+      "matchLines": [],
+      "path": "workspaces/client/apps/native/src-tauri/gen/apple/Assets.xcassets/AppIcon.appiconset/Contents.json"
+    },
+    {
+      "kind": "text config/document/contract",
+      "matchLines": [],
+      "path": "workspaces/client/apps/native/src-tauri/gen/apple/Assets.xcassets/Contents.json"
+    },
+    {
+      "kind": "text config/document/contract",
+      "matchLines": [],
+      "path": "workspaces/client/apps/native/src-tauri/gen/apple/ExportOptions.plist"
+    },
+    {
+      "kind": "text config/document/contract",
+      "matchLines": [],
+      "path": "workspaces/client/apps/native/src-tauri/gen/apple/LaunchScreen.storyboard"
+    },
+    {
+      "kind": "text config/document/contract",
+      "matchLines": [],
+      "path": "workspaces/client/apps/native/src-tauri/gen/apple/project.yml"
+    },
+    {
+      "kind": "text config/document/contract",
+      "matchLines": [],
+      "path": "workspaces/client/apps/native/src-tauri/gen/apple/studio-native-client.xcodeproj/project.pbxproj"
+    },
+    {
+      "kind": "text config/document/contract",
+      "matchLines": [],
+      "path": "workspaces/client/apps/native/src-tauri/gen/apple/studio-native-client.xcodeproj/project.xcworkspace/contents.xcworkspacedata"
+    },
+    {
+      "kind": "text config/document/contract",
+      "matchLines": [],
+      "path": "workspaces/client/apps/native/src-tauri/gen/apple/studio-native-client.xcodeproj/project.xcworkspace/xcshareddata/WorkspaceSettings.xcsettings"
+    },
+    {
+      "kind": "text config/document/contract",
+      "matchLines": [],
+      "path": "workspaces/client/apps/native/src-tauri/gen/apple/studio-native-client.xcodeproj/xcshareddata/xcschemes/studio-native-client_iOS.xcscheme"
+    },
+    {
+      "kind": "text config/document/contract",
+      "matchLines": [],
+      "path": "workspaces/client/apps/native/src-tauri/gen/apple/studio-native-client_iOS/Info.plist"
+    },
+    {
+      "kind": "text config/document/contract",
+      "matchLines": [],
+      "path": "workspaces/client/apps/native/src-tauri/gen/apple/studio-native-client_iOS/studio-native-client_iOS.entitlements"
+    },
+    {
+      "kind": "binary asset",
+      "matchLines": [],
+      "path": "workspaces/client/apps/native/src-tauri/icons/128x128.png"
+    },
+    {
+      "kind": "binary asset",
+      "matchLines": [],
+      "path": "workspaces/client/apps/native/src-tauri/icons/128x128@2x.png"
+    },
+    {
+      "kind": "binary asset",
+      "matchLines": [],
+      "path": "workspaces/client/apps/native/src-tauri/icons/32x32.png"
+    },
+    {
+      "kind": "binary asset",
+      "matchLines": [],
+      "path": "workspaces/client/apps/native/src-tauri/icons/64x64.png"
+    },
+    {
+      "kind": "binary asset",
+      "matchLines": [],
+      "path": "workspaces/client/apps/native/src-tauri/icons/Square107x107Logo.png"
+    },
+    {
+      "kind": "binary asset",
+      "matchLines": [],
+      "path": "workspaces/client/apps/native/src-tauri/icons/Square142x142Logo.png"
+    },
+    {
+      "kind": "binary asset",
+      "matchLines": [],
+      "path": "workspaces/client/apps/native/src-tauri/icons/Square150x150Logo.png"
+    },
+    {
+      "kind": "binary asset",
+      "matchLines": [],
+      "path": "workspaces/client/apps/native/src-tauri/icons/Square284x284Logo.png"
+    },
+    {
+      "kind": "binary asset",
+      "matchLines": [],
+      "path": "workspaces/client/apps/native/src-tauri/icons/Square30x30Logo.png"
+    },
+    {
+      "kind": "binary asset",
+      "matchLines": [],
+      "path": "workspaces/client/apps/native/src-tauri/icons/Square310x310Logo.png"
+    },
+    {
+      "kind": "binary asset",
+      "matchLines": [],
+      "path": "workspaces/client/apps/native/src-tauri/icons/Square44x44Logo.png"
+    },
+    {
+      "kind": "binary asset",
+      "matchLines": [],
+      "path": "workspaces/client/apps/native/src-tauri/icons/Square71x71Logo.png"
+    },
+    {
+      "kind": "binary asset",
+      "matchLines": [],
+      "path": "workspaces/client/apps/native/src-tauri/icons/Square89x89Logo.png"
+    },
+    {
+      "kind": "binary asset",
+      "matchLines": [],
+      "path": "workspaces/client/apps/native/src-tauri/icons/StoreLogo.png"
+    },
+    {
+      "kind": "text config/document/contract",
+      "matchLines": [],
+      "path": "workspaces/client/apps/native/src-tauri/icons/android/mipmap-anydpi-v26/ic_launcher.xml"
+    },
+    {
+      "kind": "binary asset",
+      "matchLines": [],
+      "path": "workspaces/client/apps/native/src-tauri/icons/android/mipmap-hdpi/ic_launcher.png"
+    },
+    {
+      "kind": "binary asset",
+      "matchLines": [],
+      "path": "workspaces/client/apps/native/src-tauri/icons/android/mipmap-hdpi/ic_launcher_foreground.png"
+    },
+    {
+      "kind": "binary asset",
+      "matchLines": [],
+      "path": "workspaces/client/apps/native/src-tauri/icons/android/mipmap-hdpi/ic_launcher_round.png"
+    },
+    {
+      "kind": "binary asset",
+      "matchLines": [],
+      "path": "workspaces/client/apps/native/src-tauri/icons/android/mipmap-mdpi/ic_launcher.png"
+    },
+    {
+      "kind": "binary asset",
+      "matchLines": [],
+      "path": "workspaces/client/apps/native/src-tauri/icons/android/mipmap-mdpi/ic_launcher_foreground.png"
+    },
+    {
+      "kind": "binary asset",
+      "matchLines": [],
+      "path": "workspaces/client/apps/native/src-tauri/icons/android/mipmap-mdpi/ic_launcher_round.png"
+    },
+    {
+      "kind": "binary asset",
+      "matchLines": [],
+      "path": "workspaces/client/apps/native/src-tauri/icons/android/mipmap-xhdpi/ic_launcher.png"
+    },
+    {
+      "kind": "binary asset",
+      "matchLines": [],
+      "path": "workspaces/client/apps/native/src-tauri/icons/android/mipmap-xhdpi/ic_launcher_foreground.png"
+    },
+    {
+      "kind": "binary asset",
+      "matchLines": [],
+      "path": "workspaces/client/apps/native/src-tauri/icons/android/mipmap-xhdpi/ic_launcher_round.png"
+    },
+    {
+      "kind": "binary asset",
+      "matchLines": [],
+      "path": "workspaces/client/apps/native/src-tauri/icons/android/mipmap-xxhdpi/ic_launcher.png"
+    },
+    {
+      "kind": "binary asset",
+      "matchLines": [],
+      "path": "workspaces/client/apps/native/src-tauri/icons/android/mipmap-xxhdpi/ic_launcher_foreground.png"
+    },
+    {
+      "kind": "binary asset",
+      "matchLines": [],
+      "path": "workspaces/client/apps/native/src-tauri/icons/android/mipmap-xxhdpi/ic_launcher_round.png"
+    },
+    {
+      "kind": "binary asset",
+      "matchLines": [],
+      "path": "workspaces/client/apps/native/src-tauri/icons/android/mipmap-xxxhdpi/ic_launcher.png"
+    },
+    {
+      "kind": "binary asset",
+      "matchLines": [],
+      "path": "workspaces/client/apps/native/src-tauri/icons/android/mipmap-xxxhdpi/ic_launcher_foreground.png"
+    },
+    {
+      "kind": "binary asset",
+      "matchLines": [],
+      "path": "workspaces/client/apps/native/src-tauri/icons/android/mipmap-xxxhdpi/ic_launcher_round.png"
+    },
+    {
+      "kind": "text config/document/contract",
+      "matchLines": [],
+      "path": "workspaces/client/apps/native/src-tauri/icons/android/values/ic_launcher_background.xml"
+    },
+    {
+      "kind": "binary asset",
+      "matchLines": [],
+      "path": "workspaces/client/apps/native/src-tauri/icons/icon.icns"
+    },
+    {
+      "kind": "binary asset",
+      "matchLines": [],
+      "path": "workspaces/client/apps/native/src-tauri/icons/icon.ico"
+    },
+    {
+      "kind": "binary asset",
+      "matchLines": [],
+      "path": "workspaces/client/apps/native/src-tauri/icons/icon.png"
+    },
+    {
+      "kind": "binary asset",
+      "matchLines": [],
+      "path": "workspaces/client/apps/native/src-tauri/icons/ios/AppIcon-20x20@1x.png"
+    },
+    {
+      "kind": "binary asset",
+      "matchLines": [],
+      "path": "workspaces/client/apps/native/src-tauri/icons/ios/AppIcon-20x20@2x-1.png"
+    },
+    {
+      "kind": "binary asset",
+      "matchLines": [],
+      "path": "workspaces/client/apps/native/src-tauri/icons/ios/AppIcon-20x20@2x.png"
+    },
+    {
+      "kind": "binary asset",
+      "matchLines": [],
+      "path": "workspaces/client/apps/native/src-tauri/icons/ios/AppIcon-20x20@3x.png"
+    },
+    {
+      "kind": "binary asset",
+      "matchLines": [],
+      "path": "workspaces/client/apps/native/src-tauri/icons/ios/AppIcon-29x29@1x.png"
+    },
+    {
+      "kind": "binary asset",
+      "matchLines": [],
+      "path": "workspaces/client/apps/native/src-tauri/icons/ios/AppIcon-29x29@2x-1.png"
+    },
+    {
+      "kind": "binary asset",
+      "matchLines": [],
+      "path": "workspaces/client/apps/native/src-tauri/icons/ios/AppIcon-29x29@2x.png"
+    },
+    {
+      "kind": "binary asset",
+      "matchLines": [],
+      "path": "workspaces/client/apps/native/src-tauri/icons/ios/AppIcon-29x29@3x.png"
+    },
+    {
+      "kind": "binary asset",
+      "matchLines": [],
+      "path": "workspaces/client/apps/native/src-tauri/icons/ios/AppIcon-40x40@1x.png"
+    },
+    {
+      "kind": "binary asset",
+      "matchLines": [],
+      "path": "workspaces/client/apps/native/src-tauri/icons/ios/AppIcon-40x40@2x-1.png"
+    },
+    {
+      "kind": "binary asset",
+      "matchLines": [],
+      "path": "workspaces/client/apps/native/src-tauri/icons/ios/AppIcon-40x40@2x.png"
+    },
+    {
+      "kind": "binary asset",
+      "matchLines": [],
+      "path": "workspaces/client/apps/native/src-tauri/icons/ios/AppIcon-40x40@3x.png"
+    },
+    {
+      "kind": "binary asset",
+      "matchLines": [],
+      "path": "workspaces/client/apps/native/src-tauri/icons/ios/AppIcon-512@2x.png"
+    },
+    {
+      "kind": "binary asset",
+      "matchLines": [],
+      "path": "workspaces/client/apps/native/src-tauri/icons/ios/AppIcon-60x60@2x.png"
+    },
+    {
+      "kind": "binary asset",
+      "matchLines": [],
+      "path": "workspaces/client/apps/native/src-tauri/icons/ios/AppIcon-60x60@3x.png"
+    },
+    {
+      "kind": "binary asset",
+      "matchLines": [],
+      "path": "workspaces/client/apps/native/src-tauri/icons/ios/AppIcon-76x76@1x.png"
+    },
+    {
+      "kind": "binary asset",
+      "matchLines": [],
+      "path": "workspaces/client/apps/native/src-tauri/icons/ios/AppIcon-76x76@2x.png"
+    },
+    {
+      "kind": "binary asset",
+      "matchLines": [],
+      "path": "workspaces/client/apps/native/src-tauri/icons/ios/AppIcon-83.5x83.5@2x.png"
+    },
+    {
+      "kind": "text config/document/contract",
+      "matchLines": [5, 10],
+      "path": "workspaces/client/apps/native/src-tauri/permissions/autogenerated/client_request.toml"
+    },
+    {
+      "kind": "text config/document/contract",
+      "matchLines": [5, 10],
+      "path": "workspaces/client/apps/native/src-tauri/permissions/autogenerated/close_ready.toml"
+    },
+    {
+      "kind": "text config/document/contract",
+      "matchLines": [5, 10],
+      "path": "workspaces/client/apps/native/src-tauri/permissions/autogenerated/close_response.toml"
+    },
+    {
+      "kind": "text config/document/contract",
+      "matchLines": [],
+      "path": "workspaces/client/apps/native/src-tauri/tauri.conf.json"
+    },
+    {
+      "kind": "text config/document/contract",
+      "matchLines": [],
+      "path": "workspaces/client/apps/native/src-tauri/tauri.ios.conf.json"
+    },
+    {
+      "kind": "text config/document/contract",
+      "matchLines": [],
+      "path": "workspaces/client/apps/native/tsconfig.json"
+    },
+    {
+      "kind": "text config/document/contract",
+      "matchLines": [],
+      "path": "workspaces/client/apps/native/tsconfig.webview.json"
+    },
+    {
+      "kind": "text config/document/contract",
+      "matchLines": [25],
+      "path": "workspaces/client/packages/client-core/Cargo.toml"
+    },
+    {
+      "kind": "text config/document/contract",
+      "matchLines": [],
+      "path": "workspaces/client/packages/client-core/README.md"
+    },
+    {
+      "kind": "binary asset",
+      "matchLines": [],
+      "path": "workspaces/client/packages/client-core/tests/fixtures/pages.pdf"
+    },
+    {
+      "kind": "text config/document/contract",
+      "matchLines": [13],
+      "path": "workspaces/client/packages/client-domain/Cargo.toml"
+    },
+    {
+      "kind": "text config/document/contract",
+      "matchLines": [15],
+      "path": "workspaces/client/packages/client-wasm/Cargo.toml"
+    }
+  ],
+  "familyCounts": {
+    "A": 9,
+    "O": 8,
+    "R": 28,
+    "U": 4
+  },
+  "familyCoverageTableMarkdown": "| ID / class / priority | Family | Producer → decode → consumer; locations | Named owner | Replacement / deletable code | Essential dynamic checks / compatibility | Proposed witness |\n|---|---|---|---|---|---|---|\n| 01 R P1 | Native command and result algebra | Renderer nativeRequest(method:string, params:unknown) → Tauri Request → core per-prefix/string dispatch → Response Value → caller generic T. D/protocol.rs:61; C/native.rs:212; N/lib.rs:291,436; WEB/native/client.ts:13 | D/protocol.rs (shared command owner proposed; presently only envelope) | Deserialize method-tagged command variants with per-command args/results once at ingress; remove repeated params indexing and result casts. Separate host-injected permission/window fields from caller arguments. | Keep exact id, request/method bounds, pending limit, transport framing, host whitelist, gesture provenance and error codes. Explicit successful null must differ from missing result. | Proposed: fixtures for every enabled method, wrong params, wrong id, both/neither result/error, explicit null; compile-time method/result mismatch witness. |\n| 02 R P1 | Native socket response/event discrimination | Core serialization → Unix/socket frame bytes → Value event probe → from_value<Response> → pending caller or event subscriber. C/client.rs:62,129; C/native.rs:364,476; D/protocol.rs:70 | D/protocol.rs Response and event envelope | Deserialize incoming Packet enum/custom visitor directly; typed overflow response instead of editing Value packet; generic result content remains only at transport boundary. | Keep frame length, oversized packet reserve, result/error XOR, unknown/duplicate reply id policy, cancellation and pending removal. Preserve event discrimination behavior. | Proposed: mixed event/response stream, null success, oversized response and late reply fixtures. |\n| 03 O P1 | Generic HTTP and signed stream payloads | Arbitrary renderer API request or signed remote request → HTTP status/header/body adapter → byte/base64 or generic JSON result → endpoint-specific caller. C/backend.rs:18,184,443,489; C/server_transport.rs:171,309; E/api.ts:32; E/main.ts:258 | C/backend.rs ApiRequest; E/api.ts ServerRequest/ServerResponse | Retain body/error details/raw bytes at this named transport; make typed endpoint helper generic only where callers know schema. Do not force a single server response struct. | Keep status handling, loopback/origin restrictions, header sanitization, method/body rules, byte/deadline budgets and no implicit write retry. Partial diagnostic error decode is best effort. | Proposed: binary body, unknown JSON extension, non-JSON error, timeout-after-write, redirect rejection fixtures. |\n| 04 R P1 | Session token and workspace identity | /api/session (legacy state fallback) and /api/sync/identity → Value field extraction → auth header and SQL singleton identity → sync.open/view caller. C/backend.rs:221; C/sync.rs:35,49; C/projections.rs:316; HTTP/sync_documents.rs:138; E/approved-pair.ts:71 | Runtime API SessionResponse/SyncIdentityResponse; client identity persisted projection | Deserialize minimal session identity and shared sync identity DTO, typed local cached identity; remove .as_str/.as_bool and object/null probing. | Preserve 404 fallback, chatState default, nonempty token, workspace hex identity and atomic refusal to rebind store, offline/error-dependent cached fallback. | Proposed: wrong workspace cache, legacy session 404, missing token, nullable optional fields, offline cached open. |\n| 05 A P1 | Backend startup identity and recovery launch configuration | Runtime /api/desktop and persisted recovery config → Rust direct typed deserialize; Electron typed annotation plus explicit validation → attach/start decision. C/startup.rs:30,60,115,177; N/local_backend.rs:89; E/backend.ts:151,208; E/restart-environment.ts:2,21,82 | C/startup.rs DesktopIdentity/SavedRecovery; E/restart-environment.ts version/key owner; runtime desktop identity API | Rust already typed; avoid adding Value stage. TS SavedEnvironment unknown fields are intentional untrusted input to savedLaunchEnvironment; consolidate through current owner if extended. | Keep missing versus explicit null, retired-key handling, allowed/unset key disjointness, absolute state identity, build hash, PID/process liveness, occupied/uncertain port behavior. | Proposed: parity fixtures for missing/null launch environment, retired keys, stale PID/build and transient timeout. No live launch performed. |\n| 06 R P1 | Preference command/import envelope | Web preference cache/import → native raw commands → entries/version Value checks → SQLite strings/replies. C/store.rs:12,23,156,182,256,291; WEB/native/preferenceState.ts:42,50,239 | C/store.rs preference commands; workspaces/client/contracts/preference-storage.json key-limit owner | Deserialize RawSet/Remove/Import{version,entries} with exact field policy, generate contract constant or typed contract input; remove primitive shape checks only. | Keep 10k entries, key byte limit, per-value and total byte caps, import conflict transaction and exact raw strings. Existing callers distinguish absent and empty values. | Proposed: import version/extra keys, total size, unchanged raw JSON whitespace and conflicting import rollback. |\n| 07 O P1 | Arbitrary preference values and replay fingerprints | Caller-provided arbitrary preference JSON/string → storage → raw_all/get; request method+serialized params → receipt lookup → typed Response replay. C/store.rs:149,291,387,422; D/protocol.rs:91 | C/store.rs raw preference and receipt ownership | Retain arbitrary JSON preference payload, raw text and exact serialized request fingerprint; outer PreferenceCommand and replay Response are already typed. | Do not normalize defaults/drop fields before fingerprinting: reused id with changed request must fail; preserve arbitrary per-key values and legacy string bytes. | Proposed: same id/same params replay, changed omitted/default/extra field, all JSON kinds and exact text round trip. |\n| 08 A P2 | Legacy singular draft CAS command | draft.set → typed DraftCommand → revision CAS SQL → text/revision; draft.get still dynamic key extraction. C/store.rs:30,113,330 | C/store.rs DraftCommand | Keep direct typed set; get args and result can join native command algebra. No second draft mechanism needed. | Keep workspace/room identity, base revision compare and receipt replay. Current Tauri whitelist exposes plural drafts, not singular draft commands. | Proposed: stale base revision and same request replay; inactive host path noted. |\n| 09 A P1 | Draft domain and markdown/WASM pure functions | Stored draft adapter → typed reconciliation; markdown source → typed AST → WASM JSON string; hash bytes → typed digest. D/drafts.rs:13,52,82,150; D/markdown.rs:16; D/lib.rs:1; W/lib.rs:1 | D/drafts.rs DraftVersion/DraftView; D/markdown.rs MarkdownTree; D/lib.rs MAX_SAFE_INTEGER | Already typed domain algorithms. JsValue error and serialization at WASM edge are justified; do not mistake to_string or test Value fixtures for dynamic domain logic. | Draft legacy missing/null/fraction timestamp conversion, id matching, extra fields, safe integer bounds, markdown parse behavior remain owned here. | Proposed: existing draft/markdown parity fixtures extended for timestamp and unknown-field round trip; no pure-function redesign. |\n| 10 R P1 | Plural draft commands, SQL documents and replication | Web drafts.edit/import → store Document payload → DraftVersion; pending rows → HTTP push/pull → conflict/ack receive → draft view. C/draft_store.rs:26,37,106,156; C/draft_replication.rs:13,29,78; C/projections.rs:9; WEB/native/draftState.ts:129; HTTP/sync_documents.rs:174 | D/drafts.rs plus C/projections.rs Document; runtime SyncPullResponse/SyncDocument | Typed command enums, pending/push/pull envelopes and conflict rows; deserialize stored compatibility DTO directly instead of Value→Map→struct; replace wire-row key mutation with explicit wire DTO. | Retain canonical key ordering/extra fields, missing-id fallback but reject conflicting id, dirty sequence, workspace/conflict correlation, optimistic ack and _deleted/deleted spelling. | Proposed: legacy document id/timestamp, extra field retention, stale ack, unrelated conflict, tombstone wire round trip. |\n| 11 R P2 | Projection document/cache and pull metadata | HTTP pull page → dynamic metadata and per-row from_value<Document> → SQL projection.get/put → view payload. C/projections.rs:9,72,86,226,386; C/sync.rs:167,257,438; HTTP/sync_documents.rs:537,797 | C/projections.rs Document; runtime SyncPullResponse/SyncPullResetResponse | Direct deserialize typed pull enum, stored Document, apply/get/put args and checkpoint records; eliminate repeated document-array/scalar checks and ready-string Value parse. | Preserve reset versus page semantics, fresh initial bound, max/page caps, increasing server cursor, independent local revision fence, transactional cache replacement, workspace and safe integer checks. | Proposed: reset mid-pagination, stale expected revision, wrong scope/workspace, tombstone, oversized escaped payload. |\n| 12 R P2 | Entity operation envelope | Pull/sync.applyEntities changes → entity_scope dynamic op/collection/id/seq/value → per-entity SQL → materialization. C/projections.rs:47,86,226; C/sync.rs:341,408 | Runtime SyncEntity operation contract; client projection cache version 4 | Deserialize upsert/delete enum with object payload and typed key/seq; remove op string/primitive shape branch. Keep opaque entity content only while uninterpreted. | Delete must forbid value rather than silently ignore it; preserve collection/id constraints, safe seq, strict monotonic insert and replacement atomicity. | Proposed: delete with value, malformed key, stale seq, revision contention and unknown collection fixture. |\n| 13 U P2 | Entity materialization and transcript delta payloads | Saved JSON document payload → parse Value → keyed item merge/removals/order or collection-specific merge → reserialized state → renderer. C/projections.rs:106; C/sync.rs:80,224 | Runtime entity/transcript payload schema; local compatibility materializer | Outer operation/page replacement is proven above. Full nested replacement needs schema/version audit across every collection and historical transcript shape; these are interpreted domain values, not automatically justified opaque blobs. | Must preserve unknown entity fields, summary/detail precedence, workspace extension fields, deleted items, order/default behavior, retired itemRevisions cleanup and numeric sorting. | Proposed: differential golden old/new materialization for every collection and legacy transcript delta; no runtime bug established. |\n| 14 O P2 | Generic view patch engine and SSE data | Projection Value snapshots → recursive generic diff/last state → view patches; external SSE lines → event/data/id text → subscribed UI. C/views.rs:253,289,336; C/events.rs:88,110,125 | C/views.rs generic patch owner; C/events.rs SSE parser | Retain generic JSON patch values and SSE data text. A typed patch operation/path enum and typed event envelope can remove only structural Value construction. | Keep revision fencing, UTF-8/framing, event id/credit flow, backpressure and patch delete versus set(null). SSE data is not decoded at this layer. | Proposed: scalar/array/object transitions, deletion/null, multiline SSE and credit exhaustion. |\n| 15 R P1 | View subscription commands and native event envelopes | view.subscribe/next/unsubscribe → topic-specific attach → microphone/transcription/voice/navigation/SSE callbacks → native client event. C/views.rs:43,118; C/media.rs:112; C/voice.rs:169; C/notifications.rs:22; N/lib.rs:483 | D/protocol.rs proposed topic/command/event owner | Typed subscription topic+params and closed event enums; remove topic strings, Value channel payloads and local field casts where payload known. | Keep subscription capacity, owner/context, cancellation, flow control and host enabled-topic allowlist; raw SSE content remains opaque. | Proposed: each enabled topic, wrong topic params, disconnect/backpressure, stale subscription id. |\n| 16 R P2 | Staged files and durable upload rows | OS selected file or files.stage_many → descriptor → uploads.enqueue SQL JSON → pending/deliver → /api/assets → asset receipt and tombstone. C/uploads.rs:14,30,57,118,151,252; C/desktop.rs:339; HTTP/workspace_files.rs:39 | C/uploads.rs local row/staged descriptor; runtime AssetRecord | Deserialize staged input, UploadRow and AssetRecord (legacy nested asset wrapper as explicit adapter); replace string helpers, row Value loads and JSON field mutation. | Keep file count/size/base64/MIME limits, workspace+agent+stateDir identity, expected-row equality, per-upload lock, idempotency and tombstones. Core route currently not Tauri-enabled. | Proposed: stale row/workspace, duplicate receipt, same asset id, legacy receipt wrapper and invalid file/base64. |\n| 17 R P1 | File selection, action info and save transfer | Renderer fileAction/save/pickAttachments → OS path/files or HTTP FileInfo → Value extraction/typed Selection → OS operation or bounded transfer → typed-ish frontend result. C/file_actions.rs:7,23,38,88,130; C/desktop.rs:414; C/file_save.rs:39,74,98,121,174; WEB/native/fileDialogs.ts:29; WEB/native/saveFile.ts:3; E/main.ts:263 | C/file_actions.rs Selection/Action already typed; runtime FileInfo; C/file_save.rs Transfers | Keep Selection direct deserialize; type FileInfo, picked paths/attachment descriptors, transfer argument/result variants. Remove path array/field shape casts; future target enum must preserve accepted combinations. | Keep trusted gesture, URL/path safety, canonical filesystem checks, symlink/nonregular/executable rules, expiry, byte/transfer/chunk limits, exact repeated chunk and atomic save; cancellation null/false semantics. | Proposed: denied gesture, file target combinations, off-by-one transfer size, repeated offset different bytes, canceled save and symlink fixture. |\n| 18 R P2 | Preview/document render metadata | HTTP FileContent or native bytes → prepare → preview/read/page; WebKit Mermaid result JSON → Value svg/height → image presentation. C/file_preview.rs:38,55,88,211,286; C/pdf.rs:11,31; C/rich_document.rs:25,318,343; HTTP/workspace_files.rs:75 | Runtime FileContent; client preview/document output DTOs | Direct typed FileContent, preview commands/results, PDF-page and diagram render result; remove primitive field extraction and output json! bags. | Keep handle authorization/lifetime, bounded bytes and UTF-8 slices, base64/actual format verification, SVG restrictions, finite geometry/page bounds and WebKit sandbox. Host routes currently gated. | Proposed: bad diagram dimensions/SVG reference, truncated payload, wrong page, invalid handle and UTF-8 boundary. |\n| 19 O P3 | Arbitrary JSON formatter and raw content | User preview JSON bytes → ordered recursive Deserialize → pretty printer; raw files/log/HTTP/TLS bytes remain format/transport data. C/ordered_json.rs:1; C/file_preview.rs:255; C/stream_log.rs:1; C/tls.rs:1 | C/ordered_json.rs OrderedJson | Retain recursive arbitrary JSON preserving input object order; no domain schema can replace the formatter. Typed bytes do not need a JSON DTO. | Keep parse/size limits and source ordering; arbitrary unfamiliar keys are valid input. | Proposed: nested mixed JSON and key-order golden; no additional validation layer. |\n| 20 R P2 | Outbox command/status/receipt envelope | outbox.enqueue → SQL Entry → claim/FIFO → HTTP /api/messages → receipt/failure → list/delivery UI. C/outbox.rs:8,61,114,164,182,213; C/delivery.rs:48,115,160; HTTP/messages.rs:104,216 | C/outbox.rs Entry; runtime ManagedMessageBody/StudioApiWorkModelsMessageReceipt | Entry outer already Deserialize; type status/action/message/receipt envelope and delivery helper results, remove status-string whitelist and repeated list/object field reads. | Keep room FIFO, attempted/cancel eligibility, pause/resume transitions, exactly matched request/workspace, no retry from uncertainty, confirmed receipt precedence and legacy room/text/deliveries receipt. | Proposed: enqueue duplicate body mismatch, claimed cancellation, uncertain POST then receipt, older receipt arriving after confirmed. |\n| 21 U P2 | Outbox historical body/attachments/receipt extras | Raw stored body/attachments → equality/id comparison → forward unchanged to API; historical receipt acceptance broader than current generated response. C/outbox.rs:8,130,234; C/delivery.rs:76; HTTP/messages.rs:112 | Runtime ManagedMessageBody and AssetRecord; C/outbox.rs historical SQL compatibility | Cannot yet delete all Value: need persisted-row migration/differential proof for unknown fields and historical receipts before strict generated decode or reserialization. | Preserve exact request identity/equality and any accepted historical payload. Do not silently normalize defaults or discard unknown attachment fields. | Proposed: versioned retained-row corpus plus canonical body/receipt round trip against current API schemas. |\n| 22 R P2 | Durable agent actions and acknowledgement | Saved preference action intent → parse fields → prepare same request → /api/action → receipt request match/not_applied decision → acknowledge/remove. C/actions.rs:23,69,157,175,235; HTTP/agent_management.rs:286,402 | C/actions.rs local intent; runtime-services native_actions request/receipt owner | Typed review/compact action enum, context/account key, saved intent and receipt envelope; delete manual saved JSON field checks and acknowledgement field indexing. | Keep workspace side key, exact request id/account, response outcome semantics and retained intent on uncertainty. Arbitrary action result/error details may remain opaque. | Proposed: wrong receipt id, not_applied acknowledgement, unknown outcome, crash between prepare/ack and old saved intent. |\n| 23 R P2 | Stored dictation metadata and patches | Recording/chunk/import → SQLite JSON row → list/update/transcription attempt/WAV export; current browser IndexedDB path is separate. C/dictation.rs:30,37,48,75,97,141,180,245; WEB/dictation/storage.ts:3,64,79 | WEB/dictation/storage.ts Recording (current browser owner); client stored compatibility DTO proposed | Typed recording, command and tri-state patch structs; delete Map clone/type probes and typed field mutations. Keep unknown historical extras until import compatibility decided. | Missing patch leaves field; explicit null deletes; browser undefined is corresponding removal intent. Keep chat/id binding, sample/count/WAV limits, retention/deletion, attempt token fencing. Tauri blocks direct dictation.*. | Proposed: old recording import, null/missing patch, late transcription after delete, chunk/WAV duration mismatch. |\n| 24 R P1 | Capture/playback and voice command/event envelopes | Native capture/voice request → subscription/session map → device callback/RTC state → JSON event → native audio frontend. C/media.rs:119,149,189,374; C/voice.rs:169,426,461,551; C/voice_audio.rs:1; WEB/native/dictation.ts:32 | Client media/voice command owner; typed native audio buffers already owned in media/voice_audio | Typed capture/session ids, start/stop/mute/answer args and PCM/state/error events; remove .as_str/.as_bool and Value channels, serialize once at edge. | Keep gesture reservation, active session uniqueness, microphone permission, bounded channel/drop-stop, cancellation and callback lifetime. PCM bytes/SDP remain external payload; audio resampling itself already typed. | Proposed: unsubscribed capture, duplicate session, denied permission, stale reservation, slow consumer and mute/close sequence. |\n| 25 R P1 | Speech helper result/progress and upload command | Bounded WAV transfer → helper process → stderr progress JSON and stdout result/error → Rust Value or TS annotated JSON → transcription UI. C/speech.rs:83,155,192,250,275; E/speech.ts:52,72,106; E/native/speech.swift:5,29,59 | Shared speech helper contract proposed; current producers Swift helper and consumers Rust/TS | Deserialize progress and success/error/helper-ready variants directly in Rust; generate/parity-check TS and Swift contract (Codable analogue). Delete repeated structural field casts only. | Keep numeric/increasing progress, empty text policy, optional provider/onDevice legacy defaults, WAV checks, output cap, exit status, deadline/cancel and one-use transcription permit. | Proposed: malformed/nonmonotonic progress, result-error collision, missing legacy defaults, cancellation and oversized output. |\n| 26 R P1 | Sign-in, native OS commands and notifications | Renderer click → host permit/window → sign-in intent/forward or OS action; notification target → retained click map → navigation. C/sign_in.rs:25,51,113; C/desktop.rs:95,168,184,239,535; C/notifications.rs:27,36,63; C/vault_keys.rs:61; E/vault-keys.ts:1; E/api.ts:113 | Native command owner; sign-in Context/Scope internal types; desktop API notification target | Deserialize external-url/sign-in/forward/notification/vault-key args to structs and enums; typed nullable path/bool/unit OS results; remove primitive shape checks and Value tuple/target storage. | Keep scheme/host/credential restrictions, normalized exact URL/card/owner/window scope, expiry/single use, forward response status and no repeat, length/NUL limits, OS permission and never return paper keys. | Proposed: spoofed owner/window/URL, consumed or expired preparation, malformed forward, null optional notification fields and one-time click. |\n| 27 R P2 | Terminal command/input/history/presentation | terminal.open/input/resize → backend POST/pull → Value then local Output deserialize → VT state → presentation; history pages → export bytes. C/terminal.rs:45,109,194,230,288,406,525,542; HTTP/terminals.rs:98,208 | Runtime TerminalOutput/TerminalActionResponse; C/terminal.rs VT screen owner | Direct typed HTTP output/history/receipt, input kind enum, command args and screen line/run DTO; preserve existing Output typed parser by moving before Value. | Keep terminal id/request correlation, no blind write retries, UTF-8/codepoint offset rules, dimensions, sequence cursor, input/mouse mode constraints, history cap and backpressure. Not host-enabled now. | Proposed: invalid kind/key/mouse, stale output offset, truncated history and uncertain input receipt. |\n| 28 R P3 | Pure platform/markdown dispatch and link outputs | Native pure command text/URL/locale args → pure parsing helpers → JSON bag/result; markdown AST remains typed. C/platform.rs:8,68,86,97; C/file_links.rs:57,133; D/markdown.rs:451; C/native.rs:428 | D/markdown.rs AST; client pure command contract | Typed pure args/results for sentences, locale, URL/query, local link; query_encode already Vec<(String,String)> deserialize. Remove extraction and json! construction at domain interior. | Keep valid URL/protocol semantics, character/UTF-16 ranges and relative path rules; link target extra fields currently copied need compatibility witness. Only markdown currently whitelisted among these. | Proposed: unicode ranges, relative link resolution, query ordering/duplicates and legacy extra link fields. |\n| 29 R P1 | Native credential vault and device pairing | Invitation+request id → stored draft with exact signed body → pairing POST → parsed receipt → paired credential → signed requests; imported Electron vault enters same owner. C/server_keys.rs:14,35,85,170,194,224; C/server_transport.rs:155,407,467; N/lib.rs:259,301 | Client credential vault schema; runtime AccessInvitation/DevicePairResponse/AccessSnapshot | Typed VaultState maps and explicit Draft/PairedCredential variants, invitation/pair receipt and approval snapshot; direct deserialize file/keychain JSON; remove dynamic nested field probes/state edits. | Keep exact draft body/signature/id and uncertainty, key/origin/user/server/client binding, expiry and paired status, private-key deletion after receipt, encrypted/private storage and import conflict checks. | Proposed: interrupted pairing reload/replay, changed invitation under same id, wrong key/server/origin receipt, conflicting import and absent optional fields. |\n| 30 A P1 | Electron IPC request/result type map | Renderer DesktopBridge → preload typed invoke → ipcMain nativeAction discriminated request → mapped result → renderer. E/api.ts:4,113,200,209; E/preload.cjs:24,91; E/main.ts:403,412,1028 | E/api.ts NativeMethods/NativeRequest/NativeResult | Already typed method/params/results at static TS owner, including exhaustive never dispatch; do not invent parallel hand-maintained response schema. Runtime input remains untrusted despite annotation. | Keep top-level frame/trust checks, method-specific semantic checks, gesture, path and permission checks. Static type assertion/JSON.parse is not evidence of runtime validation. | Proposed: existing API type-test expanded per method plus forged IPC/frame witness; none executed. |\n| 31 A P1 | Electron pairing and approval API projections | Encrypted local vault → JSON.parse typed state; UI invitation → pair/pairApproved → generated response annotation → origin/key/generation check → saved credential. E/server-credentials.ts:15,28,101,209,291; E/approved-pair.ts:39,52,71,90 | E/api.ts credential types and generated API AccessSnapshot/SessionResponse/InvitationResponse/DevicePairResponse | Static domain types already present; credential draft optional bag could become tagged persisted DTO shared with Rust. JSON.parse annotation itself is not validated decode. Avoid duplicate frontend validators for generated API bodies. | Retain request/body persistence, paired credentials, trusted frame rechecks, invitation full-field comparison and server generation fences. unknown callback/writing promise is not arbitrary data. | Proposed: cross-host credential fixture/parity, approval changed during invite, body-identical retry; full persisted historical compatibility unresolved before strict decoder. |\n| 32 R P1 | Browser profile archive and migration chunk envelope | Offline export manifest → browser capture → CDP chunk → hashed part/archive v2 → native select/read chunk → browser importer. N/profile.rs:11,28,76,108,165; E/export-profile.ts:22,35,41,203,220; E/profile-export-reader.ts:6,35,71; WEB/native/importBrowserProfile.ts:1,54 | WEB/native/importBrowserProfile.ts BrowserProfileArchive/Snapshot/Chunk/Record currently shared TS owner | Deserialize Rust versioned archive/selection/chunk metadata and typed command args; shared/generated TS manifest/chunk contract can remove outer Value array/string/object walks. | Keep v1/v2 support, context/owner selection, trusted CDP/source frame/origin, content hash/byte/count limits, file path containment and original chunk text returned unchanged. | Proposed: v1/v2 archived profiles, wrong owner/digest/count, duplicate chunk, CDP source mismatch and mixed storage types. |\n| 33 O P1 | Arbitrary browser structured-clone data and credential forwarding | Arbitrary localStorage/IndexedDB values → recursive tagged encoder → original hashed bytes → tagged decoder; decrypted credential text → syntax check → native import owner. E/export-browser-profile.ts:14,173; E/export-server-credentials.ts:46; N/profile.rs:173; WEB/native/importBrowserProfile.ts:89 | WEB/native/importBrowserProfile.ts EncodedProfileValue tagged codec; server_keys import for credentials | Retain unknown input to generic encoder and arbitrary recursively encoded values; retain exact chunk/credential forwarding bytes. Typed tag envelope is sufficient, not Studio domain entities for all browser contents. | Preserve undefined/null, dates/binary/blob/arrays/object entries and hashing; never log credential content. Unknown Promise rejection reasons are ordinary JS exception boundary. | Proposed: arbitrary tagged round trip including undefined, binary and unfamiliar keys; hash unchanged after native chunk read. |\n| 34 R P2 | Desktop intent and recovery configuration receipt | Native executable/PID/profile intent → desktop-recovery.json → recovery/installer decode → reopen or close same process; configure helper stdout → enabled receipt. N/desktop_recovery.rs:10,22,42,174,197; E/recovery.ts:124; E/recover_backend.py:969; E/install_update.py:91 | N/desktop_recovery.rs desktop intent; E/recovery.ts configureRecovery | Typed intent struct (version/open/pid/start/executable/profile/closeSignal), typed recovery preference and configure receipt; delete Value generation/extraction and narrow legacy dict field checks only. | Keep process birth/executable/profile equality, close acknowledgement/signal capability, source state directory identity, preference-only old config and enabled defaults. | Proposed: stale intent PID reuse, old intent without closeSignal, changed intent during check, helper receipt mismatch. |\n| 35 U P2 | Recovery config, supervisor lock/hello/reply/health across retained helpers | configureRecovery persisted config → Python dict launch; supervisor lock JSON → TS process-owner check; socket JSON → Python dataclass envelope → result dict health/fallback consumer. E/recovery.ts:275,330,418; E/restart-environment.ts:21,72; E/recover_backend.py:838,857,899,918 | E/restart-environment.ts launch keys; generated supervisor HealthResult/protocol; supervisor lock producer outside assigned roots | Rust startup already typed; TS validators named. Full removal needs generated retained-helper boundary codec/parity plus supervisor lock producer audit. Python dataclass annotations do not deeply validate JSON types; result dict still interpreted. | Keep allowed environment, unset/missing/null legacy policy, absolute resources and ports, supervisor-enabled policy, bounded frames, exact request/protocol, parent/PID/start identity and active-handle refusal. | Proposed: cross-language config/lock/hello/health fixtures, wrong result type, protocol/request mismatch, occupied supervisor. This is a source gap, not a witnessed runtime defect. |\n| 36 U P2 | Delivery/update journal, request, intent and pending-update formats | Delivery CLI/peer update producer → private JSON record/request/pointer/journal or pending update → recovery/installer validators → phase/build/health/path decisions. E/desktop_delivery.py:29,159,201,250,269,299; E/desktop_updates.py:32,54,94,102; E/deliver_server.py:47,83; E/recover_backend.py:1; E/install_update.py:91 | E/delivery-contract.json contract; runtime-services peer_updates producer; desktop_delivery validators | Existing TypedDicts and manual validators already normalize Build/PendingUpdate. Generated TS contract decoder could consolidate structural checks during authorized migration; no evidence supports deleting all legacy dict handling now. | Keep duplicate-key refusal, strict mutually-exclusive startup/installed variants, old/current versions, derived id/requestHash/build/commit identity, state ownership, path/no-link/private modes and phase safety. Full upstream pending producer and all journal version corpus need deeper proof. | Proposed: every phase/version golden, request/hash mismatch, duplicate keys, stale process handles, startup-versus-installed branch and path escape. |\n| 37 A P2 | Saved window bounds | Native/Electron close/move persist layout → load → bounds fit → window geometry. N/window_state.rs:10,31,75; E/window-state.ts:88 | N/window_state.rs Saved/Bounds; E/window-state.ts saved layout owner | Rust direct Deserialize already. Electron typed saved record at parse boundary with fit checks. Optional shared format parity if formats intentionally same; do not combine distinct units/policies. | Keep version, positive/minimum sizes, finite coordinates and per-monitor visibility/clamping; offscreen data is semantically invalid even when structurally typed. | Proposed: malformed/old version/offscreen/changed-display fixtures; no desktop activation. |\n| 38 R P2 | Native viewport envelope | UIKit typed Insets/Keyboard → json! injected receive → JS any field checks → CSS/custom event → web viewport owner. N/ios_shell.rs:248; N/ios_insets.rs:7,16; N/ios_viewport.js:7,14; WEB/native/nativeViewport.ts:1 | WEB/native/nativeViewport.ts viewport contract; N/ios_insets.rs geometry units owner | Serialize typed viewport update, consume generated/imported JS declaration (JSDoc) and keep raw ingress unknown; remove window/update any and duplicate field names via shared contract/parity. | Keep finite/nonnegative points/CSS px, keyboard curve integer, optional unchanged keyboard, late receiver compatibility and event source/main frame rules. | Proposed: inset/keyboard partial update and invalid geometry, old page without receiver, owner field parity. |\n| 39 O P3 | Diagnostics and foreign/exception handles | Arbitrary page diagnostic snapshot → Value → saved diagnostic only; renderer frame identities/errors → comparison/log; callbacks return unknown where ignored. N/ios_shell.rs:292,311; N/ios_diag.js:1; E/renderer-recovery.ts:1,65; E/layr-binary.ts:53; E/signing.ts:37,45 | Each named diagnostic/FFI adapter | Retain arbitrary diagnostic payload and unknown exception/callback/native-handle input; these are not unchecked domain entities. Narrow handles only when actual library type exists. | Do not remove frame identity/security checks or secret redaction; keep diagnostic mode explicit. Candidate words any/unknown in cfg/comment/FFI are not JSON defects. | Proposed: diagnostic unknown-field retention and log-redaction/source-frame tests if changed. |\n| 40 R P2 | VM helper config/control/status/share-port | Runtime settings/config and share-bridge file → Swift Any dictionary → VM configuration; runtime host.status/stop socket request → Swift method switch → JSON result → runtime status. E/native/linux-vm/main.swift:11,72,96,235,251,303; SERV/linux_vm_settings.rs:24,174,190; SERV/linux_vm_runtime.rs:52,556 | SERV/linux_vm_settings.rs VmSettings; helper control protocol owner should be shared with runtime GuestRpc | Generate/parity-check Swift Codable equivalents of settings/control/status/share-port from named source; Rust callers deserialize typed response directly. Remove dictionary scalar casts; raw forwarded VM channel bytes remain opaque. | Keep VZ resource capability limits, socket deadline/frame bound, request-id echo type compatibility, lock ownership, loopback port bounds, optional/default fields, stop lifecycle and channel slots. | Proposed: config integer/range, unknown method, null id/legacy id shape, bad share-port, missing status fields; full wire id compatibility needs decision before narrowing. |\n| 41 R P2 | Native filesystem watcher helper lines | OS event callback → Swift dictionary line → Rust Value parse → readiness/root/generation matching → dirty/rescan schedule. E/native/fs-events.swift:17,25,49; SERV/mac_sync/schedule.rs:421,435,445 | Shared helper event union proposed: Ready{roots}/Path{path}/Rescan{root} | Generate/parity-check typed Swift event and directly deserialize Rust enum; remove field/array selection probes and filter_map strings. | Keep valid root containment, generation identity, exact ready-root set, rescan precedence and malformed-line tolerance. Current dictionary could contain multiple keys; compatibility must choose/reproduce precedence. | Proposed: ready mismatch, out-of-root path, rescan after dropped event, malformed/multi-key line and stale generation. |\n| 42 A P2 | Signing configuration guard and certificate options | Config/environment → JSON.parse or environment object → signing-check assertion/identity/privateArgument checks → signing operations. E/signing-settings.ts:2,8,15; E/signing.ts:24,37; E/signing-check.ts:53 | E/signing-settings.ts explicitly owns shape/validator | Named TS type and assertion already exist; unknown belongs at raw external config ingress. Prefer using this owner if consolidating; don't duplicate schema or assume configuration() itself validates every field. | Keep certificate fingerprint, password-file requires keychain, shell-control-character guard, secret redaction and env override behavior. Runtime parse annotation alone is not validation. | Proposed: null/nonobject/optional nonstring config, password without keychain, malformed certificate and env precedence. |\n| 43 A P3 | Release and bundled Layr manifests | Packaging build writes manifest → verify typed JSON annotation/unknown source revision guard → exact commit/platform/arch/file list/hash → packager. E/release-binaries.ts:1,103,129; E/layr-binary.ts:72,112,128; E/runtime-binaries.ts:1 | E/release-binaries.ts ReleaseManifest; layr bundle contract and source manifest revision owner | Already typed named release manifest and explicit consumed projection of upstream source manifest. Preserve unknown outside owned fields; no Rust Deserialize opportunity in TS tool itself. | Keep full revision and expected artifact set, hashes checked before binary execution, version assertion, architecture, and file existence. Dynamic callbacks/sign results are not JSON payloads. | Proposed: wrong exact commit/artifact/hash/version/source revision; proposed only, no packaging invoked. |\n| 44 O P3 | Package dependency values and fixed child module-report | Package JSON → dependency keys → codec pruning; fixed child AST inspection → JSON string[] → missing modules report; package metadata read to generate package. A/bridge-image-package.ts:4,17; A/package.ts:23; E/python-resources.ts:24,48,59; E/package.ts:1 | Package manifest/package deploy owner; python-resources.ts fixed script owns string[] output | Retain opaque dependency values because only names are consumed; typed owned projection/string[] already exists. Generic full package object preservation avoids dropping manifest fields. | Keep required platform codec set and deletion dependency order, source manifest packaging compatibility and isolated child exit behavior; no new validation of unused third-party fields. | Proposed: unknown dependency value, absent required codec, fixed child empty/nonempty output and metadata preservation. |\n| 45 R P3 | Install mode marker | Packager emits mode marker → JSON.parse {mode?:unknown} → uiOnlyInstallation decision → backend startup policy. E/install-mode.ts:19; E/package.ts:239; A/package.ts:23 | Packager studio-install.json writer; install-mode.ts consumer | Use shared InstallationMode marker contract at writer/reader; a narrow typed projection replaces unknown field, not arbitrary package metadata. | Preserve missing marker→full/default and any historical non-ui-only value→false unless owner explicitly changes version policy; command/env overrides win. | Proposed: marker absent, ui-only, other mode, malformed JSON and override precedence. |\n| 46 A P2 | Close gate, pure URL/geometry and binary hosting adapters | Tauri typed close id/bool → gate; String→Url policy; typed Insets→reported geometry; typed HTTP/buffer/media APIs → OS or host output. N/close.rs:4,41,53; N/ios_server.rs:12,24; N/ios_insets.rs:7,39; N/frame_assets.rs:1; C/quick_look.rs:1; C/voice_audio.rs:1; E/frame-owner.ts:1; E/ui-host.ts:1 | Each typed native adapter; native close gate owns serial/action | Already typed or raw binary/FFI adapter; broad scan any in cfg(any), .any predicates or comments does not establish dynamic JSON. No extra state or validator proposed. | Keep close serial/trusted window, origin/capability checks, OS lifetimes and buffer lengths. These files were selected mechanically plus relevant adapter slices inspected. | Proposed: existing pure/gate adapter witnesses only if changed; no builds or desktop launch. |\n| 47 O P3 | Tests, examples and generated scaffolding | Tests deliberately construct malformed/generic JSON; generated bindings forward native entry and constants. 176-file inventory category=test/generated; C/examples; D/examples; N/native_check.rs; N/native-check.js; E/fixtures | Test fixture owners; generated Swift values owner runtime-schema; generated app bindings/Podfile owner Tauri tooling | Retain raw Value/unknown where it creates adversarial fixtures or asserts serialized wire behavior. Do not change generated outputs directly; change named generator/owner if a production contract changes. | 67 dedicated test/witness source files and 4 generated files counted separately; 45 production files contain inline cfg(test), not falsely counted as exclusively test source. | Proposed: typed production migration should retain malformed-wire witnesses. Test sources mechanically scanned; not every test body deeply inspected. |\n| 48 R P3 | System info/readiness and typed outer API error | system.info or system.start → constant JSON status/readiness → native transport → caller capability/startup decision; CommandError typed outer fields. C/store.rs:106; C/native.rs:288; D/protocol.rs:91 | D/protocol.rs native protocol and CommandError; C/store.rs system info producer | Typed SystemInfo/Ready results under shared command map; remove constant Value bag and cached Value readiness. CommandError already typed; its endpoint-specific details stay opaque unless interpreted by action adapter. | Keep exact protocol/migration values and existing startup-once/uncertain backend behavior; no new startup state machine. Error code/message/status compatibility stays. | Proposed: constant result parity and startup failure/cached success envelope. |\n| 49 R P1 | Draft snapshot metadata (lead-reported active fix) | reconcile typed DraftView → to_value → append revision/workspaceId/error dynamically → native generic result → hand-extended TS DraftView → NativeDraftState accepts workspace and revision. C/draft_store.rs:113,130,141; C/draft_replication.rs:121; D/drafts.rs:150; WEB/native/host.ts:12; WEB/native/draftState.ts:6,32,60 | Proposed Rust-owned DraftSnapshot generated through existing rustOwned contract; current D/drafts.rs DraftView owns only reconciliation fields | Return typed DraftSnapshot with required workspaceId/revision/error through generated host contract into readonly draft state; delete Value metadata insertion and handwritten TS extension. | Keep workspace equality, monotonic revision, durable acknowledgement versus matching visible text, queue/journal and required empty error string. Lead reported implementation assignment; this census makes no assertion about its later commit. | Proposed: generated field parity plus wrong workspace/stale revision/error metadata witness through NativeDraftState; source baseline only. |",
+  "fileInventory": [
+    {
+      "category": "test",
+      "containsInlineRustTests": false,
+      "familyIds": [],
+      "lines": 23,
+      "mechanicalMatchLines": [],
+      "path": "workspaces/client/apps/desktop/api.test.ts"
+    },
+    {
+      "category": "production",
+      "containsInlineRustTests": false,
+      "familyIds": ["03", "26", "30"],
+      "lines": 259,
+      "mechanicalMatchLines": [20],
+      "path": "workspaces/client/apps/desktop/api.ts"
+    },
+    {
+      "category": "test",
+      "containsInlineRustTests": false,
+      "familyIds": [],
+      "lines": 144,
+      "mechanicalMatchLines": [],
+      "path": "workspaces/client/apps/desktop/api.type-test.ts"
+    },
+    {
+      "category": "test",
+      "containsInlineRustTests": false,
+      "familyIds": [],
+      "lines": 131,
+      "mechanicalMatchLines": [51, 59, 61],
+      "path": "workspaces/client/apps/desktop/approved-pair.test.ts"
+    },
+    {
+      "category": "production",
+      "containsInlineRustTests": false,
+      "familyIds": ["04", "31"],
+      "lines": 123,
+      "mechanicalMatchLines": [21, 46],
+      "path": "workspaces/client/apps/desktop/approved-pair.ts"
+    },
+    {
+      "category": "test",
+      "containsInlineRustTests": false,
+      "familyIds": [],
+      "lines": 123,
+      "mechanicalMatchLines": [],
+      "path": "workspaces/client/apps/desktop/backend-selection.test.ts"
+    },
+    {
+      "category": "test",
+      "containsInlineRustTests": false,
+      "familyIds": [],
+      "lines": 430,
+      "mechanicalMatchLines": [99, 104, 118, 133, 157],
+      "path": "workspaces/client/apps/desktop/backend.test.ts"
+    },
+    {
+      "category": "production",
+      "containsInlineRustTests": false,
+      "familyIds": ["05"],
+      "lines": 372,
+      "mechanicalMatchLines": [178],
+      "path": "workspaces/client/apps/desktop/backend.ts"
+    },
+    {
+      "category": "test",
+      "containsInlineRustTests": false,
+      "familyIds": [],
+      "lines": 84,
+      "mechanicalMatchLines": [],
+      "path": "workspaces/client/apps/desktop/bundle-name.test.ts"
+    },
+    {
+      "category": "production",
+      "containsInlineRustTests": false,
+      "familyIds": [],
+      "lines": 38,
+      "mechanicalMatchLines": [],
+      "path": "workspaces/client/apps/desktop/bundle-name.ts"
+    },
+    {
+      "category": "production",
+      "containsInlineRustTests": false,
+      "familyIds": ["36"],
+      "lines": 517,
+      "mechanicalMatchLines": [66, 83, 257, 347, 358, 360, 392, 438, 442],
+      "path": "workspaces/client/apps/desktop/deliver_server.py"
+    },
+    {
+      "category": "test",
+      "containsInlineRustTests": false,
+      "familyIds": [],
+      "lines": 403,
+      "mechanicalMatchLines": [145, 165, 176, 210, 308, 314],
+      "path": "workspaces/client/apps/desktop/delivery-test.py"
+    },
+    {
+      "category": "production",
+      "containsInlineRustTests": false,
+      "familyIds": ["36"],
+      "lines": 340,
+      "mechanicalMatchLines": [
+        16, 48, 50, 51, 53, 54, 104, 128, 169, 172, 175, 211, 216, 258
+      ],
+      "path": "workspaces/client/apps/desktop/desktop_delivery.py"
+    },
+    {
+      "category": "production",
+      "containsInlineRustTests": false,
+      "familyIds": [],
+      "lines": 197,
+      "mechanicalMatchLines": [],
+      "path": "workspaces/client/apps/desktop/desktop_process.py"
+    },
+    {
+      "category": "production",
+      "containsInlineRustTests": false,
+      "familyIds": ["36"],
+      "lines": 149,
+      "mechanicalMatchLines": [63, 72, 96],
+      "path": "workspaces/client/apps/desktop/desktop_updates.py"
+    },
+    {
+      "category": "production",
+      "containsInlineRustTests": false,
+      "familyIds": [],
+      "lines": 10,
+      "mechanicalMatchLines": [],
+      "path": "workspaces/client/apps/desktop/desktop_vm.py"
+    },
+    {
+      "category": "test",
+      "containsInlineRustTests": false,
+      "familyIds": [],
+      "lines": 280,
+      "mechanicalMatchLines": [18, 235, 246],
+      "path": "workspaces/client/apps/desktop/dictation-permissions.test.ts"
+    },
+    {
+      "category": "production",
+      "containsInlineRustTests": false,
+      "familyIds": ["33"],
+      "lines": 209,
+      "mechanicalMatchLines": [14, 173],
+      "path": "workspaces/client/apps/desktop/export-browser-profile.ts"
+    },
+    {
+      "category": "production",
+      "containsInlineRustTests": false,
+      "familyIds": ["32"],
+      "lines": 359,
+      "mechanicalMatchLines": [35, 41, 192, 272],
+      "path": "workspaces/client/apps/desktop/export-profile.ts"
+    },
+    {
+      "category": "test",
+      "containsInlineRustTests": false,
+      "familyIds": [],
+      "lines": 54,
+      "mechanicalMatchLines": [45],
+      "path": "workspaces/client/apps/desktop/export-server-credentials.test.ts"
+    },
+    {
+      "category": "production",
+      "containsInlineRustTests": false,
+      "familyIds": ["33"],
+      "lines": 78,
+      "mechanicalMatchLines": [46],
+      "path": "workspaces/client/apps/desktop/export-server-credentials.ts"
+    },
+    {
+      "category": "test",
+      "containsInlineRustTests": false,
+      "familyIds": [],
+      "lines": 2,
+      "mechanicalMatchLines": [],
+      "path": "workspaces/client/apps/desktop/fixtures/import-credentials-failure.mts"
+    },
+    {
+      "category": "test",
+      "containsInlineRustTests": false,
+      "familyIds": [],
+      "lines": 12,
+      "mechanicalMatchLines": [6],
+      "path": "workspaces/client/apps/desktop/fixtures/import-credentials.mts"
+    },
+    {
+      "category": "test",
+      "containsInlineRustTests": false,
+      "familyIds": [],
+      "lines": 64,
+      "mechanicalMatchLines": [10],
+      "path": "workspaces/client/apps/desktop/fixtures/installed_delivery_c004.py"
+    },
+    {
+      "category": "test",
+      "containsInlineRustTests": false,
+      "familyIds": [],
+      "lines": 16,
+      "mechanicalMatchLines": [8],
+      "path": "workspaces/client/apps/desktop/fixtures/recovery-renderer-page.ts"
+    },
+    {
+      "category": "test",
+      "containsInlineRustTests": false,
+      "familyIds": [],
+      "lines": 24,
+      "mechanicalMatchLines": [],
+      "path": "workspaces/client/apps/desktop/fixtures/runtime-environment.mts"
+    },
+    {
+      "category": "test",
+      "containsInlineRustTests": false,
+      "familyIds": [],
+      "lines": 23,
+      "mechanicalMatchLines": [],
+      "path": "workspaces/client/apps/desktop/fixtures/runtime-identity.mts"
+    },
+    {
+      "category": "test",
+      "containsInlineRustTests": false,
+      "familyIds": [],
+      "lines": 4,
+      "mechanicalMatchLines": [],
+      "path": "workspaces/client/apps/desktop/fixtures/speech-pending.mts"
+    },
+    {
+      "category": "test",
+      "containsInlineRustTests": false,
+      "familyIds": [],
+      "lines": 8,
+      "mechanicalMatchLines": [],
+      "path": "workspaces/client/apps/desktop/fixtures/speech-progress.mts"
+    },
+    {
+      "category": "production",
+      "containsInlineRustTests": false,
+      "familyIds": ["46"],
+      "lines": 66,
+      "mechanicalMatchLines": [],
+      "path": "workspaces/client/apps/desktop/frame-owner.ts"
+    },
+    {
+      "category": "test",
+      "containsInlineRustTests": false,
+      "familyIds": [],
+      "lines": 5,
+      "mechanicalMatchLines": [],
+      "path": "workspaces/client/apps/desktop/hidden-electron.ts"
+    },
+    {
+      "category": "production",
+      "containsInlineRustTests": false,
+      "familyIds": ["45"],
+      "lines": 31,
+      "mechanicalMatchLines": [19],
+      "path": "workspaces/client/apps/desktop/install-mode.ts"
+    },
+    {
+      "category": "test",
+      "containsInlineRustTests": false,
+      "familyIds": [],
+      "lines": 399,
+      "mechanicalMatchLines": [115, 363],
+      "path": "workspaces/client/apps/desktop/install-update-test.py"
+    },
+    {
+      "category": "production",
+      "containsInlineRustTests": false,
+      "familyIds": ["34", "36"],
+      "lines": 278,
+      "mechanicalMatchLines": [91],
+      "path": "workspaces/client/apps/desktop/install_update.py"
+    },
+    {
+      "category": "production",
+      "containsInlineRustTests": false,
+      "familyIds": ["39", "43"],
+      "lines": 142,
+      "mechanicalMatchLines": [53, 58, 72, 128],
+      "path": "workspaces/client/apps/desktop/layr-binary.ts"
+    },
+    {
+      "category": "test",
+      "containsInlineRustTests": false,
+      "familyIds": [],
+      "lines": 52,
+      "mechanicalMatchLines": [16, 31],
+      "path": "workspaces/client/apps/desktop/main-test-source.ts"
+    },
+    {
+      "category": "production",
+      "containsInlineRustTests": false,
+      "familyIds": ["03", "17", "30"],
+      "lines": 1310,
+      "mechanicalMatchLines": [204, 214, 249, 261, 470, 1299],
+      "path": "workspaces/client/apps/desktop/main.ts"
+    },
+    {
+      "category": "test",
+      "containsInlineRustTests": false,
+      "familyIds": [],
+      "lines": 225,
+      "mechanicalMatchLines": [116],
+      "path": "workspaces/client/apps/desktop/multi-server-memory.ts"
+    },
+    {
+      "category": "test",
+      "containsInlineRustTests": false,
+      "familyIds": [],
+      "lines": 370,
+      "mechanicalMatchLines": [18, 67, 70, 125, 126, 268, 313],
+      "path": "workspaces/client/apps/desktop/native-file-actions.test.ts"
+    },
+    {
+      "category": "test",
+      "containsInlineRustTests": false,
+      "familyIds": [],
+      "lines": 728,
+      "mechanicalMatchLines": [40, 200, 487, 500, 655],
+      "path": "workspaces/client/apps/desktop/native-ux.test.ts"
+    },
+    {
+      "category": "production",
+      "containsInlineRustTests": false,
+      "familyIds": ["41"],
+      "lines": 54,
+      "mechanicalMatchLines": [18],
+      "path": "workspaces/client/apps/desktop/native/fs-events.swift"
+    },
+    {
+      "category": "production",
+      "containsInlineRustTests": false,
+      "familyIds": [],
+      "lines": 35,
+      "mechanicalMatchLines": [],
+      "path": "workspaces/client/apps/desktop/native/linux-vm/build.ts"
+    },
+    {
+      "category": "production",
+      "containsInlineRustTests": false,
+      "familyIds": ["40"],
+      "lines": 397,
+      "mechanicalMatchLines": [12, 48, 96, 114, 251, 305],
+      "path": "workspaces/client/apps/desktop/native/linux-vm/main.swift"
+    },
+    {
+      "category": "generated",
+      "containsInlineRustTests": false,
+      "familyIds": [],
+      "lines": 2,
+      "mechanicalMatchLines": [],
+      "path": "workspaces/client/apps/desktop/native/linux-vm/shared_values_generated.swift"
+    },
+    {
+      "category": "production",
+      "containsInlineRustTests": false,
+      "familyIds": ["25"],
+      "lines": 60,
+      "mechanicalMatchLines": [6, 29],
+      "path": "workspaces/client/apps/desktop/native/speech.swift"
+    },
+    {
+      "category": "test",
+      "containsInlineRustTests": false,
+      "familyIds": [],
+      "lines": 158,
+      "mechanicalMatchLines": [32, 39],
+      "path": "workspaces/client/apps/desktop/package-test.ts"
+    },
+    {
+      "category": "production",
+      "containsInlineRustTests": false,
+      "familyIds": ["44", "45"],
+      "lines": 325,
+      "mechanicalMatchLines": [],
+      "path": "workspaces/client/apps/desktop/package.ts"
+    },
+    {
+      "category": "test",
+      "containsInlineRustTests": false,
+      "familyIds": [],
+      "lines": 37,
+      "mechanicalMatchLines": [],
+      "path": "workspaces/client/apps/desktop/preload-subscriptions.test.ts"
+    },
+    {
+      "category": "production",
+      "containsInlineRustTests": false,
+      "familyIds": ["30"],
+      "lines": 140,
+      "mechanicalMatchLines": [],
+      "path": "workspaces/client/apps/desktop/preload.cjs"
+    },
+    {
+      "category": "test",
+      "containsInlineRustTests": false,
+      "familyIds": [],
+      "lines": 318,
+      "mechanicalMatchLines": [251, 254],
+      "path": "workspaces/client/apps/desktop/profile-export-fixture.ts"
+    },
+    {
+      "category": "production",
+      "containsInlineRustTests": false,
+      "familyIds": ["32"],
+      "lines": 105,
+      "mechanicalMatchLines": [],
+      "path": "workspaces/client/apps/desktop/profile-export-reader.ts"
+    },
+    {
+      "category": "test",
+      "containsInlineRustTests": false,
+      "familyIds": [],
+      "lines": 196,
+      "mechanicalMatchLines": [22, 26, 96],
+      "path": "workspaces/client/apps/desktop/profile-export-test.ts"
+    },
+    {
+      "category": "test",
+      "containsInlineRustTests": false,
+      "familyIds": [],
+      "lines": 70,
+      "mechanicalMatchLines": [40],
+      "path": "workspaces/client/apps/desktop/python-resources.test.ts"
+    },
+    {
+      "category": "production",
+      "containsInlineRustTests": false,
+      "familyIds": ["44"],
+      "lines": 66,
+      "mechanicalMatchLines": [59],
+      "path": "workspaces/client/apps/desktop/python-resources.ts"
+    },
+    {
+      "category": "production",
+      "containsInlineRustTests": false,
+      "familyIds": ["34", "35", "36"],
+      "lines": 1172,
+      "mechanicalMatchLines": [
+        48, 145, 219, 504, 513, 528, 663, 680, 730, 742, 748, 754, 839, 930,
+        976, 997
+      ],
+      "path": "workspaces/client/apps/desktop/recover_backend.py"
+    },
+    {
+      "category": "test",
+      "containsInlineRustTests": false,
+      "familyIds": [],
+      "lines": 16,
+      "mechanicalMatchLines": [],
+      "path": "workspaces/client/apps/desktop/recovery-helper-witness.test.ts"
+    },
+    {
+      "category": "test",
+      "containsInlineRustTests": false,
+      "familyIds": [],
+      "lines": 80,
+      "mechanicalMatchLines": [29],
+      "path": "workspaces/client/apps/desktop/recovery-reload-test.py"
+    },
+    {
+      "category": "test",
+      "containsInlineRustTests": false,
+      "familyIds": [],
+      "lines": 127,
+      "mechanicalMatchLines": [34, 45, 103],
+      "path": "workspaces/client/apps/desktop/recovery-renderer-test.ts"
+    },
+    {
+      "category": "test",
+      "containsInlineRustTests": false,
+      "familyIds": [],
+      "lines": 420,
+      "mechanicalMatchLines": [145, 188, 342, 346],
+      "path": "workspaces/client/apps/desktop/recovery-test.py"
+    },
+    {
+      "category": "test",
+      "containsInlineRustTests": false,
+      "familyIds": [],
+      "lines": 1020,
+      "mechanicalMatchLines": [363, 384, 609, 837],
+      "path": "workspaces/client/apps/desktop/recovery.test.ts"
+    },
+    {
+      "category": "production",
+      "containsInlineRustTests": false,
+      "familyIds": ["34", "35"],
+      "lines": 697,
+      "mechanicalMatchLines": [124, 193, 277, 330],
+      "path": "workspaces/client/apps/desktop/recovery.ts"
+    },
+    {
+      "category": "production",
+      "containsInlineRustTests": false,
+      "familyIds": ["43"],
+      "lines": 257,
+      "mechanicalMatchLines": [129, 191],
+      "path": "workspaces/client/apps/desktop/release-binaries.ts"
+    },
+    {
+      "category": "test",
+      "containsInlineRustTests": false,
+      "familyIds": [],
+      "lines": 167,
+      "mechanicalMatchLines": [],
+      "path": "workspaces/client/apps/desktop/renderer-recovery.test.ts"
+    },
+    {
+      "category": "production",
+      "containsInlineRustTests": false,
+      "familyIds": ["39"],
+      "lines": 195,
+      "mechanicalMatchLines": [15, 22, 23, 28, 65],
+      "path": "workspaces/client/apps/desktop/renderer-recovery.ts"
+    },
+    {
+      "category": "production",
+      "containsInlineRustTests": false,
+      "familyIds": ["05", "35"],
+      "lines": 84,
+      "mechanicalMatchLines": [15, 22, 23, 24, 25, 73, 83],
+      "path": "workspaces/client/apps/desktop/restart-environment.ts"
+    },
+    {
+      "category": "test",
+      "containsInlineRustTests": false,
+      "familyIds": [],
+      "lines": 33,
+      "mechanicalMatchLines": [],
+      "path": "workspaces/client/apps/desktop/retained-helper-witness.test.ts"
+    },
+    {
+      "category": "test",
+      "containsInlineRustTests": false,
+      "familyIds": [],
+      "lines": 34,
+      "mechanicalMatchLines": [],
+      "path": "workspaces/client/apps/desktop/retained-helpers-test.py"
+    },
+    {
+      "category": "production",
+      "containsInlineRustTests": false,
+      "familyIds": ["43"],
+      "lines": 9,
+      "mechanicalMatchLines": [],
+      "path": "workspaces/client/apps/desktop/runtime-binaries.ts"
+    },
+    {
+      "category": "test",
+      "containsInlineRustTests": false,
+      "familyIds": [],
+      "lines": 182,
+      "mechanicalMatchLines": [113],
+      "path": "workspaces/client/apps/desktop/server-access-native.ts"
+    },
+    {
+      "category": "test",
+      "containsInlineRustTests": false,
+      "familyIds": [],
+      "lines": 421,
+      "mechanicalMatchLines": [237, 292, 299, 302, 326],
+      "path": "workspaces/client/apps/desktop/server-credentials.test.ts"
+    },
+    {
+      "category": "production",
+      "containsInlineRustTests": false,
+      "familyIds": ["31"],
+      "lines": 396,
+      "mechanicalMatchLines": [87, 112, 294],
+      "path": "workspaces/client/apps/desktop/server-credentials.ts"
+    },
+    {
+      "category": "test",
+      "containsInlineRustTests": false,
+      "familyIds": [],
+      "lines": 169,
+      "mechanicalMatchLines": [],
+      "path": "workspaces/client/apps/desktop/server-frames-native.ts"
+    },
+    {
+      "category": "production",
+      "containsInlineRustTests": false,
+      "familyIds": ["42"],
+      "lines": 97,
+      "mechanicalMatchLines": [51, 53],
+      "path": "workspaces/client/apps/desktop/signing-check.ts"
+    },
+    {
+      "category": "production",
+      "containsInlineRustTests": false,
+      "familyIds": ["42"],
+      "lines": 34,
+      "mechanicalMatchLines": [8, 16, 21],
+      "path": "workspaces/client/apps/desktop/signing-settings.ts"
+    },
+    {
+      "category": "test",
+      "containsInlineRustTests": false,
+      "familyIds": [],
+      "lines": 220,
+      "mechanicalMatchLines": [102, 111],
+      "path": "workspaces/client/apps/desktop/signing-test.ts"
+    },
+    {
+      "category": "production",
+      "containsInlineRustTests": false,
+      "familyIds": ["39", "42"],
+      "lines": 202,
+      "mechanicalMatchLines": [31, 37, 45],
+      "path": "workspaces/client/apps/desktop/signing.ts"
+    },
+    {
+      "category": "production",
+      "containsInlineRustTests": false,
+      "familyIds": ["25"],
+      "lines": 169,
+      "mechanicalMatchLines": [52, 72, 109],
+      "path": "workspaces/client/apps/desktop/speech.ts"
+    },
+    {
+      "category": "test",
+      "containsInlineRustTests": false,
+      "familyIds": [],
+      "lines": 1249,
+      "mechanicalMatchLines": [195, 262, 668, 776, 777, 791, 874, 875],
+      "path": "workspaces/client/apps/desktop/startup-delivery-test.py"
+    },
+    {
+      "category": "test",
+      "containsInlineRustTests": false,
+      "familyIds": [],
+      "lines": 101,
+      "mechanicalMatchLines": [97],
+      "path": "workspaces/client/apps/desktop/startup-recovery.test.ts"
+    },
+    {
+      "category": "test",
+      "containsInlineRustTests": false,
+      "familyIds": [],
+      "lines": 399,
+      "mechanicalMatchLines": [48, 161, 162, 171, 172, 178],
+      "path": "workspaces/client/apps/desktop/supervisor-independence.test.ts"
+    },
+    {
+      "category": "test",
+      "containsInlineRustTests": false,
+      "familyIds": [],
+      "lines": 14,
+      "mechanicalMatchLines": [],
+      "path": "workspaces/client/apps/desktop/sync-brotli-fixture.ts"
+    },
+    {
+      "category": "test",
+      "containsInlineRustTests": false,
+      "familyIds": [],
+      "lines": 223,
+      "mechanicalMatchLines": [83, 143],
+      "path": "workspaces/client/apps/desktop/sync-brotli-native.ts"
+    },
+    {
+      "category": "test",
+      "containsInlineRustTests": false,
+      "familyIds": [],
+      "lines": 51,
+      "mechanicalMatchLines": [8, 9, 12, 13, 19, 20, 31, 40, 47],
+      "path": "workspaces/client/apps/desktop/test-support.ts"
+    },
+    {
+      "category": "test",
+      "containsInlineRustTests": false,
+      "familyIds": [],
+      "lines": 673,
+      "mechanicalMatchLines": [33, 37, 99, 228, 341, 349, 390],
+      "path": "workspaces/client/apps/desktop/test.ts"
+    },
+    {
+      "category": "test",
+      "containsInlineRustTests": false,
+      "familyIds": [],
+      "lines": 101,
+      "mechanicalMatchLines": [],
+      "path": "workspaces/client/apps/desktop/ui-host.test.ts"
+    },
+    {
+      "category": "production",
+      "containsInlineRustTests": false,
+      "familyIds": ["46"],
+      "lines": 104,
+      "mechanicalMatchLines": [],
+      "path": "workspaces/client/apps/desktop/ui-host.ts"
+    },
+    {
+      "category": "test",
+      "containsInlineRustTests": false,
+      "familyIds": [],
+      "lines": 215,
+      "mechanicalMatchLines": [],
+      "path": "workspaces/client/apps/desktop/ui-only-smoke.ts"
+    },
+    {
+      "category": "test",
+      "containsInlineRustTests": false,
+      "familyIds": [],
+      "lines": 57,
+      "mechanicalMatchLines": [],
+      "path": "workspaces/client/apps/desktop/vault-keys.test.ts"
+    },
+    {
+      "category": "production",
+      "containsInlineRustTests": false,
+      "familyIds": ["26"],
+      "lines": 52,
+      "mechanicalMatchLines": [31],
+      "path": "workspaces/client/apps/desktop/vault-keys.ts"
+    },
+    {
+      "category": "test",
+      "containsInlineRustTests": false,
+      "familyIds": [],
+      "lines": 13,
+      "mechanicalMatchLines": [],
+      "path": "workspaces/client/apps/desktop/vitest.config.ts"
+    },
+    {
+      "category": "test",
+      "containsInlineRustTests": false,
+      "familyIds": [],
+      "lines": 19,
+      "mechanicalMatchLines": [],
+      "path": "workspaces/client/apps/desktop/vitest.fast.config.ts"
+    },
+    {
+      "category": "test",
+      "containsInlineRustTests": false,
+      "familyIds": [],
+      "lines": 98,
+      "mechanicalMatchLines": [],
+      "path": "workspaces/client/apps/desktop/window-state.test.ts"
+    },
+    {
+      "category": "production",
+      "containsInlineRustTests": false,
+      "familyIds": ["37"],
+      "lines": 159,
+      "mechanicalMatchLines": [88],
+      "path": "workspaces/client/apps/desktop/window-state.ts"
+    },
+    {
+      "category": "test",
+      "containsInlineRustTests": false,
+      "familyIds": [],
+      "lines": 109,
+      "mechanicalMatchLines": [24, 86, 89],
+      "path": "workspaces/client/apps/native/bridge-image-package.test.ts"
+    },
+    {
+      "category": "production",
+      "containsInlineRustTests": false,
+      "familyIds": ["44"],
+      "lines": 45,
+      "mechanicalMatchLines": [6, 8],
+      "path": "workspaces/client/apps/native/bridge-image-package.ts"
+    },
+    {
+      "category": "test",
+      "containsInlineRustTests": false,
+      "familyIds": [],
+      "lines": 74,
+      "mechanicalMatchLines": [35, 40, 59],
+      "path": "workspaces/client/apps/native/check-native.test.ts"
+    },
+    {
+      "category": "test",
+      "containsInlineRustTests": false,
+      "familyIds": [],
+      "lines": 408,
+      "mechanicalMatchLines": [72, 74, 102, 122, 139],
+      "path": "workspaces/client/apps/native/check-native.ts"
+    },
+    {
+      "category": "test",
+      "containsInlineRustTests": false,
+      "familyIds": [],
+      "lines": 168,
+      "mechanicalMatchLines": [],
+      "path": "workspaces/client/apps/native/check-package-start.ts"
+    },
+    {
+      "category": "test",
+      "containsInlineRustTests": false,
+      "familyIds": [],
+      "lines": 114,
+      "mechanicalMatchLines": [23, 28],
+      "path": "workspaces/client/apps/native/check-package.ts"
+    },
+    {
+      "category": "production",
+      "containsInlineRustTests": false,
+      "familyIds": [],
+      "lines": 25,
+      "mechanicalMatchLines": [],
+      "path": "workspaces/client/apps/native/generate-icons.ts"
+    },
+    {
+      "category": "production",
+      "containsInlineRustTests": false,
+      "familyIds": [],
+      "lines": 143,
+      "mechanicalMatchLines": [],
+      "path": "workspaces/client/apps/native/package-flow.ts"
+    },
+    {
+      "category": "production",
+      "containsInlineRustTests": false,
+      "familyIds": ["44", "45"],
+      "lines": 86,
+      "mechanicalMatchLines": [23],
+      "path": "workspaces/client/apps/native/package.ts"
+    },
+    {
+      "category": "test",
+      "containsInlineRustTests": false,
+      "familyIds": [],
+      "lines": 53,
+      "mechanicalMatchLines": [21],
+      "path": "workspaces/client/apps/native/recovery-package.test.ts"
+    },
+    {
+      "category": "production",
+      "containsInlineRustTests": false,
+      "familyIds": [],
+      "lines": 33,
+      "mechanicalMatchLines": [],
+      "path": "workspaces/client/apps/native/recovery-package.ts"
+    },
+    {
+      "category": "production",
+      "containsInlineRustTests": false,
+      "familyIds": [],
+      "lines": 31,
+      "mechanicalMatchLines": [],
+      "path": "workspaces/client/apps/native/recovery.ts"
+    },
+    {
+      "category": "production",
+      "containsInlineRustTests": false,
+      "familyIds": [],
+      "lines": 23,
+      "mechanicalMatchLines": [],
+      "path": "workspaces/client/apps/native/src-tauri/build.rs"
+    },
+    {
+      "category": "generated",
+      "containsInlineRustTests": false,
+      "familyIds": [],
+      "lines": 21,
+      "mechanicalMatchLines": [],
+      "path": "workspaces/client/apps/native/src-tauri/gen/apple/Podfile"
+    },
+    {
+      "category": "generated",
+      "containsInlineRustTests": false,
+      "familyIds": [],
+      "lines": 8,
+      "mechanicalMatchLines": [],
+      "path": "workspaces/client/apps/native/src-tauri/gen/apple/Sources/studio-native-client/bindings/bindings.h"
+    },
+    {
+      "category": "generated",
+      "containsInlineRustTests": false,
+      "familyIds": [],
+      "lines": 6,
+      "mechanicalMatchLines": [],
+      "path": "workspaces/client/apps/native/src-tauri/gen/apple/Sources/studio-native-client/main.mm"
+    },
+    {
+      "category": "production",
+      "containsInlineRustTests": true,
+      "familyIds": ["46"],
+      "lines": 176,
+      "mechanicalMatchLines": [133],
+      "path": "workspaces/client/apps/native/src-tauri/src/close.rs"
+    },
+    {
+      "category": "production",
+      "containsInlineRustTests": false,
+      "familyIds": [],
+      "lines": 66,
+      "mechanicalMatchLines": [],
+      "path": "workspaces/client/apps/native/src-tauri/src/desktop_menu.rs"
+    },
+    {
+      "category": "production",
+      "containsInlineRustTests": true,
+      "familyIds": ["34"],
+      "lines": 236,
+      "mechanicalMatchLines": [10, 22, 23, 37, 45, 46, 73, 167, 197, 198],
+      "path": "workspaces/client/apps/native/src-tauri/src/desktop_recovery.rs"
+    },
+    {
+      "category": "production",
+      "containsInlineRustTests": false,
+      "familyIds": ["46"],
+      "lines": 89,
+      "mechanicalMatchLines": [45, 52, 53],
+      "path": "workspaces/client/apps/native/src-tauri/src/frame_assets.rs"
+    },
+    {
+      "category": "production",
+      "containsInlineRustTests": false,
+      "familyIds": ["39"],
+      "lines": 45,
+      "mechanicalMatchLines": [30],
+      "path": "workspaces/client/apps/native/src-tauri/src/ios_diag.js"
+    },
+    {
+      "category": "production",
+      "containsInlineRustTests": true,
+      "familyIds": ["38", "46"],
+      "lines": 140,
+      "mechanicalMatchLines": [133, 134, 135],
+      "path": "workspaces/client/apps/native/src-tauri/src/ios_insets.rs"
+    },
+    {
+      "category": "production",
+      "containsInlineRustTests": true,
+      "familyIds": ["46"],
+      "lines": 100,
+      "mechanicalMatchLines": [],
+      "path": "workspaces/client/apps/native/src-tauri/src/ios_server.rs"
+    },
+    {
+      "category": "production",
+      "containsInlineRustTests": false,
+      "familyIds": ["38", "39"],
+      "lines": 556,
+      "mechanicalMatchLines": [
+        50, 53, 54, 164, 251, 258, 264, 292, 304, 311, 312, 313, 364, 426, 499
+      ],
+      "path": "workspaces/client/apps/native/src-tauri/src/ios_shell.rs"
+    },
+    {
+      "category": "production",
+      "containsInlineRustTests": false,
+      "familyIds": [],
+      "lines": 67,
+      "mechanicalMatchLines": [],
+      "path": "workspaces/client/apps/native/src-tauri/src/ios_start.html"
+    },
+    {
+      "category": "production",
+      "containsInlineRustTests": false,
+      "familyIds": ["38"],
+      "lines": 51,
+      "mechanicalMatchLines": [7, 12, 14],
+      "path": "workspaces/client/apps/native/src-tauri/src/ios_viewport.js"
+    },
+    {
+      "category": "production",
+      "containsInlineRustTests": true,
+      "familyIds": ["01", "15", "29"],
+      "lines": 879,
+      "mechanicalMatchLines": [
+        91, 163, 174, 194, 199, 260, 261, 262, 271, 321, 344, 346, 361, 366,
+        681, 741, 775, 804, 871
+      ],
+      "path": "workspaces/client/apps/native/src-tauri/src/lib.rs"
+    },
+    {
+      "category": "production",
+      "containsInlineRustTests": false,
+      "familyIds": ["05"],
+      "lines": 210,
+      "mechanicalMatchLines": [6, 89, 96],
+      "path": "workspaces/client/apps/native/src-tauri/src/local_backend.rs"
+    },
+    {
+      "category": "production",
+      "containsInlineRustTests": false,
+      "familyIds": [],
+      "lines": 11,
+      "mechanicalMatchLines": [],
+      "path": "workspaces/client/apps/native/src-tauri/src/main.rs"
+    },
+    {
+      "category": "test",
+      "containsInlineRustTests": false,
+      "familyIds": [],
+      "lines": 16,
+      "mechanicalMatchLines": [5],
+      "path": "workspaces/client/apps/native/src-tauri/src/native-check-types.ts"
+    },
+    {
+      "category": "test",
+      "containsInlineRustTests": false,
+      "familyIds": [],
+      "lines": 696,
+      "mechanicalMatchLines": [10, 11, 34, 380, 524, 526, 544],
+      "path": "workspaces/client/apps/native/src-tauri/src/native-check.js"
+    },
+    {
+      "category": "test",
+      "containsInlineRustTests": false,
+      "familyIds": [],
+      "lines": 128,
+      "mechanicalMatchLines": [32, 69, 106, 118, 121],
+      "path": "workspaces/client/apps/native/src-tauri/src/native_check.rs"
+    },
+    {
+      "category": "production",
+      "containsInlineRustTests": true,
+      "familyIds": ["32", "33"],
+      "lines": 272,
+      "mechanicalMatchLines": [
+        1, 9, 11, 25, 28, 41, 56, 69, 72, 76, 101, 104, 108, 165, 172, 173, 177,
+        233
+      ],
+      "path": "workspaces/client/apps/native/src-tauri/src/profile.rs"
+    },
+    {
+      "category": "production",
+      "containsInlineRustTests": true,
+      "familyIds": ["37"],
+      "lines": 219,
+      "mechanicalMatchLines": [2, 10, 17, 59, 69, 75],
+      "path": "workspaces/client/apps/native/src-tauri/src/window_state.rs"
+    },
+    {
+      "category": "test",
+      "containsInlineRustTests": false,
+      "familyIds": [],
+      "lines": 135,
+      "mechanicalMatchLines": [5, 16, 27, 80, 93],
+      "path": "workspaces/client/packages/client-core/examples/document_check/check.rs"
+    },
+    {
+      "category": "test",
+      "containsInlineRustTests": false,
+      "familyIds": [],
+      "lines": 8,
+      "mechanicalMatchLines": [],
+      "path": "workspaces/client/packages/client-core/examples/document_check/main.rs"
+    },
+    {
+      "category": "test",
+      "containsInlineRustTests": false,
+      "familyIds": [],
+      "lines": 121,
+      "mechanicalMatchLines": [],
+      "path": "workspaces/client/packages/client-core/examples/voice_playback_check/check.rs"
+    },
+    {
+      "category": "test",
+      "containsInlineRustTests": false,
+      "familyIds": [],
+      "lines": 8,
+      "mechanicalMatchLines": [],
+      "path": "workspaces/client/packages/client-core/examples/voice_playback_check/main.rs"
+    },
+    {
+      "category": "production",
+      "containsInlineRustTests": true,
+      "familyIds": ["22"],
+      "lines": 457,
+      "mechanicalMatchLines": [
+        8, 10, 16, 23, 33, 35, 51, 67, 92, 102, 157, 164, 172, 268, 275
+      ],
+      "path": "workspaces/client/packages/client-core/src/actions.rs"
+    },
+    {
+      "category": "production",
+      "containsInlineRustTests": true,
+      "familyIds": ["03", "04"],
+      "lines": 996,
+      "mechanicalMatchLines": [
+        5, 6, 18, 29, 184, 186, 196, 214, 252, 269, 277, 286, 310, 316, 331,
+        359, 393, 410, 412, 426, 430, 443, 446, 461, 481, 483, 489, 509, 511,
+        522, 547, 552, 563, 578, 602, 629, 664, 686, 688, 791, 797, 842, 849,
+        892, 915, 916, 952, 980, 985
+      ],
+      "path": "workspaces/client/packages/client-core/src/backend.rs"
+    },
+    {
+      "category": "production",
+      "containsInlineRustTests": true,
+      "familyIds": ["02"],
+      "lines": 290,
+      "mechanicalMatchLines": [
+        7, 22, 35, 62, 63, 64, 69, 137, 185, 186, 231, 240, 269, 285
+      ],
+      "path": "workspaces/client/packages/client-core/src/client.rs"
+    },
+    {
+      "category": "production",
+      "containsInlineRustTests": true,
+      "familyIds": ["20", "21"],
+      "lines": 321,
+      "mechanicalMatchLines": [
+        6, 12, 34, 53, 59, 73, 120, 125, 166, 180, 184, 185, 228
+      ],
+      "path": "workspaces/client/packages/client-core/src/delivery.rs"
+    },
+    {
+      "category": "production",
+      "containsInlineRustTests": true,
+      "familyIds": ["16", "17", "26"],
+      "lines": 931,
+      "mechanicalMatchLines": [
+        8, 95, 97, 168, 184, 213, 217, 224, 236, 257, 273, 318, 357, 388, 398,
+        400, 411, 414, 465, 467, 483, 491, 496, 500, 510, 535, 572, 581, 608,
+        615, 617, 622, 625, 626, 631, 633, 641, 648, 659, 661, 670, 676, 678,
+        687, 690, 711, 721, 733, 739, 743, 746, 766, 767, 768, 781, 782, 792,
+        793, 794, 795, 841, 888, 904, 907, 917, 925, 926, 929
+      ],
+      "path": "workspaces/client/packages/client-core/src/desktop.rs"
+    },
+    {
+      "category": "production",
+      "containsInlineRustTests": true,
+      "familyIds": ["23"],
+      "lines": 500,
+      "mechanicalMatchLines": [
+        6, 30, 37, 39, 48, 57, 60, 64, 75, 85, 90, 91, 93, 94, 97, 107, 132,
+        144, 170, 177, 185, 192, 200, 207, 229, 230, 231, 232, 233, 234, 235,
+        236, 237, 238, 239, 240, 289
+      ],
+      "path": "workspaces/client/packages/client-core/src/dictation.rs"
+    },
+    {
+      "category": "production",
+      "containsInlineRustTests": true,
+      "familyIds": ["10", "49"],
+      "lines": 183,
+      "mechanicalMatchLines": [8, 13, 93, 122, 124, 146, 179],
+      "path": "workspaces/client/packages/client-core/src/draft_replication.rs"
+    },
+    {
+      "category": "production",
+      "containsInlineRustTests": true,
+      "familyIds": ["10", "49"],
+      "lines": 506,
+      "mechanicalMatchLines": [
+        8, 27, 32, 37, 67, 69, 99, 109, 110, 113, 131, 156, 171, 251, 288, 330,
+        342, 343, 382, 410, 412
+      ],
+      "path": "workspaces/client/packages/client-core/src/draft_store.rs"
+    },
+    {
+      "category": "production",
+      "containsInlineRustTests": true,
+      "familyIds": ["14"],
+      "lines": 414,
+      "mechanicalMatchLines": [3, 88, 110, 153, 162, 164, 171, 173],
+      "path": "workspaces/client/packages/client-core/src/events.rs"
+    },
+    {
+      "category": "production",
+      "containsInlineRustTests": true,
+      "familyIds": ["17"],
+      "lines": 270,
+      "mechanicalMatchLines": [
+        1, 3, 4, 7, 15, 23, 37, 38, 45, 47, 88, 110, 122, 130
+      ],
+      "path": "workspaces/client/packages/client-core/src/file_actions.rs"
+    },
+    {
+      "category": "production",
+      "containsInlineRustTests": true,
+      "familyIds": ["28"],
+      "lines": 246,
+      "mechanicalMatchLines": [4, 57, 60, 68, 102, 118, 225],
+      "path": "workspaces/client/packages/client-core/src/file_links.rs"
+    },
+    {
+      "category": "production",
+      "containsInlineRustTests": true,
+      "familyIds": ["18", "19"],
+      "lines": 629,
+      "mechanicalMatchLines": [
+        7, 38, 55, 78, 134, 146, 208, 211, 214, 253, 256, 258, 263, 278, 280,
+        284, 286, 296, 308, 317, 387, 395, 423, 428, 462, 465, 484, 545
+      ],
+      "path": "workspaces/client/packages/client-core/src/file_preview.rs"
+    },
+    {
+      "category": "production",
+      "containsInlineRustTests": true,
+      "familyIds": ["17"],
+      "lines": 346,
+      "mechanicalMatchLines": [
+        4, 33, 39, 46, 57, 63, 68, 74, 98, 113, 121, 152, 174, 187, 192
+      ],
+      "path": "workspaces/client/packages/client-core/src/file_save.rs"
+    },
+    {
+      "category": "production",
+      "containsInlineRustTests": false,
+      "familyIds": [],
+      "lines": 43,
+      "mechanicalMatchLines": [],
+      "path": "workspaces/client/packages/client-core/src/lib.rs"
+    },
+    {
+      "category": "production",
+      "containsInlineRustTests": true,
+      "familyIds": ["15", "24"],
+      "lines": 576,
+      "mechanicalMatchLines": [
+        8, 81, 110, 112, 119, 128, 149, 159, 162, 171, 185, 226, 233, 273, 360,
+        372, 474
+      ],
+      "path": "workspaces/client/packages/client-core/src/media.rs"
+    },
+    {
+      "category": "production",
+      "containsInlineRustTests": true,
+      "familyIds": ["01", "02", "28", "48"],
+      "lines": 665,
+      "mechanicalMatchLines": [
+        25, 119, 124, 212, 264, 296, 364, 451, 478, 480, 498, 502, 590, 605,
+        616, 647, 656, 662
+      ],
+      "path": "workspaces/client/packages/client-core/src/native.rs"
+    },
+    {
+      "category": "production",
+      "containsInlineRustTests": true,
+      "familyIds": ["15", "26"],
+      "lines": 292,
+      "mechanicalMatchLines": [
+        7, 18, 19, 22, 23, 27, 36, 38, 39, 40, 50, 53, 63, 81, 84, 180, 182,
+        211, 212, 217, 225, 279
+      ],
+      "path": "workspaces/client/packages/client-core/src/notifications.rs"
+    },
+    {
+      "category": "production",
+      "containsInlineRustTests": true,
+      "familyIds": ["19"],
+      "lines": 73,
+      "mechanicalMatchLines": [1, 4, 7, 12, 17, 18, 21, 25, 39, 59, 64, 67, 69],
+      "path": "workspaces/client/packages/client-core/src/ordered_json.rs"
+    },
+    {
+      "category": "production",
+      "containsInlineRustTests": true,
+      "familyIds": ["20", "21"],
+      "lines": 475,
+      "mechanicalMatchLines": [
+        4, 5, 8, 13, 18, 24, 43, 46, 61, 79, 88, 93, 96, 102, 106, 136, 151,
+        159, 208, 215, 218, 236, 240, 242, 246, 249, 265, 276, 280, 289, 335
+      ],
+      "path": "workspaces/client/packages/client-core/src/outbox.rs"
+    },
+    {
+      "category": "production",
+      "containsInlineRustTests": false,
+      "familyIds": ["18"],
+      "lines": 159,
+      "mechanicalMatchLines": [8, 11, 23, 24, 28, 31, 56, 130, 139],
+      "path": "workspaces/client/packages/client-core/src/pdf.rs"
+    },
+    {
+      "category": "production",
+      "containsInlineRustTests": true,
+      "familyIds": ["28"],
+      "lines": 220,
+      "mechanicalMatchLines": [3, 8, 14, 33, 37, 40, 45, 98, 118, 170, 193],
+      "path": "workspaces/client/packages/client-core/src/platform.rs"
+    },
+    {
+      "category": "production",
+      "containsInlineRustTests": true,
+      "familyIds": ["04", "10", "11", "12", "13"],
+      "lines": 778,
+      "mechanicalMatchLines": [
+        4, 5, 9, 47, 72, 82, 86, 94, 106, 107, 124, 132, 134, 141, 147, 183,
+        190, 198, 206, 207, 215, 229, 230, 236, 288, 305, 308, 316, 327, 329,
+        378, 387, 388, 390, 396, 400, 402, 447, 448, 454, 455, 554, 563, 689,
+        709, 737, 773
+      ],
+      "path": "workspaces/client/packages/client-core/src/projections.rs"
+    },
+    {
+      "category": "production",
+      "containsInlineRustTests": false,
+      "familyIds": ["46"],
+      "lines": 63,
+      "mechanicalMatchLines": [44],
+      "path": "workspaces/client/packages/client-core/src/quick_look.rs"
+    },
+    {
+      "category": "production",
+      "containsInlineRustTests": true,
+      "familyIds": ["18"],
+      "lines": 531,
+      "mechanicalMatchLines": [
+        9, 26, 101, 198, 220, 271, 290, 326, 327, 329, 343, 344, 361, 483, 501,
+        502, 507, 512, 517
+      ],
+      "path": "workspaces/client/packages/client-core/src/rich_document.rs"
+    },
+    {
+      "category": "production",
+      "containsInlineRustTests": true,
+      "familyIds": ["29"],
+      "lines": 351,
+      "mechanicalMatchLines": [
+        10, 14, 15, 35, 37, 45, 48, 85, 90, 96, 98, 123, 129, 170, 185, 195,
+        224, 226, 233, 275, 277, 280
+      ],
+      "path": "workspaces/client/packages/client-core/src/server_keys.rs"
+    },
+    {
+      "category": "production",
+      "containsInlineRustTests": true,
+      "familyIds": ["03", "29"],
+      "lines": 791,
+      "mechanicalMatchLines": [
+        5, 38, 76, 79, 153, 155, 309, 364, 401, 407, 461, 467, 524, 526, 529,
+        544, 633, 757
+      ],
+      "path": "workspaces/client/packages/client-core/src/server_transport.rs"
+    },
+    {
+      "category": "production",
+      "containsInlineRustTests": true,
+      "familyIds": ["26"],
+      "lines": 286,
+      "mechanicalMatchLines": [
+        2, 25, 27, 38, 51, 67, 79, 113, 122, 124, 133, 136, 147, 149
+      ],
+      "path": "workspaces/client/packages/client-core/src/sign_in.rs"
+    },
+    {
+      "category": "production",
+      "containsInlineRustTests": true,
+      "familyIds": ["25"],
+      "lines": 556,
+      "mechanicalMatchLines": [
+        7, 30, 31, 36, 46, 50, 67, 83, 156, 198, 250, 275
+      ],
+      "path": "workspaces/client/packages/client-core/src/speech.rs"
+    },
+    {
+      "category": "production",
+      "containsInlineRustTests": true,
+      "familyIds": ["05"],
+      "lines": 701,
+      "mechanicalMatchLines": [
+        3, 5, 30, 36, 42, 60, 65, 67, 74, 76, 77, 79, 307, 436, 443, 462, 473,
+        474, 475, 482, 495, 498, 514, 520, 521, 522, 529, 536, 540, 541, 542,
+        544, 548, 582, 606, 607, 628, 629, 630, 634, 662
+      ],
+      "path": "workspaces/client/packages/client-core/src/startup.rs"
+    },
+    {
+      "category": "production",
+      "containsInlineRustTests": true,
+      "familyIds": ["06", "07", "08", "48"],
+      "lines": 689,
+      "mechanicalMatchLines": [
+        4, 5, 12, 23, 27, 30, 115, 116, 146, 149, 153, 163, 168, 183, 196, 201,
+        202, 292, 302, 332, 403, 405, 432, 433, 454, 461, 466, 479, 483, 618
+      ],
+      "path": "workspaces/client/packages/client-core/src/store.rs"
+    },
+    {
+      "category": "production",
+      "containsInlineRustTests": true,
+      "familyIds": ["19"],
+      "lines": 50,
+      "mechanicalMatchLines": [],
+      "path": "workspaces/client/packages/client-core/src/stream_log.rs"
+    },
+    {
+      "category": "production",
+      "containsInlineRustTests": true,
+      "familyIds": ["04", "11", "12", "13"],
+      "lines": 1009,
+      "mechanicalMatchLines": [
+        8, 20, 35, 49, 50, 80, 81, 89, 94, 113, 138, 145, 153, 172, 217, 225,
+        226, 261, 287, 288, 399, 412, 413, 485, 486, 548, 569, 595, 597, 600,
+        601, 660, 674, 805, 814, 815, 834, 873, 909, 963, 1002
+      ],
+      "path": "workspaces/client/packages/client-core/src/sync.rs"
+    },
+    {
+      "category": "production",
+      "containsInlineRustTests": true,
+      "familyIds": ["27"],
+      "lines": 870,
+      "mechanicalMatchLines": [
+        7, 8, 26, 45, 60, 87, 97, 109, 194, 195, 203, 230, 235, 236, 288, 406,
+        483, 488, 542, 585, 717, 741, 743, 747
+      ],
+      "path": "workspaces/client/packages/client-core/src/terminal.rs"
+    },
+    {
+      "category": "production",
+      "containsInlineRustTests": false,
+      "familyIds": ["19"],
+      "lines": 18,
+      "mechanicalMatchLines": [],
+      "path": "workspaces/client/packages/client-core/src/tls.rs"
+    },
+    {
+      "category": "production",
+      "containsInlineRustTests": true,
+      "familyIds": ["16"],
+      "lines": 484,
+      "mechanicalMatchLines": [
+        9, 14, 24, 30, 39, 41, 43, 54, 161, 179, 187, 196, 270, 277, 291, 352,
+        365, 473
+      ],
+      "path": "workspaces/client/packages/client-core/src/uploads.rs"
+    },
+    {
+      "category": "production",
+      "containsInlineRustTests": true,
+      "familyIds": ["26"],
+      "lines": 124,
+      "mechanicalMatchLines": [2, 61, 82],
+      "path": "workspaces/client/packages/client-core/src/vault_keys.rs"
+    },
+    {
+      "category": "production",
+      "containsInlineRustTests": true,
+      "familyIds": ["14", "15"],
+      "lines": 626,
+      "mechanicalMatchLines": [
+        8, 21, 30, 119, 120, 239, 240, 241, 253, 258, 260, 268, 273, 289, 292,
+        310, 320, 339, 343, 450, 543, 553, 554, 555, 556, 557, 558, 562, 563,
+        587, 588
+      ],
+      "path": "workspaces/client/packages/client-core/src/views.rs"
+    },
+    {
+      "category": "production",
+      "containsInlineRustTests": true,
+      "familyIds": ["15", "24"],
+      "lines": 868,
+      "mechanicalMatchLines": [
+        14, 171, 184, 248, 412, 426, 435, 461, 478, 570, 582, 595
+      ],
+      "path": "workspaces/client/packages/client-core/src/voice.rs"
+    },
+    {
+      "category": "production",
+      "containsInlineRustTests": true,
+      "familyIds": ["24", "46"],
+      "lines": 406,
+      "mechanicalMatchLines": [396],
+      "path": "workspaces/client/packages/client-core/src/voice_audio.rs"
+    },
+    {
+      "category": "test",
+      "containsInlineRustTests": false,
+      "familyIds": [],
+      "lines": 21,
+      "mechanicalMatchLines": [8, 19],
+      "path": "workspaces/client/packages/client-domain/examples/markdown-parity.rs"
+    },
+    {
+      "category": "production",
+      "containsInlineRustTests": true,
+      "familyIds": ["09", "49"],
+      "lines": 357,
+      "mechanicalMatchLines": [
+        4, 5, 13, 23, 34, 52, 53, 59, 82, 83, 84, 87, 89, 110, 179, 351
+      ],
+      "path": "workspaces/client/packages/client-domain/src/drafts.rs"
+    },
+    {
+      "category": "production",
+      "containsInlineRustTests": false,
+      "familyIds": ["09"],
+      "lines": 13,
+      "mechanicalMatchLines": [8],
+      "path": "workspaces/client/packages/client-domain/src/lib.rs"
+    },
+    {
+      "category": "production",
+      "containsInlineRustTests": true,
+      "familyIds": ["09", "28"],
+      "lines": 572,
+      "mechanicalMatchLines": [142, 168, 459, 468, 470, 471, 473, 474],
+      "path": "workspaces/client/packages/client-domain/src/markdown.rs"
+    },
+    {
+      "category": "production",
+      "containsInlineRustTests": true,
+      "familyIds": ["01", "02", "07", "48"],
+      "lines": 178,
+      "mechanicalMatchLines": [
+        4, 5, 28, 61, 67, 70, 75, 78, 85, 86, 87, 88, 91, 98, 102, 128, 130,
+        131, 133
+      ],
+      "path": "workspaces/client/packages/client-domain/src/protocol.rs"
+    },
+    {
+      "category": "production",
+      "containsInlineRustTests": false,
+      "familyIds": ["09"],
+      "lines": 16,
+      "mechanicalMatchLines": [14, 15],
+      "path": "workspaces/client/packages/client-wasm/src/lib.rs"
+    }
+  ],
+  "followUp": "No implementation performed. Use individual family witness proposals to design small changes; generate/share each named contract instead of adding a second schema. For future Rust/TS/Swift/Python compatibility work, follow repository TypeScript and generated-contract rules; this audit does not authorize a language migration.",
+  "generatedSourcePaths": [
+    "workspaces/client/apps/desktop/native/linux-vm/shared_values_generated.swift",
+    "workspaces/client/apps/native/src-tauri/gen/apple/Podfile",
+    "workspaces/client/apps/native/src-tauri/gen/apple/Sources/studio-native-client/bindings/bindings.h",
+    "workspaces/client/apps/native/src-tauri/gen/apple/Sources/studio-native-client/main.mm"
+  ],
+  "hashMethod": "SHA-256 over lexicographically sorted repository-relative paths, joined by LF with one final LF. ASCII path ordering. Hash identifies list/scope, not blob contents; revision identifies contents.",
+  "hashes": {
+    "allTrackedPaths": "45be06ce2c5d88424dd6eea82b2f970c6e95205c7e5a11902278fb5336c52c49",
+    "excludedNonExecutablePaths": "21321bde6a6402c48346eb3902193613f4001b45e14f771cd46ad8ac2119355d",
+    "scannedSourcePaths": "9e52b0d998071cc0f8d0db0fc3d0d7985cbf03be8396996a8fdb84f94bd52718"
+  },
+  "keyConclusions": [
+    "The native outer Request/Response are structs but method, params and results are not coupled. Web nativeRequest<T> is caller-chosen; Electron NativeMethods already couples these statically.",
+    "Direct typed decode can remove structural primitive checks for many local command and persisted/HTTP envelopes. It cannot replace request identity, receipt equality, workspace correlation, byte/capacity limits, semantic state transitions, permission/gesture provenance or uncertainty handling.",
+    "Raw generic HTTP bodies, SSE data, arbitrary preference values, recursive ordered JSON and browser profile values are deliberate boundaries. They should not be forced into one fake domain schema.",
+    "Typed Rust DraftVersion/DraftView reconciliation, Markdown AST, WASM pure functions, ApiRequest, startup/recovery records, file action Selection, stored Document and outbox Entry outer struct already exist; remaining Value often sits around those types.",
+    "Four U rows preserve unanswered questions for entity/transcript materialization, historical outbox bodies, retained recovery/supervisor documents and delivery/update journal versions. Some typed TS rows also explicitly note runtime-ingress limitations.",
+    "DraftSnapshot metadata is a concrete current boundary: C/draft_store.rs:130 turns typed reconciliation into Value then appends revision/workspaceId/error; WEB/native/host.ts:12 hand-extends generated DraftView; NativeDraftState consumes workspace/revision. Lead reports an active implementation assignment; audit stays pinned to baseline."
+  ],
+  "pathAbbreviations": {
+    "A": "workspaces/client/apps/native/",
+    "C": "workspaces/client/packages/client-core/src/",
+    "D": "workspaces/client/packages/client-domain/src/",
+    "E": "workspaces/client/apps/desktop/",
+    "HTTP": "workspaces/runtime/packages/runtime-http/src/routes/",
+    "N": "workspaces/client/apps/native/src-tauri/src/",
+    "SERV": "workspaces/runtime/packages/runtime-services/src/",
+    "W": "workspaces/client/packages/client-wasm/src/",
+    "WEB": "workspaces/client/apps/web/src/"
+  },
+  "priorityLegend": {
+    "P1": "Prioritize for current native flow or durable identity/permission boundary; not runtime bug severity.",
+    "P2": "Broader core/migration/cross-language or currently host-gated path; retain compatibility work.",
+    "P3": "Small output/pure/tooling cleanup or intentional boundary."
+  },
+  "revision": "1b18e26491860b644f6e7373bc554e814cf95b66",
+  "scannedSourcePaths": [
+    "workspaces/client/apps/desktop/api.test.ts",
+    "workspaces/client/apps/desktop/api.ts",
+    "workspaces/client/apps/desktop/api.type-test.ts",
+    "workspaces/client/apps/desktop/approved-pair.test.ts",
+    "workspaces/client/apps/desktop/approved-pair.ts",
+    "workspaces/client/apps/desktop/backend-selection.test.ts",
+    "workspaces/client/apps/desktop/backend.test.ts",
+    "workspaces/client/apps/desktop/backend.ts",
+    "workspaces/client/apps/desktop/bundle-name.test.ts",
+    "workspaces/client/apps/desktop/bundle-name.ts",
+    "workspaces/client/apps/desktop/deliver_server.py",
+    "workspaces/client/apps/desktop/delivery-test.py",
+    "workspaces/client/apps/desktop/desktop_delivery.py",
+    "workspaces/client/apps/desktop/desktop_process.py",
+    "workspaces/client/apps/desktop/desktop_updates.py",
+    "workspaces/client/apps/desktop/desktop_vm.py",
+    "workspaces/client/apps/desktop/dictation-permissions.test.ts",
+    "workspaces/client/apps/desktop/export-browser-profile.ts",
+    "workspaces/client/apps/desktop/export-profile.ts",
+    "workspaces/client/apps/desktop/export-server-credentials.test.ts",
+    "workspaces/client/apps/desktop/export-server-credentials.ts",
+    "workspaces/client/apps/desktop/fixtures/import-credentials-failure.mts",
+    "workspaces/client/apps/desktop/fixtures/import-credentials.mts",
+    "workspaces/client/apps/desktop/fixtures/installed_delivery_c004.py",
+    "workspaces/client/apps/desktop/fixtures/recovery-renderer-page.ts",
+    "workspaces/client/apps/desktop/fixtures/runtime-environment.mts",
+    "workspaces/client/apps/desktop/fixtures/runtime-identity.mts",
+    "workspaces/client/apps/desktop/fixtures/speech-pending.mts",
+    "workspaces/client/apps/desktop/fixtures/speech-progress.mts",
+    "workspaces/client/apps/desktop/frame-owner.ts",
+    "workspaces/client/apps/desktop/hidden-electron.ts",
+    "workspaces/client/apps/desktop/install-mode.ts",
+    "workspaces/client/apps/desktop/install-update-test.py",
+    "workspaces/client/apps/desktop/install_update.py",
+    "workspaces/client/apps/desktop/layr-binary.ts",
+    "workspaces/client/apps/desktop/main-test-source.ts",
+    "workspaces/client/apps/desktop/main.ts",
+    "workspaces/client/apps/desktop/multi-server-memory.ts",
+    "workspaces/client/apps/desktop/native-file-actions.test.ts",
+    "workspaces/client/apps/desktop/native-ux.test.ts",
+    "workspaces/client/apps/desktop/native/fs-events.swift",
+    "workspaces/client/apps/desktop/native/linux-vm/build.ts",
+    "workspaces/client/apps/desktop/native/linux-vm/main.swift",
+    "workspaces/client/apps/desktop/native/linux-vm/shared_values_generated.swift",
+    "workspaces/client/apps/desktop/native/speech.swift",
+    "workspaces/client/apps/desktop/package-test.ts",
+    "workspaces/client/apps/desktop/package.ts",
+    "workspaces/client/apps/desktop/preload-subscriptions.test.ts",
+    "workspaces/client/apps/desktop/preload.cjs",
+    "workspaces/client/apps/desktop/profile-export-fixture.ts",
+    "workspaces/client/apps/desktop/profile-export-reader.ts",
+    "workspaces/client/apps/desktop/profile-export-test.ts",
+    "workspaces/client/apps/desktop/python-resources.test.ts",
+    "workspaces/client/apps/desktop/python-resources.ts",
+    "workspaces/client/apps/desktop/recover_backend.py",
+    "workspaces/client/apps/desktop/recovery-helper-witness.test.ts",
+    "workspaces/client/apps/desktop/recovery-reload-test.py",
+    "workspaces/client/apps/desktop/recovery-renderer-test.ts",
+    "workspaces/client/apps/desktop/recovery-test.py",
+    "workspaces/client/apps/desktop/recovery.test.ts",
+    "workspaces/client/apps/desktop/recovery.ts",
+    "workspaces/client/apps/desktop/release-binaries.ts",
+    "workspaces/client/apps/desktop/renderer-recovery.test.ts",
+    "workspaces/client/apps/desktop/renderer-recovery.ts",
+    "workspaces/client/apps/desktop/restart-environment.ts",
+    "workspaces/client/apps/desktop/retained-helper-witness.test.ts",
+    "workspaces/client/apps/desktop/retained-helpers-test.py",
+    "workspaces/client/apps/desktop/runtime-binaries.ts",
+    "workspaces/client/apps/desktop/server-access-native.ts",
+    "workspaces/client/apps/desktop/server-credentials.test.ts",
+    "workspaces/client/apps/desktop/server-credentials.ts",
+    "workspaces/client/apps/desktop/server-frames-native.ts",
+    "workspaces/client/apps/desktop/signing-check.ts",
+    "workspaces/client/apps/desktop/signing-settings.ts",
+    "workspaces/client/apps/desktop/signing-test.ts",
+    "workspaces/client/apps/desktop/signing.ts",
+    "workspaces/client/apps/desktop/speech.ts",
+    "workspaces/client/apps/desktop/startup-delivery-test.py",
+    "workspaces/client/apps/desktop/startup-recovery.test.ts",
+    "workspaces/client/apps/desktop/supervisor-independence.test.ts",
+    "workspaces/client/apps/desktop/sync-brotli-fixture.ts",
+    "workspaces/client/apps/desktop/sync-brotli-native.ts",
+    "workspaces/client/apps/desktop/test-support.ts",
+    "workspaces/client/apps/desktop/test.ts",
+    "workspaces/client/apps/desktop/ui-host.test.ts",
+    "workspaces/client/apps/desktop/ui-host.ts",
+    "workspaces/client/apps/desktop/ui-only-smoke.ts",
+    "workspaces/client/apps/desktop/vault-keys.test.ts",
+    "workspaces/client/apps/desktop/vault-keys.ts",
+    "workspaces/client/apps/desktop/vitest.config.ts",
+    "workspaces/client/apps/desktop/vitest.fast.config.ts",
+    "workspaces/client/apps/desktop/window-state.test.ts",
+    "workspaces/client/apps/desktop/window-state.ts",
+    "workspaces/client/apps/native/bridge-image-package.test.ts",
+    "workspaces/client/apps/native/bridge-image-package.ts",
+    "workspaces/client/apps/native/check-native.test.ts",
+    "workspaces/client/apps/native/check-native.ts",
+    "workspaces/client/apps/native/check-package-start.ts",
+    "workspaces/client/apps/native/check-package.ts",
+    "workspaces/client/apps/native/generate-icons.ts",
+    "workspaces/client/apps/native/package-flow.ts",
+    "workspaces/client/apps/native/package.ts",
+    "workspaces/client/apps/native/recovery-package.test.ts",
+    "workspaces/client/apps/native/recovery-package.ts",
+    "workspaces/client/apps/native/recovery.ts",
+    "workspaces/client/apps/native/src-tauri/build.rs",
+    "workspaces/client/apps/native/src-tauri/gen/apple/Podfile",
+    "workspaces/client/apps/native/src-tauri/gen/apple/Sources/studio-native-client/bindings/bindings.h",
+    "workspaces/client/apps/native/src-tauri/gen/apple/Sources/studio-native-client/main.mm",
+    "workspaces/client/apps/native/src-tauri/src/close.rs",
+    "workspaces/client/apps/native/src-tauri/src/desktop_menu.rs",
+    "workspaces/client/apps/native/src-tauri/src/desktop_recovery.rs",
+    "workspaces/client/apps/native/src-tauri/src/frame_assets.rs",
+    "workspaces/client/apps/native/src-tauri/src/ios_diag.js",
+    "workspaces/client/apps/native/src-tauri/src/ios_insets.rs",
+    "workspaces/client/apps/native/src-tauri/src/ios_server.rs",
+    "workspaces/client/apps/native/src-tauri/src/ios_shell.rs",
+    "workspaces/client/apps/native/src-tauri/src/ios_start.html",
+    "workspaces/client/apps/native/src-tauri/src/ios_viewport.js",
+    "workspaces/client/apps/native/src-tauri/src/lib.rs",
+    "workspaces/client/apps/native/src-tauri/src/local_backend.rs",
+    "workspaces/client/apps/native/src-tauri/src/main.rs",
+    "workspaces/client/apps/native/src-tauri/src/native-check-types.ts",
+    "workspaces/client/apps/native/src-tauri/src/native-check.js",
+    "workspaces/client/apps/native/src-tauri/src/native_check.rs",
+    "workspaces/client/apps/native/src-tauri/src/profile.rs",
+    "workspaces/client/apps/native/src-tauri/src/window_state.rs",
+    "workspaces/client/packages/client-core/examples/document_check/check.rs",
+    "workspaces/client/packages/client-core/examples/document_check/main.rs",
+    "workspaces/client/packages/client-core/examples/voice_playback_check/check.rs",
+    "workspaces/client/packages/client-core/examples/voice_playback_check/main.rs",
+    "workspaces/client/packages/client-core/src/actions.rs",
+    "workspaces/client/packages/client-core/src/backend.rs",
+    "workspaces/client/packages/client-core/src/client.rs",
+    "workspaces/client/packages/client-core/src/delivery.rs",
+    "workspaces/client/packages/client-core/src/desktop.rs",
+    "workspaces/client/packages/client-core/src/dictation.rs",
+    "workspaces/client/packages/client-core/src/draft_replication.rs",
+    "workspaces/client/packages/client-core/src/draft_store.rs",
+    "workspaces/client/packages/client-core/src/events.rs",
+    "workspaces/client/packages/client-core/src/file_actions.rs",
+    "workspaces/client/packages/client-core/src/file_links.rs",
+    "workspaces/client/packages/client-core/src/file_preview.rs",
+    "workspaces/client/packages/client-core/src/file_save.rs",
+    "workspaces/client/packages/client-core/src/lib.rs",
+    "workspaces/client/packages/client-core/src/media.rs",
+    "workspaces/client/packages/client-core/src/native.rs",
+    "workspaces/client/packages/client-core/src/notifications.rs",
+    "workspaces/client/packages/client-core/src/ordered_json.rs",
+    "workspaces/client/packages/client-core/src/outbox.rs",
+    "workspaces/client/packages/client-core/src/pdf.rs",
+    "workspaces/client/packages/client-core/src/platform.rs",
+    "workspaces/client/packages/client-core/src/projections.rs",
+    "workspaces/client/packages/client-core/src/quick_look.rs",
+    "workspaces/client/packages/client-core/src/rich_document.rs",
+    "workspaces/client/packages/client-core/src/server_keys.rs",
+    "workspaces/client/packages/client-core/src/server_transport.rs",
+    "workspaces/client/packages/client-core/src/sign_in.rs",
+    "workspaces/client/packages/client-core/src/speech.rs",
+    "workspaces/client/packages/client-core/src/startup.rs",
+    "workspaces/client/packages/client-core/src/store.rs",
+    "workspaces/client/packages/client-core/src/stream_log.rs",
+    "workspaces/client/packages/client-core/src/sync.rs",
+    "workspaces/client/packages/client-core/src/terminal.rs",
+    "workspaces/client/packages/client-core/src/tls.rs",
+    "workspaces/client/packages/client-core/src/uploads.rs",
+    "workspaces/client/packages/client-core/src/vault_keys.rs",
+    "workspaces/client/packages/client-core/src/views.rs",
+    "workspaces/client/packages/client-core/src/voice.rs",
+    "workspaces/client/packages/client-core/src/voice_audio.rs",
+    "workspaces/client/packages/client-domain/examples/markdown-parity.rs",
+    "workspaces/client/packages/client-domain/src/drafts.rs",
+    "workspaces/client/packages/client-domain/src/lib.rs",
+    "workspaces/client/packages/client-domain/src/markdown.rs",
+    "workspaces/client/packages/client-domain/src/protocol.rs",
+    "workspaces/client/packages/client-wasm/src/lib.rs"
+  ],
+  "scope": [
+    "workspaces/client/packages/client-core",
+    "workspaces/client/packages/client-domain",
+    "workspaces/client/packages/client-wasm",
+    "workspaces/client/apps/native",
+    "workspaces/client/apps/desktop"
+  ],
+  "status": "Read-only source census complete; unresolved historical/cross-owner proofs explicitly retained.",
+  "title": "Native boundary type census at 1b18e26491860b644f6e7373bc554e814cf95b66"
+}
