@@ -1,5 +1,5 @@
 import { expect, test } from "vitest";
-import { StartWaitReason } from "./generated/api";
+import { AgentStatus, StartWaitReason } from "./generated/api";
 import { startWaitLabel } from "./startWait";
 import type { Agent } from "./types";
 import type { components } from "./generated/api";
@@ -23,7 +23,7 @@ const missingEvidenceWitness: [MissingSlotEvidence, MissingPauseEvidence] = [
 
 const queued = {
   id: "worker",
-  status: "queued",
+  status: AgentStatus.queued,
   epoch: 3,
   startWait: {
     reason: StartWaitReason.slot,
@@ -46,7 +46,7 @@ test("a queued start shows the account slot or pause it waits for", () => {
 
 test("a wait of another epoch or a started turn shows nothing", () => {
   expect(startWaitLabel({ ...queued, epoch: 4 })).toBeNull();
-  expect(startWaitLabel({ ...queued, status: "running" })).toBeNull();
+  expect(startWaitLabel({ ...queued, status: AgentStatus.running })).toBeNull();
   expect(startWaitLabel({ ...queued, startWait: null })).toBeNull();
 });
 

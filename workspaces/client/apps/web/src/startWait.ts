@@ -1,4 +1,4 @@
-import { StartWaitReason } from "./generated/api";
+import { AgentStatus, StartWaitReason } from "./generated/api";
 import type { Agent } from "./types";
 
 /** Render the server's epoch-scoped wait, shared with orchestration_status. */
@@ -6,7 +6,8 @@ export function startWaitLabel(agent: Agent): string | null {
   const wait = agent.startWait;
   if (
     !wait ||
-    !["queued", "starting"].includes(agent.status ?? "") ||
+    (agent.status !== AgentStatus.queued &&
+      agent.status !== AgentStatus.starting) ||
     wait.epoch !== agent.epoch
   )
     return null;
