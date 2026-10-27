@@ -877,6 +877,46 @@ fn api_types(root: &Path, document: &Value, argument: &str) -> Result<String, St
     Ok(body)
 }
 
+#[allow(
+    clippy::disallowed_methods,
+    reason = "contract generator runs on the synchronous studio-contracts CLI thread, outside Tokio"
+)]
+fn task_tool_schema_ts(
+    root: &Path,
+    schema: &serde_json::Map<String, Value>,
+) -> Result<String, String> {
+    let text = format!(
+        "// {HEADER}\nimport type {{ core }} from \"zod\";\nexport const TASK_COMMAND_TOOL_SCHEMA = {} satisfies core.JSONSchema.JSONSchema;\n",
+        serde_json::to_string_pretty(schema).map_err(|error| error.to_string())?
+    );
+    let node = std::env::var(NODE_ENVIRONMENT).unwrap_or_else(|_| "node".into());
+    let mut child = Command::new(&node)
+        .arg(root.join("node_modules/oxfmt/bin/oxfmt"))
+        .arg("--stdin-filepath=workspaces/providers/apps/claude-bridge/task-command-tool.generated.ts")
+        .current_dir(root)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|error| format!("cannot start task schema formatter: {error}"))?;
+    child
+        .stdin
+        .take()
+        .ok_or("missing task schema input")?
+        .write_all(text.as_bytes())
+        .map_err(|error| error.to_string())?;
+    let output = child
+        .wait_with_output()
+        .map_err(|error| error.to_string())?;
+    if !output.status.success() {
+        return Err(format!(
+            "task schema formatter failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        ));
+    }
+    String::from_utf8(output.stdout).map_err(|error| error.to_string())
+}
+
 fn subscription_scopes_ts(
     scopes: &std::collections::BTreeMap<String, crate::sync_protocol::SubscriptionEntityScope>,
     print_width: usize,
@@ -1057,8 +1097,28 @@ pub fn render(root: &Path, with_api_types: bool) -> Result<Vec<Rendered>, String
         }
     }
     let web = |name: &str| format!("{WEB_GENERATED}/{name}");
+    // Mirror the runtime's task-tool advertisement from its owning contracts.
+    let native_tools = read_json(
+        root,
+        ".agents/skills/codex-workspace/references/native-tools.json",
+    )?;
+    let mut task_tool = native_tools
+        .as_array()
+        .ok_or("native tool catalog")?
+        .iter()
+        .find(|tool| tool["name"] == "orchestration_task")
+        .and_then(|tool| tool["inputSchema"].as_object())
+        .ok_or("task tool schema")?
+        .clone();
+    crate::task_results::apply_tool_contract("orchestration_task", &mut task_tool);
+    crate::task_gate::apply_tool_contract("orchestration_task", &mut task_tool);
+    crate::task_command::apply_tool_contract("orchestration_task", &mut task_tool);
     let scopes = crate::sync_protocol::entity_scopes_from_document(&openapi)?;
     let mut rendered = vec![
+        Rendered {
+            path: "workspaces/providers/apps/claude-bridge/task-command-tool.generated.ts".into(),
+            text: task_tool_schema_ts(root, &task_tool)?,
+        },
         Rendered {
             path: web("providerKind.ts"),
             text: provider_kind_ts(),
