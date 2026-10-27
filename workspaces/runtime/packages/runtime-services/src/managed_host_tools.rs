@@ -649,12 +649,7 @@ pub(crate) fn execute(
         ManagedHostTool::Search => ports.search(tx, actor, &call.args)?,
         ManagedHostTool::Context if call.args["topic"] == "plan" => {
             let plan = WorkItemsRepository::plan(tx, &actor.root_id)?
-                .and_then(|record| record.record)
-                .map(|raw| {
-                    serde_json::from_str::<Value>(&raw)
-                        .map_err(|_| Error::Invalid("Invalid stored work plan"))
-                })
-                .transpose()?
+                .map(|record| record.into_value())
                 .filter(|record| record["native"].is_object());
             let content = plan
                 .map(|record| {

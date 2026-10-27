@@ -338,7 +338,7 @@ impl WorkItemsRepository {
         Ok(released)
     }
 
-    pub fn validate_work(connection: &Connection, id: &str, value: &Value) -> StoreResult<()> {
+    pub fn validate_work(_connection: &Connection, id: &str, value: &Value) -> StoreResult<()> {
         let record = WorkItemRecord::checked(value.clone())?;
         if record.id().as_ref() != id {
             return Err(StoreError::InvalidStoredObject {
@@ -346,7 +346,7 @@ impl WorkItemsRepository {
                 id: id.to_owned(),
             });
         }
-        Table::<WorkItemRecord>::new(connection).validate(&record)
+        Ok(())
     }
 
     pub fn close_review_event(
@@ -385,16 +385,8 @@ impl WorkItemsRepository {
         Table::<WorkItemRecord>::new(connection).list()
     }
 
-    pub fn plan(connection: &Connection, id: &str) -> StoreResult<Option<StoredRecord>> {
-        Table::<PlanRecord>::new(connection)
-            .get(&AgentId::from(id))?
-            .map(|record| {
-                Ok::<_, StoreError>(StoredRecord {
-                    id: id.to_owned(),
-                    record: Some(serde_json::to_string(record.value())?),
-                })
-            })
-            .transpose()
+    pub fn plan(connection: &Connection, id: &str) -> StoreResult<Option<PlanRecord>> {
+        Table::<PlanRecord>::new(connection).get(&AgentId::from(id))
     }
 
     pub fn queue(
@@ -491,8 +483,63 @@ mod tests {
     use serde_json::json;
 
     #[test]
+    fn validation_only_checks_once_without_encoding() {
+        use crate::records::validation_counts::{CHECKS, ENCODINGS};
+        let connection = Connection::open_in_memory().expect("database");
+        let work =
+            json!({"id":"task","rootId":"lead","status":"ready","owner":null,"dependencies":[]});
+        CHECKS.with(|count| count.set(0));
+        ENCODINGS.with(|count| count.set(0));
+        WorkItemsRepository::validate_work(&connection, "task", &work).expect("valid work");
+        assert_eq!(CHECKS.with(std::cell::Cell::get), 1);
+        assert_eq!(ENCODINGS.with(std::cell::Cell::get), 0);
+        let plan = crate::PlanRecord::from_value(
+            json!({"id":"agent","rootId":"lead","text":"","version":0,"updated":null}),
+        )
+        .expect("plan");
+        CHECKS.with(|count| count.set(0));
+        ENCODINGS.with(|count| count.set(0));
+        crate::Table::<crate::PlanRecord>::new(&connection)
+            .validate_at(&crate::AgentId::from("agent"), &plan)
+            .expect("valid plan");
+        assert_eq!(CHECKS.with(std::cell::Cell::get), 1);
+        assert_eq!(ENCODINGS.with(std::cell::Cell::get), 0);
+    }
+
+    #[test]
+    fn plan_returns_checked_value_without_a_text_round_trip() {
+        let connection = Connection::open_in_memory().expect("database");
+        connection
+            .execute_batch("CREATE TABLE runtime_plans(id TEXT PRIMARY KEY,record TEXT NOT NULL)")
+            .expect("table");
+        let value = json!({"id":"agent", "rootId":"root", "text":"plan", "version":1, "updated":null, "future":{"nested":[1,2]}});
+        connection
+            .execute(
+                "INSERT INTO runtime_plans VALUES (?1,?2)",
+                rusqlite::params!["agent", value.to_string()],
+            )
+            .expect("insert");
+        assert_eq!(
+            WorkItemsRepository::plan(&connection, "agent")
+                .expect("read")
+                .expect("plan")
+                .into_value(),
+            value
+        );
+        connection
+            .execute(
+                "UPDATE runtime_plans SET record=?1",
+                [r#"{"id":"agent","version":"invalid"}"#],
+            )
+            .expect("corrupt");
+        assert!(WorkItemsRepository::plan(&connection, "agent").is_err());
+    }
+
+    #[test]
     fn typed_work_repository_retains_payload_and_rejects_corrupt_dependents() {
         // These signatures prevent serialization/reparse adapters from returning.
+        let _: fn(&Connection, &str) -> crate::StoreResult<Option<crate::PlanRecord>> =
+            WorkItemsRepository::plan;
         let _: fn(&Connection) -> crate::StoreResult<Vec<crate::WorkItemRecord>> =
             WorkItemsRepository::work;
         let _: fn(&Connection, &str) -> crate::StoreResult<Option<crate::WorkItemRecord>> =

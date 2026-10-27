@@ -410,10 +410,9 @@ mod reconnect_read_tests {
         const OPERATION: &str = "transfer:move:member:unsubscribe";
         store
             .transaction(|tx| {
-                let mut operation: Value = serde_json::from_str(
-                    &studio_runtime_store::AccountTransferRepository::get(tx, "move")?
-                        .expect("transfer"),
-                )?;
+                let mut operation =
+                    studio_runtime_store::AccountTransferRepository::get(tx, "move")?
+                        .expect("transfer");
                 let member = &mut operation["members"]["member"];
                 let mut intent = member["providerReadIntents"]["read"].take();
                 intent["operation"] = json!(OPERATION);

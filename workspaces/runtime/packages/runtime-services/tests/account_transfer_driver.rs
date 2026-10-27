@@ -74,12 +74,9 @@ fn ticket() -> Ticket {
     }
 }
 fn operation(store: &RuntimeStore) -> Value {
-    serde_json::from_str(
-        &AccountTransferRepository::get(&store.test_reader().expect("read"), OP)
-            .expect("get")
-            .expect("exists"),
-    )
-    .expect("json")
+    AccountTransferRepository::get(&store.test_reader().expect("read"), OP)
+        .expect("get")
+        .expect("exists")
 }
 struct Native<'a> {
     store: &'a RuntimeStore,

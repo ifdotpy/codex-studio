@@ -25,14 +25,10 @@ pub fn vm_actor(connection: &rusqlite::Connection, agent: &str) -> Result<bool, 
 pub(super) fn authorize(tx: &rusqlite::Transaction<'_>, call: &Call) -> Result<bool, WorkerError> {
     let Some(actor) = call.actor.as_ref() else {
         if let Some(transfer) = call.transfer.as_ref() {
-            let Some(raw) =
+            let Some(operation) =
                 studio_runtime_store::AccountTransferRepository::get(tx, &transfer.transfer_id)?
             else {
                 return Ok(false);
-            };
-            let operation: Value = match serde_json::from_str(&raw) {
-                Ok(operation) => operation,
-                Err(_) => return Ok(false),
             };
             let member = &operation["members"][&transfer.member];
             return Ok(operation["status"] == "pending"

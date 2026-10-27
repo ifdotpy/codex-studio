@@ -26,6 +26,16 @@ impl JsonRecord for AccountTransferRecord {
 }
 pub const MAX_TRANSFER_RECORD_BYTES: usize = 8 * 1024 * 1024;
 pub struct AccountTransferRepository;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn get_returns_the_checked_value_without_a_second_decode() {
+        let _: fn(&Connection, &str) -> StoreResult<Option<Value>> = AccountTransferRepository::get;
+    }
+}
 impl AccountTransferRepository {
     /// Maximum combined operation and agent JSON size in one transfer snapshot, in bytes.
     pub const MAX_SNAPSHOT_BYTES: usize = 64 * 1024 * 1024;
@@ -33,11 +43,18 @@ impl AccountTransferRepository {
     pub fn available(db: &Connection) -> StoreResult<bool> {
         Ok(db.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='runtime_account_transfers')", [], |row| row.get(0))?)
     }
-    pub fn get(db: &Connection, id: &str) -> StoreResult<Option<String>> {
+    pub fn get(db: &Connection, id: &str) -> StoreResult<Option<Value>> {
+        Ok(Self::get_with_raw(db, id)?.map(|(value, _)| value))
+    }
+
+    /// Keep the original text for the ordered transfer snapshot decoder.
+    pub fn get_with_raw(db: &Connection, id: &str) -> StoreResult<Option<(Value, String)>> {
         bounded_record(db, "runtime_account_transfers", id)?
             .map(|raw| {
-                Table::<AccountTransferRecord>::new(db).decode_stored(id, &raw)?;
-                Ok(raw)
+                let record = Table::<AccountTransferRecord>::new(db).decode_stored(id, &raw)?;
+                let mut fields = record.fields;
+                fields.insert("id".to_owned(), Value::String(record.id));
+                Ok((Value::Object(fields), raw))
             })
             .transpose()
     }
