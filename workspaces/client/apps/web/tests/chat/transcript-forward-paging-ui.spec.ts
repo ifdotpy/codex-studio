@@ -1,3 +1,4 @@
+import { cacheFixture } from "../cacheFixture.ts";
 import { required } from "../teams/helpers.ts";
 import {
   API_SCHEMA_HASH_HEADER,
@@ -46,7 +47,7 @@ test("transcript paging returns from the oldest row to the newest", async ({
   });
   await page.addInitScript(({ key, id }) => localStorage.setItem(key, id), {
     key: `codex-desktop-opened:${state.stateDir}`,
-    id: JSON.stringify(other.id),
+    id: cacheFixture(other.id),
   });
   const initialTranscript = {
     agent: {

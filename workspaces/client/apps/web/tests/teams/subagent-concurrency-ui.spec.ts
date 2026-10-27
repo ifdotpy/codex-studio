@@ -1,3 +1,4 @@
+import { cacheFixture } from "../cacheFixture.ts";
 import type { GetResult } from "../../src/apiTypes.ts";
 import { installConcurrencyStorageFixture } from "./subagent-concurrency.fixture.ts";
 declare global {
@@ -123,14 +124,11 @@ test("subagent concurrency ui", async ({ browser: _browser }) => {
     await page.addInitScript(
       ({ stateDir, id }) => {
         if (!localStorage.getItem(`codex-desktop-opened:${stateDir}`)) {
-          localStorage.setItem(
-            `codex-desktop-opened:${stateDir}`,
-            JSON.stringify(id),
-          );
-          localStorage.setItem("codex-mobile-opened", JSON.stringify(id));
+          localStorage.setItem(`codex-desktop-opened:${stateDir}`, id);
+          localStorage.setItem("codex-mobile-opened", id);
         }
       },
-      { stateDir: initial.stateDir, id: lead.id },
+      { stateDir: initial.stateDir, id: cacheFixture(lead.id) },
     );
     let loseNextReply = false,
       raceNextRequest = false;
@@ -484,18 +482,16 @@ test("subagent concurrency ui", async ({ browser: _browser }) => {
           projectionRequests.push(request.url());
       });
       await rollingPage.addInitScript(
-        ({ stateDir, workspaceId, leadId, saved }) => {
+        ({ stateDir, workspaceId, leadId, saved, selection }) => {
           const scope = JSON.stringify([stateDir, workspaceId, leadId]);
-          localStorage.setItem(
-            `codex-desktop-opened:${stateDir}`,
-            JSON.stringify(leadId),
-          );
+          localStorage.setItem(`codex-desktop-opened:${stateDir}`, selection);
           localStorage.setItem(`studio-agent-mode:${scope}`, saved);
         },
         {
           stateDir: initial.stateDir,
           workspaceId: syncWorkspaceId,
           leadId: lead.id,
+          selection: cacheFixture(lead.id),
           saved,
         },
       );
@@ -593,18 +589,16 @@ test("subagent concurrency ui", async ({ browser: _browser }) => {
       });
       await upgradedPage.addInitScript(installConcurrencyStorageFixture);
       await upgradedPage.addInitScript(
-        ({ stateDir, workspaceId, leadId, saved }) => {
+        ({ stateDir, workspaceId, leadId, saved, selection }) => {
           const scope = JSON.stringify([stateDir, workspaceId, leadId]);
-          localStorage.setItem(
-            `codex-desktop-opened:${stateDir}`,
-            JSON.stringify(leadId),
-          );
+          localStorage.setItem(`codex-desktop-opened:${stateDir}`, selection);
           localStorage.setItem(`studio-agent-mode:${scope}`, saved);
         },
         {
           stateDir: initial.stateDir,
           workspaceId: syncWorkspaceId,
           leadId: lead.id,
+          selection: cacheFixture(lead.id),
           saved,
         },
       );

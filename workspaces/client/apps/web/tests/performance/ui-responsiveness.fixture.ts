@@ -2,24 +2,22 @@ import type { PerformanceTranscriptItem as Message } from "./performance-fixture
 export function installResponsivenessFixture({
   stateDir,
   id,
+  cachedId,
   rows,
+  toolCaches,
 }: {
   stateDir: string;
   id: string;
+  cachedId: string;
   rows: [string, Pick<Message, "id" | "role">[]][];
+  toolCaches: Record<string, string>;
 }) {
-  localStorage.setItem(`codex-desktop-opened:${stateDir}`, JSON.stringify(id));
+  localStorage.setItem(`codex-desktop-opened:${stateDir}`, cachedId);
   localStorage.setItem(`codex-mobile-opened:${stateDir}`, JSON.stringify(id));
-  for (const [chat, items] of rows)
+  for (const [chat] of rows)
     localStorage.setItem(
       `studio-turns:${stateDir}:${chat}:tools-v3`,
-      JSON.stringify(
-        Object.fromEntries(
-          items
-            .filter((item) => item.role === "tool")
-            .map((item) => [item.id, false]),
-        ),
-      ),
+      toolCaches[chat]!,
     );
   window.fixtureStreams = [];
   const NativeEventSource = window.EventSource;

@@ -1,3 +1,4 @@
+import { cacheFixture } from "../cacheFixture.ts";
 import type {} from "../fixtures/ux-support.tsx";
 import type { GetResult } from "../../src/apiTypes.ts";
 import type { WorkspaceTask } from "../../src/types.ts";
@@ -97,13 +98,16 @@ test("ux support ui", async ({ page: runnerPage }) => {
       status: "running",
       created: 1,
     };
-    await page.addInitScript(() => {
-      localStorage.setItem("codex.terminal.open", "true");
-      localStorage.setItem(
-        "codex.terminal.selected",
-        JSON.stringify("shell:fixture-shell"),
-      );
-    });
+    await page.addInitScript(
+      ({ open, selected }) => {
+        localStorage.setItem("codex.terminal.open", open);
+        localStorage.setItem("codex.terminal.selected", selected);
+      },
+      {
+        open: cacheFixture(true),
+        selected: cacheFixture("shell:fixture-shell"),
+      },
+    );
     await page.route("**/api/**", async (route) => {
       const request = route.request();
       const path = new URL(request.url()).pathname;

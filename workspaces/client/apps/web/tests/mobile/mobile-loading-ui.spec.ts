@@ -1,3 +1,4 @@
+import { readCachedStorage } from "../cacheFixture.ts";
 import { build } from "esbuild";
 import type { BrowserContext, TestInfo } from "@playwright/test";
 import type { Server } from "node:http";
@@ -259,8 +260,9 @@ test("mobile loading ui", async ({ browser: _browser }) => {
     const offlineNetworkErrors = [];
     let lastNavigation = 0;
     const openSavedChat = async () => {
-      const selected = await page.evaluate(() =>
-        JSON.parse(localStorage.getItem("codex-mobile-opened") || "null"),
+      const selected = await page.evaluate(
+        readCachedStorage,
+        "codex-mobile-opened",
       );
       await page
         .locator(

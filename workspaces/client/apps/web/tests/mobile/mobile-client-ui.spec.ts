@@ -1,3 +1,4 @@
+import { readCachedStorage, hasCachedValue } from "../cacheFixture.ts";
 import type { components } from "../../src/generated/api.ts";
 import type { PricingArtifact } from "../../src/generated/pricing.ts";
 import type { FixtureStep } from "../fixtures/fixture-scripts.ts";
@@ -169,8 +170,9 @@ test("Mobile client ui", async ({
       const settingsAction = await openChatActions();
       assert.equal(await page.locator(".workspace-shortcuts").count(), 0);
       const snapshot = await readTestState(url);
-      const selected = await page.evaluate(() =>
-        JSON.parse(localStorage.getItem("codex-mobile-opened")!),
+      const selected = await page.evaluate(
+        readCachedStorage,
+        "codex-mobile-opened",
       );
       const hasWorkers = snapshot.threads.some(
         (a) => a.rootId === selected && !a.isLead,
@@ -328,10 +330,10 @@ test("Mobile client ui", async ({
       (await fixturePostResult<"/api/leads">(replayResponse)).id,
       created.id,
     );
-    await page.waitForFunction(
-      (id) => JSON.parse(localStorage.getItem("codex-mobile-opened")!) === id,
-      created.id,
-    );
+    await page.waitForFunction(hasCachedValue, {
+      key: "codex-mobile-opened",
+      value: created.id,
+    });
     const serverState = await readTestState(url);
     assert.equal(
       serverState.threads.filter((item) => item.id === created.id).length,
@@ -423,10 +425,10 @@ test("Mobile client ui", async ({
       "default",
       "The project account replaces the previous empty chat account",
     );
-    await page.waitForFunction(
-      (id) => JSON.parse(localStorage.getItem("codex-mobile-opened")!) === id,
-      nextChat.id,
-    );
+    await page.waitForFunction(hasCachedValue, {
+      key: "codex-mobile-opened",
+      value: nextChat.id,
+    });
     assert.equal(
       await page
         .getByRole("button", { name: "Retry chat request", exact: true })
@@ -455,10 +457,10 @@ test("Mobile client ui", async ({
     assert.notEqual(otherChat.id, nextChat.id);
     assert.equal(otherChat.accountKey, alternate.id);
     assert.equal(otherChat.cwd, await realpath(profile));
-    await page.waitForFunction(
-      (id) => JSON.parse(localStorage.getItem("codex-mobile-opened")!) === id,
-      otherChat.id,
-    );
+    await page.waitForFunction(hasCachedValue, {
+      key: "codex-mobile-opened",
+      value: otherChat.id,
+    });
     assert.equal(
       await page
         .getByRole("button", { name: "Retry chat request", exact: true })
@@ -607,8 +609,9 @@ async function setupMobile320Composer(testBrowser: Browser) {
     await settingsItem.waitFor();
     assert.equal(await page.locator(".workspace-shortcuts").count(), 0);
     const snapshot = await readTestState(`http://127.0.0.1:${port}`);
-    const selected = await page.evaluate(() =>
-      JSON.parse(localStorage.getItem("codex-mobile-opened")!),
+    const selected = await page.evaluate(
+      readCachedStorage,
+      "codex-mobile-opened",
     );
     const selectedAgent = snapshot.threads.find(
       (agent) => agent.id === selected,

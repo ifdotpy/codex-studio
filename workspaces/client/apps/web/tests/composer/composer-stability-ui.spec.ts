@@ -1,3 +1,4 @@
+import { cacheFixture, readCachedStorage } from "../cacheFixture.ts";
 import { required } from "../teams/helpers.ts";
 import type { GetResult, PostResult } from "../../src/apiTypes.ts";
 import type { Page, Route } from "@playwright/test";
@@ -92,13 +93,10 @@ test("composer-stability-ui", async ({ browser: fixtureBrowser }) => {
       );
       await page.addInitScript(
         ({ stateDir, chatId }) => {
-          localStorage.setItem(
-            `codex-desktop-opened:${stateDir}`,
-            JSON.stringify(chatId),
-          );
-          localStorage.setItem("codex-mobile-opened", JSON.stringify(chatId));
+          localStorage.setItem(`codex-desktop-opened:${stateDir}`, chatId);
+          localStorage.setItem("codex-mobile-opened", chatId);
         },
-        { stateDir: initial.stateDir, chatId: openedChat.id },
+        { stateDir: initial.stateDir, chatId: cacheFixture(openedChat.id) },
       );
       // Legacy queue fixture intentionally predates QueueItem; preserve its wire payload.
       let queue: unknown[] = [];
@@ -151,10 +149,10 @@ test("composer-stability-ui", async ({ browser: fixtureBrowser }) => {
         width <= 760
           ? "codex-mobile-opened"
           : `codex-desktop-opened:${initial.stateDir}`;
-      const openedChatId = await page.evaluate((key) => {
-        const value = localStorage.getItem(key);
-        return value ? JSON.parse(value) : null;
-      }, chatStorageKey);
+      const openedChatId = await page.evaluate(
+        readCachedStorage,
+        chatStorageKey,
+      );
       const openedTranscript = transcript;
       console.log(
         "Composer stability fixture:",

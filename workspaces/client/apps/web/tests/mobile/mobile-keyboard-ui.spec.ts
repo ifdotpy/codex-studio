@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { cacheFixture } from "../cacheFixture.ts";
 import { installMobileKeyboardUi } from "./mobile-keyboard-ui.fixture.ts";
 import { waitForFixturePort } from "../playwright.ts";
 // Test viewport geometry in a headless browser with isolated server state.
@@ -56,8 +57,8 @@ for (const [platform, userAgent] of mobileBrowsers) {
       });
       // This geometry scenario intentionally exercises the non-empty lead.
       await context.addInitScript((id) => {
-        localStorage.setItem("codex-mobile-opened", JSON.stringify(id));
-      }, leadId);
+        localStorage.setItem("codex-mobile-opened", id);
+      }, cacheFixture(leadId));
       const page = await context.newPage();
       await page.addInitScript(installMobileKeyboardUi);
       const errors: string[] = [];
