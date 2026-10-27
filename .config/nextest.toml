@@ -81,6 +81,8 @@ inherits = "ci"
 # Supervisor health witnesses: Accept the maintained protocol and preserve exact handles; reject foreign identity and blocked recovery.
 # Desktop projection witness: Keep private native rotation receipts on disk while validating the public status strictly.
 default-filter = '''
+    (package(=studio-runtime-services) & kind(lib) & (test(complaint_names_preserve_missing_and_null) | test(snapshot_rechecks_unprojected_and_volatile_agent_fields) | test(message_send_agent_rows_are_bounded) | test(message_send_does_not_scan_agent_directory) | test(message_ignores_unrelated_invalid_agent) | test(message_ignores_unrelated_invalid_project) | test(message_ignores_invalid_parent_project_outside_sender_cwd) | test(message_delivers_between_user_grouped_leads) | test(message_refuses_unknown_foreign_and_deleted_targets) | test(same_team_target_is_resolved_before_message_validation_without_project_reads))) |
+    (package(=studio-runtime-store) & kind(lib) & test(message_records_use_both_indexes_and_keep_row_order)) |
     (package(=studio-runtime-store) & kind(lib) & test(scoped_fingerprint_ignores_offscreen_rows_and_tracks_moves_and_deletions)) |
     (package(=studio-runtime-store) & kind(lib) & (test(scoped_page_reads_only_its_collection_and_id) | test(pull_page_without_priority_stops_at_limit))) |
     (package(=studio-runtime-store) & kind(test) & binary(=integration) & test(open_recreates_entity_scope_indexes_on_existing_state)) |
@@ -311,6 +313,8 @@ platform = 'cfg(target_os = "linux")'
 # Supervisor health witnesses: Accept the maintained protocol and preserve exact handles; reject foreign identity and blocked recovery.
 # Desktop projection witness: Keep private native rotation receipts on disk while validating the public status strictly.
 default-filter = '''
+    (package(=studio-runtime-services) & kind(lib) & (test(complaint_names_preserve_missing_and_null) | test(snapshot_rechecks_unprojected_and_volatile_agent_fields) | test(message_send_agent_rows_are_bounded) | test(message_send_does_not_scan_agent_directory) | test(message_ignores_unrelated_invalid_agent) | test(message_ignores_unrelated_invalid_project) | test(message_ignores_invalid_parent_project_outside_sender_cwd) | test(message_delivers_between_user_grouped_leads) | test(message_refuses_unknown_foreign_and_deleted_targets) | test(same_team_target_is_resolved_before_message_validation_without_project_reads))) |
+    (package(=studio-runtime-store) & kind(lib) & test(message_records_use_both_indexes_and_keep_row_order)) |
     (package(=studio-runtime-store) & kind(lib) & test(scoped_fingerprint_ignores_offscreen_rows_and_tracks_moves_and_deletions)) |
     (package(=studio-runtime-store) & kind(lib) & (test(scoped_page_reads_only_its_collection_and_id) | test(pull_page_without_priority_stops_at_limit))) |
     (package(=studio-runtime-store) & kind(test) & binary(=integration) & test(open_recreates_entity_scope_indexes_on_existing_state)) |

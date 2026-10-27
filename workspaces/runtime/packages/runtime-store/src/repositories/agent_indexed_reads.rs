@@ -120,6 +120,45 @@ impl AgentIndexedReads {
         crate::agent_volatile::merged_rows(connection, rows)
     }
 
+    /// Unmerged records for named agents and, for broadcasts, one team root.
+    pub const MESSAGE_RECORDS_SQL: &'static str = "SELECT id,record FROM runtime_agents WHERE id IN (?1,?2,?3,?4) OR root_id=?5 ORDER BY rowid";
+    pub const MESSAGE_PREFIX_SQL: &'static str = "SELECT id,record FROM runtime_agents WHERE id IN (?1,?2,?3,?4) OR root_id=?5 OR (id>=?6 AND id<?7) ORDER BY rowid";
+    const MESSAGE_FINAL_PREFIX_SQL: &'static str = "SELECT id,record FROM runtime_agents WHERE id IN (?1,?2,?3,?4) OR root_id=?5 OR id GLOB ?6 ORDER BY rowid";
+
+    pub fn message_exact_team(connection: &Connection, id: &str, root: &str) -> StoreResult<bool> {
+        Ok(connection.query_row("SELECT EXISTS(SELECT 1 FROM runtime_agents WHERE id=?1 AND root_id=?2 AND (deleted_at IS NULL OR deleted_at=0))", params![id, root], |row| row.get(0))?)
+    }
+
+    pub fn message_records(
+        connection: &Connection,
+        ids: [Option<&str>; 4],
+        root: Option<&str>,
+        prefix: Option<&str>,
+    ) -> StoreResult<Vec<(String, String)>> {
+        let upper = prefix.and_then(prefix_upper);
+        let final_pattern = prefix
+            .filter(|_| upper.is_none())
+            .map(|prefix| format!("{prefix}*"));
+        let mut parameters = ids.into_iter().chain([root]).collect::<Vec<_>>();
+        let sql = match (prefix, upper.as_deref()) {
+            (Some(prefix), Some(upper)) => {
+                parameters.extend([Some(prefix), Some(upper)]);
+                Self::MESSAGE_PREFIX_SQL
+            }
+            (Some(_), None) => {
+                parameters.push(final_pattern.as_deref());
+                Self::MESSAGE_FINAL_PREFIX_SQL
+            }
+            (None, _) => Self::MESSAGE_RECORDS_SQL,
+        };
+        let mut statement = connection.prepare_cached(sql)?;
+        Ok(statement
+            .query_map(rusqlite::params_from_iter(parameters), |row| {
+                Ok((row.get(0)?, row.get(1)?))
+            })?
+            .collect::<Result<_, _>>()?)
+    }
+
     /// SQL counting the live (not deleted) team members that are not finished.
     /// A finished member is completed, failed, interrupted, or paused without
     /// auto-wake.
@@ -226,6 +265,18 @@ impl AgentIndexedReads {
             .prepare_cached(&Self::team_slots_sql())?
             .query_row(params![agent_id, root_id], |row| row.get(0))?)
     }
+}
+
+fn prefix_upper(prefix: &str) -> Option<String> {
+    for (offset, ch) in prefix.char_indices().rev() {
+        let next = (ch as u32).checked_add(1)?;
+        if let Some(next) = char::from_u32(if next == 0xd800 { 0xe000 } else { next }) {
+            let mut upper = prefix[..offset].to_owned();
+            upper.push(next);
+            return Some(upper);
+        }
+    }
+    None
 }
 
 #[cfg(test)]
@@ -361,6 +412,69 @@ mod tests {
         // Live paused agents hold slots but are not counted as work; tombstones are not counted.
         assert_eq!(by_account["default"], 3);
         assert_eq!(by_account["b"], 1);
+    }
+
+    #[test]
+    fn message_records_use_both_indexes_and_keep_row_order() {
+        let connection = fixture();
+        let ids =
+            |rows: Vec<(String, String)>| rows.into_iter().map(|row| row.0).collect::<Vec<_>>();
+        assert_eq!(
+            ids(AgentIndexedReads::message_records(
+                &connection,
+                [Some("a"), Some("lead"), None, Some("op")],
+                None,
+                None,
+            )
+            .unwrap()),
+            ["lead", "a", "op"]
+        );
+        let broadcast = ids(AgentIndexedReads::message_records(
+            &connection,
+            [Some("lead"), None, None, Some("op")],
+            Some("lead"),
+            None,
+        )
+        .unwrap());
+        assert_eq!(broadcast.len(), 11);
+        assert_eq!(broadcast.last().map(String::as_str), Some("op"));
+        let plan_description = plan(
+            &connection,
+            AgentIndexedReads::MESSAGE_RECORDS_SQL,
+            &["a", "lead", "", "op", "lead"],
+        );
+        assert!(
+            plan_description.contains("runtime_agent_root_v2"),
+            "{plan_description}"
+        );
+        assert!(
+            !plan_description.contains("SCAN runtime_agents"),
+            "{plan_description}"
+        );
+        let prefix =
+            ids(
+                AgentIndexedReads::message_records(&connection, [None; 4], None, Some("paused-"))
+                    .unwrap(),
+            );
+        assert_eq!(prefix, ["paused-wake", "paused-off"]);
+        let prefix_plan = plan(
+            &connection,
+            AgentIndexedReads::MESSAGE_PREFIX_SQL,
+            &["", "", "", "", "", "paused-", "paused."],
+        );
+        assert!(
+            !prefix_plan.contains("SCAN runtime_agents"),
+            "{prefix_plan}"
+        );
+        assert_eq!(prefix_upper("a\u{10ffff}"), Some("b".into()));
+        assert_eq!(prefix_upper("\u{d7ff}"), Some("\u{e000}".into()));
+        assert_eq!(prefix_upper("\u{10ffff}"), None);
+        let final_plan = plan(
+            &connection,
+            AgentIndexedReads::MESSAGE_FINAL_PREFIX_SQL,
+            &["", "", "", "", "", "\u{10ffff}*"],
+        );
+        assert!(!final_plan.contains("SCAN runtime_agents"), "{final_plan}");
     }
 
     #[test]

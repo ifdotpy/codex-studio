@@ -770,19 +770,12 @@ pub(super) fn execute(
     }
     let mut resolved_args = args.clone();
     let field = match kind {
-        ToolKind::Message => args["target"]
-            .as_str()
-            .filter(|target| {
-                !matches!(*target, "user" | "parent" | "lead" | "broadcast" | "all")
-                    && !target.starts_with("remote:")
-                    && !target.starts_with("federated:")
-            })
-            .map(|_| "target"),
         ToolKind::Task => args["owner"]
             .as_str()
             .filter(|owner| !owner.is_empty())
             .map(|_| "owner"),
         ToolKind::Request
+        | ToolKind::Message
         | ToolKind::ChatRead
         | ToolKind::Context
         | ToolKind::Peers

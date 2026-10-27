@@ -20,6 +20,48 @@ struct AgentAuthority {
     pub resolved_cwd: Option<LexicalPath>,
 }
 
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
+#[serde(untagged)]
+pub enum Deletion {
+    Bool(bool),
+    Number(f64),
+}
+impl Deletion {
+    pub fn is_deleted(&self) -> bool {
+        match self {
+            Self::Bool(value) => *value,
+            Self::Number(value) => *value != 0.0,
+        }
+    }
+}
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentAuthorityRow {
+    pub id: Option<String>,
+    pub root_id: Option<String>,
+    pub parent_id: Option<String>,
+    pub is_lead: Option<bool>,
+    pub deleted_at: Option<Deletion>,
+    pub cwd: Option<String>,
+    #[serde(default, skip_serializing_if = "StoredField::is_missing")]
+    pub name: StoredField<String>,
+    pub shared_room_id: Option<String>,
+}
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectAuthorityRow {
+    pub id: Option<String>,
+    pub path: Option<String>,
+    #[serde(default)]
+    pub peer_teams: Vec<PeerTeamRow>,
+}
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
+pub struct PeerTeamRow {
+    pub id: String,
+    pub name: String,
+    pub members: Vec<String>,
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 enum RoomAuthority {
@@ -99,6 +141,27 @@ pub enum EventDenial {
 }
 
 impl AuthorizationSnapshot {
+    pub(crate) fn authorize_message(
+        &mut self,
+        sender: &str,
+        room_id: &str,
+        root: Option<&str>,
+        members: &[String],
+    ) -> Result<(), EventDenial> {
+        let room = match root {
+            Some(root) => RoomAuthority::Broadcast {
+                root_id: Some(root.to_owned()),
+            },
+            None => RoomAuthority::Private {
+                members: members.to_vec(),
+            },
+        };
+        self.rooms.insert(room_id.to_owned(), room);
+        self.authorize(&EventSnapshot::AgentMessage {
+            sender: Some(sender.to_owned()),
+            room: Some(room_id.to_owned()),
+        })
+    }
     fn same_team(&self, root: &str, sender: Option<&str>) -> bool {
         sender
             .and_then(|id| self.agents.get(id))
@@ -398,22 +461,38 @@ fn strings(value: Option<&Value>, location: &str) -> Result<Vec<String>, Snapsho
 }
 impl AuthorizationSnapshot {
     pub fn from_records(rows: &AuthorizationRecords) -> Result<Self, SnapshotError> {
+        let agents = rows
+            .agents
+            .iter()
+            .map(|(key, raw)| {
+                (
+                    key.clone(),
+                    serde_json::from_str(raw).map_err(|_| invalid(format!("agents/{key}"))),
+                )
+            })
+            .collect();
+        let projects = rows
+            .projects
+            .iter()
+            .map(|(key, raw)| {
+                (
+                    key.clone(),
+                    serde_json::from_str(raw).map_err(|_| invalid(format!("projects/{key}"))),
+                )
+            })
+            .collect();
+        Self::from_typed(rows, &agents, &projects, &[])
+    }
+
+    pub(crate) fn from_typed(
+        rows: &AuthorizationRecords,
+        agents: &BTreeMap<String, Result<AgentAuthorityRow, SnapshotError>>,
+        projects: &BTreeMap<String, Result<ProjectAuthorityRow, SnapshotError>>,
+        required_senders: &[&str],
+    ) -> Result<Self, SnapshotError> {
         if rows.recipient_id.is_empty() {
             return Err(invalid("recipient_id"));
         }
-        let resolve =
-            |value: Option<&Value>, location: &str| -> Result<Option<LexicalPath>, SnapshotError> {
-                let Some(path) = optional_string(value, location)?.filter(|p| !p.trim().is_empty())
-                else {
-                    return Ok(None);
-                };
-                let resolved = rows
-                    .resolved_paths
-                    .get(&path)
-                    .and_then(|path| LexicalPath::exact(std::path::Path::new(path)))
-                    .ok_or_else(|| invalid(location))?;
-                Ok(Some(resolved))
-            };
         let mut snapshot = Self {
             recipient_id: rows.recipient_id.clone(),
             agents: BTreeMap::new(),
@@ -423,25 +502,30 @@ impl AuthorizationSnapshot {
             events: Vec::new(),
         };
         let mut malformed_agents = BTreeMap::new();
-        for (key, raw) in &rows.agents {
+        for (key, row) in agents {
             let location = format!("agents/{key}");
             let authority = (|| {
-                let row = object(raw, &location)?;
+                let row = row.clone()?;
                 let id = row
-                    .get("id")
-                    .and_then(Value::as_str)
-                    .filter(|id| !id.is_empty() && *id == key)
+                    .id
+                    .filter(|id| !id.is_empty() && id == key)
                     .ok_or_else(|| invalid(format!("{location}/id")))?;
+                let cwd = row.cwd.filter(|path| !path.trim().is_empty());
+                let resolved_cwd = cwd
+                    .map(|path| {
+                        rows.resolved_paths
+                            .get(&path)
+                            .and_then(|path| LexicalPath::exact(std::path::Path::new(path)))
+                            .ok_or_else(|| invalid(format!("{location}/cwd")))
+                    })
+                    .transpose()?;
                 Ok::<_, SnapshotError>(AgentAuthority {
-                    id: id.into(),
-                    root_id: optional_string(row.get("rootId"), &format!("{location}/rootId"))?,
-                    parent_id: optional_string(
-                        row.get("parentId"),
-                        &format!("{location}/parentId"),
-                    )?,
-                    is_lead: row.get("isLead") == Some(&Value::Bool(true)),
-                    deleted: truthy(row.get("deletedAt")),
-                    resolved_cwd: resolve(row.get("cwd"), &format!("{location}/cwd"))?,
+                    id,
+                    root_id: row.root_id,
+                    parent_id: row.parent_id,
+                    is_lead: row.is_lead == Some(true),
+                    deleted: row.deleted_at.as_ref().is_some_and(Deletion::is_deleted),
+                    resolved_cwd,
                 })
             })();
             match authority {
@@ -482,42 +566,38 @@ impl AuthorizationSnapshot {
                 },
             );
         }
-        for (key, raw) in &rows.projects {
+        for (key, row) in projects {
             let location = format!("projects/{key}");
-            let row = object(raw, &location)?;
-            let path = resolve(row.get("path"), &format!("{location}/path"))?
+            let row = row.clone()?;
+            let original = row
+                .path
+                .filter(|path| !path.trim().is_empty())
                 .ok_or_else(|| invalid(&location))?;
+            let path = rows
+                .resolved_paths
+                .get(&original)
+                .and_then(|path| LexicalPath::exact(std::path::Path::new(path)))
+                .ok_or_else(|| invalid(format!("{location}/path")))?;
             let mut teams = Vec::new();
-            if let Some(value) = row.get("peerTeams") {
-                for (index, team) in value
-                    .as_array()
-                    .ok_or_else(|| invalid(format!("{location}/peerTeams")))?
-                    .iter()
-                    .enumerate()
-                {
-                    let at = format!("{location}/peerTeams/{index}");
-                    for field in ["id", "name"] {
-                        if !team
-                            .get(field)
-                            .and_then(Value::as_str)
-                            .is_some_and(|v| !v.is_empty())
-                        {
-                            return Err(invalid(format!("{at}/{field}")));
-                        }
+            for (index, team) in row.peer_teams.into_iter().enumerate() {
+                let at = format!("{location}/peerTeams/{index}");
+                for (field, value) in [("id", &team.id), ("name", &team.name)] {
+                    if value.is_empty() {
+                        return Err(invalid(format!("{at}/{field}")));
                     }
-                    let members = strings(team.get("members"), &format!("{at}/members"))?;
-                    if members.len() < 2
-                        || members.iter().any(String::is_empty)
-                        || members
-                            .iter()
-                            .collect::<std::collections::BTreeSet<_>>()
-                            .len()
-                            != members.len()
-                    {
-                        return Err(invalid(format!("{at}/members")));
-                    }
-                    teams.push(members);
                 }
+                let members = team.members;
+                if members.len() < 2
+                    || members.iter().any(String::is_empty)
+                    || members
+                        .iter()
+                        .collect::<std::collections::BTreeSet<_>>()
+                        .len()
+                        != members.len()
+                {
+                    return Err(invalid(format!("{at}/members")));
+                }
+                teams.push(members);
             }
             if path.to_str() == Some(key.as_str()) {
                 snapshot.projects.insert(path, teams);
@@ -525,6 +605,11 @@ impl AuthorizationSnapshot {
         }
         for event in &rows.events {
             snapshot.events.push(project_event(event, &rows.event_meta));
+        }
+        for sender in required_senders {
+            if let Some(error) = malformed_agents.get(*sender) {
+                return Err(error.clone());
+            }
         }
         for event in &snapshot.events {
             let sender = match event {
@@ -555,7 +640,7 @@ impl<T> StoredField<T> {
     fn is_missing(&self) -> bool {
         matches!(self, Self::Missing)
     }
-    fn value_or<'a>(&'a self, default: Option<&'a T>) -> Option<&'a T> {
+    pub(crate) fn value_or<'a>(&'a self, default: Option<&'a T>) -> Option<&'a T> {
         match self {
             Self::Missing => default,
             Self::Null => None,
@@ -985,5 +1070,19 @@ mod tests {
         let snapshot = AuthorizationSnapshot::from_records(&records).expect("checked rows");
         assert!(snapshot.peer_pair("left", "right"));
         assert!(!snapshot.peer_pair("left", "left"));
+        let agents = records
+            .agents
+            .iter()
+            .map(|(key, raw)| (key.clone(), Ok(serde_json::from_str(raw).unwrap())))
+            .collect();
+        let projects = records
+            .projects
+            .iter()
+            .map(|(key, raw)| (key.clone(), Ok(serde_json::from_str(raw).unwrap())))
+            .collect();
+        let shared = AuthorizationSnapshot::from_typed(&records, &agents, &projects, &[])
+            .expect("typed rows");
+        assert!(shared.peer_pair("left", "right"));
+        assert!(!shared.peer_pair("left", "left"));
     }
 }

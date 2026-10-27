@@ -82,7 +82,10 @@ pub(crate) fn submit_agent_complaint(
     checked("runtime_complaints", &record)?;
     Table::<ComplaintRecord>::new(tx).put(&ComplaintRecord::from_value(record.clone())?)?;
     let context = crate::sync_views::ComplaintViewContext {
-        agents: vec![agent.clone(), serde_json::to_value(&lead)?],
+        agents: &[
+            serde::Deserialize::deserialize(agent.clone())?,
+            serde::Deserialize::deserialize(lead.value())?,
+        ],
     };
     let view = crate::sync_views::complaint_entity_view(&record, &context)
         .ok_or_else(|| stored("runtime_complaints", &complaint_id))?;
@@ -366,8 +369,11 @@ fn save_complaint_projection(
         .ok_or(NotificationDispatchError::invalid())?;
     let typed = ComplaintRecord::from_value(complaint.clone())?;
     Table::<ComplaintRecord>::new(tx).put(&typed)?;
-    let agents = records::all(tx, "runtime_agents")?;
-    let context = crate::sync_views::ComplaintViewContext { agents };
+    let agents: Vec<_> = records::all(tx, "runtime_agents")?
+        .into_iter()
+        .map(serde::Deserialize::deserialize)
+        .collect::<Result<_, _>>()?;
+    let context = crate::sync_views::ComplaintViewContext { agents: &agents };
     let view = crate::sync_views::complaint_entity_view(complaint, &context)
         .ok_or_else(|| stored("runtime_complaints", id))?;
     SyncDocumentsRepository::put_entity(tx, "complaint", id, view, false)?;
