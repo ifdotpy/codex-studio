@@ -1485,6 +1485,27 @@ test("repository gates use manifest packages without the retired backend", () =>
 });
 
 test("short profile commands retain native nextest summary and zero-test guards", () => {
+  assert.equal(
+    parseCounts(
+      { ecosystem: "cargo" },
+      "test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s",
+      true,
+    ).summaryFound,
+    false,
+  );
+  assert.deepEqual(
+    parseCounts(
+      { ecosystem: "cargo" },
+      "test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s\n   Summary [ 1.234s] 1584 tests run: 1581 passed, 3 failed, 3049 skipped\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s",
+    ),
+    {
+      passed: 1581,
+      failed: 3,
+      skipped: 3049,
+      executed: 1584,
+      summaryFound: true,
+    },
+  );
   assert.deepEqual(
     parseCounts(
       { ecosystem: "cargo" },
@@ -1505,6 +1526,71 @@ test("short profile commands retain native nextest summary and zero-test guards"
     ).executed,
     0,
   );
+});
+
+test("cargo doctest summaries determine gate results", async () => {
+  assert.deepEqual(
+    parseCounts(
+      { ecosystem: "cargo" },
+      "test result: FAILED. 1 passed; 2 failed; 3 ignored; 0 measured; 4 filtered out; finished in 0.05s",
+    ),
+    { passed: 1, failed: 2, skipped: 3, executed: 3, summaryFound: true },
+  );
+  const restoreOutput = silenceFacadeOutput();
+  const root = mkdtempSync(path.join(os.tmpdir(), "codex-doctest-summary-"));
+  try {
+    for (const [output, expected, skipped] of [
+      [
+        "test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.05s",
+        11,
+        0,
+      ],
+      [
+        "test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 3 filtered out; finished in 0.03s",
+        5,
+        0,
+      ],
+      [
+        "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 7 filtered out; finished in 0.05s",
+        1,
+        0,
+      ],
+      [
+        "test result: ok. 0 passed; 0 failed; 2 ignored; 0 measured; 0 filtered out; finished in 0.00s",
+        0,
+        2,
+      ],
+      ["running 1 test\ntest example ... ok", 0, 0],
+    ] as const) {
+      const result = await execute(
+        root,
+        { name: "fixture", ecosystem: "cargo" },
+        "",
+        true,
+        {
+          logDirectory: path.join(root, String(expected), String(skipped)),
+          commands: [
+            ["node", ["-e", `process.stdout.write(${JSON.stringify(output)})`]],
+          ],
+        },
+      );
+      assert.equal(result.exitCode, expected ? 0 : 1, output);
+      assert.equal(result.passed, expected, output);
+      assert.equal(result.skipped, skipped, output);
+      assert.equal(result.executed, expected, output);
+      if (!expected)
+        assert.ok(result.errors!.includes("native runner executed zero tests"));
+      if (output.startsWith("running"))
+        assert.ok(
+          result.errors!.includes(
+            "native runner summary was missing; refusing to report success",
+          ),
+        );
+    }
+  } finally {
+    restoreOutput();
+    rmSync(root, { recursive: true, force: true });
+  }
 });
 
 test("nextest suite summaries reject non-number counters", () => {

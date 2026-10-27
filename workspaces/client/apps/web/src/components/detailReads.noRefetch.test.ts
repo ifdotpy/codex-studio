@@ -1,3 +1,7 @@
+import {
+  AccountStatus as GeneratedApiAccountStatus,
+  ProviderKind as GeneratedApiProviderKind,
+} from "../generated/api.ts";
 import type { ComponentHookCell } from "./componentTestFixtures";
 import { required } from "./componentTestFixtures";
 import type { EffectCallback, PropsWithChildren } from "react";
@@ -262,14 +266,14 @@ it("Claude account status and key updates do not reload settings; explicit retry
     id: "claude",
     home: "/fixture",
     source: "fixture",
-    status: "signedOut",
-    provider: "claude",
+    status: GeneratedApiAccountStatus.signedOut,
+    provider: GeneratedApiProviderKind.claude,
     label: "Claude",
   };
   const read = () => ClaudeSettings({ agent: currentAgent, account });
   render(read);
   await settle();
-  account = { ...account, status: "ready" } as Account;
+  account = { ...account, status: GeneratedApiAccountStatus.ready } as Account;
   currentAgent = { ...agent, accountKey: "other" };
   const view = render(read);
   await settle();

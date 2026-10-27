@@ -1,3 +1,4 @@
+import { AgentSource as GeneratedApiAgentSource } from "../../generated/api.ts";
 import type { Agent, PeerTeam } from "../../types";
 import { retainArray } from "../../hooks/snapshotSelection";
 
@@ -35,7 +36,7 @@ export function isVisibleSidebarAgent(
   >,
 ) {
   return (
-    agent.source === "managed" &&
+    agent.source === GeneratedApiAgentSource.managed &&
     agent.isLead &&
     !agent.deletedAt &&
     !agent.sharedRoomId &&
@@ -312,7 +313,11 @@ export function createAppCatalogSelector() {
       const nextLeads: Agent[] = [];
       for (const row of next) {
         nextById.set(row.id, row);
-        if (row.source === "managed" && row.isLead && !row.sharedRoomId)
+        if (
+          row.source === GeneratedApiAgentSource.managed &&
+          row.isLead &&
+          !row.sharedRoomId
+        )
           nextLeads.push(row);
       }
       byId = nextById;

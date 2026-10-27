@@ -1,3 +1,4 @@
+import { AgentSource as GeneratedApiAgentSource } from "../generated/api.ts";
 import { useEffect, useState } from "react";
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import { useMantineColorScheme } from "@mantine/core";
@@ -27,7 +28,7 @@ const threads = projects.flatMap((project, projectIndex) =>
         id: `${project}-${index}`,
         name,
         cwd: `/work/${project}`,
-        source: "managed",
+        source: GeneratedApiAgentSource.managed,
         isLead: true,
         provider: index % 2 ? "claude" : "codex",
         model: index % 2 ? "claude-opus-4-6" : "gpt-5.4",

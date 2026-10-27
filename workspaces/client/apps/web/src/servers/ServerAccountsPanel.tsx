@@ -1,3 +1,4 @@
+import { AccountStatus } from "../generated/api";
 import {
   Accordion,
   Badge,
@@ -543,12 +544,12 @@ export default function ServerAccountsPanel({
                     <AccountCapacityView
                       card
                       account={{
-                        status: "signedOut",
+                        status: AccountStatus.signedOut,
                         email: row.email,
                         label: row.label,
                       }}
                       view={accountLimitView(
-                        { id: row.key, status: "signedOut" },
+                        { id: row.key, status: AccountStatus.signedOut },
                         null,
                       )}
                       facts={facts}

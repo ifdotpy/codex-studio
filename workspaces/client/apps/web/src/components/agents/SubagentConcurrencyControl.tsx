@@ -1,3 +1,4 @@
+import { AgentMode } from "../../generated/api";
 import { randomUUID } from "../../uuid";
 import { useServerStorage } from "../../servers/ServerServicesContext";
 import { useServerApi } from "../../servers/ServerServicesContext";
@@ -63,7 +64,7 @@ const pendingTarget = (
   if (!request) return undefined;
   if ("subagent_concurrency" in request)
     return request.subagent_concurrency ?? undefined;
-  return request.agent_mode === "single"
+  return request.agent_mode === AgentMode.single
     ? MIN_CONCURRENCY
     : DEFAULT_CONCURRENCY;
 };
@@ -340,7 +341,7 @@ function ScopedConcurrencyControl({
 
   const legacyMode =
     lead.agentModeSupported &&
-    (lead.agentMode === "single" || lead.agentMode === "multi")
+    (lead.agentMode === AgentMode.single || lead.agentMode === AgentMode.multi)
       ? lead.agentMode
       : undefined;
   const mode = confirmed

@@ -1,3 +1,4 @@
+import { ProviderKind as GeneratedApiProviderKind } from "../generated/api.ts";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Agent, Snapshot } from "../types";
 
@@ -576,7 +577,7 @@ describe("resource read callers", () => {
             {
               accountKey: "default",
               model: "ready-model",
-              provider: "codex",
+              provider: GeneratedApiProviderKind.codex,
               hidden: false,
               catalogPosition: 0,
               serviceTiers: [],

@@ -1,3 +1,4 @@
+import { AgentStatus } from "./generated/api";
 import { expect, test } from "vitest";
 import { statusLabel, type Agent } from "./types";
 
@@ -43,13 +44,13 @@ test.each([
   [undefined, "Working"],
   ["", "Working"],
 ])("preserves the running phase label for %s", (phase, label) => {
-  expect(statusLabel("running", phase)).toBe(label);
+  expect(statusLabel(AgentStatus.running, phase)).toBe(label);
 });
 
 test("phase and parked-event labels only override their own status", () => {
-  expect(statusLabel("idle", "thinking", "ready")).toBe("Ready");
-  expect(statusLabel("parked", "thinking", "ready")).toBe(
+  expect(statusLabel(AgentStatus.idle, "thinking", "ready")).toBe("Ready");
+  expect(statusLabel(AgentStatus.parked, "thinking", "ready")).toBe(
     "Waiting for event ready",
   );
-  expect(statusLabel("parked", "thinking", "")).toBe("Turn ended");
+  expect(statusLabel(AgentStatus.parked, "thinking", "")).toBe("Turn ended");
 });

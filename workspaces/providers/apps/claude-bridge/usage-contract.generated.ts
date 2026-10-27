@@ -134,10 +134,19 @@ export interface components {
 export type $defs = Record<string, never>;
 export type operations = Record<string, never>;
 
+export const UsageEvidence = {
+  live: "live",
+  recovered: "recovered",
+  legacy: "legacy",
+} as const;
+export type UsageEvidence = components["schemas"]["UsageEvidence"];
+export const UsageScope = {
+  codexThread: "codexThread",
+  claudeQuery: "claudeQuery",
+} as const;
+export type UsageScope = components["schemas"]["UsageScope"];
 export type CumulativeModelUsage =
   components["schemas"]["CumulativeModelUsage"];
-export type UsageEvidence = components["schemas"]["UsageEvidence"];
 export type UsageGapReason = components["schemas"]["UsageGapReason"];
 export type UsageObservation = components["schemas"]["UsageObservation"];
-export type UsageScope = components["schemas"]["UsageScope"];
 export type UsageTokens = components["schemas"]["UsageTokens"];

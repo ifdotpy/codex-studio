@@ -1,3 +1,4 @@
+import { WorkspaceMode } from "./generated/api";
 import { expect, test } from "vitest";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
@@ -43,11 +44,14 @@ test("disk recovery, folder sync, workspaces and sign-in use platform-neutral pr
   expect(
     workspaceBadgeInfo({
       isLead: true,
-      workspaceMode: "image",
+      workspaceMode: WorkspaceMode.image,
     } as Agent),
   ).toBeNull();
   expect(
-    workspaceBadgeInfo({ isLead: true, workspaceMode: "layr" } as Agent),
+    workspaceBadgeInfo({
+      isLead: true,
+      workspaceMode: WorkspaceMode.layr,
+    } as Agent),
   ).toEqual({ label: "Layr VM", title: "Virtual machine with Layr" });
   expect(
     resultTarget(

@@ -1,3 +1,4 @@
+import { ProviderKind } from "../generated/api";
 import type { AccountLimitsSnapshot } from "./accountUsage";
 import { createAccountLimitsCache } from "./accountUsage";
 import type { JsonInputOf, Agent } from "../types";
@@ -11,7 +12,7 @@ const agent: Agent = {
   id: "agent",
   accountKey: "work",
   model: "gpt-6",
-  provider: "codex",
+  provider: ProviderKind.codex,
   error: { codexErrorInfo: "rateLimitExceeded" },
   nativeLimitErrorAt: now - 10,
 };
@@ -133,7 +134,11 @@ test("recovery consumes the Rust decision and validates its identity and validit
       JSON.stringify(patch),
     );
   }
-  const sonnet: Agent = { ...agent, provider: "claude", model: "sonnet" };
+  const sonnet: Agent = {
+    ...agent,
+    provider: ProviderKind.claude,
+    model: "sonnet",
+  };
   const response = {
     ...available,
     eligibility: decision({
@@ -275,7 +280,11 @@ test("unsupported provider identities retain generic recovery without Codex bill
 });
 
 test("Claude notices show model reset and overage without Codex purchase actions", () => {
-  const claude: Agent = { ...agent, provider: "claude", model: "sonnet" };
+  const claude: Agent = {
+    ...agent,
+    provider: ProviderKind.claude,
+    model: "sonnet",
+  };
   const eligibility = decision({
     provider: "claude",
     model: "sonnet",

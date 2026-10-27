@@ -1,3 +1,4 @@
+import { RoomKind } from "../generated/api";
 import { describe, expect, it, vi } from "vitest";
 import type { GetResult } from "../api";
 import { drainRoomUpdates } from "./roomUpdates";
@@ -19,7 +20,12 @@ function page(from: number, length: number, hasMore: boolean): Response {
     };
   });
   return {
-    room: { id: "feed:team", kind: "broadcast", name: "Team", members: [] },
+    room: {
+      id: "feed:team",
+      kind: RoomKind.broadcast,
+      name: "Team",
+      members: [],
+    },
     messages,
     nextBefore: null,
     nextAfter: hasMore ? messages.at(-1)?.seq || null : null,

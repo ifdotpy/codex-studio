@@ -13,6 +13,13 @@ pub const CONTROL_ID_MAX_CODEPOINTS: usize = CONTROL_ID_MAX_BYTES;
 /// Inclusive compact window bounds, in tokens.
 pub const COMPACT_WINDOW_MIN_TOKENS: u64 = 100_000;
 pub const COMPACT_WINDOW_MAX_TOKENS: u64 = 1_000_000;
+/// Wire fields owned by ClaudeSettings, used when comparing a provider reply.
+pub const CLAUDE_SETTINGS_WIRE_FIELDS: [&str; 4] = [
+    "permissionMode",
+    "thinking",
+    "mcpAutoBackground",
+    "autoCompactWindow",
+];
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, JsonSchema)]
 pub struct ControlId(#[schemars(length(min = 1, max = CONTROL_ID_MAX_CODEPOINTS))] String);
@@ -332,6 +339,18 @@ mod tests {
             schema["enum"],
             json!(crate::claude_permissions::PERMISSION_MODES)
         );
+    }
+
+    #[test]
+    fn claude_settings_wire_fields_match_derived_schema() {
+        let schema = schemars::schema_for!(ClaudeSettings).to_value();
+        let fields = schema["properties"]
+            .as_object()
+            .expect("settings properties");
+        let declared: std::collections::BTreeSet<_> =
+            CLAUDE_SETTINGS_WIRE_FIELDS.into_iter().collect();
+        assert_eq!(declared.len(), CLAUDE_SETTINGS_WIRE_FIELDS.len());
+        assert_eq!(declared, fields.keys().map(String::as_str).collect());
     }
 
     #[test]

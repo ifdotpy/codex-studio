@@ -1,3 +1,4 @@
+import { SubscriptionReplyKind } from "../generated/api";
 import { randomUUID } from "../uuid";
 import {
   openServerEvents,
@@ -719,7 +720,7 @@ export function createResourceEvents(options: ResourceEventsOptions) {
         version.transcriptSequence = revisionEntry.transcriptChanges.through;
       if (
         resource.kind === "transcript" &&
-        revisionEntry?.replyKind === "delta" &&
+        revisionEntry?.replyKind === SubscriptionReplyKind.delta &&
         revisionEntry.cursor
       )
         version.transcriptSequence = revisionEntry.cursor.seq;
@@ -1060,7 +1061,7 @@ export function createResourceEvents(options: ResourceEventsOptions) {
             resource: frame.resource,
             revision: frame.cursor.seq,
             cursor: frame.cursor,
-            replyKind: "delta",
+            replyKind: SubscriptionReplyKind.delta,
           },
         ],
       };

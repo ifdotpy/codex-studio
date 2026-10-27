@@ -1,3 +1,4 @@
+import { WorkspaceMode, AccountStatus, ProviderKind } from "./generated/api";
 import { required } from "./components/componentTestFixtures.ts";
 import assert from "node:assert/strict";
 import type { components } from "./generated/api";
@@ -204,7 +205,7 @@ describe("scale verifier helpers", () => {
     expect(callbackWorktreeCwd(entity, "worker", "/project")).toBe(entity.cwd);
     for (const changes of [
       { worktree: false },
-      { workspaceMode: "shared" },
+      { workspaceMode: WorkspaceMode.shared },
       { cwd: "/project" },
       { cwd: "relative" },
       { worktreePreparation: "waiting" },
@@ -260,11 +261,23 @@ describe("scale verifier helpers", () => {
   });
   it("spreads Codex workers over ready accounts and keeps defaults unpinned", () => {
     const accounts: Parameters<typeof scaleAccountKeys>[0] = [
-      { id: "login-b", status: "ready", provider: "codex" },
-      { id: "claude-local", status: "ready", provider: "claude" },
-      { id: "default", status: "ready", provider: "codex" },
+      {
+        id: "login-b",
+        status: AccountStatus.ready,
+        provider: ProviderKind.codex,
+      },
+      {
+        id: "claude-local",
+        status: AccountStatus.ready,
+        provider: ProviderKind.claude,
+      },
+      {
+        id: "default",
+        status: AccountStatus.ready,
+        provider: ProviderKind.codex,
+      },
       // @ts-expect-error The fixture exercises an unknown non-ready account status.
-      { id: "login-c", status: "needs-login", provider: "codex" },
+      { id: "login-c", status: "needs-login", provider: ProviderKind.codex },
     ];
     const codex = scaleProfile("codex-luna");
     const keys = scaleAccountKeys(accounts, codex);

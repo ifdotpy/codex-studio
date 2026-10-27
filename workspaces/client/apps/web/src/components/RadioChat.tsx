@@ -1,3 +1,7 @@
+import {
+  RadioStatus as GeneratedApiRadioStatus,
+  RequestStatus as GeneratedApiRequestStatus,
+} from "../generated/api.ts";
 import { randomUUID } from "../uuid";
 import { useServerApi } from "../servers/ServerServicesContext";
 import { providerLabel } from "../generated/providerKind.ts";
@@ -170,17 +174,19 @@ export default function RadioChat({
     }
   };
   const busy =
-    !!radio.active || (radio.status !== "idle" && radio.status !== "blocked");
+    !!radio.active ||
+    (radio.status !== GeneratedApiRadioStatus.idle &&
+      radio.status !== GeneratedApiRadioStatus.blocked);
   const frozen = pending || !!attempt;
   const inputBlocked =
-    radio.status === "stopping" ||
-    (radio.status === "blocked" && !!radio.active);
+    radio.status === GeneratedApiRadioStatus.stopping ||
+    (radio.status === GeneratedApiRadioStatus.blocked && !!radio.active);
   const canSend = !frozen && !inputBlocked && !!draft.trim();
   const runtimeRequests = data.runtime?.requests || [];
   const requests = runtimeRequests.filter(
     (r) =>
       r.agent === radio.active?.agentId &&
-      (!r.status || r.status === "pending") &&
+      (!r.status || r.status === GeneratedApiRequestStatus.pending) &&
       (!(r.turnId || r.params?.turnId) ||
         (r.turnId || r.params?.turnId) === radio.active?.turnId),
   );
@@ -192,7 +198,8 @@ export default function RadioChat({
             className="radio-participant"
             key={agent.id}
             data-speaking={
-              radio.speaker === agent.id && radio.status === "speaking"
+              radio.speaker === agent.id &&
+              radio.status === GeneratedApiRadioStatus.speaking
             }
           >
             <AgentAvatar id={agent.id} size={28} />
@@ -203,19 +210,22 @@ export default function RadioChat({
               </small>
             </div>
             <span className="radio-speaker">
-              {radio.speaker === agent.id && radio.status === "speaking"
+              {radio.speaker === agent.id &&
+              radio.status === GeneratedApiRadioStatus.speaking
                 ? "Speaking"
                 : busy
                   ? "Waiting"
                   : "Ready"}
             </span>
             {busy &&
-              radio.status !== "blocked" &&
+              radio.status !== GeneratedApiRadioStatus.blocked &&
               radio.speaker !== agent.id && (
                 <Button
                   size="compact-xs"
                   variant="subtle"
-                  disabled={frozen || radio.status === "stopping"}
+                  disabled={
+                    frozen || radio.status === GeneratedApiRadioStatus.stopping
+                  }
                   onClick={() => command({ action: "pass", target: agent.id })}
                 >
                   Reply next
@@ -227,10 +237,14 @@ export default function RadioChat({
           <Button
             size="compact-xs"
             variant="subtle"
-            disabled={frozen || radio.status === "stopping"}
+            disabled={
+              frozen || radio.status === GeneratedApiRadioStatus.stopping
+            }
             onClick={() => command({ action: "stop" })}
           >
-            {radio.status === "stopping" ? "Stopping…" : "Stop"}
+            {radio.status === GeneratedApiRadioStatus.stopping
+              ? "Stopping…"
+              : "Stop"}
           </Button>
         )}
       </div>
@@ -357,9 +371,9 @@ export default function RadioChat({
           />
           <span>
             {busy
-              ? radio.status === "blocked"
+              ? radio.status === GeneratedApiRadioStatus.blocked
                 ? "Resolve the current reply before sending."
-                : radio.status === "stopping"
+                : radio.status === GeneratedApiRadioStatus.stopping
                   ? "Waiting for the reply to stop."
                   : "Current reply finishes first."
               : target === "both"

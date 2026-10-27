@@ -355,7 +355,9 @@ impl RecoveryRuntime {
                 )
                 .await?;
                 Ok(RecoveryEffectResult::plain(if changed {
-                    RecoveryOutcome::Applied(serde_json::json!({"status":"checked"}))
+                    RecoveryOutcome::Applied(crate::recovery::RecoveryReceipt::Applied(
+                        serde_json::json!({"status":"checked"}),
+                    ))
                 } else {
                     RecoveryOutcome::Unconfirmed
                 }))
@@ -447,7 +449,7 @@ impl RecoveryScan {
         if self.active.as_ref() != Some(&key) {
             return Err(RecoveryError::CommitFailed);
         }
-        let restored = matches!(outcome, Ok(result) if matches!(&result.outcome, RecoveryOutcome::Applied(v) if matches!(v["status"].as_str(), Some("adopted"|"reconciled"|"input_restored"))));
+        let restored = matches!(outcome, Ok(result) if matches!(&result.outcome, RecoveryOutcome::Applied(v) if matches!(v.value()["status"].as_str(), Some("adopted"|"reconciled"|"input_restored"))));
         let failures = if restored {
             0
         } else {

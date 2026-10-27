@@ -1,3 +1,7 @@
+import {
+  ProviderKind as GeneratedApiProviderKind,
+  AccountStatus as GeneratedApiAccountStatus,
+} from "../generated/api.ts";
 import { expect, userEvent, waitFor, within } from "storybook/test";
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import { useEffect, useMemo } from "react";
@@ -64,7 +68,9 @@ function AccountLimitsFixture({
                       <span
                         role="img"
                         aria-label={
-                          item.provider === "claude" ? "Claude" : "Codex"
+                          item.provider === GeneratedApiProviderKind.claude
+                            ? "Claude"
+                            : "Codex"
                         }
                       >
                         <ProviderMark provider={item.provider || "codex"} />
@@ -73,13 +79,15 @@ function AccountLimitsFixture({
                     </span>
                   </Accordion.Control>
                   <span className="account-plan">
-                    {item.provider === "claude" ? "Max" : "Pro"}
+                    {item.provider === GeneratedApiProviderKind.claude
+                      ? "Max"
+                      : "Pro"}
                   </span>
                 </div>
                 <AccountCapacityView
                   card
                   account={{
-                    status: "ready",
+                    status: GeneratedApiAccountStatus.ready,
                     label: item.label,
                     email: item.email,
                   }}
@@ -87,7 +95,7 @@ function AccountLimitsFixture({
                     {
                       id: item.key,
                       accountId: item.accountId,
-                      status: "ready",
+                      status: GeneratedApiAccountStatus.ready,
                     },
                     accountLimits(item.limits, item.key, item.accountId),
                   )}
@@ -111,7 +119,7 @@ function AccountLimitsFixture({
                 {
                   id: "fixture",
                   accountKey: "codex-main",
-                  provider: "codex",
+                  provider: GeneratedApiProviderKind.codex,
                   contextUsage: { tokens: 12000, window: 128000 },
                 } as Agent
               }

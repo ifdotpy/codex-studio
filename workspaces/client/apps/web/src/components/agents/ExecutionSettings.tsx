@@ -1,3 +1,8 @@
+import {
+  AccountTransferScope,
+  AccountTransferStatus as GeneratedAccountTransferStatus,
+  TransferScope,
+} from "../../generated/api";
 import { randomUUID } from "../../uuid";
 import { ProviderKind, providerLabel } from "../../generated/providerKind.ts";
 import { clearSettingsRequest, settingsRequestId } from "../settingsRequestId";
@@ -998,7 +1003,7 @@ function ScopedExecutionSettings({
           id: agent.id,
           account_key: target,
           request_id: requestId,
-          scope: "subagents",
+          scope: TransferScope.subagents,
         },
         { timeoutMs: 30000 },
       );
@@ -1007,7 +1012,7 @@ function ScopedExecutionSettings({
         requestId,
         agent.id,
         target,
-        "subagents",
+        TransferScope.subagents,
       );
       save(subagentTransferReceiptKey, null);
       if (!mounted.current) return;
@@ -1071,8 +1076,8 @@ function ScopedExecutionSettings({
   const snapshotTransfer =
     storedTransfer &&
     (teamDefaults
-      ? storedTransfer.scope === "subagents"
-      : storedTransfer.scope !== "subagents")
+      ? storedTransfer.scope === AccountTransferScope.subagents
+      : storedTransfer.scope !== AccountTransferScope.subagents)
       ? storedTransfer
       : null;
   // Keep the confirmed response until replication changes its old summary.
@@ -1466,8 +1471,8 @@ function ScopedExecutionSettings({
           !!(
             !teamDefaults &&
             agent.isLead &&
-            shownTransfer?.status === "pending" &&
-            shownTransfer.scope !== "subagents" &&
+            shownTransfer?.status === GeneratedAccountTransferStatus.pending &&
+            shownTransfer.scope !== AccountTransferScope.subagents &&
             account.id !== shownTransfer.targetAccountKey
           )
         }
@@ -1550,7 +1555,7 @@ function ScopedExecutionSettings({
         !!current.account_key &&
         !crossProvider &&
         existingElsewhere.length > 0 &&
-        shownTransfer?.status !== "pending" && (
+        shownTransfer?.status !== GeneratedAccountTransferStatus.pending && (
           <Button
             size="compact-xs"
             variant="subtle"

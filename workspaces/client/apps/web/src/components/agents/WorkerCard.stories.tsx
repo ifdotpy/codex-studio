@@ -1,3 +1,4 @@
+import { AgentRole, AgentSource, AgentStatus } from "../../generated/api";
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import { expect, fn, userEvent, within } from "storybook/test";
 import WorkerCard from "./WorkerCard";
@@ -6,11 +7,11 @@ import type { Agent } from "../../types";
 const agent = {
   id: "worker-1",
   name: "Transcript worker",
-  source: "managed",
-  status: "running",
+  source: AgentSource.managed,
+  status: AgentStatus.running,
   model: "gpt-6",
   created: 1,
-  role: "worker",
+  role: AgentRole.worker,
   overview: {
     task: "Extract reusable transcript presentation components.",
     result: "The story renders the same typed card used by the team panel.",

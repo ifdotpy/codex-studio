@@ -188,7 +188,7 @@ pub trait AccountSessionPort: Send + Sync {
         &'a self,
         _account: &'a str,
         _request: crate::agent_management_recovery::AuthorizedRecoveryRequest,
-    ) -> AccountSessionFuture<'a, Value> {
+    ) -> AccountSessionFuture<'a, crate::recovery::RecoveryReceipt> {
         Box::pin(async {
             Err(AccountSessionError::Requires(
                 "account-worker/manual-agent-recovery",
@@ -733,6 +733,9 @@ pub type SessionFuture =
     Pin<Box<dyn Future<Output = Result<SessionReceipt, AccountSessionError>> + Send>>;
 pub type BarrierFuture = Pin<Box<dyn Future<Output = Result<(), AccountSessionError>> + Send>>;
 pub type RecoveryFuture = Pin<Box<dyn Future<Output = Result<Value, AccountSessionError>> + Send>>;
+pub type ManagedRecoveryFuture = Pin<
+    Box<dyn Future<Output = Result<crate::recovery::RecoveryReceipt, AccountSessionError>> + Send>,
+>;
 
 /// The integrator adapts its retained session's request(scope, operation, method,
 /// params, absolute deadline) here. Scope lookup must not dispatch a mutation.
@@ -741,7 +744,7 @@ pub trait RetainedAccountSession: Send + Sync {
         &self,
         _account: String,
         _request: crate::agent_management_recovery::AuthorizedRecoveryRequest,
-    ) -> RecoveryFuture {
+    ) -> ManagedRecoveryFuture {
         Box::pin(async {
             Err(AccountSessionError::Requires(
                 "account-worker/manual-agent-recovery",
@@ -1256,7 +1259,7 @@ impl AccountSessionPort for AccountSessionRuntime {
         &'a self,
         account: &'a str,
         request: crate::agent_management_recovery::AuthorizedRecoveryRequest,
-    ) -> AccountSessionFuture<'a, Value> {
+    ) -> AccountSessionFuture<'a, crate::recovery::RecoveryReceipt> {
         Box::pin(async move {
             let session = self.session.as_ref().ok_or(AccountSessionError::Requires(
                 "account-worker/manual-agent-recovery",

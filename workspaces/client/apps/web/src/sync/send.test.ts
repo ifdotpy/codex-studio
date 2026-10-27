@@ -1,3 +1,4 @@
+import { DeliveryMomentInput } from "../generated/api";
 import type { deliver as Deliver } from "./send";
 import assert from "node:assert/strict";
 import { afterEach, it, vi } from "vitest";
@@ -70,7 +71,12 @@ it("accepts only receipts matching the immutable message identity", () => {
 it("distinguishes durable local queue state from a server delivery receipt", () => {
   assert.deepEqual(
     intentionResult({
-      body: { id: "message-1", room: "chat", text: "hello", delivery: "queue" },
+      body: {
+        id: "message-1",
+        room: "chat",
+        text: "hello",
+        delivery: DeliveryMomentInput.queue,
+      },
       status: "queued",
       created: 1,
     }),
@@ -84,7 +90,12 @@ it("distinguishes durable local queue state from a server delivery receipt", () 
   );
   assert.deepEqual(
     intentionResult({
-      body: { id: "message-1", room: "chat", text: "hello", delivery: "queue" },
+      body: {
+        id: "message-1",
+        room: "chat",
+        text: "hello",
+        delivery: DeliveryMomentInput.queue,
+      },
       status: "accepted",
       created: 1,
       receipt: {

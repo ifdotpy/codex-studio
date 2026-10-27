@@ -1,3 +1,4 @@
+import { ProviderKind as GeneratedApiProviderKind } from "../generated/api.ts";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { MantineProvider } from "@mantine/core";
@@ -41,7 +42,7 @@ test("account limits omit model eligibility details and retain limits and refres
   const agent = {
     id: "worker",
     accountKey: "claude",
-    provider: "claude",
+    provider: GeneratedApiProviderKind.claude,
     model,
     error: { codexErrorInfo: "rateLimitExceeded" },
     nativeLimitErrorAt: now - 10,

@@ -4570,44 +4570,95 @@ export interface components {
       yoloMode?: boolean | null | undefined;
     };
     /**
-     * AgentEntityStartWaitDto
-     * @description The epoch-scoped admission owner and minimal detail, owned by runtime-schema.
+     * @description One epoch-scoped wait. `until` is a retry deadline in Unix seconds.
+     *
+     *     ```compile_fail
+     *     use studio_runtime_schema::agent_progress::AgentStartWait;
+     *     let _ = AgentStartWait::Slot { epoch: 1 };
+     *     ```
+     *     ```compile_fail
+     *     use studio_runtime_schema::agent_progress::AgentStartWait;
+     *     let _ = AgentStartWait::Pause { epoch: 1 };
+     *     ```
      */
-    AgentEntityStartWaitDto: {
-      /** Epoch */
-      epoch: number;
-      /**
-       * Maxrunningturns
-       * @default null
-       */
-      maxRunningTurns?: number | null | undefined;
-      /**
-       * Reason
-       * @enum {string}
-       */
-      reason:
-        | "slot"
-        | "pause"
-        | "start_queue"
-        | "disk"
-        | "model_catalog"
-        | "provider_session"
-        | "dependency"
-        | "dispatch_pending"
-        | "paused"
-        | "native_failure"
-        | "account_transfer";
-      /**
-       * Runningturns
-       * @default null
-       */
-      runningTurns?: number | null | undefined;
-      /**
-       * Until
-       * @default null
-       */
-      until?: null | number | undefined;
-    };
+    AgentEntityStartWaitDto:
+      | {
+          /** Format: int64 */
+          epoch: number;
+          /** Format: uint64 */
+          maxRunningTurns: number;
+          /** @constant */
+          reason: "slot";
+          /** Format: uint64 */
+          runningTurns: number;
+        }
+      | {
+          /** Format: int64 */
+          epoch: number;
+          /** @constant */
+          reason: "pause";
+          /** Format: double */
+          until: number;
+        }
+      | {
+          /** Format: int64 */
+          epoch: number;
+          /** @constant */
+          reason: "start_queue";
+        }
+      | {
+          /** Format: int64 */
+          epoch: number;
+          /** @constant */
+          reason: "disk";
+        }
+      | {
+          /** Format: int64 */
+          epoch: number;
+          /** @constant */
+          reason: "model_catalog";
+        }
+      | {
+          /** Format: int64 */
+          epoch: number;
+          /** @constant */
+          reason: "provider_session";
+          /**
+           * Format: double
+           * @description The registry knows a deadline during retry backoff, but not initial startup.
+           */
+          until?: number | null | undefined;
+        }
+      | {
+          /** Format: int64 */
+          epoch: number;
+          /** @constant */
+          reason: "dependency";
+        }
+      | {
+          /** Format: int64 */
+          epoch: number;
+          /** @constant */
+          reason: "dispatch_pending";
+        }
+      | {
+          /** Format: int64 */
+          epoch: number;
+          /** @constant */
+          reason: "paused";
+        }
+      | {
+          /** Format: int64 */
+          epoch: number;
+          /** @constant */
+          reason: "native_failure";
+        }
+      | {
+          /** Format: int64 */
+          epoch: number;
+          /** @constant */
+          reason: "account_transfer";
+        };
     /**
      * AgentEntityUsageResumeDto
      * @description Usage resume fields rendered in notices and recovery controls.
@@ -22210,19 +22261,25 @@ export interface components {
     } & {
       [key: string]: components["schemas"]["JsonValue"] | undefined;
     };
-    /** StartWaitRecordResponse */
+    /** @enum {string} */
+    StartWaitReason:
+      | "slot"
+      | "pause"
+      | "start_queue"
+      | "disk"
+      | "model_catalog"
+      | "provider_session"
+      | "dependency"
+      | "dispatch_pending"
+      | "paused"
+      | "native_failure"
+      | "account_transfer";
+    /** @description Older persisted and status waits may omit details and carry extensions. */
     StartWaitRecordResponse: {
-      /** Epoch */
+      /** Format: int64 */
       epoch: number;
-      /**
-       * Maxrunningturns
-       * @default null
-       */
-      maxRunningTurns?: number | undefined;
-      /**
-       * Reason
-       * @enum {string}
-       */
+      maxRunningTurns?: (number | null) | null | undefined;
+      /** @enum {string} */
       reason:
         | "slot"
         | "pause"
@@ -22235,16 +22292,8 @@ export interface components {
         | "paused"
         | "native_failure"
         | "account_transfer";
-      /**
-       * Runningturns
-       * @default null
-       */
-      runningTurns?: number | undefined;
-      /**
-       * Until
-       * @default null
-       */
-      until?: number | undefined;
+      runningTurns?: (number | null) | null | undefined;
+      until?: (number | null) | null | undefined;
     } & {
       [key: string]: components["schemas"]["JsonValue"] | undefined;
     };
@@ -39640,6 +39689,476 @@ export type WorkReleaseEntityDto =
 export type WorkResultEntityDto = components["schemas"]["WorkResultEntityDto"];
 export type WorkspaceEntityDto = components["schemas"]["WorkspaceEntityDto"];
 export type SyncEntityPayload = components["schemas"]["SyncEntityPayload"];
+export const AccountStatus = {
+  ready: "ready",
+  signedOut: "signedOut",
+  pending: "pending",
+  starting: "starting",
+  error: "error",
+  changed: "changed",
+  duplicate: "duplicate",
+} as const;
+export type AccountStatus = components["schemas"]["AccountStatus"];
+export const AccountTransferScope = {
+  team: "team",
+  subagents: "subagents",
+} as const;
+export type AccountTransferScope =
+  components["schemas"]["AccountTransferScope"];
+export const AccountTransferStatus = {
+  pending: "pending",
+  completed: "completed",
+  cancelled: "cancelled",
+} as const;
+export type AccountTransferStatus =
+  components["schemas"]["AccountTransferStatus"];
+export const AgentMode = { multi: "multi", single: "single" } as const;
+export type AgentMode = components["schemas"]["AgentMode"];
+export const AgentNativeStatusValue = {
+  idle: "idle",
+  notLoaded: "notLoaded",
+  unsubscribed: "unsubscribed",
+  notSubscribed: "notSubscribed",
+} as const;
+export type AgentNativeStatusValue =
+  components["schemas"]["AgentNativeStatusValue"];
+export const AgentRole = {
+  lead: "lead",
+  worker: "worker",
+  orchestrator: "orchestrator",
+  agent: "agent",
+  implementer: "implementer",
+  reviewer: "reviewer",
+} as const;
+export type AgentRole = components["schemas"]["AgentRole"];
+export const AgentRole_Input = {
+  orchestrator: "orchestrator",
+  implementer: "implementer",
+  reviewer: "reviewer",
+} as const;
+export type AgentRole_Input = components["schemas"]["AgentRole-Input"];
+export const AgentSource = {
+  managed: "managed",
+  registered: "registered",
+  "app-server": "app-server",
+  "orchestrator-reference": "orchestrator-reference",
+} as const;
+export type AgentSource = components["schemas"]["AgentSource"];
+export const AgentStatus = {
+  unknown: "unknown",
+  idle: "idle",
+  queued: "queued",
+  starting: "starting",
+  running: "running",
+  waiting: "waiting",
+  approval: "approval",
+  completed: "completed",
+  interrupted: "interrupted",
+  failed: "failed",
+  blocked: "blocked",
+  paused: "paused",
+  parked: "parked",
+  abandoned: "abandoned",
+  "capacity-retry": "capacity-retry",
+  waiting_on_monitor: "waiting_on_monitor",
+} as const;
+export type AgentStatus = components["schemas"]["AgentStatus"];
+export const AnalyticsScope = {
+  agent: "agent",
+  team: "team",
+  all: "all",
+} as const;
+export type AnalyticsScope = components["schemas"]["AnalyticsScope"];
+export const AttributionComponent = {
+  process: "process",
+  runtime: "runtime",
+  codex: "codex",
+  claude: "claude",
+  claude_bridge: "claude_bridge",
+  code_mode_host: "code_mode_host",
+  codex_app_server: "codex_app_server",
+  claude_cli: "claude_cli",
+  node_repl: "node_repl",
+  anarlog_mcp: "anarlog_mcp",
+  studio_backend: "studio_backend",
+  headless_browser: "headless_browser",
+  python: "python",
+  node: "node",
+  shell: "shell",
+  other: "other",
+} as const;
+export type AttributionComponent =
+  components["schemas"]["AttributionComponent"];
+export const AttributionOperation = {
+  ps: "ps",
+  resident: "resident",
+  nativeStatus: "nativeStatus",
+  lockSample: "lockSample",
+} as const;
+export type AttributionOperation =
+  components["schemas"]["AttributionOperation"];
+export const CapacityRetryCause = {
+  serverOverloaded: "serverOverloaded",
+  internalServerError: "internalServerError",
+  httpConnectionFailed: "httpConnectionFailed",
+  responseStreamConnectionFailed: "responseStreamConnectionFailed",
+  responseStreamDisconnected: "responseStreamDisconnected",
+  responseTooManyFailedAttempts: "responseTooManyFailedAttempts",
+  diskFull: "diskFull",
+} as const;
+export type CapacityRetryCause = components["schemas"]["CapacityRetryCause"];
+export const CapacityRetryStatus = {
+  scheduled: "scheduled",
+  starting: "starting",
+  finished: "finished",
+  cancelled: "cancelled",
+  unknown: "unknown",
+  exhausted: "exhausted",
+  failed: "failed",
+} as const;
+export type CapacityRetryStatus = components["schemas"]["CapacityRetryStatus"];
+export const ComplaintResponseStatus = {
+  in_progress: "in_progress",
+  resolved: "resolved",
+  declined: "declined",
+} as const;
+export type ComplaintResponseStatus =
+  components["schemas"]["ComplaintResponseStatus"];
+export const ComplaintStatus = {
+  open: "open",
+  in_progress: "in_progress",
+  answered: "answered",
+  resolved: "resolved",
+  declined: "declined",
+  stopped: "stopped",
+} as const;
+export type ComplaintStatus = components["schemas"]["ComplaintStatus"];
+export const DeliveryMoment = {
+  current_turn: "current_turn",
+  next_turn: "next_turn",
+} as const;
+export type DeliveryMoment = components["schemas"]["DeliveryMoment"];
+export const DeliveryMomentInput = {
+  current_turn: "current_turn",
+  next_turn: "next_turn",
+  queue: "queue",
+  steer: "steer",
+  after_tool: "after_tool",
+  after_turn: "after_turn",
+} as const;
+export type DeliveryMomentInput = components["schemas"]["DeliveryMomentInput"];
+export const ExecutionAction = {
+  review: "review",
+  compact: "compact",
+} as const;
+export type ExecutionAction = components["schemas"]["ExecutionAction"];
+export const ExecutionEffectKind = {
+  spawn: "spawn",
+  tool_requests: "tool_requests",
+  monitors: "monitors",
+  requests: "requests",
+  task_submit: "task_submit",
+} as const;
+export type ExecutionEffectKind = components["schemas"]["ExecutionEffectKind"];
+export const ExecutionNodeKind = {
+  managed_worker: "managed_worker",
+  native_child: "native_child",
+  background: "background",
+} as const;
+export type ExecutionNodeKind = components["schemas"]["ExecutionNodeKind"];
+export const ExecutionStatus = {
+  pending: "pending",
+  running: "running",
+  accepted: "accepted",
+  observed: "observed",
+  unknown: "unknown",
+  unsent: "unsent",
+  rejected: "rejected",
+  completed: "completed",
+  failed: "failed",
+  interrupted: "interrupted",
+  cancelled: "cancelled",
+  queued: "queued",
+  starting: "starting",
+  approval: "approval",
+  paused: "paused",
+  idle: "idle",
+  submitted: "submitted",
+  not_applied: "not_applied",
+} as const;
+export type ExecutionStatus = components["schemas"]["ExecutionStatus"];
+export const HttpErrorKind = {
+  handler_panic: "handler_panic",
+  store_configuration: "store_configuration",
+  store_data: "store_data",
+  store_database: "store_database",
+  store_io: "store_io",
+  store_ownership: "store_ownership",
+  store_schema: "store_schema",
+  store_concurrency: "store_concurrency",
+  response_body_read: "response_body_read",
+  costs_computation: "costs_computation",
+  costs_state: "costs_state",
+  unclassified: "unclassified",
+} as const;
+export type HttpErrorKind = components["schemas"]["HttpErrorKind"];
+export const InviteStatus = { open: "open", used: "used" } as const;
+export type InviteStatus = components["schemas"]["InviteStatus"];
+export const LiveUpdateState = {
+  idle: "idle",
+  applying: "applying",
+  applied: "applied",
+  waiting: "waiting",
+  failed: "failed",
+} as const;
+export type LiveUpdateState = components["schemas"]["LiveUpdateState"];
+export const MessageKind = {
+  "chat-message": "chat-message",
+  "room-invite": "room-invite",
+  "room-accept": "room-accept",
+} as const;
+export type MessageKind = components["schemas"]["MessageKind"];
+export const MigrationPhase = {
+  validate: "validate",
+  apply: "apply",
+  commit: "commit",
+  rollback: "rollback",
+} as const;
+export type MigrationPhase = components["schemas"]["MigrationPhase"];
+export const MigrationRollbackOutcome = {
+  not_required: "not_required",
+  rolled_back: "rolled_back",
+  unknown: "unknown",
+} as const;
+export type MigrationRollbackOutcome =
+  components["schemas"]["MigrationRollbackOutcome"];
+export const MigrationTarget = {
+  canvas: "canvas",
+  analytics: "analytics",
+  account_registry: "account_registry",
+  supervisor: "supervisor",
+} as const;
+export type MigrationTarget = components["schemas"]["MigrationTarget"];
+export const MonitorInputKind = { monitor_input: "monitor_input" } as const;
+export type MonitorInputKind = components["schemas"]["MonitorInputKind"];
+export const MonitorInputStatus = {
+  acknowledged: "acknowledged",
+  rejected: "rejected",
+  pending: "pending",
+  unknown: "unknown",
+} as const;
+export type MonitorInputStatus = components["schemas"]["MonitorInputStatus"];
+export const MonitorRecoveryReason = {
+  no_operation: "no_operation",
+  invalid_provider_observation: "invalid_provider_observation",
+  provider_rejected: "provider_rejected",
+  operation_not_accepted: "operation_not_accepted",
+  invalid_terminal_receipt: "invalid_terminal_receipt",
+  termination_unconfirmed: "termination_unconfirmed",
+  retained_exit_unavailable: "retained_exit_unavailable",
+  reattach_window_expired: "reattach_window_expired",
+} as const;
+export type MonitorRecoveryReason =
+  components["schemas"]["MonitorRecoveryReason"];
+export const MonitorRecoveryStatus = {
+  running: "running",
+  not_reattachable: "not_reattachable",
+} as const;
+export type MonitorRecoveryStatus =
+  components["schemas"]["MonitorRecoveryStatus"];
+export const MonitorState = {
+  approval: "approval",
+  starting: "starting",
+  running: "running",
+  completed: "completed",
+  failed: "failed",
+  cancelled: "cancelled",
+  lost: "lost",
+} as const;
+export type MonitorState = components["schemas"]["MonitorState"];
+export const NativeAccountState = {
+  waiting: "waiting",
+  updating: "updating",
+  current: "current",
+  failed: "failed",
+} as const;
+export type NativeAccountState = components["schemas"]["NativeAccountState"];
+export const NativeAction = { compact: "compact", review: "review" } as const;
+export type NativeAction = components["schemas"]["NativeAction"];
+export const NativeActionOutcomeStatus = {
+  pending: "pending",
+  acknowledged: "acknowledged",
+  unknown: "unknown",
+  failed: "failed",
+} as const;
+export type NativeActionOutcomeStatus =
+  components["schemas"]["NativeActionOutcomeStatus"];
+export const NativeActionReceiptStatus = { accepted: "accepted" } as const;
+export type NativeActionReceiptStatus =
+  components["schemas"]["NativeActionReceiptStatus"];
+export const NativeCandidateState = {
+  discovered: "discovered",
+  rejected: "rejected",
+  approved: "approved",
+} as const;
+export type NativeCandidateState =
+  components["schemas"]["NativeCandidateState"];
+export const NativeCommandAction = {
+  input: "input",
+  cancel: "cancel",
+} as const;
+export type NativeCommandAction = components["schemas"]["NativeCommandAction"];
+export const NativeCommandEventStatus = {
+  pending: "pending",
+  reserved: "reserved",
+  dispatching: "dispatching",
+  delivered: "delivered",
+  uncertain: "uncertain",
+  failed: "failed",
+  cancelled: "cancelled",
+  expired: "expired",
+  stored_only: "stored_only",
+} as const;
+export type NativeCommandEventStatus =
+  components["schemas"]["NativeCommandEventStatus"];
+export const NativeReleasePhase = {
+  checking: "checking",
+  unsubscribing: "unsubscribing",
+  released: "released",
+  unknown: "unknown",
+  blocked: "blocked",
+  resumed: "resumed",
+} as const;
+export type NativeReleasePhase = components["schemas"]["NativeReleasePhase"];
+export const NativeRuntimeState = {
+  checking: "checking",
+  ready: "ready",
+  failed: "failed",
+} as const;
+export type NativeRuntimeState = components["schemas"]["NativeRuntimeState"];
+export const NativeSafetyStage = {
+  turns: "turns",
+  items: "items",
+  interrupt: "interrupt",
+  verify_turns: "verify_turns",
+  verify_items: "verify_items",
+  fork: "fork",
+  start: "start",
+  unknown: "unknown",
+  running: "running",
+  failed: "failed",
+  cancelled: "cancelled",
+} as const;
+export type NativeSafetyStage = components["schemas"]["NativeSafetyStage"];
+export const ParticipantRole = { lead: "lead", agent: "agent" } as const;
+export type ParticipantRole = components["schemas"]["ParticipantRole"];
+export const PayloadMigrationName = {
+  checkpoints: "checkpoints",
+  tool_requests: "tool_requests",
+  tool_results: "tool_results",
+  tasks: "tasks",
+} as const;
+export type PayloadMigrationName =
+  components["schemas"]["PayloadMigrationName"];
+export const PayloadMigrationState = {
+  pending: "pending",
+  complete: "complete",
+  running: "running",
+  waitingForSpace: "waitingForSpace",
+  error: "error",
+} as const;
+export type PayloadMigrationState =
+  components["schemas"]["PayloadMigrationState"];
+export const PeerStatus = {
+  pending: "pending",
+  approved: "approved",
+  revoked: "revoked",
+} as const;
+export type PeerStatus = components["schemas"]["PeerStatus"];
+export const ProcessActionStatus = {
+  completed: "completed",
+  partial: "partial",
+  uncertain: "uncertain",
+} as const;
+export type ProcessActionStatus = components["schemas"]["ProcessActionStatus"];
+export const ProcessKind = {
+  claude_bridge: "claude_bridge",
+  code_mode_host: "code_mode_host",
+  codex_app_server: "codex_app_server",
+  claude_cli: "claude_cli",
+  node_repl: "node_repl",
+  anarlog_mcp: "anarlog_mcp",
+  studio_backend: "studio_backend",
+  headless_browser: "headless_browser",
+  python: "python",
+  node: "node",
+  shell: "shell",
+  other: "other",
+} as const;
+export type ProcessKind = components["schemas"]["ProcessKind"];
+export const ProjectDeleteFailureCode = {
+  project_not_found: "project_not_found",
+  project_workspace_conflict: "project_workspace_conflict",
+  project_sequence_conflict: "project_sequence_conflict",
+  project_request_conflict: "project_request_conflict",
+  project_remote_scope: "project_remote_scope",
+  project_membership_conflict: "project_membership_conflict",
+  project_lifecycle_unavailable: "project_lifecycle_unavailable",
+} as const;
+export type ProjectDeleteFailureCode =
+  components["schemas"]["ProjectDeleteFailureCode"];
+export const ProviderKind = { codex: "codex", claude: "claude" } as const;
+export type ProviderKind = components["schemas"]["ProviderKind"];
+export const ProviderVersionState = {
+  checking: "checking",
+  current: "current",
+  outdated: "outdated",
+  unknown: "unknown",
+  error: "error",
+} as const;
+export type ProviderVersionState =
+  components["schemas"]["ProviderVersionState"];
+export const QuestionDecision = {
+  accept: "accept",
+  decline: "decline",
+  cancel: "cancel",
+} as const;
+export type QuestionDecision = components["schemas"]["QuestionDecision"];
+export const RadioStatus = {
+  idle: "idle",
+  waiting: "waiting",
+  speaking: "speaking",
+  stopping: "stopping",
+  blocked: "blocked",
+} as const;
+export type RadioStatus = components["schemas"]["RadioStatus"];
+export const RecoveryOutcome = {
+  completed: "completed",
+  failed: "failed",
+  interrupted: "interrupted",
+} as const;
+export type RecoveryOutcome = components["schemas"]["RecoveryOutcome"];
+export const RecoveryPhase = { scan: "scan", history: "history" } as const;
+export type RecoveryPhase = components["schemas"]["RecoveryPhase"];
+export const RecoveryStage = {
+  input_restored: "input_restored",
+  pending: "pending",
+  superseded: "superseded",
+  finished: "finished",
+  continued: "continued",
+  reattached: "reattached",
+  held: "held",
+} as const;
+export type RecoveryStage = components["schemas"]["RecoveryStage"];
+export const RecoveryStatus = {
+  adopted: "adopted",
+  input_restored: "input_restored",
+  reconciled: "reconciled",
+  tool_response_delivered: "tool_response_delivered",
+  superseded: "superseded",
+  unconfirmed: "unconfirmed",
+} as const;
+export type RecoveryStatus = components["schemas"]["RecoveryStatus"];
 export const RequestStatus = {
   pending: "pending",
   blocked: "blocked",
@@ -39653,6 +40172,159 @@ export const RequestStatus = {
   failed: "failed",
   uncertain: "uncertain",
 } as const;
+export type RequestStatus = components["schemas"]["RequestStatus"];
+export const RestartEnvironmentKey = {
+  CODEX_HOME: "CODEX_HOME",
+  CODEX_CANVAS_CWD: "CODEX_CANVAS_CWD",
+  CODEX_CANVAS_CONCURRENCY: "CODEX_CANVAS_CONCURRENCY",
+  CODEX_BIN: "CODEX_BIN",
+  SHELL: "SHELL",
+  LANG: "LANG",
+  LC_ALL: "LC_ALL",
+  CODEX_AGENTS_SUPERVISOR_MODE: "CODEX_AGENTS_SUPERVISOR_MODE",
+} as const;
+export type RestartEnvironmentKey =
+  components["schemas"]["RestartEnvironmentKey"];
+export const RetryAction = { retry: "retry", cancel: "cancel" } as const;
+export type RetryAction = components["schemas"]["RetryAction"];
+export const RoomKind = {
+  private: "private",
+  broadcast: "broadcast",
+  federated: "federated",
+} as const;
+export type RoomKind = components["schemas"]["RoomKind"];
+export const RoomStatus = {
+  pending: "pending",
+  approved: "approved",
+  revoked: "revoked",
+} as const;
+export type RoomStatus = components["schemas"]["RoomStatus"];
+export const SafetyAction = {
+  wait: "wait",
+  retry: "retry",
+  cancel: "cancel",
+} as const;
+export type SafetyAction = components["schemas"]["SafetyAction"];
+export const SafetyActionStage = {
+  waiting: "waiting",
+  turns: "turns",
+  items: "items",
+  interrupt: "interrupt",
+  verify_turns: "verify_turns",
+  verify_items: "verify_items",
+  fork: "fork",
+  start: "start",
+  running: "running",
+  failed: "failed",
+  cancelled: "cancelled",
+  unknown: "unknown",
+} as const;
+export type SafetyActionStage = components["schemas"]["SafetyActionStage"];
+export const SearchMigrationPhase = {
+  building: "building",
+  dropping: "dropping",
+  waiting_for_space: "waiting_for_space",
+  complete: "complete",
+} as const;
+export type SearchMigrationPhase =
+  components["schemas"]["SearchMigrationPhase"];
+export const SqliteDatabase = {
+  "canvas.sqlite3": "canvas.sqlite3",
+  "analytics.sqlite3": "analytics.sqlite3",
+  other: "other",
+} as const;
+export type SqliteDatabase = components["schemas"]["SqliteDatabase"];
+export const SqliteJournalStatus = {
+  notWritten: "notWritten",
+  written: "written",
+  error: "error",
+} as const;
+export type SqliteJournalStatus = components["schemas"]["SqliteJournalStatus"];
+export const SqliteStatement = {
+  BEGIN: "BEGIN",
+  INSERT: "INSERT",
+  UPDATE: "UPDATE",
+  DELETE: "DELETE",
+  REPLACE: "REPLACE",
+  CREATE: "CREATE",
+  DROP: "DROP",
+  ALTER: "ALTER",
+  WITH: "WITH",
+  SAVEPOINT: "SAVEPOINT",
+  other: "other",
+} as const;
+export type SqliteStatement = components["schemas"]["SqliteStatement"];
+export const SqliteTransactionState = {
+  active: "active",
+  committed: "committed",
+  rolledBack: "rolledBack",
+  ended: "ended",
+} as const;
+export type SqliteTransactionState =
+  components["schemas"]["SqliteTransactionState"];
+export const StartWaitReason = {
+  slot: "slot",
+  pause: "pause",
+  start_queue: "start_queue",
+  disk: "disk",
+  model_catalog: "model_catalog",
+  provider_session: "provider_session",
+  dependency: "dependency",
+  dispatch_pending: "dispatch_pending",
+  paused: "paused",
+  native_failure: "native_failure",
+  account_transfer: "account_transfer",
+} as const;
+export type StartWaitReason = components["schemas"]["StartWaitReason"];
+export const studio_api__agents__models__AgentRole = {
+  orchestrator: "orchestrator",
+  implementer: "implementer",
+  reviewer: "reviewer",
+} as const;
+export type studio_api__agents__models__AgentRole =
+  components["schemas"]["studio_api__agents__models__AgentRole"];
+export const studio_api__sync__models__AgentRole = {
+  lead: "lead",
+  worker: "worker",
+  orchestrator: "orchestrator",
+  agent: "agent",
+  implementer: "implementer",
+  reviewer: "reviewer",
+} as const;
+export type studio_api__sync__models__AgentRole =
+  components["schemas"]["studio_api__sync__models__AgentRole"];
+export const StudioErrorEffectCertainty = {
+  read_only: "read_only",
+  not_applied: "not_applied",
+  unknown: "unknown",
+} as const;
+export type StudioErrorEffectCertainty =
+  components["schemas"]["StudioErrorEffectCertainty"];
+export const StudioErrorJsonCategory = {
+  io: "io",
+  syntax: "syntax",
+  data: "data",
+  eof: "eof",
+} as const;
+export type StudioErrorJsonCategory =
+  components["schemas"]["StudioErrorJsonCategory"];
+export const SubscriptionReplyKind = {
+  delta: "delta",
+  snapshot: "snapshot",
+} as const;
+export type SubscriptionReplyKind =
+  components["schemas"]["SubscriptionReplyKind"];
+export const TailscaleStatus = {
+  verified: "verified",
+  unavailable: "unavailable",
+} as const;
+export type TailscaleStatus = components["schemas"]["TailscaleStatus"];
+export const TaskKind = {
+  monitor: "monitor",
+  command: "command",
+  tool: "tool",
+} as const;
+export type TaskKind = components["schemas"]["TaskKind"];
 export const TaskStatus = {
   running: "running",
   starting: "starting",
@@ -39666,11 +40338,159 @@ export const TaskStatus = {
   lost: "lost",
   unknown: "unknown",
 } as const;
+export type TaskStatus = components["schemas"]["TaskStatus"];
+export const TerminalInputDelivery = {
+  sent: "sent",
+  uncertain: "uncertain",
+} as const;
+export type TerminalInputDelivery =
+  components["schemas"]["TerminalInputDelivery"];
+export const TerminalState = {
+  running: "running",
+  exited: "exited",
+  closed: "closed",
+} as const;
+export type TerminalState = components["schemas"]["TerminalState"];
+export const TombstonePruneState = {
+  notStarted: "notStarted",
+  idle: "idle",
+  running: "running",
+  waitingForLock: "waitingForLock",
+  complete: "complete",
+  error: "error",
+} as const;
+export type TombstonePruneState = components["schemas"]["TombstonePruneState"];
+export const TransferAction = {
+  retry: "retry",
+  cancel: "cancel",
+  finish_history: "finish_history",
+} as const;
+export type TransferAction = components["schemas"]["TransferAction"];
+export const TransferInterruptOutcome = {
+  acknowledged: "acknowledged",
+  unknown: "unknown",
+} as const;
+export type TransferInterruptOutcome =
+  components["schemas"]["TransferInterruptOutcome"];
+export const TransferMemberPhase = {
+  waiting: "waiting",
+  checking: "checking",
+  reading: "reading",
+  submitting: "submitting",
+  submitted: "submitted",
+  unknown: "unknown",
+  ready: "ready",
+  blocked: "blocked",
+  lazy: "lazy",
+  lazy_submitted: "lazy_submitted",
+  interrupting: "interrupting",
+  completed: "completed",
+  left: "left",
+} as const;
+export type TransferMemberPhase = components["schemas"]["TransferMemberPhase"];
+export const TransferScope = { team: "team", subagents: "subagents" } as const;
+export type TransferScope = components["schemas"]["TransferScope"];
 export const TransferStatus = {
   pending: "pending",
   completed: "completed",
   cancelled: "cancelled",
 } as const;
+export type TransferStatus = components["schemas"]["TransferStatus"];
+export const UsageEvidence = {
+  live: "live",
+  recovered: "recovered",
+  legacy: "legacy",
+} as const;
+export type UsageEvidence = components["schemas"]["UsageEvidence"];
+export const UsageResumeCause = {
+  usage_limit: "usage_limit",
+  rate_limit: "rate_limit",
+  auth: "auth",
+} as const;
+export type UsageResumeCause = components["schemas"]["UsageResumeCause"];
+export const UsageResumeStatus = {
+  scheduled: "scheduled",
+  started: "started",
+  cancelled: "cancelled",
+  unknown: "unknown",
+} as const;
+export type UsageResumeStatus = components["schemas"]["UsageResumeStatus"];
+export const UsageScope = {
+  codexThread: "codexThread",
+  claudeQuery: "claudeQuery",
+} as const;
+export type UsageScope = components["schemas"]["UsageScope"];
+export const VoiceAuth = { chatgpt: "chatgpt" } as const;
+export type VoiceAuth = components["schemas"]["VoiceAuth"];
+export const VoiceDeliveryState = {
+  pending: "pending",
+  reserved: "reserved",
+  dispatching: "dispatching",
+  uncertain: "uncertain",
+  failed: "failed",
+  cancelled: "cancelled",
+  queued: "queued",
+  delivered: "delivered",
+  stored_only: "stored_only",
+} as const;
+export type VoiceDeliveryState = components["schemas"]["VoiceDeliveryState"];
+export const VoicePlaybackConfirmation = {
+  "not confirmed": "not confirmed",
+} as const;
+export type VoicePlaybackConfirmation =
+  components["schemas"]["VoicePlaybackConfirmation"];
+export const VoiceRecordKind = {
+  user: "user",
+  courier: "courier",
+  assistant: "assistant",
+  event: "event",
+  playback: "playback",
+  orchestrator: "orchestrator",
+} as const;
+export type VoiceRecordKind = components["schemas"]["VoiceRecordKind"];
+export const VoiceSessionState = {
+  connecting: "connecting",
+  ready: "ready",
+  stopping: "stopping",
+  ended: "ended",
+  failed: "failed",
+  lost: "lost",
+  unknown: "unknown",
+} as const;
+export type VoiceSessionState = components["schemas"]["VoiceSessionState"];
+export const VoiceSpeechState = {
+  pending: "pending",
+  submitted: "submitted",
+  failed: "failed",
+  unknown: "unknown",
+} as const;
+export type VoiceSpeechState = components["schemas"]["VoiceSpeechState"];
+export const VoiceTransport = { native: "native" } as const;
+export type VoiceTransport = components["schemas"]["VoiceTransport"];
+export const WhoisStatus = {
+  pending: "pending",
+  verified: "verified",
+  missing: "missing",
+  unavailable: "unavailable",
+} as const;
+export type WhoisStatus = components["schemas"]["WhoisStatus"];
+export const WorkspaceMode = {
+  "layr-native": "layr-native",
+  layr: "layr",
+  image: "image",
+  worktree: "worktree",
+  shared: "shared",
+} as const;
+export type WorkspaceMode = components["schemas"]["WorkspaceMode"];
+export const WorkStatus = {
+  ready: "ready",
+  blocked: "blocked",
+  running: "running",
+  review: "review",
+  accepted: "accepted",
+  cancelled: "cancelled",
+} as const;
+export type WorkStatus = components["schemas"]["WorkStatus"];
 
 export const SYNC_PROTOCOL_VERSION = 4 as const;
 export const SYNC_IDENTITY_PROTOCOL_VERSION = 2 as const;

@@ -1,3 +1,7 @@
+import {
+  RequestStatus as GeneratedApiRequestStatus,
+  AgentStatus as GeneratedApiAgentStatus,
+} from "../../../generated/api.ts";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { MantineProvider } from "@mantine/core";
@@ -83,7 +87,7 @@ for (const afterTool of [false, true]) {
       id: history.id,
       agent: history.agent,
       method: history.method,
-      status: "pending",
+      status: GeneratedApiRequestStatus.pending,
       params: { questions: history.questions },
     };
     const lookup: QuestionLookup = {
@@ -162,7 +166,11 @@ test("a managed turn keeps the question card outside its work log", () => {
       createElement(TurnHistory, {
         items: [tool("before"), question, tool("after")],
         enabled: true,
-        agent: { id: "lead", threadId: "thread", status: "idle" } as Agent,
+        agent: {
+          id: "lead",
+          threadId: "thread",
+          status: GeneratedApiAgentStatus.idle,
+        } as Agent,
         agentId: "lead",
         storageKey: "question-card-managed-test",
         renderMessage: (item: Message) => createElement("p", null, item.text),

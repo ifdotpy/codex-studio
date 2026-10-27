@@ -18,8 +18,6 @@ export default function ServerAccessSettings({ active }: { active: boolean }) {
   const pending = useRef<ServerAccessRequest | null>(null);
   const load = async () => {
     const result = await serverAccess("GET");
-    if (!("identity" in result))
-      throw new Error("The server access response is invalid.");
     setState(result);
   };
   useEffect(() => {

@@ -1,3 +1,4 @@
+import { TaskStatus as GeneratedApiTaskStatus } from "../../generated/api.ts";
 import { describe, expect, it } from "vitest";
 import type { Agent } from "../../types";
 import type { DisplayBackgroundTask } from "../backgroundTaskModel";
@@ -63,7 +64,7 @@ describe("monitorTask", () => {
         id: "monitor-1",
         agent: "agent-1",
         created: 123,
-        status: "running",
+        status: GeneratedApiTaskStatus.running,
         command: "npm run check",
         cancelRequested: false,
       }),
@@ -84,7 +85,7 @@ describe("monitorTask", () => {
         id: "monitor-2",
         agent: null,
         created: 123,
-        status: "running",
+        status: GeneratedApiTaskStatus.running,
       }),
     ).toBeNull();
     expect(
@@ -92,7 +93,7 @@ describe("monitorTask", () => {
         id: "monitor-3",
         agent: "agent-1",
         created: null,
-        status: "running",
+        status: GeneratedApiTaskStatus.running,
       }),
     ).toBeNull();
   });
@@ -104,7 +105,7 @@ describe("monitor wake budget", () => {
       id: "budget",
       agent: "owner",
       created: 1,
-      status: "running",
+      status: GeneratedApiTaskStatus.running,
       outputPatterns: ["ready"],
       outputWakeBudget: {
         totalSuppressedMatches: 1250,

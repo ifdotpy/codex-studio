@@ -1,3 +1,4 @@
+import { ProcessActionStatus as GeneratedApiProcessActionStatus } from "../../../generated/api.ts";
 import { randomUUID } from "../../../uuid";
 import {
   ApiError,
@@ -48,7 +49,7 @@ function outcome(
       ? result.response
       : undefined;
   const status = response?.status;
-  if (result.status === "uncertain")
+  if (result.status === GeneratedApiProcessActionStatus.uncertain)
     return { kind: "uncertain", request, message: UNKNOWN };
   switch (status) {
     case "uncertain":

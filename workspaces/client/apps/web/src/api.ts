@@ -1,3 +1,8 @@
+import {
+  ProcessActionStatus,
+  MonitorInputKind,
+  MonitorInputStatus,
+} from "./generated/api";
 import { randomUUID } from "./uuid";
 import { hasNativeClient } from "./native/client";
 
@@ -536,28 +541,46 @@ export function createApiScope(options: ApiScopeOptions) {
     fetch: fetchApiRequest,
   });
 
-  // Pairing's versioned wire contract is independent of the generated workspace API.
-  const accessClient = createClient<
-    import("./servers/accessContract").ServerAccessPaths
-  >({ baseUrl: apiOrigin(), fetch: fetchApiRequest });
-
-  async function serverAccess(
-    method: "GET" | "POST",
-    body?: import("./servers/accessContract").ServerAccessRequest,
-    timeoutMs = 15000,
+  function serverAccess(
+    method: "GET",
+    body?: undefined,
+    timeoutMs?: number,
     sessionToken?: string,
-  ) {
-    const controller = requestController({}, timeoutMs);
+  ): Promise<import("./servers/accessContract").ServerAccessState>;
+  function serverAccess(
+    method: "POST",
+    body: import("./servers/accessContract").ServerAccessRequest,
+    timeoutMs?: number,
+    sessionToken?: string,
+  ): Promise<PostResult<"/api/multi-server">>;
+  async function serverAccess(
+    ...args:
+      | [
+          method: "GET",
+          body?: undefined,
+          timeoutMs?: number | undefined,
+          sessionToken?: string | undefined,
+        ]
+      | [
+          method: "POST",
+          body: import("./servers/accessContract").ServerAccessRequest,
+          timeoutMs?: number | undefined,
+          sessionToken?: string | undefined,
+        ]
+  ): Promise<
+    | import("./servers/accessContract").ServerAccessState
+    | PostResult<"/api/multi-server">
+  > {
+    const [method, body, timeoutMs, sessionToken] = args;
+    const controller = requestController({}, timeoutMs ?? 15000);
     try {
+      const signal = controller.signal ? { signal: controller.signal } : {};
       const result =
         method === "GET"
-          ? await accessClient.GET(
-              "/api/multi-server",
-              controller.signal ? { signal: controller.signal } : {},
-            )
-          : await accessClient.POST("/api/multi-server", {
-              body: body!,
-              ...(controller.signal ? { signal: controller.signal } : {}),
+          ? await client.GET("/api/multi-server", signal)
+          : await client.POST("/api/multi-server", {
+              body,
+              ...signal,
               headers: {
                 "X-Canvas-Token": sessionToken ?? token,
                 "X-Canvas-Workspace": workspace,
@@ -897,12 +920,13 @@ export function createApiScope(options: ApiScopeOptions) {
     if (
       !receipt.found ||
       result?.requestId !== pending.requestId ||
-      result.status !== "completed" ||
+      result.status !== ProcessActionStatus.completed ||
       !response ||
       !("kind" in response) ||
-      response.kind !== "monitor_input" ||
+      response.kind !== MonitorInputKind.monitor_input ||
       response.monitorId !== id ||
-      (response.status !== "acknowledged" && response.status !== "rejected")
+      (response.status !== MonitorInputStatus.acknowledged &&
+        response.status !== MonitorInputStatus.rejected)
     )
       return "unknown";
     return (await finishMonitorInput(

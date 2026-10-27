@@ -1,3 +1,4 @@
+import { TaskStatus as GeneratedApiTaskStatus } from "../../generated/api.ts";
 import { webcrypto } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { isValidElement, type ReactElement, type ReactNode } from "react";
@@ -131,7 +132,7 @@ function fixture() {
     id: "monitor-one",
     agent: "owner",
     created: 1,
-    status: "running",
+    status: GeneratedApiTaskStatus.running,
     interactive: true,
   })!;
   const owner = { id: "owner", accountKey: "target", epoch: 3 } as Agent;

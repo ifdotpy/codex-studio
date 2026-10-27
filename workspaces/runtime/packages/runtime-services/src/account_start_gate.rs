@@ -43,9 +43,9 @@ use tokio::time::Instant;
 
 /// The account registry row field that stores [`StartThrottle`].
 pub const REGISTRY_FIELD: &str = "startThrottle";
+pub use studio_runtime_schema::agent_progress::AgentStartWait;
 /// The agent record field that shows a start waiting here.
 pub use studio_runtime_schema::agent_progress::START_WAIT_FIELD as WAIT_FIELD;
-pub use studio_runtime_schema::agent_progress::{AgentStartWait, StartWaitReason};
 
 /// One account's turn start throttle. Bounds and the per-provider defaults
 /// (with the measurements behind them) are owned by the shared values
@@ -507,25 +507,22 @@ async fn show_wait(
     wait: Wait,
     throttle: StartThrottle,
 ) -> Result<(), ContinuationError> {
-    let mut value = AgentStartWait::new(StartWaitReason::StartQueue, epoch);
-    match wait {
-        Wait::Behind => {}
-        Wait::Slot { running } => {
-            value.reason = StartWaitReason::Slot;
-            value.running_turns = Some(running);
-            value.max_running_turns = Some(throttle.max_running);
-        }
-        Wait::Pause { until } => {
-            value.reason = StartWaitReason::Pause;
-            value.until = Some(
-                crate::event_write::unix_time()
-                    .map_err(|_| ContinuationError::Unavailable("account-start/clock"))?
-                    + until
-                        .saturating_duration_since(Instant::now())
-                        .as_secs_f64(),
-            );
-        }
-    }
+    let value = match wait {
+        Wait::Behind => AgentStartWait::StartQueue { epoch },
+        Wait::Slot { running } => AgentStartWait::Slot {
+            epoch,
+            running_turns: running,
+            max_running_turns: throttle.max_running,
+        },
+        Wait::Pause { until } => AgentStartWait::Pause {
+            epoch,
+            until: crate::event_write::unix_time()
+                .map_err(|_| ContinuationError::Unavailable("account-start/clock"))?
+                + until
+                    .saturating_duration_since(Instant::now())
+                    .as_secs_f64(),
+        },
+    };
     show_blocked(store, vec![(agent.to_owned(), value)]).await?;
     Ok(())
 }
@@ -544,7 +541,7 @@ pub async fn show_blocked(
                 continue;
             };
             if !matches!(record.status, AgentStatus::Queued | AgentStatus::Starting)
-                || record.epoch != wait.epoch
+                || record.epoch != wait.epoch()
             {
                 continue;
             }
@@ -595,6 +592,44 @@ mod tests {
             state.leave(ticket);
         }
         decision
+    }
+
+    #[tokio::test]
+    async fn admission_wait_reaches_sync_and_stale_epoch_cannot_replace_it() {
+        use serde_json::json;
+        use studio_runtime_store::{AgentRecord, AgentRepository, RuntimeStore, StoreError};
+        let dir = tempfile::tempdir().expect("state directory");
+        let store = RuntimeStore::open(Some(dir.path())).await.expect("store");
+        store.transaction_with(|tx| {
+            let agent = AgentRecord::from_value(json!({"provider":"codex", "id":"worker", "rootId":"worker", "epoch":4, "status":"queued", "autoWake":true})).expect("agent");
+            AgentRepository::put(tx, &agent)
+        }).await.expect("seed");
+        super::show_wait(
+            &store,
+            "worker",
+            4,
+            Wait::Slot { running: 2 },
+            throttle(8, 1, 3),
+        )
+        .await
+        .expect("slot wait");
+        super::show_wait(&store, "worker", 3, Wait::Behind, throttle(8, 1, 3))
+            .await
+            .expect("stale wait ignored");
+        let view = store
+            .read_async("test/admission-wait", |tx| {
+                let agent = AgentRepository::get(tx, &"worker".into())?.expect("agent");
+                Ok::<_, StoreError>(
+                    crate::sync_views::agent_entity_view(&agent.value(), &Default::default())
+                        .expect("projection"),
+                )
+            })
+            .await
+            .expect("view");
+        assert_eq!(
+            view["startWait"],
+            json!({"reason":"slot", "epoch":4, "runningTurns":2, "maxRunningTurns":3})
+        );
     }
 
     #[tokio::test(start_paused = true)]

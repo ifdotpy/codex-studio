@@ -1,3 +1,4 @@
+import { WorkStatus as GeneratedApiWorkStatus } from "../../generated/api.ts";
 import {
   Badge,
   Button,
@@ -331,17 +332,19 @@ function TaskDetail({
         <Button
           variant="default"
           disabled={
-            busy || task.status === "review" || task.status === "accepted"
+            busy ||
+            task.status === GeneratedApiWorkStatus.review ||
+            task.status === GeneratedApiWorkStatus.accepted
           }
           onClick={onEdit}
         >
           Update task
         </Button>
       </div>
-      {task.status === "review" && (
+      {task.status === GeneratedApiWorkStatus.review && (
         <p>Reject the result before you edit this task.</p>
       )}
-      {task.status === "accepted" && (
+      {task.status === GeneratedApiWorkStatus.accepted && (
         <p>Create a follow-up task to change accepted work.</p>
       )}
       <p className="task-review-description">
@@ -452,7 +455,7 @@ function TaskDetail({
       ) : (
         <p>No result submitted.</p>
       )}
-      {task.status === "review" && (
+      {task.status === GeneratedApiWorkStatus.review && (
         <fieldset disabled={busy}>
           <legend>Review decision</legend>
           <Textarea

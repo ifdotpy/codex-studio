@@ -1,3 +1,4 @@
+import { AgentStatus as GeneratedApiAgentStatus } from "../generated/api.ts";
 import type { DeepReadonly } from "rxdb";
 import { useServerApi } from "../servers/ServerServicesContext";
 import { useEffect, useMemo, useState } from "react";
@@ -61,7 +62,7 @@ export function useTurnErrors(items: Message[], agent?: Agent, workspace = "") {
     const latest = agent?.nativeTurnError;
     if (latest?.turnId && latest.error) errors[latest.turnId] = latest.error;
     else if (
-      agent?.status === "failed" &&
+      agent?.status === GeneratedApiAgentStatus.failed &&
       !agent.turnId &&
       agent.lastCompletedTurn &&
       agent.error

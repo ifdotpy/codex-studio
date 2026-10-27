@@ -184,7 +184,7 @@ async fn manual_recovery_absence_never_makes_the_original_input_schedulable() {
     worker.shutdown().await.expect("fixture worker shutdown");
     assert!(
         !schedulable,
-        "manual recovery requeued the original input: {checked}"
+        "manual recovery requeued the original input: {checked:?}"
     );
     assert_eq!(original_status, "uncertain");
     assert!(
@@ -236,7 +236,7 @@ async fn manual_active_start_case(restart: bool) {
         .await
         .expect("scheduler delivery check");
     worker.shutdown().await.expect("fixture shutdown");
-    assert_eq!(accepted["turnId"], "manual-running-turn", "{checked}");
+    assert_eq!(accepted["turnId"], "manual-running-turn", "{checked:?}");
     assert_eq!(original_status, "delivered");
     assert!(
         after["turnId"].is_null(),
@@ -333,7 +333,11 @@ async fn manual_recovery_accepts_a_restart_exact_start_and_tracks_its_terminal_n
         .expect("active check");
     worker_barrier(&worker).await;
     let held = state.record().await;
-    assert_eq!(unconfirmed["status"], "unconfirmed");
+    assert!(matches!(
+        unconfirmed,
+        crate::recovery::RecoveryReceipt::Unknown(_)
+    ));
+    assert_eq!(unconfirmed.value()["status"], "unconfirmed");
     assert_eq!(held["restartRecovery"], auth.target["restartRecovery"]);
     assert_eq!(held["contextRepairWait"], auth.target["contextRepairWait"]);
     assert!(
@@ -394,8 +398,12 @@ async fn manual_recovery_accepts_a_restart_exact_start_and_tracks_its_terminal_n
         .expect("terminal check");
     worker_barrier(&worker).await;
     let settled = state.record().await;
-    assert_eq!(accepted["turnId"], "manual-running-turn");
-    assert_eq!(accepted["manualDeliveryHeld"], true);
+    assert!(matches!(
+        accepted,
+        crate::recovery::RecoveryReceipt::Applied(_)
+    ));
+    assert_eq!(accepted.value()["turnId"], "manual-running-turn");
+    assert_eq!(accepted.value()["manualDeliveryHeld"], true);
     assert_eq!(settled["lastCompletedTurn"], "manual-running-turn");
     assert_eq!(settled["restartRecovery"]["stage"], "finished");
     assert!(settled["contextRepairWait"].is_null());
@@ -406,12 +414,12 @@ async fn manual_recovery_accepts_a_restart_exact_start_and_tracks_its_terminal_n
 
     let evidence = manual_restart_settlement_evidence(&state).await;
     assert_eq!(evidence["activeReceipt"]["signature"], "signature");
-    assert_eq!(evidence["activeReceipt"]["result"], unconfirmed);
+    assert_eq!(&evidence["activeReceipt"]["result"], unconfirmed.value());
     assert_eq!(
         evidence["terminalReceipt"]["signature"],
         "terminal-signature"
     );
-    assert_eq!(evidence["terminalReceipt"]["result"], accepted);
+    assert_eq!(&evidence["terminalReceipt"]["result"], accepted.value());
     for (receipt, turn_field) in [("startResult", "accepted"), ("terminal", "turn")] {
         assert_eq!(
             evidence["attempt"]["receipts"][receipt]["input"]["agent"],
@@ -3658,7 +3666,7 @@ async fn connection_recovery_repeated_request_returns_saved_status_without_histo
     )
     .await
     .unwrap();
-    assert_eq!(result.receipt, saved);
+    assert_eq!(result.receipt.value(), &saved);
 }
 
 #[tokio::test]
@@ -3989,7 +3997,9 @@ async fn retained_response_before_write_receipt_stays_positive() {
 
 #[tokio::test]
 async fn claude_adapter_uses_retained_scoped_control_and_invalidates_on_stop() {
-    use crate::claude_controls::service::{ControlScope, ControlSession};
+    use crate::claude_controls::service::{
+        ControlInvocation, ControlReply, ControlScope, ControlSession,
+    };
     let state = State::new().await;
     let mut peer = Peer::new();
     let mut worker = peer.worker(state.bridge.clone()).await;
@@ -4004,29 +4014,31 @@ async fn claude_adapter_uses_retained_scoped_control_and_invalidates_on_stop() {
     let task = tokio::spawn(async move {
         copy.call_scoped(
             call_scope,
-            "claude/stopTask",
-            json!({"threadId":"fake-thread-0","taskId":"task"}),
+            ControlInvocation::StopTask {
+                thread_id: "fake-thread-0".into(),
+                task_id: "task".into(),
+                request_id: "stop-task-request".into(),
+            },
         )
         .await
     });
     let request = peer.write("claude/stopTask").await;
     peer.reply(&request, json!({"status":"stopped"})).await;
-    assert_eq!(task.await.unwrap().unwrap(), json!({"status":"stopped"}));
-    assert_eq!(
-        session
-            .call_scoped(
-                scope.clone(),
-                "claude/stopTask",
-                json!({"threadId":"fake-thread-0","taskId":"task"})
-            )
-            .await
-            .unwrap(),
-        json!({"status":"stopped"})
+    assert!(
+        matches!(task.await.unwrap().unwrap(), ControlReply::StopTask(result) if result == json!({"status":"stopped"}))
+    );
+    assert!(
+        matches!(session.call_scoped(scope.clone(), ControlInvocation::StopTask { thread_id: "fake-thread-0".into(), task_id: "task".into(), request_id: "stop-task-request".into() }).await.unwrap(), ControlReply::StopTask(result) if result == json!({"status":"stopped"}))
     );
     worker.shutdown().await.unwrap();
     assert!(
         session
-            .call_scoped(scope, "claude/state", json!({"threadId":"fake-thread-0"}))
+            .call_scoped(
+                scope,
+                ControlInvocation::State {
+                    thread_id: "fake-thread-0".into()
+                }
+            )
             .await
             .is_err()
     );
@@ -4034,7 +4046,7 @@ async fn claude_adapter_uses_retained_scoped_control_and_invalidates_on_stop() {
 
 #[tokio::test]
 async fn claude_adapter_distinguishes_not_sent_from_unknown() {
-    use crate::claude_controls::service::ControlSession;
+    use crate::claude_controls::service::{ControlInvocation, ControlSession};
     use crate::claude_controls::{ControlError, service::ControlScope};
     use crate::claude_runtime::RetainedClaudeSession;
 
@@ -4068,8 +4080,11 @@ async fn claude_adapter_distinguishes_not_sent_from_unknown() {
             session
                 .call_scoped(
                     scope,
-                    "claude/stopTask",
-                    json!({"threadId":"fake-thread-0","taskId":"task"}),
+                    ControlInvocation::StopTask {
+                        thread_id: "fake-thread-0".into(),
+                        task_id: "task".into(),
+                        request_id: request_id.into(),
+                    },
                 )
                 .await
         });
@@ -4079,6 +4094,57 @@ async fn claude_adapter_distinguishes_not_sent_from_unknown() {
         match expected {
             "not-sent" => assert!(matches!(task.await.unwrap(), Err(ControlError::NotSent))),
             _ => assert!(matches!(task.await.unwrap(), Err(ControlError::Unknown))),
+        }
+        worker.shutdown().await.unwrap();
+    }
+}
+
+#[tokio::test]
+async fn claude_rewind_negative_proof_requires_both_original_identities() {
+    use crate::claude_controls::{
+        ControlError,
+        service::{ControlInvocation, ControlScope, ControlSession},
+    };
+    for (proof_request, proof_turn, accepted) in [
+        ("original", "turn", true),
+        ("other", "turn", false),
+        ("original", "other", false),
+    ] {
+        let state = State::new().await;
+        let mut peer = Peer::new();
+        let mut worker = peer.worker(state.bridge.clone()).await;
+        let session = worker.claude_session().unwrap();
+        let scope = ControlScope {
+            agent: state.agent.clone(),
+            epoch: state.epoch.try_into().unwrap(),
+            request_id: Some("transport".into()),
+        };
+        let task = tokio::spawn(async move {
+            session
+                .call_scoped(
+                    scope,
+                    ControlInvocation::Rollback {
+                        thread_id: "fake-thread-0".into(),
+                        request_id: serde_json::from_value(json!("original")).unwrap(),
+                        turn_id: serde_json::from_value(json!("turn")).unwrap(),
+                        restore_files: true,
+                        transport_request_id: "transport".into(),
+                    },
+                )
+                .await
+        });
+        let request = peer.write("thread/rollback").await;
+        assert_eq!(
+            request["params"],
+            json!({"threadId":"fake-thread-0","requestId":"original","turnId":"turn","restoreFiles":true})
+        );
+        let cursor = peer.frame(json!({"id":request["id"],"error":{"code":-32000,"message":"not applied","data":{"fileRestoreOutcome":"not_applied","requestId":proof_request,"turnId":proof_turn}}})).await;
+        peer.acknowledged(cursor).await;
+        let result = task.await.unwrap();
+        if accepted {
+            assert!(matches!(result, Err(ControlError::RewindNotApplied(_))));
+        } else {
+            assert!(matches!(result, Err(ControlError::RewindRejected(_))));
         }
         worker.shutdown().await.unwrap();
     }
@@ -4130,5 +4196,158 @@ async fn retained_claude_mutation_waits_while_lightweight_read_can_progress() {
     first.await.unwrap().unwrap();
     peer.reply(&second_wire, json!({})).await;
     second.await.unwrap();
+    worker.shutdown().await.unwrap();
+}
+
+struct ManagedRecoverySession {
+    port: RetainedSessionPort,
+    calls: AtomicUsize,
+}
+
+impl AccountSessionPort for ManagedRecoverySession {
+    fn recover_managed_agent<'a>(
+        &'a self,
+        _: &'a str,
+        request: crate::agent_management_recovery::AuthorizedRecoveryRequest,
+    ) -> crate::account_session_runtime::AccountSessionFuture<'a, crate::recovery::RecoveryReceipt>
+    {
+        self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Box::pin(async move {
+            self.port
+                .recover_managed_agent(request)
+                .await
+                .map_err(|_| AccountSessionError::Unknown)
+        })
+    }
+}
+
+#[tokio::test]
+async fn manual_recovery_owner_to_callback_keeps_unknown_and_exact_replay() {
+    use crate::provider_callbacks::{
+        CallbackContext, CallbackDecision, ManagedToolPortsConfig, ManagedToolRuntimePorts,
+    };
+    use studio_runtime_providers::{Frame, Method, RequestFrame, RequestId};
+    let state = State::new().await;
+    let mut peer = Peer::new();
+    let mut worker = peer.worker(state.bridge.clone()).await;
+    worker_barrier(&worker).await;
+    let port = worker.retained_session();
+    let _auth = manual_start_authorization(&state, port.scope(), false).await;
+    let cwd = state.root.clone();
+    state
+        .bridge
+        .store
+        .transaction(move |tx| {
+            let mut lead = AgentRepository::get(tx, &AgentId::from("lead-00000000"))?.unwrap();
+            lead.extra.insert("cwd".into(), json!(cwd));
+            AgentRepository::put(tx, &lead)
+        })
+        .await
+        .unwrap();
+    let context = CallbackContext {
+        agent: "lead-00000000".into(),
+        account: "default".into(),
+        connection: port.scope().connection.clone(),
+        generation: port.scope().generation,
+        epoch: 1,
+        thread: "lead-thread".into(),
+        turn: "lead-turn".into(),
+    };
+    let frame = Frame::Request(RequestFrame {
+        id: RequestId::String("rpc-owner-recovery".into()),
+        method: Method::ItemToolCall,
+        params: Some(
+            json!({"threadId":"lead-thread","turnId":"lead-turn","callId":"owner-recovery",
+            "tool":"orchestration_agent_manage","arguments":{"action":"recover","agent_id":state.agent}}),
+        ),
+        fields: Default::default(),
+    });
+    let session = Arc::new(ManagedRecoverySession {
+        port,
+        calls: AtomicUsize::new(0),
+    });
+    let ports = ManagedToolRuntimePorts {
+        status_watch: None,
+        child_creation: None,
+        monitor_create: None,
+        interrupt: None,
+        monitor_input: None,
+        monitor_cancel: None,
+        work_action: None,
+        late: Default::default(),
+    };
+    let session_port: Arc<dyn AccountSessionPort> = session.clone();
+    assert!(ports.late.management_session.set(session_port).is_ok());
+    let ports: Arc<dyn crate::managed_host_tools::Ports<Prepared = ()>> = Arc::new(
+        crate::provider_callbacks::managed_tool_ports_with_runtime(
+            state.bridge.store.as_ref(),
+            &context,
+            &frame,
+            ManagedToolPortsConfig {
+                wake: Arc::new(tokio::sync::Notify::new()),
+                monitor_dispatch_wake: Arc::new(tokio::sync::Notify::new()),
+                runtime_ports: ports,
+                preparation: None,
+            },
+        )
+        .await
+        .unwrap(),
+    );
+    let store = Arc::clone(&state.bridge.store);
+    let first_store = Arc::clone(&store);
+    let first_context = context.clone();
+    let first_frame = frame.clone();
+    let first_ports = ports.clone();
+    let first = tokio::spawn(async move {
+        crate::provider_callbacks::dispatch_with_managed_tools(
+            first_store,
+            &first_context,
+            &first_frame,
+            20.0,
+            first_ports,
+        )
+        .await
+    });
+    let turns = tokio::time::timeout(FIRST_PASS_TEST_DEADLINE, peer.write("thread/turns/list"))
+        .await
+        .expect("native history request");
+    peer.reply(&turns, json!({"data":[{"id":"absent-attempt","threadId":"fake-thread-0","clientUserMessageId":"annotation:input","startOutcome":"not_applied","items":[]}],"nextCursor":null})).await;
+    let read = tokio::time::timeout(FIRST_PASS_TEST_DEADLINE, peer.write("thread/read"))
+        .await
+        .expect("native thread request");
+    peer.reply(
+        &read,
+        json!({"thread":{"id":"fake-thread-0","status":{"type":"idle"}}}),
+    )
+    .await;
+    let CallbackDecision::Answer(first) = first.await.unwrap().unwrap() else {
+        panic!("callback answer")
+    };
+    let replay = crate::provider_callbacks::dispatch_with_managed_tools(
+        store.clone(),
+        &context,
+        &frame,
+        21.0,
+        ports,
+    )
+    .await
+    .unwrap();
+    let CallbackDecision::Answer(replay) = replay else {
+        panic!("replay answer")
+    };
+    assert_eq!(first.body, replay.body);
+    assert_eq!(session.calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+    let records = studio_runtime_store::system_reads::all(
+        &store.test_reader().unwrap(),
+        "runtime_tool_requests",
+    )
+    .unwrap();
+    let record = records
+        .iter()
+        .find(|record| record["callId"] == "owner-recovery")
+        .unwrap();
+    assert_eq!(record["deliveryCertainty"], "unknown");
+    assert_eq!(record["result"]["success"], false);
+    assert_eq!(state.event_status("input").await, "uncertain");
     worker.shutdown().await.unwrap();
 }

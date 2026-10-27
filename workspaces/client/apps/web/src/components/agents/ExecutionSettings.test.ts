@@ -1,3 +1,10 @@
+import {
+  AccountStatus,
+  AgentSource,
+  AgentStatus,
+  ProviderKind,
+  TransferScope,
+} from "../../generated/api";
 import { createElement, type ComponentProps } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { MantineProvider } from "@mantine/core";
@@ -55,15 +62,15 @@ const transferResponse = {
   id: "operation",
   leadId: "lead",
   targetAccountKey: "target",
-  scope: "subagents",
-  status: "pending",
+  scope: TransferScope.subagents,
+  status: TransferStatus.pending,
   created: 1,
   members: {},
   requests: {
     extension: {
       leadId: "lead",
       targetAccountKey: "target",
-      scope: "subagents",
+      scope: TransferScope.subagents,
     },
   },
 } satisfies TransferResponse;
@@ -84,7 +91,7 @@ test("transfer confirmation preserves the generated response and receipt types",
     "extension",
     "lead",
     "target",
-    "subagents",
+    TransferScope.subagents,
   );
   expect(confirmed).toBe(transferResponse);
   expect(confirmed.requests?.extension).toBe(
@@ -100,7 +107,7 @@ for (const requestId of ["operation", "extension"]) {
         requestId,
         "lead",
         "target",
-        "subagents",
+        TransferScope.subagents,
       ).id,
     ).toBe("operation");
   });
@@ -109,7 +116,7 @@ for (const requestId of ["operation", "extension"]) {
 for (const patch of [
   { leadId: "another-lead" },
   { targetAccountKey: "another-account" },
-  { scope: "team" },
+  { scope: TransferScope.team },
   { requests: null },
   {
     requests: {
@@ -129,7 +136,10 @@ for (const patch of [
   },
   {
     requests: {
-      extension: { ...transferResponse.requests.extension, scope: "team" },
+      extension: {
+        ...transferResponse.requests.extension,
+        scope: TransferScope.team,
+      },
     },
   },
 ] satisfies Partial<TransferResponse>[]) {
@@ -140,7 +150,7 @@ for (const patch of [
         "extension",
         "lead",
         "target",
-        "subagents",
+        TransferScope.subagents,
       ),
     ).toThrow("The server did not confirm this account transfer.");
   });
@@ -156,8 +166,14 @@ test("transfer confirmation rejects malformed runtime ingress", () => {
     { ...transferResponse, requests: { extension: null } },
   ]) {
     expect(() =>
-      // @ts-expect-error Deliberately malformed transport data still needs runtime rejection.
-      confirmedTransfer(value, "extension", "lead", "target", "subagents"),
+      confirmedTransfer(
+        // @ts-expect-error Deliberately malformed transport data still needs runtime rejection.
+        value,
+        "extension",
+        "lead",
+        "target",
+        TransferScope.subagents,
+      ),
     ).toThrow("The server did not confirm this account transfer.");
   }
 });
@@ -226,8 +242,8 @@ for (const initialRole of ["orchestrator", "worker", "review"] as const) {
       const agent: Agent = {
         id: "fast-picker",
         isLead: true,
-        source: "managed",
-        status: "idle",
+        source: AgentSource.managed,
+        status: AgentStatus.idle,
         model: "gpt-6-astra",
         workerDefaults: { model: "gpt-6-astra", effort: null, fastMode: false },
         reviewDefaults: { model: "gpt-6-astra", effort: null },
@@ -278,9 +294,9 @@ for (const isLead of [true, false]) {
             id: "picker-test",
             name: "Test",
             isLead,
-            source: "managed",
+            source: AgentSource.managed,
             model: "gpt-6-astra",
-            status: "idle",
+            status: AgentStatus.idle,
           },
           catalog: { models: [], loading: false, error: "", retry: () => {} },
           refresh: async () => {},
@@ -307,9 +323,9 @@ for (const initialRole of ["orchestrator", "review"] as const) {
             id: "worker",
             name: "Worker",
             isLead: false,
-            source: "managed",
+            source: AgentSource.managed,
             model: "gpt-6-luna",
-            status: "idle",
+            status: AgentStatus.idle,
           },
           catalog: { models: [], loading: false, error: "", retry: () => {} },
           refresh: async () => {},
@@ -362,11 +378,11 @@ function futureWorkerChoice(automatic = false) {
     rootId: "pm-installation",
     name: "PM installation",
     accountKey: "lead-claude",
-    provider: "claude",
+    provider: ProviderKind.claude,
     model: "default",
     isLead: true,
-    source: "managed",
-    status: "waiting",
+    source: AgentSource.managed,
+    status: AgentStatus.waiting,
     workerDefaults: {
       accountKey: automatic ? undefined : "old-codex",
       model: "gpt-6.1-sol",
@@ -409,24 +425,24 @@ function futureWorkerChoice(automatic = false) {
             label: "Lead",
             home: "/fixture/lead-claude",
             source: "fixture",
-            provider: "claude",
-            status: "ready",
+            provider: ProviderKind.claude,
+            status: AccountStatus.ready,
           },
           {
             id: "old-codex",
             label: "Old",
             home: "/fixture/old-codex",
             source: "fixture",
-            provider: "codex",
-            status: "ready",
+            provider: ProviderKind.codex,
+            status: AccountStatus.ready,
           },
           {
             id: "future-codex",
             label: "Future",
             home: "/fixture/future-codex",
             source: "fixture",
-            provider: "codex",
-            status: "ready",
+            provider: ProviderKind.codex,
+            status: AccountStatus.ready,
           },
         ],
         catalog: { models: [], loading: false, error: "", retry: vi.fn() },

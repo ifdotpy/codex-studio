@@ -1,3 +1,9 @@
+import {
+  TaskStatus as GeneratedApiTaskStatus,
+  TaskKind as GeneratedApiTaskKind,
+  WorkStatus as GeneratedApiWorkStatus,
+  TerminalState as GeneratedApiTerminalState,
+} from "../generated/api.ts";
 import type {
   ResourceRef,
   ResourceData,
@@ -222,28 +228,38 @@ it("process rows use streamed task-only records and authoritative process output
   h.nullRefs = 100;
   const props = processProps();
   props.data.runtime.tasks = [
-    { id: "stale", agent: "lead", created: 1, status: "running", kind: "tool" },
+    {
+      id: "stale",
+      agent: "lead",
+      created: 1,
+      status: GeneratedApiTaskStatus.running,
+      kind: GeneratedApiTaskKind.tool,
+    },
   ];
   const process = commandProcess();
   h.data.set("processes", { processes: [process] } satisfies ResourceData<
     Extract<ResourceRef, { kind: "processes" }>
   >);
   h.data.set("tasks", [
-    { ...process, kind: "command", tail: "Older task output" },
+    {
+      ...process,
+      kind: GeneratedApiTaskKind.command,
+      tail: "Older task output",
+    },
     {
       id: "tool",
       agent: "lead",
       created: 1,
-      status: "running",
-      kind: "tool",
+      status: GeneratedApiTaskStatus.running,
+      kind: GeneratedApiTaskKind.tool,
       name: "webSearch",
     },
     {
       id: "claude",
       agent: "lead",
       created: 1,
-      status: "running",
-      kind: "tool",
+      status: GeneratedApiTaskStatus.running,
+      kind: GeneratedApiTaskKind.tool,
       // @ts-expect-error TaskEntityDto omits legacy itemId metadata; the renderer still tolerates it.
       itemId: "task:background",
     },
@@ -395,7 +411,7 @@ it("work changes consume the stream without GET /api/work", () => {
     id: "work",
     rootId: "lead",
     title: "Before",
-    status: "running",
+    status: GeneratedApiWorkStatus.running,
   } as ResourceData<Extract<ResourceRef, { kind: "work" }>>["items"][number];
   h.data.set("work", { items: [task], tasks: [] } satisfies ResourceData<
     Extract<ResourceRef, { kind: "work" }>
@@ -517,7 +533,7 @@ it("terminal hints apply Unicode appends without GET /api/terminals/output", asy
   h.data.set("terminal-output", {
     text: "a🙂",
     offset: 2,
-    status: "running",
+    status: GeneratedApiTerminalState.running,
     truncated: false,
   } satisfies ResourceData<Extract<ResourceRef, { kind: "terminal-output" }>>);
   const read = () => ShellView({ shell, notify: vi.fn() });
@@ -526,7 +542,7 @@ it("terminal hints apply Unicode appends without GET /api/terminals/output", asy
   h.data.set("terminal-output", {
     text: "a🙂中",
     offset: 3,
-    status: "running",
+    status: GeneratedApiTerminalState.running,
     truncated: false,
   } satisfies ResourceData<Extract<ResourceRef, { kind: "terminal-output" }>>);
   render(read);

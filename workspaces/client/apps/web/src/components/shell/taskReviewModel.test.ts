@@ -1,3 +1,4 @@
+import { WorkStatus as GeneratedApiWorkStatus } from "../../generated/api.ts";
 import { required } from "../componentTestFixtures.ts";
 import { expect, test } from "vitest";
 import type { PostBody } from "../../api";
@@ -22,7 +23,7 @@ const task = {
   created: 1,
   updated: 1,
   version: 1,
-  status: "review",
+  status: GeneratedApiWorkStatus.review,
   gate: { command: "check", timeout_ms: DEFAULT_GATE_TIMEOUT_MS },
 } satisfies ReviewTask;
 const result = {
@@ -141,6 +142,10 @@ test("the schema editor preserves boolean schemas and rejects invalid JSON, shap
 
 test("the list uses dependency blocking in preference to the persisted ready status", () => {
   expect(
-    taskStatus({ ...task, status: "ready", displayStatus: "blocked" }),
+    taskStatus({
+      ...task,
+      status: GeneratedApiWorkStatus.ready,
+      displayStatus: "blocked",
+    }),
   ).toBe("blocked");
 });

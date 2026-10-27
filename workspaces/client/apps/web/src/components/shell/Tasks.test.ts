@@ -1,3 +1,4 @@
+import { WorkStatus as GeneratedApiWorkStatus } from "../../generated/api.ts";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { MantineProvider } from "@mantine/core";
@@ -42,7 +43,7 @@ it("assembles ordered canonical histories, isolates roots, and keeps unchanged a
       id,
       rootId,
       title: id,
-      status: "review",
+      status: GeneratedApiWorkStatus.review,
       created: 1,
       updated: 1,
       version: 1,

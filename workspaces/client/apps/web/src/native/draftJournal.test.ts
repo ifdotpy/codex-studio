@@ -25,6 +25,7 @@ const view = (text: string, revision: number): DraftView => ({
   conflicts: [],
   workspaceId: "workspace",
   revision,
+  error: "",
 });
 
 it("restores exact uncertain requests and later text after restart", async () => {

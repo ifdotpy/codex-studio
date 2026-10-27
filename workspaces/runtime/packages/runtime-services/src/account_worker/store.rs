@@ -3746,7 +3746,7 @@ pub(super) enum PreparationStep<T> {
 
 /// A pending preparation's reason and the agent rows whose change may clear it.
 pub(super) struct PendingWait {
-    pub reason: studio_runtime_schema::agent_progress::StartWaitReason,
+    pub reason: crate::account_worker::PreparationWaitReason,
     pub rows: super::agent_wakes::WakeRows,
 }
 
@@ -3825,14 +3825,14 @@ pub(super) async fn preparation_step<T: Send + 'static>(
 fn pending_needs_record(
     row: &studio_runtime_store::AgentRecord,
     reason: &str,
-    owner: studio_runtime_schema::agent_progress::StartWaitReason,
+    owner: crate::account_worker::PreparationWaitReason,
     attempt_id: &str,
     epoch: i64,
 ) -> bool {
     let Some(attempt) = row.extra.get("startAttempt") else {
         return false;
     };
-    let wait = studio_runtime_schema::agent_progress::AgentStartWait::new(owner, epoch);
+    let wait = owner.wait(epoch);
     let recorded = row
         .extra
         .get(studio_runtime_schema::agent_progress::START_WAIT_FIELD)
@@ -3851,7 +3851,7 @@ async fn record_pending(
     store: &RuntimeStore,
     intent: &TurnIntent,
     reason: String,
-    owner: studio_runtime_schema::agent_progress::StartWaitReason,
+    owner: crate::account_worker::PreparationWaitReason,
 ) -> Result<(), WorkerError> {
     let agent_id = intent.agent_id.clone();
     let attempt_id = intent.attempt_id.clone();
@@ -3873,10 +3873,7 @@ async fn record_pending(
             attempt.insert("prepareError".into(), json!(reason));
             row.extra.insert(
                 studio_runtime_schema::agent_progress::START_WAIT_FIELD.into(),
-                serde_json::to_value(studio_runtime_schema::agent_progress::AgentStartWait::new(
-                    owner, epoch,
-                ))
-                .map_err(StoreError::from)?,
+                serde_json::to_value(owner.wait(epoch)).map_err(StoreError::from)?,
             );
             if reason == preparation::WORKSPACE_PENDING_REASON {
                 // Python's WorkspaceWaitRecord uses these fields

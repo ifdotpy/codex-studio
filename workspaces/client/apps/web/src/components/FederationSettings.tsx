@@ -1,3 +1,8 @@
+import {
+  PeerStatus as GeneratedApiPeerStatus,
+  WhoisStatus as GeneratedApiWhoisStatus,
+  RoomStatus as GeneratedApiRoomStatus,
+} from "../generated/api.ts";
 import { useServerApi } from "../servers/ServerServicesContext";
 import { useEffect, useMemo, useState } from "react";
 import { Button, Checkbox, Switch, Textarea, TextInput } from "@mantine/core";
@@ -176,32 +181,38 @@ export function FederationSettings({
       {state?.peers.map((peer) => (
         <div className="federation-peer" key={peer.stateId}>
           <strong>{peer.label}</strong>
-          <span>{peer.status === "approved" ? "Paired" : peer.status}</span>
-          {peer.whoisStatus === "missing" && (
+          <span>
+            {peer.status === GeneratedApiPeerStatus.approved
+              ? "Paired"
+              : peer.status}
+          </span>
+          {peer.whoisStatus === GeneratedApiWhoisStatus.missing && (
             <p role="alert">
               Tailscale could not verify this user. Continue only if you
               recognize and accept this peer.
             </p>
           )}
           {peer.lastError && <p role="status">{peer.lastError}</p>}
-          {peer.status !== "approved" && peer.status !== "revoked" && (
-            <Button
-              size="xs"
-              disabled={busy}
-              onClick={() =>
-                void run({
-                  action: "approve_peer",
-                  state_id: peer.stateId,
-                  accept_missing_whois: peer.whoisStatus === "missing",
-                })
-              }
-            >
-              {peer.whoisStatus === "missing"
-                ? "Accept missing identity and pair"
-                : "Approve pairing"}
-            </Button>
-          )}
-          {peer.status !== "revoked" && (
+          {peer.status !== GeneratedApiPeerStatus.approved &&
+            peer.status !== GeneratedApiPeerStatus.revoked && (
+              <Button
+                size="xs"
+                disabled={busy}
+                onClick={() =>
+                  void run({
+                    action: "approve_peer",
+                    state_id: peer.stateId,
+                    accept_missing_whois:
+                      peer.whoisStatus === GeneratedApiWhoisStatus.missing,
+                  })
+                }
+              >
+                {peer.whoisStatus === GeneratedApiWhoisStatus.missing
+                  ? "Accept missing identity and pair"
+                  : "Approve pairing"}
+              </Button>
+            )}
+          {peer.status !== GeneratedApiPeerStatus.revoked && (
             <Button
               size="xs"
               color="red"
@@ -216,7 +227,9 @@ export function FederationSettings({
           )}
         </div>
       ))}
-      {state?.peers.some((peer) => peer.status === "approved") && (
+      {state?.peers.some(
+        (peer) => peer.status === GeneratedApiPeerStatus.approved,
+      ) && (
         <div className="federation-room-create">
           <h3>Create a shared room</h3>
           <p>
@@ -245,7 +258,7 @@ export function FederationSettings({
             onChange={(event) => setShareStatus(event.currentTarget.checked)}
           />
           {state.peers
-            .filter((peer) => peer.status === "approved")
+            .filter((peer) => peer.status === GeneratedApiPeerStatus.approved)
             .map((peer) => (
               <Button
                 key={peer.stateId}
@@ -272,55 +285,58 @@ export function FederationSettings({
         <div className="federation-room" key={room.id}>
           <strong>{room.peerLabel}</strong>
           <span>
-            {room.status === "approved"
+            {room.status === GeneratedApiRoomStatus.approved
               ? "Shared room"
               : "Room approval pending"}
           </span>
-          {room.status === "pending" && room.localMembers.length === 0 && (
-            <>
-              <p>
-                Approve access for the local lead. Select extra members only
-                when needed.
-              </p>
-              {team.map((agent) => (
+          {room.status === GeneratedApiRoomStatus.pending &&
+            room.localMembers.length === 0 && (
+              <>
+                <p>
+                  Approve access for the local lead. Select extra members only
+                  when needed.
+                </p>
+                {team.map((agent) => (
+                  <Checkbox
+                    key={`${room.id}:${agent.id}`}
+                    label={agent.isLead ? `${agent.name} (lead)` : agent.name}
+                    checked={localMembers.includes(agent.id)}
+                    disabled={busy || (agent.id !== leadId && !shareNames)}
+                    onChange={(event) =>
+                      toggleMember(agent.id, event.currentTarget.checked)
+                    }
+                  />
+                ))}
                 <Checkbox
-                  key={`${room.id}:${agent.id}`}
-                  label={agent.isLead ? `${agent.name} (lead)` : agent.name}
-                  checked={localMembers.includes(agent.id)}
-                  disabled={busy || (agent.id !== leadId && !shareNames)}
+                  label="Share names of selected agents"
+                  checked={shareNames}
                   onChange={(event) =>
-                    toggleMember(agent.id, event.currentTarget.checked)
+                    setShareNames(event.currentTarget.checked)
                   }
                 />
-              ))}
-              <Checkbox
-                label="Share names of selected agents"
-                checked={shareNames}
-                onChange={(event) => setShareNames(event.currentTarget.checked)}
-              />
-              <Checkbox
-                label="Share selected agents’ current status"
-                checked={shareStatus}
-                onChange={(event) =>
-                  setShareStatus(event.currentTarget.checked)
-                }
-              />
-              <Button
-                disabled={busy || !localMembers.includes(leadId)}
-                onClick={() =>
-                  void run({
-                    action: "approve_room",
-                    room_id: room.id,
-                    local_members: localMembers,
-                    share_names: shareNames,
-                    share_status: shareStatus,
-                  })
-                }
-              >
-                Approve room
-              </Button>
-            </>
-          )}
+                <Checkbox
+                  label="Share selected agents’ current status"
+                  checked={shareStatus}
+                  onChange={(event) =>
+                    setShareStatus(event.currentTarget.checked)
+                  }
+                />
+                <Button
+                  disabled={busy || !localMembers.includes(leadId)}
+                  onClick={() =>
+                    void run({
+                      action: "approve_room",
+                      room_id: room.id,
+                      local_members: localMembers,
+                      share_names: shareNames,
+                      share_status: shareStatus,
+                    })
+                  }
+                >
+                  Approve room
+                </Button>
+              </>
+            )}
         </div>
       ))}
       {state && state.queued > 0 && (

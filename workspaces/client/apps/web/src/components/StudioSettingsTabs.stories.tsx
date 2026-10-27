@@ -1,3 +1,4 @@
+import { AccountStatus as GeneratedApiAccountStatus } from "../generated/api.ts";
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import {
   Accordion,
@@ -105,7 +106,11 @@ function AccountStrips() {
               </Accordion.Control>
             </div>
             <AccountCapacityView
-              account={{ status: "ready", label: String(label), email: null }}
+              account={{
+                status: GeneratedApiAccountStatus.ready,
+                label: String(label),
+                email: null,
+              }}
               card
               extraDetails={
                 <AccountGroup
@@ -113,7 +118,7 @@ function AccountStrips() {
                     id: String(label),
                     label: String(label),
                     provider: provider === "Claude" ? "claude" : "codex",
-                    status: "ready",
+                    status: GeneratedApiAccountStatus.ready,
                     home: "/fixture/accounts",
                     source: "fixture",
                   }}
@@ -121,7 +126,7 @@ function AccountStrips() {
                 />
               }
               view={accountLimitView(
-                { id: String(label), status: "ready" },
+                { id: String(label), status: GeneratedApiAccountStatus.ready },
                 {
                   accountKey: String(label),
                   at: Date.now() / 1000,

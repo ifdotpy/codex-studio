@@ -1,3 +1,4 @@
+import { RequestStatus } from "../../generated/api";
 import { createElement, type ComponentProps } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
@@ -46,7 +47,7 @@ function card() {
     id: requestId,
     agent: "agent",
     method: "browser/open",
-    status: "pending",
+    status: RequestStatus.pending,
     params: {
       bridgeId: forward.bridgeId,
       url: link,

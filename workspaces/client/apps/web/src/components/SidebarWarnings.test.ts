@@ -1,3 +1,4 @@
+import { AgentSource as GeneratedApiAgentSource } from "../generated/api.ts";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { expect, test, vi } from "vitest";
@@ -7,7 +8,10 @@ vi.mock("../hooks", () => ({ useMessages: read }));
 import SidebarWarnings from "./SidebarWarnings";
 
 test("imported agents read the agent transcript that preserves native warnings", () => {
-  const agent = { id: "imported", source: "app-server" } as Agent;
+  const agent = {
+    id: "imported",
+    source: GeneratedApiAgentSource["app-server"],
+  } as Agent;
   renderToStaticMarkup(
     createElement(SidebarWarnings, {
       data: {

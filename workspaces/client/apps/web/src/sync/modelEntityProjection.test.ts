@@ -1,3 +1,4 @@
+import { ProviderKind } from "../generated/api";
 import type { EntityRow } from "./entityProjection.ts";
 import type { SyncEntityPayload } from "../generated/api";
 import assert from "node:assert/strict";
@@ -12,7 +13,7 @@ it("projects per-account model entities, including hidden rows", () => {
     model: "gpt-hidden",
     hidden: true,
     accountKey: "default",
-    provider: "codex",
+    provider: ProviderKind.codex,
   };
   const state = emptyEntityProjection();
   applyEntityRows(

@@ -709,19 +709,6 @@ pub fn check_schema_parity(openapi: &Value, account_transfer: &Value) -> Result<
             "IdleCompactionSettings.mode must match runtime-schema/src/idle_compaction.rs".into(),
         );
     }
-    let expected = serde_json::to_value(crate::agent_progress::StartWaitReason::ALL)
-        .map_err(|error| error.to_string())?;
-    for pointer in [
-        "/components/schemas/AgentEntityStartWaitDto/properties/reason/enum",
-        "/components/schemas/StartWaitRecordResponse/properties/reason/enum",
-    ] {
-        if openapi.pointer(pointer) != Some(&expected) {
-            return Err(format!(
-                "{pointer} must match StartWaitReason in runtime-schema/src/agent_progress.rs"
-            ));
-        }
-    }
-
     expect_number(
         openapi,
         "/components/schemas/ManagedMessageBody/properties/assets/maxItems",
@@ -1165,6 +1152,7 @@ pub fn render(root: &Path, with_api_types: bool) -> Result<Vec<Rendered>, String
     openapi["components"]["schemas"]["ComplaintResponseStatus"] = crate::complaints::schema();
     openapi["components"]["schemas"]["ComplaintBody"]["properties"]["status"] =
         crate::complaints::status_property();
+    openapi["components"]["schemas"]["StartWaitReason"] = serde_json::Value::Null;
     for (name, schema) in crate::agent_progress::schemas()
         .into_iter()
         .chain(crate::desktop::schemas())
@@ -1402,20 +1390,12 @@ pub fn render(root: &Path, with_api_types: bool) -> Result<Vec<Rendered>, String
         });
     }
     // Analytics embeds the same accounting owner with local schema references.
-    let usage_defs: serde_json::Value = serde_json::from_str(
-        &serde_json::to_string(&crate::usage::schemas())
-            .map_err(|error| error.to_string())?
-            .replace("#/components/schemas/", "#/$defs/"),
-    )
-    .map_err(|error| error.to_string())?;
+    let usage_defs = crate::usage::schemas_with_definitions_path("/$defs");
     for name in ["analytics-usage", "analytics-notice"] {
         let path =
             format!("workspaces/runtime/packages/runtime-schema/src/schemas/{name}.schema.json");
         let mut schema = read_json(root, &path)?;
-        for (name, value) in usage_defs
-            .as_object()
-            .ok_or("usage definitions must be an object")?
-        {
+        for (name, value) in &usage_defs {
             schema["$defs"][name] = value.clone();
         }
         if name == "analytics-usage" {
@@ -1564,6 +1544,7 @@ pub fn render(root: &Path, with_api_types: bool) -> Result<Vec<Rendered>, String
         generator.subschema_for::<studio_client_domain::protocol::Response>();
         generator.subschema_for::<studio_client_domain::drafts::DraftVersion>();
         generator.subschema_for::<studio_client_domain::drafts::DraftView>();
+        generator.subschema_for::<studio_client_domain::drafts::DraftSnapshot>();
         generator.subschema_for::<studio_client_domain::markdown::MarkdownBlock>();
         let mut schemas = generator.take_definitions(true);
         schemas.insert(

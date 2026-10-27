@@ -1,3 +1,4 @@
+import { AccountStatus as GeneratedApiAccountStatus } from "../generated/api.ts";
 import { Badge, Radio, SegmentedControl, Tooltip } from "@mantine/core";
 import { Check, Sparkles } from "lucide-react";
 import { useEffect, useId, useState, type ReactNode } from "react";
@@ -136,7 +137,8 @@ export function accountLimitView(
   now = Date.now() / 1000,
   signedInOnly = true,
 ) {
-  const shown = !signedInOnly || account.status === "ready";
+  const shown =
+    !signedInOnly || account.status === GeneratedApiAccountStatus.ready;
   const error = limits?.data ? null : limits?.error || null;
   const buckets = readBuckets(
     accountLimits(limits, account.id, account.accountId),
@@ -165,7 +167,8 @@ export function useAccountLimitView(
   const limits = useAccountLimits(
     account.id,
     account.accountId,
-    read && (!signedInOnly || account.status === "ready"),
+    read &&
+      (!signedInOnly || account.status === GeneratedApiAccountStatus.ready),
   );
   return accountLimitView(account, limits, Date.now() / 1000, signedInOnly);
 }

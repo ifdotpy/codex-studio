@@ -2136,15 +2136,15 @@ async fn saturated_wake_lane_does_not_starve_eligible_agent_after_blocked_prefix
 
 #[tokio::test]
 async fn registry_drains_strict_account_pages_after_one_global_wake() {
-    use studio_runtime_services::account_start_gate::{AgentStartWait, StartWaitReason};
+    use studio_runtime_services::account_start_gate::AgentStartWait;
 
     let fixture = Fixture::new().await;
     seed_backlog(&fixture, 130, true).await;
     let final_agent = "00000000-0000-4000-8000-000000000129";
-    let provider_wait = serde_json::to_string(&AgentStartWait::new(
-        StartWaitReason::ProviderSession,
-        fixture.agents[0]["epoch"].as_i64().unwrap(),
-    ))
+    let provider_wait = serde_json::to_string(&AgentStartWait::ProviderSession {
+        epoch: fixture.agents[0]["epoch"].as_i64().unwrap(),
+        until: None,
+    })
     .unwrap();
     fixture
         .store

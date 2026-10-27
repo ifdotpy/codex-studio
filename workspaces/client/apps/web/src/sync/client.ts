@@ -1,3 +1,4 @@
+import { SubscriptionReplyKind } from "../generated/api";
 import { mergeTerminalOutput } from "./subscriptions/terminalOutput";
 import { SUBSCRIPTION_ENTITY_SCOPES } from "../generated/subscriptionEntities";
 import { cursorDocumentId, parseAppliedCursor } from "./subscriptions/cursors";
@@ -682,7 +683,7 @@ export function createSyncClient(options: SyncClientOptions) {
       // Another tab or a mutation response may already cover an interval prefix.
       // Entity writes are idempotent; only a missing base or forward gap fails.
       if (
-        entry.replyKind !== "snapshot" &&
+        entry.replyKind !== SubscriptionReplyKind.snapshot &&
         (!applied || applied.seq < changes.after)
       )
         throw new Error("Subscription delta has no applied local base");
@@ -691,12 +692,13 @@ export function createSyncClient(options: SyncClientOptions) {
           (row) =>
             !belongs(row) ||
             row.seq > cursor.seq ||
-            (entry.replyKind !== "snapshot" && row.seq <= changes.after),
+            (entry.replyKind !== SubscriptionReplyKind.snapshot &&
+              row.seq <= changes.after),
         )
       )
         throw new Error("Entity outside subscription interval");
       const rows = changes.documents.map(entityCacheRow);
-      if (entry.replyKind === "snapshot") {
+      if (entry.replyKind === SubscriptionReplyKind.snapshot) {
         const incoming = new Set(rows.map((row) => row.id));
         for (const collection of scope.collections) {
           const prefix = `entity:${collection}:`;
@@ -732,7 +734,7 @@ export function createSyncClient(options: SyncClientOptions) {
           payload: "{}",
           seq: cursor.seq,
         });
-        if (entry.replyKind === "snapshot") {
+        if (entry.replyKind === SubscriptionReplyKind.snapshot) {
           const [ready] =
             await db.projections.storageInstance.findDocumentsById(
               ["state:entities:ready"],
@@ -787,7 +789,7 @@ export function createSyncClient(options: SyncClientOptions) {
       if (!isCurrent() || (applied && applied.seq >= interval.cursor.seq))
         return;
       if (
-        interval.replyKind === "delta" &&
+        interval.replyKind === SubscriptionReplyKind.delta &&
         (!applied || applied.seq < interval.after)
       )
         throw new Error("Staged subscription delta has no applied base");
@@ -846,7 +848,7 @@ export function createSyncClient(options: SyncClientOptions) {
           isCurrent,
         );
       }
-      if (interval.replyKind === "snapshot") {
+      if (interval.replyKind === SubscriptionReplyKind.snapshot) {
         for (const collection of scope.collections) {
           let after = `entity:${collection}:`;
           for (;;) {
@@ -887,7 +889,7 @@ export function createSyncClient(options: SyncClientOptions) {
           payload: "{}",
           seq: interval.cursor.seq,
         });
-        if (interval.replyKind === "snapshot") {
+        if (interval.replyKind === SubscriptionReplyKind.snapshot) {
           const [ready] =
             await db.projections.storageInstance.findDocumentsById(
               ["state:entities:ready"],
@@ -945,9 +947,15 @@ export function createSyncClient(options: SyncClientOptions) {
         (resource.kind === "terminal-output" || resource.kind === "room")
       ) {
         const cursor = entry.cursor;
-        if (entry.replyKind !== "snapshot" && entry.replyKind !== "delta")
+        if (
+          entry.replyKind !== SubscriptionReplyKind.snapshot &&
+          entry.replyKind !== SubscriptionReplyKind.delta
+        )
           throw new Error("View subscription has no reply kind");
-        if (resource.kind === "room" && entry.replyKind !== "snapshot")
+        if (
+          resource.kind === "room" &&
+          entry.replyKind !== SubscriptionReplyKind.snapshot
+        )
           throw new Error("Room subscription requires a complete snapshot");
         if (cursor.workspaceId !== workspaceId)
           throw new Error("Foreign view cursor");
@@ -980,7 +988,7 @@ export function createSyncClient(options: SyncClientOptions) {
             const snapshot = { ...entry.viewSnapshot };
             if (
               snapshot.terminalOutput &&
-              entry.replyKind === "delta" &&
+              entry.replyKind === SubscriptionReplyKind.delta &&
               (previous?.workspaceId !== workspaceId ||
                 cursor.terminalGeneration === undefined ||
                 cursor.terminalGeneration !== previous.terminalGeneration ||
@@ -995,7 +1003,7 @@ export function createSyncClient(options: SyncClientOptions) {
                   ? previous.viewSnapshot?.terminalOutput
                   : undefined,
                 snapshot.terminalOutput,
-                entry.replyKind === "delta",
+                entry.replyKind === SubscriptionReplyKind.delta,
               );
             // A replayed terminal interval keeps the cursor of the merged base.
             // Snapshots may reset the offset, and status can change without output.
@@ -1034,7 +1042,7 @@ export function createSyncClient(options: SyncClientOptions) {
       if (
         resource &&
         entry.cursor &&
-        entry.replyKind === "delta" &&
+        entry.replyKind === SubscriptionReplyKind.delta &&
         !entry.transcriptChanges &&
         !entry.transcriptSnapshot &&
         !entry.entityChanges

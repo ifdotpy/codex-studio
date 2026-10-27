@@ -355,45 +355,67 @@ impl ProcessReceipt {
     }
 }
 
-pub(crate) fn schemas() -> Vec<(String, Value)> {
-    let mut generator = schemars::generate::SchemaSettings::draft2020_12()
+fn schema_generator() -> schemars::SchemaGenerator {
+    schemars::generate::SchemaSettings::draft2020_12()
         .for_deserialize()
-        .into_generator();
+        .with(|settings| settings.definitions_path = "/components/schemas".into())
+        .into_generator()
+}
+
+pub(crate) fn schemas() -> Vec<(String, Value)> {
+    let mut generator = schema_generator();
     generator.subschema_for::<ProcessControlRequest>();
     generator.subschema_for::<ProcessActionResult>();
     generator.subschema_for::<ProcessReceipt>();
-    let mut schemas: Vec<_> = generator
+    generator
         .definitions()
         .iter()
         .map(|(name, schema)| (name.clone(), schema.clone()))
-        .collect();
-    for (_, schema) in &mut schemas {
-        references(schema);
-    }
-    schemas
-}
-fn references(value: &mut Value) {
-    match value {
-        Value::Object(map) => {
-            if let Some(Value::String(reference)) = map.get_mut("$ref") {
-                *reference = reference.replace("#/$defs/", "#/components/schemas/");
-            }
-            for value in map.values_mut() {
-                references(value);
-            }
-        }
-        Value::Array(values) => {
-            for value in values {
-                references(value);
-            }
-        }
-        Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) => {}
-    }
+        .collect()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn schema_references_leave_literal_text_untouched() {
+        #[derive(JsonSchema)]
+        struct Child {
+            value: String,
+        }
+        #[derive(JsonSchema)]
+        struct Fixture {
+            /// The literal #/$defs/Child is descriptive text.
+            #[schemars(default = "literal")]
+            text: String,
+            child: Child,
+        }
+        fn literal() -> String {
+            "#/$defs/Child".into()
+        }
+        let instance = Fixture {
+            text: literal(),
+            child: Child {
+                value: String::new(),
+            },
+        };
+        assert_eq!(instance.text, "#/$defs/Child");
+        assert!(instance.child.value.is_empty());
+        let mut generator = schema_generator();
+        generator.subschema_for::<Fixture>();
+        let fixture = &generator.definitions()["Fixture"];
+        assert_eq!(fixture["properties"]["text"]["default"], "#/$defs/Child");
+        assert_eq!(
+            fixture["properties"]["text"]["description"],
+            "The literal #/$defs/Child is descriptive text."
+        );
+        assert_eq!(
+            fixture["properties"]["child"]["$ref"],
+            "#/components/schemas/Child"
+        );
+        assert!(generator.definitions().contains_key("Child"));
+    }
     #[test]
     fn process_command_variants_preserve_raw_legacy_fields() {
         let identity = json!({"key":"key","generation":"generation","agent":"owner","accountKey":"account","epoch":1});

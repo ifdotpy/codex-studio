@@ -1,0 +1,1743 @@
+{
+  "classificationCounts": {
+    "already_typed": 8,
+    "remove_untyped_bag": 21,
+    "retain_opaque_raw": 8,
+    "unresolved_deeper_proof": 10
+  },
+  "classificationLabels": {
+    "already_typed": "T: already typed / no Value family",
+    "remove_untyped_bag": "D: typed boundary decode candidate",
+    "retain_opaque_raw": "R: retain justified raw/opaque boundary",
+    "unresolved_deeper_proof": "U: unresolved; deeper producer/compatibility proof"
+  },
+  "families": [
+    {
+      "classification": "remove_untyped_bag",
+      "compatibility": "Preserve optional params defaults, streaming events, unknown error codes as strings, and uncertainty after any attempted write or malformed reply.",
+      "deletable": "Repeated object/id/result/error presence/type extraction; downstream dict-envelope indexing after a successful decode.",
+      "dynamic": "Frame limits, finite numbers/no bool-as-int, known method admission, request-id correlation, concurrency, cancellation independence, dispatch permissions.",
+      "family": "Guest vsock request/result/error/event envelope",
+      "id": "G01",
+      "owner": "G/service.py:571 (guest protocol); SV/linux_vm_guest.rs:349 (host adapter)",
+      "priority": "P1",
+      "replacement": "One versioned GuestRequest + GuestFrame<Result,Event,Error> contract; direct Deserialize on Rust and generated checked Python boundary decoder.",
+      "trace": "Host call constructs id/method/params at SV/linux_vm_guest.rs:363 -> guest bounded json.loads G/service.py:683 -> request:571/dispatch:433; result/event/error serialized at :625 -> host Value envelope decode :422-450.",
+      "witness": "Round-trip every existing frame branch; malformed/missing-id/error-plus-result; disconnect after send retains unknown."
+    },
+    {
+      "classification": "remove_untyped_bag",
+      "compatibility": "AdminChannelError must preserve unavailable versus outcome_unknown; G/service.py drops only incomplete outer receipt so broker retains effect ownership.",
+      "deletable": "Repeated shape checks and nested response error-code/message indexing.",
+      "dynamic": "Peer UID must be studio; method registry uniqueness; bounds; identity; root/agent authorization; sent-before-write marker.",
+      "family": "Root broker/admin envelope",
+      "id": "G02",
+      "owner": "G/layr_admin.py:137; G/layr_admin_client.py:18",
+      "priority": "P1",
+      "replacement": "Shared broker request and event/result/error union, separate from detached-supervisor control.",
+      "trace": "Service dispatch -> admin_request emits id/method/params :22 -> root broker SO_PEERCRED and json.loads :181-190 -> registry dispatch :120 -> result/error/event -> client :31-46 -> guest outer receipt handler.",
+      "witness": "Disconnected-before-send versus disconnected-after-write; broker persisted receipt replay; streamed event and final result."
+    },
+    {
+      "classification": "retain_opaque_raw",
+      "compatibility": "Unknown request fields participate in fingerprints. Dropping them or normalizing defaults before hashing changes identity. Keep exact method-specific replay behavior.",
+      "deletable": "No whole-payload projection or universal result DTO is justified; only caller envelope duplication may disappear.",
+      "dynamic": "Same identity/different digest refusal; persist pending before effects; NULL response is unknown; sync.mac.apply is the sole RERUN_AFTER_STOP exception.",
+      "family": "Canonical request digest and generic receipt payload",
+      "id": "G03",
+      "owner": "G/common.py:108-145",
+      "priority": "P1",
+      "replacement": "Retain original payload for fingerprint/replay; optionally type outer receipt identity/status separately.",
+      "trace": "Guest/broker method+original params -> sorted compact JSON digest -> SQL pending receipt -> method response JSON -> saved response json.loads :133 -> exact replay.",
+      "witness": "Extension field changes digest; stop between effect and receipt never dispatches again except the explicitly resumable sync method."
+    },
+    {
+      "classification": "remove_untyped_bag",
+      "compatibility": "Do not make one giant closed schema for all provider messages. Preserve native versus stdio transport and lost/unknown states.",
+      "deletable": "Per-handler primitive field extraction and duplicated closed method/action membership after boundary validation.",
+      "dynamic": "Path containment/existence; argv/env count/NUL bounds; disk floor; request/handle association; credential path policy; journal cursor bounds.",
+      "family": "Owned guest command parameters and health projection",
+      "id": "G04",
+      "owner": "G/service.py:174-244,433-569",
+      "priority": "P2",
+      "replacement": "Method-discriminated request DTOs and Health/Attach/Start result projections; keep generic GuestRpc transport extensible.",
+      "trace": "Host GuestRpc method+params -> service dispatch -> launch_config/start_guarded/health/attach/credentials methods -> owned result dict -> host method consumer.",
+      "witness": "Each service dispatch method with omitted/default fields and boundary maxima; wrong action payload refused before effects."
+    },
+    {
+      "classification": "remove_untyped_bag",
+      "compatibility": "Current native bridge intentionally maps lost/rejected exchange to unknown and sanitizes errors; keep that uncertainty and secrecy.",
+      "deletable": "Python hello/response dict probes and result-key indexing; avoid creating a competing protocol enum.",
+      "dynamic": "Protocol version, state-dir/backend ownership, request identity, frame bounds, operator capability.",
+      "family": "Rust native-supervisor envelope consumed by Python",
+      "id": "G05",
+      "owner": "runtime-providers/src/supervisor_protocol.rs:7,147; PR/supervisor_daemon.rs:937; G/native.py:47",
+      "priority": "P1",
+      "replacement": "Consume the existing supervisor owner contract; generated Python envelope/result projections, direct typed Rust frame decode where transport permits.",
+      "trace": "Python hello/action request :55-64 -> Rust handshake typed from_value :944 and action decoder -> Rust response :920-932 -> Python json.loads/id/error/result :60-75.",
+      "witness": "Owner-generated hello/action fixtures plus unsupported version, mismatched request ID, lost response; native message remains unchanged."
+    },
+    {
+      "classification": "retain_opaque_raw",
+      "compatibility": "Unknown provider methods/notifications/errors and future fields must survive; nativeId string or integer excludes bool.",
+      "deletable": "Do not remove external provider fields or force all notifications/errors into the guest's own action enum.",
+      "dynamic": "Generation, operationId/nativeId identity, byte limits, exact blob length, sequence/cursor/offset, exit proof before acknowledgement.",
+      "family": "Native provider message and journal event payloads",
+      "id": "G06",
+      "owner": "G/native.py:170-219,221-271; Rust supervisor journal/provider protocol owners",
+      "priority": "P1",
+      "replacement": "Keep raw message/JSON string/blob payload under a typed transport descriptor.",
+      "trace": "Provider bytes -> Rust supervisor event journal -> guest event_page emits bounded JSON string or chunk descriptor -> eventRead raw bytes/base64 -> host/provider decoder; native.write forwards message object.",
+      "witness": "Unknown provider event survives small and chunked paths byte-for-byte; wrong generation and reordered chunk refused."
+    },
+    {
+      "classification": "unresolved_deeper_proof",
+      "compatibility": "Missing/stale process evidence means lost/unknown, never permission to restart/replay; partial historical records must not silently become live.",
+      "deletable": "Potential removal of scattered field probes only after old-format semantics are specified.",
+      "dynamic": "Fresh PID start identity, boot/session identity, generation, operation existence, refusal to replace live owner, exit evidence before journal deletion.",
+      "family": "Native handle info, lease, and saved exit proof",
+      "id": "G07",
+      "owner": "G/native.py:82-163,221-275; PR/supervisor_identity.rs",
+      "priority": "P1",
+      "replacement": "Named NativeLease/HandleInfo/ExitProof records with generation and process identity; migration/recovery policy needs proof for existing saved records.",
+      "trace": "Rust lease/handles/child_identities/events -> Python read-only SQL/json lease :93/info :128 -> current process identity comparison -> running/exited/lost and responseStatus accepted :243 -> host consumers.",
+      "witness": "Old lease, pid reuse, stale generation, missing exit event with matching/nonmatching exit proof; no restart on decode failure."
+    },
+    {
+      "classification": "remove_untyped_bag",
+      "compatibility": "Control response has no id unlike guest RPC; preserve that protocol. Service adds lost state; old status defaults require compatible decoding.",
+      "deletable": "Raw dict config/control/status access and closed string comparisons; structural checks after typed decode.",
+      "dynamic": "PID/start identity, output bounds, deadlines, fsync/receipt order, partial stdin uncertainty, sequence ordering and exit timing.",
+      "family": "Detached stdio supervisor launch/control/journal/status",
+      "id": "G08",
+      "owner": "G/supervisor.py:18-41,87-131,192; G/service.py:195-316",
+      "priority": "P1",
+      "replacement": "Owned LaunchSpec, SupervisorStatus, Output/Exit event, Write/Stop control union; explicit reason/state enums at this owner.",
+      "trace": "service writes launch.json -> detached Supervisor loads :192 -> subprocess/output events :39 -> status.json -> service status/attach; control JSON :87 -> write/stop receipt -> service.control :246.",
+      "witness": "Launch/control round trips, every terminal reason, partial stdin write then disconnect, process exited before final attach."
+    },
+    {
+      "classification": "unresolved_deeper_proof",
+      "compatibility": "Existing records, missing providerHandle, parent/subpath/default fields, and lost native owners must retain current meaning.",
+      "deletable": "Repeated required field/key lookup and providerHandle/owner/readOnly casts after schema migration.",
+      "dynamic": "UID/GID/root/line/cwd identity, immutable submitted state, readonly authorization, exact handle association and rollback policy.",
+      "family": "Saved agent/line/provider associations",
+      "id": "G09",
+      "owner": "G/layr_agents.py:124-146,224-280,328-369,418-459; G/service.py:75,106-139",
+      "priority": "P1",
+      "replacement": "Versioned AgentAssociation with optional legacy fields and separate live-derived context; define migration before deleting bag handling.",
+      "trace": "line.bind/branch validates project/user/parent -> association JSON -> context/lookup + provider handle equality -> launch/stop/evidence/file actions.",
+      "witness": "Old association fixtures plus moved cwd, wrong project/uid, duplicate handle and missing provider owner; no authority inferred from string shape."
+    },
+    {
+      "classification": "remove_untyped_bag",
+      "compatibility": "Command arguments and environment values remain open strings; codex/claude launch selection is local policy, not an external protocol closure.",
+      "deletable": "Duplicated primitive argv/env/optional limit parsing between launch producers and supervisor consumers.",
+      "dynamic": "Executable/path/environment allowlists, no NUL, cwd containment, agent context, output/deadline limits and process ownership.",
+      "family": "Provider and layr process launch specification",
+      "id": "G10",
+      "owner": "G/service.py:174; G/layr_agents.py:418-478; G/common.py:163",
+      "priority": "P2",
+      "replacement": "One owned LaunchSpec for argv/cwd/env/transport/limits and validated provider launch policy adapter.",
+      "trace": "Agent context+known provider argv/env or layr.exec argv -> launch config -> supervised/native process owner -> provider/exec result.",
+      "witness": "Generated launch fixture consumed by both paths; unknown provider refused by policy, arbitrary permitted argument text preserved."
+    },
+    {
+      "classification": "retain_opaque_raw",
+      "compatibility": "Provider formats may evolve independently; copying opaque bytes avoids destructive normalization.",
+      "deletable": "No provider credential schema or value parsing justified here.",
+      "dynamic": "Bounded files/strings, ownership/mode, no symlink traversal, profile identity, NUL/name restrictions; no secret output.",
+      "family": "Credential files and secret values",
+      "id": "G11",
+      "owner": "G/service.py:credentials.put at 520-569; G/layr_agents.py:418-455; G/project_env.py:41-106",
+      "priority": "P2",
+      "replacement": "Keep credential contents and secret strings opaque; type only filename/profile/envelope metadata.",
+      "trace": "Host credential bytes -> bounded validated relative private paths -> profile copy as line user -> native provider; secret string map -> anonymous FD -> target environment.",
+      "witness": "Unknown credential JSON fields and non-JSON content preserved; bad path/symlink rejected and no values exposed."
+    },
+    {
+      "classification": "remove_untyped_bag",
+      "compatibility": "Feature negotiation and unknown future error strings stay open; any uncertain exchange keeps operation/lease; no retry with fresh phase ID.",
+      "deletable": "dict(response.result), nested error indexing, repeated method-result structural probes.",
+      "dynamic": "Token, frame/chunk/page bounds, request phase identity, deadline, rejection versus unexpected failure distinction.",
+      "family": "Host-exec request/result/error protocol",
+      "id": "G12",
+      "owner": "G/host_exec_protocol.py:1-34 (named owner); G/host_exec.py:59-94; SV/host_exec_service/protocol.rs:1-7",
+      "priority": "P1",
+      "replacement": "Shared method-specific HostExec request and response variants; Rust direct Deserialize plus generated Python decoder from one owner.",
+      "trace": "Guest phase request_key -> token/id/method/params frame :68 -> Rust host service -> owned result/error -> Python :75-79 -> operation flow.",
+      "witness": "Every method response plus malformed result, unknown code/feature and lost response after command start."
+    },
+    {
+      "classification": "remove_untyped_bag",
+      "compatibility": "Preserve older host lack of generationNumber and optional prime/mode/batch/clone features.",
+      "deletable": "Unstructured steps.get('leased')/get('run') and operation field dictionary indexing.",
+      "dynamic": "Mark attempted run before send; only explicit sync_conflict proves no start; hold lease after ambiguous run; collect before release.",
+      "family": "Host command phase state and acquired operation",
+      "id": "G13",
+      "owner": "G/host_exec.py:145-174,215,317-329",
+      "priority": "P1",
+      "replacement": "Named ExecutionProgress / AcquiredOperation; phase enum expressing Leased, RunMayHaveStarted, Collected.",
+      "trace": "Acquire returns operation -> steps.leased -> sync/manifest -> steps.run set before call -> attach/collect/release; error handler releases only pre-run proven state.",
+      "witness": "Failure at each phase, especially after send-before-reply; no premature release or second command."
+    },
+    {
+      "classification": "unresolved_deeper_proof",
+      "compatibility": "Legacy generation folders intentionally retained; missing optional paths lists are defaults; corrupt state must not authorize cleanup.",
+      "deletable": "Raw json loads and repeated record key/default probes once historical formats are proven.",
+      "dynamic": "Lease operation match, in-use/deleting exclusion, current line state, held-tree checks, symlink-safe cleanup; delete only older numbered generations.",
+      "family": "Host slot lease/held/path/collection persistence",
+      "id": "G14",
+      "owner": "G/host_exec_slot.py:72-161,219-378",
+      "priority": "P1",
+      "replacement": "Versioned SlotLease/HeldState/SlotPaths/Collection records; compatibility for legacy unnumbered generations first.",
+      "trace": "Prepare validates agent+slot/generation -> lease.json/held/paths.json/manifest/collect records -> subsequent slot.* loads -> collect/forget/stale cleanup.",
+      "witness": "Legacy generation and missing paths fields; stale numeric generation with active lease; corrupt held record refuses destructive action."
+    },
+    {
+      "classification": "remove_untyped_bag",
+      "compatibility": "Manifest SHA must preserve Python json.dumps(sort_keys=True) byte grammar; changing whitespace/escaping/default omission changes handshake.",
+      "deletable": "Repeated kind/key/number string branches and dynamic field access after decode.",
+      "dynamic": "Path containment/casefold/Unicode conflicts, symlinks, file identity and content hash, page size/count, monotonic cursor, exact transfer lengths.",
+      "family": "Host content manifest entry union",
+      "id": "G15",
+      "owner": "G/host_exec_protocol.py:118-176; SV/host_exec_service/protocol.rs:1-7",
+      "priority": "P1",
+      "replacement": "Tagged ManifestEntry (File bytes/mode/hash, Link target, Directory), typed page map and nullable cursor.",
+      "trace": "Guest scan -> file/link/directory dict entries -> manifest paging/hash -> host reconciliation -> entry/chunk/mode/commit/collect -> rescanned manifest.",
+      "witness": "Same tree manifests/hash in both languages, Unicode/link/empty dir, wrong hash, page split and unknown kind refusal."
+    },
+    {
+      "classification": "remove_untyped_bag",
+      "compatibility": "Corrupt/nonobject cache currently degrades to empty/recompute, not a fatal operation; retain that compatibility.",
+      "deletable": "Tuple length and slot-type access within cache consumers after decode.",
+      "dynamic": "Fresh file stamps and RACY_NS threshold, file/hash validation and symlink policy.",
+      "family": "Host-exec hash cache tuple",
+      "id": "G16",
+      "owner": "G/host_exec_protocol.py:87-117",
+      "priority": "P2",
+      "replacement": "Named HashCacheEntry and typed cache map; invalid cache entry is a miss.",
+      "trace": "load_hashes file -> list [size,mtime_ns,inode,ctime_ns,sha] -> file_hash stamp/racy-age validation -> scan or recomputed digest -> saved cache.",
+      "witness": "Old/malformed cache and same-clock rewrite both recompute; valid stable cache yields identical manifest."
+    },
+    {
+      "classification": "remove_untyped_bag",
+      "compatibility": "Do not convert merge conflicts into schema failures or remove semantic merge decisions; raw file bytes remain bytes.",
+      "deletable": "Action-string cascades and result/error shape indexing; duplicated field primitive parsing.",
+      "dynamic": "Project user/root identity, byte/count/hash limits, held/current state, three-way merge conflicts/kept paths and safe filesystem traversal.",
+      "family": "Unprivileged slot helper I/O and merge result",
+      "id": "G17",
+      "owner": "G/host_exec_slot.py:161; G/host_exec_slot_io.py:179-262",
+      "priority": "P2",
+      "replacement": "Owned helper action union and results, sharing manifest/entry owner from G15.",
+      "trace": "Root broker emits action-specific JSON -> user-context helper run stdin -> manifest/read-many/entry/chunk/commit/collect -> result/error JSON -> broker consumers.",
+      "witness": "Every helper action projection and file/link/delete conflict; wrong owner/root and truncated chunk."
+    },
+    {
+      "classification": "remove_untyped_bag",
+      "compatibility": "Do not close external status strings or require unused fields; older Layr flags/exit behavior remain compatibility concern.",
+      "deletable": "Unchecked status[field] / ['ignored'] shape assumptions; redundant collection type probes after decode.",
+      "dynamic": "Read-only versus mutating command policy, placeholder cleanup and path safety; dirty check itself remains essential.",
+      "family": "Layr status JSON consumed by guest",
+      "id": "G18",
+      "owner": "Layr src/cmd/work.rs:68-81 (producer); G/mac_sync.py:146; G/host_exec_slot_io.py:65-103",
+      "priority": "P2",
+      "replacement": "Open typed status projection of consumed collections; preserve unconsumed extension fields if forwarding.",
+      "trace": "Layr status --json produces staged/unstaged/untracked/ignored/conflicts/overlaps -> Python json.loads -> dirty decision or ignored-path restoration helper.",
+      "witness": "Current producer fixture with extra fields and malformed consumed collections; cleanup still occurs if decode fails."
+    },
+    {
+      "classification": "remove_untyped_bag",
+      "compatibility": "Old guest unsupported-method behavior and missing optional fields must survive. Error code strings remain extensible.",
+      "deletable": "Repeated wire object/primitive checks and Rust get/as_array/as_u64 envelope extraction after decode.",
+      "dynamic": "Authenticated peer UID, actor context, URL policy, current card/lease, exact callback, wait/page cursor and frame limits.",
+      "family": "Browser shim and guest method wire records",
+      "id": "G19",
+      "owner": "G/browser_bridge.py:284-337,437-518; G/studio_browser.py:22-48; SV/browser_cards.rs:583",
+      "priority": "P1",
+      "replacement": "Shared versioned OpenRequest/OpenReply, WaitPage, AnswerRequest, CallbackResult and closed local decision type.",
+      "trace": "Shim v1/url/session -> guest peer-UID actor -> submit queue item; Rust browser.wait -> items/next at :598 -> apply; browser_answer.rs:258/637 -> answer/callback -> guest results.",
+      "witness": "Shim and host consume shared fixtures; old unsupported bridge, wrong UID, expired card and unknown optional field."
+    },
+    {
+      "classification": "unresolved_deeper_proof",
+      "compatibility": "Do not default unreadable/old records to approved or refresh a lease without proof; unknown saved state needs conservative handling.",
+      "deletable": "Mutable Any dictionaries, spread updates and state-string comparisons after validated migration.",
+      "dynamic": "Listener ownership/freshness, TTL, relay budget saved before request, joined-leader completion, approval and exact state transitions.",
+      "family": "Browser persisted item/lease/state transitions",
+      "id": "G20",
+      "owner": "G/browser_bridge.py:233-239,353-420,459-586",
+      "priority": "P1",
+      "replacement": "Versioned BrowserQueue/BrowserItem/Lease with explicit local state enum and typed partial update methods; historical record proof needed first.",
+      "trace": "Queue creates owned item :392 -> atomic {seq,items} :417 -> restart load :233 -> answer/callback/check/listener/joined-state consumers.",
+      "witness": "Saved pending/approved/opened/joined/closed variants including absent legacy lease; listener reused, expiry and crash after relay counter persist."
+    },
+    {
+      "classification": "already_typed",
+      "compatibility": "Provider URL/query values are open external strings; unknown domains and policy failures must retain current refusal behavior.",
+      "deletable": "None from typing alone.",
+      "dynamic": "HTTPS/loopback restrictions, port range, provider-host/private-IP policy, exact redirect/state matching and callback sanitization.",
+      "family": "Browser URL policy projections",
+      "id": "G21",
+      "owner": "G/browser_policy.py:49,64,72,140-155,188-277",
+      "priority": "P2",
+      "replacement": "Keep existing typed policy projections; no Value-removal proposal for these.",
+      "trace": "External URL/query -> classify/provider/callback parsing -> Redirect/StartPage/Provider/Callback dataclasses -> browser queue/answer.",
+      "witness": "Existing policy fixture families can witness URL, port, state and pasted-callback limits; proposed only, not run."
+    },
+    {
+      "classification": "retain_opaque_raw",
+      "compatibility": "Provider callback HTML/text/binary and SMB protocol evolution must pass through without normalization.",
+      "deletable": "No application JSON decoder or closed content schema at these relays.",
+      "dynamic": "Peer/listener identity, callback lease/target/header validation, HTTP size/deadline and tunnel lifetime.",
+      "family": "Browser HTTP relay and SMB byte tunnel",
+      "id": "G22",
+      "owner": "G/browser_bridge.py:160-230,491-518; G/share_bridge.py:1-63",
+      "priority": "P1",
+      "replacement": "Retain opaque body/stream bytes with typed transport metadata.",
+      "trace": "Authorized callback target -> bounded local HTTP response -> status/contentType/base64 body -> host forwarder; vsock stream -> SMB stream in share_bridge.",
+      "witness": "Non-JSON body/binary bytes unchanged; oversized body and unauthorized callback refused."
+    },
+    {
+      "classification": "unresolved_deeper_proof",
+      "compatibility": "Existing reboot/current/in_place routing and provision-before-key behavior must remain; decode does not authorize in-place update. The module comment describes a host signer, but that comment is not proof of a reachable host producer at this revision.",
+      "deletable": "Repeated params.get/type checks and plan path string comparisons after decoder.",
+      "dynamic": "Path allowlist, actual installed hashes, chunk offset/size/digest, operation identity, disk/write bounds and authorization signature.",
+      "family": "Guest update method inputs and plan/status projections; caller gap",
+      "id": "G23",
+      "owner": "G/guest_update.py:53-95,119-177,177-224",
+      "priority": "P1",
+      "replacement": "Local Update request union, Manifest map<Path,Sha256>, StageChunk and PlanResult are plausible; establish actual caller/host decoder and compatibility before declaring an end-to-end removal.",
+      "trace": "Guest METHOD registry/service forwarding -> broker dispatch -> update.plan/stage/apply/status handlers -> owned result. Pinned workspace grep found no production caller literal update.plan/update.apply outside guest, so host producer integration is not proven.",
+      "witness": "All plan branches; out-of-order/mismatched chunks; altered manifest; versioned/unknown optional response fields."
+    },
+    {
+      "classification": "retain_opaque_raw",
+      "compatibility": "Unknown provision metadata participates in equality. Types must not silently ignore it or substitute defaults before checking.",
+      "deletable": "No dropping extension payload fields or reserializing with a different canonical grammar.",
+      "dynamic": "Signature verification, path/hash bounds, full equality and safe state persistence.",
+      "family": "Signed update canonical input and provision payload identity",
+      "id": "G24",
+      "owner": "G/guest_update.py:70-73,135-149",
+      "priority": "P1",
+      "replacement": "Keep exact canonical signed bytes and full payload record. Typed manifest wrapper may validate shape without changing signed representation.",
+      "trace": "Incoming update request operation+files -> guest signature() canonical sorted compact JSON HMAC :70-73 -> apply verification; opaque payload -> saved-record full JSON equality at plan :143 -> reboot decision. Host signer implementation not established here.",
+      "witness": "Extra payload field forces same current classification as before; canonical-byte fixture identical across host/guest; tampered manifest refused."
+    },
+    {
+      "classification": "unresolved_deeper_proof",
+      "compatibility": "Malformed records currently skipped by unfinished scan; migration must specify preservation rather than silently treating unfinished work complete.",
+      "deletable": "Raw status dictionaries and ad hoc stage/default probes after migration.",
+      "dynamic": "Persist-before-write order, superseding old work, drain/busy checks, restarted process proof, no active-provider restart through an in-place shortcut.",
+      "family": "Update durable stages and restart completion evidence",
+      "id": "G25",
+      "owner": "G/guest_update.py:155-170,203-309,514-539",
+      "priority": "P1",
+      "replacement": "Versioned UpdateStatus with stage enum, changed/restarts/error/times; distinguish absent/legacy/unrecognized records.",
+      "trace": "Apply writes status stage before installation -> install/restart task updates -> later unfinished() recovers changed files -> restart completion checks scheduled time/process start.",
+      "witness": "Crash at writing/install_failed/restart_failed/scheduled; broker start older/newer than scheduled time; unknown historical stage."
+    },
+    {
+      "classification": "remove_untyped_bag",
+      "compatibility": "State is currently an external string, not evidence for closing future values. Unknown states remain refused for upgrade; optional store/upgrade remain nullable.",
+      "deletable": "Repeated isinstance/descriptor field extraction; only structural checks covered by decoder.",
+      "dynamic": "Compatible/state/store/format relationships; metadataOnly, strictly increasing format and target equality; daemon magic/size/format.",
+      "family": "Layr store-version report and daemon hello",
+      "id": "G26",
+      "owner": "Layr src/store_version.rs:12,136-150; G/guest_update.py:321-356,427",
+      "priority": "P1",
+      "replacement": "Reuse vendor owner's Version/Upgrade/Report as an open consumed projection; share decoder/parity rather than inventing fields.",
+      "trace": "Layr typed Version/Upgrade/Report -> store-version --json -> layr_report manual validation -> ready/permit; daemon bounded hello -> expected-format match.",
+      "witness": "Actual serialized Report fixtures for absent/empty/compatible/legacy/incompatible plus future state; no upgrade from bool-as-int format."
+    },
+    {
+      "classification": "unresolved_deeper_proof",
+      "compatibility": "Do not ignore unknown pending-intent fields before equality; old receipt formats need operator-visible conservative treatment.",
+      "deletable": "Raw receipt key/type probes only after compatibility proof.",
+      "dynamic": "Existing unfinished receipt blocks rerun; exact request/root/target match; binary digest and store report; rollback/start proof; no inference that failed reply means no upgrade.",
+      "family": "Layr pending activation and store-upgrade receipts",
+      "id": "G27",
+      "owner": "G/guest_update.py:379-424,460-511",
+      "priority": "P1",
+      "replacement": "Typed InstallIntent/UpgradeReceipt stages with explicit historical loading rules; retain original identity for equality.",
+      "trace": "Verified installer source identity -> pending intent/binary hash -> staged binary -> durable pending upgrade receipt before command -> fresh compatible report -> complete -> daemon hello and swap.",
+      "witness": "Crash before/after upgrade command, digest mismatch, different target/root, rollback failure and already-compatible matching receipt."
+    },
+    {
+      "classification": "remove_untyped_bag",
+      "compatibility": "Manifest extensions may be ignored only outside canonical files map; installed older manifests must keep current accepted shape.",
+      "deletable": "Unchecked manifest key/value extraction and revision primitive shape checks after decoder.",
+      "dynamic": "Per-file bytes hash, path containment, aggregate hash, revision format and exact build identity remain essential.",
+      "family": "Vendoring manifest consumed by embedded installer Python",
+      "id": "G28",
+      "owner": "workspaces/tooling/apps/repository-checks/update-vm-layr.py:20-50; G/install-layr.sh:21-38",
+      "priority": "P2",
+      "replacement": "Named SourceManifest shared by producer and embedded installer boundary; preserve files map canonical encoding.",
+      "trace": "Vendor updater writes revision/tree/sourceSha256/files -> installer json.loads -> verifies each file and canonical files digest -> revision/build/stage identities.",
+      "witness": "Producer fixture verifies both source identity/revision outputs; altered file/map/hash fails without executing install."
+    },
+    {
+      "classification": "remove_untyped_bag",
+      "compatibility": "Existing SQL columns/defaults and cached result replay remain; non-receiving/non-applied state must not become permission to retry application.",
+      "deletable": "Numeric tuple indexing (including row[7]/row[8]), closed state/mode string branches and repeated primitive checks after decode.",
+      "dynamic": "Exact id/content match, chunk sequence/hash/offset, disk floor, fsync, durable applying/seeding before effects, nonterminal ambiguity.",
+      "family": "Upload SQL row, state/mode and request shapes",
+      "id": "G29",
+      "owner": "G/upload.py:184-290; G/service.py:317-405",
+      "priority": "P1",
+      "replacement": "Named UploadRecord, UploadState, UploadMode and Begin/Chunk/Commit request variants.",
+      "trace": "begin/chunk parameters -> uploads SQL tuple -> row positional consumers -> commit/seed/apply state transitions -> saved applied result -> duplicate commit replay.",
+      "witness": "Duplicate chunk exact/mismatched content, commit after partial applying, old default full mode, response lost after receipt."
+    },
+    {
+      "classification": "remove_untyped_bag",
+      "compatibility": "Decode failure after applying marker remains outcome_unknown; keep delta/full semantics and do not infer no change from malformed worker output.",
+      "deletable": "Dict result/error indexing, bytes/applied primitive checks after one boundary decode.",
+      "dynamic": "Tar member/expansion bounds, descriptor nofollow, relative delete paths, disk floor, root check, exact applied=true and worker exit code.",
+      "family": "Upload extraction/apply/delete helper envelopes",
+      "id": "G30",
+      "owner": "G/upload.py:96-180,292-309; G/upload_apply.py:16-90; G/upload_delete.py:1-24; G/service.py:317-361",
+      "priority": "P1",
+      "replacement": "Owned ExtractResult, ApplyRequest/Result and DeleteRequest; shared GuestError projection.",
+      "trace": "Service worker argv/JSON -> extraction byte-count/error or Apply/Delete request -> helper JSON -> service validates applied/error -> upload receipt.",
+      "witness": "Truncated helper reply after effect; applied:false, error, nonzero exit; unsafe archive/link/delete path refused."
+    },
+    {
+      "classification": "remove_untyped_bag",
+      "compatibility": "Token is live consistency evidence, not a schema guarantee; preserve byte encoding and legacy token representation.",
+      "deletable": "Method-string and repeated field primitive extraction in worker and result consumers.",
+      "dynamic": "Contained regular file/no symlink; before/after fstat token, bounded offset/read size, stable hash and exact identity.",
+      "family": "File stat/read worker contract",
+      "id": "G31",
+      "owner": "G/files.py:1-48; G/service.py:407; G/layr_agents.py:478",
+      "priority": "P2",
+      "replacement": "StatRequest/ReadRequest and StatResult/ReadResult with FileToken record.",
+      "trace": "Guest file method+context -> helper JSON stdin -> stat/read -> result/error -> guest envelope -> host consumer.",
+      "witness": "File replacement between stat/read, wrong token, changed during hash, missing path and max-sized read."
+    },
+    {
+      "classification": "unresolved_deeper_proof",
+      "compatibility": "Missing folder-modes currently means empty/default behavior; old markers must not permit duplicate import or overwrite main.",
+      "deletable": "Raw marker key access and mixed result bags after migration.",
+      "dynamic": "Project owner and root; completed upload identity; immutable expected state; frozen source/private snapshot; nofollow and bottom-up modes.",
+      "family": "Project policy, seed/import markers and directory modes",
+      "id": "G32",
+      "owner": "G/layr_projects.py:69-92,119-252,267; G/upload.py:96-180",
+      "priority": "P2",
+      "replacement": "Named ProjectPolicy, SeedReceipt, ImportReceipt, FolderModes; old markers/defaults need explicit loading policy.",
+      "trace": "Project creation/seed/import and archive extraction -> policy/seed/import JSON markers and folder-modes map -> owner/context/duplicate import/folder-mode restoration.",
+      "witness": "Old/missing marker/modes fixtures, repeated import identity, changed main and symlink replaced between staging/application."
+    },
+    {
+      "classification": "remove_untyped_bag",
+      "compatibility": "Existing unnamed export records use project default name; preserve that fallback and SMB transport openness.",
+      "deletable": "Record name/default fields and local status-string comparisons after decode.",
+      "dynamic": "Exact password/install identity, project name syntax/casefold uniqueness/reserved names, read-only mount inode validation.",
+      "family": "Share export records and status",
+      "id": "G33",
+      "owner": "G/layr_share.py:51-163",
+      "priority": "P2",
+      "replacement": "ExportRecord and ShareStatus with local state enum and typed project-name map.",
+      "trace": "Configure identity and project -> export record -> restore/status -> Samba configuration; status state unconfigured/ready/failed -> guest result.",
+      "witness": "Legacy export without display name, duplicate normalized name, changed mount target and missing config."
+    },
+    {
+      "classification": "remove_untyped_bag",
+      "compatibility": "Support UUID and legacy hex state IDs; preserve file/link/absent and optional modeChanged; unknown host/guest extensions should not collapse to success.",
+      "deletable": "Repeated params.get/type checks and host as_str/as_object/default probes on these owned fields.",
+      "dynamic": "State ID resolution as project owner (syntax alone not authority), upload/root/path checks, per-project locking, merge state/expected head, bounded entries/chunks/cursor, readOnly acknowledgement.",
+      "family": "Mac-sync method requests/results and entry descriptions",
+      "id": "G34",
+      "owner": "G/mac_sync.py:32-54,87-91,186-258,321-324,474-566; SV/mac_sync/round.rs:1310-1361,1755-1780",
+      "priority": "P1",
+      "replacement": "Method DTOs, SyncEntry union, ApplyResult with local MergeOutcome, HashPage, ReadResult and HeadResult; shared consumed contract with Rust direct Deserialize.",
+      "trace": "Host params -> broker dispatcher -> guest sync methods -> file/link/absent descriptions and apply/head/hashes/read outputs -> host raw result field extraction and merge reconciliation.",
+      "witness": "Current producer results deserialize on host; preview must acknowledge readOnly; malformed merge/state/items refused without losing pending operation."
+    },
+    {
+      "classification": "unresolved_deeper_proof",
+      "compatibility": "Only apply has generic restart rerun exemption; do not extend it to handoff/worktree. Missing/unknown result cannot authorize repeat side effects.",
+      "deletable": "Raw receipt/pending field probes after old-format policy; no deletion of replay/receipt machinery.",
+      "dynamic": "Exact identity and payload, snapshot/fold cleanup, protected main fast-forward, dirty-line/reset ownership, result persist before upload removal.",
+      "family": "Mac-sync resumable apply/handoff/worktree receipts",
+      "id": "G35",
+      "owner": "G/mac_sync.py:253-333,346-472; G/common.py:115; SV/mac_sync/round.rs:1723-1767",
+      "priority": "P1",
+      "replacement": "Typed versioned method-specific receipts and pending record, retaining original request body for replay; recovery proof needed before strict migration.",
+      "trace": "Host persists exact operation/params/hashes -> apply call -> guest receipt lookup -> snapshot/merge -> saved result -> host clears pending only on proven refusal or settlement; handoff/worktree have their own receipt results.",
+      "witness": "Lost reply at each persisted stage; same operation replays same result; stale upload, refused merge and unknown outcome preserve appropriate pending state."
+    },
+    {
+      "classification": "already_typed",
+      "compatibility": "Current reader does not require version; imposing strict version without historical evidence would narrow accepted files.",
+      "deletable": "No value parsing or removal of name/NUL/size checks.",
+      "dynamic": "Generated maximum secret bytes, reserved name/prefix policy, no overriding protected environment, private ownership and bounded FD input.",
+      "family": "Project secret name/value map",
+      "id": "G36",
+      "owner": "G/project_secrets.py:31-85; G/project_env.py:41-106",
+      "priority": "P2",
+      "replacement": "Keep dict[str,str] validated map and opaque secret strings; a named outer record is a small follow-up only.",
+      "trace": "set/remove validates names/values -> {version:1,secrets:map} -> read_secrets checks object/string map -> anonymous FD -> exec environment parser checks strings.",
+      "witness": "Names/UTF-8 byte limits/empty values and missing old file; malformed map does not enter environment."
+    },
+    {
+      "classification": "remove_untyped_bag",
+      "compatibility": "Missing signing key/endpoint and old status fields remain optional. Vendor allows broader endpoints than guest; do not replace guest policy with vendor structural types.",
+      "deletable": "Raw config/status field indexing and primitive shape tests after decode.",
+      "dynamic": "Recipient/bucket/region/prefix/key syntax, seed length, endpoint policy, private file mode; per-project push lock and VAULT_FIELDS writer reset.",
+      "family": "Vault configuration and local push status",
+      "id": "G37",
+      "owner": "G/vault_admin.py:31-55,73-132; layr-desk/crates/layr-desk/src/push.rs:36-51,151",
+      "priority": "P2",
+      "replacement": "Shared VaultConfig projection and local PushStatus; generated parity with typed vendor Config, preserving guest-specific tighter policy.",
+      "trace": "Broker configure -> validated config.json -> Python load -> stdin JSON to typed vendor Config -> local lastAttempt/lastError/lastPush status -> guest result.",
+      "witness": "Unsigned/signed config fixtures, key rotation vs access-key rotation, old status without fields; no secrets appear in output."
+    },
+    {
+      "classification": "retain_opaque_raw",
+      "compatibility": "Vendor owns record canonical form and schema. Unknown fields and optional summary metrics remain preserved.",
+      "deletable": "No closure of writer side/state/attempt or deletion of external metadata.",
+      "dynamic": "Require actual boolean pushed, successful process result, private state and bounded error text; do not infer remote nonexecution from process failure.",
+      "family": "External vault writer record and extensible push summary",
+      "id": "G38",
+      "owner": "layr-desk desk-core/src/writer.rs:49-91; layr-desk src/push.rs:184; G/vault_admin.py:88-95,168-175",
+      "priority": "P2",
+      "replacement": "Retain external record/summary extensions; a typed pushed projection is appropriate without claiming guest owns the whole schema.",
+      "trace": "Vendor Record persisted as writer.json; typed Summary serialized by push -> Python JSON -> pushed boolean consumed, complete summary/last record forwarded to host.",
+      "witness": "Future writer/summary fields survive guest round trip; missing/nonboolean pushed rejected; process timeout stays unproven remote outcome."
+    },
+    {
+      "classification": "already_typed",
+      "compatibility": "RequestTool serde aliases and Other preserve legacy/open tool names; missing receipt outcome stays Unknown.",
+      "deletable": "No core Value layer to remove; serde derives already present under feature.",
+      "dynamic": "Attempt/epoch/generation/revision identity, event replay, nonexecution/applied proof, receipt presence and legal transition checks.",
+      "family": "Operation identity/state/events/reservation/settlement core",
+      "id": "O01",
+      "owner": "O/lib.rs:22-344,390-437; O/reservation.rs:13-107,183; O/settlement.rs:13-80; SV/tool_requests/admission.rs:8; lifecycle.rs:136",
+      "priority": "P1",
+      "replacement": "Existing newtypes/enums/structs are the named domain owner; keep Rust core. Value belongs to adapters, not this pure crate.",
+      "trace": "Runtime service validated persisted record -> typed State/ReservationInput/SettlementInput -> decide/transition -> typed intents -> adapter transaction persists result.",
+      "witness": "Existing source witnesses cover transition and reservation/settlement decisions; no tests executed in this census."
+    },
+    {
+      "classification": "unresolved_deeper_proof",
+      "compatibility": "One actual producer was deeply verified, not every table entry. Preserve exact legacy wording semantics; no prefix/substr inference or blanket error=>not-applied.",
+      "deletable": "Potentially delete English-text equality allowlist and first-text parsing only after every producer/effect boundary and historical receipt rule is traced.",
+      "dynamic": "Positive no-effect proof, committed receipt handling, request identity, read-only status; any unknown wording or tool remains Unknown.",
+      "family": "Exact error-text table used as nonexecution evidence",
+      "id": "O02",
+      "owner": "O/settlement.rs:160-264; SV/tool_requests/lifecycle.rs:142-177; SV/work_write.rs:2715-2740",
+      "priority": "P1",
+      "replacement": "Structured owned PreExecutionRejection/NonExecutionProof from handlers; retain legacy exact-text adapter until all allowlisted producers are proven.",
+      "trace": "Work submit checks owner before effect and returns exact rejection at work_write:2725 -> tool result inputText -> lifecycle first_error -> is_exact_rejection -> NotApplied; analogous table covers other managed tools.",
+      "witness": "For every allowlisted text: source-owned preeffect producer witness plus post-effect error with identical-looking text must remain Unknown; committed/absent receipt matrix."
+    },
+    {
+      "classification": "already_typed",
+      "compatibility": "Keep CLI flag text and arbitrary path arguments open; wrapper does not own migration semantics.",
+      "deletable": "None. Argument forwarding is intentional.",
+      "dynamic": "Binary existence and authoritative Rust migration validation/receipt policy.",
+      "family": "Native-Layr migration launcher",
+      "id": "S01",
+      "owner": "apps/native-layr/codex_layr_native_migration.py:1-35; apps/runtime-server/src/operator_cli/native_layr.rs",
+      "priority": "P2",
+      "replacement": "Keep thin argv delegation; no intermediate JSON/Value/state bag.",
+      "trace": "CLI argv -> help/env/which binary selection -> execv(runtime-server native-layr migrate argv) -> Rust CLI parser -> native migration owner.",
+      "witness": "Source trace proves delegation only; proposed fixture verifies argv ordering/help; no migration execution."
+    },
+    {
+      "classification": "already_typed",
+      "compatibility": "Kernel ABI numeric constants have distinct purpose/units; do not merge equal constants or close unknown errno values.",
+      "deletable": "None from typing.",
+      "dynamic": "Positive pgid and actual group ownership before syscall, OS errno handling.",
+      "family": "Process-group I/O priority syscall",
+      "id": "S02",
+      "owner": "runtime-priority-sys/src/lib.rs:1-29; PR/child_priority.rs:87",
+      "priority": "P2",
+      "replacement": "Retain typed syscall wrapper; no JSON or string-domain replacement.",
+      "trace": "Runtime child-priority owner verifies process group -> positive i32 group -> typed scalar syscall wrapper -> best-effort Result.",
+      "witness": "Source-only ownership/ABI trace; proposed invalid/foreign group fixture without changing active processes."
+    },
+    {
+      "classification": "already_typed",
+      "compatibility": "Unsupported/failed evidence cannot prove process death/ownership; retain unknown OS statuses and platform cfg.",
+      "deletable": "None; exact structure-length/PID checks are semantic ABI validation.",
+      "dynamic": "PID positive, byte-size/PID match, table growth bounds, ESRCH versus permission failure, fresh start time and boot identity.",
+      "family": "Darwin process-info and boot identity projection",
+      "id": "S03",
+      "owner": "runtime-proc-sys/src/lib.rs:29-137,188-218; PR/supervisor_identity.rs:110,141,335,352; PR/pty_host.rs:576",
+      "priority": "P1",
+      "replacement": "Already typed safe wrapper over ABI. Kernel status u32 is deliberately open; is_zombie is a predicate.",
+      "trace": "libproc/sysctl returns bytes -> BsdInfo typed fields / bounded pid vector / validated boot UUID -> supervisor/PTY identity comparisons.",
+      "witness": "Existing inline test region 220-276 is counted separately in caveat; proposed truncated ABI and reused-PID evidence fixtures, not live calls."
+    },
+    {
+      "classification": "retain_opaque_raw",
+      "compatibility": "Do not assume UTF-8 or close environment/argument values; future ABI changes require parser proof.",
+      "deletable": "No serde/JSON model is applicable.",
+      "dynamic": "Kernel length bounds, NUL/record layout parsing, PID identity and permissions.",
+      "family": "Kernel process argument blob",
+      "id": "S04",
+      "owner": "runtime-proc-sys/src/lib.rs:140-186; PR/provider_shared.rs:196,222",
+      "priority": "P2",
+      "replacement": "Retain raw bounded OS record at syscall boundary; typed interpretation belongs to its consuming ABI parser.",
+      "trace": "sysctl process argument record -> bounded Vec<u8> -> provider_shared ABI-specific argument/environment parser.",
+      "witness": "Binary/NUL/non-UTF8 fixtures and malformed length; no reads of live process environments."
+    },
+    {
+      "classification": "retain_opaque_raw",
+      "compatibility": "Raw stderr and package/kernel text are external; avoid treating successful parse as proof an install or runtime works.",
+      "deletable": "No structural JSON checks in these paths to delete.",
+      "dynamic": "Deadline/output/error caps, child process-group cleanup, install prerequisites, native format/mount checks and command status.",
+      "family": "Deadline byte pump and platform installer text interfaces",
+      "id": "S05",
+      "owner": "G/deadline.py:9-77; G/rosetta.py:47-49,111-150; G/install.sh:1-70; G/install-codex-sandbox.sh:1-17",
+      "priority": "P2",
+      "replacement": "Keep byte transport and external CLI/kernel grammar; no Value family. Local CLI branch set is already explicit.",
+      "trace": "Service worker JSON or arbitrary bytes -> deadline byte pump -> child output/status; installer argv and platform command/kernel text -> bounded parser -> provisioning control.",
+      "witness": "Source coverage only; proposed byte-pump EOF/timeout and fixture text parsing, no install/network/system commands executed."
+    },
+    {
+      "classification": "already_typed",
+      "compatibility": "Generated file is excluded from handwritten findings; JSON tool contract is metadata, not mistakenly omitted source.",
+      "deletable": "None unless a future shared decoder demonstrably subsumes a repeated structural check.",
+      "dynamic": "Runtime bounds still apply even when numeric constants are generated.",
+      "family": "Generated shared values and sign-in metadata owner",
+      "id": "S06",
+      "owner": "SC/contracts.rs:1357 -> G/shared_values_generated.py:1-12; G/sign_in_contract.json:2",
+      "priority": "P2",
+      "replacement": "Consume existing owner/generated contract; avoid another constant/schema copy.",
+      "trace": "Schema owner generates guest constants -> guest secret/update/browser/Rosetta consumers; sign-in metadata owner -> Rust catalog/sign_in result parity sources.",
+      "witness": "Existing parity witness locations are source evidence only; proposed regenerate/parity in future authorized change."
+    },
+    {
+      "classification": "already_typed",
+      "compatibility": "Python must match Rust start identity encoding exactly; boot text stays externally owned.",
+      "deletable": "None; syntax and fresh identity checks remain essential.",
+      "dynamic": "Positive PID excluding bool; proc-field location; zombie/dead distinction; nonnegative ticks; missing/invalid identity cannot prove ownership.",
+      "family": "Linux native process start identity",
+      "id": "G39",
+      "owner": "PR/supervisor_identity.rs (ProcStat.start_identity); G/native_identity.py:1-28",
+      "priority": "P1",
+      "replacement": "Keep named owner encoding and typed int -> optional string helper; no Value conversion or arbitrary closed enum.",
+      "trace": "Kernel proc-stat/boot-id text -> checked PID/start ticks/zombie projection -> linux:<boot>:<ticks> -> native.py lease/child identity comparisons.",
+      "witness": "Fixture stat with spaces/parentheses, zombies, malformed ticks, missing boot and reused PID; no live process reads."
+    }
+  ],
+  "guestMethodRegistry": {
+    "interpretation": "READ_METHODS is the source owner's receipt routing policy; it includes resumable operations and must not be reinterpreted as a pure-effect classification.",
+    "methodCount": 65,
+    "methods": [
+      "agent.context",
+      "agent.release",
+      "browser.answer",
+      "browser.callback",
+      "browser.close",
+      "browser.submit",
+      "browser.wait",
+      "credentials.put",
+      "exec",
+      "file.read",
+      "file.stat",
+      "handoff.ensure",
+      "health",
+      "host.configure",
+      "host.exec",
+      "layr.credentials.sync",
+      "layr.exec",
+      "layr.file.read",
+      "layr.file.stat",
+      "layr.health",
+      "layr.provider.list",
+      "layr.provider.rpc",
+      "layr.provider.start",
+      "layr.provider.stop",
+      "line.bind",
+      "line.branch",
+      "line.evidence",
+      "line.merge",
+      "line.remove",
+      "line.save",
+      "line.status",
+      "project.ensure",
+      "project.exec",
+      "project.import",
+      "project.seed",
+      "provider.attach",
+      "provider.list",
+      "provider.rpc",
+      "provider.start",
+      "provider.stop",
+      "provider.write",
+      "secrets.list",
+      "secrets.remove",
+      "secrets.set",
+      "share.configure",
+      "share.name",
+      "share.status",
+      "sync.mac.apply",
+      "sync.mac.handoff",
+      "sync.mac.hashes",
+      "sync.mac.head",
+      "sync.mac.preview",
+      "sync.mac.read",
+      "sync.mac.worktree",
+      "sync.push",
+      "update.apply",
+      "update.plan",
+      "update.stage",
+      "update.status",
+      "upload.begin",
+      "upload.chunk",
+      "upload.commit",
+      "vault.configure",
+      "vault.push",
+      "vault.status"
+    ],
+    "owner": "G/service.py:27-51",
+    "readMethods": [
+      "agent.context",
+      "browser.wait",
+      "file.read",
+      "file.stat",
+      "health",
+      "layr.file.read",
+      "layr.file.stat",
+      "layr.health",
+      "layr.provider.list",
+      "layr.provider.rpc",
+      "line.evidence",
+      "line.status",
+      "project.ensure",
+      "provider.attach",
+      "provider.list",
+      "provider.rpc",
+      "secrets.list",
+      "share.status",
+      "sync.mac.hashes",
+      "sync.mac.head",
+      "sync.mac.preview",
+      "sync.mac.read",
+      "update.plan",
+      "update.status",
+      "upload.begin",
+      "upload.chunk",
+      "upload.commit",
+      "vault.status"
+    ]
+  },
+  "inventory": {
+    "allPathsSha256": "dd132dd9ef52297a0342f93137cdbc4f889355121801457c94cb92904040ee12",
+    "categories": {
+      "generated": {
+        "files": 1,
+        "lines": 12,
+        "listSha256": "82eafe885ea74e55ffb15e181993a2bb8efd5179ba865f785363c5d5ea3017f8",
+        "matchingLines": 0,
+        "sourceFiles": 1
+      },
+      "metadata": {
+        "files": 17,
+        "lines": 632,
+        "listSha256": "4e294127d8f8ed4a03d41527608af10f49ffc50a3095ac47b1e9455ea065325a",
+        "matchingLines": 24,
+        "sourceFiles": 0
+      },
+      "production": {
+        "files": 38,
+        "lines": 8976,
+        "listSha256": "e059f9a9129f15922f2970e014663d84da04b48b6afd27523eef159cd4575fd8",
+        "matchingLines": 757,
+        "sourceFiles": 38
+      },
+      "test": {
+        "files": 32,
+        "lines": 9227,
+        "listSha256": "63144cb6155050e15f4e8681d900b4e482416e4c7219bb37153651992f7aab83",
+        "matchingLines": 581,
+        "sourceFiles": 31
+      },
+      "vendor": {
+        "files": 0,
+        "lines": 0,
+        "listSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "matchingLines": 0,
+        "sourceFiles": 0
+      }
+    },
+    "classificationRules": "Tests: /tests/, basename test_* or *.test.*, plus guest_suite.py, guest_test_worker.py, host_exec_mac_contract.py, run-guest-suite.mts, install-layr-store.mts, sign_in_links.json. Generated: shared_values_generated.py only. Vendor: none. Remaining source-like files: production. Other tracked files: metadata.",
+    "exclusionDefinition": "No exclusions from mechanical scan. Handwritten production depth excludes every manifest entry whose category is test, generated, metadata or vendor. The manifest is the exact enumerated exclusion list via those categories.",
+    "hashDefinition": "SHA-256 over lexicographically sorted repository-relative paths, UTF-8, joined by LF and one terminal LF; empty list hashes empty bytes",
+    "inlineTestCaveat": "runtime-proc-sys/src/lib.rs:220-276 is an inline test block within a production-classified file. File-line totals include it; not pure production LOC.",
+    "manifest": [
+      {
+        "category": "production",
+        "lexicalHitLines": [28],
+        "lines": 35,
+        "path": "workspaces/runtime/apps/native-layr/codex_layr_native_migration.py",
+        "source": true
+      },
+      {
+        "category": "metadata",
+        "lexicalHitCount": 1,
+        "lines": 121,
+        "path": "workspaces/runtime/apps/vm-guest/README.md",
+        "source": false
+      },
+      {
+        "category": "production",
+        "lexicalHitLines": [
+          23, 59, 77, 109, 124, 138, 144, 160, 170, 174, 191, 192, 193, 196,
+          197, 202, 212, 217, 220, 224, 233, 234, 235, 237, 264, 267, 274, 284,
+          288, 289, 291, 303, 309, 313, 318, 323, 327, 331, 337, 349, 353, 355,
+          391, 392, 393, 398, 406, 419, 420, 421, 426, 437, 438, 445, 446, 456,
+          459, 461, 464, 466, 473, 476, 483, 487, 491, 493, 498, 506, 515, 528,
+          529, 531, 547, 550, 559, 562, 565, 571, 575
+        ],
+        "lines": 586,
+        "path": "workspaces/runtime/apps/vm-guest/browser_bridge.py",
+        "source": true
+      },
+      {
+        "category": "production",
+        "lexicalHitLines": [
+          60, 82, 92, 126, 128, 132, 134, 185, 193, 197, 209, 210, 211, 215,
+          218, 242, 243, 249, 275
+        ],
+        "lines": 277,
+        "path": "workspaces/runtime/apps/vm-guest/browser_policy.py",
+        "source": true
+      },
+      {
+        "category": "metadata",
+        "lexicalHitCount": 0,
+        "lines": 15,
+        "path": "workspaces/runtime/apps/vm-guest/codex-studio-grow.service",
+        "source": false
+      },
+      {
+        "category": "metadata",
+        "lexicalHitCount": 0,
+        "lines": 37,
+        "path": "workspaces/runtime/apps/vm-guest/codex-studio-guest.service",
+        "source": false
+      },
+      {
+        "category": "metadata",
+        "lexicalHitCount": 0,
+        "lines": 25,
+        "path": "workspaces/runtime/apps/vm-guest/codex-studio-layr-admin.service",
+        "source": false
+      },
+      {
+        "category": "metadata",
+        "lexicalHitCount": 0,
+        "lines": 26,
+        "path": "workspaces/runtime/apps/vm-guest/codex-studio-layr.service",
+        "source": false
+      },
+      {
+        "category": "metadata",
+        "lexicalHitCount": 0,
+        "lines": 13,
+        "path": "workspaces/runtime/apps/vm-guest/codex-studio-rosetta.service",
+        "source": false
+      },
+      {
+        "category": "metadata",
+        "lexicalHitCount": 0,
+        "lines": 19,
+        "path": "workspaces/runtime/apps/vm-guest/codex-studio-share-bridge.service",
+        "source": false
+      },
+      {
+        "category": "metadata",
+        "lexicalHitCount": 0,
+        "lines": 16,
+        "path": "workspaces/runtime/apps/vm-guest/codex-studio-share.service",
+        "source": false
+      },
+      {
+        "category": "production",
+        "lexicalHitLines": [24, 95, 109, 122, 133, 145, 182, 187, 200],
+        "lines": 223,
+        "path": "workspaces/runtime/apps/vm-guest/common.py",
+        "source": true
+      },
+      {
+        "category": "production",
+        "lexicalHitLines": [],
+        "lines": 77,
+        "path": "workspaces/runtime/apps/vm-guest/deadline.py",
+        "source": true
+      },
+      {
+        "category": "production",
+        "lexicalHitLines": [18, 33, 34, 35, 42, 44, 47],
+        "lines": 48,
+        "path": "workspaces/runtime/apps/vm-guest/files.py",
+        "source": true
+      },
+      {
+        "category": "test",
+        "lexicalHitCount": 1,
+        "lines": 90,
+        "path": "workspaces/runtime/apps/vm-guest/guest_suite.py",
+        "source": true
+      },
+      {
+        "category": "test",
+        "lexicalHitCount": 0,
+        "lines": 50,
+        "path": "workspaces/runtime/apps/vm-guest/guest_test_worker.py",
+        "source": true
+      },
+      {
+        "category": "production",
+        "lexicalHitLines": [
+          47, 66, 70, 72, 80, 95, 107, 136, 137, 138, 143, 160, 163, 169, 179,
+          180, 181, 182, 199, 201, 204, 206, 210, 224, 230, 297, 300, 301, 323,
+          324, 325, 326, 329, 330, 331, 332, 348, 352, 353, 379, 387, 395, 402,
+          417, 418, 419, 421, 428, 453, 454, 456, 460, 466, 467, 468, 470, 524,
+          529, 537
+        ],
+        "lines": 545,
+        "path": "workspaces/runtime/apps/vm-guest/guest_update.py",
+        "source": true
+      },
+      {
+        "category": "production",
+        "lexicalHitLines": [
+          9, 23, 25, 29, 33, 41, 51, 52, 59, 68, 69, 75, 76, 79, 88, 96, 97,
+          125, 127, 142, 144, 145, 154, 156, 160, 161, 174, 175, 176, 178, 180,
+          181, 182, 183, 194, 197, 202, 206, 209, 210, 211, 220, 222, 223, 233,
+          247, 249, 280, 282, 290, 299, 318, 319, 320, 335, 336, 342, 351, 366,
+          387
+        ],
+        "lines": 391,
+        "path": "workspaces/runtime/apps/vm-guest/host_exec.py",
+        "source": true
+      },
+      {
+        "category": "test",
+        "lexicalHitCount": 37,
+        "lines": 562,
+        "path": "workspaces/runtime/apps/vm-guest/host_exec_mac_contract.py",
+        "source": true
+      },
+      {
+        "category": "production",
+        "lexicalHitLines": [
+          14, 34, 38, 47, 51, 64, 73, 84, 87, 90, 93, 96, 102, 118, 123, 127,
+          162, 167, 170, 179
+        ],
+        "lines": 204,
+        "path": "workspaces/runtime/apps/vm-guest/host_exec_protocol.py",
+        "source": true
+      },
+      {
+        "category": "production",
+        "lexicalHitLines": [
+          22, 56, 61, 69, 117, 133, 136, 139, 141, 146, 161, 168, 174, 178, 180,
+          188, 199, 219, 221, 222, 223, 225, 232, 240, 241, 249, 255, 260, 268,
+          277, 288, 289, 301, 312, 314, 316, 318, 344, 347, 352, 355, 365, 368
+        ],
+        "lines": 378,
+        "path": "workspaces/runtime/apps/vm-guest/host_exec_slot.py",
+        "source": true
+      },
+      {
+        "category": "production",
+        "lexicalHitLines": [
+          54, 101, 180, 181, 184, 185, 186, 190, 193, 195, 204, 205, 216, 227,
+          237, 244, 258, 259, 261
+        ],
+        "lines": 262,
+        "path": "workspaces/runtime/apps/vm-guest/host_exec_slot_io.py",
+        "source": true
+      },
+      {
+        "category": "production",
+        "lexicalHitLines": [],
+        "lines": 17,
+        "path": "workspaces/runtime/apps/vm-guest/install-codex-sandbox.sh",
+        "source": true
+      },
+      {
+        "category": "test",
+        "lexicalHitCount": 15,
+        "lines": 231,
+        "path": "workspaces/runtime/apps/vm-guest/install-layr-store.mts",
+        "source": true
+      },
+      {
+        "category": "test",
+        "lexicalHitCount": 112,
+        "lines": 336,
+        "path": "workspaces/runtime/apps/vm-guest/install-layr-store.test.mts",
+        "source": true
+      },
+      {
+        "category": "production",
+        "lexicalHitLines": [26, 29, 30, 31, 34, 44, 50, 51],
+        "lines": 93,
+        "path": "workspaces/runtime/apps/vm-guest/install-layr.sh",
+        "source": true
+      },
+      {
+        "category": "production",
+        "lexicalHitLines": [],
+        "lines": 70,
+        "path": "workspaces/runtime/apps/vm-guest/install.sh",
+        "source": true
+      },
+      {
+        "category": "production",
+        "lexicalHitLines": [30, 138, 141, 142, 190, 193, 197, 223],
+        "lines": 243,
+        "path": "workspaces/runtime/apps/vm-guest/layr_admin.py",
+        "source": true
+      },
+      {
+        "category": "production",
+        "lexicalHitLines": [24, 34, 35, 42],
+        "lines": 49,
+        "path": "workspaces/runtime/apps/vm-guest/layr_admin_client.py",
+        "source": true
+      },
+      {
+        "category": "production",
+        "lexicalHitLines": [
+          114, 135, 150, 153, 171, 199, 228, 230, 236, 248, 265, 305, 323, 324,
+          332, 333, 338, 339, 340, 353, 354, 355, 356, 361, 379, 384, 389, 395,
+          404, 410, 419, 421, 440, 442, 450, 451, 453, 455, 464, 466, 468, 473,
+          487, 488, 489
+        ],
+        "lines": 492,
+        "path": "workspaces/runtime/apps/vm-guest/layr_agents.py",
+        "source": true
+      },
+      {
+        "category": "production",
+        "lexicalHitLines": [
+          71, 87, 95, 98, 101, 105, 106, 123, 126, 131, 132, 166, 180, 183, 190,
+          197, 201, 218, 275, 276, 289
+        ],
+        "lines": 346,
+        "path": "workspaces/runtime/apps/vm-guest/layr_projects.py",
+        "source": true
+      },
+      {
+        "category": "production",
+        "lexicalHitLines": [
+          45, 52, 93, 98, 99, 106, 107, 109, 124, 138, 155, 157, 160
+        ],
+        "lines": 163,
+        "path": "workspaces/runtime/apps/vm-guest/layr_share.py",
+        "source": true
+      },
+      {
+        "category": "test",
+        "lexicalHitCount": 0,
+        "lines": 23,
+        "path": "workspaces/runtime/apps/vm-guest/mac-sync-witness.test.mts",
+        "source": true
+      },
+      {
+        "category": "production",
+        "lexicalHitLines": [
+          26, 52, 87, 95, 97, 119, 147, 148, 154, 155, 176, 187, 192, 193, 195,
+          205, 210, 239, 240, 253, 254, 255, 257, 259, 264, 278, 346, 349, 350,
+          351, 353, 358, 373, 392, 396, 397, 401, 403, 405, 407, 414, 474, 475,
+          482, 483, 484, 485, 490, 510, 512, 513, 514, 516, 553
+        ],
+        "lines": 566,
+        "path": "workspaces/runtime/apps/vm-guest/mac_sync.py",
+        "source": true
+      },
+      {
+        "category": "production",
+        "lexicalHitLines": [
+          39, 58, 60, 61, 64, 69, 70, 72, 93, 136, 138, 141, 144, 146, 148, 149,
+          153, 154, 166, 191, 200, 201, 202, 222, 226, 228, 230, 231, 233, 239,
+          245, 246, 247, 251, 252, 254, 259, 260, 261, 262, 264, 266, 267, 269,
+          274, 275
+        ],
+        "lines": 284,
+        "path": "workspaces/runtime/apps/vm-guest/native.py",
+        "source": true
+      },
+      {
+        "category": "production",
+        "lexicalHitLines": [],
+        "lines": 28,
+        "path": "workspaces/runtime/apps/vm-guest/native_identity.py",
+        "source": true
+      },
+      {
+        "category": "production",
+        "lexicalHitLines": [29, 34, 41, 44, 47, 48, 71, 76, 79, 80],
+        "lines": 106,
+        "path": "workspaces/runtime/apps/vm-guest/project_env.py",
+        "source": true
+      },
+      {
+        "category": "production",
+        "lexicalHitLines": [58, 61, 70, 78],
+        "lines": 85,
+        "path": "workspaces/runtime/apps/vm-guest/project_secrets.py",
+        "source": true
+      },
+      {
+        "category": "production",
+        "lexicalHitLines": [],
+        "lines": 155,
+        "path": "workspaces/runtime/apps/vm-guest/rosetta.py",
+        "source": true
+      },
+      {
+        "category": "test",
+        "lexicalHitCount": 27,
+        "lines": 278,
+        "path": "workspaces/runtime/apps/vm-guest/run-guest-suite-processes.test.mts",
+        "source": true
+      },
+      {
+        "category": "test",
+        "lexicalHitCount": 5,
+        "lines": 317,
+        "path": "workspaces/runtime/apps/vm-guest/run-guest-suite.mts",
+        "source": true
+      },
+      {
+        "category": "test",
+        "lexicalHitCount": 59,
+        "lines": 420,
+        "path": "workspaces/runtime/apps/vm-guest/run-guest-suite.test.mts",
+        "source": true
+      },
+      {
+        "category": "production",
+        "lexicalHitLines": [
+          56, 75, 103, 117, 126, 128, 132, 144, 148, 158, 175, 179, 180, 181,
+          186, 192, 197, 198, 206, 213, 216, 218, 219, 221, 233, 248, 249, 259,
+          267, 269, 279, 281, 282, 283, 284, 288, 294, 304, 310, 315, 321, 335,
+          338, 346, 347, 353, 357, 368, 372, 380, 385, 390, 391, 392, 408, 412,
+          414, 442, 443, 444, 465, 469, 472, 494, 510, 512, 513, 530, 533, 534,
+          535, 537, 541, 545, 546, 555, 572, 575, 577, 643, 645, 646, 653, 683,
+          688, 732, 753
+        ],
+        "lines": 759,
+        "path": "workspaces/runtime/apps/vm-guest/service.py",
+        "source": true
+      },
+      {
+        "category": "production",
+        "lexicalHitLines": [],
+        "lines": 63,
+        "path": "workspaces/runtime/apps/vm-guest/share_bridge.py",
+        "source": true
+      },
+      {
+        "category": "generated",
+        "lexicalHitCount": 0,
+        "lines": 12,
+        "path": "workspaces/runtime/apps/vm-guest/shared_values_generated.py",
+        "source": true
+      },
+      {
+        "category": "metadata",
+        "lexicalHitCount": 0,
+        "lines": 35,
+        "path": "workspaces/runtime/apps/vm-guest/sign_in_contract.json",
+        "source": false
+      },
+      {
+        "category": "test",
+        "lexicalHitCount": 4,
+        "lines": 150,
+        "path": "workspaces/runtime/apps/vm-guest/sign_in_links.json",
+        "source": false
+      },
+      {
+        "category": "metadata",
+        "lexicalHitCount": 0,
+        "lines": 9,
+        "path": "workspaces/runtime/apps/vm-guest/studio-codex.apparmor",
+        "source": false
+      },
+      {
+        "category": "production",
+        "lexicalHitLines": [25, 27, 33, 40, 44, 45, 48, 49, 52],
+        "lines": 58,
+        "path": "workspaces/runtime/apps/vm-guest/studio_browser.py",
+        "source": true
+      },
+      {
+        "category": "production",
+        "lexicalHitLines": [
+          25, 30, 42, 92, 93, 94, 95, 101, 102, 104, 106, 124, 140, 143, 156,
+          176, 192
+        ],
+        "lines": 199,
+        "path": "workspaces/runtime/apps/vm-guest/supervisor.py",
+        "source": true
+      },
+      {
+        "category": "test",
+        "lexicalHitCount": 35,
+        "lines": 634,
+        "path": "workspaces/runtime/apps/vm-guest/test_browser_bridge.py",
+        "source": true
+      },
+      {
+        "category": "test",
+        "lexicalHitCount": 13,
+        "lines": 187,
+        "path": "workspaces/runtime/apps/vm-guest/test_browser_fakes.py",
+        "source": true
+      },
+      {
+        "category": "test",
+        "lexicalHitCount": 2,
+        "lines": 80,
+        "path": "workspaces/runtime/apps/vm-guest/test_common.py",
+        "source": true
+      },
+      {
+        "category": "test",
+        "lexicalHitCount": 22,
+        "lines": 275,
+        "path": "workspaces/runtime/apps/vm-guest/test_guest_update.py",
+        "source": true
+      },
+      {
+        "category": "test",
+        "lexicalHitCount": 4,
+        "lines": 159,
+        "path": "workspaces/runtime/apps/vm-guest/test_host_exec_slot_io.py",
+        "source": true
+      },
+      {
+        "category": "test",
+        "lexicalHitCount": 6,
+        "lines": 127,
+        "path": "workspaces/runtime/apps/vm-guest/test_install_layr.py",
+        "source": true
+      },
+      {
+        "category": "test",
+        "lexicalHitCount": 5,
+        "lines": 473,
+        "path": "workspaces/runtime/apps/vm-guest/test_layr_admin.py",
+        "source": true
+      },
+      {
+        "category": "test",
+        "lexicalHitCount": 6,
+        "lines": 252,
+        "path": "workspaces/runtime/apps/vm-guest/test_layr_agents.py",
+        "source": true
+      },
+      {
+        "category": "test",
+        "lexicalHitCount": 5,
+        "lines": 256,
+        "path": "workspaces/runtime/apps/vm-guest/test_layr_e2e.py",
+        "source": true
+      },
+      {
+        "category": "test",
+        "lexicalHitCount": 3,
+        "lines": 55,
+        "path": "workspaces/runtime/apps/vm-guest/test_layr_vendor.py",
+        "source": true
+      },
+      {
+        "category": "test",
+        "lexicalHitCount": 1,
+        "lines": 50,
+        "path": "workspaces/runtime/apps/vm-guest/test_line_save.py",
+        "source": true
+      },
+      {
+        "category": "test",
+        "lexicalHitCount": 42,
+        "lines": 242,
+        "path": "workspaces/runtime/apps/vm-guest/test_linux_integration.py",
+        "source": true
+      },
+      {
+        "category": "test",
+        "lexicalHitCount": 6,
+        "lines": 160,
+        "path": "workspaces/runtime/apps/vm-guest/test_mac_sync.py",
+        "source": true
+      },
+      {
+        "category": "test",
+        "lexicalHitCount": 3,
+        "lines": 110,
+        "path": "workspaces/runtime/apps/vm-guest/test_project_group.py",
+        "source": true
+      },
+      {
+        "category": "test",
+        "lexicalHitCount": 19,
+        "lines": 334,
+        "path": "workspaces/runtime/apps/vm-guest/test_project_secrets.py",
+        "source": true
+      },
+      {
+        "category": "test",
+        "lexicalHitCount": 0,
+        "lines": 30,
+        "path": "workspaces/runtime/apps/vm-guest/test_retained_boundary.py",
+        "source": true
+      },
+      {
+        "category": "test",
+        "lexicalHitCount": 36,
+        "lines": 1189,
+        "path": "workspaces/runtime/apps/vm-guest/test_service.py",
+        "source": true
+      },
+      {
+        "category": "test",
+        "lexicalHitCount": 20,
+        "lines": 219,
+        "path": "workspaces/runtime/apps/vm-guest/test_vault_admin.py",
+        "source": true
+      },
+      {
+        "category": "test",
+        "lexicalHitCount": 15,
+        "lines": 175,
+        "path": "workspaces/runtime/apps/vm-guest/test_vault_e2e.py",
+        "source": true
+      },
+      {
+        "category": "metadata",
+        "lexicalHitCount": 0,
+        "lines": 5,
+        "path": "workspaces/runtime/apps/vm-guest/tsconfig.json",
+        "source": false
+      },
+      {
+        "category": "production",
+        "lexicalHitLines": [
+          33, 121, 152, 211, 214, 218, 219, 220, 222, 228, 235, 248, 249, 274,
+          299, 301, 304
+        ],
+        "lines": 309,
+        "path": "workspaces/runtime/apps/vm-guest/upload.py",
+        "source": true
+      },
+      {
+        "category": "production",
+        "lexicalHitLines": [78, 80, 82, 85],
+        "lines": 90,
+        "path": "workspaces/runtime/apps/vm-guest/upload_apply.py",
+        "source": true
+      },
+      {
+        "category": "production",
+        "lexicalHitLines": [10],
+        "lines": 24,
+        "path": "workspaces/runtime/apps/vm-guest/upload_delete.py",
+        "source": true
+      },
+      {
+        "category": "production",
+        "lexicalHitLines": [
+          32, 36, 38, 41, 46, 47, 77, 80, 91, 94, 95, 102, 103, 117, 130, 144,
+          159, 170, 173
+        ],
+        "lines": 175,
+        "path": "workspaces/runtime/apps/vm-guest/vault_admin.py",
+        "source": true
+      },
+      {
+        "category": "metadata",
+        "lexicalHitCount": 1,
+        "lines": 20,
+        "path": "workspaces/runtime/packages/operations/Cargo.toml",
+        "source": false
+      },
+      {
+        "category": "metadata",
+        "lexicalHitCount": 3,
+        "lines": 33,
+        "path": "workspaces/runtime/packages/operations/README.md",
+        "source": false
+      },
+      {
+        "category": "metadata",
+        "lexicalHitCount": 19,
+        "lines": 216,
+        "path": "workspaces/runtime/packages/operations/docs/model.md",
+        "source": false
+      },
+      {
+        "category": "production",
+        "lexicalHitLines": [
+          164, 172, 184, 195, 228, 281, 348, 353, 354, 364, 382, 386, 391, 415,
+          437, 471, 475, 489, 605, 617, 626, 635, 644, 655, 667, 679, 688, 706,
+          715, 724, 736, 745, 754, 766, 778, 794
+        ],
+        "lines": 797,
+        "path": "workspaces/runtime/packages/operations/src/lib.rs",
+        "source": true
+      },
+      {
+        "category": "production",
+        "lexicalHitLines": [
+          70, 80, 84, 88, 116, 125, 131, 139, 145, 151, 157, 165, 174, 179, 185,
+          191
+        ],
+        "lines": 205,
+        "path": "workspaces/runtime/packages/operations/src/reservation.rs",
+        "source": true
+      },
+      {
+        "category": "production",
+        "lexicalHitLines": [
+          74, 76, 81, 84, 115, 121, 123, 124, 129, 131, 137, 152
+        ],
+        "lines": 265,
+        "path": "workspaces/runtime/packages/operations/src/settlement.rs",
+        "source": true
+      },
+      {
+        "category": "test",
+        "lexicalHitCount": 33,
+        "lines": 862,
+        "path": "workspaces/runtime/packages/operations/tests/lifecycle.rs",
+        "source": true
+      },
+      {
+        "category": "test",
+        "lexicalHitCount": 13,
+        "lines": 277,
+        "path": "workspaces/runtime/packages/operations/tests/reservation.rs",
+        "source": true
+      },
+      {
+        "category": "test",
+        "lexicalHitCount": 32,
+        "lines": 624,
+        "path": "workspaces/runtime/packages/operations/tests/settlement.rs",
+        "source": true
+      },
+      {
+        "category": "metadata",
+        "lexicalHitCount": 0,
+        "lines": 13,
+        "path": "workspaces/runtime/packages/runtime-priority-sys/Cargo.toml",
+        "source": false
+      },
+      {
+        "category": "metadata",
+        "lexicalHitCount": 0,
+        "lines": 16,
+        "path": "workspaces/runtime/packages/runtime-priority-sys/README.md",
+        "source": false
+      },
+      {
+        "category": "production",
+        "lexicalHitLines": [],
+        "lines": 29,
+        "path": "workspaces/runtime/packages/runtime-priority-sys/src/lib.rs",
+        "source": true
+      },
+      {
+        "category": "metadata",
+        "lexicalHitCount": 0,
+        "lines": 13,
+        "path": "workspaces/runtime/packages/runtime-proc-sys/Cargo.toml",
+        "source": false
+      },
+      {
+        "category": "production",
+        "lexicalHitLines": [33, 41, 88, 207, 215, 232, 233, 234, 237, 261],
+        "lines": 280,
+        "path": "workspaces/runtime/packages/runtime-proc-sys/src/lib.rs",
+        "source": true
+      }
+    ],
+    "sourceExtensions": [
+      ".rs",
+      ".ts",
+      ".tsx",
+      ".js",
+      ".jsx",
+      ".mjs",
+      ".cjs",
+      ".mts",
+      ".cts",
+      ".py",
+      ".swift",
+      ".sh",
+      ".mm",
+      ".h"
+    ],
+    "sourcePathsSha256": "41f6d6e643908cf6469d6bf384b97e809688687acdd643db754bbfde974ef6d7"
+  },
+  "method": {
+    "deep": "All 38 handwritten production paths mapped to family-level producer/decode/consumer inspection, plus selected cross-root evidence. No claim every line manually read; U means required proof remains.",
+    "executedChecks": "Only read-only source enumeration/search/hash/AST analysis; no test/build/install/live/network operations.",
+    "lexicalPattern": "\\b(?:Value|RawValue|Any|unknown|any|dict|Dictionary)\\b|serde_json|JSON\\.(?:parse|stringify)|\\bjson\\.(?:load|loads|dump|dumps)|\\.get\\(|\\.as_(?:str|object|array|bool|i64|u64)\\(|\\b(?:status|state|phase|action|kind|operation)\\s*[:=]|\\bassert\\b",
+    "mechanical": "Read all tracked blobs via git ls-tree/git show at pinned commit; source extension filter and static lexical scan; git grep/rg for candidate follow-up. Python AST parsed only module-level literal set/union assignments for method inventory, never imported/executed guest code.",
+    "sourceEvidenceOnly": true
+  },
+  "pathAliases": {
+    "G": "workspaces/runtime/apps/vm-guest",
+    "Layr src/": "workspaces/runtime/apps/layr/src/",
+    "O": "workspaces/runtime/packages/operations/src",
+    "PR": "workspaces/runtime/packages/runtime-process/src",
+    "SC": "workspaces/runtime/packages/runtime-schema/src",
+    "SV": "workspaces/runtime/packages/runtime-services/src",
+    "apps/": "workspaces/runtime/apps/",
+    "layr-desk/": "workspaces/runtime/apps/layr-desk/",
+    "runtime-priority-sys/": "workspaces/runtime/packages/runtime-priority-sys/",
+    "runtime-proc-sys/": "workspaces/runtime/packages/runtime-proc-sys/",
+    "runtime-providers/": "workspaces/runtime/packages/runtime-providers/"
+  },
+  "productionFileCoverage": [
+    {
+      "families": ["S01"],
+      "path": "workspaces/runtime/apps/native-layr/codex_layr_native_migration.py"
+    },
+    {
+      "families": ["G19", "G20", "G22"],
+      "path": "workspaces/runtime/apps/vm-guest/browser_bridge.py"
+    },
+    {
+      "families": ["G21"],
+      "path": "workspaces/runtime/apps/vm-guest/browser_policy.py"
+    },
+    {
+      "families": ["G03", "G08", "G10"],
+      "path": "workspaces/runtime/apps/vm-guest/common.py"
+    },
+    {
+      "families": ["S05"],
+      "path": "workspaces/runtime/apps/vm-guest/deadline.py"
+    },
+    {
+      "families": ["G31"],
+      "path": "workspaces/runtime/apps/vm-guest/files.py"
+    },
+    {
+      "families": ["G23", "G24", "G25", "G26", "G27"],
+      "path": "workspaces/runtime/apps/vm-guest/guest_update.py"
+    },
+    {
+      "families": ["G12", "G13"],
+      "path": "workspaces/runtime/apps/vm-guest/host_exec.py"
+    },
+    {
+      "families": ["G15", "G16"],
+      "path": "workspaces/runtime/apps/vm-guest/host_exec_protocol.py"
+    },
+    {
+      "families": ["G14", "G17"],
+      "path": "workspaces/runtime/apps/vm-guest/host_exec_slot.py"
+    },
+    {
+      "families": ["G17", "G18"],
+      "path": "workspaces/runtime/apps/vm-guest/host_exec_slot_io.py"
+    },
+    {
+      "families": ["S05"],
+      "path": "workspaces/runtime/apps/vm-guest/install-codex-sandbox.sh"
+    },
+    {
+      "families": ["G28", "G27"],
+      "path": "workspaces/runtime/apps/vm-guest/install-layr.sh"
+    },
+    {
+      "families": ["S05"],
+      "path": "workspaces/runtime/apps/vm-guest/install.sh"
+    },
+    {
+      "families": ["G02", "G03"],
+      "path": "workspaces/runtime/apps/vm-guest/layr_admin.py"
+    },
+    {
+      "families": ["G02"],
+      "path": "workspaces/runtime/apps/vm-guest/layr_admin_client.py"
+    },
+    {
+      "families": ["G09", "G10", "G11"],
+      "path": "workspaces/runtime/apps/vm-guest/layr_agents.py"
+    },
+    {
+      "families": ["G32"],
+      "path": "workspaces/runtime/apps/vm-guest/layr_projects.py"
+    },
+    {
+      "families": ["G33"],
+      "path": "workspaces/runtime/apps/vm-guest/layr_share.py"
+    },
+    {
+      "families": ["G18", "G34", "G35"],
+      "path": "workspaces/runtime/apps/vm-guest/mac_sync.py"
+    },
+    {
+      "families": ["G05", "G06", "G07"],
+      "path": "workspaces/runtime/apps/vm-guest/native.py"
+    },
+    {
+      "families": ["G39"],
+      "path": "workspaces/runtime/apps/vm-guest/native_identity.py"
+    },
+    {
+      "families": ["G11", "G36"],
+      "path": "workspaces/runtime/apps/vm-guest/project_env.py"
+    },
+    {
+      "families": ["G36"],
+      "path": "workspaces/runtime/apps/vm-guest/project_secrets.py"
+    },
+    {
+      "families": ["S05"],
+      "path": "workspaces/runtime/apps/vm-guest/rosetta.py"
+    },
+    {
+      "families": [
+        "G01",
+        "G03",
+        "G04",
+        "G08",
+        "G09",
+        "G10",
+        "G11",
+        "G29",
+        "G30",
+        "G31"
+      ],
+      "path": "workspaces/runtime/apps/vm-guest/service.py"
+    },
+    {
+      "families": ["G22"],
+      "path": "workspaces/runtime/apps/vm-guest/share_bridge.py"
+    },
+    {
+      "families": ["G19"],
+      "path": "workspaces/runtime/apps/vm-guest/studio_browser.py"
+    },
+    {
+      "families": ["G08"],
+      "path": "workspaces/runtime/apps/vm-guest/supervisor.py"
+    },
+    {
+      "families": ["G29", "G30", "G32"],
+      "path": "workspaces/runtime/apps/vm-guest/upload.py"
+    },
+    {
+      "families": ["G30"],
+      "path": "workspaces/runtime/apps/vm-guest/upload_apply.py"
+    },
+    {
+      "families": ["G30"],
+      "path": "workspaces/runtime/apps/vm-guest/upload_delete.py"
+    },
+    {
+      "families": ["G37", "G38"],
+      "path": "workspaces/runtime/apps/vm-guest/vault_admin.py"
+    },
+    {
+      "families": ["O01"],
+      "path": "workspaces/runtime/packages/operations/src/lib.rs"
+    },
+    {
+      "families": ["O01"],
+      "path": "workspaces/runtime/packages/operations/src/reservation.rs"
+    },
+    {
+      "families": ["O01", "O02"],
+      "path": "workspaces/runtime/packages/operations/src/settlement.rs"
+    },
+    {
+      "families": ["S02"],
+      "path": "workspaces/runtime/packages/runtime-priority-sys/src/lib.rs"
+    },
+    {
+      "families": ["S03", "S04"],
+      "path": "workspaces/runtime/packages/runtime-proc-sys/src/lib.rs"
+    }
+  ],
+  "reportMarkdown": "Read-only coverage completion at 1b18e26491860b644f6e7373bc554e814cf95b66. This complements task36 and the earlier seven reports; it does not replace their findings. The assigned native-layr path was corrected from packages/native-layr to the tracked apps/native-layr folder.\n\nThe exact scope contains 88 tracked paths and 70 source-like paths, matching all 70 selected missing paths in audit commit 2118a320 with zero missing or extra source paths. There are 38 handwritten production files, 32 test/fixture files (31 source-like plus sign_in_links.json), one generated source, 17 metadata files, and no vendor files. Selected external producer/consumer snippets were read only to close traces; they are not included in these scope counts.\n\n| Root under workspaces/runtime | Production | Test/fixture | Generated | Metadata | Vendor | Source-like |\n| --- | ---: | ---: | ---: | ---: | ---: | ---: |\n| apps/vm-guest | 32 | 29 | 1 | 11 | 0 | 61 |\n| apps/native-layr | 1 | 0 | 0 | 0 | 0 | 1 |\n| packages/operations | 3 | 3 | 0 | 3 | 0 | 6 |\n| packages/runtime-priority-sys | 1 | 0 | 0 | 2 | 0 | 1 |\n| packages/runtime-proc-sys | 1 | 0 | 0 | 1 | 0 | 1 |\n\nAll tracked-list SHA-256: dd132dd9ef52297a0342f93137cdbc4f889355121801457c94cb92904040ee12\nSource-list SHA-256: 41f6d6e643908cf6469d6bf384b97e809688687acdd643db754bbfde974ef6d7\nHandwritten production-list SHA-256: e059f9a9129f15922f2970e014663d84da04b48b6afd27523eef159cd4575fd8\nHashes cover sorted repository-relative paths joined by LF with one trailing LF; the empty vendor list hashes the empty byte string. The structured manifest records every path, category, source flag, line count, and lexical hit lines (production) or count (other categories). This is a path-list hash, not a claim that the hash represents source contents.\n\nAll 88 tracked blobs were mechanically scanned at the pinned commit. The scan used tracked Git-tree inventory, source-extension filtering, lexical candidate matches and follow-up git grep/numbered git show reads. The 38 production paths are mapped to deeply inspected boundary families. This does not claim that every line was manually read. Test files were inventoried and mechanically scanned; selected fixture headers were read to classify them. No tests, builds, installs, source edits, live service/process/state reads, or network operations were run. The known baseline Linux build defect is irrelevant to this source review.\n\nThe 65 admitted guest methods were statically enumerated from module-level set expressions without executing the module. Handler families, source producers, decoders and consumers were traced across guest RPC/admin/native/stdio/host-exec/browser/update/upload/mac-sync/secrets/vault, operations and support crates. Internal task/lock registries are not JSON boundaries: service.py:581-617 and layr_admin.py:145-173 keep fingerprint/task pairs, common.py:207-223 keeps lock/refcount pairs, and host_exec_slot.py:61-70 keeps pages/in-use/deleting collections. A named local record may improve those annotations, but Deserialize must not be introduced for live Task/Lock objects or used to remove their lifecycle checks.\n\nClassification: 21 D candidates, 8 R retained boundaries, 8 T already typed families, 10 U unresolved families (47 total). D means a source-supported simplification opportunity, not a runtime defect. For Python, D means a named checked boundary projection generated/shared from the named owner, not a claim that json.loads is a typed deserializer. Rust counterparts can deserialize directly. No new dependency or implementation is proposed here. P1 identifies stateful identity/recovery/authorization-sensitive work; P2 is lower-risk structural cleanup. These are review priorities, not vulnerability severities.\n\nThe full table deliberately preserves open provider payloads, canonical signatures/fingerprints, external OS/HTTP/SMB/credential bytes, unknown protocol errors/features, and uncertain operation outcomes. Only redundant structural checks after a proven decoder may be deleted. Authorization, identity, range/size, chronology, hash, freshness, proof and filesystem checks remain.\n\nPaths use aliases: G=workspaces/runtime/apps/vm-guest; O=workspaces/runtime/packages/operations/src; PR=workspaces/runtime/packages/runtime-process/src; SV=workspaces/runtime/packages/runtime-services/src; SC=workspaces/runtime/packages/runtime-schema/src. Other abbreviated apps/crate paths are expanded by pathAliases in the structured result. Line references are pinned to 1b18e26491860b644f6e7373bc554e814cf95b66.\n\n| ID / class / priority / family | Named owner and source trace | Replacement and deletable code | Essential dynamic checks | Compatibility | Proposed witness (not run) |\n| --- | --- | --- | --- | --- | --- |\n| G01 / D / P1: Guest vsock request/result/error/event envelope | G/service.py:571 (guest protocol); SV/linux_vm_guest.rs:349 (host adapter). Host call constructs id/method/params at SV/linux_vm_guest.rs:363 -> guest bounded json.loads G/service.py:683 -> request:571/dispatch:433; result/event/error serialized at :625 -> host Value envelope decode :422-450. | One versioned GuestRequest + GuestFrame<Result,Event,Error> contract; direct Deserialize on Rust and generated checked Python boundary decoder. Deletable: Repeated object/id/result/error presence/type extraction; downstream dict-envelope indexing after a successful decode. | Frame limits, finite numbers/no bool-as-int, known method admission, request-id correlation, concurrency, cancellation independence, dispatch permissions. | Preserve optional params defaults, streaming events, unknown error codes as strings, and uncertainty after any attempted write or malformed reply. | Round-trip every existing frame branch; malformed/missing-id/error-plus-result; disconnect after send retains unknown. |\n| G02 / D / P1: Root broker/admin envelope | G/layr_admin.py:137; G/layr_admin_client.py:18. Service dispatch -> admin_request emits id/method/params :22 -> root broker SO_PEERCRED and json.loads :181-190 -> registry dispatch :120 -> result/error/event -> client :31-46 -> guest outer receipt handler. | Shared broker request and event/result/error union, separate from detached-supervisor control. Deletable: Repeated shape checks and nested response error-code/message indexing. | Peer UID must be studio; method registry uniqueness; bounds; identity; root/agent authorization; sent-before-write marker. | AdminChannelError must preserve unavailable versus outcome_unknown; G/service.py drops only incomplete outer receipt so broker retains effect ownership. | Disconnected-before-send versus disconnected-after-write; broker persisted receipt replay; streamed event and final result. |\n| G03 / R / P1: Canonical request digest and generic receipt payload | G/common.py:108-145. Guest/broker method+original params -> sorted compact JSON digest -> SQL pending receipt -> method response JSON -> saved response json.loads :133 -> exact replay. | Retain original payload for fingerprint/replay; optionally type outer receipt identity/status separately. Deletable: No whole-payload projection or universal result DTO is justified; only caller envelope duplication may disappear. | Same identity/different digest refusal; persist pending before effects; NULL response is unknown; sync.mac.apply is the sole RERUN_AFTER_STOP exception. | Unknown request fields participate in fingerprints. Dropping them or normalizing defaults before hashing changes identity. Keep exact method-specific replay behavior. | Extension field changes digest; stop between effect and receipt never dispatches again except the explicitly resumable sync method. |\n| G04 / D / P2: Owned guest command parameters and health projection | G/service.py:174-244,433-569. Host GuestRpc method+params -> service dispatch -> launch_config/start_guarded/health/attach/credentials methods -> owned result dict -> host method consumer. | Method-discriminated request DTOs and Health/Attach/Start result projections; keep generic GuestRpc transport extensible. Deletable: Per-handler primitive field extraction and duplicated closed method/action membership after boundary validation. | Path containment/existence; argv/env count/NUL bounds; disk floor; request/handle association; credential path policy; journal cursor bounds. | Do not make one giant closed schema for all provider messages. Preserve native versus stdio transport and lost/unknown states. | Each service dispatch method with omitted/default fields and boundary maxima; wrong action payload refused before effects. |\n| G05 / D / P1: Rust native-supervisor envelope consumed by Python | runtime-providers/src/supervisor_protocol.rs:7,147; PR/supervisor_daemon.rs:937; G/native.py:47. Python hello/action request :55-64 -> Rust handshake typed from_value :944 and action decoder -> Rust response :920-932 -> Python json.loads/id/error/result :60-75. | Consume the existing supervisor owner contract; generated Python envelope/result projections, direct typed Rust frame decode where transport permits. Deletable: Python hello/response dict probes and result-key indexing; avoid creating a competing protocol enum. | Protocol version, state-dir/backend ownership, request identity, frame bounds, operator capability. | Current native bridge intentionally maps lost/rejected exchange to unknown and sanitizes errors; keep that uncertainty and secrecy. | Owner-generated hello/action fixtures plus unsupported version, mismatched request ID, lost response; native message remains unchanged. |\n| G06 / R / P1: Native provider message and journal event payloads | G/native.py:170-219,221-271; Rust supervisor journal/provider protocol owners. Provider bytes -> Rust supervisor event journal -> guest event_page emits bounded JSON string or chunk descriptor -> eventRead raw bytes/base64 -> host/provider decoder; native.write forwards message object. | Keep raw message/JSON string/blob payload under a typed transport descriptor. Deletable: Do not remove external provider fields or force all notifications/errors into the guest's own action enum. | Generation, operationId/nativeId identity, byte limits, exact blob length, sequence/cursor/offset, exit proof before acknowledgement. | Unknown provider methods/notifications/errors and future fields must survive; nativeId string or integer excludes bool. | Unknown provider event survives small and chunked paths byte-for-byte; wrong generation and reordered chunk refused. |\n| G07 / U / P1: Native handle info, lease, and saved exit proof | G/native.py:82-163,221-275; PR/supervisor_identity.rs. Rust lease/handles/child_identities/events -> Python read-only SQL/json lease :93/info :128 -> current process identity comparison -> running/exited/lost and responseStatus accepted :243 -> host consumers. | Named NativeLease/HandleInfo/ExitProof records with generation and process identity; migration/recovery policy needs proof for existing saved records. Deletable: Potential removal of scattered field probes only after old-format semantics are specified. | Fresh PID start identity, boot/session identity, generation, operation existence, refusal to replace live owner, exit evidence before journal deletion. | Missing/stale process evidence means lost/unknown, never permission to restart/replay; partial historical records must not silently become live. | Old lease, pid reuse, stale generation, missing exit event with matching/nonmatching exit proof; no restart on decode failure. |\n| G08 / D / P1: Detached stdio supervisor launch/control/journal/status | G/supervisor.py:18-41,87-131,192; G/service.py:195-316. service writes launch.json -> detached Supervisor loads :192 -> subprocess/output events :39 -> status.json -> service status/attach; control JSON :87 -> write/stop receipt -> service.control :246. | Owned LaunchSpec, SupervisorStatus, Output/Exit event, Write/Stop control union; explicit reason/state enums at this owner. Deletable: Raw dict config/control/status access and closed string comparisons; structural checks after typed decode. | PID/start identity, output bounds, deadlines, fsync/receipt order, partial stdin uncertainty, sequence ordering and exit timing. | Control response has no id unlike guest RPC; preserve that protocol. Service adds lost state; old status defaults require compatible decoding. | Launch/control round trips, every terminal reason, partial stdin write then disconnect, process exited before final attach. |\n| G09 / U / P1: Saved agent/line/provider associations | G/layr_agents.py:124-146,224-280,328-369,418-459; G/service.py:75,106-139. line.bind/branch validates project/user/parent -> association JSON -> context/lookup + provider handle equality -> launch/stop/evidence/file actions. | Versioned AgentAssociation with optional legacy fields and separate live-derived context; define migration before deleting bag handling. Deletable: Repeated required field/key lookup and providerHandle/owner/readOnly casts after schema migration. | UID/GID/root/line/cwd identity, immutable submitted state, readonly authorization, exact handle association and rollback policy. | Existing records, missing providerHandle, parent/subpath/default fields, and lost native owners must retain current meaning. | Old association fixtures plus moved cwd, wrong project/uid, duplicate handle and missing provider owner; no authority inferred from string shape. |\n| G10 / D / P2: Provider and layr process launch specification | G/service.py:174; G/layr_agents.py:418-478; G/common.py:163. Agent context+known provider argv/env or layr.exec argv -> launch config -> supervised/native process owner -> provider/exec result. | One owned LaunchSpec for argv/cwd/env/transport/limits and validated provider launch policy adapter. Deletable: Duplicated primitive argv/env/optional limit parsing between launch producers and supervisor consumers. | Executable/path/environment allowlists, no NUL, cwd containment, agent context, output/deadline limits and process ownership. | Command arguments and environment values remain open strings; codex/claude launch selection is local policy, not an external protocol closure. | Generated launch fixture consumed by both paths; unknown provider refused by policy, arbitrary permitted argument text preserved. |\n| G11 / R / P2: Credential files and secret values | G/service.py:credentials.put at 520-569; G/layr_agents.py:418-455; G/project_env.py:41-106. Host credential bytes -> bounded validated relative private paths -> profile copy as line user -> native provider; secret string map -> anonymous FD -> target environment. | Keep credential contents and secret strings opaque; type only filename/profile/envelope metadata. Deletable: No provider credential schema or value parsing justified here. | Bounded files/strings, ownership/mode, no symlink traversal, profile identity, NUL/name restrictions; no secret output. | Provider formats may evolve independently; copying opaque bytes avoids destructive normalization. | Unknown credential JSON fields and non-JSON content preserved; bad path/symlink rejected and no values exposed. |\n| G12 / D / P1: Host-exec request/result/error protocol | G/host_exec_protocol.py:1-34 (named owner); G/host_exec.py:59-94; SV/host_exec_service/protocol.rs:1-7. Guest phase request_key -> token/id/method/params frame :68 -> Rust host service -> owned result/error -> Python :75-79 -> operation flow. | Shared method-specific HostExec request and response variants; Rust direct Deserialize plus generated Python decoder from one owner. Deletable: dict(response.result), nested error indexing, repeated method-result structural probes. | Token, frame/chunk/page bounds, request phase identity, deadline, rejection versus unexpected failure distinction. | Feature negotiation and unknown future error strings stay open; any uncertain exchange keeps operation/lease; no retry with fresh phase ID. | Every method response plus malformed result, unknown code/feature and lost response after command start. |\n| G13 / D / P1: Host command phase state and acquired operation | G/host_exec.py:145-174,215,317-329. Acquire returns operation -> steps.leased -> sync/manifest -> steps.run set before call -> attach/collect/release; error handler releases only pre-run proven state. | Named ExecutionProgress / AcquiredOperation; phase enum expressing Leased, RunMayHaveStarted, Collected. Deletable: Unstructured steps.get('leased')/get('run') and operation field dictionary indexing. | Mark attempted run before send; only explicit sync_conflict proves no start; hold lease after ambiguous run; collect before release. | Preserve older host lack of generationNumber and optional prime/mode/batch/clone features. | Failure at each phase, especially after send-before-reply; no premature release or second command. |\n| G14 / U / P1: Host slot lease/held/path/collection persistence | G/host_exec_slot.py:72-161,219-378. Prepare validates agent+slot/generation -> lease.json/held/paths.json/manifest/collect records -> subsequent slot.* loads -> collect/forget/stale cleanup. | Versioned SlotLease/HeldState/SlotPaths/Collection records; compatibility for legacy unnumbered generations first. Deletable: Raw json loads and repeated record key/default probes once historical formats are proven. | Lease operation match, in-use/deleting exclusion, current line state, held-tree checks, symlink-safe cleanup; delete only older numbered generations. | Legacy generation folders intentionally retained; missing optional paths lists are defaults; corrupt state must not authorize cleanup. | Legacy generation and missing paths fields; stale numeric generation with active lease; corrupt held record refuses destructive action. |\n| G15 / D / P1: Host content manifest entry union | G/host_exec_protocol.py:118-176; SV/host_exec_service/protocol.rs:1-7. Guest scan -> file/link/directory dict entries -> manifest paging/hash -> host reconciliation -> entry/chunk/mode/commit/collect -> rescanned manifest. | Tagged ManifestEntry (File bytes/mode/hash, Link target, Directory), typed page map and nullable cursor. Deletable: Repeated kind/key/number string branches and dynamic field access after decode. | Path containment/casefold/Unicode conflicts, symlinks, file identity and content hash, page size/count, monotonic cursor, exact transfer lengths. | Manifest SHA must preserve Python json.dumps(sort_keys=True) byte grammar; changing whitespace/escaping/default omission changes handshake. | Same tree manifests/hash in both languages, Unicode/link/empty dir, wrong hash, page split and unknown kind refusal. |\n| G16 / D / P2: Host-exec hash cache tuple | G/host_exec_protocol.py:87-117. load_hashes file -> list [size,mtime_ns,inode,ctime_ns,sha] -> file_hash stamp/racy-age validation -> scan or recomputed digest -> saved cache. | Named HashCacheEntry and typed cache map; invalid cache entry is a miss. Deletable: Tuple length and slot-type access within cache consumers after decode. | Fresh file stamps and RACY_NS threshold, file/hash validation and symlink policy. | Corrupt/nonobject cache currently degrades to empty/recompute, not a fatal operation; retain that compatibility. | Old/malformed cache and same-clock rewrite both recompute; valid stable cache yields identical manifest. |\n| G17 / D / P2: Unprivileged slot helper I/O and merge result | G/host_exec_slot.py:161; G/host_exec_slot_io.py:179-262. Root broker emits action-specific JSON -> user-context helper run stdin -> manifest/read-many/entry/chunk/commit/collect -> result/error JSON -> broker consumers. | Owned helper action union and results, sharing manifest/entry owner from G15. Deletable: Action-string cascades and result/error shape indexing; duplicated field primitive parsing. | Project user/root identity, byte/count/hash limits, held/current state, three-way merge conflicts/kept paths and safe filesystem traversal. | Do not convert merge conflicts into schema failures or remove semantic merge decisions; raw file bytes remain bytes. | Every helper action projection and file/link/delete conflict; wrong owner/root and truncated chunk. |\n| G18 / D / P2: Layr status JSON consumed by guest | Layr src/cmd/work.rs:68-81 (producer); G/mac_sync.py:146; G/host_exec_slot_io.py:65-103. Layr status --json produces staged/unstaged/untracked/ignored/conflicts/overlaps -> Python json.loads -> dirty decision or ignored-path restoration helper. | Open typed status projection of consumed collections; preserve unconsumed extension fields if forwarding. Deletable: Unchecked status[field] / ['ignored'] shape assumptions; redundant collection type probes after decode. | Read-only versus mutating command policy, placeholder cleanup and path safety; dirty check itself remains essential. | Do not close external status strings or require unused fields; older Layr flags/exit behavior remain compatibility concern. | Current producer fixture with extra fields and malformed consumed collections; cleanup still occurs if decode fails. |\n| G19 / D / P1: Browser shim and guest method wire records | G/browser_bridge.py:284-337,437-518; G/studio_browser.py:22-48; SV/browser_cards.rs:583. Shim v1/url/session -> guest peer-UID actor -> submit queue item; Rust browser.wait -> items/next at :598 -> apply; browser_answer.rs:258/637 -> answer/callback -> guest results. | Shared versioned OpenRequest/OpenReply, WaitPage, AnswerRequest, CallbackResult and closed local decision type. Deletable: Repeated wire object/primitive checks and Rust get/as_array/as_u64 envelope extraction after decode. | Authenticated peer UID, actor context, URL policy, current card/lease, exact callback, wait/page cursor and frame limits. | Old guest unsupported-method behavior and missing optional fields must survive. Error code strings remain extensible. | Shim and host consume shared fixtures; old unsupported bridge, wrong UID, expired card and unknown optional field. |\n| G20 / U / P1: Browser persisted item/lease/state transitions | G/browser_bridge.py:233-239,353-420,459-586. Queue creates owned item :392 -> atomic {seq,items} :417 -> restart load :233 -> answer/callback/check/listener/joined-state consumers. | Versioned BrowserQueue/BrowserItem/Lease with explicit local state enum and typed partial update methods; historical record proof needed first. Deletable: Mutable Any dictionaries, spread updates and state-string comparisons after validated migration. | Listener ownership/freshness, TTL, relay budget saved before request, joined-leader completion, approval and exact state transitions. | Do not default unreadable/old records to approved or refresh a lease without proof; unknown saved state needs conservative handling. | Saved pending/approved/opened/joined/closed variants including absent legacy lease; listener reused, expiry and crash after relay counter persist. |\n| G21 / T / P2: Browser URL policy projections | G/browser_policy.py:49,64,72,140-155,188-277. External URL/query -> classify/provider/callback parsing -> Redirect/StartPage/Provider/Callback dataclasses -> browser queue/answer. | Keep existing typed policy projections; no Value-removal proposal for these. Deletable: None from typing alone. | HTTPS/loopback restrictions, port range, provider-host/private-IP policy, exact redirect/state matching and callback sanitization. | Provider URL/query values are open external strings; unknown domains and policy failures must retain current refusal behavior. | Existing policy fixture families can witness URL, port, state and pasted-callback limits; proposed only, not run. |\n| G22 / R / P1: Browser HTTP relay and SMB byte tunnel | G/browser_bridge.py:160-230,491-518; G/share_bridge.py:1-63. Authorized callback target -> bounded local HTTP response -> status/contentType/base64 body -> host forwarder; vsock stream -> SMB stream in share_bridge. | Retain opaque body/stream bytes with typed transport metadata. Deletable: No application JSON decoder or closed content schema at these relays. | Peer/listener identity, callback lease/target/header validation, HTTP size/deadline and tunnel lifetime. | Provider callback HTML/text/binary and SMB protocol evolution must pass through without normalization. | Non-JSON body/binary bytes unchanged; oversized body and unauthorized callback refused. |\n| G23 / U / P1: Guest update method inputs and plan/status projections; caller gap | G/guest_update.py:53-95,119-177,177-224. Guest METHOD registry/service forwarding -> broker dispatch -> update.plan/stage/apply/status handlers -> owned result. Pinned workspace grep found no production caller literal update.plan/update.apply outside guest, so host producer integration is not proven. | Local Update request union, Manifest map<Path,Sha256>, StageChunk and PlanResult are plausible; establish actual caller/host decoder and compatibility before declaring an end-to-end removal. Deletable: Repeated params.get/type checks and plan path string comparisons after decoder. | Path allowlist, actual installed hashes, chunk offset/size/digest, operation identity, disk/write bounds and authorization signature. | Existing reboot/current/in_place routing and provision-before-key behavior must remain; decode does not authorize in-place update. The module comment describes a host signer, but that comment is not proof of a reachable host producer at this revision. | All plan branches; out-of-order/mismatched chunks; altered manifest; versioned/unknown optional response fields. |\n| G24 / R / P1: Signed update canonical input and provision payload identity | G/guest_update.py:70-73,135-149. Incoming update request operation+files -> guest signature() canonical sorted compact JSON HMAC :70-73 -> apply verification; opaque payload -> saved-record full JSON equality at plan :143 -> reboot decision. Host signer implementation not established here. | Keep exact canonical signed bytes and full payload record. Typed manifest wrapper may validate shape without changing signed representation. Deletable: No dropping extension payload fields or reserializing with a different canonical grammar. | Signature verification, path/hash bounds, full equality and safe state persistence. | Unknown provision metadata participates in equality. Types must not silently ignore it or substitute defaults before checking. | Extra payload field forces same current classification as before; canonical-byte fixture identical across host/guest; tampered manifest refused. |\n| G25 / U / P1: Update durable stages and restart completion evidence | G/guest_update.py:155-170,203-309,514-539. Apply writes status stage before installation -> install/restart task updates -> later unfinished() recovers changed files -> restart completion checks scheduled time/process start. | Versioned UpdateStatus with stage enum, changed/restarts/error/times; distinguish absent/legacy/unrecognized records. Deletable: Raw status dictionaries and ad hoc stage/default probes after migration. | Persist-before-write order, superseding old work, drain/busy checks, restarted process proof, no active-provider restart through an in-place shortcut. | Malformed records currently skipped by unfinished scan; migration must specify preservation rather than silently treating unfinished work complete. | Crash at writing/install_failed/restart_failed/scheduled; broker start older/newer than scheduled time; unknown historical stage. |\n| G26 / D / P1: Layr store-version report and daemon hello | Layr src/store_version.rs:12,136-150; G/guest_update.py:321-356,427. Layr typed Version/Upgrade/Report -> store-version --json -> layr_report manual validation -> ready/permit; daemon bounded hello -> expected-format match. | Reuse vendor owner's Version/Upgrade/Report as an open consumed projection; share decoder/parity rather than inventing fields. Deletable: Repeated isinstance/descriptor field extraction; only structural checks covered by decoder. | Compatible/state/store/format relationships; metadataOnly, strictly increasing format and target equality; daemon magic/size/format. | State is currently an external string, not evidence for closing future values. Unknown states remain refused for upgrade; optional store/upgrade remain nullable. | Actual serialized Report fixtures for absent/empty/compatible/legacy/incompatible plus future state; no upgrade from bool-as-int format. |\n| G27 / U / P1: Layr pending activation and store-upgrade receipts | G/guest_update.py:379-424,460-511. Verified installer source identity -> pending intent/binary hash -> staged binary -> durable pending upgrade receipt before command -> fresh compatible report -> complete -> daemon hello and swap. | Typed InstallIntent/UpgradeReceipt stages with explicit historical loading rules; retain original identity for equality. Deletable: Raw receipt key/type probes only after compatibility proof. | Existing unfinished receipt blocks rerun; exact request/root/target match; binary digest and store report; rollback/start proof; no inference that failed reply means no upgrade. | Do not ignore unknown pending-intent fields before equality; old receipt formats need operator-visible conservative treatment. | Crash before/after upgrade command, digest mismatch, different target/root, rollback failure and already-compatible matching receipt. |\n| G28 / D / P2: Vendoring manifest consumed by embedded installer Python | workspaces/tooling/apps/repository-checks/update-vm-layr.py:20-50; G/install-layr.sh:21-38. Vendor updater writes revision/tree/sourceSha256/files -> installer json.loads -> verifies each file and canonical files digest -> revision/build/stage identities. | Named SourceManifest shared by producer and embedded installer boundary; preserve files map canonical encoding. Deletable: Unchecked manifest key/value extraction and revision primitive shape checks after decoder. | Per-file bytes hash, path containment, aggregate hash, revision format and exact build identity remain essential. | Manifest extensions may be ignored only outside canonical files map; installed older manifests must keep current accepted shape. | Producer fixture verifies both source identity/revision outputs; altered file/map/hash fails without executing install. |\n| G29 / D / P1: Upload SQL row, state/mode and request shapes | G/upload.py:184-290; G/service.py:317-405. begin/chunk parameters -> uploads SQL tuple -> row positional consumers -> commit/seed/apply state transitions -> saved applied result -> duplicate commit replay. | Named UploadRecord, UploadState, UploadMode and Begin/Chunk/Commit request variants. Deletable: Numeric tuple indexing (including row[7]/row[8]), closed state/mode string branches and repeated primitive checks after decode. | Exact id/content match, chunk sequence/hash/offset, disk floor, fsync, durable applying/seeding before effects, nonterminal ambiguity. | Existing SQL columns/defaults and cached result replay remain; non-receiving/non-applied state must not become permission to retry application. | Duplicate chunk exact/mismatched content, commit after partial applying, old default full mode, response lost after receipt. |\n| G30 / D / P1: Upload extraction/apply/delete helper envelopes | G/upload.py:96-180,292-309; G/upload_apply.py:16-90; G/upload_delete.py:1-24; G/service.py:317-361. Service worker argv/JSON -> extraction byte-count/error or Apply/Delete request -> helper JSON -> service validates applied/error -> upload receipt. | Owned ExtractResult, ApplyRequest/Result and DeleteRequest; shared GuestError projection. Deletable: Dict result/error indexing, bytes/applied primitive checks after one boundary decode. | Tar member/expansion bounds, descriptor nofollow, relative delete paths, disk floor, root check, exact applied=true and worker exit code. | Decode failure after applying marker remains outcome_unknown; keep delta/full semantics and do not infer no change from malformed worker output. | Truncated helper reply after effect; applied:false, error, nonzero exit; unsafe archive/link/delete path refused. |\n| G31 / D / P2: File stat/read worker contract | G/files.py:1-48; G/service.py:407; G/layr_agents.py:478. Guest file method+context -> helper JSON stdin -> stat/read -> result/error -> guest envelope -> host consumer. | StatRequest/ReadRequest and StatResult/ReadResult with FileToken record. Deletable: Method-string and repeated field primitive extraction in worker and result consumers. | Contained regular file/no symlink; before/after fstat token, bounded offset/read size, stable hash and exact identity. | Token is live consistency evidence, not a schema guarantee; preserve byte encoding and legacy token representation. | File replacement between stat/read, wrong token, changed during hash, missing path and max-sized read. |\n| G32 / U / P2: Project policy, seed/import markers and directory modes | G/layr_projects.py:69-92,119-252,267; G/upload.py:96-180. Project creation/seed/import and archive extraction -> policy/seed/import JSON markers and folder-modes map -> owner/context/duplicate import/folder-mode restoration. | Named ProjectPolicy, SeedReceipt, ImportReceipt, FolderModes; old markers/defaults need explicit loading policy. Deletable: Raw marker key access and mixed result bags after migration. | Project owner and root; completed upload identity; immutable expected state; frozen source/private snapshot; nofollow and bottom-up modes. | Missing folder-modes currently means empty/default behavior; old markers must not permit duplicate import or overwrite main. | Old/missing marker/modes fixtures, repeated import identity, changed main and symlink replaced between staging/application. |\n| G33 / D / P2: Share export records and status | G/layr_share.py:51-163. Configure identity and project -> export record -> restore/status -> Samba configuration; status state unconfigured/ready/failed -> guest result. | ExportRecord and ShareStatus with local state enum and typed project-name map. Deletable: Record name/default fields and local status-string comparisons after decode. | Exact password/install identity, project name syntax/casefold uniqueness/reserved names, read-only mount inode validation. | Existing unnamed export records use project default name; preserve that fallback and SMB transport openness. | Legacy export without display name, duplicate normalized name, changed mount target and missing config. |\n| G34 / D / P1: Mac-sync method requests/results and entry descriptions | G/mac_sync.py:32-54,87-91,186-258,321-324,474-566; SV/mac_sync/round.rs:1310-1361,1755-1780. Host params -> broker dispatcher -> guest sync methods -> file/link/absent descriptions and apply/head/hashes/read outputs -> host raw result field extraction and merge reconciliation. | Method DTOs, SyncEntry union, ApplyResult with local MergeOutcome, HashPage, ReadResult and HeadResult; shared consumed contract with Rust direct Deserialize. Deletable: Repeated params.get/type checks and host as_str/as_object/default probes on these owned fields. | State ID resolution as project owner (syntax alone not authority), upload/root/path checks, per-project locking, merge state/expected head, bounded entries/chunks/cursor, readOnly acknowledgement. | Support UUID and legacy hex state IDs; preserve file/link/absent and optional modeChanged; unknown host/guest extensions should not collapse to success. | Current producer results deserialize on host; preview must acknowledge readOnly; malformed merge/state/items refused without losing pending operation. |\n| G35 / U / P1: Mac-sync resumable apply/handoff/worktree receipts | G/mac_sync.py:253-333,346-472; G/common.py:115; SV/mac_sync/round.rs:1723-1767. Host persists exact operation/params/hashes -> apply call -> guest receipt lookup -> snapshot/merge -> saved result -> host clears pending only on proven refusal or settlement; handoff/worktree have their own receipt results. | Typed versioned method-specific receipts and pending record, retaining original request body for replay; recovery proof needed before strict migration. Deletable: Raw receipt/pending field probes after old-format policy; no deletion of replay/receipt machinery. | Exact identity and payload, snapshot/fold cleanup, protected main fast-forward, dirty-line/reset ownership, result persist before upload removal. | Only apply has generic restart rerun exemption; do not extend it to handoff/worktree. Missing/unknown result cannot authorize repeat side effects. | Lost reply at each persisted stage; same operation replays same result; stale upload, refused merge and unknown outcome preserve appropriate pending state. |\n| G36 / T / P2: Project secret name/value map | G/project_secrets.py:31-85; G/project_env.py:41-106. set/remove validates names/values -> {version:1,secrets:map} -> read_secrets checks object/string map -> anonymous FD -> exec environment parser checks strings. | Keep dict[str,str] validated map and opaque secret strings; a named outer record is a small follow-up only. Deletable: No value parsing or removal of name/NUL/size checks. | Generated maximum secret bytes, reserved name/prefix policy, no overriding protected environment, private ownership and bounded FD input. | Current reader does not require version; imposing strict version without historical evidence would narrow accepted files. | Names/UTF-8 byte limits/empty values and missing old file; malformed map does not enter environment. |\n| G37 / D / P2: Vault configuration and local push status | G/vault_admin.py:31-55,73-132; layr-desk/crates/layr-desk/src/push.rs:36-51,151. Broker configure -> validated config.json -> Python load -> stdin JSON to typed vendor Config -> local lastAttempt/lastError/lastPush status -> guest result. | Shared VaultConfig projection and local PushStatus; generated parity with typed vendor Config, preserving guest-specific tighter policy. Deletable: Raw config/status field indexing and primitive shape tests after decode. | Recipient/bucket/region/prefix/key syntax, seed length, endpoint policy, private file mode; per-project push lock and VAULT_FIELDS writer reset. | Missing signing key/endpoint and old status fields remain optional. Vendor allows broader endpoints than guest; do not replace guest policy with vendor structural types. | Unsigned/signed config fixtures, key rotation vs access-key rotation, old status without fields; no secrets appear in output. |\n| G38 / R / P2: External vault writer record and extensible push summary | layr-desk desk-core/src/writer.rs:49-91; layr-desk src/push.rs:184; G/vault_admin.py:88-95,168-175. Vendor Record persisted as writer.json; typed Summary serialized by push -> Python JSON -> pushed boolean consumed, complete summary/last record forwarded to host. | Retain external record/summary extensions; a typed pushed projection is appropriate without claiming guest owns the whole schema. Deletable: No closure of writer side/state/attempt or deletion of external metadata. | Require actual boolean pushed, successful process result, private state and bounded error text; do not infer remote nonexecution from process failure. | Vendor owns record canonical form and schema. Unknown fields and optional summary metrics remain preserved. | Future writer/summary fields survive guest round trip; missing/nonboolean pushed rejected; process timeout stays unproven remote outcome. |\n| O01 / T / P1: Operation identity/state/events/reservation/settlement core | O/lib.rs:22-344,390-437; O/reservation.rs:13-107,183; O/settlement.rs:13-80; SV/tool_requests/admission.rs:8; lifecycle.rs:136. Runtime service validated persisted record -> typed State/ReservationInput/SettlementInput -> decide/transition -> typed intents -> adapter transaction persists result. | Existing newtypes/enums/structs are the named domain owner; keep Rust core. Value belongs to adapters, not this pure crate. Deletable: No core Value layer to remove; serde derives already present under feature. | Attempt/epoch/generation/revision identity, event replay, nonexecution/applied proof, receipt presence and legal transition checks. | RequestTool serde aliases and Other preserve legacy/open tool names; missing receipt outcome stays Unknown. | Existing source witnesses cover transition and reservation/settlement decisions; no tests executed in this census. |\n| O02 / U / P1: Exact error-text table used as nonexecution evidence | O/settlement.rs:160-264; SV/tool_requests/lifecycle.rs:142-177; SV/work_write.rs:2715-2740. Work submit checks owner before effect and returns exact rejection at work_write:2725 -> tool result inputText -> lifecycle first_error -> is_exact_rejection -> NotApplied; analogous table covers other managed tools. | Structured owned PreExecutionRejection/NonExecutionProof from handlers; retain legacy exact-text adapter until all allowlisted producers are proven. Deletable: Potentially delete English-text equality allowlist and first-text parsing only after every producer/effect boundary and historical receipt rule is traced. | Positive no-effect proof, committed receipt handling, request identity, read-only status; any unknown wording or tool remains Unknown. | One actual producer was deeply verified, not every table entry. Preserve exact legacy wording semantics; no prefix/substr inference or blanket error=>not-applied. | For every allowlisted text: source-owned preeffect producer witness plus post-effect error with identical-looking text must remain Unknown; committed/absent receipt matrix. |\n| S01 / T / P2: Native-Layr migration launcher | apps/native-layr/codex_layr_native_migration.py:1-35; apps/runtime-server/src/operator_cli/native_layr.rs. CLI argv -> help/env/which binary selection -> execv(runtime-server native-layr migrate argv) -> Rust CLI parser -> native migration owner. | Keep thin argv delegation; no intermediate JSON/Value/state bag. Deletable: None. Argument forwarding is intentional. | Binary existence and authoritative Rust migration validation/receipt policy. | Keep CLI flag text and arbitrary path arguments open; wrapper does not own migration semantics. | Source trace proves delegation only; proposed fixture verifies argv ordering/help; no migration execution. |\n| S02 / T / P2: Process-group I/O priority syscall | runtime-priority-sys/src/lib.rs:1-29; PR/child_priority.rs:87. Runtime child-priority owner verifies process group -> positive i32 group -> typed scalar syscall wrapper -> best-effort Result. | Retain typed syscall wrapper; no JSON or string-domain replacement. Deletable: None from typing. | Positive pgid and actual group ownership before syscall, OS errno handling. | Kernel ABI numeric constants have distinct purpose/units; do not merge equal constants or close unknown errno values. | Source-only ownership/ABI trace; proposed invalid/foreign group fixture without changing active processes. |\n| S03 / T / P1: Darwin process-info and boot identity projection | runtime-proc-sys/src/lib.rs:29-137,188-218; PR/supervisor_identity.rs:110,141,335,352; PR/pty_host.rs:576. libproc/sysctl returns bytes -> BsdInfo typed fields / bounded pid vector / validated boot UUID -> supervisor/PTY identity comparisons. | Already typed safe wrapper over ABI. Kernel status u32 is deliberately open; is_zombie is a predicate. Deletable: None; exact structure-length/PID checks are semantic ABI validation. | PID positive, byte-size/PID match, table growth bounds, ESRCH versus permission failure, fresh start time and boot identity. | Unsupported/failed evidence cannot prove process death/ownership; retain unknown OS statuses and platform cfg. | Existing inline test region 220-276 is counted separately in caveat; proposed truncated ABI and reused-PID evidence fixtures, not live calls. |\n| S04 / R / P2: Kernel process argument blob | runtime-proc-sys/src/lib.rs:140-186; PR/provider_shared.rs:196,222. sysctl process argument record -> bounded Vec<u8> -> provider_shared ABI-specific argument/environment parser. | Retain raw bounded OS record at syscall boundary; typed interpretation belongs to its consuming ABI parser. Deletable: No serde/JSON model is applicable. | Kernel length bounds, NUL/record layout parsing, PID identity and permissions. | Do not assume UTF-8 or close environment/argument values; future ABI changes require parser proof. | Binary/NUL/non-UTF8 fixtures and malformed length; no reads of live process environments. |\n| S05 / R / P2: Deadline byte pump and platform installer text interfaces | G/deadline.py:9-77; G/rosetta.py:47-49,111-150; G/install.sh:1-70; G/install-codex-sandbox.sh:1-17. Service worker JSON or arbitrary bytes -> deadline byte pump -> child output/status; installer argv and platform command/kernel text -> bounded parser -> provisioning control. | Keep byte transport and external CLI/kernel grammar; no Value family. Local CLI branch set is already explicit. Deletable: No structural JSON checks in these paths to delete. | Deadline/output/error caps, child process-group cleanup, install prerequisites, native format/mount checks and command status. | Raw stderr and package/kernel text are external; avoid treating successful parse as proof an install or runtime works. | Source coverage only; proposed byte-pump EOF/timeout and fixture text parsing, no install/network/system commands executed. |\n| S06 / T / P2: Generated shared values and sign-in metadata owner | SC/contracts.rs:1357 -> G/shared_values_generated.py:1-12; G/sign_in_contract.json:2. Schema owner generates guest constants -> guest secret/update/browser/Rosetta consumers; sign-in metadata owner -> Rust catalog/sign_in result parity sources. | Consume existing owner/generated contract; avoid another constant/schema copy. Deletable: None unless a future shared decoder demonstrably subsumes a repeated structural check. | Runtime bounds still apply even when numeric constants are generated. | Generated file is excluded from handwritten findings; JSON tool contract is metadata, not mistakenly omitted source. | Existing parity witness locations are source evidence only; proposed regenerate/parity in future authorized change. |\n| G39 / T / P1: Linux native process start identity | PR/supervisor_identity.rs (ProcStat.start_identity); G/native_identity.py:1-28. Kernel proc-stat/boot-id text -> checked PID/start ticks/zombie projection -> linux:<boot>:<ticks> -> native.py lease/child identity comparisons. | Keep named owner encoding and typed int -> optional string helper; no Value conversion or arbitrary closed enum. Deletable: None; syntax and fresh identity checks remain essential. | Positive PID excluding bool; proc-field location; zombie/dead distinction; nonnegative ticks; missing/invalid identity cannot prove ownership. | Python must match Rust start identity encoding exactly; boot text stays externally owned. | Fixture stat with spaces/parentheses, zombies, malformed ticks, missing boot and reused PID; no live process reads. |\n\nExact production-review exclusions are the non-production entries of the manifest: all category=test paths, shared_values_generated.py (generated), and all category=metadata paths. None was excluded from tracked-blob mechanical scanning. Metadata includes service units, Cargo/tsconfig files, README/model prose, AppArmor, and the handwritten sign_in_contract.json owner. install-layr-store.mts is explicitly a host-side installer fixture, and host_exec_mac_contract.py is a process witness; neither is production. Vendor count is zero within the assigned roots. Production file line totals include the inline runtime-proc-sys test block at src/lib.rs:220-276, so they are file-line counts, not pure production LOC.\n\nTwo limits are especially material. G23 found the guest handlers and registry, but no production literal caller of update.plan/update.apply elsewhere in the pinned workspaces; a dynamically assembled caller may exist, so reachability is unresolved. O02 traced an actual exact-error producer before effects, but did not prove every allowlisted message producer; replacing the entire proof table needs that additional work. The other U rows preserve historical saved-record compatibility and recovery uncertainty explicitly. No source suspicion here is asserted as an observed runtime bug.\n",
+  "reviewLimits": [
+    "No runtime witnesses executed; proposed witnesses are future verification ideas.",
+    "Update host caller/signing producer not established; only guest production literal matches found in pinned workspaces, not proof of absence of a dynamic caller.",
+    "Exact-rejection table has one fully traced work-submit producer; all other producer/effect points require deeper proof before wholesale replacement.",
+    "Saved-record schema migrations need historical fixtures; decode failure must not authorize effects, cleanup, retries or change Unknown into NotApplied.",
+    "External snippets establish local trace edges only, not full coverage of those other roots.",
+    "No edits made; report persisted by Studio task submission only."
+  ],
+  "revision": "1b18e26491860b644f6e7373bc554e814cf95b66",
+  "scope": {
+    "allTracked": 88,
+    "assignedPathCorrection": "native-layr is workspaces/runtime/apps/native-layr, not packages/native-layr",
+    "byRoot": {
+      "workspaces/runtime/apps/native-layr": {
+        "generated": 0,
+        "metadata": 0,
+        "production": 1,
+        "test": 0,
+        "vendor": 0
+      },
+      "workspaces/runtime/apps/vm-guest": {
+        "generated": 1,
+        "metadata": 11,
+        "production": 32,
+        "test": 29,
+        "vendor": 0
+      },
+      "workspaces/runtime/packages/operations": {
+        "generated": 0,
+        "metadata": 3,
+        "production": 3,
+        "test": 3,
+        "vendor": 0
+      },
+      "workspaces/runtime/packages/runtime-priority-sys": {
+        "generated": 0,
+        "metadata": 2,
+        "production": 1,
+        "test": 0,
+        "vendor": 0
+      },
+      "workspaces/runtime/packages/runtime-proc-sys": {
+        "generated": 0,
+        "metadata": 1,
+        "production": 1,
+        "test": 0,
+        "vendor": 0
+      }
+    },
+    "extraSourcePaths": [],
+    "matchedPriorGapPaths": 70,
+    "missingPriorGapPaths": [],
+    "priorInventory": "2118a320:docs/audits/type-contracts-2026-10-27/inventory.json",
+    "roots": [
+      "workspaces/runtime/apps/vm-guest",
+      "workspaces/runtime/apps/native-layr",
+      "workspaces/runtime/packages/operations",
+      "workspaces/runtime/packages/runtime-priority-sys",
+      "workspaces/runtime/packages/runtime-proc-sys"
+    ],
+    "sourceLike": 70,
+    "sourceLikeByRoot": {
+      "workspaces/runtime/apps/native-layr": 1,
+      "workspaces/runtime/apps/vm-guest": 61,
+      "workspaces/runtime/packages/operations": 6,
+      "workspaces/runtime/packages/runtime-priority-sys": 1,
+      "workspaces/runtime/packages/runtime-proc-sys": 1
+    }
+  },
+  "taskId": "work-1793106314433956096-80",
+  "title": "Guest and support-crate type census coverage completion"
+}

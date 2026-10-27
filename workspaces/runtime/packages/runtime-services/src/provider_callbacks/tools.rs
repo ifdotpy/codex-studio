@@ -474,23 +474,22 @@ fn claim_settlement(
     call: &ToolCall,
 ) -> Box<ClaimFailure> {
     use crate::managed_host_tools::{DeliveryCertainty, DispatchedOperation, OperationResult};
-    let (value, applied) = match certainty {
-        DeliveryCertainty::NotSent => (json!(error.to_string()), Some(false)),
-        DeliveryCertainty::Written | DeliveryCertainty::Unknown => {
-            (json!(unknown_outcome(&call.name, &call.id, &error)), None)
-        }
+    let operation = match certainty {
+        DeliveryCertainty::NotSent => DispatchedOperation::NotSent(OperationResult {
+            value: json!(error.to_string()),
+            signals: Vec::new(),
+        }),
+        #[cfg(test)]
+        DeliveryCertainty::Written => DispatchedOperation::Unknown(OperationResult {
+            value: json!(unknown_outcome(&call.name, &call.id, &error)),
+            signals: Vec::new(),
+        }),
+        DeliveryCertainty::Unknown => DispatchedOperation::Unknown(OperationResult {
+            value: json!(unknown_outcome(&call.name, &call.id, &error)),
+            signals: Vec::new(),
+        }),
     };
-    Box::new(ClaimFailure {
-        error,
-        operation: DispatchedOperation {
-            result: OperationResult {
-                value,
-                signals: Vec::new(),
-            },
-            certainty,
-            applied,
-        },
-    })
+    Box::new(ClaimFailure { error, operation })
 }
 
 fn unknown_outcome(tool: &str, id: &str, cause: &dyn std::fmt::Display) -> String {
@@ -753,8 +752,8 @@ impl Drop for ClaimGuard {
             return;
         };
         runtime.spawn(async move {
-            let operation = crate::managed_host_tools::DispatchedOperation {
-                result: crate::managed_host_tools::OperationResult {
+            let operation = crate::managed_host_tools::DispatchedOperation::Unknown(
+                crate::managed_host_tools::OperationResult {
                     value: json!(unknown_outcome(
                         &tool,
                         &id,
@@ -762,9 +761,7 @@ impl Drop for ClaimGuard {
                     )),
                     signals: Vec::new(),
                 },
-                certainty: crate::managed_host_tools::DeliveryCertainty::Unknown,
-                applied: None,
-            };
+            );
             record_settlement(&store, &id, &signature, now, operation).await;
         });
     }
@@ -869,24 +866,22 @@ fn finalize_dispatched(
     now: f64,
     dispatched: crate::managed_host_tools::DispatchedOperation,
 ) -> Result<(Value, Vec<crate::managed_host_tools::WakeSignal>), CallbackError> {
-    use crate::managed_host_tools::DeliveryCertainty;
-    let certainty = match dispatched.certainty {
-        DeliveryCertainty::Written => "written",
-        DeliveryCertainty::NotSent => "not_sent",
-        DeliveryCertainty::Unknown => "unknown",
+    use crate::managed_host_tools::DispatchedOperation;
+    let (result, certainty, success, rejected) = match dispatched {
+        DispatchedOperation::Applied(result) => (result, "written", true, false),
+        DispatchedOperation::Rejected(result) => (result, "written", false, true),
+        DispatchedOperation::NotSent(result) => (result, "not_sent", false, true),
+        DispatchedOperation::Unknown(result) => (result, "unknown", false, false),
     };
     record["deliveryCertainty"] = json!(certainty);
-    let success = dispatched
-        .applied
-        .unwrap_or(matches!(dispatched.certainty, DeliveryCertainty::Written));
     // Python `dynamic`: a command page keeps its own expiry on the tool result.
     let output_expires = matches!(
         record["tool"].as_str(),
         Some("orchestration_servers" | "orchestration_read")
     )
-    .then(|| output_expiry(&dispatched.result.value))
+    .then(|| output_expiry(&result.value))
     .flatten();
-    let mut value = tool_result(dispatched.result.value, success);
+    let mut value = tool_result(result.value, success);
     if let Some(expires) = output_expires {
         value["serverOutputExpiresAt"] = json!(expires);
         tx.execute(
@@ -901,17 +896,10 @@ fn finalize_dispatched(
         .as_array_mut()
         .ok_or(CallbackError::Invalid("Invalid tool result"))?
         .push(json!({"type":"inputText","text":format!("[Time awareness] Tool result finalized at {finalized}")}));
-    match dispatched.certainty {
-        DeliveryCertainty::NotSent => admission::reject(record)?,
-        DeliveryCertainty::Unknown => {
-            lifecycle::settle(record, &value, true)?;
-        }
-        DeliveryCertainty::Written if dispatched.applied == Some(false) => {
-            admission::reject(record)?
-        }
-        DeliveryCertainty::Written => {
-            lifecycle::settle(record, &value, true)?;
-        }
+    if rejected {
+        admission::reject(record)?;
+    } else {
+        lifecycle::settle(record, &value, true)?;
     }
     record["result"] = value.clone();
     record["updated"] = json!(now);
@@ -922,13 +910,13 @@ fn finalize_dispatched(
         "INSERT INTO runtime_tool_results(id,result) VALUES(?1,?2)",
         params![id, value.to_string()],
     )?;
-    Ok((value, dispatched.result.signals))
+    Ok((value, result.signals))
 }
 
 #[cfg(test)]
 mod local_failure_tests {
     use super::{CallbackError, LocalFailure, ToolCall, ToolKind};
-    use crate::managed_host_tools::DeliveryCertainty;
+    use crate::managed_host_tools::DispatchedOperation;
     use serde_json::json;
 
     fn call() -> ToolCall {
@@ -950,11 +938,10 @@ mod local_failure_tests {
             "commit outcome unknown",
         ))
         .settlement(&call());
-        assert_eq!(failure.operation.certainty, DeliveryCertainty::Unknown);
-        assert_eq!(failure.operation.applied, None);
+        assert!(matches!(failure.operation, DispatchedOperation::Unknown(_)));
         let text = failure
             .operation
-            .result
+            .result()
             .value
             .as_str()
             .expect("unknown outcome text");
@@ -964,7 +951,6 @@ mod local_failure_tests {
     #[test]
     fn rolled_back_body_settles_not_applied() {
         let failure = LocalFailure::Body(CallbackError::Invalid("refused")).settlement(&call());
-        assert_eq!(failure.operation.certainty, DeliveryCertainty::NotSent);
-        assert_eq!(failure.operation.applied, Some(false));
+        assert!(matches!(failure.operation, DispatchedOperation::NotSent(_)));
     }
 }

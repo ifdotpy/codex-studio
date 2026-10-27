@@ -1,3 +1,4 @@
+import { AgentStatus } from "./generated/api";
 import { required } from "./components/componentTestFixtures.ts";
 import assert from "node:assert/strict";
 import type { components, AgentEntityDto } from "./generated/api.ts";
@@ -122,7 +123,10 @@ describe("ui team scale helpers", () => {
 
   it("tracks start, token reply and lead report per worker", () => {
     const tracker = createTeamTracker("lead", "TAG", 2);
-    tracker.observe({ id: "w1", rootId: "lead", status: "queued" }, 10);
+    tracker.observe(
+      { id: "w1", rootId: "lead", status: AgentStatus.queued },
+      10,
+    );
     tracker.observe({ id: "w1", rootId: "lead", inFlight: true }, 20);
     tracker.observe({ id: "w1", rootId: "lead", lastAnswer: "TAG_W0001" }, 30);
     tracker.observe(

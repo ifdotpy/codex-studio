@@ -1,3 +1,4 @@
+import { AgentSource } from "../generated/api";
 import {
   isStudioSettingsTab,
   type StudioSettingsTab,
@@ -165,7 +166,7 @@ export function navigationSnapshot(
   const chats: ServerNavigation["chats"] = [];
   for (const chat of data?.threads || []) {
     if (
-      chat.source !== "managed" ||
+      chat.source !== AgentSource.managed ||
       !chat.isLead ||
       chat.deletedAt ||
       chat.sharedRoomId ||

@@ -1,3 +1,4 @@
+import { AgentSource, AgentStatus, RequestStatus } from "../../generated/api";
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import { expect, userEvent, within } from "storybook/test";
 import Requests from "./Requests";
@@ -10,8 +11,8 @@ const agent = {
   kind: "agent",
   id: "worker-1",
   name: "Release worker",
-  source: "managed",
-  status: "approval",
+  source: AgentSource.managed,
+  status: AgentStatus.approval,
   model: "gpt-6",
   created: 1,
 } satisfies Agent;
@@ -20,7 +21,7 @@ const question: RequestDto = {
   id: "question-1",
   agent: agent.id,
   method: "agent/asyncQuestion",
-  status: "pending",
+  status: RequestStatus.pending,
   createdAt: 1,
   params: {
     questions: [

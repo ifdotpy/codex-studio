@@ -1,3 +1,7 @@
+import {
+  TaskStatus as GeneratedApiTaskStatus,
+  TaskKind as GeneratedApiTaskKind,
+} from "../generated/api.ts";
 import { componentSnapshot } from "./componentTestFixtures";
 import type { BackgroundTask, Monitor } from "../types";
 import type { components } from "../generated/api";
@@ -23,7 +27,7 @@ it("projects generated monitor and task payloads for renderer use", () => {
           id: "monitor",
           agent: "lead",
           created: 1,
-          status: "completed",
+          status: GeneratedApiTaskStatus.completed,
         },
       ],
       tasks: [
@@ -31,8 +35,8 @@ it("projects generated monitor and task payloads for renderer use", () => {
           id: "task",
           agent: "lead",
           created: 2,
-          status: "running",
-          kind: "command",
+          status: GeneratedApiTaskStatus.running,
+          kind: GeneratedApiTaskKind.command,
         },
       ],
     }),
@@ -142,17 +146,27 @@ it("lists commands and monitors without tool calls", () => {
   const common: Partial<BackgroundTask> = {
     agent: "lead",
     created: 1,
-    status: "running",
+    status: GeneratedApiTaskStatus.running,
   };
   const tasks = backgroundTasks(
     componentSnapshot([], {
       monitors: [{ ...common, id: "watch" }],
       tasks: [
-        { ...common, id: "command", kind: "command" },
+        { ...common, id: "command", kind: GeneratedApiTaskKind.command },
         { ...common, id: "legacy-command", command: "pwd" },
-        { ...common, id: "question", kind: "tool", name: "AskUserQuestion" },
+        {
+          ...common,
+          id: "question",
+          kind: GeneratedApiTaskKind.tool,
+          name: "AskUserQuestion",
+        },
         { ...common, id: "named-tool", name: "fileChange" },
-        { ...common, id: "tool-with-command", kind: "tool", command: "pwd" },
+        {
+          ...common,
+          id: "tool-with-command",
+          kind: GeneratedApiTaskKind.tool,
+          command: "pwd",
+        },
       ],
     }),
   );

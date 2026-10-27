@@ -1,3 +1,4 @@
+import { AgentSource } from "../generated/api";
 import { required } from "../components/componentTestFixtures.ts";
 import assert from "node:assert/strict";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
@@ -89,7 +90,7 @@ function mount(
       {
         id: "lead",
         name: "Real chat",
-        source: "managed",
+        source: AgentSource.managed,
         isLead: true,
         cwd: "/work",
       },

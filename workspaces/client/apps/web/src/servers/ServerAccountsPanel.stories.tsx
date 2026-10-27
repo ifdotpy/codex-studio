@@ -1,3 +1,4 @@
+import { ProviderKind, AccountStatus } from "../generated/api";
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import { useEffect, useMemo } from "react";
 import { expect, userEvent, within, waitFor } from "storybook/test";
@@ -18,9 +19,9 @@ const accounts: (Account & {
     id: "release",
     label: "Release team",
     email: "release@example.test",
-    provider: "codex",
+    provider: ProviderKind.codex,
     plan: "Pro",
-    status: "ready",
+    status: AccountStatus.ready,
     isDefault: true,
     home: "/fixture/release",
     source: "fixture",
@@ -29,9 +30,9 @@ const accounts: (Account & {
     id: "review",
     label: "Review team",
     email: "review@example.test",
-    provider: "claude",
+    provider: ProviderKind.claude,
     plan: "Max",
-    status: "signedOut",
+    status: AccountStatus.signedOut,
     isDefault: false,
     home: "/fixture/review",
     source: "fixture",
@@ -46,7 +47,9 @@ const accounts: (Account & {
       label: item.label,
       email: item.email ?? null,
       provider:
-        item.provider === "claude" ? ("claude" as const) : ("codex" as const),
+        item.provider === ProviderKind.claude
+          ? ("claude" as const)
+          : ("codex" as const),
       plan: item.plan ?? null,
       status: "ready" as const,
       isDefault: false,

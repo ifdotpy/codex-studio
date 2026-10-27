@@ -115,17 +115,33 @@ fn vm_refresh_deadline_after_session_change(
     }
 }
 
+/// The preparation stages that can block a start without additional evidence.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PreparationWaitReason {
+    ModelCatalog,
+    ProviderSession,
+    Dependency,
+}
+
+impl PreparationWaitReason {
+    fn wait(self, epoch: i64) -> studio_runtime_schema::agent_progress::AgentStartWait {
+        use studio_runtime_schema::agent_progress::AgentStartWait;
+        match self {
+            Self::ModelCatalog => AgentStartWait::ModelCatalog { epoch },
+            Self::ProviderSession => AgentStartWait::ProviderSession { epoch, until: None },
+            Self::Dependency => AgentStartWait::Dependency { epoch },
+        }
+    }
+}
+
 /// Typed owner of a pending preparation; diagnostic text never selects its category.
 #[derive(Debug)]
 pub struct PreparationBlock {
-    pub reason: studio_runtime_schema::agent_progress::StartWaitReason,
+    pub reason: PreparationWaitReason,
     pub diagnostic: String,
 }
 impl PreparationBlock {
-    pub fn new(
-        reason: studio_runtime_schema::agent_progress::StartWaitReason,
-        diagnostic: impl Into<String>,
-    ) -> Self {
+    pub fn new(reason: PreparationWaitReason, diagnostic: impl Into<String>) -> Self {
         Self {
             reason,
             diagnostic: diagnostic.into(),
@@ -134,10 +150,7 @@ impl PreparationBlock {
 }
 impl From<String> for PreparationBlock {
     fn from(diagnostic: String) -> Self {
-        Self::new(
-            studio_runtime_schema::agent_progress::StartWaitReason::Dependency,
-            diagnostic,
-        )
+        Self::new(PreparationWaitReason::Dependency, diagnostic)
     }
 }
 impl From<&str> for PreparationBlock {
@@ -499,12 +512,16 @@ pub enum AccountCommand {
     ConnectionRecovery {
         agent_id: String,
         authorization: Option<crate::agent_management_recovery::AuthorizedRecoveryRequest>,
-        reply: tokio::sync::oneshot::Sender<Result<Value, retained::PortError>>,
+        reply: tokio::sync::oneshot::Sender<
+            Result<crate::recovery::RecoveryReceipt, retained::PortError>,
+        >,
     },
     ConnectionRecoveryComplete {
-        result: Result<Value, retained::PortError>,
+        result: Result<crate::recovery::RecoveryReceipt, retained::PortError>,
         streams: Option<NotificationStreamBuffer>,
-        reply: tokio::sync::oneshot::Sender<Result<Value, retained::PortError>>,
+        reply: tokio::sync::oneshot::Sender<
+            Result<crate::recovery::RecoveryReceipt, retained::PortError>,
+        >,
     },
     #[cfg(test)]
     Barrier(tokio::sync::oneshot::Sender<usize>),
@@ -1886,16 +1903,14 @@ impl Worker {
         let commands = self.commands.clone();
         let agent_id = intent.agent_id.clone();
         let epoch = intent.epoch;
-        let catalog = (pending.reason
-            == studio_runtime_schema::agent_progress::StartWaitReason::ModelCatalog)
-            .then(|| {
-                (
-                    self.resources.model_catalog.clone(),
-                    self.account.clone(),
-                    self.resources.account_home.clone(),
-                    intent.provider,
-                )
-            });
+        let catalog = (pending.reason == PreparationWaitReason::ModelCatalog).then(|| {
+            (
+                self.resources.model_catalog.clone(),
+                self.account.clone(),
+                self.resources.account_home.clone(),
+                intent.provider,
+            )
+        });
         let agents = catalog
             .is_none()
             .then(|| self.bridge.agent_wakes.wait(since, pending.rows));
@@ -2648,13 +2663,13 @@ impl Worker {
         } else {
             let resolver = self.resources.vm_provider_launch.clone().ok_or_else(|| {
                 WorkerError::PreparationPending(crate::account_worker::PreparationBlock::new(
-                    studio_runtime_schema::agent_progress::StartWaitReason::ProviderSession,
+                    PreparationWaitReason::ProviderSession,
                     "provider-session/vm-launch-resolver",
                 ))
             })?;
             let guest = self.resources.guest_rpc.clone().ok_or_else(|| {
                 WorkerError::PreparationPending(crate::account_worker::PreparationBlock::new(
-                    studio_runtime_schema::agent_progress::StartWaitReason::ProviderSession,
+                    PreparationWaitReason::ProviderSession,
                     "provider-session/vm-guest-unavailable",
                 ))
             })?;
@@ -2835,7 +2850,7 @@ impl Worker {
         }
         let resolver = self.resources.vm_provider_launch.clone().ok_or_else(|| {
             WorkerError::PreparationPending(PreparationBlock::new(
-                studio_runtime_schema::agent_progress::StartWaitReason::ProviderSession,
+                PreparationWaitReason::ProviderSession,
                 "provider-session/vm-launch-resolver",
             ))
         })?;
@@ -2846,7 +2861,7 @@ impl Worker {
             Ok(()) => {}
             Err(WorkerError::PreparationRefused(reason)) => {
                 return Err(WorkerError::PreparationPending(PreparationBlock::new(
-                    studio_runtime_schema::agent_progress::StartWaitReason::ProviderSession,
+                    PreparationWaitReason::ProviderSession,
                     reason,
                 )));
             }

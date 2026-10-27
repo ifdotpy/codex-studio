@@ -1,3 +1,4 @@
+import { ProviderKind as GeneratedProviderProviderKind } from "../generated/providerKind.ts";
 import { expect, test } from "vitest";
 import { THROTTLE_FIELDS, accountThrottle } from "./AccountStartThrottle";
 import type { Account } from "./Accounts";
@@ -8,18 +9,24 @@ const account = (provider: ProviderKind, startThrottle?: object) =>
   ({ id: provider, provider, startThrottle }) as unknown as Account;
 
 test("an account without settings shows its provider's generated defaults", () => {
-  expect(accountThrottle(account("codex"))).toEqual({
-    burst: shared.ACCOUNT_START_BURST_DEFAULT_CODEX,
-    pauseSeconds: shared.ACCOUNT_START_PAUSE_DEFAULT_SECONDS_CODEX,
-    maxRunningTurns: shared.ACCOUNT_RUNNING_TURNS_DEFAULT_CODEX,
-  });
-  expect(accountThrottle(account("claude"))).toEqual({
+  expect(accountThrottle(account(GeneratedProviderProviderKind.Codex))).toEqual(
+    {
+      burst: shared.ACCOUNT_START_BURST_DEFAULT_CODEX,
+      pauseSeconds: shared.ACCOUNT_START_PAUSE_DEFAULT_SECONDS_CODEX,
+      maxRunningTurns: shared.ACCOUNT_RUNNING_TURNS_DEFAULT_CODEX,
+    },
+  );
+  expect(
+    accountThrottle(account(GeneratedProviderProviderKind.Claude)),
+  ).toEqual({
     burst: shared.ACCOUNT_START_BURST_DEFAULT_CLAUDE,
     pauseSeconds: shared.ACCOUNT_START_PAUSE_DEFAULT_SECONDS_CLAUDE,
     maxRunningTurns: shared.ACCOUNT_RUNNING_TURNS_DEFAULT_CLAUDE,
   });
   const stored = { burst: 2, pauseSeconds: 5, maxRunningTurns: 3 };
-  expect(accountThrottle(account("codex", stored))).toEqual(stored);
+  expect(
+    accountThrottle(account(GeneratedProviderProviderKind.Codex, stored)),
+  ).toEqual(stored);
 });
 
 test("each field uses the generated bounds and says Studio limits turn starts only", () => {

@@ -1453,23 +1453,25 @@ mod tests {
             })
             .await
             .expect("enable queued owner");
-        use studio_runtime_schema::agent_progress::{AgentStartWait, StartWaitReason};
-        for reason in [
-            StartWaitReason::Pause,
-            StartWaitReason::Slot,
-            StartWaitReason::Disk,
-            StartWaitReason::ModelCatalog,
-            StartWaitReason::ProviderSession,
-            StartWaitReason::Dependency,
+        use studio_runtime_schema::agent_progress::AgentStartWait;
+        for wait in [
+            AgentStartWait::Pause {
+                epoch: 4,
+                until: 5.0,
+            },
+            AgentStartWait::Slot {
+                epoch: 4,
+                running_turns: 2,
+                max_running_turns: 3,
+            },
+            AgentStartWait::Disk { epoch: 4 },
+            AgentStartWait::ModelCatalog { epoch: 4 },
+            AgentStartWait::ProviderSession {
+                epoch: 4,
+                until: None,
+            },
+            AgentStartWait::Dependency { epoch: 4 },
         ] {
-            let mut wait = AgentStartWait::new(reason, 4);
-            if reason == StartWaitReason::Pause {
-                wait.until = Some(4000.0);
-            }
-            if reason == StartWaitReason::Slot {
-                wait.running_turns = Some(8);
-                wait.max_running_turns = Some(8);
-            }
             crate::account_start_gate::show_blocked(&store, vec![("queued".into(), wait.clone())])
                 .await
                 .expect("owner publishes wait");
@@ -1492,10 +1494,7 @@ mod tests {
         // A stale owner cannot replace the current epoch's blocker.
         crate::account_start_gate::show_blocked(
             &store,
-            vec![(
-                "queued".into(),
-                AgentStartWait::new(StartWaitReason::Disk, 3),
-            )],
+            vec![("queued".into(), AgentStartWait::Disk { epoch: 3 })],
         )
         .await
         .expect("stale wait ignored");
@@ -1506,6 +1505,67 @@ mod tests {
             status["capacity"]["queued"][0]["reasons"][0]["reason"],
             "dependency"
         );
+    }
+
+    #[tokio::test]
+    async fn legacy_incomplete_waits_keep_status_and_sync_available() {
+        let (_directory, store) = fixture().await;
+        for wait in [
+            json!({"reason":"slot","epoch":4}),
+            json!({"reason":"pause","epoch":4,"until":null}),
+            json!({"reason":"slot","epoch":3,"runningTurns":"invalid"}),
+            json!({"reason":"slot","epoch":3}),
+            json!({"reason":"pause","epoch":3,"until":null}),
+        ] {
+            let saved = wait.clone();
+            store
+                .transaction_with(move |tx| {
+                    let mut agent = AgentRepository::get(tx, &"queued".into())?.expect("agent");
+                    agent.extra.insert("autoWake".into(), json!(true));
+                    agent.extra.insert("startWait".into(), saved);
+                    AgentRepository::put(tx, &agent)
+                })
+                .await
+                .expect("seed wait");
+            let view = store
+                .read_async("test/legacy-view", |tx| {
+                    let agent = AgentRepository::get(tx, &"queued".into())?.expect("agent");
+                    Ok::<_, StoreError>(crate::sync_views::agent_entity_view(
+                        &agent.value(),
+                        &Default::default(),
+                    ))
+                })
+                .await
+                .expect("read")
+                .expect("agent remains visible");
+            let expected = if wait["epoch"] == 4 {
+                json!(null)
+            } else {
+                json!({"reason":"dispatch_pending","epoch":4})
+            };
+            assert_eq!(view["startWait"], expected);
+            let status = model_directory(&store, "lead", 3, &json!({}), 103.0)
+                .await
+                .expect("status remains available");
+            let reasons = status["capacity"]["queued"][0]["reasons"].clone();
+            assert_eq!(
+                reasons,
+                if expected.is_null() {
+                    json!([])
+                } else {
+                    json!([expected])
+                }
+            );
+        }
+        let record = json!({"provider":"codex","id":"worker","rootId":"worker","epoch":4,"status":"starting","startWait":{"reason":"slot","epoch":4,"runningTurns":2,"maxRunningTurns":3,"until":null}});
+        let view = crate::sync_views::agent_entity_view(&record, &Default::default())
+            .expect("valid legacy wait");
+        assert_eq!(
+            view["startWait"],
+            json!({"reason":"slot","epoch":4,"runningTurns":2,"maxRunningTurns":3})
+        );
+        let record = json!({"provider":"codex","id":"worker","rootId":"worker","epoch":4,"status":"running","startWait":{"reason":"slot","epoch":4}});
+        assert!(crate::sync_views::agent_entity_view(&record, &Default::default()).is_some());
     }
 
     #[tokio::test]

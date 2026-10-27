@@ -35,6 +35,8 @@ unused_must_use = "deny"
 
 [workspace.lints.clippy]
 all = { level = "deny", priority = -1 }
+# The configured JSON type restriction is opt-in at closed typed owners.
+disallowed_types = "allow"
 let_underscore_future = "deny"
 let_underscore_must_use = "deny"
 unwrap_used = "deny"

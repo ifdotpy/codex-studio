@@ -1,3 +1,4 @@
+import { StudioErrorEffectCertainty as GeneratedApiStudioErrorEffectCertainty } from "../generated/api.ts";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { MantineProvider } from "@mantine/core";
@@ -34,7 +35,7 @@ const lost: StudioErrorItem = {
       turnId: null,
       epoch: 0,
     },
-    certainty: "unknown",
+    certainty: GeneratedApiStudioErrorEffectCertainty.unknown,
     causes: [],
   },
 };
@@ -119,7 +120,7 @@ test("server incidents expose details without inventing an agent action", () => 
         status: 503,
         class: "store_data",
       },
-      certainty: "read_only",
+      certainty: GeneratedApiStudioErrorEffectCertainty.read_only,
       causes: [
         {
           kind: "stored_record",

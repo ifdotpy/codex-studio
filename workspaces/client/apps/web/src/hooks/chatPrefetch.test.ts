@@ -1,3 +1,4 @@
+import { AgentSource } from "../generated/api";
 import { afterEach, expect, it, vi } from "vitest";
 import type { Snapshot } from "../types";
 
@@ -76,9 +77,9 @@ it.each([false, true])(
     const data = {
       stateDir: "workspace",
       threads: [
-        { id: "open", source: "managed" },
-        { id: "invisible-one", source: "managed" },
-        { id: "invisible-two", source: "managed" },
+        { id: "open", source: AgentSource.managed },
+        { id: "invisible-one", source: AgentSource.managed },
+        { id: "invisible-two", source: AgentSource.managed },
       ],
     } as Snapshot;
     const prepare = useChatPrefetch(data, "open", "workspace");

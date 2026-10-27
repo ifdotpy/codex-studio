@@ -1,6 +1,6 @@
 //! Draft edits commit before acknowledgment. Replication cannot erase a newer edit.
 use crate::{
-    drafts::{self, DraftVersion},
+    drafts::{self, DraftSnapshot, DraftVersion},
     projections::Document,
     protocol::{Request, Response},
 };
@@ -110,7 +110,7 @@ fn same(a: &Document, b: &Document) -> bool {
             == serde_json::from_str::<Value>(&b.payload).ok()
 }
 
-pub fn view(db: &Connection, workspace: &str) -> Result<Value, String> {
+pub fn view(db: &Connection, workspace: &str) -> Result<DraftSnapshot, String> {
     let rows = rows(db, workspace)?;
     let mut versions = Vec::new();
     for (doc, _, _) in &rows {
@@ -126,10 +126,7 @@ pub fn view(db: &Connection, workspace: &str) -> Result<Value, String> {
         .map_err(|e| e.to_string())?;
     // Dirty means pending replication, not an uncommitted renderer edit. All
     // these branches are committed; reconcile them so conflicts remain visible.
-    // Reconciled draft fields have the same infallible JSON shape as DraftVersion.
-    let mut value =
-        serde_json::to_value(drafts::reconcile(&versions, &BTreeMap::new(), &dismissed)?)
-            .expect("draft view is JSON-serializable");
+    let view = drafts::reconcile(&versions, &BTreeMap::new(), &dismissed)?;
     let revision = sql(db
         .query_row(
             "SELECT revision FROM client_draft_scopes WHERE workspace=?1",
@@ -138,33 +135,41 @@ pub fn view(db: &Connection, workspace: &str) -> Result<Value, String> {
         )
         .optional())?
     .unwrap_or(0);
-    value["revision"] = json!(revision);
-    value["workspaceId"] = json!(workspace);
-    value["error"] = json!(
-        sql(db
-            .query_row(
-                "SELECT error FROM client_draft_sync WHERE workspace=?1",
-                [workspace],
-                |r| r.get::<_, String>(0)
-            )
-            .optional())?
-        .unwrap_or_default()
-    );
-    Ok(value)
+    let error = sql(db
+        .query_row(
+            "SELECT error FROM client_draft_sync WHERE workspace=?1",
+            [workspace],
+            |r| r.get::<_, String>(0),
+        )
+        .optional())?
+    .unwrap_or_default();
+    Ok(DraftSnapshot {
+        view,
+        workspace_id: workspace.into(),
+        revision,
+        error,
+    })
 }
 
-fn execute(db: &Connection, request: &Request) -> Result<Value, String> {
+#[derive(serde::Serialize)]
+#[serde(untagged)]
+enum DraftResult {
+    Snapshot(DraftSnapshot),
+    Pending(Value),
+}
+
+fn execute(db: &Connection, request: &Request) -> Result<DraftResult, String> {
     let p = &request.params;
     let workspace = p["workspace"]
         .as_str()
         .filter(|v| crate::projections::valid_workspace(v))
         .ok_or("Invalid draft workspace.")?;
     match request.method.as_str() {
-        "drafts.view" => view(db, workspace),
+        "drafts.view" => view(db, workspace).map(DraftResult::Snapshot),
         "drafts.sync_status" => {
             let message = p["error"].as_str().unwrap_or("");
             sql(db.execute("INSERT INTO client_draft_sync VALUES(?1,?2) ON CONFLICT(workspace) DO UPDATE SET error=excluded.error",params![workspace,message]))?;
-            view(db, workspace)
+            view(db, workspace).map(DraftResult::Snapshot)
         }
         "drafts.import" => {
             let versions: Vec<DraftVersion> =
@@ -185,7 +190,7 @@ fn execute(db: &Connection, request: &Request) -> Result<Value, String> {
                 }
             }
             revision(db, workspace)?;
-            view(db, workspace)
+            view(db, workspace).map(DraftResult::Snapshot)
         }
         "drafts.edit" => {
             let changes = p["changes"]
@@ -219,7 +224,7 @@ fn execute(db: &Connection, request: &Request) -> Result<Value, String> {
                 save(db, workspace, &document(&version), master, true)?;
             }
             revision(db, workspace)?;
-            view(db, workspace)
+            view(db, workspace).map(DraftResult::Snapshot)
         }
         "drafts.dismiss" => {
             let version = &p["version"];
@@ -232,7 +237,7 @@ fn execute(db: &Connection, request: &Request) -> Result<Value, String> {
                 params![workspace, id, text],
             ))?;
             revision(db, workspace)?;
-            view(db, workspace)
+            view(db, workspace).map(DraftResult::Snapshot)
         }
         "drafts.pending" => {
             let rows=rows(db,workspace)?.into_iter().filter(|(_,_,dirty)|*dirty).take(100).map(|(local,master,_)|json!({"newDocumentState":local,"assumedMasterState":master})).collect::<Vec<_>>();
@@ -244,7 +249,9 @@ fn execute(db: &Connection, request: &Request) -> Result<Value, String> {
                 )
                 .optional())?
             .unwrap_or(0);
-            Ok(json!({"rows":rows,"checkpoint":checkpoint}))
+            Ok(DraftResult::Pending(
+                json!({"rows":rows,"checkpoint":checkpoint}),
+            ))
         }
         "drafts.receive" => {
             let incoming: Vec<Document> =
@@ -281,7 +288,7 @@ fn execute(db: &Connection, request: &Request) -> Result<Value, String> {
             {
                 sql(db.execute("UPDATE client_draft_scopes SET checkpoint=max(checkpoint,?2) WHERE workspace=?1",params![workspace,checkpoint as i64]))?;
             }
-            view(db, workspace)
+            view(db, workspace).map(DraftResult::Snapshot)
         }
         "drafts.acknowledge" => {
             let sent: Vec<Document> =
@@ -293,7 +300,7 @@ fn execute(db: &Connection, request: &Request) -> Result<Value, String> {
                 }
             }
             revision(db, workspace)?;
-            view(db, workspace)
+            view(db, workspace).map(DraftResult::Snapshot)
         }
         _ => Err("Unknown draft command.".into()),
     }
@@ -311,6 +318,8 @@ pub fn dispatch(db: &mut Connection, request: &Request) -> Response {
             return Ok(response);
         }
         let value = execute(&transaction, request)?;
+        // Both result variants contain only JSON values and string-keyed maps.
+        let value = serde_json::to_value(value).expect("draft result is JSON-serializable");
         let response = Response::success(request.id.clone(), value);
         if receipt {
             sql(crate::store::record(&transaction, request, &response))?;
@@ -337,6 +346,33 @@ mod tests {
         assert!(response.error.is_none(), "{:?}", response.error);
         response.result.unwrap()
     }
+    #[test]
+    fn snapshot_wire_contains_workspace_revision_and_error() {
+        let mut store = crate::store::Store::open(std::path::Path::new(":memory:")).unwrap();
+        let initial = command(&mut store, "initial", "drafts.view", json!({}));
+        assert_eq!(
+            initial,
+            json!({"drafts":{}, "conflicts":[], "workspaceId":"a".repeat(32), "revision":0, "error":""})
+        );
+        let edited = command(
+            &mut store,
+            "edit",
+            "drafts.edit",
+            json!({"changes":{"room":"saved"}}),
+        );
+        assert_eq!(edited["revision"], 1);
+        assert_eq!(edited["drafts"]["room"], "saved");
+        let status = command(
+            &mut store,
+            "status",
+            "drafts.sync_status",
+            json!({"error":"offline"}),
+        );
+        assert_eq!(status["error"], "offline");
+        assert_eq!(status["workspaceId"], "a".repeat(32));
+        assert_eq!(status["revision"], 1);
+    }
+
     #[test]
     fn draft_receive_normalizes_shared_legacy_fixtures_without_rewriting_storage() {
         let cases: Vec<Value> =

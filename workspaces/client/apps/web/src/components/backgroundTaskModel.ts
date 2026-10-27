@@ -1,3 +1,4 @@
+import { TaskKind as GeneratedApiTaskKind } from "../generated/api.ts";
 import type { Snapshot } from "../types";
 import type { BackgroundTask, Monitor, WorkspaceTask } from "../types";
 import type { components } from "../generated/api";
@@ -71,7 +72,10 @@ export const activeTask = (task: Pick<DisplayBackgroundTask, "status">) =>
   );
 
 export function isCommandTask(task: Pick<BackgroundTask, "kind" | "command">) {
-  return task.kind === "command" || (task.kind == null && !!task.command);
+  return (
+    task.kind === GeneratedApiTaskKind.command ||
+    (task.kind == null && !!task.command)
+  );
 }
 
 export function projectTaskForRenderer<T extends Task | Monitor>(
@@ -86,7 +90,7 @@ export function projectTaskForRenderer(
     source === "monitor" ? "monitor" : isCommandTask(task) ? "command" : "tool";
   const claudeTask =
     "kind" in task &&
-    task.kind === "tool" &&
+    task.kind === GeneratedApiTaskKind.tool &&
     "itemId" in task &&
     typeof task.itemId === "string" &&
     task.itemId.startsWith("task:");

@@ -1,3 +1,4 @@
+import { AgentStatus } from "../../generated/api";
 import {
   Brain,
   Circle,
@@ -82,7 +83,11 @@ export default function AgentPhase({
   )
     return null;
   // The terminal error appears in the transcript and the account notice.
-  if (agent.status === "failed" && agent.error && !savedMessagePending)
+  if (
+    agent.status === AgentStatus.failed &&
+    agent.error &&
+    !savedMessagePending
+  )
     return null;
   const status = agent.status || "idle";
   const active = ["running", "starting"].includes(status);
@@ -93,7 +98,7 @@ export default function AgentPhase({
     ? "blocked"
     : currentCapacityRetry(agent)?.status === "scheduled"
       ? "capacity-retry"
-      : agent.status === "starting" && agent.worktreePreparation
+      : agent.status === AgentStatus.starting && agent.worktreePreparation
         ? agent.worktreePreparation === "waiting"
           ? "folder-wait"
           : "folder-prepare"

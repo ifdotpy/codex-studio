@@ -1,3 +1,4 @@
+import { AgentStatus, RequestStatus } from "../../generated/api";
 import { required } from "../componentTestFixtures.ts";
 import type { Agent } from "../../types";
 import type { ChatIndicator } from "../chat-status/chatStatusModel";
@@ -9,10 +10,15 @@ it("only includes pending requests with a string agent identity", () => {
   assert.deepEqual(
     [
       ...awaitingAnswerIds([
-        { id: "valid", agent: "worker", status: "pending" },
-        { id: "missing", status: "pending" },
-        { id: "answered", agent: "other", status: "answered" },
-        { id: "deferred", agent: "later", status: "pending", deferred: true },
+        { id: "valid", agent: "worker", status: RequestStatus.pending },
+        { id: "missing", status: RequestStatus.pending },
+        { id: "answered", agent: "other", status: RequestStatus.answered },
+        {
+          id: "deferred",
+          agent: "later",
+          status: RequestStatus.pending,
+          deferred: true,
+        },
       ]),
     ],
     ["worker"],
@@ -25,7 +31,7 @@ it("keeps unknown worker statuses in the existing waiting fallback", () => {
     "waiting",
   );
   assert.equal(
-    workerState({ id: "worker", status: "paused" }, new Set()),
+    workerState({ id: "worker", status: AgentStatus.paused }, new Set()),
     "stopped",
   );
 });
@@ -33,12 +39,12 @@ it("keeps unknown worker statuses in the existing waiting fallback", () => {
 it("orders actionable indicators before work and keeps completed results collapsed", async () => {
   const { teamDispatchGroups } = await import("./WorkerOverview.tsx");
   const rows: Agent[] = [
-    { id: "work", status: "running" },
-    { id: "answer", status: "running", inFlight: true },
-    { id: "failed", status: "failed" },
-    { id: "unread", status: "completed" },
-    { id: "read", status: "completed" },
-    { id: "paused", status: "paused" },
+    { id: "work", status: AgentStatus.running },
+    { id: "answer", status: AgentStatus.running, inFlight: true },
+    { id: "failed", status: AgentStatus.failed },
+    { id: "unread", status: AgentStatus.completed },
+    { id: "read", status: AgentStatus.completed },
+    { id: "paused", status: AgentStatus.paused },
   ];
   const indicators = new Map<string, ChatIndicator>([
     ["work", { kind: "working", label: "Working" }],
@@ -93,11 +99,11 @@ it("keeps parents before their children without losing orphaned or cyclic rows",
 it("filters the same canonical lanes counted by the summary, including queued work", async () => {
   const { filterTeamWorkers } = await import("./WorkerOverview.tsx");
   const rows: Agent[] = [
-    { id: "queued", status: "queued" },
-    { id: "running", status: "running", inFlight: true },
-    { id: "error", status: "failed" },
-    { id: "paused", status: "paused" },
-    { id: "done", status: "completed" },
+    { id: "queued", status: AgentStatus.queued },
+    { id: "running", status: AgentStatus.running, inFlight: true },
+    { id: "error", status: AgentStatus.failed },
+    { id: "paused", status: AgentStatus.paused },
+    { id: "done", status: AgentStatus.completed },
   ];
   const indicators = new Map<string, ChatIndicator>([
     ["queued", { kind: "working", label: "Queued" }],

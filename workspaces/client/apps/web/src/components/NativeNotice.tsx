@@ -1,3 +1,4 @@
+import { AgentStatus as GeneratedApiAgentStatus } from "../generated/api.ts";
 import { useEffect, useState } from "react";
 import { displayError, errorDetails } from "../errorPresentation";
 import { currentCapacityRetry } from "../capacityRetry";
@@ -109,7 +110,7 @@ export function NativeError({
     !blocked &&
     !retry &&
     !connectionCheck &&
-    agent.status === "queued" &&
+    agent.status === GeneratedApiAgentStatus.queued &&
     wait?.scope === "local" &&
     typeof agent.error === "string" &&
     agent.error === wait.error &&

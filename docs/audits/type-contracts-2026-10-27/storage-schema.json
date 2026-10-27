@@ -1,0 +1,1369 @@
+{
+  "activity": "read-only fixed-revision source census",
+  "checks": "No builds, tests, installs, source edits, application starts or live-state reads. Mechanical tracked-source enumeration and lexical/schema inspection only.",
+  "classificationCounts": {
+    "D": 32,
+    "R": 17,
+    "T": 9,
+    "U": 10
+  },
+  "fileCoverage": [
+    {
+      "familyIds": ["F66"],
+      "path": "H/agent_limits.rs"
+    },
+    {
+      "familyIds": ["F66"],
+      "path": "H/agent_progress.rs"
+    },
+    {
+      "familyIds": ["F57"],
+      "path": "H/claude_controls.rs"
+    },
+    {
+      "familyIds": ["F63"],
+      "path": "H/claude_failure.rs"
+    },
+    {
+      "familyIds": ["F66"],
+      "path": "H/claude_permissions.rs"
+    },
+    {
+      "familyIds": ["F09", "F57"],
+      "path": "H/complaints.rs"
+    },
+    {
+      "familyIds": ["F22"],
+      "path": "H/delivery.rs"
+    },
+    {
+      "familyIds": ["F66"],
+      "path": "H/desktop.rs"
+    },
+    {
+      "familyIds": ["F36", "F66"],
+      "path": "H/federation_limits.rs"
+    },
+    {
+      "familyIds": ["F50", "F66"],
+      "path": "H/idle_compaction.rs"
+    },
+    {
+      "familyIds": ["F53"],
+      "path": "H/json_compat.rs"
+    },
+    {
+      "familyIds": ["F01", "F53", "F56"],
+      "path": "H/lib.rs"
+    },
+    {
+      "familyIds": ["F62"],
+      "path": "H/model_catalog.rs"
+    },
+    {
+      "familyIds": ["F39", "F66"],
+      "path": "H/multi_server_protocol.rs"
+    },
+    {
+      "familyIds": ["F62"],
+      "path": "H/pricing.rs"
+    },
+    {
+      "familyIds": ["F58"],
+      "path": "H/process_controls.rs"
+    },
+    {
+      "familyIds": ["F61"],
+      "path": "H/provider_diagnostics.rs"
+    },
+    {
+      "familyIds": ["F60"],
+      "path": "H/provider_errors.rs"
+    },
+    {
+      "familyIds": ["F61"],
+      "path": "H/provider_input.rs"
+    },
+    {
+      "familyIds": ["F61"],
+      "path": "H/provider_input/items.rs"
+    },
+    {
+      "familyIds": ["F60"],
+      "path": "H/provider_kind.rs"
+    },
+    {
+      "familyIds": ["F60"],
+      "path": "H/provider_lifecycle.rs"
+    },
+    {
+      "familyIds": ["F61"],
+      "path": "H/provider_method_policy.rs"
+    },
+    {
+      "familyIds": ["F64"],
+      "path": "H/provider_rate_limits.rs"
+    },
+    {
+      "familyIds": ["F08", "F59"],
+      "path": "H/question_answers.rs"
+    },
+    {
+      "familyIds": ["F57"],
+      "path": "H/queue_command.rs"
+    },
+    {
+      "familyIds": ["F03", "F66"],
+      "path": "H/records.rs"
+    },
+    {
+      "familyIds": ["F33"],
+      "path": "H/schemas/account-registry.schema.json"
+    },
+    {
+      "familyIds": ["F44"],
+      "path": "H/schemas/analytics-agent.schema.json"
+    },
+    {
+      "familyIds": ["F44"],
+      "path": "H/schemas/analytics-context.schema.json"
+    },
+    {
+      "familyIds": ["F47"],
+      "path": "H/schemas/analytics-history-importer.schema.json"
+    },
+    {
+      "familyIds": ["F47"],
+      "path": "H/schemas/analytics-history.schema.json"
+    },
+    {
+      "familyIds": ["F44"],
+      "path": "H/schemas/analytics-item.schema.json"
+    },
+    {
+      "familyIds": ["F44"],
+      "path": "H/schemas/analytics-notice.schema.json"
+    },
+    {
+      "familyIds": ["F44"],
+      "path": "H/schemas/analytics-turn.schema.json"
+    },
+    {
+      "familyIds": ["F45", "F46"],
+      "path": "H/schemas/analytics-usage.schema.json"
+    },
+    {
+      "familyIds": ["F63"],
+      "path": "H/schemas/claude-failure.schema.json"
+    },
+    {
+      "familyIds": ["F36"],
+      "path": "H/schemas/federation-chat-payload.schema.json"
+    },
+    {
+      "familyIds": ["F35", "F36"],
+      "path": "H/schemas/federation-room-payload.schema.json"
+    },
+    {
+      "familyIds": ["F37"],
+      "path": "H/schemas/persisted-access-client.schema.json"
+    },
+    {
+      "familyIds": ["F37"],
+      "path": "H/schemas/persisted-access-invite.schema.json"
+    },
+    {
+      "familyIds": ["F38", "F41"],
+      "path": "H/schemas/persisted-access-receipt.schema.json"
+    },
+    {
+      "familyIds": ["F37"],
+      "path": "H/schemas/persisted-access-record.schema.json"
+    },
+    {
+      "familyIds": ["F24"],
+      "path": "H/schemas/persisted-account-transfer-record.schema.json"
+    },
+    {
+      "familyIds": ["F02"],
+      "path": "H/schemas/persisted-agent-record.schema.json"
+    },
+    {
+      "familyIds": ["F07"],
+      "path": "H/schemas/persisted-annotation-record.schema.json"
+    },
+    {
+      "familyIds": ["F49"],
+      "path": "H/schemas/persisted-budget-state-write.schema.json"
+    },
+    {
+      "familyIds": ["F49"],
+      "path": "H/schemas/persisted-budget-state.schema.json"
+    },
+    {
+      "familyIds": ["F49"],
+      "path": "H/schemas/persisted-budget-usage.schema.json"
+    },
+    {
+      "familyIds": ["F42"],
+      "path": "H/schemas/persisted-chat-message.schema.json"
+    },
+    {
+      "familyIds": ["F10"],
+      "path": "H/schemas/persisted-checkpoint-record.schema.json"
+    },
+    {
+      "familyIds": ["F17"],
+      "path": "H/schemas/persisted-claude-attempt.schema.json"
+    },
+    {
+      "familyIds": ["F32"],
+      "path": "H/schemas/persisted-claude-control.schema.json"
+    },
+    {
+      "familyIds": ["F68"],
+      "path": "H/schemas/persisted-claude-login.schema.json"
+    },
+    {
+      "familyIds": ["F09"],
+      "path": "H/schemas/persisted-complaint-record.schema.json"
+    },
+    {
+      "familyIds": ["F13", "F14"],
+      "path": "H/schemas/persisted-continuation-snapshot.schema.json"
+    },
+    {
+      "familyIds": ["F29"],
+      "path": "H/schemas/persisted-execution-record.schema.json"
+    },
+    {
+      "familyIds": ["F16"],
+      "path": "H/schemas/persisted-execution-run-record.schema.json"
+    },
+    {
+      "familyIds": ["F36"],
+      "path": "H/schemas/persisted-federation-inbox.schema.json"
+    },
+    {
+      "familyIds": ["F36"],
+      "path": "H/schemas/persisted-federation-outbox.schema.json"
+    },
+    {
+      "familyIds": ["F35"],
+      "path": "H/schemas/persisted-federation-peer.schema.json"
+    },
+    {
+      "familyIds": ["F35"],
+      "path": "H/schemas/persisted-federation-room-record.schema.json"
+    },
+    {
+      "familyIds": ["F35"],
+      "path": "H/schemas/persisted-federation-room.schema.json"
+    },
+    {
+      "familyIds": ["F35"],
+      "path": "H/schemas/persisted-federation-settings.schema.json"
+    },
+    {
+      "familyIds": ["F23"],
+      "path": "H/schemas/persisted-graph-agent-record.schema.json"
+    },
+    {
+      "familyIds": ["F28"],
+      "path": "H/schemas/persisted-message-event.schema.json"
+    },
+    {
+      "familyIds": ["F11"],
+      "path": "H/schemas/persisted-monitor-record.schema.json"
+    },
+    {
+      "familyIds": ["F11"],
+      "path": "H/schemas/persisted-monitor-result.schema.json"
+    },
+    {
+      "familyIds": ["F29", "F41"],
+      "path": "H/schemas/persisted-operation-result.schema.json"
+    },
+    {
+      "familyIds": ["F06"],
+      "path": "H/schemas/persisted-plan-record.schema.json"
+    },
+    {
+      "familyIds": ["F04"],
+      "path": "H/schemas/persisted-profile-record.schema.json"
+    },
+    {
+      "familyIds": ["F26"],
+      "path": "H/schemas/persisted-project-location-outbox.schema.json"
+    },
+    {
+      "familyIds": ["F27"],
+      "path": "H/schemas/persisted-project-record.schema.json"
+    },
+    {
+      "familyIds": ["F25", "F26", "F27"],
+      "path": "H/schemas/persisted-relocation.schema.json"
+    },
+    {
+      "familyIds": ["F08"],
+      "path": "H/schemas/persisted-request-record.schema.json"
+    },
+    {
+      "familyIds": ["F42"],
+      "path": "H/schemas/persisted-room-record.schema.json"
+    },
+    {
+      "familyIds": ["F15"],
+      "path": "H/schemas/persisted-rule-record.schema.json"
+    },
+    {
+      "familyIds": ["F39"],
+      "path": "H/schemas/persisted-server-delivery.schema.json"
+    },
+    {
+      "familyIds": ["F53"],
+      "path": "H/schemas/persisted-sync-entity.schema.json"
+    },
+    {
+      "familyIds": ["F05"],
+      "path": "H/schemas/persisted-task-record.schema.json"
+    },
+    {
+      "familyIds": ["F12"],
+      "path": "H/schemas/persisted-terminal-record.schema.json"
+    },
+    {
+      "familyIds": ["F40"],
+      "path": "H/schemas/persisted-tool-alias.schema.json"
+    },
+    {
+      "familyIds": ["F40"],
+      "path": "H/schemas/persisted-tool-request-record.schema.json"
+    },
+    {
+      "familyIds": ["F41"],
+      "path": "H/schemas/persisted-tool-result.schema.json"
+    },
+    {
+      "familyIds": ["F20"],
+      "path": "H/schemas/persisted-transcript-record.schema.json"
+    },
+    {
+      "familyIds": ["F24"],
+      "path": "H/schemas/persisted-transfer-agent-record.schema.json"
+    },
+    {
+      "familyIds": ["F13"],
+      "path": "H/schemas/persisted-usage-resume-record.schema.json"
+    },
+    {
+      "familyIds": ["F03"],
+      "path": "H/schemas/persisted-work-item-record.schema.json"
+    },
+    {
+      "familyIds": ["F18", "F19"],
+      "path": "H/schemas/persisted-workspace-operation-record.schema.json"
+    },
+    {
+      "familyIds": ["F02", "F31"],
+      "path": "H/schemas/recovery-agent-record.schema.json"
+    },
+    {
+      "familyIds": ["F05"],
+      "path": "H/schemas/recovery-task-record.schema.json"
+    },
+    {
+      "familyIds": ["F40", "F41"],
+      "path": "H/schemas/recovery-tool-receipt.schema.json"
+    },
+    {
+      "familyIds": ["F22"],
+      "path": "H/schemas/runtime-event-metadata.schema.json"
+    },
+    {
+      "familyIds": ["F21"],
+      "path": "H/schemas/runtime-transcript-asset.schema.json"
+    },
+    {
+      "familyIds": ["F10"],
+      "path": "H/schemas/workspace-checkpoint-agent-record.schema.json"
+    },
+    {
+      "familyIds": ["F10"],
+      "path": "H/schemas/workspace-checkpoint-history-record.schema.json"
+    },
+    {
+      "familyIds": ["F34"],
+      "path": "H/schemas/workspace-usage-limits.schema.json"
+    },
+    {
+      "familyIds": ["F66"],
+      "path": "H/shared_values.rs"
+    },
+    {
+      "familyIds": ["F50", "F66"],
+      "path": "H/shell_policy.rs"
+    },
+    {
+      "familyIds": ["F66"],
+      "path": "H/studio_errors.rs"
+    },
+    {
+      "familyIds": ["F11"],
+      "path": "H/studio_errors/monitor.rs"
+    },
+    {
+      "familyIds": ["F51"],
+      "path": "H/supervisor_contract.rs"
+    },
+    {
+      "familyIds": ["F53"],
+      "path": "H/sync_protocol.rs"
+    },
+    {
+      "familyIds": ["F57"],
+      "path": "H/task_command.rs"
+    },
+    {
+      "familyIds": ["F57"],
+      "path": "H/task_gate.rs"
+    },
+    {
+      "familyIds": ["F59"],
+      "path": "H/task_results.rs"
+    },
+    {
+      "familyIds": ["F34", "F66"],
+      "path": "H/token_rate_limits.rs"
+    },
+    {
+      "familyIds": ["F65"],
+      "path": "H/usage.rs"
+    },
+    {
+      "familyIds": ["F45", "F65"],
+      "path": "H/usage/ledger.rs"
+    },
+    {
+      "familyIds": ["F46"],
+      "path": "H/usage/persisted.rs"
+    },
+    {
+      "familyIds": ["F66"],
+      "path": "H/workspace_modes.rs"
+    },
+    {
+      "familyIds": ["F33"],
+      "path": "S/account_registry.rs"
+    },
+    {
+      "familyIds": ["F02", "F67"],
+      "path": "S/agent_columns.rs"
+    },
+    {
+      "familyIds": ["F02"],
+      "path": "S/agent_volatile.rs"
+    },
+    {
+      "familyIds": ["F67"],
+      "path": "S/blocking_pool.rs"
+    },
+    {
+      "familyIds": ["F56", "F67"],
+      "path": "S/bootstrap.rs"
+    },
+    {
+      "familyIds": ["F67"],
+      "path": "S/cached_sql.rs"
+    },
+    {
+      "familyIds": ["F53", "F67"],
+      "path": "S/entity_publication.rs"
+    },
+    {
+      "familyIds": ["F56"],
+      "path": "S/feature_schema.rs"
+    },
+    {
+      "familyIds": ["F56"],
+      "path": "S/fresh_state.rs"
+    },
+    {
+      "familyIds": ["F52", "F67"],
+      "path": "S/lib.rs"
+    },
+    {
+      "familyIds": ["F55"],
+      "path": "S/migrations/m2026_10_20_agents.rs"
+    },
+    {
+      "familyIds": ["F55"],
+      "path": "S/migrations/m2026_10_22_analytics.rs"
+    },
+    {
+      "familyIds": ["F55"],
+      "path": "S/migrations/m2026_10_26_canvas.rs"
+    },
+    {
+      "familyIds": ["F55"],
+      "path": "S/migrations/m2026_10_26_provider_identity.rs"
+    },
+    {
+      "familyIds": ["F55"],
+      "path": "S/migrations/m2026_10_26_registry.rs"
+    },
+    {
+      "familyIds": ["F55"],
+      "path": "S/migrations/m2026_10_26_terminal_errors.rs"
+    },
+    {
+      "familyIds": ["F55"],
+      "path": "S/migrations/mod.rs"
+    },
+    {
+      "familyIds": ["F37", "F56"],
+      "path": "S/multi_server_state_check.rs"
+    },
+    {
+      "familyIds": ["F67"],
+      "path": "S/path.rs"
+    },
+    {
+      "familyIds": ["F67"],
+      "path": "S/path_identity.rs"
+    },
+    {
+      "familyIds": [
+        "F01",
+        "F02",
+        "F03",
+        "F04",
+        "F05",
+        "F06",
+        "F07",
+        "F08",
+        "F09",
+        "F10",
+        "F11",
+        "F12",
+        "F13",
+        "F15",
+        "F16",
+        "F18",
+        "F20",
+        "F21",
+        "F22",
+        "F23"
+      ],
+      "path": "S/records.rs"
+    },
+    {
+      "familyIds": ["F34"],
+      "path": "S/repositories/account_state.rs"
+    },
+    {
+      "familyIds": ["F24"],
+      "path": "S/repositories/account_transfer.rs"
+    },
+    {
+      "familyIds": ["F02", "F67"],
+      "path": "S/repositories/agent_indexed_reads.rs"
+    },
+    {
+      "familyIds": ["F02"],
+      "path": "S/repositories/agent_management.rs"
+    },
+    {
+      "familyIds": ["F25"],
+      "path": "S/repositories/agent_move.rs"
+    },
+    {
+      "familyIds": ["F02"],
+      "path": "S/repositories/agents.rs"
+    },
+    {
+      "familyIds": ["F44", "F47", "F48", "F64"],
+      "path": "S/repositories/analytics.rs"
+    },
+    {
+      "familyIds": ["F44", "F45", "F46", "F47"],
+      "path": "S/repositories/analytics_capture.rs"
+    },
+    {
+      "familyIds": ["F02", "F67"],
+      "path": "S/repositories/capability_reads.rs"
+    },
+    {
+      "familyIds": ["F10"],
+      "path": "S/repositories/checkpoints.rs"
+    },
+    {
+      "familyIds": ["F32"],
+      "path": "S/repositories/claude_controls.rs"
+    },
+    {
+      "familyIds": ["F17"],
+      "path": "S/repositories/claude_records.rs"
+    },
+    {
+      "familyIds": ["F17"],
+      "path": "S/repositories/claude_retry.rs"
+    },
+    {
+      "familyIds": ["F31"],
+      "path": "S/repositories/context_repair.rs"
+    },
+    {
+      "familyIds": ["F13", "F14"],
+      "path": "S/repositories/continuation.rs"
+    },
+    {
+      "familyIds": ["F23", "F42"],
+      "path": "S/repositories/coordination.rs"
+    },
+    {
+      "familyIds": ["F45", "F46", "F48"],
+      "path": "S/repositories/cost_aggregate.rs"
+    },
+    {
+      "familyIds": ["F02", "F07", "F22", "F29"],
+      "path": "S/repositories/event_write.rs"
+    },
+    {
+      "familyIds": ["F28"],
+      "path": "S/repositories/events.rs"
+    },
+    {
+      "familyIds": ["F16", "F29"],
+      "path": "S/repositories/execution_history.rs"
+    },
+    {
+      "familyIds": ["F35", "F36"],
+      "path": "S/repositories/federation.rs"
+    },
+    {
+      "familyIds": ["F37", "F67"],
+      "path": "S/repositories/federation_credentials.rs"
+    },
+    {
+      "familyIds": ["F35", "F36"],
+      "path": "S/repositories/federation_messaging.rs"
+    },
+    {
+      "familyIds": ["F42"],
+      "path": "S/repositories/messages.rs"
+    },
+    {
+      "familyIds": ["F56", "F67"],
+      "path": "S/repositories/mod.rs"
+    },
+    {
+      "familyIds": ["F08", "F11"],
+      "path": "S/repositories/monitor_runtime.rs"
+    },
+    {
+      "familyIds": ["F11"],
+      "path": "S/repositories/monitors.rs"
+    },
+    {
+      "familyIds": ["F37", "F67"],
+      "path": "S/repositories/multi_server.rs"
+    },
+    {
+      "familyIds": ["F39"],
+      "path": "S/repositories/multi_server_delivery.rs"
+    },
+    {
+      "familyIds": ["F20", "F22", "F29"],
+      "path": "S/repositories/notification_dispatch.rs"
+    },
+    {
+      "familyIds": ["F50"],
+      "path": "S/repositories/orchestration_settings.rs"
+    },
+    {
+      "familyIds": ["F04"],
+      "path": "S/repositories/profiles.rs"
+    },
+    {
+      "familyIds": ["F26", "F27"],
+      "path": "S/repositories/project_locations.rs"
+    },
+    {
+      "familyIds": ["F27", "F42"],
+      "path": "S/repositories/projects.rs"
+    },
+    {
+      "familyIds": ["F08", "F09", "F10"],
+      "path": "S/repositories/questions_reads.rs"
+    },
+    {
+      "familyIds": ["F08", "F09"],
+      "path": "S/repositories/questions_write.rs"
+    },
+    {
+      "familyIds": ["F22", "F28"],
+      "path": "S/repositories/queue_write.rs"
+    },
+    {
+      "familyIds": ["F38"],
+      "path": "S/repositories/remote_transport.rs"
+    },
+    {
+      "familyIds": ["F02", "F67"],
+      "path": "S/repositories/reviewer_archive.rs"
+    },
+    {
+      "familyIds": ["F15"],
+      "path": "S/repositories/rules.rs"
+    },
+    {
+      "familyIds": ["F15"],
+      "path": "S/repositories/rules_tick.rs"
+    },
+    {
+      "familyIds": ["F02", "F28"],
+      "path": "S/repositories/scheduler.rs"
+    },
+    {
+      "familyIds": ["F02"],
+      "path": "S/repositories/scheduler/idle_unload.rs"
+    },
+    {
+      "familyIds": ["F02", "F16", "F28"],
+      "path": "S/repositories/scheduler/lifecycle.rs"
+    },
+    {
+      "familyIds": ["F22", "F28"],
+      "path": "S/repositories/scheduler/selection.rs"
+    },
+    {
+      "familyIds": ["F30"],
+      "path": "S/repositories/scheduler/steer.rs"
+    },
+    {
+      "familyIds": ["F02", "F67"],
+      "path": "S/repositories/startup_recovery.rs"
+    },
+    {
+      "familyIds": ["F53"],
+      "path": "S/repositories/sync_documents.rs"
+    },
+    {
+      "familyIds": ["F01", "F37", "F39", "F40", "F41"],
+      "path": "S/repositories/system_reads.rs"
+    },
+    {
+      "familyIds": ["F05"],
+      "path": "S/repositories/tasks.rs"
+    },
+    {
+      "familyIds": ["F12"],
+      "path": "S/repositories/terminals.rs"
+    },
+    {
+      "familyIds": ["F20", "F53"],
+      "path": "S/repositories/transcript.rs"
+    },
+    {
+      "familyIds": ["F13", "F14"],
+      "path": "S/repositories/usage.rs"
+    },
+    {
+      "familyIds": ["F43"],
+      "path": "S/repositories/voice.rs"
+    },
+    {
+      "familyIds": ["F03", "F16", "F29"],
+      "path": "S/repositories/work_items.rs"
+    },
+    {
+      "familyIds": ["F21"],
+      "path": "S/repositories/workspace_files.rs"
+    },
+    {
+      "familyIds": ["F18"],
+      "path": "S/repositories/workspace_operations.rs"
+    },
+    {
+      "familyIds": ["F19"],
+      "path": "S/repositories/workspace_ready.rs"
+    },
+    {
+      "familyIds": [
+        "F01",
+        "F02",
+        "F05",
+        "F06",
+        "F07",
+        "F08",
+        "F09",
+        "F10",
+        "F11",
+        "F15",
+        "F23"
+      ],
+      "path": "S/repositories/workspace_views.rs"
+    },
+    {
+      "familyIds": ["F56"],
+      "path": "S/runtime-state-schema.json"
+    },
+    {
+      "familyIds": ["F53", "F55", "F56"],
+      "path": "S/schema.rs"
+    },
+    {
+      "familyIds": ["F67"],
+      "path": "S/sqlite_actor.rs"
+    },
+    {
+      "familyIds": ["F67"],
+      "path": "S/sqlite_durability.rs"
+    },
+    {
+      "familyIds": ["F01", "F56"],
+      "path": "S/state_check.rs"
+    },
+    {
+      "familyIds": ["F52"],
+      "path": "S/state_owner.rs"
+    },
+    {
+      "familyIds": ["F54"],
+      "path": "S/stored_text.rs"
+    },
+    {
+      "familyIds": ["F54"],
+      "path": "S/stored_text_compaction.rs"
+    },
+    {
+      "familyIds": ["F54"],
+      "path": "S/stored_text_dictionary.rs"
+    },
+    {
+      "familyIds": ["F51"],
+      "path": "S/supervisor_journal.rs"
+    },
+    {
+      "familyIds": ["F51", "F56"],
+      "path": "S/supervisor_schema.sql"
+    },
+    {
+      "familyIds": ["F53", "F56"],
+      "path": "S/sync_schema.sql"
+    }
+  ],
+  "fileCoverageAliases": {
+    "H": "workspaces/runtime/packages/runtime-schema/src",
+    "S": "workspaces/runtime/packages/runtime-store/src"
+  },
+  "limits": "No manually-read-every-line claim; each family row labels inspection. Ten whole-family conclusions remain unresolved. All witnesses proposed/unrun. Generated-schema implementation excluded.",
+  "noRuntimeEvidence": true,
+  "observedAt": "2026-10-27T12:58:00Z",
+  "pathManifest": {
+    "all": {
+      "count": 235,
+      "sha256": "1f1acf41a228d600ca84663676288e748f30183e7483942d643ea9134342b5ce"
+    },
+    "buckets": {
+      "docs_config": [
+        "workspaces/runtime/packages/runtime-schema/Cargo.toml",
+        "workspaces/runtime/packages/runtime-schema/README.md",
+        "workspaces/runtime/packages/runtime-store/Cargo.toml",
+        "workspaces/runtime/packages/runtime-store/README.md"
+      ],
+      "generated": [
+        "workspaces/runtime/packages/runtime-schema/src/codex_generated.rs",
+        "workspaces/runtime/packages/runtime-schema/src/schemas/claude-rate-limit.provenance.json",
+        "workspaces/runtime/packages/runtime-schema/src/schemas/claude-rate-limit.schema.json",
+        "workspaces/runtime/packages/runtime-schema/src/schemas/usage-observation.schema.json"
+      ],
+      "generator_excluded": [
+        "workspaces/runtime/packages/runtime-schema/build.rs",
+        "workspaces/runtime/packages/runtime-schema/src/api_schema.rs",
+        "workspaces/runtime/packages/runtime-schema/src/bin/studio-contracts.rs",
+        "workspaces/runtime/packages/runtime-schema/src/contracts.rs"
+      ],
+      "production": [
+        "workspaces/runtime/packages/runtime-schema/src/agent_limits.rs",
+        "workspaces/runtime/packages/runtime-schema/src/agent_progress.rs",
+        "workspaces/runtime/packages/runtime-schema/src/claude_controls.rs",
+        "workspaces/runtime/packages/runtime-schema/src/claude_failure.rs",
+        "workspaces/runtime/packages/runtime-schema/src/claude_permissions.rs",
+        "workspaces/runtime/packages/runtime-schema/src/complaints.rs",
+        "workspaces/runtime/packages/runtime-schema/src/delivery.rs",
+        "workspaces/runtime/packages/runtime-schema/src/desktop.rs",
+        "workspaces/runtime/packages/runtime-schema/src/federation_limits.rs",
+        "workspaces/runtime/packages/runtime-schema/src/idle_compaction.rs",
+        "workspaces/runtime/packages/runtime-schema/src/json_compat.rs",
+        "workspaces/runtime/packages/runtime-schema/src/lib.rs",
+        "workspaces/runtime/packages/runtime-schema/src/model_catalog.rs",
+        "workspaces/runtime/packages/runtime-schema/src/multi_server_protocol.rs",
+        "workspaces/runtime/packages/runtime-schema/src/pricing.rs",
+        "workspaces/runtime/packages/runtime-schema/src/process_controls.rs",
+        "workspaces/runtime/packages/runtime-schema/src/provider_diagnostics.rs",
+        "workspaces/runtime/packages/runtime-schema/src/provider_errors.rs",
+        "workspaces/runtime/packages/runtime-schema/src/provider_input.rs",
+        "workspaces/runtime/packages/runtime-schema/src/provider_input/items.rs",
+        "workspaces/runtime/packages/runtime-schema/src/provider_kind.rs",
+        "workspaces/runtime/packages/runtime-schema/src/provider_lifecycle.rs",
+        "workspaces/runtime/packages/runtime-schema/src/provider_method_policy.rs",
+        "workspaces/runtime/packages/runtime-schema/src/provider_rate_limits.rs",
+        "workspaces/runtime/packages/runtime-schema/src/question_answers.rs",
+        "workspaces/runtime/packages/runtime-schema/src/queue_command.rs",
+        "workspaces/runtime/packages/runtime-schema/src/records.rs",
+        "workspaces/runtime/packages/runtime-schema/src/schemas/account-registry.schema.json",
+        "workspaces/runtime/packages/runtime-schema/src/schemas/analytics-agent.schema.json",
+        "workspaces/runtime/packages/runtime-schema/src/schemas/analytics-context.schema.json",
+        "workspaces/runtime/packages/runtime-schema/src/schemas/analytics-history-importer.schema.json",
+        "workspaces/runtime/packages/runtime-schema/src/schemas/analytics-history.schema.json",
+        "workspaces/runtime/packages/runtime-schema/src/schemas/analytics-item.schema.json",
+        "workspaces/runtime/packages/runtime-schema/src/schemas/analytics-notice.schema.json",
+        "workspaces/runtime/packages/runtime-schema/src/schemas/analytics-turn.schema.json",
+        "workspaces/runtime/packages/runtime-schema/src/schemas/analytics-usage.schema.json",
+        "workspaces/runtime/packages/runtime-schema/src/schemas/claude-failure.schema.json",
+        "workspaces/runtime/packages/runtime-schema/src/schemas/federation-chat-payload.schema.json",
+        "workspaces/runtime/packages/runtime-schema/src/schemas/federation-room-payload.schema.json",
+        "workspaces/runtime/packages/runtime-schema/src/schemas/persisted-access-client.schema.json",
+        "workspaces/runtime/packages/runtime-schema/src/schemas/persisted-access-invite.schema.json",
+        "workspaces/runtime/packages/runtime-schema/src/schemas/persisted-access-receipt.schema.json",
+        "workspaces/runtime/packages/runtime-schema/src/schemas/persisted-access-record.schema.json",
+        "workspaces/runtime/packages/runtime-schema/src/schemas/persisted-account-transfer-record.schema.json",
+        "workspaces/runtime/packages/runtime-schema/src/schemas/persisted-agent-record.schema.json",
+        "workspaces/runtime/packages/runtime-schema/src/schemas/persisted-annotation-record.schema.json",
+        "workspaces/runtime/packages/runtime-schema/src/schemas/persisted-budget-state-write.schema.json",
+        "workspaces/runtime/packages/runtime-schema/src/schemas/persisted-budget-state.schema.json",
+        "workspaces/runtime/packages/runtime-schema/src/schemas/persisted-budget-usage.schema.json",
+        "workspaces/runtime/packages/runtime-schema/src/schemas/persisted-chat-message.schema.json",
+        "workspaces/runtime/packages/runtime-schema/src/schemas/persisted-checkpoint-record.schema.json",
+        "workspaces/runtime/packages/runtime-schema/src/schemas/persisted-claude-attempt.schema.json",
+        "workspaces/runtime/packages/runtime-schema/src/schemas/persisted-claude-control.schema.json",
+        "workspaces/runtime/packages/runtime-schema/src/schemas/persisted-claude-login.schema.json",
+        "workspaces/runtime/packages/runtime-schema/src/schemas/persisted-complaint-record.schema.json",
+        "workspaces/runtime/packages/runtime-schema/src/schemas/persisted-continuation-snapshot.schema.json",
+        "workspaces/runtime/packages/runtime-schema/src/schemas/persisted-execution-record.schema.json",
+        "workspaces/runtime/packages/runtime-schema/src/schemas/persisted-execution-run-record.schema.json",
+        "workspaces/runtime/packages/runtime-schema/src/schemas/persisted-federation-inbox.schema.json",
+        "workspaces/runtime/packages/runtime-schema/src/schemas/persisted-federation-outbox.schema.json",
+        "workspaces/runtime/packages/runtime-schema/src/schemas/persisted-federation-peer.schema.json",
+        "workspaces/runtime/packages/runtime-schema/src/schemas/persisted-federation-room-record.schema.json",
+        "workspaces/runtime/packages/runtime-schema/src/schemas/persisted-federation-room.schema.json",
+        "workspaces/runtime/packages/runtime-schema/src/schemas/persisted-federation-settings.schema.json",
+        "workspaces/runtime/packages/runtime-schema/src/schemas/persisted-graph-agent-record.schema.json",
+        "workspaces/runtime/packages/runtime-schema/src/schemas/persisted-message-event.schema.json",
+        "workspaces/runtime/packages/runtime-schema/src/schemas/persisted-monitor-record.schema.json",
+        "workspaces/runtime/packages/runtime-schema/src/schemas/persisted-monitor-result.schema.json",
+        "workspaces/runtime/packages/runtime-schema/src/schemas/persisted-operation-result.schema.json",
+        "workspaces/runtime/packages/runtime-schema/src/schemas/persisted-plan-record.schema.json",
+        "workspaces/runtime/packages/runtime-schema/src/schemas/persisted-profile-record.schema.json",
+        "workspaces/runtime/packages/runtime-schema/src/schemas/persisted-project-location-outbox.schema.json",
+        "workspaces/runtime/packages/runtime-schema/src/schemas/persisted-project-record.schema.json",
+        "workspaces/runtime/packages/runtime-schema/src/schemas/persisted-relocation.schema.json",
+        "workspaces/runtime/packages/runtime-schema/src/schemas/persisted-request-record.schema.json",
+        "workspaces/runtime/packages/runtime-schema/src/schemas/persisted-room-record.schema.json",
+        "workspaces/runtime/packages/runtime-schema/src/schemas/persisted-rule-record.schema.json",
+        "workspaces/runtime/packages/runtime-schema/src/schemas/persisted-server-delivery.schema.json",
+        "workspaces/runtime/packages/runtime-schema/src/schemas/persisted-sync-entity.schema.json",
+        "workspaces/runtime/packages/runtime-schema/src/schemas/persisted-task-record.schema.json",
+        "workspaces/runtime/packages/runtime-schema/src/schemas/persisted-terminal-record.schema.json",
+        "workspaces/runtime/packages/runtime-schema/src/schemas/persisted-tool-alias.schema.json",
+        "workspaces/runtime/packages/runtime-schema/src/schemas/persisted-tool-request-record.schema.json",
+        "workspaces/runtime/packages/runtime-schema/src/schemas/persisted-tool-result.schema.json",
+        "workspaces/runtime/packages/runtime-schema/src/schemas/persisted-transcript-record.schema.json",
+        "workspaces/runtime/packages/runtime-schema/src/schemas/persisted-transfer-agent-record.schema.json",
+        "workspaces/runtime/packages/runtime-schema/src/schemas/persisted-usage-resume-record.schema.json",
+        "workspaces/runtime/packages/runtime-schema/src/schemas/persisted-work-item-record.schema.json",
+        "workspaces/runtime/packages/runtime-schema/src/schemas/persisted-workspace-operation-record.schema.json",
+        "workspaces/runtime/packages/runtime-schema/src/schemas/recovery-agent-record.schema.json",
+        "workspaces/runtime/packages/runtime-schema/src/schemas/recovery-task-record.schema.json",
+        "workspaces/runtime/packages/runtime-schema/src/schemas/recovery-tool-receipt.schema.json",
+        "workspaces/runtime/packages/runtime-schema/src/schemas/runtime-event-metadata.schema.json",
+        "workspaces/runtime/packages/runtime-schema/src/schemas/runtime-transcript-asset.schema.json",
+        "workspaces/runtime/packages/runtime-schema/src/schemas/workspace-checkpoint-agent-record.schema.json",
+        "workspaces/runtime/packages/runtime-schema/src/schemas/workspace-checkpoint-history-record.schema.json",
+        "workspaces/runtime/packages/runtime-schema/src/schemas/workspace-usage-limits.schema.json",
+        "workspaces/runtime/packages/runtime-schema/src/shared_values.rs",
+        "workspaces/runtime/packages/runtime-schema/src/shell_policy.rs",
+        "workspaces/runtime/packages/runtime-schema/src/studio_errors.rs",
+        "workspaces/runtime/packages/runtime-schema/src/studio_errors/monitor.rs",
+        "workspaces/runtime/packages/runtime-schema/src/supervisor_contract.rs",
+        "workspaces/runtime/packages/runtime-schema/src/sync_protocol.rs",
+        "workspaces/runtime/packages/runtime-schema/src/task_command.rs",
+        "workspaces/runtime/packages/runtime-schema/src/task_gate.rs",
+        "workspaces/runtime/packages/runtime-schema/src/task_results.rs",
+        "workspaces/runtime/packages/runtime-schema/src/token_rate_limits.rs",
+        "workspaces/runtime/packages/runtime-schema/src/usage.rs",
+        "workspaces/runtime/packages/runtime-schema/src/usage/ledger.rs",
+        "workspaces/runtime/packages/runtime-schema/src/usage/persisted.rs",
+        "workspaces/runtime/packages/runtime-schema/src/workspace_modes.rs",
+        "workspaces/runtime/packages/runtime-store/src/account_registry.rs",
+        "workspaces/runtime/packages/runtime-store/src/agent_columns.rs",
+        "workspaces/runtime/packages/runtime-store/src/agent_volatile.rs",
+        "workspaces/runtime/packages/runtime-store/src/blocking_pool.rs",
+        "workspaces/runtime/packages/runtime-store/src/bootstrap.rs",
+        "workspaces/runtime/packages/runtime-store/src/cached_sql.rs",
+        "workspaces/runtime/packages/runtime-store/src/entity_publication.rs",
+        "workspaces/runtime/packages/runtime-store/src/feature_schema.rs",
+        "workspaces/runtime/packages/runtime-store/src/fresh_state.rs",
+        "workspaces/runtime/packages/runtime-store/src/lib.rs",
+        "workspaces/runtime/packages/runtime-store/src/migrations/m2026_10_20_agents.rs",
+        "workspaces/runtime/packages/runtime-store/src/migrations/m2026_10_22_analytics.rs",
+        "workspaces/runtime/packages/runtime-store/src/migrations/m2026_10_26_canvas.rs",
+        "workspaces/runtime/packages/runtime-store/src/migrations/m2026_10_26_provider_identity.rs",
+        "workspaces/runtime/packages/runtime-store/src/migrations/m2026_10_26_registry.rs",
+        "workspaces/runtime/packages/runtime-store/src/migrations/m2026_10_26_terminal_errors.rs",
+        "workspaces/runtime/packages/runtime-store/src/migrations/mod.rs",
+        "workspaces/runtime/packages/runtime-store/src/multi_server_state_check.rs",
+        "workspaces/runtime/packages/runtime-store/src/path.rs",
+        "workspaces/runtime/packages/runtime-store/src/path_identity.rs",
+        "workspaces/runtime/packages/runtime-store/src/records.rs",
+        "workspaces/runtime/packages/runtime-store/src/repositories/account_state.rs",
+        "workspaces/runtime/packages/runtime-store/src/repositories/account_transfer.rs",
+        "workspaces/runtime/packages/runtime-store/src/repositories/agent_indexed_reads.rs",
+        "workspaces/runtime/packages/runtime-store/src/repositories/agent_management.rs",
+        "workspaces/runtime/packages/runtime-store/src/repositories/agent_move.rs",
+        "workspaces/runtime/packages/runtime-store/src/repositories/agents.rs",
+        "workspaces/runtime/packages/runtime-store/src/repositories/analytics.rs",
+        "workspaces/runtime/packages/runtime-store/src/repositories/analytics_capture.rs",
+        "workspaces/runtime/packages/runtime-store/src/repositories/capability_reads.rs",
+        "workspaces/runtime/packages/runtime-store/src/repositories/checkpoints.rs",
+        "workspaces/runtime/packages/runtime-store/src/repositories/claude_controls.rs",
+        "workspaces/runtime/packages/runtime-store/src/repositories/claude_records.rs",
+        "workspaces/runtime/packages/runtime-store/src/repositories/claude_retry.rs",
+        "workspaces/runtime/packages/runtime-store/src/repositories/context_repair.rs",
+        "workspaces/runtime/packages/runtime-store/src/repositories/continuation.rs",
+        "workspaces/runtime/packages/runtime-store/src/repositories/coordination.rs",
+        "workspaces/runtime/packages/runtime-store/src/repositories/cost_aggregate.rs",
+        "workspaces/runtime/packages/runtime-store/src/repositories/event_write.rs",
+        "workspaces/runtime/packages/runtime-store/src/repositories/events.rs",
+        "workspaces/runtime/packages/runtime-store/src/repositories/execution_history.rs",
+        "workspaces/runtime/packages/runtime-store/src/repositories/federation.rs",
+        "workspaces/runtime/packages/runtime-store/src/repositories/federation_credentials.rs",
+        "workspaces/runtime/packages/runtime-store/src/repositories/federation_messaging.rs",
+        "workspaces/runtime/packages/runtime-store/src/repositories/messages.rs",
+        "workspaces/runtime/packages/runtime-store/src/repositories/mod.rs",
+        "workspaces/runtime/packages/runtime-store/src/repositories/monitor_runtime.rs",
+        "workspaces/runtime/packages/runtime-store/src/repositories/monitors.rs",
+        "workspaces/runtime/packages/runtime-store/src/repositories/multi_server.rs",
+        "workspaces/runtime/packages/runtime-store/src/repositories/multi_server_delivery.rs",
+        "workspaces/runtime/packages/runtime-store/src/repositories/notification_dispatch.rs",
+        "workspaces/runtime/packages/runtime-store/src/repositories/orchestration_settings.rs",
+        "workspaces/runtime/packages/runtime-store/src/repositories/profiles.rs",
+        "workspaces/runtime/packages/runtime-store/src/repositories/project_locations.rs",
+        "workspaces/runtime/packages/runtime-store/src/repositories/projects.rs",
+        "workspaces/runtime/packages/runtime-store/src/repositories/questions_reads.rs",
+        "workspaces/runtime/packages/runtime-store/src/repositories/questions_write.rs",
+        "workspaces/runtime/packages/runtime-store/src/repositories/queue_write.rs",
+        "workspaces/runtime/packages/runtime-store/src/repositories/remote_transport.rs",
+        "workspaces/runtime/packages/runtime-store/src/repositories/reviewer_archive.rs",
+        "workspaces/runtime/packages/runtime-store/src/repositories/rules.rs",
+        "workspaces/runtime/packages/runtime-store/src/repositories/rules_tick.rs",
+        "workspaces/runtime/packages/runtime-store/src/repositories/scheduler.rs",
+        "workspaces/runtime/packages/runtime-store/src/repositories/scheduler/idle_unload.rs",
+        "workspaces/runtime/packages/runtime-store/src/repositories/scheduler/lifecycle.rs",
+        "workspaces/runtime/packages/runtime-store/src/repositories/scheduler/selection.rs",
+        "workspaces/runtime/packages/runtime-store/src/repositories/scheduler/steer.rs",
+        "workspaces/runtime/packages/runtime-store/src/repositories/startup_recovery.rs",
+        "workspaces/runtime/packages/runtime-store/src/repositories/sync_documents.rs",
+        "workspaces/runtime/packages/runtime-store/src/repositories/system_reads.rs",
+        "workspaces/runtime/packages/runtime-store/src/repositories/tasks.rs",
+        "workspaces/runtime/packages/runtime-store/src/repositories/terminals.rs",
+        "workspaces/runtime/packages/runtime-store/src/repositories/transcript.rs",
+        "workspaces/runtime/packages/runtime-store/src/repositories/usage.rs",
+        "workspaces/runtime/packages/runtime-store/src/repositories/voice.rs",
+        "workspaces/runtime/packages/runtime-store/src/repositories/work_items.rs",
+        "workspaces/runtime/packages/runtime-store/src/repositories/workspace_files.rs",
+        "workspaces/runtime/packages/runtime-store/src/repositories/workspace_operations.rs",
+        "workspaces/runtime/packages/runtime-store/src/repositories/workspace_ready.rs",
+        "workspaces/runtime/packages/runtime-store/src/repositories/workspace_views.rs",
+        "workspaces/runtime/packages/runtime-store/src/runtime-state-schema.json",
+        "workspaces/runtime/packages/runtime-store/src/schema.rs",
+        "workspaces/runtime/packages/runtime-store/src/sqlite_actor.rs",
+        "workspaces/runtime/packages/runtime-store/src/sqlite_durability.rs",
+        "workspaces/runtime/packages/runtime-store/src/state_check.rs",
+        "workspaces/runtime/packages/runtime-store/src/state_owner.rs",
+        "workspaces/runtime/packages/runtime-store/src/stored_text.rs",
+        "workspaces/runtime/packages/runtime-store/src/stored_text_compaction.rs",
+        "workspaces/runtime/packages/runtime-store/src/stored_text_dictionary.rs",
+        "workspaces/runtime/packages/runtime-store/src/supervisor_journal.rs",
+        "workspaces/runtime/packages/runtime-store/src/supervisor_schema.sql",
+        "workspaces/runtime/packages/runtime-store/src/sync_schema.sql"
+      ],
+      "test_fixture": [
+        "workspaces/runtime/packages/runtime-schema/src/fixtures/claude-cache-write-1h.json",
+        "workspaces/runtime/packages/runtime-schema/src/fixtures/claude-usage-notifications.json",
+        "workspaces/runtime/packages/runtime-store/src/repositories/scheduler/lifecycle/tests.rs",
+        "workspaces/runtime/packages/runtime-store/src/repositories/scheduler/steer/tests.rs",
+        "workspaces/runtime/packages/runtime-store/tests/analytics_state_check.rs",
+        "workspaces/runtime/packages/runtime-store/tests/cross_runtime.rs",
+        "workspaces/runtime/packages/runtime-store/tests/fixtures/live-state-schema.json",
+        "workspaces/runtime/packages/runtime-store/tests/fixtures/record-round-trip.json",
+        "workspaces/runtime/packages/runtime-store/tests/fresh_state.rs",
+        "workspaces/runtime/packages/runtime-store/tests/integration.rs",
+        "workspaces/runtime/packages/runtime-store/tests/local_server_id.rs",
+        "workspaces/runtime/packages/runtime-store/tests/migration_startup.rs",
+        "workspaces/runtime/packages/runtime-store/tests/schema_compat.rs",
+        "workspaces/runtime/packages/runtime-store/tests/sql_callback_guard.rs",
+        "workspaces/runtime/packages/runtime-store/tests/stored_text_analytics.rs",
+        "workspaces/runtime/packages/runtime-store/tests/stored_text_owner.rs",
+        "workspaces/runtime/packages/runtime-store/tests/support/scheduler_repository.rs"
+      ],
+      "vendor": [
+        "workspaces/runtime/packages/runtime-schema/src/schemas/codex/CodexErrorInfo.json",
+        "workspaces/runtime/packages/runtime-schema/src/schemas/codex/ThreadTokenUsageUpdatedNotification.json",
+        "workspaces/runtime/packages/runtime-schema/src/schemas/codex/lifecycle.schema.json"
+      ]
+    },
+    "contentScanned": {
+      "count": 227,
+      "sha256": "deaab410d5f7a9d7285246f9189edf060db997ec81c44934350544614a07b6e2"
+    },
+    "counts": [
+      {
+        "bucket": "docs_config",
+        "count": 4,
+        "roots": {
+          "schema": 2,
+          "store": 2
+        },
+        "sha256": "99501cd34e455b8d9b56bdabf628b575306e2dca6b85cafaf55f238c27bb1886"
+      },
+      {
+        "bucket": "generator_excluded",
+        "count": 4,
+        "roots": {
+          "schema": 4,
+          "store": 0
+        },
+        "sha256": "3279b1c85f0d774da6b206884a07bb5ef7027c92b99c69b1e5b73f34945a97d6"
+      },
+      {
+        "bucket": "production",
+        "count": 203,
+        "roots": {
+          "schema": 111,
+          "store": 92
+        },
+        "sha256": "0ec9a51f4cc26f57013cc403484c19c489d6790e85ed7709afbad8565e49daa3"
+      },
+      {
+        "bucket": "generated",
+        "count": 4,
+        "roots": {
+          "schema": 4,
+          "store": 0
+        },
+        "sha256": "6a35319b9537baddd570a2c388fea3505f1c388f15530826fac42acf0b1808ea"
+      },
+      {
+        "bucket": "test_fixture",
+        "count": 17,
+        "roots": {
+          "schema": 2,
+          "store": 15
+        },
+        "sha256": "b71eda152a8551f6fcb38734bd62a2d4395fba9fcb6b988e1ae4523235db4d5e"
+      },
+      {
+        "bucket": "vendor",
+        "count": 3,
+        "roots": {
+          "schema": 3,
+          "store": 0
+        },
+        "sha256": "ed97b2978519e5a08d45020cfcd49d265141d034b1b71fb98fd3dcb9c9cb96c5"
+      }
+    ],
+    "hashDefinition": "SHA-256 of lexicographically sorted exact repository-relative UTF-8 paths, LF joined with trailing LF"
+  },
+  "reportMarkdown": "# Storage boundary type census\n\nRevision: `1b18e26491860b644f6e7373bc554e814cf95b66`. Source observation completed 2026-10-27 12:58 UTC. Task: `work-1793104264984144896-34`.\n\nThis is a source census and design review, not a runtime bug report. It covers every tracked path in the assigned runtime-store/runtime-schema roots mechanically and dispositions every candidate family found by that scan. It does **not** claim every line was manually read. Relevant producer, decoder, schema and consumer bodies were deeply inspected as identified per row; several families explicitly retain a deeper-proof gap. No builds, tests, installs, edits, application starts, filesystem state-directory reads, model requests or live services were used. All witnesses below are proposed and unrun. The known unrelated Linux compile issue was not used as evidence.\n\nThe useful distinction is actual typed ownership versus a typed-looking wrapper. There are **24 concrete JsonRecord types**: **16 macro Value carriers**, **5 id-plus-flattened-Value carriers**, **AgentRecord and WorkItemRecord with partially typed operational fields**, and **one concrete ProfileRecord DTO**. The generic table first parses Value, validates a schema, and then often deserializes that Value. A call spelled from_str::<TaskRecord> still parses Value inside the wrapper. Changing that spelling alone would not establish typed ownership.\n\nFamily dispositions: **68 rows: 32 D, 17 R, 9 T, 10 U**. These are refactoring dispositions, not defect counts. A D row means the owned envelope can be decoded directly once the stated compatibility/refinement contract is represented; opaque leaves and essential dynamic checks remain. Several rows deliberately cover related variants under one named owner; no top-N selection was applied.\n\nAliases for evidence: **S** = workspaces/runtime/packages/runtime-store/src; **H** = workspaces/runtime/packages/runtime-schema/src; **V** = workspaces/runtime/packages/runtime-services/src; **P** = workspaces/runtime/packages/runtime-providers/src; **HTTP** = workspaces/runtime/packages/runtime-http/src. All line references refer to the fixed revision. External caller files were followed for evidence, not included as a full census of those external roots.\n\n## Mechanical coverage and reproducibility\n\nEnumeration used `git ls-tree -r --name-only REV -- workspaces/runtime/packages/runtime-store workspaces/runtime/packages/runtime-schema`; source searches used `git grep`, `rg` on tracked-path/search output, and in-memory source-analysis scripts over `git show REV:path`. No working-tree source mutation or test execution occurred. File lists use exact repository-relative paths sorted lexicographically; SHA-256 input is UTF-8 paths joined by LF with one trailing LF. The exact bucket path arrays and complete file-to-family map are persisted alongside this report in the task result.\n\n| Bucket | Files | Store | Schema | Path-list SHA-256 |\n|---|---:|---:|---:|---|\n| docs_config | 4 | 2 | 2 | `99501cd34e455b8d9b56bdabf628b575306e2dca6b85cafaf55f238c27bb1886` |\n| generator_excluded | 4 | 0 | 4 | `3279b1c85f0d774da6b206884a07bb5ef7027c92b99c69b1e5b73f34945a97d6` |\n| production | 203 | 92 | 111 | `0ec9a51f4cc26f57013cc403484c19c489d6790e85ed7709afbad8565e49daa3` |\n| generated | 4 | 0 | 4 | `6a35319b9537baddd570a2c388fea3505f1c388f15530826fac42acf0b1808ea` |\n| test_fixture | 17 | 15 | 2 | `b71eda152a8551f6fcb38734bd62a2d4395fba9fcb6b988e1ae4523235db4d5e` |\n| vendor | 3 | 0 | 3 | `ed97b2978519e5a08d45020cfcd49d265141d034b1b71fb98fd3dcb9c9cb96c5` |\n\nAll tracked paths: **235**, hash `1f1acf41a228d600ca84663676288e748f30183e7483942d643ea9134342b5ce`.\nAll content-scanned source/test/fixture/generated/vendor paths: **227**, hash `deaab410d5f7a9d7285246f9189edf060db997ec81c44934350544614a07b6e2`.\nProduction/source-schema list: **203**, hash `0ec9a51f4cc26f57013cc403484c19c489d6790e85ed7709afbad8565e49daa3`.\n\nThe 203 production/source-schema files comprise **130 Rust files, 71 JSON contract/catalog documents, 2 SQL files**. **81 of the 130 Rust files contain cfg(test) markers**; they are classified by file role, not claimed to contain production lines only. The separate 17-file test/fixture bucket contains dedicated test/fixture files. The 227 scanned files contain 84,388 newline-terminated source lines in total, including tests/generated/vendor. That is a mechanical volume measure, not a manual-reading claim.\n\nBroad lexical scan (includes inline tests, generated/vendor, comments and schema AST; counts are not findings):\n- String/Option: 127 files, 2040 matching lines.\n- Value/RawValue/JsonValue: 164 files, 1755 matching lines.\n- Deserialize/from_str/from_slice/from_reader/from_value/row.get: 116 files, 1181 matching lines.\n- get/pointer/as_*/is_* dynamic accesses: 126 files, 2840 matching lines.\nAll committed schema JSON was also parsed mechanically for required members, enum/const branches, object openness and union structure. The whole file was scanned; an early cfg(test) marker was not treated as the end of production code.\n\nExact whole-file generator implementation exclusions (enumerated, not part of the 227 content-scan list):\n- `workspaces/runtime/packages/runtime-schema/build.rs`\n- `workspaces/runtime/packages/runtime-schema/src/api_schema.rs`\n- `workspaces/runtime/packages/runtime-schema/src/bin/studio-contracts.rs`\n- `workspaces/runtime/packages/runtime-schema/src/contracts.rs`\n\nThe four excluded docs/config paths are:\n- `workspaces/runtime/packages/runtime-schema/Cargo.toml`\n- `workspaces/runtime/packages/runtime-schema/README.md`\n- `workspaces/runtime/packages/runtime-store/Cargo.toml`\n- `workspaces/runtime/packages/runtime-store/README.md`\n\nREADME material was read as task context. Generator files were consulted narrowly where necessary to identify ownership/classify committed artifacts; their implementation was not reviewed. Generation-only helpers embedded in mixed runtime modules were mechanically scanned, but this report does not audit generation algorithms. No additional production file was silently excluded.\n\nFully generated artifacts, counted separately and mechanically scanned:\n- `workspaces/runtime/packages/runtime-schema/src/codex_generated.rs`\n- `workspaces/runtime/packages/runtime-schema/src/schemas/claude-rate-limit.provenance.json`\n- `workspaces/runtime/packages/runtime-schema/src/schemas/claude-rate-limit.schema.json`\n- `workspaces/runtime/packages/runtime-schema/src/schemas/usage-observation.schema.json`\n\nVendor artifacts, counted separately and mechanically scanned:\n- `workspaces/runtime/packages/runtime-schema/src/schemas/codex/CodexErrorInfo.json`\n- `workspaces/runtime/packages/runtime-schema/src/schemas/codex/ThreadTokenUsageUpdatedNotification.json`\n- `workspaces/runtime/packages/runtime-schema/src/schemas/codex/lifecycle.schema.json`\n\nThe 71 JSON production documents are committed source/contract documents, including mixed documents with generated leaves. They are not presented as 71 wholly handwritten JSON files. Claude rate-limit provenance explicitly names generate-provider-contracts.ts; UsageObservation schema is fully rendered by contracts.rs:1453. runtime-state-schema.json is the store-owned committed catalog source consumed by bootstrap. The two SQL owners are supervisor_schema.sql and sync_schema.sql.\n\n## Decode feasibility and checks that survive\n\nFor ordinary Table records, records.rs:633,1075,1084,1217 reads SQLite **TEXT**, validates UTF-8 and then parses JSON. An owned DTO can use serde_json::from_str directly on that text (or from_slice on its UTF-8 bytes), retaining table/key error context. Generic get_json_record<T>/decode_json_record<T> at records.rs:1291 already provide direct generic deserialization; selecting T=Value or a macro Value wrapper does not make a structural DTO.\n\nFor compressed storage, stored_text.rs is the format owner. StoredText first verifies/decompresses TEXT-or-BLOB and yields text; only then is direct DTO parsing feasible. Do not parse compressed BLOB bytes as JSON. stored_text_compaction.rs owns runtime_item_fulltext.body and analytics_items.record; stored_text_dictionary.rs owns the immutable trained dictionaries and temp.analytics_items decoding view. Unqualified reads can therefore see text while writes target main.analytics_items. Arbitrary fulltext is not a JSON candidate.\n\nA future typed reader must explicitly preserve: missing versus null; defaults only on omission; required-nullable fields; extension openness; historical variants; duplicate-key policy (Value can collapse duplicates while derived struct decoding may reject them); raw ordering/signature/hash behavior; numeric bounds/finite values/safe integer units; stable diagnostic context; and row-column/payload identity. Deserialize alone proves none of epoch freshness, permissions, filesystem state, replay safety, successful side effects, budget charge uniqueness, cross-row consistency or valid transitions. Remove shape checks only when an owned type/refined constructor represents the same check.\n\nThe strongest concrete source discrepancy is ProfileRecord: S/repositories/profiles.rs:27 denies unknown fields, while H/schemas/persisted-profile-record.schema.json:5,8 permits them and says future fields remain readable. This is a confirmed declaration mismatch, with an unrun extra-field repository witness; no observed user failure is asserted.\n\n## Complete record-wrapper / schema correlation\n\nH/lib.rs:448 maps **45 physical table names** to schema names. Of the 24 JsonRecord types, 23 tables overlap this map and all 23 schema names agree. runtime_profiles carries its own direct SCHEMA constant and is absent from table_schema; that absence is not asserted to be a bug. Key/query modes below are part of the contract and cannot be erased by a uniform decoder.\n\n| Record / source | Table | Schema owner | Key / query mode | Actual representation |\n|---|---|---|---|---|\n| TaskRecord; S/records.rs:266 | runtime_tasks | PersistedTaskRecord | PayloadId / JsonAgent | macro Value carrier |\n| PlanRecord; S/records.rs:274 | runtime_plans | PersistedPlanRecord | External / None | macro Value carrier |\n| AnnotationRecord; S/records.rs:282 | runtime_annotations | PersistedAnnotationRecord | PayloadId / None | macro Value carrier |\n| RequestRecord; S/records.rs:290 | runtime_requests | PersistedRequestRecord | PayloadId / JsonAgent | macro Value carrier |\n| ComplaintRecord; S/records.rs:298 | runtime_complaints | PersistedComplaintRecord | PayloadId / None | macro Value carrier |\n| CheckpointRecord; S/records.rs:306 | runtime_checkpoints | PersistedCheckpointRecord | PayloadId / JsonAgent | macro Value carrier |\n| MonitorRecord; S/records.rs:314 | runtime_monitors | PersistedMonitorRecord | PayloadId / JsonAgent | macro Value carrier |\n| TerminalRecord; S/records.rs:322 | user_terminals | PersistedTerminalRecord | PayloadId / None | macro Value carrier |\n| UsageResumeRecord; S/records.rs:330 | runtime_usage_resumes | PersistedUsageResumeRecord | External / UsageResumeRecovery | macro Value carrier |\n| ExecutionRunRecord; S/records.rs:386 | runtime_execution_runs | PersistedExecutionRunRecord | PayloadId / None | macro Value carrier |\n| WorkspaceOperationRecord; S/records.rs:394 | runtime_workspace_operations | PersistedWorkspaceOperationRecord | PayloadId / JsonAgent | macro Value carrier |\n| RuleRecord; S/records.rs:402 | runtime_rules | PersistedRuleRecord | PayloadId / None | macro Value carrier |\n| TranscriptItemRecord; S/records.rs:410 | runtime_items | PersistedTranscriptRecord | PayloadId / PhysicalAgent | macro Value carrier |\n| TranscriptAssetRecord; S/records.rs:418 | runtime_assets | PersistedTranscriptAsset | PayloadId / JsonAgent | macro Value carrier |\n| EventMetadataRecord; S/records.rs:426 | runtime_event_meta | RuntimeEventMetadataRecord | External / None | macro Value carrier |\n| GraphAgentRecord; S/records.rs:434 | graph_agents | PersistedGraphAgentRecord | PayloadId / None | macro Value carrier |\n| AgentRecord; S/records.rs:251 | runtime_agents | PersistedAgentRecord | PayloadId / None | typed identity/status + flattened Value extras |\n| WorkItemRecord; S/records.rs:373 | runtime_work | PersistedWorkItemRecord | PayloadId / None | typed operational fields + original Value |\n| AccountTransferRecord; S/repositories/account_transfer.rs:17 | runtime_account_transfers | PersistedAccountTransferRecord | PayloadId / None | id + flattened Value fields |\n| MoveRecord; S/repositories/agent_move.rs:30 | runtime_agent_moves | relocation/MoveRecord | PayloadId / None | id + flattened Value fields |\n| ClaudeAttemptRecord; S/repositories/claude_records.rs:11 | runtime_execution_attempts | PersistedClaudeAttemptRecord | PayloadId / None | id + flattened Value fields |\n| CapacityContinuationRecord; S/repositories/continuation.rs:254 | runtime_capacity_retries | continuation/CapacityContinuation | PayloadId / PhysicalAgent | id + flattened Value fields |\n| ProfileRecord; S/repositories/profiles.rs:38 | runtime_profiles | PersistedProfileRecord | PayloadId / None | concrete typed DTO |\n| ProjectLocationRecord; S/repositories/project_locations.rs:159 | runtime_projects | PersistedProjectRecord | PayloadId / None | id + flattened Value fields |\n\nSpecialized normalized SQL families have separate entries below: queue events/chat deliveries, access/federation/server receipts, analytics, voice, supervisor, settings and migration/cursor metadata. The complete 45-name mapping is persisted as tableSchemaCorrelation in the structured task result.\n\n## Family coverage table\n\n**D** remove Value via direct typed Deserialize (or construct typed data directly from normalized SQL); **R** retain justified opaque/raw boundary; **T** already typed; **U** unresolved, deeper proof required. Priorities express likely refactoring value/risk, not incident severity. Each row contains the actual boundary chain observed, explicit owner, deletable work, dynamic checks, compatibility and a proposed witness. A deep boundary inspection is not an assertion that every producer implementation or historical record has been read.\n\n| ID / family / disposition / priority | Source trace and inspection | Named owner | Replacement and deletable code | Essential checks | Compatibility | Proposed witness (unrun) |\n|---|---|---|---|---|---|---|\n| F01: Generic record/SQL decoding seam; **R**; P1 enabling refactor | S/records.rs:25,591,633,1075,1084,1195; S/repositories/system_reads.rs:14,36,50 → all Table repositories → policy consumers below. Inspection: deep. | JsonRecord::SCHEMA/KEY_MODE/QUERY_SHAPE and H/lib.rs:448 table_schema | Make concrete family DTOs Deserialize at the TEXT boundary; current from_str::<macro wrapper> still calls Value::deserialize at records.rs:82, so changing only the call spelling removes nothing. Delete intermediate parse/clone/from_value and primitive shape checks per migrated family, not the heterogeneous dispatch facility wholesale. | Row-key and physical-owner correlation; conditional table support; query shape; allowed SQL identifiers; named contextual errors; schema bounds/refinements. | 16 macro carriers, Agent/Work partial carriers, 5 id+flatten wrappers and 1 real Profile DTO. Unknown fields and absent/null behavior vary. Schema validation cannot be deleted solely because Deserialize succeeds. | For each migrated table, exercise repository put/get/list on historical fixture plus malformed field, unknown extension and mismatched SQL key. No witness run. |\n| F02: Agent records, volatile overlay and agent lifecycle projections; **U**; P1 | S/agent_volatile.rs:29,363,410,442 writes/merges → S/records.rs:210,1111,1138 → S/repositories/{agents,agent_management,agent_indexed_reads,capability_reads,startup_recovery,reviewer_archive,workspace_views}.rs; scheduler/lifecycle.rs:2770,2881,2927 consumes startAttempt and authority. Inspection: deep. | PersistedAgentRecord; AgentRecord; agent_volatile::FIELDS; specific service owners of startAttempt/restartRecovery/contextRepair/nativeFailureHold/idle state | Promote owned decision subrecords and retain an explicit historical/extension payload. Typed effective record must be formed after volatile merge. Potential deletion: repeated as_str/as_bool and TypedFields reprojection; no proof for replacing the entire open Agent object with a closed DTO. | SQL identity, epoch/account/thread/ticket/generation comparison; held/uncertain transitions; missing versus explicit clear; permission/capability/workspace checks. | AgentStatus::Other(String), flatten extras, deletedAt historical truthiness; absent volatile value leaves previous SQL value, JSON null clears, SQL NULL does not override. These are not equivalent to naive Option<T>. | Overlay matrix of absent/JSON-null/SQL-NULL/value; unknown legacy status; stale attempt identity; each lifecycle subrecord producer/consumer parity. |\n| F03: Work items and submitted results; **R**; P2 | S/records.rs:340,347,458,477; S/repositories/work_items.rs:84,117,168 → task command/result policy; Table reads feed V/transcript.rs:476. Inspection: deep. | WorkItemFields / H/records.rs::WorkStatus; PersistedWorkItemRecord; H/task_results.rs for user result contracts | Operational status/dependencies/owner/updated are already checked typed fields. Preserve original extensible document by design. Additional stable subrecords can be typed, but no claim that the retained Value is wholly redundant. | Dependency graph, current owner/version, attempt counter fences, result-schema evaluation, acceptance gate evidence and idempotent receipt comparison. | Absent dependencies→empty but null fails; absent updated→0 but null fails; arbitrary task result and caller-defined result_schema remain dynamic; original omissions/extensions preserved. | Legacy minimal work item; null versus omission; status transition and same-attempt receipt replay; arbitrary valid task result. |\n| F04: Profiles; **T**; P1 contract discrepancy; P2 cleanup | HTTP/routes/panels.rs:40 → S/repositories/profiles.rs:26,98 → Table decode → profiles.rs:94 → HTTP/routes/panels.rs:25. Inspection: deep. | ProfileRecord, ProfileRole, ReasoningEffort; persisted-profile-record.schema.json | Direct Deserialize<ProfileRecord> can bypass Value once schema parity is resolved; delete Table Value→from_value projection for this concrete type. Source discrepancy: Rust deny_unknown_fields while schema permits extra JsonValue members. | Required-nullable effort, required instructions string, id consistency and role/effort choices; bounds not expressed by derive. | An extra field satisfies the JSON schema but Rust rejects it. This is source disagreement, not a proven runtime defect. Choose authoritative acceptance policy before removing schema validation. | Read current and extra-field profile through actual list/save caller; missing versus null required fields; all effort variants. Not run. |\n| F05: Tasks / task recovery snapshots; **D**; P1 | V/notification_dispatch.rs::put_task_record; V/task_recovery_store.rs:136 → S/repositories/tasks.rs:66 + records.rs:266 → V/task_settlement.rs:91,103,344 and task recovery policy. Inspection: deep. | PersistedTaskRecord, recovery-task-record schema; task settlement/recovery policy | Define storage-owned task envelope with typed lifecycle fields plus explicit historical extensions; decode directly from record text and pass it to recovery/settlement. Delete wrapper-only conversion and repeated structural field extraction. | Current execution/owner/turn identity, completed-turn evidence, unknown outcomes and no repeated settlement. | Stored task schema is intentionally permissive and historical output may be preview/truncated; do not replace with a strict fresh-command or full response DTO. | Historical sparse task, current task, truncated output, mismatched owner/turn, terminal replay via settlement caller. |\n| F06: Plans; **D**; P2 | V/notification_dispatch/kinds.rs:335–347 creates/updates → S/records.rs:274 Table → V/transcript.rs:481 and workspace views. Inspection: deep. | PersistedPlanRecord; external AgentId key mode | Typed id/rootId/text/version/updated envelope with opaque native plan and extension fields; decode stored text directly. Delete repeated object indexing for stable members and macro wrapper. | External key contract, correct root/agent visibility, version/update semantics. | Native provider plan payload and steps may evolve; retain those raw leaves and existing omission behavior. | Provider plan update followed by transcript/workspace read, external key mismatch, unknown native leaf. |\n| F07: Annotations; **D**; P2 | V/event_write.rs:174,216 → S/repositories/event_write.rs annotation writer/validate_annotation → S/records.rs:282 → HTTP/routes/workspace_views.rs:203,348. Inspection: deep. | PersistedAnnotationRecord and event_write annotation producer | Typed historical annotation envelope: required id, nullable/optional agent/path/line/text/created plus extension map. Delete macro Value carrier and repetitive primitive checks; do not apply fresh required path/text to historical reads. | Path/text validation at ingress, request signature equality, uniqueness of annotation event, agent visibility, unsigned safe line bound. | Schema requires only id, unlike current producer. A direct typed reader must accept sparse historical rows. | Current annotate+replay+workspace read, id-only historical record, invalid line range and request signature conflict. |\n| F08: Requests, question history and elicitation; **R**; P2 | V/notification_dispatch/questions.rs:388,424,464 and monitor_runtime.rs:137 → S/records.rs:290; S/repositories/questions_reads.rs reads raw → V/questions_reads.rs:26,65,73. Inspection: deep. | PersistedRequestRecord; question_answers input variants; questions_reads::elicitation_property_order | Typed method/status/identity envelope is feasible; retain original JSON text or ordered schema map for elicitation property ordering. Delete duplicate scalar extraction only after stable envelope ownership. | Question ownership, approval permission, secret-answer redaction, response/request identity; method-specific schema and dynamic elicitation answers. | Property order affects question presentation; arbitrary user-defined elicitation schema/content cannot become a single closed Rust type. Required members differ across historical methods. | Property-order-preserving elicitation round trip, secret history redaction, old approval/request variants, mismatched response owner. |\n| F09: Complaints and stored response lifecycle; **D**; P2 | V/notification_dispatch/questions.rs:70,83,367 → S/records.rs:298; scheduler/selection.rs:1535,1550 → V/questions_reads.rs:101. Inspection: deep. | PersistedComplaintRecord; H/complaints.rs:7 fresh response status is distinct from stored lifecycle | Historical complaint envelope and owned stored lifecycle enum/projection; delete repeated string/object field checks. Do not equate fresh ComplaintResponseStatus with every stored status. | Author/root visibility, current response resolution and event admission; replay identity. | Sparse schema and legacy response data/unknown extensions; fresh in_progress/resolved/declined set is not proof of exhaustive stored states. | Old complaint variants and response history through scheduler admission and question detail; each stored lifecycle state. |\n| F10: Checkpoints, workspace snapshot/object wrappers; **D**; P1 | V/checkpoints.rs:186,498,607 → S/repositories/checkpoints.rs:76,165,227,929,943,963,991,1011 → V/checkpoints.rs:145. Inspection: deep. | PersistedCheckpointRecord; WorkspaceCheckpointAgentRecord/HistoryRecord; CheckpointsRepository | Typed checkpoint and snapshot metadata records, typed active object projection per kind, direct text decoding at read_stored_row. Delete Value object/id/primitive checks and repeated decode_json_record<Value> where DTO ownership is complete. | Workspace reservation/source and generation equality, active process guards, snapshot byte/row bounds, file/tree/restore evidence. | Historical checkpoint trees/history content and provider payloads remain opaque; current sparse record and rich checkpoint-specific schemas are different contracts. | Snapshot→reserve→complete→read; old tree shape; changed workspace generation; mismatched row id; active operation refusal. |\n| F11: Monitor records and pending approval results; **D**; P1 | V/monitor_runtime.rs writes → S/repositories/{monitors.rs:85,monitor_runtime.rs:25} → V/monitor_policy.rs:271,301 MonitorSnapshot. Inspection: deep. | PersistedMonitorRecord, PersistedMonitorResult; H/studio_errors/monitor.rs typed status/error owners | Move existing monitor policy Deserialize projection to storage-facing typed contract; typed operation/state fields plus declared extras. Remove Value→cloned record→Deserialize and manual scalar checks. | Agent/caller identity, permission approval, command signature, process/monitor identity, output bounds and unknown command outcome. | Nullable/missing historical members and output/event tails remain supported; typed status does not prove a command ran or failed. | Stored monitor→policy→approval/exit flow with null/missing legacy fields, bad state, mismatched command signature. |\n| F12: Terminal record and terminal request receipts; **U**; P1 | V/terminal_driver.rs:396,449,491,623 → S/repositories/terminals.rs:84,108,118 → driver.rs:117,169,1050; output/decoder-state SQL is normalized typed. Inspection: deep. | PersistedTerminalRecord; terminal_driver lifecycle and receipt owner | Typed terminal envelope/status and typed action receipts could remove Value setters/getters, but stored schema requires only id and no full historical state union was proved. Preserve arbitrary output text and pending UTF-8 bytes. | Process identity, signature, cursor monotonicity, output_generation reset, character offsets, exact request replay and no repeated command. | Historical sparse records, optional process identity and uncertain receipts; archive text is not JSON. | Create/output/exit/reopen with old sparse row, partial UTF-8, generation rollback, repeated request ID; exhaustive stored status corpus required. |\n| F13: Usage resume; **D**; P1 | S/repositories/usage.rs:130,194,280,286; S/records.rs:330 → continuation/recovery driver; V/continuation.rs:62. Inspection: deep. | PersistedUsageResumeRecord and continuation policy | Typed Status{scheduled,started,cancelled,unknown}, Cause{usage_limit,rate_limit,auth}, identity and optional fields. Direct from_str replaces validate_resume object/get/is_* list at usage.rs:286–336. | Current embedded agent resume identity, epoch/account/thread/turn, auth freshness/proof timestamps, cancellation eligibility, event-driver requirement. | External row key; optional timestamps accept missing/null; taskClaims omission allowed but null currently fails; retired auth_probe_wait belongs migration, not current enum. | All current statuses/causes, legacy migrated status, missing/null taskClaims, stale proof/epoch cancellation. |\n| F14: Capacity continuation and whole continuation snapshots; **D**; P1 | S/repositories/continuation.rs:22,69,192,218,254 and usage.rs:51 → V/continuation.rs:48,62,97,103; continuation_driver reads/writes snapshot. Inspection: deep. | continuation/CapacityContinuation and PersistedContinuationSnapshot | Promote existing checked continuation snapshot/identity projections to shared owned records; direct text decoding and typed batches. Delete wrapper id+flatten round trip, from_value clones, duplicated primitive field validation. | Agent/physical-owner correlation, due/claimed timing, bounded batches, epoch and event status comparisons, no repeated input or credit charge. | Unknown outcome/cancelled versus scheduled distinctions; original snapshot raw fields needed for exact comparison must remain explicit. | Scheduled→claim→cancel/settle through actual driver, stale agent epoch, partial snapshot, null/missing timestamps, retained unknown outcome. |\n| F15: Rules and rule activity snapshots; **D**; P1 | S/repositories/rules.rs:40,55; rules_tick.rs:25,81,106 → V/rules_engine.rs:323,852; V/rules_tick.rs:484,580. Inspection: deep. | PersistedRuleRecord and RuleSnapshot policy | Deserialize existing RuleSnapshot fields from stored text at repository boundary; typed rule action/schedule variants with preserved extensions. Delete wrapper→Value clone→serde_path_to_error projection. | Schedule/event conditions, action permissions, recurrence/next-run timing, activity ownership and bounded page selection. | Historical optional rule fields and raw user command content; schema bounds still need typed refinements. | Each rule action/trigger variant through page→tick→write; missing historical defaults; stale recurrence evidence. |\n| F16: Execution runs and execution-attempt structural projections; **D**; P1 | S/repositories/execution_history.rs:184,347 → decode:413; S/records.rs:386; work_items.rs:168; scheduler/lifecycle.rs:2927 consumes attempt evidence. Inspection: deep. | PersistedExecutionRunRecord/PersistedClaudeAttemptRecord; ExecutionHistoryRepository | Typed run and attempt metadata with status/epoch/events and explicit opaque claimResult/inputIdentity. Direct text Deserialize replaces object check plus string/null/finite array loops in decode:413–444. | Account/thread/epoch/turn correlation, unique run selection, terminal settlement guards, first result wins and exact claim identity. | Nullable thread/turn/attempt IDs, missing historical optional fields; receipt content and native identity arrays stay lossless. | Record start→latest-run/read→terminal settlement, cross-account same-turn collision, malformed events and repeated settlement. |\n| F17: Claude retry attempt records; **D**; P1 | V/claude_input_recovery/runtime.rs:146,215 → S/repositories/claude_retry.rs:76; load:14 and event reconstruction:45; claude_records.rs:7 → V/claude_input_recovery/runtime.rs:33,162. Inspection: deep. | PersistedClaudeAttemptRecord; ClaudeAttemptRecord currently id+flatten; Claude input recovery policy | Store typed attempt status/identity/event references and nested owned evidence; direct from_str avoids id-only typed carrier→Value→policy parsing. | Exact attempt/input/epoch identity, which queued input was sent, unknown provider outcome, reconnect evidence. | Preserve historical provider attempt/effect details and null versus omitted timestamps; do not treat absent delivery proof as failed. | Stored attempt recovered through real recovery decoder, malformed nested identity, replay after uncertain submission. |\n| F18: Workspace operations; **D**; P1 | V/workspace_operations.rs:241,252,294 → S/repositories/workspace_operations.rs:30,41,81; S/records.rs:394; checkpoints shares the operation table. Inspection: deep. | PersistedWorkspaceOperationRecord and V/workspace_operations operation Kind/Phase | Reuse kind/phase enum and typed operation snapshots at SQL text boundary; discriminate operation variants rather than one all-optional struct. Delete wrapper→Value and repeated per-field policy decoding. | Workspace/source identity, filesystem observations, reservation ownership, epoch and uncertain effect comparison. | Table holds several operation kinds, including provision and controls; do not deserialize every row as one service-specific operation struct. | Each persisted kind through owning producer→repository→policy, legacy fields, stale reservation and uncertain outcome. |\n| F19: Workspace-ready provision journal; **D**; P1 | V/workspace_ready_git.rs:311,364,490 → S/repositories/workspace_ready.rs:295,307,355,383,412 → ready publication. Inspection: deep. | ProvisionIdentity and ReadyToken; workspace-ready journal variant of workspace operation | Typed provision journal phase/source/agent/generation with direct Deserialize; remove repeated kind/phase and primitive checks. Existing ReadyToken is already a proof object, not just a data shape. | Generation/source reservation and actual path/worktree readiness checks; never derive ReadyToken solely from stored JSON. | recovery_required preserves uncertainty/files; archived release and failed publication differ from completed provisioning. | Reserve→uncertain→recover/publish and archived release; stale source/generation; partial journal. |\n| F20: Transcript items, native notices and fulltext; **R**; P1 envelope opportunity | V/notification_dispatch.rs:411,1574,2026 and account_worker/history.rs:21 → S/repositories/transcript.rs:244,put_item; S/records.rs:410 → notification_dispatch.rs:140,353 and transcript.rs:654,922. Inspection: deep. | PersistedTranscriptRecord; TranscriptRepository; native provider item/history owners | Type common owned item/input envelope; leave historical/provider-specific body explicit. Remove duplicated stable shape validation in notification_dispatch::validate_item only after envelope parity. Fulltext remains String, decoded by StoredText. | Physical agent key/prefix, finite created, turn completion and restore visibility, search indexing, transcript revision/hash/tombstone cursor rules. | Historical truthiness and turnStatus fallback 'ended'; open native notice/tool kinds; streaming/tool interruption normalization. A strict fresh provider Item enum cannot decode all stored transcript history. | User/assistant/system/output plus old native item through write/read/enrich/sync; restored item, missing turnStatus, compressed fulltext and partial stream. |\n| F21: Transcript assets / workspace uploads; **D**; P2 | V/payload_store.rs:121,145,156 writes/replays → S/repositories/workspace_files.rs:50 insert_asset → records.rs:418/Table → workspace_files.rs:39 asset → V/vm_attachments.rs:137. Inspection: deep boundary and producer; attachment caller located. | PersistedTranscriptAsset / runtime-transcript-asset.schema.json; WorkspaceFilesRepository | Owned asset metadata DTO, direct text Deserialize and typed writer argument; eliminate Value wrapper and repeated metadata extraction. | Agent/asset identity, size/path/content-type bounds, actual file access and authorization; cannot replace file validation with JSON shape. | Keep provider-specific/unowned asset metadata as explicit extension data; schema's optional/null members must match. | Upload metadata→asset read→attachment caller; old optional fields, wrong agent/path, changed hash and missing file. |\n| F22: Event metadata / delivery timing / context manifests; **D**; P1 | V/coordination.rs:379,597 → S/repositories/queue_write.rs:103,109/Table EventMetadataRecord; notification_dispatch.rs:220,297 and scheduler/selection.rs:1361; V/account_worker/preparation/pipeline.rs:559 consumes. Inspection: deep. | RuntimeEventMetadataRecord; H/delivery.rs::DeliveryMoment; compiler-owned context manifest members | Typed metadata envelope for assets, requested delivery, radio answer id, model projection and known manifest references. Direct from_str removes object/string/array loops; preserve explicitly opaque compiler projection. | Event owner/epoch, asset identities and bounds, manifest freshness, timing policy and one-time transcript link. | External key mode, missing metadata versus null, canonical and legacy delivery spelling; metadata can carry forward extensions. | Queue producer→scheduler→model preparation with absent/null metadata, legacy timing, malformed assets and stale manifest. |\n| F23: Graph-agent records; **U**; P2 | S/records.rs:434 → S/repositories/coordination.rs:104; V/coordination.rs:859 updates/publishes alongside AgentRecord; workspace views also reads graph_agents. Inspection: deep boundary; historical domain incomplete. | PersistedGraphAgentRecord and coordination graph projection | Typed graph-node owned fields possible; schema and historical graph node variants need a full producer corpus before a closed state enum or whole Value removal. | Graph edge/member identity and correct distinction from runtime-agent lifecycle. | Graph nodes are not runtime agents; do not force AgentStatus or AgentRecord fields on them. | Graph node creation, member change and historical node read through coordination; unknown extension and sparse node. |\n| F24: Account-transfer operation and snapshots; **R**; P1 typed envelope | S/repositories/account_transfer.rs:12,36,100,144 → V/account_transfer.rs:66,116,165,191,221,244 → account-worker retained transfer storage. Inspection: deep. | PersistedAccountTransferRecord; TransferIdentity/Phase; snapshot MemberOrder | Typed operation identity/phase and typed snapshot envelope can replace Value clone/from_value, while ordered raw agent/member content remains represented explicitly. Direct stored-text decode must preserve order. | 8MiB record /64MiB snapshot/team bounds, source/target account and agent identities, phase/ownership fences, uncertain transfer state. | Store deliberately validates then returns/stores original raw text: member insertion order affects notices. Sorted map serialization would change behavior. | Transfer snapshot with nonlexical member order, unknown agent extension, duplicate/missing member, bounded oversize and repeated transfer request. |\n| F25: Agent relocation/move; **D**; P1 | V/agent_move.rs:20,40,61 policy → S/repositories/agent_move.rs:42,48 → Table MoveRecord:24; consumers retain_agent_ownership:54 and MoveSnapshot. Inspection: deep. | relocation/MoveRecord; V/agent_move::Phase, Side, Fields | Storage-owned tagged source/target move DTO plus explicit raw descriptor leaves; direct text Deserialize removes id+flatten→to_value→from_value Fields. | Derived target id from move identity, source/descriptor agent consistency, deadline, outstanding uncertain phase and cross-server ownership. | A failed move with uncertainPhase still retains ownership; missing versus explicit null matters to SQL json_type checks. | Source and target moves, all phases, failed+uncertainPhase absent/null/value, derived target identity mismatch. |\n| F26: Project-location outbox and tool completion; **D**; P1 | S/repositories/project_locations.rs:59,78,95,106,117,159 → V/project_locations.rs:35,58,197,252,380,517; HTTP/routes/projects writes request/receipt. Inspection: deep. | relocation/LocationOutbox, Envelope, LocationAdmission; PersistedServerDelivery generic SQL projection | Decode SQL columns directly into typed outbox and decode body/result strings directly into their DTOs, avoiding SQL json_object→Value→nested string parse→checked<Outbox>. Remove id-only ProjectLocationRecord carrier where unused as actual type proof. | request id/body/project/server/path/action/signature correlations, exact saved tool row comparison, remote receipt identity and completion CAS. | Generic server-delivery state set is broader than location queued/complete; keep per-operation subtype and opaque original request for signature. | Location add/remove request→outbox→completion; mismatched body signature, malformed nested JSON and repeated complete. |\n| F27: Projects, locations, peer teams and sidebar state; **U**; P2 | S/repositories/projects.rs:94,114,193,255,348,366 stores/reads raw; V/project_locations.rs:58,71,completion modifies; sync publication publishes project state. Inspection: deep boundary. | PersistedProjectRecord, relocation/RelocationProject; sidebar projection owner | Typed project/peer-team envelope and sidebar revision/groups DTO possible, but generic schema is sparse while relocation uses a richer projection. No proved single DTO acceptance policy yet. | Project identity, selected root/server/path and member visibility, revision and deletion ownership. | Historical absent locations/peer groups, sidebar default revision=0/groups=null, unknown extensions; stricter relocation DTO cannot replace every generic project read. | Old minimal project, modern locations/peer teams, sidebar defaults and relocation completion through actual callers. |\n| F28: Normalized queue events and embedded event-kind data; **U**; P1 | S/repositories/events.rs:43,70,84 → QueueEvent records.rs:1256; queue_write.rs:34,46,87; scheduler.rs:55,57,selection.rs:1535,1580,1741,1801 consumes kind-specific JSON text. Inspection: deep. | QueueEvent normalized SQL contract; scheduler event-kind owners; PersistedMessageEvent | SQL scalar shape already typed; status and kind remain String. A shared historical-safe status enum and per-owned-kind text DTO can remove string matching/parsing, but arbitrary user text and all legacy event kinds are not one JSON record. | Epoch/owner/event-set identity; pending/reserved/dispatching/uncertain semantics; invalid-row retention with valid flag; row conversion errors remain retained evidence. | Unknown kind/history may need preservation. String text for user messages must never be parsed indiscriminately as JSON; invalid row placeholders are diagnostic state. | All producer statuses/kinds enumerated first, then queue→claim→settle, malformed scalar row, arbitrary text and special progress/complaint payloads. |\n| F29: Execution-effect and general operation receipts; **R**; P1 | S/repositories/execution_history.rs:39,70,88 stores/replays input/result; event_write.rs receipts feed V/event_write.rs:196; system_reads.rs:24 excludes payload-key enforcement for operation results. Inspection: deep. | PersistedExecutionRecord/PersistedOperationResult; each operation's signature owner | Typed outer receipt/signature/outcome where common, typed per-action result after dispatch. Preserve raw result and original identity for generic operation store; no universal Deserialize DTO replaces arbitrary result. | Same request+content, first settlement wins, unknown status remains unknown; no repeat effect after lost reply. | Scalar/string results exist (notification stream-base), not all receipts are objects; signature may depend on null/omission and inactive fields. | Scalar and object receipt replay, same id changed input, uncertain effect settlement, stream-base string round trip. |\n| F30: Steer receipt and prepared submission; **D**; P1 | S/repositories/scheduler/steer.rs:48,60,79,90,124,633 → scheduler/account worker steer caller. Inspection: deep. | Steer receipt envelope; AcknowledgedSteer; compiler owns prepared_submission | Typed identity/status/events Vec<String> receipt directly from text; remove manual array/string loop and serialize-events→deserialize Vec path. Keep prepared_submission Option<Value> explicitly opaque. | Nonempty event list, exact input signature and agent/epoch/turn identity, acknowledged versus uncertain replay. | Frozen prepared compiler payload must survive unchanged, including absent/null and extensions. | Claim→ack→replay with malformed event IDs, stale turn and preserved prepared submission; prove no double input. |\n| F31: Context repair capture and pending-input recovery; **D**; P1 | S/repositories/context_repair.rs:69,76,84,115,126 → V/context_repair.rs:283,319,811 → deliver/requeue S:98,111. Inspection: deep. | RecoverySnapshot/InputRow, RuntimeEventMetadataRecord, context repair policy | Construct typed InputRow directly from SQL columns and typed metadata; avoid SQL/json!→Value→from_value and repeated pending object shape checks. Keep raw captured evidence only where exact comparison/history requires it. | Capture byte bound, unique IDs, account connection, epoch/status/turn and completed-turn evidence, positive delivery CAS. | Raw capture is compared as evidence; oversize SQL NULL currently fails conversion; do not silently convert malformed/oversized row to missing. | Bounded capture→RecoverySnapshot→deliver/requeue with corrupt metadata, duplicate ID, stale epoch and oversized row. |\n| F32: Persisted Claude controls and file rewind operations; **D**; P1 | V/claude_controls/store.rs:90,98,226 → S/repositories/claude_controls.rs:8,24,35,61; ControlSnapshot consumes; H/claude_controls.rs owns fresh commands/settings. Inspection: deep. | PersistedClaudeControl plus ControlSnapshot operation/agent projections; fresh command type is separate | Typed stored operation with phase/control identity and discriminated control kinds; direct stored text decode avoids Value→policy parsing and settled rewind field getters. | Epoch, workspace source/reservation and expected saved operation equality; binding/transport and uncertain provider effects. | completed/failed/recovery_required/submitted distinctions; old transport evidence; arbitrary file-change/history results remain explicit raw leaves. | Each control reserve→load→settle, rewind history, stale reservation and uncertain provider response. |\n| F33: Account registry file, order and duplicate keys; **R**; P1 typed ordered-envelope opportunity | S/account_registry.rs:22,59,123,198 codec → V/account_policy.rs:197 and account_driver.rs:1781,2678,2819; migration reuses same codec. Inspection: deep. | account-registry.schema.json; RegistryOrder custom visitor; ProviderKind | One typed ordered registry Deserialize from bounded bytes can replace Value parse+schema+second order parse only if it preserves duplicate detection and order. Plain BTreeMap or ordinary derive alone is not equivalent. | Byte/depth bounds, account/provider key consistency, duplicate root/map keys, atomic replacement and replaced-but-not-durable outcome. | accounts/logins insertion order is durable UI state; current version2, account/login enums and extension policy; no automatic rewrite of ordering. | Nonlexical account order, duplicate root/account keys, unknown provider and malformed nested member; uncertain atomic replacement semantics preserved. |\n| F34: Account limit observations and workspace rate-limit hydration; **U**; P1 | S/repositories/account_state.rs:53,80,99,120,183 → account policy limits hydration/selection; H/schemas/workspace-usage-limits.schema.json and provider-specific rate evidence. Inspection: deep. | AccountStateRepository timestamp overlay; current service LimitsSnapshot/provider rate owners | Typed observation/envelope possible but current durable hydration isolates malformed accounts and has partial timestamp overlay semantics; a single fail-fast Vec/map Deserialize would change behavior. | 64MiB/depth128 limits, provider/account identity, freshness/reset/expiry, partial diagnostics and timestamp authority. | When observed time exists, missing times may be removed; absence/null differ. Preserve sparse legacy rate snapshot and per-account isolation. | Mixed valid/invalid account map, missing/null timestamps, stale limit observation and provider/account mismatch through hydration. |\n| F35: Federation settings, peers and rooms; **D**; P2 | S/repositories/federation.rs:49,127,133,529,581 and federation_messaging.rs:10,36,92,106 → V/federation.rs:26,63–89. Inspection: deep. | FederationTable schemas: PersistedFederationSettings/Peer/Room; federation policy | Typed settings/peer/room envelope and closed owned peer state where schema proves it; direct record-text decoding removes generic object/field projections. Preserve peer-specific payload extensions. | Peer stateId/room id, authorization/public identity and secret redaction, member identity, pairing/approval transitions. | Legacy room members may be strings or objects; settings/inbox have different key rules; no one id-equality rule fits all. | Peer approve/revoke and room membership update→snapshot, legacy member alternatives, wrong stateId and secret-free public projection. |\n| F36: Federation inbox/outbox and chat payloads; **D**; P1 | V/federation_effects.rs:458,465,523,552 writes → S/repositories/federation_messaging.rs:58,92,106 → effects.rs:115–120 and delivery transport; federation.rs:71–110 status projection. Inspection: deep store; targeted caller. | FederationTable::Outbox/Inbox and corresponding schema; signed federation payload owner | Typed delivery envelope/status/timestamps with explicit raw signed payload; direct text Deserialize removes scalar validation and indexed JSON extraction in policy. | 512KiB record bound, peer/message composite identity, signature, rate limit and nonce/replay semantics. | Inbox composite keys differ from outbox payload id; canonical Python JSON and peer extensions must remain stable. | Outbound create→retry→receipt, inbound replay, wrong peer/message identity, legacy extension and payload canonicalization. |\n| F37: Access clients, discovered peers and invites; **D**; P1 | V/multi_server_auth.rs:427,444,455; discovery.rs:160,163 and pairing.rs:798 → stored JSON checked by H table_schema; S/remote_transport and multi_server_state_check consume access state. Inspection: deep schema and consumer. | PersistedAccessClient/Invite; multi_server_auth::AccessSnapshot | Typed ClientKind/ClientStatus and InviteStatus plus typed identity/key/expiry fields with preserved extras; direct Deserialize<&str> replaces Value+text getters in snapshot constructor. | id/clientId/inviteId correlation, public-key checks, origin/authorization, token hash and expiration; auto-pair policy. | Client states paired/revoked/discovered/unreachable; invite open/used. Preserve extensible stored records and historical absent optional members. | Pair→discover→authenticate/revoke with wrong clientId, malformed state, expired invite and unknown nondecision field. |\n| F38: Remote outbound receipt state; **D**; P1 | S/repositories/remote_transport.rs:61,173,193,232,267,288 → V/remote_transport.rs:736,850,858,919. Inspection: deep. | OutboundReservation / stored outbound receipt shapes | Tagged StoredOutboundReceipt{Unknown{created},Complete{completed,value:Map},Redacted{...}} matching exact accepted fields; direct text Deserialize replaces object-len/get/is_json_number checks. | Fingerprint equality, unknown→complete SQL CAS, retained/redacted replay and positive result identity. | Existing exact object-length validation must remain equivalent (deny extra only at this envelope); arbitrary complete.value object is opaque; unknown is not retry permission. | All three variants, extra/missing key, scalar result, conflicting fingerprint and repeated complete via reserve caller. |\n| F39: Cross-server delivery inbox/outbox; **D**; P1 | H/lib.rs:483 → V/multi_server_orchestration.rs:2235,2251,2271 DeliverySnapshot; S/repositories/multi_server_delivery.rs owns SQL family; project-location subtype F26. Inspection: deep consumer and shared boundary. | PersistedServerDelivery; DeliverySnapshot/ExchangeOutcome | Typed state enum queued/running/waiting/complete, signature/fingerprint/body fields, decode nested result directly into ExchangeOutcome's raw envelope. Remove Value→text getter chain and broad state String. | Envelope request id, receipt identity/time, signature or historical fingerprint/body-hash fallback, complete requires receipt, remote uncertainty. | Nested body/result are stored JSON strings, not objects; preserve fallback identity and old spelling. Location narrower state type is not universal. | Each delivery state, legacy signature fallback, complete-without-receipt, mismatched nested outcome and lost response replay. |\n| F40: Tool requests and request aliases; **D**; P1 | S/repositories/system_reads.rs:14,50 + H/lib.rs:485 → V/host_exec.rs:371 and managed host ingress; aliases normalized (agent,alias,request). Inspection: deep boundary and schema; caller located. | PersistedToolRequestRecord stage/outcome enums; PersistedToolAlias; managed host tool admission | Typed stored request identity, Stage{queued,running,cancelled,interrupted,failed,unknown,completed}, Outcome{pending,applied,not_applied,unknown}; alias is already SQL scalars. Direct text Deserialize replaces loose Value projections. | Tool permission, agent/request/signature identity, exact request execution and unknown outcome after lost response; alias lookup scope. | Original tool arguments/results remain arbitrary; older optional provider/process fields and raw signatures preserved. | Queue→admit→settle→lookup alias, all outcome/stage combinations accepted by owner, stale or conflicting request identity. |\n| F41: Tool results and generic receipt stores; **R**; P2 | S/repositories/system_reads.rs:24,54 chooses result column; S/repositories/project_locations.rs:106,117 and work_items.rs:84; H persisted-tool-result/operation-result/access-receipt schemas. Inspection: deep. | Individual tool/action result contract; storage intentionally generic | Use explicit JsonObject/RawValue aliases or typed per-action decoder at the consuming action. Do not impose a universal record.id or object shape on a generic result column. | Correct request/signature, permission and once-only operation semantics; bounded payload/actual result-schema validation where owned. | Some schema documents accept arbitrary JSON; null/scalar/array/object results and raw omissions are intentional. | Representative scalar, array and structured tool result replay through each actual caller; wrong signature refused. |\n| F42: Rooms, groups, chat messages and deliveries; **U**; P2 | V/coordination.rs:96,401,842 → S/repositories/coordination.rs:39,79,144,202; messages.rs:29,47 and records.rs:1269 → V/transcript.rs:455,469; runtime_rooms via system_reads. Inspection: deep. | ChatGroup/CanvasMessage/ChatMessage; PersistedRoomRecord/PersistedChatMessage; coordination deliveries owner | Most SQL scalars already typed. A typed deliveries/member map could replace parse-only Value/String, but two message tables and historical delivery encodings need one proved acceptance contract first. | Original group member text, participant visibility, room ownership, message event id/signature, delivery replay. | groups original_members is retained raw; runtime_chat_messages deliveries sometimes exposed as encoded text; historical participant records and federation members differ. | Both message tables and room/group variants through post→history→participant projection; malformed/unknown delivery state and original member order. |\n| F43: Voice record, session and delivery state; **D**; P1 | V/voice.rs:36,102,116,158,176 → S/repositories/voice.rs:57,147,167,186,215,250 → V/voice.rs:641,666,686 and voice/provider.rs:1238. Inspection: deep. | VoiceRecord and V/voice::RECORD_KINDS/SESSION_STATES/PLAYBACK_STATES | Typed enums for closed kind/session/playback states, typed SQL SessionRow/receipt and Vec<record-id> deliveries; deserialize payload once to an explicit object envelope. Remove SQL→json→nullable getter validations and duplicate parse at validate_record_content/value. | Lead-only speech permission, record/session/agent identity, exact replay content, safe sequence and payload/text limits. | Session SQL nullable fields are present-null; missing currently invalid. Provider payload remains extensible JSON. Session 'unknown' preserves uncertainty. | Each record/session/playback state through save→status→delivery, absent versus null session field, payload mismatch replay, unauthorized publisher. |\n| F44: Analytics agent, turn, item, context and notice records; **D**; P1 | V/analytics_capture.rs:19/analytics_projection.rs:20 use Repo → S/repositories/analytics_capture.rs:33,50,200,341,356 → analytics.rs:987,1011,1063 → analytics service; all analytics schemas mechanically correlated. Inspection: deep capture/read boundary; schema scan all variants. | CaptureTable and AnalyticsAgent/Turn/Item/Context/Notice schemas | Concrete analytical record DTOs with typed envelope/status and raw provider notice/item leaves; decode StoredText result directly. Remove parse_object + required-field-exists loops after parity is proved. | Agent/root/thread/turn/id correlation, finite timing, query scope and pagination; content/usage bounds; compression decode. | Capture strict schema and analytics historical read acceptance differ: current read valid_stored_shape is existence-based. Migration must preserve old rows rather than silently tighten historical reads. | Each capture family write→analytic list/summary with old sparse row, invalid primitive, wrong scope and compressed item. |\n| F45: Modern usage ledger and cost-read projection; **D**; P1 | S/repositories/analytics_capture.rs:237,266; cost_aggregate.rs:105,126,229,328,382 → H/usage/ledger.rs:217,234,323,341 → UsageObservation typed cost interpretation. Inspection: deep. | UsageLedgerRow/UsageIdentity/UsageReceipt/UsageObservation, checked UsageTokens | Typed modern analytics envelope with flattened owned ledger and borrowed cost fields; direct text Deserialize invokes existing custom checked constructors, eliminating Value→Self::deserialize clones. Decode once for provenance and cost projection. | External agent/thread identity, nonempty ledger key, receipt/evidence consistency, checked token arithmetic, response-vs-cumulative accounting and source selection. | studioUsage presence marks modern format; explicit null/malformed modern data must not fall through to a forgiving legacy decoder. | Modern response/gap/cumulative rows through capture→cost; mismatched ledger identity, malformed present studioUsage, cache1h subset violation and reconciliation truncation. |\n| F46: Historical usage and cost adapters; **R**; P1 preserve | H/usage/persisted.rs:11,40,85,109; H/usage/ledger.rs:312,318,323 → S/repositories/cost_aggregate.rs:126 and analytics_capture.rs:266. Inspection: deep. | usage::persisted legacy adapters and pre-ledger detection | Keep version/shape-aware historical adapter. Typed legacy DTOs may replace internal primitive reads only with exhaustive historical fixtures; do not delete dynamic discriminator/default logic as redundant. | Provider evidence, missing-versus-null token counts, unknown usage exclusion, provenance replacement and no cumulative double-counting. | Absent/null cache counts stay unknown; explicit zero can be priced. Typed modern discriminator is absence-sensitive. Legacy token shapes and provider aliases are intentional. | All existing historical fixture shapes, null/absent/zero cache fields, migrated-row suppression and malformed modern row refusal. |\n| F47: Analytics history/importer and repair metadata; **U**; P2 | V/analytics_history.rs:311,328,1388 reads/writes History → S/repositories/analytics_capture.rs metadata:78,115,315; analytics-history/importer schemas; migrations/m2026_10_26_terminal_errors.rs:45,54,98. Inspection: deep metadata paths; history variants mechanically correlated. | AnalyticsHistory/AnalyticsHistoryImporter schemas; per-metadata-key repair owner | Typed per-key cursor/end/repaired/ambiguous checkpoint and tagged importer/history record, not one generic metadata struct. No whole-family replacement proved across every metadata key. | Monotonic cursor/window end, checked counts, bounded conversion page, source completeness and resume identity. | Historic importer errors and metadata keys have distinct shapes; unknown keys remain opaque. terminal-error repair requires exact notice/turn evidence. | Each metadata key and history/import state round trip, corrupt cursor/end, resume after partial migration and ambiguous notice ignored. |\n| F48: Derived analytics SQL aggregates and scoped read structs; **T**; P3 | S/repositories/cost_aggregate.rs:429,456,620; analytics.rs:694,731,901 → service cost/analytics readers. Inspection: deep representative SQL constructors; mechanical full file. | CostTokens/RecordedResponse and analytic SQL response structs | No Value removal needed for normalized scalar SQL rows. Optional model/account/release labels are data, not enums; retain checked conversion and numeric units. | Token/rate arithmetic, source window bounds, scope filtering, null legacy eligibility, final-evidence precedence. | Nullable aggregate columns preserve old interpretation; semantic query constraints are not JSON shape checks. | Existing aggregate caller fixtures for missing eligibility, nullable cache split and final evidence. No tests run. |\n| F49: Legacy budget state and budget-usage receipts; **U**; P2 | H persisted-budget-state/write/usage schemas, table_schema:459; S/migrations/m2026_10_26_canvas.rs:122 adds nullable legacy columns; V/costs.rs:280–294 reads replayConflicts Value→Vec<UsageReplayConflict>. Inspection: deep current reader; full producer not proved. | PersistedBudgetState/PersistedBudgetUsage; UsageReplayConflict typed owner | Direct deserialize a replay-conflict projection for the present read; do not claim a complete budget DTO migration from this source set. Current producer of all historic budget fields was not found within runtime-package search. | Conflict accounting, safe token bounds, unknown usage requires zero/null breakdown; legacy replay identity and null total-only comparison. | Historical budget tables remain supported despite retired feature paths; not evidence to remove schema/table. Missing replayConflicts defaults empty; malformed present conflict list fails. | Historical budget record→costs reconciliation, absent/null/malformed replayConflicts, total-only and detailed legacy usage; locate full writer before stronger changes. |\n| F50: Orchestration settings; **T**; P2 scalar cleanup | S/repositories/orchestration_settings.rs:83,110,128,159,180 → shell/idle-compaction settings consumers; H/{shell_policy,idle_compaction}.rs. Inspection: deep. | Setting field/default/min/max owner; typed shell_policy::Settings and idle_compaction::Settings | Shell/idle values already from_str<T> plus valid(). Scalar setting reader uses Value solely to select one owned field; could use a typed settings projection while preserving other preference fields. No general settings Value elimination required. | Range validation and unit-specific defaults, zero/off semantics; write updates only selected field. | Absent table/row/field defaults; scalar explicit null is invalid, unlike nested nullable json_extract fallback. Do not conflate those paths. | Each owned scalar default/range, absent/null nested settings, unrelated preference preserved. |\n| F51: Supervisor handles, operations and events; **D**; P1 | S/supervisor_journal.rs:77,94,101,127,194,460,547,611 → P/supervisor_protocol.rs:239,251 HandleSnapshot (and ReceiptSnapshot). SQL typed values currently json!→Value→from_value. Inspection: deep. | supervisor_protocol typed records/NativeId; supervisor_journal row decoder; H/supervisor_contract health types | Construct typed Handle/Receipt records directly from SQL, retaining checked snapshot constructors. Typed event kind and recovery outcome enums replace string matches; keep Box<RawValue> event payload and init_result explicitly opaque. | Integer range/order, acknowledged≤sequence, generation, process pid/start identity, signature, native Integer/Text/NULL distinction, replay/ack correctness. | Stored native id historically INTEGER or TEXT; REAL/BLOB rejected. Raw event JSON bytes preserved; provider initialize response not owned by store. | Handle/operation round trip and replay via supervisor caller; text/integer/null native id, malformed sequence/generation, raw payload byte preservation. |\n| F52: State-owner and local-server identity files; **D**; P2 | S/state_owner.rs:35,47,71 read/write → store opening; S/lib.rs:2205,2262 reads local server identity. Inspection: deep. | StateOwner formatVersion/runtime/backend-build and local_server_id validation | Small typed marker and projected serverId DTO from_slice/from_reader replaces Value get/as_string/get_i64 chain; ignore private unrelated fields rather than materializing them. | Version/runtime equality, backend hash spelling, file size/permissions/regular-file/no-symlink constraints, identity length/characters, lock and durable replacement. | Unknown allowed marker members and historical identity spelling; deserialization alone does not establish filesystem safety or state-directory identity. | Existing marker/identity source fixture plus wrong version/hash/id, unknown fields and filesystem checks through opener; no live state opened. |\n| F53: Sync entities, document payloads and canonical JSON; **R**; P1 preserve | S/repositories/sync_documents.rs:111,153,516,862 → H/lib.rs:516,547,581 normalization/validation; S/schema.rs:244 event payload; H/json_compat.rs:5 canonical bytes → HTTP sync stream. Inspection: deep. | SyncDocument/EntityRow; generated per-collection union; Python-compatible canonicalization; transcript hash-only index owner | Type outer envelope/cursors where not already typed. Keep arbitrary selected collection documents/raw payload text and schema AST; per-collection DTO generation is a separate owner and excluded implementation audit. | Collection/id consistency, scope/permission filtering, exact hash bytes, tombstone semantics and sequence floors, producer strictness versus stored historical normalization. | Historical extras are stripped for public projection, tombstones use empty object; float signed-zero/exponent/Unicode and canonical ordering affect hashes. Hash-only transcript rows intentionally outside public union. | Every supported collection schema witness, historical extras, tombstone, event canonical hash and transcript private index; no polling/runtime reads used. |\n| F54: Compression and stored-text ownership; **T**; P1 preserve boundary | S/stored_text.rs:25,32,85,124,170,192,207; stored_text_compaction.rs:42,52; stored_text_dictionary.rs:1,28,33,60 → analytics capture/fulltext reads. Inspection: deep. | StoredText/StoredTextValue format byte and decoder; immutable dictionary registry; compaction column catalog | No Value to remove in binary codec. Direct typed JSON parsing occurs only after decoder yields UTF-8 text; raw TEXT may be parsed by from_str/from_slice. Generic Table's records.rs:1217 helpers accept TEXT only and are not this codec. | Version, one complete zstd frame/no trailing data, checksum/content size, dictionary identity and availability, 1e9 decoded-byte bound, exact decompressed length and UTF-8. | Only runtime_item_fulltext.body and analytics_items.record are compaction owners here. Analytics temp view decodes/shadows main table; writer names main.analytics_items. Fulltext can be arbitrary non-JSON text. | TEXT and compressed item DTO equality, malformed/trailing frame and dictionary mismatch, fulltext round trip; do not feed compressed bytes directly to serde_json. |\n| F55: Historical startup migrations and markers; **R**; P1 preserve | S/migrations/mod.rs catalog → m2026_10_20_agents,10_22_analytics,10_26_canvas/provider_identity/registry/terminal_errors; schema.rs:374,427 marker readers → startup validation. Inspection: deep representative conversion bodies; full mechanical module scan. | Each dated migration owns supported source formats; current account_registry/stored_text/schema owners reused | Do not replace historical partial conversion JSON with today's strict DTO. Small migration-marker/progress structs can be typed, but source-complete historical traversal remains versioned dynamic logic. | Source preflight before writes, complete source evidence, per-target transaction/durable-file uncertainty, resumable checkpoint and provider identity classification. | Retired auth_probe_wait, legacy provider identities and unknown/null token fields are intentional sources. Optional payload marker status remains version-dependent. | Every supported historical fixture→preflight→migration→reopen, ambiguous source untouched and uncertain file replacement retained; none executed. |\n| F56: Schema documents, validation errors, startup catalog and state checks; **R**; P3 | H/lib.rs:406,432,498,512,740 compiles schema AST → records/system_reads/state_check; S/{schema,bootstrap,fresh_state,feature_schema,multi_server_state_check}.rs consume schema/catalog metadata. Inspection: deep representative runtime validators; mechanical all schemas/SQL. | runtime-schema registry and table_schema; runtime-state-schema.json; sync_schema.sql and supervisor_schema.sql | Schema AST, arbitrary diagnostic records and generic catalog traversal appropriately use Value or SQL metadata strings. Typed diagnostic envelope is possible but not a global static record replacement. | Schema dialect/ref resolution, numeric/string bounds, SQL catalog compatibility, error pointer/table/key context, current versus historical schema. | Database declared column types and dynamically registered tables are data; do not enum them as application lifecycle. Generated contract implementation excluded from this audit. | Schema owner/consumer parity and representative invalid row path; full catalog/conditional-table fixture. Existing tests only inspected as source. |\n| F57: Typed fresh commands and acceptance gates; **T**; P2 boundary cleanup only | H/task_command.rs:191,238 and queue_command.rs Field<T>/action enum; H/task_gate.rs:12,40; H/claude_controls.rs command decoders → request/service callers. Inspection: deep. | TaskCommand/QueueCommand/Claude commands, GateInput/Gate and named bound constants | Already typed action variants and tri-state fields; raw-to-typed conversion at API ingress is legitimate. Stored callers can decode directly to these only if they actually store the fresh command contract. Keep generator/parity code excluded. | Command text/timeout/length/numeric limits, action-required diagnostics, task version compatibility, permission and gate execution evidence. | Queue Field<T> preserves missing/null/value; gates accept string/config/null; fresh command strictness must not be imposed on historical records. | Each action through real request decoder, absent/null field distinction, gate limit edges and numeric version spellings. |\n| F58: Process controls raw request signatures and results; **R**; P1 preserve | H/process_controls.rs:167,186,343 → process-control request receipt lookup and action decisions. Inspection: deep. | process_controls::Request/Command/ProcessActionResult and exact raw signature contract | Typed command/result decision fields already exist. Retain raw request/result for exact signature/replay semantics; replacing raw with reserialized struct would erase inactive fields/omissions. | Signature equality, caller permission, process identity and request outcome certainty. | Explicit null versus omission and unused fields affect request identity; older result optional/extension members retained. | Same typed command with differing raw null/omission/inactive fields must preserve original signature behavior; unknown stored outcome. |\n| F59: User-defined result schemas and arbitrary elicitation answers; **R**; P2 | H/task_results.rs:23,101,112; H/question_answers.rs:8,37,60 → task submission and question answer callers. Inspection: deep. | task_results validator and provider-specific answer variant owner | Keep Value for user-authored JSON Schema/results and arbitrary elicitation content; typed outer answer/task result metadata already feasible. No single static application DTO captures caller-defined result structure. | Supported schema subset/depth/size, direct string result versus parse-as-JSON fallback, required field/value constraints and answer authorization. | A string can itself satisfy the result schema; parsing it unconditionally changes semantics. Provider question variants have differing content shapes. | String schema and object schema with text JSON, dynamic nested result, invalid supported-schema keyword and arbitrary elicitation answer. |\n| F60: Provider lifecycle, error classifications and raw history; **R**; P1 preserve | H/provider_lifecycle.rs:43,69,88,111; provider_errors.rs:12,25; generated Codex leaves and provider_kind → scheduler/recovery/notifications. Inspection: deep. | Generated provider lifecycle/error leaves; TerminalTurnStatus/ProviderKind; raw historical provider payload owner | Known decision leaves already typed; keep raw lossless provider/history records and only project known status/error tags. No closed whole-provider DTO replacing external extensions. | Nonempty thread identity, unknown activity cannot prove idle, ambiguous multi-key error object unclassified; provider dispatch identity. | Unknown future tags and historical string/single-key error shapes retained; generated vendor enum is not exhaustive provider payload. | Known/unknown/malformed lifecycle/error leaves through actual recovery decisions, multi-key extension error and missing activity. |\n| F61: Provider input items, method policy and diagnostics; **T**; P3 | H/provider_input.rs:20,76; provider_input/items.rs variants; provider_method_policy.rs; provider_diagnostics.rs → provider request builders. Inspection: deep representative item/method forms; mechanical complete files. | Provider input enum/RequestId integer-or-string, method classification policy and typed diagnostics | Typed owned input/status variants already exist. Value leaves for dynamic tool schema/content, file diffs, arbitrary commands or metadata remain explicit opaque boundaries. | Provider method permissions/capability and request identity; payload-specific content bounds. | New upstream tool/content variants and opaque schemas; native request string ids must not be forced to integers. | Each known input variant plus opaque extension and integer/string request IDs through provider builder. |\n| F62: Model catalog and pricing artifact; **R**; P2 | H/model_catalog.rs:16,141,154 typed ProviderModel; H/pricing.rs:6,23,73 → V/pricing.rs:64,66,71,74 artifact load and signature. Inspection: deep. | ModelCatalog/ProviderModel and PricingArtifact/RawCatalog; catalog_signature canonical hash | Typed consumed model/pricing fields already defined; avoid redundant clones where possible, retain entire catalog document for hash and extension fields. RawTierKey.kind/model/effort IDs are upstream open strings. | Nonempty model identity, validated price/rate/context bounds, artifact version and exact canonical catalog signature. | Present-helper distinguishes absent and explicit null model fields; upstream tiers/releases may expand. Serializing only typed subset would change artifact signature. | Catalog with unknown fields/tiers, missing/null optional model member, version mismatch and stable catalog signature. |\n| F63: Claude failure stored leaf projection; **U**; P2 | H/claude_failure.rs:8,35,42,57,70 → persisted agent/notice failure metadata and policies; claude-failure.schema.json owns known leaf choices. Inspection: deep. | ClaudeFailure projection and per-property validators | Closed enum leaf types could replace broad Option<String> error/origin/provider/remedy/media fields, but direct strict Deserialize would change intentional per-field sanitization (invalid leaves dropped). Need tolerant typed projection preserving that rule. | Known classification only; unknown failure evidence must not invent retry/safety decision. | Malformed/unknown leaf is dropped independently while valid siblings survive; whole-record failure is different behavior. | Each known enum leaf plus unknown/malformed sibling; valid evidence retained and no fabricated classification. |\n| F64: Provider rate-limit evidence and analytics rate payloads; **R**; P2 typed projection | H/provider_rate_limits.rs:12,35 validates SDK-derived schema; S/repositories/analytics.rs:751,1141 rate data Value → account limit freshness decisions. Inspection: deep checker; current producer derivation inspected for ownership only. | claude-rate-limit generated schema/provenance and rate_evidence; provider raw payload owner | Generated consumed projection could replace repeated nested getters, but retain raw provider payload and open provider variants. Schema generation itself belongs excluded audit. | Presence versus invalid evidence, provider identity, rate-window freshness/reset and finite numeric constraints. | Missing rate data is allowed; malformed known data must not establish freshness; upstream payload evolves. | Absent, valid, malformed and extended SDK rate info; latest analytic rate snapshot through account admission. |\n| F65: Typed usage/token/ledger domain contracts; **T**; P3 | H/usage.rs custom UsageTokens Deserialize; usage/ledger.rs:217,234,249 checked ledger → analytics capture/cost consumers F45/F46. Inspection: deep. | UsageObservation/UsageTokens/UsageLedgerRow and shared unit constants | No broad Value replacement inside already typed modern domain objects. Reuse custom Deserialize/constructors at boundaries; do not create a parallel token/status type. | Token arithmetic/subset relations and identity/receipt/evidence invariants remain even when fields deserialize. | Partial evidence is modeled explicitly, including unknown/gap/cumulative distinctions and provider-scoped identities. | Token subset/overflow, each observation kind and mismatched receipt identity via boundary decoder. |\n| F66: Progress, cache settings, workspace modes and shared scalar contracts; **T**; P3 | H/agent_progress.rs:8,44,70; idle_compaction.rs:89 → V/idle_compaction.rs:72,76,89; H/{records,workspace_modes,desktop,shell_policy,claude_permissions,studio_errors}.rs. Inspection: deep representative contracts; mechanical all owner files. | StartWaitReason/AgentStartWait, WorkspaceMode, DiskSpaceLevel, typed error enums, CacheReport/Settings; shared_values and limits owners | Do not enum descriptive AgentCommandProgress.stage: source says first command line. Open model/provider identifiers and messages stay strings. CacheReport.ttl currently accepts any string and only '1h' arms timer; retain unknown string or explicitly model Other before closing. | Epoch and activity-time units, settings bounds, known permission state, positive cache eligibility; schema parity owner. | Option fields often mean missing observation or optional diagnostics, not invalid state. TTL '5m'/future strings disarm rather than reject. | Arbitrary command stage, unknown TTL, missing optional observation, stale epoch and generated parity witnesses. |\n| F67: Normalized SQL infrastructure, path identities and publication bookkeeping; **T**; P3 | S/{path_identity.rs:11,17,agent_columns,entity_publication,cached_sql,sqlite_actor,sqlite_durability,blocking_pool,bootstrap}.rs; repositories/{federation_credentials,multi_server,agent_indexed_reads,capability_reads,startup_recovery,reviewer_archive}.rs. Inspection: mechanical all files; deep representative boundaries. | LexicalPath/CanonicalPath/PathEvidence, typed SQL constructors and individual repository/actor owners | No blanket String→enum or Value removal: ids, hashes, paths, arbitrary SQL table/column names and diagnostic actions are data. Audit-specific normalized projections already avoid whole record parsing; some output json! values are serialization only. | SQL type/range checks, no filesystem access during stored path Deserialize, process/state ownership, transaction/publication and bounded reader semantics. | Historical SQLite metadata and optional normalized columns; PathEvidence is deliberately not deserializable as proven canonical identity. | Source-level typed constructor/parity review; representative SQL wrong-type and stored path lexical-only witness. No actual check executed. |\n| F68: Claude sign-in receipt/metadata envelope; **D**; P2 | V/claude_login/receipts.rs file persistence → V/claude_login.rs:92,98,103,106 LoginSnapshot; H/lib.rs:912 PersistedClaudeLoginRecord schema registration. Inspection: deep schema and external producer/consumer. | PersistedClaudeLoginRecord; LoginStatus/Receipt/Metadata and login snapshot | Version-aware typed envelope from stored bytes can eliminate schema-checked Value→two cloned subrecord Deserialize operations. Keep historical bare-receipt alternative and explicitly preserved extension members. | UUID request identity, account/signature replay, secret/verification URL removal, metadata flow and code-submitted uncertainty, atomic file durability. | Early records are bare receipt and get wrapped in {receipt,metadata:{}}; metadata.flow is an open string tested for 'add', not proven exhaustive. No strict current-envelope-only parser. | Bare legacy receipt and modern envelope through load→replay, missing metadata, wrong request/account/signature and transient URL redaction. |\n\n## Remaining proof boundaries and handoff\n\nThe ten U families are explicitly not implementation-ready whole-family conversions: F02 Agent records, volatile overlay and agent lifecycle projections; F12 Terminal record and terminal request receipts; F23 Graph-agent records; F27 Projects, locations, peer teams and sidebar state; F28 Normalized queue events and embedded event-kind data; F34 Account limit observations and workspace rate-limit hydration; F42 Rooms, groups, chat messages and deliveries; F47 Analytics history/importer and repair metadata; F49 Legacy budget state and budget-usage receipts; F63 Claude failure stored leaf projection. Their unknowns are identified in their rows rather than hidden behind a claim of total manual review. In particular the whole agent extension universe, every historical terminal/queue/graph/chat shape, tolerant account-limit hydration, generic project/sidebar acceptance, historical budget writers, metadata key variants and Claude failure sanitization need deeper proof.\n\nThe broad String/Option sweep did not classify every string as an enum candidate. Stable closed sets were found for voice kinds/session/playback, access client/invite, server delivery state, tool request stage/outcome and policy-owned operation phases. AgentStatus::Other, provider/model/effort identifiers, CacheReport.ttl future values, human command stage, error messages, path/id/hash strings and raw provider variants have different contracts. Required-nullable profile effort, queue Field<T>, volatile overlay nulls, raw signature fields and partial rate observation semantics must stay distinct.\n\nAll 203 production/source-schema paths have family IDs in the persisted fileCoverage array; no source path remains unmapped. Files classified T/R or grouped infrastructure were mechanically fully scanned and selected relevant constructors were inspected; this is not a claim of exhaustive manual proof of all business behavior. Dedicated test/fixture sources were inventoried/scanned as evidence sources, not executed. Source findings do not establish performance improvement or runtime failure until a relevant caller witness is implemented and run under a separately authorized change.\n",
+  "revision": "1b18e26491860b644f6e7373bc554e814cf95b66",
+  "scope": [
+    "workspaces/runtime/packages/runtime-store",
+    "workspaces/runtime/packages/runtime-schema"
+  ],
+  "tableSchemaCorrelation": [
+    {
+      "schema": "PersistedGraphAgentRecord",
+      "table": "graph_agents"
+    },
+    {
+      "schema": "PersistedAccessClient",
+      "table": "runtime_access_clients"
+    },
+    {
+      "schema": "PersistedAccessClient",
+      "table": "runtime_access_discovered"
+    },
+    {
+      "schema": "PersistedAccessInvite",
+      "table": "runtime_access_invites"
+    },
+    {
+      "schema": "PersistedAccessReceipt",
+      "table": "runtime_access_receipts"
+    },
+    {
+      "schema": "PersistedAccountTransferRecord",
+      "table": "runtime_account_transfers"
+    },
+    {
+      "schema": "relocation/MoveRecord",
+      "table": "runtime_agent_moves"
+    },
+    {
+      "schema": "PersistedAgentRecord",
+      "table": "runtime_agents"
+    },
+    {
+      "schema": "PersistedAnnotationRecord",
+      "table": "runtime_annotations"
+    },
+    {
+      "schema": "PersistedTranscriptAsset",
+      "table": "runtime_assets"
+    },
+    {
+      "schema": "PersistedBudgetState",
+      "table": "runtime_budget"
+    },
+    {
+      "schema": "PersistedBudgetUsage",
+      "table": "runtime_budget_usage"
+    },
+    {
+      "schema": "continuation/CapacityContinuation",
+      "table": "runtime_capacity_retries"
+    },
+    {
+      "schema": "PersistedChatMessage",
+      "table": "runtime_chat_messages"
+    },
+    {
+      "schema": "PersistedCheckpointRecord",
+      "table": "runtime_checkpoints"
+    },
+    {
+      "schema": "PersistedComplaintRecord",
+      "table": "runtime_complaints"
+    },
+    {
+      "schema": "RuntimeEventMetadataRecord",
+      "table": "runtime_event_meta"
+    },
+    {
+      "schema": "PersistedMessageEvent",
+      "table": "runtime_events"
+    },
+    {
+      "schema": "PersistedClaudeAttemptRecord",
+      "table": "runtime_execution_attempts"
+    },
+    {
+      "schema": "PersistedExecutionRecord",
+      "table": "runtime_execution_effects"
+    },
+    {
+      "schema": "PersistedExecutionRunRecord",
+      "table": "runtime_execution_runs"
+    },
+    {
+      "schema": "PersistedFederationInbox",
+      "table": "runtime_federation_inbox"
+    },
+    {
+      "schema": "PersistedFederationOutbox",
+      "table": "runtime_federation_outbox"
+    },
+    {
+      "schema": "PersistedFederationPeer",
+      "table": "runtime_federation_peers"
+    },
+    {
+      "schema": "PersistedFederationRoom",
+      "table": "runtime_federation_rooms"
+    },
+    {
+      "schema": "PersistedFederationSettings",
+      "table": "runtime_federation_settings"
+    },
+    {
+      "schema": "PersistedTranscriptRecord",
+      "table": "runtime_items"
+    },
+    {
+      "schema": "PersistedMonitorRecord",
+      "table": "runtime_monitors"
+    },
+    {
+      "schema": "PersistedOperationResult",
+      "table": "runtime_operation_receipts"
+    },
+    {
+      "schema": "PersistedPlanRecord",
+      "table": "runtime_plans"
+    },
+    {
+      "schema": "PersistedProjectRecord",
+      "table": "runtime_projects"
+    },
+    {
+      "schema": "PersistedRequestRecord",
+      "table": "runtime_requests"
+    },
+    {
+      "schema": "PersistedRoomRecord",
+      "table": "runtime_rooms"
+    },
+    {
+      "schema": "PersistedRuleRecord",
+      "table": "runtime_rules"
+    },
+    {
+      "schema": "PersistedServerDelivery",
+      "table": "runtime_server_inbox"
+    },
+    {
+      "schema": "PersistedServerDelivery",
+      "table": "runtime_server_outbox"
+    },
+    {
+      "schema": "PersistedTaskRecord",
+      "table": "runtime_tasks"
+    },
+    {
+      "schema": "PersistedToolAlias",
+      "table": "runtime_tool_request_aliases"
+    },
+    {
+      "schema": "PersistedToolRequestRecord",
+      "table": "runtime_tool_requests"
+    },
+    {
+      "schema": "PersistedToolResult",
+      "table": "runtime_tool_results"
+    },
+    {
+      "schema": "PersistedUsageResumeRecord",
+      "table": "runtime_usage_resumes"
+    },
+    {
+      "schema": "PersistedWorkItemRecord",
+      "table": "runtime_work"
+    },
+    {
+      "schema": "PersistedWorkspaceOperationRecord",
+      "table": "runtime_workspace_operations"
+    },
+    {
+      "schema": "PersistedSyncEntity",
+      "table": "sync_entities"
+    },
+    {
+      "schema": "PersistedTerminalRecord",
+      "table": "user_terminals"
+    }
+  ],
+  "title": "Storage boundary type census"
+}

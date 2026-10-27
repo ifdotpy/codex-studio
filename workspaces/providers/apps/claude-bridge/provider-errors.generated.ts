@@ -103,10 +103,36 @@ export interface components {
 export type $defs = Record<string, never>;
 export type operations = Record<string, never>;
 
-export type CodexErrorInfo = components["schemas"]["CodexErrorInfo"];
+export const KnownCodexErrorKind = {
+  contextWindowExceeded: "contextWindowExceeded",
+  sessionBudgetExceeded: "sessionBudgetExceeded",
+  usageLimitExceeded: "usageLimitExceeded",
+  rateLimitExceeded: "rateLimitExceeded",
+  flexUnavailable: "flexUnavailable",
+  serverOverloaded: "serverOverloaded",
+  cyberPolicy: "cyberPolicy",
+  misalignmentPolicyViolation: "misalignmentPolicyViolation",
+  tooManyDenials: "tooManyDenials",
+  internalServerError: "internalServerError",
+  unauthorized: "unauthorized",
+  badRequest: "badRequest",
+  threadRollbackFailed: "threadRollbackFailed",
+  sandboxError: "sandboxError",
+  other: "other",
+  httpConnectionFailed: "httpConnectionFailed",
+  responseStreamConnectionFailed: "responseStreamConnectionFailed",
+  responseStreamDisconnected: "responseStreamDisconnected",
+  responseTooManyFailedAttempts: "responseTooManyFailedAttempts",
+  activeTurnNotSteerable: "activeTurnNotSteerable",
+} as const;
 export type KnownCodexErrorKind = components["schemas"]["KnownCodexErrorKind"];
+export const NonSteerableTurnKind = {
+  review: "review",
+  compact: "compact",
+} as const;
 export type NonSteerableTurnKind =
   components["schemas"]["NonSteerableTurnKind"];
+export type CodexErrorInfo = components["schemas"]["CodexErrorInfo"];
 
 // Known tags only; the vendor's future-value branch remains open.
 export const KNOWN_CODEX_ERROR_KINDS = [

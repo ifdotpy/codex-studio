@@ -1,3 +1,4 @@
+import { AgentSource as GeneratedApiAgentSource } from "../generated/api.ts";
 import { randomUUID } from "../uuid";
 import { DeliveryMoment } from "../generated/deliveryMoment";
 import { serverLocalStorage as localStorage } from "../servers/storage";
@@ -148,7 +149,9 @@ export function createSendingMessageRemoval(
       include({
         chat: entry.body.room,
         kind: data.threads.some(
-          (agent) => agent.id === entry.body.room && agent.source === "managed",
+          (agent) =>
+            agent.id === entry.body.room &&
+            agent.source === GeneratedApiAgentSource.managed,
         )
           ? "agent"
           : "room",
@@ -163,7 +166,9 @@ export function createSendingMessageRemoval(
         },
       });
     }
-    const agents = data.threads.filter((agent) => agent.source === "managed");
+    const agents = data.threads.filter(
+      (agent) => agent.source === GeneratedApiAgentSource.managed,
+    );
     let next = 0;
     await Promise.all(
       Array.from({ length: Math.min(4, agents.length) }, async () => {

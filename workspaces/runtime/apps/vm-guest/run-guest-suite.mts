@@ -8,8 +8,9 @@
 // - Temporary root: a macOS Unix socket path has at most 104 bytes, and the guest's control
 //   sockets (`<state>/providers/<uuid>/control.sock`) do not fit below the per-user macOS
 //   temporary folder. On macOS the suite therefore gets its own short folder in `/private/tmp`
-//   (the real path of `/tmp`, because the tests resolve their folders); on Linux it gets one
-//   in the platform temporary folder. The runner removes the folder at the end.
+//   (the real path of `/tmp`, because the tests resolve their folders); on Linux it uses
+//   `/var/tmp`, independent of an inherited TMPDIR. The runner removes
+//   the folder at the end.
 //
 // - Leaked processes: every process that the suite starts (the guest supervisor, the
 //   process supervisor and their commands) names the temporary root in its arguments or works
@@ -42,9 +43,13 @@ const POLL_MS = 100;
 const guest = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(guest, "../../../..");
 
-/** Base directory for owned suite folders; Mac socket paths require a short base. */
+/** Base directory for owned suite folders; Unix socket paths require a short base. */
 export function suiteTemporaryBase() {
-  return process.platform === "darwin" ? "/private/tmp" : os.tmpdir();
+  return process.platform === "darwin"
+    ? "/private/tmp"
+    : process.platform === "linux"
+      ? "/var/tmp"
+      : os.tmpdir();
 }
 
 function fail(message: string): never {

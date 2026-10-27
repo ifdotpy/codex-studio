@@ -4,8 +4,7 @@ use crate::account_session_runtime::{
 };
 use crate::account_worker::retained::RequestActor;
 use crate::managed_host_tools::{
-    Actor, AgentAncestry, DeliveryCertainty, DispatchedOperation, Error, OperationResult,
-    agent_ancestry,
+    Actor, AgentAncestry, DispatchedOperation, Error, OperationResult, agent_ancestry,
 };
 use rusqlite::Transaction;
 use serde_json::{Value, json};
@@ -169,32 +168,59 @@ fn blocker(tx: &Transaction<'_>, worker: &Value) -> Result<Option<&'static str>,
     Ok(None)
 }
 
-fn result(value: Value) -> DispatchedOperation {
-    let uncertain = matches!(value["status"].as_str(), Some("unknown" | "unconfirmed"));
-    let refused = matches!(
-        value["status"].as_str(),
-        Some("blocked" | "skipped" | "superseded" | "history_missing")
-    );
-    DispatchedOperation {
-        result: OperationResult {
-            value,
-            signals: vec![],
-        },
-        certainty: if uncertain {
-            DeliveryCertainty::Unknown
-        } else {
-            DeliveryCertainty::Written
-        },
-        applied: if uncertain { None } else { Some(!refused) },
+/// Interpret the status of an existing durable receipt written before typed outcomes.
+pub(crate) fn decode_saved_recovery_receipt(value: Value) -> crate::recovery::RecoveryReceipt {
+    use crate::recovery::RecoveryReceipt;
+    match value["status"].as_str() {
+        Some("unknown" | "unconfirmed") => RecoveryReceipt::Unknown(value),
+        Some("blocked" | "skipped" | "superseded" | "history_missing") => {
+            RecoveryReceipt::Rejected(value)
+        }
+        _ => RecoveryReceipt::Applied(value),
     }
 }
 
-fn release_result(status: &str, reason: Option<&str>) -> Value {
-    let mut value = json!({"status":status,"loss":TOOL_MEMORY_LOSS});
+fn result(receipt: crate::recovery::RecoveryReceipt) -> DispatchedOperation {
+    use crate::recovery::RecoveryReceipt;
+    match receipt {
+        RecoveryReceipt::Applied(value) => DispatchedOperation::Applied(OperationResult {
+            value,
+            signals: vec![],
+        }),
+        RecoveryReceipt::Rejected(value) => DispatchedOperation::Rejected(OperationResult {
+            value,
+            signals: vec![],
+        }),
+        RecoveryReceipt::Unknown(value) => DispatchedOperation::Unknown(OperationResult {
+            value,
+            signals: vec![],
+        }),
+    }
+}
+
+#[derive(Clone, Copy)]
+enum ReleaseStatus {
+    Released,
+    Blocked,
+    Unknown,
+}
+
+fn release_result(status: ReleaseStatus, reason: Option<&str>) -> crate::recovery::RecoveryReceipt {
+    use crate::recovery::RecoveryReceipt;
+    let name = match status {
+        ReleaseStatus::Released => "released",
+        ReleaseStatus::Blocked => "blocked",
+        ReleaseStatus::Unknown => "unknown",
+    };
+    let mut value = json!({"status":name,"loss":TOOL_MEMORY_LOSS});
     if let Some(reason) = reason {
         value["reason"] = json!(reason);
     }
-    value
+    match status {
+        ReleaseStatus::Released => RecoveryReceipt::Applied(value),
+        ReleaseStatus::Blocked => RecoveryReceipt::Rejected(value),
+        ReleaseStatus::Unknown => RecoveryReceipt::Unknown(value),
+    }
 }
 
 fn read_saved(tx: &Transaction<'_>, id: &str, signature: &str) -> Result<Option<Value>, Error> {
@@ -265,33 +291,33 @@ pub(crate) async fn execute(
         let resolved = crate::provider_callbacks::tools::services::manage::resolved_args(tx, &actor, &args).map_err(|_| Error::Invalid("Unknown managed agent"))?;
         let target = resolved["agent_id"].as_str().ok_or(Error::Invalid("Supply agent_id"))?;
         let (lead, mut worker) = authorize(tx, &actor, target)?;
-        if let Some(saved) = read_saved(tx, &id, &sig)? { return Ok((None, saved)); }
+        if let Some(saved) = read_saved(tx, &id, &sig)? { return Ok((None, decode_saved_recovery_receipt(saved))); }
         let auth = AuthorizedRecoveryRequest { lead: stable(&lead), target: stable(&worker), request_id: id.clone(), signature: sig.clone() };
         if recovery {
             let pending = json!({"status":"unconfirmed","next":"Inspect the worker. Do not replay input with an unknown outcome."});
             save(tx, &id, &sig, &pending)?;
-            return Ok((Some((auth, Value::Null)), pending));
+            return Ok((Some((auth, Value::Null)), crate::recovery::RecoveryReceipt::Unknown(pending)));
         }
         if worker["provider"].as_str().unwrap_or("codex") != "codex" || worker["executionMode"].as_str().is_some_and(|mode| mode != "native") {
             return Err(Error::Unavailable("native-release/local-codex-session"));
         }
         let previous = &worker["nativeRelease"];
         if truthy(previous.get("resetPending")) || (previous["closedAt"].as_f64().is_none() && matches!(previous["phase"].as_str(), Some("unknown" | "unsubscribing" | "checking"))) {
-            let value = release_result("unknown", Some("The previous release still needs exact native closure"));
-            save(tx, &id, &sig, &value)?;
+            let value = release_result(ReleaseStatus::Unknown, Some("The previous release still needs exact native closure"));
+            save(tx, &id, &sig, value.value())?;
             return Ok((None, value));
         }
         if let Some(reason) = blocker(tx, &worker)? {
-            let value = release_result("blocked", Some(reason));
-            save(tx, &id, &sig, &value)?;
+            let value = release_result(ReleaseStatus::Blocked, Some(reason));
+            save(tx, &id, &sig, value.value())?;
             return Ok((None, value));
         }
         if !worker["threadId"].as_str().is_some_and(|thread| !thread.is_empty()) { return Err(Error::Invalid("The worker has no native thread")); }
         let operation = format!("{MANUAL_RELEASE_PREFIX}{}", studio_runtime_store::sha256_hex(id.as_bytes()));
         worker["nativeRelease"] = json!({"id":operation,"phase":"checking","at":now,"threadId":worker["threadId"],"accountKey":worker["accountKey"].as_str().unwrap_or("default"),"targetEpoch":worker["epoch"],"targetRootId":worker["rootId"],"targetParentId":worker["parentId"],"resetPending":true,"resetReason":reason,"resetBy":auth.lead["id"],"resetActorEpoch":auth.lead["epoch"],"authorization":auth});
         put(tx, worker.clone())?;
-        let pending = release_result("unknown", Some("The manual release has not returned a result"));
-        save(tx, &id, &sig, &pending)?;
+        let pending = release_result(ReleaseStatus::Unknown, Some("The manual release has not returned a result"));
+        save(tx, &id, &sig, pending.value())?;
         Ok((Some((auth, worker["nativeRelease"].clone())), pending))
     }).await?;
     let Some((auth, mut release)) = initial.0 else {
@@ -317,7 +343,10 @@ pub(crate) async fn execute(
             &auth,
             &release,
             Arc::clone(&session),
-            release_result("blocked", Some("The owning account is offline")),
+            release_result(
+                ReleaseStatus::Blocked,
+                Some("The owning account is offline"),
+            ),
             false,
             false,
         )
@@ -354,7 +383,7 @@ pub(crate) async fn execute(
                 &auth,
                 &release,
                 Arc::clone(&session),
-                release_result("blocked", Some(reason)),
+                release_result(ReleaseStatus::Blocked, Some(reason)),
                 false,
                 false,
             )
@@ -367,7 +396,7 @@ pub(crate) async fn execute(
             &auth,
             &release,
             Arc::clone(&session),
-            release_result("released", None),
+            release_result(ReleaseStatus::Released, None),
             false,
             true,
         )
@@ -405,7 +434,7 @@ pub(crate) async fn execute(
             &release,
             Arc::clone(&session),
             release_result(
-                "blocked",
+                ReleaseStatus::Blocked,
                 Some("The lead or worker changed during inspection"),
             ),
             false,
@@ -430,9 +459,9 @@ pub(crate) async fn execute(
                 Some("unsubscribed" | "notSubscribed" | "notLoaded")
             ) =>
         {
-            ("released", body["status"] == "notLoaded")
+            (ReleaseStatus::Released, body["status"] == "notLoaded")
         }
-        _ => ("unknown", false),
+        _ => (ReleaseStatus::Unknown, false),
     };
     finish_release(
         &store,
@@ -449,8 +478,8 @@ pub(crate) async fn execute(
 pub(crate) async fn finish_recovery(
     store: &RuntimeStore,
     auth: &AuthorizedRecoveryRequest,
-    value: Value,
-) -> Result<Value, Error> {
+    receipt: crate::recovery::RecoveryReceipt,
+) -> Result<crate::recovery::RecoveryReceipt, Error> {
     let auth = auth.clone();
     store
         .transaction_with(move |tx| {
@@ -458,16 +487,20 @@ pub(crate) async fn finish_recovery(
             // The account worker can finish after the callback caller disappears.
             // Its committed result, not a retry's transport state, remains the receipt.
             if saved["manualRecoveryComplete"] == true {
-                return Ok(saved);
+                return Ok(if &saved == receipt.value() {
+                    receipt
+                } else {
+                    decode_saved_recovery_receipt(saved)
+                });
             }
-            let mut value = if value.is_object() {
-                value
+            let mut receipt = if receipt.value().is_object() {
+                receipt
             } else {
-                json!({"status":"unconfirmed"})
+                crate::recovery::RecoveryReceipt::Unknown(json!({"status":"unconfirmed"}))
             };
-            value["manualRecoveryComplete"] = json!(true);
-            save(tx, &auth.request_id, &auth.signature, &value)?;
-            Ok(value)
+            receipt.value_mut()["manualRecoveryComplete"] = json!(true);
+            save(tx, &auth.request_id, &auth.signature, receipt.value())?;
+            Ok(receipt)
         })
         .await
 }
@@ -576,7 +609,7 @@ async fn finish_release(
     auth: &AuthorizedRecoveryRequest,
     release: &Value,
     session: Arc<dyn AccountSessionPort>,
-    mut value: Value,
+    mut value: crate::recovery::RecoveryReceipt,
     submitted: bool,
     closed: bool,
 ) -> Result<DispatchedOperation, Error> {
@@ -601,19 +634,23 @@ async fn finish_release(
                         }));
             if !current {
                 value = release_result(
-                    if submitted { "unknown" } else { "blocked" },
+                    if submitted {
+                        ReleaseStatus::Unknown
+                    } else {
+                        ReleaseStatus::Blocked
+                    },
                     Some("The lead or worker identity changed"),
                 );
             }
             let closed = closed && current;
             let confirmed_close = closed || worker["nativeRelease"]["closedAt"].as_f64().is_some();
-            worker["nativeRelease"]["phase"] = value["status"].clone();
+            worker["nativeRelease"]["phase"] = value.value()["status"].clone();
             worker["nativeRelease"]["resetPending"] = json!(submitted && !confirmed_close);
             if closed {
                 worker["nativeRelease"]["closedAt"] = json!(now);
             }
             put(tx, worker)?;
-            save(tx, &auth.request_id, &auth.signature, &value)?;
+            save(tx, &auth.request_id, &auth.signature, value.value())?;
             Ok(value)
         })
         .await?;
@@ -697,13 +734,15 @@ mod tests {
             &'a self,
             _: &'a str,
             request: AuthorizedRecoveryRequest,
-        ) -> AccountSessionFuture<'a, Value> {
+        ) -> AccountSessionFuture<'a, crate::recovery::RecoveryReceipt> {
             self.recoveries.lock().expect("recoveries").push(request);
             Box::pin(async move {
                 if self.recover_unknown {
                     Err(crate::account_session_runtime::AccountSessionError::Unknown)
                 } else {
-                    Ok(json!({"status":"unconfirmed"}))
+                    Ok(crate::recovery::RecoveryReceipt::Unknown(
+                        json!({"status":"unconfirmed"}),
+                    ))
                 }
             })
         }
@@ -1150,7 +1189,7 @@ mod tests {
         let checked = execute(store, session.clone(), &actor, &args(), "new-reset", 10.0)
             .await
             .expect("new reset");
-        assert_eq!(checked.result.value["status"], "released");
+        assert_eq!(checked.result().value["status"], "released");
         assert_eq!(
             session.unsubscribes(),
             1,
@@ -1174,19 +1213,21 @@ mod tests {
         )
         .await
         .expect("unknown response");
-        assert_eq!(lost.result.value["status"], "unconfirmed");
+        assert_eq!(lost.result().value["status"], "unconfirmed");
         let auth = session.recoveries.lock().expect("recoveries")[0].clone();
         finish_recovery(
             &store,
             &auth,
-            json!({"status":"checked","evidence":"exact native result"}),
+            crate::recovery::RecoveryReceipt::Applied(
+                json!({"status":"checked","evidence":"exact native result"}),
+            ),
         )
         .await
         .expect("worker finishes after response loss");
         let replay = execute(store, session.clone(), &actor, &args, "late-recovery", 11.0)
             .await
             .expect("durable late result");
-        assert_eq!(replay.result.value["status"], "checked");
+        assert_eq!(replay.result().value["status"], "checked");
         assert_eq!(session.recoveries.lock().expect("recoveries").len(), 1);
         assert!(session.calls.lock().expect("native calls").is_empty());
     }
@@ -1212,7 +1253,7 @@ mod tests {
             )
             .await
             .expect("manual recovery");
-            assert_eq!(checked.result.value["status"], "unconfirmed");
+            assert_eq!(checked.result().value["status"], "unconfirmed");
         }
         assert_eq!(session.recoveries.lock().expect("recoveries").len(), 1);
         assert!(session.calls.lock().expect("native calls").is_empty());
@@ -1244,15 +1285,15 @@ mod tests {
         )
         .await
         .expect("manual reset");
-        assert_eq!(first.result.value["status"], "released");
+        assert_eq!(first.result().value["status"], "released");
         assert!(
-            first.result.value["loss"]
+            first.result().value["loss"]
                 .as_str()
                 .expect("loss warning")
                 .contains("JavaScript")
         );
         assert!(
-            first.result.value["loss"]
+            first.result().value["loss"]
                 .as_str()
                 .expect("loss warning")
                 .contains("MCP")
@@ -1273,7 +1314,7 @@ mod tests {
         )
         .await
         .expect("lost response replay");
-        assert_eq!(first.result.value, replay.result.value);
+        assert_eq!(first.result().value, replay.result().value);
         assert_eq!(session.unsubscribes(), 1);
         let mut changed = args();
         changed["reason"] = json!("Changed request content");
@@ -1300,11 +1341,11 @@ mod tests {
         )
         .await
         .expect("unknown result");
-        assert_eq!(
-            first.certainty,
-            crate::managed_host_tools::DeliveryCertainty::Unknown
-        );
-        assert_eq!(first.result.value["status"], "unknown");
+        assert!(matches!(
+            first,
+            crate::managed_host_tools::DispatchedOperation::Unknown(_)
+        ));
+        assert_eq!(first.result().value["status"], "unknown");
         for request in ["unknown-1", "unknown-2"] {
             let result = execute(
                 Arc::clone(&store),
@@ -1316,7 +1357,7 @@ mod tests {
             )
             .await
             .expect("inspect uncertain release");
-            assert_eq!(result.result.value["status"], "unknown");
+            assert_eq!(result.result().value["status"], "unknown");
         }
         assert_eq!(session.unsubscribes(), 1);
         assert_eq!(worker(&store).await["nativeRelease"]["resetPending"], true);
@@ -1336,7 +1377,7 @@ mod tests {
             10.0,
         )
         .await;
-        assert!(result.is_err() || result.expect("result").result.value["status"] == "blocked");
+        assert!(result.is_err() || result.expect("result").result().value["status"] == "blocked");
         assert_eq!(session.unsubscribes(), 0);
     }
 
@@ -1355,7 +1396,7 @@ mod tests {
         )
         .await
         .expect("refused reset");
-        assert_eq!(checked.result.value["status"], "blocked");
+        assert_eq!(checked.result().value["status"], "blocked");
         assert_eq!(session.unsubscribes(), 0);
     }
 
@@ -1405,7 +1446,7 @@ mod tests {
         )
         .await
         .expect("unsubscribe result");
-        assert_eq!(checked.result.value["status"], "released");
+        assert_eq!(checked.result().value["status"], "released");
         let current = worker(&store).await;
         assert_eq!(current["nativeRelease"]["resetPending"], false);
         assert_eq!(current["nativeRelease"]["closedAt"], 11.0);
@@ -1433,7 +1474,7 @@ mod tests {
             )
             .await
             .expect("blocked reset");
-            assert_eq!(result.result.value["status"], "blocked");
+            assert_eq!(result.result().value["status"], "blocked");
             assert_eq!(session.unsubscribes(), 0);
         }
     }
@@ -1453,7 +1494,7 @@ mod tests {
         )
         .await
         .expect("confirmed closure");
-        assert_eq!(result.result.value["status"], "released");
+        assert_eq!(result.result().value["status"], "released");
         let current = worker(&store).await;
         assert_eq!(current["nativeRelease"]["resetPending"], false);
         assert_eq!(current["nativeRelease"]["closedAt"], 10.0);

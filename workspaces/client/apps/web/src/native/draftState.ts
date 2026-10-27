@@ -1,3 +1,4 @@
+import type { DeepReadonly } from "rxdb";
 import { randomUUID } from "../uuid";
 import type { DraftJournal } from "./draftJournal";
 
@@ -19,7 +20,9 @@ export class NativeDraftState {
   private saving = false;
   private failure = "";
   private listeners = new Set<() => void>();
-  private snapshot: DraftView & { pending: boolean; localError: string };
+  private snapshot: DeepReadonly<
+    DraftView & { pending: boolean; localError: string }
+  >;
 
   declare readonly workspace: string;
   declare private invoke: Invoke;
@@ -34,6 +37,7 @@ export class NativeDraftState {
       conflicts: [],
       workspaceId: workspace,
       revision: -1,
+      error: "",
     };
     this.snapshot = { ...this.committed, pending: false, localError: "" };
     this.queue = journal?.load() ?? [];

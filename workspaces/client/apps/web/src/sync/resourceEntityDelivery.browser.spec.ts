@@ -1,3 +1,4 @@
+import { AgentStatus, AgentSource } from "../generated/api";
 import type { LegacySyncIdentityResponse } from "./syncBrowserFixture.ts";
 import type { ResourceChangeEvent } from "./resourceEvents";
 import type { Page } from "@playwright/test";
@@ -42,7 +43,14 @@ test("state stream persists records across tabs without pulls and repairs missin
       op: "upsert",
       collection: "agent",
       id,
-      value: deleted ? {} : { id, name, status: "running", source: "managed" },
+      value: deleted
+        ? {}
+        : {
+            id,
+            name,
+            status: AgentStatus.running,
+            source: AgentSource.managed,
+          },
       seq: ++sequence,
     };
     rows.set(row.id, row);

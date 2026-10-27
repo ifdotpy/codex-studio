@@ -1,3 +1,4 @@
+import { AgentSource, AgentStatus } from "../generated/api";
 import { describe, expect, it } from "vitest";
 import {
   ChatWaitSource,
@@ -13,10 +14,10 @@ function fixture(workerCount = WORKERS): Snapshot {
   const lead: Agent = {
     id: "lead",
     name: "Lead",
-    source: "managed",
+    source: AgentSource.managed,
     isLead: true,
     rootId: "lead",
-    status: "waiting",
+    status: AgentStatus.waiting,
     autoWake: true,
     accountKey: "default",
   };
@@ -98,7 +99,10 @@ describe("worker-only snapshot changes", () => {
           ? [0, WORKERS / 2, WORKERS - 1]
           : Array.from({ length: count }, (_, i) => i);
       for (const [offset, index] of indices.entries()) {
-        data = changeWorker(data, index, { status: "running", inFlight: true });
+        data = changeWorker(data, index, {
+          status: AgentStatus.running,
+          inFlight: true,
+        });
         const next = run(data);
         expect(next.conversationData).toBe(first.conversationData);
         expect(next.wait?.agents).toHaveLength(offset + 1);
@@ -111,14 +115,14 @@ describe("worker-only snapshot changes", () => {
   it("retains wait identity across token-only changes", () => {
     const run = pipeline();
     let data = changeWorker(fixture(), 0, {
-      status: "running",
+      status: AgentStatus.running,
       inFlight: true,
     });
     const first = run(data);
     for (let count = 1; count <= 3; count++) {
       data = changeWorker(data, 1, {
         lastEvent: `2026-10-24T00:00:0${count}Z`,
-        status: "completed",
+        status: AgentStatus.completed,
       });
       const next = run(data);
       expect(next.conversationData).toBe(first.conversationData);
