@@ -37,3 +37,8 @@ only stale entries; it cannot add new matches. Review the resulting diff. The
 scan runs in `lint:all` and the short tooling tier. It is not in the staged
 hook: the full baseline must be checked against a consistent repository snapshot,
 while the hook checks index content only.
+
+The root [Cargo lint policy](../../../../Cargo.toml) also rejects boolean-heavy
+function signatures, boolean matches, oversized enum variants, and references
+to small Copy values. Its native witnesses verify each rule; callbacks required
+by external APIs may document a narrow exception.

@@ -86,6 +86,10 @@ test("Cargo.toml keeps the selected Rust and Clippy rules at deny level", () => 
     "wildcard_enum_match_arm",
     "match_wildcard_for_single_variants",
     "rest_pat_in_fully_bound_structs",
+    "fn_params_excessive_bools",
+    "match_bool",
+    "large_enum_variant",
+    "trivially_copy_pass_by_ref",
   ]) {
     assert.equal(clippy.get(name), '"deny"', `Cargo.toml: ${name}`);
   }
@@ -196,6 +200,29 @@ pub fn request_id(receipt: Receipt) -> u64 {
     const baseline = check(source);
     assert.equal(baseline.status, 0, baseline.stdout + baseline.stderr);
     for (const [name, text, diagnostic] of [
+      [
+        "excessive boolean parameters",
+        source +
+          "\npub fn flags(a: bool, b: bool, c: bool, d: bool) -> bool { a && b && c && d }\n",
+        /#fn_params_excessive_bools/,
+      ],
+      [
+        "match on a boolean",
+        source +
+          "\npub fn bool_match(flag: bool) -> u8 { match flag { true => 1, false => 2 } }\n",
+        /#match_bool/,
+      ],
+      [
+        "large enum variant",
+        source + "\npub enum Large { Small(u8), Big([u8; 512]) }\n",
+        /#large_enum_variant/,
+      ],
+      [
+        "small Copy value passed by reference",
+        source +
+          "\nfn by_ref(value: &u8) -> u8 { *value }\npub fn call_by_ref() -> u8 { by_ref(&1) }\n",
+        /#trivially_copy_pass_by_ref/,
+      ],
       [
         "qualified JSON value in typed owner",
         source.replace(

@@ -47,6 +47,12 @@ wildcard_enum_match_arm = "deny"
 match_wildcard_for_single_variants = "deny"
 # Fully bound contracts must expose new fields to the compiler.
 rest_pat_in_fully_bound_structs = "deny"
+# Flag ambiguous boolean argument lists and matches better expressed as conditionals.
+fn_params_excessive_bools = "deny"
+match_bool = "deny"
+# Avoid large inline enum variants and unnecessary references to small Copy values.
+large_enum_variant = "deny"
+trivially_copy_pass_by_ref = "deny"
 
 [workspace.dependencies]
 schemars = { version = "=1.2.3", features = ["derive"] }
