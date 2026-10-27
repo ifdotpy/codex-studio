@@ -14,6 +14,17 @@ export interface components {
       /** Format: uint16 */
       status?: number | null | undefined;
     };
+    /** @description Committed draft view and its native workspace metadata. */
+    DraftSnapshot: {
+      conflicts: components["schemas"]["DraftVersion"][];
+      drafts: {
+        [key: string]: string;
+      };
+      error: string;
+      /** Format: uint64 */
+      revision: number;
+      workspaceId: string;
+    };
     DraftVersion: {
       alternatives?: string[] | undefined;
       device: string;
@@ -164,14 +175,19 @@ export interface components {
 export type $defs = Record<string, never>;
 export type operations = Record<string, never>;
 
+export const Durability = {
+  "sqlite-full-sync-per-request": "sqlite-full-sync-per-request",
+} as const;
+export type Durability = components["schemas"]["Durability"];
+export const MarkdownKind = { html: "html", mermaid: "mermaid" } as const;
+export type MarkdownKind = components["schemas"]["MarkdownKind"];
 export type CommandError = components["schemas"]["CommandError"];
+export type DraftSnapshot = components["schemas"]["DraftSnapshot"];
 export type DraftVersion = components["schemas"]["DraftVersion"];
 export type DraftView = components["schemas"]["DraftView"];
-export type Durability = components["schemas"]["Durability"];
 export type HealthHandle = components["schemas"]["HealthHandle"];
 export type HealthResult = components["schemas"]["HealthResult"];
 export type MarkdownBlock = components["schemas"]["MarkdownBlock"];
-export type MarkdownKind = components["schemas"]["MarkdownKind"];
 export type MarkdownNode = components["schemas"]["MarkdownNode"];
 export type MarkdownSentence = components["schemas"]["MarkdownSentence"];
 export type MarkdownTree = components["schemas"]["MarkdownTree"];
