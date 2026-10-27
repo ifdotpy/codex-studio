@@ -314,13 +314,6 @@ async fn sync_stream(
     };
     let mut voice_sequences = BTreeMap::new();
     let mut transcript_sequences = BTreeMap::new();
-    let transcript_updates = read_transcript_changes(
-        Some(store.clone()),
-        &view.resources,
-        &mut transcript_sequences,
-        false,
-    )
-    .await;
     let subscription_snapshot = view.cursor.clone();
     let mut initial_event = match resource_changes_event(
         &state.workspace_id,
@@ -334,7 +327,6 @@ async fn sync_stream(
         Ok(event) => event,
         Err(error) => return error.into_response(),
     };
-    attach_transcript_changes(&mut initial_event, transcript_updates);
     if let Err(error) = attach_initial_entries(&state, &mut initial_event, &since).await {
         return error.into_response();
     }
@@ -576,6 +568,17 @@ pub(super) async fn append_progress_frames(
     }
 }
 
+#[cfg(test)]
+static TEST_TRANSCRIPT_PULLS: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
+
+#[cfg(test)]
+fn record_test_transcript_pull(agent: &str) {
+    if agent == "pull-count-fixture" {
+        TEST_TRANSCRIPT_PULLS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
 /// Reuse the durable transcript projection; the returned payload and checkpoint
 /// are produced by one serialized projection transaction, independent of SSE epochs.
 pub(super) async fn transcript_initial_snapshot(
@@ -593,6 +596,8 @@ pub(super) async fn transcript_initial_snapshot(
         .filter(|cursor| cursor.workspace_id == state.workspace_id)
         .map(|cursor| cursor.seq);
     let read = |after| {
+        #[cfg(test)]
+        record_test_transcript_pull(&transcript.agent_id);
         studio_runtime_services::transcript::pull_scope(
             store.clone(),
             &scope,
@@ -848,6 +853,8 @@ async fn read_transcript_changes(
         } else {
             None
         };
+        #[cfg(test)]
+        record_test_transcript_pull(&agent);
         let result = studio_runtime_services::transcript::pull_scope(
             store.clone(),
             &scope,
@@ -1262,13 +1269,6 @@ async fn subscription_frame(state: &mut ResourceStream, update: SubscriptionChan
                 .ok()?
                 .0;
         }
-        let updates = read_transcript_changes(
-            state.store.clone(),
-            &view.resources,
-            &mut state.transcript_sequences,
-            false,
-        )
-        .await;
         let mut event = resource_changes_event(
             &state.workspace_id,
             &view,
@@ -1279,7 +1279,6 @@ async fn subscription_frame(state: &mut ResourceStream, update: SubscriptionChan
             None,
         )
         .ok()?;
-        attach_transcript_changes(&mut event, updates);
         attach_initial_entries(http_state, &mut event, &update.since)
             .await
             .ok()?;
@@ -3211,6 +3210,111 @@ mod tests {
             restored["records"], rates["records"],
             "full replay includes quiet agents"
         );
+    }
+
+    #[tokio::test]
+    async fn transcript_open_and_add_pull_one_baseline_for_each_cursor() {
+        use axum::{body::Body, extract::ConnectInfo, http::Request};
+        use std::sync::atomic::Ordering;
+        use tower::ServiceExt;
+
+        let root = tempfile::tempdir().expect("isolated state");
+        let store = Arc::new(RuntimeStore::open(Some(root.path())).await.expect("store"));
+        store.transaction(|tx| {
+            tx.execute("INSERT INTO runtime_agents(id,record) VALUES('pull-count-fixture',?1)", [json!({"provider":studio_runtime_schema::ProviderKind::Codex,"id":"pull-count-fixture","rootId":"pull-count-fixture","epoch":0,"status":"running","threadId":"thread","accountKey":"default","turnId":"turn","inFlight":true,"activeTools":[],"events":0}).to_string()])?;
+            tx.execute("INSERT INTO runtime_items(id,agent,record,created) VALUES('count-item','pull-count-fixture',?1,1)", [json!({"id":"count-item","role":"assistant","text":"message"}).to_string()])?;
+            Ok(())
+        }).await.expect("transcript fixture");
+        let http = HttpState::new(
+            "token".into(),
+            "workspace".into(),
+            root.path().display().to_string(),
+            4321,
+            None,
+            Some(store.clone()),
+            None,
+        );
+        let resource = json!({"kind":"transcript","agentId":"pull-count-fixture"});
+        let baseline = studio_runtime_services::transcript::pull_scope(
+            store.clone(),
+            "transcript:pull-count-fixture",
+            "pull-count-fixture",
+            0,
+        )
+        .await
+        .expect("baseline");
+        let current = baseline["checkpoint"]["seq"].as_i64().expect("checkpoint");
+        assert!(current > 0);
+        let app = crate::router(http.clone()).expect("router");
+        for (workspace, seq) in [
+            ("workspace", current),
+            ("workspace", 0),
+            ("foreign", current),
+        ] {
+            let cursor = SubscriptionCursor {
+                terminal_generation: None,
+                workspace_id: workspace.into(),
+                seq,
+            };
+            let addition = json!({"resource":resource,"since":cursor});
+            let query = form_urlencoded::Serializer::new(String::new())
+                .append_pair("protocol", SYNC_PROTOCOL_VERSION_TEXT)
+                .append_pair("resources", &json!([resource]).to_string())
+                .append_pair("since", &json!([addition]).to_string())
+                .finish();
+            TEST_TRANSCRIPT_PULLS.store(0, Ordering::Relaxed);
+            let response = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .uri(format!("/api/sync/stream?{query}"))
+                        .header("host", "127.0.0.1:4321")
+                        .header("x-canvas-token", "token")
+                        .extension(ConnectInfo(std::net::SocketAddr::from((
+                            [127, 0, 0, 1],
+                            12345,
+                        ))))
+                        .body(Body::empty())
+                        .expect("request"),
+                )
+                .await
+                .expect("open");
+            assert_eq!(response.status(), StatusCode::OK);
+            assert_eq!(
+                TEST_TRANSCRIPT_PULLS.load(Ordering::Relaxed),
+                1,
+                "open {workspace} {seq}"
+            );
+            drop(response);
+
+            let mut stream = test_stream(
+                &http.sync_changes,
+                &http.token_rates,
+                http.resource_notifications.clone(),
+                vec![],
+            );
+            stream.http_state = Some(http.clone());
+            stream.store = Some(store.clone());
+            let since = BTreeMap::from([(resource.to_string(), cursor)]);
+            TEST_TRANSCRIPT_PULLS.store(0, Ordering::Relaxed);
+            subscription_frame(
+                &mut stream,
+                SubscriptionChange {
+                    generation: 1,
+                    resources: vec![resource.clone()],
+                    added: vec![resource.clone()],
+                    token_rates: None,
+                    since,
+                },
+            )
+            .await
+            .expect("add");
+            assert_eq!(
+                TEST_TRANSCRIPT_PULLS.load(Ordering::Relaxed),
+                1,
+                "add {workspace} {seq}"
+            );
+        }
     }
 
     #[tokio::test]
