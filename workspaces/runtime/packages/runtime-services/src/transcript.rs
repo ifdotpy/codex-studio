@@ -1,13 +1,13 @@
 //! Transcript item/search readers and durable sync projection from committed state.
 
 use crate::event_write::truthy;
+use crate::submit_gates::Deletion;
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use serde_json::{Value, json};
 use std::sync::Arc;
 use studio_runtime_store::{
-    AgentId, AgentRecord, ComplaintRecord, PlanRecord, RuntimeStore, StoreError, Table, TaskId,
-    TranscriptItem, TranscriptRepository, TranscriptStoreError, WorkItemRecord,
-    WorkspaceViewsRepository,
+    AgentId, ComplaintRecord, PlanRecord, RuntimeStore, StoreError, Table, TaskId, TranscriptItem,
+    TranscriptRepository, TranscriptStoreError, WorkItemRecord, WorkspaceViewsRepository,
 };
 use thiserror::Error;
 
@@ -435,9 +435,14 @@ fn search_item_in(
         return Err(TranscriptError::SnapshotChanged);
     }
     if let Some(row) = TranscriptRepository::item_any_agent(connection, identity)? {
-        let actor = TranscriptRepository::agent(connection, &row.agent)?
+        let actor = directory
+            .agents()
+            .iter()
+            .find(|agent| agent.id.as_ref() == Some(&row.agent))
             .ok_or(TranscriptError::SearchResultUnavailable)?;
-        if truthy(actor.get("deletedAt")) || truthy(row.record.get("afterRestore")) {
+        if actor.deleted_at.as_ref().is_some_and(Deletion::is_deleted)
+            || truthy(row.record.get("afterRestore"))
+        {
             return Err(TranscriptError::SearchResultUnavailable);
         }
         let text = searchable_text(connection, &row)?;
@@ -500,8 +505,13 @@ fn search_item_in(
         .and_then(Value::as_str)
         .map(str::to_owned)
         .ok_or_else(|| invalid_stored("runtime_search", identity))?;
-    TranscriptRepository::agent(connection, &owner)?
-        .filter(|actor| !truthy(actor.get("deletedAt")))
+    directory
+        .agents()
+        .iter()
+        .find(|actor| {
+            actor.id.as_ref() == Some(&owner)
+                && !actor.deleted_at.as_ref().is_some_and(Deletion::is_deleted)
+        })
         .ok_or(TranscriptError::SearchResultUnavailable)?;
     let text = if let Some(text) = record
         .get("text")
@@ -584,31 +594,24 @@ pub(crate) fn search_work_in_transaction(
     if !directory.matches(connection)? {
         return Err(TranscriptError::SnapshotChanged);
     }
-    let agents = Table::<AgentRecord>::new(connection)
-        .list()
-        .map_err(|_| TranscriptError::Store)?;
+    let agents = directory.agents();
     let caller_root = if let Some(agent) = agent_filter {
-        let caller = TranscriptRepository::agent(connection, agent)?
+        let caller = agents
+            .iter()
+            .find(|caller| caller.id.as_deref() == Some(agent))
             .ok_or(TranscriptError::SearchResultUnavailable)?;
-        if truthy(caller.get("deletedAt")) {
+        if caller.deleted_at.as_ref().is_some_and(Deletion::is_deleted) {
             return Err(TranscriptError::DeletedConversation);
         }
-        caller
-            .get("rootId")
-            .and_then(Value::as_str)
-            .map(str::to_owned)
+        caller.root_id.as_deref()
     } else {
         None
     };
     let allowed = agents
         .iter()
-        .filter(|agent| !truthy(agent.value().get("deletedAt")))
-        .filter(|agent| {
-            caller_root
-                .as_deref()
-                .is_none_or(|root| agent.root_id.0 == root)
-        })
-        .map(|agent| agent.id().0.clone())
+        .filter(|agent| !agent.deleted_at.as_ref().is_some_and(Deletion::is_deleted))
+        .filter(|agent| caller_root.is_none_or(|root| agent.root_id.as_deref() == Some(root)))
+        .filter_map(|agent| agent.id.clone())
         .collect::<std::collections::BTreeSet<_>>();
     let match_query = query
         .split_whitespace()
@@ -653,9 +656,7 @@ pub(crate) fn search_work_in_transaction(
                 .or_else(|| record.get("id"))
                 .and_then(Value::as_str)
                 .ok_or_else(|| invalid_stored(table, &stored.id))?;
-            if !allowed.contains(root)
-                || caller_root.as_deref().is_some_and(|caller| caller != root)
-            {
+            if !allowed.contains(root) || caller_root.is_some_and(|caller| caller != root) {
                 continue;
             }
             let serialized = serde_json::to_string(&record).map_err(|_| TranscriptError::Store)?;
@@ -695,9 +696,9 @@ pub(crate) fn search_work_in_transaction(
                 let direct = room["radio"]["direct"] == true
                     && members.iter().all(|id| {
                         directory.agents().iter().any(|a| {
-                            a["id"] == *id
-                                && a["sharedRoomId"] == room["id"]
-                                && a["cwd"] == room["projectPath"]
+                            a.id.as_deref() == id.as_str()
+                                && a.shared_room_id.as_deref() == room["id"].as_str()
+                                && a.cwd.as_deref() == room["projectPath"].as_str()
                         })
                     });
                 if foreign

@@ -1,4 +1,5 @@
 //! Snapshot readers and user-controlled room visibility using canonical room views.
+use crate::submit_gates::Deletion;
 use crate::{
     coordination::CoordinationError, event_write::truthy, sync_entity_context::RoomDirectory,
     sync_views::room_entity_view,
@@ -91,13 +92,20 @@ pub fn chat_read(
         let root = context
             .agents()
             .iter()
-            .find(|a| a["id"] == root_id && a["isLead"] == true && !truthy(a.get("deletedAt")))
+            .find(|a| {
+                a.id.as_deref() == Some(root_id)
+                    && a.is_lead == Some(true)
+                    && !a.deleted_at.as_ref().is_some_and(Deletion::is_deleted)
+            })
             .ok_or(CoordinationError::InvalidRequest("Team is unavailable"))?;
         let members = context
             .agents()
             .iter()
-            .filter(|a| a["rootId"] == root_id && !truthy(a.get("deletedAt")))
-            .filter_map(|a| a["id"].as_str())
+            .filter(|a| {
+                a.root_id.as_deref() == Some(root_id)
+                    && !a.deleted_at.as_ref().is_some_and(Deletion::is_deleted)
+            })
+            .filter_map(|a| a.id.as_deref())
             .collect::<BTreeSet<_>>();
         let rooms = records::all(connection, "runtime_rooms")?;
         let mut selection = connection.prepare_cached("WITH
@@ -124,7 +132,7 @@ pub fn chat_read(
             )?
             .collect::<Result<Vec<_>, _>>()?;
         (
-            json!({"id":room_id,"name":root["name"],"members":members}),
+            json!({"id":room_id,"name":root.name,"members":members}),
             ids,
         )
     } else {
@@ -170,7 +178,7 @@ pub fn chat_read(
     let mut names = context
         .agents()
         .iter()
-        .filter_map(|a| Some((a["id"].as_str()?.to_owned(), a["name"].clone())))
+        .filter_map(|a| Some((a.id.clone()?, json!(a.name))))
         .collect::<BTreeMap<_, _>>();
     for person in room["remoteMembers"].as_array().into_iter().flatten() {
         if let Some(id) = person["id"].as_str().filter(|_| truthy(person.get("name"))) {

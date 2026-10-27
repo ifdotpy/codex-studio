@@ -460,6 +460,7 @@ fn send_as_actor(
     };
     let projects = message_projects(tx, &agents)?;
     let mut authority = MessageAuthority::new(&agents, &projects)?;
+    let directory = crate::sync_entity_context::RoomDirectory::resolve(agents, projects)?;
     let broadcast = target == "broadcast";
     let mut refused = serde_json::Map::new();
     let mut first_refusal = None;
@@ -538,7 +539,6 @@ fn send_as_actor(
     room["userHidden"] = json!(false);
     records::validate("runtime_rooms", &room_id, room.clone())?;
     tx.execute("INSERT INTO runtime_rooms(id,record) VALUES(?1,?2) ON CONFLICT(id) DO UPDATE SET record=excluded.record",params![room_id,room.to_string()])?;
-    let directory = crate::sync_entity_context::RoomDirectory::load(tx)?;
     // Python projects the room immediately after writing runtime_rooms, before
     // it enqueues recipient events. Keep the shared global sync sequence in
     // that order; the room is projected again below after the chat message

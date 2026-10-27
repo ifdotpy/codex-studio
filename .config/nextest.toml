@@ -80,6 +80,7 @@ inherits = "ci"
 # Supervisor health witnesses: Accept the maintained protocol and preserve exact handles; reject foreign identity and blocked recovery.
 # Desktop projection witness: Keep private native rotation receipts on disk while validating the public status strictly.
 default-filter = '''
+    (package(=studio-runtime-services) & kind(lib) & (test(complaint_names_preserve_missing_and_null) | test(snapshot_rechecks_unprojected_and_volatile_agent_fields))) |
     (package(=studio-runtime-store) & kind(lib) & test(scoped_fingerprint_ignores_offscreen_rows_and_tracks_moves_and_deletions)) |
     (package(=studio-runtime-store) & kind(lib) & (test(scoped_page_reads_only_its_collection_and_id) | test(pull_page_without_priority_stops_at_limit))) |
     (package(=studio-runtime-store) & kind(test) & binary(=integration) & test(open_recreates_entity_scope_indexes_on_existing_state)) |
@@ -308,6 +309,7 @@ platform = 'cfg(target_os = "linux")'
 # Supervisor health witnesses: Accept the maintained protocol and preserve exact handles; reject foreign identity and blocked recovery.
 # Desktop projection witness: Keep private native rotation receipts on disk while validating the public status strictly.
 default-filter = '''
+    (package(=studio-runtime-services) & kind(lib) & (test(complaint_names_preserve_missing_and_null) | test(snapshot_rechecks_unprojected_and_volatile_agent_fields))) |
     (package(=studio-runtime-store) & kind(lib) & test(scoped_fingerprint_ignores_offscreen_rows_and_tracks_moves_and_deletions)) |
     (package(=studio-runtime-store) & kind(lib) & (test(scoped_page_reads_only_its_collection_and_id) | test(pull_page_without_priority_stops_at_limit))) |
     (package(=studio-runtime-store) & kind(test) & binary(=integration) & test(open_recreates_entity_scope_indexes_on_existing_state)) |
