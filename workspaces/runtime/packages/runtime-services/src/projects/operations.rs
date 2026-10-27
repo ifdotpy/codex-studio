@@ -169,7 +169,7 @@ pub async fn peer_team_write(
     }).await
 }
 
-fn request_error(error: RequestResultError) -> ProjectsError {
+pub(crate) fn request_error(error: RequestResultError) -> ProjectsError {
     match error {
         RequestResultError::Sql(error) => ProjectsError::Sqlite(error),
         RequestResultError::Json(error) => ProjectsError::Store(error.into()),
@@ -182,7 +182,7 @@ fn request_error(error: RequestResultError) -> ProjectsError {
     }
 }
 
-fn admit_operation(
+pub(crate) fn admit_operation(
     tx: &studio_runtime_store::Transaction<'_>,
     namespace: &str,
     root: &str,
@@ -202,12 +202,12 @@ fn admit_operation(
     .map_err(request_error)
 }
 
-fn saved_reply(raw: &str) -> Result<Value, ProjectsError> {
+pub(crate) fn saved_reply(raw: &str) -> Result<Value, ProjectsError> {
     let result: ResultEnvelope<Value> = serde_json::from_str(raw).map_err(StoreError::from)?;
     Ok(result.reply)
 }
 
-fn settle_operation(
+pub(crate) fn settle_operation(
     tx: &studio_runtime_store::Transaction<'_>,
     admitted: &AdmittedRequest,
     reply: &Value,

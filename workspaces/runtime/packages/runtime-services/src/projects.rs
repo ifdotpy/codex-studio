@@ -552,8 +552,10 @@ pub async fn write(
                 return Ok(json!({"id":path,"removed":removed}));
             }
             if action == "register"
-                && let Some(project) = project
+                && let Some(mut project) = project
             {
+                project["sidebarHidden"] = json!(false);
+                ProjectsRepository::put_project(tx, &project)?;
                 return Ok(project);
             }
             let account_revision = revision_of(project.as_ref(), "accountRevision", &path)?;
