@@ -500,6 +500,7 @@ Studio does not fetch. Push the branch first.
 A running turn, monitor, task, queued input, or workspace operation refuses the switch.
 New workers of a switched lead use Layr.
 Existing WT workers keep WT until you switch them.
+A switched lead cannot accept Git results from a WT worker. Switch each implementer after the lead.
 
 The switch writes the line under the receipt that preparation uses, so a repeat returns the same line.
 A repeat after success returns the saved association. An unknown outcome stays held for inspection.

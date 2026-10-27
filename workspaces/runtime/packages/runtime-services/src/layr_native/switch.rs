@@ -109,7 +109,7 @@ fn admit(
     let parent = get(record["parentId"].as_str().unwrap_or_default())?;
     if !is_native(&parent) || parent["layrReady"] != true {
         return Err(NativeLayrError::Refused(
-            "Switch the parent chat to Layr and let it finish one turn first".into(),
+            "Switch the parent chat to Layr first".into(),
         ));
     }
     let root = get(record["rootId"].as_str().unwrap_or_default())?;
