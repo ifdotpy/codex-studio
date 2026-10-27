@@ -973,7 +973,7 @@ impl SchedulerRepository {
         AgentRepository::put(transaction, &agent)?;
         EventWriteRepository::set_agent_sync_lifecycle(
             transaction,
-            agent_id,
+            &agent,
             "starting",
             true,
             None,

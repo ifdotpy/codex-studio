@@ -368,7 +368,7 @@ fn submission_recheck_retires_decided_work_review_and_keeps_reconciliation_field
         .expect("projection transaction begins");
     crate::EventWriteRepository::set_agent_sync_lifecycle(
         &transaction,
-        "agent",
+        &agent,
         "starting",
         true,
         None,

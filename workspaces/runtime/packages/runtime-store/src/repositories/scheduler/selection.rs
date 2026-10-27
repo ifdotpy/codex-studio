@@ -1037,7 +1037,7 @@ impl SchedulerRepository {
         }
         if events.is_empty() {
             apply_preparation(transaction, &prepared)?;
-            set_waiting(transaction, &mut agent, agent_id)?;
+            set_waiting(transaction, &mut agent)?;
             return Ok(None);
         }
         apply_preparation(transaction, &prepared)?;
@@ -1433,7 +1433,7 @@ impl SchedulerRepository {
             publish_agent(tx, &record)?;
             EventWriteRepository::set_agent_sync_lifecycle(
                 tx,
-                agent,
+                &record,
                 record.status.as_str(),
                 record.extra.get("inFlight") == Some(&json!(true)),
                 record.extra.get("turnId").and_then(Value::as_str),
@@ -1847,11 +1847,10 @@ pub(super) fn event_policy_dependency(kind: &str) -> Option<&'static str> {
 pub(super) fn set_waiting(
     transaction: &Transaction<'_>,
     agent: &mut AgentRecord,
-    agent_id: &str,
 ) -> StoreResult<()> {
     agent.status = AgentStatus::Waiting;
     AgentRepository::put(transaction, agent)?;
-    EventWriteRepository::set_agent_sync_lifecycle(transaction, agent_id, "waiting", false, None)
+    EventWriteRepository::set_agent_sync_lifecycle(transaction, agent, "waiting", false, None)
 }
 
 /// Native slash and skill commands require their existing turn-start handling.
