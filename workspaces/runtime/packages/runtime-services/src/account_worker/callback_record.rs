@@ -86,18 +86,12 @@ impl SavedReply {
     }
 
     pub(super) fn same_connection(&self, status: &SessionStatus) -> bool {
-        status.generation.0 == self.generation
-            && status.initialization == studio_runtime_providers::InitializationStatus::Ready
-            && status.attachment.open_attempted
-            && status.attachment.initialization
-                == studio_runtime_providers::InitializationStatus::Ready
-            && status.attachment.handle.as_str() == self.handle
-            && status.attachment.info.as_ref().is_some_and(|info| {
-                info.handle.as_str() == self.handle
-                    && info.generation.0 == self.generation
-                    && info.pid == self.pid
-                    && info.pid > 0
-            })
+        status
+            .ready_connection(
+                &status.attachment.handle,
+                studio_runtime_process::Generation(self.generation),
+            )
+            .is_some_and(|info| info.handle.as_str() == self.handle && info.pid == self.pid)
     }
 
     fn response(&self, accepted: &Accepted) -> Result<Frame, WorkerError> {

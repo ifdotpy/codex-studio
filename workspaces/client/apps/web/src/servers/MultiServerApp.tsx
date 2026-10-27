@@ -807,7 +807,8 @@ function MultiServerShell({
                 restoreAccountActionFocus.current || undefined
               }
               onInitialFocus={() => {
-                restoreAccountActionFocus.current = null;
+                if (!restoreManagerAfterAccountDialog.current)
+                  restoreAccountActionFocus.current = null;
               }}
               servicesFor={(id) => services.get(id)}
               servers={accountsServers}
