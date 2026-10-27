@@ -234,6 +234,8 @@ objects that have no production creator. No user row data was used.
 | `runtime_item_turn_scope`                                                                                                                                                            | No production creator is present in the current source tree. Its only matching DDL is the `turn-completion-scope-contract.py` test fixture. It is a rebuildable index on `runtime_items`; this schema-only occurrence is treated as an unowned legacy/test-created index and is ignored by runtime-store. |
 | `graph_agents`, `graph_edges`, `groups`, `messages`, `messages_room`                                                                                                                 | `Canvas.__init__` in `codex_canvas.py` still executes `CREATE TABLE/INDEX IF NOT EXISTS` for these tables on startup. Their data model is older than the `runtime_*` records, but they are not abandoned schema objects: Python still owns their creation and compatibility lifecycle.                    |
 
+The historical comparison below predates the 2026-10-27 retirement migration. Current Rust startup removes the old search generation and unused projections, including their rows, while retaining the current search rollout and its data.
+
 The live schema has 43 objects absent from the snapshot: 31 tables, 6 indexes
 and 6 triggers, itemized above. Its 9 absent snapshot objects are the previous
 search generation: `runtime_search`, `runtime_search_config`,

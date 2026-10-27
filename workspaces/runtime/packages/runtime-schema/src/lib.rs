@@ -237,8 +237,7 @@ const CLAUDE_CONTROL_URI: &str =
 const CLAUDE_LOGIN_URI: &str = "https://codex-studio.invalid/persisted-claude-login.schema.json";
 
 const PERSISTED_SCHEMAS: &[(&str, &[u8])] = &[
-    // The stored rows of the removed team token budget. Current builds neither
-    // read nor write these tables; the schemas describe what older builds wrote.
+    // Retained state of the removed team token budget, including replay diagnostics.
     (
         "https://codex-studio.invalid/persisted-budget-state.schema.json",
         include_bytes!("schemas/persisted-budget-state.schema.json"),
@@ -246,10 +245,6 @@ const PERSISTED_SCHEMAS: &[(&str, &[u8])] = &[
     (
         "https://codex-studio.invalid/persisted-budget-state-write.schema.json",
         include_bytes!("schemas/persisted-budget-state-write.schema.json"),
-    ),
-    (
-        "https://codex-studio.invalid/persisted-budget-usage.schema.json",
-        include_bytes!("schemas/persisted-budget-usage.schema.json"),
     ),
     (ACCESS_CLIENT_URI, ACCESS_CLIENT),
     (ACCESS_INVITE_URI, ACCESS_INVITE),
@@ -457,7 +452,6 @@ pub fn table_schema(table: &str) -> Option<&'static str> {
         "runtime_annotations" => "PersistedAnnotationRecord",
         "runtime_assets" => "PersistedTranscriptAsset",
         "runtime_budget" => "PersistedBudgetState",
-        "runtime_budget_usage" => "PersistedBudgetUsage",
         "runtime_capacity_retries" => "continuation/CapacityContinuation",
         "runtime_chat_messages" => "PersistedChatMessage",
         "runtime_checkpoints" => "PersistedCheckpointRecord",
@@ -900,10 +894,6 @@ fn prepare_schemas() -> SchemaResult<CompiledSchemas> {
         (
             "PersistedBudgetStateWrite",
             "https://codex-studio.invalid/persisted-budget-state-write.schema.json",
-        ),
-        (
-            "PersistedBudgetUsage",
-            "https://codex-studio.invalid/persisted-budget-usage.schema.json",
         ),
         ("PersistedChatMessage", CHAT_MESSAGE_URI),
         ("PersistedCheckpointRecord", CHECKPOINT_RECORD_URI),

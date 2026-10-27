@@ -119,21 +119,6 @@ pub(crate) fn feature_columns(transaction: &Transaction<'_>) -> StoreResult<()> 
         )?;
     }
 
-    let has_breakdown: bool = transaction.query_row(
-        "SELECT EXISTS(SELECT 1 FROM pragma_table_info('runtime_budget_usage') WHERE name='breakdown')",
-        [], |row| row.get(0),
-    )?;
-    if !has_breakdown {
-        // NULL preserves total-only replay comparison for every existing response.
-        transaction.execute_batch("ALTER TABLE runtime_budget_usage ADD COLUMN breakdown TEXT")?;
-    }
-    let has_details: bool = transaction.query_row(
-        "SELECT EXISTS(SELECT 1 FROM pragma_table_info('runtime_budget_usage') WHERE name='details')", [], |row| row.get(0),
-    )?;
-    if !has_details {
-        // O(1): old receipts retain their existing interpretation, without a rebuild.
-        transaction.execute_batch("ALTER TABLE runtime_budget_usage ADD COLUMN details TEXT")?;
-    }
     Ok(())
 }
 

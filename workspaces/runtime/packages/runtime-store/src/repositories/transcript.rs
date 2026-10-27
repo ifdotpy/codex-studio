@@ -1216,6 +1216,56 @@ mod tests {
 
     use super::{TranscriptRepository, TranscriptStoreError, enrich_persisted_items};
 
+    #[test]
+    fn retired_sqlite_search_keeps_current_rollout_phases() {
+        let mut db = crate::fresh_state::test_canvas();
+        for phase in [
+            "building",
+            "active",
+            "dropping",
+            "complete",
+            "waiting_for_space",
+        ] {
+            let tx = db.transaction().expect("transaction");
+            tx.execute("INSERT INTO runtime_search_rollout(id,phase,cursor,updated) VALUES(1,?1,0,0) ON CONFLICT(id) DO UPDATE SET phase=excluded.phase", [phase]).expect("phase");
+            let record = json!({"id":"item", "role":"assistant"});
+            TranscriptRepository::put_item(
+                &tx,
+                "item",
+                "agent",
+                &record,
+                1.0,
+                "searchable sentinel",
+                true,
+            )
+            .expect("write");
+            let hits = TranscriptRepository::search_hits(&tx, "sentinel").expect("search");
+            assert_eq!(
+                hits.len(),
+                usize::from(matches!(phase, "active" | "dropping" | "complete")),
+                "{phase}"
+            );
+            if phase != "waiting_for_space" {
+                TranscriptRepository::put_item(&tx, "item", "agent", &record, 1.0, "", false)
+                    .expect("unindex");
+                let count: i64 = tx
+                    .query_row("SELECT count(*) FROM runtime_search_next_meta", [], |row| {
+                        row.get(0)
+                    })
+                    .expect("metadata");
+                assert_eq!(count, 0, "{phase}");
+            }
+            tx.commit().expect("commit");
+        }
+        db.execute("DELETE FROM runtime_search_rollout", [])
+            .expect("absent phase");
+        assert!(
+            TranscriptRepository::search_hits(&db, "sentinel")
+                .expect("search")
+                .is_empty()
+        );
+    }
+
     thread_local! {
         static TRACED_SQL: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
     }
