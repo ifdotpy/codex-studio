@@ -4,10 +4,6 @@ import { RequestStatus } from "../../../client/apps/web/src/generated/api.ts";
 import type { components } from "../../../client/apps/web/src/generated/api.ts";
 
 type Schema = components["schemas"];
-type Entity = Schema["SyncEntity"];
-type Request = Schema["RequestEntityDto"];
-type Monitor = Schema["MonitorEntityDto"];
-
 const [
   url,
   agent,
@@ -18,6 +14,7 @@ const [
   declineRequest,
   declineMarker,
   seconds,
+  evidencePath,
 ] = process.argv.slice(2);
 const duration = Number(seconds);
 if (
@@ -29,14 +26,17 @@ if (
   !declineMonitor ||
   !declineRequest ||
   !declineMarker ||
+  !evidencePath ||
   !Number.isFinite(duration) ||
   duration <= 0 ||
   acceptMonitor === declineMonitor ||
   acceptRequest === declineRequest ||
-  acceptMarker === declineMarker
+  acceptMarker === declineMarker ||
+  evidencePath === acceptMarker ||
+  evidencePath === declineMarker
 ) {
   throw new Error(
-    "Usage: node approvals.ts <server-url> <agent-id> <accept-monitor-id> <accept-request-id> <accept-marker> <decline-monitor-id> <decline-request-id> <decline-marker> <deadline-seconds>",
+    "Usage: node approvals.ts <server-url> <agent-id> <accept-monitor-id> <accept-request-id> <accept-marker> <decline-monitor-id> <decline-request-id> <decline-marker> <deadline-seconds> <evidence-json-path>",
   );
 }
 const targets = [
@@ -55,76 +55,95 @@ const targets = [
 ] as const;
 const signal = AbortSignal.timeout(duration * 1000);
 const base = url.replace(/\/$/, "");
-const requests = new Map<string, Request>();
-const monitors = new Map<string, Monitor>();
+const records = new Map<string, Record<string, unknown>>();
+const sequences = new Map<string, number>();
 const removed = new Set<string>();
-let cursor = 0;
+const events: object[] = [];
 let ready = false;
-let pulling = false;
+const startedAt = new Date().toISOString();
 
-async function get<T>(route: string): Promise<T> {
+function record(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+async function get(route: string): Promise<unknown> {
   const response = await fetch(base + route, { signal });
   if (!response.ok) throw new Error(`${route}: HTTP ${response.status}`);
-  return (await response.json()) as T;
+  return response.json();
 }
-function apply(doc: Entity) {
+function apply(doc: unknown, fromStream: boolean) {
   if (
-    doc.collection === "request" &&
-    targets.some((t) => t.requestId === doc.id)
-  ) {
-    if (doc.op === "delete") {
-      requests.delete(doc.id);
+    !record(doc) ||
+    typeof doc.collection !== "string" ||
+    typeof doc.id !== "string" ||
+    typeof doc.seq !== "number" ||
+    (doc.op !== "upsert" && doc.op !== "delete")
+  )
+    throw new Error("Invalid entity document");
+  if (
+    !targets.some(
+      (t) =>
+        (doc.collection === "request" && doc.id === t.requestId) ||
+        (doc.collection === "monitor" && doc.id === t.monitorId),
+    )
+  )
+    return;
+  const key = `${doc.collection}:${doc.id}`;
+  if (doc.seq <= (sequences.get(key) ?? 0)) return;
+  sequences.set(key, doc.seq);
+  if (doc.op === "delete") {
+    records.delete(key);
+    if (fromStream && ready && doc.collection === "request")
       removed.add(doc.id);
-    } else {
-      requests.set(doc.id, doc.value);
-      removed.delete(doc.id);
-    }
+  } else {
+    if (!record(doc.value)) throw new Error(`Invalid entity value: ${key}`);
+    records.set(key, doc.value);
+    if (doc.collection === "request") removed.delete(doc.id);
   }
-  if (
-    doc.collection === "monitor" &&
-    targets.some((t) => t.monitorId === doc.id)
-  ) {
-    if (doc.op === "delete") monitors.delete(doc.id);
-    else monitors.set(doc.id, doc.value);
-  }
+  if (fromStream)
+    events.push({
+      collection: doc.collection,
+      id: doc.id,
+      op: doc.op,
+      seq: doc.seq,
+      value: doc.op === "upsert" ? doc.value : undefined,
+    });
 }
-async function pull() {
-  pulling = true;
+async function baseline() {
+  let cursor = 0;
   for (;;) {
-    const page = await get<Schema["SyncPullResponse"]>(
+    const page = await get(
       `/api/sync/pull?scope=state:entities:v1&after=${cursor}&limit=500`,
     );
-    for (const doc of page.documents) {
-      if (!("collection" in doc))
-        throw new Error("Unexpected non-entity document");
-      apply(doc);
-    }
-    if (page.maxSeq == null || page.checkpoint.seq < cursor)
+    if (
+      !record(page) ||
+      !record(page.checkpoint) ||
+      typeof page.checkpoint.seq !== "number" ||
+      typeof page.maxSeq !== "number" ||
+      !Array.isArray(page.documents) ||
+      page.checkpoint.seq < cursor
+    )
       throw new Error("Invalid entity checkpoint");
+    for (const doc of page.documents) apply(doc, false);
     cursor = page.checkpoint.seq;
-    if (cursor >= page.maxSeq || page.documents.length === 0) break;
+    if (cursor >= page.maxSeq || page.documents.length === 0) return;
   }
-  pulling = false;
 }
 function pending(t: (typeof targets)[number]) {
-  const request = requests.get(t.requestId);
-  const monitor = monitors.get(t.monitorId);
+  const request = records.get(`request:${t.requestId}`);
+  const monitor = records.get(`monitor:${t.monitorId}`);
   return (
-    request !== undefined &&
-    monitor !== undefined &&
-    request.agent === agent &&
-    request.method === "monitor/approve" &&
-    request.params?.monitorId === t.monitorId &&
-    request.status === RequestStatus.pending &&
-    monitor.agent === agent &&
-    monitor.status === "approval"
+    request?.agent === agent &&
+    request?.method === "monitor/approve" &&
+    request?.status === RequestStatus.pending &&
+    monitor?.agent === agent &&
+    monitor?.status === "approval"
   );
 }
 function markerLines(file: string) {
   try {
     return fs.readFileSync(file, "utf8").split("\n").filter(Boolean).length;
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return 0;
+    if (record(error) && error.code === "ENOENT") return 0;
     throw error;
   }
 }
@@ -134,15 +153,16 @@ function verify() {
       "Did not observe both exact pending approval cards before their decisions",
     );
   for (const t of targets) {
-    const monitor = monitors.get(t.monitorId);
+    const monitor = records.get(`monitor:${t.monitorId}`);
     const expected = t.decision === "accept" ? "completed" : "cancelled";
-    if (!removed.has(t.requestId) || requests.has(t.requestId))
-      throw new Error(`${t.decision}: approval request was not removed`);
+    if (!removed.has(t.requestId) || records.has(`request:${t.requestId}`))
+      throw new Error(
+        `${t.decision}: approval request removal was not witnessed over SSE`,
+      );
     if (
-      monitor === undefined ||
-      monitor.agent !== agent ||
-      monitor.status !== expected ||
-      (t.decision === "accept" && monitor.exitCode !== 0)
+      monitor?.agent !== agent ||
+      monitor?.status !== expected ||
+      (t.decision === "accept" && monitor?.exitCode !== 0)
     )
       throw new Error(
         `${t.decision}: monitor did not reach ${expected} successfully`,
@@ -151,26 +171,60 @@ function verify() {
     if (count !== (t.decision === "accept" ? 1 : 0))
       throw new Error(`${t.decision}: marker has ${count} nonempty lines`);
   }
-  console.log(
-    "PASS: both cards resolved; accepted marker has one line; declined marker is absent or empty",
-  );
 }
-
-const protocol =
-  await get<Schema["SyncProtocolResponse"]>("/api/sync/protocol");
-if (targets.some((target) => markerLines(target.marker) !== 0))
-  throw new Error("Marker files must be absent or empty before decisions");
-const resources: Schema["ResourceRef"][] = [
-  { kind: "state" },
-  { kind: "monitors", agentId: agent },
-];
-const stream = await fetch(
-  `${base}/api/sync/stream?protocol=${protocol.protocolVersion}&resources=${encodeURIComponent(JSON.stringify(resources))}`,
-  { signal, headers: { accept: "text/event-stream" } },
-);
-if (!stream.ok || !stream.body) throw new Error(`SSE HTTP ${stream.status}`);
-try {
-  await pull();
+function consume(frame: string) {
+  const lines = frame.split("\n");
+  if (lines.includes("event: entity-transfer"))
+    throw new Error(
+      "SSE entity transfer requires recovery; evidence incomplete",
+    );
+  if (!lines.includes("event: resources")) return;
+  const data = lines
+    .filter((line) => line.startsWith("data:"))
+    .map((line) => line.slice(5).trimStart())
+    .join("\n");
+  const event: unknown = JSON.parse(data);
+  if (
+    !record(event) ||
+    !Array.isArray(event.resourceVersions) ||
+    typeof event.reason !== "string"
+  )
+    throw new Error("Invalid SSE resources event");
+  if (["overflow", "reconnect", "workspace"].includes(event.reason))
+    throw new Error(`SSE ${event.reason}: evidence incomplete`);
+  for (const entry of event.resourceVersions) {
+    if (!record(entry)) throw new Error("Invalid SSE resource entry");
+    if (entry.entityChanges == null) continue;
+    if (
+      !record(entry.entityChanges) ||
+      !Array.isArray(entry.entityChanges.documents)
+    )
+      throw new Error("Invalid SSE entity changes");
+    for (const doc of entry.entityChanges.documents) apply(doc, true);
+  }
+  if (!ready && targets.every(pending)) {
+    ready = true;
+    console.log(
+      "READY: both exact approval cards are pending; user may decide",
+    );
+  }
+}
+async function run() {
+  const protocol = await get("/api/sync/protocol");
+  if (!record(protocol) || typeof protocol.protocolVersion !== "number")
+    throw new Error("Invalid sync protocol");
+  if (targets.some((target) => markerLines(target.marker) !== 0))
+    throw new Error("Marker files must be absent or empty before decisions");
+  const resources: Schema["ResourceRef"][] = [
+    { kind: "state" },
+    { kind: "monitors", agentId: agent },
+  ];
+  const stream = await fetch(
+    `${base}/api/sync/stream?protocol=${protocol.protocolVersion}&resources=${encodeURIComponent(JSON.stringify(resources))}`,
+    { signal, headers: { accept: "text/event-stream" } },
+  );
+  if (!stream.ok || !stream.body) throw new Error(`SSE HTTP ${stream.status}`);
+  await baseline();
   if (targets.every(pending)) {
     ready = true;
     console.log(
@@ -179,25 +233,56 @@ try {
   }
   let buffer = "";
   const decoder = new TextDecoder();
-  for await (const chunk of stream.body) {
-    buffer += decoder.decode(chunk, { stream: true });
-    buffer = buffer.replaceAll("\r\n", "\n");
-    let end: number;
-    while ((end = buffer.indexOf("\n\n")) >= 0) {
-      const frame = buffer.slice(0, end);
-      buffer = buffer.slice(end + 2);
-      if (!frame.split("\n").includes("event: resources")) continue;
-      await pull();
-      if (!ready && targets.every(pending)) {
-        ready = true;
-        console.log(
-          "READY: both exact approval cards are pending; user may decide",
-        );
+  try {
+    for await (const chunk of stream.body) {
+      buffer += decoder.decode(chunk, { stream: true });
+      buffer = buffer.replaceAll("\r\n", "\n");
+      let end: number;
+      while ((end = buffer.indexOf("\n\n")) >= 0) {
+        consume(buffer.slice(0, end));
+        buffer = buffer.slice(end + 2);
       }
     }
+    throw new Error("SSE closed before the deadline");
+  } catch (error) {
+    if (error !== signal.reason || !signal.aborted) throw error;
   }
-  throw new Error("SSE closed before the deadline");
-} catch (error) {
-  if (!signal.aborted || pulling) throw error;
   verify();
 }
+let outcome = "passed";
+let failure: string | undefined;
+try {
+  await run();
+} catch (error) {
+  outcome = "failed";
+  failure = error instanceof Error ? error.message : String(error);
+  process.exitCode = 1;
+}
+fs.writeFileSync(
+  evidencePath,
+  JSON.stringify(
+    {
+      startedAt,
+      finishedAt: new Date().toISOString(),
+      server: base,
+      agent,
+      targets,
+      ready,
+      events,
+      markerCounts: targets.map((t) => ({
+        decision: t.decision,
+        lines: markerLines(t.marker),
+      })),
+      outcome,
+      failure,
+    },
+    null,
+    2,
+  ) + "\n",
+  { flag: "wx" },
+);
+if (failure) console.error(`FAIL: ${failure}`);
+else
+  console.log(
+    "PASS: both cards resolved; accepted marker has one line; declined marker is absent or empty",
+  );
