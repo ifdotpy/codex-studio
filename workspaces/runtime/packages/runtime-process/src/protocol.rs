@@ -46,6 +46,8 @@ impl SupervisorHandshakeV2 {
     }
 }
 
+// Serde's skip_serializing_if callback requires a reference to the field.
+#[allow(clippy::trivially_copy_pass_by_ref)]
 fn is_false(value: &bool) -> bool {
     !value
 }

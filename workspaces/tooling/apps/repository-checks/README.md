@@ -19,3 +19,8 @@ root manifest and Clippy settings into a disposable dependency-free crate; it
 does not build the application or interpret Rust source itself. Run the focused
 witnesses with
 `node --test workspaces/tooling/apps/repository-checks/tests/compiler-policy.test.ts workspaces/tooling/apps/repository-checks/tests/rust-lint-policy.test.ts`.
+
+The root [Cargo lint policy](../../../../Cargo.toml) also rejects boolean-heavy
+function signatures, boolean matches, oversized enum variants, and references
+to small Copy values. Its native witnesses verify each rule; callbacks required
+by external APIs may document a narrow exception.
