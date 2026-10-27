@@ -1396,20 +1396,12 @@ pub fn render(root: &Path, with_api_types: bool) -> Result<Vec<Rendered>, String
         });
     }
     // Analytics embeds the same accounting owner with local schema references.
-    let usage_defs: serde_json::Value = serde_json::from_str(
-        &serde_json::to_string(&crate::usage::schemas())
-            .map_err(|error| error.to_string())?
-            .replace("#/components/schemas/", "#/$defs/"),
-    )
-    .map_err(|error| error.to_string())?;
+    let usage_defs = crate::usage::schemas_with_definitions_path("/$defs");
     for name in ["analytics-usage", "analytics-notice"] {
         let path =
             format!("workspaces/runtime/packages/runtime-schema/src/schemas/{name}.schema.json");
         let mut schema = read_json(root, &path)?;
-        for (name, value) in usage_defs
-            .as_object()
-            .ok_or("usage definitions must be an object")?
-        {
+        for (name, value) in &usage_defs {
             schema["$defs"][name] = value.clone();
         }
         if name == "analytics-usage" {
