@@ -127,6 +127,23 @@ async fn count_message_agent_rows(unrelated: usize) -> usize {
         thread: worker["threadId"].as_str().unwrap().into(),
         turn: worker["turnId"].as_str().unwrap().into(),
     };
+    let reader = store.test_reader().unwrap();
+    let admission = crate::message_admission::PreparedAdmission::read(&reader, &context.agent)
+        .unwrap()
+        .prepare()
+        .await
+        .unwrap();
+    drop(reader);
+    let ports = ProductionPorts::new(ProductionPortsConfig {
+        context: context.clone(),
+        room_directory: None,
+        admission,
+        event_wake: std::sync::Arc::new(tokio::sync::Notify::new()),
+        monitor_dispatch_wake: std::sync::Arc::new(tokio::sync::Notify::new()),
+        runtime_ports: empty_runtime_ports(),
+        preparation: None,
+    });
+    let prefix = lead[..8].to_owned();
     let rows = store
         .transaction_with(move |tx| {
             let snapshot = super::super::super::storage::snapshot(tx, &context)?;
@@ -135,12 +152,16 @@ async fn count_message_agent_rows(unrelated: usize) -> usize {
                 rusqlite::trace::TraceEventCodes::SQLITE_TRACE_ROW,
                 Some(trace_agent_rows),
             );
-            let result = messages::send(
+            let result = super::execute(
                 tx,
                 &snapshot,
-                &json!({"target":lead,"text":"hello"}),
+                ToolKind::Message,
+                "orchestration_message",
+                &json!({"target":prefix,"text":"hello"}),
                 "rows-witness",
                 20.0,
+                None,
+                &ports,
             );
             tx.trace_v2(rusqlite::trace::TraceEventCodes::SQLITE_TRACE_ROW, None);
             result?;
@@ -170,16 +191,83 @@ async fn message_refuses_unknown_foreign_and_deleted_targets() {
         thread: worker["threadId"].as_str().unwrap().into(),
         turn: worker["turnId"].as_str().unwrap().into(),
     };
-    store.transaction_with(move |tx| {
-        for agent in [foreign, deleted] {
-            studio_runtime_store::AgentRepository::put(tx, &studio_runtime_store::AgentRecord::from_value(agent).unwrap())?;
-        }
-        let snapshot = super::super::super::storage::snapshot(tx, &context)?;
-        for (target, expected) in [("unknown-target", "Recipient conversation was deleted"), ("foreign-target", "Communication is limited to your team or user-grouped peer chat"), ("deleted-target", "Recipient conversation was deleted")] {
-            assert!(matches!(messages::send(tx, &snapshot, &json!({"target":target,"text":"hello"}), "refusal-witness", 20.0), Err(CallbackError::Invalid(message)) if message == expected));
-        }
-        Ok::<_, CallbackError>(())
-    }).await.unwrap();
+    store
+        .transaction_with(move |tx| {
+            for agent in [foreign, deleted] {
+                studio_runtime_store::AgentRepository::put(
+                    tx,
+                    &studio_runtime_store::AgentRecord::from_value(agent).unwrap(),
+                )?;
+            }
+            let snapshot = super::super::super::storage::snapshot(tx, &context)?;
+            for target in ["unknown-target", "foreign-target", "deleted-target"] {
+                let result = messages::send(
+                    tx,
+                    &snapshot,
+                    &json!({"target":target,"text":"hello"}),
+                    "refusal-witness",
+                    20.0,
+                );
+                assert!(
+                    matches!(
+                        result,
+                        Err(CallbackError::Invalid(
+                            "Unknown agent ID in this caller's scope"
+                        ))
+                    ),
+                    "{target}: {result:?}"
+                );
+            }
+            Ok::<_, CallbackError>(())
+        })
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn same_team_target_is_resolved_before_message_validation_without_project_reads() {
+    let (_directory, store, oracle) = frozen::state().await;
+    let worker = oracle["agents"][1].clone();
+    let lead = oracle["agents"][0]["id"].as_str().unwrap().to_owned();
+    let context = CallbackContext {
+        agent: worker["id"].as_str().unwrap().into(),
+        account: "default".into(),
+        connection: "connection".into(),
+        generation: 7,
+        epoch: worker["epoch"].as_u64().unwrap(),
+        thread: worker["threadId"].as_str().unwrap().into(),
+        turn: worker["turnId"].as_str().unwrap().into(),
+    };
+    store
+        .transaction_with(move |tx| {
+            tx.execute(
+                "INSERT INTO runtime_projects(id,record) VALUES('invalid-project',?1)",
+                [
+                    json!({"id":"invalid-project","path":worker["cwd"],"peerTeams":"invalid"})
+                        .to_string(),
+                ],
+            )?;
+            let snapshot = super::super::super::storage::snapshot(tx, &context)?;
+            let result = messages::send(
+                tx,
+                &snapshot,
+                &json!({"target":lead,"text":""}),
+                "invalid-text-witness",
+                20.0,
+            );
+            assert!(
+                matches!(
+                    result,
+                    Err(CallbackError::Invalid(
+                        "Message must have 1 to 12000 characters"
+                    ))
+                ),
+                "{result:?}"
+            );
+            Ok::<_, CallbackError>(())
+        })
+        .await
+        .unwrap();
 }
 
 #[tokio::test]

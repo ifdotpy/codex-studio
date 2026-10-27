@@ -11,6 +11,7 @@ fn message_agents(
     tx: &Transaction<'_>,
     actor: &Value,
     target: &str,
+    resolve_prefix: bool,
 ) -> Result<Vec<AgentAuthorityRow>, CallbackError> {
     let root = text(actor, "rootId")?;
     let rows = studio_runtime_store::AgentIndexedReads::message_records(
@@ -22,6 +23,7 @@ fn message_agents(
             Some(target),
         ],
         (target == "broadcast").then_some(root),
+        (resolve_prefix && target.chars().count() >= 8).then_some(target),
     )?;
     rows.into_iter()
         .map(|(id, raw)| {
@@ -155,6 +157,52 @@ impl MessageAuthority {
                 )
             })
     }
+}
+
+fn resolve_message_target(
+    supplied: &str,
+    actor: &Value,
+    who: &str,
+    agents: &[AgentAuthorityRow],
+    authority: &mut MessageAuthority,
+) -> Result<String, CallbackError> {
+    let mut visible = Vec::new();
+    for agent in agents {
+        let Some(id) = agent.id.as_deref().filter(|id| id.starts_with(supplied)) else {
+            continue;
+        };
+        if agent
+            .deleted_at
+            .as_ref()
+            .is_some_and(|deleted| deleted.is_deleted())
+        {
+            continue;
+        }
+        let same_team = agent.root_id.as_deref() == actor["rootId"].as_str();
+        let members = [who.to_owned(), id.to_owned()];
+        let allowed = if same_team {
+            true
+        } else {
+            match authority.authorize(id, who, "peer-check", None, &members) {
+                Ok(()) => true,
+                Err(CallbackError::Invalid(_)) => false,
+                Err(CallbackError::Stored(location)) => {
+                    crate::diagnostics::log_stderr(format_args!(
+                        "Agent {id} is not visible to {who}: invalid stored authority at {location}"
+                    ));
+                    false
+                }
+                Err(error) => return Err(error),
+            }
+        };
+        if allowed {
+            if id == supplied {
+                return Ok(id.to_owned());
+            }
+            visible.push(id.to_owned());
+        }
+    }
+    resolve_visible_agent_prefix(visible, supplied)
 }
 
 pub(super) fn authorization_records(
@@ -312,6 +360,7 @@ pub(super) fn send(
         args,
         id,
         now,
+        true,
     )
 }
 
@@ -330,7 +379,7 @@ pub(crate) fn send_remote_worker(
     {
         return Err(CallbackError::Invalid("The worker was stopped"));
     }
-    send_as_actor(tx, &actor, sender, args, id, now)
+    send_as_actor(tx, &actor, sender, args, id, now, false)
 }
 
 fn send_as_actor(
@@ -340,7 +389,35 @@ fn send_as_actor(
     args: &Value,
     id: &str,
     now: f64,
+    resolve_direct: bool,
 ) -> Result<Value, CallbackError> {
+    let mut resolved_args = args.clone();
+    let prepared = if let Some(supplied) = args["target"].as_str().filter(|target| {
+        resolve_direct
+            && !matches!(*target, "user" | "parent" | "lead" | "broadcast" | "all")
+            && !target.starts_with("remote:")
+            && !target.starts_with("federated:")
+    }) {
+        let exact_team = studio_runtime_store::AgentIndexedReads::message_exact_team(
+            tx,
+            supplied,
+            text(actor, "rootId")?,
+        )?;
+        let agents = message_agents(tx, actor, supplied, !exact_team)?;
+        let authority = if exact_team {
+            None
+        } else {
+            let projects = message_projects(tx, &agents)?;
+            let mut authority = MessageAuthority::new(&agents, &projects)?;
+            let target = resolve_message_target(supplied, actor, who, &agents, &mut authority)?;
+            resolved_args["target"] = json!(target);
+            Some((projects, authority))
+        };
+        Some((agents, authority))
+    } else {
+        None
+    };
+    let args = &resolved_args;
     let message = crate::event_write::python_strip(text(args, "text")?);
     if !(1..=12000).contains(&message.chars().count()) {
         return Err(CallbackError::Invalid(
@@ -415,7 +492,18 @@ fn send_as_actor(
     if target == who {
         return Err(CallbackError::Invalid("Select another agent"));
     }
-    let agents = message_agents(tx, actor, target)?;
+    let (agents, prepared_authority) = match prepared {
+        Some(prepared) => prepared,
+        None => (message_agents(tx, actor, target, false)?, None),
+    };
+    let (projects, mut authority) = match prepared_authority {
+        Some(prepared) => prepared,
+        None => {
+            let projects = message_projects(tx, &agents)?;
+            let authority = MessageAuthority::new(&agents, &projects)?;
+            (projects, authority)
+        }
+    };
     let recipients = if target == "broadcast" {
         agents
             .iter()
@@ -451,8 +539,6 @@ fn send_as_actor(
         ids.sort();
         json!({"id":format!("private:{}:{}",ids[0],ids[1]),"kind":"private","members":ids})
     };
-    let projects = message_projects(tx, &agents)?;
-    let mut authority = MessageAuthority::new(&agents, &projects)?;
     let directory = crate::sync_entity_context::RoomDirectory::resolve(agents, projects)?;
     let broadcast = target == "broadcast";
     let mut refused = serde_json::Map::new();
