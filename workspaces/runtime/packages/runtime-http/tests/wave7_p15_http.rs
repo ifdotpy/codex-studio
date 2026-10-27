@@ -210,6 +210,46 @@ async fn acknowledged_monitor_input_returns_without_entity_envelope() {
     ));
     let app = router(state).expect("router").layer(Extension(runtime));
     let id = case["before"]["id"].as_str().expect("monitor id");
+    let before_invalid = database_snapshot(&store);
+    for (field, invalid) in [
+        ("rows", Value::Null),
+        ("cols", Value::Null),
+        ("rows", json!(0)),
+        ("cols", json!(1001)),
+        ("rows", json!(1.5)),
+        ("text", json!("x".repeat(32001))),
+    ] {
+        let mut body = json!({"id": id});
+        body[field] = invalid;
+        let (status, response) = call(&app, "/api/monitor/input", body).await;
+        assert_eq!(status, 400, "{field}: {response}");
+        assert_eq!(response["error"], "Invalid request");
+        assert_eq!(response["location"], json!(["body", field]));
+        assert_eq!(database_snapshot(&store), before_invalid);
+        assert!(port.submitted.lock().expect("effects").is_empty());
+    }
+
+    // Missing dimensions write stdin; a supplied dimension resizes using only
+    // the missing dimension's default. Explicit null was refused above.
+    for (dimension, size) in [
+        (json!({"rows": 19}), json!({"rows": 19, "cols": 80})),
+        (json!({"cols": 37}), json!({"rows": 24, "cols": 37})),
+    ] {
+        let mut body = dimension;
+        body["id"] = json!(id);
+        let (status, response) = call(&app, "/api/monitor/input", body).await;
+        assert_eq!(status, 200, "resize should succeed: {response}");
+        let submitted = port.submitted.lock().expect("resize effects");
+        let Some(studio_runtime_services::monitor_policy::Effect::Native {
+            method, params, ..
+        }) = submitted.last()
+        else {
+            panic!("resize must submit a native effect");
+        };
+        assert_eq!(*method, "command/exec/resize");
+        assert_eq!(params, &json!({"processId": id, "size": size}));
+    }
+
     let (status, response) = call(
         &app,
         "/api/monitor/input",
@@ -223,14 +263,14 @@ async fn acknowledged_monitor_input_returns_without_entity_envelope() {
     let submitted = port.submitted.lock().expect("submitted effects");
     assert_eq!(
         submitted.len(),
-        1,
+        3,
         "one HTTP input submits one native effect"
     );
     let studio_runtime_services::monitor_policy::Effect::Native {
         identity,
         method,
         params,
-    } = &submitted[0]
+    } = &submitted[2]
     else {
         panic!("input must submit a native effect");
     };

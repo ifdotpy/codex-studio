@@ -217,10 +217,21 @@ async fn mcp_reconnect_requires_user_authority_and_exact_session_identity() {
 }
 #[tokio::test]
 async fn mcp_reconnect_replays_lost_success_without_second_provider_call() {
-    let (_root, _store, app, session) = fixture("claude", false).await;
+    let (_root, store, app, session) = fixture("claude", false).await;
     let first = request(&app, "/api/mcp/reconnect", Some(body()), true).await;
     assert_eq!(first.0, 200, "{first:?}");
     assert_eq!(first.1["status"], "completed");
+    let receipt = studio_runtime_store::EventWriteRepository::receipt(
+        &store.test_reader().unwrap(),
+        "mcp-reconnect:f43c1885-f4fc-485b-bf99-8b4f31e7e7c4",
+    )
+    .unwrap()
+    .unwrap();
+    assert_eq!(
+        receipt.signature,
+        r#"{"id":"agent","name":"server","request_id":"f43c1885-f4fc-485b-bf99-8b4f31e7e7c4","session":{"account":"account","connection":"connection","epoch":2,"generation":1,"thread":"thread"}}"#,
+        "typed requests must preserve historical receipt signature bytes"
+    );
     assert_eq!(
         request(&app, "/api/mcp/reconnect", Some(body()), true).await,
         first

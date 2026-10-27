@@ -114,31 +114,21 @@ async fn cancel(
     Ok(Json(result))
 }
 
+#[derive(serde::Deserialize)]
+struct MonitorInputRequest {
+    id: String,
+    // Use the runtime input owner without applying schema defaults to absent
+    // dimensions: an absent dimension must remain different from a resize.
+    #[serde(flatten)]
+    input: Input,
+}
+
 async fn input(
     State(state): State<HttpState>,
     runtime: Option<Extension<Arc<MonitorRuntime>>>,
-    ApiJson(body): ApiJson<Value>,
+    ApiJson(body): ApiJson<MonitorInputRequest>,
 ) -> Result<Json<Value>, ApiError> {
-    if let Some((pointer, _)) = studio_runtime_schema::first_error("MonitorInput", &body)
-        .map_err(|_| ApiError::internal())?
-    {
-        let mut location = vec![Value::String("body".into())];
-        location.extend(
-            pointer
-                .split('/')
-                .skip(1)
-                .map(|part| Value::String(part.replace("~1", "/").replace("~0", "~"))),
-        );
-        return Err(ApiError::validation(location));
-    }
-    let id = body
-        .get("id")
-        .and_then(Value::as_str)
-        .ok_or_else(ApiError::internal)?
-        .to_owned();
-    // Preserve field presence: a resize-only request is different from an empty write.
-    let input: Input = serde_json::from_value(body)
-        .map_err(|_| ApiError::new(StatusCode::BAD_REQUEST, "Invalid monitor input"))?;
+    let MonitorInputRequest { id, input } = body;
     if let Some(Extension(runtime)) = runtime {
         let now = event_write::unix_time().map_err(|_| ApiError::internal())?;
         return runtime
@@ -187,5 +177,36 @@ inventory::submit! {
     crate::routes::manifest::RouteModuleRegistration {
         name: "monitor_runtime", routes: Some(routes),
         dependencies: &["provider-session/monitor-commands"],
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn http_input_preserves_runtime_input_type_and_dimension_presence() {
+        fn typed_input<F: Future<Output = Result<Json<Value>, ApiError>>>(
+            _: fn(
+                State<HttpState>,
+                Option<Extension<Arc<MonitorRuntime>>>,
+                ApiJson<MonitorInputRequest>,
+            ) -> F,
+        ) {
+        }
+        typed_input(input);
+        let request: MonitorInputRequest =
+            serde_json::from_value(serde_json::json!({"id": "monitor"}))
+                .expect("missing dimensions are valid");
+        let input: Input = request.input;
+        assert_eq!(input.rows, None);
+        assert_eq!(input.cols, None);
+        assert_eq!(input.text, "");
+        assert!(!input.close_stdin);
+        for field in ["rows", "cols"] {
+            let mut invalid = serde_json::json!({"id": "monitor"});
+            invalid[field] = Value::Null;
+            assert!(serde_json::from_value::<MonitorInputRequest>(invalid).is_err());
+        }
     }
 }

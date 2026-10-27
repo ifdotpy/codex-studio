@@ -33,16 +33,16 @@ fn changed() -> ApiError {
         "The agent session changed. Refresh the tools list.",
     )
 }
-fn matches_agent(agent: &Value, expected: &Value) -> bool {
+fn matches_agent(agent: &Value, expected: &crate::generated::McpSessionBinding) -> bool {
     !studio_runtime_store::truthy(agent.get("deletedAt"))
         && agent.get("deleted") != Some(&json!(true))
-        && agent.get("threadId") == expected.get("thread")
-        && agent.get("epoch") == expected.get("epoch")
+        && agent.get("threadId").and_then(Value::as_str) == Some(expected.thread.as_str())
+        && agent.get("epoch").and_then(Value::as_i64) == Some(expected.epoch)
         && agent
             .get("accountKey")
             .and_then(Value::as_str)
             .unwrap_or("default")
-            == expected["account"].as_str().unwrap_or("")
+            == expected.account
 }
 
 async fn reconnect(
@@ -52,24 +52,25 @@ async fn reconnect(
     // The HTTP boundary requires the user's canvas token and a trusted origin.
     // Detach settlement from HTTP cancellation. A crash after admission leaves
     // an unknown receipt, which cannot send the mutation again.
-    let body = serde_json::to_value(body).map_err(|_| ApiError::internal())?;
     let result = tokio::spawn(execute(state, body))
         .await
         .map_err(|_| ApiError::internal())??;
     Ok(Json(super::generated_json(result)?))
 }
 
-async fn execute(state: HttpState, body: Value) -> Result<Value, ApiError> {
+async fn execute(
+    state: HttpState,
+    body: crate::generated::McpReconnectRequest,
+) -> Result<Value, ApiError> {
     let store = state.store.clone().ok_or_else(ApiError::internal)?;
-    let id = body["id"]
-        .as_str()
-        .ok_or_else(ApiError::internal)?
-        .to_owned();
-    let expected = body["session"].clone();
-    let account = expected["account"]
-        .as_str()
-        .ok_or_else(ApiError::internal)?
-        .to_owned();
+    // Retained receipts use the canonical JSON object encoding, including its
+    // key ordering and normalized UUID. Keep those bytes across typed adapters.
+    let signature = serde_json::to_value(&body)
+        .map_err(|_| ApiError::internal())?
+        .to_string();
+    let id = body.id;
+    let expected = body.session;
+    let account = expected.account.clone();
     // Account-wide config/mcpServer/reload is not a per-server, per-thread
     // equivalent. Do not broaden a user's selected reconnect into that action.
     let policy = state
@@ -106,16 +107,12 @@ async fn execute(state: HttpState, body: Value) -> Result<Value, ApiError> {
         .ok_or_else(ApiError::internal)?;
     let scope = port.current_scope(&account).ok_or_else(changed)?;
     if scope.account != account
-        || expected["connection"] != scope.connection
-        || expected["generation"] != scope.generation
+        || expected.connection != scope.connection
+        || u64::try_from(expected.generation).ok() != Some(scope.generation)
     {
         return Err(changed());
     }
-    let key = format!(
-        "mcp-reconnect:{}",
-        body["request_id"].as_str().ok_or_else(ApiError::internal)?
-    );
-    let signature = body.to_string();
+    let key = format!("mcp-reconnect:{}", body.request_id);
     let claim_key = key.clone();
     let claim_signature = signature.clone();
     let claim_id = id.clone();
@@ -143,9 +140,12 @@ async fn execute(state: HttpState, body: Value) -> Result<Value, ApiError> {
     let ticket = studio_runtime_services::workspace_operations::ProviderTicket {
         operation: key.clone(),
         agent: id,
-        epoch: expected["epoch"].as_u64().ok_or_else(ApiError::internal)?,
+        epoch: expected
+            .epoch
+            .try_into()
+            .map_err(|_| ApiError::internal())?,
         account,
-        thread: expected["thread"].as_str().map(str::to_owned),
+        thread: Some(expected.thread),
         connection: scope.connection.clone(),
         generation: scope.generation,
         request: key.clone(),
@@ -156,7 +156,7 @@ async fn execute(state: HttpState, body: Value) -> Result<Value, ApiError> {
         &ticket,
         &key,
         "mcpServer/reconnect",
-        json!({"threadId":ticket.thread,"name":body["name"]}),
+        json!({"threadId":ticket.thread,"name":body.name}),
     )
     .await
     {
@@ -184,3 +184,18 @@ async fn execute(state: HttpState, body: Value) -> Result<Value, ApiError> {
 }
 
 inventory::submit! {crate::routes::manifest::RouteModuleRegistration{name:"mcp_reconnect",routes:Some(routes),dependencies:&[]}}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn reconnect_helpers_preserve_request_types() {
+        fn typed_execute<F: Future<Output = Result<Value, ApiError>>>(
+            _: fn(HttpState, crate::generated::McpReconnectRequest) -> F,
+        ) {
+        }
+        typed_execute(execute);
+        let _: fn(&Value, &crate::generated::McpSessionBinding) -> bool = matches_agent;
+    }
+}
