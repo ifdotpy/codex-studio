@@ -2002,7 +2002,14 @@ mod resource_tests {
         for (root, ready, expected_root) in [
             (json!(alias), false, alias.clone()),
             (json!(custom.path()), false, custom.path().to_owned()),
-            (Value::Null, false, custom.path().to_owned()),
+            // The saved selection is canonical: macOS temporary folders resolve /var to /private/var.
+            (
+                Value::Null,
+                false,
+                studio_runtime_store::path_identity::CanonicalPath::existing(custom.path())
+                    .expect("canonical custom store")
+                    .into_path_buf(),
+            ),
             (Value::Null, true, default_root.clone()),
         ] {
             let record = json!({"id":"reviewer", "rootId":"reviewer", "epoch":1,
