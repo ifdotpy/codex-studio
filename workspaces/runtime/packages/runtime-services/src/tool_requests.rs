@@ -1,11 +1,14 @@
 //! Durable tool receipt actions shared by HTTP and future provider callback callers.
 pub(crate) mod admission;
+mod callback_storage;
 pub(crate) mod lifecycle;
 pub(crate) mod prepared;
 use crate::event_write::truthy;
+pub use callback_storage::{CallbackTask, delete_callback, get_callback, put_callback};
 use lifecycle::terminal;
 use rusqlite::{Transaction, params};
 use serde_json::{Value, json};
+use studio_runtime_store::request_results::{AdmittedRequest, RequestResults, ResultEnvelope};
 use studio_runtime_store::{StoreError, system_reads as records};
 use thiserror::Error;
 
@@ -34,6 +37,58 @@ pub enum Action<'a> {
 }
 const TABLE: &str = "runtime_tool_requests";
 const PAYLOAD: &str = "payload-store/tool-request-recovery";
+
+/// Read the exact original tool reply; expiry never authorizes another dispatch.
+pub fn saved_result(
+    connection: &studio_runtime_store::Connection,
+    id: &str,
+) -> Result<Option<Value>, ToolRequestError> {
+    let Some(task) = records::get(connection, TABLE, id)? else {
+        return Ok(None);
+    };
+    let admitted: AdmittedRequest =
+        serde_json::from_value(task["admitted"].clone()).map_err(StoreError::from)?;
+    let now = crate::event_write::unix_time()
+        .map_err(|_| ToolRequestError::InvalidRequest("Invalid request clock"))?;
+    let row = RequestResults::replay(
+        connection,
+        admitted.id(),
+        admitted.signature(),
+        (now * 1000.0) as i64,
+    )
+    .map_err(|error| StoreError::SchemaMismatch(error.to_string()))?;
+    row.map(|row| {
+        serde_json::from_str::<ResultEnvelope<Value>>(&row.result)
+            .map(|result| result.reply)
+            .map_err(StoreError::from)
+            .map_err(Into::into)
+    })
+    .transpose()
+}
+
+/// Settle only an already admitted task. Completing old work is allowed after TTL.
+pub fn settle_result(
+    tx: &Transaction<'_>,
+    id: &str,
+    result: &Value,
+) -> Result<(), ToolRequestError> {
+    let task = records::get(tx, TABLE, id)?
+        .ok_or(ToolRequestError::InvalidRequest("Unknown tool task"))?;
+    let admitted: AdmittedRequest =
+        serde_json::from_value(task["admitted"].clone()).map_err(StoreError::from)?;
+    RequestResults::settle(
+        tx,
+        &admitted,
+        &ResultEnvelope {
+            actor: task["agent"].as_str().map(str::to_owned),
+            reply: result,
+            references: Vec::new(),
+        },
+    )
+    .map_err(|error| StoreError::SchemaMismatch(error.to_string()))?;
+    tx.execute("UPDATE runtime_tool_requests SET record=json_remove(record,'$.result','$._payloadBlobs') WHERE id=?1",[id])?;
+    Ok(())
+}
 
 pub fn execute(
     tx: &Transaction<'_>,

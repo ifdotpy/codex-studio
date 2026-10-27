@@ -23,6 +23,66 @@ pub fn request_signature(value: &Value) -> String {
     studio_runtime_store::sha256_hex(python_json(value).as_bytes())
 }
 
+/// Authorization belongs to the caller and must precede replay disclosure.
+pub fn replay_request<R: serde::de::DeserializeOwned>(
+    connection: &studio_runtime_store::Connection,
+    id: &str,
+    signature: &str,
+    now_ms: i64,
+) -> Result<
+    Option<studio_runtime_store::request_results::ResultEnvelope<R>>,
+    studio_runtime_store::request_results::RequestResultError,
+> {
+    studio_runtime_store::request_results::RequestResults::replay(
+        connection, id, signature, now_ms,
+    )?
+    .map(|stored| serde_json::from_str(&stored.result).map_err(Into::into))
+    .transpose()
+}
+
+/// A replay miss never authorizes an opaque or expired identity.
+pub fn admit_request(
+    transaction: &Transaction<'_>,
+    namespace: &str,
+    authority: &[&str],
+    root_request_id: &str,
+    operation: &[&str],
+    signature: &str,
+    now_ms: i64,
+) -> Result<
+    studio_runtime_store::request_results::Admission,
+    studio_runtime_store::request_results::RequestResultError,
+> {
+    use studio_runtime_schema::persistence::{RequestIdentity, RequestIdentityError};
+    use studio_runtime_store::request_results::RequestResults;
+    let identity =
+        RequestIdentity::new(namespace, authority, root_request_id, operation).map_err(|_| {
+            RequestIdentityError::Expired {
+                issued_ms: 0,
+                expired_before_ms: now_ms,
+            }
+        })?;
+    RequestResults::admit(transaction, &identity, signature, now_ms)
+}
+
+pub fn settle_request<R: serde::Serialize>(
+    transaction: &Transaction<'_>,
+    admitted: &studio_runtime_store::request_results::AdmittedRequest,
+    actor: Option<&str>,
+    reply: &R,
+) -> Result<(), studio_runtime_store::request_results::RequestResultError> {
+    studio_runtime_store::request_results::RequestResults::settle(
+        transaction,
+        admitted,
+        &studio_runtime_store::request_results::ResultEnvelope {
+            actor: actor.map(str::to_owned),
+            reply,
+            references: Vec::new(),
+        },
+    )?;
+    Ok(())
+}
+
 static GENERATED_ANNOTATION_ID: AtomicU64 = AtomicU64::new(0);
 
 /// Python `str.strip()` includes four ASCII separators Rust's whitespace predicate omits.
