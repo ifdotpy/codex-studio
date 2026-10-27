@@ -937,17 +937,22 @@ async fn an_unusual_record_of_another_team_does_not_refuse_sends() {
     }
     let (_root, store, refused) =
         try_send_with(0, "bbbbbbbb-relative-cwd", "send-hidden", others()).await;
-    let mut rows = store
-        .transaction(|tx| Ok(messages::authorization_records(tx).unwrap()))
+    store
+        .transaction(|tx| {
+            let directory = crate::sync_entity_context::RoomDirectory::load(tx)?;
+            let mut authority = messages::message_authority(
+                directory.agents(),
+                directory.projects(),
+                Default::default(),
+            )
+            .unwrap();
+            authority
+                .for_message("aaaaaaaa-trailing-slash", "aaaaaaaa-trailing-slash")
+                .expect("a trailing slash is the same path identity");
+            Ok(())
+        })
         .await
         .unwrap();
-    assert_eq!(
-        rows.resolved_paths[&trailing],
-        lead["cwd"].as_str().unwrap()
-    );
-    rows.recipient_id = "aaaaaaaa-trailing-slash".into();
-    crate::submit_gates::AuthorizationSnapshot::from_records(&rows)
-        .expect("a trailing slash is the same path identity");
     assert!(
         matches!(
             refused,

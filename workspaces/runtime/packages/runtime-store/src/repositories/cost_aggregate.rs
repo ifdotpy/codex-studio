@@ -53,8 +53,6 @@ const INDEXES: &str = "
 CREATE INDEX analytics_cost_rows_scope ON analytics_cost_rows(root, agent, thread, turn);
 CREATE INDEX analytics_cost_rows_response ON analytics_cost_rows(root, thread, response)
     WHERE response IS NOT NULL;
-CREATE INDEX analytics_cost_groups_key ON analytics_cost_groups(
-    root, model, account, input, cached, cache_write, output, uncached);
 ";
 
 /// Seek response counterparts and eligible model-less facts within one root/agent scope.
@@ -86,7 +84,8 @@ WITH receipts AS MATERIALIZED (
 SELECT r.account,r.thread,r.response,u.record
 FROM receipts r JOIN scopes s ON s.account=r.account AND s.thread=r.thread
 CROSS JOIN analytics_usage u INDEXED BY analytics_usage_response
-WHERE u.agent=s.agent AND u.thread=s.thread AND json_extract(u.record,'$.responseId')=r.response";
+WHERE u.agent=s.agent AND u.thread=s.thread AND json_extract(u.record,'$.responseId')=r.response
+AND json_type(u.record,'$.studioUsage') IS NOT NULL";
 
 /// Token counts of one usage row as priced; `None` is an unreported count.
 #[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq)]
@@ -379,25 +378,19 @@ pub fn partition_journal_receipts(
     let mut statement = db.prepare_cached(JOURNAL_RECEIPT_SQL)?;
     let mut rows = statement.query(params![encoded, scopes])?;
     while let Some(row) = rows.next()? {
-        let value: serde_json::Value = serde_json::from_str(&row.get::<_, String>(3)?)?;
-        if value.get("studioUsage").is_none() {
-            continue;
-        }
-        match studio_runtime_schema::usage::ledger::UsageLedgerRow::from_typed_analytics(&value)
-            .map(|ledger| ledger.into_observation())
-        {
-            Ok(UsageObservation::Response {
+        let raw = row.get_ref(3)?.as_str().map_err(rusqlite::Error::from)?;
+        let observation = studio_runtime_schema::usage::ledger::UsageLedgerRow::observation_from_typed_analytics_str(raw)
+            .map_err(|error| StoreError::SchemaValidation(error.to_string()))?;
+        if matches!(
+            observation,
+            UsageObservation::Response {
                 evidence: UsageEvidence::Live | UsageEvidence::Recovered,
                 ..
-            }) => {
-                let receipt = (row.get(0)?, row.get(1)?, row.get(2)?);
-                result.accepted.remove(&receipt);
-                result.superseded.insert(receipt);
             }
-            Err(error) if value.get("studioUsage").is_some() => {
-                return Err(StoreError::SchemaValidation(error.to_string()));
-            }
-            _ => {}
+        ) {
+            let receipt = (row.get(0)?, row.get(1)?, row.get(2)?);
+            result.accepted.remove(&receipt);
+            result.superseded.insert(receipt);
         }
     }
     Ok(result)
@@ -624,6 +617,7 @@ pub fn install(db: &Connection) -> StoreResult<()> {
         backfill(db)?;
     }
     db.execute_batch(SCOPE_INDEXES)?;
+    db.execute_batch(crate::migrations::m2026_10_27_cost_index::INDEX)?;
     Ok(())
 }
 
@@ -1021,6 +1015,9 @@ pub fn cost_groups(
         let rows = scope_rows(db, root, agent, turns)?;
         let kept = contributions(&rows, |row| !replaced.contains(&row.id));
         for (row, contribution) in rows.iter().zip(kept) {
+            if row.counted == contribution {
+                continue;
+            }
             if let Some(model) = &row.counted {
                 *groups.entry(row.group_key(model.clone())).or_default() -= 1;
             }
@@ -1562,6 +1559,107 @@ mod tests {
                 "explicitly reported zero cache categories remain priceable");
             Ok(())
         }).await.expect("cost eligibility");
+    }
+
+    #[tokio::test]
+    #[allow(clippy::disallowed_methods)] // The fixture builds a legacy record and its ledger form.
+    async fn typed_usage_receipt_decoding_keeps_legacy_and_ledger_identity_checks() {
+        use studio_runtime_schema::usage::ledger::UsageLedgerRow;
+        let temp = tempfile::tempdir().expect("state");
+        let store = RuntimeStore::open(Some(temp.path())).await.expect("store");
+        store.analytics_transaction::<_, StoreError>(|tx, _| {
+            let mut record = json!({"id":"receipt","agentId":"agent","rootId":"root","threadId":"thread","at":1,
+                "responseId":"response","accountKey":"acct","last":{},"total":{},
+                "studioUsage":{"kind":"response","responseId":"response","model":"m","evidence":"live",
+                    "tokens":{"uncachedInput":10,"cacheReadInput":0,"cacheWriteInput":0,"output":2}}});
+            AnalyticsCaptureRepository::write(tx, CaptureTable::Usage, &record)?;
+            let receipts = [("acct".into(), "thread".into(), "response".into())].into();
+            assert_eq!(super::partition_journal_receipts(tx, &receipts, &receipt_members())?.superseded.len(), 1);
+            let observation = serde_json::from_value(record["studioUsage"].clone())?;
+            let ledger = UsageLedgerRow::capture("agent", Some("thread"), observation);
+            record.as_object_mut().expect("row").extend(serde_json::to_value(ledger)?.as_object().expect("ledger").clone());
+            tx.execute("UPDATE analytics_usage SET record=?1 WHERE id='receipt'", [record.to_string()])?;
+            assert_eq!(super::partition_journal_receipts(tx, &receipts, &receipt_members())?.superseded.len(), 1);
+            for pointer in ["/receiptKey", "/usageIdentity/agent", "/usageIdentity/responseId", "/studioUsage/tokens/output"] {
+                for invalid in [json!(null), json!(""), json!({})] {
+                    let mut malformed = record.clone();
+                    *malformed.pointer_mut(pointer).expect("field") = invalid;
+                    tx.execute("UPDATE analytics_usage SET record=?1 WHERE id='receipt'", [malformed.to_string()])?;
+                    assert!(super::partition_journal_receipts(tx, &receipts, &receipt_members()).is_err(), "{pointer}: {malformed}");
+                }
+            }
+            record.as_object_mut().expect("row").remove("usageIdentity");
+            tx.execute("UPDATE analytics_usage SET record=?1 WHERE id='receipt'", [record.to_string()])?;
+            assert!(super::partition_journal_receipts(tx, &receipts, &receipt_members()).is_err(), "receipt metadata requires its persisted identity");
+            record.as_object_mut().expect("row").remove("receiptKey");
+            record["studioUsage"]["evidence"] = json!("legacy");
+            tx.execute("UPDATE analytics_usage SET record=?1 WHERE id='receipt'", [record.to_string()])?;
+            assert_eq!(super::partition_journal_receipts(tx, &receipts, &receipt_members())?.accepted, receipts);
+            record.as_object_mut().expect("row").remove("studioUsage");
+            tx.execute("UPDATE analytics_usage SET record=?1 WHERE id='receipt'", [record.to_string()])?;
+            assert_eq!(super::partition_journal_receipts(tx, &receipts, &receipt_members())?.accepted, receipts);
+            Ok(())
+        }).await.expect("typed receipt identity");
+    }
+
+    #[tokio::test]
+    async fn typed_usage_cost_index_migration_preserves_groups_on_reopen() {
+        let temp = tempfile::tempdir().expect("state");
+        let store = RuntimeStore::open(Some(temp.path())).await.expect("store");
+        drop(store);
+        let db =
+            rusqlite::Connection::open(temp.path().join("analytics.sqlite3")).expect("database");
+        db.execute_batch("DROP INDEX analytics_cost_groups_cover;
+            CREATE INDEX analytics_cost_groups_key ON analytics_cost_groups(root,model,account,input,cached,cache_write,output,uncached);
+            INSERT INTO analytics_cost_groups VALUES('root','m','acct',10,3,2,1,1,2,NULL);")
+            .expect("previous group index and retained facts");
+        let expected =
+            super::cost_groups(&db, "root", &Default::default()).expect("before migration");
+        drop(db);
+        {
+            let store = RuntimeStore::open(Some(temp.path()))
+                .await
+                .expect("upgrade and reopen");
+            let db = crate::AnalyticsRepository::new(store.root())
+                .open_read_only()
+                .expect("reader");
+            assert_eq!(
+                super::cost_groups(&db, "root", &Default::default()).expect("retained groups"),
+                expected
+            );
+            let old: bool = db.query_row("SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE name='analytics_cost_groups_key')", [], |row| row.get(0)).expect("old index");
+            assert!(!old, "retire the redundant index");
+            let version: i64 = db
+                .pragma_query_value(None, "schema_version", |row| row.get(0))
+                .expect("schema version");
+            drop(db);
+            drop(store);
+            let store = RuntimeStore::open(Some(temp.path()))
+                .await
+                .expect("idempotent startup");
+            let db = crate::AnalyticsRepository::new(store.root())
+                .open_read_only()
+                .expect("reader");
+            assert_eq!(
+                db.pragma_query_value::<i64, _>(None, "schema_version", |row| row.get(0))
+                    .expect("schema version"),
+                version
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn typed_usage_cost_groups_read_is_covered() {
+        let temp = tempfile::tempdir().expect("state");
+        let store = RuntimeStore::open(Some(temp.path())).await.expect("store");
+        store.analytics_transaction::<_, StoreError>(|tx, _| {
+            let plan = tx.prepare("EXPLAIN QUERY PLAN SELECT model,account,input,cached,cache_write,output,uncached,count,cache_write_1h FROM analytics_cost_groups WHERE root=?1")?
+                .query_map(["root"], |row| row.get::<_, String>(3))?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            eprintln!("cost group read plan: {plan:?}");
+            assert!(plan.iter().any(|line| line.contains("USING COVERING INDEX")), "{plan:?}");
+            Ok(())
+        }).await.expect("covered group read");
     }
 
     #[tokio::test]

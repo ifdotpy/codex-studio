@@ -1,6 +1,7 @@
 //! Identity and correction policy shared by durable budget and analytics receipts.
 use super::{UsageEvidence, UsageObservation, UsageParseError, UsageScope};
 use crate::provider_kind::ProviderKind;
+use crate::queue_command::Field;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -219,6 +220,21 @@ struct UsageLedgerRowWire {
     receipt_key: Option<String>,
     studio_usage: UsageObservation,
 }
+
+/// Cost receipt projection: presentation metadata is skipped during deserialization.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AnalyticsReceipt {
+    #[serde(default)]
+    agent_id: Option<String>,
+    #[serde(default)]
+    thread_id: Option<String>,
+    #[serde(default)]
+    usage_identity: Field<UsageIdentity>,
+    #[serde(default)]
+    receipt_key: Field<String>,
+    studio_usage: UsageObservation,
+}
 impl<'de> Deserialize<'de> for UsageLedgerRow {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         let row = UsageLedgerRowWire::deserialize(deserializer)?;
@@ -331,17 +347,7 @@ impl UsageLedgerRow {
         let agent = row["agentId"].as_str().unwrap_or_default();
         if row.get("usageIdentity").is_some() || row.get("receiptKey").is_some() {
             let ledger = Self::deserialize(row)?;
-            let matches_owner = match &ledger.usage_identity {
-                UsageIdentity::Response { agent: owner, .. } => owner == agent,
-                UsageIdentity::Cumulative {
-                    agent: owner,
-                    thread_id,
-                    ..
-                } => owner == agent && thread_id.as_deref() == row["threadId"].as_str(),
-            };
-            if !matches_owner || ledger.receipt_key.as_deref().is_none_or(str::is_empty) {
-                return Err(UsageParseError("persisted usage identity mismatch".into()));
-            }
+            ledger.validate_analytics_owner(agent, row["threadId"].as_str())?;
             return Ok(ledger);
         }
         let observation = UsageObservation::deserialize(&row["studioUsage"])?;
@@ -359,6 +365,48 @@ impl UsageLedgerRow {
             receipt_key,
             studio_usage: observation,
         })
+    }
+
+    /// Decode a receipt once without building a JSON value or synthesizing an unused legacy key.
+    pub fn observation_from_typed_analytics_str(
+        raw: &str,
+    ) -> Result<UsageObservation, UsageParseError> {
+        let row: AnalyticsReceipt = serde_json::from_str(raw)?;
+        if row.usage_identity.is_missing() && row.receipt_key.is_missing() {
+            return Ok(row.studio_usage);
+        }
+        let Field::Value(identity) = row.usage_identity else {
+            return Err(UsageParseError("persisted usage identity mismatch".into()));
+        };
+        let receipt = match row.receipt_key {
+            Field::Value(key) => Some(key),
+            Field::Missing | Field::Null => None,
+        };
+        let ledger = Self::new(identity, receipt, row.studio_usage)?;
+        ledger.validate_analytics_owner(
+            row.agent_id.as_deref().unwrap_or_default(),
+            row.thread_id.as_deref(),
+        )?;
+        Ok(ledger.into_observation())
+    }
+
+    fn validate_analytics_owner(
+        &self,
+        agent: &str,
+        thread: Option<&str>,
+    ) -> Result<(), UsageParseError> {
+        let matches_owner = match &self.usage_identity {
+            UsageIdentity::Response { agent: owner, .. } => owner == agent,
+            UsageIdentity::Cumulative {
+                agent: owner,
+                thread_id,
+                ..
+            } => owner == agent && thread_id.as_deref() == thread,
+        };
+        if !matches_owner || self.receipt_key.as_deref().is_none_or(str::is_empty) {
+            return Err(UsageParseError("persisted usage identity mismatch".into()));
+        }
+        Ok(())
     }
 }
 

@@ -919,6 +919,7 @@ pub struct RuntimeStore {
     root: PathBuf,
     writer: SqliteActor,
     analytics: Arc<Mutex<Connection>>,
+    cost_reader: repositories::analytics::CostReader,
     analytics_commit_notifiers: Arc<Mutex<CommitNotifiers>>,
     version_reader: Mutex<Connection>,
     read_pool: Arc<ReadConnectionPool>,
@@ -1326,6 +1327,7 @@ impl RuntimeStore {
         stored_text_dictionary::install_analytics_sql(&analytics)?;
         let version_reader = open_database(&canvas_path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
         version_reader.pragma_update(None, "query_only", "ON")?;
+        let cost_reader = repositories::analytics::CostReader::open(&root)?;
         let identity_registry_path = canvas_path.clone();
         {
             let mut registry = identity_registry()
@@ -1343,6 +1345,7 @@ impl RuntimeStore {
             root,
             writer,
             analytics: Arc::new(Mutex::new(analytics)),
+            cost_reader,
             analytics_commit_notifiers: Arc::new(Mutex::new(CommitNotifiers::default())),
             version_reader: Mutex::new(version_reader),
             read_pool: Arc::new(ReadConnectionPool::new(canvas_path.clone())),
