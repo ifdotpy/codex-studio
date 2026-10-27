@@ -98,3 +98,12 @@
 .workspace-panel-inline .team-room-back {
   display: flex;
 }
+
+/* Workspace precedes Team when both desktop panels are open. */
+.workspace-panel-slot > .team-panel-inline {
+  order: 1;
+}
+
+.workspace-panel-inline.team-panel-inline {
+  border: 0;
+}

@@ -1,7 +1,13 @@
+import { duoPhoneUserAgent } from "./duo-fixture.ts";
 import { test, expect } from "../playwright.ts";
 import { sidebarParityFixture } from "../sidebar/sidebar-parity-fixture.ts";
 
-test.use({ hasTouch: true, reducedMotion: "reduce", serviceWorkers: "block" });
+test.use({
+  userAgent: duoPhoneUserAgent,
+  hasTouch: true,
+  reducedMotion: "reduce",
+  serviceWorkers: "block",
+});
 
 test("Duo has its own sidebar preference and keeps one header row", async ({
   page,

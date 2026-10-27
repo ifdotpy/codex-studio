@@ -1,7 +1,8 @@
+import { duoPhoneUserAgent } from "./duo-fixture.ts";
 import { test, expect } from "../playwright.ts";
 import { sidebarParityFixture } from "../sidebar/sidebar-parity-fixture.ts";
 
-test.use({ hasTouch: true });
+test.use({ userAgent: duoPhoneUserAgent, hasTouch: true });
 for (const check of [
   "buttons",
   "header",
@@ -66,8 +67,7 @@ for (const check of [
         await expect(rail.getByRole("button")).toHaveText(["", ""]);
         await expect(
           rail.getByRole("button", {
-            name: "Toggle conversations",
-            exact: true,
+            name: /^(Show|Hide) conversations$/,
           }),
         ).toBeVisible();
         await expect(
@@ -98,8 +98,7 @@ for (const check of [
           rail.getByRole("button", { name: "Messages, 1 need you" }),
         ).toBeVisible();
         const sidebarToggle = rail.getByRole("button", {
-          name: "Toggle conversations",
-          exact: true,
+          name: /^(Show|Hide) conversations$/,
         });
         const messagesToggle = rail.getByRole("button", {
           name: "Messages, 1 need you",

@@ -139,6 +139,12 @@
   --layout-legacy_main_components_conversation_empty_chat_settings-query7a8a99ac: 35em;
   --layout-legacy_main_components_conversation_empty_chat_settings-query62cf757f: 25em;
   --layout-legacy_main_components_conversation_empty_chat_settings-query7269dc35: 20em;
+  --layout-edge-rail-status-column-center: 48px;
+  --layout-sidebar-heading-stack-max: 288px;
+  --layout-sidebar-header-stack-max: 240px;
+  --layout-edge-rail-top-status-reserve: 136px;
+  --layout-edge-rail-menu-gap: 8px;
+  --layout-edge-rail-button-gap: 8px;
   --layout-edge-rail-button-size: 48px;
   --layout-layers-edge-rail: 201;
   --layout-legacy_main_workspace-diff-line-number-width: 48px;
@@ -149,6 +155,7 @@
   --layout-header-compact-height: 44px;
   --layout-keyboard-motion-duration: 400ms;
   --layout-keyboard-motion-target-tolerance: 0.1px;
+  --layout-keyboard-native-motion-hold: 64ms;
   --layout-keyboard-focus-sample-window: 600ms;
   --layout-keyboard-stable-sample-duration: 300ms;
   --layout-keyboard-focus-open-grace: 2000ms;

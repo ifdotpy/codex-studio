@@ -17,7 +17,24 @@ describe("edge rail geometry", () => {
       bottom: 34,
       height: 523,
       targetSize: 44,
+      center: 42,
     });
+  });
+
+  test("centers buttons on the system status column, inside the strip", () => {
+    const status = { ...metrics, targetSize: 48, statusColumnCenter: 48 };
+    expect(
+      edgeRailGeometry({ ...duo, insets: { ...duo.insets, right: 82 } }, status)
+        ?.center,
+    ).toBe(48);
+    // A narrow strip keeps the whole button inside it.
+    expect(
+      edgeRailGeometry({ ...duo, insets: { ...duo.insets, right: 64 } }, status)
+        ?.center,
+    ).toBe(40);
+    expect(
+      edgeRailGeometry(duo, { ...status, statusColumnCenter: 10 })?.center,
+    ).toBe(24);
   });
 
   test("supports the physical left strip after rotation", () => {
@@ -100,5 +117,81 @@ describe("edge rail geometry", () => {
     expect(
       edgeRailGeometry({ ...duo, viewportHeight: NaN }, metrics),
     ).toBeNull();
+  });
+});
+
+describe("top strip rail (iPhone Duo portrait)", () => {
+  const portrait = {
+    coarsePointer: true,
+    viewportHeight: 951,
+    viewportWidth: 669,
+    insets: { top: 0, right: 0, bottom: 34, left: 0 },
+    topStrip: 82,
+  };
+  const top = {
+    ...metrics,
+    targetSize: 48,
+    statusColumnCenter: 48,
+    topStatusReserve: 136,
+  };
+
+  test("makes a row in the strip that ends before the clock", () => {
+    expect(edgeRailGeometry(portrait, top)).toEqual({
+      side: "top",
+      width: 82,
+      top: 0,
+      bottom: 34,
+      height: 669 - 136,
+      targetSize: 48,
+      center: 48,
+    });
+  });
+
+  test("needs the viewport owner's top strip and prefers a side strip", () => {
+    expect(
+      edgeRailGeometry({ ...portrait, topStrip: undefined }, top),
+    ).toBeNull();
+    expect(edgeRailGeometry({ ...portrait, topStrip: 40 }, top)).toBeNull();
+    expect(
+      edgeRailGeometry(
+        { ...portrait, insets: { ...portrait.insets, right: 82 } },
+        top,
+      )?.side,
+    ).toBe("right");
+  });
+
+  test("ends the row at the measured status column left edge", () => {
+    expect(
+      edgeRailGeometry(
+        { ...portrait, statusColumn: { bottom: 82, left: 420 } },
+        top,
+      )?.height,
+    ).toBe(420);
+  });
+});
+
+describe("measured status column", () => {
+  test("starts a side rail at the status column bottom, which a call moves down", () => {
+    expect(
+      edgeRailGeometry(
+        { ...duo, statusColumn: { bottom: 124, left: 867 } },
+        metrics,
+      ),
+    ).toMatchObject({ top: 124, height: 669 - 124 - 34 });
+    expect(
+      edgeRailGeometry(
+        { ...duo, statusColumn: { bottom: 190, left: 867 } },
+        metrics,
+      ),
+    ).toMatchObject({ top: 190, height: 669 - 190 - 34 });
+  });
+
+  test("falls back to the contract reserve without a valid measurement", () => {
+    expect(
+      edgeRailGeometry(
+        { ...duo, statusColumn: { bottom: Number.NaN, left: 867 } },
+        metrics,
+      )?.top,
+    ).toBe(112);
   });
 });

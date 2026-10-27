@@ -113,7 +113,7 @@ beforeEach(() => {
   frames = new Map();
   vi.stubGlobal("window", windowMock);
   vi.stubGlobal("document", documentMock);
-  vi.stubGlobal("navigator", { maxTouchPoints: 0 });
+  vi.stubGlobal("navigator", { maxTouchPoints: 0, userAgent: "iPhone" });
   vi.stubGlobal("HTMLTextAreaElement", Textarea);
   let nextFrame = 0;
   vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) => {
@@ -161,7 +161,7 @@ it("tracks a wide touch viewport with the keyboard already open", () => {
   mount();
   expect(root.style.get("--mobile-viewport-height")).toBe("669px");
   expect(root.style.get("--mobile-safe-area-bottom")).toBe(
-    "env(safe-area-inset-bottom)",
+    "var(--viewport-device-safe-bottom)",
   );
   expect(root.setAttribute).toHaveBeenCalledWith("data-viewport-surface", "");
 });
@@ -176,7 +176,7 @@ it("pins the Duo keyboard before the viewport event returns", () => {
   expect(root.style.get("--mobile-viewport-top")).toBe("346px");
   expect(root.style.get("--mobile-viewport-height")).toBe("669px");
   expect(root.style.get("--mobile-safe-area-bottom")).toBe(
-    "env(safe-area-inset-bottom)",
+    "var(--viewport-device-safe-bottom)",
   );
   expect(root.setAttribute).toHaveBeenCalledWith(
     "data-viewport-keyboard-compact",
@@ -189,7 +189,7 @@ it("pins the Duo keyboard before the viewport event returns", () => {
   expect(root.style.get("--mobile-viewport-top")).toBe("0px");
   expect(root.style.get("--mobile-viewport-height")).toBe("669px");
   expect(root.style.get("--mobile-safe-area-bottom")).toBe(
-    "env(safe-area-inset-bottom)",
+    "var(--viewport-device-safe-bottom)",
   );
 });
 it("marks short keyboard space below 400px and restores passive status at the boundary", () => {
@@ -255,7 +255,7 @@ it("retains compact support without touch capability", () => {
 });
 it("keeps a fine-primary touch document unpinned", () => {
   queries.matches = primaryQueries.matches = false;
-  vi.stubGlobal("navigator", { maxTouchPoints: 5 });
+  vi.stubGlobal("navigator", { maxTouchPoints: 5, userAgent: "iPhone" });
   mount();
   expect(root.style.size).toBe(0);
   expect(root.hasAttribute("data-touch-input")).toBe(true);
@@ -264,15 +264,15 @@ it("updates toolbar, keyboard, offset, and rotation geometry without focus chang
   mount();
   resize({ height: 620 });
   expect(root.style.get("--mobile-safe-area-bottom")).toBe(
-    "env(safe-area-inset-bottom)",
+    "var(--viewport-device-safe-bottom)",
   );
   resize({ height: 350, offsetTop: 20 });
   expect(root.style.get("--mobile-viewport-top")).toBe("20px");
   expect(root.style.get("--mobile-safe-area-top")).toBe(
-    "max(0px, calc(env(safe-area-inset-top) - 20px))",
+    "max(0px, calc(var(--viewport-device-safe-top) - 20px))",
   );
   expect(root.style.get("--mobile-safe-area-bottom")).toBe(
-    "env(safe-area-inset-bottom)",
+    "var(--viewport-device-safe-bottom)",
   );
   windowMock.innerHeight = root.clientHeight = 951;
   Object.assign(viewport, { height: 951, offsetTop: 0 });
@@ -514,7 +514,7 @@ it("keeps hardware-keyboard caret taps native on a coarse touch device", () => {
 });
 it("keeps a fine-primary touch laptop in its normal layout without touch interception", () => {
   primaryQueries.matches = false;
-  vi.stubGlobal("navigator", { maxTouchPoints: 5 });
+  vi.stubGlobal("navigator", { maxTouchPoints: 5, userAgent: "iPhone" });
   const listeners = vi.spyOn(documentMock, "addEventListener");
   mount();
   expect(listeners.mock.calls.some(([name]) => name === "touchstart")).toBe(
@@ -599,4 +599,78 @@ it("publishes the full portrait layout height while the keyboard shrinks the sur
   cleanup?.();
   cleanup = undefined;
   expect(root.style.has("--viewport-layout-height")).toBe(false);
+});
+it("follows native shell keyboard events with their UIKit timing and ignores the visual viewport", () => {
+  const state = {
+    insets: { top: 0, right: 84, bottom: 34, left: 0 },
+    keyboard: null as null | {
+      overlap: number;
+      duration: number;
+      curve: number;
+    },
+  };
+  vi.stubGlobal("__studioNativeViewport", { version: 1, state });
+  const send = (keyboard: typeof state.keyboard) => {
+    state.keyboard = keyboard;
+    windowMock.dispatchEvent(
+      new CustomEvent("studio-native-viewport", { detail: { ...state } }),
+    );
+  };
+  mount();
+  expect(root.hasAttribute("data-viewport-keyboard")).toBe(false);
+  // WebKit's own keyboard geometry is not the source in the shell.
+  resize({ height: 300, offsetTop: 200 });
+  expect(root.hasAttribute("data-viewport-keyboard")).toBe(false);
+  expect(root.style.get("--mobile-viewport-top")).toBe("0px");
+  send({ overlap: 300, duration: 350, curve: 7 });
+  expect(frames.size).toBe(0);
+  expect(root.hasAttribute("data-viewport-keyboard")).toBe(true);
+  expect(root.style.get("--keyboard-motion")).toBe(
+    "350ms cubic-bezier(0.38, 0.7, 0.125, 1)",
+  );
+  expect(root.style.get("--mobile-viewport-height")).toBe("669px");
+  send({ overlap: 0, duration: 250, curve: 0 });
+  expect(root.hasAttribute("data-viewport-keyboard")).toBe(false);
+  expect(root.style.get("--keyboard-motion")).toBe(
+    "250ms cubic-bezier(0.42, 0, 0.58, 1)",
+  );
+  cleanup?.();
+  cleanup = undefined;
+  expect(root.style.has("--keyboard-motion")).toBe(false);
+});
+it("leaves composer touches native in the native shell, which removes the keyboard pan", () => {
+  vi.stubGlobal("__studioNativeViewport", {
+    version: 1,
+    state: { insets: null, keyboard: null },
+  });
+  mount();
+  const textarea = new Textarea();
+  // A chat open focuses the composer without a keyboard; the tap must reach
+  // WebKit, because a programmatic refocus does not show the keyboard there.
+  documentMock.activeElement = textarea;
+  expect(gesture(textarea).defaultPrevented).toBe(false);
+  expect(gesture(textarea, "touchstart").defaultPrevented).toBe(false);
+  expect(textarea.blur).not.toHaveBeenCalled();
+  expect(textarea.focus).not.toHaveBeenCalled();
+});
+it("marks the native portrait top strip and leaves landscape side strips alone", () => {
+  const state = {
+    insets: { top: 82, right: 0, bottom: 34, left: 0 },
+    keyboard: null,
+  };
+  vi.stubGlobal("__studioNativeViewport", { version: 1, state });
+  Object.assign(windowMock, { innerWidth: 669, innerHeight: 951 });
+  root.clientHeight = 951;
+  Object.assign(viewport, { width: 669, height: 951 });
+  mount();
+  expect(root.hasAttribute("data-viewport-top-strip")).toBe(true);
+  // Landscape: the strip is on the side (edge rail), not on top.
+  state.insets = { top: 0, right: 82, bottom: 34, left: 0 };
+  Object.assign(windowMock, { innerWidth: 951, innerHeight: 669 });
+  root.clientHeight = 669;
+  resize({ width: 951, height: 669 });
+  expect(root.hasAttribute("data-viewport-top-strip")).toBe(false);
+  cleanup?.();
+  cleanup = undefined;
+  expect(root.hasAttribute("data-viewport-top-strip")).toBe(false);
 });

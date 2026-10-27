@@ -84,7 +84,11 @@ for (const capability of [
         path: test.info().outputPath("edge-rail-right.png"),
         animations: "disabled",
       });
-      for (const label of ["Toggle conversations", "Messages, 3 need you"]) {
+      for (const label of [
+        "Toggle conversations",
+        "Team, 1 of 3 working",
+        "Messages, 3 need you",
+      ]) {
         const button = rail.getByRole("button", { name: label, exact: true });
         const rect = (await button.boundingBox())!;
         expect(rect.width).toBeGreaterThanOrEqual(44);
@@ -92,15 +96,30 @@ for (const capability of [
         expect(rect.y + rect.height).toBeLessThanOrEqual(635);
         await button.click();
         await expect(page.locator("#last-action")).toHaveText(
-          label.startsWith("Messages") ? "Messages" : label,
+          label.startsWith("Messages")
+            ? "Messages"
+            : label.startsWith("Team")
+              ? "Team"
+              : label,
         );
       }
-      await rail
-        .getByRole("button", { name: "Chat actions", exact: true })
-        .click();
+      // Buttons center on the system status column (edgeRail.statusColumnCenter).
+      const actions = rail.getByRole("button", {
+        name: "Chat actions",
+        exact: true,
+      });
+      const actionsRect = (await actions.boundingBox())!;
+      expect(actionsRect.x + actionsRect.width / 2).toBe(951 - 48);
+      await actions.click();
       const item = page.getByRole("menuitem", { name: "Existing action" });
       await expect(item).toBeVisible();
       expect((await item.boundingBox())!.x).toBeLessThan(867);
+      // The menu opens at its button, keeps edgeRail.menuGap from the strip,
+      // and ends above Home.
+      const menuRect = (await page.getByRole("menu").boundingBox())!;
+      expect(Math.abs(menuRect.y - actionsRect.y)).toBeLessThanOrEqual(1);
+      expect(menuRect.x + menuRect.width).toBeLessThanOrEqual(867 - 8);
+      expect(menuRect.y + menuRect.height).toBeLessThanOrEqual(635);
       await item.click();
       await expect(page.locator("#last-action")).toHaveText("Existing action");
 
@@ -115,11 +134,14 @@ for (const capability of [
       });
       await expect(rail).toHaveAttribute("data-side", "left");
       expect((await rail.boundingBox())!.x).toBe(0);
-      await rail
-        .getByRole("button", { name: "Chat actions", exact: true })
-        .click();
+      const leftActions = (await actions.boundingBox())!;
+      expect(leftActions.x + leftActions.width / 2).toBe(48);
+      await actions.click();
       await expect(item).toBeVisible();
       expect((await item.boundingBox())!.x).toBeGreaterThanOrEqual(44);
+      expect(
+        (await page.getByRole("menu").boundingBox())!.x,
+      ).toBeGreaterThanOrEqual(84 + 8);
       await expect(page.getByRole("menu")).toHaveCSS("opacity", "1");
       await page.screenshot({
         path: test.info().outputPath("edge-rail-left-menu.png"),
@@ -143,14 +165,22 @@ for (const capability of [
       await rail
         .getByRole("button", { name: "Chat actions", exact: true })
         .focus();
+      // Two targets fit: the sidebar button and the menu. Team and Messages
+      // become the first menu items; the rail does not scroll.
+      await expect(rail.getByRole("button")).toHaveCount(2);
       await page.keyboard.press("Enter");
       await expect(item).toBeVisible();
-      await expect(item).toBeFocused();
-      await page.keyboard.press("Escape");
+      const team = page.getByRole("menuitem", { name: "Team, 1 of 3 working" });
+      await expect(team).toBeFocused();
+      await expect(
+        page.getByRole("menuitem", { name: "Messages, 3 need you" }),
+      ).toBeVisible();
+      await team.click();
+      await expect(page.locator("#last-action")).toHaveText("Team");
       await expect(item).toHaveCount(0);
       expect(
         await rail.evaluate((node) => node.scrollHeight > node.clientHeight),
-      ).toBe(true);
+      ).toBe(false);
       await page.evaluate(() => {
         (
           document.querySelector<HTMLElement>("#root") ??

@@ -14,7 +14,10 @@ export function useWorkspaceLayout(options: {
   workspaceOpen?: boolean;
   teamPreferred?: boolean;
   preferredPanelWidthRem?: number;
-  panePath?: Omit<PanePathInput, "primaryCoarse" | "hinge" | "available">;
+  panePath?: Omit<
+    PanePathInput,
+    "primaryCoarse" | "duoDevice" | "hinge" | "available"
+  >;
 }) {
   const [host, setHost] = useState<HTMLDivElement | null>(null);
   const [geometry, setGeometry] = useState<{
@@ -24,6 +27,7 @@ export function useWorkspaceLayout(options: {
     shortTouchLandscape: boolean;
     duo: boolean;
     primaryCoarse: boolean;
+    duoDevice: boolean;
     available: LayoutRect;
     safeInsets: SafeInsets;
     overlayInsetTop: number;
@@ -34,6 +38,7 @@ export function useWorkspaceLayout(options: {
     rootFontPx: layoutValues.viewport.rootFontDefault,
     shortTouchLandscape: false,
     duo: false,
+    duoDevice: false,
     primaryCoarse: false,
     available: emptyRect,
     safeInsets: { top: 0, right: 0, bottom: 0, left: 0 },
@@ -45,11 +50,12 @@ export function useWorkspaceLayout(options: {
     [],
   );
   useLayoutEffect(() => {
-    if (!host) return;
-    const document = host.ownerDocument;
+    const measureHost = host ?? window.document.getElementById("root");
+    if (!measureHost) return;
+    const document = measureHost.ownerDocument;
     const view = document.defaultView!;
     const update = () => {
-      const bounds = host.getBoundingClientRect();
+      const bounds = measureHost.getBoundingClientRect();
       const root = document.documentElement;
       const app = document.getElementById("root");
       const appStyle = view.getComputedStyle(app || root);
@@ -59,17 +65,19 @@ export function useWorkspaceLayout(options: {
       const top = number(appStyle.paddingTop),
         bottom = number(appStyle.paddingBottom);
       const status = root.dataset.nativeHinge;
+      const rootStyle = view.getComputedStyle(root);
+      const optionalLength = (name: string) => {
+        const value = Number.parseFloat(rootStyle.getPropertyValue(name));
+        return Number.isFinite(value) && value >= 0 ? value : undefined;
+      };
       const hinge: NonNullable<PanePathInput["hinge"]> = {
         status:
           status === "open" || status === "closed" || status === "partial"
             ? status
             : "unknown",
-        left: number(
-          view.getComputedStyle(root).getPropertyValue("--native-hinge-left"),
-        ),
-        width: number(
-          view.getComputedStyle(root).getPropertyValue("--native-hinge-width"),
-        ),
+        left: optionalLength("--native-hinge-left"),
+        width: optionalLength("--native-hinge-width"),
+        height: optionalLength("--native-hinge-height"),
       };
       const next = {
         host: {
@@ -99,6 +107,7 @@ export function useWorkspaceLayout(options: {
           "data-viewport-short-landscape",
         ),
         duo: root.hasAttribute("data-duo-proportions"),
+        duoDevice: root.hasAttribute("data-duo-device"),
         primaryCoarse: primaryTouchPointerMedia().matches,
         available: {
           x: left,
@@ -125,7 +134,7 @@ export function useWorkspaceLayout(options: {
       );
     };
     const resize = new ResizeObserver(update);
-    resize.observe(host);
+    resize.observe(measureHost);
     resize.observe(document.documentElement);
     const preferences = new MutationObserver(update);
     preferences.observe(document.documentElement, {
@@ -135,6 +144,7 @@ export function useWorkspaceLayout(options: {
         "class",
         "data-viewport-short-landscape",
         "data-duo-proportions",
+        "data-duo-device",
         "data-native-hinge",
         "data-viewport-top-strip",
       ],
@@ -161,6 +171,7 @@ export function useWorkspaceLayout(options: {
         ? {
             ...options.panePath,
             primaryCoarse: geometry.primaryCoarse,
+            duoDevice: geometry.duoDevice,
             hinge: geometry.hinge,
             available: geometry.available,
           }

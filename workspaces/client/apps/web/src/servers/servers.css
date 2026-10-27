@@ -194,10 +194,11 @@ html[data-server-view] .workspace {
   .multi-server-shell {
     padding-top: 40px;
   }
+  /* The bar sits below the top safe area, not under a status bar. */
   .server-mobile-toggle {
     display: block;
     position: fixed;
-    inset: 0 0 auto;
+    inset: var(--viewport-surface-top, 0px) 0 auto;
     height: 40px;
     border-radius: 0;
     z-index: 201;
@@ -205,12 +206,21 @@ html[data-server-view] .workspace {
   .server-sidebar {
     display: none;
     position: fixed;
-    inset: 40px 0 0;
+    inset: calc(var(--viewport-surface-top, 0px) + 40px) 0 0;
     width: 100%;
     z-index: 200;
   }
   .server-sidebar-open {
     display: block;
+  }
+  /* No phone bar with the rail: the drawer starts at the safe top, or below
+     the portrait top strip that the page runs under. */
+  html:has(> body > .edge-rail) .server-sidebar {
+    inset-block-start: var(--viewport-surface-top, 0px);
+  }
+  html[data-viewport-top-strip]:has(> body > .edge-rail[data-side="top"])
+    .server-sidebar {
+    inset-block-start: var(--native-safe-top, 0px);
   }
 }
 
@@ -303,4 +313,15 @@ html[data-server-view] .workspace {
 .shell-terminal-bar .terminal-dock-count {
   color: var(--muted);
   font-variant-numeric: tabular-nums;
+}
+
+/* With the edge rail (iPhone Duo: any pose, shell or PWA) its sidebar
+   button opens servers and chats, so the phone bar and its space are not
+   shown. The rail selector outranks the compact navigation rule that shows
+   the bar. Phones without the rail keep the bar. */
+html:has(> body > .edge-rail) .multi-server-shell {
+  padding-top: 0;
+}
+html:has(> body > .edge-rail) .multi-server-shell .server-mobile-toggle {
+  display: none;
 }

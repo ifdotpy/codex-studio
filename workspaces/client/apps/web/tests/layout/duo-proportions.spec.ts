@@ -1,3 +1,4 @@
+import { duoPhoneUserAgent } from "./duo-fixture.ts";
 import { writeFileSync } from "node:fs";
 import { test, expect, entityPullFixtureForRequest } from "../playwright.ts";
 import { sidebarParityFixture } from "../sidebar/sidebar-parity-fixture.ts";
@@ -64,6 +65,7 @@ for (const size of sizes) {
   test.describe(size.name, () => {
     test.use({
       hasTouch: size.touch,
+      userAgent: size.duo ? duoPhoneUserAgent : undefined,
       reducedMotion: "reduce",
       colorScheme: "dark",
       serviceWorkers: "block",

@@ -1,7 +1,13 @@
+import { duoPhoneUserAgent } from "./duo-fixture.ts";
 import { test, expect } from "../playwright.ts";
 import { sidebarParityFixture } from "../sidebar/sidebar-parity-fixture.ts";
 
-test.use({ hasTouch: true, serviceWorkers: "block", reducedMotion: "reduce" });
+test.use({
+  userAgent: duoPhoneUserAgent,
+  hasTouch: true,
+  serviceWorkers: "block",
+  reducedMotion: "reduce",
+});
 
 for (const size of [
   { name: "open", width: 951, height: 669, hinge: "open" },
@@ -52,6 +58,15 @@ for (const size of [
       await page.locator(".edge-rail").evaluate(
         (rail, { hinge, top }) => {
           const root = document.documentElement;
+          const state = {
+            insets: { top, right: top ? 0 : 84, bottom: 34, left: 0 },
+            keyboard: null,
+          };
+          Object.assign(globalThis, {
+            __studioNativeViewport: { version: 1, state },
+          });
+          for (const [edge, value] of Object.entries(state.insets))
+            root.style.setProperty(`--native-safe-${edge}`, `${value}px`);
           root.dataset.nativeHinge = hinge;
           if (top) root.setAttribute("data-viewport-top-strip", "");
           root.style.setProperty("--native-safe-top", `${top}px`);
@@ -66,14 +81,16 @@ for (const size of [
               width: "529px",
               height: "82px",
               flexDirection: "row",
-              // Match the native first button at x365 with this two-button fixture.
+              // Reserve the native rail button area in this fixture.
               justifyContent: "flex-start",
               paddingLeft: "365px",
               alignItems: "flex-end",
               paddingBottom: "10px",
               gap: "8px",
             });
-          window.dispatchEvent(new Event("studio-native-viewport"));
+          window.dispatchEvent(
+            new CustomEvent("studio-native-viewport", { detail: state }),
+          );
         },
         { hinge: size.hinge, top },
       );
@@ -123,7 +140,18 @@ for (const size of [
           .soft(counts.y)
           .toBeGreaterThanOrEqual(project.y + project.height);
         expect.soft(project.width).toBeGreaterThan(60);
-        expect((await opener.boundingBox())!.x).toBe(365);
+        const titleSpace = await page
+          .locator(".duo-transcript-bar")
+          .evaluate((node) => {
+            const style = getComputedStyle(node);
+            return (
+              node.clientWidth -
+              Number.parseFloat(style.paddingLeft) -
+              Number.parseFloat(style.paddingRight)
+            );
+          });
+        expect(titleSpace).toBeGreaterThan(0);
+        expect(titleSpace).toBeLessThan(140);
         const title = page.locator(".duo-transcript-bar .conversation-heading");
         await expect.soft(title).toBeHidden();
         await page.screenshot({
@@ -141,10 +169,14 @@ for (const size of [
         path: test.info().outputPath(`${size.name}-native-sidebar.png`),
       });
       await opener.click();
-      await page
-        .getByRole("button", { name: "Chat actions", exact: true })
-        .click();
-      await page.getByRole("menuitem", { name: "Team", exact: true }).click();
+      const railTeam = page.locator('.edge-rail button[aria-label^="Team,"]');
+      if (await railTeam.isVisible()) await railTeam.click();
+      else {
+        await page
+          .getByRole("button", { name: "Chat actions", exact: true })
+          .click();
+        await page.getByRole("menuitem", { name: "Team", exact: true }).click();
+      }
       const panel = page.locator(
         '.workspace-panel-inline.duo-pane-panel[aria-label="Team panel"]',
       );
