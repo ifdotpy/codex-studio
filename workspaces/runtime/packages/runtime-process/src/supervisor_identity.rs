@@ -638,11 +638,13 @@ mod tests {
     fn terminal_leader_keeps_exact_start_anchor_without_live_identity() {
         use rustix::process::{WaitId, WaitIdOptions, waitid};
         let mut child = Command::new("/bin/sh")
-            .args(["-c", "exit 0"])
+            .args(["-c", "read -r release; exit 0"])
+            .stdin(std::process::Stdio::piped())
             .spawn()
             .expect("owned fixture");
         let pid = child.id();
         let anchor = start_time(pid, true).expect("captured native start");
+        drop(child.stdin.take().expect("owned exit gate"));
         waitid(
             WaitId::Pid(native_pid(pid).expect("fixture pid")),
             WaitIdOptions::EXITED | WaitIdOptions::NOWAIT,
