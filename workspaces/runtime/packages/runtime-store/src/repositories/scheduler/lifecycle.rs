@@ -994,7 +994,7 @@ impl SchedulerRepository {
         if let Some(result) = ExecutionHistoryRepository::replay(
             transaction,
             attempt_id,
-            "submission",
+            ExecutionReceiptKind::Submission,
             &receipt_input,
         )? {
             return result.as_bool().ok_or_else(|| invalid_agent(agent_id));
@@ -1060,7 +1060,7 @@ impl SchedulerRepository {
         ExecutionHistoryRepository::save_receipt(
             transaction,
             attempt_id,
-            "submission",
+            ExecutionReceiptKind::Submission,
             receipt_input,
             json!(true),
         )?;
@@ -1117,8 +1117,12 @@ impl SchedulerRepository {
         let Some(agent) = load_agent(transaction, &identity.agent_id)? else {
             return Ok(false);
         };
-        if ExecutionHistoryRepository::attempt(transaction, &identity.attempt_id)?
-            .is_some_and(|saved| saved.pointer("/receipts/startResult").is_some())
+        if ExecutionHistoryRepository::receipt(
+            transaction,
+            &identity.attempt_id,
+            ExecutionReceiptKind::StartResult,
+        )?
+        .is_some()
             || ExecutionHistoryRepository::start_returns(transaction, &identity.attempt_id)?
                 >= START_RETURN_LIMIT
         {
@@ -1215,7 +1219,7 @@ impl SchedulerRepository {
         if let Some(result) = ExecutionHistoryRepository::replay(
             transaction,
             attempt_id,
-            "startResult",
+            ExecutionReceiptKind::StartResult,
             &acceptance_input(agent_id, epoch, turn_id),
         )? {
             let saved = ExecutionHistoryRepository::attempt(transaction, attempt_id)?
@@ -1253,7 +1257,7 @@ impl SchedulerRepository {
         let saved = ExecutionHistoryRepository::replay(
             transaction,
             attempt_id,
-            "startResult",
+            ExecutionReceiptKind::StartResult,
             &acceptance_input(agent_id, epoch, turn_id),
         )?
         .ok_or_else(|| invalid_agent(agent_id))?;
@@ -1279,7 +1283,7 @@ impl SchedulerRepository {
         if let Some(result) = ExecutionHistoryRepository::replay(
             transaction,
             attempt_id,
-            "startResult",
+            ExecutionReceiptKind::StartResult,
             &receipt_input,
         )? {
             let saved = ExecutionHistoryRepository::attempt(transaction, attempt_id)?
@@ -1360,7 +1364,7 @@ impl SchedulerRepository {
         if let Some(result) = ExecutionHistoryRepository::replay(
             transaction,
             attempt_id,
-            "startResult",
+            ExecutionReceiptKind::StartResult,
             &receipt_input,
         )? {
             return result.as_bool().ok_or_else(|| invalid_agent(agent_id));
@@ -1403,7 +1407,7 @@ impl SchedulerRepository {
         ExecutionHistoryRepository::save_receipt(
             transaction,
             attempt_id,
-            "startResult",
+            ExecutionReceiptKind::StartResult,
             receipt_input,
             json!(true),
         )?;
@@ -1426,7 +1430,7 @@ impl SchedulerRepository {
         if let Some(result) = ExecutionHistoryRepository::replay(
             transaction,
             attempt_id,
-            "startResult",
+            ExecutionReceiptKind::StartResult,
             &json!({"agent":agent_id,"epoch":epoch,"input":input}),
         )? {
             return result.as_bool().ok_or_else(|| invalid_agent(agent_id));
@@ -1485,7 +1489,7 @@ impl SchedulerRepository {
         if let Some(result) = ExecutionHistoryRepository::replay(
             transaction,
             attempt_id,
-            "startResult",
+            ExecutionReceiptKind::StartResult,
             &receipt_input,
         )? {
             return result["bound"]
@@ -1637,7 +1641,7 @@ impl SchedulerRepository {
         ExecutionHistoryRepository::save_receipt(
             transaction,
             attempt_id,
-            "startResult",
+            ExecutionReceiptKind::StartResult,
             receipt_input,
             json!({"bound":true,"interrupt":interrupt}),
         )?;
@@ -1698,9 +1702,12 @@ impl SchedulerRepository {
         }
         let native_error = native_error.as_ref();
         let receipt_input = json!({"agent":agent_id,"epoch":epoch,"turn":turn_id,"status":status,"error":error,"nativeStatus":native_status,"nativeError":native_error});
-        if let Some(result) =
-            ExecutionHistoryRepository::replay(transaction, attempt_id, "terminal", &receipt_input)?
-        {
+        if let Some(result) = ExecutionHistoryRepository::replay(
+            transaction,
+            attempt_id,
+            ExecutionReceiptKind::Terminal,
+            &receipt_input,
+        )? {
             return result.as_bool().ok_or_else(|| invalid_agent(agent_id));
         }
         Self::resolve_steers_at_terminal(transaction, agent_id, turn_id, unapplied_steers)?;
@@ -1880,13 +1887,15 @@ impl SchedulerRepository {
             transaction,
             agent_id,
             turn_id,
-            native_status,
+            serde_json::from_value::<studio_runtime_schema::persistence::ExecutionStatus>(json!(
+                native_status
+            ))?,
             native_error,
         )?;
         ExecutionHistoryRepository::save_receipt(
             transaction,
             attempt_id,
-            "terminal",
+            ExecutionReceiptKind::Terminal,
             receipt_input,
             json!(true),
         )?;
@@ -1949,8 +1958,8 @@ pub(super) enum StartReach {
 }
 
 pub(super) struct StartErrorDecision {
-    event_status: &'static str,
-    evidence: &'static str,
+    event_status: studio_runtime_schema::persistence::EventStatus,
+    evidence: studio_runtime_schema::persistence::AttemptSubmission,
     visible: Option<AgentStatus>,
     in_flight: bool,
     return_busy_input: bool,
@@ -1974,22 +1983,26 @@ pub(super) fn start_error_decision(
     });
     Ok(StartErrorDecision {
         event_status: if unknown {
-            if submitted { "uncertain" } else { "reserved" }
+            if submitted {
+                studio_runtime_schema::persistence::EventStatus::Uncertain
+            } else {
+                studio_runtime_schema::persistence::EventStatus::Reserved
+            }
         } else if !current {
-            "cancelled"
+            studio_runtime_schema::persistence::EventStatus::Cancelled
         } else if reach == StartReach::NotWritten
             || (reach == StartReach::Preparation && !submitted)
         {
-            "pending"
+            studio_runtime_schema::persistence::EventStatus::Pending
         } else {
-            "failed"
+            studio_runtime_schema::persistence::EventStatus::Failed
         },
         evidence: if unknown {
-            "unknown"
+            studio_runtime_schema::persistence::AttemptSubmission::Unknown
         } else if submitted {
-            "rejected"
+            studio_runtime_schema::persistence::AttemptSubmission::Rejected
         } else {
-            "unsent"
+            studio_runtime_schema::persistence::AttemptSubmission::Unsent
         },
         visible,
         in_flight: unknown || busy,
@@ -2023,7 +2036,7 @@ fn return_unapplied_input(
     if let Some(result) = ExecutionHistoryRepository::replay_settled(
         tx,
         &identity.attempt_id,
-        "startResult",
+        ExecutionReceiptKind::StartResult,
         &receipt_input,
     )? {
         return result
@@ -2068,7 +2081,7 @@ fn return_unapplied_input(
     ExecutionHistoryRepository::save_receipt(
         tx,
         &identity.attempt_id,
-        "startResult",
+        ExecutionReceiptKind::StartResult,
         receipt_input,
         json!(true),
     )?;
@@ -2084,7 +2097,11 @@ pub(super) fn apply_start_error(
     message: &str,
     input: Value,
 ) -> StoreResult<bool> {
-    let kind = if unknown { "unknown" } else { "startResult" };
+    let kind = if unknown {
+        ExecutionReceiptKind::Unknown
+    } else {
+        ExecutionReceiptKind::StartResult
+    };
     let receipt_input = json!({"agent":identity.agent_id,"epoch":identity.epoch,"input":input});
     if let Some(result) =
         ExecutionHistoryRepository::replay_settled(tx, &identity.attempt_id, kind, &receipt_input)?
@@ -2254,10 +2271,11 @@ pub(super) fn account_agents(
         match decode_agent(connection, &id, &raw) {
             Ok(agent) => agents.push(agent),
             Err(error) => {
-                let receipt_id = format!("{}{id}", crate::INVALID_AGENT_HOLD_RECEIPT_PREFIX);
-                let held = EventWriteRepository::receipt(connection, &receipt_id)?.is_some_and(
-                    |receipt| receipt.signature == crate::INVALID_AGENT_HOLD_RECEIPT_SIGNATURE,
-                );
+                let held = connection.query_row(
+                    "SELECT hold_status<>?1 FROM runtime_agents WHERE id=?2",
+                    params![studio_runtime_schema::persistence::HoldStatus::Clear, id],
+                    |row| row.get::<_, bool>(0),
+                )?;
                 if !held {
                     return Err(error);
                 }
@@ -2635,15 +2653,19 @@ pub(super) fn settled_attempt(
     let Some(id) = attempt["id"].as_str() else {
         return Ok(false);
     };
-    Ok(connection
-        .query_row_cached(
-            "SELECT json_type(record,'$.receipts.terminal') IS 'object' \
-             FROM runtime_execution_attempts WHERE id=?1",
-            [id],
-            |row| row.get::<_, bool>(0),
+    let status=connection.query_row_cached(
+        "SELECT json_extract(record,'$.turnStatus') FROM runtime_execution_attempts WHERE id=?1",
+        [id], |row|row.get::<_,Option<studio_runtime_schema::persistence::ExecutionStatus>>(0),
+    ).optional()?.flatten();
+    Ok(matches!(
+        status,
+        Some(
+            studio_runtime_schema::persistence::ExecutionStatus::Completed
+                | studio_runtime_schema::persistence::ExecutionStatus::Failed
+                | studio_runtime_schema::persistence::ExecutionStatus::Interrupted
+                | studio_runtime_schema::persistence::ExecutionStatus::Cancelled
         )
-        .optional()?
-        .unwrap_or(false))
+    ))
 }
 /// The id of the attempt that a recovery receipt of `agent` names.
 fn recovery_attempt_ids(agent: &AgentRecord) -> impl Iterator<Item = &str> {
@@ -2838,7 +2860,12 @@ pub(super) fn mark_timing(tx: &Transaction<'_>, ids: &str, field: &str) -> Store
 }
 pub(super) fn publish_agent(transaction: &Transaction<'_>, agent: &AgentRecord) -> StoreResult<()> {
     crate::ExecutionHistoryRepository::record(transaction, agent)?;
-    AgentRepository::put(transaction, agent)
+    let mut agent = agent.clone();
+    if let Some(pointer) = crate::ExecutionHistoryRepository::current_pointer(transaction, &agent)?
+    {
+        agent.extra.insert("activeExecution".into(), pointer);
+    }
+    AgentRepository::put(transaction, &agent)
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
