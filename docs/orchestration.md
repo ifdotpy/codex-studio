@@ -106,8 +106,8 @@ load estimate. The parent account has no special preference.
 Child creation from the UI and managed tools uses the same account selection
 and execution-default resolution. Both prepare candidate catalogs before
 selection and require the parent's catalog to be available, even when the
-selected worker uses another account. A saved creation result is returned
-before catalog preparation, so replay does not depend on provider availability.
+selected worker uses another account. HTTP child creation returns a saved result
+before catalog preparation, so its replay does not depend on provider availability.
 The user can select an account in chat settings. All new workers must use it.
 Existing workers keep their accounts. Automatic permits account selection per worker.
 An explicit `account_key` must respect the user's account choice. The target account catalog defines
