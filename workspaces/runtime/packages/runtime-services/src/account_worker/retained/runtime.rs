@@ -169,7 +169,16 @@ impl Worker {
                         .await
                         .unwrap_or(false)
                 })
-                .await?;
+                .await;
+            let ready = match ready {
+                Ok(ready) => ready,
+                Err(WorkerError::Closed) if *self.stop.borrow() => {
+                    // Cancellation before preparation cannot have sent a request.
+                    self.closing = true;
+                    false
+                }
+                Err(error) => return Err(error),
+            };
             if !ready {
                 let _ignored = reply.send(Err(PortError::NotSent));
                 return Ok(());

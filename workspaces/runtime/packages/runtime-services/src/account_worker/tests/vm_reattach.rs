@@ -659,7 +659,7 @@ async fn vm_existing_reattach_on_demand_read_reuses_the_existing_actor_connectio
 #[tokio::test]
 async fn vm_reattach_read_waits_for_handshake_and_rechecks_authority() {
     use crate::account_worker::retained::{PortError, RequestActor, RequestResult, SessionRequest};
-    for change_authority in [false, true] {
+    for (change_authority, cancel) in [(false, false), (true, false), (false, true)] {
         let (state, guest) = existing_actor(false).await;
         *guest.info_override.lock().unwrap() = Some(json!({"initResult":null}));
         let (_peer, mut worker) = existing_worker(&state, guest.clone()).await;
@@ -694,6 +694,16 @@ async fn vm_reattach_read_waits_for_handshake_and_rechecks_authority() {
             () = worker.faults.vm_readiness_waiting.notified() => {},
         }
         assert!(guest.inner.state.lock().unwrap().writes.is_empty());
+        if cancel {
+            worker.cancel();
+            let result = pending.await;
+            release.notify_one();
+            let shutdown = worker.shutdown().await;
+            assert_eq!(result.unwrap_err(), PortError::NotSent);
+            shutdown.unwrap();
+            assert!(guest.inner.state.lock().unwrap().writes.is_empty());
+            continue;
+        }
         if change_authority {
             edit_actor(&state, json!({"cwd":"/home/studio/other"})).await;
         }
