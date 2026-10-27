@@ -1,3 +1,4 @@
+import { StudioErrorLevel } from "../../src/generated/api.ts";
 import type { components } from "../../src/generated/api.ts";
 import type { PostBody } from "../../src/apiTypes.ts";
 import { mkdir } from "node:fs/promises";
@@ -29,6 +30,7 @@ test("streamed server errors expose full safe diagnostics at phone width", async
     const incident: components["schemas"]["StudioError"] = {
       id: "http:streamed-read",
       kind: "http_failure",
+      level: StudioErrorLevel.error,
       action: "details",
       reason: "The server could not complete this request.",
       detail: "store_data",
@@ -98,6 +100,7 @@ for (const width of [1440, 390, 320]) {
       ].map((id) => ({
         id: `monitor:${id}`,
         kind: "monitor_outcome_lost",
+        level: StudioErrorLevel.error,
         diagnostics: {
           context: { source: "monitor", requestId: id, turnId: null, epoch: 0 },
           certainty: "unknown",

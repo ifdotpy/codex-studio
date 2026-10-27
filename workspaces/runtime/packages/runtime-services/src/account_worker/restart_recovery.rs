@@ -321,6 +321,7 @@ async fn record_failure(
         StudioError {
             id,
             kind,
+            level: kind.level(),
             reason: kind.reason().into(),
             target: Target::Details,
             detail,
