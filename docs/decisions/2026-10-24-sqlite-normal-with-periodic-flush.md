@@ -27,8 +27,9 @@ the single Canvas writer busy about 78% of the time, with commit medians of
   `SQLITE_WAL_JOURNAL_SIZE_LIMIT_BYTES` in
   `workspaces/runtime/packages/runtime-schema/src/shared_values.rs`.
   `studio_runtime_store::sqlite_durability` applies them: `configure_writer`
-  sets WAL, `synchronous=NORMAL`, and `journal_size_limit` on every writer
-  connection, and `WalFlushSchedule` decides when a flush is due.
+  sets WAL, `synchronous=NORMAL`, `wal_autocheckpoint=0`, and
+  `journal_size_limit` on every writer connection, and `WalFlushSchedule`
+  decides when a flush is due.
 - Canvas and analytics: a commit requests a flush. The account registry runs
   `PRAGMA wal_checkpoint(PASSIVE)` on both databases when a request is
   pending and the last flush is at least one interval old, on its one retry
@@ -42,6 +43,7 @@ the single Canvas writer busy about 78% of the time, with commit medians of
 - The supervisor journal and the Mac `host_exec` service database each have one
   long-lived writer in their own process. A thread flushes that writer once per
   interval when it changed rows; closing the last connection checkpoints it.
+  Startup fails if that thread cannot be started.
 - Analytics projection: Canvas deletes projected log rows only after a complete
   analytics flush. When an OS crash rolled Canvas back below the analytics
   projection cursor, `RuntimeStore::open` raises the log sequence above the
