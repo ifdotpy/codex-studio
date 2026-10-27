@@ -132,12 +132,26 @@ string_id!(ChatMessageId);
 string_id!(TranscriptItemId);
 string_id!(TranscriptAssetId);
 
+/// A future agent status that is distinct from every known status.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct UnknownAgentStatus(String);
+
+impl UnknownAgentStatus {
+    pub fn new(value: String) -> Option<Self> {
+        (!AgentStatus::VALUES.contains(&value.as_str())).then_some(Self(value))
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
 macro_rules! stored_string_enum {
     ($name:ident { $($variant:ident => $value:literal),+ $(,)? }) => {
         #[derive(Clone, Debug, Eq, PartialEq)]
         pub enum $name {
             $($variant,)+
-            Other(String),
+            Other(UnknownAgentStatus),
         }
 
         impl $name {
@@ -147,7 +161,7 @@ macro_rules! stored_string_enum {
             pub fn as_str(&self) -> &str {
                 match self {
                     $(Self::$variant => $value,)+
-                    Self::Other(value) => value,
+                    Self::Other(value) => value.as_str(),
                 }
             }
         }
@@ -159,7 +173,7 @@ macro_rules! stored_string_enum {
             {
                 match self {
                     $(Self::$variant => serializer.serialize_str($value),)+
-                    Self::Other(value) => serializer.serialize_str(value),
+                    Self::Other(value) => serializer.serialize_str(value.as_str()),
                 }
             }
         }
@@ -178,7 +192,7 @@ macro_rules! stored_string_enum {
             fn parse(value: &str) -> Self {
                 match value {
                     $($value => Self::$variant,)+
-                    _ => Self::Other(value.to_owned()),
+                    _ => Self::Other(UnknownAgentStatus(value.to_owned())),
                 }
             }
         }
@@ -1322,7 +1336,8 @@ mod tests {
     use super::{
         AgentId, AgentRecord, AgentStatus, EventMetadataRecord, QueueEventId, RecordOrder,
         RecordPredicate, RequestRecord, Table, TaskRecord, TranscriptAssetId,
-        TranscriptAssetRecord, TranscriptItemId, TranscriptItemRecord, WorkItemRecord, WorkStatus,
+        TranscriptAssetRecord, TranscriptItemId, TranscriptItemRecord, UnknownAgentStatus,
+        WorkItemRecord, WorkStatus,
     };
     use crate::StoreError;
     use rusqlite::Connection;
@@ -1527,11 +1542,24 @@ mod tests {
         let record = agent(value.clone());
         assert_eq!(
             record.status,
-            AgentStatus::Other("future-agent-state".into())
+            AgentStatus::Other(UnknownAgentStatus::new("future-agent-state".into()).unwrap())
         );
         assert_eq!(
             serde_json::to_value(record).expect("record serializes"),
             value
+        );
+    }
+
+    #[test]
+    fn known_status_has_only_one_representation() {
+        for known in AgentStatus::VALUES {
+            let decoded: AgentStatus = serde_json::from_value(json!(known)).unwrap();
+            assert!(UnknownAgentStatus::new((*known).to_owned()).is_none());
+            assert_eq!(decoded.as_str(), *known);
+        }
+        assert_eq!(
+            serde_json::from_value::<AgentStatus>(json!("running")).unwrap(),
+            AgentStatus::Running
         );
     }
 
