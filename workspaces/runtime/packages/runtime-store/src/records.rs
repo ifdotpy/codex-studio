@@ -311,6 +311,14 @@ record_newtype!(
     query = None
 );
 record_newtype!(
+    ToolResultRecord,
+    String,
+    table = "request_results",
+    schema = "PersistedToolResult",
+    key = External,
+    query = None
+);
+record_newtype!(
     RequestRecord,
     String,
     table = "runtime_requests",

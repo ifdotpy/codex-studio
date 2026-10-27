@@ -5,6 +5,7 @@ pub mod blocking_pool;
 mod bootstrap;
 mod cached_sql;
 pub mod entity_publication;
+pub mod error_incidents;
 pub mod migrations;
 pub use cached_sql::{CachedSql, STATEMENT_CACHE_CAPACITY};
 pub use entity_publication::{EntityPublisher, PendingEntities, StudioErrorSources};
@@ -94,7 +95,7 @@ pub use records::{
     QueueEventId, QueueEventRepository, RecordKeyMode, RecordOrder, RecordPredicate,
     RecordQueryShape, RequestRecord, RuleRecord, Table, TaskId, TaskRecord, TaskRepository,
     TerminalRecord, TranscriptAssetId, TranscriptAssetRecord, TranscriptItemId,
-    TranscriptItemRecord, UnknownAgentStatus, UsageResumeRecord, WorkItemRecord, WorkStatus,
+    TranscriptItemRecord, ToolResultRecord, UnknownAgentStatus, UsageResumeRecord, WorkItemRecord, WorkStatus,
     WorkspaceOperationRecord, decode_agent_value,
 };
 pub use repositories::agent_indexed_reads::{AgentIndexedReads, RESERVED_TURN_INPUT};
