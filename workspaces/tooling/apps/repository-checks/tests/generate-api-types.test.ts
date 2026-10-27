@@ -241,17 +241,20 @@ test("the repository OpenAPI preserves committed declarations without format chu
       ts.ScriptTarget.Latest,
       true,
     );
+    const enumNames = new Set(
+      source.statements.flatMap((node) =>
+        ts.isVariableStatement(node)
+          ? node.declarationList.declarations.flatMap((declaration) =>
+              ts.isIdentifier(declaration.name) ? [declaration.name.text] : [],
+            )
+          : [],
+      ),
+    );
     return source.statements
       .filter(
         (node) =>
           ts.isInterfaceDeclaration(node) ||
-          (ts.isTypeAliasDeclaration(node) &&
-            !(
-              ts.isIndexedAccessTypeNode(node.type) &&
-              (ts.isTypeQueryNode(node.type.objectType) ||
-                (ts.isParenthesizedTypeNode(node.type.objectType) &&
-                  ts.isTypeQueryNode(node.type.objectType.type)))
-            )),
+          (ts.isTypeAliasDeclaration(node) && !enumNames.has(node.name.text)),
       )
       .map((node) => node.getText(source));
   };
@@ -267,6 +270,74 @@ test("the repository OpenAPI preserves committed declarations without format chu
       ),
     ),
   );
+});
+
+test("each runtime enum alias identifies its exact component in both output modes", () => {
+  const document = {
+    ...schema,
+    components: {
+      schemas: {
+        ...schema.components.schemas,
+        JsonValue: {
+          anyOf: [
+            { type: "string" },
+            {
+              type: "array",
+              items: { $ref: "#/components/schemas/JsonValue" },
+            },
+          ],
+        },
+        "same-values": { type: "string", enum: ["__proto__", "x"] },
+        AnotherOwner: { type: "string", enum: ["__proto__", "x"] },
+      },
+    },
+  } satisfies OpenAPI3;
+  for (const mode of ["-", "--rust-owned"]) {
+    const result = spawnSync(
+      process.execPath,
+      [
+        fileURLToPath(new URL("../generate-api-types.ts", import.meta.url)),
+        mode,
+      ],
+      { input: JSON.stringify(document), encoding: "utf8" },
+    );
+    assert.equal(result.status, 0, result.stderr);
+    const source = ts.createSourceFile(
+      "api.ts",
+      result.stdout,
+      ts.ScriptTarget.Latest,
+      true,
+    );
+    for (const [identifier, owner] of [
+      ["same_values", "same-values"],
+      ["AnotherOwner", "AnotherOwner"],
+    ]) {
+      const index = source.statements.findIndex(
+        (node) =>
+          ts.isVariableStatement(node) &&
+          node.declarationList.declarations.some(
+            (declaration) =>
+              ts.isIdentifier(declaration.name) &&
+              declaration.name.text === identifier,
+          ),
+      );
+      assert.ok(index >= 0, identifier);
+      const alias = source.statements[index + 1];
+      assert.ok(alias && ts.isTypeAliasDeclaration(alias));
+      assert.equal(alias.name.text, identifier);
+      assert.equal(
+        alias.type.getText(source),
+        `components["schemas"]["${owner}"]`,
+      );
+      assert.equal(
+        source.statements.filter(
+          (node) =>
+            ts.isTypeAliasDeclaration(node) && node.name.text === identifier,
+        ).length,
+        1,
+      );
+    }
+  }
 });
 
 test("runtime enum exports use schema-owned strings and reject name collisions", async () => {

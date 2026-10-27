@@ -40,7 +40,7 @@ function runtimeEnumValues(
   rustOwned: boolean,
 ) {
   const names = new Set<string>();
-  return Object.entries(document.components?.schemas ?? {})
+  const declarations = Object.entries(document.components?.schemas ?? {})
     .sort(([left], [right]) => left.localeCompare(right))
     .flatMap(([name, schema]) => {
       if (
@@ -73,17 +73,12 @@ function runtimeEnumValues(
         (value) =>
           `${value === "__proto__" ? `[${JSON.stringify(value)}]` : JSON.stringify(value)}: ${JSON.stringify(value)}`,
       );
-      const union =
-        !rustOwned &&
-        !name.endsWith("EntityDto") &&
-        name !== "SyncEntityPayload"
-          ? `\nexport type ${identifier} = (typeof ${identifier})[keyof typeof ${identifier}];`
-          : "";
       return [
-        `export const ${identifier} = { ${entries.join(", ")} } as const;${union}`,
+        `export const ${identifier} = { ${entries.join(", ")} } as const;\nexport type ${identifier} = components["schemas"][${JSON.stringify(name)}];`,
       ];
     })
     .join("\n");
+  return { declarations, names };
 }
 
 function format(input: string) {
@@ -107,7 +102,10 @@ function format(input: string) {
   return result.stdout;
 }
 
-function entityAliases(document: import("openapi-typescript").OpenAPI3) {
+function entityAliases(
+  document: import("openapi-typescript").OpenAPI3,
+  enumNames: Set<string>,
+) {
   const schemas = document.components?.schemas ?? {};
   const names = Object.keys(schemas)
     .filter((name) => name.endsWith("EntityDto"))
@@ -116,6 +114,7 @@ function entityAliases(document: import("openapi-typescript").OpenAPI3) {
     throw new Error("OpenAPI document has no *EntityDto component schemas");
   if ("SyncEntityPayload" in schemas) names.push("SyncEntityPayload");
   return names
+    .filter((name) => !enumNames.has(identifierForComponent(name)))
     .map((name) => `\nexport type ${name} = components["schemas"]["${name}"];`)
     .join("");
 }
@@ -202,20 +201,26 @@ const declarations = recursiveJsonValue
   ? `${generated}\n${JSON_VALUE_ALIAS}`
   : generated;
 const runtimeValues = runtimeEnumValues(document, rustOwned);
-const runtimeDeclarations = runtimeValues ? `${runtimeValues}\n` : "";
+const runtimeDeclarations = runtimeValues.declarations
+  ? `${runtimeValues.declarations}\n`
+  : "";
 process.stdout.write(
   format(
     rustOwned
       ? `${declarations}\n${runtimeDeclarations}${Object.keys(
           document.components?.schemas ?? {},
         )
-          .filter((name) => name !== "JsonValue" || !recursiveJsonValue)
+          .filter(
+            (name) =>
+              (name !== "JsonValue" || !recursiveJsonValue) &&
+              !runtimeValues.names.has(identifierForComponent(name)),
+          )
           .sort()
           .map(
             (name) =>
               `export type ${identifierForComponent(name)} = components["schemas"][${JSON.stringify(name)}];`,
           )
           .join("\n")}\n`
-      : `${declarations}${entityAliases(document)}\n${runtimeDeclarations}`,
+      : `${declarations}${entityAliases(document, runtimeValues.names)}\n${runtimeDeclarations}`,
   ),
 );
