@@ -1506,6 +1506,7 @@ function nextestCounter(
 export function parseCounts(
   item: Pick<WorkspacePackage, "ecosystem">,
   output: string,
+  nextest = false,
 ) {
   // ANSI CSI sequences contain control characters by design.
   // oxlint-disable-next-line no-control-regex
@@ -1525,6 +1526,25 @@ export function parseCounts(
         executed: total,
         summaryFound: true,
       };
+    }
+    const doctests = [
+      ...normalizedOutput.matchAll(
+        /^test result: (?:ok|FAILED)\. (\d+) passed; (\d+) failed; (\d+) ignored; \d+ measured; \d+ filtered out; finished in [^\r\n]+\r?$/gm,
+      ),
+    ];
+    if (!nextest && doctests.length) {
+      return doctests.reduce(
+        (counts, match) => {
+          const passed = Number(match[1]);
+          const failed = Number(match[2]);
+          counts.passed += passed;
+          counts.failed += failed;
+          counts.skipped += Number(match[3]);
+          counts.executed += passed + failed;
+          return counts;
+        },
+        { passed: 0, failed: 0, skipped: 0, executed: 0, summaryFound: true },
+      );
     }
     return normalizedOutput.split("\n").reduce(
       (counts, line) => {
@@ -1850,7 +1870,11 @@ export async function execute(
     playwrightFailures = reportResult.failures;
     errors.push(...reportResult.errors);
   } else {
-    counts = parseCounts(item, output);
+    counts = parseCounts(
+      item,
+      output,
+      commands.some(([bin, args]) => bin === "cargo" && args[0] === "nextest"),
+    );
   }
   const selectionError = nextestSelectionError(exitCode);
   if (selectionError) errors.push(selectionError);
@@ -2738,7 +2762,11 @@ export async function main(argv = process.argv.slice(2)) {
     const durationSeconds = Number(
       ((performance.now() - started) / 1000).toFixed(3),
     );
-    const counts = parseCounts(item, output);
+    const counts = parseCounts(
+      item,
+      output,
+      commands.some(([bin, args]) => bin === "cargo" && args[0] === "nextest"),
+    );
     if (
       exitCode === 0 &&
       commands.some(
