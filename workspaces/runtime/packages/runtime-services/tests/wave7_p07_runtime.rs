@@ -200,7 +200,9 @@ async fn connection_completion_matches_python_full_records_and_results() {
             .expect("complete");
         assert_eq!(
             result,
-            RecoveryOutcome::Applied(case["result"].clone()),
+            RecoveryOutcome::Applied(studio_runtime_services::recovery::RecoveryReceipt::Applied(
+                case["result"].clone()
+            )),
             "{}",
             case["name"]
         );
@@ -542,7 +544,9 @@ async fn unknown_start_accepts_exact_client_receipt_without_resending_input() {
     .expect("accept");
     assert_eq!(
         result,
-        RecoveryOutcome::Applied(json!({"status":"accepted","turnId":"turn"}))
+        RecoveryOutcome::Applied(studio_runtime_services::recovery::RecoveryReceipt::Applied(
+            json!({"status":"accepted","turnId":"turn"})
+        ))
     );
     assert_eq!(agent(&store)["turnId"], "turn");
     assert_eq!(
@@ -1325,7 +1329,9 @@ async fn accepted_terminal_start_calls_canonical_messages_and_finishes_atomicall
                 assert_eq!(
                     outcome.outcome,
                     RecoveryOutcome::Applied(
-                        json!({"status":"reconciled","turnId":"turn","outcome":native_status})
+                        studio_runtime_services::recovery::RecoveryReceipt::Applied(
+                            json!({"status":"reconciled","turnId":"turn","outcome":native_status})
+                        )
                     )
                 );
                 assert_eq!(agent(&store)["inFlight"], false);

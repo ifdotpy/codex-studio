@@ -235,7 +235,11 @@ impl RecoveryEffects for Effects {
             self.actions.push(action);
             Ok(
                 studio_runtime_services::recovery::RecoveryEffectResult::plain(
-                    RecoveryOutcome::Applied(json!({"status":"reconciled"})),
+                    RecoveryOutcome::Applied(
+                        studio_runtime_services::recovery::RecoveryReceipt::Applied(
+                            json!({"status":"reconciled"}),
+                        ),
+                    ),
                 ),
             )
         })

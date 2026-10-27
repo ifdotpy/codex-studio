@@ -3,6 +3,7 @@
 use crate::{
     recovery::{
         RecoveryAction, RecoveryEffectResult, RecoveryEffects, RecoveryError, RecoveryOutcome,
+        RecoveryReceipt,
     },
     recovery_history::ConnectionScope,
     recovery_policy::RecoverySnapshot,
@@ -210,7 +211,7 @@ impl RecoveryStore {
                             updated["error"] = Value::Null;
                             updated["activity"] = Value::Null;
                             updated["activeTools"] = json!([]);
-                            json!({"status":"input_restored"})
+                            RecoveryReceipt::Applied(json!({"status":"input_restored"}))
                         }
                         StartAbsenceDecision::Hold => {
                             let stamp = chrono::DateTime::from_timestamp(current.at as i64, 0)
@@ -242,11 +243,11 @@ impl RecoveryStore {
                                     attempt["id"].as_str().ok_or(RecoveryError::CommitFailed)?
                                 ),
                             )?;
-                            json!({"status":"held","at":current.at})
+                            RecoveryReceipt::Applied(json!({"status":"held","at":current.at}))
                         }
                         StartAbsenceDecision::Waiting => {
                             updated["startRecoveryCheck"] = json!({"at":current.at,"attemptId":attempt["id"],"state":"waiting","reason":"start-outcome-unconfirmed","completeHistory":complete_history,"idleTwice":idle_twice,"quiet":current.quiet,"journalDrained":current.journal_drained});
-                            json!({"status":"unconfirmed"})
+                            RecoveryReceipt::Unknown(json!({"status":"unconfirmed"}))
                         }
                     }
                 }
@@ -309,7 +310,7 @@ impl RecoveryStore {
                     } else if let Some(object) = updated.as_object_mut() {
                         object.remove("startAttempt");
                     }
-                    json!({"status":"input_restored","attemptId":attempt["id"]})
+                    RecoveryReceipt::Applied(json!({"status":"input_restored","attemptId":attempt["id"]}))
                 }
                 RecoveryAction::OrphanIdle { latest } => {
                     if !expected.eligibility().orphan_busy {
@@ -344,7 +345,7 @@ impl RecoveryStore {
                         object.remove("steerRejectedTurnId");
                     }
                     updated["turnRecovery"] = json!({"at":at,"turnId":null,"latestTurnId":latest.as_ref().map(|t|&t["id"]),"outcome":"idle","source":"native_thread_read"});
-                    json!({"status":"reconciled","turnId":null,"outcome":"idle"})
+                    RecoveryReceipt::Applied(json!({"status":"reconciled","turnId":null,"outcome":"idle"}))
                 }
                 RecoveryAction::RecordCheck {
                     native_state,
@@ -359,11 +360,11 @@ impl RecoveryStore {
                     if let Some(status) = turn_status {
                         updated["connectionCheck"]["restartTurnStatus"] = status.clone();
                     }
-                    json!({"status":"unconfirmed","checked":true})
+                    RecoveryReceipt::Unknown(json!({"status":"unconfirmed","checked":true}))
                 }
                 RecoveryAction::AcceptStart { .. } | RecoveryAction::AdoptQueuedWait { .. } | RecoveryAction::Terminal { .. } => return completion.lock().map_err(|_| RecoveryError::CommitFailed)?.complete(tx, &expected, &scope, &action),
             };
-            persist_request_result(a, &mut updated, &result);
+            persist_request_result(a, &mut updated, result.value());
             RecoverySnapshot::from_record(updated.clone())
                 .map_err(|_| RecoveryError::CommitFailed)?;
             let record: AgentRecord =
@@ -376,8 +377,8 @@ impl RecoveryStore {
                 let mut agent = AgentRepository::get(tx, &AgentId::from(id))?.ok_or(RecoveryError::CommitFailed)?;
                 studio_runtime_store::SchedulerRepository::hold_recovered_delivery(&mut agent)?;
                 AgentRepository::put(tx, &agent)?;
-                value["manualDeliveryHeld"] = json!(true);
-                value["next"] = json!("The exact native result is recorded. Send a new instruction to enable further input delivery.");
+                value.value_mut()["manualDeliveryHeld"] = json!(true);
+                value.value_mut()["next"] = json!("The exact native result is recorded. Send a new instruction to enable further input delivery.");
             }
             Ok(applied)
         }).await
@@ -556,7 +557,7 @@ impl CompletionWriter for LifecycleCompletionWriter {
             persist_request_result(a, &mut updated, &result);
             put_agent(tx, updated)?;
             return Ok(RecoveryEffectResult {
-                outcome: RecoveryOutcome::Applied(result),
+                outcome: RecoveryOutcome::Applied(RecoveryReceipt::Applied(result)),
                 stream_update,
             });
         }
@@ -605,9 +606,9 @@ impl CompletionWriter for LifecycleCompletionWriter {
                     );
                 }
                 Ok(if accepted {
-                    RecoveryEffectResult::plain(RecoveryOutcome::Applied(
+                    RecoveryEffectResult::plain(RecoveryOutcome::Applied(RecoveryReceipt::Applied(
                         json!({"status":"accepted","turnId":turn["id"]}),
-                    ))
+                    )))
                 } else {
                     RecoveryEffectResult::plain(RecoveryOutcome::Superseded)
                 })
@@ -879,7 +880,7 @@ impl CompletionWriter for LifecycleCompletionWriter {
                     .map_err(|_| RecoveryError::CommitFailed)?;
                 }
                 Ok(RecoveryEffectResult {
-                    outcome: RecoveryOutcome::Applied(result),
+                    outcome: RecoveryOutcome::Applied(RecoveryReceipt::Applied(result)),
                     stream_update,
                 })
             }

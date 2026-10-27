@@ -48,12 +48,39 @@ pub enum RecoveryAction {
         turn_status: Option<Value>,
     },
 }
+/// Semantic outcome of a recovery receipt. The payload is the existing opaque
+/// wire receipt; a committed recovery transaction can still be unconfirmed.
+#[derive(Clone, Debug, PartialEq)]
+pub enum RecoveryReceipt {
+    Applied(Value),
+    Rejected(Value),
+    Unknown(Value),
+}
+
+impl RecoveryReceipt {
+    pub fn value(&self) -> &Value {
+        match self {
+            Self::Applied(value) | Self::Rejected(value) | Self::Unknown(value) => value,
+        }
+    }
+    pub fn value_mut(&mut self) -> &mut Value {
+        match self {
+            Self::Applied(value) | Self::Rejected(value) | Self::Unknown(value) => value,
+        }
+    }
+    pub fn into_value(self) -> Value {
+        match self {
+            Self::Applied(value) | Self::Rejected(value) | Self::Unknown(value) => value,
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub enum RecoveryOutcome {
     Skipped,
     Superseded,
     Unconfirmed,
-    Applied(Value),
+    Applied(RecoveryReceipt),
 }
 /// Recovery result metadata produced inside the actor transaction and returned
 /// only after commit. Callers publish stream updates after observing this value.

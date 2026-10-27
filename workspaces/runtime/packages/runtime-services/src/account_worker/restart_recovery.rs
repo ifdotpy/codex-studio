@@ -586,7 +586,9 @@ impl CompletionWriter for RestartInputCompletion {
             stream_update = Some(streams);
         }
         Ok(RecoveryEffectResult {
-            outcome: RecoveryOutcome::Applied(json!({"status":"accepted","turnId":turn_id})),
+            outcome: RecoveryOutcome::Applied(crate::recovery::RecoveryReceipt::Applied(
+                json!({"status":"accepted","turnId":turn_id}),
+            )),
             stream_update,
         })
     }

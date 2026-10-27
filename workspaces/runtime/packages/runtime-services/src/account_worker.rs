@@ -512,12 +512,16 @@ pub enum AccountCommand {
     ConnectionRecovery {
         agent_id: String,
         authorization: Option<crate::agent_management_recovery::AuthorizedRecoveryRequest>,
-        reply: tokio::sync::oneshot::Sender<Result<Value, retained::PortError>>,
+        reply: tokio::sync::oneshot::Sender<
+            Result<crate::recovery::RecoveryReceipt, retained::PortError>,
+        >,
     },
     ConnectionRecoveryComplete {
-        result: Result<Value, retained::PortError>,
+        result: Result<crate::recovery::RecoveryReceipt, retained::PortError>,
         streams: Option<NotificationStreamBuffer>,
-        reply: tokio::sync::oneshot::Sender<Result<Value, retained::PortError>>,
+        reply: tokio::sync::oneshot::Sender<
+            Result<crate::recovery::RecoveryReceipt, retained::PortError>,
+        >,
     },
     #[cfg(test)]
     Barrier(tokio::sync::oneshot::Sender<usize>),

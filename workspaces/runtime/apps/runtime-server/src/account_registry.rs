@@ -790,7 +790,7 @@ impl studio_runtime_services::account_session_runtime::RetainedAccountSession
         &self,
         account: String,
         request: studio_runtime_services::agent_management_recovery::AuthorizedRecoveryRequest,
-    ) -> studio_runtime_services::account_session_runtime::RecoveryFuture {
+    ) -> studio_runtime_services::account_session_runtime::ManagedRecoveryFuture {
         let session = self
             .sessions
             .read()

@@ -820,3 +820,107 @@ async fn failed_finalize_still_records_the_real_operation_and_wakes_its_owner() 
     assert_eq!(saved_result(&store, &id).as_ref(), Some(&settled["result"]));
     assert_eq!(creation.calls.load(Ordering::SeqCst), 1);
 }
+
+struct ScriptedRecoverySession {
+    receipt: crate::recovery::RecoveryReceipt,
+    calls: AtomicUsize,
+}
+
+impl crate::account_session_runtime::AccountSessionPort for ScriptedRecoverySession {
+    fn recover_managed_agent<'a>(
+        &'a self,
+        _: &'a str,
+        _: crate::agent_management_recovery::AuthorizedRecoveryRequest,
+    ) -> crate::account_session_runtime::AccountSessionFuture<'a, crate::recovery::RecoveryReceipt>
+    {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        Box::pin(async move { Ok(self.receipt.clone()) })
+    }
+}
+
+#[tokio::test]
+async fn managed_recovery_callback_uses_typed_receipt_and_replays() {
+    use crate::recovery::RecoveryReceipt;
+    for (label, receipt, certainty, success) in [
+        (
+            "applied",
+            RecoveryReceipt::Applied(json!({"status":"unconfirmed","checked":true})),
+            "written",
+            true,
+        ),
+        (
+            "unknown",
+            RecoveryReceipt::Unknown(json!({"status":"checked","checked":true})),
+            "unknown",
+            false,
+        ),
+        (
+            "rejected",
+            RecoveryReceipt::Rejected(json!({"status":"checked","checked":true})),
+            "written",
+            false,
+        ),
+    ] {
+        let (_root, store, context) = fixture().await;
+        let target = template().value["agents"][1]["id"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let call_id = format!("managed-recovery-{label}");
+        let frame = call(
+            &context,
+            &call_id,
+            "orchestration_agent_manage",
+            json!({"action":"recover","agent_id":target}),
+        );
+        let session = Arc::new(ScriptedRecoverySession {
+            receipt,
+            calls: AtomicUsize::new(0),
+        });
+        let runtime_ports = ManagedToolRuntimePorts {
+            status_watch: None,
+            child_creation: None,
+            monitor_create: None,
+            interrupt: None,
+            monitor_input: None,
+            monitor_cancel: None,
+            work_action: None,
+            late: Default::default(),
+        };
+        let port: Arc<dyn crate::account_session_runtime::AccountSessionPort> = session.clone();
+        assert!(runtime_ports.late.management_session.set(port).is_ok());
+        let ports = shared_ports(
+            crate::provider_callbacks::managed_tool_ports_with_runtime(
+                store.as_ref(),
+                &context,
+                &frame,
+                ManagedToolPortsConfig {
+                    wake: Arc::new(tokio::sync::Notify::new()),
+                    monitor_dispatch_wake: Arc::new(tokio::sync::Notify::new()),
+                    runtime_ports,
+                    preparation: None,
+                },
+            )
+            .await
+            .unwrap(),
+        );
+        let first =
+            dispatch_with_managed_tools(Arc::clone(&store), &context, &frame, 20.0, ports.clone())
+                .await
+                .unwrap();
+        let CallbackDecision::Answer(first) = first else {
+            panic!("first answer")
+        };
+        let row = request_row(&store, &call_id);
+        assert_eq!(row["deliveryCertainty"], certainty, "{label}: {row}");
+        assert_eq!(row["result"]["success"], success, "{label}: {row}");
+        let replay = dispatch_with_managed_tools(Arc::clone(&store), &context, &frame, 21.0, ports)
+            .await
+            .unwrap();
+        let CallbackDecision::Answer(replay) = replay else {
+            panic!("replay answer")
+        };
+        assert_eq!(first.body, replay.body, "{label}");
+        assert_eq!(session.calls.load(Ordering::SeqCst), 1, "{label}");
+    }
+}

@@ -5,7 +5,7 @@ use super::{
 };
 use crate::{
     lifecycle_effects::ProductionRecoveryDelivery,
-    recovery::{RecoveryError, RecoveryOutcome},
+    recovery::{RecoveryError, RecoveryOutcome, RecoveryReceipt},
     recovery_absence::RecoveryObservation,
     recovery_history::ConnectionScope,
     recovery_policy::RecoverySnapshot,
@@ -27,7 +27,7 @@ pub(super) struct Command {
 }
 
 pub(super) struct Completed {
-    pub receipt: Value,
+    pub receipt: RecoveryReceipt,
     pub streams: Option<crate::notification_dispatch::NotificationStreamBuffer>,
 }
 
@@ -80,7 +80,7 @@ pub(super) async fn run_inner(command: Command) -> Result<Completed, RecoveryErr
             .map_err(|_| RecoveryError::CommitFailed)?;
         if !allowed {
             return Ok(Completed {
-                receipt: json!({"status":"superseded"}),
+                receipt: RecoveryReceipt::Rejected(json!({"status":"superseded"})),
                 streams: None,
             });
         }
@@ -96,7 +96,9 @@ pub(super) async fn run_inner(command: Command) -> Result<Completed, RecoveryErr
             })
         {
             return Ok(Completed {
-                receipt: json!({"status":"history_missing","replayed":false,"next":"The transferred thread has no confirmed source history. Keep its saved inputs unchanged."}),
+                receipt: RecoveryReceipt::Rejected(
+                    json!({"status":"history_missing","replayed":false,"next":"The transferred thread has no confirmed source history. Keep its saved inputs unchanged."}),
+                ),
                 streams: None,
             });
         }
@@ -106,7 +108,9 @@ pub(super) async fn run_inner(command: Command) -> Result<Completed, RecoveryErr
         && saved_receipt_matches_current(&before)
     {
         return Ok(Completed {
-            receipt: before["connectionRecovery"]["requestReceipt"].clone(),
+            receipt: crate::agent_management_recovery::decode_saved_recovery_receipt(
+                before["connectionRecovery"]["requestReceipt"].clone(),
+            ),
             streams: None,
         });
     }
@@ -128,11 +132,15 @@ pub(super) async fn run_inner(command: Command) -> Result<Completed, RecoveryErr
             db.query_row("SELECT EXISTS(SELECT 1 FROM runtime_events WHERE agent=?1 AND status IN ('reserved','dispatching','uncertain'))", [target], |row| row.get::<_,bool>(0)).map_err(studio_runtime_store::StoreError::from)
         }).await?;
         let receipt = if uncertain {
-            json!({"status":"unconfirmed","inputRecovery":{"status":"waiting"},"next":"Exact native input evidence is not available. Keep the original input unchanged."})
+            RecoveryReceipt::Unknown(
+                json!({"status":"unconfirmed","inputRecovery":{"status":"waiting"},"next":"Exact native input evidence is not available. Keep the original input unchanged."}),
+            )
         } else {
-            json!({"status":"skipped","next":"The worker has no unsettled turn to recover."})
+            RecoveryReceipt::Rejected(
+                json!({"status":"skipped","next":"The worker has no unsettled turn to recover."}),
+            )
         };
-        finish_request(&store, &command.agent_id, &recovery_id, &receipt).await?;
+        finish_request(&store, &command.agent_id, &recovery_id, receipt.value()).await?;
         return Ok(Completed {
             receipt,
             streams: None,
@@ -243,8 +251,9 @@ pub(super) async fn run_inner(command: Command) -> Result<Completed, RecoveryErr
     let result = match outcome {
         Ok(outcome) => outcome,
         Err(RecoveryError::History(error)) => {
-            let receipt = json!({"status":"unconfirmed","error":error.to_string()});
-            finish_request(&store, &command.agent_id, &recovery_id, &receipt).await?;
+            let receipt =
+                RecoveryReceipt::Unknown(json!({"status":"unconfirmed","error":error.to_string()}));
+            finish_request(&store, &command.agent_id, &recovery_id, receipt.value()).await?;
             return Ok(Completed {
                 receipt,
                 streams: None,
@@ -254,13 +263,17 @@ pub(super) async fn run_inner(command: Command) -> Result<Completed, RecoveryErr
     };
     let (receipt, needs_receipt_commit) = match result.outcome {
         RecoveryOutcome::Applied(value) => (value, false),
-        RecoveryOutcome::Unconfirmed => (json!({"status":"unconfirmed"}), true),
-        RecoveryOutcome::Superseded | RecoveryOutcome::Skipped => {
-            (json!({"status":"superseded"}), true)
-        }
+        RecoveryOutcome::Unconfirmed => (
+            RecoveryReceipt::Unknown(json!({"status":"unconfirmed"})),
+            true,
+        ),
+        RecoveryOutcome::Superseded | RecoveryOutcome::Skipped => (
+            RecoveryReceipt::Rejected(json!({"status":"superseded"})),
+            true,
+        ),
     };
     if needs_receipt_commit {
-        finish_request(&store, &command.agent_id, &recovery_id, &receipt).await?;
+        finish_request(&store, &command.agent_id, &recovery_id, receipt.value()).await?;
     }
     Ok(Completed {
         receipt,
