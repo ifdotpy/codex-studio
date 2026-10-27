@@ -540,7 +540,22 @@ fn pending_attention(
 #[cfg(test)]
 mod room_preparation_tests {
     use super::*;
+    use crate::submit_gates::{PeerTeamRow, StoredField};
     use std::sync::Arc;
+
+    fn agent(id: &str) -> AgentAuthorityRow {
+        AgentAuthorityRow {
+            id: Some(id.to_owned()),
+            root_id: None,
+            parent_id: None,
+            is_lead: None,
+            deleted_at: None,
+            cwd: None,
+            name: StoredField::Missing,
+            shared_room_id: None,
+        }
+    }
+
     #[cfg(unix)]
     #[test]
     fn room_membership_uses_symlink_paths_resolved_by_the_creation_owner() {
@@ -555,10 +570,25 @@ mod room_preparation_tests {
             project.path(),
         )
         .expect("resolved real cwd");
-        let directory = RoomDirectory::resolve(serde_json::from_value(json!([
-            json!({"provider":studio_runtime_schema::ProviderKind::Codex,"id":"first","rootId":"first","isLead":true,"cwd":first}),
-            json!({"provider":studio_runtime_schema::ProviderKind::Codex,"id":"second","rootId":"second","isLead":true,"cwd":second}),
-        ])).expect("typed agents"), serde_json::from_value(json!([{"id":"project","path":first,"peerTeams":[{"id":"peers","name":"Peers","members":["first","second"]}]}])).expect("typed projects"))
+        let agents = [("first", &first), ("second", &second)]
+            .into_iter()
+            .map(|(id, cwd)| AgentAuthorityRow {
+                root_id: Some(id.to_owned()),
+                is_lead: Some(true),
+                cwd: Some(cwd.to_str().expect("UTF-8 path").to_owned()),
+                ..agent(id)
+            })
+            .collect();
+        let projects = vec![ProjectAuthorityRow {
+            id: Some("project".to_owned()),
+            path: Some(first.to_str().expect("UTF-8 path").to_owned()),
+            peer_teams: vec![PeerTeamRow {
+                id: "peers".to_owned(),
+                name: "Peers".to_owned(),
+                members: vec!["first".to_owned(), "second".to_owned()],
+            }],
+        }];
+        let directory = RoomDirectory::resolve(agents, projects)
             .expect("room membership resolves canonical paths");
         let members = &directory.context.peer_teams;
         assert_eq!(members[0].members, ["first", "second"]);
@@ -649,11 +679,13 @@ mod room_preparation_tests {
     #[test]
     fn room_contexts_share_agents_peers_and_the_active_agent_index() {
         let directory = RoomDirectory::resolve(
-            serde_json::from_value(json!([
-                json!({"id":"agent-a"}),
-                json!({"id":"agent-b","deletedAt":1}),
-            ]))
-            .expect("typed agents"),
+            vec![
+                agent("agent-a"),
+                AgentAuthorityRow {
+                    deleted_at: Some(Deletion::Number(1.0)),
+                    ..agent("agent-b")
+                },
+            ],
             Vec::new(),
         )
         .expect("directory resolves");
