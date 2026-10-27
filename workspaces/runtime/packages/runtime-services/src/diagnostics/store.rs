@@ -20,28 +20,45 @@ pub fn execution_ledger(connection: &Connection) -> Result<Value, rusqlite::Erro
         .collect::<Result<Vec<_>, _>>()?;
     let mut runs = Vec::with_capacity(raw_runs.len());
     for raw in raw_runs {
-        let mut run: Value = serde_json::from_str(&raw).map_err(|error| {
-            rusqlite::Error::FromSqlConversionFailure(
-                0,
-                rusqlite::types::Type::Text,
-                Box::new(error),
-            )
-        })?;
+        let mut run: serde_json::Map<String, Value> =
+            serde_json::from_str(&raw).map_err(|error| {
+                rusqlite::Error::FromSqlConversionFailure(
+                    0,
+                    rusqlite::types::Type::Text,
+                    Box::new(error),
+                )
+            })?;
         let run_id = run
             .get("id")
             .and_then(Value::as_str)
-            .unwrap_or_default()
+            .filter(|id| !id.is_empty())
+            .ok_or_else(|| {
+                rusqlite::Error::FromSqlConversionFailure(
+                    0,
+                    rusqlite::types::Type::Text,
+                    Box::new(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        "corrupt execution run: expected an object with an id",
+                    )),
+                )
+            })?
             .to_owned();
         for table in ["attempts", "nodes", "effects"] {
-            run[table] = related_records(connection, table, &run_id)?;
+            run.insert(
+                table.to_owned(),
+                related_records(connection, table, &run_id)?,
+            );
         }
         let attempts = run["attempts"].as_array().cloned().unwrap_or_default();
         let effects = run["effects"].as_array().cloned().unwrap_or_default();
-        run["attemptIds"] = json!(
-            attempts
-                .iter()
-                .filter_map(|value| value.get("id").and_then(Value::as_str))
-                .collect::<Vec<_>>()
+        run.insert(
+            "attemptIds".to_owned(),
+            json!(
+                attempts
+                    .iter()
+                    .filter_map(|value| value.get("id").and_then(Value::as_str))
+                    .collect::<Vec<_>>()
+            ),
         );
         let mut request_ids = BTreeSet::new();
         for attempt in &attempts {
@@ -56,9 +73,15 @@ pub fn execution_ledger(connection: &Connection) -> Result<Value, rusqlite::Erro
                 request_ids.insert(value.to_owned());
             }
         }
-        run["requestIds"] = json!(request_ids.into_iter().collect::<Vec<_>>());
-        run["inputEventIds"] = json!(related_inputs(connection, &run_id)?);
-        runs.push(run);
+        run.insert(
+            "requestIds".to_owned(),
+            json!(request_ids.into_iter().collect::<Vec<_>>()),
+        );
+        run.insert(
+            "inputEventIds".to_owned(),
+            json!(related_inputs(connection, &run_id)?),
+        );
+        runs.push(Value::Object(run));
     }
     Ok(json!({"runs": runs, "limit": RUN_LIMIT, "relatedLimit": RELATED_LIMIT}))
 }
@@ -204,4 +227,45 @@ fn related_inputs(connection: &Connection, run_id: &str) -> Result<Vec<String>, 
     statement
         .query_map((run_id, RELATED_LIMIT as i64), |row| row.get(0))?
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::execution_ledger;
+    use rusqlite::Connection;
+
+    #[test]
+    fn corrupt_run_records_return_errors() {
+        let connection = Connection::open_in_memory().unwrap();
+        connection
+            .execute_batch(
+                "CREATE TABLE runtime_execution_runs (record TEXT NOT NULL, created REAL NOT NULL)",
+            )
+            .unwrap();
+        for record in ["[]", "{}", "{\"id\":null}"] {
+            connection
+                .execute("DELETE FROM runtime_execution_runs", [])
+                .unwrap();
+            connection
+                .execute(
+                    "INSERT INTO runtime_execution_runs VALUES (?1, 1)",
+                    [record],
+                )
+                .unwrap();
+            assert!(execution_ledger(&connection).is_err(), "record: {record}");
+        }
+        connection
+            .execute("DELETE FROM runtime_execution_runs", [])
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO runtime_execution_runs VALUES ('{\"id\":\"run\",\"extra\":42}', 1)",
+                [],
+            )
+            .unwrap();
+        assert_eq!(
+            execution_ledger(&connection).unwrap()["runs"][0]["extra"],
+            42
+        );
+    }
 }
