@@ -84,6 +84,12 @@ decimal versions remain accepted, and receipt signatures use the original
 transport JSON, including unused known fields and null or omitted owner fields.
 The task editor consumes the generated action variants directly.
 
+Agent-tool advertisements use the same owner's flat object field projection,
+because the bridge SDK does not support conditional schemas. The server still
+enforces each action's required payload through `TaskCommand::parse`.
+The generated bridge tool artifact and real SDK conversion witness guard that
+advertised shape; read filters and pagination retain their catalog owner.
+
 Store work-item list, get, and dependent reads return `WorkItemRecord` through
 policy and dependency decisions. Its retained JSON preserves nulls, omission,
 and extension fields; serialization occurs at the response boundary. The table

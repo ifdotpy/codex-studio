@@ -323,8 +323,9 @@ pub fn check_api_contract(document: &Value) -> Result<(), String> {
     Ok(())
 }
 
-/// Tool reads retain their pagination contract; every mutation field and its
-/// action-specific requirements are generated from the command owner.
+/// The SDK requires a flat object advertisement. Field schemas come from this
+/// owner; action-specific requirements remain enforced by `TaskCommand::parse`.
+/// Read actions retain the existing tool catalog's filters and pagination.
 pub fn apply_tool_contract(name: &str, input: &mut serde_json::Map<String, Value>) {
     if name != "orchestration_task" {
         return;
@@ -333,15 +334,26 @@ pub fn apply_tool_contract(name: &str, input: &mut serde_json::Map<String, Value
         .as_array()
         .expect("command variants")
         .clone();
-    for (field, schema) in command_properties(&variants) {
+    for (field, mut schema) in command_properties(&variants) {
         if !matches!(field.as_str(), "action" | "agent" | "id") {
+            // SDK conversion applies JSON Schema defaults. Preserve omission
+            // of optional arguments; defaults inside supplied objects still
+            // belong to those objects' owners (for example gate deadlines).
+            schema
+                .as_object_mut()
+                .expect("field schema")
+                .remove("default");
+            if let Some(alternatives) = schema.get_mut("anyOf").and_then(Value::as_array_mut) {
+                for alternative in alternatives {
+                    alternative
+                        .as_object_mut()
+                        .expect("field alternative")
+                        .remove("default");
+                }
+            }
             input["properties"][field] = schema;
         }
     }
-    input.insert("allOf".into(), Value::Array(variants.into_iter().map(|variant| {
-        json!({"if":{"properties":{"action":variant["properties"]["action"]},"required":["action"]},
-            "then":variant})
-    }).collect()));
 }
 
 #[cfg(test)]
@@ -385,8 +397,18 @@ mod tests {
             json!({"action":"update","task_id":"task","owner":42}),
             json!({"action":"update","task_id":"task","version":2.5}),
         ] {
-            assert!(!validator.is_valid(&raw), "{raw}");
             assert!(TaskCommand::parse(&raw).is_err());
+        }
+        // The advertisement describes fields; the server requires the payload
+        // selected by the action even when the SDK accepts an incomplete object.
+        let incomplete = json!({"action":"cancel","task_id":"task"});
+        assert!(validator.is_valid(&incomplete));
+        assert!(TaskCommand::parse(&incomplete).is_err());
+        for malformed in [
+            json!({"action":"update","task_id":"task","owner":42}),
+            json!({"action":"update","task_id":"task","version":2.5}),
+        ] {
+            assert!(!validator.is_valid(&malformed));
         }
     }
     #[test]

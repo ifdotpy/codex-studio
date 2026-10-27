@@ -3,7 +3,35 @@ type FixtureSchema = Omit<core.JSONSchema.ObjectSchema, "properties"> & {
   properties: Record<string, core.JSONSchema.JSONSchema>;
 };
 import { canonicalJson } from "./move.ts";
+import { TASK_COMMAND_TOOL_SCHEMA } from "./task-command-tool.generated.ts";
 import { test } from "vitest";
+
+test("generated task advertisement converts through the real bridge SDK and preserves read arguments", async () => {
+  const { createSdkMcpServer, tool } =
+    await import("@anthropic-ai/claude-agent-sdk");
+  const { z } = await import("zod");
+  const schema = z.fromJSONSchema(TASK_COMMAND_TOOL_SCHEMA);
+  assert.ok(
+    schema instanceof z.ZodObject,
+    "the bridge consumes an object shape",
+  );
+  createSdkMcpServer({
+    name: "studio",
+    version: "1",
+    tools: [
+      tool("orchestration_task", "Tasks", schema.shape, async () => ({
+        content: [],
+      })),
+    ],
+  });
+  for (const input of [
+    { action: "list", owner: "worker", state: "ready", cursor: "cursor" },
+    { action: "get", task_id: "task" },
+    { action: "history", task_id: "task", limit: 5 },
+  ]) {
+    assert.deepEqual(schema.parse(input), input);
+  }
+});
 import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import os from "node:os";
