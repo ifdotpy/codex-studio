@@ -1,4 +1,4 @@
-import type { DraftView as GeneratedDraftView } from "../generated/rustOwned.ts";
+import type { DraftSnapshot as GeneratedDraftSnapshot } from "../generated/rustOwned.ts";
 
 // The native host sends subscription payloads in this envelope.
 export type NativeEvent<Value = unknown> = { event: string; value: Value };
@@ -9,11 +9,7 @@ export type HttpResponse = {
   base64: string;
 };
 
-export type DraftView = GeneratedDraftView & {
-  workspaceId: string;
-  revision: number;
-  error?: string;
-};
+export type DraftView = GeneratedDraftSnapshot;
 export type Invoke = (
   command: string,
   args: Record<string, unknown>,
