@@ -207,9 +207,20 @@ fn review2_stage_rejects_nested_destination_link() {
     fs::write(source.join("dir/new"), "new").expect("fixture operation succeeds");
     std::os::unix::fs::symlink(&original, destination.join("dir"))
         .expect("fixture operation succeeds");
-    let plan = Plan::new(&source, false, &destination).expect("fixture operation succeeds");
-    plan.stage(&destination)
+    let mut plan = Plan::new(&source, false, &destination).expect("fixture operation succeeds");
+    // A link-following regression must reach the write even without reflink support.
+    for entry in &mut plan.entries {
+        entry.cloneable = false;
+    }
+    let error = plan
+        .stage(&destination)
         .expect_err("Staging must reject the nested destination link");
+    assert!(
+        matches!(&error, NativeLayrError::Io(error)
+            if error.kind() == std::io::ErrorKind::NotADirectory
+                || error.raw_os_error() == Some(rustix::io::Errno::LOOP.raw_os_error())),
+        "Staging must reject the directory link during traversal: {error}"
+    );
     assert!(
         !original.join("new").exists(),
         "Staging must never follow a replaced destination"
