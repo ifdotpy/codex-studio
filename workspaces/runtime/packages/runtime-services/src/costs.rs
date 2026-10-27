@@ -13,9 +13,7 @@ use serde_json::{Value, json};
 use studio_runtime_store::cost_aggregate::{
     CostMember, CostReceipt, CostTokens, DEFAULT_ACCOUNT, cost_groups,
 };
-use studio_runtime_store::{
-    AnalyticsRepository, AnalyticsStoreError, RuntimeStore, StoreError, analytics,
-};
+use studio_runtime_store::{AnalyticsStoreError, RuntimeStore, StoreError, analytics};
 use thiserror::Error;
 
 use crate::file_derived::FileDerived;
@@ -246,11 +244,22 @@ pub fn usage_reconciliation(
     agent_id: &str,
     accounts: &BTreeMap<String, Value>,
 ) -> Result<Value, CostsError> {
+    let root = store.root().to_owned();
+    let agent_id = agent_id.to_owned();
+    let accounts = accounts.clone();
+    store
+        .with_cost_reader(move |db| usage_reconciliation_on_reader(db, &root, &agent_id, &accounts))
+}
+
+fn usage_reconciliation_on_reader(
+    db: &mut rusqlite::Connection,
+    root: &Path,
+    agent_id: &str,
+    accounts: &BTreeMap<String, Value>,
+) -> Result<Value, CostsError> {
     use rusqlite::OptionalExtension;
     use studio_runtime_schema::usage::{UsageObservation, UsageScope};
 
-    let repository = AnalyticsRepository::new(store.root());
-    let mut db = repository.open_read_only()?;
     let tx = db.transaction()?;
     // Analytics preserves archived/deleted agents after the runtime row disappears.
     let raw: Option<String> = tx.query_row(
@@ -313,7 +322,7 @@ pub fn usage_reconciliation(
 
     let mut native = BTreeMap::<String, NativeResponse>::new();
     let members = vec![(agent_id.to_owned(), member.clone())];
-    for row in read_local_claude_usage_inner(store.root(), &members, accounts, Some(&mut budget))? {
+    for row in read_local_claude_usage_inner(root, &members, accounts, Some(&mut budget))? {
         let tokens = log_tokens(row.usage.tokens);
         if tokens.is_none() {
             budget.incomplete = true;
@@ -332,7 +341,7 @@ pub fn usage_reconciliation(
     if native.is_empty() {
         budget.incomplete = true;
     }
-    let loaded = crate::pricing::load_pricing(store.root());
+    let loaded = crate::pricing::load_pricing(root);
     let catalog = loaded.as_ref().and_then(|loaded| loaded.catalog.as_ref());
     let mut rows = BTreeMap::<
         String,
@@ -2036,8 +2045,18 @@ mod tests {
             AnalyticsCaptureRepository::write(tx,CaptureTable::Usage,&final_row)?;
             Ok(())
         }).await.expect("response records");
+        studio_runtime_store::analytics::take_cost_read_witness();
         let result =
             super::usage_reconciliation(&store, "agent", &BTreeMap::new()).expect("reconciliation");
+        let second = super::usage_reconciliation(&store, "agent", &BTreeMap::new())
+            .expect("second reconciliation");
+        assert_eq!(result, second);
+        let reads = studio_runtime_store::analytics::take_cost_read_witness();
+        assert_eq!(
+            (reads.opens, reads.attaches),
+            (0, 0),
+            "reconciliation reuses the store reader"
+        );
         assert_eq!(result["responses"][0]["recordedEvidence"], "live");
         assert_eq!(result["responses"][0]["recordedTokens"]["output"], 50);
     }
