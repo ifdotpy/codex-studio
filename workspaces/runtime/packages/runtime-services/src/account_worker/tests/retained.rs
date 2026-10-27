@@ -3216,6 +3216,8 @@ async fn transferred_monitor_cancel_uses_the_original_command_and_settles_its_ex
         state.epoch,
         "target",
         "transfer-watch",
+        None,
+        None,
     )
     .await
     .unwrap();
