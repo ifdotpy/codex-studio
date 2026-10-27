@@ -399,6 +399,23 @@ export interface paths {
     patch?: never | undefined;
     trace?: never | undefined;
   };
+  "/api/agents/workspace-mode": {
+    parameters: {
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
+    };
+    get?: never | undefined;
+    put?: never | undefined;
+    /** Switch an idle WT chat to Layr in place */
+    post: operations["switch_workspace_mode_api_agents_workspace_mode_post"];
+    delete?: never | undefined;
+    options?: never | undefined;
+    head?: never | undefined;
+    patch?: never | undefined;
+    trace?: never | undefined;
+  };
   "/api/analytics": {
     parameters: {
       query?: never | undefined;
@@ -6692,6 +6709,37 @@ export interface components {
       unreadCount?: number | null | undefined;
       /** Updated */
       updated?: null | number | undefined;
+    };
+    /**
+     * AgentWorkspaceModeRequest
+     * @description Switch one idle WT chat to the Layr workspace mode. The chat keeps its thread and history.
+     */
+    AgentWorkspaceModeRequest: {
+      /** Id */
+      id: string;
+      /**
+       * Workspacemode
+       * @enum {string}
+       */
+      workspaceMode: "layr-native";
+    };
+    /** AgentWorkspaceModeResponse */
+    AgentWorkspaceModeResponse: {
+      /** Cwd */
+      cwd: string;
+      /** Id */
+      id: string;
+      /** Layrline */
+      layrLine: string;
+      /** Layrprojectid */
+      layrProjectId: string;
+      /** Layrstateid */
+      layrStateId: string;
+      /**
+       * Workspacemode
+       * @enum {string}
+       */
+      workspaceMode: "layr-native";
     };
     /** AmbiguousToolRequestResponse */
     AmbiguousToolRequestResponse: {
@@ -30148,6 +30196,71 @@ export interface operations {
       429: components["responses"]["ApiError429"];
       /** @description Internal Server Error */
       500: components["responses"]["ApiError500"];
+      /** @description Service Unavailable */
+      503: components["responses"]["ApiError503"];
+    };
+  };
+  switch_workspace_mode_api_agents_workspace_mode_post: {
+    parameters: {
+      query?: never | undefined;
+      header?: never | undefined;
+      path?: never | undefined;
+      cookie?: never | undefined;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["AgentWorkspaceModeRequest"];
+      };
+    };
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          "Access-Control-Allow-Origin": components["headers"]["AccessControlAllowOrigin"];
+          "Access-Control-Expose-Headers": components["headers"]["AccessControlExposeHeaders"];
+          "Cache-Control": components["headers"]["CacheControl"];
+          "Content-Encoding": components["headers"]["ContentEncoding"];
+          "Content-Length": components["headers"]["ContentLength"];
+          "Content-Security-Policy": components["headers"]["ContentSecurityPolicy"];
+          "Content-Type": components["headers"]["ContentType"];
+          "Referrer-Policy": components["headers"]["ReferrerPolicy"];
+          "Server-Timing": components["headers"]["ServerTiming"];
+          Vary: components["headers"]["Vary"];
+          "X-Content-Type-Options": components["headers"]["XContentTypeOptions"];
+          "X-Studio-API-Schema": components["headers"]["StudioApiSchema"];
+          "X-Studio-Server": components["headers"]["StudioServer"];
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["AgentWorkspaceModeResponse"];
+        };
+      };
+      /** @description Bad Request */
+      400: components["responses"]["ApiError400"];
+      /** @description Unauthorized */
+      401: components["responses"]["ApiError401"];
+      /** @description Forbidden */
+      403: components["responses"]["ApiError403"];
+      /** @description Not Found */
+      404: components["responses"]["ApiError404"];
+      /** @description Request Timeout */
+      408: components["responses"]["ApiError408"];
+      /** @description Conflict */
+      409: components["responses"]["ApiError409"];
+      /** @description Gone */
+      410: components["responses"]["ApiError410"];
+      /** @description Content Too Large */
+      413: components["responses"]["ApiError413"];
+      /** @description Unsupported Media Type */
+      415: components["responses"]["ApiError415"];
+      /** @description Upgrade Required */
+      426: components["responses"]["ApiError426"];
+      /** @description Too Many Requests */
+      429: components["responses"]["ApiError429"];
+      /** @description Internal Server Error */
+      500: components["responses"]["ApiError500"];
+      /** @description Bad Gateway */
+      502: components["responses"]["ApiError502"];
       /** @description Service Unavailable */
       503: components["responses"]["ApiError503"];
     };
