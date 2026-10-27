@@ -120,6 +120,7 @@ pub struct PreparationFilesystem {
     browser: Option<crate::browser::AccountBrowser>,
     mcp_servers: Vec<String>,
     receipt_cwd: Option<(String, String, bool)>,
+    receipt: bool,
     native_layr: Option<Result<NativeLayrFilesystem, ()>>,
 }
 
@@ -262,6 +263,7 @@ impl PreparationResources {
             browser,
             mcp_servers,
             receipt_cwd,
+            receipt: false,
             native_layr: None,
         }));
         self
@@ -278,11 +280,17 @@ impl PreparationResources {
                 .map_err(|_| invalid("native-layr/store"))?;
             let prepared_identity = if matches!(
                 identity,
-                crate::layr_native::settings::StoreAssociation::LegacyLine(_)
+                crate::layr_native::settings::StoreAssociation::LegacyLine {
+                    reviewer: false,
+                    ..
+                }
             ) {
-                prepared_cwd.map(|cwd| {
-                    crate::layr_native::settings::StoreAssociation::LegacyLine(cwd.to_path_buf())
-                })
+                prepared_cwd.map(
+                    |cwd| crate::layr_native::settings::StoreAssociation::LegacyLine {
+                        cwd: cwd.to_path_buf(),
+                        reviewer: false,
+                    },
+                )
             } else {
                 None
             };
@@ -331,9 +339,21 @@ impl PreparationResources {
         if (captured.identity != identity && captured.prepared_identity.as_ref() != Some(&identity))
             || captured.state_root != state_root
         {
-            return Err(refusal("native-layr/store-changed".into()));
+            return Err(self.native_layr_changed("native-layr/store-changed"));
         }
         Ok(captured)
+    }
+
+    fn native_layr_changed(&self, reason: &'static str) -> WorkerError {
+        if self
+            .filesystem_inputs
+            .as_ref()
+            .is_some_and(|inputs| inputs.receipt)
+        {
+            invalid(reason)
+        } else {
+            refusal(reason.into())
+        }
     }
 
     pub(super) fn validate_native_layr_source(
@@ -405,7 +425,10 @@ impl PreparationResources {
         studio_runtime_process::blocking_pool::spawn_blocking(
             "runtime-services/thread-receipt/filesystem",
             move || {
-                let resources = resources.capture_filesystem(receipt_cwd);
+                let mut resources = resources.capture_filesystem(receipt_cwd);
+                if let Some(inputs) = resources.filesystem_inputs.as_mut() {
+                    Arc::make_mut(inputs).receipt = true;
+                }
                 Ok(match record {
                     Some(record) => {
                         match resources
@@ -1229,7 +1252,7 @@ fn native_claude_options(
             .reviewer
             .as_ref()
             .filter(|(stored, _)| stored == scratch)
-            .ok_or_else(|| refusal("native-layr/scratch-changed".into()))?;
+            .ok_or_else(|| resources.native_layr_changed("native-layr/scratch-changed"))?;
         options.insert("sandbox".into(),json!({"enabled":true,"failIfUnavailable":true,"allowUnsandboxedCommands":false,
             "filesystem":{"allowWrite":[scratch],"denyWrite":[root]},
             "network":{"allowedDomains":[],"strictAllowlist":true,"allowUnixSockets":[],"allowAllUnixSockets":false}}));
@@ -2411,6 +2434,62 @@ mod resource_tests {
 #[cfg(test)]
 mod workspace_fence_tests {
     use super::*;
+
+    #[test]
+    fn legacy_reviewer_store_uses_read_line_not_prepared_scratch() {
+        let state = tempfile::tempdir().expect("state");
+        let root = crate::layr_native::store_path(state.path());
+        let line = root.join("projects/p/lines/main");
+        let scratch = state.path().join("reviewer-scratch");
+        let record = json!({"workspaceMode":"layr-native", "layrReady":true,
+            "role":"reviewer", "cwd":scratch, "layrReadCwd":line, "layrScratch":scratch});
+        let resources = PreparationResources::bundled(String::new(), ModelCatalogService::new())
+            .expect("resources")
+            .capture_filesystem(None)
+            .capture_native_layr(state.path(), &record, Some(&scratch))
+            .expect("reviewer capture");
+        assert_eq!(
+            resources
+                .native_layr(state.path(), &record)
+                .expect("association")
+                .root,
+            root
+        );
+    }
+
+    #[tokio::test]
+    async fn receipt_store_and_scratch_changes_are_isolatable() {
+        let state = tempfile::tempdir().expect("state");
+        let store = RuntimeStore::open(Some(state.path())).await.expect("store");
+        let record = json!({"id":"reviewer", "rootId":"reviewer", "epoch":1,
+            "status":"running", "isLead":true, "provider":"claude", "cwd":"/scratch",
+            "workspaceMode":"layr-native", "role":"reviewer", "layrStoreRoot":"/store-a", "layrScratch":"/scratch"});
+        let saved = record.clone();
+        store
+            .transaction_with(move |tx| {
+                AgentRepository::put(tx, &AgentRecord::from_value(saved).expect("agent"))?;
+                Ok::<_, StoreError>(())
+            })
+            .await
+            .expect("save");
+        let resources = PreparationResources::bundled(String::new(), ModelCatalogService::new())
+            .expect("resources")
+            .for_receipt(&store, "reviewer", Some("/scratch"))
+            .await
+            .expect("capture");
+        let mut changed = record.clone();
+        changed["layrStoreRoot"] = json!("/store-b");
+        assert!(matches!(
+            resources.native_layr(state.path(), &changed),
+            Err(WorkerError::Store(StoreError::InvalidStoredObject { .. }))
+        ));
+        changed = record;
+        changed["layrScratch"] = json!("/other-scratch");
+        assert!(matches!(
+            native_claude_options(&resources, &changed, state.path()),
+            Err(WorkerError::Store(StoreError::InvalidStoredObject { .. }))
+        ));
+    }
 
     #[cfg(unix)]
     #[test]

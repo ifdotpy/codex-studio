@@ -107,7 +107,7 @@ pub(super) fn root_from_cwd(cwd: &Path) -> Option<PathBuf> {
 #[derive(Clone, PartialEq, Eq)]
 pub(crate) enum StoreAssociation {
     Recorded(PathBuf),
-    LegacyLine(PathBuf),
+    LegacyLine { cwd: PathBuf, reviewer: bool },
     Selected,
 }
 
@@ -115,7 +115,7 @@ impl StoreAssociation {
     pub(crate) fn resolve(&self, state: &Path) -> Result<PathBuf> {
         match self {
             Self::Recorded(root) => Ok(root.clone()),
-            Self::LegacyLine(cwd) => root_from_cwd(cwd).ok_or_else(|| {
+            Self::LegacyLine { cwd, .. } => root_from_cwd(cwd).ok_or_else(|| {
                 NativeLayrError::Refused("Invalid native Layr cwd association".into())
             }),
             Self::Selected => selected_store(state),
@@ -142,7 +142,10 @@ pub(crate) fn store_association(record: &Value) -> Result<StoreAssociation> {
         }]
         .as_str()
         .ok_or_else(|| NativeLayrError::Refused("Missing native Layr cwd".into()))?;
-        return Ok(StoreAssociation::LegacyLine(PathBuf::from(cwd)));
+        return Ok(StoreAssociation::LegacyLine {
+            cwd: PathBuf::from(cwd),
+            reviewer: record["role"] == "reviewer",
+        });
     }
     Ok(StoreAssociation::Selected)
 }
