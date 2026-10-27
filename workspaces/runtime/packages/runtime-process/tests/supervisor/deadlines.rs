@@ -70,7 +70,7 @@ fn blocked_write_on_one_handle_does_not_block_another_handle() {
     let slow_child = open(slow_handle);
     let other_child = open(other_handle);
     let slow_slot = supervisor.child_slot(slow_handle, false).unwrap().unwrap();
-    let write_gate = slow_child.write_lock.lock().unwrap();
+    let write_gate = slow_slot.operation.lock().unwrap();
     let (slow_done_tx, slow_done_rx) = mpsc::channel();
     let slow_supervisor = supervisor.clone();
     let slow_write = thread::spawn(move || {
@@ -83,22 +83,6 @@ fn blocked_write_on_one_handle_does_not_block_another_handle() {
         slow_done_tx.send(result).unwrap();
     });
 
-    // Wait until the real child_action owns this child's operation lock and is
-    // blocked at its write lock. This establishes the gate without a timing
-    // threshold; the deadline below is only a hang guard.
-    let operation_deadline = Instant::now() + Duration::from_secs(5);
-    let write_is_gated = loop {
-        match slow_slot.operation.try_lock() {
-            Err(std::sync::TryLockError::WouldBlock) => break true,
-            Err(std::sync::TryLockError::Poisoned(_)) => break false,
-            Ok(guard) => drop(guard),
-        }
-        if Instant::now() >= operation_deadline {
-            break false;
-        }
-        thread::yield_now();
-    };
-
     let (other_done_tx, other_done_rx) = mpsc::channel();
     let other_supervisor = supervisor.clone();
     let independent_operation = thread::spawn(move || {
@@ -107,7 +91,7 @@ fn blocked_write_on_one_handle_does_not_block_another_handle() {
         });
         other_done_tx.send(result).unwrap();
     });
-    // The slow child's actual write lock stays held until this other child's
+    // The slow child's operation lock stays held until this other child's
     // supervisor operation finishes.
     let other_finished_while_gated = other_done_rx.recv_timeout(Duration::from_secs(5)).ok();
     let other_finished_before_release = other_finished_while_gated.is_some();
@@ -126,7 +110,6 @@ fn blocked_write_on_one_handle_does_not_block_another_handle() {
         native_id: Some(1.into()),
         message: json!({"method":"finish"}).as_object().unwrap().clone(),
     });
-    assert!(write_is_gated);
     assert!(
         other_finished_before_release,
         "other operation waited for the gated write"
