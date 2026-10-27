@@ -937,7 +937,7 @@ mod tests {
         assert_eq!(
             serde_json::from_value::<Version>(json!(0.0))
                 .expect("integral version")
-                .0,
+                .get(),
             0
         );
         assert!(serde_json::from_value::<Version>(json!(1.5)).is_err());
@@ -996,6 +996,73 @@ mod managed_work_port_tests {
 
     fn schema() -> Value {
         json!({"type":"object","properties":{"count":{"type":"integer"}},"required":["count"],"additionalProperties":false})
+    }
+
+    #[tokio::test]
+    async fn task_command_preupgrade_receipt_replays_nullable_unused_fields() {
+        let (state, store, _directory) = state().await;
+        let created = super::perform(
+            state.clone(),
+            None,
+            json!({"action":"create","agent":"lead","id":"seed-create","title":"Task"}),
+            None,
+        )
+        .await
+        .expect("seed task");
+        for (index, actor) in [None, Some("lead")].into_iter().enumerate() {
+            let request = format!("legacy-create-{index}");
+            // A successful pre-upgrade create retained these unused nullable
+            // fields in its HTTP body and therefore in its receipt signature.
+            let original = json!({"action":"create","agent":"lead","id":request,"title":"Task",
+                "checks":null,"task_id":null,"reason":null,"revision":null,"files":null,"result":null});
+            let signature = super::work_items::work_request_signature("lead", actor, &original)
+                .expect("original hash");
+            let saved_signature = signature.clone();
+            let saved_result = created.to_string();
+            let saved_request = request.clone();
+            store.transaction(move |tx| {
+                tx.execute("INSERT INTO runtime_operation_receipts(id,signature,result) VALUES (?1,?2,?3)",
+                    rusqlite::params![saved_request,saved_signature,saved_result])?;
+                Ok(())
+            }).await.expect("pre-upgrade successful receipt");
+            let replayed = if actor.is_some() {
+                written(
+                    managed_work_port(state.clone(), None)
+                        .act("lead", &original, &request)
+                        .await,
+                )
+            } else {
+                super::perform(state.clone(), None, original.clone(), None)
+                    .await
+                    .expect("original HTTP body replays")
+            };
+            assert_eq!(replayed, created);
+            let query_request = request.clone();
+            let (actual_signature, actual_result, task_count) = store
+                .read_async("legacy-replay-test", move |db| {
+                    let (signature, result) = db.query_row(
+                        "SELECT signature,result FROM runtime_operation_receipts WHERE id=?1",
+                        [query_request],
+                        |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+                    )?;
+                    let count: i64 =
+                        db.query_row("SELECT count(*) FROM runtime_work", [], |row| row.get(0))?;
+                    Ok::<_, studio_runtime_store::StoreError>((signature, result, count))
+                })
+                .await
+                .expect("exact saved receipt");
+            assert_eq!(actual_signature, signature);
+            assert_eq!(actual_result, created.to_string());
+            assert_eq!(task_count, 1, "replay creates no additional task");
+            let mut changed = original;
+            changed.as_object_mut().expect("body").remove("checks");
+            assert!(
+                super::perform(state.clone(), None, changed, actor.map(str::to_owned))
+                    .await
+                    .is_err(),
+                "dropping a null field cannot rewrite the original hash"
+            );
+        }
     }
 
     #[tokio::test]

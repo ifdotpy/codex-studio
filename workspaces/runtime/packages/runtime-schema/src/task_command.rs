@@ -37,9 +37,12 @@ pub enum InitialStatus {
 /// compatibility while carrying an actual integer in the service.
 #[derive(Clone, Copy, Debug, Serialize, JsonSchema)]
 #[serde(transparent)]
-pub struct Version(
-    #[schemars(range(min = 0, max = crate::shared_values::MAX_SAFE_INTEGER))] pub i64,
-);
+pub struct Version(#[schemars(range(min = 0, max = crate::shared_values::MAX_SAFE_INTEGER))] i64);
+impl Version {
+    pub fn get(self) -> i64 {
+        self.0
+    }
+}
 impl<'de> Deserialize<'de> for Version {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         let number = serde_json::Number::deserialize(deserializer)?;
@@ -69,6 +72,11 @@ impl<'de> Deserialize<'de> for Version {
 /// use studio_runtime_schema::task_command::TaskCommand;
 /// let command = TaskCommand::Cancel { task_id: "task".into(), version: None };
 /// // A cancellation always carries its reason.
+/// ```
+///
+/// ```compile_fail
+/// use studio_runtime_schema::task_command::Version;
+/// let version = Version(-1); // Ingress validation cannot be bypassed.
 /// ```
 #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(tag = "action", rename_all = "snake_case")]
@@ -259,15 +267,38 @@ fn command_properties(variants: &[Value]) -> serde_json::Map<String, Value> {
             .as_object()
             .expect("command properties")
         {
+            let mut optional = schema.clone();
+            // A required action's nonempty text constraint does not apply when
+            // that field is unused. Its action variant still enforces it.
+            optional
+                .as_object_mut()
+                .expect("property schema")
+                .remove("minLength");
             let alternatives = fields.entry(field.clone()).or_default();
-            if !alternatives.contains(schema) {
-                alternatives.push(schema.clone());
+            if !alternatives.contains(&optional) {
+                alternatives.push(optional);
             }
         }
     }
     fields
         .into_iter()
-        .map(|(field, alternatives)| (field, json!({"anyOf":alternatives})))
+        .map(|(field, mut alternatives)| {
+            let mut schema = if alternatives.len() == 1 {
+                alternatives.remove(0)
+            } else {
+                json!({"anyOf":alternatives})
+            };
+            // Historical flat optional scalar/list fields accepted null even
+            // on actions which did not consume them. Named object contracts
+            // (including result_schema) retain their owner's exact schema.
+            if matches!(
+                schema.get("type").and_then(Value::as_str),
+                Some("string" | "integer" | "number" | "array")
+            ) {
+                schema = json!({"anyOf":[schema,{"type":"null"}]});
+            }
+            (field, schema)
+        })
         .collect()
 }
 
@@ -323,9 +354,17 @@ mod tests {
         check_api_contract(&document).expect("generated request owner");
         let mut tool = json!({"type":"object","properties":{"action":{"type":"string"}},"required":["action"]}).as_object().expect("object").clone();
         apply_tool_contract("orchestration_task", &mut tool);
+        assert_eq!(
+            tool["properties"]["result_schema"],
+            crate::task_results::schema_input(),
+            "a single named schema keeps its owner's exact representation"
+        );
         let validator = crate::Validator::new(&Value::Object(tool)).expect("tool variants");
         for raw in [
             json!({"action":"create","title":"Task","description":"x".repeat(64000)}),
+            json!({"action":"create","title":"Task","checks":null,"task_id":null,"reason":null,"revision":null,"files":null}),
+            json!({"action":"create","title":"Task","reason":""}),
+            json!({"action":"cancel","task_id":"task","reason":"done","title":""}),
             json!({"action":"submit","task_id":"task","result":{"answer":null},"checks":"checked","revision":"abc"}),
             json!({"action":"update","task_id":"task","version":2.0,"owner":null}),
         ] {
@@ -335,6 +374,14 @@ mod tests {
         for raw in [
             json!({"action":"create"}),
             json!({"action":"cancel","task_id":"task"}),
+            json!({"action":"create","title":null}),
+            json!({"action":"create","title":""}),
+            json!({"action":"cancel","task_id":"task","reason":null}),
+            json!({"action":"cancel","task_id":"task","reason":""}),
+            json!({"action":"cancel","task_id":null,"reason":"done"}),
+            json!({"action":"submit","task_id":"task","result":"done","checks":null,"revision":"abc"}),
+            json!({"action":"submit","task_id":"task","result":"done","checks":"checked","revision":null}),
+            json!({"action":"submit","task_id":"task","result":"done","checks":"checked","revision":"abc","files":null}),
             json!({"action":"update","task_id":"task","owner":42}),
             json!({"action":"update","task_id":"task","version":2.5}),
         ] {
@@ -358,7 +405,7 @@ mod tests {
         };
         assert!(matches!(owner, Field::Null));
         assert!(matches!(result_schema, Field::Value(Value::Bool(false))));
-        assert_eq!(version.expect("version").0, 2);
+        assert_eq!(version.expect("version").get(), 2);
         let TaskCommand::Update {
             owner,
             result_schema,

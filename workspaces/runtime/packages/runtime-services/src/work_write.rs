@@ -1470,7 +1470,7 @@ pub fn task_command(
             gate,
         } => WorkWrite::Mutate(WorkMutation::Update {
             task_id,
-            version: version.map(|value| value.0),
+            version: version.map(|value| value.get()),
             title,
             description,
             owner: match owner {
@@ -1489,7 +1489,7 @@ pub fn task_command(
             reason,
         } => WorkWrite::Mutate(WorkMutation::Cancel {
             task_id,
-            version: version.map(|value| value.0),
+            version: version.map(|value| value.get()),
             reason,
         }),
         TaskCommand::Reject {
@@ -1498,7 +1498,7 @@ pub fn task_command(
             result,
         } => WorkWrite::Mutate(WorkMutation::Reject {
             task_id,
-            version: version.map(|value| value.0),
+            version: version.map(|value| value.get()),
             reason: result,
         }),
         TaskCommand::Claim {
@@ -1507,7 +1507,7 @@ pub fn task_command(
             owner,
         } => WorkWrite::Claim(ClaimWork {
             task_id,
-            version: version.map(|value| value.0),
+            version: version.map(|value| value.get()),
             claimant_id: owner.unwrap_or(actor_id),
         }),
         TaskCommand::Submit {
@@ -1519,7 +1519,7 @@ pub fn task_command(
             files,
         } => WorkWrite::Submit(SubmitWork {
             task_id,
-            version: version.map(|value| value.0),
+            version: version.map(|value| value.get()),
             result,
             checks,
             revision,
@@ -1537,7 +1537,7 @@ pub fn task_command(
             override_reason,
         } => WorkWrite::Accept(AcceptWork {
             task_id,
-            version: version.map(|value| value.0),
+            version: version.map(|value| value.get()),
             reason: result,
             override_reason,
             merged_result_id: None,
