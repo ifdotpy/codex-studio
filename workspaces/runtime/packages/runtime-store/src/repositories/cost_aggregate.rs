@@ -1562,6 +1562,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[allow(clippy::disallowed_methods)] // The fixture builds a legacy record and its ledger form.
     async fn typed_usage_receipt_decoding_keeps_legacy_and_ledger_identity_checks() {
         use studio_runtime_schema::usage::ledger::UsageLedgerRow;
         let temp = tempfile::tempdir().expect("state");
