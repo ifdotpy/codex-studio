@@ -6,6 +6,69 @@ use sha2::{Digest, Sha256};
 
 use crate::{StoreError, StoreResult};
 
+/// Current receipt-owner query columns. The JSON record owns domain state;
+/// only quarantine remains independent so malformed agent JSON can be held.
+pub(crate) fn receipt_owner_columns() -> Vec<(&'static str, &'static str, String)> {
+    use studio_runtime_schema::persistence::*;
+    let generated = |_name: &str, path: &str, check: String| {
+        format!("TEXT GENERATED ALWAYS AS (record->>'$.{path}') VIRTUAL {check}")
+    };
+    vec![
+        ("runtime_agents", "hold_status", format!("TEXT NOT NULL DEFAULT '{}' {}", HoldStatus::Clear.as_str(), enum_check::<HoldStatus>("hold_status"))),
+        ("runtime_agents", "hold_incident", "TEXT".into()),
+        ("runtime_agents", "title_status", generated("title_status", "titleJob.status", enum_check::<TitleStatus>("title_status"))),
+        ("runtime_agents", "vm_launch_status", generated("vm_launch_status", "vmLaunch.status", enum_check::<WorkEffectStatus>("vm_launch_status"))),
+        ("runtime_agents", "idle_episode_outcome", generated("idle_episode_outcome", "idleCompactionEpisode.outcome", enum_check::<IdleEpisodeOutcome>("idle_episode_outcome"))),
+        ("runtime_agents", "provider_stream_generation", "INTEGER GENERATED ALWAYS AS (record->>'$.providerStream.generation') VIRTUAL".into()),
+        ("runtime_agents", "provider_stream_ack", "INTEGER GENERATED ALWAYS AS (record->>'$.providerStream.ack') VIRTUAL".into()),
+        ("runtime_work", "status", generated("status", "status", enum_check::<WorkStatus>("status"))),
+        ("runtime_work", "archive_status", generated("archive_status", "archiveIntent.status", enum_check::<WorkEffectStatus>("archive_status"))),
+        ("runtime_work", "archive_next_at", "REAL GENERATED ALWAYS AS (COALESCE(record->>'$.archiveIntent.nextAttemptAt',0)) VIRTUAL".into()),
+        ("runtime_work", "vm_submit_status", generated("vm_submit_status", "vmSubmit.status", enum_check::<WorkEffectStatus>("vm_submit_status"))),
+        ("runtime_work", "vm_accept_status", generated("vm_accept_status", "vmAccept.status", enum_check::<WorkEffectStatus>("vm_accept_status"))),
+        ("runtime_tool_requests", "agent", generated("agent", "agent", String::new())),
+        ("runtime_tool_requests", "kind", generated("kind", "kind", enum_check::<ToolRequestKind>("kind"))),
+        ("runtime_tool_requests", "status", generated("status", "status", enum_check::<ToolRequestStatus>("status"))),
+        ("runtime_tool_requests", "request_id", generated("request_id", "requestId", String::new())),
+        ("runtime_tool_requests", "origin_key", generated("origin_key", "originKey", String::new())),
+        ("runtime_tool_requests", "updated", "INTEGER GENERATED ALWAYS AS (record->>'$.updated') VIRTUAL".into()),
+        ("runtime_execution_runs", "status", generated("status", "status", enum_check::<ExecutionStatus>("status"))),
+        ("runtime_execution_attempts", "submission", generated("submission", "submission", enum_check::<AttemptSubmission>("submission"))),
+        ("runtime_execution_attempts", "turn_status", generated("turn_status", "turnStatus", enum_check::<ExecutionStatus>("turn_status"))),
+        ("runtime_execution_effects", "status", generated("status", "status", enum_check::<ExecutionEffectStatus>("status"))),
+        ("runtime_execution_nodes", "status", generated("status", "status", enum_check::<ExecutionNodeStatus>("status"))),
+        ("runtime_projects", "removal_reason", generated("removal_reason", "removal.reason", enum_check::<ProjectRemovalReason>("removal_reason"))),
+    ]
+}
+
+pub(crate) fn prepare_receipt_owners(connection: &Connection) -> StoreResult<()> {
+    for (table, name, definition) in receipt_owner_columns() {
+        if !table_exists(connection, table)? {
+            continue;
+        }
+        let exists: bool = connection.query_row(
+            "SELECT EXISTS(SELECT 1 FROM pragma_table_xinfo(?1) WHERE name=?2)",
+            params![table, name],
+            |row| row.get(0),
+        )?;
+        if !exists {
+            connection.execute_batch(&format!(
+                "ALTER TABLE {table} ADD COLUMN {name} {definition}"
+            ))?;
+        }
+    }
+    connection.execute_batch(
+        "CREATE INDEX IF NOT EXISTS runtime_agent_holds ON runtime_agents(id) WHERE hold_status!='clear';
+         DROP INDEX IF EXISTS runtime_work_archive_due;
+         CREATE INDEX runtime_work_archive_due ON runtime_work(archive_next_at,id) WHERE archive_status IN ('pending','retryable','unknown');
+         CREATE INDEX IF NOT EXISTS runtime_tool_request_current_actor ON runtime_tool_requests(agent,updated DESC,id);
+         CREATE UNIQUE INDEX IF NOT EXISTS runtime_tool_request_origin ON runtime_tool_requests(origin_key) WHERE origin_key IS NOT NULL;
+         CREATE INDEX IF NOT EXISTS runtime_tool_request_current_status ON runtime_tool_requests(status,agent,id);
+         CREATE UNIQUE INDEX IF NOT EXISTS runtime_execution_terminal_source ON runtime_execution_attempts(json_extract(record,'$.terminalRepair.source.accountKey'),json_extract(record,'$.terminalRepair.source.threadId'),json_extract(record,'$.terminalRepair.proof.turnId')) WHERE json_type(record,'$.terminalRepair')='object';"
+    )?;
+    Ok(())
+}
+
 pub(crate) fn verify(canvas_path: &Path, analytics_path: &Path) -> StoreResult<()> {
     verify_core(canvas_path, analytics_path)?;
     verify_bootstrap(&open_read_only(canvas_path)?)
