@@ -51,6 +51,13 @@ pub enum DispatchOutcome {
     Unhandled { kind: String, reason: String },
 }
 
+/// Notification application proof stored in the owning journal gap until ACK.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub(crate) struct NotificationSettlement {
+    pub signature: String,
+    pub outcome: DispatchOutcome,
+}
+
 /// Native session identity supplied by the account worker, never reconstructed
 /// from a journal generation. Replayed generations cannot acquire current controls.
 #[derive(Clone)]
