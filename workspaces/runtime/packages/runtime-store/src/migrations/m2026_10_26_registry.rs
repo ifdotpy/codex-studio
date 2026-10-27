@@ -145,6 +145,12 @@ mod tests {
     use crate::account_registry::atomic_replace_with;
     use std::fs;
 
+    /// Production passes the canonical state directory; macOS temporary
+    /// directories sit behind the `/var` to `/private/var` symlink.
+    fn canonical(root: &tempfile::TempDir) -> std::path::PathBuf {
+        fs::canonicalize(root.path()).expect("canonical state")
+    }
+
     fn source(root: &std::path::Path) -> Vec<u8> {
         fs::create_dir(root.join("accounts")).expect("accounts");
         let bytes = br#"{"version":1,"defaultAccountKey":"default","accounts":{"z":{"id":"z","provider":"claude","home":"/fixture/z","label":"Z","source":"fixture","status":"ready"},"default":{"id":"default","home":"/fixture","label":"Fixture","source":"fixture","status":"ready"}},"logins":{}}"#.to_vec();
@@ -157,7 +163,7 @@ mod tests {
         let root = tempfile::tempdir().expect("state");
         let original = source(root.path());
         let path = root.path().join("accounts/registry.json");
-        let prepared = preflight(root.path()).expect("preflight");
+        let prepared = preflight(&canonical(&root)).expect("preflight");
         let error = apply_with(prepared.as_ref(), |path, bytes| {
             atomic_replace_with(
                 path,
@@ -188,7 +194,7 @@ mod tests {
         let root = tempfile::tempdir().expect("state");
         let original = source(root.path());
         let path = root.path().join("accounts/registry.json");
-        let prepared = preflight(root.path()).expect("preflight");
+        let prepared = preflight(&canonical(&root)).expect("preflight");
         let error = apply_with(prepared.as_ref(), |path, bytes| {
             atomic_replace_with(
                 path,
@@ -210,7 +216,7 @@ mod tests {
         assert_ne!(committed, original);
         let (_, order) = decode_registry(&committed).expect("strict current document");
         assert_eq!(order.accounts, ["z", "default"]);
-        let retry = preflight(root.path()).expect("restart preflight");
+        let retry = preflight(&canonical(&root)).expect("restart preflight");
         apply_with(retry.as_ref(), |_, _| {
             panic!("already current file must not be replaced")
         })
