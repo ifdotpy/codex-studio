@@ -19,7 +19,8 @@ pub use routes::{
 };
 pub use schema::{API_SCHEMA_HASH_HEADER, API_SCHEMA_MISMATCH_HEADER, api_schema_hash, operations};
 
-#[allow(clippy::all)]
+// Generated HTTP types follow the schema, including nested optional fields.
+#[allow(clippy::all, clippy::option_option, clippy::struct_excessive_bools)]
 pub mod generated {
     include!(concat!(env!("OUT_DIR"), "/generated/mod.rs"));
 }

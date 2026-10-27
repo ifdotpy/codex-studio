@@ -166,7 +166,7 @@ test("short and comprehensive recipes preserve their owned test boundaries", () 
   assert.match(fast.command, /native\/check-native\.test\.ts/);
   assert.doesNotMatch(fast.command, /test:browser/);
   assert.match(comprehensive.command, /'--profile' 'ci'/);
-  assert.match(comprehensive.command, /'clippy' '--workspace'/);
+  assert.match(comprehensive.command, /clippy-ratchet\.ts/);
   assert.match(comprehensive.command, /test:unit:prepared/);
   assert.match(comprehensive.command, /test:browser:smoke:prepared/);
 });

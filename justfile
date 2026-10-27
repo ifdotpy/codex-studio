@@ -62,7 +62,7 @@ check package *args:
 
 [doc("Lint every runtime workspace target with warnings treated as errors.")]
 clippy-runtime:
-    cargo clippy --workspace --all-targets --locked -- -D warnings
+    node workspaces/tooling/apps/repository-checks/clippy-ratchet.ts
 
 [doc("Check generated API and persisted-state contracts in read-only drift mode.")]
 contracts-check:
