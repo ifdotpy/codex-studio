@@ -9,7 +9,7 @@ use serde_json::{Value, json};
 use std::sync::Arc;
 use studio_runtime_providers::ProviderKind;
 use studio_runtime_services::claude_controls::{
-    ControlError, ControlRequest,
+    ControlError,
     service::{ControlBinding, ControlFuture, ControlSession, Controls},
     store::StoredControls,
 };
@@ -102,47 +102,37 @@ async fn session(
     State(state): State<HttpState>,
     ApiJson(body): ApiJson<crate::generated::ClaudeSessionApiClaudeSessionPostRequest>,
 ) -> Result<Json<Value>, ApiError> {
-    use crate::generated::ClaudeSessionApiClaudeSessionPostRequest as SessionRequest;
-    let control_request: Option<ControlRequest> = match &body {
-        SessionRequest::ClaudeSessionSettingsRequest(request)
-        | SessionRequest::ClaudeSessionRollbackRequest(request) => Some(request.clone()),
-        SessionRequest::ClaudeSessionCommandRequest(_)
-        | SessionRequest::ClaudeSessionStateRequest(_)
-        | SessionRequest::ClaudeSessionStopTaskRequest(_) => None,
+    use crate::generated::{
+        ClaudeSessionApiClaudeSessionPostRequest as SessionRequest, ClaudeSessionStateRequestAction,
     };
-    let body = serde_json::to_value(body).map_err(|_| ApiError::internal())?;
-    let action = body
-        .get("action")
-        .and_then(Value::as_str)
-        .unwrap_or_default();
-    if action == "command" {
-        let id = body
-            .get("id")
-            .and_then(Value::as_str)
-            .filter(|id| !id.is_empty())
-            .ok_or_else(|| ApiError::validation(vec![json!("body"), json!("id")]))?;
-        let store = state.store.clone().ok_or_else(ApiError::internal)?;
-        let (agent, _) = load_agent(store, id.to_owned()).await?;
-        require_claude_account(&state, &agent).await?;
-        studio_runtime_services::claude_controls::ControlSnapshot::from_records(agent, None)
-            .map_err(control_error)?;
-        return command(state, body).await;
+    let id = match &body {
+        SessionRequest::ClaudeSessionSettingsRequest(request)
+        | SessionRequest::ClaudeSessionRollbackRequest(request) => request.id(),
+        SessionRequest::ClaudeSessionCommandRequest(request) => &request.id,
+        SessionRequest::ClaudeSessionStateRequest(request) => &request.id,
+        SessionRequest::ClaudeSessionStopTaskRequest(request) => &request.id,
+    };
+    if id.is_empty() {
+        return Err(ApiError::validation(vec![json!("body"), json!("id")]));
     }
-    let id = body
-        .get("id")
-        .and_then(Value::as_str)
-        .filter(|id| !id.is_empty())
-        .ok_or_else(|| ApiError::validation(vec![json!("body"), json!("id")]))?
-        .to_owned();
+    let id = id.to_owned();
+    let is_state = matches!(&body, SessionRequest::ClaudeSessionStateRequest(request) if request.action == ClaudeSessionStateRequestAction::State);
     let store = state.store.clone().ok_or_else(ApiError::internal)?;
     let (agent, operation) = load_agent(store.clone(), id.clone()).await?;
     require_claude_account(&state, &agent).await?;
+    let snapshot_operation = match &body {
+        SessionRequest::ClaudeSessionCommandRequest(_) => None,
+        SessionRequest::ClaudeSessionSettingsRequest(_)
+        | SessionRequest::ClaudeSessionRollbackRequest(_)
+        | SessionRequest::ClaudeSessionStateRequest(_)
+        | SessionRequest::ClaudeSessionStopTaskRequest(_) => operation.clone(),
+    };
     let snapshot = studio_runtime_services::claude_controls::ControlSnapshot::from_records(
         agent.clone(),
-        operation.clone(),
+        snapshot_operation,
     )
     .map_err(control_error)?;
-    let account = if action == "state" {
+    let account = if is_state {
         agent
             .get("lazyAccountTransfer")
             .and_then(|lazy| lazy.get("sourceAccountKey"))
@@ -163,49 +153,57 @@ async fn session(
         .get("threadId")
         .and_then(Value::as_str)
         .is_none_or(str::is_empty);
-    let local_only = (action == "state" && state_thread(&agent).is_none())
-        || (action == "settings" && no_thread);
-    if matches!(action, "rollback" | "stop_task") && no_thread {
+    let local_only = (is_state && state_thread(&agent).is_none())
+        || (matches!(&body, SessionRequest::ClaudeSessionSettingsRequest(_)) && no_thread);
+    if matches!(
+        &body,
+        SessionRequest::ClaudeSessionRollbackRequest(_)
+            | SessionRequest::ClaudeSessionStopTaskRequest(_)
+    ) && no_thread
+    {
         return Err(control_error(ControlError::Request));
     }
-    let session: Arc<dyn ControlSession> = if local_only {
-        Arc::new(LocalControlSession {
-            binding: ControlBinding::new(account.to_owned(), "local-no-thread".into(), 1)
-                .map_err(control_error)?,
-        })
-    } else {
-        let broker = state
-            .account_session
-            .as_ref()
-            .ok_or_else(|| ApiError::dependency("provider-session/claude-controls"))?;
-        broker
-            .claude_control_session(account)
-            .map_err(session_error)?
+    // Native commands use the message service and need no provider control session.
+    let controls = || -> Result<Controls, ApiError> {
+        let session: Arc<dyn ControlSession> = if local_only {
+            Arc::new(LocalControlSession {
+                binding: ControlBinding::new(account.to_owned(), "local-no-thread".into(), 1)
+                    .map_err(control_error)?,
+            })
+        } else {
+            let broker = state
+                .account_session
+                .as_ref()
+                .ok_or_else(|| ApiError::dependency("provider-session/claude-controls"))?;
+            broker
+                .claude_control_session(account)
+                .map_err(session_error)?
+        };
+        Ok(Controls::new(
+            Arc::new(StoredControls::new(store.clone(), Arc::new(|_| {}))),
+            session,
+        ))
     };
-    let controls = Controls::new(
-        Arc::new(StoredControls::new(store.clone(), Arc::new(|_| {}))),
-        session,
-    );
-    let result = match action {
-        "settings" | "rollback" => match control_request {
-            Some(request) => controls.execute(request).await,
-            None => return Err(ApiError::internal()),
-        },
-        "state" | "commands" | "stop_task" => {
-            controls
+    let result = match body {
+        SessionRequest::ClaudeSessionCommandRequest(request) => {
+            let body = serde_json::to_value(request).map_err(|_| ApiError::internal())?;
+            return command(state, body).await;
+        }
+        SessionRequest::ClaudeSessionSettingsRequest(request)
+        | SessionRequest::ClaudeSessionRollbackRequest(request) => {
+            controls()?.execute(request).await
+        }
+        request @ (SessionRequest::ClaudeSessionStateRequest(_)
+        | SessionRequest::ClaudeSessionStopTaskRequest(_)) => {
+            let body = serde_json::to_value(request).map_err(|_| ApiError::internal())?;
+            controls()?
                 .read_or_stop(snapshot.agent(), &body, operation)
                 .await
-        }
-        _ => {
-            return Err(ApiError::new(
-                StatusCode::BAD_REQUEST,
-                "Unknown Claude action",
-            ));
         }
     };
     state.event_wake.notify_one();
     let mut result = result.map_err(control_error)?;
-    if action == "state" {
+    if is_state {
         let workspace = studio_runtime_services::checkpoints::capture_context(&store, &id)
             .await
             .map_err(|_| ApiError::internal())?;
