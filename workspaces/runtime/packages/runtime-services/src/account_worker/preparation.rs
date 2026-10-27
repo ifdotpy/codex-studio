@@ -237,7 +237,7 @@ impl PreparedTurn {
         };
         let pending = Pending {
             intent: prepared.intent.clone(),
-            method: prepared.method.as_str().into(),
+            method: prepared.method,
             operation,
             thread: prepared.thread.clone(),
             compiled: prepared.compiled.clone(),

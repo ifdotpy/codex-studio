@@ -35,7 +35,16 @@ fn known_method_set_has_unique_reversible_wire_names() {
     );
     for method in Method::all() {
         assert_eq!(Method::from_wire(method.as_str()), Some(*method));
+        assert_eq!(
+            serde_json::to_value(method).unwrap(),
+            json!(method.as_str())
+        );
+        assert_eq!(
+            serde_json::from_value::<Method>(json!(method.as_str())).unwrap(),
+            *method
+        );
     }
+    assert!(serde_json::from_value::<Method>(json!("turn/strat")).is_err());
 }
 
 #[test]
