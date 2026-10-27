@@ -112,7 +112,7 @@ impl TaskRecoveryEffects for TaskRecoveryStore {
                 .optional()?;
             let decision = match decision {
                 TaskAbsenceDecision::Lost => expected.absence_decision(&current, observation.quiet),
-                hold => hold,
+                hold @ TaskAbsenceDecision::Hold { .. } => hold,
             };
             let mut updated = t.clone();
             match decision {
@@ -315,7 +315,7 @@ impl TaskCompletionWriter for RuntimeTaskCompletionWriter {
                     crate::notification_dispatch::NotificationDispatchError::Store(error) => {
                         RecoveryError::Store(error)
                     }
-                    _ => RecoveryError::CommitFailed,
+                    crate::notification_dispatch::NotificationDispatchError::InvalidNotification { .. } | crate::notification_dispatch::NotificationDispatchError::InvalidAccountState { .. } | crate::notification_dispatch::NotificationDispatchError::StreamCapacity | crate::notification_dispatch::NotificationDispatchError::InvalidStoredObject { .. } | crate::notification_dispatch::NotificationDispatchError::ConflictingDelivery | crate::notification_dispatch::NotificationDispatchError::ConflictingInput | crate::notification_dispatch::NotificationDispatchError::UnauthorizedSubmission | crate::notification_dispatch::NotificationDispatchError::Dependency(_) | crate::notification_dispatch::NotificationDispatchError::Budget(_) | crate::notification_dispatch::NotificationDispatchError::Move(_) | crate::notification_dispatch::NotificationDispatchError::Json(_) => RecoveryError::CommitFailed,
                 })?;
                 let written = TaskRepository::get(tx, &TaskId::from(id))?
                     .ok_or(RecoveryError::CommitFailed)?;

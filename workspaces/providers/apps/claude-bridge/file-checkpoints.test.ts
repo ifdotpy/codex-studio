@@ -23,6 +23,7 @@ test("bridge enables SDK checkpoints and rewinds the exact echoed message with c
       n.method === "turn/completed" && n.params.turn.id === started.turn.id,
   );
   const state = await bridge.call("claude/state", { threadId: bridge.thread });
+  assert.ok(state.turns[0]);
   assert.equal(state.turns[0].canRestoreFiles, true);
   const request = {
     threadId: bridge.thread,

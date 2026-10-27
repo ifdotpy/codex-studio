@@ -74,8 +74,42 @@ impl CaptureTable {
 /// applied to analytics. Unit: Canvas log sequence number.
 pub const PROJECTION_CURSOR_KEY: &str = "canvasProjectionSeq";
 
+/// Parse a persisted nonnegative analytics time/count.
+pub fn number(value: &Value) -> Option<f64> {
+    value
+        .as_f64()
+        .filter(|number| number.is_finite() && *number >= 0.)
+}
+/// Historical analytics text spelling; original receipt interpretation is retained.
+pub fn text(value: &Value) -> &str {
+    value.as_str().unwrap_or("None")
+}
+
+pub fn repair_checkpoint_cursor(state: &Value) -> StoreResult<(i64, i64)> {
+    let read = |field| {
+        state[field]
+            .as_i64()
+            .filter(|number| *number >= 0)
+            .ok_or(StoreError::RecordContract(
+                "invalid analytics repair cursor/end",
+            ))
+    };
+    Ok((read("cursor")?, read("end")?))
+}
+
 pub struct AnalyticsCaptureRepository;
 impl AnalyticsCaptureRepository {
+    pub fn metadata(db: &Connection, key: &str) -> StoreResult<Option<Value>> {
+        let raw: Option<String> = db
+            .query_row(
+                "SELECT value FROM analytics_meta WHERE key=?1",
+                [key],
+                |row| row.get(0),
+            )
+            .optional()?;
+        raw.map(|raw| serde_json::from_str(&raw).map_err(Into::into))
+            .transpose()
+    }
     /// Resolve legacy usage's explicit provenance or its referenced agent identity.
     /// Missing owners and malformed explicit provenance never select a provider.
     pub(crate) fn legacy_usage_provider(db: &Connection, row: &Value) -> StoreResult<ProviderKind> {
@@ -490,7 +524,8 @@ impl RuntimeStore {
 
     /// Keep the Canvas actor callback occupied for stable main-store reads through commit:
     /// analytics_capture::{capture,capture_batch}, analytics_history::HistoryBatch::commit,
-    /// and analytics_history_repair::{migrate_budget,repair_terminal_errors} rely on it.
+    /// and analytics_history_repair::migrate_budget rely on it. Terminal repair instead
+    /// runs in the pre-start migration transaction.
     /// Serialize analytics with canvas writes. The callback must do SQLite and
     /// bounded pure decisions only. Analytics commit is the durable receipt;
     /// a lost commit response is Unknown and must be reconciled by the caller.
@@ -707,15 +742,15 @@ fn check_history_rows(
 
         let id = match id {
             ValueRef::Text(bytes) => std::str::from_utf8(bytes).ok(),
-            _ => None,
+            ValueRef::Null | ValueRef::Integer(_) | ValueRef::Real(_) | ValueRef::Blob(_) => None,
         };
         let agent = match row.get_ref(1)? {
             ValueRef::Text(bytes) => std::str::from_utf8(bytes).ok(),
-            _ => None,
+            ValueRef::Null | ValueRef::Integer(_) | ValueRef::Real(_) | ValueRef::Blob(_) => None,
         };
         let raw = match row.get_ref(2)? {
             ValueRef::Text(bytes) => std::str::from_utf8(bytes).ok(),
-            _ => None,
+            ValueRef::Null | ValueRef::Integer(_) | ValueRef::Real(_) | ValueRef::Blob(_) => None,
         };
         let (Some(id), Some(agent), Some(raw)) = (id, agent, raw) else {
             record_analytics_failure(report, failures, (String::new(), "storageType".into()));

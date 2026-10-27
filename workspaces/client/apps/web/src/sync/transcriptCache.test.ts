@@ -1,3 +1,5 @@
+import { required } from "../components/componentTestFixtures.ts";
+import assert from "node:assert/strict";
 import type { TranscriptWireItem } from "../types";
 // Cache-only fixture views omit renderer-only role/text and input truncation fields.
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
@@ -79,6 +81,7 @@ it("applies every delta immediately and publishes the latest transcript once", a
   expect(accept).toHaveBeenCalledOnce();
   vi.advanceTimersByTime(50);
   expect(accept).toHaveBeenCalledTimes(2);
+  assert.ok(accept.mock.calls[1] != null);
   expect(accept.mock.calls[1][0]).toEqual(
     cache.peekTranscript("workspace", "a"),
   );
@@ -102,7 +105,9 @@ it("keeps workspace notifications separate and cancels notifications for a close
   vi.advanceTimersByTime(50);
   expect(old).not.toHaveBeenCalled();
   expect(current).toHaveBeenCalledOnce();
-  expect(current.mock.calls[0][0].payload.items).toEqual([{ id: "new" }]);
+  expect(required(current.mock.calls[0])[0].payload.items).toEqual([
+    { id: "new" },
+  ]);
   stopCurrent();
 });
 
@@ -140,6 +145,7 @@ it("keeps a retained conversation snapshot renderable while a removal awaits pub
   const accept = vi.fn();
   const stop = cache.subscribeTranscript("workspace", "chat", accept);
   // useMessages retains this payload in page.latest until the next publication.
+  assert.ok(accept.mock.calls[0] != null);
   const retained = accept.mock.calls[0][0];
   const rendered = transcriptMessages(retained.payload!.items, "chat");
   expect(rendered.map(({ id, role, text }) => ({ id, role, text }))).toEqual([
@@ -156,13 +162,15 @@ it("keeps a retained conversation snapshot renderable while a removal awaits pub
   expect(transcriptMessages(retained.payload!.items, "chat")).toEqual(rendered);
   expect(retained.payload!.items).toEqual([batch, reply]);
   const current = cache.peekTranscript("workspace", "chat")!;
-  expect(current.payload!.items).toEqual([reply]);
-  expect(current.payload!.items[0]).toBe(reply);
-  expect(transcriptMessages(current.payload!.items, "chat")).toEqual([
+  assert.ok(current.payload != null);
+  expect(current.payload.items).toEqual([reply]);
+  expect(current.payload.items[0]).toBe(reply);
+  expect(transcriptMessages(current.payload.items, "chat")).toEqual([
     rendered[2],
   ]);
   vi.advanceTimersByTime(50);
   expect(accept).toHaveBeenCalledTimes(2);
+  assert.ok(accept.mock.calls[1] != null);
   expect(accept.mock.calls[1][0]).toBe(current);
   stop();
 });
@@ -194,7 +202,8 @@ it.each(["append", "replace", "remove", "reorder"] as const)(
       operation === "reorder" ? ["kept", "first"] : undefined,
     );
 
-    expect(retained.payload!.items).toBe(items);
+    assert.ok(retained.payload != null);
+    expect(retained.payload.items).toBe(items);
     expect(items).toEqual([first, kept]);
     expect(retained.seq).toBe(1);
     const current = cache.peekTranscript("workspace", "chat")!;
@@ -205,7 +214,8 @@ it.each(["append", "replace", "remove", "reorder"] as const)(
       reorder: [kept, first],
     }[operation];
     expect(current.seq).toBe(2);
-    expect(current.payload!.items).toEqual(expected);
+    assert.ok(current.payload != null);
+    expect(current.payload.items).toEqual(expected);
     for (const [index, item] of expected.entries())
       expect(current.payload!.items[index]).toBe(item);
   },

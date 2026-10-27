@@ -1,3 +1,4 @@
+import { required } from "../components/componentTestFixtures.ts";
 import { readFileSync } from "node:fs";
 import { expect, test } from "vitest";
 import { theme } from "../theme";
@@ -10,7 +11,7 @@ const kindDeclaration = read(
   "../components/chat-status/chatStatusModel.ts",
 ).match(/export type ChatIndicatorKind =([\s\S]*?);/)![1];
 
-const kinds = [...kindDeclaration.matchAll(/"(\w+)"/g)].map(
+const kinds = [...required(kindDeclaration).matchAll(/"(\w+)"/g)].map(
   (match) => match[1],
 );
 
@@ -25,18 +26,22 @@ function variables(scheme: "light" | "dark") {
   for (const source of [surfaceSource, stateSource]) {
     for (const [, selector, body] of source.matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
       if (
-        !selector.includes(":root") &&
-        !selector.includes(`[data-mantine-color-scheme="${scheme}"]`) &&
-        !selector.trim().endsWith("[data-mantine-color-scheme]")
+        !required(selector).includes(":root") &&
+        !required(selector).includes(
+          `[data-mantine-color-scheme="${scheme}"]`,
+        ) &&
+        !required(selector).trim().endsWith("[data-mantine-color-scheme]")
       )
         continue;
-      for (const [, name, value] of body.matchAll(/(--[\w-]+):\s*([^;]+);/g))
-        values[name] = value.trim();
+      for (const [, name, value] of required(body).matchAll(
+        /(--[\w-]+):\s*([^;]+);/g,
+      ))
+        values[required(name)] = required(value).trim();
     }
   }
   const resolve = (name: string): string => {
     expect(values[name], `${name} must have a named token owner`).toBeDefined();
-    return values[name].replace(/var\((--[\w-]+)\)/g, (_, token) =>
+    return required(values[name]).replace(/var\((--[\w-]+)\)/g, (_, token) =>
       resolve(token),
     );
   };
@@ -51,7 +56,8 @@ function luminance(rgb: number[]) {
       value <= 0.04045 ? value / 12.92 : ((value + 0.055) / 1.055) ** 2.4,
     )
     .reduce(
-      (sum, value, index) => sum + value * [0.2126, 0.7152, 0.0722][index],
+      (sum, value, index) =>
+        sum + value * required([0.2126, 0.7152, 0.0722][index]),
       0,
     );
 }
@@ -60,7 +66,7 @@ function contrast(foreground: number[], background: number[]) {
     (a, b) => a - b,
   );
 
-  return (high + 0.05) / (low + 0.05);
+  return (required(high) + 0.05) / (required(low) + 0.05);
 }
 
 test("every ChatIndicatorKind has a rail and soft-color contract", () => {
@@ -105,7 +111,8 @@ for (const scheme of ["light", "dark"] as const) {
             ? 0
             : Number(soft.match(/([\d.]+)%/)![1]) / 100;
         const tinted = background.map(
-          (channel, index) => channel * (1 - alpha) + foreground[index] * alpha,
+          (channel, index) =>
+            channel * (1 - alpha) + required(foreground[index]) * alpha,
         );
         expect(
           contrast(foreground, tinted),

@@ -183,7 +183,7 @@ export function splitJoinedAnswer(
         break;
       }
     if (!matched) {
-      other.push(parts[index]);
+      other.push(parts[index]!);
       index++;
       continue;
     }

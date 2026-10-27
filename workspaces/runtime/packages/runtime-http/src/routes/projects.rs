@@ -199,9 +199,7 @@ async fn radio_model_lists(
         }) else {
             continue;
         };
-        let Ok(provider) =
-            studio_runtime_providers::ProviderKind::of_record(row).map(|kind| kind.key())
-        else {
+        let Ok(provider) = studio_runtime_providers::ProviderKind::of_record(row) else {
             continue;
         };
         if let Ok(value) = studio_runtime_services::model_catalog::ModelListPort::list(
@@ -229,7 +227,19 @@ fn radio_create_error(error: CreateError) -> ProjectsError {
         CreateError::InvalidStoredObject { .. } => {
             ProjectsError::Invalid("radio participant record is invalid")
         }
-        _ => ProjectsError::Invalid("radio participant creation was rejected"),
+        CreateError::Conflict
+        | CreateError::MissingCreationIntent
+        | CreateError::Deleted
+        | CreateError::UnknownAgent
+        | CreateError::LeadRequired
+        | CreateError::RequestIdRequired
+        | CreateError::BaseUnresolved
+        | CreateError::ModelUnavailable
+        | CreateError::Stale
+        | CreateError::CurrentAccountExcluded
+        | CreateError::InFlight => {
+            ProjectsError::Invalid("radio participant creation was rejected")
+        }
     }
 }
 
@@ -307,7 +317,7 @@ async fn delete_project(
             eprintln!("Project deletion store error: {error}");
             return Err(ApiError::internal());
         }
-        _ => {
+        Error::Lifecycle(_) => {
             eprintln!("Project deletion lifecycle error: {error}");
             return Err(ApiError::internal());
         }

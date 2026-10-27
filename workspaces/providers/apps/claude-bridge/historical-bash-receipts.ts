@@ -9,6 +9,7 @@ import { isDeepStrictEqual } from "node:util";
 import {
   readNativeHistory,
   nativeHistoryRows,
+  nativeProjectCwd,
   NATIVE_HISTORY_TAIL_BYTES,
   nativeUuid as uuid,
 } from "./native-history.ts";
@@ -57,6 +58,7 @@ async function receipts(
   tail: NativeTail,
   selected: ReturnType<typeof candidates>,
   session: Session,
+  cwd: string,
 ) {
   const ids = new Set<unknown>(selected.map(({ item }) => item.id));
   const uses = new Map<
@@ -124,7 +126,7 @@ async function receipts(
         (row) =>
           row.sessionId !== (session.nativeId || session.id) ||
           row.isSidechain !== false ||
-          row.cwd !== entry.item.cwd ||
+          row.cwd !== cwd ||
           row.isMeta === true ||
           row.isVisibleInTranscriptOnly === true,
       ) ||
@@ -205,10 +207,12 @@ export async function reconcileHistoricalBash(
   ]);
   const turns = session.turns,
     turnCount = turns.length;
+  // Candidate items ran in session.cwd. Claude records its real path.
+  const cwd = await nativeProjectCwd(session.cwd, filesystem);
   const found = await readNativeHistory(
     session,
     { configDir, filesystem },
-    (tail) => receipts(tail, selected, session),
+    (tail) => receipts(tail, selected, session, cwd),
   );
   if (!found?.length) return 0;
 

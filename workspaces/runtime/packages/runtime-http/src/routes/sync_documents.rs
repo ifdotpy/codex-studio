@@ -649,7 +649,7 @@ pub(crate) async fn push_preferences(
             ApiError::validation(vec![Value::String("body".to_owned())])
         }
         SyncPolicyError::InvalidStoredObject { scope, id } => ApiError::invalid_stored(&scope, &id),
-        _ => ApiError::internal(),
+        SyncPolicyError::Store(_) => ApiError::internal(),
     })?;
     Ok(Json(json!({"fields": merged})))
 }
@@ -861,7 +861,26 @@ fn validate_entity_envelope(payload: &Value, collection: &str, id: &str, deleted
 fn map_sync_store_error(error: StoreError) -> ApiError {
     match error {
         StoreError::InvalidSyncObject { scope, id } => ApiError::invalid_stored(&scope, &id),
-        _ => ApiError::internal(),
+        StoreError::StateDirectory(_)
+        | StoreError::AlreadyOwned
+        | StoreError::MissingDatabase(_)
+        | StoreError::Migration { .. }
+        | StoreError::UnsafeStateDirectory
+        | StoreError::SchemaMismatch(_)
+        | StoreError::InvalidSyncObjectField { .. }
+        | StoreError::InvalidStoredRecord { .. }
+        | StoreError::SchemaObjectMismatch { .. }
+        | StoreError::Sqlite(_)
+        | StoreError::CommitOutcomeUnknown(_)
+        | StoreError::Json(_)
+        | StoreError::InvalidStoredObject { .. }
+        | StoreError::SchemaValidation(_)
+        | StoreError::RecordContract(_)
+        | StoreError::WriterPoisoned
+        | StoreError::WriterActorInitialization(_)
+        | StoreError::WriterActorControl(_)
+        | StoreError::CommitActorOutcomeUnknown(_)
+        | StoreError::ReadTaskFailed => ApiError::internal(),
     }
 }
 

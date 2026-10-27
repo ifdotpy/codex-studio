@@ -1,7 +1,9 @@
 import type { ViteDevServer } from "vite";
 
 export function fixtureServerOrigin(server: ViteDevServer): string {
-  return server.resolvedUrls!.local[0];
+  const origin = server.resolvedUrls?.local[0];
+  if (!origin) throw new Error("Missing fixture origin");
+  return origin;
 }
 
 import type { Request } from "@playwright/test";

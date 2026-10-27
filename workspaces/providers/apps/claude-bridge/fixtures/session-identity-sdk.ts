@@ -65,8 +65,10 @@ export function query({ prompt, options }: SessionFixtureQuery) {
   const abort = new AbortController();
   fixtureCwd = options.cwd;
   const record: IdentityQueryRecord = {
-    resume: options.resume,
-    sessionId: options.sessionId,
+    ...(options.resume !== undefined ? { resume: options.resume } : {}),
+    ...(options.sessionId !== undefined
+      ? { sessionId: options.sessionId }
+      : {}),
   };
   fs.appendFileSync(options.cwd + "/.queries", JSON.stringify(record) + "\n");
   process.stdout.write(
@@ -159,6 +161,7 @@ export function query({ prompt, options }: SessionFixtureQuery) {
       yield {
         type: "result",
         subtype: "success",
+        is_error: false,
         result: "cleared",
         usage: { input_tokens: 0, output_tokens: 0 },
       };

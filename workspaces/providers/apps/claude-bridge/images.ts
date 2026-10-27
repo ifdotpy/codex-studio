@@ -111,6 +111,7 @@ async function reduceImage(
       const jpeg = await image().jpeg({ quality }).toBuffer();
       if (jpeg.length <= MAX_IMAGE_BYTES) return jpeg;
     }
+    return undefined;
   };
   // Try compression before a format conversion when only the byte limit is exceeded.
   if (!resize) {

@@ -690,7 +690,13 @@ pub fn send_message_in_transaction(
     )
     .map_err(|error| match error {
         crate::event_write::EventWriteError::Conflict(message) => Error::Conflict(message),
-        other => Error::Event(other),
+        other @ crate::event_write::EventWriteError::InvalidRequest(_)
+        | other @ crate::event_write::EventWriteError::InvalidResultSchema(_)
+        | other @ crate::event_write::EventWriteError::RemoteEventsUnavailable
+        | other @ crate::event_write::EventWriteError::WorkerAssignmentUnavailable
+        | other @ crate::event_write::EventWriteError::InvalidStoredObject { .. }
+        | other @ crate::event_write::EventWriteError::Store(_)
+        | other @ crate::event_write::EventWriteError::Clock => Error::Event(other),
     })? {
         return Ok(saved);
     }

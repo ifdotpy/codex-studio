@@ -1,3 +1,5 @@
+import { required } from "../teams/helpers.ts";
+import assert from "node:assert/strict";
 import type { components } from "../../src/generated/api.ts";
 import { fixtureOrigin } from "./browser-fixture.ts";
 import { mkdtemp, rm } from "node:fs/promises";
@@ -131,6 +133,10 @@ test("bounded entities render initial and live changes with zero resource GETs",
       description: String(reads.length),
     });
 
+    assert.ok(backend.snapshot.runtime.accountsSummary?.accounts[0]);
+    assert.ok(backend.snapshot.runtime.accountCostsByAccount.default);
+    assert.ok(backend.snapshot.runtime.sessionCostsByAgent.overlap);
+    assert.ok(backend.snapshot.runtime.terminals[0]);
     backend.snapshot.runtime.queuesByAgent.overlap = queue(
       "Updated stream queue",
       "second",
@@ -189,11 +195,13 @@ test("bounded entities render initial and live changes with zero resource GETs",
     expect(projection.accountCostsByAccount).toEqual({
       default: backend.snapshot.runtime.accountCostsByAccount.default,
     });
-    expect(projection.accountsSummary!.accounts[0].label).toBe(
+    expect(required(projection.accountsSummary!.accounts[0]).label).toBe(
       "Updated account",
     );
-    expect(projection.sessionCostsByAgent!.overlap.totalUSD).toBe(0.75);
-    expect(projection.terminals![0].title).toBe("Updated shell");
+    expect(required(projection.sessionCostsByAgent!.overlap).totalUSD).toBe(
+      0.75,
+    );
+    expect(required(projection.terminals![0]).title).toBe("Updated shell");
     await page.waitForTimeout(1100);
     expect(reads).toHaveLength(0);
     test.info().annotations.push({

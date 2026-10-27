@@ -41,7 +41,8 @@ function outcome(
       return null;
     if (kind === "metadata" || kind === "queue") continue;
     if (row.type !== "assistant" && row.type !== "user") {
-      if (kind === "input") return null;
+      // An opaque record may be input that changed this turn's answer.
+      if (kind === "input" || kind === "opaque") return null;
       continue;
     }
     if (

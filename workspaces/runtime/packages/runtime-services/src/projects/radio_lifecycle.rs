@@ -318,6 +318,13 @@ fn reconcile(
 
 /// P04 calls before native send, and with accepted=true only after acceptance.
 /// It marks the question answered in this same transaction. No provider call here.
+#[derive(Debug, PartialEq, Eq)]
+pub enum QuestionAnswerRoute {
+    OrdinaryFollowup,
+    RadioFollowup { turn_id: String },
+    ConsumedByRadio,
+}
+
 pub fn route_question_answer(
     db: &Transaction<'_>,
     prepared: &PreparedHost,
@@ -325,11 +332,11 @@ pub fn route_question_answer(
     text: &str,
     receipt: Option<&NativeAcceptanceReceipt>,
     now: f64,
-) -> Result<bool, ProjectsError> {
+) -> Result<QuestionAnswerRoute, ProjectsError> {
     if question["method"] != "agent/asyncQuestion"
         || question["turnId"].as_str().is_none_or(str::is_empty)
     {
-        return Ok(false);
+        return Ok(QuestionAnswerRoute::OrdinaryFollowup);
     }
     prepared.recheck(db)?;
     for mut room in rooms(db)? {
@@ -369,11 +376,13 @@ pub fn route_question_answer(
                 || Some(receipt.turn_id.as_str()) != question["turnId"].as_str()
                 || receipt.event_id != active.event_id
             {
-                return Ok(false);
+                return Ok(QuestionAnswerRoute::OrdinaryFollowup);
             }
             message(db, &room, &key, "user", text, now)?;
             save(db, &mut room, prepared, now)?;
-            return Ok(false);
+            return Ok(QuestionAnswerRoute::RadioFollowup {
+                turn_id: turn.clone().ok_or_else(|| invalid(room.id()))?,
+            });
         }
         let turn = turn.as_deref().ok_or_else(|| invalid(room.id()))?;
         if completed(db, &active.agent_id, turn)? {
@@ -419,11 +428,13 @@ pub fn route_question_answer(
                     .ok_or_else(|| invalid(room.id()))?;
                 save(db, &mut room, prepared, now)?;
             }
-            return Ok(true);
+            return Ok(QuestionAnswerRoute::ConsumedByRadio);
         }
-        return Ok(false);
+        return Ok(QuestionAnswerRoute::RadioFollowup {
+            turn_id: turn.to_owned(),
+        });
     }
-    Ok(false)
+    Ok(QuestionAnswerRoute::OrdinaryFollowup)
 }
 
 /// Mirror an accepted durable async-question follow-up into its matching radio
@@ -781,6 +792,27 @@ pub fn guard_message(db: &Connection, sender: &str, recipient: &str) -> Result<(
     Ok(())
 }
 
+/// Whether this agent is currently producing a reply shared with its peer.
+fn shared_turn(db: &Connection, agent: &Value) -> Result<Option<String>, ProjectsError> {
+    let id = agent["id"]
+        .as_str()
+        .ok_or(ProjectsError::Invalid("agent ID missing"))?;
+    for room in rooms(db)? {
+        if let Some(active) = room.radio.active.as_ref().filter(|a| a.agent_id == id)
+            && truthy(agent.get("inFlight"))
+            && let Some(turn) = turn(agent, active, event(db, active)?.as_ref())
+            && agent["turnId"] == turn
+        {
+            return Ok(Some(turn));
+        }
+    }
+    Ok(None)
+}
+
+pub fn shared_turn_active(db: &Connection, agent: &Value) -> Result<bool, ProjectsError> {
+    Ok(shared_turn(db, agent)?.is_some())
+}
+
 /// Account-worker queue selection: an exact radio input is always a single batch.
 /// Ordinary inputs may enter a shared turn only with that turn's answer receipt.
 pub fn select_pending(
@@ -805,21 +837,15 @@ pub fn select_pending(
         .filter(|e| e.kind != "radio_turn")
         .cloned()
         .collect::<Vec<_>>();
-    for room in rooms(db)? {
-        if let Some(active) = room.radio.active.as_ref().filter(|a| a.agent_id == id)
-            && truthy(agent.get("inFlight"))
-            && let Some(turn) = turn(agent, active, event(db, active)?.as_ref())
-            && agent["turnId"] == turn
-        {
-            for row in &ordinary {
-                if let Some(meta) = records::get(db, "runtime_event_meta", &row.id.0)?
-                    && meta["radioAnswerTurnId"] == turn
-                {
-                    return Ok(vec![row.clone()]);
-                }
+    if let Some(turn) = shared_turn(db, agent)? {
+        for row in &ordinary {
+            if let Some(meta) = records::get(db, "runtime_event_meta", &row.id.0)?
+                && meta["radioAnswerTurnId"] == turn
+            {
+                return Ok(vec![row.clone()]);
             }
-            return Ok(Vec::new());
         }
+        return Ok(Vec::new());
     }
     Ok(ordinary)
 }

@@ -30,6 +30,7 @@ test("retained folders of live and deleted workers show at both widths", async (
         resolveId(id) {
           if (/\/servers\/ServerServicesContext(?:\.tsx)?$/.test(id))
             return fileURLToPath(new URL("./retained-api.ts", import.meta.url));
+          return undefined;
         },
       },
     ],

@@ -177,6 +177,7 @@ impl ExecutionHistoryRepository {
             return Self::record_recovery(tx, agent);
         };
         let id = attempt["id"].as_str().ok_or_else(|| invalid(&agent.id.0))?;
+        let submitted = super::scheduler::ValidatedAttempt::submission(agent)?;
         let account = attempt
             .get("accountKey")
             .or_else(|| agent.extra.get("accountKey"))
@@ -206,13 +207,13 @@ impl ExecutionHistoryRepository {
         } else if turn.is_some() {
             "observed"
         } else {
-            attempt["executionOutcome"]
-                .as_str()
-                .unwrap_or(if attempt["submitted"] == true {
+            attempt["executionOutcome"].as_str().unwrap_or(
+                if submitted == super::scheduler::StartSubmission::Submitted {
                     "unknown"
                 } else {
                     "unsent"
-                })
+                },
+            )
         };
         if let Some(turn) = turn {
             run["turnId"] = turn.clone();

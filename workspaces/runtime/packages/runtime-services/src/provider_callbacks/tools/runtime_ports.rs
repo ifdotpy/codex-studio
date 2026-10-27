@@ -608,7 +608,16 @@ fn monitor_error(error: crate::monitor_policy::MonitorError) -> Error {
         },
         // Python returns the reason of its ValueError to the agent.
         E::Refused(reason) => Error::Invalid(reason),
-        _ => Error::Invalid("Monitor action was refused"),
+        E::InvalidResultReceipt(_)
+        | E::InvalidDeliveryIdentity(_)
+        | E::InvalidOutputReceipt(_)
+        | E::TaskFailed
+        | E::ProviderRequest { .. }
+        | E::ConfigurationRejected { .. }
+        | E::ConfigurationReceipt { .. }
+        | E::Event(_)
+        | E::Rules(_)
+        | E::Io(_) => Error::Invalid("Monitor action was refused"),
     }
 }
 

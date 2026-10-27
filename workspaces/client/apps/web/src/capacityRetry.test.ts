@@ -6,7 +6,7 @@ import { currentCapacityRetry as readCapacityRetry } from "./capacityRetry.ts";
 type RetryFixture = Omit<
   Partial<NonNullable<Agent["capacityRetry"]>>,
   "status"
-> & { status?: string | null };
+> & { status?: string | null | undefined };
 type AgentFixture = Omit<Partial<Agent>, "capacityRetry"> & {
   capacityRetry?: RetryFixture;
 };

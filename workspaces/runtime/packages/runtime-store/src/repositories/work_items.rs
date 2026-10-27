@@ -227,7 +227,7 @@ impl WorkItemsRepository {
     }
 
     pub fn put_work(connection: &Connection, id: &str, value: &Value) -> StoreResult<bool> {
-        let record = WorkItemRecord::from_value(value.clone())?;
+        let record = WorkItemRecord::checked(value.clone())?;
         if record.id().as_ref() != id {
             return Err(StoreError::InvalidStoredObject {
                 table: WorkItemRecord::TABLE,
@@ -238,7 +238,7 @@ impl WorkItemsRepository {
     }
 
     pub fn update_work(connection: &Connection, id: &str, value: &Value) -> StoreResult<()> {
-        let record = WorkItemRecord::from_value(value.clone())?;
+        let record = WorkItemRecord::checked(value.clone())?;
         if record.id().as_ref() != id {
             return Err(StoreError::InvalidStoredObject {
                 table: WorkItemRecord::TABLE,
@@ -342,7 +342,7 @@ impl WorkItemsRepository {
     }
 
     pub fn validate_work(connection: &Connection, id: &str, value: &Value) -> StoreResult<()> {
-        let record = WorkItemRecord::from_value(value.clone())?;
+        let record = WorkItemRecord::checked(value.clone())?;
         if record.id().as_ref() != id {
             return Err(StoreError::InvalidStoredObject {
                 table: WorkItemRecord::TABLE,
@@ -489,7 +489,9 @@ fn optional_text(value: rusqlite::types::ValueRef<'_>) -> (Option<String>, bool)
             Ok(text) => (Some(text.to_owned()), true),
             Err(_) => (None, false),
         },
-        _ => (None, false),
+        rusqlite::types::ValueRef::Integer(_)
+        | rusqlite::types::ValueRef::Real(_)
+        | rusqlite::types::ValueRef::Blob(_) => (None, false),
     }
 }
 

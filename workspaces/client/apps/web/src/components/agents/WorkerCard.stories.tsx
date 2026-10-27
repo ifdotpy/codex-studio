@@ -15,7 +15,7 @@ const agent = {
     task: "Extract reusable transcript presentation components.",
     result: "The story renders the same typed card used by the team panel.",
   },
-} as Agent;
+} satisfies Agent;
 
 const meta = {
   title: "Agents/Worker card",

@@ -1,3 +1,4 @@
+import { required } from "../teams/helpers.ts";
 import type { Browser, Page, Route } from "@playwright/test";
 import type { PostBody } from "../../src/apiTypes.ts";
 import { fixturePostBody } from "../teams/helpers.ts";
@@ -37,7 +38,7 @@ test("upload recovery browser", async ({ browser }) => {
   try {
     await server.listen();
     context = await browser.newContext();
-    const page = await context!.newPage();
+    const page = await context.newPage();
     let stage = "initial";
     const errors: {
       stage: string;
@@ -83,14 +84,14 @@ test("upload recovery browser", async ({ browser }) => {
       headers.push(route.request().headers()["x-canvas-workspace"]);
       if (body.name === "reject.txt")
         return route.fulfill({ status: 400, json: { error: "Rejected file" } });
-      const receipt = receipts.get(body.id!) || {
-        id: body.id!,
+      const receipt = receipts.get(required(body.id)) || {
+        id: required(body.id),
         name: body.name,
-        size: Buffer.from(body.base64!, "base64").length,
+        size: Buffer.from(required(body.base64), "base64").length,
         mime: "text/plain",
         image: false,
       };
-      receipts.set(body.id!, receipt);
+      receipts.set(required(body.id), receipt);
       if (mode === "hold") {
         held.push({ route, receipt });
         return;
@@ -186,6 +187,7 @@ test("upload recovery browser", async ({ browser }) => {
     );
     const retryOwner = await page.evaluate(async () => {
       const row = (await window.uploadRecoveryBrowserFixture.pending())[0];
+      if (!row) throw new Error("Missing pending upload");
 
       return { id: row.id, agent: row.agent, workspace: row.workspace };
     });
@@ -271,7 +273,7 @@ test("upload recovery browser", async ({ browser }) => {
       });
     });
     // The server committed the first UUID, but this renderer never gets the reply.
-    await held.shift()!.route.abort();
+    await required(held.shift()).route.abort();
     workspaceId = "b".repeat(32);
     await mount();
     await page.waitForTimeout(200);
@@ -329,7 +331,7 @@ test("upload recovery browser", async ({ browser }) => {
       buffer: Buffer.from("Cancel this"),
     });
     await wait(() => held.length === 1);
-    const cancelled = posts.at(-1)!.id!;
+    const cancelled = required(required(posts.at(-1)).id);
     await page.evaluate(async (id) => {
       const original = IDBDatabase.prototype.transaction;
       IDBDatabase.prototype.transaction = function (...args) {
@@ -348,7 +350,7 @@ test("upload recovery browser", async ({ browser }) => {
       await page.evaluate(() => window.cancelError),
       "Deletion interrupted",
     );
-    await held.shift()!.route.fulfill({
+    await required(held.shift()).route.fulfill({
       json: receipts.get(cancelled),
     });
     await page.waitForTimeout(150);
@@ -369,7 +371,10 @@ test("upload recovery browser", async ({ browser }) => {
       2,
       "A persisted tombstone prevents recovery after interrupted deletion and reload",
     );
-    assert.equal(posts.filter((body) => body.id === cancelled).length, 1);
+    assert.equal(
+      posts.filter((body) => required(body.id) === cancelled).length,
+      1,
+    );
     await input.setInputFiles([
       {
         name: "reject.txt",
@@ -570,7 +575,7 @@ async function setupAttachmentWriters(browser: Browser) {
     await server.listen();
     context = await browser.newContext();
     const mountWriter = async () => {
-      const page = await context!.newPage();
+      const page = await required(context).newPage();
       await page.route("**/check", (route) =>
         route.fulfill({
           contentType: "text/html",
@@ -650,7 +655,7 @@ test("sequential cross-tab attachment writes converge", async ({ browser }) => {
     for (const tab of [writers.page, writers.other]) {
       const surviving = await writers.read(tab);
       assert.ok(
-        expected.every((id) => surviving!.includes(id)),
+        expected.every((id) => surviving?.includes(id)),
         `sequential writes did not converge; surviving value: ${JSON.stringify(surviving)}`,
       );
     }

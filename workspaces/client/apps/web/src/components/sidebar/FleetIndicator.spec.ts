@@ -64,6 +64,7 @@ test("fleet state indicators remain visible and animated in priority and project
             (element) =>
               new Promise((resolve) => {
                 const observer = new IntersectionObserver(([entry]) => {
+                  if (!entry) throw new Error("Missing intersection entry");
                   observer.disconnect();
                   resolve(entry.intersectionRatio);
                 });

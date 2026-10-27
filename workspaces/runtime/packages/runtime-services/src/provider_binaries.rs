@@ -298,7 +298,7 @@ impl NativePlatform {
     pub const fn executable_name(self) -> &'static str {
         match self {
             Self::WindowsX64 | Self::WindowsArm64 => "codex.exe",
-            _ => "codex",
+            Self::LinuxX64 | Self::LinuxArm64 | Self::MacX64 | Self::MacArm64 => "codex",
         }
     }
 

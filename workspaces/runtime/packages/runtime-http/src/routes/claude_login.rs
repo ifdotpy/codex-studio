@@ -68,7 +68,15 @@ fn error(error: LoginError) -> ApiError {
         invalid @ (LoginError::InvalidCode | LoginError::InvalidAuthorizationResponse) => {
             ApiError::not_applied(invalid.to_string())
         }
-        other => ApiError::new(StatusCode::BAD_REQUEST, other.to_string()),
+        other @ LoginError::InvalidIdentity
+        | other @ LoginError::Unknown
+        | other @ LoginError::Conflict
+        | other @ LoginError::Busy
+        | other @ LoginError::WaitForLink
+        | other @ LoginError::Unavailable
+        | other @ LoginError::SystemProfile => {
+            ApiError::new(StatusCode::BAD_REQUEST, other.to_string())
+        }
     }
 }
 async fn status(

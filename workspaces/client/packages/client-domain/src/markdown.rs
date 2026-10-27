@@ -66,7 +66,8 @@ impl Tree {
             self.error = Some("This Markdown document has too many elements.".into());
             return;
         }
-        let children = &mut self.stack.last_mut().unwrap().children;
+        // tree() installs a root, and close() never removes that final stack entry.
+        let children = &mut self.stack.last_mut().expect("tree root exists").children;
         // Tokenizer chunk boundaries differ between native and WASM builds.
         // Canonicalize text before sentence segmentation and React keys.
         if node.tag.is_empty()
@@ -80,7 +81,8 @@ impl Tree {
         children.push(node);
     }
     fn close(&mut self) {
-        let node = self.stack.pop().unwrap();
+        // Callers close only entries above the root.
+        let node = self.stack.pop().expect("open tree node exists");
         self.append(node);
     }
 }
@@ -273,7 +275,11 @@ impl TokenSink for Sink {
                     }
                 }
             }
-            _ => {}
+            Token::DoctypeToken(_)
+            | Token::CommentToken(_)
+            | Token::NullCharacterToken
+            | Token::EOFToken
+            | Token::ParseError(_) => {}
         }
         TokenSinkResult::Continue
     }
@@ -311,7 +317,8 @@ fn tree(html: String) -> Result<MarkdownTree, String> {
     let tokenizer = Tokenizer::new(sink, TokenizerOpts::default());
     let input = BufferQueue::default();
     input.push_back(html.into());
-    let _ = tokenizer.feed(&input);
+    // This sink always continues, so feeding the input never suspends for a script.
+    let _progress = tokenizer.feed(&input);
     tokenizer.end();
     let mut tree = tokenizer.sink.0.into_inner();
     if let Some(error) = tree.error {
@@ -320,7 +327,8 @@ fn tree(html: String) -> Result<MarkdownTree, String> {
     while tree.stack.len() > 1 {
         tree.close();
     }
-    let mut root = tree.stack.pop().unwrap();
+    // The root installed above remains after all nested nodes have been closed.
+    let mut root = tree.stack.pop().expect("tree root exists");
     let mut length = 0;
     segments(&mut root, &mut length, false);
     Ok(MarkdownTree {
@@ -334,7 +342,8 @@ fn closed_fence(raw: &str) -> bool {
         return false;
     }
     let first = lines[0].trim_start();
-    let last = lines.last().unwrap().trim();
+    // The length check above proves both first and last lines exist.
+    let last = lines.last().expect("at least two fence lines").trim();
     let Some(ch) = first.chars().next().filter(|c| matches!(c, '`' | '~')) else {
         return false;
     };
@@ -367,7 +376,17 @@ pub fn parse(text: &str, streaming: bool) -> Result<Vec<MarkdownBlock>, String> 
         match &event {
             Event::Start(_) => depth += 1,
             Event::End(_) => depth = depth.saturating_sub(1),
-            _ => {}
+            Event::Text(_)
+            | Event::Code(_)
+            | Event::InlineMath(_)
+            | Event::DisplayMath(_)
+            | Event::Html(_)
+            | Event::InlineHtml(_)
+            | Event::FootnoteReference(_)
+            | Event::SoftBreak
+            | Event::HardBreak
+            | Event::Rule
+            | Event::TaskListMarker(_) => {}
         }
         group.push(event);
         if depth != 0 {
@@ -395,7 +414,17 @@ pub fn parse(text: &str, streaming: bool) -> Result<Vec<MarkdownBlock>, String> 
                 .iter()
                 .filter_map(|e| match e {
                     Event::Text(s) | Event::Html(s) => Some(s.as_ref()),
-                    _ => None,
+                    Event::Start(_)
+                    | Event::End(_)
+                    | Event::Code(_)
+                    | Event::InlineMath(_)
+                    | Event::DisplayMath(_)
+                    | Event::InlineHtml(_)
+                    | Event::FootnoteReference(_)
+                    | Event::SoftBreak
+                    | Event::HardBreak
+                    | Event::Rule
+                    | Event::TaskListMarker(_) => None,
                 })
                 .collect::<String>();
             if raw_html

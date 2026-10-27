@@ -201,6 +201,60 @@ ${crypto.createHash("sha256").update(text).digest("hex")}`;
     await rm(root, { recursive: true, force: true });
   }
 });
+test("forget during a pending rejection keeps the attempt forgotten and fails visibly", async () => {
+  const profile = await mkdtemp(
+    path.join(tmpdir(), "studio-forgotten-invite-"),
+  );
+  const response = Promise.withResolvers<Response>();
+  const requested = Promise.withResolvers<void>();
+  const adapter = createServerCredentials({
+    profile,
+    safeStorage,
+    fetchRequest: async () => {
+      requested.resolve();
+      return response.promise;
+    },
+  });
+  const invitation = {
+    protocol: 1,
+    serverId: "remote",
+    origin: "https://remote.tailnet.ts.net",
+    inviteId: "invite",
+    token: "secret",
+    publicKey: "key",
+    tailscaleUser: "owner",
+  };
+  const attempt = {
+    serverId: invitation.serverId,
+    origin: invitation.origin,
+    requestId: "forgotten-attempt",
+  };
+  const pairing = adapter.pair({ ...attempt, invitation });
+  try {
+    await requested.promise;
+    await adapter.forget(invitation.serverId);
+    response.resolve(
+      Response.json(
+        { error: "The invitation is unavailable.", code: "invite_unavailable" },
+        { status: 403 },
+      ),
+    );
+    await expect(pairing).rejects.toMatchObject({
+      message: "The invitation is unavailable.",
+    });
+    // A forgotten attempt must not be reported as available for automatic renewal.
+    await expect(pairing).rejects.not.toHaveProperty(
+      "code",
+      "invite_unavailable",
+    );
+    expect(await adapter.hasPairAttempt(attempt)).toBe(false);
+    expect(await adapter.owns(invitation.serverId)).toBe(false);
+  } finally {
+    response.resolve(new Response(null, { status: 403 }));
+    await pairing.catch(() => {});
+    await rm(profile, { recursive: true, force: true });
+  }
+});
 test("Serve HTTPS ports retain the host, credential, and path restrictions", () => {
   expect(serveOrigin("https://computer.tailnet.ts.net:8443/")).toBe(
     "https://computer.tailnet.ts.net:8443",

@@ -122,25 +122,28 @@ export async function importBrowserProfile(
             lastModified: fourth,
           });
         case "view": {
-          const constructors: Record<
+          const constructors = new Map<
             string,
             new (buffer: ArrayBuffer) => ArrayBufferView
-          > = {
-            Int8Array,
-            Uint8Array,
-            Uint8ClampedArray,
-            Int16Array,
-            Uint16Array,
-            Int32Array,
-            Uint32Array,
-            Float32Array,
-            Float64Array,
-            BigInt64Array,
-            BigUint64Array,
-            DataView,
-          };
-          if (!Object.hasOwn(constructors, item)) break;
-          return new constructors[item](decode<ArrayBuffer>(extra));
+          >(
+            Object.entries({
+              Int8Array,
+              Uint8Array,
+              Uint8ClampedArray,
+              Int16Array,
+              Uint16Array,
+              Int32Array,
+              Uint32Array,
+              Float32Array,
+              Float64Array,
+              BigInt64Array,
+              BigUint64Array,
+              DataView,
+            }),
+          );
+          const Constructor = constructors.get(item);
+          if (!Constructor) break;
+          return new Constructor(decode<ArrayBuffer>(extra));
         }
         case "array":
           return item.map(decode);

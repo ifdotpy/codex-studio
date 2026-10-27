@@ -1,3 +1,4 @@
+import { required } from "./helpers.ts";
 import type { Route } from "@playwright/test";
 import type { components } from "../../src/generated/api.ts";
 import { requestBody } from "./helpers.ts";
@@ -127,17 +128,17 @@ test("Complaint ownership", async ({ browser: testBrowser }) => {
         id: payload.id,
         author: "user",
         text: payload.text,
-        status: payload.status!,
+        status: required(payload.status),
         at: 3,
       });
-      user.status = payload.status;
+      user.status = required(payload.status);
       user.needsUserResponse = false;
       if (mode === "lost") {
         mode = "retry";
         await route.abort("failed");
       } else await route.fulfill({ json: user });
     });
-    await page.goto(server.resolvedUrls!.local[0] + "check");
+    await page.goto(required(server.resolvedUrls).local[0] + "check");
     await page.waitForFunction(() => !!window.setRecords);
     await page.evaluate((records) => window.setRecords(records), records);
     const card = (id: string) => page.locator(`[data-complaint="${id}"]`);
@@ -168,7 +169,7 @@ test("Complaint ownership", async ({ browser: testBrowser }) => {
       /Release lead[\s\S]*The lead previously closed its own request\./,
     );
     assert.equal(
-      history.responses[0].status,
+      required(history.responses[0]).status,
       "resolved",
       "Prior response metadata stays intact",
     );
@@ -228,8 +229,8 @@ test("Complaint ownership", async ({ browser: testBrowser }) => {
       .filter({ hasText: "Access is available." })
       .waitFor();
     assert.equal(completed, 2);
-    assert.notEqual(attempts[3].id, attempts[2].id);
-    assert.equal(attempts[3].status, "in_progress");
+    assert.notEqual(required(attempts[3]).id, required(attempts[2]).id);
+    assert.equal(required(attempts[3]).status, "in_progress");
     await close("owner");
     await page.evaluate(() => window.setTarget("lead"));
     await card("worker-request").waitFor();

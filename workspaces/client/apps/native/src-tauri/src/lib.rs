@@ -35,6 +35,8 @@ struct Clients {
 
 // Held for the entire host lifetime, including before local client creation.
 struct ProfileLock(#[allow(dead_code)] std::fs::File);
+// SAFETY: flock borrows the live file descriptor; ProfileLock retains the file.
+#[allow(unsafe_code)]
 fn lock_profile(directory: &std::path::Path) -> Result<ProfileLock, String> {
     use std::os::fd::AsRawFd;
     std::fs::create_dir_all(directory).map_err(|e| e.to_string())?;
@@ -272,7 +274,8 @@ async fn client_request(
                         studio_client_core::server_transport::RemoteClient::new(Arc::new(vault))?,
                     ));
                 }
-                remote.as_ref().unwrap().clone()
+                // The branch above initializes the client while this lock is held.
+                remote.as_ref().expect("remote client initialized").clone()
             };
             return match client.dispatch(&request.method, &request.params).await {
                 Ok(value) => Ok(Response::success(request.id, value)),
@@ -391,7 +394,9 @@ async fn client_request(
         let method = request.method.clone();
         window
             .run_on_main_thread(move || {
-                let _ = send.send(studio_client_core::desktop::gesture_for_method(&method));
+                // A closed requester no longer needs the gesture response.
+                let _send_result =
+                    send.send(studio_client_core::desktop::gesture_for_method(&method));
             })
             .map_err(|error| error.to_string())?;
         let permit = receive
@@ -463,7 +468,7 @@ async fn client_request(
                     backend_origin: origin,
                 },
                 move |event| {
-                    let _ = events_window.emit("studio-client-event", event);
+                    drop(events_window.emit("studio-client-event", event));
                 },
             )?));
         }
@@ -574,7 +579,7 @@ pub fn run() {
                 loop {
                     match navigation.recv().await {
                         Ok(target) => {
-                            let _ = handle.emit("studio-native-navigate", target);
+                            drop(handle.emit("studio-native-navigate", target));
                         }
                         Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
                         Err(_) => break,

@@ -13,10 +13,7 @@ import type { LocationProject } from "./projectLocations";
 import { chatIndicators } from "../components/chat-status/chatStatusModel";
 import type { ChatIndicator } from "../components/chat-status/chatStatusModel";
 import { sidebarSnapshot, type ServerSidebarSnapshot } from "./sidebarSnapshot";
-import {
-  isProviderKind,
-  type ProviderKind,
-} from "../generated/providerKind.ts";
+import { isProviderKind, ProviderKind } from "../generated/providerKind.ts";
 export type ServerAccount = {
   provider: ProviderKind;
   email: string | null;
@@ -257,7 +254,7 @@ export function isServerCommand(value: unknown): value is ServerCommand {
       ].includes(String(command.operation)) &&
       isProviderKind(command.provider) &&
       (command.operation !== "configure-profile" ||
-        command.provider === "claude") &&
+        command.provider === ProviderKind.Claude) &&
       (command.email === null || typeof command.email === "string") &&
       typeof command.label === "string" &&
       (command.nextLabel === undefined || typeof command.nextLabel === "string")

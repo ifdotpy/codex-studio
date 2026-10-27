@@ -2,7 +2,7 @@ import { fixtureOrigin } from "../misc-fixture.ts";
 import { usageSessionCost, usageAccountCost } from "./usage-fixture.ts";
 import type { BrowserContext, TestInfo } from "@playwright/test";
 import type { ServerResponse } from "node:http";
-import type { PostBody } from "../../src/apiTypes.ts";
+import type { PostBody, PostResult } from "../../src/apiTypes.ts";
 import { fixturePostBody } from "./fixture-server.ts";
 import { usageFixtureServer } from "./fixture-server.ts";
 import assert from "node:assert/strict";
@@ -92,6 +92,13 @@ test("usage accounts ui", async ({ browser: _browser }) => {
       }
       if (req.url?.startsWith("/api/")) {
         res.setHeader("Content-Type", "application/json");
+        if (req.method === "POST" && req.url === "/api/costs/interest") {
+          req.resume();
+          res.end(
+            JSON.stringify({} satisfies PostResult<"/api/costs/interest">),
+          );
+          return;
+        }
         if (req.url.startsWith("/api/session-cost")) {
           reads.sessionCost++;
           res.end(JSON.stringify(usageSessionCost()));
@@ -173,10 +180,10 @@ test("usage accounts ui", async ({ browser: _browser }) => {
 
     await page.goto(fixtureOrigin(server) + `?multi&now=${now}`);
     const ownTab = page.getByRole("tab", {
-      name: "own@example.test account limits",
+      name: "own@example.test, codex account limits",
     });
     const teamTab = page.getByRole("tab", {
-      name: "team@example.test, openai account limits",
+      name: "team@example.test, codex account limits",
     });
     await ownTab.waitFor();
     assert.equal(
@@ -241,7 +248,7 @@ test("usage accounts ui", async ({ browser: _browser }) => {
     assert.equal(reset.account_id, "team-account");
     assert.equal(reset.credit_id, "team-credit");
     const ownTile = page.getByRole("tab", {
-      name: "own@example.test account limits",
+      name: "own@example.test, codex account limits",
       exact: true,
     });
     assert.equal(

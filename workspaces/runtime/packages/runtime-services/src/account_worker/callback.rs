@@ -27,7 +27,7 @@ pub(super) fn is_vm_codex_refresh_request(frame: &Frame) -> bool {
             request.method == "account/chatgptAuthTokens/refresh"
                 && request.fields.contains_key("id")
         }
-        _ => false,
+        Frame::Notification(_) | Frame::Response { .. } => false,
     }
 }
 
@@ -50,7 +50,7 @@ pub(super) async fn vm_codex_refresh_response(
             serde_json::from_value(request.fields.get("id")?.clone()).ok()?,
             request.fields.get("params"),
         ),
-        _ => return None,
+        Frame::Notification(_) | Frame::Response { .. } => return None,
     };
     let failed = || Frame::Response {
         id: id.clone(),
@@ -460,7 +460,7 @@ pub(super) fn response(frame: &Frame) -> Option<Frame> {
         Frame::UnknownMethod(request) => {
             serde_json::from_value(request.fields.get("id")?.clone()).ok()?
         }
-        _ => return None,
+        Frame::Notification(_) | Frame::Response { .. } => return None,
     };
     let body = match dispatch(frame) {
         CallbackDecision::Answer(body) => body,

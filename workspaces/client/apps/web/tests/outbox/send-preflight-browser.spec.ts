@@ -1,3 +1,4 @@
+import { required } from "../teams/helpers.ts";
 import type { components } from "../../src/generated/api.ts";
 import { requestBody } from "../messages/helpers.ts";
 import type { Route } from "playwright";
@@ -53,6 +54,7 @@ test("send-preflight-browser", async ({ page: fixturePage }) => {
             "workspaceId"
           >,
         });
+      return undefined;
     });
     await page.route("**/api/session", (route) => {
       if (preflight) preflight.sessions.push(route);
@@ -62,6 +64,7 @@ test("send-preflight-browser", async ({ page: fixturePage }) => {
             token: "fixture",
           } satisfies components["schemas"]["SessionResponse"],
         });
+      return undefined;
     });
     await page.route("**/api/messages", async (route) => {
       const body = requestBody<PostBody<"/api/messages">>(route);
@@ -119,7 +122,7 @@ test("send-preflight-browser", async ({ page: fixturePage }) => {
         "Both prerequisite reads must start before either response arrives",
       );
     const identity = (value = workspaceId, status = 200) =>
-      preflight!.identities[0].fulfill({
+      required(preflight!.identities[0]).fulfill({
         status,
         json:
           status === 200
@@ -127,7 +130,7 @@ test("send-preflight-browser", async ({ page: fixturePage }) => {
             : { error: "Identity failed" },
       });
     const session = (status = 200) =>
-      preflight!.sessions[0].fulfill({
+      required(preflight!.sessions[0]).fulfill({
         status,
         json:
           status === 200 ? { token: "fixture" } : { error: "Session failed" },
@@ -153,11 +156,11 @@ test("send-preflight-browser", async ({ page: fixturePage }) => {
       ["delivered", "delivered"],
     );
     assert.equal(posts.length, 1);
-    assert.deepEqual(posts[0].body, parallel);
-    assert.equal(posts[0].headers["x-canvas-workspace"], workspaceId);
-    assert.equal(posts[0].headers["x-canvas-token"], "fixture");
+    assert.deepEqual(required(posts[0]).body, parallel);
+    assert.equal(required(posts[0]).headers["x-canvas-workspace"], workspaceId);
+    assert.equal(required(posts[0]).headers["x-canvas-token"], "fixture");
     await begin(parallel);
-    assert.equal((await settle())[0].status, "delivered");
+    assert.equal(required((await settle())[0]).status, "delivered");
     assert.equal(preflight!.identities.length, 1);
     assert.equal(preflight!.sessions.length, 1);
     assert.equal(posts.length, 1, "An accepted message must not be sent again");
@@ -169,7 +172,7 @@ test("send-preflight-browser", async ({ page: fixturePage }) => {
     await prerequisites();
     await session();
     await identity("d".repeat(32));
-    assert.equal((await settle())[0].code, 409);
+    assert.equal(required((await settle())[0]).code, 409);
     assert.equal((await stored(changedWorkspace.id))!.attempted, false);
     assert.equal(posts.length, 1);
 
@@ -179,7 +182,7 @@ test("send-preflight-browser", async ({ page: fixturePage }) => {
     await begin(failedIdentity);
     await prerequisites();
     await identity(workspaceId, 503);
-    assert.equal((await settle())[0].queued, true);
+    assert.equal(required((await settle())[0]).queued, true);
     assert.equal((await stored(failedIdentity.id))!.attempted, false);
     await session();
     assert.equal(posts.length, 1);
@@ -189,7 +192,7 @@ test("send-preflight-browser", async ({ page: fixturePage }) => {
     await prerequisites();
     await identity();
     await session(403);
-    assert.equal((await settle())[0].code, 403);
+    assert.equal(required((await settle())[0]).code, 403);
     assert.equal((await stored(failedSession.id))!.attempted, false);
     assert.equal(posts.length, 1);
 
@@ -212,7 +215,7 @@ test("send-preflight-browser", async ({ page: fixturePage }) => {
       await identity();
       await session();
       assert.equal(
-        (await settle())[0].status,
+        required((await settle())[0]).status,
         action === "pause" ? "paused" : "cancelled",
       );
       assert.equal((await stored(pending.id))!.attempted, false);
@@ -225,17 +228,17 @@ test("send-preflight-browser", async ({ page: fixturePage }) => {
     loseResponse = true;
     const lost = body("lost-response");
     await begin(lost);
-    assert.equal((await settle())[0].queued, true);
+    assert.equal(required((await settle())[0]).queued, true);
     assert.equal((await stored(lost.id))!.attempted, true);
     await begin(lost);
-    assert.equal((await settle())[0].status, "delivered");
+    assert.equal(required((await settle())[0]).status, "delivered");
     assert.deepEqual(
       posts.filter((post) => post.body.id === lost.id).map((post) => post.body),
       [lost, lost],
     );
     assert.deepEqual([...effects], [parallel.id, lost.id]);
     await begin({ ...lost, text: "Changed command" });
-    assert.match((await settle())[0].error!, /different content/);
+    assert.match(required((await settle())[0]).error!, /different content/);
     assert.equal(posts.length, 3);
     expect(errors).toEqual([]);
     console.log(

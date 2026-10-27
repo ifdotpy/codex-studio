@@ -100,7 +100,10 @@ pub async fn manage_with_origin_and_whoami(
             {
                 FederationError::Refused(message)
             }
-            other => other,
+            other @ FederationError::Store(_)
+            | other @ FederationError::Refused(_)
+            | other @ FederationError::NeedsIdentity
+            | other @ FederationError::Credentials(_) => other,
         })
 }
 

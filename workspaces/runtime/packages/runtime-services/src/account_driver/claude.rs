@@ -2,6 +2,7 @@
 //! these methods never invoke a provider or read credential files.
 use super::*;
 use serde_json::{Map, json};
+use studio_runtime_providers::ProviderKind;
 
 #[derive(Debug, thiserror::Error)]
 pub enum ClaudeAccountError {
@@ -42,7 +43,7 @@ impl<R: ProviderAuthReader> AccountDriver<R> {
             .lock()
             .map_err(|_| AccountDriverError::Poisoned)?;
         let row = registry_account(&state.value, key)?;
-        if row.get("provider") != Some(&json!("claude")) {
+        if row.get("provider") != Some(&json!(ProviderKind::Claude.key())) {
             return Err(ClaudeAccountError::NotClaude);
         }
         Ok(row.clone())
@@ -61,7 +62,7 @@ impl<R: ProviderAuthReader> AccountDriver<R> {
             .iter()
             .filter_map(|key| state.value.get("accounts")?.get(key))
             .find(|row| {
-                row.get("provider") == Some(&json!("claude"))
+                row.get("provider") == Some(&json!(ProviderKind::Claude.key()))
                     && row
                         .pointer("/claudeOptions/configDir")
                         .and_then(Value::as_str)
@@ -171,7 +172,7 @@ impl<R: ProviderAuthReader> AccountDriver<R> {
                         .as_deref()
                         .is_some_and(|new| claude_identity::accepts(old, new))
                 });
-            if local.get("provider") == Some(&json!("claude"))
+            if local.get("provider") == Some(&json!(ProviderKind::Claude.key()))
                 && same_paths
                 && same_login
                 && same_credential
@@ -197,7 +198,7 @@ impl<R: ProviderAuthReader> AccountDriver<R> {
             .unwrap_or_else(|| default_home.to_string_lossy().into_owned());
         let mut row = Map::from_iter([
             ("id".into(), json!(key)),
-            ("provider".into(), json!("claude")),
+            ("provider".into(), json!(ProviderKind::Claude.key())),
             ("claudeOptions".into(), Value::Object(options)),
             ("home".into(), json!(home)),
             ("label".into(), json!(label.trim())),
@@ -230,7 +231,7 @@ impl<R: ProviderAuthReader> AccountDriver<R> {
         let row = registry_account_mut(&mut updated, key)?
             .as_object_mut()
             .ok_or(AccountDriverError::InvalidRegistry)?;
-        if row.get("provider") != Some(&json!("claude")) {
+        if row.get("provider") != Some(&json!(ProviderKind::Claude.key())) {
             return Err(ClaudeAccountError::NotClaude);
         }
         if ["accountId", "claudeOptions"]

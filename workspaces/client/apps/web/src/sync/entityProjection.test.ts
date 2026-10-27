@@ -1,3 +1,4 @@
+import { required } from "../components/componentTestFixtures.ts";
 import type { EntityRow } from "./entityProjection.ts";
 import type { Agent, Message, Snapshot } from "../types";
 import type { SyncEntityPayload } from "../generated/api";
@@ -48,6 +49,7 @@ it("revives a locally evicted source version without reviving authoritative tomb
   assert.equal(removed.threads.length, 0);
   const revived = applyEntityChanges(state, [row], true);
 
+  assert.ok(revived.threads[0] !== null && revived.threads[0] !== undefined);
   assert.equal(revived.threads[0].id, "moved");
   applyEntityChanges(
     state,
@@ -80,6 +82,10 @@ it("retains other agents when one streamed summary or detail changes", () => {
 
   assert.notEqual(updated.runtime.agents[0], first.runtime.agents[0]);
 
+  assert.ok(
+    updated.runtime.agents[0] !== null &&
+      updated.runtime.agents[0] !== undefined,
+  );
   assert.equal(updated.runtime.agents[0].status, "running");
 
   assert.equal(updated.runtime.agents[1], untouched);
@@ -89,6 +95,10 @@ it("retains other agents when one streamed summary or detail changes", () => {
     true,
   );
 
+  assert.ok(
+    detailed.runtime.agents[0] !== null &&
+      detailed.runtime.agents[0] !== undefined,
+  );
   assert.equal(detailed.runtime.agents[0].lastAnswer, "Progress");
 
   assert.equal(detailed.runtime.agents[1], untouched);
@@ -105,6 +115,9 @@ it("retains other agents when one streamed summary or detail changes", () => {
     true,
   );
 
+  assert.ok(
+    closed.runtime.agents[0] !== null && closed.runtime.agents[0] !== undefined,
+  );
   assert.equal(closed.runtime.agents[0].lastAnswer, undefined);
 
   assert.equal(closed.runtime.agents[1], untouched);
@@ -146,28 +159,41 @@ it("renders the list from summaries and adds detail without losing unread state"
     true,
   );
 
+  assert.ok(first.threads[0] !== null && first.threads[0] !== undefined);
   assert.equal(first.threads[0].name, "Current");
 
+  assert.ok(first.threads[0] !== null && first.threads[0] !== undefined);
   assert.equal(first.threads[0].lastAnswer, undefined);
 
-  assert.equal(first.threads[0].readState!.read, false);
+  assert.ok(
+    first.threads[0].readState !== null &&
+      first.threads[0].readState !== undefined,
+  );
+  assert.equal(first.threads[0].readState.read, false);
   const open = applyEntityChanges(
     state,
     [entityRow("agentDetail", "a", { id: "a", lastAnswer: "Answer" }, 2)],
     true,
   );
 
+  assert.ok(open.threads[0] !== null && open.threads[0] !== undefined);
   assert.equal(open.threads[0].lastAnswer, "Answer");
 
-  assert.equal(open.threads[0].readState!.read, false);
+  assert.ok(
+    open.threads[0].readState !== null &&
+      open.threads[0].readState !== undefined,
+  );
+  assert.equal(open.threads[0].readState.read, false);
   const updated = applyEntityChanges(
     state,
     [entityRow("agentSummary", "a", { ...summary, name: "Renamed" }, 3)],
     true,
   );
 
+  assert.ok(updated.threads[0] !== null && updated.threads[0] !== undefined);
   assert.equal(updated.threads[0].name, "Renamed");
 
+  assert.ok(updated.threads[0] !== null && updated.threads[0] !== undefined);
   assert.equal(updated.threads[0].lastAnswer, "Answer");
   const closed = applyEntityChanges(
     state,
@@ -182,8 +208,10 @@ it("renders the list from summaries and adds detail without losing unread state"
     true,
   );
 
+  assert.ok(closed.threads[0] !== null && closed.threads[0] !== undefined);
   assert.equal(closed.threads[0].lastAnswer, undefined);
 
+  assert.ok(closed.threads[0] !== null && closed.threads[0] !== undefined);
   assert.equal(closed.threads[0].name, "Renamed");
 });
 
@@ -228,11 +256,31 @@ it("projects bounded workspace summaries and receipts with deletes", () => {
     true,
   );
 
-  assert.equal(first.runtime.messageReceipts![0].status, "pending");
+  assert.ok(
+    first.runtime.messageReceipts !== null &&
+      first.runtime.messageReceipts !== undefined,
+  );
+  assert.ok(
+    first.runtime.messageReceipts[0] !== null &&
+      first.runtime.messageReceipts[0] !== undefined,
+  );
+  assert.equal(first.runtime.messageReceipts[0].status, "pending");
 
-  assert.equal(first.runtime.plans![0].text, "Plan");
+  assert.ok(first.runtime.plans !== null && first.runtime.plans !== undefined);
+  assert.ok(
+    first.runtime.plans[0] !== null && first.runtime.plans[0] !== undefined,
+  );
+  assert.equal(first.runtime.plans[0].text, "Plan");
 
-  assert.equal(first.runtime.annotations![0].text, "Comment");
+  assert.ok(
+    first.runtime.annotations !== null &&
+      first.runtime.annotations !== undefined,
+  );
+  assert.ok(
+    first.runtime.annotations[0] !== null &&
+      first.runtime.annotations[0] !== undefined,
+  );
+  assert.equal(first.runtime.annotations[0].text, "Comment");
   const next = applyEntityChanges(
     state,
     [
@@ -246,7 +294,10 @@ it("projects bounded workspace summaries and receipts with deletes", () => {
     true,
   );
 
-  assert.equal(next.runtime.annotations!.length, 0);
+  assert.ok(
+    next.runtime.annotations !== null && next.runtime.annotations !== undefined,
+  );
+  assert.equal(next.runtime.annotations.length, 0);
 
   assert.equal(next.runtime.messageReceipts, first.runtime.messageReceipts);
 });
@@ -295,6 +346,7 @@ it("reuses unchanged entity data and bounds transcript and history caches", () =
       "unchanged collection arrays remain stable",
     );
 
+    assert.ok(changed.threads[1] !== null && changed.threads[1] !== undefined);
     assert.equal(changed.threads[1].name, "B2");
 
     const stale = applyEntityRows(
@@ -307,6 +359,7 @@ it("reuses unchanged entity data and bounds transcript and history caches", () =
       true,
     );
 
+    assert.ok(stale.threads[1] !== null && stale.threads[1] !== undefined);
     assert.equal(
       stale.threads[1].name,
       "B2",
@@ -361,6 +414,9 @@ it("reuses unchanged entity data and bounds transcript and history caches", () =
       ["a", "b"],
     );
 
+    assert.ok(
+      restored.threads[1] !== null && restored.threads[1] !== undefined,
+    );
     assert.equal(restored.threads[1].name, "restored");
   } finally {
     JSON.parse = parse;
@@ -379,6 +435,7 @@ it("reuses unchanged entity data and bounds transcript and history caches", () =
   assert.equal(bounded.items.length, 240);
   assert.ok(bounded.bytes <= 4_000_000);
 
+  assert.ok(bounded.items[0] !== null && bounded.items[0] !== undefined);
   assert.equal(bounded.items[0].id, "m0");
 
   assert.equal(bounded.items.at(-1)!.id, "m239");
@@ -493,11 +550,16 @@ it("reuses unchanged entity data and bounds transcript and history caches", () =
   );
 
   assert.deepEqual(
-    presentation[0].items.map((item) => item.id),
+    required(presentation[0]).items.map((item) => item.id),
     ["tool-a", "reasoning-a", "tool-b"],
     "reasoning remains chronological between tools",
   );
 
+  assert.ok(presentation[0]);
+  assert.ok(presentation[0].turns);
+  assert.ok(
+    presentation[0]?.turns !== null && presentation[0]?.turns !== undefined,
+  );
   assert.equal(
     presentation[0].turns!.length,
     2,
@@ -517,6 +579,9 @@ it("reuses unchanged entity data and bounds transcript and history caches", () =
     "a live adjacent turn stays in the run",
   );
 
+  assert.ok(
+    activePresentation[0] !== null && activePresentation[0] !== undefined,
+  );
   assert.equal(activePresentation[0].outcome, undefined);
   const completedPresentation = historyPresentationGroups([
     runGroups[0],
@@ -531,6 +596,12 @@ it("reuses unchanged entity data and bounds transcript and history caches", () =
     },
   ]);
 
+  assert.ok(
+    activePresentation[0] !== null && activePresentation[0] !== undefined,
+  );
+  assert.ok(
+    completedPresentation[0] !== null && completedPresentation[0] !== undefined,
+  );
   assert.equal(
     completedPresentation[0].id,
     activePresentation[0].id,
@@ -557,10 +628,12 @@ it("reuses unchanged entity data and bounds transcript and history caches", () =
   );
 
   assert.equal(
-    historyPresentationGroups([
-      ...runGroups.slice(0, 1),
-      { ...runGroups[1], outcome: "interrupted" },
-    ])[0].outcome,
+    required(
+      historyPresentationGroups([
+        ...runGroups.slice(0, 1),
+        { ...runGroups[1], outcome: "interrupted" },
+      ])[0],
+    ).outcome,
     "interrupted",
     "interrupted status stays attributable to the last native turn",
   );
@@ -853,8 +926,13 @@ it("skips malformed entity rows once and still applies the rest of the batch", (
       true,
     );
 
+    assert.ok(changed.threads[0] !== null && changed.threads[0] !== undefined);
     assert.equal(changed.threads[0].name, "A2");
 
+    assert.ok(
+      changed.runtime.projects[0] !== null &&
+        changed.runtime.projects[0] !== undefined,
+    );
     assert.equal(changed.runtime.projects[0].name, "P2");
 
     assert.equal(changed.chats, initial.chats);
@@ -1038,6 +1116,7 @@ it("updates stable entities in place and relocates changed entity IDs", () => {
     ["a", "b"],
   );
 
+  assert.ok(stable.threads[0] !== null && stable.threads[0] !== undefined);
   assert.equal(stable.threads[0].name, "A2");
 
   const relocated = applyEntityRows(
@@ -1390,6 +1469,7 @@ it("retains graph nodes while another collection changes", () => {
 
   assert.notEqual(renamed.nodes, changed.nodes);
 
+  assert.ok(renamed.nodes[1] !== null && renamed.nodes[1] !== undefined);
   assert.equal(renamed.nodes[1].name, "Renamed");
 });
 
@@ -1464,6 +1544,10 @@ it("keeps extra and wrong-typed known DTO fields after envelope validation", () 
     Pick<typeof extraAgent, "unknownPrivateLookingField">;
   assert.equal(projectedAgent.unknownPrivateLookingField, "retained");
 
+  assert.ok(
+    snapshot.runtime.agents[1] !== null &&
+      snapshot.runtime.agents[1] !== undefined,
+  );
   assert.equal(snapshot.runtime.agents[1].name, 42);
 
   assert.equal(state.rows.get("entity:agent:extra")!.seq, 1);
@@ -1518,8 +1602,16 @@ it("projects independent account limits and preserves them across workspace upda
     true,
   );
 
-  assert.deepEqual(initial.runtime.rateLimitsByAccount!.alpha, alpha);
+  assert.ok(
+    initial.runtime.rateLimitsByAccount !== null &&
+      initial.runtime.rateLimitsByAccount !== undefined,
+  );
+  assert.deepEqual(initial.runtime.rateLimitsByAccount.alpha, alpha);
 
+  assert.ok(
+    initial.runtime.rateLimitsByAccount !== null &&
+      initial.runtime.rateLimitsByAccount !== undefined,
+  );
   assert.equal(
     initial.runtime.rateLimits,
     initial.runtime.rateLimitsByAccount!.default,
@@ -1553,7 +1645,11 @@ it("projects independent account limits and preserves them across workspace upda
     true,
   );
 
-  assert.equal(withoutAlpha.runtime.rateLimitsByAccount!.alpha, undefined);
+  assert.ok(
+    withoutAlpha.runtime.rateLimitsByAccount !== null &&
+      withoutAlpha.runtime.rateLimitsByAccount !== undefined,
+  );
+  assert.equal(withoutAlpha.runtime.rateLimitsByAccount.alpha, undefined);
 
   assert.equal(withoutAlpha.runtime.rateLimits!.accountKey, "default");
 });
@@ -1563,6 +1659,11 @@ it("projects Studio error entities and removes dismissed rows by tombstone", () 
   const item = {
     id: "agent:worker:turn-1",
     kind: "turn_disconnected",
+    diagnostics: {
+      context: { source: "agent", turnId: "turn-1", epoch: 0 },
+      certainty: "unknown",
+      causes: [],
+    },
     reason: "The provider connection ended during the turn.",
     action: "resume",
     agentId: "worker",
@@ -1633,7 +1734,11 @@ it("projects queue stream upserts and deletion without endpoint reads", () => {
   };
   const initial = applyEntityRows(state, [row], true);
 
-  assert.deepEqual(initial.runtime.queuesByAgent!.chat, value);
+  assert.ok(
+    initial.runtime.queuesByAgent !== null &&
+      initial.runtime.queuesByAgent !== undefined,
+  );
+  assert.deepEqual(initial.runtime.queuesByAgent.chat, value);
   const next = applyEntityRows(
     state,
     [
@@ -1648,7 +1753,11 @@ it("projects queue stream upserts and deletion without endpoint reads", () => {
     true,
   );
 
-  assert.equal(next.runtime.queuesByAgent!.chat, undefined);
+  assert.ok(
+    next.runtime.queuesByAgent !== null &&
+      next.runtime.queuesByAgent !== undefined,
+  );
+  assert.equal(next.runtime.queuesByAgent.chat, undefined);
 });
 
 for (const [collection, field, singleton] of [

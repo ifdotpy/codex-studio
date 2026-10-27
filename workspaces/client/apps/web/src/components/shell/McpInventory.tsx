@@ -257,7 +257,7 @@ export function McpInventory({
           {row.error && <p className="workspace-error">Error: {row.error}</p>}
           <Button
             size="xs"
-            loading={feedback[requestKey(row.name)]?.busy}
+            loading={!!feedback[requestKey(row.name)]?.busy}
             disabled={!inventory.mcpSession}
             onClick={() => void reconnectServer(row.name)}
           >
@@ -266,7 +266,7 @@ export function McpInventory({
               : "Reconnect"}
           </Button>
           {feedback[requestKey(row.name)] && (
-            <p role="status">{feedback[requestKey(row.name)].message}</p>
+            <p role="status">{feedback[requestKey(row.name)]?.message}</p>
           )}
         </section>
       ))}

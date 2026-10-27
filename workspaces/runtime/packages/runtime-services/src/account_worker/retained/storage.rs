@@ -743,7 +743,11 @@ mod replay_identity_tests {
                 .iter()
                 .filter_map(|action| match action {
                     Action::Write(Frame::Request(frame)) => Some(frame),
-                    _ => None,
+                    Action::Write(_)
+                    | Action::Resolve { .. }
+                    | Action::Dispatch(_)
+                    | Action::GenerationClosed { .. }
+                    | Action::ThreadReleased { .. } => None,
                 })
                 .collect::<Vec<_>>();
             if index + 1 < restored_count {

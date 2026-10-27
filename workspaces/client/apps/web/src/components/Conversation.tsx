@@ -1,3 +1,4 @@
+import { ProviderKind } from "../generated/providerKind.ts";
 import type { ReactNode } from "react";
 import { IdleCompactionNotice } from "./IdleCompactionNotice";
 import {
@@ -1455,7 +1456,7 @@ export default function Conversation(p: {
   const transcript = useMemo(
     () => (
       <>
-        {managed && !p.room && agent?.provider === "claude" && (
+        {managed && !p.room && agent?.provider === ProviderKind.Claude && (
           <ClaudeRepairNotice agent={agent} />
         )}
         <TurnHistory
@@ -2001,7 +2002,7 @@ export default function Conversation(p: {
               );
               const voiceTool = managed &&
                 agent?.isLead &&
-                agent?.provider !== "claude" &&
+                agent?.provider === ProviderKind.Codex &&
                 p.id &&
                 !threadBlock && (
                   <RealtimeVoice
@@ -2053,7 +2054,7 @@ export default function Conversation(p: {
                       workspace: p.syncWorkspaceId || p.data.stateDir,
                       account: p.agent?.accountKey || "default",
                       cwd: p.agent?.cwd || "",
-                      provider: String(p.agent?.provider || "codex"),
+                      provider: String(p.agent?.provider || ""),
                     }}
                   />
                   {exactModelCommand && (

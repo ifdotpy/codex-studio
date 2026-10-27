@@ -10,9 +10,9 @@ import { atomicJSON } from "./recovery.ts";
 
 function rectangle(value: Rectangle | undefined) {
   return (
-    value &&
-    ["x", "y", "width", "height"].every((key) =>
-      Number.isSafeInteger(value[key as keyof Rectangle]),
+    !!value &&
+    [value.x, value.y, value.width, value.height].every((coordinate) =>
+      Number.isSafeInteger(coordinate),
     ) &&
     value.width > 0 &&
     value.height > 0
@@ -23,11 +23,17 @@ function windowState(
   displays: Pick<Display, "workArea">[],
 ) {
   const areas = displays.map((display) => display.workArea).filter(rectangle);
-  if (!areas.length) throw new Error("No display work area is available.");
-  const valid = saved?.version === 1 && rectangle(saved.bounds);
-  const bounds = valid
-    ? saved!.bounds!
-    : { x: areas[0].x, y: areas[0].y, width: 1440, height: 960 };
+  const [primary] = areas;
+  if (!primary) throw new Error("No display work area is available.");
+  const restored =
+    saved?.version === 1 && rectangle(saved.bounds) ? saved.bounds : undefined;
+  const valid = restored !== undefined;
+  const bounds = restored ?? {
+    x: primary.x,
+    y: primary.y,
+    width: 1440,
+    height: 960,
+  };
   const overlap = (area: Rectangle) =>
     Math.max(
       0,
@@ -47,11 +53,11 @@ function windowState(
       (y - Math.max(area.y, Math.min(y, area.y + area.height))) ** 2
     );
   };
-  const area = valid
+  const [area = primary] = valid
     ? [...areas].sort(
         (a, b) => overlap(b) - overlap(a) || distance(a) - distance(b),
-      )[0]
-    : areas[0];
+      )
+    : [primary];
   const minWidth = Math.min(420, area.width),
     minHeight = Math.min(600, area.height);
   const width = Math.max(minWidth, Math.min(bounds.width, area.width));
@@ -69,7 +75,7 @@ function windowState(
     },
     minWidth,
     minHeight,
-    maximized: valid && saved.maximized === true,
+    maximized: valid && saved?.maximized === true,
   };
 }
 function loadWindowState(

@@ -58,7 +58,9 @@ export default function ClaudeProfile({
           .split("\n")
           .filter((line: string) => line.trim())
           .map((line: string) => {
-            const [id, ...parts] = line.split("|").map((part) => part.trim());
+            const [id = "", ...parts] = line
+              .split("|")
+              .map((part) => part.trim());
             return { id, label: parts.join(" | ") || id };
           }),
       };

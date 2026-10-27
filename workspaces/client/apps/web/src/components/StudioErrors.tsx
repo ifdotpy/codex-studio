@@ -16,7 +16,21 @@ export type StudioErrorItem = GetResult<"/api/studio-errors">["items"][number];
 const EMPTY_ERRORS: StudioErrorItem[] = [];
 
 export function actionLabel(item: StudioErrorItem) {
-  return item.action === "resume" ? "Resume" : "Open";
+  switch (item.action) {
+    case "resume":
+      return "Resume";
+    case "check":
+      return "Open";
+    case "details":
+      return "Details";
+    default: {
+      const exhaustive: never = item;
+      return exhaustive;
+    }
+  }
+}
+function ownerLabel(item: StudioErrorItem) {
+  return item.action === "details" ? "Server" : item.agentName;
 }
 function when(at: number) {
   return at > 0 ? new Date(at * 1000).toLocaleString() : "";
@@ -78,8 +92,8 @@ export function StudioErrorList({
               data-kind={item.kind}
             >
               <Checkbox
-                label={item.agentName}
-                aria-label={`Select error ${item.id} for ${item.agentName}`}
+                label={ownerLabel(item)}
+                aria-label={`Select error ${item.id} for ${ownerLabel(item)}`}
                 checked={selected.has(item.id)}
                 disabled={
                   busy !== null ||
@@ -101,21 +115,29 @@ export function StudioErrorList({
                   {item.detail}
                 </Text>
               )}
+              <details>
+                <summary>Details</summary>
+                <pre className="studio-error-details">
+                  {JSON.stringify(item, null, 2)}
+                </pre>
+              </details>
               <Group gap="xs" mt="xs">
                 {when(item.at) && (
                   <Text size="xs" c="dimmed">
                     {when(item.at)}
                   </Text>
                 )}
-                <Button
-                  size="xs"
-                  variant="light"
-                  loading={busy === item.id}
-                  disabled={busy !== null}
-                  onClick={() => onAction(item)}
-                >
-                  {actionLabel(item)}
-                </Button>
+                {item.action !== "details" && (
+                  <Button
+                    size="xs"
+                    variant="light"
+                    loading={busy === item.id}
+                    disabled={busy !== null}
+                    onClick={() => onAction(item)}
+                  >
+                    {actionLabel(item)}
+                  </Button>
+                )}
               </Group>
             </article>
           ))}
@@ -199,6 +221,7 @@ export function useStudioErrorsState(
     }
   };
   const resume = async (item: StudioErrorItem) => {
+    if (item.action !== "resume") return;
     if (pending.current) return;
     pending.current = true;
     generation.current++;

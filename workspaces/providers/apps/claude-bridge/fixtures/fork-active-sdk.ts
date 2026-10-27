@@ -1,3 +1,4 @@
+import { inputText } from "../sdk-fixtures.ts";
 export interface ForkQueryEvent {
   id: string;
   start?: boolean;
@@ -92,7 +93,7 @@ export function query({ prompt, options }: SessionFixtureQuery) {
       while (!abort.signal.aborted) {
         const input = await prompt.next();
         if (input.done) return;
-        const text = input.value.message.content[0].text;
+        const text = inputText(input.value);
         const messages = histories.get(id) || [];
         histories.set(id, messages);
         const user: SessionStoreEntry = {
@@ -139,6 +140,7 @@ export function query({ prompt, options }: SessionFixtureQuery) {
         yield {
           type: "result",
           subtype: "success",
+          is_error: false,
           usage: { input_tokens: 10, output_tokens: 2 },
           result: "reply",
         };

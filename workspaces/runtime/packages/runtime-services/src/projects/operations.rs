@@ -178,7 +178,11 @@ pub(crate) fn replay(
                 ProjectsError::InvalidStored { table: object, id }
             }
             EventWriteError::Store(error) => ProjectsError::Store(error),
-            _ => ProjectsError::Invalid("operation receipt is invalid"),
+            EventWriteError::InvalidRequest(_)
+            | EventWriteError::InvalidResultSchema(_)
+            | EventWriteError::RemoteEventsUnavailable
+            | EventWriteError::WorkerAssignmentUnavailable
+            | EventWriteError::Clock => ProjectsError::Invalid("operation receipt is invalid"),
         }
     })
 }
@@ -194,7 +198,12 @@ pub(crate) fn save_operation_receipt(
         EventWriteError::InvalidStoredObject { object, id } => {
             ProjectsError::InvalidStored { table: object, id }
         }
-        _ => ProjectsError::Invalid("operation receipt could not be saved"),
+        EventWriteError::InvalidRequest(_)
+        | EventWriteError::InvalidResultSchema(_)
+        | EventWriteError::Conflict(_)
+        | EventWriteError::RemoteEventsUnavailable
+        | EventWriteError::WorkerAssignmentUnavailable
+        | EventWriteError::Clock => ProjectsError::Invalid("operation receipt could not be saved"),
     })
 }
 

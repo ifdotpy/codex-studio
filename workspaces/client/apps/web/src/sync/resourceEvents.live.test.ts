@@ -1,3 +1,5 @@
+import { required } from "../components/componentTestFixtures.ts";
+import assert from "node:assert/strict";
 import type { OutgoingTabMessage } from "./resourceEvents";
 import { afterEach, expect, it, vi } from "vitest";
 import { createResourceEvents } from "./resourceEvents";
@@ -693,6 +695,34 @@ it("coalesces chat switches into one POST without reopening the SSE stream", asy
   });
 });
 
+it("queues interests on an opening stream until its session arrives", async () => {
+  const f = await fixture(false, false, false, false);
+  const connection = vi.fn();
+  f.transport.watchResourceConnection(connection);
+  const transcript = { kind: "transcript", agentId: "chat" } as const;
+  f.transport.watchResourceChanges(transcript, vi.fn());
+  await vi.advanceTimersToNextTimerAsync();
+  expect(f.source.closed).toBe(false);
+  expect(f.sources).toHaveLength(1);
+  expect(f.post).not.toHaveBeenCalled();
+  expect(connection.mock.calls.some(([status]) => status === "degraded")).toBe(
+    false,
+  );
+
+  f.source.emit("session", { sessionId: "session-one" });
+  await vi.advanceTimersToNextTimerAsync();
+  expect(f.source.closed).toBe(false);
+  expect(f.sources).toHaveLength(1);
+  expect(f.post).toHaveBeenCalledTimes(1);
+  expect(f.post.mock.calls[0]?.[0]).toBe("/api/sync/subscriptions");
+  expect(f.post.mock.calls[0]?.[1]).toMatchObject({
+    sessionId: "session-one",
+    gen: 1,
+    add: [{ resource: transcript }],
+    remove: [],
+  });
+});
+
 it("reopens with the full desired set when a stream has not announced its session", async () => {
   const f = await fixture(false, false);
   const transcript = { kind: "transcript", agentId: "chat" } as const;
@@ -1119,6 +1149,8 @@ it("T28 recently viewed chat switching sends no subscription changes within grac
       }
       await vi.advanceTimersByTimeAsync(50);
     };
+    assert.ok(refs[0]);
+    assert.ok(refs[1]);
     let stop = events.watchResourceChanges(refs[0], () => {});
     await settle();
     stop();
@@ -1127,7 +1159,10 @@ it("T28 recently viewed chat switching sends no subscription changes within grac
     const baseline = f.post.mock.calls.length;
     for (let step = 0; step < 10; step++) {
       stop();
-      stop = events.watchResourceChanges(refs[step % refs.length], () => {});
+      stop = events.watchResourceChanges(
+        required(refs[step % refs.length]),
+        () => {},
+      );
       await settle();
     }
     expect(f.sources).toHaveLength(1);
@@ -1420,6 +1455,7 @@ it("takes terminal ownership using its durable cursor", async () => {
   });
   await vi.advanceTimersByTimeAsync(0);
   const reset = frame(11, "new", 3);
+  assert.ok(reset.resourceVersions[0]);
   // This is what an owner's failed snapshot dispatch broadcasts to a follower.
   const {
     cursor: _cursor,
@@ -2259,7 +2295,8 @@ it("connection: owner health snapshots retain server freshness and invalidate re
   const first = [...f.posted]
     .reverse()
     .find((message) => message.kind === "leader-heartbeat");
-  expect(first!.health!).toMatchObject({
+  assert.ok(first != null);
+  expect(first.health).toMatchObject({
     status: "live",
     validatedAt: expect.any(Number),
   });
@@ -2267,15 +2304,20 @@ it("connection: owner health snapshots retain server freshness and invalidate re
   const quiet = [...f.posted]
     .reverse()
     .find((message) => message.kind === "leader-heartbeat");
-  expect(quiet!.health!.validatedAt).toBe(first!.health!.validatedAt);
-  expect(quiet!.health!.sequence).toBeGreaterThan(first!.health!.sequence);
+  assert.ok(quiet != null);
+  assert.ok(quiet.health != null);
+  assert.ok(first.health != null);
+  expect(quiet.health.validatedAt).toBe(first.health.validatedAt);
+  expect(quiet.health.sequence).toBeGreaterThan(first.health.sequence);
   f.source.onerror?.();
   const failed = [...f.posted]
     .reverse()
     .find((message) => message.kind === "status");
-  expect(failed!.health!.status).toBe("degraded");
-  expect(failed!.health!.validatedAt).toBeUndefined();
-  expect(failed!.health!.generation).toBeGreaterThan(first!.health!.generation);
+  assert.ok(failed != null);
+  assert.ok(failed.health != null);
+  expect(failed.health.status).toBe("degraded");
+  expect(failed.health.validatedAt).toBeUndefined();
+  expect(failed.health.generation).toBeGreaterThan(first.health.generation);
 });
 
 it("connection: first and late quiet followers recover only from fresh scoped owner proof", async () => {
@@ -2389,7 +2431,9 @@ it("connection: cancelling a pending server frame cannot publish live proof for 
   const failed = [...f.posted]
     .reverse()
     .find((message) => message.kind === "status");
-  expect(failed!.health!.validatedAt).toBeUndefined();
+  assert.ok(failed != null);
+  assert.ok(failed.health != null);
+  expect(failed.health.validatedAt).toBeUndefined();
 });
 
 it("connection: actual lock and channel share the version and schema coordination scope", async () => {
@@ -2435,7 +2479,8 @@ it("connection: validated progress keeps owner health fresh through a false offl
     const relay = [...f.posted]
       .reverse()
       .find((message) => message.kind === "resource-progress");
-    follower.control("resource-progress", relay!);
+    assert.ok(relay);
+    follower.control("resource-progress", relay);
     expect(followerStatus.mock.lastCall?.[0]).toBe("live");
   }
   Object.assign(navigator, { onLine: false });
@@ -2445,7 +2490,9 @@ it("connection: validated progress keeps owner health fresh through a false offl
   const proof = [...f.posted]
     .reverse()
     .find((message) => message.kind === "resource-progress");
-  expect(proof!.health!.validatedAt).toBe(Date.now());
+  assert.ok(proof != null);
+  assert.ok(proof.health != null);
+  expect(proof.health.validatedAt).toBe(Date.now());
 });
 
 it("connection: foreign, stale and invalid progress cannot heal a replacement stream", async () => {

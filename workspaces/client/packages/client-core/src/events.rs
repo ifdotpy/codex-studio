@@ -105,9 +105,11 @@ pub async fn run(
     let backend = match backend.as_ref() {
         Ok(backend) => backend,
         Err(error) => {
-            let _ = output
-                .send(json!({"event":id,"error":sync::error("backend_config",error)}))
-                .await;
+            drop(
+                output
+                    .send(json!({"event":id,"error":sync::error("backend_config",error)}))
+                    .await,
+            );
             return;
         }
     };

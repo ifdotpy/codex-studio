@@ -80,21 +80,6 @@ pub(super) fn save_reply(
         &json!({"identity":reply.identity,"signature":input.signature(),"body":body,"delivery":"prepared"}),
     )
 }
-/// Managed tool replies keep no row: the durable tool result rebuilds the
-/// answer. Delete the rows and cursor links that earlier versions kept. They
-/// were only a replay cache, so deleting them sends and repeats nothing.
-pub(crate) fn delete_legacy_tool_replies(tx: &Transaction<'_>) -> Result<usize, CallbackError> {
-    let replies = tx.execute(
-        "DELETE FROM runtime_operation_receipts WHERE signature='provider-callback' AND json_extract(result,'$.delivery')='prepared' AND json_extract(result,'$.toolRequest') IS NOT NULL",
-        [],
-    )?;
-    let links = tx.execute(
-        "DELETE FROM runtime_operation_receipts WHERE id>='account-worker:callback:' AND id<'account-worker:callback;' AND id LIKE '%:reply'",
-        [],
-    )?;
-    Ok(replies + links)
-}
-
 /// The receipt key of a reply, for tests that seed reply rows.
 #[cfg(test)]
 pub(crate) fn reply_key(identity: &ReplyIdentity) -> String {

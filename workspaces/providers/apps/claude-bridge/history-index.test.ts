@@ -42,8 +42,15 @@ async function fixture(serviceFirst = true) {
   const configDir = path.join(cwd, "config");
   process.env.CLAUDE_CONFIG_DIR = configDir;
   const nativeId = randomUUID();
-  const ids: string[] = Array.from({ length: 6 }, () => randomUUID());
-  const rows: sdk.SessionStoreEntry[] = ids.map((uuid, index) => ({
+  const ids: [string, string, string, string, string, string] = [
+    randomUUID(),
+    randomUUID(),
+    randomUUID(),
+    randomUUID(),
+    randomUUID(),
+    randomUUID(),
+  ];
+  const row = (uuid: string, index: number): sdk.SessionStoreEntry => ({
     type: index === 2 || index === 5 ? "assistant" : "user",
     uuid,
     parentUuid: index ? ids[index - 1] : null,
@@ -71,7 +78,22 @@ async function fixture(serviceFirst = true) {
         ? { id: `msg_${index}`, stop_reason: "end_turn" }
         : {}),
     },
-  }));
+  });
+  const rows: [
+    sdk.SessionStoreEntry,
+    sdk.SessionStoreEntry,
+    sdk.SessionStoreEntry,
+    sdk.SessionStoreEntry,
+    sdk.SessionStoreEntry,
+    sdk.SessionStoreEntry,
+  ] = [
+    row(ids[0], 0),
+    row(ids[1], 1),
+    row(ids[2], 2),
+    row(ids[3], 3),
+    row(ids[4], 4),
+    row(ids[5], 5),
+  ];
   const file = path.join(
     configDir,
     "projects",
@@ -109,9 +131,9 @@ for (const damage of ["malformed uuid", "unknown record"])
     const f = await fixture();
     const rows = f.rows.slice(0, 3);
     rows.push({
-      ...rows[2],
+      ...f.rows[2],
       uuid: damage === "malformed uuid" ? "bad-uuid" : randomUUID(),
-      parentUuid: rows[2].uuid,
+      parentUuid: f.rows[2].uuid,
       ...(damage === "unknown record" ? { type: "future-input" } : {}),
     });
     await fs.writeFile(
@@ -134,14 +156,14 @@ for (const serviceFirst of [true, false])
     const deps = controls();
     const fork = await forkAtTurn(f.session, { lastTurnId: "turn0" }, deps);
     expect(fork.turns).toHaveLength(1);
-    expect(fork.turns[0].items[0].nativeIds).toHaveLength(2);
+    expect(fork.turns[0]?.items[0]?.nativeIds).toHaveLength(2);
     await rollbackSession(
       f.session,
       { requestId: randomUUID(), turnId: "turn3" },
       deps,
     );
     expect(f.session.turns).toHaveLength(1);
-    expect(f.session.turns[0].items[0].nativeIds).toHaveLength(2);
+    expect(f.session.turns[0]?.items[0]?.nativeIds).toHaveLength(2);
   });
 
 for (const damage of ["malformed uuid", "unknown record"])
@@ -181,13 +203,10 @@ for (const damage of ["malformed uuid", "unknown record"])
     const root = path.join(f.cwd, "state");
     await createSessionStore(root).persist(f.session);
     const restored = await createSessionStore(root).get(f.session.id);
-    expect(restored.turns[0].status).toBe("uncertain");
-    expect(restored.turns[0].startOutcome).toBe("preparing");
-    expect(restored.turns[0].items[1].deliveryStatus).toBe("submitted");
-    expect(
-      (restored.turns[0] as Turn & { unappliedSteers?: unknown })
-        .unappliedSteers,
-    ).toBeUndefined();
+    expect(restored.turns[0]?.status).toBe("uncertain");
+    expect(restored.turns[0]?.startOutcome).toBe("preparing");
+    expect(restored.turns[0]?.items[1]?.deliveryStatus).toBe("submitted");
+    expect(restored.turns[0]).not.toHaveProperty("unappliedSteers");
   });
 
 test("post-clear controls use current native turns while preserving earlier mirror history", async () => {
@@ -262,6 +281,21 @@ for (const [kind, change] of [
       "unknown",
     );
   });
+
+test("a symlinked project cwd reads the real-path history the CLI wrote", async () => {
+  // The CLI and the SDK key and record the project by its real path.
+  const f = await fixture();
+  const alias = f.cwd + "-link";
+  roots.push(alias);
+  await fs.symlink(f.cwd, alias);
+  const real = await readHistoryIndex(f.session);
+  const linked = await readHistoryIndex({ ...f.session, cwd: alias });
+  expect(real?.messages.length).toBeGreaterThan(0);
+  expect(linked?.messages).toEqual(real?.messages);
+  expect(
+    await readHistoryIndex({ ...f.session, nativeHistoryCwd: alias }),
+  ).not.toBeNull();
+});
 
 test("installed alpha import retains exact ordered meta provenance", async () => {
   const f = await fixture();
@@ -434,8 +468,16 @@ for (const kind of ["system retry", "tool references", "non-input attachment"])
     expect(index?.outcome([f.ids[1]], [f.ids[1]])).toBe("delivered");
   });
 
-for (const content of [[{ type: "text", text: "Studio instruction" }], 42])
-  test(`an unknown input-shaped attachment remains unknown: ${JSON.stringify(content)}`, async () => {
+// Claude 2.1.310 writes CLI context attachments such as skill_listing.
+for (const attachment of [
+  {
+    type: "future-input",
+    content: [{ type: "text", text: "Studio instruction" }],
+  },
+  { type: "future-input", content: 42 },
+  { type: "skill_listing", content: "- skill: description", skillCount: 1 },
+])
+  test(`an unclassified attachment leaves absence unknown and delivery provable: ${attachment.type}`, async () => {
     const f = await fixture();
     const row = {
       ...f.rows[5],
@@ -443,7 +485,7 @@ for (const content of [[{ type: "text", text: "Studio instruction" }], 42])
       uuid: randomUUID(),
       parentUuid: f.ids[5],
       message: undefined,
-      attachment: { type: "future-input", content },
+      attachment,
     };
     await fs.writeFile(
       f.file,
@@ -455,7 +497,73 @@ for (const content of [[{ type: "text", text: "Studio instruction" }], 42])
     expect(index?.outcome([randomUUID()], [f.ids[1]]) ?? "unknown").toBe(
       "unknown",
     );
+    expect(index?.outcome([f.ids[1]], [f.ids[1]])).toBe("delivered");
   });
+
+test("a Claude 2.1.310 steer receipt after opaque rows in another directory is delivered", async () => {
+  const f = await fixture();
+  const opaqueId = randomUUID();
+  const steerId = randomUUID();
+  const moved = path.join(f.cwd, "src");
+  const rows = [
+    ...f.rows.slice(0, 3),
+    {
+      ...f.rows[2],
+      type: "attachment",
+      uuid: opaqueId,
+      parentUuid: f.ids[2],
+      cwd: moved,
+      message: undefined,
+      attachment: { type: "skill_listing", content: "- skill: description" },
+    },
+    {
+      ...f.rows[2],
+      type: "attachment",
+      uuid: randomUUID(),
+      parentUuid: opaqueId,
+      cwd: moved,
+      message: undefined,
+      attachment: {
+        type: "queued_command",
+        prompt: [{ type: "text", text: "steer" }],
+        source_uuid: steerId,
+        delivery_id: randomUUID(),
+        commandMode: "prompt",
+        origin: { kind: "unclassified" },
+        timestamp: new Date().toISOString(),
+        isMeta: true,
+      },
+    },
+  ];
+  await fs.writeFile(
+    f.file,
+    rows.map(JSON.stringify as (value: unknown) => string).join("\n") + "\n",
+  );
+  const index = await readHistoryIndex(f.session);
+  expect(index?.outcome([steerId], [f.ids[1]])).toBe("delivered");
+  expect(index?.outcome([randomUUID()], [f.ids[1]])).toBe("unknown");
+});
+
+test("native history controls refuse opaque records", async () => {
+  const f = await fixture();
+  const row = {
+    ...f.rows[5],
+    type: "attachment",
+    uuid: randomUUID(),
+    parentUuid: f.ids[5],
+    message: undefined,
+    attachment: { type: "skill_listing", content: "- skill: description" },
+  };
+  await fs.writeFile(
+    f.file,
+    [...f.rows, row]
+      .map(JSON.stringify as (value: unknown) => string)
+      .join("\n") + "\n",
+  );
+  await expect(verifiedHistoryIndex(f.session)).rejects.toThrow(
+    /incomplete or uncertain/,
+  );
+});
 
 test("a known output attachment with an input-shaped payload stays unknown", async () => {
   const f = await fixture();
@@ -481,6 +589,22 @@ test("a known output attachment with an input-shaped payload stays unknown", asy
   expect(index?.outcome([randomUUID()], [f.ids[1]]) ?? "unknown").toBe(
     "unknown",
   );
+  expect(index?.outcome([f.ids[1]], [f.ids[1]])).toBe("delivered");
+});
+
+// Claude records the shell's current directory on each row after a `cd`.
+test("rows recorded in another working directory keep input coverage", async () => {
+  const f = await fixture();
+  const rows = f.rows.map((row, index) =>
+    index >= 3 ? { ...row, cwd: path.join(f.cwd, "src") } : row,
+  );
+  await fs.writeFile(
+    f.file,
+    rows.map(JSON.stringify as (value: unknown) => string).join("\n") + "\n",
+  );
+  const index = await readHistoryIndex(f.session);
+  expect(index?.outcome([f.ids[4]], [f.ids[1]])).toBe("delivered");
+  expect(index?.outcome([randomUUID()], [f.ids[1]])).toBe("not_applied");
 });
 
 for (const trailing of [false, true])

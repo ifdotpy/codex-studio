@@ -103,6 +103,7 @@ test("upload owners retain distinct bytes and reject a late cancelled attachment
         crypto.randomUUID = uuid;
       }
 
+      if (!rowA || !rowB) throw new Error("Missing upload rows");
       const pendingA = a.deliverUpload(rowA);
       await started;
       const assetB = await b.deliverUpload(rowB);

@@ -198,7 +198,7 @@ export default function RadioChat({
             <div>
               <strong>{agent.name}</strong>
               <small>
-                {providerLabel(agent.provider || "codex")} · {agent.model}
+                {providerLabel(agent.provider || "")} · {agent.model}
               </small>
             </div>
             <span className="radio-speaker">

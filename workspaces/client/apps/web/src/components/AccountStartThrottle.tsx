@@ -18,7 +18,7 @@ import {
   ACCOUNT_START_PAUSE_MIN_SECONDS,
 } from "../generated/sharedValues";
 import type { Account } from "./Accounts";
-import type { ProviderKind } from "../generated/providerKind.ts";
+import { ProviderKind } from "../generated/providerKind.ts";
 
 type Throttle = Omit<PostBody<"/api/accounts/throttle">, "account_key">;
 
@@ -91,12 +91,12 @@ export const THROTTLE_FIELDS: ThrottleFieldSpec[] = [
 ];
 
 const DEFAULT_THROTTLES: Record<ProviderKind, Throttle> = {
-  codex: {
+  [ProviderKind.Codex]: {
     burst: ACCOUNT_START_BURST_DEFAULT_CODEX,
     pauseSeconds: ACCOUNT_START_PAUSE_DEFAULT_SECONDS_CODEX,
     maxRunningTurns: ACCOUNT_RUNNING_TURNS_DEFAULT_CODEX,
   },
-  claude: {
+  [ProviderKind.Claude]: {
     burst: ACCOUNT_START_BURST_DEFAULT_CLAUDE,
     pauseSeconds: ACCOUNT_START_PAUSE_DEFAULT_SECONDS_CLAUDE,
     maxRunningTurns: ACCOUNT_RUNNING_TURNS_DEFAULT_CLAUDE,

@@ -143,6 +143,7 @@ test("a transcript window streams without pulls and older history uses one bound
               );
               const limit = Number(url.searchParams.get("limit"));
               const start = Math.max(0, before - limit);
+              assert.ok(all[start]);
               json({
                 items: all.slice(start, before),
                 truncated: start > 0,
@@ -196,6 +197,7 @@ test("a transcript window streams without pulls and older history uses one bound
       1,
       "one user action issues exactly one page read",
     );
+    assert.ok(pages[0]);
     assert.equal(Number(pages[0].limit), SYNC_TRANSCRIPT_INITIAL_TAIL_ITEMS);
     assert.equal(pages[0].before, snapshot.nextCursor);
     assert.deepEqual(

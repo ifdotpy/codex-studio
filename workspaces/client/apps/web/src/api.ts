@@ -546,12 +546,13 @@ export function createApiScope(options: ApiScopeOptions) {
     try {
       const result =
         method === "GET"
-          ? await accessClient.GET("/api/multi-server", {
-              signal: controller.signal,
-            })
+          ? await accessClient.GET(
+              "/api/multi-server",
+              controller.signal ? { signal: controller.signal } : {},
+            )
           : await accessClient.POST("/api/multi-server", {
               body: body!,
-              signal: controller.signal,
+              ...(controller.signal ? { signal: controller.signal } : {}),
               headers: {
                 "X-Canvas-Token": sessionToken ?? token,
                 "X-Canvas-Workspace": workspace,

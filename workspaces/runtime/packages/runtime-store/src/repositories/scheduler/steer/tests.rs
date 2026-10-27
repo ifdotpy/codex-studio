@@ -636,7 +636,7 @@ fn wake_page_selects_running_turns_of_every_provider_with_queued_user_input() {
             .expect("wake page reads")
     };
     let connection = database();
-    assert_eq!(page(&connection)["acct"][0].0, AGENT);
+    assert_eq!(page(&connection)["acct"][0].agent_id, AGENT);
     let mut rejected = running();
     rejected
         .extra
@@ -649,7 +649,7 @@ fn wake_page_selects_running_turns_of_every_provider_with_queued_user_input() {
     codex.extra.get_mut("startAttempt").expect("attempt")["connectionGeneration"] = Value::Null;
     put_agent(&connection, codex);
     assert_eq!(
-        page(&connection)["acct"][0].0,
+        page(&connection)["acct"][0].agent_id,
         AGENT,
         "Codex turns are steered too"
     );
@@ -658,7 +658,7 @@ fn wake_page_selects_running_turns_of_every_provider_with_queued_user_input() {
         .execute("UPDATE runtime_events SET kind='followup'", [])
         .expect("events change kind");
     assert_eq!(
-        page(&connection)["acct"][0].0,
+        page(&connection)["acct"][0].agent_id,
         AGENT,
         "followups wake a busy turn too"
     );

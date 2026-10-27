@@ -25,12 +25,13 @@ import {
 type ComplaintDetailResponse =
   paths["/api/complaint"]["get"]["responses"][200]["content"]["application/json"];
 type ComplaintSummary = Complaint;
+type ReplyDraft = Pick<UserComplaintResponse, "text" | "status">;
 
 const caches = new WeakMap<
   Storage,
   {
     confirmedMessages: Map<string, ComplaintDetailResponse>;
-    replyDrafts: Map<string, { text: string; status: string }>;
+    replyDrafts: Map<string, ReplyDraft>;
   }
 >();
 function useMessageCache() {
@@ -69,8 +70,7 @@ function MessageResponse({
   const draftKey = JSON.stringify([pendingKey, detail.id]);
   const storageKey = `studio-reply-draft:${draftKey}`;
   const draft =
-    replyDrafts.get(draftKey) ||
-    saved<{ text: string; status: string } | null>(storageKey, null);
+    replyDrafts.get(draftKey) || saved<ReplyDraft | null>(storageKey, null);
   const previous = requests.get(detail.id);
   const [text, setText] = useState(previous?.text || draft?.text || "");
   const status: UserComplaintResponse["status"] =
@@ -78,7 +78,7 @@ function MessageResponse({
   const [sending, setSending] = useState(false);
   const [retry, setRetry] = useState(!!previous);
   const [error, setError] = useState<unknown>(null);
-  const saveDraft = (value: { text: string; status: string }) => {
+  const saveDraft = (value: ReplyDraft) => {
     replyDrafts.set(draftKey, value);
     setError(writeLocalDraft(storageKey, value) || "");
   };

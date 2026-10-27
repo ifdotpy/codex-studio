@@ -1,3 +1,4 @@
+import { required } from "../components/componentTestFixtures.ts";
 import { expect, it, vi } from "vitest";
 import { NativeDraftState, type DraftView } from "./draftState";
 const view = (text: string, revision: number): DraftView => ({
@@ -34,7 +35,9 @@ it("keeps newer input pending when an older edit is acknowledged", async () => {
   expect(state.getSnapshot().drafts.room).toBe("latest Ж🦀");
   expect(state.getSnapshot().pending).toBe(true);
   expect(invoke).toHaveBeenCalledTimes(2);
-  expect(invoke.mock.calls[1][1].changes).toEqual({ room: "latest Ж🦀" });
+  expect(required(invoke.mock.calls[1])[1].changes).toEqual({
+    room: "latest Ж🦀",
+  });
   second.resolve(view("latest Ж🦀", 3));
   await second.promise;
   expect(state.getSnapshot().pending).toBe(false);
@@ -61,7 +64,9 @@ it("retains exact uncertain command identity and content until an explicit retry
   });
   await state.retry();
   expect(invoke.mock.calls[1]).toEqual(invoke.mock.calls[0]);
-  expect(invoke.mock.calls[2][2]).not.toBe(invoke.mock.calls[0][2]);
+  expect(required(invoke.mock.calls[2])[2]).not.toBe(
+    required(invoke.mock.calls[0])[2],
+  );
   expect(state.getSnapshot()).toMatchObject({
     pending: false,
     localError: "",

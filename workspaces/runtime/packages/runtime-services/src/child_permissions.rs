@@ -1,4 +1,5 @@
 use serde_json::{Value, json};
+use studio_runtime_providers::ProviderKind;
 
 /// Resolve permissions from the current rows inside the child commit transaction.
 /// Only the permission mode transfers; other Claude settings belong to the child.
@@ -8,7 +9,7 @@ pub(crate) fn inherit_claude_permissions(
     root: &Value,
     spec: &Value,
 ) -> Result<(), &'static str> {
-    if child["provider"] != "claude" {
+    if child["provider"] != ProviderKind::Claude.key() {
         if spec.get("permission_mode").is_some() {
             return Err("permission_mode requires a Claude child");
         }
@@ -23,7 +24,7 @@ pub(crate) fn inherit_claude_permissions(
                 .ok_or("Invalid Claude permission_mode")
         })
         .transpose()?;
-    let inherited = if parent["provider"] == "claude" {
+    let inherited = if parent["provider"] == ProviderKind::Claude.key() {
         match parent.pointer("/claudeOptions/permissionMode") {
             Some(value) => value
                 .as_str()

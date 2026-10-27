@@ -1,3 +1,4 @@
+import { required } from "./componentTestFixtures";
 import { afterEach, expect, it, vi } from "vitest";
 vi.mock("../servers/ServerServicesContext", () => ({}));
 vi.mock("../api", () => ({
@@ -63,7 +64,7 @@ it("retains cancellation and recoverable copies on the initiating server after a
     ownerA.removeSendingMessage(scope, { chat: "same", message }),
   ).rejects.toThrow("lost reply");
   expect(sendA).toHaveBeenCalledTimes(1);
-  const first = sendA.mock.calls[0][1];
+  const first = required(required(sendA.mock.calls[0])[1]);
   expect(isRemovedMessage("same", "agent", "same", message, a)).toBe(false);
   const copies = `${removedMessagesStorageKey("same", "agent", "same")}:copies`;
   expect(a.getItem(copies)).toContain("private-a");
@@ -72,10 +73,12 @@ it("retains cancellation and recoverable copies on the initiating server after a
     chat: "same",
     message: { ...message, text: "private-b" },
   });
-  expect(sendB.mock.calls[0][1].request_id).not.toBe(first.request_id);
+  expect(required(required(sendB.mock.calls[0])[1]).request_id).not.toBe(
+    first.request_id,
+  );
   expect(isRemovedMessage("same", "agent", "same", message, a)).toBe(false);
   await ownerA.removeSendingMessage(scope, { chat: "same", message });
-  expect(sendA.mock.calls[1][1]).toEqual(first);
+  expect(required(required(sendA.mock.calls[1])[1])).toEqual(first);
   expect(sendB).toHaveBeenCalledTimes(1);
   expect(stopA).toHaveBeenCalledTimes(2);
   expect(stopB).toHaveBeenCalledTimes(1);

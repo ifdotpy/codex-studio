@@ -93,10 +93,9 @@ test("a registered foreground command moves to the background and releases the t
       n.params.item.id === "task:bash-1" &&
       n.params.item.status === "completed",
   );
-  assert.match(
-    (finished.params.item.result as FixtureToolResult).content[0].text,
-    /Background command completed/,
-  );
+  const result = finished.params.item.result as FixtureToolResult;
+  assert.ok(result.content[0]);
+  assert.match(result.content[0].text, /Background command completed/);
 });
 
 test("a request for another turn or item never reaches Claude", async () => {
@@ -117,10 +116,18 @@ test("a request for another turn or item never reaches Claude", async () => {
 });
 
 test("task events set the control only for a running foreground shell", () => {
-  const item: import("./session-state.ts").Item = {
+  const item: Extract<
+    import("./session-state.ts").FreshToolItem,
+    { type: "commandExecution" }
+  > = {
     id: "toolu-2",
     type: "commandExecution",
     status: "inProgress",
+    tool: "Bash",
+    arguments: { command: "pwd" },
+    command: "pwd",
+    cwd: "/work",
+    aggregatedOutput: "",
   };
   const active = { tools: new Map([["toolu-2", item]]) };
   const started = {
@@ -164,14 +171,24 @@ test("an SDK without the control fails visibly", async () => {
     Pick<import("@anthropic-ai/claude-agent-sdk").Query, "backgroundTasks">
   > = {};
   const active = {
-    turn: { id: "turn", items: [] },
+    turn: {
+      id: "turn",
+      items: [],
+      status: "inProgress",
+    } satisfies import("./session-state.ts").FreshTurn,
     q,
-    tools: new Map([
+    tools: new Map<string, import("./session-state.ts").FreshToolItem>([
       [
         "toolu-4",
         {
+          id: "toolu-4",
           type: "commandExecution",
           status: "inProgress",
+          tool: "Bash",
+          arguments: { command: "pwd" },
+          command: "pwd",
+          cwd: "/work",
+          aggregatedOutput: "",
           canMoveToBackground: true,
         },
       ],

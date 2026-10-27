@@ -230,7 +230,7 @@ fn workspace_view(
         "runtime_work",
         WorkspaceViewsRepository::records(connection, "runtime_work").map_err(ApiError::stored)?,
     )?;
-    let statuses = work_policy::work_statuses(&all_work);
+    let statuses = work_policy::work_statuses(&all_work).map_err(ApiError::stored)?;
     let root_view = root.as_deref().unwrap_or("");
     let work = all_work
         .iter()
@@ -239,7 +239,8 @@ fn workspace_view(
                 && (root.is_none() || item["rootId"] == root_view)
         })
         .map(|item| work_policy::work_item_view(item, &statuses))
-        .collect::<Vec<_>>();
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(ApiError::stored)?;
     if view == "work" {
         return Ok(
             studio_runtime_services::workspace_views::workspace_view_response(
@@ -328,7 +329,8 @@ fn workspace_view(
             monitors: &monitors,
             rules: &rules,
         },
-    );
+    )
+    .map_err(ApiError::stored)?;
     if view == "inbox" {
         return Ok(
             studio_runtime_services::workspace_views::workspace_view_response(

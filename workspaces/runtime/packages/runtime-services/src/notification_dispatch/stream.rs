@@ -494,7 +494,11 @@ impl NotificationStreamBuffer {
                     .saturating_sub(2);
                 let mut text = match std::mem::take(&mut saved.params["delta"]) {
                     Value::String(text) => text,
-                    other => {
+                    other @ Value::Null
+                    | other @ Value::Bool(_)
+                    | other @ Value::Number(_)
+                    | other @ Value::Array(_)
+                    | other @ Value::Object(_) => {
                         removed_bytes =
                             serde_json::to_string(&other).map_or(usize::MAX, |value| value.len());
                         added_bytes = added_bytes.saturating_add(2);

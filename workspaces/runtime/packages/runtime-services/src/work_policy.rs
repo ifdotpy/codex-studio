@@ -3,7 +3,7 @@
 use std::collections::BTreeMap;
 
 use serde_json::{Value, json};
-use studio_runtime_store::StoredQueueEvent;
+use studio_runtime_store::{StoreResult, StoredQueueEvent, WorkItemRecord, WorkStatus};
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -22,56 +22,40 @@ pub struct PreparedQueue {
     pub asset_ids: Vec<String>,
 }
 
-pub fn work_list(root: &str, records: &[Value]) -> Value {
-    let statuses = work_statuses(records);
+pub fn work_list(root: &str, records: &[Value]) -> StoreResult<Value> {
+    let statuses = work_statuses(records)?;
     let items = records
         .iter()
         .filter(|item| item["rootId"] == root)
         .map(|item| work_item_view(item, &statuses))
-        .collect::<Vec<_>>();
-    json!({"items": items, "tasks": items})
+        .collect::<StoreResult<Vec<_>>>()?;
+    Ok(json!({"items": items, "tasks": items}))
 }
 
-pub fn work_statuses(records: &[Value]) -> BTreeMap<String, String> {
+pub fn work_statuses(records: &[Value]) -> StoreResult<BTreeMap<String, WorkStatus>> {
     records
         .iter()
-        .filter_map(|item| {
-            Some((
-                item.get("id")?.as_str()?.to_owned(),
-                item.get("status")?.as_str()?.to_owned(),
-            ))
+        .map(|item| {
+            let item = WorkItemRecord::checked(item.clone())?;
+            Ok((item.id().0.clone(), item.status()))
         })
         .collect()
 }
 
-pub fn work_item_view(item: &Value, statuses: &BTreeMap<String, String>) -> Value {
-    let mut view = item.clone();
-    let object = view.as_object_mut().expect("schema-validated work item");
-    let blocked = item["dependencies"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .filter_map(Value::as_str)
-        .filter(|id| statuses.get(*id).map(String::as_str) != Some("accepted"))
-        .map(|id| Value::String(id.to_owned()))
-        .collect::<Vec<_>>();
-    let status = item["status"]
-        .as_str()
-        .expect("schema-validated work status");
-    object.insert("blockedBy".into(), json!(blocked));
-    object.insert(
-        "displayStatus".into(),
-        json!(
-            if !object["blockedBy"].as_array().is_some_and(Vec::is_empty)
-                && matches!(status, "ready" | "running")
-            {
-                "blocked"
-            } else {
-                status
-            }
-        ),
-    );
-    view
+pub fn work_item_view(item: &Value, statuses: &BTreeMap<String, WorkStatus>) -> StoreResult<Value> {
+    let item = WorkItemRecord::checked(item.clone())?;
+    let mut view = item.value().clone();
+    let blocked = item.blocked_by(statuses);
+    let status = if !blocked.is_empty()
+        && matches!(item.status(), WorkStatus::Ready | WorkStatus::Running)
+    {
+        WorkStatus::Blocked
+    } else {
+        item.status()
+    };
+    view["blockedBy"] = json!(blocked);
+    view["displayStatus"] = json!(status);
+    Ok(view)
 }
 
 pub fn plan_view(agent_id: &str, root_id: &str, stored: Option<Value>) -> Value {
@@ -179,7 +163,8 @@ mod tests {
         let result = work_list(
             "lead",
             records.as_array().expect("work records are an array"),
-        );
+        )
+        .expect("checked work projection");
         assert_eq!(
             result["items"]
                 .as_array()

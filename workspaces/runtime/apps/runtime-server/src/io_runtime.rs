@@ -124,7 +124,14 @@ impl IoRuntime {
                 TerminalError::Session(_) => "session",
                 TerminalError::InvalidStoredObject(_) => "stored-terminal",
                 TerminalError::Store(_) => "store",
-                _ => "terminal",
+                TerminalError::InvalidRequest
+                | TerminalError::UnknownTerminal
+                | TerminalError::NotRunning
+                | TerminalError::ReceiptConflict
+                | TerminalError::InvalidCursor
+                | TerminalError::InvalidHistoryRange
+                | TerminalError::StartupRecovery(_)
+                | TerminalError::BlockingTask => "terminal",
             };
             eprintln!("terminal restart reconciliation failed (kind={kind})");
             reconciliation.diagnostic_reported = true;

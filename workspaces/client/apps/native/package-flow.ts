@@ -36,11 +36,12 @@ export function parseFlowArguments(argv: string[]) {
     else if (flags.has(argument)) hostedCiPassed = true;
     else throw new Error(`Unknown flag: ${argument}`);
   }
-  if (positional.length !== 1)
+  const [out] = positional;
+  if (positional.length !== 1 || out === undefined)
     throw new Error(
       "Usage: package-flow.ts <new output directory> [--hosted-ci-passed]",
     );
-  return { out: path.resolve(positional[0]), hostedCiPassed };
+  return { out: path.resolve(out), hostedCiPassed };
 }
 
 // Ordered steps of the flow. Each step is data, so a test can check the plan

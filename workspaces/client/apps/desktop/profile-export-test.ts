@@ -72,9 +72,14 @@ assert.match(
 const archive = readArchive(await readFile(output, "utf8"));
 assert.equal(archive.version, 2);
 assert.equal(archive.snapshots.length, 2);
-assert.equal(archive.snapshots[1].topLevelOrigin, "http://127.0.0.1:4620");
-assert.equal(archive.snapshots[1].databases[0].stores[0].chunks![0].records, 1);
-assert.deepEqual(archive.snapshots[1].preferences, {
+const [, frameSnapshot] = archive.snapshots;
+assert.ok(frameSnapshot);
+assert.equal(frameSnapshot.topLevelOrigin, "http://127.0.0.1:4620");
+assert.equal(
+  frameSnapshot.databases.at(0)?.stores.at(0)?.chunks?.at(0)?.records,
+  1,
+);
+assert.deepEqual(frameSnapshot.preferences, {
   "frame-only": "partitioned",
 });
 const snapshot = combineBrowserProfiles(
@@ -84,14 +89,11 @@ const snapshot = combineBrowserProfiles(
   })),
 );
 assert.equal(snapshot.preferences["unexpected-app-run"], undefined);
+const draft = snapshot.preferences["codex-drafts:workspace"];
+assert.ok(draft);
 assert.equal(
   // The seed writes this exact preference immediately before export.
-  (
-    JSON.parse(snapshot.preferences["codex-drafts:workspace"]) as Record<
-      string,
-      unknown
-    >
-  ).room,
+  (JSON.parse(draft) as Record<string, unknown>).room,
   "Сохранить 🦀",
 );
 const store = snapshot.databases
@@ -132,17 +134,20 @@ for (const db of materialized)
       assert.equal((await stat(chunkPath)).mode & 0o777, 0o600);
       const bytes = await readFile(chunkPath);
       assert.equal(bytes.length, chunk.bytes);
-      chunks[chunk.sha256] = readRecords(bytes.toString());
-      savedStore.records.push(...chunks[chunk.sha256]);
+      const chunkRecords = readRecords(bytes.toString());
+      chunks[chunk.sha256] = chunkRecords;
+      savedStore.records.push(...chunkRecords);
     }
     delete savedStore.chunks;
   }
 const records = materialized
   .find((db) => db.name === "studio-fixture")!
   .stores.find((s) => s.name === "records");
+const firstRecord = records?.records?.at(0);
+assert.ok(firstRecord);
 const value = Object.fromEntries(
   (
-    records!.records![0][1] as Extract<
+    firstRecord[1] as Extract<
       import("../web/src/native/importBrowserProfile.ts").EncodedProfileValue,
       { 0: "object" }
     >

@@ -1561,9 +1561,9 @@ function SidebarContents(p: SidebarProps & { services: SidebarServices }) {
                         <ActionIcon
                           className="project-tree-action"
                           aria-label={`New chat in ${group.name}`}
-                          aria-description={blocked || undefined}
-                          aria-disabled={blocked ? true : undefined}
-                          data-disabled={blocked ? true : undefined}
+                          {...(blocked ? { "aria-description": blocked } : {})}
+                          {...(blocked ? { "aria-disabled": true } : {})}
+                          {...(blocked ? { "data-disabled": true } : {})}
                           onClick={() => {
                             if (!blocked) p.newChat(group.path || undefined);
                           }}
@@ -2015,10 +2015,12 @@ function SidebarContents(p: SidebarProps & { services: SidebarServices }) {
       <SidebarFrame
         scope={`${p.services.cache.ownerId}:${p.data.stateDir}`}
         opened={p.mobile}
-        collapsed={p.collapsed}
+        {...(p.collapsed !== undefined ? { collapsed: p.collapsed } : {})}
         close={closeSidebar}
         onCompactChange={reportCompact}
-        drawerZIndex={p.settings ? layoutValues.layers.navigation : undefined}
+        {...(p.settings
+          ? { drawerZIndex: layoutValues.layers.navigation }
+          : {})}
         onEntered={() => {
           if (lastOpened.current)
             document

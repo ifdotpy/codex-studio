@@ -2296,7 +2296,18 @@ mod tests {
     fn mount_status(error: ImageWorkspaceError) -> &'static str {
         match error {
             ImageWorkspaceError::MountCheck { status, .. } => status,
-            other => panic!("expected a mount check refusal, got {other}"),
+            other @ ImageWorkspaceError::UnsupportedPlatform
+            | other @ ImageWorkspaceError::InvalidId
+            | other @ ImageWorkspaceError::BaseNotReady
+            | other @ ImageWorkspaceError::IdentityConflict
+            | other @ ImageWorkspaceError::FreeSpace { .. }
+            | other @ ImageWorkspaceError::MountUnavailable(_)
+            | other @ ImageWorkspaceError::Backend(_)
+            | other @ ImageWorkspaceError::InvalidState
+            | other @ ImageWorkspaceError::Io(_)
+            | other @ ImageWorkspaceError::Json(_) => {
+                panic!("expected a mount check refusal, got {other}")
+            }
         }
     }
 

@@ -13,6 +13,10 @@ model requests, or interrupt active agents. Automated desktop checks use hidden
 windows without operating-system input. Fixture success does not prove a live
 model request or a real reset-credit redemption.
 
+Follow [Type contracts](type-contracts.md) for the typing policy, its enforcement
+owners, and current migration coverage. Root Oxlint runs in both local tiers and
+the hosted gate composition.
+
 ## Fast, comprehensive, and manual checks
 
 `just test-fast` runs the [`fast` nextest profile](../.config/nextest.toml), desktop

@@ -65,6 +65,7 @@ if (worker.STUDIO_SHELL) {
       )
         return entry.html;
     }
+    return undefined;
   };
   /** @param {string} text */
   const isCurrentHTML = (text) =>

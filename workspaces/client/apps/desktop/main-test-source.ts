@@ -11,6 +11,7 @@ import * as installMode from "./install-mode.ts";
 import * as vaultKeys from "./vault-keys.ts";
 import * as speech from "./speech.ts";
 import * as serverCredentials from "./server-credentials.ts";
+import * as api from "./api.ts";
 
 const modules: Record<string, unknown> = {
   "./backend.ts": backend,
@@ -24,6 +25,7 @@ const modules: Record<string, unknown> = {
   "./vault-keys.ts": vaultKeys,
   "./speech.ts": speech,
   "./server-credentials.ts": serverCredentials,
+  "./api.ts": api,
 };
 const require = createRequire(import.meta.url);
 export function mainDependency(name: string): unknown {

@@ -18,6 +18,8 @@ pub fn close() {
     });
 }
 
+// SAFETY: Quick Look owns its native window and preview objects on the main thread.
+#[allow(unsafe_code)]
 pub fn show(url: &NSURL, title: &str) -> Result<(), String> {
     let mtm = MainThreadMarker::new().ok_or("Quick Look requires the main thread.")?;
     close();

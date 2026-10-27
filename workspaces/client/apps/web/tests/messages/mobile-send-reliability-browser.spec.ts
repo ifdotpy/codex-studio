@@ -1,3 +1,4 @@
+import { required } from "./helpers.ts";
 import { requestBody } from "./helpers.ts";
 import type { Page, Route } from "@playwright/test";
 import type { MessageRequest } from "./helpers.ts";
@@ -30,7 +31,7 @@ test("Mobile Send Reliability Browser", async ({
     server: { host: "127.0.0.1", port: 0, hmr: false },
   });
   await server.listen();
-  const origin = server.resolvedUrls!.local[0];
+  const origin = required(server.resolvedUrls).local[0];
   let browser, context;
   try {
     browser = testBrowser;
@@ -71,6 +72,7 @@ test("Mobile Send Reliability Browser", async ({
             token: "fixture",
           } satisfies import("../playwright.ts").SessionResponse,
         });
+      return undefined;
     });
     await context.route("**/api/messages", (route) => {
       const body = requestBody<import("./helpers.ts").MessageRequest>(route);
@@ -95,6 +97,7 @@ test("Mobile Send Reliability Browser", async ({
             status: "delivered",
           } satisfies import("../../src/api.ts").PostResult<"/api/messages">,
         });
+      return undefined;
     });
     const mount = async (page: Page) => {
       page.on("pageerror", (error) => errors.push((error as Error).message));
@@ -152,7 +155,7 @@ test("Mobile Send Reliability Browser", async ({
       body: body("offline-first"),
       status: "queued",
       attempted: false,
-      created: (await stored(first, "offline-first"))!.created,
+      created: required(await stored(first, "offline-first")).created,
       displayPending: true,
       attachments: [],
     });
@@ -196,7 +199,7 @@ test("Mobile Send Reliability Browser", async ({
       window.send.changeOutbox("cancel-before-post", "cancel"),
     );
     holdSession = false;
-    await sessions.shift()!.fulfill({
+    await required(sessions.shift()).fulfill({
       json: {
         token: "fixture",
       } satisfies import("../playwright.ts").SessionResponse,
@@ -212,13 +215,21 @@ test("Mobile Send Reliability Browser", async ({
     await start(second, body("hold-locked"));
     await until(() => pending.get("hold-locked")?.length === 2);
     assert.ok(Date.now() - retryStart < 1000);
-    await reply(pending.get("hold-locked")![1], "hold-locked", "delivered");
+    await reply(
+      required(required(pending.get("hold-locked"))[1]),
+      "hold-locked",
+      "delivered",
+    );
     assert.equal((await settle(second)).status, "delivered");
-    await reply(pending.get("hold-locked")![0], "hold-locked", "queued");
+    await reply(
+      required(required(pending.get("hold-locked"))[0]),
+      "hold-locked",
+      "queued",
+    );
     assert.equal((await settle(first)).status, "delivered");
     await start(second, body("hold-locked"));
     assert.equal((await settle(second)).status, "delivered");
-    assert.equal(pending.get("hold-locked")!.length, 2);
+    assert.equal(required(pending.get("hold-locked")).length, 2);
 
     // Late replies cannot regress a newer accepted receipt or add a false error.
     for (const code of [200, 503, 400]) {
@@ -227,14 +238,14 @@ test("Mobile Send Reliability Browser", async ({
       await until(() => pending.get(id)?.length === 1);
       await start(second, body(id));
       await until(() => pending.get(id)?.length === 2);
-      await reply(pending.get(id)![1], id, "delivered");
+      await reply(required(required(pending.get(id))[1]), id, "delivered");
       assert.equal((await settle(second)).status, "delivered");
-      await reply(pending.get(id)![0], id, "queued", code);
+      await reply(required(required(pending.get(id))[0]), id, "queued", code);
       assert.equal((await settle(first)).status, "delivered");
       const value = await stored(first, id);
-      assert.equal(value!.status, "accepted");
-      assert.equal(value!.receipt!.status, "delivered");
-      assert.equal(value!.error, undefined);
+      assert.equal(required(value).status, "accepted");
+      assert.equal(required(required(value).receipt).status, "delivered");
+      assert.equal(required(value).error, undefined);
       assert.deepEqual(
         posts.filter((post) => post.id === id),
         [body(id), body(id)],
@@ -247,11 +258,14 @@ test("Mobile Send Reliability Browser", async ({
       await until(() => pending.get(id)?.length === 1);
       await start(second, body(id));
       await until(() => pending.get(id)?.length === 2);
-      await reply(pending.get(id)![0], id, "queued");
+      await reply(required(required(pending.get(id))[0]), id, "queued");
       assert.equal((await settle(first)).status, "queued");
-      await reply(pending.get(id)![1], id, finalStatus);
+      await reply(required(required(pending.get(id))[1]), id, finalStatus);
       assert.equal((await settle(second)).status, finalStatus);
-      assert.equal((await stored(second, id))!.receipt!.status, finalStatus);
+      assert.equal(
+        required(required(await stored(second, id)).receipt).status,
+        finalStatus,
+      );
     }
 
     // The persistence callback cannot authorize reuse of an identity with new text.
@@ -319,16 +333,19 @@ test("Mobile Send Reliability Browser", async ({
     const timeoutResult = await settle(first);
     assert.equal(timeoutResult.queued, true);
     assert.match(timeoutResult.error, /did not respond in time/);
-    assert.equal((await stored(first, hung.id))!.attempted, true);
-    await pending
-      .get(hung.id)![0]
+    assert.equal(required(await stored(first, hung.id)).attempted, true);
+    await required(required(pending.get(hung.id))[0])
       .abort("failed")
       .catch(() => {});
     await start(second, hung);
     await until(() => pending.get(hung.id)?.length === 2);
-    await reply(pending.get(hung.id)![1], hung.id, "delivered");
+    await reply(
+      required(required(pending.get(hung.id))[1]),
+      hung.id,
+      "delivered",
+    );
     assert.equal((await settle(second)).status, "delivered");
-    assert.equal((await stored(second, hung.id))!.error, undefined);
+    assert.equal(required(await stored(second, hung.id)).error, undefined);
     assert.deepEqual(
       posts.filter((post) => post.id === hung.id),
       [hung, hung],
@@ -354,20 +371,24 @@ test("Mobile Send Reliability Browser", async ({
     );
     assert.equal(pending.has(orderedSecond.id), false);
     const continuationStart = Date.now();
-    await reply(pending.get(orderedFirst.id)![0], orderedFirst.id, "delivered");
+    await reply(
+      required(required(pending.get(orderedFirst.id))[0]),
+      orderedFirst.id,
+      "delivered",
+    );
     await until(() => pending.get(orderedSecond.id)?.length === 1);
     assert.ok(
       Date.now() - continuationStart < 1500,
       "Next send does not wait for a poll",
     );
     await reply(
-      pending.get(orderedSecond.id)![0],
+      required(required(pending.get(orderedSecond.id))[0]),
       orderedSecond.id,
       "delivered",
     );
     await until(
       async () =>
-        (await stored(first, orderedSecond.id))!.status === "accepted",
+        (await stored(first, orderedSecond.id))?.status === "accepted",
     );
     await first.evaluate(() => window.mobileSendReactRoot.unmount());
     // A missing current endpoint cannot silently obtain credentials elsewhere.
@@ -378,10 +399,11 @@ test("Mobile Send Reliability Browser", async ({
       } catch (error) {
         return (error as Error).message;
       }
+      return undefined;
     }, body("missing-session-send"));
     assert.match(failure, /Not found/);
     assert.equal(
-      (await stored(first, "missing-session-send"))!.status,
+      required(await stored(first, "missing-session-send")).status,
       "failed",
     );
     assert.ok(sessionReads > 0);
@@ -394,10 +416,10 @@ test("Mobile Send Reliability Browser", async ({
     await start(first, body("statusless-receipt"));
     assert.equal((await settle(first)).queued, true);
     const unmatched = await stored(first, "statusless-receipt");
-    assert.equal(unmatched!.status, "queued");
-    assert.equal(unmatched!.attempted, true);
-    assert.match(unmatched!.error, /does not match/);
-    assert.equal(unmatched!.receipt, undefined);
+    assert.equal(required(unmatched).status, "queued");
+    assert.equal(required(unmatched).attempted, true);
+    assert.match(required(unmatched).error, /does not match/);
+    assert.equal(required(unmatched).receipt, undefined);
     assert.deepEqual(errors, []);
     console.log(
       "PASS: offline persistence, immediate callback, reconnect, cancellation boundary, concurrent tabs, late receipt/error guards, immutable IDs, stalled HTTP retry, ordered parallel chat recovery",

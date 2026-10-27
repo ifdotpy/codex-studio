@@ -1,3 +1,4 @@
+import assert from "node:assert/strict";
 import { describe, expect, it } from "vitest";
 import { relativeSeen, serverRows } from "./serverRows";
 import type { DiscoveredServer } from "./discoveryModel";
@@ -66,6 +67,7 @@ describe("Settings server rows", () => {
       [],
       { manual: "offline" },
     );
+    assert.ok(row != null);
     expect(row.status).toBe("Offline");
     expect(row.peer).toBeUndefined();
     expect(row.registered?.id).toBe("manual");

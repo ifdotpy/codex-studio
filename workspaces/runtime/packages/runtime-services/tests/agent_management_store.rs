@@ -672,7 +672,7 @@ const SYNTHETIC_NOW_SECS: f64 = 1234567.5;
 /// Synthetic conversation state: `leads` teams of one lead and
 /// `WORKERS_PER_TEAM_ROWS` workers, one broadcast room per team, a private
 /// room between consecutive leads, one project peer team of all leads, an
-/// active and a running work item per team (release makes it `ready`),
+/// accepted and a running work item per team (release makes the latter `ready`),
 /// `tasks` task rows spread over all agents (one running task per team),
 /// proportional monitor and event history,
 /// and one oldest undelivered event per team outside the event window.
@@ -752,7 +752,7 @@ async fn synthetic_store(root: &Path, leads: usize, tasks: usize) -> std::sync::
                     params![
                         work,
                         json!({"id":work,"owner":format!("worker-{lead:04}-0"),"rootId":root_id,
-                            "status":"active","title":"work"})
+                            "status":"accepted","title":"work"})
                         .to_string()
                     ],
                 )?;

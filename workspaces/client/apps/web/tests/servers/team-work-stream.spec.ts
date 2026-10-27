@@ -1,3 +1,4 @@
+import assert from "node:assert/strict";
 import type { TestAgent, TestRuntimeView } from "../playwright.ts";
 import type { PostBody } from "../../src/apiTypes.ts";
 import { fixturePostBody } from "./browser-fixture.ts";
@@ -8,14 +9,6 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { test, expect, createFixtureViteServer } from "../playwright.ts";
 import { fixture } from "./multi-server-fixture.ts";
-
-type GateResult = NonNullable<
-  NonNullable<TestRuntimeView["workDetails"]>[number]["results"]
->[number]["gate"];
-// This fixture exercises streamed output and omits the gate's cwd and log.
-const partialGate = (
-  value: Omit<NonNullable<GateResult>, "cwd" | "log">,
-): NonNullable<GateResult> => value as NonNullable<GateResult>;
 
 test("team, task assignments and projects render typed stream changes without extra state reads", async ({
   page,
@@ -79,6 +72,7 @@ test("team, task assignments and projects render typed stream changes without ex
     },
   });
   const lead = backend.snapshot.runtime.agents[0];
+  assert.ok(lead);
 
   backend.snapshot.runtime.viewScopedAgents = true;
   const worker: TestAgent = {
@@ -163,7 +157,8 @@ test("team, task assignments and projects render typed stream changes without ex
     worker.error = "Stream regression failure";
     worker.commandProgress = [];
     Object.assign(task, { status: "review", version: 2, updated: 2 });
-    task.gate = { command: "verify", timeout_ms: 1234 };
+    const gate = { command: "verify", timeout_ms: 1234 };
+    task.gate = gate;
     task.results = [
       {
         id: "stream-result",
@@ -173,14 +168,16 @@ test("team, task assignments and projects render typed stream changes without ex
         revision: "abc123",
         files: [],
         created: 2,
-        gate: partialGate({
+        gate: {
+          cwd: null,
+          log: null,
           status: "failed",
-          config: task.gate,
+          config: gate,
           exitCode: 1,
           output: "Full streamed gate output",
           revision: "abc123",
           monitorId: "gate-check",
-        }),
+        },
       },
     ];
     task.decisions = [

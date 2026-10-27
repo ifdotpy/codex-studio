@@ -35,7 +35,7 @@ vi.mock("react", async (original) => {
     const old = h.cells[index];
     if (!old || deps.some((value, i) => value !== old.deps![i]))
       h.cells[index] = { deps, value: factory() };
-    return h.cells[index].value;
+    return required(h.cells[index]).value;
   };
   return {
     ...react,
@@ -45,10 +45,12 @@ vi.mock("react", async (original) => {
         value: typeof initial === "function" ? initial() : initial,
       };
       return [
-        h.cells[index].value,
+        required(h.cells[index]).value,
         (value: unknown) => {
-          h.cells[index].value =
-            typeof value === "function" ? value(h.cells[index].value) : value;
+          required(h.cells[index]).value =
+            typeof value === "function"
+              ? value(required(h.cells[index]).value)
+              : value;
         },
       ];
     },
@@ -70,7 +72,8 @@ vi.mock("react", async (original) => {
         old?.cleanup?.();
         h.cells[index] = { deps };
         h.effects.push(() => {
-          h.cells[index].cleanup = effect() as ComponentHookCell["cleanup"];
+          required(h.cells[index]).cleanup =
+            effect() as ComponentHookCell["cleanup"];
         });
       }
     },
@@ -530,3 +533,4 @@ it("terminal hints apply Unicode appends without GET /api/terminals/output", asy
   expect(h.writes).toEqual(["a🙂", "中"]);
   expect(h.get).not.toHaveBeenCalled();
 });
+import { required } from "./componentTestFixtures";

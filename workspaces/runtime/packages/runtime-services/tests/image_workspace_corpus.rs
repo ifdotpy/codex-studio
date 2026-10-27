@@ -296,7 +296,7 @@ fn normalize(value: Value, store: &Path) -> Value {
             let version = regex::Regex::new(r"v-[0-9]+").expect("version regex");
             Value::String(version.replace_all(&value, "v-{version}").into_owned())
         }
-        scalar => scalar,
+        scalar @ Value::Null | scalar @ Value::Bool(_) | scalar @ Value::Number(_) => scalar,
     }
 }
 

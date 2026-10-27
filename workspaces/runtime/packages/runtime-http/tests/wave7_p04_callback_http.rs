@@ -33,6 +33,231 @@ async fn call(app: &axum::Router, path: &str, body: Value, token: &str) -> (u16,
     let bytes = to_bytes(response.into_body(), 1024 * 1024).await.unwrap();
     (status, serde_json::from_slice(&bytes).unwrap())
 }
+
+#[tokio::test]
+async fn complaint_http_preserves_validation_locations_and_default_submit() {
+    let (root, store, context) = fixture().await;
+    let app = router(HttpState::new(
+        "token".into(),
+        "fixture".into(),
+        root.path().to_string_lossy().into(),
+        49171,
+        None,
+        Some(store),
+        None,
+    ))
+    .unwrap();
+    for (body, location) in [
+        (
+            json!({"id":"submit", "text":"Review this"}),
+            json!(["body.lead"]),
+        ),
+        (
+            json!({"id":"submit", "text":"Review this", "lead":null}),
+            json!(["body.lead"]),
+        ),
+        (
+            json!({"id":"submit", "text":"Review this", "lead":"  "}),
+            json!(["body.lead"]),
+        ),
+        (
+            json!({"id":"reply", "text":"Reviewed", "action":"respond"}),
+            json!(["body"]),
+        ),
+        (
+            json!({"id":"reply", "text":"Reviewed", "action":"respond", "complaint_id":"c", "status":null, "version":1}),
+            json!(["body"]),
+        ),
+        (
+            json!({"id":"reply", "text":"Reviewed", "action":"respond", "complaint_id":"c", "status":"resolved", "version":null}),
+            json!(["body"]),
+        ),
+        (
+            json!({"id":"reply", "text":"Reviewed", "action":"unknown"}),
+            json!(["body", "action"]),
+        ),
+        (
+            json!({"id":"reply", "text":"Reviewed", "status":"open"}),
+            json!(["body", "status"]),
+        ),
+        (
+            json!({"id":"reply", "text":"Reviewed", "surprise":true}),
+            json!(["body", "surprise"]),
+        ),
+    ] {
+        let (status, error) = call(&app, "/api/complaints", body.clone(), "token").await;
+        assert_eq!(status, 400, "{body}: {error}");
+        assert_eq!(error["location"], location, "{body}: {error}");
+    }
+    let body = json!({"id":"default-submit", "lead":context.agent, "text":"  Review this  "});
+    let (status, first) = call(&app, "/api/complaints", body.clone(), "token").await;
+    assert_eq!(status, 200, "{first}");
+    assert_eq!(first["status"], "open");
+    assert_eq!(first["text"], "Review this");
+    let (status, replay) = call(&app, "/api/complaints", body, "token").await;
+    assert_eq!(status, 200, "{replay}");
+    assert_eq!(first, replay);
+    let (status, explicit) = call(
+        &app,
+        "/api/complaints",
+        json!({"id":"default-submit", "lead":context.agent, "text":"Review this",
+            "action":"submit", "complaint_id":"unused", "status":"resolved", "version":0}),
+        "token",
+    )
+    .await;
+    assert_eq!(status, 200, "{explicit}");
+    assert_eq!(
+        first, explicit,
+        "known fields remain accepted on either action"
+    );
+    let (status, changed) = call(
+        &app,
+        "/api/complaints",
+        json!({
+            "id":"default-submit", "lead":context.agent, "text":"Different content"
+        }),
+        "token",
+    )
+    .await;
+    assert_eq!(status, 400, "{changed}");
+    assert_eq!(changed["error"], "This complaint id has different content");
+}
+
+#[tokio::test]
+async fn complaint_http_replays_original_signature_before_version_and_recipient_checks() {
+    let (root, store, context) = fixture().await;
+    let reporter = template()["agents"][1]["id"].as_str().unwrap().to_owned();
+    let lead = context.agent.clone();
+    store
+        .transaction_with::<_, studio_runtime_store::StoreError>(move |tx| {
+            studio_runtime_store::QuestionsWriteRepository::put_complaint(
+                tx,
+                "complaint",
+                &json!({
+                    "id":"complaint", "leadId":lead, "author":reporter,
+                    "text":"Please review", "recipient":"user", "status":"open",
+                    "created":1, "version":1, "responses":[]
+                })
+                .to_string(),
+            )
+        })
+        .await
+        .unwrap();
+    let app = router(HttpState::new(
+        "token".into(),
+        "fixture".into(),
+        root.path().to_string_lossy().into(),
+        49171,
+        None,
+        Some(store.clone()),
+        None,
+    ))
+    .unwrap();
+    let body = json!({"id":"reply", "action":"respond", "complaint_id":"complaint",
+        "text":"  Reviewed  ", "status":"in_progress", "version":1, "lead":null});
+    assert_eq!(
+        call(&app, "/api/complaints", body.clone(), "wrong").await.0,
+        403
+    );
+    let (status, first) = call(&app, "/api/complaints", body.clone(), "token").await;
+    assert_eq!(status, 200, "{first}");
+    assert_eq!(first["version"], 2);
+    assert_eq!(first["responses"][0]["text"], "Reviewed");
+    // This is the pre-refactor DTO's exact serialization, including explicit null.
+    let mut signature_body = body.clone();
+    signature_body["operation"] = json!("complaint_response");
+    let signature = studio_runtime_services::event_write::request_signature(&signature_body);
+    store.transaction_with::<_, studio_runtime_store::StoreError>(move |tx| {
+        assert!(studio_runtime_services::event_write::read_receipt(
+            tx, Some("user:reply"), &signature, "runtime_complaints", "complaint", |_: &Value| true,
+        ).unwrap().is_some());
+        // A lost reply must replay despite later version/recipient changes.
+        tx.execute("UPDATE runtime_complaints SET record=json_set(record,'$.recipient','lead','$.version',9)", [])?;
+        Ok(())
+    }).await.unwrap();
+    let (status, replay) = call(&app, "/api/complaints", body.clone(), "token").await;
+    assert_eq!(status, 200, "{replay}");
+    assert_eq!(replay, first);
+    for field in ["text", "lead"] {
+        let mut changed = body.clone();
+        if field == "lead" {
+            assert!(changed.as_object_mut().unwrap().remove(field).is_some());
+        } else {
+            changed[field] = json!("Changed reply");
+        }
+        let (status, error) = call(&app, "/api/complaints", changed, "token").await;
+        assert_eq!(status, 400, "{error}");
+        assert_eq!(error["error"], "This request id has different content");
+    }
+    let mut fresh = body.clone();
+    fresh["id"] = json!("new-reply");
+    let (status, error) = call(&app, "/api/complaints", fresh.clone(), "token").await;
+    assert_eq!(status, 400, "{error}");
+    assert_eq!(
+        error["error"],
+        "This complaint requires a response from its orchestrator"
+    );
+    store
+        .transaction_with::<_, studio_runtime_store::StoreError>(move |tx| {
+            tx.execute(
+                "UPDATE runtime_complaints SET record=json_set(record,'$.recipient','user')",
+                [],
+            )?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    let (status, error) = call(&app, "/api/complaints", fresh, "token").await;
+    assert_eq!(status, 409, "{error}");
+    assert_eq!(
+        error["error"],
+        "This complaint changed. Review the latest response before replying"
+    );
+    let events: i64 = store
+        .test_reader()
+        .unwrap()
+        .query_row(
+            "SELECT count(*) FROM runtime_events WHERE kind='complaint_response'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(events, 1, "retries never enqueue another response");
+
+    // A user can close a lead-directed complaint once its orchestrator answered.
+    let lead = context.agent;
+    store
+        .transaction_with::<_, studio_runtime_store::StoreError>(move |tx| {
+            let raw = studio_runtime_store::QuestionsWriteRepository::complaint(tx, "complaint")?
+                .unwrap();
+            let mut complaint: Value = serde_json::from_str(&raw).unwrap();
+            complaint["recipient"] = json!("lead");
+            complaint["responses"].as_array_mut().unwrap().push(json!({
+                "id":"lead-response", "author":lead, "status":"resolved", "text":"Handled", "at":2
+            }));
+            studio_runtime_store::QuestionsWriteRepository::put_complaint(
+                tx,
+                "complaint",
+                &complaint.to_string(),
+            )
+        })
+        .await
+        .unwrap();
+    for (id, version, status) in [
+        ("resolved-reply", 9, "resolved"),
+        ("declined-reply", 10, "declined"),
+    ] {
+        let mut closing = body.clone();
+        closing["id"] = json!(id);
+        closing["version"] = json!(version);
+        closing["status"] = json!(status);
+        let (code, record) = call(&app, "/api/complaints", closing, "token").await;
+        assert_eq!(code, 200, "{record}");
+        assert_eq!(record["status"], status);
+        assert_eq!(record["version"], version + 1);
+    }
+}
+
 #[tokio::test]
 async fn human_http_roundtrip_requires_consumer_and_authenticated_user() {
     let (root, store, context) = fixture().await;

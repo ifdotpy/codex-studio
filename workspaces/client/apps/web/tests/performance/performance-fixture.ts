@@ -27,3 +27,8 @@ export function transcriptFixtureAgent(
   // through fixture documents whose broad owner type loses that seed invariant.
   return agent as Agent & components["schemas"]["TranscriptAgent"];
 }
+
+export function required<T>(value: T | null | undefined): T {
+  if (value == null) throw new Error("Missing performance fixture value");
+  return value;
+}

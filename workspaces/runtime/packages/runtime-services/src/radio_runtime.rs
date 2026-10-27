@@ -33,9 +33,10 @@ use state::*;
 #[path = "projects/radio_lifecycle.rs"]
 mod lifecycle;
 pub use lifecycle::{
-    InterruptOutcome, InterruptReceipt, NativeAcceptanceReceipt, ObservedItem, bind_reserved,
-    claim_interrupt, guard_message, holds_floor, observe_item, record_question_answer_followup,
-    route_question_answer, select_pending, settle_interrupt, tick,
+    InterruptOutcome, InterruptReceipt, NativeAcceptanceReceipt, ObservedItem, QuestionAnswerRoute,
+    bind_reserved, claim_interrupt, guard_message, holds_floor, observe_item,
+    record_question_answer_followup, route_question_answer, select_pending, settle_interrupt,
+    shared_turn_active, tick,
 };
 
 pub(crate) fn publish_room(

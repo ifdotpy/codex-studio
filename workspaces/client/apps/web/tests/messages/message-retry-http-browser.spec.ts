@@ -1,3 +1,4 @@
+import { required } from "./helpers.ts";
 import { requestBody } from "./helpers.ts";
 import type { AddressInfo } from "node:net";
 import type {} from "./message-retry-http-browser.fixture.tsx";
@@ -26,21 +27,21 @@ test("message retry http browser", async ({ page: runnerPage }) => {
   let server,
     release = () => {},
     log = "";
-  fixture.stderr!.on("data", (chunk) => {
+  required(fixture.stderr).on("data", (chunk) => {
     log += chunk;
   });
   try {
     const port = await new Promise((resolve, reject) => {
-      fixture.stdout!.once("data", (chunk) =>
+      required(fixture.stdout).once("data", (chunk) =>
         resolve(Number(String(chunk).trim())),
       );
       fixture.once("exit", () => reject(new Error(log)));
     });
     const target = `http://127.0.0.1:${port}`;
     const snapshot = await readTestState(target);
-    const lead = snapshot.runtime.agents.find(
-      (agent) => agent.name === "Other project",
-    )!;
+    const lead = required(
+      snapshot.runtime.agents.find((agent) => agent.name === "Other project"),
+    );
     server = await createFixtureViteServer({
       configFile: false,
       root: join(root, "workspaces/client/apps/web"),
@@ -61,7 +62,7 @@ test("message retry http browser", async ({ page: runnerPage }) => {
       },
     });
     await server.listen();
-    const origin = `http://127.0.0.1:${(server.httpServer!.address() as AddressInfo).port}`;
+    const origin = `http://127.0.0.1:${(required(server.httpServer).address() as AddressInfo).port}`;
     const page = runnerPage;
     page.setDefaultTimeout(20000);
     const errors: string[] = [],
@@ -139,16 +140,20 @@ test("message retry http browser", async ({ page: runnerPage }) => {
       "Every attempt keeps its original identity and content",
     );
     const counts = [
-      queryFixtureDatabase(
-        state,
-        "SELECT COUNT(*) AS n FROM runtime_events WHERE id=?",
-        id,
-      )[0].n,
-      queryFixtureDatabase(
-        state,
-        "SELECT COUNT(*) AS n FROM messages WHERE id=?",
-        id,
-      )[0].n,
+      required(
+        queryFixtureDatabase(
+          state,
+          "SELECT COUNT(*) AS n FROM runtime_events WHERE id=?",
+          id,
+        )[0],
+      ).n,
+      required(
+        queryFixtureDatabase(
+          state,
+          "SELECT COUNT(*) AS n FROM messages WHERE id=?",
+          id,
+        )[0],
+      ).n,
     ];
     assert.deepEqual(
       counts,
@@ -162,6 +167,6 @@ test("message retry http browser", async ({ page: runnerPage }) => {
   } finally {
     release();
     if (server) await server.close();
-    fixture.stdin!.end();
+    required(fixture.stdin).end();
   }
 });

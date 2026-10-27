@@ -1,3 +1,4 @@
+import { ProviderKind } from "../generated/providerKind.ts";
 import type { Account } from "./Accounts";
 
 export function organizationLabel(
@@ -11,7 +12,8 @@ export default function ClaudeOrganization({
 }: {
   account?: Account | undefined;
 }) {
-  if (account?.provider !== "claude" || !account.organization) return null;
+  if (account?.provider !== ProviderKind.Claude || !account.organization)
+    return null;
   return (
     <small className="claude-organization">
       Organization: {organizationLabel(account.organization)}

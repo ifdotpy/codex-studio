@@ -126,12 +126,14 @@ pub async fn refresh(backend: &Backend, store: &StoreSender) {
         return;
     };
     let result = replicate(backend, store, workspace).await;
-    let _ = state(
-        store,
-        "drafts.sync_status",
-        json!({"workspace":workspace,"error":result.err().unwrap_or_default()}),
-    )
-    .await;
+    drop(
+        state(
+            store,
+            "drafts.sync_status",
+            json!({"workspace":workspace,"error":result.err().unwrap_or_default()}),
+        )
+        .await,
+    );
 }
 
 /// Refresh only the opened workspace. This does not activate the message outbox.

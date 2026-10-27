@@ -24,6 +24,8 @@ export type NativeHistoryFilesystem = {
   lstat: (file: string) => Promise<NativeStat>;
 };
 export interface NativeTail {
+  // The project directory that Claude used to key and record this history.
+  cwd: string;
   offset: number;
   raw: Buffer;
   before: NativeStat;
@@ -50,11 +52,27 @@ export const nativeUuid = (value: unknown): value is string =>
   typeof value === "string" &&
   /^[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}$/i.test(value);
 
+// Claude keys and records a project by its real path, in NFC form on macOS.
+// Like the SDK, use the given path when it cannot be resolved.
+export async function nativeProjectCwd(
+  cwd: string,
+  filesystem: Pick<NativeHistoryFilesystem, "realpath"> = fs,
+) {
+  let resolved;
+  try {
+    resolved = await filesystem.realpath(cwd);
+  } catch {
+    resolved = path.resolve(cwd);
+  }
+  return process.platform === "darwin" ? resolved.normalize("NFC") : resolved;
+}
+
 async function readTail(
   file: string,
+  cwd: string,
   filesystem: NonNullable<NativeHistoryOptions["filesystem"]>,
 ) {
-  // Resolve the account's own native path. Never follow a transcript symlink.
+  // Never follow a symlink below the resolved account root.
   if ((await filesystem.realpath(file)) !== file) return null;
   const handle = await filesystem.open(
     file,
@@ -69,7 +87,7 @@ async function readTail(
     const read = await handle.read(raw, 0, raw.length, offset);
     if (read.bytesRead !== raw.length || raw.at(-1) !== 10) return null;
     retained = true;
-    return { handle, before, offset, raw };
+    return { cwd, handle, before, offset, raw };
   } finally {
     if (!retained) await handle.close();
   }
@@ -126,21 +144,24 @@ export async function readNativeHistory<T>(
     !path.isAbsolute(session.cwd || "")
   )
     return null;
-  const cwd = session.nativeHistoryCwd || session.cwd;
-  if (typeof cwd !== "string" || !path.isAbsolute(cwd)) return null;
+  const given = session.nativeHistoryCwd || session.cwd;
+  if (typeof given !== "string" || !path.isAbsolute(given)) return null;
+  const cwd = await nativeProjectCwd(given, filesystem);
   // Claude hashes longer project directory names. Leave that unsupported scope
   // unknown rather than searching other projects or guessing its native path.
   const project = cwd.replace(/[^a-zA-Z0-9]/g, "-");
   if (project.length > 200) return null;
-  const file = path.join(
-    path.resolve(configDir),
-    "projects",
-    project,
-    (session.nativeId || session.id) + ".jsonl",
-  );
   let tail;
   try {
-    tail = await readTail(file, filesystem);
+    // The account root may be reached through a symlink, for example a
+    // symlinked ~/.claude or macOS /var. Nothing below it may be one.
+    const file = path.join(
+      await filesystem.realpath(path.resolve(configDir)),
+      "projects",
+      project,
+      (session.nativeId || session.id) + ".jsonl",
+    );
+    tail = await readTail(file, cwd, filesystem);
     if (!tail) return null;
     const found = await inspect(tail);
     if (!found?.length) return found;

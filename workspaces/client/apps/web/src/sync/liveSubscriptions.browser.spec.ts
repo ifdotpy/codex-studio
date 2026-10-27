@@ -32,7 +32,7 @@ test("switching chats changes subscriptions on one EventSource", async ({
     string,
     {
       response: import("node:http").ServerResponse;
-      resources: (ResourceRef | components["schemas"]["SubscriptionAdd"])[];
+      resources: ResourceRef[];
       url: URL;
     }
   >();
@@ -44,9 +44,7 @@ test("switching chats changes subscriptions on one EventSource", async ({
   let updateResponseBytes = 0;
   let hypotheticalReopenBytes = 0;
   let hypotheticalReopenRequestBytes = 0;
-  const frame = (
-    resources: (ResourceRef | components["schemas"]["SubscriptionAdd"])[],
-  ) =>
+  const frame = (resources: ResourceRef[]) =>
     sse("resources", {
       protocol: 3,
       workspaceId,
@@ -99,22 +97,19 @@ test("switching chats changes subscriptions on one EventSource", async ({
                 response.end();
                 return;
               }
-              const key = (
-                resource:
-                  | ResourceRef
-                  | components["schemas"]["SubscriptionAdd"],
-              ) => JSON.stringify(resource);
+              const key = (resource: ResourceRef) => JSON.stringify(resource);
               session.resources = session.resources.filter(
                 (resource) =>
                   !update.remove.some(
                     (removed) => key(removed) === key(resource),
                   ),
               );
-              session.resources.push(...update.add);
+              const added = update.add.map((entry) => entry.resource);
+              session.resources.push(...added);
               const ack = sse("subscriptions", {
                 gen: update.gen,
               } satisfies components["schemas"]["SyncSubscriptionAck"]);
-              const initial = frame(update.add);
+              const initial = frame(added);
               updates.push({ ...update, bytes: body.length });
               updateResponseBytes += Buffer.byteLength(ack + initial);
               hypotheticalReopenBytes += Buffer.byteLength(
@@ -168,7 +163,10 @@ test("switching chats changes subscriptions on one EventSource", async ({
     await expect(page.locator("output")).toHaveText("one");
     assert.equal(opened, 1);
     assert.equal(updates.length, 2);
-    assert.deepEqual(updates[0].add, [{ kind: "transcript", agentId: "two" }]);
+    assert.ok(updates[0]);
+    assert.deepEqual(updates[0].add, [
+      { resource: { kind: "transcript", agentId: "two" } },
+    ] satisfies components["schemas"]["SyncSubscriptionRequest"]["add"]);
     assert.deepEqual(updates[0].remove, [
       { kind: "transcript", agentId: "one" },
     ]);

@@ -11,7 +11,28 @@ use crate::{
     EventWriteRepository, ExecutionHistoryRepository, QueueEvent, StoreError, StoreResult,
 };
 
-pub type AccountWakePage = BTreeMap<String, Vec<(String, i64, Option<String>)>>;
+pub type AccountWakePage = BTreeMap<String, Vec<WakeCandidate>>;
+
+pub use studio_runtime_schema::records::WorkspaceMode;
+
+/// A selected row keeps its identity even when its mode is invalid, so registry
+/// isolation can hold that row without discarding the rest of the bounded page.
+#[derive(Clone, Debug)]
+pub struct WakeCandidate {
+    pub agent_id: String,
+    pub epoch: i64,
+    pub workspace_mode: Result<Option<WorkspaceMode>, std::sync::Arc<StoreError>>,
+}
+
+impl WakeCandidate {
+    pub fn ready(agent_id: String, epoch: i64, workspace_mode: Option<WorkspaceMode>) -> Self {
+        Self {
+            agent_id,
+            epoch,
+            workspace_mode: Ok(workspace_mode),
+        }
+    }
+}
 
 /// Persisted turn errors for a provider disconnect, a backend restart, and an
 /// unknown Linux VM provider outcome, owned by runtime-schema shared values.
@@ -111,6 +132,7 @@ pub struct SchedulerRepository;
 mod idle_unload;
 mod lifecycle;
 pub use lifecycle::START_RETURN_LIMIT;
+pub(crate) use lifecycle::{StartSubmission, ValidatedAttempt};
 mod selection;
 mod steer;
 use lifecycle::*;
@@ -362,6 +384,76 @@ mod tests {
             .expect("resumed input is not blocked by old reservation");
         assert_eq!(next.events[0].id.0, "resumed");
         transaction.commit().expect("resumed claim commits");
+    }
+
+    #[test]
+    fn malformed_start_submission_never_releases_input_or_changes_history() {
+        for submitted in [None, Some(json!(null)), Some(json!("true")), Some(json!(0))] {
+            for outcome in ["held", "uncertain"] {
+                let mut connection = database();
+                let transaction = connection.transaction().expect("claim");
+                SchedulerRepository::claim(&transaction, "agent", 4, "attempt", 10.0, 2)
+                    .expect("claim");
+                assert!(
+                    SchedulerRepository::mark_submitted_identity(
+                        &transaction,
+                        "agent",
+                        4,
+                        "attempt",
+                        "ticket-attempt",
+                        "default",
+                        1,
+                        "test-connection",
+                        "thread",
+                    )
+                    .expect("immutable submitted receipt")
+                );
+                transaction.commit().expect("claim commits");
+                let mut agent = AgentRepository::get(&connection, &AgentId::from("agent"))
+                    .expect("read")
+                    .expect("agent");
+                let attempt = agent
+                    .extra
+                    .get_mut("startAttempt")
+                    .expect("attempt")
+                    .as_object_mut()
+                    .expect("object");
+                if let Some(value) = &submitted {
+                    attempt.insert("submitted".into(), value.clone());
+                } else {
+                    attempt.remove("submitted");
+                }
+                AgentRepository::put(&connection, &agent).expect("corrupt submission marker");
+                connection
+                    .execute(
+                        "UPDATE runtime_events SET status='uncertain' WHERE agent='agent'",
+                        [],
+                    )
+                    .expect("uncertain");
+                let snapshot = |db: &Connection| {
+                    ["SELECT record FROM runtime_agents ORDER BY id", "SELECT status||coalesce(turn_id,'')||coalesce(error,'') FROM runtime_events ORDER BY id", "SELECT record FROM runtime_execution_runs ORDER BY id", "SELECT record FROM runtime_execution_attempts ORDER BY id", "SELECT signature||result FROM runtime_operation_receipts ORDER BY id"]
+                        .map(|sql| db.prepare(sql).expect("prepare").query_map([], |row| row.get::<_, String>(0)).expect("query").collect::<Result<Vec<_>,_>>().expect("rows"))
+                };
+                let before = snapshot(&connection);
+                let transaction = connection.transaction().expect("settlement");
+                let result = SchedulerRepository::settle_start_outcome(
+                    &transaction,
+                    &super::TurnAttemptIdentity {
+                        agent_id: "agent".into(),
+                        epoch: 4,
+                        attempt_id: "attempt".into(),
+                    },
+                    outcome,
+                    None,
+                );
+                assert!(
+                    result.is_err(),
+                    "{submitted:?}/{outcome} must refuse malformed proof"
+                );
+                transaction.commit().expect("no writes to commit");
+                assert_eq!(snapshot(&connection), before);
+            }
+        }
     }
 
     #[test]

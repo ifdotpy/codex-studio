@@ -5534,6 +5534,7 @@ dependencies = [
  "studio-runtime-process",
  "studio-runtime-store",
  "tempfile",
+ "tokio",
 ]
 
 [[package]]

@@ -183,10 +183,10 @@ impl studio_runtime_services::diagnostics::ProviderDiagnosticsPort for ProviderD
             for (index, ((_, provider, _), result)) in active.iter().zip(account_reads).enumerate()
             {
                 let alias = format!("account{}", index + 1);
-                match result {
-                    Some(value) if *provider == ProviderKind::Claude => {
+                match (result, *provider) {
+                    (Some(value), ProviderKind::Claude) => {
                         let mut row = serde_json::Map::new();
-                        row.insert("provider".to_owned(), json!("claude"));
+                        row.insert("provider".to_owned(), json!(ProviderKind::Claude.key()));
                         if let Some(fields) = value.as_object() {
                             row.extend(fields.clone());
                         }
@@ -194,7 +194,7 @@ impl studio_runtime_services::diagnostics::ProviderDiagnosticsPort for ProviderD
                         row.insert("idleLimitSeconds".to_owned(), json!(idle_limit_seconds));
                         native_accounts.insert(alias.clone(), Value::Object(row));
                     }
-                    Some(value) => {
+                    (Some(value), ProviderKind::Codex) => {
                         let count = value
                             .get("data")
                             .and_then(Value::as_array)
@@ -202,10 +202,10 @@ impl studio_runtime_services::diagnostics::ProviderDiagnosticsPort for ProviderD
                         loaded_threads = loaded_threads.saturating_add(count as u64);
                         native_accounts.insert(
                             alias.clone(),
-                            json!({"provider":"codex", "loadedThreads":count}),
+                            json!({"provider":ProviderKind::Codex.key(), "loadedThreads":count}),
                         );
                     }
-                    None => {
+                    (None, ProviderKind::Codex | ProviderKind::Claude) => {
                         native_accounts.insert(
                             alias.clone(),
                             json!({"error":"ProviderDiagnosticsUnavailable"}),
@@ -805,7 +805,144 @@ mod tests {
                             "type":"agentMessage", "phase":"final_answer", "text":"A Useful Title"
                         }]
                     }]}))),
-                    _ => None,
+                    Method::Initialize
+                    | Method::Initialized
+                    | Method::Ack
+                    | Method::AccountLoginCancel
+                    | Method::AccountLoginStart
+                    | Method::AccountRateLimitResetCreditConsume
+                    | Method::ThreadLoadedList
+                    | Method::ConfigRead
+                    | Method::SkillsExtraRootsSet
+                    | Method::ModelList
+                    | Method::AccountRead
+                    | Method::AccountRateLimitsRead
+                    | Method::ThreadRealtimeStart
+                    | Method::ThreadRealtimeStop
+                    | Method::ThreadRealtimeAppendSpeech
+                    | Method::ThreadRealtimeItemStarted
+                    | Method::ThreadRealtimeTranscriptDelta
+                    | Method::ThreadRealtimeTranscriptDone
+                    | Method::ThreadRealtimeSdp
+                    | Method::ThreadRealtimeError
+                    | Method::ThreadRealtimeClosed
+                    | Method::ThreadResume
+                    | Method::ThreadRead
+                    | Method::TurnSteer
+                    | Method::TurnInterrupt
+                    | Method::ThreadList
+                    | Method::ThreadArchive
+                    | Method::ThreadFork
+                    | Method::ThreadNameSet
+                    | Method::ThreadMetadataUpdate
+                    | Method::ThreadSettingsUpdate
+                    | Method::ThreadCompactStart
+                    | Method::ThreadRollback
+                    | Method::ThreadItemsList
+                    | Method::ThreadGoalSet
+                    | Method::ThreadGoalUpdated
+                    | Method::ThreadUnarchive
+                    | Method::ThreadUnsubscribe
+                    | Method::ProcessSpawn
+                    | Method::ProcessWriteStdin
+                    | Method::ProcessKill
+                    | Method::ProcessResizePty
+                    | Method::CommandExec
+                    | Method::CommandExecWrite
+                    | Method::CommandExecResize
+                    | Method::CommandExecTerminate
+                    | Method::ThreadBackgroundTerminalsList
+                    | Method::ThreadBackgroundTerminalsTerminate
+                    | Method::ThreadBackgroundTerminalsClean
+                    | Method::ThreadCommandExecutionBackground
+                    | Method::ThreadQueueList
+                    | Method::ClaudeState
+                    | Method::ClaudeRepairReport
+                    | Method::ClaudeFileBackups
+                    | Method::ClaudeSettings
+                    | Method::ClaudeActivity
+                    | Method::ClaudeStopTask
+                    | Method::ClaudeDiagnostics
+                    | Method::ClaudeMoveVersions
+                    | Method::McpServerReconnect
+                    | Method::McpServerStatusList
+                    | Method::SkillsList
+                    | Method::OperationStatus
+                    | Method::ReviewStart
+                    | Method::BrowserAnswer
+                    | Method::BrowserCallback
+                    | Method::BrowserClose
+                    | Method::BrowserWait
+                    | Method::ClaudeCommands
+                    | Method::ClaudeMoveExport
+                    | Method::ClaudeMoveIdentity
+                    | Method::ClaudeMovePreflight
+                    | Method::ClaudeMoveProof
+                    | Method::Detach
+                    | Method::EventRead
+                    | Method::Exec
+                    | Method::Generate
+                    | Method::Health
+                    | Method::Info
+                    | Method::LayrHealth
+                    | Method::Next
+                    | Method::Open
+                    | Method::ProjectEnsure
+                    | Method::ProjectExec
+                    | Method::ProjectImport
+                    | Method::ProviderList
+                    | Method::Replay
+                    | Method::ResponseStatus
+                    | Method::RetireCommand
+                    | Method::SecretsList
+                    | Method::SecretsRemove
+                    | Method::SecretsSet
+                    | Method::ShareConfigure
+                    | Method::ShareName
+                    | Method::ShareStatus
+                    | Method::Sign
+                    | Method::Status
+                    | Method::SyncMacApply
+                    | Method::SyncMacHandoff
+                    | Method::SyncMacHashes
+                    | Method::SyncMacHead
+                    | Method::SyncMacRead
+                    | Method::SyncMacWorktree
+                    | Method::VaultConfigure
+                    | Method::VaultPush
+                    | Method::VaultStatus
+                    | Method::UploadBegin
+                    | Method::UploadChunk
+                    | Method::UploadCommit
+                    | Method::Verify
+                    | Method::Write
+                    | Method::CurrentTimeRead
+                    | Method::ItemToolCall
+                    | Method::ItemCommandExecutionRequestApproval
+                    | Method::ItemFileChangeRequestApproval
+                    | Method::ItemPermissionsRequestApproval
+                    | Method::McpServerElicitationRequest
+                    | Method::ItemToolRequestUserInput
+                    | Method::ItemStarted
+                    | Method::ItemCompleted
+                    | Method::ItemAgentMessageDelta
+                    | Method::ItemReasoningTextDelta
+                    | Method::ItemCommandExecutionOutputDelta
+                    | Method::CommandExecOutputDelta
+                    | Method::TurnStarted
+                    | Method::TurnCompleted
+                    | Method::TurnPlanUpdated
+                    | Method::TurnDiffUpdated
+                    | Method::ThreadClosed
+                    | Method::ThreadStatusChanged
+                    | Method::ThreadTokenUsageUpdated
+                    | Method::ThreadIdleCompactionUpdated
+                    | Method::AccountLoginCompleted
+                    | Method::AccountUpdated
+                    | Method::AccountRateLimitsUpdated
+                    | Method::ModelSafetyBufferingUpdated
+                    | Method::ProviderGenerationStarted
+                    | Method::ProtocolError => None,
                 };
                 Ok(SessionReceipt {
                     scope,

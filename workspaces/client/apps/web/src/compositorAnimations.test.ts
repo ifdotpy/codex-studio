@@ -1,3 +1,4 @@
+import { required } from "./components/componentTestFixtures.ts";
 import { cssFiles } from "./cssFixtureFiles";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
@@ -21,9 +22,9 @@ function keyframeProperties(css: string) {
     }
     const body = css.slice(start.lastIndex, index - 1);
     const properties = new Set(
-      [...body.matchAll(/([a-z-]+)\s*:/g)].map(([, name]) => name),
+      [...body.matchAll(/([a-z-]+)\s*:/g)].map(([, name]) => required(name)),
     );
-    blocks.set(match[1], properties);
+    blocks.set(required(match[1]), properties);
   }
   return blocks;
 }
@@ -44,7 +45,7 @@ it("runs every infinite animation on compositor properties only", () => {
   );
   assert.ok(infinite.size > 0);
   for (const name of infinite) {
-    const properties = keyframes.get(name);
+    const properties = keyframes.get(required(name));
     assert.ok(properties, `@keyframes ${name} is missing`);
     assert.deepEqual(
       [...properties].filter((property) => !compositorProperties.has(property)),

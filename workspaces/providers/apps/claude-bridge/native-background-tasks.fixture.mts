@@ -88,6 +88,7 @@ export function query({ prompt, options }: FixtureQuery) {
       yield {
         type: "result",
         subtype: "success",
+        is_error: false,
         usage,
         result: "Task started",
       };
@@ -96,12 +97,9 @@ export function query({ prompt, options }: FixtureQuery) {
       );
       if (abort.signal.aborted) return;
       // The test writes the task status consumed by this fixture.
-      const status = fs.readFileSync(cwd + "/.finish", "utf8") as NonNullable<
-        Extract<
-          NativeTaskFixtureMessage,
-          { subtype?: "task_notification" }
-        >["status"]
-      >;
+      const status = fs.readFileSync(cwd + "/.finish", "utf8") as
+        | NonNullable<SDKTaskNotificationMessage["status"]>
+        | "stopped";
       // A state patch can precede the notification that supplies the final output.
       yield {
         type: "system",
@@ -132,6 +130,7 @@ export function query({ prompt, options }: FixtureQuery) {
       yield {
         type: "result",
         subtype: "success",
+        is_error: false,
         usage,
         result: "Native task finished",
       };

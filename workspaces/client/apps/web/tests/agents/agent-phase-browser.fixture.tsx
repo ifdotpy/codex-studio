@@ -223,6 +223,7 @@ function scope(ownerId: string, hold = false) {
         hold = false;
         sources.at(-1)!.baseline();
       }
+      return undefined;
     },
   };
 }
@@ -236,7 +237,8 @@ window.repeatLive = () => {
 window.phase = (id, phase) => {
   const old = payloads[id],
     ref = refs[id];
-  const next = { ...old, agent: { ...old.agent!, activity: { phase } } };
+  if (!old?.agent || !ref) throw new Error("Missing transcript fixture");
+  const next = { ...old, agent: { ...old.agent, activity: { phase } } };
   payloads[id] = next;
   firstScope.resources.publish(ref, fixtureData<typeof ref>(next));
 };

@@ -171,7 +171,7 @@ async fn fixture_records_are_readable_and_writable_in_rust() {
             let mut work = work_table
                 .get(&TaskId::from("cross-work"))?
                 .expect("record fixture contains work");
-            work.set("rustFlag", json!(true));
+            work.set("rustFlag", json!(true))?;
             work_table.put(&work)?;
             let mut message = MessageRepository::get(
                 transaction,

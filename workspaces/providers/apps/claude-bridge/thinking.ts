@@ -28,7 +28,7 @@ export function requiresThinking(
     );
   const match = explicit || described;
   if (!match) return false;
-  const [, family, major, minor = "0"] = match;
+  const [, family = "", major, minor = "0"] = match;
   return (
     (family.toLowerCase() === "opus" && major === "5" && minor === "5") ||
     (family.toLowerCase() === "fable" &&

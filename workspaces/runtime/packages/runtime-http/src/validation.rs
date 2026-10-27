@@ -652,7 +652,7 @@ fn check_safe_integer_bounds(
         let integer_type = schema.get("type").is_some_and(|kind| match kind {
             Value::String(kind) => kind == "integer",
             Value::Array(kinds) => kinds.iter().any(|kind| kind.as_str() == Some("integer")),
-            _ => false,
+            Value::Null | Value::Bool(_) | Value::Number(_) | Value::Object(_) => false,
         });
         if integer_type {
             let bound = |name: &str| {
@@ -1172,7 +1172,40 @@ fn convert_error(error: &jsonschema::ValidationError<'_>, section: &str) -> Loca
                 location.push(Value::String(name.clone()));
             }
         }
-        _ => {}
+        jsonschema::error::ValidationErrorKind::AdditionalItems { .. }
+        | jsonschema::error::ValidationErrorKind::AnyOf { .. }
+        | jsonschema::error::ValidationErrorKind::BacktrackLimitExceeded { .. }
+        | jsonschema::error::ValidationErrorKind::RegexEngineFailure { .. }
+        | jsonschema::error::ValidationErrorKind::Constant { .. }
+        | jsonschema::error::ValidationErrorKind::Contains
+        | jsonschema::error::ValidationErrorKind::ContentEncoding { .. }
+        | jsonschema::error::ValidationErrorKind::ContentMediaType { .. }
+        | jsonschema::error::ValidationErrorKind::Custom { .. }
+        | jsonschema::error::ValidationErrorKind::Enum { .. }
+        | jsonschema::error::ValidationErrorKind::ExclusiveMaximum { .. }
+        | jsonschema::error::ValidationErrorKind::ExclusiveMinimum { .. }
+        | jsonschema::error::ValidationErrorKind::FalseSchema
+        | jsonschema::error::ValidationErrorKind::Format { .. }
+        | jsonschema::error::ValidationErrorKind::FromUtf8 { .. }
+        | jsonschema::error::ValidationErrorKind::MaxItems { .. }
+        | jsonschema::error::ValidationErrorKind::Maximum { .. }
+        | jsonschema::error::ValidationErrorKind::MaxLength { .. }
+        | jsonschema::error::ValidationErrorKind::MaxProperties { .. }
+        | jsonschema::error::ValidationErrorKind::MinItems { .. }
+        | jsonschema::error::ValidationErrorKind::Minimum { .. }
+        | jsonschema::error::ValidationErrorKind::MinLength { .. }
+        | jsonschema::error::ValidationErrorKind::MinProperties { .. }
+        | jsonschema::error::ValidationErrorKind::MultipleOf { .. }
+        | jsonschema::error::ValidationErrorKind::Not { .. }
+        | jsonschema::error::ValidationErrorKind::OneOfMultipleValid { .. }
+        | jsonschema::error::ValidationErrorKind::OneOfNotValid { .. }
+        | jsonschema::error::ValidationErrorKind::Pattern { .. }
+        | jsonschema::error::ValidationErrorKind::PropertyNames { .. }
+        | jsonschema::error::ValidationErrorKind::Type { .. }
+        | jsonschema::error::ValidationErrorKind::UnevaluatedItems { .. }
+        | jsonschema::error::ValidationErrorKind::UnevaluatedProperties { .. }
+        | jsonschema::error::ValidationErrorKind::UniqueItems
+        | jsonschema::error::ValidationErrorKind::Referencing(_) => {}
     }
     LocatedError { location }
 }

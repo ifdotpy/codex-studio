@@ -143,7 +143,7 @@ function ContextChart({
         No context-window measurements in this period.
       </div>
     );
-  const start = points[0].at,
+  const start = points[0]!.at,
     end = points.at(-1)!.at;
   const groups = new Map<string, AnalyticsContextPoint[]>();
   points.forEach((p) => {
@@ -219,7 +219,7 @@ function ContextChart({
         {[...groups].map(([id, group], i) => (
           <span key={id}>
             <i style={{ background: colors[i % colors.length] }} />
-            {aggregate ? id : group[0].agentName || id}
+            {aggregate ? id : group[0]?.agentName || id}
           </span>
         ))}
       </div>
@@ -1046,7 +1046,7 @@ export default function Analytics({
                     <Button
                       size="compact-xs"
                       variant="subtle"
-                      loading={loadingDetails.turns}
+                      loading={!!loadingDetails.turns}
                       onClick={() => loadOlderDetails("turns")}
                     >
                       Load 100 older turns
@@ -1175,7 +1175,7 @@ export default function Analytics({
                     <Button
                       size="compact-xs"
                       variant="subtle"
-                      loading={loadingDetails.rateLimits}
+                      loading={!!loadingDetails.rateLimits}
                       onClick={() => loadOlderDetails("rateLimits")}
                     >
                       Load 100 older snapshots

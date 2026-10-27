@@ -46,7 +46,10 @@ impl Failure {
         match self {
             Self::ServerOverloaded | Self::InternalServerError => &DELAYS,
             Self::DiskFull => &DISK_FULL_DELAYS,
-            _ => &CONNECTION_DELAYS,
+            Self::HttpConnectionFailed
+            | Self::ResponseStreamConnectionFailed
+            | Self::ResponseStreamDisconnected
+            | Self::ResponseTooManyFailedAttempts => &CONNECTION_DELAYS,
         }
     }
 }

@@ -59,6 +59,7 @@ test("a limit that refuses a turn Claude started itself reports the provider res
       n.params.item.id ===
         "limit:" + own.params.turn.id + ":five_hour:" + RESET,
   );
+  assert.ok(shown.params.item.text !== undefined);
   assert.match(
     shown.params.item.text!,
     new RegExp(

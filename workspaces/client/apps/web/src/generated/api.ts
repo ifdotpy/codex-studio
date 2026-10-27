@@ -4202,10 +4202,7 @@ export interface components {
         | null
         | undefined;
       /** Workspacemode */
-      workspaceMode?:
-        | ("layr" | "image" | "worktree" | "shared")
-        | null
-        | undefined;
+      workspaceMode?: components["schemas"]["WorkspaceMode"] | null | undefined;
       /** Workspaceoperation */
       workspaceOperation?: null | string | undefined;
       /** Worktree */
@@ -4604,10 +4601,7 @@ export interface components {
         | null
         | undefined;
       /** Workspacemode */
-      workspaceMode?:
-        | ("layr" | "image" | "worktree" | "shared")
-        | null
-        | undefined;
+      workspaceMode?: components["schemas"]["WorkspaceMode"] | null | undefined;
       /** Workspaceoperation */
       workspaceOperation?: null | string | undefined;
       /** Worktree */
@@ -5957,10 +5951,7 @@ export interface components {
        * Workspacemode
        * @default null
        */
-      workspaceMode?:
-        | ("layr" | "image" | "worktree" | "shared")
-        | null
-        | undefined;
+      workspaceMode?: components["schemas"]["WorkspaceMode"] | null | undefined;
       /**
        * Workspacemodeexplicit
        * @default null
@@ -6691,10 +6682,7 @@ export interface components {
        * Workspacemode
        * @default null
        */
-      workspaceMode?:
-        | ("layr" | "image" | "worktree" | "shared")
-        | null
-        | undefined;
+      workspaceMode?: components["schemas"]["WorkspaceMode"] | null | undefined;
       /**
        * Workspaceoperation
        * @default null
@@ -9583,10 +9571,7 @@ export interface components {
        * Workspacemode
        * @default null
        */
-      workspaceMode?:
-        | ("layr" | "image" | "worktree" | "shared")
-        | null
-        | undefined;
+      workspaceMode?: components["schemas"]["WorkspaceMode"] | null | undefined;
       /**
        * Workspaceoperation
        * @default null
@@ -11203,7 +11188,10 @@ export interface components {
        * Status
        * @default null
        */
-      status?: ("in_progress" | "resolved" | "declined") | null | undefined;
+      status?:
+        | components["schemas"]["ComplaintResponseStatus"]
+        | null
+        | undefined;
       /** Text */
       text: string;
       /**
@@ -11421,6 +11409,8 @@ export interface components {
       /** Text */
       text: string;
     };
+    /** @enum {string} */
+    ComplaintResponseStatus: "in_progress" | "resolved" | "declined";
     /**
      * ComplaintStatus
      * @enum {string}
@@ -12246,9 +12236,8 @@ export interface components {
       /**
        * Workspacemode
        * @default worktree
-       * @enum {string}
        */
-      workspaceMode?: "layr" | "image" | "worktree" | "shared" | undefined;
+      workspaceMode?: components["schemas"]["WorkspaceMode"] | undefined;
       /**
        * Yolo Mode
        * @default true
@@ -14034,6 +14023,23 @@ export interface components {
       /** Totalmemorybytes */
       totalMemoryBytes: number | null;
     };
+    /**
+     * @description Safe HTTP classifications, shared with the existing operator log.
+     * @enum {string}
+     */
+    HttpErrorKind:
+      | "handler_panic"
+      | "store_configuration"
+      | "store_data"
+      | "store_database"
+      | "store_io"
+      | "store_ownership"
+      | "store_schema"
+      | "store_concurrency"
+      | "response_body_read"
+      | "costs_computation"
+      | "costs_state"
+      | "unclassified";
     /** HttpMetricSummary */
     HttpMetricSummary: {
       /** Max */
@@ -15003,6 +15009,13 @@ export interface components {
        */
       protocol: 1;
     };
+    /** @enum {string} */
+    MigrationPhase: "validate" | "apply" | "commit" | "rollback";
+    /**
+     * @description A failed step's rollback, never a claim about previously committed migration steps.
+     * @enum {string}
+     */
+    MigrationRollbackOutcome: "not_required" | "rolled_back" | "unknown";
     /** MigrationStatus */
     MigrationStatus: {
       /** @default null */
@@ -15028,6 +15041,11 @@ export interface components {
        */
       stateReadError?: null | string | undefined;
     };
+    /**
+     * @description Migration execution stays in runtime-store; these facts are shared operator and UI evidence.
+     * @enum {string}
+     */
+    MigrationTarget: "canvas" | "analytics" | "account_registry" | "supervisor";
     /** MissingToolRequestResponse */
     MissingToolRequestResponse: {
       /** Id */
@@ -15280,6 +15298,14 @@ export interface components {
        */
       text?: string | undefined;
     };
+    /** @description Public projection of the native operation identity, without open transport evidence. */
+    MonitorOperationIdentity: {
+      accountKey: string;
+      agent: string;
+      connectionId: string;
+      /** Format: int64 */
+      epoch: number;
+    };
     /** @description Public output wake budget. The monitor matcher owns the stored budget. Tokens count available output wake batches. */
     MonitorOutputWakeBudget: {
       paused: boolean;
@@ -15460,6 +15486,42 @@ export interface components {
     } & {
       [key: string]: components["schemas"]["JsonValue"] | undefined;
     };
+    MonitorRecoveryEvidence: {
+      proof: components["schemas"]["MonitorRecoveryProof"] | null;
+      /**
+       * Format: double
+       * @description Unix seconds.
+       */
+      startedAt: number;
+      status: components["schemas"]["MonitorRecoveryStatus"];
+    };
+    /** @description Unclassified text stays private in the retained record; its digest permits exact correlation. */
+    MonitorRecoveryProof:
+      | {
+          /** @constant */
+          classification: "recognized";
+          reason: components["schemas"]["MonitorRecoveryReason"];
+        }
+      | {
+          /** @constant */
+          classification: "unclassified";
+          sha256: string;
+        };
+    /**
+     * @description Studio-owned recovery proof codes. A retained native reason outside this set remains unclassified.
+     * @enum {string}
+     */
+    MonitorRecoveryReason:
+      | "no_operation"
+      | "invalid_provider_observation"
+      | "provider_rejected"
+      | "operation_not_accepted"
+      | "invalid_terminal_receipt"
+      | "termination_unconfirmed"
+      | "retained_exit_unavailable"
+      | "reattach_window_expired";
+    /** @enum {string} */
+    MonitorRecoveryStatus: "running" | "not_reattachable";
     MonitorRestartRequest: {
       accountKey: string;
       agent: string;
@@ -15478,13 +15540,10 @@ export interface components {
        */
       kind: "monitors";
     };
-    /**
-     * MonitorState
-     * @enum {string}
-     */
+    /** @enum {string} */
     MonitorState:
-      | "starting"
       | "approval"
+      | "starting"
       | "running"
       | "completed"
       | "failed"
@@ -18834,42 +18893,17 @@ export interface components {
       /** Label */
       label: string;
     };
-    /** QueueCancelBody */
     QueueCancelBody: {
       /**
        * @description discriminator enum property added by openapi-typescript
        * @enum {string}
        */
       action: "cancel";
-      /**
-       * Agent
-       * @default null
-       */
-      agent?: null | string | undefined;
-      /**
-       * Expected Revision
-       * @default null
-       */
-      expected_revision?: null | string | undefined;
-      /**
-       * Expectedtext
-       * @default null
-       */
-      expectedText?: null | string | undefined;
-      /**
-       * Id
-       * @default null
-       */
-      id?: null | string | undefined;
-      /**
-       * Message Id
-       * @default null
-       */
-      message_id?: null | string | undefined;
-      /**
-       * Request Id
-       * @default null
-       */
+      agent?: string | null | undefined;
+      expected_revision?: string | null | undefined;
+      expectedText?: string | null | undefined;
+      id?: string | null | undefined;
+      message_id?: string | null | undefined;
       request_id?: string | null | undefined;
     };
     /** QueueCapabilities */
@@ -18879,44 +18913,18 @@ export interface components {
       /** Reorder */
       reorder: boolean;
     };
-    /** QueueEditBody */
     QueueEditBody: {
       /**
        * @description discriminator enum property added by openapi-typescript
        * @enum {string}
        */
       action: "edit";
-      /**
-       * Agent
-       * @default null
-       */
-      agent?: null | string | undefined;
-      /**
-       * Expected Revision
-       * @default null
-       */
-      expected_revision?: null | string | undefined;
-      /**
-       * Expectedtext
-       * @default null
-       */
-      expectedText?: null | string | undefined;
-      /**
-       * Id
-       * @default null
-       */
-      id?: null | string | undefined;
-      /**
-       * Message Id
-       * @default null
-       */
-      message_id?: null | string | undefined;
-      /**
-       * Request Id
-       * @default null
-       */
+      agent?: string | null | undefined;
+      expected_revision?: string | null | undefined;
+      expectedText?: string | null | undefined;
+      id?: string | null | undefined;
+      message_id?: string | null | undefined;
       request_id?: string | null | undefined;
-      /** Text */
       text: string;
     };
     /** QueueEntityDto */
@@ -18927,42 +18935,17 @@ export interface components {
       /** Revision */
       revision: string;
     };
-    /** QueueFirstBody */
     QueueFirstBody: {
       /**
        * @description discriminator enum property added by openapi-typescript
        * @enum {string}
        */
       action: "first" | "send_now";
-      /**
-       * Agent
-       * @default null
-       */
-      agent?: null | string | undefined;
-      /**
-       * Expected Revision
-       * @default null
-       */
-      expected_revision?: null | string | undefined;
-      /**
-       * Expectedtext
-       * @default null
-       */
-      expectedText?: null | string | undefined;
-      /**
-       * Id
-       * @default null
-       */
-      id?: null | string | undefined;
-      /**
-       * Message Id
-       * @default null
-       */
-      message_id?: null | string | undefined;
-      /**
-       * Request Id
-       * @default null
-       */
+      agent?: string | null | undefined;
+      expected_revision?: string | null | undefined;
+      expectedText?: string | null | undefined;
+      id?: string | null | undefined;
+      message_id?: string | null | undefined;
       request_id?: string | null | undefined;
     };
     /** QueueItem */
@@ -19003,31 +18986,16 @@ export interface components {
       /** Text */
       text: string;
     };
-    /** QueueReorderBody */
     QueueReorderBody: {
       /**
        * @description discriminator enum property added by openapi-typescript
        * @enum {string}
        */
       action: "reorder";
-      /**
-       * Agent
-       * @default null
-       */
-      agent?: null | string | undefined;
-      /** Expected Revision */
+      agent?: string | null | undefined;
       expected_revision: string;
-      /**
-       * Id
-       * @default null
-       */
-      id?: null | string | undefined;
-      /** Ordered Ids */
+      id?: string | null | undefined;
       ordered_ids: string[];
-      /**
-       * Request Id
-       * @default null
-       */
       request_id?: string | null | undefined;
     };
     /** QueueResource */
@@ -19293,6 +19261,8 @@ export interface components {
      * @enum {string}
      */
     RecoveryOutcome: "completed" | "failed" | "interrupted";
+    /** @enum {string} */
+    RecoveryPhase: "scan" | "history";
     /** RecoveryResponse */
     RecoveryResponse: {
       /**
@@ -22743,70 +22713,181 @@ export interface components {
       /** Waitingfor */
       waitingFor?: components["schemas"]["JsonValue"][] | null | undefined;
     };
-    /**
-     * StudioError
-     * @description One agent work item that ended because of a Studio error, not because of the agent's own work.
-     */
+    /** @description An action always carries its real destination. Server incidents have no invented agent. */
     StudioError: {
       /**
-       * Action
-       * @description resume runs connection recovery for the agent; check opens the agent for the owner.
-       * @enum {string}
-       */
-      action: "resume" | "check";
-      /** Agentid */
-      agentId: string;
-      /** Agentname */
-      agentName: string;
-      /**
-       * At
-       * @description Unix seconds of the failure.
+       * Format: double
+       * @description Unix seconds.
        */
       at: number;
-      /**
-       * Detail
-       * @description The stored error.
-       */
       detail: string;
-      /**
-       * Eventid
-       * @default null
-       */
+      diagnostics: components["schemas"]["StudioErrorDiagnostics"];
       eventId?: string | null | undefined;
-      /**
-       * Id
-       * @description Row identity; dismissing it hides this row only.
-       */
       id: string;
-      /**
-       * Kind
-       * @enum {string}
-       */
-      kind:
-        | "monitor_outcome_lost"
-        | "monitor_not_recorded"
-        | "input_not_sent"
-        | "input_unconfirmed"
-        | "input_uncertain"
-        | "input_stuck"
-        | "turn_disconnected"
-        | "workspace_failed";
-      /**
-       * Monitorid
-       * @default null
-       */
+      kind: components["schemas"]["StudioErrorKind"];
       monitorId?: string | null | undefined;
-      /**
-       * Reason
-       * @description The reason in plain words.
-       */
       reason: string;
-      /**
-       * Subject
-       * @description The command or the start of the message.
-       */
       subject: string;
+    } & (
+      | {
+          /** @constant */
+          action: "resume";
+          agentId: string;
+          agentName: string;
+        }
+      | {
+          /** @constant */
+          action: "check";
+          agentId: string;
+          agentName: string;
+        }
+      | {
+          /** @constant */
+          action: "details";
+        }
+    );
+    /** @description Only facts extracted by typed adapters belong here; never arbitrary error strings or payloads. */
+    StudioErrorCause:
+      | {
+          /** @constant */
+          kind: "monitor";
+          operation: components["schemas"]["MonitorOperationIdentity"] | null;
+          recovery: components["schemas"]["MonitorRecoveryEvidence"] | null;
+          status: components["schemas"]["MonitorState"];
+        }
+      | {
+          keyword: string;
+          /** @constant */
+          kind: "schema_violation";
+          pointer: string;
+        }
+      | {
+          /** @constant */
+          kind: "unclassified";
+          sha256: string;
+        }
+      | {
+          id: string;
+          /** @constant */
+          kind: "migration";
+          phase: components["schemas"]["MigrationPhase"];
+          rollback: components["schemas"]["MigrationRollbackOutcome"];
+          target: components["schemas"]["MigrationTarget"];
+        }
+      | {
+          id: string;
+          /** @constant */
+          kind: "stored_record";
+          object: string;
+          pointer: string | null;
+        }
+      | {
+          /** Format: int32 */
+          extendedCode: number;
+          /** @constant */
+          kind: "sqlite";
+          /** Format: int32 */
+          primaryCode: number;
+        }
+      | {
+          category: components["schemas"]["StudioErrorJsonCategory"];
+          /** Format: uint */
+          column: number;
+          /** @constant */
+          kind: "json";
+          /** Format: uint */
+          line: number;
+        }
+      | {
+          /** @constant */
+          kind: "io";
+          /** Format: int32 */
+          osCode: number | null;
+        }
+      | {
+          /** @constant */
+          kind: "schema_object";
+          object: string;
+        }
+      | {
+          class: components["schemas"]["HttpErrorKind"];
+          /** @constant */
+          kind: "runtime";
+        };
+    StudioErrorContext:
+      | {
+          /** Format: int64 */
+          epoch: number | null;
+          requestId: string | null;
+          /** @constant */
+          source: "monitor";
+          turnId: string | null;
+        }
+      | {
+          /** Format: int64 */
+          epoch: number;
+          /** @constant */
+          source: "input";
+          turnId: string | null;
+        }
+      | {
+          /** Format: int64 */
+          epoch: number | null;
+          /** @constant */
+          source: "agent";
+          turnId: string | null;
+        }
+      | {
+          class: components["schemas"]["HttpErrorKind"];
+          requestId: string | null;
+          route: string;
+          /** @constant */
+          source: "http";
+          /** Format: uint16 */
+          status: number;
+        }
+      | {
+          account: string;
+          agentId: string | null;
+          phase: components["schemas"]["RecoveryPhase"];
+          /** @constant */
+          source: "recovery";
+        }
+      | {
+          id: string;
+          object: string;
+          /** @constant */
+          source: "stored";
+        };
+    StudioErrorDiagnostics: {
+      /** @description Ordered from the owning boundary to the underlying safe machine facts. */
+      causes: components["schemas"]["StudioErrorCause"][];
+      certainty: components["schemas"]["StudioErrorEffectCertainty"];
+      context: components["schemas"]["StudioErrorContext"];
     };
+    /**
+     * @description Evidence about effects, distinct from provider delivery ("written" is not applied).
+     * @enum {string}
+     */
+    StudioErrorEffectCertainty: "read_only" | "not_applied" | "unknown";
+    /** @enum {string} */
+    StudioErrorJsonCategory: "io" | "syntax" | "data" | "eof";
+    /**
+     * @description Why work needs attention. The service owns classification and publication.
+     * @enum {string}
+     */
+    StudioErrorKind:
+      | "monitor_outcome_lost"
+      | "monitor_not_recorded"
+      | "input_unconfirmed"
+      | "input_uncertain"
+      | "input_stuck"
+      | "turn_disconnected"
+      | "workspace_failed"
+      | "http_failure"
+      | "recovery_failed"
+      | "stored_record_invalid"
+      | "unclassified_failure";
     /** StudioErrorsDismissRequest */
     StudioErrorsDismissRequest: {
       /** @description Legacy single error id. Supply either id or ids. */
@@ -27447,17 +27528,7 @@ export interface components {
       /** Rootid */
       rootId?: null | string | undefined;
       /** Status */
-      status?:
-        | (
-            | "ready"
-            | "running"
-            | "blocked"
-            | "review"
-            | "accepted"
-            | "cancelled"
-          )
-        | null
-        | undefined;
+      status?: components["schemas"]["WorkStatus"] | null | undefined;
       /** Title */
       title?: null | string | undefined;
     };
@@ -27638,17 +27709,8 @@ export interface components {
         | undefined;
       /** Rootid */
       rootId: string;
-      /**
-       * Status
-       * @enum {string}
-       */
-      status:
-        | "ready"
-        | "blocked"
-        | "running"
-        | "review"
-        | "accepted"
-        | "cancelled";
+      /** Status */
+      status: components["schemas"]["WorkStatus"];
       submissionRefusal?:
         | components["schemas"]["TaskSubmissionRefusal"]
         | undefined;
@@ -27843,6 +27905,8 @@ export interface components {
       /** Taskshistorylimit */
       tasksHistoryLimit?: number | null | undefined;
     };
+    /** @enum {string} */
+    WorkspaceMode: "layr" | "image" | "worktree" | "shared";
     /** WorkspaceResource */
     WorkspaceResource: {
       /** Agentid */
@@ -28092,6 +28156,14 @@ export interface components {
     } & {
       [key: string]: components["schemas"]["JsonValue"] | undefined;
     };
+    /** @enum {string} */
+    WorkStatus:
+      | "ready"
+      | "blocked"
+      | "running"
+      | "review"
+      | "accepted"
+      | "cancelled";
     /** WorktreeCleanupErrorRecordResponse */
     WorktreeCleanupErrorRecordResponse: {
       /** At */
@@ -28228,16 +28300,7 @@ export interface components {
       /** Description */
       description: string;
       /** Displaystatus */
-      displayStatus:
-        | "blocked"
-        | (
-            | "ready"
-            | "running"
-            | "blocked"
-            | "review"
-            | "accepted"
-            | "cancelled"
-          );
+      displayStatus: "blocked" | components["schemas"]["WorkStatus"];
       gate?: components["schemas"]["TaskAcceptanceGate"] | undefined;
       /**
        * Handoff
@@ -28272,17 +28335,8 @@ export interface components {
         | undefined;
       /** Rootid */
       rootId: string;
-      /**
-       * Status
-       * @enum {string}
-       */
-      status:
-        | "ready"
-        | "running"
-        | "blocked"
-        | "review"
-        | "accepted"
-        | "cancelled";
+      /** Status */
+      status: components["schemas"]["WorkStatus"];
       submissionRefusal?:
         | components["schemas"]["TaskSubmissionRefusal"]
         | undefined;

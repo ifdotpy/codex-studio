@@ -202,6 +202,6 @@ fn relocate(value: &mut Value, from: &Path, to: &Path) {
             .iter_mut()
             .for_each(|value| relocate(value, from, to)),
         Value::Object(map) => map.values_mut().for_each(|value| relocate(value, from, to)),
-        _ => {}
+        Value::Null | Value::Bool(_) | Value::Number(_) => {}
     }
 }

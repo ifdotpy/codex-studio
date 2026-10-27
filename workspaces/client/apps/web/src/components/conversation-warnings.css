@@ -84,3 +84,9 @@
     min-height: 2.75rem;
   }
 }
+.studio-error-details {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  user-select: text;
+  font-size: var(--mantine-font-size-xs);
+}

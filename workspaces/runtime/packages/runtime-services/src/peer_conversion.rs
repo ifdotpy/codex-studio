@@ -171,7 +171,13 @@ fn event_error(error: event_write::EventWriteError) -> ProjectsError {
         event_write::EventWriteError::Store(error) => ProjectsError::Store(error),
         event_write::EventWriteError::InvalidRequest(reason)
         | event_write::EventWriteError::Conflict(reason) => ProjectsError::Invalid(reason),
-        _ => ProjectsError::Requires("cross-server-driver/peer-team-transport"),
+        event_write::EventWriteError::InvalidResultSchema(_)
+        | event_write::EventWriteError::RemoteEventsUnavailable
+        | event_write::EventWriteError::WorkerAssignmentUnavailable
+        | event_write::EventWriteError::InvalidStoredObject { .. }
+        | event_write::EventWriteError::Clock => {
+            ProjectsError::Requires("cross-server-driver/peer-team-transport")
+        }
     }
 }
 fn put(db: &Transaction<'_>, table: &'static str, value: &Value) -> Result<(), ProjectsError> {

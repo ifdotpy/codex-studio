@@ -497,7 +497,7 @@ export function createOutbox(options: {
     const projectionSubscription = db.projections.$.subscribe((event) =>
       markDeleted(event.documentData),
     );
-    let nextRoom = 0;
+    const nextRoom = roomBatches.values();
     let failure: unknown;
     try {
       const currentAgents =
@@ -509,8 +509,7 @@ export function createOutbox(options: {
 
       await Promise.all(
         Array.from({ length: Math.min(4, roomBatches.length) }, async () => {
-          while (nextRoom < roomBatches.length) {
-            const { room, batches } = roomBatches[nextRoom++];
+          for (const { room, batches } of nextRoom) {
             const controller = controllers.get(room)!;
             for (const ids of batches) {
               if (deletedRooms.has(room) || controller.signal.aborted) break;

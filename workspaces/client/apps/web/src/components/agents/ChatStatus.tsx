@@ -18,16 +18,14 @@ export default function ChatStatus({
   if (!status || status.kind === "none" || status.kind === "paused")
     return null;
   const kind = status.kind;
-  const modelLabel = model
-    ? `${providerLabel(provider || "codex")} · ${model}`
-    : "";
+  const modelLabel = model ? `${providerLabel(provider || "")} · ${model}` : "";
   const label = [status?.label, modelLabel].filter(Boolean).join(" · ");
   return (
     <span
       ref={visualRef}
       className={`chat-status chat-status-${kind}`}
       data-chat-status={kind}
-      data-agent-provider={provider || "codex"}
+      data-agent-provider={provider || ""}
       role="img"
       aria-label={label}
       title={label}

@@ -3,9 +3,10 @@ import { readFileSync } from "node:fs";
 import {
   PROVIDER_KINDS,
   PROVIDER_LABELS,
+  ProviderKind,
   isProviderKind,
   providerLabel,
-  type ProviderKind,
+  providerToString,
 } from "./generated/providerKind.ts";
 import { serializePrimitiveParam } from "openapi-fetch";
 import { post } from "./api";
@@ -304,9 +305,11 @@ it("generated provider identities agree with the OpenAPI owner and reject unknow
     ),
   );
   expect(PROVIDER_KINDS).toEqual(openapi.components.schemas.ProviderKind.enum);
+  expect(Object.values(ProviderKind)).toEqual(PROVIDER_KINDS);
   expect(Object.keys(PROVIDER_LABELS)).toEqual(PROVIDER_KINDS);
   for (const provider of PROVIDER_KINDS) {
     expect(isProviderKind(provider)).toBe(true);
+    expect(providerToString(provider)).toBe(provider);
     expect(providerLabel(provider)).toBe(PROVIDER_LABELS[provider]);
   }
   for (const value of [
@@ -413,7 +416,7 @@ export type LocalContractAssertions = [
   Assert<
     Equal<
       PreferenceDeclaration["provider"],
-      Partial<components["schemas"]["Account"]>["provider"]
+      components["schemas"]["Account"]["provider"]
     >
   >,
   Assert<

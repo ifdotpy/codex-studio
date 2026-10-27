@@ -1,3 +1,4 @@
+import { inputText } from "./sdk-fixtures.ts";
 export { resolveSettings } from "./sdk-fixtures.ts";
 import type { SessionFixtureLegacyMessage as SessionFixtureMessage } from "./fixtures/session-sdk-types.ts";
 import { waitForFile } from "./sdk-fixtures.ts";
@@ -64,10 +65,7 @@ export function query({ prompt, options }: FixtureQuery) {
     > {
       const input = await prompt.next();
       if (input.done) return;
-      fs.appendFileSync(
-        cwd + "/.inputs",
-        input.value.message.content[0].text + "\n",
-      );
+      fs.appendFileSync(cwd + "/.inputs", inputText(input.value) + "\n");
       yield { type: "user", isReplay: true, uuid: input.value.uuid };
       yield {
         type: "system",
@@ -92,9 +90,15 @@ export function query({ prompt, options }: FixtureQuery) {
       await until(cwd + "/.space", abort.signal);
       if (abort.signal.aborted) return;
       fs.rmSync(marker, { force: true });
-      yield { type: "result", subtype: "success", usage, result: "done" };
-      await new Promise<unknown>((resolve) =>
-        abort.signal.addEventListener("abort", resolve, { once: true }),
+      yield {
+        type: "result",
+        subtype: "success",
+        is_error: false,
+        usage,
+        result: "done",
+      };
+      await new Promise<void>((resolve) =>
+        abort.signal.addEventListener("abort", () => resolve(), { once: true }),
       );
     },
   };

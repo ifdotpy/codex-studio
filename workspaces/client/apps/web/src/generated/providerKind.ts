@@ -2,10 +2,19 @@
 export const PROVIDER_KINDS = ["codex", "claude"] as const;
 export type ProviderKind = (typeof PROVIDER_KINDS)[number];
 
+export const ProviderKind = {
+  Codex: "codex",
+  Claude: "claude",
+} as const;
+
 export const PROVIDER_LABELS: Record<ProviderKind, string> = {
   codex: "Codex",
   claude: "Claude",
 };
+
+export function providerToString(provider: ProviderKind): ProviderKind {
+  return provider;
+}
 
 export function isProviderKind(value: unknown): value is ProviderKind {
   return PROVIDER_KINDS.some((provider) => provider === value);

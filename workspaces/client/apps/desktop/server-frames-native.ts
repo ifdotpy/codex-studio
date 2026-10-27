@@ -58,7 +58,7 @@ try {
   page.setDefaultTimeout(15000);
   assert.equal(
     await desktop.evaluate(({ BrowserWindow }) =>
-      BrowserWindow.getAllWindows()[0].isVisible(),
+      BrowserWindow.getAllWindows().at(0)?.isVisible(),
     ),
     false,
   );

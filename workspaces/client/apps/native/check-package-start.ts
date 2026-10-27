@@ -13,7 +13,12 @@ import { identity } from "../desktop/backend.ts";
 const startupTimeoutMs = 60_000;
 const startupPollMs = 100;
 const hostStopTimeoutMs = 10_000;
-const bundle = path.resolve(process.argv[2]);
+const bundleArgument = process.argv[2];
+assert.ok(
+  bundleArgument !== undefined,
+  "Usage: check-package-start.ts <application bundle>",
+);
+const bundle = path.resolve(bundleArgument);
 const executableName = execFileSync(
   "plutil",
   [

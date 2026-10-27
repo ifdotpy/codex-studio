@@ -156,6 +156,291 @@ async fn set_agent_in_use(state: &State, thread: &str, in_use: bool) {
         .unwrap();
 }
 
+/// Journal ACK proves the turn commit; the actor barrier also waits for
+/// startup recovery and detached preparations before enabling idle checks.
+async fn settled_worker() -> (State, Peer, AccountHandle) {
+    let state = State::new().await;
+    let mut peer = Peer::new();
+    let worker = peer.worker(state.bridge.clone()).await;
+    let start = state.start(&mut peer, &worker).await;
+    peer.accepted(&start).await;
+    progress(peer.completed()).await;
+    progress(worker_barrier(&worker)).await;
+    (state, peer, worker)
+}
+
+/// Observe the settled classification itself: an inspection queued during a
+/// broken unsubscribe may cause Retry, which must not pass as Provider busy.
+/// An explicit sweep is awaited before replying, independent of timer polling.
+async fn observe_idle(
+    worker: &AccountHandle,
+    peer: &mut Peer,
+    evidence: &Value,
+    sweep: bool,
+) -> super::super::idle_unload::IdleObservation {
+    let (reply, observed) = oneshot::channel();
+    worker
+        .send(AccountCommand::IdleInspect {
+            sweep_at: sweep.then(tokio::time::Instant::now),
+            reply,
+        })
+        .await
+        .unwrap();
+    let observed = tokio::select! {
+        result = tokio::time::timeout(PROGRESS_GUARD, observed) => {
+            result.unwrap_or_else(|error| panic!("idle observation for {evidence}: {error}"))
+                .expect("worker returns the settled idle decision")
+        }
+        request = peer.writes.recv() => {
+            panic!("unexpected provider request for {evidence}: {:?}", request.map(|wire| wire.value));
+        }
+    };
+    assert!(
+        peer.writes.try_recv().is_err(),
+        "unexpected provider write for {evidence}"
+    );
+    observed
+}
+
+async fn assert_idle_blocked(
+    worker: &AccountHandle,
+    peer: &mut Peer,
+    evidence: &Value,
+    sweep: bool,
+) {
+    let observed = observe_idle(worker, peer, evidence, sweep).await;
+    assert!(observed.initialized, "{evidence}: {observed:?}");
+    assert!(
+        observed.provider_blocked.contains(THREAD),
+        "{evidence}: {observed:?}"
+    );
+    assert!(
+        !observed.released.contains(THREAD),
+        "{evidence}: {observed:?}"
+    );
+    assert_eq!(observed.retry_at, None, "{evidence}: {observed:?}");
+    assert_eq!(observed.deadline, None, "{evidence}: {observed:?}");
+    assert!(
+        !*worker.completion_signal().borrow(),
+        "invalid evidence: {evidence}"
+    );
+}
+
+#[tokio::test]
+async fn malformed_loaded_inventory_never_continues_or_stops_the_session() {
+    for page in [
+        json!({"data": [], "nextCursor": 42}),
+        json!({"data": [], "nextCursor": false}),
+        json!({"data": [], "nextCursor": {}}),
+        json!({"data": [], "nextCursor": []}),
+        json!({"data": [""]}),
+        json!({"data": [42]}),
+        json!({"data": null}),
+        json!({}),
+        json!([[], null]),
+    ] {
+        let (state, mut peer, mut worker) = settled_worker().await;
+        set_delay(&state, IDLE_SESSION_UNLOAD_SETTING.default).await;
+        answer(
+            &mut peer,
+            "thread/loaded/list",
+            json!({"limit": 100}),
+            page.clone(),
+        )
+        .await;
+        let observed = observe_idle(&worker, &mut peer, &page, false).await;
+        assert!(!observed.initialized, "{page}: {observed:?}");
+        assert!(observed.deadline.is_some(), "{page}: {observed:?}");
+        assert!(observed.released.is_empty(), "{page}: {observed:?}");
+        progress(worker.shutdown()).await.unwrap();
+    }
+}
+
+#[tokio::test]
+async fn malformed_or_foreign_thread_evidence_blocks_until_a_provider_event() {
+    for read in [
+        json!({}),
+        json!({"thread": null}),
+        json!([{"id": THREAD, "status": {"type": "idle"}}]),
+        json!({"thread": [THREAD, {"type": "idle"}]}),
+        json!({"thread": {"id": THREAD, "status": ["idle"]}}),
+        json!({"thread": {"id": THREAD, "status": {"type": {"idle": null}}}}),
+        json!({"thread": {"id": THREAD}}),
+        json!({"thread": {"id": THREAD, "status": {"type": 42}}}),
+        json!({"thread": {"id": THREAD, "status": {"type": "futureIdle"}}}),
+        json!({"thread": {"id": THREAD, "status": {"type": "active"}}}),
+        json!({"thread": {"id": "foreign-thread", "status": {"type": "idle"}}}),
+    ] {
+        let (state, mut peer, mut worker) = settled_worker().await;
+        set_lead(&state, false).await;
+        enable_unload(&state, &mut peer).await;
+        answer(
+            &mut peer,
+            "thread/read",
+            json!({"threadId": THREAD, "includeTurns": false}),
+            read.clone(),
+        )
+        .await;
+        assert_idle_blocked(&worker, &mut peer, &read, false).await;
+        // Busy provider evidence waits for its event, rather than retrying on
+        // the durable usage hint or an elapsed timer.
+        sweep(&worker).await;
+        assert_idle_blocked(&worker, &mut peer, &read, true).await;
+        progress(worker.shutdown()).await.unwrap();
+    }
+}
+
+#[tokio::test]
+async fn malformed_or_incomplete_work_pages_block_until_a_provider_event() {
+    for method in ["thread/queue/list", "thread/backgroundTerminals/list"] {
+        for page in [
+            json!({}),
+            json!({"data": null}),
+            json!({"data": {}}),
+            json!({"data": [], "nextCursor": 42}),
+            json!({"data": [], "nextCursor": "more"}),
+            json!({"data": [null]}),
+            json!([[], null]),
+        ] {
+            let (state, mut peer, mut worker) = settled_worker().await;
+            set_lead(&state, false).await;
+            enable_unload(&state, &mut peer).await;
+            answer(
+                &mut peer,
+                "thread/read",
+                json!({"threadId": THREAD, "includeTurns": false}),
+                json!({"thread": {"id": THREAD, "status": {"type": "idle"}}}),
+            )
+            .await;
+            if method == "thread/queue/list" {
+                answer(
+                    &mut peer,
+                    "thread/backgroundTerminals/list",
+                    json!({"threadId": THREAD, "limit": 100}),
+                    json!({"data": []}),
+                )
+                .await;
+            }
+            let params = if method == "thread/queue/list" {
+                json!({"threadId": THREAD})
+            } else {
+                json!({"threadId": THREAD, "limit": 100})
+            };
+            answer(&mut peer, method, params, page.clone()).await;
+            assert_idle_blocked(&worker, &mut peer, &page, false).await;
+            sweep(&worker).await;
+            assert_idle_blocked(&worker, &mut peer, &page, true).await;
+            progress(worker.shutdown()).await.unwrap();
+        }
+    }
+}
+
+#[tokio::test]
+async fn malformed_unsubscribe_confirmation_retries_without_claiming_unloaded() {
+    for reply in [
+        json!({}),
+        json!({"status": null}),
+        json!({"status": 42}),
+        json!({"status": "futureUnsubscribed"}),
+        json!({"status": {"unsubscribed": null}}),
+        json!(["unsubscribed"]),
+    ] {
+        let (state, mut peer, mut worker) = settled_worker().await;
+        set_lead(&state, false).await;
+        enable_unload(&state, &mut peer).await;
+        idle_checks(&mut peer).await;
+        answer(
+            &mut peer,
+            "thread/unsubscribe",
+            json!({"threadId": THREAD}),
+            reply.clone(),
+        )
+        .await;
+        let observed = observe_idle(&worker, &mut peer, &reply, false).await;
+        assert!(
+            observed.provider_blocked.is_empty(),
+            "{reply}: {observed:?}"
+        );
+        assert!(!observed.released.contains(THREAD), "{reply}: {observed:?}");
+        assert!(observed.retry_at.is_some(), "{reply}: {observed:?}");
+        assert_eq!(
+            observed.deadline, observed.retry_at,
+            "{reply}: {observed:?}"
+        );
+        assert!(!*worker.completion_signal().borrow());
+        sweep(&worker).await;
+        idle_checks(&mut peer).await;
+        answer(
+            &mut peer,
+            "thread/unsubscribe",
+            json!({"threadId": THREAD}),
+            json!({"status": "unsubscribed"}),
+        )
+        .await;
+        progress(worker.completion()).await.unwrap();
+    }
+}
+
+#[tokio::test]
+async fn typed_idle_evidence_preserves_pagination_extensions_and_unload_statuses() {
+    for (thread_status, unsubscribe_status) in [
+        ("idle", "unsubscribed"),
+        ("notLoaded", "notSubscribed"),
+        ("systemError", "notLoaded"),
+    ] {
+        let (state, mut peer, mut worker) = settled_worker().await;
+        set_lead(&state, false).await;
+        set_delay(&state, IDLE_SESSION_UNLOAD_SETTING.default).await;
+        answer(
+            &mut peer,
+            "thread/loaded/list",
+            json!({"limit": 100}),
+            json!({"data": [THREAD], "nextCursor": "next", "extension": true}),
+        )
+        .await;
+        answer(
+            &mut peer,
+            "thread/loaded/list",
+            json!({"limit": 100, "cursor": "next"}),
+            json!({"data": [THREAD], "extension": {"ignored": true}}),
+        )
+        .await;
+        answer(
+            &mut peer,
+            "thread/read",
+            json!({"threadId": THREAD, "includeTurns": false}),
+            json!({"thread": {"id": THREAD, "status": {"type": thread_status, "extension": true}, "turns": []}, "extension": true}),
+        )
+        .await;
+        answer(
+            &mut peer,
+            "thread/backgroundTerminals/list",
+            json!({"threadId": THREAD, "limit": 100}),
+            json!({"data": [], "extension": true}),
+        )
+        .await;
+        answer(
+            &mut peer,
+            "thread/queue/list",
+            json!({"threadId": THREAD}),
+            json!({"data": [], "nextCursor": null, "extension": true}),
+        )
+        .await;
+        answer(
+            &mut peer,
+            "thread/unsubscribe",
+            json!({"threadId": THREAD}),
+            json!({"status": unsubscribe_status, "extension": true}),
+        )
+        .await;
+        // A finished worker's thread unloads immediately, but its provider
+        // process still observes the configured idle delay.
+        expire_idle_clocks(&worker).await;
+        progress(worker.completion()).await.unwrap();
+        assert!(worker.planned_idle_exit());
+    }
+}
+
 #[tokio::test]
 async fn idle_thread_unloads_then_the_session_stops_and_a_new_turn_resumes_it() {
     let state = State::new().await;

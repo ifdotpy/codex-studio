@@ -1934,9 +1934,9 @@ export function createResourceEvents(options: ResourceEventsOptions) {
     )
       return;
     if (!sessionId) {
-      // A stream without its session cannot acknowledge a diff. Recover with
-      // the complete desired set rather than stranding newly added resources.
-      reconnectNow();
+      // Opening streams queue interests until the session handler flushes them.
+      // An already live stream without a session cannot acknowledge a diff.
+      if (currentStatus === "live") reconnectNow();
       return;
     }
     const connected = source;

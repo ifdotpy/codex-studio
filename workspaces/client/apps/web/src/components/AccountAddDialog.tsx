@@ -7,12 +7,12 @@ import ClaudeAddSignIn from "./ClaudeAddSignIn";
 import {
   PROVIDER_KINDS,
   PROVIDER_LABELS,
-  type ProviderKind,
+  ProviderKind,
 } from "../generated/providerKind.ts";
 
 export const ACCOUNT_SIGN_IN_HINTS: Record<ProviderKind, string> = {
-  codex: "ChatGPT subscription, one-time code",
-  claude: "Claude subscription, link + paste code",
+  [ProviderKind.Codex]: "ChatGPT subscription, one-time code",
+  [ProviderKind.Claude]: "Claude subscription, link + paste code",
 };
 
 export type AddAccountIntent = {
@@ -101,7 +101,7 @@ export default function AccountAddDialog({
           </div>
         </Stack>
       </Modal>
-      {opened && flow && provider === "codex" && (
+      {opened && flow && provider === ProviderKind.Codex && (
         <Modal
           opened={opened}
           zIndex={layerZIndex.modalAbovePopover}
@@ -119,7 +119,7 @@ export default function AccountAddDialog({
           </Stack>
         </Modal>
       )}
-      {opened && flow && provider === "claude" && (
+      {opened && flow && provider === ProviderKind.Claude && (
         <ClaudeAddSignIn
           label={label || "Claude Code"}
           email={email}

@@ -1,3 +1,4 @@
+import assert from "node:assert/strict";
 import { sidebarFixtureRadio } from "./sidebar-fixture-values.ts";
 import type { TestRuntimeView } from "../playwright.ts";
 
@@ -132,6 +133,8 @@ function seedFixture(local: ServerFixture) {
     chat("archived-chat", "Archived chat", { archived: true }),
   ]);
 
+  const initialProject = local.snapshot.runtime.projects[0];
+  assert.ok(initialProject);
   Object.assign(local.snapshot.runtime, {
     projectOrganizationVersion: 1,
     peerTeamsVersion: 1,
@@ -139,7 +142,7 @@ function seedFixture(local: ServerFixture) {
     peerTeams: teams,
     projects: [
       {
-        ...local.snapshot.runtime.projects[0],
+        ...initialProject,
         path,
         name: "Project A",
         folders: [
@@ -287,6 +290,7 @@ test("the owner adapter preserves saved organization in standalone and classic s
       );
     await expect.poll(frameSnapshot).not.toBeNull();
     const published = await frameSnapshot();
+    assert.ok(published);
 
     expect(published!.stateDir).toBe(scope);
     expect(published!.compact).toEqual(compact);

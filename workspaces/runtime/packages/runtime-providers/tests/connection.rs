@@ -44,7 +44,10 @@ fn outgoing(actions: &[Action]) -> Vec<Value> {
             Action::Write(frame) => {
                 serde_json::from_slice(&encode_line(frame).expect("valid write")).ok()
             }
-            _ => None,
+            Action::Resolve { .. }
+            | Action::Dispatch(_)
+            | Action::GenerationClosed { .. }
+            | Action::ThreadReleased { .. } => None,
         })
         .collect()
 }
@@ -660,7 +663,10 @@ fn numeric_request_exactly_at_frame_limit_uses_its_actual_id_for_validation() {
     assert_eq!(ticket.id, RequestId::Number(2));
     let written = match &actions[0] {
         Action::Write(frame) => encode_line(frame).expect("valid frame"),
-        other => panic!("expected request write, got {other:?}"),
+        other @ Action::Resolve { .. }
+        | other @ Action::Dispatch(_)
+        | other @ Action::GenerationClosed { .. }
+        | other @ Action::ThreadReleased { .. } => panic!("expected request write, got {other:?}"),
     };
     assert_eq!(written.len(), exact.len());
 }
@@ -1174,7 +1180,11 @@ fn deadline_index_expires_only_due_unanswered_requests_for_both_providers() {
                     ticket,
                     outcome: RequestOutcome::Unknown,
                 } => ticket.id.clone(),
-                other => panic!("unexpected action {other:?}"),
+                other @ Action::Write(_)
+                | other @ Action::Resolve { .. }
+                | other @ Action::Dispatch(_)
+                | other @ Action::GenerationClosed { .. }
+                | other @ Action::ThreadReleased { .. } => panic!("unexpected action {other:?}"),
             })
             .collect::<Vec<_>>();
         assert_eq!(expired.len(), 3);

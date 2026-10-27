@@ -1,19 +1,16 @@
-import type { StudioServerIdentity } from "../web/src/servers/serverIdentity.ts";
 import type { components } from "../web/src/generated/api.ts";
 import type { SafeStorage } from "electron";
-import type { ServerRequest, PairRequest } from "./api.ts";
+import type { ServerRequest, PairRequest, PairReceipt } from "./api.ts";
+import { isServerMethod } from "./api.ts";
+export type { PairReceipt } from "./api.ts";
 export type Invitation = components["schemas"]["AccessInvitation"];
-export type PairReceipt = Required<
-  Pick<StudioServerIdentity, "id" | "origin" | "label" | "credentialId">
->;
 export type PairInput = PairRequest;
 // IPC serializes ArrayBuffer; the internal adapter also accepts Request's byte views.
 export type AdapterRequest = Omit<ServerRequest, "body" | "method"> & {
   method?: ServerRequest["method"];
-  body?: Extract<
-    NonNullable<RequestInit["body"]>,
-    { readonly byteLength: number }
-  >;
+  body?:
+    | Extract<NonNullable<RequestInit["body"]>, { readonly byteLength: number }>
+    | undefined;
 };
 type Draft = {
   origin: string;
@@ -302,7 +299,10 @@ function createServerCredentials({
           );
           if (response.status === 403 && value.code === "invite_unavailable") {
             await change((state) => {
-              state.drafts[requestId].rejected = true;
+              const attempt = state.drafts[requestId];
+              // Forget may have removed the attempt while its request was pending.
+              if (!attempt) throw error;
+              attempt.rejected = true;
             });
             error.code = "invite_unavailable";
           }
@@ -363,7 +363,7 @@ function createServerCredentials({
       const credential = (await read()).servers[serverId];
       if (!credential || credential.clientId !== credentialId)
         throw new Error("The server key is unavailable. Pair this UI again.");
-      if (!["GET", "POST", "HEAD"].includes(method))
+      if (!isServerMethod(method))
         throw new Error("Unsupported server method.");
       // The request ID is part of the signed bytes and of its header. A read
       // without one (the shell summary) gets a new ID; a write needs the
@@ -379,7 +379,7 @@ function createServerCredentials({
           method,
           headers,
           ...(body?.byteLength ? { body } : {}),
-          signal,
+          ...(signal === undefined ? {} : { signal }),
         }),
         requestId,
       );

@@ -152,41 +152,61 @@ export const nativeReleaseLabel = (agent: Agent) => {
     ? "Tool reset waits for Codex to close the native session"
     : "Native thread released";
 };
-export const statusLabel = (
-  status: string,
+export function statusLabel(
+  status: Agent["status"],
   phase?: string,
   parkedEvent?: string,
-) =>
-  (status === "parked" && parkedEvent
-    ? `Waiting for event ${parkedEvent}`
-    : null) ||
-  (status === "running" &&
-    phase &&
-    (
-      {
-        thinking: "Thinking",
-        writing: "Writing",
-        tool: "Using tools",
-        retrying: "Codex is retrying",
-        auth: "Restoring sign-in",
-        error: "Codex reported an error",
-      } as Record<string, string>
-    )[phase]) ||
-  {
-    idle: "Ready",
-    running: "Working",
-    starting: "Starting",
-    queued: "Queued",
-    waiting: "Turn ended",
-    waiting_on_monitor: "Waiting on command",
-    completed: "Complete",
-    failed: "Failed",
-    paused: "Stopped",
-    parked: "Turn ended",
-    approval: "Needs an answer",
-    interrupted: "Interrupted",
-  }[status] ||
-  status;
+): string {
+  switch (status) {
+    case null:
+    case undefined:
+      return "";
+    case "running":
+      switch (phase) {
+        case "thinking":
+          return "Thinking";
+        case "writing":
+          return "Writing";
+        case "tool":
+          return "Using tools";
+        case "retrying":
+          return "Codex is retrying";
+        case "auth":
+          return "Restoring sign-in";
+        case "error":
+          return "Codex reported an error";
+      }
+      return "Working";
+    case "idle":
+      return "Ready";
+    case "starting":
+      return "Starting";
+    case "queued":
+      return "Queued";
+    case "waiting":
+      return "Turn ended";
+    case "parked":
+      return parkedEvent ? `Waiting for event ${parkedEvent}` : "Turn ended";
+    case "waiting_on_monitor":
+      return "Waiting on command";
+    case "completed":
+      return "Complete";
+    case "failed":
+      return "Failed";
+    case "paused":
+      return "Stopped";
+    case "approval":
+      return "Needs an answer";
+    case "interrupted":
+      return "Interrupted";
+    case "unknown":
+    case "blocked":
+    case "abandoned":
+    case "capacity-retry":
+      return status;
+  }
+  return status satisfies never;
+}
 export const complaintLabel = (status: string) =>
   ({
     open: "Awaiting response",

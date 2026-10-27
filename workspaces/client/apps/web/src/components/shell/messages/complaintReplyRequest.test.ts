@@ -6,6 +6,26 @@ import {
 } from "./complaintReplyRequest";
 import type { UserComplaintResponse } from "./complaintReplyRequest";
 
+// A response must snapshot every field used for version checks and replay.
+type RequiredResponseFields = Pick<
+  UserComplaintResponse,
+  "action" | "complaint_id" | "status" | "version"
+>;
+// @ts-expect-error A response without status is not a complete command.
+const missingStatus: RequiredResponseFields = {
+  action: "respond",
+  complaint_id: "complaint-1",
+  version: 1,
+};
+// @ts-expect-error A response without version is not a complete command.
+const missingVersion: RequiredResponseFields = {
+  action: "respond",
+  complaint_id: "complaint-1",
+  status: "resolved",
+};
+void missingStatus;
+void missingVersion;
+
 it("reuses the exact persisted complaint response after an uncertain attempt", () => {
   const pending: UserComplaintResponse = {
     id: "request-1",

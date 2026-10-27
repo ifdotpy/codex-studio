@@ -194,7 +194,11 @@ pub(crate) fn load_hashes(path: &Path) -> Map<String, Value> {
         .and_then(|text| serde_json::from_str::<Value>(&text).ok())
         .and_then(|value| match value {
             Value::Object(map) => Some(map),
-            _ => None,
+            Value::Null
+            | Value::Bool(_)
+            | Value::Number(_)
+            | Value::String(_)
+            | Value::Array(_) => None,
         })
         .unwrap_or_default()
 }

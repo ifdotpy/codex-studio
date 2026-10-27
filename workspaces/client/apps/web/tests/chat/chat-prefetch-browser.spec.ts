@@ -263,7 +263,7 @@ test("Chat prefetch browser", async ({
           > & {
             items: Record<string, unknown>[];
           })[]
-        ).at(-1)?.items[0].body === "revision 2",
+        ).at(-1)?.items[0]?.body === "revision 2",
     );
     await page.evaluate(() => window.stops.splice(0).forEach((stop) => stop()));
     await until(
@@ -550,7 +550,7 @@ test("Chat prefetch browser", async ({
             (typeof window.activeValues)[number],
             "items"
           > & { items: Record<string, unknown>[] })[]
-        ).at(-1)?.items[0].body === "revision 10",
+        ).at(-1)?.items[0]?.body === "revision 10",
     );
     documents.set("transcript:active", doc("active", 11, true));
     await page.evaluate(

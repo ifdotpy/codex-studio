@@ -37,7 +37,9 @@ pub fn validate(value: &Value) -> Result<(String, String, Value, bool), String> 
     let sound = match &value["sound"] {
         Value::Null => false,
         Value::Bool(sound) => *sound,
-        _ => return Err("Invalid notification.".into()),
+        Value::Number(_) | Value::String(_) | Value::Array(_) | Value::Object(_) => {
+            return Err("Invalid notification.".into());
+        }
     };
     let target = &value["target"];
     let mut clean = json!({"agentId": text(&target["agentId"], 128)?, "section": "messages"});
@@ -72,7 +74,7 @@ fn clicked(id: &str) {
         targets.remove(index).map(|(_, target)| target)
     });
     if let Some(target) = target {
-        let _ = navigation().send(target);
+        drop(navigation().send(target));
     }
 }
 
@@ -93,6 +95,8 @@ pub async fn notify(value: &Value) -> Result<Value, String> {
 }
 
 #[cfg(target_os = "macos")]
+// SAFETY: Objective-C delegates and notification bindings stay inside this adapter.
+#[allow(unsafe_code)]
 pub mod mac {
     use super::*;
     use block2::RcBlock;
@@ -186,7 +190,8 @@ pub mod mac {
             let reply = Mutex::new(Some(reply));
             let granted = RcBlock::new(move |granted: Bool, _error: *mut NSError| {
                 if let Some(reply) = reply.lock().ok().and_then(|mut r| r.take()) {
-                    let _ = reply.send(granted.as_bool());
+                    // The authorization requester may have canceled while the prompt was open.
+                    let _send_result = reply.send(granted.as_bool());
                 }
             });
             UNUserNotificationCenter::currentNotificationCenter()
@@ -222,7 +227,8 @@ pub mod mac {
                     Err(unsafe { &*error }.localizedDescription().to_string())
                 };
                 if let Some(reply) = reply.lock().ok().and_then(|mut r| r.take()) {
-                    let _ = reply.send(result);
+                    // Completion can outlive the requester.
+                    drop(reply.send(result));
                 }
             });
             UNUserNotificationCenter::currentNotificationCenter()

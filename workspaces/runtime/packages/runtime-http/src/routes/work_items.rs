@@ -46,14 +46,10 @@ pub(crate) async fn work(
 
 pub(crate) async fn work_for_agent(state: HttpState, agent_id: String) -> Result<Value, ApiError> {
     read_agent(state, agent_id, |connection, agent, validators| {
-        let records = WorkItemsRepository::work(connection).map_err(|error| match error {
-            studio_runtime_store::StoreError::InvalidStoredObject { table, id } => {
-                invalid_stored(table, &id)
-            }
-            _ => ApiError::internal(),
-        })?;
+        let records = WorkItemsRepository::work(connection).map_err(ApiError::stored)?;
         let records = stored_values("runtime_work", records, validators, false)?;
-        let mut list = work_policy::work_list(&agent.root_id.0, &records);
+        let mut list =
+            work_policy::work_list(&agent.root_id.0, &records).map_err(ApiError::stored)?;
         let lead = AgentRepository::get(connection, &agent.root_id)?
             .ok_or_else(|| invalid_stored("runtime_agents", &agent.root_id.0))?;
         list["rootId"] = json!(agent.root_id.0);
@@ -105,7 +101,26 @@ pub(crate) async fn plan(
                 studio_runtime_store::StoreError::InvalidStoredObject { table, id } => {
                     invalid_stored(table, &id)
                 }
-                _ => ApiError::internal(),
+                studio_runtime_store::StoreError::StateDirectory(_)
+                | studio_runtime_store::StoreError::AlreadyOwned
+                | studio_runtime_store::StoreError::MissingDatabase(_)
+                | studio_runtime_store::StoreError::Migration { .. }
+                | studio_runtime_store::StoreError::UnsafeStateDirectory
+                | studio_runtime_store::StoreError::SchemaMismatch(_)
+                | studio_runtime_store::StoreError::InvalidSyncObject { .. }
+                | studio_runtime_store::StoreError::InvalidSyncObjectField { .. }
+                | studio_runtime_store::StoreError::InvalidStoredRecord { .. }
+                | studio_runtime_store::StoreError::SchemaObjectMismatch { .. }
+                | studio_runtime_store::StoreError::Sqlite(_)
+                | studio_runtime_store::StoreError::CommitOutcomeUnknown(_)
+                | studio_runtime_store::StoreError::Json(_)
+                | studio_runtime_store::StoreError::SchemaValidation(_)
+                | studio_runtime_store::StoreError::RecordContract(_)
+                | studio_runtime_store::StoreError::WriterPoisoned
+                | studio_runtime_store::StoreError::WriterActorInitialization(_)
+                | studio_runtime_store::StoreError::WriterActorControl(_)
+                | studio_runtime_store::StoreError::CommitActorOutcomeUnknown(_)
+                | studio_runtime_store::StoreError::ReadTaskFailed => ApiError::internal(),
             })?;
         let record = match stored {
             None => None,
@@ -333,11 +348,8 @@ pub(crate) fn write_error(error: EventWriteError) -> ApiError {
             ApiError::new(StatusCode::BAD_REQUEST, message)
         }
         EventWriteError::InvalidStoredObject { object, id } => invalid_stored(object, &id),
-        EventWriteError::Store(studio_runtime_store::StoreError::InvalidStoredObject {
-            table,
-            id,
-        }) => invalid_stored(table, &id),
-        EventWriteError::Store(_) | EventWriteError::Clock => ApiError::internal(),
+        EventWriteError::Store(error) => ApiError::stored(error),
+        EventWriteError::Clock => ApiError::internal(),
     }
 }
 inventory::submit! {

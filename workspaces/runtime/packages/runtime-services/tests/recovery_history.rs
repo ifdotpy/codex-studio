@@ -97,6 +97,25 @@ async fn read(replies: Vec<Result<Value, HistoryError>>) -> Result<Option<Value>
         .await
 }
 #[tokio::test]
+async fn thread_observation_preserves_unknown_status_and_external_fields() {
+    let thread = json!({"id":"thread","status":{"type":"future","opaque":[1,2]},"nativeId":"native-session"});
+    let mut reader = Reader {
+        replies: vec![Ok(json!({"thread":thread}))].into(),
+        ..Default::default()
+    };
+    let observed = HistoryRead::new(&mut reader, scope(), Instant::now() + READ_DEADLINE)
+        .thread_document("thread")
+        .await
+        .expect("unknown external state remains readable");
+    assert_eq!(observed, thread);
+    assert!(
+        studio_runtime_schema::provider_lifecycle::ThreadLifecycle::observe(&observed)
+            .expect("thread identity")
+            .activity
+            .is_none()
+    );
+}
+#[tokio::test]
 async fn exact_turn_keeps_complete_text_and_coalesces_identical_items() {
     let mut t = turn();
     let duplicate = t["items"][0].clone();
@@ -374,6 +393,53 @@ async fn exact_start_requires_unique_complete_client_receipt() {
 }
 
 #[tokio::test]
+async fn exact_start_refuses_malformed_delivered_items() {
+    for items in [Value::Null, json!([{"id":null,"type":"agentMessage"}])] {
+        let mut reader = Reader {
+            replies: [Ok(page(
+                json!({"id":"turn","threadId":"thread","clientUserMessageId":"event",
+                "status":"completed","items":items}),
+            ))]
+            .into(),
+            ..Default::default()
+        };
+        assert!(
+            HistoryRead::new(&mut reader, scope(), Instant::now() + READ_DEADLINE)
+                .exact_start_outcome("thread", "event")
+                .await
+                .is_err(),
+            "{items}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn exact_start_rejects_invalid_negative_receipt_identity() {
+    for mutation in [
+        json!({"threadId":"foreign"}),
+        json!({"id":null}),
+        json!({"id":""}),
+    ] {
+        let mut turn = json!({"id":"rejected","threadId":"thread","items":[],
+            "clientUserMessageId":"event","startOutcome":"not_applied"});
+        for (key, value) in mutation.as_object().expect("mutation") {
+            turn[key] = value.clone();
+        }
+        let mut reader = Reader {
+            replies: vec![Ok(page(turn))].into(),
+            ..Default::default()
+        };
+        assert!(
+            HistoryRead::new(&mut reader, scope(), Instant::now() + READ_DEADLINE)
+                .exact_start_outcome("thread", "event")
+                .await
+                .is_err(),
+            "{mutation}"
+        );
+    }
+}
+
+#[tokio::test]
 async fn exact_start_reports_only_explicit_not_applied_receipts_as_negative_proof() {
     let mut reader = Reader {
         replies: vec![Ok(json!({"data":[{
@@ -387,13 +453,13 @@ async fn exact_start_reports_only_explicit_not_applied_receipts_as_negative_proo
         .into(),
         ..Default::default()
     };
-    assert_eq!(
+    assert!(matches!(
         HistoryRead::new(&mut reader, scope(), Instant::now() + READ_DEADLINE)
             .exact_start_outcome("thread", "event")
             .await
             .expect("explicit negative receipt"),
-        studio_runtime_services::recovery_history::ExactStart::NotApplied
-    );
+        studio_runtime_services::recovery_history::ExactStart::NotApplied(_)
+    ));
     let mut unavailable = Reader {
         replies: vec![Err(HistoryError::Unavailable)].into(),
         ..Default::default()
@@ -479,7 +545,7 @@ async fn recover_exact_status(held: bool, status: &str) -> (RecoveryOutcome, Rea
 
 #[tokio::test]
 async fn held_restart_start_keeps_nonterminal_history_uncertain() {
-    for status in ["inProgress", "running", "uncertain"] {
+    for status in ["inProgress", "running", "uncertain", "futureStatus"] {
         let (outcome, reader, effects) = recover_exact_status(true, status).await;
         assert!(matches!(outcome, RecoveryOutcome::Unconfirmed), "{status}");
         assert!(

@@ -1,6 +1,10 @@
 import type { Session } from "./session-state.ts";
 import type { NativeHistoryOptions } from "./native-history.ts";
-import { readNativeHistory, nativeUuid } from "./native-history.ts";
+import {
+  readNativeHistory,
+  nativeHistoryRows,
+  nativeUuid,
+} from "./native-history.ts";
 
 export interface JournalChange {
   op: "set" | "delete" | "append";
@@ -93,7 +97,11 @@ export async function nativeConfirmsJournal(
     }
     if (expected.at(-1)?.type !== "assistant") return false;
   }
-  const records = await readNativeHistory(session, options);
+  let cwd = "";
+  const records = await readNativeHistory(session, options, (tail) => {
+    cwd = tail.cwd;
+    return nativeHistoryRows(tail);
+  });
   if (!records) return false;
   const messages: { type: unknown; uuid: unknown; text: string }[] = [];
   for (const { row } of records) {
@@ -121,7 +129,7 @@ export async function nativeConfirmsJournal(
       row.isApiErrorMessage ||
       row.isVisibleInTranscriptOnly ||
       row.sessionId !== (session.nativeId || session.id) ||
-      row.cwd !== (session.nativeHistoryCwd || session.cwd) ||
+      row.cwd !== cwd ||
       row.parentUuid !== (messages.at(-1)?.uuid ?? null)
     )
       return false;

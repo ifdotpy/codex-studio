@@ -1,3 +1,5 @@
+import { required } from "./components/componentTestFixtures.ts";
+import assert from "node:assert/strict";
 import type { components } from "./generated/api";
 import type {
   RetainedInput,
@@ -108,14 +110,14 @@ it("waits for a publication event before rereading missing served-model evidence
     waitForPublication: () =>
       new Promise<void>((resolve) => {
         publish = resolve;
-
-        subscribed!();
+        assert.ok(subscribed);
+        subscribed();
       }),
   });
   await registered;
   expect(reads).toBe(1);
-
-  publish!();
+  assert.ok(publish);
+  publish();
   expect((await wait).get("owned")).toHaveLength(1);
   expect(reads).toBe(2);
 });
@@ -258,11 +260,11 @@ describe("scale verifier helpers", () => {
   });
   it("spreads Codex workers over ready accounts and keeps defaults unpinned", () => {
     const accounts: Parameters<typeof scaleAccountKeys>[0] = [
-      { id: "login-b", status: "ready" },
+      { id: "login-b", status: "ready", provider: "codex" },
       { id: "claude-local", status: "ready", provider: "claude" },
-      { id: "default", status: "ready" },
+      { id: "default", status: "ready", provider: "codex" },
       // @ts-expect-error The fixture exercises an unknown non-ready account status.
-      { id: "login-c", status: "needs-login" },
+      { id: "login-c", status: "needs-login", provider: "codex" },
     ];
     const codex = scaleProfile("codex-luna");
     const keys = scaleAccountKeys(accounts, codex);
@@ -414,7 +416,9 @@ describe("scale verifier helpers", () => {
       p95Ms: 300,
       maxMs: 300,
     });
-    expect(result.byAccountAndMethod["account:b thread/resume"].maxMs).toBe(50);
+    expect(
+      required(result.byAccountAndMethod["account:b thread/resume"]).maxMs,
+    ).toBe(50);
     expect(result.writesWithoutReply).toBe(1);
     expect(result.unmatchedReplies).toBe(1);
     // A thread/start line never becomes a turn/start timing gap or witness.
@@ -654,7 +658,7 @@ describe("scale verifier helpers", () => {
       await Promise.all(roots.map((root) => mkdir(root)));
       const releasePaths = roots.map((root) => join(root, "release.fifo"));
       const workers = tokens.map((token, index) => ({
-        path: releasePaths[index],
+        path: required(releasePaths[index]),
         token,
       }));
       const created = spawnSync("mkfifo", releasePaths, { timeout: 5_000 });
@@ -670,7 +674,7 @@ describe("scale verifier helpers", () => {
               ),
             ),
             releasePath,
-            tokens[index],
+            required(tokens[index]),
           ],
           { stdio: ["ignore", "pipe", "pipe"] },
         ),
@@ -1761,7 +1765,9 @@ describe("staged run controls", () => {
     const path = join(directory, "release.fifo");
     spawnSync("mkfifo", [path]);
     const token = randomUUID();
-    expect(releaseBarriersNow([{ path, token }])[0].outcome).toBe("gone");
+    expect(required(releaseBarriersNow([{ path, token }])[0]).outcome).toBe(
+      "gone",
+    );
     const reader = spawn(
       "sh",
       ["-c", 'exec 3<>"$1"; echo READY; read r <&3; echo "$r"', "sh", path],
@@ -1785,12 +1791,15 @@ describe("staged run controls", () => {
         }),
       ]);
       expect(output).toBe("READY\n");
-      expect(releaseBarriersNow([{ path, token }])[0].outcome).toBe("released");
+      expect(required(releaseBarriersNow([{ path, token }])[0]).outcome).toBe(
+        "released",
+      );
       await closed;
       expect(output.trim()).toBe(`READY\n${token}`);
       expect(
-        releaseBarriersNow([{ path: join(directory, "missing"), token }])[0]
-          .outcome,
+        required(
+          releaseBarriersNow([{ path: join(directory, "missing"), token }])[0],
+        ).outcome,
       ).toBe("gone");
     } finally {
       if (reader.exitCode === null) reader.kill("SIGKILL");

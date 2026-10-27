@@ -3,13 +3,14 @@
 export function encodeDraftPayload(value: unknown): string {
   const normalized = JSON.parse(JSON.stringify(value));
   const compareKeys = (a: string, b: string) => {
-    const left = Array.from(a),
-      right = Array.from(b);
-    for (let i = 0; i < Math.min(left.length, right.length); i++) {
-      const difference = left[i].codePointAt(0)! - right[i].codePointAt(0)!;
+    const right = b[Symbol.iterator]();
+    for (const left of a) {
+      const next = right.next();
+      if (next.done) return 1;
+      const difference = left.codePointAt(0)! - next.value.codePointAt(0)!;
       if (difference) return difference;
     }
-    return left.length - right.length;
+    return right.next().done ? 0 : -1;
   };
   const encode = (item: unknown): string => {
     if (Array.isArray(item)) return `[${item.map(encode).join(",")}]`;

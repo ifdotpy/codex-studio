@@ -42,7 +42,11 @@ pub type Playback = Arc<dyn Fn(&[f32]) + Send + Sync>;
 
 pub struct Encoder(*mut unsafe_libopus::OpusEncoder);
 // The codec state has no thread affinity. One task owns it at a time.
+// SAFETY: The encoder is exclusively owned; moving it does not share its native state.
+#[allow(unsafe_code)]
 unsafe impl Send for Encoder {}
+// SAFETY: Opus calls borrow owned input/output buffers and the live encoder state.
+#[allow(unsafe_code)]
 impl Encoder {
     pub fn new() -> Result<Self, String> {
         let mut error = 0;
@@ -81,6 +85,8 @@ impl Encoder {
         Ok(packet)
     }
 }
+// SAFETY: Drop destroys the encoder state exactly once.
+#[allow(unsafe_code)]
 impl Drop for Encoder {
     fn drop(&mut self) {
         unsafe { unsafe_libopus::opus_encoder_destroy(self.0) };
@@ -88,7 +94,11 @@ impl Drop for Encoder {
 }
 
 pub struct Decoder(*mut unsafe_libopus::OpusDecoder);
+// SAFETY: The decoder is exclusively owned; moving it does not share its native state.
+#[allow(unsafe_code)]
 unsafe impl Send for Decoder {}
+// SAFETY: Opus calls borrow owned input/output buffers and the live decoder state.
+#[allow(unsafe_code)]
 impl Decoder {
     pub fn new() -> Result<Self, String> {
         let mut error = 0;
@@ -123,6 +133,8 @@ impl Decoder {
             .collect())
     }
 }
+// SAFETY: Drop destroys the decoder state exactly once.
+#[allow(unsafe_code)]
 impl Drop for Decoder {
     fn drop(&mut self) {
         unsafe { unsafe_libopus::opus_decoder_destroy(self.0) };
@@ -165,9 +177,12 @@ struct Handler {
 impl PeerConnectionEventHandler for Handler {
     async fn on_ice_gathering_state_change(&self, state: RTCIceGatheringState) {
         if state == RTCIceGatheringState::Complete {
-            let _ = self.gathered.try_send(());
+            // Gathering is already complete when the receiver has closed or has a signal.
+            let _gather_result = self.gathered.try_send(());
         }
     }
+    // The provider state enum is non-exhaustive; unknown states remain connecting.
+    #[allow(clippy::wildcard_enum_match_arm)]
     async fn on_connection_state_change(&self, state: RTCPeerConnectionState) {
         let state = match state {
             RTCPeerConnectionState::Connected => "connected",
@@ -176,10 +191,11 @@ impl PeerConnectionEventHandler for Handler {
             RTCPeerConnectionState::Closed => "closed",
             _ => "connecting",
         };
-        let _ = self
-            .events
-            .send(json!({"type":"state","state":state}))
-            .await;
+        drop(
+            self.events
+                .send(json!({"type":"state","state":state}))
+                .await,
+        );
     }
     async fn on_track(&self, track: Arc<dyn TrackRemote>) {
         if track.kind().await != RtpCodecKind::Audio {
@@ -190,7 +206,7 @@ impl PeerConnectionEventHandler for Handler {
             let mut decoder = match Decoder::new() {
                 Ok(value) => value,
                 Err(error) => {
-                    let _ = events.send(json!({"type":"error","message":error})).await;
+                    drop(events.send(json!({"type":"error","message":error})).await);
                     return;
                 }
             };
@@ -225,6 +241,8 @@ async fn payload_type(sender: &Arc<dyn RtpSender>) -> Option<u8> {
 impl Peer {
     /// Builds the peer, starts sending microphone frames and returns the complete offer.
     /// `udp` is the local bind address; production uses every interface.
+    // DataChannelEvent is non-exhaustive; unrelated provider events are ignored.
+    #[allow(clippy::wildcard_enum_match_arm)]
     pub async fn create(
         udp: &str,
         events: mpsc::Sender<Value>,
@@ -239,19 +257,21 @@ impl Peer {
         let (gathered, mut gathered_receiver) = mpsc::channel(1);
         // Like the browser client, no STUN server: the realtime service answers with its address.
         let connection: Arc<dyn PeerConnection> = Arc::new(
-            PeerConnectionBuilder::new()
-                .with_configuration(RTCConfigurationBuilder::new().build())
-                .with_media_engine(media)
-                .with_interceptor_registry(registry)
-                .with_handler(Arc::new(Handler {
-                    events: events.clone(),
-                    gathered,
-                    playback,
-                }))
-                .with_udp_addrs(vec![udp.to_owned()])
-                .build()
-                .await
-                .map_err(error)?,
+            Box::pin(
+                PeerConnectionBuilder::new()
+                    .with_configuration(RTCConfigurationBuilder::new().build())
+                    .with_media_engine(media)
+                    .with_interceptor_registry(registry)
+                    .with_handler(Arc::new(Handler {
+                        events: events.clone(),
+                        gathered,
+                        playback,
+                    }))
+                    .with_udp_addrs(vec![udp.to_owned()])
+                    .build(),
+            )
+            .await
+            .map_err(error)?,
         );
         let ssrc = rand_ssrc()?;
         let track = Arc::new(
@@ -299,9 +319,11 @@ impl Peer {
                         "data": String::from_utf8_lossy(&message.data),
                     }),
                     DataChannelEvent::OnClose => {
-                        let _ = channel_events
-                            .send(json!({"type":"channel","state":"closed"}))
-                            .await;
+                        drop(
+                            channel_events
+                                .send(json!({"type":"channel","state":"closed"}))
+                                .await,
+                        );
                         break;
                     }
                     _ => continue,
@@ -315,7 +337,7 @@ impl Peer {
             let mut encoder = match Encoder::new() {
                 Ok(value) => value,
                 Err(error) => {
-                    let _ = events.send(json!({"type":"error","message":error})).await;
+                    drop(events.send(json!({"type":"error","message":error})).await);
                     return;
                 }
             };
@@ -330,27 +352,31 @@ impl Peer {
                     let (Some(payload), Ok(packet)) = (payload, encoder.encode(&frame)) else {
                         continue;
                     };
-                    let _ = track
-                        .sample_writer(ssrc, payload)
-                        .write_sample(&Sample {
-                            data: Bytes::from(packet),
-                            duration: Duration::from_millis(20),
-                            ..Sample::new(Instant::now())
-                        })
-                        .await;
+                    drop(
+                        track
+                            .sample_writer(ssrc, payload)
+                            .write_sample(&Sample {
+                                data: Bytes::from(packet),
+                                duration: Duration::from_millis(20),
+                                ..Sample::new(Instant::now())
+                            })
+                            .await,
+                    );
                 }
             }
             // The microphone ended. The UI shows the reason and closes the session.
-            let _ = events
-                .send(json!({"type":"microphone","state":"ended"}))
-                .await;
+            drop(
+                events
+                    .send(json!({"type":"microphone","state":"ended"}))
+                    .await,
+            );
         }));
         let offer = connection.create_offer(None).await.map_err(error)?;
         connection
             .set_local_description(offer)
             .await
             .map_err(error)?;
-        let _ = tokio::time::timeout(GATHER_TIMEOUT, gathered_receiver.recv()).await;
+        drop(tokio::time::timeout(GATHER_TIMEOUT, gathered_receiver.recv()).await);
         let sdp = connection
             .local_description()
             .await
@@ -374,7 +400,7 @@ impl Peer {
         for task in &self.tasks {
             task.abort();
         }
-        let _ = self.connection.close().await;
+        drop(self.connection.close().await);
     }
 }
 
@@ -424,8 +450,8 @@ async fn stop(active: Active) {
     #[cfg(target_os = "macos")]
     {
         let session = active.session.clone();
-        let _ =
-            crate::media::mac::on_main(move || Ok(crate::voice_audio::mac::stop(&session))).await;
+        // Audio shutdown remains best effort; the peer is closed below even if its UI owner left.
+        drop(crate::media::mac::on_main(move || Ok(crate::voice_audio::mac::stop(&session))).await);
     }
     if let Some(peer) = active.peer {
         peer.close().await;
@@ -475,7 +501,8 @@ async fn create(params: &Value) -> Result<Value, String> {
                     device_playback,
                     device_muted,
                     Box::new(move |_| {
-                        let _ = ended.try_send(json!({"type":"microphone","state":"ended"}));
+                        // A canceled voice subscriber no longer needs this final device event.
+                        drop(ended.try_send(json!({"type":"microphone","state":"ended"})));
                     }),
                 )
             })
@@ -487,13 +514,13 @@ async fn create(params: &Value) -> Result<Value, String> {
             return Err::<(Peer, String), String>("Voice requires macOS.".into());
         }
         #[allow(unreachable_code)]
-        Peer::create(
+        Box::pin(Peer::create(
             "0.0.0.0:0",
             events,
             microphone_receiver,
             Arc::new(move |samples: &[f32]| playback.push(samples)),
             muted.clone(),
-        )
+        ))
         .await
     }
     .await;
@@ -590,6 +617,8 @@ pub async fn close_all() {
     }
 }
 
+// SAFETY: getentropy writes exactly the length of the owned fixed-size byte array.
+#[allow(unsafe_code)]
 fn rand_ssrc() -> Result<u32, String> {
     let mut bytes = [0u8; 4];
     if unsafe { libc::getentropy(bytes.as_mut_ptr().cast(), bytes.len()) } != 0 {
@@ -649,7 +678,8 @@ mod tests {
     impl PeerConnectionEventHandler for Echo {
         async fn on_ice_gathering_state_change(&self, state: RTCIceGatheringState) {
             if state == RTCIceGatheringState::Complete {
-                let _ = self.gathered.try_send(());
+                // Gathering is already complete when the receiver has closed or has a signal.
+                let _gather_result = self.gathered.try_send(());
             }
         }
         async fn on_track(&self, track: Arc<dyn TrackRemote>) {
@@ -659,11 +689,13 @@ mod tests {
                 while let Some(event) = track.poll().await {
                     if let TrackRemoteEvent::OnRtpPacket(mut packet) = event {
                         packet.header.ssrc = ssrc;
-                        let _ = output.write_rtp(packet).await;
+                        drop(output.write_rtp(packet).await);
                     }
                 }
             });
         }
+        // DataChannelEvent is non-exhaustive; the echo fixture handles only its protocol.
+        #[allow(clippy::wildcard_enum_match_arm)]
         async fn on_data_channel(&self, channel: Arc<dyn DataChannel>) {
             tokio::spawn(async move {
                 let mut opened = false;
@@ -671,10 +703,10 @@ mod tests {
                     match event {
                         DataChannelEvent::OnOpen if !opened => {
                             opened = true;
-                            let _ = channel.send_text(r#"{"type":"session.started"}"#).await;
+                            drop(channel.send_text(r#"{"type":"session.started"}"#).await);
                         }
                         DataChannelEvent::OnMessage(message) => {
-                            let _ = channel.send(BytesMut::from(&message.data[..])).await;
+                            drop(channel.send(BytesMut::from(&message.data[..])).await);
                         }
                         DataChannelEvent::OnClose => break,
                         _ => {}
@@ -691,13 +723,13 @@ mod tests {
         let (microphone, microphone_receiver) = mpsc::channel(64);
         let (audio, mut reflected) = mpsc::unbounded_channel();
         let muted = Arc::new(AtomicBool::new(false));
-        let (peer, offer) = Peer::create(
+        let (peer, offer) = Box::pin(Peer::create(
             "127.0.0.1:0",
             events,
             microphone_receiver,
             Arc::new(move |samples: &[f32]| audio.send(samples.to_vec()).unwrap()),
             muted.clone(),
-        )
+        ))
         .await
         .unwrap();
         assert!(
@@ -733,18 +765,20 @@ mod tests {
                 ..Default::default()
             }],
         )));
-        let service = PeerConnectionBuilder::new()
-            .with_configuration(RTCConfigurationBuilder::new().build())
-            .with_media_engine(media)
-            .with_interceptor_registry(registry)
-            .with_handler(Arc::new(Echo {
-                gathered,
-                output: output.clone(),
-            }))
-            .with_udp_addrs(vec!["127.0.0.1:0"])
-            .build()
-            .await
-            .unwrap();
+        let service = Box::pin(
+            PeerConnectionBuilder::new()
+                .with_configuration(RTCConfigurationBuilder::new().build())
+                .with_media_engine(media)
+                .with_interceptor_registry(registry)
+                .with_handler(Arc::new(Echo {
+                    gathered,
+                    output: output.clone(),
+                }))
+                .with_udp_addrs(vec!["127.0.0.1:0"])
+                .build(),
+        )
+        .await
+        .unwrap();
         service
             .add_track(output as Arc<dyn TrackLocal>)
             .await
@@ -755,7 +789,7 @@ mod tests {
             .unwrap();
         let answer = service.create_answer(None).await.unwrap();
         service.set_local_description(answer).await.unwrap();
-        let _ = tokio::time::timeout(GATHER_TIMEOUT, gathered_receiver.recv()).await;
+        drop(tokio::time::timeout(GATHER_TIMEOUT, gathered_receiver.recv()).await);
         peer.answer(service.local_description().await.unwrap().sdp)
             .await
             .unwrap();
@@ -829,6 +863,6 @@ mod tests {
         .unwrap_or(false);
         assert!(ended, "closing the microphone reports its end");
         peer.close().await;
-        let _ = service.close().await;
+        drop(service.close().await);
     }
 }

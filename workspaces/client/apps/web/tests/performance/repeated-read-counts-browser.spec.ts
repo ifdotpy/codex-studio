@@ -1,3 +1,4 @@
+import { required } from "./performance-fixture.ts";
 import type { Browser, Request } from "@playwright/test";
 import type { ResourceChangeEvent, ResourceRef } from "../playwright.ts";
 
@@ -51,7 +52,7 @@ async function repeatedReadCountsScenario(
     }
   >();
   let fixtureOutputBuffer = "";
-  fixture.stdout!.on("data", (chunk) => {
+  required(fixture.stdout).on("data", (chunk) => {
     fixtureOutputBuffer += String(chunk);
     const lines = fixtureOutputBuffer.split("\n");
     fixtureOutputBuffer = lines.pop() || "";
@@ -67,9 +68,9 @@ async function repeatedReadCountsScenario(
       } catch {}
     }
   });
-  fixture.stderr!.on("data", (chunk) => (log += chunk));
+  required(fixture.stderr).on("data", (chunk) => (log += chunk));
   const port = await new Promise<number>((resolve, reject) => {
-    fixture.stdout!.once("data", (chunk) =>
+    required(fixture.stdout).once("data", (chunk) =>
       resolve(Number(String(chunk).trim())),
     );
     fixture.once("exit", () => reject(Error(log)));
@@ -298,14 +299,14 @@ async function repeatedReadCountsScenario(
           },
         );
     const streamStartedAt = Date.now();
-    fixture.stdin!.write(
+    required(fixture.stdin).write(
       `${JSON.stringify({
         id: streamRequestId,
         method: "fixture/stream-transcript",
         params: { agent: otherChatId, id: streamMessageId, text: streamedText },
       })}\n`,
     );
-    const streamReply = (await streamAck)!;
+    const streamReply = required(await streamAck);
     assert.equal(streamReply.ok, true);
     await page
       .locator(`[data-message="${otherChatId}:${streamMessageId}"]`)
@@ -411,7 +412,7 @@ async function repeatedReadCountsScenario(
           );
           fixtureWaiters.set(freshnessId, { resolve, reject, timeout });
         });
-    fixture.stdin!.write(
+    required(fixture.stdin).write(
       `${JSON.stringify({
         id: freshnessId,
         method: "fixture/model-catalog",
@@ -427,8 +428,10 @@ async function repeatedReadCountsScenario(
     await page.getByRole("option", { name: "Fixture model new" }).waitFor();
     await page.getByRole("option", { name: "Fixture model new" }).click();
     assert.match(await modelPicker.innerText(), /Fixture model new/);
+    const firstLoadStream = loadStreams[0];
+    const firstOtherStream = otherStreams[0];
     console.log(
-      `STREAM_NAVIGATION_LATENCY ${JSON.stringify({ firstStreamOpenMs: loadStreams[0]?.at - loadStartedAt, reconfigureAfterOpeningChatMs: otherStreams[0]?.at - openOtherStartedAt, streamedMessageToVisibleMs: openedChatStreamMs, transcriptEventToTextMs, firstContentMs: { load: loadFirstContentMs, openOther: openOtherFirstContentMs, back: openLeadFirstContentMs } })}`,
+      `STREAM_NAVIGATION_LATENCY ${JSON.stringify({ firstStreamOpenMs: firstLoadStream ? firstLoadStream.at - loadStartedAt : null, reconfigureAfterOpeningChatMs: firstOtherStream ? firstOtherStream.at - openOtherStartedAt : null, streamedMessageToVisibleMs: openedChatStreamMs, transcriptEventToTextMs, firstContentMs: { load: loadFirstContentMs, openOther: openOtherFirstContentMs, back: openLeadFirstContentMs } })}`,
     );
     console.log(
       `REPEATED_READ_COUNTS ${JSON.stringify({ load, toOther, back, settings: settingsCounts, firstContentMs: { load: loadFirstContentMs, openOther: openOtherFirstContentMs, backToLead: openLeadFirstContentMs }, readTimeline: requestTimeline, streamOpens: { load: streamSummary(loadStreams), toOther: streamSummary(otherStreams), back: streamSummary(backStreams) }, resourceEvents: resourceEvents.map(({ at, event: { reason, resources } }) => ({ at, reason, resourceCounts: resources.reduce<Record<string, number>>((result, resource) => ((result[resource.kind] = (result[resource.kind] || 0) + 1), result), {}) })), sendFlow: { streamOpens: streamSummary(sendStreams), duplicateUrls: repeatedSendStreamUrls.length, readsWithin700ms: sendRequests } })}`,
@@ -516,7 +519,7 @@ async function repeatedReadCountsScenario(
     }))
       for (const [key, count] of Object.entries(countsInPhase)) {
         const kind = routeKind(key);
-        const [startedAt, settledAt] = phaseBounds[phase]!;
+        const [startedAt, settledAt] = required(phaseBounds[phase]);
         const invalidations = kind
           ? resourceEvents.filter(
               ({ at, event }) =>

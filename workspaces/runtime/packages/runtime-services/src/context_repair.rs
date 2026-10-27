@@ -860,7 +860,7 @@ fn apply(
         .iter()
         .filter_map(|decision| match decision {
             InputDecision::Delivered { id, turn_id } => Some((id.clone(), turn_id.clone())),
-            _ => None,
+            InputDecision::Waiting { .. } | InputDecision::NotDelivered { .. } => None,
         })
         .collect::<BTreeMap<_, _>>();
     let pending = decisions
@@ -1563,7 +1563,11 @@ async fn repair_idle_with_broker_inner(
                 crate::native_actions::NativeError::Unavailable(_)
                 | crate::native_actions::NativeError::Changed
                 | crate::native_actions::NativeError::Invalid(_) => RepairError::AccountSession,
-                _ => RepairError::AccountSession,
+                crate::native_actions::NativeError::InvalidStored { .. }
+                | crate::native_actions::NativeError::Conflict
+                | crate::native_actions::NativeError::Store(_)
+                | crate::native_actions::NativeError::Json(_)
+                | crate::native_actions::NativeError::Sql(_) => RepairError::AccountSession,
             })
             .and_then(|receipt| match receipt.certainty {
                 RequestCertainty::Written => match receipt.result {

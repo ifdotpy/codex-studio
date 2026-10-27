@@ -1,4 +1,4 @@
-import type { Session } from "./session-state.ts";
+import type { Session, Turn } from "./session-state.ts";
 import assert from "node:assert/strict";
 import { test } from "vitest";
 import fs from "node:fs/promises";
@@ -10,7 +10,7 @@ import {
 } from "./session-store.ts";
 
 const sessionId = "11111111-1111-4111-8111-111111111111";
-const makeSession = (): Session => ({
+const makeSession = (): Session & { turns: [Turn] } => ({
   id: sessionId,
   cwd: "/tmp/work",
   turns: [
@@ -100,9 +100,11 @@ test("held session identity survives concurrent load and persist", async () =>
     store.sessions.set(sessionId, original);
     await store.persist(original);
     const heldByHandler = await store.get(sessionId);
+    const [heldTurn] = heldByHandler.turns;
+    assert.ok(heldTurn);
     await store.evict(sessionId);
     const loading = store.get(sessionId);
-    heldByHandler.turns[0].items.push({
+    heldTurn.items.push({
       id: "during-load",
       text: "written by the held object",
     });
@@ -114,7 +116,7 @@ test("held session identity survives concurrent load and persist", async () =>
       heldByHandler,
       "weak reference reuses an object held across an await",
     );
-    heldByHandler.turns[0].items.push({
+    heldTurn.items.push({
       id: "after-race",
       text: "current state",
     });
@@ -196,7 +198,9 @@ test("journal appends compact and recover torn records", async () =>
     );
     const resumedStore = createSessionStore(root);
     const resumed = await resumedStore.get(sessionId);
-    resumed.turns[0].items.push({
+    const [resumedTurn] = resumed.turns;
+    assert.ok(resumedTurn);
+    resumedTurn.items.push({
       id: "after-recovery",
       text: "append remains valid",
     });
@@ -247,7 +251,8 @@ test("mutation during a save survives the following persist", async () =>
     const store = createSessionStore(root, { compactRecords: 1000 });
     const session = makeSession();
     await store.persist(session);
-    session.turns.push({ id: "turn-2", status: "inProgress", items: [] });
+    const addedTurn: Turn = { id: "turn-2", status: "inProgress", items: [] };
+    session.turns.push(addedTurn);
     const originalAppend = fs.appendFile;
     const { promise: held, resolve: entered } = Promise.withResolvers<void>();
     const { promise: gate, resolve: release } = Promise.withResolvers<void>();
@@ -260,18 +265,18 @@ test("mutation during a save survives the following persist", async () =>
     try {
       const saved = store.persist(session);
       await held;
-      session.turns[1].error = { message: "interrupted" };
+      addedTurn.error = { message: "interrupted" };
       release();
       await saved;
     } finally {
       fs.appendFile = originalAppend;
     }
-    session.turns[1].status = "failed";
-    session.turns[1].error!.message = "not submitted";
+    addedTurn.status = "failed";
+    addedTurn.error = { message: "not submitted" };
     await store.persist(session);
     const restored = await createSessionStore(root).get(sessionId);
-    assert.equal(restored.turns[1].error!.message, "not submitted");
-    assert.equal(restored.turns[1].status, "failed");
+    assert.equal(restored.turns[1]?.error?.message, "not submitted");
+    assert.equal(restored.turns[1]?.status, "failed");
   }));
 
 test("ephemeral title session stays live without writing durable session files", async () => {
@@ -445,9 +450,11 @@ test("restart truncates a torn tail after a Unicode journal record", async () =>
 
     const restarted = createSessionStore(root);
     const recovered = await restarted.get(sessionId);
+    const [recoveredTurn] = recovered.turns;
+    assert.ok(recoveredTurn);
     assert.deepEqual(recovered, session);
     assert.equal((await fs.stat(journal)).size, completeBytes);
-    recovered.turns[0].items.push({
+    recoveredTurn.items.push({
       id: "after-restart",
       text: "still valid",
     });
