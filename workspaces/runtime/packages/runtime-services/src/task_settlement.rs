@@ -17,7 +17,10 @@
 //! reads from the live provider.
 use rusqlite::{OptionalExtension, Transaction};
 use serde_json::{Value, json};
-use studio_runtime_store::{CachedSql, RuntimeStore, StoreError, StoreResult, truthy};
+use studio_runtime_store::{
+    AgentId, AgentRecord, AgentRepository, CachedSql, RuntimeStore, StoreError, StoreResult,
+    TaskId, TaskRecord, TaskRepository, system_reads, truthy,
+};
 
 /// The status of a task whose turn ended before the provider reported its end.
 /// Python `codex_runtime.py` names it at `turn/completed`.
@@ -82,39 +85,24 @@ fn completed_turn(tx: &rusqlite::Connection, agent: &str, turn: &str) -> StoreRe
 }
 
 fn stored_agent(tx: &rusqlite::Connection, id: &str) -> StoreResult<Option<Value>> {
-    let raw: Option<String> = tx
-        .query_row_cached(
-            "SELECT record FROM runtime_agents WHERE id=?1",
-            [id],
-            |row| row.get(0),
-        )
-        .optional()?;
-    Ok(raw.and_then(|raw| serde_json::from_str(&raw).ok()))
+    AgentRepository::get(tx, &AgentId::from(id)).map(|agent| agent.map(AgentRecord::into_value))
 }
 
-/// The running tasks of one agent, in a stable order. A row that is not a
-/// valid task record is left for its owner's validator.
+/// Schema-checked running tasks of one agent, with their stored row identities.
 fn running_tasks(tx: &rusqlite::Connection, agent: &str) -> StoreResult<Vec<Value>> {
     let mut statement = tx.prepare_cached(
-        "SELECT record FROM runtime_tasks WHERE json_extract(record,'$.agent')=?1 \
+        "SELECT id,record FROM runtime_tasks WHERE json_extract(record,'$.agent')=?1 \
          AND json_extract(record,'$.status')='running' ORDER BY id",
     )?;
-    let rows = statement
-        .query_map([agent], |row| row.get::<_, String>(0))?
-        .collect::<Result<Vec<_>, _>>()?;
-    Ok(rows
-        .iter()
-        .filter_map(|raw| serde_json::from_str::<Value>(raw).ok())
-        .filter(valid_task)
-        .collect())
-}
-
-fn valid_task(task: &Value) -> bool {
-    task["id"].is_string()
-        && task["status"] == "running"
-        && studio_runtime_schema::table_schema("runtime_tasks")
-            .and_then(|schema| studio_runtime_schema::validate(schema, task).ok())
-            .unwrap_or(false)
+    statement
+        .query_map([agent], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?
+        .map(|row| {
+            let (id, raw) = row?;
+            system_reads::decode("runtime_tasks", &id, &raw)
+        })
+        .collect()
 }
 
 fn write_task(tx: &Transaction<'_>, task: &Value) -> StoreResult<()> {
@@ -340,14 +328,8 @@ pub fn close_absent_commands(
     let mut closed = 0;
     for expected in &check.tasks {
         let id = expected["id"].as_str().unwrap_or_default();
-        let current: Option<String> = tx
-            .query_row_cached(
-                "SELECT record FROM runtime_tasks WHERE id=?1",
-                [id],
-                |row| row.get(0),
-            )
-            .optional()?;
-        let Some(current) = current.and_then(|raw| serde_json::from_str::<Value>(&raw).ok()) else {
+        let Some(current) = TaskRepository::get(tx, &TaskId::from(id))?.map(TaskRecord::into_value)
+        else {
             continue;
         };
         if &current != expected
@@ -398,6 +380,36 @@ mod tests {
     use super::*;
 
     const AT: f64 = 2_000.0;
+
+    #[test]
+    fn settlement_readers_reject_invalid_rows_instead_of_skipping_them() {
+        let connection = rusqlite::Connection::open_in_memory().expect("connection");
+        connection.execute_batch("CREATE TABLE runtime_agents(id TEXT PRIMARY KEY, record TEXT); CREATE TABLE runtime_tasks(id TEXT PRIMARY KEY, record TEXT);").expect("tables");
+        connection
+            .execute("INSERT INTO runtime_agents VALUES('agent','not json')", [])
+            .expect("corrupt agent");
+        assert!(stored_agent(&connection, "agent").is_err());
+    }
+
+    #[test]
+    fn settlement_task_reader_checks_schema_and_row_identity() {
+        let connection = rusqlite::Connection::open_in_memory().expect("connection");
+        connection
+            .execute_batch("CREATE TABLE runtime_tasks(id TEXT PRIMARY KEY, record TEXT);")
+            .expect("table");
+        for invalid in [
+            json!({"id":"agent:item","agent":"agent","status":"running","created":"invalid"}),
+            task("agent", "other", "turn", "tool", None),
+        ] {
+            connection
+                .execute(
+                    "INSERT OR REPLACE INTO runtime_tasks VALUES('agent:item',?1)",
+                    [invalid.to_string()],
+                )
+                .expect("corrupt task");
+            assert!(running_tasks(&connection, "agent").is_err(), "{invalid}");
+        }
+    }
 
     fn task(agent: &str, item: &str, turn: &str, kind: &str, process: Option<&str>) -> Value {
         let command = kind == "command";
@@ -458,6 +470,23 @@ mod tests {
             .await
             .expect("seed");
         store
+    }
+
+    #[tokio::test]
+    async fn corrupt_task_rolls_back_other_settlement_writes() {
+        let root = tempfile::tempdir().expect("state root");
+        let valid = task("a-done", "item", "turn", "tool", None);
+        let mut invalid = task("z-done", "item", "turn", "tool", None);
+        invalid["created"] = json!("invalid");
+        let store = seeded(
+            &root,
+            vec![agent("a-done", json!({})), agent("z-done", json!({}))],
+            vec![valid.clone(), invalid],
+            &[],
+        )
+        .await;
+        assert!(recover_on_startup(&store, AT).await.is_err());
+        assert_eq!(stored(&store, "a-done:item"), valid);
     }
 
     fn stored(store: &RuntimeStore, id: &str) -> Value {
@@ -621,6 +650,7 @@ mod tests {
             })
             .await
             .expect("change");
+        let recheck = check.clone();
         let closed = store
             .transaction_with(move |tx| {
                 close_absent_commands(tx, &check, "default", &TerminalReport::NotLoaded, AT)
@@ -629,5 +659,23 @@ mod tests {
             .expect("close");
         assert_eq!(closed, 0);
         assert_eq!(stored(&store, "done:gone")["status"], "running");
+        store
+            .transaction_with(|tx| {
+                tx.execute(
+                    "UPDATE runtime_tasks SET record='{}' WHERE id='done:gone'",
+                    [],
+                )?;
+                Ok::<_, StoreError>(())
+            })
+            .await
+            .expect("corrupt checked task");
+        assert!(
+            store
+                .transaction_with(move |tx| {
+                    close_absent_commands(tx, &recheck, "default", &TerminalReport::NotLoaded, AT)
+                })
+                .await
+                .is_err()
+        );
     }
 }

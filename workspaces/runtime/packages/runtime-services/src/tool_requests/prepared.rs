@@ -40,7 +40,7 @@ impl Rows {
             .flatten()
             .filter(|row| text(row, "stage") != "ambiguous")
         {
-            if matches!(selection, Selection::List) && terminal(request) {
+            if matches!(selection, Selection::List) && terminal(request)? {
                 continue;
             }
             let id = text(request, "id");
@@ -79,12 +79,13 @@ impl Rows {
             .filter(|row| text(row, "stage") != "ambiguous")
         {
             // Match refresh's list projection: terminal receipts normally need no payload.
-            if !specific && terminal(raw) && !terminal_payload_needed(raw) {
+            let terminal = terminal(raw)?;
+            if !specific && terminal && !terminal_payload_needed(raw) {
                 continue;
             }
             let mut record = prepare_record(root, raw, &mut resolved)?;
             if let Some(saved) = self.results.get(text(raw, "id")).and_then(Option::as_ref)
-                && (!terminal(raw) || output)
+                && (!terminal || output)
             {
                 let mut result = prepare_record(root, saved, &mut resolved)?;
                 if specific {
@@ -92,7 +93,7 @@ impl Rows {
                 }
                 record["result"] = result;
             }
-            if !terminal(raw) {
+            if !terminal {
                 // Only result is externalized by the request owner. Lifecycle
                 // and timing fields cannot change these content hashes.
                 let decision = crate::payload_blobs::decide_externalize("tool_requests", &record)?;

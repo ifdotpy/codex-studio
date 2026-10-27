@@ -4,6 +4,138 @@ use std::sync::Arc;
 use studio_runtime_services::task_recovery::{TaskRecoveryDecision, TaskRecoverySnapshot};
 
 #[test]
+fn cancelled_receipt_requires_exact_attempt_and_negative_finished_result() {
+    let cases: Vec<Value> = serde_json::from_str(include_str!("recovery/task_oracle.json"))
+        .expect("frozen recovery cases");
+    let case = cases
+        .iter()
+        .find(|case| case["name"] == "completed-not_applied-False")
+        .expect("negative receipt");
+    let mut cancelled = case["receipt"].clone();
+    cancelled["stage"] = json!("cancelled");
+    cancelled["epoch"] = case["agent"]["epoch"].clone();
+    let decide = |receipt: Value| {
+        TaskRecoverySnapshot::from_records(
+            case["agent"].clone(),
+            case["task"].clone(),
+            vec![],
+            vec![("receipt".into(), receipt.clone())],
+        )
+        .expect("valid receipt shape")
+        .decide(&[], Some(&receipt))
+    };
+    assert_eq!(
+        decide(cancelled.clone()),
+        TaskRecoveryDecision::Complete(case["proof"].clone())
+    );
+    for (field, value) in [
+        ("id", json!("other")),
+        ("agent", json!("other")),
+        ("accountKey", json!("other")),
+        ("threadId", json!("other")),
+        ("turnId", json!("other")),
+        ("callId", json!("other")),
+        ("epoch", json!(1)),
+        ("epoch", Value::Null),
+        ("finished", Value::Null),
+        ("outcome", json!("unknown")),
+        ("stage", json!("queued")),
+        ("result", json!({"success":true})),
+    ] {
+        let mut invalid = cancelled.clone();
+        invalid[field] = value;
+        assert_eq!(
+            decide(invalid),
+            TaskRecoveryDecision::Unconfirmed,
+            "{field}"
+        );
+    }
+    let mut missing_epoch = cancelled.clone();
+    missing_epoch
+        .as_object_mut()
+        .expect("receipt")
+        .remove("epoch");
+    assert_eq!(decide(missing_epoch), TaskRecoveryDecision::Unconfirmed);
+    let snapshot = TaskRecoverySnapshot::from_records(
+        case["agent"].clone(),
+        case["task"].clone(),
+        vec![],
+        vec![("receipt".into(), cancelled.clone())],
+    )
+    .expect("cancelled receipt");
+    for field in ["epoch", "supervisor", "connectionId", "signature"] {
+        let mut resolved = cancelled.clone();
+        resolved[field] = json!("changed by payload resolution");
+        assert_eq!(
+            snapshot.decide(&[], Some(&resolved)),
+            TaskRecoveryDecision::Unconfirmed,
+            "{field}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn historical_negative_receipt_resolves_without_rewriting_or_native_evidence() {
+    let cases: Vec<Value> = serde_json::from_str(include_str!("recovery/task_oracle.json"))
+        .expect("frozen recovery cases");
+    let case = cases
+        .iter()
+        .find(|case| case["name"] == "completed-not_applied-False")
+        .expect("historical receipt");
+    let receipt = case["receipt"].clone();
+    let snapshot = TaskRecoverySnapshot::from_records(
+        case["agent"].clone(),
+        case["task"].clone(),
+        vec![],
+        vec![("receipt".into(), receipt.clone())],
+    )
+    .expect("historical receipt is readable");
+    assert_eq!(snapshot.terminal_receipt(), Some(&receipt));
+    assert_eq!(
+        snapshot.decide(&[], Some(&receipt)),
+        TaskRecoveryDecision::Complete(case["proof"].clone())
+    );
+    assert_eq!(
+        snapshot.terminal_receipt().expect("retained receipt")["stage"],
+        "completed"
+    );
+    let root = tempfile::tempdir().expect("state root");
+    let store = studio_runtime_store::RuntimeStore::open(Some(root.path()))
+        .await
+        .expect("store");
+    let owner = case["agent"].to_string();
+    let raw = receipt.to_string();
+    store
+        .transaction(move |tx| {
+            tx.execute(
+                "INSERT INTO runtime_agents(id,record) VALUES('agent',?1)",
+                [owner],
+            )?;
+            tx.execute(
+                "INSERT INTO runtime_tool_requests(id,record) VALUES('receipt',?1)",
+                [raw],
+            )?;
+            Ok(())
+        })
+        .await
+        .expect("seed historical receipt");
+    for _ in 0..2 {
+        let recovered = store
+            .transaction_with(|tx| {
+                studio_runtime_services::tool_requests::execute(
+                    tx,
+                    "agent",
+                    studio_runtime_services::tool_requests::Action::Get("receipt"),
+                    3.0,
+                )
+            })
+            .await
+            .expect("read retained terminal receipt");
+        assert_eq!(recovered, receipt);
+    }
+}
+
+#[test]
 fn exact_task_receipts_match_python_and_unknown_local_outcomes_override_native() {
     let cases: Vec<Value> = serde_json::from_str(include_str!("recovery/task_oracle.json"))
         .expect("frozen recovery cases");
@@ -153,9 +285,23 @@ async fn task_consumer_resolves_local_receipt_without_native_read() {
             })
         }
     }
-    let cases: Vec<Value> = serde_json::from_str(include_str!("recovery/task_oracle.json"))
+    let mut cases: Vec<Value> = serde_json::from_str(include_str!("recovery/task_oracle.json"))
         .expect("frozen receipt cases");
-    for name in ["exact", "running-unknown-True"] {
+    let mut cancelled = cases
+        .iter()
+        .find(|case| case["name"] == "completed-not_applied-False")
+        .expect("negative receipt")
+        .clone();
+    cancelled["name"] = json!("cancelled");
+    cancelled["receipt"]["stage"] = json!("cancelled");
+    cancelled["receipt"]["epoch"] = cancelled["agent"]["epoch"].clone();
+    cases.push(cancelled);
+    for name in [
+        "exact",
+        "cancelled",
+        "running-unknown-True",
+        "queued-applied-False",
+    ] {
         let case = cases
             .iter()
             .find(|c| c["name"] == name)
@@ -177,10 +323,13 @@ async fn task_consumer_resolves_local_receipt_without_native_read() {
             recover_task(&snapshot, scope, &mut Reader, &mut effects)
                 .await
                 .expect("valid recovery fixture"),
-            name == "exact"
+            name == "exact" || name == "cancelled"
         );
-        assert_eq!(effects.completed.len(), usize::from(name == "exact"));
-        if name == "exact" {
+        assert_eq!(
+            effects.completed.len(),
+            usize::from(name == "exact" || name == "cancelled")
+        );
+        if name == "exact" || name == "cancelled" {
             assert_eq!(effects.completed[0], case["proof"]);
         }
     }

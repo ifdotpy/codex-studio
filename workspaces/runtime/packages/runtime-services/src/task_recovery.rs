@@ -94,10 +94,16 @@ impl TaskRecoverySnapshot {
         {
             return None;
         }
-        ((r["stage"] == "completed" && r["outcome"] == "applied")
-            || ((r["stage"] == "completed" || r["stage"] == "failed")
-                && r["outcome"] == "not_applied"))
-            .then_some(r.as_ref())
+        // Cancellation proves non-dispatch only for this exact owner attempt.
+        if matches!(
+            crate::tool_requests::lifecycle::classify(r),
+            Ok(studio_operations::OperationState::CancelledBeforeDispatch)
+        ) && r.get("epoch") != a.get("epoch")
+        {
+            return None;
+        }
+        // Invalid pairs, like unknown outcomes, supply no completion evidence.
+        matches!(crate::tool_requests::lifecycle::terminal(r), Ok(true)).then_some(r.as_ref())
     }
     pub fn terminal_receipt_arc(&self) -> Option<Arc<Value>> {
         self.terminal_receipt()?;
@@ -148,6 +154,10 @@ impl TaskRecoverySnapshot {
                 "threadId",
                 "turnId",
                 "callId",
+                "epoch",
+                "supervisor",
+                "connectionId",
+                "signature",
                 "stage",
                 "outcome",
                 "finished",
@@ -160,7 +170,13 @@ impl TaskRecoverySnapshot {
             let Some(success) = result["success"].as_bool() else {
                 return TaskRecoveryDecision::Unconfirmed;
             };
-            if resolved["outcome"] == "not_applied" && success {
+            if success
+                && matches!(
+                    crate::tool_requests::lifecycle::classify(resolved),
+                    Ok(studio_operations::OperationState::NotApplied
+                        | studio_operations::OperationState::CancelledBeforeDispatch)
+                )
+            {
                 return TaskRecoveryDecision::Unconfirmed;
             }
             return TaskRecoveryDecision::Complete(
