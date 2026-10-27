@@ -28,7 +28,7 @@ pub struct AgentContextWork {
 pub(crate) fn agent_view_contexts(
     transaction: &Transaction<'_>,
     agents: &[(&str, &Value)],
-    work_records: &[(String, String)],
+    work_records: &[studio_runtime_store::WorkItemRecord],
     project_server_id: Option<&str>,
 ) -> StoreResult<(HashMap<String, AgentViewContext>, AgentContextWork)> {
     let lead_ids = agents
@@ -138,14 +138,13 @@ pub(crate) fn agent_view_contexts(
         }
     }
     let mut latest_work = HashMap::<String, (f64, String)>::new();
-    for (_, raw) in work_records {
-        let Ok(record) = serde_json::from_str::<Value>(raw) else {
+    let mut assigned = HashMap::<String, Vec<&crate::agent_progress::Assignment>>::new();
+    for record in work_records {
+        let record_value = record.value();
+        let Some(owner) = record_value.get("owner").and_then(Value::as_str) else {
             continue;
         };
-        let Some(owner) = record.get("owner").and_then(Value::as_str) else {
-            continue;
-        };
-        for result in record
+        for result in record_value
             .get("results")
             .and_then(Value::as_array)
             .into_iter()
@@ -172,20 +171,14 @@ pub(crate) fn agent_view_contexts(
                 latest_work.insert(owner.to_owned(), (created, path.to_owned()));
             }
         }
-    }
-    let mut assigned = HashMap::<String, Vec<crate::agent_progress::Assignment>>::new();
-    for (id, raw) in work_records {
-        let task = crate::agent_progress::Assignment::decode(id, raw)?;
-        if let Some(owner) = task.owner() {
-            assigned.entry(owner.to_owned()).or_default().push(task);
-        }
+        assigned.entry(owner.to_owned()).or_default().push(record);
     }
     let mut contexts = HashMap::with_capacity(agents.len());
     for &(id, record) in agents {
         let progress = crate::agent_progress::derive(
             transaction,
             record,
-            assigned.get(id).map(Vec::as_slice).unwrap_or_default(),
+            assigned.get(id).into_iter().flatten().copied(),
         )?;
         let empty_lead = truthy(record.get("isLead"))
             && !truthy(record.get("deletedAt"))
@@ -678,7 +671,9 @@ mod room_preparation_tests {
                 )
                 .expect("work row");
             agents.push((id, agent));
-            work.push((work_id, task));
+            work.push(
+                studio_runtime_store::WorkItemRecord::decode(&work_id, &task).expect("work JSON"),
+            );
         }
         transaction.commit().expect("seed commit");
         let transaction = connection.transaction().expect("read transaction");
