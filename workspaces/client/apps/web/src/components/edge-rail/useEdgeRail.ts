@@ -98,7 +98,11 @@ export function useEdgeRail(
         ),
         {
           minimumInset,
-          statusReserve,
+          statusReserve: document.documentElement.hasAttribute(
+            "data-duo-proportions",
+          )
+            ? layoutValues.duo.railTop
+            : statusReserve,
           targetSize,
           statusColumnCenter,
           topStatusReserve,

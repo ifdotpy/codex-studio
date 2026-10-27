@@ -39,7 +39,10 @@ export function BottomInsetBand({ children }: { children: ReactNode }) {
         Number.parseFloat(getComputedStyle(root).paddingBottom) > 0;
       if (shown && !host.isConnected) document.body.append(host);
       if (!shown) host.remove();
-      setVisible(shown);
+      // Duo keeps the composer last. Passive usage shares the row above it.
+      setVisible(
+        shown && !document.documentElement.hasAttribute("data-duo-proportions"),
+      );
       if (!shown) {
         content.disconnect();
         watchingContent = false;
@@ -94,6 +97,7 @@ export function BottomInsetBand({ children }: { children: ReactNode }) {
         "class",
         "data-touch-input",
         "data-viewport-keyboard",
+        "data-duo-proportions",
       ],
     });
     window.addEventListener("resize", schedule);

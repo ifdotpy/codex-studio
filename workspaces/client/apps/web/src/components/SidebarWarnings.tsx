@@ -1,15 +1,28 @@
-import { createContext, useContext, useState, type ReactNode } from "react";
+import {
+  createContext,
+  useContext,
+  useState,
+  useCallback,
+  type ReactNode,
+} from "react";
 import { createPortal } from "react-dom";
-import { useMessages } from "../hooks";
+import { useMessages, useCommittedCallback } from "../hooks";
 import type { Agent, Snapshot } from "../types";
 import ConversationWarnings from "./ConversationWarnings";
 
-const Target = createContext<HTMLElement | null>(null);
-const SetTarget = createContext<(target: HTMLElement | null) => void>(() => {});
+type WarningTarget = {
+  node: HTMLElement;
+  utility: boolean;
+  settings: (() => void) | undefined;
+};
+const Target = createContext<WarningTarget | null>(null);
+const SetTarget = createContext<(target: WarningTarget | null) => void>(
+  () => {},
+);
 
 /** The active server retains API ownership while the shared sidebar supplies the target. */
 export function SidebarWarningsProvider({ children }: { children: ReactNode }) {
-  const [target, setTarget] = useState<HTMLElement | null>(null);
+  const [target, setTarget] = useState<WarningTarget | null>(null);
   return (
     <SetTarget.Provider value={setTarget}>
       <Target.Provider value={target}>{children}</Target.Provider>
@@ -17,9 +30,23 @@ export function SidebarWarningsProvider({ children }: { children: ReactNode }) {
   );
 }
 
-export function SidebarWarningsTarget() {
+export function SidebarWarningsTarget(
+  p: { utility?: boolean; settings?: (() => void) | undefined } = {},
+) {
   const setTarget = useContext(SetTarget);
-  return <span className="sidebar-warnings-target" ref={setTarget} />;
+  const settings = useCommittedCallback(() => p.settings?.());
+  const hasSettings = !!p.settings;
+  const utility = !!p.utility;
+  const ref = useCallback(
+    (node: HTMLSpanElement | null) =>
+      setTarget(
+        node
+          ? { node, utility, settings: hasSettings ? settings : undefined }
+          : null,
+      ),
+    [setTarget, utility, hasSettings, settings],
+  );
+  return <span className="sidebar-warnings-target" ref={ref} />;
 }
 
 export default function SidebarWarnings({
@@ -58,8 +85,10 @@ export default function SidebarWarnings({
           accountKey={accountKey}
           messages={items}
           openAgent={open}
+          utility={target.utility}
+          settings={target.settings}
         />,
-        target,
+        target.node,
       )
     : null;
 }

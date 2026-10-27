@@ -3,7 +3,13 @@ import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { resolve } from "node:path";
 
-export type LayoutToken = { value: number; unit: string; purpose: string };
+export type LayoutToken = {
+  value: number;
+  unit: string;
+  purpose: string;
+  /** Older tokens retain dimension scans until their role is explicit. */
+  kind?: "dimension" | "spacing" | "condition";
+};
 export type LegacyConsumer = {
   path: string;
   kind: string;
@@ -59,6 +65,8 @@ export function validateContract(contract: LayoutContract) {
       !Number.isFinite(token.value) ||
       token.value < 0 ||
       !token.purpose ||
+      (token.kind !== undefined &&
+        !["dimension", "spacing", "condition"].includes(token.kind)) ||
       (token.unit === "ratio" && token.value > 1) ||
       (token.unit === "layer" && !Number.isInteger(token.value))
     )

@@ -145,6 +145,16 @@ function resize(patch: Partial<Viewport>, event = "resize") {
   flush();
 }
 
+it("keeps Duo proportions at full height while the keyboard covers the page", () => {
+  mount();
+  expect(root.hasAttribute("data-duo-proportions")).toBe(true);
+  documentMock.activeElement = new Textarea();
+  windowMock.innerHeight = root.clientHeight = 323;
+  resize({ height: 323, offsetTop: 346 });
+  expect(root.hasAttribute("data-duo-proportions")).toBe(true);
+  cleanup?.();
+  expect(root.hasAttribute("data-duo-proportions")).toBe(false);
+});
 it("tracks a wide touch viewport with the keyboard already open", () => {
   documentMock.activeElement = new Textarea();
   viewport.height = 350;

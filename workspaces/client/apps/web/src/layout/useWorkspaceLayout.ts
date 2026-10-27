@@ -18,11 +18,13 @@ export function useWorkspaceLayout(options: {
     viewport: LayoutRect;
     rootFontPx: number;
     shortTouchLandscape: boolean;
+    duo: boolean;
   }>({
     host: emptyRect,
     viewport: emptyRect,
     rootFontPx: layoutValues.viewport.rootFontDefault,
     shortTouchLandscape: false,
+    duo: false,
   });
   const rowRef = useCallback(
     (node: HTMLDivElement | null) => setHost(node),
@@ -54,6 +56,7 @@ export function useWorkspaceLayout(options: {
         shortTouchLandscape: document.documentElement.hasAttribute(
           "data-viewport-short-landscape",
         ),
+        duo: document.documentElement.hasAttribute("data-duo-proportions"),
       };
       setGeometry((old) =>
         JSON.stringify(old) === JSON.stringify(next) ? old : next,
@@ -65,7 +68,12 @@ export function useWorkspaceLayout(options: {
     const preferences = new MutationObserver(update);
     preferences.observe(document.documentElement, {
       attributes: true,
-      attributeFilter: ["style", "class", "data-viewport-short-landscape"],
+      attributeFilter: [
+        "style",
+        "class",
+        "data-viewport-short-landscape",
+        "data-duo-proportions",
+      ],
     });
     view.addEventListener("resize", update);
     update();
@@ -78,6 +86,7 @@ export function useWorkspaceLayout(options: {
   return {
     rowRef,
     row: host,
+    duo: geometry.duo,
     shortTouchLandscape: geometry.shortTouchLandscape,
     ...deriveWorkspaceLayout({
       ...geometry,

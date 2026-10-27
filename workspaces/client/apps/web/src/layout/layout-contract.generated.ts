@@ -875,6 +875,143 @@ export const layoutTokens = {
     purpose:
       "Initial composer focus watch interval for a delayed silent keyboard height change",
   },
+  "duo.heightMin": {
+    value: 500,
+    unit: "px",
+    purpose:
+      "Inclusive full viewport height for Duo shell 951x669 and Duo PWA 867x669 proportions",
+    kind: "condition",
+  },
+  "duo.heightMax": {
+    value: 700,
+    unit: "px",
+    purpose:
+      "Exclusive full viewport height for Duo proportions; tablets keep their layout",
+    kind: "condition",
+  },
+  "duo.widthMax": {
+    value: 1024,
+    unit: "px",
+    purpose: "Exclusive viewport width for Duo proportions",
+    kind: "condition",
+  },
+  "duo.conversationMin": {
+    value: 34,
+    unit: "rem",
+    purpose: "Duo conversation minimum, 544 CSS px at the default root font",
+    kind: "dimension",
+  },
+  "duo.readingMax": {
+    value: 478,
+    unit: "px",
+    purpose:
+      "Maximum Duo assistant text width inside the shared 504 px card and composer column",
+    kind: "dimension",
+  },
+  "duo.bodyFont": {
+    value: 17,
+    unit: "px",
+    purpose: "Minimum Duo chat list and transcript body font size",
+    kind: "dimension",
+  },
+  "duo.bodyLineHeight": {
+    value: 1.6,
+    unit: "em",
+    purpose: "Duo transcript body line height relative to its font size",
+    kind: "spacing",
+  },
+  "duo.rowMin": {
+    value: 50,
+    unit: "px",
+    purpose: "Minimum Duo conversation list row height",
+    kind: "dimension",
+  },
+  "duo.headerControl": {
+    value: 48,
+    unit: "px",
+    purpose: "Duo sidebar header control size",
+    kind: "dimension",
+  },
+  "duo.headerGap": {
+    value: 12,
+    unit: "px",
+    purpose: "Duo sidebar header control gap",
+    kind: "spacing",
+  },
+  "duo.composerMin": {
+    value: 97,
+    unit: "px",
+    purpose: "Minimum Duo composer card height",
+    kind: "dimension",
+  },
+  "duo.composerRadius": {
+    value: 24,
+    unit: "px",
+    purpose: "Duo composer card corner radius",
+    kind: "spacing",
+  },
+  "duo.railTop": {
+    value: 124,
+    unit: "px",
+    purpose: "Duo first rail button top, below the system status",
+    kind: "spacing",
+  },
+  "duo.railGap": {
+    value: 13,
+    unit: "px",
+    purpose: "Duo rail button spacing",
+    kind: "spacing",
+  },
+  "duo.messageInset": {
+    value: 12,
+    unit: "px",
+    purpose: "Duo assistant card inner side padding around the reading column",
+    kind: "spacing",
+  },
+  "duo.columnGutter": {
+    value: 20,
+    unit: "px",
+    purpose:
+      "Minimum outer Duo card and composer gutter; both share the reading width plus the card padding and border",
+    kind: "spacing",
+  },
+  "duo.latestGap": {
+    value: 36,
+    unit: "px",
+    purpose:
+      "Duo Latest button gap above the composer outer top, clear of its context row",
+    kind: "spacing",
+  },
+  "duo.titleHeight": {
+    value: 64,
+    unit: "px",
+    kind: "dimension",
+    purpose: "Duo rail title and project bar height over the transcript",
+  },
+  "duo.titleInset": {
+    value: 12,
+    unit: "px",
+    kind: "spacing",
+    purpose: "Duo title bar vertical padding",
+  },
+  "duo.titleOpacity": {
+    value: 0.82,
+    unit: "ratio",
+    kind: "spacing",
+    purpose: "Duo title bar surface opacity over scrolling messages",
+  },
+  "duo.titleBlur": {
+    value: 12,
+    unit: "px",
+    kind: "spacing",
+    purpose: "Duo translucent title backdrop blur radius",
+  },
+  "duo.transcriptFade": {
+    value: 16,
+    unit: "px",
+    kind: "spacing",
+    purpose: "Duo transcript bottom fade before the passive usage row",
+  },
 } as const;
 export const layoutValues = {
   navigation: {
@@ -1164,6 +1301,30 @@ export const layoutValues = {
   header: {
     shortLandscapeMaxHeight: 700,
     compactHeight: 44,
+  },
+  duo: {
+    heightMin: 500,
+    heightMax: 700,
+    widthMax: 1024,
+    conversationMin: 34,
+    readingMax: 478,
+    bodyFont: 17,
+    bodyLineHeight: 1.6,
+    rowMin: 50,
+    headerControl: 48,
+    headerGap: 12,
+    composerMin: 97,
+    composerRadius: 24,
+    railTop: 124,
+    railGap: 13,
+    messageInset: 12,
+    columnGutter: 20,
+    latestGap: 36,
+    titleHeight: 64,
+    titleInset: 12,
+    titleOpacity: 0.82,
+    titleBlur: 12,
+    transcriptFade: 16,
   },
 } as const;
 export const layoutQueries = {
