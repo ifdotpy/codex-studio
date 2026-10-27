@@ -2707,10 +2707,13 @@ mod workspace_fence_tests {
         let captured = resources
             .native_layr(state.path(), &record)
             .expect("association");
-        assert_eq!(
-            captured.environment["LAYR_SOCKET"],
-            json!(crate::layr_native::socket_path(state.path()))
-        );
+        // Only Linux uses the root daemon socket; macOS runs Layr directly.
+        if cfg!(target_os = "linux") {
+            assert_eq!(
+                captured.environment["LAYR_SOCKET"],
+                json!(crate::layr_native::socket_path(state.path()))
+            );
+        }
         let changed = json!({"workspaceMode":"layr-native", "layrStoreRoot":root});
         assert!(resources.native_layr(state.path(), &changed).is_err());
 
