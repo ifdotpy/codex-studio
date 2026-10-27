@@ -1,3 +1,4 @@
+import { WorkStatus } from "../../generated/api";
 import type { DeepReadonly } from "rxdb";
 import type { SyncEntityPayload as MutableSyncEntityPayload } from "../../generated/api";
 import type { ReviewTask, WorkList } from "./contracts.ts";
@@ -43,7 +44,7 @@ export function createTaskAssignmentSelector() {
     }
     const accepted = new Set(
       metadata
-        .filter((entity) => entity.value.status === "accepted")
+        .filter((entity) => entity.value.status === WorkStatus.accepted)
         .map((entity) => entity.id),
     );
     const next = new Map<string, Assignment>();

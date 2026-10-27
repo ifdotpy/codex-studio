@@ -1,3 +1,4 @@
+import { NativeSafetyStage as GeneratedApiNativeSafetyStage } from "../../../generated/api.ts";
 import { useServerApi } from "../../../servers/ServerServicesContext";
 import ErrorDescription from "../../ErrorDescription";
 import { useRef, useState } from "react";
@@ -35,7 +36,7 @@ export default function SafetyBuffering({ agent }: { agent: Agent }) {
     !b.dismissed &&
     dismissed !== bufferingTurnId;
   const failed =
-    retry?.stage === "failed" &&
+    retry?.stage === GeneratedApiNativeSafetyStage.failed &&
     (retry.turnId === agent.turnId || !agent.turnId);
   if (!visible && !active && !failed) return null;
   const choose = async (safety: "wait" | "retry" | "cancel") => {

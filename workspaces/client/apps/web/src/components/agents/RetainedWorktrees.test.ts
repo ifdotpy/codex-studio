@@ -1,3 +1,4 @@
+import { AgentStatus } from "../../generated/api";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { MantineProvider } from "@mantine/core";
@@ -19,7 +20,7 @@ const worker: Agent = {
   id: "worker",
   worktree: true,
   rootId: "lead",
-  status: "completed",
+  status: AgentStatus.completed,
 };
 
 test("retained worktrees show reason and path without a delete action", () => {

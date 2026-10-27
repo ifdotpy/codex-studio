@@ -2,7 +2,11 @@ import { required } from "../components/componentTestFixtures.ts";
 import type { TranscriptWireItem } from "../types";
 // Cache separation fixtures omit role; they exercise only item identity and text.
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { createApiScope, ApiSchemaMismatchError } from "../api";
+import {
+  createApiScope,
+  ApiSchemaMismatchError,
+  NetworkTimeoutError,
+} from "../api";
 import {
   API_SCHEMA_HASH,
   API_SCHEMA_HASH_HEADER,
@@ -215,4 +219,75 @@ it("keeps draft records and interrupted draft journals with their server", async
   expect(b.readLocalDraftRecord(scope, "identical-chat")?.text).toBe("B");
   journalB.forgetDraftJournal(entry);
   expect(journalA.readDraftJournal(scope)).toEqual([entry]);
+});
+
+it("uses the generated access transport with scoped headers and exact management body", async () => {
+  const requests: Request[] = [];
+  const snapshot = {
+    protocol: 1,
+    identity: {
+      serverId: "owner",
+      label: "Owner",
+      origin: null,
+      publicKey: "key",
+      tailscaleUser: null,
+    },
+    clients: [],
+    servers: [],
+    invites: [],
+    settings: { autoPair: true },
+  };
+  const api = scope(
+    "a",
+    async (request) => {
+      requests.push(request);
+      return response(snapshot);
+    },
+    memory(),
+  );
+  api.setToken("scope-token");
+  api.setWorkspace("workspace-a");
+  expect(await api.serverAccess("GET")).toEqual(snapshot);
+  const body = { action: "discover", requestId: "exact-id" } as const;
+  expect(await api.serverAccess("POST", body, 105000, "fresh-token")).toEqual(
+    snapshot,
+  );
+  expect(
+    requests.map((request) => [
+      request.method,
+      new URL(request.url).pathname,
+      request.headers.get("X-Canvas-Token"),
+      request.headers.get("X-Canvas-Workspace"),
+    ]),
+  ).toEqual([
+    ["GET", "/api/multi-server", null, null],
+    ["POST", "/api/multi-server", "fresh-token", "workspace-a"],
+  ]);
+  expect(await requests[1]!.json()).toEqual(body);
+});
+
+it("times out an access request without retrying it", async () => {
+  vi.useFakeTimers();
+  try {
+    const fetch = vi.fn(
+      (request: Request) =>
+        new Promise<Response>((_resolve, reject) => {
+          request.signal.addEventListener("abort", () =>
+            reject(request.signal.reason),
+          );
+        }),
+    );
+    const api = scope("a", fetch, memory());
+    const pending = api.serverAccess(
+      "POST",
+      { action: "discover", requestId: "same-id" },
+      50,
+    );
+    const result = expect(pending).rejects.toBeInstanceOf(NetworkTimeoutError);
+    await vi.advanceTimersByTimeAsync(50);
+    await result;
+    expect(fetch).toHaveBeenCalledTimes(1);
+  } finally {
+    vi.useRealTimers();
+  }
 });

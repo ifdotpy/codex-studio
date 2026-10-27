@@ -88,8 +88,6 @@ export function useServerDiscovery(
         // Revalidate permission before/after automatic pairing. A cached stream
         // snapshot cannot authorize a remote credential change.
         const value = await serverAccess("GET");
-        if (!("identity" in value))
-          throw new Error("The server discovery response is invalid.");
         return discoverySnapshot(value);
       },
       existing: readServers,
@@ -243,8 +241,6 @@ export function useServerDiscovery(
     loading.current = (async () => {
       await attempts.current!.initialize();
       const value = await serverAccess("GET");
-      if (!("identity" in value))
-        throw new Error("The server discovery response is invalid.");
       // A newer inline snapshot supersedes a recovery already in flight.
       if (generation === loadGeneration.current) await apply(value);
     })().finally(() => {

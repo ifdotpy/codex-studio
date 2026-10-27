@@ -1,3 +1,7 @@
+import {
+  AgentSource as GeneratedApiAgentSource,
+  AgentStatus as GeneratedApiAgentStatus,
+} from "../../generated/api.ts";
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import { expect, fn, userEvent, within } from "storybook/test";
 import ConversationTitle from "./ConversationTitle";
@@ -6,8 +10,8 @@ import type { Agent } from "../../types";
 const lead = {
   id: "lead-1",
   name: "Main agent",
-  source: "managed",
-  status: "running",
+  source: GeneratedApiAgentSource.managed,
+  status: GeneratedApiAgentStatus.running,
 } as Agent;
 
 const meta = {

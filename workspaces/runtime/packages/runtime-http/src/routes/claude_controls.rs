@@ -10,12 +10,26 @@ use std::sync::Arc;
 use studio_runtime_providers::ProviderKind;
 use studio_runtime_services::claude_controls::{
     ControlError,
-    service::{ControlBinding, ControlFuture, ControlSession, Controls},
+    service::{
+        ControlBinding, ControlFuture, ControlInvocation, ControlReply, ControlSession, Controls,
+    },
     store::StoredControls,
 };
 use studio_runtime_store::{
     AgentId, AgentRepository, RuntimeStore, workspace_operations::WorkspaceOperationsRepository,
 };
+
+// The bridge may include private diagnostic fields; deserialize only the
+// evidence that this route is allowed to expose.
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RepairEvidence {
+    status: String,
+    skipped_rows: u64,
+    invalid_sequence: bool,
+    scope_confirmed: Option<bool>,
+    native_history_confirmed: Option<bool>,
+}
 
 pub(crate) fn routes() -> RouteGroup {
     RouteGroup::new(vec![
@@ -72,8 +86,9 @@ async fn repair_report(
                 epoch: agent["epoch"].as_u64().unwrap_or(0),
                 request_id: None,
             },
-            "claude/repairReport",
-            json!({"threadId":thread}),
+            ControlInvocation::RepairReport {
+                thread_id: thread.to_owned(),
+            },
         ),
     )
     .await
@@ -84,16 +99,19 @@ async fn repair_report(
         )
     })?
     .map_err(control_error)?;
-    // Project only typed evidence. Provider text, paths, and unknown fields can contain secrets.
-    let skipped_rows = result["skippedRows"]
-        .as_u64()
-        .filter(|value| *value <= studio_runtime_schema::shared_values::MAX_SAFE_INTEGER as u64)
-        .ok_or_else(ApiError::internal)?;
+    let ControlReply::RepairReport(result) = result else {
+        return Err(ApiError::internal());
+    };
+    let evidence: RepairEvidence =
+        serde_json::from_value(result).map_err(|_| ApiError::internal())?;
+    if evidence.skipped_rows > studio_runtime_schema::shared_values::MAX_SAFE_INTEGER as u64 {
+        return Err(ApiError::internal());
+    }
     let safe = json!({
-        "status": result["status"], "skippedRows": skipped_rows,
-        "invalidSequence": result["invalidSequence"],
-        "scopeConfirmed": result["scopeConfirmed"],
-        "nativeHistoryConfirmed": result["nativeHistoryConfirmed"],
+        "status": evidence.status, "skippedRows": evidence.skipped_rows,
+        "invalidSequence": evidence.invalid_sequence,
+        "scopeConfirmed": evidence.scope_confirmed,
+        "nativeHistoryConfirmed": evidence.native_history_confirmed,
     });
     super::generated_json(safe).map(Json)
 }
@@ -237,26 +255,65 @@ async fn file_backups(
         use studio_runtime_services::claude_controls::service::ControlScope;
         use studio_runtime_store::ClaudeControlRepository;
         let store = state.store.clone().ok_or_else(ApiError::internal)?;
-        let _execution = studio_runtime_services::checkpoints::RestoreExecution::acquire(
-            format!("{}:{}", store.state_dir().display(), body.id),
-        ).map_err(|_| control_error(ControlError::Busy))?;
+        let _execution = studio_runtime_services::checkpoints::RestoreExecution::acquire(format!(
+            "{}:{}",
+            store.state_dir().display(),
+            body.id
+        ))
+        .map_err(|_| control_error(ControlError::Busy))?;
         let id = body.id.clone();
-        let (agent, settled) = store.read_async("claude/file-backups", move |tx| {
-            let agent = AgentRepository::get(tx, &AgentId(id))?.ok_or_else(||
-                studio_runtime_store::StoreError::InvalidStoredRecord {object: "agent", id: "missing".into()})?.value();
-            let settled = ClaudeControlRepository::settled_file_rewinds(tx, &agent)?;
-            Ok::<_, studio_runtime_store::StoreError>((agent, settled))
-        }).await.map_err(|_| ApiError::internal())?;
+        let (agent, settled) = store
+            .read_async("claude/file-backups", move |tx| {
+                let agent = AgentRepository::get(tx, &AgentId(id))?
+                    .ok_or_else(|| studio_runtime_store::StoreError::InvalidStoredRecord {
+                        object: "agent",
+                        id: "missing".into(),
+                    })?
+                    .value();
+                let settled = ClaudeControlRepository::settled_file_rewinds(tx, &agent)?;
+                Ok::<_, studio_runtime_store::StoreError>((agent, settled))
+            })
+            .await
+            .map_err(|_| ApiError::internal())?;
         require_claude_account(&state, &agent).await?;
-        let snapshot = studio_runtime_services::claude_controls::ControlSnapshot::from_records(agent.clone(), None).map_err(control_error)?;
-        let thread = agent["threadId"].as_str().filter(|s| !s.is_empty()).ok_or_else(|| control_error(ControlError::Request))?;
+        let snapshot = studio_runtime_services::claude_controls::ControlSnapshot::from_records(
+            agent.clone(),
+            None,
+        )
+        .map_err(control_error)?;
+        let thread = agent["threadId"]
+            .as_str()
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| control_error(ControlError::Request))?;
         let account = agent["accountKey"].as_str().unwrap_or("default");
-        let session = state.account_session.as_ref().ok_or_else(ApiError::internal)?.claude_control_session(account).map_err(session_error)?;
-        let result = session.call_scoped(ControlScope {
-            agent: body.id, epoch: snapshot.epoch(), request_id: Some(body.request_id),
-        }, "claude/fileBackups", json!({"threadId":thread,"settledRequestIds":if body.release {Some(settled)} else {None}})).await.map_err(control_error)?;
+        let session = state
+            .account_session
+            .as_ref()
+            .ok_or_else(ApiError::internal)?
+            .claude_control_session(account)
+            .map_err(session_error)?;
+        let result = session
+            .call_scoped(
+                ControlScope {
+                    agent: body.id,
+                    epoch: snapshot.epoch(),
+                    request_id: Some(body.request_id.clone()),
+                },
+                ControlInvocation::FileBackups {
+                    thread_id: thread.to_owned(),
+                    settled_request_ids: if body.release { Some(settled) } else { None },
+                    request_id: body.request_id,
+                },
+            )
+            .await
+            .map_err(control_error)?;
+        let ControlReply::FileBackups(result) = result else {
+            return Err(ApiError::internal());
+        };
         super::generated_json::<crate::generated::ClaudeFileBackupsResponse>(result).map(Json)
-    }).await.map_err(|_| ApiError::internal())?
+    })
+    .await
+    .map_err(|_| ApiError::internal())?
 }
 
 async fn require_claude_account(state: &HttpState, agent: &Value) -> Result<(), ApiError> {
@@ -319,7 +376,11 @@ impl ControlSession for LocalControlSession {
         self.binding.clone()
     }
 
-    fn call(&self, _method: &str, _params: Value) -> ControlFuture<'_, Value> {
+    fn call_scoped(
+        &self,
+        _scope: studio_runtime_services::claude_controls::service::ControlScope,
+        _call: ControlInvocation,
+    ) -> ControlFuture<'_, ControlReply> {
         Box::pin(async { Err(ControlError::Request) })
     }
 }

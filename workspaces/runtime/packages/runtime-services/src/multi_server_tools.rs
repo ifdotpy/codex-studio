@@ -21,9 +21,7 @@ use studio_runtime_store::{
 };
 
 use crate::event_write::request_signature;
-use crate::managed_host_tools::{
-    Actor, DeliveryCertainty, DispatchedOperation, Error, OperationResult,
-};
+use crate::managed_host_tools::{Actor, DispatchedOperation, Error, OperationResult};
 use crate::multi_server_auth::AccessError;
 use crate::multi_server_orchestration::{ExchangeOutcome, OrchestrationDriver};
 use crate::multi_server_transport_limits::MAX_REQUEST_BYTES;
@@ -129,39 +127,27 @@ fn refuse<T>(message: impl Into<String>) -> Result<T, Step> {
 
 /// A written tool result that carries the paired receipt or local value.
 fn written(value: Value) -> DispatchedOperation {
-    DispatchedOperation {
-        result: OperationResult {
-            value,
-            signals: Vec::new(),
-        },
-        certainty: DeliveryCertainty::Written,
-        applied: Some(true),
-    }
+    DispatchedOperation::Applied(OperationResult {
+        value,
+        signals: Vec::new(),
+    })
 }
 
 fn not_sent(message: String) -> DispatchedOperation {
-    DispatchedOperation {
-        result: OperationResult {
-            value: Value::String(message),
-            signals: Vec::new(),
-        },
-        certainty: DeliveryCertainty::NotSent,
-        applied: Some(false),
-    }
+    DispatchedOperation::NotSent(OperationResult {
+        value: Value::String(message),
+        signals: Vec::new(),
+    })
 }
 
 fn settle(step: Result<Value, Step>) -> Result<DispatchedOperation, Error> {
     match step {
         Ok(value) => Ok(written(value)),
         Err(Step::Refused(message)) => Ok(not_sent(message)),
-        Err(Step::Failed(message)) => Ok(DispatchedOperation {
-            result: OperationResult {
-                value: Value::String(message),
-                signals: Vec::new(),
-            },
-            certainty: DeliveryCertainty::Unknown,
-            applied: None,
-        }),
+        Err(Step::Failed(message)) => Ok(DispatchedOperation::Unknown(OperationResult {
+            value: Value::String(message),
+            signals: Vec::new(),
+        })),
         Err(Step::Store(error)) => Err(Error::Store(error)),
     }
 }

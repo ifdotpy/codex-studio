@@ -790,7 +790,7 @@ impl studio_runtime_services::account_session_runtime::RetainedAccountSession
         &self,
         account: String,
         request: studio_runtime_services::agent_management_recovery::AuthorizedRecoveryRequest,
-    ) -> studio_runtime_services::account_session_runtime::RecoveryFuture {
+    ) -> studio_runtime_services::account_session_runtime::ManagedRecoveryFuture {
         let session = self
             .sessions
             .read()
@@ -1091,7 +1091,7 @@ impl AccountRegistry {
                 AccountPageDispatch::Exhausted
             });
         }
-        use studio_runtime_services::account_start_gate::{AgentStartWait, StartWaitReason};
+        use studio_runtime_services::account_start_gate::AgentStartWait;
         // The registry owns provider startup, before a worker can claim input.
         if !self.workers.contains_key(account) {
             let waits = agents
@@ -1099,7 +1099,10 @@ impl AccountRegistry {
                 .map(|(agent, epoch)| {
                     (
                         agent.clone(),
-                        AgentStartWait::new(StartWaitReason::ProviderSession, *epoch),
+                        AgentStartWait::ProviderSession {
+                            epoch: *epoch,
+                            until: None,
+                        },
                     )
                 })
                 .collect();
@@ -1355,7 +1358,7 @@ impl AccountRegistry {
             .get(&account)
             .filter(|retry_at| **retry_at > tokio::time::Instant::now())
         {
-            use studio_runtime_services::account_start_gate::{AgentStartWait, StartWaitReason};
+            use studio_runtime_services::account_start_gate::AgentStartWait;
             let until = event_time()
                 + retry_at
                     .saturating_duration_since(tokio::time::Instant::now())
@@ -1366,8 +1369,10 @@ impl AccountRegistry {
             let waits = agents
                 .iter()
                 .map(|(agent, epoch)| {
-                    let mut wait = AgentStartWait::new(StartWaitReason::ProviderSession, *epoch);
-                    wait.until = Some(until);
+                    let wait = AgentStartWait::ProviderSession {
+                        epoch: *epoch,
+                        until: Some(until),
+                    };
                     (agent.clone(), wait)
                 })
                 .collect();

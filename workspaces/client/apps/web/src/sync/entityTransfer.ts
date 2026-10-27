@@ -1,3 +1,4 @@
+import { SubscriptionReplyKind } from "../generated/api";
 import { randomUUID } from "../uuid";
 import { subscriptionKey } from "./subscriptions/contracts";
 import { SYNC_PROTOCOL_VERSION, type components } from "../generated/api";
@@ -380,7 +381,10 @@ export class EntityTransferAssembler {
     const batch = pageValue(decoded, after, frame.cursor.seq);
     if (pending.after === undefined) {
       pending.after = batch.after;
-      if (frame.replyKind === "snapshot" && batch.after !== 0)
+      if (
+        frame.replyKind === SubscriptionReplyKind.snapshot &&
+        batch.after !== 0
+      )
         throw new Error("Snapshot transfer has a nonzero base");
     }
     await this.storage.putMany([

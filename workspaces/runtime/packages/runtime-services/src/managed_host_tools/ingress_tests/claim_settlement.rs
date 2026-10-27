@@ -9,6 +9,8 @@ use futures_util::future::BoxFuture;
 enum SpawnScript {
     /// Refuse before any write.
     Refuse,
+    WrittenRejection,
+    OpaqueApplied,
     /// Refuse before any write because no fresh model catalog was readable.
     CatalogUnavailable,
     /// Commit the first child row, then fail (image provisioning shape).
@@ -47,12 +49,24 @@ impl crate::provider_callbacks::RuntimeChildCreationPort for ScriptedChildCreati
         _: &'a Value,
         request_id: &'a str,
         _: f64,
-    ) -> BoxFuture<'a, Result<OperationResult, Error>> {
+    ) -> BoxFuture<'a, Result<crate::managed_host_tools::DispatchedOperation, Error>> {
         Box::pin(async move {
             self.calls.fetch_add(1, Ordering::SeqCst);
             self.entered.notify_one();
             match self.script {
                 SpawnScript::Refuse => Err(Error::Invalid("Supply 1 to 64 agents")),
+                SpawnScript::WrittenRejection => Ok(
+                    crate::managed_host_tools::DispatchedOperation::Rejected(OperationResult {
+                        value: json!({"reason":"provider rejected"}),
+                        signals: Vec::new(),
+                    }),
+                ),
+                SpawnScript::OpaqueApplied => Ok(
+                    crate::managed_host_tools::DispatchedOperation::Applied(OperationResult {
+                        value: json!({"outcome":"unknown"}),
+                        signals: Vec::new(),
+                    }),
+                ),
                 SpawnScript::CatalogUnavailable => Err(Error::Unavailable(
                     crate::model_catalog::MODEL_CATALOG_DEPENDENCY,
                 )),
@@ -71,13 +85,22 @@ impl crate::provider_callbacks::RuntimeChildCreationPort for ScriptedChildCreati
                         .await?;
                     Err(Error::Unavailable("workspace-state/image-provisioning"))
                 }
-                SpawnScript::Hang => std::future::pending::<Result<OperationResult, Error>>().await,
+                SpawnScript::Hang => {
+                    std::future::pending::<
+                        Result<crate::managed_host_tools::DispatchedOperation, Error>,
+                    >()
+                    .await
+                }
                 SpawnScript::Release => {
                     self.release.notified().await;
-                    Ok(OperationResult {
-                        value: json!({"requestId":request_id,"agents":[]}),
-                        signals: vec![crate::managed_host_tools::WakeSignal::new("account-worker")],
-                    })
+                    Ok(crate::managed_host_tools::DispatchedOperation::Applied(
+                        OperationResult {
+                            value: json!({"requestId":request_id,"agents":[]}),
+                            signals: vec![crate::managed_host_tools::WakeSignal::new(
+                                "account-worker",
+                            )],
+                        },
+                    ))
                 }
             }
         })
@@ -90,7 +113,7 @@ impl crate::provider_callbacks::RuntimeChildCreationPort for ScriptedChildCreati
         _: &'a Value,
         _: &'a str,
         _: f64,
-    ) -> BoxFuture<'a, Result<OperationResult, Error>> {
+    ) -> BoxFuture<'a, Result<crate::managed_host_tools::DispatchedOperation, Error>> {
         Box::pin(async { Err(Error::Invalid("Native review requires a Codex agent")) })
     }
 }
@@ -224,6 +247,78 @@ async fn replay_returns_saved_result(
         "{call_id}: replay never dispatches again"
     );
     assert_eq!(request_row(store, call_id), before, "{call_id}");
+}
+
+#[tokio::test]
+async fn opaque_payload_does_not_change_fresh_applied_outcome() {
+    let (_root, store, context) = fixture().await;
+    let creation = ScriptedChildCreation::new(SpawnScript::OpaqueApplied);
+    let call_id = "settle-opaque-applied";
+    let frame = call(
+        &context,
+        call_id,
+        "orchestration_spawn",
+        json!({"agents":[]}),
+    );
+    let decision = dispatch_with_managed_tools(
+        Arc::clone(&store),
+        &context,
+        &frame,
+        20.0,
+        ports_for(&store, &context, &frame, &creation).await,
+    )
+    .await
+    .unwrap();
+    assert!(matches!(decision, CallbackDecision::Answer(_)));
+    let row = request_row(&store, call_id);
+    assert_eq!(row["deliveryCertainty"], "written");
+    assert_eq!(row["result"]["success"], true);
+}
+
+#[tokio::test]
+async fn written_rejection_settles_and_replays_exactly() {
+    let (_root, store, context) = fixture().await;
+    let creation = ScriptedChildCreation::new(SpawnScript::WrittenRejection);
+    let call_id = "settle-written-rejection";
+    let frame = call(
+        &context,
+        call_id,
+        "orchestration_spawn",
+        json!({"agents":[]}),
+    );
+    let decision = dispatch_with_managed_tools(
+        Arc::clone(&store),
+        &context,
+        &frame,
+        20.0,
+        ports_for(&store, &context, &frame, &creation).await,
+    )
+    .await
+    .unwrap();
+    let CallbackDecision::Answer(first) = decision else {
+        panic!("first answer")
+    };
+    let ResponseBody::Result(first_body) = first.body else {
+        panic!("first result")
+    };
+    assert_terminal(&store, call_id, "not_applied", Some("written"));
+    let replay = dispatch_with_managed_tools(
+        Arc::clone(&store),
+        &context,
+        &frame,
+        40.0,
+        ports_for(&store, &context, &frame, &creation).await,
+    )
+    .await
+    .unwrap();
+    let CallbackDecision::Answer(replayed) = replay else {
+        panic!("replay answer")
+    };
+    let ResponseBody::Result(replay_body) = replayed.body else {
+        panic!("replay result")
+    };
+    assert_eq!(first_body, replay_body);
+    assert_eq!(creation.calls.load(Ordering::SeqCst), 1);
 }
 
 #[tokio::test]
@@ -724,4 +819,108 @@ async fn failed_finalize_still_records_the_real_operation_and_wakes_its_owner() 
     assert!(settled["finished"].is_number(), "{settled}");
     assert_eq!(saved_result(&store, &id).as_ref(), Some(&settled["result"]));
     assert_eq!(creation.calls.load(Ordering::SeqCst), 1);
+}
+
+struct ScriptedRecoverySession {
+    receipt: crate::recovery::RecoveryReceipt,
+    calls: AtomicUsize,
+}
+
+impl crate::account_session_runtime::AccountSessionPort for ScriptedRecoverySession {
+    fn recover_managed_agent<'a>(
+        &'a self,
+        _: &'a str,
+        _: crate::agent_management_recovery::AuthorizedRecoveryRequest,
+    ) -> crate::account_session_runtime::AccountSessionFuture<'a, crate::recovery::RecoveryReceipt>
+    {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        Box::pin(async move { Ok(self.receipt.clone()) })
+    }
+}
+
+#[tokio::test]
+async fn managed_recovery_callback_uses_typed_receipt_and_replays() {
+    use crate::recovery::RecoveryReceipt;
+    for (label, receipt, certainty, success) in [
+        (
+            "applied",
+            RecoveryReceipt::Applied(json!({"status":"unconfirmed","checked":true})),
+            "written",
+            true,
+        ),
+        (
+            "unknown",
+            RecoveryReceipt::Unknown(json!({"status":"checked","checked":true})),
+            "unknown",
+            false,
+        ),
+        (
+            "rejected",
+            RecoveryReceipt::Rejected(json!({"status":"checked","checked":true})),
+            "written",
+            false,
+        ),
+    ] {
+        let (_root, store, context) = fixture().await;
+        let target = template().value["agents"][1]["id"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let call_id = format!("managed-recovery-{label}");
+        let frame = call(
+            &context,
+            &call_id,
+            "orchestration_agent_manage",
+            json!({"action":"recover","agent_id":target}),
+        );
+        let session = Arc::new(ScriptedRecoverySession {
+            receipt,
+            calls: AtomicUsize::new(0),
+        });
+        let runtime_ports = ManagedToolRuntimePorts {
+            status_watch: None,
+            child_creation: None,
+            monitor_create: None,
+            interrupt: None,
+            monitor_input: None,
+            monitor_cancel: None,
+            work_action: None,
+            late: Default::default(),
+        };
+        let port: Arc<dyn crate::account_session_runtime::AccountSessionPort> = session.clone();
+        assert!(runtime_ports.late.management_session.set(port).is_ok());
+        let ports = shared_ports(
+            crate::provider_callbacks::managed_tool_ports_with_runtime(
+                store.as_ref(),
+                &context,
+                &frame,
+                ManagedToolPortsConfig {
+                    wake: Arc::new(tokio::sync::Notify::new()),
+                    monitor_dispatch_wake: Arc::new(tokio::sync::Notify::new()),
+                    runtime_ports,
+                    preparation: None,
+                },
+            )
+            .await
+            .unwrap(),
+        );
+        let first =
+            dispatch_with_managed_tools(Arc::clone(&store), &context, &frame, 20.0, ports.clone())
+                .await
+                .unwrap();
+        let CallbackDecision::Answer(first) = first else {
+            panic!("first answer")
+        };
+        let row = request_row(&store, &call_id);
+        assert_eq!(row["deliveryCertainty"], certainty, "{label}: {row}");
+        assert_eq!(row["result"]["success"], success, "{label}: {row}");
+        let replay = dispatch_with_managed_tools(Arc::clone(&store), &context, &frame, 21.0, ports)
+            .await
+            .unwrap();
+        let CallbackDecision::Answer(replay) = replay else {
+            panic!("replay answer")
+        };
+        assert_eq!(first.body, replay.body, "{label}");
+        assert_eq!(session.calls.load(Ordering::SeqCst), 1, "{label}");
+    }
 }

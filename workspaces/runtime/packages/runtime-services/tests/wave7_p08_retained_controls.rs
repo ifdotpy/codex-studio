@@ -52,6 +52,7 @@ impl ClaudeSessionPort for AccountPort {
             }
             let result = match identity.method {
                 studio_runtime_providers::Method::ClaudeState => json!({"tasks":[],"turns":[]}),
+                studio_runtime_providers::Method::ClaudeSettings => json!({"settings":{}}),
                 studio_runtime_providers::Method::Initialize
                 | studio_runtime_providers::Method::Initialized
                 | studio_runtime_providers::Method::Ack
@@ -108,7 +109,6 @@ impl ClaudeSessionPort for AccountPort {
                 | studio_runtime_providers::Method::ThreadQueueList
                 | studio_runtime_providers::Method::ClaudeRepairReport
                 | studio_runtime_providers::Method::ClaudeFileBackups
-                | studio_runtime_providers::Method::ClaudeSettings
                 | studio_runtime_providers::Method::ClaudeActivity
                 | studio_runtime_providers::Method::ClaudeStopTask
                 | studio_runtime_providers::Method::ClaudeShellPolicy
@@ -233,12 +233,15 @@ async fn retained_controls_bind_every_receipt_field_and_never_retry_a_lost_reply
         let result = session
             .call_scoped(
                 scope(),
-                "claude/settings",
-                json!({"threadId":"thread","settings":{}}),
+                ControlInvocation::Settings {
+                    thread_id: "thread".into(),
+                    settings: Default::default(),
+                    request_id: "logical-request".into(),
+                },
             )
             .await;
         if fault == "none" {
-            assert_eq!(result.expect("receipt"), json!({"ok":true}));
+            assert!(matches!(result, Ok(ControlReply::Settings(_))));
         } else {
             assert!(matches!(result, Err(ControlError::Unknown)), "{fault}");
         }
@@ -249,24 +252,16 @@ async fn retained_controls_bind_every_receipt_field_and_never_retry_a_lost_reply
 async fn replaced_generation_and_unscoped_or_unrecognized_calls_never_reach_the_owner() {
     let port = port("none");
     let session = RetainedClaudeSession::new(port.clone());
-    assert!(session.call("claude/state", json!({})).await.is_err());
-    assert!(
-        session
-            .call_scoped(scope(), "turn/start", json!({}))
-            .await
-            .is_err()
-    );
-    assert!(
-        session
-            .call_scoped(scope(), "claude/settings", Value::Null)
-            .await
-            .is_err()
-    );
     *port.binding.lock().expect("binding") =
         ControlBinding::new("account".into(), "replacement".into(), 8).expect("binding");
     assert!(matches!(
         session
-            .call_scoped(scope(), "claude/state", json!({}))
+            .call_scoped(
+                scope(),
+                ControlInvocation::State {
+                    thread_id: "thread".into()
+                }
+            )
             .await,
         Err(ControlError::Changed)
     ));
@@ -285,15 +280,15 @@ impl ControlStorage for NoWrites {
         &self,
         _: studio_runtime_services::claude_controls::ControlSnapshot,
         _: studio_runtime_services::claude_controls::ControlRequest,
-        _: Value,
-        _: Value,
+        _: NativeProof,
     ) -> ControlFuture<'_, studio_runtime_services::claude_controls::ControlSnapshot> {
         panic!("read must not write")
     }
     fn provider(
         &self,
         _: studio_runtime_services::claude_controls::ControlSnapshot,
-        _: Value,
+        _: studio_runtime_services::claude_controls::ControlRequest,
+        _: MutationReply,
     ) -> ControlFuture<'_, studio_runtime_services::claude_controls::ControlSnapshot> {
         panic!("read must not write")
     }
@@ -378,6 +373,12 @@ async fn opaque_stop_ids_have_distinct_stable_request_identities() {
         calls[3].identity.scope.request_id.as_deref(),
         Some("caller-request")
     );
-    assert_eq!(calls[0].params, json!({"threadId":"a:b","taskId":"c"}));
-    assert_eq!(calls[1].params, json!({"threadId":"a","taskId":"b:c"}));
+    assert_eq!(
+        calls[0].invocation.params(),
+        json!({"threadId":"a:b","taskId":"c"})
+    );
+    assert_eq!(
+        calls[1].invocation.params(),
+        json!({"threadId":"a","taskId":"b:c"})
+    );
 }

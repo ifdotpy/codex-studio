@@ -1,3 +1,4 @@
+import { AgentSource, AgentStatus, ProviderKind } from "../../generated/api";
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import { expect, within } from "storybook/test";
 import AgentPhase from "./AgentPhase";
@@ -16,10 +17,10 @@ type Story = StoryObj<typeof meta>;
 const thinkingAgent = {
   id: "worker-1",
   name: "Transcript worker",
-  source: "managed",
+  source: AgentSource.managed,
   model: "gpt-6",
-  status: "running",
-  provider: "codex",
+  status: AgentStatus.running,
+  provider: ProviderKind.codex,
   created: 1,
   activity: { phase: "thinking" },
   inFlight: true,

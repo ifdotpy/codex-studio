@@ -7,13 +7,85 @@ use serde_json::{Value, json};
 use std::collections::BTreeMap;
 use thiserror::Error;
 
-use crate::account_session_runtime::RequestCertainty;
+use crate::account_session_runtime::{
+    ConnectionScope, ProviderResponse, RequestCertainty, SessionReceipt,
+};
 use studio_runtime_schema::agent_limits::MAX_TRANSFER_AGENT_RECORDS;
 pub use studio_runtime_store::MAX_TRANSFER_RECORD_BYTES as MAX_RECORD_BYTES;
 pub const EXECUTOR_REQUIRED: &str = "account-transfer/provider-history-executor";
 pub const SETTINGS_REQUIRED: &str = "account-transfer/destination-settings";
 /// Internal receipt-hold identity mapped to native admission by preparation.
 pub(crate) const RECEIPT_HOLD: &str = "account-transfer/receipt-hold";
+
+/// A retained receipt or a failure before a receipt could be obtained.
+pub enum TransferDispatch {
+    Receipt(SessionReceipt),
+    Unknown {
+        operation: String,
+        scope: ConnectionScope,
+    },
+}
+
+impl TransferDispatch {
+    fn identity(&self) -> (&str, &ConnectionScope) {
+        match self {
+            Self::Receipt(receipt) => (&receipt.operation, &receipt.scope),
+            Self::Unknown { operation, scope } => (operation, scope),
+        }
+    }
+
+    fn certainty(&self) -> RequestCertainty {
+        match self {
+            Self::Receipt(receipt) => receipt.certainty(),
+            Self::Unknown { .. } => RequestCertainty::Unknown,
+        }
+    }
+
+    fn mutation_result(&self) -> Option<Value> {
+        match self {
+            Self::Receipt(receipt) => receipt.response().map(|response| match response {
+                ProviderResponse::Reply(value) => value.clone(),
+                ProviderResponse::Rejected(value) => json!({"rejected":value}),
+            }),
+            Self::Unknown { .. } => None,
+        }
+    }
+
+    pub(crate) fn has_thread(&self) -> bool {
+        matches!(self, Self::Receipt(receipt) if matches!(receipt.response(),
+            Some(ProviderResponse::Reply(value)) if value.pointer("/thread/id").and_then(Value::as_str).is_some_and(|id| !id.is_empty())))
+    }
+
+    fn mutation_record(&self, result: &Option<Value>) -> Value {
+        match self {
+            Self::Receipt(receipt) => {
+                let ticket = receipt_ticket(receipt);
+                json!({"operation":receipt.operation,"scope":receipt.scope,"certainty":receipt.certainty().as_str(),
+                    "ticket":ticket,"notSentReason":receipt.not_sent_reason().map(|reason| format!("{reason:?}")),"result":result})
+            }
+            Self::Unknown { operation, scope } => {
+                json!({"operation":operation,"scope":scope,"certainty":self.certainty().as_str(),"ticket":null})
+            }
+        }
+    }
+}
+
+fn read_record_for_receipt(receipt: &SessionReceipt) -> (Value, Option<Value>) {
+    let ticket = receipt_ticket(receipt);
+    let response = receipt.response().map(|response| match response {
+        ProviderResponse::Reply(value) => json!({"kind":"reply","value":value}),
+        ProviderResponse::Rejected(value) => json!({"kind":"rejected","value":value}),
+    });
+    (
+        json!({"operation":receipt.operation,"scope":receipt.scope,"certainty":receipt.certainty().as_str(),"ticket":ticket,
+        "notSentReason":receipt.not_sent_reason().map(|reason| format!("{reason:?}"))}),
+        response,
+    )
+}
+
+fn receipt_ticket(receipt: &SessionReceipt) -> Option<Value> {
+    receipt.ticket().map(|ticket| json!({"generation":ticket.generation,"id":ticket.id,"method":ticket.method.as_str()}))
+}
 
 /// Exact source preflight shapes. A background read checks one bounded page;
 /// a nonempty result or continuation cursor keeps the transfer on its source.
@@ -910,10 +982,9 @@ impl Snapshot {
         &self,
         agent: &str,
         operation: &str,
-        receipt: Value,
-        result: Option<Value>,
-        certainty: RequestCertainty,
+        receipt: &SessionReceipt,
     ) -> Result<Decision, TransferError> {
+        let certainty = receipt.certainty();
         let member = &self.operation["members"][agent];
         let intent = member
             .get("providerReadIntents")
@@ -926,25 +997,23 @@ impl Snapshot {
             .get("providerReadReceipts")
             .and_then(Value::as_object)
             .and_then(|receipts| receipts.get(operation));
-        if existing == Some(&receipt) {
+        let scope = serde_json::to_value(&receipt.scope)
+            .map_err(|_| TransferError::Refused("Invalid provider scope"))?;
+        let (raw_receipt, result) = read_record_for_receipt(receipt);
+        let record = json!({"receipt":raw_receipt,"result":result,"certainty":certainty.as_str()});
+        if existing == Some(&record) {
             return Ok(self.decision(self.operation.clone(), self.agents.clone(), vec![]));
         }
         if self.phase(agent)? != Phase::Reading
-            || receipt["certainty"] != certainty.as_str()
-            || receipt["operation"] != operation
-            || receipt["scope"] != intent["scope"]
-            || (certainty == RequestCertainty::Written && receipt["ticket"].is_null())
-            || (certainty == RequestCertainty::Written && result.is_none())
-            || (certainty != RequestCertainty::Written && result.is_some())
+            || receipt.operation != operation
+            || scope != intent["scope"]
         {
             return Err(TransferError::Refused(
                 "Provider read receipt does not match its intent",
             ));
         }
         let mut op = self.operation.clone();
-        op["members"][agent]["providerReadReceipts"][operation] = json!({
-            "receipt":receipt,"result":result,"certainty":certainty.as_str()
-        });
+        op["members"][agent]["providerReadReceipts"][operation] = record;
         if certainty == RequestCertainty::Unknown {
             op["members"][agent]["phase"] = json!("unknown");
             op["members"][agent]["error"] =
@@ -992,14 +1061,27 @@ impl Snapshot {
 
     /// Store the exact provider receipt before interpreting its result. Unknown
     /// is durable and never authorizes another mutation.
+    ///
+    /// A receipt cannot be supplied as independent JSON, result, and certainty:
+    /// ```compile_fail
+    /// # use studio_runtime_services::account_transfer::Snapshot;
+    /// # use studio_runtime_services::account_session_runtime::RequestCertainty;
+    /// # fn old_bag(snapshot: &Snapshot) {
+    /// snapshot.provider_receipt("agent", "operation", serde_json::Value::Null, None, RequestCertainty::Written);
+    /// # }
+    /// ```
     pub fn provider_receipt(
         &self,
         agent: &str,
         operation: &str,
-        receipt: Value,
-        written_result: Option<Value>,
-        certainty: RequestCertainty,
+        dispatch: &TransferDispatch,
     ) -> Result<Decision, TransferError> {
+        let certainty = dispatch.certainty();
+        let (receipt_operation, receipt_scope) = dispatch.identity();
+        let scope = serde_json::to_value(receipt_scope)
+            .map_err(|_| TransferError::Refused("Invalid provider scope"))?;
+        let written_result = dispatch.mutation_result();
+        let receipt = dispatch.mutation_record(&written_result);
         let member = &self.operation["members"][agent];
         let exact_replay = member["providerIntent"]["operation"] == operation
             && member["providerReceipts"]
@@ -1013,11 +1095,8 @@ impl Snapshot {
                 self.phase(agent)?,
                 Phase::Submitted | Phase::LazySubmitted | Phase::Unknown
             )
-            || receipt["certainty"] != certainty.as_str()
-            || receipt["operation"] != operation
-            || receipt["scope"] != member["providerIntent"]["scope"]
-            || (certainty == RequestCertainty::Written && receipt["ticket"].is_null())
-            || (certainty != RequestCertainty::Written && written_result.is_some())
+            || receipt_operation != operation
+            || scope != member["providerIntent"]["scope"]
         {
             return Err(TransferError::Refused(
                 "The provider receipt does not match this transfer intent",
@@ -1853,6 +1932,72 @@ fn validate_source_for_submission(member: &Value, agent: &Value) -> Result<(), T
 #[cfg(test)]
 mod provider_receipt_tests {
     use super::*;
+    use crate::account_session_runtime::SessionOutcome;
+    use studio_runtime_providers::{Method, RequestTicket};
+
+    fn test_session(
+        raw: Value,
+        result: Option<Value>,
+        certainty: RequestCertainty,
+    ) -> SessionReceipt {
+        let mut scope = raw["scope"].clone();
+        if scope.get("generation").is_none() {
+            scope["generation"] = json!(1);
+        }
+        let scope: ConnectionScope = serde_json::from_value(scope).expect("scope");
+        let ticket = RequestTicket {
+            generation: raw["ticket"]["generation"]
+                .as_u64()
+                .unwrap_or(scope.generation),
+            id: serde_json::from_value(raw["ticket"]["id"].clone()).expect("ticket id"),
+            method: Method::from_wire(raw["ticket"]["method"].as_str().unwrap_or("thread/start"))
+                .expect("method"),
+        };
+        let outcome = match certainty {
+            RequestCertainty::Written => {
+                let result = result.expect("written response");
+                let value = if result.get("kind").is_some() {
+                    result["value"].clone()
+                } else {
+                    result
+                };
+                SessionOutcome::Written {
+                    ticket,
+                    response: ProviderResponse::Reply(value),
+                }
+            }
+            RequestCertainty::NotSent => SessionOutcome::WorkerNotSent { ticket },
+            RequestCertainty::Unknown => SessionOutcome::Unknown { ticket },
+        };
+        SessionReceipt {
+            scope,
+            operation: raw["operation"].as_str().expect("operation").into(),
+            outcome,
+            replayed: false,
+        }
+    }
+
+    fn test_dispatch(
+        raw: Value,
+        result: Option<Value>,
+        certainty: RequestCertainty,
+    ) -> TransferDispatch {
+        if raw["ticket"].is_null() {
+            let mut scope = raw["scope"].clone();
+            if scope.get("generation").is_none() {
+                scope["generation"] = json!(1);
+            }
+            let scope = serde_json::from_value(scope).expect("scope");
+            let operation = raw["operation"].as_str().expect("operation").into();
+            match certainty {
+                RequestCertainty::Unknown => TransferDispatch::Unknown { operation, scope },
+                RequestCertainty::NotSent => panic!("NotSent requires a retained receipt"),
+                RequestCertainty::Written => panic!("written requires a ticket"),
+            }
+        } else {
+            TransferDispatch::Receipt(test_session(raw, result, certainty))
+        }
+    }
 
     fn snapshot() -> Snapshot {
         let operation = json!({
@@ -1893,7 +2038,7 @@ mod provider_receipt_tests {
         .provider_intent(
             "agent",
             "transfer:agent:thread-start",
-            json!({"account":"target","connection":"connection-1"}),
+            json!({"account":"target","connection":"connection-1","generation":1}),
             "thread/start",
             json!({"model":"model-a"}),
         )
@@ -1988,30 +2133,28 @@ mod provider_receipt_tests {
         );
         assert!(member.get("providerReceipts").is_none());
 
-        let receipt = json!({"operation":"transfer:agent:thread-start", "scope":{"account":"target","connection":"connection-1"}, "certainty":"written", "ticket":{"id":9}});
+        let receipt = json!({"operation":"transfer:agent:thread-start", "scope":{"account":"target","connection":"connection-1","generation":1}, "certainty":"written", "ticket":{"id":9}});
         let result = Some(json!({"thread":{"id":"target-thread"}}));
         let recorded = submitted
             .provider_receipt(
                 "agent",
                 "transfer:agent:thread-start",
-                receipt.clone(),
-                result.clone(),
-                RequestCertainty::Written,
+                &test_dispatch(receipt.clone(), result.clone(), RequestCertainty::Written),
             )
             .expect("test fixture operation succeeds");
         let recorded = after(recorded);
         assert_eq!(recorded.operation["members"]["agent"]["phase"], "ready");
         assert_eq!(
             recorded.operation["members"]["agent"]["providerReceipts"][0],
-            receipt
+            json!({"operation":"transfer:agent:thread-start", "scope":{"account":"target","connection":"connection-1","generation":1},
+                "certainty":"written", "ticket":{"generation":1,"id":9,"method":"thread/start"},
+                "notSentReason":null,"result":{"thread":{"id":"target-thread"}}})
         );
         let replay = recorded
             .provider_receipt(
                 "agent",
                 "transfer:agent:thread-start",
-                receipt,
-                result,
-                RequestCertainty::Written,
+                &test_dispatch(receipt, result, RequestCertainty::Written),
             )
             .expect("test fixture operation succeeds");
         assert!(!replay.changed);
@@ -2034,17 +2177,13 @@ mod provider_receipt_tests {
                 .provider_intent(
                     "agent",
                     "transfer:agent:thread-start",
-                    json!({"account":"target","connection":"connection-1"}),
+                    json!({"account":"target","connection":"connection-1","generation":1}),
                     "thread/start",
                     json!({"model":"model-b"}),
                 )
                 .expect("test fixture operation succeeds"),
         );
-        let mut ready = after(submitted.provider_receipt(
-            "agent", "transfer:agent:thread-start",
-            json!({"operation":"transfer:agent:thread-start", "scope":{"account":"target","connection":"connection-1"}, "certainty":"written", "ticket":{"id":11}}),
-            Some(json!({"thread":{"id":"target-thread"}})), RequestCertainty::Written,
-        ).expect("test fixture operation succeeds"));
+        let mut ready = after(submitted.provider_receipt("agent", "transfer:agent:thread-start", &test_dispatch(json!({"operation":"transfer:agent:thread-start", "scope":{"account":"target","connection":"connection-1","generation":1}, "certainty":"written", "ticket":{"id":11}}), Some(json!({"thread":{"id":"target-thread"}})), RequestCertainty::Written)).expect("test fixture operation succeeds"));
         for (path, invalid) in [
             ("/targetSettings", Value::Null),
             ("/result", Value::Null),
@@ -2100,15 +2239,13 @@ mod provider_receipt_tests {
     #[test]
     fn not_sent_releases_retry_with_same_operation_and_unknown_stays_held() {
         let first = after(intent(&snapshot()));
-        let receipt = json!({"operation":"transfer:agent:thread-start", "scope":{"account":"target","connection":"connection-1"}, "certainty":"not_sent", "ticket":{"generation":7,"id":10,"method":"thread/start"}});
+        let receipt = json!({"operation":"transfer:agent:thread-start", "scope":{"account":"target","connection":"connection-1","generation":1}, "certainty":"not_sent", "ticket":{"generation":7,"id":10,"method":"thread/start"}});
         let released = after(
             first
                 .provider_receipt(
                     "agent",
                     "transfer:agent:thread-start",
-                    receipt,
-                    None,
-                    RequestCertainty::NotSent,
+                    &test_dispatch(receipt, None, RequestCertainty::NotSent),
                 )
                 .expect("test fixture operation succeeds"),
         );
@@ -2123,23 +2260,47 @@ mod provider_receipt_tests {
             10
         );
 
-        let unknown = after(retry.provider_receipt(
-            "agent", "transfer:agent:thread-start",
-            json!({"operation":"transfer:agent:thread-start", "scope":{"account":"target","connection":"connection-1"}, "certainty":"unknown", "ticket":null}),
-            None, RequestCertainty::Unknown,
-        ).expect("test fixture operation succeeds"));
+        let unknown = after(retry.provider_receipt("agent", "transfer:agent:thread-start", &test_dispatch(json!({"operation":"transfer:agent:thread-start", "scope":{"account":"target","connection":"connection-1","generation":1}, "certainty":"unknown", "ticket":null}), None, RequestCertainty::Unknown)).expect("test fixture operation succeeds"));
         assert_eq!(unknown.operation["members"]["agent"]["phase"], "unknown");
         assert!(
             unknown
                 .provider_intent(
                     "agent",
                     "transfer:agent:thread-start",
-                    json!({"account":"target","connection":"connection-1"}),
+                    json!({"account":"target","connection":"connection-1","generation":1}),
                     "thread/start",
                     json!({"model":"model-a"}),
                 )
                 .is_err()
         );
+    }
+
+    #[test]
+    fn rejected_response_cannot_adopt_a_thread() {
+        let submitted = after(intent(&snapshot()));
+        let raw = json!({"operation":"transfer:agent:thread-start", "scope":{"account":"target","connection":"connection-1","generation":1},
+            "ticket":{"generation":1,"id":9,"method":"thread/start"}});
+        let mut receipt = test_session(raw, Some(json!({})), RequestCertainty::Written);
+        let SessionOutcome::Written { response, .. } = &mut receipt.outcome else {
+            panic!("written fixture")
+        };
+        *response = ProviderResponse::Rejected(json!({"thread":{"id":"not-a-success"}}));
+        let recorded = after(
+            submitted
+                .provider_receipt(
+                    "agent",
+                    "transfer:agent:thread-start",
+                    &TransferDispatch::Receipt(receipt),
+                )
+                .expect("save rejection"),
+        );
+        assert_eq!(recorded.operation["members"]["agent"]["phase"], "unknown");
+        assert!(
+            recorded.operation["members"]["agent"]
+                .get("result")
+                .is_none()
+        );
+        assert!(recorded.adopt_receipt("agent").is_err());
     }
 
     #[test]
@@ -2169,9 +2330,11 @@ mod provider_receipt_tests {
                 .provider_read_receipt(
                     "agent",
                     op_id,
-                    receipt.clone(),
-                    Some(response.clone()),
-                    RequestCertainty::Written,
+                    &test_session(
+                        receipt.clone(),
+                        Some(response.clone()),
+                        RequestCertainty::Written,
+                    ),
                 )
                 .expect("test fixture operation succeeds"),
         );
@@ -2209,9 +2372,7 @@ mod provider_receipt_tests {
                 .provider_read_receipt(
                     "agent",
                     read_op,
-                    not_sent_receipt,
-                    None,
-                    RequestCertainty::NotSent,
+                    &test_session(not_sent_receipt, None, RequestCertainty::NotSent),
                 )
                 .expect("test fixture operation succeeds"),
         );
@@ -2259,15 +2420,13 @@ mod provider_receipt_tests {
         );
         let unknown_op = "account-transfer:transfer:agent:turns:0";
         let unknown_receipt = json!({"operation":unknown_op,"scope":{"account":"source","connection":"source-conn","generation":2},
-            "certainty":"unknown","ticket":null});
+            "certainty":"unknown","ticket":{"generation":2,"id":11,"method":"thread/turns/list"}});
         let held = after(
             unknown
                 .provider_read_receipt(
                     "agent",
                     unknown_op,
-                    unknown_receipt,
-                    None,
-                    RequestCertainty::Unknown,
+                    &test_session(unknown_receipt, None, RequestCertainty::Unknown),
                 )
                 .expect("test fixture operation succeeds"),
         );
@@ -2321,9 +2480,11 @@ mod provider_receipt_tests {
                 .provider_read_receipt(
                     "agent",
                     operation,
-                    receipt,
-                    Some(json!({"kind":"reply","value":response})),
-                    RequestCertainty::Written,
+                    &test_session(
+                        receipt,
+                        Some(json!({"kind":"reply","value":response})),
+                        RequestCertainty::Written,
+                    ),
                 )
                 .expect("test fixture operation succeeds"),
         );

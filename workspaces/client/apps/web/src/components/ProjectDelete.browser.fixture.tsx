@@ -1,3 +1,7 @@
+import {
+  AgentSource as GeneratedApiAgentSource,
+  AgentStatus as GeneratedApiAgentStatus,
+} from "../generated/api.ts";
 import type { Agent, Snapshot } from "../types.ts";
 import type { SidebarBackend, SidebarServices } from "./sidebar/services.tsx";
 import type { PostBody, PostResult } from "../api.ts";
@@ -40,10 +44,10 @@ const project = {
 const agent: Agent = {
   id: "lead",
   cwd: "/project",
-  source: "managed",
+  source: GeneratedApiAgentSource.managed,
   isLead: true,
   name: "Chat",
-  status: "paused",
+  status: GeneratedApiAgentStatus.paused,
   projectId: "project",
   projectServerId: "home",
 };

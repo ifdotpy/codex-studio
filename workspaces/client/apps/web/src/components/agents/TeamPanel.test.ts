@@ -1,3 +1,4 @@
+import { AgentStatus } from "../../generated/api";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { MantineProvider } from "@mantine/core";
@@ -25,8 +26,16 @@ function renderTeam(deferred = false, workerFilter = "all") {
       {},
       createElement(TeamPanel, {
         workers: [
-          { id: "approval", name: "Approval worker", status: "approval" },
-          { id: "finished", name: "Finished worker", status: "completed" },
+          {
+            id: "approval",
+            name: "Approval worker",
+            status: AgentStatus.approval,
+          },
+          {
+            id: "finished",
+            name: "Finished worker",
+            status: AgentStatus.completed,
+          },
         ],
         accounts: [],
         opened: null,

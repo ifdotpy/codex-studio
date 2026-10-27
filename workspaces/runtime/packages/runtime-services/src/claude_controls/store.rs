@@ -155,15 +155,14 @@ impl ControlStorage for StoredControls {
         &self,
         expected: ControlSnapshot,
         request: ControlRequest,
-        native: Value,
-        queue: Value,
+        proof: NativeProof,
     ) -> ControlFuture<'_, ControlSnapshot> {
         let store = self.store.clone();
         Box::pin(async move {
             store
                 .transaction_with(move |tx| {
                     let current = current(tx, &expected)?;
-                    let operation = current.submitted(&request, &native, &queue, now())?;
+                    let operation = current.submitted(&request, &proof, now())?;
                     Repository::apply(tx, &current.raw, &operation, &[])?;
                     ControlSnapshot::from_records(current.raw, Some(operation))
                 })
@@ -173,14 +172,15 @@ impl ControlStorage for StoredControls {
     fn provider(
         &self,
         expected: ControlSnapshot,
-        result: Value,
+        request: ControlRequest,
+        result: MutationReply,
     ) -> ControlFuture<'_, ControlSnapshot> {
         let store = self.store.clone();
         Box::pin(async move {
             store
                 .transaction_with(move |tx| {
                     let current = current(tx, &expected)?;
-                    let operation = current.provider_ready(result, now())?;
+                    let operation = current.provider_ready(&request, result, now())?;
                     Repository::apply(tx, &current.raw, &operation, &[])?;
                     ControlSnapshot::from_records(current.raw, Some(operation))
                 })

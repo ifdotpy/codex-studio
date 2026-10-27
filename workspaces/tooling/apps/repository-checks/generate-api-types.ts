@@ -17,23 +17,68 @@ const JSON_VALUE_ALIAS =
   "export type JsonValue = null | boolean | number | string | JsonValue[] " +
   "| { [key: string]: JsonValue };";
 
-// Runtime consumers use these closed domains from the same schema as their types.
-function runtimeEnumValues(document: import("openapi-typescript").OpenAPI3) {
-  return ["RequestStatus", "TaskStatus", "TransferStatus"]
-    .flatMap((name) => {
-      const schema = document.components?.schemas?.[name];
-      if (!schema) return [];
-      if (
-        !("enum" in schema) ||
-        !schema.enum?.every((value) => typeof value === "string")
+function identifierForComponent(name: string) {
+  let identifier = name.replace(/[^a-zA-Z0-9_$]/g, "_");
+  if (!/^[a-zA-Z_$]/.test(identifier)) identifier = `_${identifier}`;
+  if (
+    ts
+      .createScanner(
+        ts.ScriptTarget.Latest,
+        false,
+        ts.LanguageVariant.Standard,
+        identifier,
       )
-        throw new Error(`${name} must be a closed string enum`);
+      .scan() !== ts.SyntaxKind.Identifier
+  )
+    identifier = `_${identifier}`;
+  return identifier;
+}
+
+// Runtime consumers use these closed domains from the same schema as their types.
+function runtimeEnumValues(
+  document: import("openapi-typescript").OpenAPI3,
+  rustOwned: boolean,
+) {
+  const names = new Set<string>();
+  const declarations = Object.entries(document.components?.schemas ?? {})
+    .sort(([left], [right]) => left.localeCompare(right))
+    .flatMap(([name, schema]) => {
+      if (
+        ("type" in schema && schema.type !== "string") ||
+        !("enum" in schema) ||
+        !schema.enum?.length ||
+        !schema.enum.every((value) => typeof value === "string")
+      )
+        return [];
+      const identifier = identifierForComponent(name);
+      const schemas = document.components?.schemas ?? {};
+      const typeCollision =
+        ["paths", "webhooks", "components", "operations", "JsonValue"].includes(
+          identifier,
+        ) ||
+        Object.keys(schemas).some(
+          (other) =>
+            other !== name &&
+            (rustOwned ||
+              other.endsWith("EntityDto") ||
+              other === "SyncEntityPayload") &&
+            identifierForComponent(other) === identifier,
+        );
+      if (names.has(identifier) || typeCollision)
+        throw new Error(`Invalid or colliding enum component name: ${name}`);
+      names.add(identifier);
+      if (new Set(schema.enum).size !== schema.enum.length)
+        throw new Error(`Duplicate enum value in ${name}`);
       const entries = schema.enum.map(
-        (value) => `${JSON.stringify(value)}: ${JSON.stringify(value)}`,
+        (value) =>
+          `${value === "__proto__" ? `[${JSON.stringify(value)}]` : JSON.stringify(value)}: ${JSON.stringify(value)}`,
       );
-      return [`export const ${name} = { ${entries.join(", ")} } as const;`];
+      return [
+        `export const ${identifier} = { ${entries.join(", ")} } as const;\nexport type ${identifier} = components["schemas"][${JSON.stringify(name)}];`,
+      ];
     })
     .join("\n");
+  return { declarations, names };
 }
 
 function format(input: string) {
@@ -57,7 +102,10 @@ function format(input: string) {
   return result.stdout;
 }
 
-function entityAliases(document: import("openapi-typescript").OpenAPI3) {
+function entityAliases(
+  document: import("openapi-typescript").OpenAPI3,
+  enumNames: Set<string>,
+) {
   const schemas = document.components?.schemas ?? {};
   const names = Object.keys(schemas)
     .filter((name) => name.endsWith("EntityDto"))
@@ -66,6 +114,7 @@ function entityAliases(document: import("openapi-typescript").OpenAPI3) {
     throw new Error("OpenAPI document has no *EntityDto component schemas");
   if ("SyncEntityPayload" in schemas) names.push("SyncEntityPayload");
   return names
+    .filter((name) => !enumNames.has(identifierForComponent(name)))
     .map((name) => `\nexport type ${name} = components["schemas"]["${name}"];`)
     .join("");
 }
@@ -151,20 +200,27 @@ const generated = COMMENT_HEADER + optionalPropertyInputs(nodes);
 const declarations = recursiveJsonValue
   ? `${generated}\n${JSON_VALUE_ALIAS}`
   : generated;
-const runtimeValues = runtimeEnumValues(document);
-const runtimeDeclarations = runtimeValues ? `${runtimeValues}\n` : "";
+const runtimeValues = runtimeEnumValues(document, rustOwned);
+const runtimeDeclarations = runtimeValues.declarations
+  ? `${runtimeValues.declarations}\n`
+  : "";
 process.stdout.write(
   format(
     rustOwned
       ? `${declarations}\n${runtimeDeclarations}${Object.keys(
           document.components?.schemas ?? {},
         )
-          .filter((name) => name !== "JsonValue" || !recursiveJsonValue)
+          .filter(
+            (name) =>
+              (name !== "JsonValue" || !recursiveJsonValue) &&
+              !runtimeValues.names.has(identifierForComponent(name)),
+          )
           .sort()
           .map(
-            (name) => `export type ${name} = components["schemas"]["${name}"];`,
+            (name) =>
+              `export type ${identifierForComponent(name)} = components["schemas"][${JSON.stringify(name)}];`,
           )
           .join("\n")}\n`
-      : `${declarations}${entityAliases(document)}\n${runtimeDeclarations}`,
+      : `${declarations}${entityAliases(document, runtimeValues.names)}\n${runtimeDeclarations}`,
   ),
 );

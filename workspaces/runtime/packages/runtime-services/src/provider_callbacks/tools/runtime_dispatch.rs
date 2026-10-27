@@ -9,9 +9,7 @@ use serde_json::{Value, json};
 use studio_runtime_store::RuntimeStore;
 
 use crate::managed_child_create::ManagedCreationEnvironmentError as CreationError;
-use crate::managed_host_tools::{
-    Actor, DeliveryCertainty, DispatchedOperation, Error, OperationResult, WakeSignal,
-};
+use crate::managed_host_tools::{Actor, DispatchedOperation, Error, OperationResult, WakeSignal};
 
 /// What a worker creation asks of account selection.
 pub struct WorkerAccountRequest<'a> {
@@ -230,7 +228,7 @@ pub(crate) trait ChildCreationPort: Send + Sync {
         args: &'a Value,
         request_id: &'a str,
         now: f64,
-    ) -> BoxFuture<'a, Result<OperationResult, Error>>;
+    ) -> BoxFuture<'a, Result<DispatchedOperation, Error>>;
 
     fn review<'a>(
         &'a self,
@@ -239,7 +237,7 @@ pub(crate) trait ChildCreationPort: Send + Sync {
         args: &'a Value,
         request_id: &'a str,
         now: f64,
-    ) -> BoxFuture<'a, Result<OperationResult, Error>>;
+    ) -> BoxFuture<'a, Result<DispatchedOperation, Error>>;
 }
 
 pub(crate) trait MonitorCreatePort: Send + Sync {
@@ -499,14 +497,10 @@ pub(super) async fn dispatch(
                 Ok(value) => written(value, Vec::new()),
                 // The bridge returns the earlier request of the same link, so a
                 // refusal, also after a lost reply, is safe to send again.
-                Err(message) => DispatchedOperation {
-                    result: OperationResult {
-                        value: json!(message),
-                        signals: Vec::new(),
-                    },
-                    certainty: DeliveryCertainty::NotSent,
-                    applied: Some(false),
-                },
+                Err(message) => DispatchedOperation::NotSent(OperationResult {
+                    value: json!(message),
+                    signals: Vec::new(),
+                }),
             }
         }
         "orchestration_servers" => {
@@ -565,7 +559,7 @@ pub(super) async fn dispatch(
                 port.review(store_ref, actor, args, request_id, now).await
             };
             match result {
-                Ok(result) => child_creation_result(result),
+                Ok(result) => result,
                 Err(error) => child_creation_refusal(store_ref, tool, request_id, error).await?,
             }
         }
@@ -665,14 +659,12 @@ pub(super) async fn dispatch(
                         json!({"tool":"orchestration_task","action":"get","task_id":record["id"]});
                     written(value, Vec::new())
                 }
-                WorkActionOutcome::Refused(message) => DispatchedOperation {
-                    result: OperationResult {
+                WorkActionOutcome::Refused(message) => {
+                    DispatchedOperation::NotSent(OperationResult {
                         value: json!(message),
                         signals: Vec::new(),
-                    },
-                    certainty: DeliveryCertainty::NotSent,
-                    applied: Some(false),
-                },
+                    })
+                }
                 WorkActionOutcome::Unknown(message) => unknown(json!(message), Vec::new()),
             }
         }
@@ -962,14 +954,10 @@ async fn speak(
         Err(error @ (V::Unknown | V::Store(_) | V::Voice(crate::voice::VoiceError::Store(_)))) => {
             unknown(json!(error.to_string()), Vec::new())
         }
-        Err(error) => DispatchedOperation {
-            result: OperationResult {
-                value: json!(error.to_string()),
-                signals: Vec::new(),
-            },
-            certainty: DeliveryCertainty::Written,
-            applied: Some(false),
-        },
+        Err(error) => DispatchedOperation::Rejected(OperationResult {
+            value: json!(error.to_string()),
+            signals: Vec::new(),
+        }),
     }
 }
 
@@ -1054,35 +1042,21 @@ pub(crate) fn managed_input_receipt(
     let receipt = [&record["lastInputAttempt"], &record["inputAttempt"]]
         .into_iter()
         .find(|receipt| receipt.get("id").and_then(Value::as_str) == Some(request_id));
-    let (value, certainty, applied) = match receipt {
-        Some(receipt) if receipt["status"] == "acknowledged" => (
-            receipt.get("response").cloned().unwrap_or(Value::Null),
-            DeliveryCertainty::Written,
-            Some(true),
-        ),
-        Some(receipt) if receipt["status"] == "failed" => (
-            json!("Monitor input was rejected"),
-            DeliveryCertainty::NotSent,
-            Some(false),
-        ),
-        Some(_) => (
-            json!("Monitor input outcome unknown; do not repeat it"),
-            DeliveryCertainty::Unknown,
-            None,
-        ),
-        None => (
-            json!("Monitor input was not submitted"),
-            DeliveryCertainty::NotSent,
-            Some(false),
-        ),
+    let result = |value| OperationResult {
+        value,
+        signals: Vec::new(),
     };
-    Ok(DispatchedOperation {
-        result: OperationResult {
-            value,
-            signals: Vec::new(),
-        },
-        certainty,
-        applied,
+    Ok(match receipt {
+        Some(receipt) if receipt["status"] == "acknowledged" => DispatchedOperation::Applied(
+            result(receipt.get("response").cloned().unwrap_or(Value::Null)),
+        ),
+        Some(receipt) if receipt["status"] == "failed" => {
+            DispatchedOperation::NotSent(result(json!("Monitor input was rejected")))
+        }
+        Some(_) => DispatchedOperation::Unknown(result(json!(
+            "Monitor input outcome unknown; do not repeat it"
+        ))),
+        None => DispatchedOperation::NotSent(result(json!("Monitor input was not submitted"))),
     })
 }
 
@@ -1148,14 +1122,10 @@ fn not_sent(error: Error) -> DispatchedOperation {
         | error @ Error::Sqlite(_)
         | error @ Error::Work(_) => json!(error.to_string()),
     };
-    DispatchedOperation {
-        result: OperationResult {
-            value,
-            signals: Vec::new(),
-        },
-        certainty: DeliveryCertainty::NotSent,
-        applied: Some(false),
-    }
+    DispatchedOperation::NotSent(OperationResult {
+        value,
+        signals: Vec::new(),
+    })
 }
 
 fn unknown_input() -> DispatchedOperation {
@@ -1166,33 +1136,17 @@ fn unknown_input() -> DispatchedOperation {
 }
 
 fn unknown(value: Value, signals: Vec<WakeSignal>) -> DispatchedOperation {
-    DispatchedOperation {
-        result: OperationResult { value, signals },
-        certainty: DeliveryCertainty::Unknown,
-        applied: None,
-    }
+    DispatchedOperation::Unknown(OperationResult { value, signals })
 }
 
 fn written(value: Value, signals: Vec<WakeSignal>) -> DispatchedOperation {
-    DispatchedOperation {
-        result: OperationResult { value, signals },
-        certainty: DeliveryCertainty::Written,
-        applied: Some(true),
-    }
-}
-
-fn child_creation_result(result: OperationResult) -> DispatchedOperation {
-    if result.value.get("outcome").and_then(Value::as_str) == Some("unknown") {
-        unknown(result.value, result.signals)
-    } else {
-        written(result.value, result.signals)
-    }
+    DispatchedOperation::Applied(OperationResult { value, signals })
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{child_creation_result, managed_input_receipt};
-    use crate::managed_host_tools::{DeliveryCertainty, OperationResult};
+    use super::managed_input_receipt;
+    use crate::managed_host_tools::{DispatchedOperation, OperationResult};
     use serde_json::json;
 
     #[tokio::test]
@@ -1248,9 +1202,9 @@ mod tests {
         .await
         .expect("dispatch")
         .expect("maintenance report has an async owner");
-        assert_eq!(result.certainty, DeliveryCertainty::Written);
+        assert!(matches!(result, DispatchedOperation::Applied(_)));
         assert_eq!(
-            result.result.value,
+            result.result().value,
             json!({"worktrees":[],"workspaces":[],"bases":[]})
         );
     }
@@ -1282,16 +1236,15 @@ mod tests {
         let refusal = super::not_sent(crate::managed_host_tools::Error::Unavailable(
             crate::model_catalog::MODEL_CATALOG_DEPENDENCY,
         ));
-        assert_eq!(refusal.certainty, DeliveryCertainty::NotSent);
-        assert_eq!(refusal.applied, Some(false));
-        let text = refusal.result.value.as_str().expect("refusal text");
+        assert!(matches!(refusal, DispatchedOperation::NotSent(_)));
+        let text = refusal.result().value.as_str().expect("refusal text");
         assert!(text.contains("temporarily unavailable"), "{text}");
         assert!(text.contains("new request_id"), "{text}");
         let other = super::not_sent(crate::managed_host_tools::Error::Unavailable(
             "agent-create/managed-environment",
         ));
         assert_eq!(
-            other.result.value,
+            other.result().value,
             json!("Not implemented: requires agent-create/managed-environment")
         );
     }
@@ -1303,9 +1256,9 @@ mod tests {
         let refusal = super::not_sent(super::callback_refusal(
             crate::provider_callbacks::CallbackError::Stored("agents/a/cwd".into()),
         ));
-        assert_eq!(refusal.certainty, DeliveryCertainty::NotSent);
+        assert!(matches!(refusal, DispatchedOperation::NotSent(_)));
         assert_eq!(
-            refusal.result.value,
+            refusal.result().value,
             json!("Invalid stored record at agents/a/cwd")
         );
         assert!(matches!(
@@ -1315,35 +1268,28 @@ mod tests {
     }
 
     #[test]
-    fn uncertain_guest_save_remains_unknown_at_the_tool_boundary() {
-        let result = child_creation_result(OperationResult {
-            value: json!({"outcome":"unknown","requestId":"review-1"}),
+    fn child_creation_payload_does_not_determine_delivery() {
+        let payload = OperationResult {
+            value: json!({"outcome":"unknown"}),
             signals: Vec::new(),
-        });
-        assert_eq!(result.certainty, DeliveryCertainty::Unknown);
-        assert_eq!(result.applied, None);
-        assert_eq!(result.result.value["outcome"], "unknown");
+        };
+        let applied = crate::managed_host_tools::DispatchedOperation::Applied(payload.clone());
+        let unknown = crate::managed_host_tools::DispatchedOperation::Unknown(payload);
+        assert!(matches!(applied, DispatchedOperation::Applied(_)));
+        assert!(matches!(unknown, DispatchedOperation::Unknown(_)));
     }
 
     #[test]
     fn managed_input_receipts_preserve_written_not_sent_and_unknown() {
-        for (status, expected) in [
-            ("acknowledged", DeliveryCertainty::Written),
-            ("failed", DeliveryCertainty::NotSent),
-            ("pending", DeliveryCertainty::Unknown),
-        ] {
+        for status in ["acknowledged", "failed", "pending"] {
             let record = json!({"lastInputAttempt":{"id":"stable-input","status":status,"response":{"ok":true}}});
-            let result = managed_input_receipt(&record, "stable-input")
-                .expect("known receipt has durable outcome");
-            assert_eq!(result.certainty, expected, "status {status}");
-            assert_eq!(
-                result.applied,
-                match expected {
-                    DeliveryCertainty::Written => Some(true),
-                    DeliveryCertainty::NotSent => Some(false),
-                    DeliveryCertainty::Unknown => None,
-                }
-            );
+            let result = managed_input_receipt(&record, "stable-input").expect("known receipt");
+            assert!(matches!(
+                (status, result),
+                ("acknowledged", DispatchedOperation::Applied(_))
+                    | ("failed", DispatchedOperation::NotSent(_))
+                    | ("pending", DispatchedOperation::Unknown(_))
+            ));
         }
     }
 }

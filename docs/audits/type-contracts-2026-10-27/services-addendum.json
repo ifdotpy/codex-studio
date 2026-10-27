@@ -1,0 +1,2556 @@
+{
+  "claude_control_family_inventory": [
+    "settings (live permission versus idle change)",
+    "rollback context-only",
+    "rollback with file restore",
+    "state including lazy source account",
+    "commands",
+    "stop_task",
+    "native command text",
+    "durable transport/provider/failure receipts"
+  ],
+  "combined_services_coverage": {
+    "allSourceHash": "2364b5e0eaabcb0111cdef0322fac4f256095d8508f25719f870a707a3424f18",
+    "all_tracked": 855,
+    "documentation_metadata": 8,
+    "interpretation": "Task35 plus this disjoint supplement mechanically covers847source/fixture files and inventories all855tracked paths. Production files324 include4non-Rust resources/scripts inherited from task35; supplement20 are allRust. This does not upgrade prior task35 structural/unresolved rows to deep proofs.",
+    "productionCount": 324,
+    "productionHash": "79aa9be3213a24aaef879a12e66452691bb4d53cda0503c4f7d3f23b8f6f32b5",
+    "remaining_assigned_away_exclusions": 0,
+    "sourceCount": 847,
+    "testCount": 523,
+    "testHash": "e0320a15767a2ca5e6b11355ac950eb91ca2e309818071da6ae1da1511d8f0a1"
+  },
+  "context": "Complements task35. The 20 exact inventory.excluded paths are now source-audited at the same base revision; this is independent of any later implementation/review commits and makes no claim that those reviews covered the base. The originally selected transfer receipts, Claude controls and managed dispatch remain in context, but this report covers full surrounding production families and every recognized tool route.",
+  "dispatch_inventory": {
+    "columns": [
+      "published_tool",
+      "ToolKind",
+      "actual_route_or_fallback",
+      "family_ids"
+    ],
+    "recognized_tool_names": 27,
+    "rows": [
+      [
+        "orchestration_request",
+        "Request",
+        "services.rs:915 → request_action:1223 → prepared::Payloads::execute",
+        "SV2"
+      ],
+      [
+        "orchestration_task",
+        "Task",
+        "runtime_dispatch.rs:643 claim/submit/accept → WorkActionPort; services/work.rs:3 other actions",
+        "SV1"
+      ],
+      [
+        "orchestration_message",
+        "Message",
+        "services.rs:919 → messages.rs:140/175",
+        "SV7,SV8"
+      ],
+      [
+        "orchestration_chat_read",
+        "ChatRead",
+        "services.rs:920 → reads.rs:10 → authorized chat projection",
+        "SV10"
+      ],
+      [
+        "orchestration_context",
+        "Context",
+        "managed_host_tools.rs:638 plan; services.rs:327 monitor/other → context.rs:9",
+        "SV4"
+      ],
+      [
+        "orchestration_peers",
+        "Peers",
+        "services.rs:921 → messages.rs:513 directory",
+        "SV9,SV3"
+      ],
+      [
+        "orchestration_status",
+        "Status",
+        "runtime_dispatch.rs:523 → runtime_ports.rs:446 → managed_status_watch",
+        "RT1"
+      ],
+      [
+        "orchestration_read",
+        "Read",
+        "tools.rs:591 prepared payload → services.rs:922 → reads.rs:66",
+        "SV2,SV10,SV11"
+      ],
+      [
+        "orchestration_search",
+        "Search",
+        "managed_host_tools.rs:637 → services.rs:294 → transcript::search_work_in_transaction",
+        "SV4"
+      ],
+      [
+        "orchestration_send",
+        "Send",
+        "runtime_dispatch.rs:425 remote worker routing; services.rs:55 descendant followup or messages send",
+        "SV7,SV8,RT1"
+      ],
+      [
+        "orchestration_spawn",
+        "Spawn",
+        "runtime_dispatch.rs:556 → runtime_ports.rs:190 managed_child_create; fallback managed_host_tools.rs:748",
+        "MH3,RT4"
+      ],
+      [
+        "orchestration_review",
+        "Review",
+        "runtime_dispatch.rs:556 → runtime_ports.rs:212 managed_child_create; fallback services.rs:487 NativeReviewPlan",
+        "MH3,RT4"
+      ],
+      [
+        "orchestration_monitor",
+        "Monitor",
+        "runtime_dispatch.rs:597 create/observe → runtime_ports.rs:241; services.rs:434 legacy cancel",
+        "RT2"
+      ],
+      [
+        "orchestration_monitor_input",
+        "MonitorInput",
+        "tools.rs:267 auth → runtime_dispatch.rs:608/:620 Input → runtime_ports.rs:499",
+        "RT3"
+      ],
+      [
+        "orchestration_cancel_monitor",
+        "CancelMonitor",
+        "services.rs:816 owner resolution → monitor_driver::reserve_cancel",
+        "RT2"
+      ],
+      [
+        "orchestration_move",
+        "Move",
+        "runtime_dispatch worker_route :445 if eligible; otherwise services.rs:945 named dependency",
+        "RT1"
+      ],
+      [
+        "orchestration_teleport",
+        "Teleport",
+        "same multi-server routing and named dependency as Move; original alias identity retained tools.rs:175",
+        "RT1"
+      ],
+      [
+        "orchestration_servers",
+        "Servers",
+        "runtime_dispatch.rs:512 → attached MultiServer port",
+        "RT1"
+      ],
+      [
+        "orchestration_interrupt",
+        "Interrupt",
+        "runtime_dispatch.rs:572 → resolve_interrupt_target → runtime_ports.rs:544 lifecycle; fallback managed_host_tools.rs:619",
+        "MH2,RT4"
+      ],
+      [
+        "orchestration_agent_manage",
+        "AgentManage",
+        "runtime_dispatch.rs:707 maintenance/:734 recovery/reset/:754 lifecycle; services/manage.rs:121 local13-action set",
+        "SV5,SV6"
+      ],
+      [
+        "orchestration_watch",
+        "Watch",
+        "runtime_dispatch.rs:531 → runtime_ports.rs:466 rules + monitor cancellation",
+        "RT1,RT2"
+      ],
+      [
+        "orchestration_complaint",
+        "Complaint",
+        "managed_host_tools.rs:670 → services.rs:362 → notification_dispatch::agent_complaint_action",
+        "SV4"
+      ],
+      [
+        "orchestration_speak",
+        "Speak",
+        "runtime_dispatch.rs:466/:933 → voice::SpeakRequest",
+        "SV12"
+      ],
+      [
+        "orchestration_title",
+        "Title",
+        "services.rs:961 → checked actor save",
+        "SV12"
+      ],
+      [
+        "orchestration_sign_in",
+        "SignIn",
+        "runtime_dispatch.rs:481 → sign_in::tool",
+        "SV12"
+      ],
+      [
+        "host_exec",
+        "HostExec",
+        "runtime_dispatch.rs:679 → attached host_exec::run",
+        "RT1,SV12"
+      ],
+      [
+        "layr_read",
+        "LayrRead",
+        "runtime_dispatch.rs:694 → native or guest layr_read owner",
+        "RT1,SV12"
+      ],
+      [
+        "unknown native tool name",
+        "Unknown",
+        "ToolKind serde(other) tools.rs:128 → dispatch_with_ports:253 Unsupported",
+        "MH1"
+      ]
+    ],
+    "unknown_fallback": true
+  },
+  "family_counts": {
+    "already_typed": 4,
+    "remove": 24,
+    "retain": 5,
+    "total": 34,
+    "unresolved": 1
+  },
+  "family_table": [
+    {
+      "classification": "already_typed",
+      "compatibility": "Default scope 'team', account 'default', typed Source/TargetProvider must preserve old records and replay signatures.",
+      "essential": "UUID/global request identity, lead/root/descendant membership, provider eligibility, disabled account, limits and actor epoch.",
+      "evidence": "runtime-http/routes/account_transfer.rs:101/:178 maps HTTP action/request → account_transfer_driver.rs:210 request/:230 ProviderKind → account_transfer.rs:66 Phase/:91 Action/:97 Command/:105 Ticket/:116 TransferIdentity/:221 typed identity → :294 decide.",
+      "family": "Transfer command, phase, request and actor identity",
+      "id": "AT1",
+      "inspection": "focused source excerpts",
+      "owner": "Existing transfer types; runtime-schema PersistedAccountTransferRecord; runtime-store AccountTransferRepository",
+      "priority": "none",
+      "proposed_witness": "Each scope/action/phase; globally reused ID from another lead; old absent scope; typed provider dispatch parity.",
+      "replacement": "Retain these enum/ticket owners. A TransferScope(team|subagents) typed boundary can replace driver :221 string check and repeated scope default, without a parallel transfer state machine."
+    },
+    {
+      "classification": "remove",
+      "compatibility": "sourceStateExact true distinguishes missing versus null when cancelling (:444); old false/absent semantics differ. Unknown fields/insertion order/public privacy allowlist must survive. Full state-correlated member union requires more proof than merely adding a projection.",
+      "essential": "Bounded snapshot bytes/record count, exact row IDs, lineage, current inFlight/workspace hold, native/interrupt evidence, source revision, actual unfinished input; no unknown resend.",
+      "evidence": "driver.rs:352 operation/member writer → account_transfer.rs:191 schema+Value/:193 MemberOrder/:245 phase decode → :294 restart/cancel/:506 release_waiting/:1337 enroll → :1676 public_view/:1722 progress → driver.rs:433 persist.",
+      "family": "Transfer snapshot members, enrollment, restart/retry/cancel, public progress",
+      "id": "AT2",
+      "inspection": "focused source excerpts",
+      "owner": "PersistedAccountTransferRecord/member schema and existing Phase; transfer.rs MemberOrder owns insertion order",
+      "priority": "P2",
+      "proposed_witness": "Historical lazy/waiting/blocked/unknown records; cancellation before/after thread request; exact vs old sourceState restoration; original member order and no private public fields.",
+      "replacement": "Deserialize fixed operation/member projection once (members ordered separately); eliminate repeated phase Deserialize/indexing, scalar getters, object expects. Retain raw agent rows/extra fields for patches."
+    },
+    {
+      "classification": "remove",
+      "compatibility": "Written replay may use saved original scope after reconnect. String/number RequestId retained. Missing versus null reply value and rejected payload must preserve behavior; opaque native payload stays raw.",
+      "essential": "Exact operation/account/scope/method/params fingerprint, generation, valid RequestId, permitted read methods, current phase and source; unknown/no receipt never repeats, only proven NotSent retries.",
+      "evidence": "executor.rs:637 ticket/:644 reply-or-rejected/:648 exact receipt → driver.rs:1194 provider_read_intent/:1275 provider_read_receipt → transfer.rs:867 intent/:945 receipt wrapper → :756 written_read_replay/:878 certainty branch → executor.rs:556 reconstruct SessionReceipt.",
+      "family": "Provider read intent, receipt and replay",
+      "id": "AT3",
+      "inspection": "focused source excerpts",
+      "owner": "Existing RequestCertainty, ConnectionScope, RequestTicket, ProviderResponse/SessionOutcome plus transfer wire receipt owner",
+      "priority": "P1",
+      "proposed_witness": "Replay after reconnect without send; changed method/params/account; wrong ticket generation/id; missing/unknown receipt; Written rejection versus Reply(null). Existing pinned tests cover named scenarios but were not run.",
+      "replacement": "Typed read-intent and correlated receipt wrapper with Reply(Value)|Rejected(Value); remove manual ticket reconstruction, as_u64/default/Method parsing and written/result option cross-checks enforced by type."
+    },
+    {
+      "classification": "remove",
+      "compatibility": "Written rejected or missing thread identity remains unknown; invalid/persistence session errors remain Unknown (:1452), not no-send. Legacy transportTicket path needs explicit adapter.",
+      "essential": "Exact intent/ticket/scope/generation/account/epoch, source settings recheck, latest Written receipt, nonempty native thread identity, NotSent proof, reservation before effect, no unknown retry.",
+      "evidence": "executor.rs:1376 send produces TransferDispatch :1431/:1442 from typed SessionOutcome → driver.rs:561 reserve-before-send/:581 receipt → transfer.rs:995 provider_receipt/:1036 certainty → :1077 adoption and :1248 legacy receive → driver adopt receipt.",
+      "family": "Final transfer mutation, durable dispatch and adoption",
+      "id": "AT4",
+      "inspection": "focused source excerpts",
+      "owner": "TransferDispatch/ProviderReceipt wire format with existing Ticket/RequestCertainty and provider Thread result owner",
+      "priority": "P1",
+      "proposed_witness": "All SessionOutcome branches; receipt duplicate/conflict; adopted saved receipt only; source changed; Written invalid ID and lost commit cannot create second native thread.",
+      "replacement": "Correlated dispatch/receipt outcome removes independently mutable certainty, optional result and loose receipt fields; typed consumed thread-ID projection avoids repeated /thread/id gets. Keep complete raw result for archive/history."
+    },
+    {
+      "classification": "retain",
+      "compatibility": "Only legacy background-without-limit and allowed paginated history requests qualify. Existing receipt/transport evidence forbids rewriting even if new schema is nicer.",
+      "essential": "No transport evidence and no saved receipt, valid exact three-field source scope, method-specific shape, canonical page suffix, account/thread and phase.",
+      "evidence": "transfer.rs:668 correction matches canonical background/page identity/:721 old fingerprint/:743 preserves correction → driver.rs:1194 retained transport-evidence lookup gates persistence → transfer.rs:756 Written replay.",
+      "family": "Legacy unsubmitted-read correction",
+      "id": "AT5",
+      "inspection": "focused source excerpts",
+      "owner": "Transfer legacy correction adapter and retained worker transport evidence owner",
+      "priority": "none",
+      "proposed_witness": "Exact eligible legacy corrections; any transport evidence blocks; wrong cursor/thread/fingerprint; saved Written reply replays without rebinding.",
+      "replacement": "Retain original raw intent fingerprints and correction history; typed consumed projection optional, not normalization or automatic remapping."
+    },
+    {
+      "classification": "remove",
+      "compatibility": "Idle/notLoaded/systemError paths differ; missing/null nextCursor accepted, empty/repeated cursor refused. Preserve opaque full turns and native fields for archive.",
+      "essential": "Source idle proof, empty queue and background page/no continuation, exact scoped unsubscribe, bounded pages, cursor uniqueness, current thread, catalog account/generation/freshness.",
+      "evidence": "executor.rs:1037 thread/read → :1049 identity/:1053 state; :1059 queue/:1083 background/:1105 unsubscribe/:1116 recheck → :1162 turn pages/:1181 data/:1187 cursor; read_catalog :756 already ModelCatalog::parse.",
+      "family": "Source preflight and native history page metadata",
+      "id": "AT6",
+      "inspection": "focused source excerpts",
+      "owner": "Native provider thread/queue/background/page schema owners; existing ModelCatalog",
+      "priority": "P2",
+      "proposed_witness": "Each source status, queued/background item/cursor, repeated cursor, wrong thread; model page with unknown model name and old null cursor.",
+      "replacement": "Typed consumed thread/status/page headers (data can remain raw items) remove primitive array/cursor/type getters. Reuse ModelCatalog; no invented closed model names."
+    },
+    {
+      "classification": "retain",
+      "compatibility": "metadata payload id may be absent/null; unrelated manifest entry shape intentionally carried unchanged; existing destination same bytes is reusable.",
+      "essential": "Canonical account containment, allowed sessions roots/suffix, complete newline, no ancestry shortcut, bytes equality/nonoverwrite, lock/concurrency, file permissions, digest and atomic publication.",
+      "evidence": "executor.rs:62 copy_native_history/:94 first metadata Value/:96 type/history_base → :169 manifest/:183 writer → :1153 copy and :1159 native archive pages/:1201 portable export.",
+      "family": "Native copy/import manifest and portable history",
+      "id": "AT7",
+      "inspection": "focused source excerpts",
+      "owner": "Native JSONL/portable history owners; .studio-account-imports.json owned by executor",
+      "priority": "none",
+      "proposed_witness": "Unknown header fields, inherited history_base refused, partial JSONL, conflicting filename, concurrent distinct imports preserving both entries.",
+      "replacement": "Preserve full native bytes/pages and arbitrary old manifest entries. A small session_meta/header and newly written ImportEntry typed projection can remove scalar metadata walking, but old manifest entries must not be dropped."
+    },
+    {
+      "classification": "remove",
+      "compatibility": "Missing/null settings and sourceStateExact matter; cross-provider reset rules, resolved model aliases, unknown access-program strings follow existing owner. No total all-fields close.",
+      "essential": "Visible/default model selection, grant/fast/effort validity, pending account match, source settings unchanged, current preparation catalog, before_start ownership and blockers.",
+      "evidence": "executor.rs:784 destination_settings from agent+typed CatalogObservation → :818 ExecutionSettings/:833 validate_execution → :848 Value/:893 pending → :1300 params modifications/:1341 freeze; transfer.rs:1792 settings_snapshot/:1816 source check; executor :1463 before_start executes/adopts.",
+      "family": "Destination settings freeze, lazy state and startup integration",
+      "id": "AT8",
+      "inspection": "focused source excerpts",
+      "owner": "ExecutionSettings/StoredField/catalog owners; transfer frozen-settings record",
+      "priority": "P2",
+      "proposed_witness": "No available default, pending settings wrong account, same/different provider, lazy reconnect, settings drift before adoption, missing/null optional flags.",
+      "replacement": "Typed consumed current/pending settings and frozen target record remove repeated getters and settings→Value→gets; preserve raw worker defaults/extensions and native config."
+    },
+    {
+      "classification": "already_typed",
+      "compatibility": "Thinking absent means enabled; compact limit missing/null means default (:121); context-only signatures omit restoreFiles unless true (:82).",
+      "essential": "Workspace idle except supported live-permissions change, request/source/account/epoch, permission capabilities and actual pending native input.",
+      "evidence": "claude_controls.rs:69 ControlRequest aliases runtime-schema ClaudeControlCommand; HTTP routes :192 passes typed Settings/Rollback → service.rs:100 execute/:211 method match → controls.rs:140 reserve/:321 complete.",
+      "family": "Claude settings/rollback command boundary",
+      "id": "CC1",
+      "inspection": "focused source excerpts",
+      "owner": "runtime-schema/claude_controls.rs command and claude_permissions PermissionMode owners",
+      "priority": "none",
+      "proposed_witness": "All typed command variants, live permission-only versus settings change, missing/null compact limit, old rollback signature.",
+      "replacement": "Reuse command enum and permission owner. Do not add duplicate action/settings enum; preserve original raw agent for unrelated fields."
+    },
+    {
+      "classification": "remove",
+      "compatibility": "Completed missing result currently returns null; failed only retries when no effect proved; previous controlAttempt absent defaults0, increment bound and exact transport ID stable. Unknown partial restore always recovery_required.",
+      "essential": "Same exact saved record before settle, request signature/id/source, current reservation, epoch/connection/generation, no submitted-unknown resend, workspace idle recheck.",
+      "evidence": "controls.rs:196 writes operation → :89 schema/:101 Operation decode (kind/phase String, source Value, submitted Option) → :157/:165 reserve/:289 provider_ready/:306 complete; store.rs:93/:119 transport mismatch and :214 failure settlement.",
+      "family": "Claude persisted operation, transport and uncertainty state",
+      "id": "CC2",
+      "inspection": "focused source excerpts",
+      "owner": "PersistedClaudeControlRecord + existing ControlBinding/FailureEvidence; workspace source owner",
+      "priority": "P1",
+      "proposed_witness": "All phases; failed no-send retry changes transport attempt; stale source/epoch/saved record; provider error after partial restore; completed legacy result absent.",
+      "replacement": "Deserialize state-correlated operation and typed source/transport projection; remove phase/kind strings and provider/submitted/result option relationships where representable; retain raw result/settings extras."
+    },
+    {
+      "classification": "remove",
+      "compatibility": "Queue supports data or items; state lazy no-thread synthesis; old partial reply fields need adapter; do not infer file restore from transport success.",
+      "essential": "No active native tasks/inProgress turn/queued input, requested turn found, canRestoreFiles, original thread/native identity, actual filesRestored for restore path.",
+      "evidence": "Provider bridge.ts:3135 emits state, :3247 rollback; bridge-protocol.ts:312/:329/:333 owns shapes → service.rs:173 native/:182 queue → controls.rs:223 submitted/:257 turns/:289 result/:315 filesRestored → complete.",
+      "family": "Claude state/queue/rollback reply consumed projection",
+      "id": "CC3",
+      "inspection": "focused source excerpts",
+      "owner": "TypeScript bridge-protocol BridgeState/ControlReceipt result, generated/shared runtime projection or parity",
+      "priority": "P1",
+      "proposed_witness": "Producer parity samples; data/items queue aliases, missing turn ID, wrong native/thread ID, restore result without filesRestored and incomplete mutation.",
+      "replacement": "Typed native state/turn/queue and action-correlated provider replies; delete array/id/object/status getters. Keep open SDK settings/tasks/response extras outside consumed projection."
+    },
+    {
+      "classification": "remove",
+      "compatibility": "Fallback stop-task request identity derives thread+task when request_id absent. Native command regex/Unicode/trim/NUL/newline/size checks essential.",
+      "essential": "Session binding before/after (:262), lazy source-account/thread selection for state only, stopTask stable ID+task size, live task existence, timeouts Unknown.",
+      "evidence": "HTTP typed SessionRequest :196 → :198 reserialize Value → service.rs:299 read_or_stop/:315 action/:370 task → :337/:357/:381 method call; bridge.ts:4001 stopTask returns {}; controls/service.rs:394 native_command.",
+      "family": "Claude state/commands/stop task adapter and command text",
+      "id": "CC4",
+      "inspection": "focused source excerpts",
+      "owner": "Existing runtime-schema Claude session request enum; bridge method contract",
+      "priority": "P1",
+      "proposed_witness": "Typed caller parity for state/commands/stop; no-thread state, lazy source selection, explicit/implicit request IDs, post-call binding change, invalid command text.",
+      "replacement": "Pass typed state/commands/stop request from HTTP into service; remove typed→Value→action/task getters. Keep native command text as validated text, not closed command enum."
+    },
+    {
+      "classification": "remove",
+      "compatibility": "Arguments accept JSON string/object and absent=>{}; callId numeric/string and fallback RPC ID; alias families have deliberate prefixes and default-account prefix compatibility.",
+      "essential": "Callback context/epoch/account/thread/generation, bounded object args/call IDs/request aliases, original canonical signature before target resolution, declared tool capabilities.",
+      "evidence": "provider_callbacks/tools.rs:143 parses native Input tool/arguments/callId → :216 ToolKind; managed_host_tools.rs:148 reparses ManagedHostTool; runtime_dispatch.rs:405 uses tool strings; services.rs:737 ToolKind dispatch → managed execute :595.",
+      "family": "Managed tool and callback ingress tag/arguments",
+      "id": "MH1",
+      "inspection": "focused source excerpts",
+      "owner": "One managed-tool discriminant owner derived/shared with preparation-resources.json and existing native Input/RequestId",
+      "priority": "P1",
+      "proposed_witness": "Every recognized tag plus unknown; string/object args same identity rules, numeric ID, original versus resolved target, changed request alias args.",
+      "replacement": "Carry closed recognized tool kind through dispatcher/ports instead of stringify/serde/str comparisons; parse per-tool consumed args once. Keep Unknown case and raw arguments for canonical fingerprint."
+    },
+    {
+      "classification": "remove",
+      "compatibility": "remoteOrigin/executionMove use Python truthiness on any JSON; default/absent provider and parent must not silently become stricter. Prefer compatibility adapter.",
+      "essential": "Exact expected ID/epoch, root/parent ancestry, cycle detection, active lead/reviewer and remote/move capability checks.",
+      "evidence": "checked callback actor → managed_host_tools.rs:97 AgentRecord/:111 extra fields → :595 permission/routing/:748 spawn; :946 ParentEdge Deserialize already drives ancestry; services/messages.rs:673 visible-ID lookup.",
+      "family": "Managed actor and ancestry projections",
+      "id": "MH2",
+      "inspection": "focused source excerpts",
+      "owner": "runtime-store AgentRecord + ParentEdge and shared role/provider contracts",
+      "priority": "P2",
+      "proposed_witness": "Stale actor, cycle, hidden target prefix, truthy object/array flags, missing legacy provider/parent; reviewer cannot spawn.",
+      "replacement": "Typed consumed actor extension projection eliminates name/parent/lead/role/provider get chains; reuse ProviderKind and existing ancestry DTO, keep raw AgentRecord for open fields."
+    },
+    {
+      "classification": "remove",
+      "compatibility": "Default role implementer; explicit null role invalid; base_ref/task_id malformed rejected; public fields default null, environment host, workspace fallback, preserve base warning semantics.",
+      "essential": "Active root lead, no nested reviewer spawn, batch/name/prompt/base bounds, task single assignment, capability/workspace/account validation, recheck before persistence, wake after commit.",
+      "evidence": "managed_host_tools.rs:748 spawn/:764 agents array/:777 name/prompt/:779 role/:801 task_id/:807 base_ref → creation port/:813 prepare/:815 record → :846 public projection; runtime_ports.rs:199 actual managed_child_create::spawn_agents.",
+      "family": "Spawn specs and public child projection",
+      "id": "MH3",
+      "inspection": "focused source excerpts",
+      "owner": "Bundled spawn tool schema and managed_child_create command owner; MAX_SPAWN_BATCH_AGENTS owner :54",
+      "priority": "P2",
+      "proposed_witness": "1/64/65 specs, null/missing role/task/base_ref, duplicate task, cross-server option, public projection never exposes private agent fields.",
+      "replacement": "Deserialize SpawnRequest/WorkerSpec with role enum and explicit optional fields shared with real creation caller; typed public ChildSummary removes primitive checks/copy lists after owner parity."
+    },
+    {
+      "classification": "retain",
+      "compatibility": "Written with applied=false is a real committed rejection; Written/applied=None and Unknown differ; lost wake must not become effect failure. Preserve expiry projection for server outputs.",
+      "essential": "Claim commits before effect, same signature/owner/generation, local body rollback versus writer-commit uncertainty, dropped-future guard, cached result once, wake only after commit.",
+      "evidence": "managed_host_tools.rs:362 DeliveryCertainty/:369 DispatchedOperation applied Option<bool> → tools.rs:471 claim settlement/:535 run_claimed/:677 settle → :865 finalize_dispatched; WorkActionOutcome runtime_dispatch.rs:294 already enum.",
+      "family": "Effect/claim result certainty and payload boundary",
+      "id": "MH4",
+      "inspection": "focused source excerpts",
+      "owner": "Existing DeliveryCertainty, typed WorkActionOutcome, tool lifecycle/admission owner",
+      "priority": "none",
+      "proposed_witness": "Body rollback vs writer-after-commit failure, dropped future, Written rejection, cached replay, unknown no retry, lost wake retains durable answer.",
+      "replacement": "Keep arbitrary tool result Value. Consider named applied outcome enum only if it clarifies Some(false)/None; current Option<bool> is documented semantics, not redundant. Small typed owned envelope projection is possible."
+    },
+    {
+      "classification": "remove",
+      "compatibility": "Cached older result inside request is fallback; result content extensible, old stage/outcome defaults shown during recovery, server-output expiration preserved.",
+      "essential": "Exact account/thread/epoch/connection/generation/signature, terminal/unknown state, prepared payload revalidation, no service dispatch before durable claim.",
+      "evidence": "tools.rs:284 candidate writer → :318 records::get/:320 identity → :341 claim/:692 running/pending → :916 result fields → :421 project_tool_result; output_expiry :851 recursively inspects value/result envelope headers.",
+      "family": "Persisted callback request/result metadata",
+      "id": "MH5",
+      "inspection": "focused source excerpts",
+      "owner": "runtime_tool_requests/results schema and tool_requests lifecycle; original request raw identity owner",
+      "priority": "P2",
+      "proposed_witness": "Legacy inline result vs results table, stale actor after effect still receipt settlement, malformed envelope, expired output, retry on pending never re-executes.",
+      "replacement": "Typed consumed request/receipt metadata and result envelope projection can remove post-schema indexing/defaults; raw arguments/native tool body and exact signed fingerprint retained."
+    },
+    {
+      "classification": "remove",
+      "compatibility": "Move/teleport currently rely on routing or named missing dependency; no fabricated success. Unknown tools return Unsupported. Existing sign-in link dedup behavior stays.",
+      "essential": "Remote-origin/movedFrom/executionMove routing order, actual attached capability, same request identity, descendant versus home-server routing, pre-write NotSent versus post-effect Unknown.",
+      "evidence": "tools/services.rs:570 dispatch_managed → runtime_dispatch.rs:405 routing/:425 remote send/:465 tool match → runtime_ports.rs:137/:155/:163/:170/:178 attached ports; fallback services.rs:873 dispatch.",
+      "family": "Post-claim routing, capability ports and delegated tools",
+      "id": "RT1",
+      "inspection": "focused source excerpts",
+      "owner": "Managed tool discriminant owner; existing multi_server/host_exec/layr_read/sign_in/voice service contracts",
+      "priority": "P2",
+      "proposed_witness": "Every route with port present/absent; moved remote sender to local descendant; lost remote result; host/VM Layr mode and exact request propagation.",
+      "replacement": "Use recognized ToolKind through route selection and typed per-owner command at each port; delete duplicate name matching. Dynamic port availability Option is valid and should remain."
+    },
+    {
+      "classification": "remove",
+      "compatibility": "Observe accepts only monitor_id/wait_timeout_ms; presence of forbidden command field matters even null; after admission capacity failure returns existing record; timeout/observation failure cannot imply no launch.",
+      "essential": "Wait millisecond bound, observation capacity, actor/account/epoch, command admission identity, deadline before launch, stored create receipt checked before retry; cancellation ownership/ancestry.",
+      "evidence": "runtime_dispatch.rs:597 monitor dispatch → runtime_ports.rs:250 wait/:262 command-or-id/:275 observation else :320 MonitorAdmission/:328 existing receipt/:379 create → :395 observe_created; services.rs:434 legacy cancel/:831 reserve_cancel.",
+      "family": "Monitor create versus observe and cancellation",
+      "id": "RT2",
+      "inspection": "focused source excerpts",
+      "owner": "Monitor request schema/MonitorAdmission and runtime monitor owner",
+      "priority": "P1",
+      "proposed_witness": "All request variants, present-null forbidden field, before/after-launch wait exhaustion, existing command replay, ancestor versus unrelated cancel.",
+      "replacement": "Typed Create|Observe|Cancel request removes exclusive-argument and forbidden-observation-field shape loops; typed created/observation response projection removes ID/outputSequence getters."
+    },
+    {
+      "classification": "remove",
+      "compatibility": "Acknowledged missing response currently null; failed maps NotSent, all other statuses Unknown; no saved attempt means unsubmitted. Input null dimension policy stays owner-defined.",
+      "essential": "Current caller/owner epoch, active autoWake/not-deleted, same monitor/current request ticket, failed/unknown receipt classification, exact input no-repeat.",
+      "evidence": "tools.rs:267 pre-admission ownership → runtime_dispatch.rs:614 ID/:620 serde Input → runtime_ports.rs:499 forwards typed Input; runtime_dispatch.rs:976 saved attempts/:1050 status response → DispatchedOperation.",
+      "family": "Monitor input command, authorization and saved attempt",
+      "id": "RT3",
+      "inspection": "focused source excerpts",
+      "owner": "Existing monitor_policy::Input and monitor attempt record owner",
+      "priority": "P2",
+      "proposed_witness": "Own active monitor only, stale caller/owner, acknowledged/failed/unknown/absent attempt, write followed by receipt-read failure => Unknown.",
+      "replacement": "Keep already typed input; add typed attempt projection/status union to remove lastInputAttempt/inputAttempt ID/status/response getters."
+    },
+    {
+      "classification": "already_typed",
+      "compatibility": "Optional account/group choices meaningful; empty group uses default; restore unassign_work rejected, archive defaults preserved; store cleanup failure not NotSent.",
+      "essential": "Explicit account never falls back; project/excluded/readiness/load/capacity/catalog, active role/epoch, target resolution, cleanup after commit with uncertain store errors.",
+      "evidence": "runtime_dispatch.rs:17 WorkerAccountRequest/:31 selection → :41 policy/:165 ordering; :766 tagged LifecycleRequest → :830 serde → :793 LifecycleCommand → agent_management_store :881; runtime_ports.rs:185 child adapters.",
+      "family": "Worker account selection and native lifecycle requests",
+      "id": "RT4",
+      "inspection": "focused source excerpts",
+      "owner": "Existing worker account identity/listing types; LifecycleRequest and agent_management::Action",
+      "priority": "none",
+      "proposed_witness": "Explicit vs implicit account, absent catalog, tied load order, each archive/restore variant, cleanup commit then error.",
+      "replacement": "Reuse typed account selection and archive/restore commands. Narrow args need no new parallel lifecycle enum."
+    },
+    {
+      "classification": "already_typed",
+      "compatibility": "Integral decimal version accepted by shared parser; list owner/state currently truthy filters, old results/decisions defaults preserved; set_default_gate typed GateInput currently reserializes.",
+      "essential": "Lead/creator cancel authority, root scope, task owner/revision/dependencies/gate/evidence, raw request signature, exact result schema contract.",
+      "evidence": "services/work.rs:10 action → :15 TaskCommand::parse_tool for writes → :111 WorkWrite→write_as_agent; runtime_dispatch.rs:318 claim/submit/accept route/:660 WorkActionPort; work.rs:39 list/:65 get/:87 history.",
+      "family": "Task command/read filter and result projection",
+      "id": "SV1",
+      "inspection": "focused source excerpts",
+      "owner": "runtime-schema TaskCommand, WorkWrite/work_action owner; task result schema owner",
+      "priority": "none",
+      "proposed_witness": "All task write variants including decimal version; owner/state missing/null/false; foreign root; claim/submit/accept no fallback to transaction-only writer.",
+      "replacement": "Keep typed mutation paths and opaque result/resultSchema. Typed list/get/history query and TaskBrief projection can reduce remaining action/field getters; do not bypass owner via new dispatcher implementation."
+    },
+    {
+      "classification": "remove",
+      "compatibility": "Default action list; explicit wrong-type action currently defaults list via as_str; preserve or explicitly migrate. Output refs remain namespaced identifiers with canonical ambiguity checks.",
+      "essential": "Caller-owned canonical receipt alias, immutable payload selection, original request/argument signature and revalidation after file I/O.",
+      "evidence": "services.rs:1223 request_action string/default → :1177 Selection → tools.rs:596 prepare outside transaction/:641 revalidate → services.rs:915 prepared execute; reads.rs:193 receipt_keys/native alias.",
+      "family": "Request list/get/cancel and prepared payload selection",
+      "id": "SV2",
+      "inspection": "focused source excerpts",
+      "owner": "tool_requests::Action/Selection and request tool schema owners",
+      "priority": "P1",
+      "proposed_witness": "List/get/cancel; ID absent/malformed; aliases ambiguous; payload changed between prepare and transaction; cancellation never repeats command.",
+      "replacement": "Direct typed request action with required ID for get/cancel; carry action across selection/revalidation/execute; delete repeated string/text parsing."
+    },
+    {
+      "classification": "remove",
+      "compatibility": "Wrong-type cursor currently ignored unless string; offset numeric acceptance, at least one oversized row, exclusion of agent status from revision and absent optional nextCursor must stay.",
+      "essential": "Limit1..50, offset<=row length, content/scope revision, encoded model byte cap, ordering and exact scope.",
+      "evidence": "services.rs:1160 cursor writer → :1138 Base64/:1141 Value/:1142 offset/revision → pagination; :1087 page removes volatile agent status; used by work/history/manage/peers.",
+      "family": "Pagination cursor and heterogeneous list envelope",
+      "id": "SV3",
+      "inspection": "focused source excerpts",
+      "owner": "Service model_page/paginate cursor owner (distinct from managed_status_watch cursor)",
+      "priority": "P1",
+      "proposed_witness": "All consumers round-trip; stale scope/revision, malformed base64/negative/decimal offset; volatile status does not invalidate peers cursor; oversized first row.",
+      "replacement": "Deserialize Cursor{offset,revision}; typed query and Page<T>/AgentOrRoom enum remove get loops and peers split-by-entry strings."
+    },
+    {
+      "classification": "remove",
+      "compatibility": "Retired panel topic intentionally retained; search wrong-type limit currently defaults50; plan missing native/default explanation behavior and complaint unknown result shape need parity.",
+      "essential": "Caller root/monitor team, lead-only panel/background, complaint recipient/author/action and event wake after commit, query/result limits, preparation capability.",
+      "evidence": "managed_host_tools.rs:638 plan JSON projection; services.rs:306 search query/:333 context/:373 complaint delegation/:407 wake outcome; services/context.rs:9 topic switch → profile/tool/complaint sources.",
+      "family": "Context topics, search, plan and complaint adapters",
+      "id": "SV4",
+      "inspection": "focused source excerpts",
+      "owner": "Bundled tool schemas and existing context/search/complaint owners; ProfileRepository returns typed profiles",
+      "priority": "P2",
+      "proposed_witness": "Every topic including plan/monitor/tools/profiles/complaints/background/panel; wrong team, legacy panel, absent preparation, search default, duplicate complaint no duplicate notification.",
+      "replacement": "Typed ContextTopic (Monitor has ID), SearchQuery and complaint consumed request/result projections; delete topic/action strings/fixed field getters. Keep returned schemas/tools/content heterogeneous JSON."
+    },
+    {
+      "classification": "remove",
+      "compatibility": "13 actions include inspect/list/recover/reset_tools/archive/archive_finished/restore/list_archived/maintenance_report/park/list_parked/cancel_park/emit_event. unassign_work absent=false, explicit nonbool rejected; existing alias resolution and defaults remain.",
+      "essential": "Active lead/root/current epoch, visible archived-target resolution, remote/move restrictions, lifecycle cleanup owner, recover/reset exact input history and transport scope.",
+      "evidence": "services/manage.rs:10 ACTIONS/:40 checked_action/:59 lifecycle_action → :69 resolve/:121 execute; runtime_dispatch.rs:707 maintenance/:734 recover/reset/:754 lifecycle; typed LifecycleRequest :766 covers only3 actions.",
+      "family": "Management closed actions and inspect/list/archive routing",
+      "id": "SV5",
+      "inspection": "focused source excerpts",
+      "owner": "One management action owner shared with agent_management and published tool schema",
+      "priority": "P1",
+      "proposed_witness": "Each of13 actions; null/wrong unassign_work; disallowed true on restore; archived prefix, hidden ambiguity; named missing dependency before writes.",
+      "replacement": "Deserialize all action variants once; eliminate ACTIONS membership and duplicated strings; encode which actions accept unassign_work/target. Reuse existing typed lifecycle/inspection commands."
+    },
+    {
+      "classification": "remove",
+      "compatibility": "source fields cleared not null on resume; sequence missing defaults0; park while inFlight schedules after-turn; repeated event reports saved/replayed result, never duplicate wake.",
+      "essential": "Live same-team descendant/cycle, pending current-epoch input, lead-only emit, exact event+request signature, event already-fired guard, epoch+sequence match, after-commit wake.",
+      "evidence": "services/manage.rs:430 parkReceipt writer → :360 saved fields/:365 sequence during emit; :262 generic receipt read/:277 save → :309 park_action/:461 resume and :288 wake.",
+      "family": "Park/event wait receipts and wake state",
+      "id": "SV6",
+      "inspection": "focused source excerpts",
+      "owner": "ParkReceipt/event/request receipt owner in services/manage; persisted agent fields remain runtime-store-owned",
+      "priority": "P2",
+      "proposed_witness": "Park idle/inflight, pending input refusal, old epoch/sequence, emitted before park, same/different request identity, repeated cancel/emit no extra event.",
+      "replacement": "Typed ParkReceipt/EventResult and tagged Park|List|Cancel|Emit inputs; remove primitive event/epoch/sequence/status getters and action shape guards."
+    },
+    {
+      "classification": "remove",
+      "compatibility": "Null key/version mean absent; both required for versioning; send cannot address user while message can; broadcast skips individually invalid stored authority but aborts if none admitted. Preserve raw signature before resolved args.",
+      "essential": "Message Unicode count/Python strip, current actor/delegation/radio guard, recipient visibility, room membership, all authorized before effects, request signature/id, progress grouping and delivery timing.",
+      "evidence": "services.rs:65 Send target/:89 text→AgentFollowup or :141 Message args; services/messages.rs:175 send_as_actor/:189 importance/:198 progress pair → :366 event payload/:391 delivery state/:401 result/:407 receipt.",
+      "family": "Send/message command, progress metadata and delivery receipts",
+      "id": "SV7",
+      "inspection": "focused source excerpts",
+      "owner": "Message command/DeliveryMoment and chat delivery schema; event_write receipt identity owner",
+      "priority": "P1",
+      "proposed_witness": "Every importance/target, one progress field only, null pair/version0, inactive stored-only recipient, mixed invalid broadcast, private radio hold, duplicate ID changed text.",
+      "replacement": "Typed target category/importance and optional Progress{key,version} correlated with progress message; typed per-recipient Queued|StoredOnly map; remove presence/type/whitelist guards."
+    },
+    {
+      "classification": "retain",
+      "compatibility": "Raw unknown historical authority fields may be necessary for validator diagnostics; invalid peer authority hidden/skipped with diagnostic rather than globally aborting directory.",
+      "essential": "Lead-only user contact, same team or explicitly grouped peer authorization, lexical path authority precedence, approved remote membership, ambiguity refusal, idempotent user message and private data projection.",
+      "evidence": "messages.rs:9 authorization_records/:50 canonical project precedence → :88 AuthorizationSnapshot; :232 approved remote room → federation_delivery; :415 lead user message/:437 canonical signature/:449 submit_user_message.",
+      "family": "User, remote/federated messaging and authorization snapshots",
+      "id": "SV8",
+      "inspection": "focused source excerpts",
+      "owner": "AuthorizationSnapshot/Scope owner, federation message contract, notification user-message receipt owner",
+      "priority": "none",
+      "proposed_witness": "Equivalent path spellings preserve exact-record authority; unauthorized peer/user sender, multiple approved rooms, stale/deleted members, exact user message retry.",
+      "replacement": "Keep arbitrary message text and opaque peer transport result. Typed public receipt projection is possible; do not replace authorization with DTO success or normalize exact stored source records."
+    },
+    {
+      "classification": "remove",
+      "compatibility": "Non-string scope currently accepted as no filter; absent/null summary fields and optional parent, corrupt authority filtered with diagnostics, status omitted from cursor revision.",
+      "essential": "Deleted/hidden/project-grouped peers, room members, exact ID checked alone, >=8-char unique visible prefix, stable row order and scoped revision.",
+      "evidence": "messages.rs:513 peers → :636 agent_visible/:673 exact-or-prefix → :525 AgentSummary/:563 RoomSummary/:585 Agent|Room envelope → :589 split output; services :1087 paginated revision.",
+      "family": "Peer/room directory and visible target resolution",
+      "id": "SV9",
+      "inspection": "focused source excerpts",
+      "owner": "Shared public agent/room view schemas and AuthorizationSnapshot owner",
+      "priority": "P2",
+      "proposed_witness": "Exact ID unaffected by unrelated corrupt row; hidden ID never creates ambiguity; mixed room/agent page boundary; current membership changes scope revision.",
+      "replacement": "Typed consumed agent/room summaries plus tagged DirectoryEntry removes copy-field and entry strings; existing scope and visibility functions remain."
+    },
+    {
+      "classification": "remove",
+      "compatibility": "contains null ignored, offset absent0, nextBefore semantics, metadata contextManifest explicitly removed; invalid stored metadata errors retained, unknown metadata survives.",
+      "essential": "Same actor/room authority, event team gate, no caller thread ID authorization, canonical alias ambiguity, spill hash not permission, bounded Unicode codepoint excerpts and byte model envelopes.",
+      "evidence": "reads.rs:10 authorize chat/:21 project_chat→fixed room/message fields; :66 output_ref category/:158 studioInput metadata/:248 event → :443 excerpt args offset/contains; tools.rs:591 prepared selection/read path.",
+      "family": "Chat/history/read-reference headers and excerpt requests",
+      "id": "SV10",
+      "inspection": "focused source excerpts",
+      "owner": "Read tool schema; chat/input-spill/event metadata owners; transcript item schema",
+      "priority": "P2",
+      "proposed_witness": "Every ref namespace, wrong owner/room, alias ambiguous, hash known but unauthorized, Unicode excerpts/contains context, truncated chat page nextBefore.",
+      "replacement": "Typed ReadRequest/OutputReference and consumed chat/event/StudioInput headers; delete fixed offset/contains/text/seq getters. Keep body text and extensible metadata raw."
+    },
+    {
+      "classification": "retain",
+      "compatibility": "Existing outcome intentionally unknown even if commandStatus completed/exit0; missing full text stays truncated; tool content may include future item types.",
+      "essential": "Ownership/canonical alias, archived full-text availability, expiration, truncation truthiness, output bounds; never rerun unreadable command.",
+      "evidence": "reads.rs:103 native item fallback commandExecution/dynamicToolCall → :387 full saved command JSON/:410 decode/:411 aggregatedOutput/:418 status+exitCode; generic tool result :135 text content joined.",
+      "family": "Saved native command/tool output",
+      "id": "SV11",
+      "inspection": "focused source excerpts",
+      "owner": "Native command output schema and generic tool result/content-item owner",
+      "priority": "none",
+      "proposed_witness": "Truncated/unreadable saved output never executes; missing aggregatedOutput, unknown native status, text + other content items, expired server result.",
+      "replacement": "Retain original result payloads and text. Typed consumed command-output projection can replace getters, preserving raw extension and unknown status for saved diagnostics."
+    },
+    {
+      "classification": "remove",
+      "compatibility": "Title manualName protects existing name but clears needsTitle; speech payload/result open; missing URL sign-in behavior belongs to sign_in; no type converts uncertain error into refusal.",
+      "essential": "Lead-only title/manualName, length/trim, current epoch/request, actual capability, voice NotSent vs committed rejection vs Unknown, sign-in request/link identity.",
+      "evidence": "services.rs:961 Title lead/title validation → actor save; runtime_dispatch.rs:933 Speak text→typed SpeakRequest/:962 Unknown errors; :481 SignIn url→sign_in::tool; host/Layr delegates :679/:694.",
+      "family": "Title, speech and simple delegated effect adapters",
+      "id": "SV12",
+      "inspection": "focused source excerpts",
+      "owner": "Existing title/voice/sign-in/host-exec/Layr request owners; managed envelope discriminant",
+      "priority": "P2",
+      "proposed_witness": "Title bounds/manual-name; missing speech text; lost voice store reply; link dedup; unavailable host/guest runtime refuses before effects.",
+      "replacement": "Typed Title/Speak/SignIn consumed argument structs remove text/url getters; preserve raw delegated payload for owner validation, not duplicate all host/VM protocols here."
+    },
+    {
+      "classification": "unresolved",
+      "compatibility": "Future native/SDK extensions and old malformed/missing fields are not demonstrated closed domains. The report does not infer runtime bugs from permissive parsing.",
+      "essential": "Keep canonical raw signatures, ordered native histories, arbitrary task result/schema/tool definitions, exact unknown-state evidence, authorization and partial-effect safeguards.",
+      "evidence": "Transfer native params/history and Claude provider replies flow from existing external/provider owners; callback output/metadata spread across tools.rs and services/reads.rs; all16 production modules inventoried.",
+      "family": "Whole native/provider payload closure and older operation extras",
+      "id": "SV13",
+      "inspection": "structural cross-family limit; whole-object compatibility unresolved",
+      "owner": "Each native/provider schema and persisted table owner, not one global JSON type",
+      "priority": "P3",
+      "proposed_witness": "Golden old/current/future-extra fixtures per owner before any total conversion; no proposed witness executed.",
+      "replacement": "Narrow owned projections above are concrete. A whole-object conversion deleting all Value validation requires exhaustive legacy fixture and provider-version proof not supplied by this source-only census."
+    }
+  ],
+  "files": [
+    {
+      "bytes": 93909,
+      "class": "production",
+      "declarations": [
+        [
+          20,
+          "pub fn valid_source_preflight_params(method: &str, thread: &str, params: &Value) -> bool {"
+        ],
+        [37, "fn valid_read_scope(scope: &Value, account: &Value) -> bool {"],
+        [50, "pub enum TransferError {"],
+        [66, "pub enum Phase {"],
+        [80, "fn terminal(self) -> bool {"],
+        [83, "fn moving(self) -> bool {"],
+        [91, "pub enum Action {"],
+        [97, "pub enum Command {"],
+        [105, "pub struct Ticket {"],
+        [116, "struct TransferIdentity {"],
+        [124, "enum TransferStatus {"],
+        [131, "pub struct Snapshot {"],
+        [138, "pub struct Followup {"],
+        [143, "pub struct Decision {"],
+        [
+          151,
+          "fn invalid(object: &'static str, pointer: impl Into<String>) -> TransferError {"
+        ],
+        [
+          157,
+          "fn validate(schema: &str, object: &'static str, value: &Value) -> Result<(), TransferError> {"
+        ],
+        [165, "pub(crate) fn read_record("],
+        [179, "pub fn read("],
+        [187, "pub(crate) fn read_fallible("],
+        [230, "pub fn public_view(&self) -> Result<Value, TransferError> {"],
+        [233, "pub fn lead_id(&self) -> &str {"],
+        [236, "pub fn operation(&self) -> &Value {"],
+        [
+          239,
+          "pub fn agent(&self, id: &str) -> Result<&Value, TransferError> {"
+        ],
+        [244, "fn phase(&self, id: &str) -> Result<Phase, TransferError> {"],
+        [248, "fn pending(&self) -> bool {"],
+        [251, "fn decision("],
+        [267, "pub fn replay("],
+        [
+          294,
+          "pub fn decide(&self, command: Command) -> Result<Decision, TransferError> {"
+        ],
+        [490, "pub(crate) fn waiting_for_blocker("],
+        [
+          506,
+          "pub fn release_waiting(&self, agent: &str) -> Result<Option<Decision>, TransferError> {"
+        ],
+        [
+          570,
+          "pub fn begin_read(&self, agent: &str) -> Result<Decision, TransferError> {"
+        ],
+        [612, "pub fn provider_intent("],
+        [668, "pub(crate) fn correct_unsubmitted_legacy_read("],
+        [756, "pub(crate) fn written_read_replay("],
+        [831, "pub fn provider_read_intent("],
+        [909, "pub fn provider_read_receipt("],
+        [958, "pub fn prepared_member("],
+        [995, "pub fn provider_receipt("],
+        [
+          1077,
+          "pub fn adopt_receipt(&self, agent: &str) -> Result<Decision, TransferError> {"
+        ],
+        [1187, "pub fn submit("],
+        [1228, "pub fn preparation_failed("],
+        [1248, "pub fn receive("],
+        [
+          1298,
+          "fn check_ticket_agent(&self, ticket: &Ticket) -> Result<(), TransferError> {"
+        ],
+        [1337, "pub(crate) fn enroll("],
+        [
+          1471,
+          "pub fn before_start(agent: &Value) -> Result<(), TransferError> {"
+        ],
+        [1489, "fn flag(value: &Value, key: &str) -> bool {"],
+        [
+          1492,
+          "pub(crate) fn remove(value: &mut Value, keys: &[&str]) -> Result<(), TransferError> {"
+        ],
+        [1524, "struct MemberOrder {"],
+        [1528, "fn member_order<'de, D: serde::Deserializer<'de>>("],
+        [
+          1557,
+          "pub fn stamp(&mut self, now: f64, previous_created: Option<f64>) -> Result<(), TransferError> {"
+        ],
+        [1618, "pub fn public_view(&self) -> Result<Value, TransferError> {"],
+        [1621, "pub fn encoded(&self) -> Result<String, TransferError> {"],
+        [
+          1666,
+          "fn extend(target: &mut Value, fields: Value) -> Result<(), TransferError> {"
+        ],
+        [
+          1676,
+          "fn public_view(op: &Value, order: &[String]) -> Result<Value, TransferError> {"
+        ],
+        [
+          1722,
+          "fn progress(op: &Value, order: &[String], public: bool) -> Result<Value, TransferError> {"
+        ],
+        [1792, "fn settings_snapshot(agent: &Value) -> Value {"],
+        [
+          1816,
+          "fn validate_source_for_submission(member: &Value, agent: &Value) -> Result<(), TransferError> {"
+        ],
+        [1853, "#[cfg(test)]"],
+        [1857, "fn snapshot() -> Snapshot {"],
+        [1876, "fn after(decision: Decision) -> Snapshot {"],
+        [1887, "fn intent(snapshot: &Snapshot) -> Decision {"],
+        [
+          1906,
+          "fn refused_during_source_reads(native_intent: bool) -> Snapshot {"
+        ],
+        [
+          1961,
+          "fn cancel_returns_a_lazy_member_whose_move_sent_no_thread_request() {"
+        ],
+        [
+          1981,
+          "fn provider_intent_precedes_receipt_and_exact_replay_is_idempotent() {"
+        ],
+        [
+          2021,
+          "fn adoption_requires_saved_written_receipt_and_validated_target_settings() {"
+        ],
+        [
+          2101,
+          "fn not_sent_releases_retry_with_same_operation_and_unknown_stays_held() {"
+        ],
+        [
+          2146,
+          "fn provider_read_journal_replays_written_and_holds_uncertain_calls() {"
+        ],
+        [
+          2279,
+          "fn source_queue_preflight_requires_transfer_scope_and_exact_receipt() {"
+        ]
+      ],
+      "families": ["AT1", "AT2", "AT3", "AT4", "AT5", "AT8"],
+      "generatedHeader": false,
+      "inspection": "Mechanical full-file scan + focused producer/decode/caller body excerpts for listed families; not all lines manually read",
+      "lines": 2338,
+      "markers": {
+        "Option": 8,
+        "Value": 111,
+        "decode": 6,
+        "dynamic": 152,
+        "knownString": 20
+      },
+      "path": "src/account_transfer.rs",
+      "sha256": "b73f8dac09dd3bfe55bc3d02574d5088330728bee7c86c4d9a10ac5dde02becb"
+    },
+    {
+      "bytes": 99628,
+      "class": "production",
+      "declarations": [
+        [
+          14,
+          "pub fn load(tx: &Transaction<'_>, id: &str) -> Result<Snapshot, TransferError> {"
+        ],
+        [
+          41,
+          "pub(crate) fn active_summary_id(agent: &Value) -> Option<&str> {"
+        ],
+        [55, "fn drop_orphan_summary_in("],
+        [81, "pub async fn drop_orphan_summary("],
+        [95, "pub async fn release_waiting("],
+        [107, "pub(crate) fn release_waiting_in("],
+        [139, "pub fn owns_reading_member("],
+        [154, "fn snapshot_agents("],
+        [
+          177,
+          "pub async fn recover(store: &RuntimeStore, now: f64) -> Result<usize, TransferError> {"
+        ],
+        [194, "pub async fn action("],
+        [210, "pub async fn request("],
+        [396, "pub async fn reserve("],
+        [417, "pub async fn receive("],
+        [
+          433,
+          "fn persist(tx: &Transaction<'_>, mut decision: Decision, now: f64) -> Result<Value, TransferError> {"
+        ],
+        [
+          539,
+          "pub type TransferFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;"
+        ],
+        [540, "pub trait TransferTransport: Send + Sync {"],
+        [541, "fn send<'a>("],
+        [549, "pub struct TransferDispatch {"],
+        [555, "pub enum DispatchOutcome {"],
+        [561, "pub async fn send_once("],
+        [603, "pub async fn begin_read("],
+        [622, "pub struct ProviderIntent<'a> {"],
+        [631, "pub async fn provider_intent("],
+        [659, "pub(crate) struct ProviderReadIntent<'a> {"],
+        [669, "#[cfg(test)]"],
+        [676, "fn scope() -> Value {"],
+        [
+          680,
+          "async fn fixture(evidence: Option<&'static str>) -> (tempfile::TempDir, RuntimeStore, Value) {"
+        ],
+        [690, "async fn fixture_read("],
+        [725, "fn turn_params() -> Value {"],
+        [729, "async fn correct_turn_page("],
+        [
+          752,
+          "async fn legacy_paginated_turn_read_rebinds_only_its_scope_without_transport_evidence() {"
+        ],
+        [
+          815,
+          "async fn legacy_paginated_turn_read_preserves_every_transport_or_transfer_receipt() {"
+        ],
+        [
+          847,
+          "async fn legacy_paginated_turn_read_replays_its_written_reply_without_rebinding() {"
+        ],
+        [
+          901,
+          "async fn legacy_paginated_turn_read_refuses_changed_fingerprints_and_invalid_scopes() {"
+        ],
+        [976, "async fn corrected("],
+        [
+          997,
+          "async fn legacy_background_read_without_transport_evidence_keeps_its_logical_identity() {"
+        ],
+        [
+          1032,
+          "async fn legacy_background_read_reconnects_only_before_any_native_submission() {"
+        ],
+        [
+          1062,
+          "async fn legacy_background_read_never_discards_transport_evidence() {"
+        ],
+        [
+          1091,
+          "async fn legacy_background_read_refuses_invalid_source_scope_and_changed_thread() {"
+        ],
+        [
+          1150,
+          "async fn legacy_background_correction_refuses_other_unknown_fingerprints() {"
+        ],
+        [1194, "pub(crate) async fn provider_read_intent("],
+        [1266, "pub(crate) struct ProviderReadReceipt<'a> {"],
+        [1275, "pub(crate) async fn provider_read_receipt("],
+        [1304, "pub struct ProviderReceipt<'a> {"],
+        [1313, "pub async fn provider_receipt("],
+        [1340, "pub async fn prepared_member("],
+        [1363, "pub async fn adopt_receipt("],
+        [
+          1379,
+          "fn check_durable_blockers(tx: &Transaction<'_>, agent: &str) -> Result<(), TransferError> {"
+        ],
+        [1438, "pub struct TransferPreparation {"],
+        [1443, "pub fn operation(&self) -> &Value {"],
+        [1446, "pub fn agent(&self) -> &Value {"],
+        [1452, "pub enum TransferMethod {"],
+        [1457, "pub(crate) fn wire(self) -> &'static str {"],
+        [1464, "pub struct PreparedTransfer {"],
+        [1475, "pub trait TransferExecutor: TransferTransport {"],
+        [1476, "fn available(&self) -> Result<(), TransferError>;"],
+        [1477, "fn prepare<'a>("],
+        [1486, "pub async fn execute_member("],
+        [1564, "#[cfg(test)]"],
+        [1572, "fn run_async<F: Future>(future: F) -> F::Output {"],
+        [1580, "fn request("],
+        [1592, "fn store_with_agents() -> (tempfile::TempDir, RuntimeStore) {"],
+        [
+          1614,
+          "fn add_agents(store: &RuntimeStore, root: &str, count: usize) {"
+        ],
+        [1634, "fn new_request_ignores_more_than_4096_unrelated_agents() {"],
+        [1651, "fn active_request_ignores_more_than_4096_unrelated_agents() {"],
+        [
+          1680,
+          "fn subagents_request_keeps_lead_as_summary_owner_without_enrolling_it() {"
+        ],
+        [
+          1727,
+          "fn scoped_membership_keeps_nested_workers_and_excludes_deleted_or_other_roots() {"
+        ],
+        [1772, "fn vm_member_guard_applies_only_to_enrolled_members() {"],
+        [
+          1810,
+          "fn recovery_does_not_hide_unknown_or_missing_operation_status() {"
+        ],
+        [
+          1834,
+          "fn unrelated_transfer_history_does_not_block_requests_or_pending_recovery() {"
+        ],
+        [1861, "fn request_identity_is_global_even_between_leads() {"],
+        [
+          1884,
+          "fn own_team_transfer_boundary_is_enforced_without_partial_enrollment() {"
+        ],
+        [
+          1940,
+          "fn active_alias_refuses_a_late_vm_member_before_any_enrollment_write() {"
+        ],
+        [
+          1978,
+          "fn initial_and_active_enrollment_exclude_other_providers_before_the_vm_guard() {"
+        ],
+        [
+          2039,
+          "fn exact_replay_stops_reading_members_at_the_snapshot_byte_boundary() {"
+        ],
+        [
+          2075,
+          "fn a_running_retained_monitor_does_not_block_its_owners_account_transfer() {"
+        ],
+        [
+          2104,
+          "fn an_unproven_monitor_publishes_one_transfer_wait_without_repeated_writes() {"
+        ],
+        [
+          2164,
+          "fn new_request_adopts_lazy_members_and_exact_replay_is_read_only() {"
+        ],
+        [
+          2181,
+          "fn request_cancels_pending_usage_resume_in_the_transfer_transaction() {"
+        ],
+        [
+          2236,
+          "fn new_request_adopts_descendants_created_during_active_transfer() {"
+        ],
+        [2283, "fn set_lead_busy(store: &RuntimeStore, busy: bool) {"],
+        [2298, "fn stored(store: &RuntimeStore, id: &str) -> Value {"],
+        [
+          2309,
+          "fn busy_member_says_why_it_waits_and_moves_once_its_turn_ended() {"
+        ],
+        [
+          2348,
+          "fn invalid_scope_and_excluded_account_refuse_without_writes() {"
+        ]
+      ],
+      "families": ["AT1", "AT2", "AT3", "AT4", "AT5", "AT8"],
+      "generatedHeader": false,
+      "inspection": "Mechanical full-file scan + focused producer/decode/caller body excerpts for listed families; not all lines manually read",
+      "lines": 2407,
+      "markers": {
+        "Option": 13,
+        "Value": 73,
+        "decode": 12,
+        "dynamic": 59,
+        "knownString": 32
+      },
+      "path": "src/account_transfer_driver.rs",
+      "sha256": "d691e406b2a5f2bde447160d6342fa3385aa7aa2ad03de5521e60fbf1eba30b7"
+    },
+    {
+      "bytes": 126524,
+      "class": "production",
+      "declarations": [
+        [
+          48,
+          "fn native_import_lock(target_home: &Path) -> Result<Arc<Mutex<()>>, TransferError> {"
+        ],
+        [62, "fn copy_native_history("],
+        [213, "pub struct AccountTransferExecutor {"],
+        [221, "async fn run_transfer_blocking<T: Send + 'static>("],
+        [232, "struct ProviderReadContext<'a> {"],
+        [241, "struct ProviderReadCall {"],
+        [250, "#[cfg(test)]"],
+        [
+          281,
+          "async fn fixture(change: &'static str) -> (tempfile::TempDir, RuntimeStore, Value) {"
+        ],
+        [314, "async fn read("],
+        [
+          325,
+          "async fn written_read_replays_its_original_receipt_after_reconnect_without_native_writes() {"
+        ],
+        [
+          358,
+          "async fn reconnect_read_refuses_changed_content_or_unproven_receipts_without_native_writes() {"
+        ],
+        [
+          380,
+          "async fn written_source_unsubscribe_replays_only_its_exact_receipt_after_reconnect() {"
+        ],
+        [
+          492,
+          "async fn written_replay_never_authorizes_other_native_mutations() {"
+        ],
+        [527, "async fn session_reply("],
+        [697, "struct SourceTransferCall<'a> {"],
+        [704, "async fn source_transfer_call("],
+        [726, "async fn read_catalog("],
+        [784, "fn destination_settings("],
+        [946, "fn available(&self) -> Result<(), TransferError> {"],
+        [950, "fn prepare<'a>("],
+        [1376, "fn send<'a>("],
+        [
+          1452,
+          "fn certainty_after_session_error(error: AccountSessionError) -> RequestCertainty {"
+        ],
+        [1463, "pub async fn before_start("],
+        [
+          1520,
+          "async fn transfer_member(store: &RuntimeStore, agent_id: &str) -> Result<Value, TransferError> {"
+        ],
+        [1531, "#[cfg(test)]"],
+        [
+          1536,
+          "fn missing_default_and_fallback_model_refuses_instead_of_selecting_first() {"
+        ],
+        [
+          1571,
+          "fn native_history_copy_reuses_the_published_file_after_interruption() {"
+        ],
+        [
+          1617,
+          "fn concurrent_native_history_imports_preserve_both_manifest_entries() {"
+        ],
+        [
+          1676,
+          "fn concurrent_conflicting_history_filenames_never_overwrite_the_first_copy() {"
+        ],
+        [1728, "#[cfg(test)]"],
+        [1742, "fn only_pre_dispatch_session_errors_prove_not_sent() {"],
+        [
+          2235,
+          "async fn store_with_orphan_summary(root: &Path) -> Arc<RuntimeStore> {"
+        ],
+        [2261, "fn stored_lead(store: &RuntimeStore) -> Value {"],
+        [
+          2274,
+          "async fn summary_without_its_transfer_row_does_not_hold_turn_start() {"
+        ],
+        [
+          2305,
+          "async fn summary_without_its_transfer_row_does_not_block_a_new_transfer() {"
+        ],
+        [2328, "async fn source_reads_start_a_dormant_source_session() {"],
+        [
+          2333,
+          "async fn startup_transfer_reads_registered_profiles_before_any_http_catalog_request() {"
+        ],
+        [
+          2337,
+          "async fn assert_dormant_source_reads(register_from_driver: bool) {"
+        ],
+        [
+          2465,
+          "async fn before_start_executor_checks_and_durably_authorizes_source_queue() {"
+        ],
+        [
+          2577,
+          "async fn before_start_copies_history_once_and_replays_unknown_fork_after_restart() {"
+        ],
+        [
+          2582,
+          "async fn cold_catalog_transfer_prepares_history_without_http_model_read() {"
+        ],
+        [
+          2586,
+          "async fn assert_history_transfer_without_duplicate_fork(cold_catalog: bool) {"
+        ]
+      ],
+      "families": ["AT3", "AT4", "AT6", "AT7", "AT8"],
+      "generatedHeader": false,
+      "inspection": "Mechanical full-file scan + focused producer/decode/caller body excerpts for listed families; not all lines manually read",
+      "lines": 2981,
+      "markers": {
+        "Option": 9,
+        "Value": 57,
+        "decode": 11,
+        "dynamic": 67,
+        "knownString": 13
+      },
+      "path": "src/account_transfer_executor.rs",
+      "sha256": "01bfb9b7067eef5e0c89da71d358e156565869f3f8e710e3089fd145660bc839"
+    },
+    {
+      "bytes": 16287,
+      "class": "production",
+      "declarations": [
+        [11, "pub enum ControlError {"],
+        [35, "pub type Result<T> = std::result::Result<T, ControlError>;"],
+        [38, "struct Agent {"],
+        [47, "fn default_account() -> String {"],
+        [52, "struct Operation {"],
+        [63, "pub struct ControlSnapshot {"],
+        [70, "pub struct Writes {"],
+        [76, "fn signature(request: &ControlRequest) -> String {"],
+        [
+          89,
+          "pub fn from_records(agent: Value, operation: Option<Value>) -> Result<Self> {"
+        ],
+        [112, "pub fn agent(&self) -> &Value {"],
+        [115, "pub fn source(&self) -> Value {"],
+        [118, "pub fn epoch(&self) -> u64 {"],
+        [
+          123,
+          "pub(crate) fn live_permissions(&self, request: &ControlRequest) -> bool {"
+        ],
+        [
+          140,
+          "pub fn reserve(&self, request: &ControlRequest, pending: bool, now: f64) -> Result<Writes> {"
+        ],
+        [223, "pub fn submitted("],
+        [
+          289,
+          "pub fn provider_ready(&self, result: Value, now: f64) -> Result<Value> {"
+        ],
+        [
+          306,
+          "pub fn complete(&self, request: &ControlRequest, now: f64) -> Result<Writes> {"
+        ],
+        [372, "fn check_owned(&self, op: &Value) -> Result<()> {"],
+        [382, "fn validate(schema: &str, value: &Value) -> Result<()> {"],
+        [391, "#[cfg(test)]"],
+        [396, "fn claude_control_signatures_preserve_existing_receipts() {"],
+        [422, "fn claude_control_service_consumes_shared_command() {"]
+      ],
+      "families": ["CC1", "CC2", "CC3"],
+      "generatedHeader": false,
+      "inspection": "Mechanical full-file scan + focused producer/decode/caller body excerpts for listed families; not all lines manually read",
+      "lines": 435,
+      "markers": {
+        "Option": 5,
+        "Value": 42,
+        "decode": 4,
+        "dynamic": 33,
+        "knownString": 4
+      },
+      "path": "src/claude_controls.rs",
+      "sha256": "50af9d148ba2815d851f955570d14ea3da46ee72b93ad72ddbac4c494d9002a3"
+    },
+    {
+      "bytes": 14972,
+      "class": "production",
+      "declarations": [
+        [
+          4,
+          "pub type ControlFuture<'a, T> = Pin<Box<dyn Future<Output = Result<T>> + Send + 'a>>;"
+        ],
+        [7, "pub struct ControlBinding {"],
+        [
+          13,
+          "pub fn new(account: String, connection: String, generation: u64) -> Result<Self> {"
+        ],
+        [28, "pub fn account(&self) -> &str {"],
+        [35, "pub struct ControlScope {"],
+        [40, "pub trait ControlSession: Send + Sync {"],
+        [41, "fn binding(&self) -> ControlBinding;"],
+        [
+          42,
+          "fn call(&self, method: &str, params: Value) -> ControlFuture<'_, Value>;"
+        ],
+        [43, "fn call_scoped("],
+        [55, "pub enum FailureEvidence {"],
+        [63, "pub trait ControlStorage: Send + Sync {"],
+        [64, "fn execution_key(&self, request: &ControlRequest) -> String {"],
+        [67, "fn reserve("],
+        [72, "fn submitted("],
+        [79, "fn provider("],
+        [84, "fn complete("],
+        [
+          89,
+          "fn failed(&self, expected: ControlSnapshot, evidence: FailureEvidence)"
+        ],
+        [92, "pub struct Controls {"],
+        [
+          97,
+          "pub fn new(store: Arc<dyn ControlStorage>, session: Arc<dyn ControlSession>) -> Self {"
+        ],
+        [
+          100,
+          "pub async fn execute(&self, request: ControlRequest) -> Result<Value> {"
+        ],
+        [138, "async fn perform("],
+        [262, "async fn bound_call("],
+        [284, "async fn call("],
+        [299, "pub async fn read_or_stop("],
+        [394, "pub fn native_command(value: &str) -> Result<&str> {"]
+      ],
+      "families": ["CC1", "CC2", "CC3", "CC4"],
+      "generatedHeader": false,
+      "inspection": "Mechanical full-file scan + focused producer/decode/caller body excerpts for listed families; not all lines manually read",
+      "lines": 408,
+      "markers": {
+        "Option": 2,
+        "Value": 27,
+        "decode": 0,
+        "dynamic": 17,
+        "knownString": 1
+      },
+      "path": "src/claude_controls/service.rs",
+      "sha256": "cb9b9c71f37dd0de640c7921a73bfd2cbc3cf3f97756c0dba6e3a01399f1dc7a"
+    },
+    {
+      "bytes": 12596,
+      "class": "production",
+      "declarations": [
+        [8, "pub struct StoredControls {"],
+        [
+          13,
+          "pub fn new(store: Arc<RuntimeStore>, unload: Arc<dyn Fn(&str) + Send + Sync>) -> Self {"
+        ],
+        [
+          17,
+          "fn store_error(_: studio_runtime_store::StoreError) -> ControlError {"
+        ],
+        [21, "fn from(error: studio_runtime_store::StoreError) -> Self {"],
+        [
+          25,
+          "fn current(tx: &Transaction<'_>, expected: &ControlSnapshot) -> Result<ControlSnapshot> {"
+        ],
+        [
+          39,
+          "async fn blocking<T: Send + 'static>(f: impl FnOnce() -> Result<T> + Send + 'static) -> Result<T> {"
+        ],
+        [47, "fn now() -> f64 {"],
+        [53, "fn execution_key(&self, request: &ControlRequest) -> String {"],
+        [57, "fn reserve("],
+        [154, "fn submitted("],
+        [173, "fn provider("],
+        [190, "fn complete("],
+        [214, "fn failed("]
+      ],
+      "families": ["CC2"],
+      "generatedHeader": false,
+      "inspection": "Mechanical full-file scan + focused producer/decode/caller body excerpts for listed families; not all lines manually read",
+      "lines": 288,
+      "markers": {
+        "Option": 0,
+        "Value": 8,
+        "decode": 0,
+        "dynamic": 9,
+        "knownString": 6
+      },
+      "path": "src/claude_controls/store.rs",
+      "sha256": "a662fe3d8c747cdf70e604f53ad52705b77def0912880d7c5a55c56439e8d703"
+    },
+    {
+      "bytes": 39169,
+      "class": "production",
+      "declarations": [
+        [58, "pub(crate) enum ManagedHostTool {"],
+        [82, "pub(crate) struct Actor {"],
+        [97, "pub(crate) fn from_record("],
+        [
+          135,
+          "pub(crate) fn record(&self) -> &studio_runtime_store::AgentRecord {"
+        ],
+        [141, "pub(crate) struct Call {"],
+        [
+          148,
+          "pub(crate) fn checked(tool: &str, args: Value, request_id: &str) -> Result<Self, Error> {"
+        ],
+        [164, "pub(crate) enum Error {"],
+        [192, "pub(crate) trait ChildCreationPort {"],
+        [195, "fn prepare_work_item("],
+        [204, "fn recheck_worker("],
+        [211, "fn persisted_record("],
+        [
+          219,
+          "fn wake_signal(&self, prepared: &Self::Prepared) -> WakeSignal;"
+        ],
+        [224, "pub(crate) trait SendPort {"],
+        [225, "fn send("],
+        [237, "pub(crate) trait InterruptPort {"],
+        [240, "fn resolve_target("],
+        [254, "fn interrupt_in_transaction("],
+        [265, "pub(crate) trait StatusPort {"],
+        [266, "fn status("],
+        [274, "pub(crate) trait SearchPort {"],
+        [275, "fn search("],
+        [283, "pub(crate) trait ContextPort {"],
+        [284, "fn context("],
+        [292, "pub(crate) trait ComplaintPort {"],
+        [293, "fn complaint("],
+        [305, "pub(crate) trait WatchMonitorPort {"],
+        [306, "fn watch("],
+        [314, "fn monitor("],
+        [325, "pub(crate) trait ReviewPort {"],
+        [326, "fn review("],
+        [339, "pub(crate) struct WakeSignal {"],
+        [344, "pub(crate) fn new(owner: impl Into<String>) -> Self {"],
+        [350, "pub(crate) fn owner(&self) -> &str {"],
+        [356, "pub(crate) struct OperationResult {"],
+        [362, "pub(crate) enum DeliveryCertainty {"],
+        [369, "pub(crate) struct DispatchedOperation {"],
+        [380, "pub(crate) struct Staged {"],
+        [385, "pub(crate) trait Ports:"],
+        [417, "pub(crate) trait PostCommitPort {"],
+        [421, "fn dispatch_managed<'a>("],
+        [
+          434,
+          "fn release(&self, signals: &[WakeSignal]) -> Result<(), Error>;"
+        ],
+        [439, "pub(crate) struct UnavailablePorts;"],
+        [444, "fn prepare_work_item("],
+        [455, "fn recheck_worker("],
+        [
+          464,
+          "fn persisted_record(&self, _: &Transaction<'_>, _: &Self::Prepared) -> Result<Value, Error> {"
+        ],
+        [468, "fn wake_signal(&self, _: &Self::Prepared) -> WakeSignal {"],
+        [474, "fn send("],
+        [489, "fn interrupt_in_transaction("],
+        [
+          503,
+          "fn status(&self, _: &Transaction<'_>, _: &Actor, _: &Value) -> Result<OperationResult, Error> {"
+        ],
+        [
+          511,
+          "fn search(&self, _: &Transaction<'_>, _: &Actor, _: &Value) -> Result<OperationResult, Error> {"
+        ],
+        [
+          519,
+          "fn context(&self, _: &Transaction<'_>, _: &Actor, _: &Value) -> Result<OperationResult, Error> {"
+        ],
+        [525, "fn complaint("],
+        [538, "fn watch("],
+        [549, "fn monitor("],
+        [562, "fn review("],
+        [575, "fn dispatch_managed<'a>("],
+        [
+          587,
+          "fn release(&self, signals: &[WakeSignal]) -> Result<(), Error> {"
+        ],
+        [595, "pub(crate) fn execute("],
+        [701, "fn remote_dependency("],
+        [748, "fn spawn("],
+        [
+          846,
+          "fn project_child(record: &Value, task_id: Option<&str>) -> Value {"
+        ],
+        [
+          924,
+          "fn copy_if(record: &Value, output: &mut serde_json::Map<String, Value>, to: &str, from: &str) {"
+        ],
+        [931, "pub(crate) fn is_agent_target(target: &str) -> bool {"],
+        [938, "pub(crate) enum AgentAncestry {"],
+        [946, "pub(crate) fn agent_ancestry("],
+        [
+          958,
+          "fn edge(tx: &Transaction<'_>, id: &str) -> Result<Option<ParentEdge>, Error> {"
+        ],
+        [
+          999,
+          "fn is_descendant(tx: &Transaction<'_>, actor: &Actor, target: &str) -> Result<bool, Error> {"
+        ],
+        [
+          1007,
+          "fn field<'a>(value: &'a Value, name: &str) -> Result<&'a str, Error> {"
+        ],
+        [
+          1015,
+          "fn required_text<'a>(value: &'a Value, name: &str) -> Result<&'a str, Error> {"
+        ],
+        [1023, "fn validate_request_id(value: &str) -> Result<(), Error> {"],
+        [1034, "fn truthy(value: Option<&Value>) -> bool {"],
+        [1045, "#[cfg(test)]"],
+        [1051, "fn actor_snapshot_binds_id_and_epoch() {"],
+        [1068, "fn parser_accepts_only_managed_tools_and_bounded_identity() {"],
+        [
+          1076,
+          "fn remote_and_move_flags_are_truthy_only_for_nonempty_values() {"
+        ],
+        [1085, "fn child_projection_does_not_return_private_record_fields() {"],
+        [
+          1100,
+          "fn remote_local_reads_are_allowed_and_cross_server_calls_name_the_dependency() {"
+        ],
+        [1125, "fn spawn_batch_bound_matches_the_published_tool_schema() {"],
+        [1155, "#[cfg(test)]"]
+      ],
+      "families": ["MH1", "MH2", "MH3", "MH4", "SV4"],
+      "generatedHeader": false,
+      "inspection": "Mechanical full-file scan + focused producer/decode/caller body excerpts for listed families; not all lines manually read",
+      "lines": 1158,
+      "markers": {
+        "Option": 11,
+        "Value": 66,
+        "decode": 4,
+        "dynamic": 41,
+        "knownString": 2
+      },
+      "path": "src/managed_host_tools.rs",
+      "sha256": "6fae6551283535570105986f99ffb5c11412c5676d6b40e739972b846f6175ea"
+    },
+    {
+      "bytes": 151890,
+      "class": "test",
+      "declarations": [
+        [30, "struct Template {"],
+        [36, "fn template() -> &'static Template {"],
+        [
+          71,
+          "async fn fixture() -> (tempfile::TempDir, Arc<RuntimeStore>, CallbackContext) {"
+        ],
+        [
+          118,
+          "async fn fixture_arc() -> (tempfile::TempDir, Arc<RuntimeStore>, CallbackContext) {"
+        ],
+        [
+          122,
+          "fn shared_ports<P>(ports: P) -> Arc<dyn crate::managed_host_tools::Ports<Prepared = ()>>"
+        ],
+        [130, "struct PortBundle {"],
+        [139, "fn stage("],
+        [161, "fn prepare_work_item("],
+        [178, "fn recheck_worker("],
+        [
+          187,
+          "fn persisted_record(&self, tx: &Transaction<'_>, _: &Self::Prepared) -> Result<Value, Error> {"
+        ],
+        [198, "fn wake_signal(&self, _: &Self::Prepared) -> WakeSignal {"],
+        [204, "fn send("],
+        [217, "fn interrupt_in_transaction("],
+        [236, "fn status("],
+        [248, "fn search("],
+        [259, "fn context("],
+        [270, "fn complaint("],
+        [283, "fn watch("],
+        [294, "fn monitor("],
+        [307, "fn review("],
+        [320, "fn dispatch_managed<'a>("],
+        [
+          352,
+          "fn release(&self, signals: &[WakeSignal]) -> Result<(), Error> {"
+        ],
+        [
+          362,
+          "async fn a_failed_wake_after_the_effect_still_answers_with_the_real_result() {"
+        ],
+        [406, "struct ScriptedMonitorPort {"],
+        [414, "fn input<'a>("],
+        [457, "fn cancel_monitor<'a>("],
+        [467, "struct ScriptedRetainedMonitorPort {"],
+        [474, "fn submit<'a>("],
+        [503, "fn available(&self) -> bool {"],
+        [506, "fn launch<'a>("],
+        [512, "fn cancel<'a>("],
+        [521, "fn next<'a>("],
+        [532, "fn acknowledge<'a>("],
+        [538, "fn reattach<'a>("],
+        [547, "fn probe<'a>("],
+        [555, "fn input_reply<'a>("],
+        [566, "struct NoopLifecyclePorts;"],
+        [569, "fn stage("],
+        [
+          576,
+          "fn committed(&self) -> crate::agent_lifecycle_runtime::LifecycleCommitFuture<'_> {"
+        ],
+        [581, "fn real_monitor_runtime_ports("],
+        [595, "async fn production_managed_ports("],
+        [
+          619,
+          "async fn production_monitor_adapter_authorizes_before_callback_writes_and_preserves_receipts() {"
+        ],
+        [736, "struct EligibleAccountRead;"],
+        [739, "fn worker_accounts("],
+        [766, "fn resolve_identity("],
+        [
+          779,
+          "fn unavailable_provider_model_list_names_the_missing_dependency() {"
+        ],
+        [814, "fn callback_intent_snapshot(store: &RuntimeStore) -> Value {"],
+        [829, "fn managed_ports("],
+        [850, "fn managed_monitor_id() -> String {"],
+        [
+          862,
+          "async fn activate_fixture_monitor(store: &RuntimeStore, context: &CallbackContext, id: &str) {"
+        ],
+        [
+          889,
+          "async fn managed_monitor_input_checks_owner_and_preserves_delivery_receipts_on_replay() {"
+        ],
+        [
+          1011,
+          "async fn each_missing_managed_runtime_port_refuses_without_domain_writes() {"
+        ],
+        [
+          1085,
+          "fn call(context: &CallbackContext, rpc: &str, tool: &str, args: Value) -> Frame {"
+        ],
+        [1100, "fn intent_count(store: &RuntimeStore, kind: &str) -> i64 {"],
+        [
+          1112,
+          "fn application_table_snapshot(store: &RuntimeStore) -> Vec<(String, Vec<String>)> {"
+        ],
+        [1176, "async fn dispatch_case("],
+        [
+          1216,
+          "async fn managed_monitor_create_persists_one_start_intent_and_replays_exactly() {"
+        ],
+        [1360, "async fn send_remote_routing_refusals_write_nothing() {"],
+        [
+          1460,
+          "async fn deleted_team_root_refuses_complaint_without_writes() {"
+        ],
+        [1493, "async fn managed_reads_preserve_corrupt_record_identity() {"],
+        [
+          1604,
+          "async fn managed_write_rollback(case_index: usize, table: &str, operation: &str, timing: &str) {"
+        ],
+        [1739, "async fn startup_reconciles_reserved_callback_once() {"],
+        [
+          1817,
+          "async fn every_managed_tool_runs_through_provider_callback_dispatch() {"
+        ],
+        [
+          1858,
+          "async fn post_commit_wake_failure_answers_and_replays_without_staging_again() {"
+        ],
+        [
+          1887,
+          "async fn same_request_replays_saved_result_without_a_second_effect() {"
+        ],
+        [
+          1914,
+          "async fn remote_origin_search_and_monitor_context_stay_local() {"
+        ],
+        [
+          1988,
+          "async fn queued_managed_tool_request_can_be_cancelled_before_dispatch() {"
+        ],
+        [2038, "struct AllowWorkspace;"],
+        [2040, "fn check("],
+        [2049, "struct CreationEnvironment;"],
+        [2050, "struct FakeVmReviewGuest;"],
+        [2055, "fn stream("],
+        [2080, "fn guest_rpc("],
+        [2089, "fn select_worker_account("],
+        [
+          2147,
+          "fn catalog(&self) -> &dyn crate::host_worker_create::CreationCatalog {"
+        ],
+        [2150, "fn prepare_workspace("],
+        [2171, "fn resolve("],
+        [
+          2193,
+          "fn run_git_output(directory: &std::path::Path, arguments: &[&str]) -> String {"
+        ],
+        [
+          2205,
+          "async fn managed_reviewer_defaults_reach_public_spawn_tool() {"
+        ],
+        [
+          2621,
+          "async fn managed_spawn_accepts_any_explicit_model_for_each_role() {"
+        ],
+        [
+          2677,
+          "async fn task_result_schema_spawn_assignment_contains_contract() {"
+        ],
+        [
+          2721,
+          "async fn managed_child_creation_preserves_spawn_and_review_contracts() {"
+        ],
+        [
+          3200,
+          "async fn spawn_child_and_first_turn_failpoints_roll_back_the_batch() {"
+        ],
+        [
+          3276,
+          "async fn spawn_past_the_running_limit_queues_and_past_the_team_size_refuses() {"
+        ],
+        [3406, "struct ScriptedWorkPort {"],
+        [3412, "fn act<'a>("],
+        [3427, "async fn work_ports("],
+        [3459, "fn tool_reply(decision: CallbackDecision) -> (bool, Value) {"],
+        [
+          3474,
+          "async fn task_claim_submit_and_accept_run_through_the_work_action_owner_once() {"
+        ],
+        [
+          3558,
+          "async fn legacy_worker_archives_through_current_tool_without_losing_its_row() {"
+        ],
+        [
+          3631,
+          "async fn lead_archive_and_restore_run_through_the_lifecycle_owner() {"
+        ],
+        [
+          3770,
+          "async fn archive_finished_runs_for_codex_and_claude_leads_through_tool_dispatch() {"
+        ],
+        [
+          3831,
+          "async fn archive_finished_reason_survives_dispatch_and_receipt_replay() {"
+        ],
+        [3913, "async fn ancestry_reads_only_the_checked_parent_chain() {"]
+      ],
+      "families": [],
+      "generatedHeader": false,
+      "inspection": "Mechanical full-file scan + declaration/test-name inventory; no execution, no full manual test-body review",
+      "lines": 4032,
+      "markers": {
+        "Option": 9,
+        "Value": 46,
+        "decode": 10,
+        "dynamic": 115,
+        "knownString": 21
+      },
+      "path": "src/managed_host_tools/ingress_tests.rs",
+      "sha256": "4f07af324f13e10a468fcd529b66c9973a74d825e61dc68a201a87f697858113"
+    },
+    {
+      "bytes": 26080,
+      "class": "test",
+      "declarations": [
+        [9, "enum SpawnScript {"],
+        [24, "struct ScriptedChildCreation {"],
+        [32, "fn new(script: SpawnScript) -> Arc<Self> {"],
+        [43, "fn spawn<'a>("],
+        [86, "fn review<'a>("],
+        [98, "struct UnusedInterrupt;"],
+        [101, "fn stop_by_agent<'a>("],
+        [113, "async fn ports_for("],
+        [129, "async fn ports_with_wake("],
+        [163, "fn request_row(store: &RuntimeStore, call_id: &str) -> Value {"],
+        [
+          171,
+          "fn saved_result(store: &RuntimeStore, id: &str) -> Option<Value> {"
+        ],
+        [
+          180,
+          "fn assert_terminal(store: &RuntimeStore, call_id: &str, outcome: &str, certainty: Option<&str>) {"
+        ],
+        [196, "async fn replay_returns_saved_result("],
+        [230, "async fn proven_pre_write_refusals_settle_not_applied() {"],
+        [
+          267,
+          "async fn transient_catalog_refusal_settles_not_applied_with_retry_guidance() {"
+        ],
+        [
+          300,
+          "async fn possible_effects_settle_unknown_and_never_redispatch() {"
+        ],
+        [328, "async fn rolled_back_local_execution_settles_not_applied() {"],
+        [
+          379,
+          "async fn wait_for_settlement(store: &RuntimeStore, call_id: &str) {"
+        ],
+        [395, "async fn dropped_dispatch_settles_unknown() {"],
+        [
+          423,
+          "async fn startup_recovery_settles_stuck_rows_and_unblocks_context_repair() {"
+        ],
+        [
+          535,
+          "async fn connection_recovery_leaves_an_in_flight_dispatch_to_record_its_real_outcome() {"
+        ],
+        [
+          608,
+          "async fn connection_recovery_settles_a_claim_without_an_in_process_owner() {"
+        ],
+        [
+          670,
+          "async fn failed_finalize_still_records_the_real_operation_and_wakes_its_owner() {"
+        ]
+      ],
+      "families": [],
+      "generatedHeader": false,
+      "inspection": "Mechanical full-file scan + declaration/test-name inventory; no execution, no full manual test-body review",
+      "lines": 728,
+      "markers": {
+        "Option": 2,
+        "Value": 4,
+        "decode": 0,
+        "dynamic": 20,
+        "knownString": 1
+      },
+      "path": "src/managed_host_tools/ingress_tests/claim_settlement.rs",
+      "sha256": "1dbcb76f3118df088bb95cd737933fdb46656ed3932947eddb0d67c16670dc58"
+    },
+    {
+      "bytes": 7847,
+      "class": "test",
+      "declarations": [
+        [4, "async fn spawn_permission_case("],
+        [105, "fn permission_case("],
+        [
+          130,
+          "fn claude_child_inherits_auto_plan_accept_edits_and_default() {"
+        ],
+        [
+          149,
+          "async fn claude_child_uses_immediate_parent_instead_of_root() {"
+        ],
+        [
+          154,
+          "async fn claude_child_reviewer_stays_plan_even_with_bypass_override() {"
+        ],
+        [166, "fn claude_child_cannot_escalate_to_bypass() {"],
+        [179, "fn claude_child_accepts_explicit_mode_override() {"],
+        [190, "fn claude_child_maps_legacy_and_codex_yolo() {"],
+        [
+          199,
+          "async fn claude_child_rejects_invalid_override_without_child_record() {"
+        ],
+        [
+          207,
+          "async fn claude_child_reads_current_parent_permission_at_commit() {"
+        ]
+      ],
+      "families": [],
+      "generatedHeader": false,
+      "inspection": "Mechanical full-file scan + declaration/test-name inventory; no execution, no full manual test-body review",
+      "lines": 236,
+      "markers": {
+        "Option": 3,
+        "Value": 3,
+        "decode": 0,
+        "dynamic": 5,
+        "knownString": 5
+      },
+      "path": "src/managed_host_tools/ingress_tests/claude_permissions.rs",
+      "sha256": "6752b7b4a9e13b25262c20e41d775290adf2f1815ae8bf7a176734f0f795d987"
+    },
+    {
+      "bytes": 38497,
+      "class": "production",
+      "declarations": [
+        [
+          9,
+          "fn dispatch_gate_key(state_dir: &std::path::Path, id: &str) -> String {"
+        ],
+        [17, "pub(super) fn unowned_dispatch("],
+        [
+          26,
+          "fn dispatch_gate(key: String) -> Result<Arc<tokio::sync::Mutex<()>>, CallbackError> {"
+        ],
+        [42, "#[cfg(test)]"],
+        [45, "#[cfg(test)]"],
+        [47, "#[cfg(test)]"],
+        [49, "#[cfg(test)]"],
+        [51, "#[cfg(test)]"],
+        [53, "#[cfg(test)]"],
+        [61, "fn from(error: tool_requests::ToolRequestError) -> Self {"],
+        [73, "enum ToolKind {"],
+        [132, "struct ToolCall {"],
+        [
+          143,
+          "fn parse(input: &Input, context: &CallbackContext) -> Result<Self, CallbackError> {"
+        ],
+        [
+          229,
+          "pub(crate) fn put(tx: &Transaction<'_>, record: &Value) -> Result<(), CallbackError> {"
+        ],
+        [240, "pub(super) async fn dispatch_with_ports("],
+        [431, "pub(super) async fn production_ports("],
+        [466, "struct ClaimFailure {"],
+        [471, "fn claim_settlement("],
+        [
+          496,
+          "fn unknown_outcome(tool: &str, id: &str, cause: &dyn std::fmt::Display) -> String {"
+        ],
+        [504, "enum LocalFailure {"],
+        [509, "fn from(error: studio_runtime_store::StoreError) -> Self {"],
+        [514, "fn check_claim_owner("],
+        [535, "async fn run_claimed("],
+        [666, "fn settlement(self, call: &ToolCall) -> Box<ClaimFailure> {"],
+        [677, "fn settle_claim("],
+        [705, "async fn record_settlement("],
+        [728, "struct ClaimGuard {"],
+        [
+          732,
+          "fn arm(store: &Arc<RuntimeStore>, call: &ToolCall, now: f64) -> Self {"
+        ],
+        [743, "fn disarm(mut self) {"],
+        [748, "fn drop(&mut self) {"],
+        [773, "fn execute_once("],
+        [851, "fn output_expiry(value: &Value) -> Option<f64> {"],
+        [865, "fn finalize_dispatched("],
+        [928, "#[cfg(test)]"],
+        [934, "fn call() -> ToolCall {"],
+        [948, "fn writer_failure_that_may_hide_a_commit_settles_unknown() {"],
+        [965, "fn rolled_back_body_settles_not_applied() {"]
+      ],
+      "families": ["MH1", "MH4", "MH5", "SV2"],
+      "generatedHeader": false,
+      "inspection": "Mechanical full-file scan + focused producer/decode/caller body excerpts for listed families; not all lines manually read",
+      "lines": 971,
+      "markers": {
+        "Option": 5,
+        "Value": 20,
+        "decode": 2,
+        "dynamic": 25,
+        "knownString": 10
+      },
+      "path": "src/provider_callbacks/tools.rs",
+      "sha256": "786971606a02285e038e93040586a90afd778ee6e522fd9b38dc3e7aa2f968ae"
+    },
+    {
+      "bytes": 61182,
+      "class": "production",
+      "declarations": [
+        [17, "pub struct WorkerAccountRequest<'a> {"],
+        [31, "pub struct WorkerAccountSelection<'a> {"],
+        [41, "pub fn select_worker_account("],
+        [120, "fn account_read_error("],
+        [139, "fn validate_selected_account("],
+        [165, "fn ordered_worker_account_candidates<'a>("],
+        [
+          196,
+          "fn worker_model_provider(model: &str) -> Option<&'static str> {"
+        ],
+        [201, "pub(crate) struct RulesActionResult {"],
+        [206, "pub(crate) trait StatusWatchPort: Send + Sync {"],
+        [207, "fn status<'a>("],
+        [215, "fn rules<'a>("],
+        [225, "pub(crate) trait ChildCreationPort: Send + Sync {"],
+        [226, "fn spawn<'a>("],
+        [235, "fn review<'a>("],
+        [245, "pub(crate) trait MonitorCreatePort: Send + Sync {"],
+        [246, "fn create<'a>("],
+        [256, "pub(crate) trait InterruptPort: Send + Sync {"],
+        [257, "fn stop_by_agent<'a>("],
+        [267, "pub(crate) trait MonitorInputPort: Send + Sync {"],
+        [270, "fn input<'a>(&'a self, request: MonitorInputRequest<'a>)"],
+        [274, "pub(crate) struct MonitorInputRequest<'a> {"],
+        [283, "pub(crate) trait MonitorCancelPort: Send + Sync {"],
+        [284, "fn cancel_monitor<'a>("],
+        [294, "pub enum WorkActionOutcome {"],
+        [307, "pub trait WorkActionPort: Send + Sync {"],
+        [308, "fn act<'a>("],
+        [
+          318,
+          "pub(crate) fn work_action_tool(tool: &str, args: &Value) -> bool {"
+        ],
+        [324, "fn task_brief(task: &Value) -> Value {"],
+        [345, "pub(crate) struct ManagedToolRuntimePorts {"],
+        [361, "pub(crate) struct LatePorts {"],
+        [394, "pub(super) struct DispatchRequest<'a> {"],
+        [405, "pub(super) async fn dispatch("],
+        [766, "enum LifecycleRequest {"],
+        [793, "enum LifecycleCommand {"],
+        [805, "async fn lifecycle_management("],
+        [
+          921,
+          "fn callback_refusal(error: crate::provider_callbacks::CallbackError) -> Error {"
+        ],
+        [933, "async fn speak("],
+        [976, "async fn input_attempt("],
+        [1003, "pub(crate) async fn authorize_monitor_input("],
+        [1017, "pub(crate) fn authorize_monitor_input_in_transaction("],
+        [1050, "pub(crate) fn managed_input_receipt("],
+        [
+          1091,
+          "fn refused_before_write(error: Error) -> Result<Option<DispatchedOperation>, Error> {"
+        ],
+        [1106, "async fn child_creation_refusal("],
+        [1137, "fn not_sent(error: Error) -> DispatchedOperation {"],
+        [1161, "fn unknown_input() -> DispatchedOperation {"],
+        [
+          1168,
+          "fn unknown(value: Value, signals: Vec<WakeSignal>) -> DispatchedOperation {"
+        ],
+        [
+          1176,
+          "fn written(value: Value, signals: Vec<WakeSignal>) -> DispatchedOperation {"
+        ],
+        [
+          1184,
+          "fn child_creation_result(result: OperationResult) -> DispatchedOperation {"
+        ],
+        [1192, "#[cfg(test)]"],
+        [1199, "async fn maintenance_report_dispatches_for_an_active_lead() {"],
+        [1259, "fn monitor_input_port_preserves_runtime_input_type() {"],
+        [
+          1281,
+          "fn transient_catalog_refusal_tells_the_caller_to_retry_with_a_new_request_id() {"
+        ],
+        [
+          1302,
+          "fn a_stored_record_refusal_names_its_location_not_a_stale_caller() {"
+        ],
+        [
+          1318,
+          "fn uncertain_guest_save_remains_unknown_at_the_tool_boundary() {"
+        ],
+        [
+          1329,
+          "fn managed_input_receipts_preserve_written_not_sent_and_unknown() {"
+        ],
+        [1351, "#[cfg(test)]"],
+        [
+          1383,
+          "fn candidate(key: &str, provider: ProviderKind, ready: bool) -> Candidate {"
+        ],
+        [
+          1402,
+          "fn accounts(rows: &[(&str, ProviderKind, bool)]) -> Accounts {"
+        ],
+        [1414, "fn select("],
+        [
+          1442,
+          "fn spread(accounts: &Accounts, model: &str, workers: usize) -> Vec<(String, i64)> {"
+        ],
+        [
+          1454,
+          "fn thirty_workers_spread_evenly_over_three_accounts_per_provider() {"
+        ],
+        [
+          1474,
+          "fn implicit_selection_prefers_the_least_loaded_ready_account() {"
+        ],
+        [
+          1498,
+          "fn implicit_selection_follows_the_account_order_and_falls_back() {"
+        ],
+        [
+          1549,
+          "fn implicit_selection_prefers_an_account_below_its_running_turn_limit() {"
+        ],
+        [1570, "fn explicit_worker_account_never_falls_back() {"]
+      ],
+      "families": ["RT1", "RT2", "RT3", "RT4", "SV1", "SV5", "SV12"],
+      "generatedHeader": false,
+      "inspection": "Mechanical full-file scan + focused producer/decode/caller body excerpts for listed families; not all lines manually read",
+      "lines": 1589,
+      "markers": {
+        "Option": 23,
+        "Value": 39,
+        "decode": 2,
+        "dynamic": 44,
+        "knownString": 21
+      },
+      "path": "src/provider_callbacks/tools/runtime_dispatch.rs",
+      "sha256": "7ef3818a7de4ff33be9f23700dcf080cf835c93a417b1ff801deaaa19307e5f7"
+    },
+    {
+      "bytes": 23990,
+      "class": "production",
+      "declarations": [
+        [21, "pub struct ManagedToolRuntime {"],
+        [31, "#[cfg(test)]"],
+        [
+          32,
+          "pub(crate) fn from_ports_for_test(ports: ManagedToolRuntimePorts) -> Arc<Self> {"
+        ],
+        [41, "pub fn set_preparation_resources("],
+        [55, "pub(crate) fn preparation_resources("],
+        [61, "pub fn new("],
+        [68, "pub fn with_creation("],
+        [78, "pub fn with_creation_and_work("],
+        [87, "fn with_optional_creation("],
+        [121, "pub(crate) async fn wait_for_catalog("],
+        [131, "pub(crate) fn ports(&self) -> ManagedToolRuntimePorts {"],
+        [137, "pub fn attach_multi_server("],
+        [
+          155,
+          "pub fn attach_sign_in(&self, sources: crate::sign_in::SignInSources) {"
+        ],
+        [
+          163,
+          "pub fn attach_host_exec(&self, runtime: Arc<crate::host_exec::HostExecRuntime>) {"
+        ],
+        [
+          170,
+          "pub fn attach_layr_read(&self, guest: Arc<dyn crate::linux_vm_guest::GuestRpc>) {"
+        ],
+        [
+          178,
+          "pub fn attach_voice(&self, port: Arc<dyn crate::voice_runtime::VoiceRequestPort>) {"
+        ],
+        [185, "struct ManagedChildCreationAdapter("],
+        [190, "fn spawn<'a>("],
+        [212, "fn review<'a>("],
+        [235, "struct ManagedMonitorCreateAdapter {"],
+        [241, "fn create<'a>("],
+        [395, "async fn observe_created("],
+        [
+          433,
+          "fn child_creation_error(error: crate::managed_child_create::Error) -> Error {"
+        ],
+        [443, "struct ManagedStatusWatchAdapter;"],
+        [446, "fn status<'a>("],
+        [466, "fn rules<'a>("],
+        [494, "struct ManagedMonitorInputAdapter {"],
+        [499, "fn input<'a>("],
+        [519, "struct ManagedMonitorCancelAdapter {"],
+        [524, "fn cancel_monitor<'a>("],
+        [539, "struct ManagedInterruptAdapter {"],
+        [544, "fn stop_by_agent<'a>("],
+        [
+          578,
+          "fn status_error(error: crate::managed_status_watch::StatusError) -> Error {"
+        ],
+        [
+          591,
+          "fn rules_error(error: crate::managed_status_watch::RulesServiceError) -> Error {"
+        ],
+        [
+          603,
+          "fn monitor_error(error: crate::monitor_policy::MonitorError) -> Error {"
+        ],
+        [
+          629,
+          "fn management_error(error: crate::agent_management::ManagementError) -> Error {"
+        ],
+        [638, "#[cfg(test)]"],
+        [647, "fn a_monitor_refusal_keeps_its_reason() {"]
+      ],
+      "families": ["RT1", "RT2", "RT3", "RT4"],
+      "generatedHeader": false,
+      "inspection": "Mechanical full-file scan + focused producer/decode/caller body excerpts for listed families; not all lines manually read",
+      "lines": 664,
+      "markers": {
+        "Option": 5,
+        "Value": 14,
+        "decode": 0,
+        "dynamic": 15,
+        "knownString": 0
+      },
+      "path": "src/provider_callbacks/tools/runtime_ports.rs",
+      "sha256": "b0e11af2e6c642f2ac9aca65245cb722196b11e2515fb7372be070beec5ad543"
+    },
+    {
+      "bytes": 49399,
+      "class": "production",
+      "declarations": [
+        [7, "#[cfg(test)]"],
+        [19, "pub(crate) struct ProductionPorts {"],
+        [29, "pub(crate) struct ProductionPortsConfig {"],
+        [41, "pub(crate) fn new(config: ProductionPortsConfig) -> Self {"],
+        [55, "fn send("],
+        [155, "fn monitor_cancel_owner("],
+        [
+          177,
+          "fn callback_refusal(error: CallbackError) -> crate::managed_host_tools::Error {"
+        ],
+        [192, "fn is_descendant("],
+        [207, "fn prepare_work_item("],
+        [219, "fn recheck_worker("],
+        [229, "fn persisted_record("],
+        [
+          238,
+          "fn wake_signal(&self, _: &()) -> crate::managed_host_tools::WakeSignal {"
+        ],
+        [244, "fn resolve_target("],
+        [266, "fn interrupt_in_transaction("],
+        [282, "fn status("],
+        [294, "fn search("],
+        [327, "fn context("],
+        [362, "fn complaint("],
+        [422, "fn watch("],
+        [434, "fn monitor("],
+        [487, "fn review("],
+        [546, "struct UnavailableReviewCreator;"],
+        [548, "fn child("],
+        [558, "fn receipt("],
+        [570, "fn dispatch_managed<'a>("],
+        [600, "fn release("],
+        [617, "pub(super) async fn resolve_interrupt_target("],
+        [657, "pub(super) async fn resolve_send_target("],
+        [692, "fn from(error: event_write::EventWriteError) -> Self {"],
+        [
+          706,
+          "fn from(error: crate::coordination::CoordinationError) -> Self {"
+        ],
+        [717, "pub(super) fn read_only(name: &str, args: &Value) -> bool {"],
+        [737, "pub(super) fn execute("],
+        [
+          992,
+          "pub(super) fn managed_error(error: crate::managed_host_tools::Error) -> CallbackError {"
+        ],
+        [
+          1017,
+          "fn search_error(error: crate::transcript::TranscriptError) -> crate::managed_host_tools::Error {"
+        ],
+        [1045, "fn monitor_context_error("],
+        [
+          1073,
+          "fn text<'a>(v: &'a Value, key: &str) -> Result<&'a str, CallbackError> {"
+        ],
+        [1078, "fn brief(value: &Value) -> Value {"],
+        [
+          1087,
+          "fn page(rows: Vec<Value>, args: &Value, scope: Value) -> Result<Value, CallbackError> {"
+        ],
+        [1103, "fn model_page("],
+        [1113, "fn paginate("],
+        [1169, "pub(super) fn payload_selection("],
+        [
+          1223,
+          "fn request_action(args: &Value) -> Result<tool_requests::Action<'_>, CallbackError> {"
+        ]
+      ],
+      "families": [
+        "MH1",
+        "RT1",
+        "RT2",
+        "SV1",
+        "SV2",
+        "SV3",
+        "SV4",
+        "SV7",
+        "SV12"
+      ],
+      "generatedHeader": false,
+      "inspection": "Mechanical full-file scan + focused producer/decode/caller body excerpts for listed families; not all lines manually read",
+      "lines": 1231,
+      "markers": {
+        "Option": 9,
+        "Value": 40,
+        "decode": 1,
+        "dynamic": 27,
+        "knownString": 14
+      },
+      "path": "src/provider_callbacks/tools/services.rs",
+      "sha256": "1ac453ace89e1f405332030c563186d7618e5a907b9798dddff081e875261c91"
+    },
+    {
+      "bytes": 5994,
+      "class": "production",
+      "declarations": [
+        [9, "pub(super) fn topic("],
+        [
+          50,
+          "fn resources(preparation: Option<&PreparationResources>) -> Result<&PreparationResources, Error> {"
+        ],
+        [54, "fn worker_error(error: WorkerError) -> Error {"],
+        [80, "#[cfg(test)]"],
+        [89, "async fn the_tools_topic_lists_the_tools_of_a_vm_agent() {"]
+      ],
+      "families": ["SV4"],
+      "generatedHeader": false,
+      "inspection": "Mechanical full-file scan + focused producer/decode/caller body excerpts for listed families; not all lines manually read",
+      "lines": 134,
+      "markers": {
+        "Option": 2,
+        "Value": 2,
+        "decode": 0,
+        "dynamic": 5,
+        "knownString": 7
+      },
+      "path": "src/provider_callbacks/tools/services/context.rs",
+      "sha256": "a85ae764933a437a15cd8ddc8d551a55aa1774e2b2e462b3b2c9f6eec769c81c"
+    },
+    {
+      "bytes": 17791,
+      "class": "production",
+      "declarations": [
+        [
+          40,
+          "pub(crate) fn checked_action(args: &Value) -> Result<(&str, bool), CallbackError> {"
+        ],
+        [59, "pub(crate) fn lifecycle_action(args: &Value) -> bool {"],
+        [69, "pub(crate) fn resolved_args("],
+        [
+          88,
+          "fn target(tx: &Transaction<'_>, args: &Value) -> Result<Value, CallbackError> {"
+        ],
+        [96, "fn team("],
+        [121, "pub(super) fn execute("],
+        [
+          159,
+          "pub(crate) fn management_error(error: crate::agent_management::ManagementError) -> CallbackError {"
+        ],
+        [
+          170,
+          "fn authorize_lead(actor: &Value) -> Result<(), CallbackError> {"
+        ],
+        [182, "fn list("],
+        [214, "fn event_name(value: &Value) -> Result<&str, CallbackError> {"],
+        [
+          230,
+          "fn park_target(tx: &Transaction<'_>, actor: &Value, target: &Value) -> Result<(), CallbackError> {"
+        ],
+        [262, "fn receipt("],
+        [277, "fn save_receipt("],
+        [288, "fn wake("],
+        [309, "fn park_action("],
+        [461, "fn resume(agent: &mut Value) -> Result<(), CallbackError> {"]
+      ],
+      "families": ["SV5", "SV6"],
+      "generatedHeader": false,
+      "inspection": "Mechanical full-file scan + focused producer/decode/caller body excerpts for listed families; not all lines manually read",
+      "lines": 474,
+      "markers": {
+        "Option": 1,
+        "Value": 28,
+        "decode": 0,
+        "dynamic": 31,
+        "knownString": 9
+      },
+      "path": "src/provider_callbacks/tools/services/manage.rs",
+      "sha256": "b38985c99f0717176c0a1dd2eef02090989e869c9858eb6965c3c50e47eb4731"
+    },
+    {
+      "bytes": 29683,
+      "class": "production",
+      "declarations": [
+        [9, "pub(super) fn authorization_records("],
+        [50, "fn projects_by_resolved_path("],
+        [74, "fn authorize("],
+        [94, "pub(super) fn authorize_room("],
+        [103, "fn authorize_room_with("],
+        [140, "pub(super) fn send("],
+        [157, "pub(crate) fn send_remote_worker("],
+        [175, "fn send_as_actor("],
+        [415, "fn send_to_user("],
+        [
+          483,
+          "fn radio_guard_error(error: crate::projects::ProjectsError) -> CallbackError {"
+        ],
+        [496, "fn map_federation_error("],
+        [513, "pub(super) fn peers("],
+        [617, "fn visible_agents("],
+        [636, "fn agent_visible("],
+        [673, "pub(super) fn resolve_agent("],
+        [692, "pub(super) fn resolve_visible_agent_prefix("],
+        [715, "#[cfg(test)]"],
+        [
+          720,
+          "fn visible_agent_prefix_requires_eight_characters_and_unique_match() {"
+        ],
+        [740, "fn visible_agent_prefix_refuses_ambiguous_match() {"]
+      ],
+      "families": ["SV7", "SV8", "SV9"],
+      "generatedHeader": false,
+      "inspection": "Mechanical full-file scan + focused producer/decode/caller body excerpts for listed families; not all lines manually read",
+      "lines": 752,
+      "markers": {
+        "Option": 1,
+        "Value": 22,
+        "decode": 0,
+        "dynamic": 25,
+        "knownString": 15
+      },
+      "path": "src/provider_callbacks/tools/services/messages.rs",
+      "sha256": "08757836e305b323399a72f5280eff2b1d8e3efcb89abb86542b278cb125e9e5"
+    },
+    {
+      "bytes": 23199,
+      "class": "production",
+      "declarations": [
+        [10, "pub(super) fn chat("],
+        [
+          21,
+          "pub(crate) fn project_chat(page: &Value) -> Result<Value, CallbackError> {"
+        ],
+        [66, "pub(super) fn read("],
+        [158, "fn studio_input("],
+        [193, "pub(super) fn receipt_keys("],
+        [215, "fn native_request_alias("],
+        [236, "fn receipt("],
+        [248, "fn event("],
+        [314, "fn authorize_event("],
+        [349, "fn event_denial(denial: EventDenial) -> CallbackError {"],
+        [387, "fn command_output("],
+        [
+          431,
+          "fn transcript_error(error: TranscriptStoreError) -> CallbackError {"
+        ],
+        [443, "fn excerpt("],
+        [487, "#[cfg(test)]"],
+        [493, "fn spilled_input_is_durable_paged_and_agent_owned() {"]
+      ],
+      "families": ["SV2", "SV10", "SV11"],
+      "generatedHeader": false,
+      "inspection": "Mechanical full-file scan + focused producer/decode/caller body excerpts for listed families; not all lines manually read",
+      "lines": 622,
+      "markers": {
+        "Option": 3,
+        "Value": 28,
+        "decode": 3,
+        "dynamic": 26,
+        "knownString": 5
+      },
+      "path": "src/provider_callbacks/tools/services/reads.rs",
+      "sha256": "28b4c4fd632f190f48e79279d8b2959988742e75c5543659347c8638266f007d"
+    },
+    {
+      "bytes": 46488,
+      "class": "test",
+      "declarations": [
+        [11, "fn expectations() -> Value {"],
+        [18, "async fn send("],
+        [27, "async fn try_send("],
+        [39, "async fn try_send_with("],
+        [58, "async fn try_send_args("],
+        [70, "async fn try_send_args_with("],
+        [
+          143,
+          "async fn production_release_notifies_the_registry_after_a_committed_send() {"
+        ],
+        [
+          207,
+          "async fn monitor_cancel_release_notifies_only_the_monitor_dispatcher() {"
+        ],
+        [
+          252,
+          "async fn complaint_submit_read_and_respond_share_the_notification_service() {"
+        ],
+        [
+          313,
+          "async fn send_to_descendant_is_followup_input_while_parent_and_broadcast_are_chat() {"
+        ],
+        [
+          373,
+          "async fn send_preserves_explicit_next_turn_for_followup_and_chat() {"
+        ],
+        [
+          416,
+          "async fn an_ancestor_cancels_a_descendant_watch_and_others_are_refused_by_name() {"
+        ],
+        [447, "async fn cancel_as("],
+        [
+          510,
+          "async fn send_resolves_a_unique_visible_prefix_and_names_a_refused_id() {"
+        ],
+        [
+          556,
+          "async fn an_unusual_record_of_another_team_does_not_refuse_sends() {"
+        ],
+        [
+          614,
+          "async fn a_broadcast_names_a_member_that_cannot_be_checked_and_reaches_the_others() {"
+        ],
+        [
+          662,
+          "async fn a_broadcast_with_no_member_that_can_be_checked_is_refused_by_location() {"
+        ],
+        [708, "fn a_stored_refusal_names_its_location() {"],
+        [
+          718,
+          "async fn radio_member_message_is_refused_only_during_its_shared_reply_turn() {"
+        ],
+        [
+          815,
+          "fn empty_runtime_ports() -> crate::provider_callbacks::tools::ManagedToolRuntimePorts {"
+        ],
+        [829, "enum BlobRace {"],
+        [844, "async fn callback_blob_case(race: BlobRace) {"],
+        [1131, "async fn callback_blob_read_allows_an_unrelated_writer() {"],
+        [
+          1135,
+          "async fn callback_blob_actor_epoch_change_refuses_settlement() {"
+        ],
+        [1139, "async fn callback_blob_changed_result_refuses_settlement() {"],
+        [1143, "async fn callback_blob_late_result_refuses_stale_recovery() {"],
+        [
+          1147,
+          "async fn callback_blob_read_can_be_cancelled_while_io_is_blocked() {"
+        ],
+        [
+          1151,
+          "async fn callback_blob_recovery_write_precedes_referencing_commit() {"
+        ],
+        [
+          1156,
+          "async fn callback_blob_missing_file_does_not_settle_recovery() {"
+        ],
+        [
+          1160,
+          "async fn callback_blob_corrupt_file_does_not_settle_recovery() {"
+        ],
+        [1165, "async fn callback_blob_symlink_does_not_settle_recovery() {"],
+        [
+          1170,
+          "async fn callback_panel_returns_the_retired_progress_notice() {"
+        ],
+        [
+          1243,
+          "async fn callback_request_expires_a_terminal_inline_result() {"
+        ],
+        [
+          1248,
+          "async fn callback_request_invalid_action_preserves_tool_refusal() {"
+        ]
+      ],
+      "families": [],
+      "generatedHeader": false,
+      "inspection": "Mechanical full-file scan + declaration/test-name inventory; no execution, no full manual test-body review",
+      "lines": 1251,
+      "markers": {
+        "Option": 0,
+        "Value": 19,
+        "decode": 7,
+        "dynamic": 69,
+        "knownString": 0
+      },
+      "path": "src/provider_callbacks/tools/services/sends_tests.rs",
+      "sha256": "14e3979d8c4ac60b91b74d4ca5fbbf75e77502a5e41a201cd6c6e506dcb7e875"
+    },
+    {
+      "bytes": 5938,
+      "class": "production",
+      "declarations": [
+        [3, "pub(super) fn execute("],
+        [135, "#[cfg(test)]"],
+        [
+          140,
+          "fn task_transport_accepts_canonical_description_and_integral_decimal_version() {"
+        ]
+      ],
+      "families": ["SV1"],
+      "generatedHeader": false,
+      "inspection": "Mechanical full-file scan + focused producer/decode/caller body excerpts for listed families; not all lines manually read",
+      "lines": 155,
+      "markers": {
+        "Option": 0,
+        "Value": 7,
+        "decode": 0,
+        "dynamic": 16,
+        "knownString": 5
+      },
+      "path": "src/provider_callbacks/tools/services/work.rs",
+      "sha256": "d664d314b0f809808032aef41fd96d305ad11b8610b63f2710b8363d2c91bce0"
+    }
+  ],
+  "management_actions": [
+    "inspect",
+    "list",
+    "recover",
+    "reset_tools",
+    "archive",
+    "archive_finished",
+    "restore",
+    "list_archived",
+    "maintenance_report",
+    "park",
+    "list_parked",
+    "cancel_park",
+    "emit_event"
+  ],
+  "methodology": {
+    "caller_route": "Post-claim async dispatch gets the first chance; transactional services/managed_host_tools fallback runs only on None. A fallback parser is not asserted to be invoked on every production request. MH3 explicitly names the actual managed_child_create caller and shared-definition requirement.",
+    "caveats": "Regex can miss aliases/macros/index-only access and overcount literal/comment/test hits. Generated/vendor0 identified from exact selected paths and first15-line header markers; not a provenance claim about any outside tree. No tests, builds, installs, edits, live runtime state, model calls or reset-credit actions.",
+    "compatibility": "Do not erase raw canonical request signatures, original argument identity before resolution, native history ordering/unknown fields, arbitrary tool/task/schema payloads, Python truthiness, Missing versus Null, integral-decimal acceptance or read diagnostics. Ordinary optional capability ports and optional input are real absence; correlated receipt fields are specific enum candidates.",
+    "external_support_sources": [
+      "workspaces/runtime/packages/runtime-http/src/routes/account_transfer.rs:101,178",
+      "workspaces/runtime/packages/runtime-http/src/routes/claude_controls.rs:188,196,200",
+      "workspaces/providers/apps/claude-bridge/bridge-protocol.ts:285,312,329,333,421",
+      "workspaces/providers/apps/claude-bridge/bridge.ts:3135,3180,3247,4001",
+      "Existing runtime-schema/runtime-store/provider/process owners referenced by the cited production imports and prior task35 source traces."
+    ],
+    "hashes": "List SHA256 is UTF-8 full repo paths in ASCII/byte sort order, each ending LF including final entry. Relative paths in file table are prefixed by scope. Individual source-content SHA256 also attached.",
+    "inspection": "16/16 production-containing files have focused function-body traces. 33 family rows describe focused excerpts; SV13 explicitly records the unresolved whole-object closure proof. This does not claim every line, test body, helper branch or historical provider version was manually read. All734 declaration marker lines are attached so mechanical versus focused coverage is visible.",
+    "inventory": "git ls-tree -r --name-only 1b18e26491860b644f6e7373bc554e814cf95b66 -- workspaces/runtime/packages/runtime-services; intersect exact task35 exclusion list; git show pinned object for every file. Full contents read mechanically, bounded source-body excerpts and function/struct/enum/trait declarations inspected, native/tool tags and branches enumerated without top-N cap.",
+    "metrics": "Whole physical files, including inline tests, comments and string literals. Files with tests interleaved still classified production-containing; four dedicated test-only modules separately classified. Line count is split('\\n').length including trailing empty segment. These are discovery counts, not AST counts or runtime defects.",
+    "patterns": {
+      "Option": "\\bOption\\s*<",
+      "Value": "\\bValue\\b",
+      "decode": "serde_json::from_(str|slice|value|reader)|::deserialize\\b",
+      "dynamic": "\\.(get|pointer|as_(str|u64|i64|f64|bool|object|array))\\s*\\(",
+      "knownString": "(==|!=)\\s*\"[^\"\\n]+\"|\"[^\"\\n]+\"\\s*=>"
+    },
+    "priorities": "P1 concrete bounded refactor with owner+caller; P2 broader compatibility migration; P3 unresolved deeper proof. No priority is a confirmed bug severity. Every proposed witness is future work, not executed.",
+    "source_aliases": "In AT rows transfer.rs=src/account_transfer.rs, driver.rs=src/account_transfer_driver.rs, executor.rs=src/account_transfer_executor.rs. In CC rows controls.rs=src/claude_controls.rs, service.rs/store.rs=src/claude_controls/service.rs and store.rs. Other short tools/services/runtime paths are relative src/provider_callbacks/; managed_host_tools.rs under src. Full inventory paths disambiguate.",
+    "types": "Use existing Phase/Action/Ticket/ConnectionScope/RequestId/RequestCertainty/SessionOutcome, ClaudeControlCommand/PermissionMode, monitor Input, TaskCommand/WorkWrite, LifecycleRequest and authorization owners. Add consumed DTOs only with their named owner; cross-language TS bridge/native contracts need generated/shared consumers or parity, not duplicate hand-maintained definitions."
+  },
+  "revision": "1b18e26491860b644f6e7373bc554e814cf95b66",
+  "scope": "workspaces/runtime/packages/runtime-services/",
+  "scope_accounting": {
+    "dedicated_test_files": 4,
+    "exclusions_within_selected_list": [],
+    "file_list_sha256": "34fbe2366442d8bc2614897e7b62fd7f2a4026ec246a3b5c72164b937703c5d8",
+    "generated_identified": 0,
+    "match_previous_task35_exclusion_hash": true,
+    "metadata_selected": 0,
+    "outside_scope": "All other repository files excluded from this supplemental inventory; only necessary source owners/callers read as supporting trace evidence. Those are already covered by other censuses or outside this assignment.",
+    "production_containing_files": 16,
+    "production_list_sha256": "1cda47776b0eb3343150c005f49c148dc3dced2e3ca0a290a3731f941ef5ed7d",
+    "test_list_sha256": "fe5e0f83f26b6663bc0f74a9def70ccee47e3424cfc5a7bc412094bc100d5921",
+    "tracked_selected": 20,
+    "vendor_identified": 0
+  },
+  "task": "work-1793106449767203072-82",
+  "test_inventory_note": "All four dedicated test files included in the scan/hash and detailed declarations. Existing test names provide source evidence of intended behaviors only. None were run; no green/failing claims or live provider/credit witnesses. Inline tests in all production modules similarly not executed.",
+  "title": "Pinned-base supplement: all 20 previously assigned-away runtime-services paths",
+  "transfer_phase_inventory": [
+    "waiting",
+    "lazy",
+    "reading",
+    "interrupting",
+    "submitted",
+    "lazy_submitted",
+    "ready",
+    "blocked",
+    "unknown",
+    "completed",
+    "left"
+  ],
+  "verification": {
+    "builds": 0,
+    "installs": 0,
+    "live_reads": 0,
+    "pinned_source_only": true,
+    "produced_at_utc": "2026-10-27T13:15Z",
+    "runtime_bug_claims": 0,
+    "source_edits": 0,
+    "tests_executed": 0,
+    "witnesses": "proposed only"
+  }
+}

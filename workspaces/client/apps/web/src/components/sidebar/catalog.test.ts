@@ -1,3 +1,7 @@
+import {
+  AgentSource as GeneratedApiAgentSource,
+  AgentStatus as GeneratedApiAgentStatus,
+} from "../../generated/api.ts";
 import { required } from "../componentTestFixtures";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Agent, PeerTeam } from "../../types";
@@ -14,7 +18,7 @@ import {
 const agent = (id: string, fields: Partial<Agent> = {}): Agent => ({
   id,
   name: id,
-  source: "managed",
+  source: GeneratedApiAgentSource.managed,
   isLead: true,
   cwd: "/work",
   created: 1,
@@ -46,7 +50,10 @@ describe("incremental sidebar catalog", () => {
     ];
     const before = select(rows, overrides, teams, order);
     const next = select(
-      [required(rows[0]), { ...required(rows[1]), status: "failed" }],
+      [
+        required(rows[0]),
+        { ...required(rows[1]), status: GeneratedApiAgentStatus.failed },
+      ],
       overrides,
       teams,
       order,

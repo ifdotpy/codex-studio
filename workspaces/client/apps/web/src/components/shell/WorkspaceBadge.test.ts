@@ -1,3 +1,7 @@
+import {
+  WorkspaceMode as GeneratedApiWorkspaceMode,
+  AgentRole as GeneratedApiAgentRole,
+} from "../../generated/api.ts";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { expect, test } from "vitest";
@@ -70,7 +74,7 @@ test.each([
 test.each([false, true])("shows the layr worker badge, remote=%s", (remote) => {
   const current = agent({
     ...(remote ? { remoteWorker: { server: "remote", link: "link" } } : {}),
-    workspaceMode: "layr",
+    workspaceMode: GeneratedApiWorkspaceMode.layr,
   });
   expect(workspaceBadgeInfo(current)).toEqual({
     label: "Layr VM",
@@ -97,13 +101,15 @@ test("missing modes retain lead and remote badge visibility", () => {
     ).toBeNull();
   }
   expect(
-    workspaceBadgeInfo(agent({ isLead: true, workspaceMode: "shared" })),
+    workspaceBadgeInfo(
+      agent({ isLead: true, workspaceMode: GeneratedApiWorkspaceMode.shared }),
+    ),
   ).toBeNull();
   expect(
     workspaceBadgeInfo(
       agent({
         cwd: null,
-        workspaceMode: "worktree",
+        workspaceMode: GeneratedApiWorkspaceMode.worktree,
         remoteWorker: { server: "remote", link: "link" },
       }),
     ),
@@ -111,8 +117,8 @@ test("missing modes retain lead and remote badge visibility", () => {
 });
 
 test.each([
-  [{ worktree: true, role: "reviewer" }, "WT"],
-  [{ role: "reviewer" }, "SHARED"],
+  [{ worktree: true, role: GeneratedApiAgentRole.reviewer }, "WT"],
+  [{ role: GeneratedApiAgentRole.reviewer }, "SHARED"],
   [{ worktree: false }, "SHARED"],
   [{ worktree: "/legacy/worktree" }, undefined],
 ] satisfies [Partial<Agent>, string | undefined][])(

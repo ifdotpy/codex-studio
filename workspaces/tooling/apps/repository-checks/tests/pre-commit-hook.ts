@@ -65,6 +65,10 @@ function fixture() {
   chmodSync(path.join(root, ".githooks", "pre-commit"), 0o755);
   copyFileSync(checkSource, checkerPath);
   copyFileSync(
+    path.join(path.dirname(checkSource), "enum-literals.ts"),
+    path.join(path.dirname(checkerPath), "enum-literals.ts"),
+  );
+  copyFileSync(
     path.join(path.dirname(checkSource), "javascript-policy.ts"),
     path.join(path.dirname(checkerPath), "javascript-policy.ts"),
   );
@@ -422,6 +426,203 @@ try {
     );
   }
 
+  {
+    const root = fixture();
+    stage(
+      root,
+      "tsconfig.base.json",
+      '{"compilerOptions":{"strict":true,"module":"ESNext","moduleResolution":"Bundler"}}',
+    );
+    stage(
+      root,
+      "workspaces/client/apps/web/tsconfig.json",
+      '{"extends":"../../../../tsconfig.base.json"}',
+    );
+    stage(
+      root,
+      "workspaces/client/apps/web/src/generated/api.ts",
+      'export const Reason = { slot: "slot", budget: "budget" } as const;\nexport type Reason = typeof Reason[keyof typeof Reason];\n',
+    );
+    stage(
+      root,
+      "workspaces/client/apps/web/src/generated/providerKind.ts",
+      'export const ProviderKind = { Codex: "codex", Claude: "claude" } as const;\n',
+    );
+    stage(
+      root,
+      "workspaces/client/apps/web/package.json",
+      '{"name":"fixture-web"}',
+    );
+    const target = "workspaces/client/apps/web/src/startWait.ts";
+    stage(
+      root,
+      target,
+      'import type { Reason } from "./generated/api";\nexport function waiting(reason: Reason) { return reason === "slot"; }\n',
+    );
+    const lint = () =>
+      command(
+        process.execPath,
+        [
+          "workspaces/tooling/apps/repository-checks/check-code.ts",
+          "staged",
+          "lint",
+        ],
+        root,
+      );
+    stage(root, target, 'import { value } from "web-only-package"; value();\n');
+    const missing = lint();
+    assert.notEqual(missing.status, 0, missing.stdout + missing.stderr);
+    assert.match(
+      missing.stdout + missing.stderr,
+      /Cannot resolve TypeScript dependencies/,
+    );
+    const dependency = path.join(
+      root,
+      "workspaces/client/apps/web/node_modules/web-only-package",
+    );
+    mkdirSync(dependency, { recursive: true });
+    writeFileSync(
+      path.join(dependency, "index.d.ts"),
+      "export declare function value(): void;\n",
+    );
+    stage(
+      root,
+      target,
+      'import { value } from "web-only-package"; value();\nimport type { Reason } from "./generated/api";\nexport function waiting(reason: Reason) { return reason === "slot"; }\n',
+    );
+    const rejected = lint();
+    assert.notEqual(rejected.status, 0, rejected.stdout + rejected.stderr);
+    assert.match(rejected.stdout + rejected.stderr, /import and use Reason/);
+    stage(
+      root,
+      target,
+      'import { value } from "web-only-package"; value();\nimport { Reason } from "./generated/api";\nexport function waiting(reason: Reason) { return reason === Reason.slot; }\n',
+    );
+    writeFileSync(path.join(root, target), "const broken = ;\n");
+    const accepted = lint();
+    assert.equal(accepted.status, 0, accepted.stdout + accepted.stderr);
+    const ambient = "workspaces/client/apps/web/src/assets.d.ts";
+    stage(
+      root,
+      ambient,
+      'declare module "*.css";\ndeclare module "*?url" { const url: string; export default url; }\ndeclare module "*?raw" { const text: string; export default text; }\n',
+    );
+    git(root, "commit", "--quiet", "-m", "prepare ambient module declarations");
+    stage(
+      root,
+      target,
+      'import "./view.css";\nimport workerURL from "./worker.ts?url";\nimport text from "./contract.json?raw";\nimport { Reason } from "./generated/api";\nexport function waiting(reason: Reason) { return reason === Reason.slot && workerURL.length > 0 && text.length > 0; }\n',
+    );
+    writeFileSync(path.join(root, ambient), "export {};\n");
+    const ambientAccepted = lint();
+    assert.equal(
+      ambientAccepted.status,
+      0,
+      ambientAccepted.stdout + ambientAccepted.stderr,
+    );
+    const bridgeRoot = "workspaces/providers/apps/fixture-bridge";
+    stage(
+      root,
+      `${bridgeRoot}/package.json`,
+      '{"name":"fixture-bridge","type":"module","exports":"./index.ts"}',
+    );
+    const bridge = `${bridgeRoot}/index.ts`;
+    const enumBridge =
+      'export type { Reason } from "../../../client/apps/web/src/generated/api";\n';
+    stage(root, bridge, enumBridge);
+    symlinkSync(
+      path.join(root, bridgeRoot),
+      path.join(root, "workspaces/client/apps/web/node_modules/fixture-bridge"),
+      "dir",
+    );
+    stage(
+      root,
+      target,
+      'import type { Reason } from "fixture-bridge";\nexport function waiting(reason: Reason) { return reason === "slot"; }\n',
+    );
+    writeFileSync(path.join(root, bridge), "export type Reason = string;\n");
+    const indexRejects = lint();
+    assert.notEqual(
+      indexRejects.status,
+      0,
+      indexRejects.stdout + indexRejects.stderr,
+    );
+    assert.match(
+      indexRejects.stdout + indexRejects.stderr,
+      /import and use Reason/,
+    );
+    stage(root, bridge, "export type Reason = string;\n");
+    writeFileSync(path.join(root, bridge), enumBridge);
+    const indexAccepts = lint();
+    assert.equal(
+      indexAccepts.status,
+      0,
+      indexAccepts.stdout + indexAccepts.stderr,
+    );
+    const facade = "workspaces/client/apps/web/src/wasm/client.ts";
+    const realFacade = readFileSync(path.join(repositoryRoot, facade), "utf8");
+    stage(root, facade, realFacade);
+    const rustOwned = "workspaces/client/apps/web/src/generated/rustOwned.ts";
+    stage(
+      root,
+      rustOwned,
+      readFileSync(path.join(repositoryRoot, rustOwned), "utf8"),
+    );
+    git(root, "commit", "--quiet", "-m", "prepare staged wasm facade");
+    stage(
+      root,
+      target,
+      'import { sha256 } from "./wasm/client";\nexport async function check(bytes: Uint8Array): Promise<Uint8Array> { return sha256(bytes); }\n',
+    );
+    const cleanWasm = lint();
+    assert.equal(cleanWasm.status, 0, cleanWasm.stdout + cleanWasm.stderr);
+    stage(root, facade, realFacade + "\n");
+    const facadeNeedsBinding = lint();
+    assert.notEqual(
+      facadeNeedsBinding.status,
+      0,
+      facadeNeedsBinding.stdout + facadeNeedsBinding.stderr,
+    );
+    assert.match(
+      facadeNeedsBinding.stdout + facadeNeedsBinding.stderr,
+      /Cannot resolve TypeScript dependencies/,
+    );
+    stage(root, facade, realFacade);
+    const wholeLint = () =>
+      command(
+        process.execPath,
+        [
+          "workspaces/tooling/apps/repository-checks/check-code.ts",
+          "lint-all",
+          target,
+        ],
+        root,
+      );
+    writeFileSync(
+      path.join(root, target),
+      'import { Reason } from "./generated/api";\nexport function waiting(reason: Reason) { return reason === Reason.slot; }\n',
+    );
+    const wholeAccepted = wholeLint();
+    assert.equal(
+      wholeAccepted.status,
+      0,
+      wholeAccepted.stdout + wholeAccepted.stderr,
+    );
+    writeFileSync(
+      path.join(root, target),
+      'import type { Reason } from "./generated/api";\nexport function waiting(reason: Reason) { return reason === "slot"; }\n',
+    );
+    const wholeRejected = wholeLint();
+    assert.notEqual(
+      wholeRejected.status,
+      0,
+      wholeRejected.stdout + wholeRejected.stderr,
+    );
+    assert.match(
+      wholeRejected.stdout + wholeRejected.stderr,
+      /import and use Reason/,
+    );
+  }
   console.log("Pre-commit staged-content fixtures passed.");
 } finally {
   for (const root of temporaryRoots)

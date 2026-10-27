@@ -153,6 +153,17 @@ pub struct DraftView {
     pub conflicts: Vec<DraftVersion>,
 }
 
+/// Committed draft view and its native workspace metadata.
+#[derive(Debug, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct DraftSnapshot {
+    #[serde(flatten)]
+    pub view: DraftView,
+    pub workspace_id: String,
+    pub revision: u64,
+    pub error: String,
+}
+
 pub fn reconcile(
     versions: &[DraftVersion],
     pending: &BTreeMap<String, String>,

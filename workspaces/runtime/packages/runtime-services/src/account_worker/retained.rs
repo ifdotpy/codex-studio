@@ -137,12 +137,14 @@ impl RetainedSessionPort {
         !*self.stop.subscribe().borrow() && !self.commands.is_closed()
     }
     pub async fn recover_connection(&self, agent_id: String) -> Result<Value, PortError> {
-        self.recover_authorized(agent_id, None).await
+        self.recover_authorized(agent_id, None)
+            .await
+            .map(crate::recovery::RecoveryReceipt::into_value)
     }
     pub async fn recover_managed_agent(
         &self,
         authorization: crate::agent_management_recovery::AuthorizedRecoveryRequest,
-    ) -> Result<Value, PortError> {
+    ) -> Result<crate::recovery::RecoveryReceipt, PortError> {
         let agent = authorization.target["id"]
             .as_str()
             .ok_or(PortError::Invalid)?
@@ -153,7 +155,7 @@ impl RetainedSessionPort {
         &self,
         agent_id: String,
         authorization: Option<crate::agent_management_recovery::AuthorizedRecoveryRequest>,
-    ) -> Result<Value, PortError> {
+    ) -> Result<crate::recovery::RecoveryReceipt, PortError> {
         if agent_id.is_empty() || !self.is_live() {
             return Err(PortError::Identity);
         }

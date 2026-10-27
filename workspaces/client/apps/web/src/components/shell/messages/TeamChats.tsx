@@ -1,3 +1,7 @@
+import {
+  RoomKind as GeneratedApiRoomKind,
+  RequestStatus as GeneratedApiRequestStatus,
+} from "../../../generated/api.ts";
 import { useServerApi } from "../../../servers/ServerServicesContext";
 import MessageDate from "../../conversation/transcript/MessageDate";
 import { localDateTime, localTime } from "../../../local-time";
@@ -98,11 +102,11 @@ export default function TeamChats({
   const rooms = (runtime?.rooms ?? []).filter(
     (room) =>
       leadId &&
-      (room.kind === "federated"
+      (room.kind === GeneratedApiRoomKind.federated
         ? (room.localMembers ?? room.members ?? []).some((id) =>
             members.has(id),
           )
-        : room.kind === "broadcast"
+        : room.kind === GeneratedApiRoomKind.broadcast
           ? room.rootId === leadId
           : (room.members ?? []).length > 0 &&
             ((room.members ?? []).every((id) => members.has(id)) ||
@@ -110,8 +114,9 @@ export default function TeamChats({
                 (room.members ?? []).some((id) => members.has(id))))),
   );
   const name = (room: (typeof rooms)[number]) => {
-    if (room.kind === "federated") return room.peerLabel || room.name;
-    if (room.kind === "broadcast") return "Team broadcast";
+    if (room.kind === GeneratedApiRoomKind.federated)
+      return room.peerLabel || room.name;
+    if (room.kind === GeneratedApiRoomKind.broadcast) return "Team broadcast";
     const peers = (room.members ?? []).filter((id) => id !== leadId);
     return peers.length === 1
       ? data.threads.find((agent) => agent.id === peers[0])?.name || room.name
@@ -128,7 +133,8 @@ export default function TeamChats({
     setSeen(saved(seenKey, {}));
   }, [seenKey]);
   const attention = (runtime?.requests ?? []).filter(
-    (request) => request.status === "pending" || !request.status,
+    (request) =>
+      request.status === GeneratedApiRequestStatus.pending || !request.status,
   );
   const latestPersonal = [
     ...(runtime?.complaints ?? []).map((item) => ({
@@ -147,11 +153,11 @@ export default function TeamChats({
       <span className="team-conversation-icon personal">
         <Inbox size={21} />
       </span>
-    ) : item.kind === "broadcast" ? (
+    ) : item.kind === GeneratedApiRoomKind.broadcast ? (
       <span className="team-conversation-icon">
         <Megaphone size={21} />
       </span>
-    ) : item.kind === "federated" ? (
+    ) : item.kind === GeneratedApiRoomKind.federated ? (
       <span className="team-conversation-icon">
         <Users size={21} />
       </span>
@@ -219,7 +225,11 @@ export default function TeamChats({
   }, [selection.detail, selected]);
   const events = [
     ...(showYou ? (runtime?.requests ?? []) : [])
-      .filter((request) => request.status === "pending" || !request.status)
+      .filter(
+        (request) =>
+          request.status === GeneratedApiRequestStatus.pending ||
+          !request.status,
+      )
       .map((request) => ({
         id: `request:${request.id}`,
         created: request.createdAt ?? request.created ?? request.at ?? 0,
@@ -461,9 +471,9 @@ export default function TeamChats({
               <span className="team-room-kind">
                 {showYou
                   ? "Questions, messages and replies"
-                  : room?.kind === "broadcast"
+                  : room?.kind === GeneratedApiRoomKind.broadcast
                     ? "Team conversation"
-                    : room?.kind === "federated"
+                    : room?.kind === GeneratedApiRoomKind.federated
                       ? `Remote room on ${room.peerLabel || "paired server"}`
                       : "Conversation"}
               </span>

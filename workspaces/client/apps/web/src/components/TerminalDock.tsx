@@ -1,3 +1,4 @@
+import { TerminalState as GeneratedApiTerminalState } from "../generated/api.ts";
 import { randomUUID } from "../uuid";
 import { useScreenEnvironment } from "../servers/ScreenContext";
 import { useServerApi, useServerSync } from "../servers/ServerServicesContext";
@@ -185,7 +186,7 @@ export default function TerminalDock({
     setEndTarget(null);
   }, [selected]);
   const entries: Entry[] = shells
-    .filter((shell) => shell.status !== "closed")
+    .filter((shell) => shell.status !== GeneratedApiTerminalState.closed)
     .map((shell) => ({ key: `shell:${shell.id}`, ...shell }));
   const current = entries.find((entry) => entry.key === selected);
   const owner = (id: string) =>

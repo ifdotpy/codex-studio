@@ -1,3 +1,8 @@
+import {
+  ProviderKind as GeneratedApiProviderKind,
+  AgentSource as GeneratedApiAgentSource,
+  AgentStatus as GeneratedApiAgentStatus,
+} from "../../generated/api.ts";
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import { expect, within, waitFor } from "storybook/test";
 import { useState, type ContextType } from "react";
@@ -208,7 +213,7 @@ const previewCatalog = [
   (row) =>
     ({
       ...row,
-      provider: "codex",
+      provider: GeneratedApiProviderKind.codex,
       supportedReasoningEfforts: [
         "low",
         "medium",
@@ -243,12 +248,12 @@ const previewReader: ContextType<typeof ModelCatalogReader> = {
 const previewAgent = {
   id: "execution-preview",
   name: "Preview",
-  source: "managed",
+  source: GeneratedApiAgentSource.managed,
   isLead: true,
-  provider: "codex",
+  provider: GeneratedApiProviderKind.codex,
   model: "gpt-6-astra",
   effort: "high",
-  status: "idle",
+  status: GeneratedApiAgentStatus.idle,
   created: 1,
   workerDefaults: { model: "gpt-6-luna", effort: "high" },
   reviewDefaults: { model: null, effort: null },

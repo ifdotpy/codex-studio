@@ -1,3 +1,4 @@
+import { ProviderKind as GeneratedApiProviderKind } from "../../generated/api.ts";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { MantineProvider } from "@mantine/core";
@@ -15,7 +16,7 @@ import {
 
 const lead = (mode: ClaudePermissionMode, yolo = true): Agent => ({
   id: "lead",
-  provider: "claude",
+  provider: GeneratedApiProviderKind.claude,
   yoloMode: yolo,
   claudeOptions: { permissionMode: mode },
 });
@@ -40,14 +41,24 @@ test.each(CLAUDE_PERMISSION_MODES)(
   },
 );
 test("legacy modes use provider-specific yolo defaults and invalid modes fail closed", () => {
-  expect(inheritedClaudeMode({ id: "lead", provider: "claude" })).toBe(
-    "default",
-  );
-  expect(inheritedClaudeMode({ id: "lead", provider: "codex" })).toBe(
-    "bypassPermissions",
-  );
   expect(
-    inheritedClaudeMode({ id: "lead", provider: "claude", yoloMode: true }),
+    inheritedClaudeMode({
+      id: "lead",
+      provider: GeneratedApiProviderKind.claude,
+    }),
+  ).toBe("default");
+  expect(
+    inheritedClaudeMode({
+      id: "lead",
+      provider: GeneratedApiProviderKind.codex,
+    }),
+  ).toBe("bypassPermissions");
+  expect(
+    inheritedClaudeMode({
+      id: "lead",
+      provider: GeneratedApiProviderKind.claude,
+      yoloMode: true,
+    }),
   ).toBe("bypassPermissions");
   expect(
     allowedWorkerModes(

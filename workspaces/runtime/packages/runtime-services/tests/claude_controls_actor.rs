@@ -40,6 +40,91 @@ struct Native {
     unknown: bool,
     generation: std::sync::atomic::AtomicU64,
 }
+
+struct MalformedState(Mutex<Vec<String>>);
+impl ControlSession for MalformedState {
+    fn binding(&self) -> ControlBinding {
+        ControlBinding::new("account".into(), "connection".into(), 1).expect("binding")
+    }
+    fn call_scoped(
+        &self,
+        _scope: ControlScope,
+        invocation: ControlInvocation,
+    ) -> ControlFuture<'_, ControlReply> {
+        let result = self.call(invocation.method().as_str(), invocation.params());
+        Box::pin(async move { ControlReply::from_wire(&invocation, result.await?) })
+    }
+}
+impl MalformedState {
+    fn call(&self, method: &str, _: Value) -> ControlFuture<'_, Value> {
+        self.0.lock().expect("calls").push(method.to_owned());
+        let state = method == "claude/state";
+        Box::pin(async move {
+            if state {
+                Ok(json!({"tasks": [], "turns": null}))
+            } else {
+                Ok(json!({"settings": {}}))
+            }
+        })
+    }
+}
+
+#[tokio::test]
+async fn malformed_state_never_authorizes_a_settings_mutation() {
+    let root = tempfile::tempdir().expect("scratch");
+    let cwd = root.path().join("cwd");
+    let state = root.path().join("state");
+    std::fs::create_dir(&cwd).expect("cwd");
+    std::fs::create_dir(&state).expect("state");
+    seed_state(&state, &cwd).await;
+    let store = Arc::new(RuntimeStore::open(Some(&state)).await.expect("store"));
+    let native = Arc::new(MalformedState(Mutex::new(vec![])));
+    let controls = Controls::new(
+        Arc::new(StoredControls::new(store, Arc::new(|_| {}))),
+        native.clone(),
+    );
+    let request = serde_json::from_value(json!({"action":"settings","id":"agent","request_id":"malformed","settings":{"thinking":false}})).expect("request");
+    assert!(controls.execute(request).await.is_err());
+    assert_eq!(*native.0.lock().expect("calls"), ["claude/state"]);
+}
+
+#[test]
+fn control_wire_roundtrips_presence_numbers_extensions_and_original_ids() {
+    let state = json!({"turns":[{"id":"turn","status":null,"extra":1.5}],"tasks":null,"extra":{"count":9007199254740991u64}});
+    let parsed: NativeState = serde_json::from_value(state.clone()).expect("state");
+    assert_eq!(
+        serde_json::to_value(parsed).expect("state serialization"),
+        state
+    );
+    let settings = json!({"autoCompactWindow":null,"thinking":false});
+    let call = ControlInvocation::Settings {
+        thread_id: "thread".into(),
+        settings: serde_json::from_value(settings.clone()).expect("settings"),
+        request_id: "transport".into(),
+    };
+    assert_eq!(
+        call.params(),
+        json!({"threadId":"thread","settings":settings})
+    );
+    let reply = json!({"settings":{"thinking":false,"vendor":{"count":1.5}},"extra":null});
+    let parsed: SettingsReply = serde_json::from_value(reply.clone()).expect("reply");
+    assert_eq!(
+        serde_json::to_value(parsed).expect("reply serialization"),
+        reply
+    );
+    let call = ControlInvocation::Rollback {
+        thread_id: "thread".into(),
+        request_id: serde_json::from_value(json!("original")).expect("request"),
+        turn_id: serde_json::from_value(json!("turn")).expect("turn"),
+        restore_files: false,
+        transport_request_id: "retry-transport".into(),
+    };
+    assert_eq!(
+        call.params(),
+        json!({"threadId":"thread","requestId":"original","turnId":"turn","restoreFiles":false})
+    );
+    assert_eq!(call.request_id(), Some("retry-transport"));
+}
 impl ControlSession for Native {
     fn binding(&self) -> ControlBinding {
         ControlBinding::new(
@@ -49,6 +134,16 @@ impl ControlSession for Native {
         )
         .expect("valid fixture")
     }
+    fn call_scoped(
+        &self,
+        _scope: ControlScope,
+        invocation: ControlInvocation,
+    ) -> ControlFuture<'_, ControlReply> {
+        let result = self.call(invocation.method().as_str(), invocation.params());
+        Box::pin(async move { ControlReply::from_wire(&invocation, result.await?) })
+    }
+}
+impl Native {
     fn call(&self, method: &str, _params: Value) -> ControlFuture<'_, Value> {
         let method = method.to_owned();
         Box::pin(async move {
@@ -73,6 +168,193 @@ impl ControlSession for Native {
             })
         })
     }
+}
+
+struct MismatchedSettings {
+    inner: Native,
+    attempts: std::sync::atomic::AtomicUsize,
+    response: Value,
+}
+impl ControlSession for MismatchedSettings {
+    fn binding(&self) -> ControlBinding {
+        self.inner.binding()
+    }
+    fn call_scoped(
+        &self,
+        scope: ControlScope,
+        invocation: ControlInvocation,
+    ) -> ControlFuture<'_, ControlReply> {
+        if matches!(invocation, ControlInvocation::Settings { .. }) {
+            self.attempts
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            let response = self.response.clone();
+            return Box::pin(async move {
+                ControlReply::from_wire(&invocation, json!({"settings":response,"extension":1}))
+            });
+        }
+        self.inner.call_scoped(scope, invocation)
+    }
+}
+#[tokio::test]
+async fn mismatched_settings_reply_is_unknown_and_never_replayed() {
+    let root = tempfile::tempdir().expect("scratch");
+    let cwd = root.path().join("cwd");
+    let state = root.path().join("state");
+    std::fs::create_dir(&cwd).expect("cwd");
+    std::fs::create_dir(&state).expect("state");
+    seed_state(&state, &cwd).await;
+    let store = Arc::new(RuntimeStore::open(Some(&state)).await.expect("store"));
+    let native = Arc::new(MismatchedSettings {
+        inner: Native {
+            calls: Mutex::new(vec![]),
+            unknown: false,
+            generation: 1.into(),
+        },
+        attempts: 0.into(),
+        response: json!({"permissionMode":"default"}),
+    });
+    let controls = Controls::new(
+        Arc::new(StoredControls::new(store.clone(), Arc::new(|_| {}))),
+        native.clone(),
+    );
+    let request: ControlRequest = serde_json::from_value(json!({"action":"settings","id":"agent","request_id":"mismatch","settings":{"permissionMode":"plan"}})).expect("request");
+    assert!(matches!(
+        controls.execute(request.clone()).await,
+        Err(ControlError::Unknown)
+    ));
+    assert!(matches!(
+        controls.execute(request).await,
+        Err(ControlError::Unknown)
+    ));
+    assert_eq!(native.attempts.load(std::sync::atomic::Ordering::SeqCst), 1);
+    let agent = AgentRepository::get(
+        &store.test_reader().expect("reader"),
+        &AgentId("agent".into()),
+    )
+    .expect("agent")
+    .expect("present")
+    .value();
+    assert_eq!(agent["workspaceOperation"], "branch_recovery");
+}
+
+#[tokio::test]
+async fn extra_known_settings_in_reply_remain_unknown_and_are_not_replayed() {
+    for response in [
+        json!({"thinking":false}),
+        json!({"permissionMode":"bypassPermissions"}),
+        json!({"mcpAutoBackground":false}),
+        json!({"autoCompactWindow":null}),
+    ] {
+        let root = tempfile::tempdir().expect("scratch");
+        let cwd = root.path().join("cwd");
+        let state = root.path().join("state");
+        std::fs::create_dir(&cwd).expect("cwd");
+        std::fs::create_dir(&state).expect("state");
+        seed_state(&state, &cwd).await;
+        let store = Arc::new(RuntimeStore::open(Some(&state)).await.expect("store"));
+        let native = Arc::new(MismatchedSettings {
+            inner: Native {
+                calls: Mutex::new(vec![]),
+                unknown: false,
+                generation: 1.into(),
+            },
+            attempts: 0.into(),
+            response,
+        });
+        let controls = Controls::new(
+            Arc::new(StoredControls::new(store.clone(), Arc::new(|_| {}))),
+            native.clone(),
+        );
+        let request: ControlRequest = serde_json::from_value(
+            json!({"action":"settings","id":"agent","request_id":"extra-known","settings":{}}),
+        )
+        .expect("request");
+        assert!(matches!(
+            controls.execute(request.clone()).await,
+            Err(ControlError::Unknown)
+        ));
+        assert!(matches!(
+            controls.execute(request).await,
+            Err(ControlError::Unknown)
+        ));
+        assert_eq!(native.attempts.load(std::sync::atomic::Ordering::SeqCst), 1);
+        let agent = AgentRepository::get(
+            &store.test_reader().expect("reader"),
+            &AgentId("agent".into()),
+        )
+        .expect("agent")
+        .expect("present")
+        .value();
+        assert_eq!(agent["workspaceOperation"], "branch_recovery");
+    }
+}
+
+struct MalformedRollback {
+    inner: Native,
+    attempts: std::sync::atomic::AtomicUsize,
+}
+impl ControlSession for MalformedRollback {
+    fn binding(&self) -> ControlBinding {
+        self.inner.binding()
+    }
+    fn call_scoped(
+        &self,
+        scope: ControlScope,
+        invocation: ControlInvocation,
+    ) -> ControlFuture<'_, ControlReply> {
+        if matches!(invocation, ControlInvocation::Rollback { .. }) {
+            self.attempts
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            return Box::pin(async move {
+                ControlReply::from_wire(&invocation, json!({"nativeId":"restored"}))
+            });
+        }
+        self.inner.call_scoped(scope, invocation)
+    }
+}
+
+#[tokio::test]
+async fn malformed_mutation_reply_is_unknown_and_never_replayed() {
+    let root = tempfile::tempdir().expect("scratch");
+    let cwd = root.path().join("cwd");
+    let state = root.path().join("state");
+    std::fs::create_dir(&cwd).expect("cwd");
+    std::fs::create_dir(&state).expect("state");
+    seed_state(&state, &cwd).await;
+    let store = Arc::new(RuntimeStore::open(Some(&state)).await.expect("store"));
+    let native = Arc::new(MalformedRollback {
+        inner: Native {
+            calls: Mutex::new(vec![]),
+            unknown: false,
+            generation: 1.into(),
+        },
+        attempts: 0.into(),
+    });
+    let controls = Controls::new(
+        Arc::new(StoredControls::new(store.clone(), Arc::new(|_| {}))),
+        native.clone(),
+    );
+    let request: ControlRequest = serde_json::from_value(
+        json!({"action":"rollback","id":"agent","request_id":"malformed-reply","turn_id":"two"}),
+    )
+    .expect("request");
+    assert!(matches!(
+        controls.execute(request.clone()).await,
+        Err(ControlError::Unknown)
+    ));
+    assert!(matches!(
+        controls.execute(request).await,
+        Err(ControlError::Unknown)
+    ));
+    assert_eq!(native.attempts.load(std::sync::atomic::Ordering::SeqCst), 1);
+    let agent = AgentRepository::get(
+        &store.test_reader().expect("reader"),
+        &AgentId("agent".into()),
+    )
+    .expect("agent")
+    .expect("present")
+    .value();
+    assert_eq!(agent["workspaceOperation"], "branch_recovery");
 }
 #[tokio::test]
 async fn stored_control_replay_and_unknown_never_repeat_native_write() {
@@ -197,15 +479,11 @@ impl ControlStorage for Cut {
         &self,
         expected: studio_runtime_services::claude_controls::ControlSnapshot,
         request: ControlRequest,
-        native: Value,
-        queue: Value,
+        proof: NativeProof,
     ) -> ControlFuture<'_, studio_runtime_services::claude_controls::ControlSnapshot> {
         Box::pin(async move {
             self.at("submitted", false).await;
-            let result = self
-                .inner
-                .submitted(expected, request, native, queue)
-                .await?;
+            let result = self.inner.submitted(expected, request, proof).await?;
             self.at("submitted", true).await;
             Ok(result)
         })
@@ -213,11 +491,12 @@ impl ControlStorage for Cut {
     fn provider(
         &self,
         expected: studio_runtime_services::claude_controls::ControlSnapshot,
-        result: Value,
+        request: ControlRequest,
+        result: MutationReply,
     ) -> ControlFuture<'_, studio_runtime_services::claude_controls::ControlSnapshot> {
         Box::pin(async move {
             self.at("provider", false).await;
-            let result = self.inner.provider(expected, result).await?;
+            let result = self.inner.provider(expected, request, result).await?;
             self.at("provider", true).await;
             Ok(result)
         })
@@ -343,6 +622,16 @@ impl ControlSession for RewindNative {
         ControlBinding::new("account".into(), "connection".into(), 1)
             .expect("control binding validates")
     }
+    fn call_scoped(
+        &self,
+        _scope: ControlScope,
+        invocation: ControlInvocation,
+    ) -> ControlFuture<'_, ControlReply> {
+        let result = self.call(invocation.method().as_str(), invocation.params());
+        Box::pin(async move { ControlReply::from_wire(&invocation, result.await?) })
+    }
+}
+impl RewindNative {
     fn call(&self, method: &str, params: Value) -> ControlFuture<'_, Value> {
         if method == "thread/rollback" && self.1 {
             return Box::pin(async { Err(ControlError::Request) });
@@ -492,6 +781,16 @@ impl ControlSession for HeldRewind {
     fn binding(&self) -> ControlBinding {
         self.inner.binding()
     }
+    fn call_scoped(
+        &self,
+        _scope: ControlScope,
+        invocation: ControlInvocation,
+    ) -> ControlFuture<'_, ControlReply> {
+        let result = self.call(invocation.method().as_str(), invocation.params());
+        Box::pin(async move { ControlReply::from_wire(&invocation, result.await?) })
+    }
+}
+impl HeldRewind {
     fn call(&self, method: &str, params: Value) -> ControlFuture<'_, Value> {
         let result = self.inner.call(method, params);
         let hold = method == "thread/rollback";
@@ -599,7 +898,7 @@ async fn stale_failure_cannot_clear_a_newer_durable_submission() {
         .reserve(request.clone(), binding)
         .await
         .expect("stale rewind reserves");
-    let submitted=adapter.submitted(stale.clone(),request,json!({"tasks":[],"turns":[{"id":"one","status":"completed","canRestoreFiles":true},{"id":"two","status":"completed","canRestoreFiles":true},{"id":"three","status":"completed","canRestoreFiles":true}]}),json!({"data":[]})).await.expect("rewind submission persists");
+    let submitted=adapter.submitted(stale.clone(),request,NativeProof::Rollback { state: serde_json::from_value(json!({"tasks":[],"turns":[{"id":"one","status":"completed","canRestoreFiles":true},{"id":"two","status":"completed","canRestoreFiles":true},{"id":"three","status":"completed","canRestoreFiles":true}]})).expect("state"), queue: serde_json::from_value(json!({"data":[]})).expect("queue") }).await.expect("rewind submission persists");
     assert!(matches!(
         adapter
             .failed(stale.clone(), FailureEvidence::BeforeSubmission)
@@ -644,6 +943,16 @@ impl ControlSession for NotSentOnce {
     fn binding(&self) -> ControlBinding {
         self.inner.binding()
     }
+    fn call_scoped(
+        &self,
+        _scope: ControlScope,
+        invocation: ControlInvocation,
+    ) -> ControlFuture<'_, ControlReply> {
+        let result = self.call(invocation.method().as_str(), invocation.params());
+        Box::pin(async move { ControlReply::from_wire(&invocation, result.await?) })
+    }
+}
+impl NotSentOnce {
     fn call(&self, method: &str, params: Value) -> ControlFuture<'_, Value> {
         if method == "thread/rollback"
             && self
@@ -848,6 +1157,16 @@ impl ControlSession for RejectedRewind {
     fn binding(&self) -> ControlBinding {
         self.0.binding()
     }
+    fn call_scoped(
+        &self,
+        _scope: ControlScope,
+        invocation: ControlInvocation,
+    ) -> ControlFuture<'_, ControlReply> {
+        let result = self.call(invocation.method().as_str(), invocation.params());
+        Box::pin(async move { ControlReply::from_wire(&invocation, result.await?) })
+    }
+}
+impl RejectedRewind {
     fn call(&self, method: &str, params: Value) -> ControlFuture<'_, Value> {
         if method == "thread/rollback" {
             return Box::pin(async {
@@ -900,6 +1219,16 @@ impl ControlSession for LivePermissionsNative {
     fn binding(&self) -> ControlBinding {
         ControlBinding::new("account".into(), "connection".into(), 1).expect("fixture binding")
     }
+    fn call_scoped(
+        &self,
+        _scope: ControlScope,
+        invocation: ControlInvocation,
+    ) -> ControlFuture<'_, ControlReply> {
+        let result = self.call(invocation.method().as_str(), invocation.params());
+        Box::pin(async move { ControlReply::from_wire(&invocation, result.await?) })
+    }
+}
+impl LivePermissionsNative {
     fn call(&self, method: &str, params: Value) -> ControlFuture<'_, Value> {
         let method = method.to_owned();
         Box::pin(async move {
@@ -911,7 +1240,11 @@ impl ControlSession for LivePermissionsNative {
                 "claude/settings" if self.fail => Err(ControlError::SettingsNotApplied(
                     "fixture live apply failed".into(),
                 )),
-                "claude/settings" => Ok(json!({"settings":params["settings"]})),
+                "claude/settings" => {
+                    let mut settings = params["settings"].clone();
+                    settings["providerExtension"] = json!({"number":1.5});
+                    Ok(json!({"settings":settings,"extension":null}))
+                }
                 _ => panic!("unexpected live control {method}"),
             }
         })
@@ -957,6 +1290,13 @@ async fn live_permissions_claude_control_applies_while_running_and_pending_witho
             let request = serde_json::from_value::<ControlRequest>(json!({"id":"agent","action":"settings","request_id":"live-permission","settings":{"permissionMode":"bypassPermissions","thinking":true}})).expect("request");
             let result = service.execute(request.clone()).await;
             assert_eq!(result.is_ok(), !fail, "{status}: {result:?}");
+            if let Ok(result) = &result {
+                assert_eq!(
+                    result["settings"]["providerExtension"],
+                    json!({"number":1.5})
+                );
+                assert_eq!(result["extension"], Value::Null);
+            }
             let agent = AgentRepository::get(
                 &store.test_reader().expect("reader"),
                 &AgentId("agent".into()),

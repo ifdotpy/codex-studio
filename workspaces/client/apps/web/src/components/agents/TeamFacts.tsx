@@ -1,3 +1,4 @@
+import { AgentRole, AgentStatus } from "../../generated/api";
 import {
   Brain,
   CheckCheck,
@@ -38,7 +39,7 @@ export function TeamRoleIcon({ agent, lead }: { agent: Agent; lead: boolean }) {
   const role =
     lead || agent.isLead || ["lead", "orchestrator"].includes(agent.role || "")
       ? "Lead"
-      : agent.role === "reviewer"
+      : agent.role === AgentRole.reviewer
         ? "Reviewer"
         : "Worker";
   const Icon = role === "Lead" ? Crown : role === "Reviewer" ? ScanEye : Wrench;
@@ -51,7 +52,7 @@ export function TeamRoleIcon({ agent, lead }: { agent: Agent; lead: boolean }) {
 export function activityPresentation(agent: Agent) {
   if (agent.commandProgress?.length)
     return { Icon: Terminal, label: "Command" };
-  if (agent.status === "waiting_on_monitor")
+  if (agent.status === AgentStatus.waiting_on_monitor)
     return { Icon: Timer, label: "Waiting on monitor" };
   if (["waiting", "parked", "queued", "starting"].includes(agent.status || ""))
     return { Icon: Timer, label: "Waiting" };

@@ -1,3 +1,4 @@
+import { AgentSource, AgentStatus } from "../generated/api";
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import { Button } from "@mantine/core";
 import QuestionCard from "../components/questions/QuestionCard";
@@ -25,8 +26,8 @@ function NoticeAudit() {
                   id: "notice-agent",
                   kind: "agent",
                   name: "Release lead",
-                  source: "managed",
-                  status: "failed",
+                  source: AgentSource.managed,
+                  status: AgentStatus.failed,
                   created: 1,
                   error:
                     "The provider connection failed. Your input is retained.",

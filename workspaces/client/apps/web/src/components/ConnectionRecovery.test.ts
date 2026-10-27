@@ -1,3 +1,7 @@
+import {
+  AgentSource as GeneratedApiAgentSource,
+  AgentStatus as GeneratedApiAgentStatus,
+} from "../generated/api.ts";
 import { expect, test } from "vitest";
 import {
   canCheckConnection,
@@ -13,8 +17,8 @@ import type { Agent } from "../types";
 
 const interrupted = (error: string, turnId: string | null): Agent => ({
   id: "agent-1",
-  source: "managed",
-  status: "interrupted",
+  source: GeneratedApiAgentSource.managed,
+  status: GeneratedApiAgentStatus.interrupted,
   inFlight: false,
   autoWake: false,
   startAttempt: null,

@@ -1,3 +1,4 @@
+import { SubscriptionReplyKind } from "../../generated/api";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createSubscriptionStore } from "./store";
 import type {
@@ -78,7 +79,7 @@ describe("screen subscription ownership", () => {
       revision: 1,
       reason: "initial",
       cursor: { workspaceId: "workspace", seq: 1 },
-      replyKind: "snapshot",
+      replyKind: SubscriptionReplyKind.snapshot,
     });
     expect(store.getSnapshot(resource).status).toBe("live");
     stop();
@@ -98,7 +99,7 @@ describe("screen subscription ownership", () => {
       revision: 1,
       reason: "initial",
       cursor: { workspaceId: "workspace", seq: 1 },
-      replyKind: "delta",
+      replyKind: SubscriptionReplyKind.delta,
     });
     expect(store.getSnapshot(resource).status).toBe("live");
     stop();
@@ -115,7 +116,7 @@ describe("screen subscription ownership", () => {
       epoch: "epoch",
       revision: 1,
       cursor: { workspaceId: "workspace", seq: 1 },
-      replyKind: "snapshot",
+      replyKind: SubscriptionReplyKind.snapshot,
     });
     expect(store.getSnapshot(resource).status).toBe("live");
     connection("degraded");
@@ -126,7 +127,7 @@ describe("screen subscription ownership", () => {
       epoch: "epoch",
       revision: 1,
       cursor: { workspaceId: "workspace", seq: 1 },
-      replyKind: "delta",
+      replyKind: SubscriptionReplyKind.delta,
     });
     expect(store.getSnapshot(resource).status).toBe("live");
     stop();

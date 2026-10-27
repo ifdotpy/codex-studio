@@ -1,3 +1,4 @@
+import { ProviderKind as GeneratedApiProviderKind } from "../generated/api.ts";
 import type { JsonInputOf } from "../apiTypes.ts";
 import type { components } from "../generated/api.ts";
 import type { UsageAccount } from "./Usage";
@@ -16,7 +17,7 @@ export const accountLimitFixtures: (Omit<UsageAccount, "limits"> & {
     key: "codex-main",
     label: "Codex",
     email: "main@example.test",
-    provider: "codex",
+    provider: GeneratedApiProviderKind.codex,
     plan: "pro",
     accountId: "main",
     loading: false,
@@ -57,7 +58,7 @@ export const accountLimitFixtures: (Omit<UsageAccount, "limits"> & {
     key: "codex-review",
     label: "Review",
     email: "review@example.test",
-    provider: "codex",
+    provider: GeneratedApiProviderKind.codex,
     plan: "pro",
     accountId: "review",
     loading: false,
@@ -79,7 +80,7 @@ export const accountLimitFixtures: (Omit<UsageAccount, "limits"> & {
     key: "codex-stale",
     label: "Documentation",
     email: "docs@example.test",
-    provider: "codex",
+    provider: GeneratedApiProviderKind.codex,
     plan: "pro",
     loading: false,
     reload: () => {},
@@ -94,7 +95,7 @@ export const accountLimitFixtures: (Omit<UsageAccount, "limits"> & {
     key: "claude-main",
     label: "Claude code 2",
     email: "claude-two@example.test",
-    provider: "claude",
+    provider: GeneratedApiProviderKind.claude,
     plan: "max",
     loading: false,
     reload: () => {},
@@ -121,7 +122,7 @@ export const accountLimitFixtures: (Omit<UsageAccount, "limits"> & {
     key: "claude-review",
     label: "Claude code 1",
     email: "claude-one@example.test",
-    provider: "claude",
+    provider: GeneratedApiProviderKind.claude,
     plan: "max",
     loading: false,
     reload: () => {},

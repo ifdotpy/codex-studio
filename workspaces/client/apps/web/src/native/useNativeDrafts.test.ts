@@ -58,6 +58,7 @@ const view: DraftView = {
   conflicts: [],
   workspaceId: "workspace",
   revision: 0,
+  error: "",
 };
 async function settle() {
   await vi.advanceTimersByTimeAsync(0);

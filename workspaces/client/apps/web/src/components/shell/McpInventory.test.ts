@@ -1,3 +1,4 @@
+import { studio_api__agents__models__AgentRole as GeneratedApistudio_api__agents__models__AgentRole } from "../../generated/api.ts";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { MantineProvider } from "@mantine/core";
@@ -9,7 +10,7 @@ const inventory: GetResult<"/api/capabilities"> = {
   agent: "agent",
   at: 1,
   model: "model",
-  role: "orchestrator",
+  role: GeneratedApistudio_api__agents__models__AgentRole.orchestrator,
   managed: [],
   observed: [],
   observedNative: [],

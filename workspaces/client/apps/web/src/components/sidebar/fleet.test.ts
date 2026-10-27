@@ -1,3 +1,4 @@
+import { AgentStatus as GeneratedApiAgentStatus } from "../../generated/api.ts";
 import { describe, expect, it } from "vitest";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
@@ -67,7 +68,10 @@ describe("fleet presentation", () => {
     ).toBe("");
   });
   it("uses the supplied indicator even when the agent's saved status differs", () => {
-    const row: Agent = { ...chat("answer"), status: "running" };
+    const row: Agent = {
+      ...chat("answer"),
+      status: GeneratedApiAgentStatus.running,
+    };
     expect(needsYou([row], indicators)).toEqual([row]);
     // The operational owner still decides a failed chat is an error.
     const actual = chatIndicators({

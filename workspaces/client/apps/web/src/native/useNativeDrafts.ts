@@ -67,7 +67,13 @@ export function useNativeDrafts() {
       if (stopped || !controller.current) return;
       const view = controller.current.getSnapshot();
       publish(view.drafts);
-      setConflicts(view.conflicts);
+      setConflicts(
+        view.conflicts.map((conflict) => ({
+          ...conflict,
+          alternatives: conflict.alternatives && [...conflict.alternatives],
+          seen: conflict.seen && { ...conflict.seen },
+        })),
+      );
       setPending(view.pending);
       const committed = wasPending && !view.pending;
       wasPending = view.pending;

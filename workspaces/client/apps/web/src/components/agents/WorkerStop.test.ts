@@ -1,3 +1,4 @@
+import { AgentStatus } from "../../generated/api";
 import { componentAgent } from "../componentTestFixtures";
 import assert from "node:assert/strict";
 import { it } from "vitest";
@@ -11,7 +12,7 @@ it("identifies an explicit user or parent stop", () => {
     assert.equal(
       agentStopReason(
         componentAgent({
-          status: "paused",
+          status: AgentStatus.paused,
           autoWake: false,
           error,
         }),
@@ -31,7 +32,7 @@ it("preserves errors without an exact explicit stop", () => {
     assert.equal(
       agentStopReason(
         componentAgent({
-          status: "paused",
+          status: AgentStatus.paused,
           autoWake: false,
           error,
         }),

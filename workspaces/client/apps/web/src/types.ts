@@ -1,3 +1,4 @@
+import { NativeReleasePhase, AgentStatus } from "./generated/api";
 import { nativeErrorView } from "./nativeErrors";
 import type { GetResult } from "./api";
 import type {
@@ -148,7 +149,12 @@ export type Message = Omit<
 export const busy = new Set(["running", "starting", "approval"]);
 export const nativeReleaseLabel = (agent: Agent) => {
   const release = agent.nativeRelease;
-  if (agent.inFlight || !release || release.phase !== "released") return null;
+  if (
+    agent.inFlight ||
+    !release ||
+    release.phase !== NativeReleasePhase.released
+  )
+    return null;
   return release.resetPending
     ? "Tool reset waits for Codex to close the native session"
     : "Native thread released";
@@ -162,7 +168,7 @@ export function statusLabel(
     case null:
     case undefined:
       return "";
-    case "running":
+    case AgentStatus.running:
       switch (phase) {
         case "thinking":
           return "Thinking";
@@ -178,32 +184,32 @@ export function statusLabel(
           return "Codex reported an error";
       }
       return "Working";
-    case "idle":
+    case AgentStatus.idle:
       return "Ready";
-    case "starting":
+    case AgentStatus.starting:
       return "Starting";
-    case "queued":
+    case AgentStatus.queued:
       return "Queued";
-    case "waiting":
+    case AgentStatus.waiting:
       return "Turn ended";
-    case "parked":
+    case AgentStatus.parked:
       return parkedEvent ? `Waiting for event ${parkedEvent}` : "Turn ended";
-    case "waiting_on_monitor":
+    case AgentStatus.waiting_on_monitor:
       return "Waiting on command";
-    case "completed":
+    case AgentStatus.completed:
       return "Complete";
-    case "failed":
+    case AgentStatus.failed:
       return "Failed";
-    case "paused":
+    case AgentStatus.paused:
       return "Stopped";
-    case "approval":
+    case AgentStatus.approval:
       return "Needs an answer";
-    case "interrupted":
+    case AgentStatus.interrupted:
       return "Interrupted";
-    case "unknown":
-    case "blocked":
-    case "abandoned":
-    case "capacity-retry":
+    case AgentStatus.unknown:
+    case AgentStatus.blocked:
+    case AgentStatus.abandoned:
+    case AgentStatus["capacity-retry"]:
       return status;
   }
   return status satisfies never;
@@ -230,7 +236,7 @@ export function agentErrorLabel(agent: Agent): string {
 
 export function agentStopReason(agent: Agent): string {
   if (
-    agent.status !== "paused" ||
+    agent.status !== AgentStatus.paused ||
     agent.autoWake !== false ||
     typeof agent.error !== "string"
   )

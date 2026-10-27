@@ -1,3 +1,4 @@
+import { AgentSource } from "../generated/api";
 import assert from "node:assert/strict";
 import { describe, expect, it, vi } from "vitest";
 import * as api from "../api";
@@ -44,7 +45,12 @@ const project = {
 describe("project locations", () => {
   it("does not offer deletion for an unregistered lead-chat folder projected into navigation", () => {
     const data = snapshotFixture([
-      { id: "lead", source: "managed", isLead: true, cwd: "/lead-only" },
+      {
+        id: "lead",
+        source: AgentSource.managed,
+        isLead: true,
+        cwd: "/lead-only",
+      },
     ]);
     const groups = logicalProjects({
       local: navigationSnapshot(data, null, ""),

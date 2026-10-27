@@ -1,3 +1,4 @@
+import { RequestStatus } from "../../generated/api";
 import { required } from "../componentTestFixtures.ts";
 import { describe, expect, it } from "vitest";
 import type { components } from "../../generated/api";
@@ -211,7 +212,7 @@ describe("browserOpenDetails", () => {
     const request = {
       id: "request-waiting",
       method: "browser/open",
-      status: "pending",
+      status: RequestStatus.pending,
       params: {
         url: "https://id.example.com/authorize?state=s",
         host: "id.example.com",

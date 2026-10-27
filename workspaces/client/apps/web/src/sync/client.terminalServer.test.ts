@@ -1,3 +1,4 @@
+import { SubscriptionReplyKind, TerminalState } from "../generated/api";
 import { required } from "../components/componentTestFixtures.ts";
 import assert from "node:assert/strict";
 import { afterAll, beforeAll, expect, it, vi } from "vitest";
@@ -314,7 +315,12 @@ it("streams terminal intervals through RxDB and the screen consumer with zero ou
     await client.persistResourceEntityChanges(
       {
         ...structuredClone(late),
-        resourceVersions: [{ ...late.resourceVersions[0], replyKind: "delta" }],
+        resourceVersions: [
+          {
+            ...late.resourceVersions[0],
+            replyKind: SubscriptionReplyKind.delta,
+          },
+        ],
       },
       () => true,
     );
@@ -345,7 +351,7 @@ it("streams terminal intervals through RxDB and the screen consumer with zero ou
         filter(
           (event) =>
             required(event.resourceVersions[0]).viewSnapshot?.terminalOutput
-              ?.status === "exited",
+              ?.status === TerminalState.exited,
         ),
         timeout(5000),
       ),

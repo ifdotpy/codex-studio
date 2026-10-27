@@ -6,6 +6,7 @@ const view = (text: string, revision: number): DraftView => ({
   conflicts: [],
   workspaceId: "workspace",
   revision,
+  error: "",
 });
 function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -147,3 +148,34 @@ it("a close timeout retains the pending write and allows its later acknowledgeme
     vi.useRealTimers();
   }
 });
+
+// These assertions are checked by the normal TypeScript build, not executed.
+function snapshotTypeAssertions(state: NativeDraftState) {
+  // @ts-expect-error workspace identity is required on the wire
+  const missingWorkspace: DraftView = {
+    drafts: {},
+    conflicts: [],
+    revision: 0,
+    error: "",
+  };
+  // @ts-expect-error server revision is required on the wire
+  const missingRevision: DraftView = {
+    drafts: {},
+    conflicts: [],
+    workspaceId: "workspace",
+    error: "",
+  };
+  // @ts-expect-error sync error is required on the wire
+  const missingError: DraftView = {
+    drafts: {},
+    conflicts: [],
+    workspaceId: "workspace",
+    revision: 0,
+  };
+  // @ts-expect-error published drafts cannot be mutated by a consumer
+  state.getSnapshot().drafts.room = "mutated";
+  // @ts-expect-error published conflict arrays cannot be mutated by a consumer
+  state.getSnapshot().conflicts.push({});
+  return [missingWorkspace, missingRevision, missingError];
+}
+void snapshotTypeAssertions;

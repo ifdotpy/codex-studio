@@ -1,3 +1,9 @@
+import {
+  NativeAccountState as GeneratedApiNativeAccountState,
+  NativeCandidateState as GeneratedApiNativeCandidateState,
+  NativeRuntimeState as GeneratedApiNativeRuntimeState,
+  ProviderVersionState as GeneratedApiProviderVersionState,
+} from "../generated/api.ts";
 import { ProviderKind } from "../generated/providerKind.ts";
 import Disclosure from "./ui/Disclosure";
 import { useServerSync } from "../servers/ServerServicesContext";
@@ -73,12 +79,14 @@ export default function NativeRuntimeStatus({
   const entries = Object.entries(data?.accounts || {});
   const pending = entries.filter(
     ([, account]) =>
-      account.status === "waiting" || account.status === "updating",
+      account.status === GeneratedApiNativeAccountState.waiting ||
+      account.status === GeneratedApiNativeAccountState.updating,
   ).length;
   const reasonCount = (reason: string) =>
     entries.filter(([, runtime]) => runtime.reason === reason).length;
   const rejected = data?.candidates.filter(
-    (candidate) => candidate.status === "rejected",
+    (candidate) =>
+      candidate.status === GeneratedApiNativeCandidateState.rejected,
   );
   return (
     <section
@@ -87,15 +95,18 @@ export default function NativeRuntimeStatus({
     >
       <h3>Runtime and provider versions</h3>
       {(error ||
-        data?.status === "failed" ||
+        data?.status === GeneratedApiNativeRuntimeState.failed ||
         data?.error ||
         rejected?.length ||
-        entries.some(([, runtime]) => runtime.status === "failed") ||
+        entries.some(
+          ([, runtime]) =>
+            runtime.status === GeneratedApiNativeAccountState.failed,
+        ) ||
         providers.providers.some(
           (provider) =>
-            provider.status === "error" ||
-            provider.status === "outdated" ||
-            provider.status === "unknown" ||
+            provider.status === GeneratedApiProviderVersionState.error ||
+            provider.status === GeneratedApiProviderVersionState.outdated ||
+            provider.status === GeneratedApiProviderVersionState.unknown ||
             !!provider.error,
         )) && (
         <p role="status" className="native-runtime-error">
@@ -110,9 +121,9 @@ export default function NativeRuntimeStatus({
               {data.selected && <span>{data.selected.version}</span>}
             </div>
             <p className="native-runtime-summary" role="status">
-              {data.status === "checking"
+              {data.status === GeneratedApiNativeRuntimeState.checking
                 ? "Checking installed versions…"
-                : data.status === "failed"
+                : data.status === GeneratedApiNativeRuntimeState.failed
                   ? "Runtime check failed"
                   : "Automatic updates"}
               {pending > 0 &&
@@ -134,7 +145,8 @@ export default function NativeRuntimeStatus({
                         <span>{account?.label || account?.email || key}</span>
                         <span
                           className={
-                            runtime.status === "failed"
+                            runtime.status ===
+                            GeneratedApiNativeAccountState.failed
                               ? "native-runtime-error"
                               : undefined
                           }
@@ -147,7 +159,8 @@ export default function NativeRuntimeStatus({
                         <small>{runtime.reason}</small>
                       )}
                       {runtime.targetVersion &&
-                        runtime.status !== "current" && (
+                        runtime.status !==
+                          GeneratedApiNativeAccountState.current && (
                           <small>Target: {runtime.targetVersion}</small>
                         )}
                     </li>
@@ -225,9 +238,11 @@ export default function NativeRuntimeStatus({
                       </span>
                       <span
                         className={
-                          provider.status === "error"
+                          provider.status ===
+                          GeneratedApiProviderVersionState.error
                             ? "native-runtime-error"
-                            : provider.status === "outdated"
+                            : provider.status ===
+                                GeneratedApiProviderVersionState.outdated
                               ? "native-runtime-warning"
                               : undefined
                         }
@@ -259,17 +274,20 @@ export default function NativeRuntimeStatus({
                         {provider.error}
                       </small>
                     )}
-                    {provider.message && provider.status !== "current" && (
-                      <small
-                        className={
-                          provider.status === "outdated"
-                            ? "native-runtime-warning"
-                            : undefined
-                        }
-                      >
-                        {provider.message}
-                      </small>
-                    )}
+                    {provider.message &&
+                      provider.status !==
+                        GeneratedApiProviderVersionState.current && (
+                        <small
+                          className={
+                            provider.status ===
+                            GeneratedApiProviderVersionState.outdated
+                              ? "native-runtime-warning"
+                              : undefined
+                          }
+                        >
+                          {provider.message}
+                        </small>
+                      )}
                   </li>
                 );
               })}

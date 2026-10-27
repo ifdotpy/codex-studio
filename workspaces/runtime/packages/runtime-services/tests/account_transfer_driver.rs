@@ -1,13 +1,44 @@
 use serde_json::{Value, json};
 use std::sync::atomic::{AtomicUsize, Ordering};
+use studio_runtime_providers::{Method, RequestTicket};
 use studio_runtime_services::{
-    account_session_runtime::{ConnectionScope, RequestCertainty},
-    account_transfer::{Action, Ticket},
+    account_session_runtime::{
+        ConnectionScope, ProviderResponse, RequestCertainty, SessionOutcome, SessionReceipt,
+    },
+    account_transfer::{Action, Ticket, TransferError},
     account_transfer_driver::{
         self as driver, DispatchOutcome, ProviderReceipt, TransferDispatch, TransferFuture,
         TransferTransport,
     },
 };
+
+pub(crate) fn dispatch_from_raw(
+    raw: Value,
+    result: Option<Value>,
+    certainty: RequestCertainty,
+) -> TransferDispatch {
+    let scope: ConnectionScope = serde_json::from_value(raw["scope"].clone()).expect("scope");
+    let ticket = RequestTicket {
+        generation: raw["ticket"]["generation"].as_u64().expect("generation"),
+        id: serde_json::from_value(raw["ticket"]["id"].clone()).expect("id"),
+        method: Method::from_wire(raw["ticket"]["method"].as_str().expect("method"))
+            .expect("known method"),
+    };
+    let outcome = match certainty {
+        RequestCertainty::Written => SessionOutcome::Written {
+            ticket,
+            response: ProviderResponse::Reply(result.expect("result")),
+        },
+        RequestCertainty::NotSent => SessionOutcome::WorkerNotSent { ticket },
+        RequestCertainty::Unknown => SessionOutcome::Unknown { ticket },
+    };
+    TransferDispatch::Receipt(SessionReceipt {
+        scope,
+        operation: raw["operation"].as_str().expect("operation").into(),
+        outcome,
+        replayed: false,
+    })
+}
 use studio_runtime_store::{AccountTransferRepository, RuntimeStore};
 const OP: &str = "41e0b552-0b0c-4c5c-9c37-2e7483cd05c9";
 pub(crate) async fn state() -> (tempfile::TempDir, RuntimeStore) {
@@ -62,7 +93,7 @@ impl TransferTransport for Native<'_> {
         scope: &'a ConnectionScope,
         method: &'a str,
         _params: &'a Value,
-    ) -> TransferFuture<'a, TransferDispatch> {
+    ) -> TransferFuture<'a, Result<TransferDispatch, TransferError>> {
         Box::pin(async move {
             self.calls.fetch_add(1, Ordering::SeqCst);
             // Acquiring the writer here would deadlock if native work ran in a transaction.
@@ -70,23 +101,22 @@ impl TransferTransport for Native<'_> {
                 .transaction(|_| Ok(()))
                 .await
                 .expect("no transaction held during effect");
-            TransferDispatch {
-                receipt: json!({
-                    "operation": ticket.request,
-                    "scope": scope,
-                    "certainty": if self.result.is_some() {"written"} else {"unknown"},
-                    "ticket": {"generation": scope.generation, "id": "request-1", "method": method}
-                }),
-                result: self.result.clone(),
-                certainty: if self.result.is_some() {
-                    RequestCertainty::Written
-                } else {
-                    RequestCertainty::Unknown
+            Ok(match &self.result {
+                Some(result) => dispatch_from_raw(
+                    json!({"operation":ticket.request,"scope":scope,
+                        "ticket":{"generation":scope.generation,"id":"request-1","method":method}}),
+                    Some(result.clone()),
+                    RequestCertainty::Written,
+                ),
+                None => TransferDispatch::Unknown {
+                    operation: ticket.request.clone(),
+                    scope: scope.clone(),
                 },
-            }
+            })
         })
     }
 }
+#[tokio::test]
 async fn durable_reservation_precedes_native_and_unknown_is_never_resent() {
     let (root, store) = state().await;
     driver::begin_read(&store, OP, "lead", 10.0)
@@ -116,6 +146,7 @@ async fn durable_reservation_precedes_native_and_unknown_is_never_resent() {
         DispatchOutcome::Unknown
     );
     assert_eq!(operation(&store)["members"]["lead"]["phase"], "unknown");
+    assert!(operation(&store)["members"]["lead"]["providerReceipts"][0]["ticket"].is_null());
     assert!(
         driver::send_once(
             &store,
@@ -151,9 +182,7 @@ async fn durable_reservation_precedes_native_and_unknown_is_never_resent() {
             operation: OP,
             agent: "lead",
             provider_operation: "request-1",
-            receipt: json!({"operation":"request-1","scope":scope,"certainty":"written","ticket":{"generation":1,"id":"request-1","method":"thread/fork"}}),
-            result: Some(json!({"thread":{"id":"saved-fork"}})),
-            certainty: RequestCertainty::Written,
+            receipt: dispatch_from_raw(json!({"operation":"request-1","scope":scope,"ticket":{"generation":1,"id":"request-1","method":"thread/fork"}}), Some(json!({"thread":{"id":"saved-fork"}})), RequestCertainty::Written),
         },
         14.0,
     )
@@ -169,9 +198,7 @@ async fn durable_reservation_precedes_native_and_unknown_is_never_resent() {
             operation: OP,
             agent: "lead",
             provider_operation: "request-1",
-            receipt: json!({"operation":"request-1","scope":scope,"certainty":"written","ticket":{"generation":1,"id":"request-1","method":"thread/fork"}}),
-            result: Some(json!({"thread":{"id":"saved-fork"}})),
-            certainty: RequestCertainty::Written,
+            receipt: dispatch_from_raw(json!({"operation":"request-1","scope":scope,"ticket":{"generation":1,"id":"request-1","method":"thread/fork"}}), Some(json!({"thread":{"id":"saved-fork"}})), RequestCertainty::Written),
         },
         15.0,
     )
@@ -271,7 +298,6 @@ async fn replay_and_conflict_have_no_writes() {
 async fn durable_adapter_failpoint_matrix() {
     transaction_failpoints_roll_back_operation_agents_and_sync().await;
     if std::env::var_os("STUDIO_RUNTIME_CORPUS_FULL").is_some() {
-        durable_reservation_precedes_native_and_unknown_is_never_resent().await;
         replay_and_conflict_have_no_writes().await;
     }
 }

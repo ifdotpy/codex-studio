@@ -1,3 +1,4 @@
+import { DeliveryMoment } from "./generated/api";
 import { expect, it } from "vitest";
 import { readFileSync } from "node:fs";
 import {
@@ -235,7 +236,7 @@ void jsonValueAssertion;
 const localOutboxQueueRow: QueueItem = {
   id: "local-message",
   text: "unsent locally",
-  requestedDelivery: "next_turn",
+  requestedDelivery: DeliveryMoment.next_turn,
   localDelivery: true,
 };
 const serverQueueRow: QueueItem = {
@@ -521,3 +522,29 @@ export type RendererNativeError = Assert<
     ? true
     : false
 >;
+
+function serverAccessContractAssertions(api: import("./api").ServerApi) {
+  // @ts-expect-error POST requires a body.
+  void api.serverAccess("POST");
+  // @ts-expect-error GET does not accept a body.
+  void api.serverAccess("GET", { action: "discover", requestId: "id" });
+  const read = api.serverAccess("GET");
+  // @ts-expect-error GET snapshots always contain settings.
+  const missingSettings: Awaited<typeof read> = {
+    protocol: 1,
+    identity: {
+      serverId: "id",
+      label: "label",
+      origin: null,
+      publicKey: "key",
+      tailscaleUser: null,
+    },
+    clients: [],
+    servers: [],
+    invites: [],
+  };
+  // @ts-expect-error management actions are restricted to the UI subset.
+  void api.serverAccess("POST", { action: "invalid", requestId: "id" });
+  void missingSettings;
+}
+void serverAccessContractAssertions;

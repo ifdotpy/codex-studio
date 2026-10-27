@@ -1,3 +1,4 @@
+import { AgentStatus } from "../../generated/api";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
@@ -57,11 +58,14 @@ describe("agent-list progress", () => {
     );
     expect(html).toContain("Waiting for lead · task task-14 not submitted");
     expect(
-      workerState({ id: "worker", status: "completed", stall }, new Set()),
+      workerState(
+        { id: "worker", status: AgentStatus.completed, stall },
+        new Set(),
+      ),
     ).toBe("stalled");
-    expect(workerState({ id: "worker", status: "completed" }, new Set())).toBe(
-      "completed",
-    );
+    expect(
+      workerState({ id: "worker", status: AgentStatus.completed }, new Set()),
+    ).toBe("completed");
     expect(
       renderToStaticMarkup(createElement(AgentProgress, { agent: {} })),
     ).toBe("");

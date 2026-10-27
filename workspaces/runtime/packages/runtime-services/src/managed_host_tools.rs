@@ -360,18 +360,30 @@ pub(crate) struct OperationResult {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum DeliveryCertainty {
+    #[cfg(test)]
     Written,
     NotSent,
     Unknown,
 }
 
 #[derive(Clone, Debug, PartialEq)]
-pub(crate) struct DispatchedOperation {
-    pub(crate) result: OperationResult,
-    pub(crate) certainty: DeliveryCertainty,
-    /// `Some(true/false)` is a provider's committed application/rejection
-    /// receipt; `None` preserves an unresolved outcome.
-    pub(crate) applied: Option<bool>,
+pub(crate) enum DispatchedOperation {
+    Applied(OperationResult),
+    Rejected(OperationResult),
+    NotSent(OperationResult),
+    Unknown(OperationResult),
+}
+
+#[cfg(test)]
+impl DispatchedOperation {
+    pub(crate) fn result(&self) -> &OperationResult {
+        match self {
+            Self::Applied(result)
+            | Self::Rejected(result)
+            | Self::NotSent(result)
+            | Self::Unknown(result) => result,
+        }
+    }
 }
 
 /// The transaction caller persists `value` and the durable intent before

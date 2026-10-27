@@ -16,7 +16,7 @@ use serde_json::{Map, Value, json};
 use studio_runtime_store::RuntimeStore;
 
 use crate::linux_vm_guest::{GuestError, GuestRpc};
-use crate::managed_host_tools::{Actor, DeliveryCertainty, DispatchedOperation, OperationResult};
+use crate::managed_host_tools::{Actor, DispatchedOperation, OperationResult};
 
 /// The tool name.
 pub(crate) const TOOL: &str = "host_exec";
@@ -440,14 +440,10 @@ fn settle(
     match outcome {
         Ok(Value::Object(mut result)) => {
             result.insert("output".into(), json!(output));
-            DispatchedOperation {
-                result: OperationResult {
-                    value: Value::Object(result),
-                    signals: Vec::new(),
-                },
-                certainty: DeliveryCertainty::Written,
-                applied: Some(true),
-            }
+            DispatchedOperation::Applied(OperationResult {
+                value: Value::Object(result),
+                signals: Vec::new(),
+            })
         }
         Ok(_) => unknown(with_note("The host command has no proven result.".into())),
         // Nothing reached the guest: a connection or request check failed first.
@@ -482,25 +478,17 @@ fn guest_error_text(error: &GuestError) -> String {
 }
 
 pub(crate) fn refused(message: String) -> DispatchedOperation {
-    DispatchedOperation {
-        result: OperationResult {
-            value: json!(message),
-            signals: Vec::new(),
-        },
-        certainty: DeliveryCertainty::NotSent,
-        applied: Some(false),
-    }
+    DispatchedOperation::NotSent(OperationResult {
+        value: json!(message),
+        signals: Vec::new(),
+    })
 }
 
 pub(crate) fn unknown(message: String) -> DispatchedOperation {
-    DispatchedOperation {
-        result: OperationResult {
-            value: json!(message),
-            signals: Vec::new(),
-        },
-        certainty: DeliveryCertainty::Unknown,
-        applied: None,
-    }
+    DispatchedOperation::Unknown(OperationResult {
+        value: json!(message),
+        signals: Vec::new(),
+    })
 }
 
 #[cfg(test)]

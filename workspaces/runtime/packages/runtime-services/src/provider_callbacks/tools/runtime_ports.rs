@@ -10,9 +10,7 @@ use super::runtime_dispatch::{
     ChildCreationPort, ManagedToolRuntimePorts, MonitorCancelPort, MonitorCreatePort,
     MonitorInputPort, RulesActionResult, StatusWatchPort,
 };
-use crate::managed_host_tools::{
-    Actor, DeliveryCertainty, DispatchedOperation, Error, OperationResult,
-};
+use crate::managed_host_tools::{Actor, DispatchedOperation, Error, OperationResult};
 
 /// Runtime services available to retained managed-tool callbacks.
 ///
@@ -194,7 +192,7 @@ impl ChildCreationPort for ManagedChildCreationAdapter {
         args: &'a Value,
         request_id: &'a str,
         now: f64,
-    ) -> BoxFuture<'a, Result<OperationResult, Error>> {
+    ) -> BoxFuture<'a, Result<DispatchedOperation, Error>> {
         Box::pin(async move {
             crate::managed_child_create::spawn_agents(
                 store,
@@ -216,7 +214,7 @@ impl ChildCreationPort for ManagedChildCreationAdapter {
         args: &'a Value,
         request_id: &'a str,
         now: f64,
-    ) -> BoxFuture<'a, Result<OperationResult, Error>> {
+    ) -> BoxFuture<'a, Result<DispatchedOperation, Error>> {
         Box::pin(async move {
             crate::managed_child_create::request_review(
                 store,
@@ -561,14 +559,10 @@ impl super::runtime_dispatch::InterruptPort for ManagedInterruptAdapter {
             )
             .await
             {
-                Ok(value) => Ok(DispatchedOperation {
-                    result: OperationResult {
-                        value,
-                        signals: Vec::new(),
-                    },
-                    certainty: DeliveryCertainty::Written,
-                    applied: Some(true),
-                }),
+                Ok(value) => Ok(DispatchedOperation::Applied(OperationResult {
+                    value,
+                    signals: Vec::new(),
+                })),
                 Err(error) => Err(management_error(error)),
             }
         })

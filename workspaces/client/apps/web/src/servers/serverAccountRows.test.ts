@@ -1,3 +1,4 @@
+import { ProviderKind } from "../generated/providerKind";
 import { expect, it } from "vitest";
 import type { ServerAccount } from "./navigation";
 import type { StudioServer } from "./registry";
@@ -6,7 +7,7 @@ import { rowServers, serverAccountRows } from "./serverAccountRows";
 const server = (id: string, label: string) =>
   ({ id, label, origin: `https://${id}.example` }) as StudioServer;
 const account = (fields: Partial<ServerAccount>): ServerAccount => ({
-  provider: "claude",
+  provider: ProviderKind.Claude,
   email: null,
   plan: null,
   status: "ready",

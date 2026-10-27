@@ -1,3 +1,4 @@
+import { VoiceRecordKind as GeneratedApiVoiceRecordKind } from "../generated/api.ts";
 import {
   useServerApi,
   useServerResources,
@@ -557,9 +558,9 @@ function NativeVoice({
                   .map((r) => (
                     <div key={r.id}>
                       <strong>
-                        {r.kind === "user"
+                        {r.kind === GeneratedApiVoiceRecordKind.user
                           ? "You"
-                          : r.kind === "courier"
+                          : r.kind === GeneratedApiVoiceRecordKind.courier
                             ? "Previous voice assistant"
                             : "Codex"}
                       </strong>

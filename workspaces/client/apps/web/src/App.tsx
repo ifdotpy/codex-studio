@@ -1,3 +1,8 @@
+import {
+  AgentStatus as GeneratedApiAgentStatus,
+  AgentSource as GeneratedApiAgentSource,
+  RequestStatus as GeneratedApiRequestStatus,
+} from "./generated/api.ts";
 import { useSubscription } from "./sync/subscriptions";
 import { ProviderKind } from "./generated/providerKind.ts";
 import { submitRename, watchRenameResult } from "./renameRequest";
@@ -990,7 +995,11 @@ export default function App({ active = true }: { active?: boolean }) {
     setCompletedOpen(false);
   }, [lead?.id]);
   useEffect(() => {
-    if (agent && !agent.isLead && agent.status === "completed")
+    if (
+      agent &&
+      !agent.isLead &&
+      agent.status === GeneratedApiAgentStatus.completed
+    )
       setCompletedOpen(true);
   }, [agent?.id, agent?.status]);
   const accounts = useAccounts(data?.stateDir);
@@ -1018,7 +1027,7 @@ export default function App({ active = true }: { active?: boolean }) {
     (agent ? "default" : accounts.data.defaultAccountKey);
   const agentModels = useWorkerModels(
     accountKey,
-    !!agent && agent.source === "managed",
+    !!agent && agent.source === GeneratedApiAgentSource.managed,
   );
   const limitsRequests = useRef(new Map<string, Promise<boolean>>());
   const selectedAccount =
@@ -1046,7 +1055,9 @@ export default function App({ active = true }: { active?: boolean }) {
   // The conversation reads a narrow projection, so a worker's progress does not
   // render it; its wait state arrives through a source that filters unchanged waits.
   const conversationSnapshot =
-    agent?.source === "managed" && !room ? scopedConversationData : data;
+    agent?.source === GeneratedApiAgentSource.managed && !room
+      ? scopedConversationData
+      : data;
   const conversationSelector = useMemo(createConversationDataSelector, []);
   const conversationData = conversationSelector(conversationSnapshot);
   const chatWaitSource = useMemo(() => new ChatWaitSource(), []);
@@ -1735,7 +1746,7 @@ export default function App({ active = true }: { active?: boolean }) {
       if (!id) return;
       latestSend.current[id] = attempt;
       if (
-        agent?.source === "managed" &&
+        agent?.source === GeneratedApiAgentSource.managed &&
         studioCommand(text, agent.provider ?? undefined)
       ) {
         const [command] = text.split(/\s+/);
@@ -2429,7 +2440,11 @@ export default function App({ active = true }: { active?: boolean }) {
   const answerIds = awaitingAnswerIds(chatData?.runtime?.requests || []);
   const deferredIds = new Set<string>(
     (chatData?.runtime?.requests || [])
-      .filter((request) => request.deferred && request.status === "pending")
+      .filter(
+        (request) =>
+          request.deferred &&
+          request.status === GeneratedApiRequestStatus.pending,
+      )
       .map((request) => request.agent)
       .filter((agentId): agentId is string => typeof agentId === "string"),
   );
@@ -2624,7 +2639,7 @@ export default function App({ active = true }: { active?: boolean }) {
           {workers.length}
         </Menu.Item>
       )}
-      {agent?.source === "managed" && (
+      {agent?.source === GeneratedApiAgentSource.managed && (
         <Menu.Item
           id="mark-unread"
           aria-label="Mark chat unread"
@@ -2639,13 +2654,13 @@ export default function App({ active = true }: { active?: boolean }) {
           Mark as unread
         </Menu.Item>
       )}
-      {agent?.source === "managed" && (
+      {agent?.source === GeneratedApiAgentSource.managed && (
         <>
           {(!!agent.inFlight ||
             team.some(
               (member) =>
                 (member.status != null && busy.has(member.status)) ||
-                member.status === "queued" ||
+                member.status === GeneratedApiAgentStatus.queued ||
                 member.inFlight,
             )) && (
             <Menu.Item
@@ -3002,7 +3017,7 @@ export default function App({ active = true }: { active?: boolean }) {
                     item.rootId === lead?.id &&
                     !item.deletedAt &&
                     (item.accountKey || "default") === account.id &&
-                    item.status === "failed",
+                    item.status === GeneratedApiAgentStatus.failed,
                 ),
             )
             .map((account) => (

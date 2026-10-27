@@ -1,3 +1,7 @@
+import {
+  AgentSource as GeneratedApiAgentSource,
+  WorkspaceMode as GeneratedApiWorkspaceMode,
+} from "../../generated/api.ts";
 import { randomUUID } from "../../uuid";
 import { ProviderKind } from "../../generated/providerKind.ts";
 import { McpInventory } from "./McpInventory";
@@ -229,7 +233,7 @@ export function Workspace(props: Props) {
     [reload],
   );
   const selected = props.data.threads.find(
-    (a) => a.id === agentId && a.source === "managed",
+    (a) => a.id === agentId && a.source === GeneratedApiAgentSource.managed,
   );
   const context: Context = {
     ...props,
@@ -335,13 +339,16 @@ export function Workspace(props: Props) {
                     >
                       <option value="">Select an agent</option>
                       {props.data.threads
-                        .filter((a) => a.source === "managed")
+                        .filter(
+                          (a) => a.source === GeneratedApiAgentSource.managed,
+                        )
                         .map((a) => {
                           const parent = a.parentId
                             ? props.data.threads.find(
                                 (candidate) =>
                                   candidate.id === a.parentId &&
-                                  candidate.source === "managed",
+                                  candidate.source ===
+                                    GeneratedApiAgentSource.managed,
                               )
                             : undefined;
                           return (
@@ -728,8 +735,9 @@ function Plan(c: Context) {
 function Checkpoints(c: Context) {
   if (
     c.selected?.provider === ProviderKind.Claude &&
-    (c.selected.workspaceMode === "shared" ||
-      (!c.selected.worktree && c.selected.workspaceMode !== "worktree"))
+    (c.selected.workspaceMode === GeneratedApiWorkspaceMode.shared ||
+      (!c.selected.worktree &&
+        c.selected.workspaceMode !== GeneratedApiWorkspaceMode.worktree))
   ) {
     return (
       <ClaudeCheckpointRestore

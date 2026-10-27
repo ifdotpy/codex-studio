@@ -1,3 +1,4 @@
+import { TerminalState } from "../../generated/api";
 import { expect, it } from "vitest";
 import { mergeTerminalOutput } from "./terminalOutput";
 const output = (text: string, offset: number) => ({
@@ -12,8 +13,11 @@ it("resumes Unicode output, ignores duplicates, and applies status at an unchang
   expect(next.text).toBe("a🙂中");
   expect(mergeTerminalOutput(next, output("中", 3), true)).toEqual(next);
   expect(
-    mergeTerminalOutput(next, { ...output("", 3), status: "exited" }, true)
-      .status,
+    mergeTerminalOutput(
+      next,
+      { ...output("", 3), status: TerminalState.exited },
+      true,
+    ).status,
   ).toBe("exited");
 });
 it("rejects gaps and missing local bases and replaces expired snapshots", () => {
@@ -44,7 +48,10 @@ it("replaces an authoritative reset snapshot even when the terminal offset decre
 it("keeps the retained-history notice across empty status intervals", () => {
   const previous = { ...output("tail", 20), truncated: true };
   expect(
-    mergeTerminalOutput(previous, { ...output("", 20), status: "exited" }, true)
-      .truncated,
+    mergeTerminalOutput(
+      previous,
+      { ...output("", 20), status: TerminalState.exited },
+      true,
+    ).truncated,
   ).toBe(true);
 });

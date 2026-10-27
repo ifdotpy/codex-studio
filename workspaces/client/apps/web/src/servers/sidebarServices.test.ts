@@ -1,3 +1,4 @@
+import { AgentSource } from "../generated/api";
 import assert from "node:assert/strict";
 import { describe, expect, it } from "vitest";
 import {
@@ -54,7 +55,7 @@ function fixture() {
           id: "same",
           name: id,
           cwd: `/${id}`,
-          source: "managed",
+          source: AgentSource.managed,
           isLead: true,
           projectFolder: "folder",
         },
@@ -62,7 +63,7 @@ function fixture() {
           id: "second",
           name: id,
           cwd: `/${id}`,
-          source: "managed",
+          source: AgentSource.managed,
           isLead: true,
         },
       ],

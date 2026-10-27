@@ -442,6 +442,39 @@ export type JsonValue =
   | string
   | JsonValue[]
   | { [key: string]: JsonValue };
+export const FreshAgentPhase = {
+  commentary: "commentary",
+  final_answer: "final_answer",
+} as const;
+export type FreshAgentPhase = components["schemas"]["FreshAgentPhase"];
+export const FreshCompactionStatus = { completed: "completed" } as const;
+export type FreshCompactionStatus =
+  components["schemas"]["FreshCompactionStatus"];
+export const FreshInputDelivery = { steer: "steer" } as const;
+export type FreshInputDelivery = components["schemas"]["FreshInputDelivery"];
+export const FreshInputDeliveryStatus = {
+  preparing: "preparing",
+  submitted: "submitted",
+  delivered: "delivered",
+  not_applied: "not_applied",
+  cancelled: "cancelled",
+} as const;
+export type FreshInputDeliveryStatus =
+  components["schemas"]["FreshInputDeliveryStatus"];
+export const FreshToolStatus = {
+  inProgress: "inProgress",
+  completed: "completed",
+  failed: "failed",
+} as const;
+export type FreshToolStatus = components["schemas"]["FreshToolStatus"];
+export const ProviderKind = { codex: "codex", claude: "claude" } as const;
+export type ProviderKind = components["schemas"]["ProviderKind"];
+export const TerminalTurnStatus = {
+  completed: "completed",
+  interrupted: "interrupted",
+  failed: "failed",
+} as const;
+export type TerminalTurnStatus = components["schemas"]["TerminalTurnStatus"];
 export type BackgroundShellPolicySettings =
   components["schemas"]["BackgroundShellPolicySettings"];
 export type CacheReport = components["schemas"]["CacheReport"];
@@ -453,22 +486,14 @@ export type ClaudeCustomModel = components["schemas"]["ClaudeCustomModel"];
 export type ClaudeFailure = components["schemas"]["ClaudeFailure"];
 export type ClaudeSessionSettings =
   components["schemas"]["ClaudeSessionSettings"];
-export type FreshAgentPhase = components["schemas"]["FreshAgentPhase"];
-export type FreshCompactionStatus =
-  components["schemas"]["FreshCompactionStatus"];
 export type FreshFileChange = components["schemas"]["FreshFileChange"];
 export type FreshFileChangeKind = components["schemas"]["FreshFileChangeKind"];
-export type FreshInputDelivery = components["schemas"]["FreshInputDelivery"];
-export type FreshInputDeliveryStatus =
-  components["schemas"]["FreshInputDeliveryStatus"];
 export type FreshItem = components["schemas"]["FreshItem"];
 export type FreshToolResult = components["schemas"]["FreshToolResult"];
-export type FreshToolStatus = components["schemas"]["FreshToolStatus"];
 export type ModelAccessPrograms = components["schemas"]["ModelAccessPrograms"];
 export type ModelReasoningEffort =
   components["schemas"]["ModelReasoningEffort"];
 export type ModelServiceTier = components["schemas"]["ModelServiceTier"];
-export type ProviderKind = components["schemas"]["ProviderKind"];
 export type ProviderModel = components["schemas"]["ProviderModel"];
 export type RateLimitBucket = components["schemas"]["RateLimitBucket"];
 export type RateLimitBucketDto = components["schemas"]["RateLimitBucketDto"];
@@ -477,7 +502,6 @@ export type RateLimitIndividualLimit =
 export type RateLimitWindow = components["schemas"]["RateLimitWindow"];
 export type RateLimitWindowDto = components["schemas"]["RateLimitWindowDto"];
 export type TerminalTurn = components["schemas"]["TerminalTurn"];
-export type TerminalTurnStatus = components["schemas"]["TerminalTurnStatus"];
 export type ThreadIdentity = components["schemas"]["ThreadIdentity"];
 export type ToolDefinition = components["schemas"]["ToolDefinition"];
 export type UnsupportedClaudeRateLimit =

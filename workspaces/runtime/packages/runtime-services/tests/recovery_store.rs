@@ -157,6 +157,34 @@ fn projection(store: &RuntimeStore) -> Vec<String> {
     ["SELECT json_group_array(json_array(collection,id,seq,hash,payload,deleted)) FROM (SELECT * FROM sync_entities ORDER BY collection,id)","SELECT json_group_array(json_array(key,value)) FROM (SELECT * FROM sync_entity_meta ORDER BY key)"]
         .iter().map(|sql|db.query_row(sql,[],|row|row.get(0)).expect("projection read")).collect()
 }
+#[tokio::test]
+async fn committed_recovery_check_keeps_unconfirmed_receipt() {
+    let root = fixture();
+    let store = open_store(root.path()).await;
+    let before = snapshot(&store);
+    let result = apply(
+        &store,
+        &before,
+        true,
+        RecoveryAction::RecordCheck {
+            native_state: json!("idle"),
+            turn_status: None,
+        },
+    )
+    .await
+    .expect("record check");
+    assert_eq!(
+        result,
+        RecoveryOutcome::Applied(studio_runtime_services::recovery::RecoveryReceipt::Unknown(
+            json!({"status":"unconfirmed", "checked":true})
+        ))
+    );
+    assert_eq!(
+        snapshot(&store).record()["connectionCheck"]["nativeState"],
+        "idle"
+    );
+}
+
 async fn preparation_retry_after_response_loss_preserves_exact_input() {
     let root = fixture();
     let store = open_store(root.path()).await;
@@ -173,7 +201,9 @@ async fn preparation_retry_after_response_loss_preserves_exact_input() {
     .expect("valid recovery fixture");
     assert_eq!(
         result,
-        RecoveryOutcome::Applied(json!({"status":"input_restored","attemptId":"attempt"}))
+        RecoveryOutcome::Applied(studio_runtime_services::recovery::RecoveryReceipt::Applied(
+            json!({"status":"input_restored","attemptId":"attempt"})
+        ))
     );
     let after = snapshot(&store).record().clone();
     let queue = events(&store);
@@ -360,7 +390,9 @@ async fn queued_active_wait_is_adopted_and_keeps_input_pending() {
         .expect("adopt active native turn");
     assert_eq!(
         result,
-        RecoveryOutcome::Applied(json!({"status":"adopted","turnId":"turn"}))
+        RecoveryOutcome::Applied(studio_runtime_services::recovery::RecoveryReceipt::Applied(
+            json!({"status":"adopted","turnId":"turn"})
+        ))
     );
     let after = snapshot(&store).record().clone();
     assert_eq!(after["status"], "running");
@@ -422,9 +454,9 @@ async fn queued_active_wait_terminal_is_reconciled_and_saved() {
     .expect("reconcile exact terminal turn");
     assert_eq!(
         result,
-        RecoveryOutcome::Applied(
+        RecoveryOutcome::Applied(studio_runtime_services::recovery::RecoveryReceipt::Applied(
             json!({"status":"reconciled","turnId":"turn","outcome":"completed"})
-        )
+        ))
     );
     let after = snapshot(&store).record().clone();
     assert_eq!(after["status"], "completed");
@@ -613,7 +645,11 @@ async fn legacy_start_absence_matches_python_writes_and_visible_wait() {
         .outcome;
         assert_eq!(
             result,
-            RecoveryOutcome::Applied(case["result"].clone()),
+            RecoveryOutcome::Applied(if case["result"]["status"] == "unconfirmed" {
+                studio_runtime_services::recovery::RecoveryReceipt::Unknown(case["result"].clone())
+            } else {
+                studio_runtime_services::recovery::RecoveryReceipt::Applied(case["result"].clone())
+            }),
             "{}",
             case["name"]
         );
@@ -704,7 +740,11 @@ async fn a_replaced_host_provider_does_not_restore_an_uncertain_vm_input() {
             );
             assert_eq!(
                 outcome,
-                RecoveryOutcome::Applied(json!({"status":"unconfirmed"}))
+                RecoveryOutcome::Applied(
+                    studio_runtime_services::recovery::RecoveryReceipt::Unknown(
+                        json!({"status":"unconfirmed"})
+                    )
+                )
             );
             assert_eq!(
                 after.record()["startAttempt"],
@@ -719,7 +759,11 @@ async fn a_replaced_host_provider_does_not_restore_an_uncertain_vm_input() {
             assert_eq!(events(&store), vec![("event".into(), "pending".into())]);
             assert_eq!(
                 outcome,
-                RecoveryOutcome::Applied(json!({"status":"input_restored"}))
+                RecoveryOutcome::Applied(
+                    studio_runtime_services::recovery::RecoveryReceipt::Applied(
+                        json!({"status":"input_restored"})
+                    )
+                )
             );
             assert_eq!(after.record()["restartRecovery"]["stage"], "finished");
         }
@@ -1362,9 +1406,9 @@ async fn an_adopted_turn_that_finished_while_the_worker_was_dead_is_reconciled()
     .expect("reconcile the finished turn");
     assert_eq!(
         result,
-        RecoveryOutcome::Applied(
+        RecoveryOutcome::Applied(studio_runtime_services::recovery::RecoveryReceipt::Applied(
             json!({"status":"reconciled","turnId":"turn","outcome":"completed"})
-        )
+        ))
     );
     let after = snapshot(&store).record().clone();
     assert_eq!(

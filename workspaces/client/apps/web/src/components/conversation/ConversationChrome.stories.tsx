@@ -1,3 +1,8 @@
+import {
+  AgentSource as GeneratedApiAgentSource,
+  AgentStatus as GeneratedApiAgentStatus,
+  ProviderKind as GeneratedApiProviderKind,
+} from "../../generated/api.ts";
 import type { WorkerModelInfo } from "../agents/WorkerModelPicker";
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import { expect, fn, userEvent, within } from "storybook/test";
@@ -47,12 +52,12 @@ const lead = {
   id: "story-lead",
   rootId: "story-lead",
   name: "Release coordination",
-  source: "managed",
+  source: GeneratedApiAgentSource.managed,
   isLead: true,
-  status: "idle",
+  status: GeneratedApiAgentStatus.idle,
   model: "gpt-6-astra",
   effort: "high",
-  provider: "codex",
+  provider: GeneratedApiProviderKind.codex,
   cwd: "/projects/codex-studio",
   accountKey: "default",
   workerModel: "gpt-6-luna",
@@ -61,7 +66,7 @@ const lead = {
 const models = ["gpt-6-astra", "gpt-6-luna"].map((model): WorkerModelInfo => ({
   model,
   displayName: model,
-  provider: "codex",
+  provider: GeneratedApiProviderKind.codex,
   defaultReasoningEffort: "high",
   serviceTiers: [],
   supportedReasoningEfforts: [{ reasoningEffort: "high" }],

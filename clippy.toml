@@ -4,3 +4,6 @@ allow-unwrap-in-tests = true
 
 # Maximum inline future size in bytes; larger futures are boxed at their owner.
 future-size-threshold = 16384
+
+# Opt-in with clippy::disallowed_types on closed typed owners only.
+disallowed-types = [{ path = "serde_json::Value", reason = "closed typed owners must not accept unstructured JSON" }]

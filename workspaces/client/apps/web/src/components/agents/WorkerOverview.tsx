@@ -1,3 +1,4 @@
+import { AgentStatus, RequestStatus } from "../../generated/api";
 import { createContext, type ReactNode } from "react";
 import { useWorkerModels, type WorkerModelInfo } from "./WorkerModelPicker";
 
@@ -36,7 +37,7 @@ export function awaitingAnswerIds(requests: Request[]) {
       .filter(
         (request) =>
           !request.deferred &&
-          (request.status === "pending" || !request.status),
+          (request.status === RequestStatus.pending || !request.status),
       )
       .flatMap((request) =>
         typeof request.agent === "string" ? [request.agent] : [],
@@ -192,7 +193,7 @@ export function teamDispatchGroups(
 ) {
   const kindOf = (agent: Agent) => indicators.get(agent.id)?.kind || "none";
   const finished = (agent: Agent) =>
-    agent.status === "completed" &&
+    agent.status === AgentStatus.completed &&
     !agent.stall &&
     !["answer", "error", "working"].includes(kindOf(agent));
   return {

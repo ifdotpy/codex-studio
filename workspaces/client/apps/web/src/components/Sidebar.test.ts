@@ -1,3 +1,4 @@
+import { AgentSource as GeneratedApiAgentSource } from "../generated/api.ts";
 import { describe, expect, it } from "vitest";
 import {
   isVisibleSidebarAgent,
@@ -9,7 +10,7 @@ describe("sidebar identity fallbacks", () => {
   it("keeps a managed lead visible when its name is missing", () => {
     expect(
       isVisibleSidebarAgent({
-        source: "managed",
+        source: GeneratedApiAgentSource.managed,
         isLead: true,
         deletedAt: null,
         sharedRoomId: null,

@@ -1,3 +1,10 @@
+import {
+  SubscriptionReplyKind,
+  AgentStatus,
+  TaskKind,
+  TaskStatus,
+  WorkStatus,
+} from "../generated/api";
 import assert from "node:assert/strict";
 import { afterEach, expect, it, vi } from "vitest";
 import type { RxDatabase } from "rxdb";
@@ -244,7 +251,7 @@ async function setup() {
         revision: seq,
         resource: { kind: "state" },
         cursor: { workspaceId, seq },
-        replyKind: "snapshot",
+        replyKind: SubscriptionReplyKind.snapshot,
         entityChanges: {
           after: 0,
           through: seq,
@@ -259,7 +266,7 @@ async function setup() {
                 rootId: "lead",
                 epoch: 1,
                 name,
-                status: "idle",
+                status: AgentStatus.idle,
               },
             },
           ],
@@ -490,7 +497,7 @@ it.each([false, true])(
           resource,
           revision: through,
           cursor: { workspaceId: f.workspaceId, seq: through },
-          replyKind: "snapshot",
+          replyKind: SubscriptionReplyKind.snapshot,
           entityChanges: { after: 0, through, documents },
         },
       ],
@@ -506,8 +513,8 @@ it.each([false, true])(
       value: {
         id,
         agent: "lead",
-        kind: "command",
-        status: "running",
+        kind: TaskKind.command,
+        status: TaskStatus.running,
         created: 1,
       },
     });
@@ -981,7 +988,7 @@ it.each(["burst", "inline removal", "staged removal"])(
           resource: ref,
           revision: 5,
           cursor: { workspaceId: f.workspaceId, seq: 5 },
-          replyKind: "snapshot",
+          replyKind: SubscriptionReplyKind.snapshot,
           entityChanges: {
             after: 0,
             through: 5,
@@ -998,7 +1005,7 @@ it.each(["burst", "inline removal", "staged removal"])(
                   created: 1,
                   updated: 1,
                   version: 1,
-                  status: "ready",
+                  status: WorkStatus.ready,
                 },
               },
             ],

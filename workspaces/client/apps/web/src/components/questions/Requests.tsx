@@ -1,3 +1,4 @@
+import { QuestionDecision } from "../../generated/api";
 import {
   useServerApi,
   useServerLocalDrafts,
@@ -236,7 +237,10 @@ export function AnswerForm({
                     ? parseJson(v[0] ?? "")
                     : v[0];
         }
-        answer = { method, data: { decision: "accept", content } };
+        answer = {
+          method,
+          data: { decision: QuestionDecision.accept, content },
+        };
       } else {
         throw new Error("Unsupported question type.");
       }
@@ -628,7 +632,7 @@ export function RequestCard({
                 disabled={sending}
                 onClick={() =>
                   void post({
-                    decision: "decline",
+                    decision: QuestionDecision.decline,
                   } satisfies components["schemas"]["QuestionApproval"])
                 }
               >
@@ -639,7 +643,7 @@ export function RequestCard({
                 disabled={sending}
                 onClick={() =>
                   void post({
-                    decision: "accept",
+                    decision: QuestionDecision.accept,
                   } satisfies components["schemas"]["QuestionApproval"])
                 }
               >

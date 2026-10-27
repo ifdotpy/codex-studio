@@ -66,7 +66,7 @@ pub trait VmProviderLaunchResolver: Send + Sync {
         Box::pin(async {
             Err(WorkerError::PreparationPending(
                 crate::account_worker::PreparationBlock::new(
-                    studio_runtime_schema::agent_progress::StartWaitReason::ProviderSession,
+                    crate::account_worker::PreparationWaitReason::ProviderSession,
                     "provider-session/vm-token-refresh",
                 ),
             ))
@@ -120,25 +120,19 @@ pub struct PreparationFilesystem {
     browser: Option<crate::browser::AccountBrowser>,
     mcp_servers: Vec<String>,
     receipt_cwd: Option<(String, String, bool)>,
-    native_layr_inputs: Value,
-    native_layr_environment: Map<String, Value>,
-    native_reviewer_options: Map<String, Value>,
-    native_layr_error: Option<&'static str>,
+    receipt: bool,
+    native_layr: Option<Result<NativeLayrFilesystem, ()>>,
 }
 
-fn native_layr_inputs(state_root: &Path, record: &Value) -> Value {
-    let reviewer = record["role"] == "reviewer";
-    let legacy_ready = record["layrStoreRoot"].as_str().is_none() && record["layrReady"] == true;
-    json!({
-        "stateRoot": state_root,
-        "storeRoot": record["layrStoreRoot"],
-        "legacyReady": legacy_ready,
-        "legacyCwd": if legacy_ready {
-            record[if reviewer { "layrReadCwd" } else { "cwd" }].clone()
-        } else { Value::Null },
-        "reviewer": reviewer,
-        "scratch": if reviewer { record["layrScratch"].clone() } else { Value::Null },
-    })
+#[derive(Clone)]
+struct NativeLayrFilesystem {
+    identity: crate::layr_native::settings::StoreAssociation,
+    prepared_identity: Option<crate::layr_native::settings::StoreAssociation>,
+    is_reviewer: bool,
+    root: PathBuf,
+    environment: Map<String, Value>,
+    state_root: PathBuf,
+    reviewer: Option<(String, Map<String, Value>)>,
 }
 
 impl PreparationResources {
@@ -270,87 +264,137 @@ impl PreparationResources {
             browser,
             mcp_servers,
             receipt_cwd,
-            ..PreparationFilesystem::default()
+            receipt: false,
+            native_layr: None,
         }));
         self
     }
 
-    fn capture_native_filesystem(
+    fn capture_native_layr(
         mut self,
         state_root: &Path,
         record: &Value,
+        prepared_cwd: Option<&Path>,
     ) -> Result<Self, WorkerError> {
-        studio_runtime_store::debug_assert_outside_sql();
         if crate::layr_native::is_native(record) {
-            let captured = crate::layr_native::thread_environment_for_record(state_root, record)
-                .map_err(|_| "native-layr/store")
-                .and_then(|environment| {
-                    native_reviewer_options(record, state_root)
-                        .map(|options| (environment, options))
-                });
-            let inputs = Arc::make_mut(
-                self.filesystem_inputs
-                    .as_mut()
-                    .ok_or_else(|| invalid("thread guidance filesystem inputs"))?,
-            );
-            inputs.native_layr_inputs = native_layr_inputs(state_root, record);
-            // A receipt may not consume thread settings. Its SQL owner must
-            // surface local failures under the per-agent settlement savepoint.
-            match captured {
-                Ok((environment, options)) => {
-                    inputs.native_layr_environment = environment;
-                    inputs.native_reviewer_options = options;
+            let identity = crate::layr_native::settings::store_association(record)
+                .map_err(|_| invalid("native-layr/store"))?;
+            let prepared_identity = if matches!(
+                identity,
+                crate::layr_native::settings::StoreAssociation::LegacyLine {
+                    reviewer: false,
+                    ..
                 }
-                Err(error) => inputs.native_layr_error = Some(error),
-            }
+            ) {
+                prepared_cwd.map(
+                    |cwd| crate::layr_native::settings::StoreAssociation::LegacyLine {
+                        cwd: cwd.to_path_buf(),
+                        reviewer: false,
+                    },
+                )
+            } else {
+                None
+            };
+            let root = identity
+                .resolve(state_root)
+                .map_err(|_| invalid("native-layr/store"))?;
+            let environment = crate::layr_native::thread_environment_in_store(state_root, &root);
+            let inputs = self
+                .filesystem_inputs
+                .as_mut()
+                .ok_or_else(|| invalid("thread guidance filesystem inputs"))?;
+            let reviewer = record["layrScratch"].as_str().map(|scratch| {
+                (
+                    scratch.to_owned(),
+                    crate::layr_native::reviewer_environment(state_root, scratch),
+                )
+            });
+            Arc::make_mut(inputs).native_layr = Some(Ok(NativeLayrFilesystem {
+                identity,
+                prepared_identity,
+                is_reviewer: record["role"] == "reviewer",
+                root,
+                environment,
+                state_root: state_root.to_path_buf(),
+                reviewer,
+            }));
         }
         Ok(self)
     }
 
-    fn native_filesystem(
+    fn native_layr<'a>(
+        &'a self,
+        state_root: &Path,
+        record: &Value,
+    ) -> Result<&'a NativeLayrFilesystem, WorkerError> {
+        let captured = self
+            .filesystem_inputs
+            .as_ref()
+            .and_then(|inputs| inputs.native_layr.as_ref())
+            .ok_or_else(|| invalid("native-layr/filesystem inputs"))?
+            .as_ref()
+            .map_err(|_| invalid("native-layr/store"))?;
+        let identity = crate::layr_native::settings::store_association(record)
+            .map_err(|_| invalid("native-layr/store"))?;
+        if (captured.identity != identity && captured.prepared_identity.as_ref() != Some(&identity))
+            || captured.state_root != state_root
+            || captured.is_reviewer != (record["role"] == "reviewer")
+        {
+            return Err(self.native_layr_changed("native-layr/store-changed"));
+        }
+        Ok(captured)
+    }
+
+    fn native_layr_changed(&self, reason: &'static str) -> WorkerError {
+        if self
+            .filesystem_inputs
+            .as_ref()
+            .is_some_and(|inputs| inputs.receipt)
+        {
+            invalid(reason)
+        } else {
+            refusal(reason.into())
+        }
+    }
+
+    pub(super) fn validate_native_layr_source(
         &self,
         state_root: &Path,
         record: &Value,
-    ) -> Result<&PreparationFilesystem, WorkerError> {
-        let inputs = self
-            .filesystem_inputs
-            .as_deref()
-            .filter(|inputs| inputs.native_layr_inputs == native_layr_inputs(state_root, record))
-            .ok_or_else(|| invalid("native-layr/filesystem-inputs"))?;
-        if let Some(error) = inputs.native_layr_error {
-            return Err(invalid(error));
-        }
-        Ok(inputs)
-    }
-
-    /// Validate stored inputs before applying the caller's validated cwd projection.
-    pub(super) fn project_cwd(
-        &mut self,
-        state_root: &Path,
-        record: &mut Value,
-        cwd: &Path,
     ) -> Result<(), WorkerError> {
         if crate::layr_native::is_native(record) {
-            self.native_filesystem(state_root, record)?;
-            record["cwd"] = json!(cwd);
-            let inputs = Arc::make_mut(
-                self.filesystem_inputs
-                    .as_mut()
-                    .ok_or_else(|| invalid("native-layr/filesystem-inputs"))?,
-            );
-            inputs.native_layr_inputs = native_layr_inputs(state_root, record);
-        } else {
-            record["cwd"] = json!(cwd);
+            let captured = self.native_layr(state_root, record)?;
+            let identity = crate::layr_native::settings::store_association(record)
+                .map_err(|_| invalid("native-layr/store"))?;
+            if captured.identity != identity {
+                return Err(refusal("native-layr/store-changed".into()));
+            }
         }
         Ok(())
     }
 
     pub(crate) async fn for_sql(
         &self,
-        store: &RuntimeStore,
-        agent_id: &str,
+        state_root: &Path,
+        record: &Value,
+        prepared_cwd: Option<&Path>,
     ) -> Result<Self, WorkerError> {
-        self.for_receipt(store, agent_id, None).await
+        let resources = self.clone();
+        let state_root = state_root.to_path_buf();
+        let record = record.clone();
+        let prepared_cwd = prepared_cwd.map(Path::to_path_buf);
+        studio_runtime_process::blocking_pool::spawn_blocking(
+            "runtime-services/thread-guidance/filesystem",
+            move || {
+                resources.capture_filesystem(None).capture_native_layr(
+                    &state_root,
+                    &record,
+                    prepared_cwd.as_deref(),
+                )
+            },
+        )
+        .await
+        .map_err(|_| WorkerError::TaskFailed)?
     }
 
     pub(crate) async fn for_receipt(
@@ -359,38 +403,58 @@ impl PreparationResources {
         agent_id: &str,
         prepared_cwd: Option<&str>,
     ) -> Result<Self, WorkerError> {
-        let agent_id = agent_id.to_owned();
-        let observed = store
-            .read_async("runtime-services/thread-guidance/agent", move |tx| {
-                Ok::<_, WorkerError>(
-                    AgentRepository::get(tx, &AgentId::from(agent_id.as_str()))?
-                        .map(|agent| agent.value())
-                        .unwrap_or(Value::Null),
-                )
-            })
-            .await;
-        let record = match observed {
-            Ok(record) => record,
-            // Owning SQL logic re-reads this agent inside its isolation boundary.
-            // Missing observations cannot be used to construct a native snapshot.
-            Err(error) if crate::account_worker::agent_fault::data_fault(&error).is_some() => {
-                Value::Null
+        let record = if prepared_cwd.is_some() {
+            let agent_id = agent_id.to_owned();
+            match store
+                .read_async("runtime-services/thread-receipt/cwd", move |tx| {
+                    Ok::<_, WorkerError>(
+                        AgentRepository::get(tx, &AgentId::from(agent_id.as_str()))?
+                            .map(|agent| agent.value()),
+                    )
+                })
+                .await
+            {
+                Ok(record) => record,
+                Err(error) if crate::account_worker::agent_fault::data_fault(&error).is_some() => {
+                    None
+                }
+                Err(error) => return Err(error),
             }
-            Err(error) => return Err(error),
+        } else {
+            None
         };
-        let receipt_cwd = prepared_cwd.and_then(|prepared| {
-            record["cwd"]
-                .as_str()
-                .map(|stored| (stored.to_owned(), prepared.to_owned()))
-        });
-        let state_root = store.root().to_path_buf();
+        let receipt_cwd = record
+            .as_ref()
+            .and_then(|record| record["cwd"].as_str())
+            .zip(prepared_cwd)
+            .map(|(stored, prepared)| (stored.to_owned(), prepared.to_owned()));
         let resources = self.clone();
+        let state_root = store.root().to_path_buf();
         studio_runtime_process::blocking_pool::spawn_blocking(
             "runtime-services/thread-receipt/filesystem",
             move || {
-                resources
-                    .capture_filesystem(receipt_cwd)
-                    .capture_native_filesystem(&state_root, &record)
+                let mut resources = resources.capture_filesystem(receipt_cwd);
+                if let Some(inputs) = resources.filesystem_inputs.as_mut() {
+                    Arc::make_mut(inputs).receipt = true;
+                }
+                Ok(match record {
+                    Some(record) => {
+                        match resources
+                            .clone()
+                            .capture_native_layr(&state_root, &record, None)
+                        {
+                            Ok(captured) => captured,
+                            Err(_) => {
+                                let mut resources = resources;
+                                if let Some(inputs) = resources.filesystem_inputs.as_mut() {
+                                    Arc::make_mut(inputs).native_layr = Some(Err(()));
+                                }
+                                resources
+                            }
+                        }
+                    }
+                    None => resources,
+                })
             },
         )
         .await
@@ -776,14 +840,12 @@ pub(super) fn guidance(
         ));
     }
     if crate::layr_native::is_native(record) {
-        for (name, value) in &resources
-            .native_filesystem(state_root, record)?
-            .native_layr_environment
+        for (name, value) in resources
+            .native_layr(state_root, record)?
+            .environment
+            .clone()
         {
-            thread_config.insert(
-                format!("shell_environment_policy.set.{name}"),
-                value.clone(),
-            );
+            thread_config.insert(format!("shell_environment_policy.set.{name}"), value);
         }
         if record["role"] == "reviewer"
             && let Some(scratch) = record["layrScratch"].as_str()
@@ -1181,42 +1243,30 @@ fn frozen_params(record: &Value) -> Result<Option<thread::FrozenParams>, WorkerE
     }))
 }
 
-fn native_reviewer_options(
+fn native_claude_options(
+    resources: &PreparationResources,
     record: &Value,
     state_root: &Path,
-) -> Result<serde_json::Map<String, Value>, &'static str> {
-    let mut options = Map::new();
+) -> Result<serde_json::Map<String, Value>, WorkerError> {
+    let mut options: serde_json::Map<String, Value> =
+        optional(record, "claudeOptions")?.unwrap_or_default();
     if crate::layr_native::is_native(record) && record["role"] == "reviewer" {
         let scratch = record["layrScratch"]
             .as_str()
-            .ok_or("native-reviewer/scratch")?;
-        let root = crate::layr_native::settings::record_store(state_root, record)
-            .map_err(|_| "native-layr/store")?;
+            .ok_or_else(|| invalid("native-reviewer/scratch"))?;
+        let captured = resources.native_layr(state_root, record)?;
+        let root = &captured.root;
+        let environment = captured
+            .reviewer
+            .as_ref()
+            .filter(|(stored, _)| stored == scratch)
+            .ok_or_else(|| resources.native_layr_changed("native-layr/scratch-changed"))?;
         options.insert("sandbox".into(),json!({"enabled":true,"failIfUnavailable":true,"allowUnsandboxedCommands":false,
             "filesystem":{"allowWrite":[scratch],"denyWrite":[root]},
             "network":{"allowedDomains":[],"strictAllowlist":true,"allowUnixSockets":[],"allowAllUnixSockets":false}}));
         options.insert(
             "nativeReviewerEnvironment".into(),
-            Value::Object(crate::layr_native::reviewer_environment(
-                state_root, scratch,
-            )),
-        );
-    }
-    Ok(options)
-}
-
-fn native_claude_options(
-    resources: &PreparationResources,
-    record: &Value,
-    state_root: &Path,
-) -> Result<Map<String, Value>, WorkerError> {
-    let mut options: Map<String, Value> = optional(record, "claudeOptions")?.unwrap_or_default();
-    if crate::layr_native::is_native(record) && record["role"] == "reviewer" {
-        options.extend(
-            resources
-                .native_filesystem(state_root, record)?
-                .native_reviewer_options
-                .clone(),
+            Value::Object(environment.1.clone()),
         );
     }
     Ok(options)
@@ -1678,7 +1728,7 @@ mod resource_tests {
             &resources
                 .clone()
                 .capture_filesystem(None)
-                .capture_native_filesystem(state_root, record)?,
+                .capture_native_layr(state_root, record, None)?,
             record,
             state_root,
         )
@@ -2035,7 +2085,7 @@ mod resource_tests {
                 );
             }
             let captured = resources
-                .for_sql(&store, "reviewer")
+                .for_sql(&state_root, &record, None)
                 .await
                 .expect("capture before SQL");
             let receipt = resources
@@ -2132,7 +2182,13 @@ mod resource_tests {
         let mut resources =
             PreparationResources::bundled(String::new(), ModelCatalogService::new())
                 .expect("runtime resources")
-                .capture_filesystem(None);
+                .capture_filesystem(None)
+                .capture_native_layr(
+                    Path::new("/state"),
+                    &json!({"workspaceMode":"layr-native"}),
+                    None,
+                )
+                .expect("native Layr inputs");
         resources
             .legacy_tools
             .iter_mut()
@@ -2141,10 +2197,6 @@ mod resource_tests {
             .description
             .push_str(" Legacy catalog fixture.");
         assert_ne!(resources.tools, resources.legacy_tools);
-        let native_resources = resources
-            .clone()
-            .capture_native_filesystem(Path::new("/state"), &json!({"workspaceMode":"layr-native"}))
-            .expect("native filesystem inputs");
         store
             .transaction_with(move |tx| {
                 let failed = |error: WorkerError| StoreError::SchemaMismatch(error.to_string());
@@ -2175,7 +2227,7 @@ mod resource_tests {
                         )?;
                         let snapshot = thread_snapshot(
                             tx,
-                            if vm { &resources } else { &native_resources },
+                            &resources,
                             &record,
                             "connection",
                             Path::new("/state"),
@@ -2583,6 +2635,106 @@ mod workspace_fence_tests {
     use super::*;
 
     #[test]
+    fn legacy_reviewer_store_uses_read_line_not_prepared_scratch() {
+        let state = tempfile::tempdir().expect("state");
+        let root = crate::layr_native::store_path(state.path());
+        let line = root.join("projects/p/lines/main");
+        let scratch = state.path().join("reviewer-scratch");
+        let record = json!({"workspaceMode":"layr-native", "layrReady":true,
+            "role":"reviewer", "cwd":scratch, "layrReadCwd":line, "layrScratch":scratch});
+        let resources = PreparationResources::bundled(String::new(), ModelCatalogService::new())
+            .expect("resources")
+            .capture_filesystem(None)
+            .capture_native_layr(state.path(), &record, Some(&scratch))
+            .expect("reviewer capture");
+        assert_eq!(
+            resources
+                .native_layr(state.path(), &record)
+                .expect("association")
+                .root,
+            root
+        );
+    }
+
+    #[tokio::test]
+    async fn receipt_store_and_scratch_changes_are_isolatable() {
+        let state = tempfile::tempdir().expect("state");
+        let store = RuntimeStore::open(Some(state.path())).await.expect("store");
+        let record = json!({"id":"reviewer", "rootId":"reviewer", "epoch":1,
+            "status":"running", "isLead":true, "provider":"claude", "cwd":"/scratch",
+            "workspaceMode":"layr-native", "role":"reviewer", "layrStoreRoot":"/store-a", "layrScratch":"/scratch"});
+        let saved = record.clone();
+        store
+            .transaction_with(move |tx| {
+                AgentRepository::put(tx, &AgentRecord::from_value(saved).expect("agent"))?;
+                Ok::<_, StoreError>(())
+            })
+            .await
+            .expect("save");
+        let resources = PreparationResources::bundled(String::new(), ModelCatalogService::new())
+            .expect("resources")
+            .for_receipt(&store, "reviewer", Some("/scratch"))
+            .await
+            .expect("capture");
+        let mut changed = record.clone();
+        changed["layrStoreRoot"] = json!("/store-b");
+        assert!(matches!(
+            resources.native_layr(state.path(), &changed),
+            Err(WorkerError::Store(StoreError::InvalidStoredObject { .. }))
+        ));
+        changed = record;
+        changed["layrScratch"] = json!("/other-scratch");
+        assert!(matches!(
+            native_claude_options(&resources, &changed, state.path()),
+            Err(WorkerError::Store(StoreError::InvalidStoredObject { .. }))
+        ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn native_layr_capture_preserves_alias_identity_and_rejects_changed_association() {
+        let state = tempfile::tempdir().expect("state");
+        let root = crate::layr_native::store_path(state.path());
+        std::fs::create_dir_all(&root).expect("store");
+        let alias = state.path().join("store-alias");
+        std::os::unix::fs::symlink(&root, &alias).expect("alias");
+        let record = json!({"workspaceMode":"layr-native", "layrStoreRoot":alias});
+        let resources = PreparationResources::bundled(String::new(), ModelCatalogService::new())
+            .expect("resources")
+            .capture_filesystem(None)
+            .capture_native_layr(state.path(), &record, None)
+            .expect("capture");
+        let captured = resources
+            .native_layr(state.path(), &record)
+            .expect("association");
+        assert_eq!(
+            captured.environment["LAYR_SOCKET"],
+            json!(crate::layr_native::socket_path(state.path()))
+        );
+        let changed = json!({"workspaceMode":"layr-native", "layrStoreRoot":root});
+        assert!(resources.native_layr(state.path(), &changed).is_err());
+
+        let line = root.join("projects/p/lines/main");
+        std::fs::create_dir_all(&line).expect("line");
+        let legacy = json!({"workspaceMode":"layr-native", "layrReady":true, "cwd":alias.join("projects/p/lines/main")});
+        let resources = PreparationResources::bundled(String::new(), ModelCatalogService::new())
+            .expect("resources")
+            .capture_filesystem(None)
+            .capture_native_layr(state.path(), &legacy, Some(&line))
+            .expect("legacy capture");
+        let normalized = json!({"workspaceMode":"layr-native", "layrReady":true, "cwd":line});
+        assert_eq!(
+            resources
+                .native_layr(state.path(), &normalized)
+                .expect("normalized association")
+                .environment["LAYR_ROOT"],
+            json!(alias)
+        );
+        let changed = json!({"workspaceMode":"layr-native", "layrReady":true, "cwd":"/other/projects/p/lines/main"});
+        assert!(resources.native_layr(state.path(), &changed).is_err());
+    }
+
+    #[test]
     fn task_result_schema_native_and_legacy_catalogs_use_the_owner() {
         let resources = PreparationResources::bundled(String::new(), ModelCatalogService::new())
             .expect("resources");
@@ -2667,9 +2819,10 @@ mod workspace_fence_tests {
         let resources = PreparationResources::bundled(String::new(), ModelCatalogService::new())
             .expect("resources");
         let native_resources: Vec<_> = ["implementer", "reviewer"].into_iter().map(|role| {
-            resources.clone().capture_filesystem(None).capture_native_filesystem(
+            resources.clone().capture_filesystem(None).capture_native_layr(
                 Path::new("/state"), &json!({"workspaceMode":"layr-native", "role":role,
                     "layrStoreRoot":"/state/layr-native/store", "layrScratch":"/private/reviewer-scratch"}),
+                None,
             ).expect("native filesystem inputs")
         }).collect();
         store
@@ -2755,7 +2908,9 @@ mod workspace_fence_tests {
                             tx,
                             if mode == "layr-native" {
                                 &native_resources[usize::from(role == "reviewer")]
-                            } else { &resources },
+                            } else {
+                                &resources
+                            },
                             &record,
                             "connection",
                             Path::new("/state"),

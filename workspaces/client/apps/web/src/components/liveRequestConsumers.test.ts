@@ -1,3 +1,4 @@
+import { AgentStatus as GeneratedApiAgentStatus } from "../generated/api.ts";
 import { required } from "./componentTestFixtures.ts";
 import type { ComponentHookCell } from "./componentTestFixtures";
 import type { EffectCallback } from "react";
@@ -146,13 +147,17 @@ it("agent status and completed turns do not refetch saved repair evidence", asyn
     id: "lead",
     threadId: "thread",
     epoch: 1,
-    status: "running",
+    status: GeneratedApiAgentStatus.running,
   };
   render(() => ClaudeRepairNotice({ agent }));
   await Promise.resolve();
   render(() =>
     ClaudeRepairNotice({
-      agent: { ...agent, status: "idle", lastCompletedTurn: "turn" },
+      agent: {
+        ...agent,
+        status: GeneratedApiAgentStatus.idle,
+        lastCompletedTurn: "turn",
+      },
     }),
   );
   await Promise.resolve();

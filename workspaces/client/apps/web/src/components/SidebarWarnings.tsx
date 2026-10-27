@@ -1,3 +1,4 @@
+import { AgentSource as GeneratedApiAgentSource } from "../generated/api.ts";
 import { createContext, useContext, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { useMessages } from "../hooks";
@@ -44,7 +45,7 @@ export default function SidebarWarnings({
   const { items } = useMessages(
     agent ? opened : null,
     "agent",
-    agent?.source === "managed",
+    agent?.source === GeneratedApiAgentSource.managed,
     data.stateDir,
     syncWorkspaceId,
     visible,

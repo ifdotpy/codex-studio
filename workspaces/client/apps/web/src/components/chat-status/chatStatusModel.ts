@@ -1,3 +1,4 @@
+import { AgentSource, AgentStatus, RequestStatus } from "../../generated/api";
 import type { Agent, Snapshot } from "../../types";
 import type { components } from "../../generated/api";
 import { isCommandTask } from "../backgroundTaskModel";
@@ -63,7 +64,7 @@ export interface ChatWaitState {
 export function chatChildren(data: Snapshot): Map<string, Agent[]> {
   const children = new Map<string, Agent[]>();
   for (const child of data.threads) {
-    if (child.source !== "managed" || !child.parentId) continue;
+    if (child.source !== AgentSource.managed || !child.parentId) continue;
     const siblings = children.get(child.parentId);
     if (siblings) siblings.push(child);
     else children.set(child.parentId, [child]);
@@ -98,7 +99,8 @@ export function chatWaitState(
         )
       )
         return true;
-      const parked = current.status === "parked" && !!current.parkedEvent;
+      const parked =
+        current.status === AgentStatus.parked && !!current.parkedEvent;
       if (
         (current.autoWake === false && !parked) ||
         !["waiting", "parked", "waiting_on_monitor"].includes(
@@ -140,7 +142,7 @@ export function chatWaitState(
     runtime?.requests?.filter(
       (request) =>
         request.agent === agent.id &&
-        (!request.status || request.status === "pending") &&
+        (!request.status || request.status === RequestStatus.pending) &&
         !request.deferred &&
         epochMatches(request.epoch, agent.epoch),
     ).length ?? 0;
@@ -179,7 +181,9 @@ export function backgroundActivities(activities: ChatActivity[]) {
 // The visible reasons and the spinner use the same activity records.
 export function chatActivities(data: Snapshot): Map<string, ChatActivity[]> {
   const runtime = data.runtime;
-  const agents = data.threads.filter((agent) => agent.source === "managed");
+  const agents = data.threads.filter(
+    (agent) => agent.source === AgentSource.managed,
+  );
   const byId = new Map(agents.map((agent) => [agent.id, agent]));
   const result = new Map<string, ChatActivity[]>();
   const concrete = new Set<string>();
@@ -252,9 +256,9 @@ export function chatActivities(data: Snapshot): Map<string, ChatActivity[]> {
         agentId: agent.id,
         agentName: agent.name || "Agent",
         label:
-          agent.status === "queued"
+          agent.status === AgentStatus.queued
             ? "Waiting to start"
-            : agent.status === "starting"
+            : agent.status === AgentStatus.starting
               ? "Starting"
               : "Working",
         status: agent.status || "",
@@ -300,7 +304,9 @@ export function chatIndicators(
   readStateFor: (agent: Agent) => ReadState | null = savedReadState,
   activities = chatActivities(data),
 ): Map<string, ChatIndicator> {
-  const agents = data.threads.filter((agent) => agent.source === "managed");
+  const agents = data.threads.filter(
+    (agent) => agent.source === AgentSource.managed,
+  );
   const byId = new Map(agents.map((agent) => [agent.id, agent]));
   const children = chatChildren(data);
   const answers = new Set<string>(),
@@ -317,7 +323,7 @@ export function chatIndicators(
   const requests = data.runtime?.requests;
   if (requests) {
     for (const request of requests) {
-      if (request.status && request.status !== "pending") continue;
+      if (request.status && request.status !== RequestStatus.pending) continue;
       const agent = byId.get(request.agent || "");
       if (!agent || !epochMatches(request.epoch, agent.epoch)) continue;
       if (request.deferred) deferred.add(agent.id);
@@ -369,7 +375,7 @@ export function chatIndicators(
           kind: "working",
           label,
         };
-      } else if (agent.status === "failed")
+      } else if (agent.status === AgentStatus.failed)
         // A turn that failed because the disk was full waits for free space.
         indicator = diskFullHold(agent)
           ? { kind: "paused", label: DISK_FULL_WAIT_LABEL }
@@ -380,19 +386,22 @@ export function chatIndicators(
       )
         indicator = {
           kind: "paused",
-          label: agent.status === "interrupted" ? "Interrupted" : "Stopped",
+          label:
+            agent.status === AgentStatus.interrupted
+              ? "Interrupted"
+              : "Stopped",
         };
-      else if (deferred.has(agent.id) && agent.status === "approval")
+      else if (deferred.has(agent.id) && agent.status === AgentStatus.approval)
         indicator = { kind: "paused", label: "Question deferred" };
       else if (
-        agent.status === "completed" &&
+        agent.status === AgentStatus.completed &&
         unreadResult(agent, readStateFor(agent) ?? null)
       )
         indicator = { kind: "unread", label: "Unread result" };
       else
         indicator = {
           kind: "none",
-          label: agent.status === "completed" ? "Read" : "Ready",
+          label: agent.status === AgentStatus.completed ? "Read" : "Ready",
         };
       return [agent.id, indicator];
     }),

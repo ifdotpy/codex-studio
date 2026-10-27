@@ -140,7 +140,10 @@ pub fn thread_environment_for_record(
     ))
 }
 
-fn thread_environment_in_store(state_root: &Path, root: &Path) -> serde_json::Map<String, Value> {
+pub(crate) fn thread_environment_in_store(
+    state_root: &Path,
+    root: &Path,
+) -> serde_json::Map<String, Value> {
     let bin = binary_path(state_root);
     let path = format!(
         "{}:{}",

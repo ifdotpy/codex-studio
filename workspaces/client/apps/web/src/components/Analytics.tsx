@@ -1,3 +1,4 @@
+import { AnalyticsScope as GeneratedApiAnalyticsScope } from "../generated/api.ts";
 import { useServerApi } from "../servers/ServerServicesContext";
 import { localDateTime, localTime } from "../local-time";
 import { useEffect, useMemo, useState } from "react";
@@ -40,7 +41,11 @@ type AnalyticsContextPoint = AnalyticsUsageRecord & {
 };
 type AnalyticsQuery = NonNullable<GetOptions<"/api/analytics">["query"]>;
 type AnalyticsScope = NonNullable<AnalyticsQuery["scope"]>;
-const analyticsScopes: readonly AnalyticsScope[] = ["agent", "team", "all"];
+const analyticsScopes: readonly AnalyticsScope[] = [
+  GeneratedApiAnalyticsScope.agent,
+  GeneratedApiAnalyticsScope.team,
+  GeneratedApiAnalyticsScope.all,
+];
 const isAnalyticsScope = (value: string): value is AnalyticsScope =>
   analyticsScopes.some((scope) => scope === value);
 
@@ -644,7 +649,7 @@ export default function Analytics({
         </div>
         <div className="analytics-scope">
           <span>
-            {scope === "agent"
+            {scope === GeneratedApiAnalyticsScope.agent
               ? agent.name
               : scope === "team"
                 ? "Selected team"
@@ -771,7 +776,7 @@ export default function Analytics({
                   <ContextChart
                     timeline={data.chartBuckets || timeline}
                     compactions={data.compactions || []}
-                    aggregate={scope !== "agent"}
+                    aggregate={scope !== GeneratedApiAnalyticsScope.agent}
                   />
                   <p className="analytics-note">
                     Each point is the highest context report in its time bucket.

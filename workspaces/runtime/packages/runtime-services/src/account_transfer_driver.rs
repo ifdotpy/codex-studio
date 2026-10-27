@@ -1,6 +1,7 @@
 //! Transaction adapter for the pure transfer reducer. No provider or file I/O
 //! runs under the writer lock. Native integration calls reserve/receive with its
 //! exact ticket; it may send only after reserve returns a committed decision.
+pub use crate::account_transfer::TransferDispatch;
 use crate::account_transfer::{
     Action, Command, Decision, EXECUTOR_REQUIRED, Snapshot, Ticket, TransferError,
 };
@@ -544,12 +545,7 @@ pub trait TransferTransport: Send + Sync {
         scope: &'a crate::account_session_runtime::ConnectionScope,
         method: &'a str,
         params: &'a Value,
-    ) -> TransferFuture<'a, TransferDispatch>;
-}
-pub struct TransferDispatch {
-    pub receipt: Value,
-    pub result: Option<Value>,
-    pub certainty: crate::account_session_runtime::RequestCertainty,
+    ) -> TransferFuture<'a, Result<TransferDispatch, TransferError>>;
 }
 #[derive(Debug, PartialEq, Eq)]
 pub enum DispatchOutcome {
@@ -570,23 +566,15 @@ pub async fn send_once(
     let scope_value = serde_json::to_value(&scope)
         .map_err(|_| TransferError::Refused("Invalid provider scope"))?;
     reserve(store, ticket, method, params.clone(), scope_value, now).await?;
-    let dispatch = transport.send(ticket, &scope, method, &params).await;
-    let known = dispatch.certainty == crate::account_session_runtime::RequestCertainty::Written
-        && dispatch
-            .result
-            .as_ref()
-            .and_then(|r| r.pointer("/thread/id"))
-            .and_then(Value::as_str)
-            .is_some_and(|s| !s.is_empty());
+    let dispatch = transport.send(ticket, &scope, method, &params).await?;
+    let known = dispatch.has_thread();
     provider_receipt(
         store,
         ProviderReceipt {
             operation: &ticket.operation,
             agent: &ticket.agent,
             provider_operation: &ticket.request,
-            receipt: dispatch.receipt,
-            result: dispatch.result,
-            certainty: dispatch.certainty,
+            receipt: dispatch,
         },
         now,
     )
@@ -853,7 +841,7 @@ mod background_read_compat_tests {
             .await
             .expect("correct unsubmitted page");
         let receipt = json!({"operation":TURN_READ,"scope":current,"certainty":"written",
-            "ticket":{"generation":8,"id":"native-page-request","method":"thread/turns/list"}});
+            "notSentReason":null,"ticket":{"generation":8,"id":"native-page-request","method":"thread/turns/list"}});
         let result = json!({"kind":"reply","value":{"data":[],"nextCursor":null}});
         provider_read_receipt(
             &store,
@@ -861,9 +849,21 @@ mod background_read_compat_tests {
                 transfer: TRANSFER,
                 agent: "member",
                 operation: TURN_READ,
-                receipt: receipt.clone(),
-                result: Some(result.clone()),
-                certainty: crate::account_session_runtime::RequestCertainty::Written,
+                receipt: crate::account_session_runtime::SessionReceipt {
+                    scope: serde_json::from_value(current.clone()).expect("scope"),
+                    operation: TURN_READ.into(),
+                    replayed: false,
+                    outcome: crate::account_session_runtime::SessionOutcome::Written {
+                        ticket: studio_runtime_providers::RequestTicket {
+                            generation: 8,
+                            id: serde_json::from_value(json!("native-page-request")).expect("id"),
+                            method: studio_runtime_providers::Method::ThreadTurnsList,
+                        },
+                        response: crate::account_session_runtime::ProviderResponse::Reply(
+                            result["value"].clone(),
+                        ),
+                    },
+                },
             },
             3.0,
         )
@@ -1267,16 +1267,14 @@ pub(crate) struct ProviderReadReceipt<'a> {
     pub transfer: &'a str,
     pub agent: &'a str,
     pub operation: &'a str,
-    pub receipt: Value,
-    pub result: Option<Value>,
-    pub certainty: crate::account_session_runtime::RequestCertainty,
+    pub receipt: crate::account_session_runtime::SessionReceipt,
 }
 
 pub(crate) async fn provider_read_receipt(
     store: &RuntimeStore,
     receipt: ProviderReadReceipt<'_>,
     now: f64,
-) -> Result<(), TransferError> {
+) -> Result<crate::account_session_runtime::SessionReceipt, TransferError> {
     let transfer = receipt.transfer.to_owned();
     let agent = receipt.agent.to_owned();
     let operation = receipt.operation.to_owned();
@@ -1285,16 +1283,10 @@ pub(crate) async fn provider_read_receipt(
             let snapshot = load(tx, &transfer)?;
             persist(
                 tx,
-                snapshot.provider_read_receipt(
-                    &agent,
-                    &operation,
-                    receipt.receipt,
-                    receipt.result,
-                    receipt.certainty,
-                )?,
+                snapshot.provider_read_receipt(&agent, &operation, &receipt.receipt)?,
                 now,
             )?;
-            Ok(())
+            Ok(receipt.receipt)
         })
         .await
 }
@@ -1305,9 +1297,7 @@ pub struct ProviderReceipt<'a> {
     pub operation: &'a str,
     pub agent: &'a str,
     pub provider_operation: &'a str,
-    pub receipt: Value,
-    pub result: Option<Value>,
-    pub certainty: crate::account_session_runtime::RequestCertainty,
+    pub receipt: TransferDispatch,
 }
 
 pub async fn provider_receipt(
@@ -1323,13 +1313,7 @@ pub async fn provider_receipt(
             let snapshot = load(tx, &operation)?;
             persist(
                 tx,
-                snapshot.provider_receipt(
-                    &agent,
-                    &provider_operation,
-                    receipt.receipt,
-                    receipt.result,
-                    receipt.certainty,
-                )?,
+                snapshot.provider_receipt(&agent, &provider_operation, &receipt.receipt)?,
                 now,
             )?;
             Ok(())
@@ -2110,7 +2094,7 @@ mod request_tests {
                 _: &'a crate::account_session_runtime::ConnectionScope,
                 _: &'a str,
                 _: &'a Value,
-            ) -> TransferFuture<'a, TransferDispatch> {
+            ) -> TransferFuture<'a, Result<TransferDispatch, TransferError>> {
                 Box::pin(async { panic!("an unproven monitor cannot dispatch a transfer") })
             }
         }

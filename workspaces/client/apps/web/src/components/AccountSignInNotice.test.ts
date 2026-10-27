@@ -1,3 +1,7 @@
+import {
+  AccountStatus as GeneratedApiAccountStatus,
+  ProviderKind as GeneratedApiProviderKind,
+} from "../generated/api.ts";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { MantineProvider } from "@mantine/core";
@@ -13,8 +17,8 @@ const observed = { name: "Observed organization", idSuffix: "87654321" };
 const account: Account = {
   id: "claude",
   label: "Claude",
-  status: "changed",
-  provider: "claude",
+  status: GeneratedApiAccountStatus.changed,
+  provider: GeneratedApiProviderKind.claude,
   home: "/fixture",
   source: "Fixture",
   organization: expected,

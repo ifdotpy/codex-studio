@@ -1,3 +1,4 @@
+import { RequestStatus } from "../../generated/api";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { MantineProvider } from "@mantine/core";
@@ -99,7 +100,7 @@ describe("question card", () => {
   it("keeps one editor when a tool and message refer to the same request", () => {
     const request = {
       id: "question",
-      status: "pending",
+      status: RequestStatus.pending,
       agent: AGENT,
     } satisfies components["schemas"]["RequestEntityDto"];
     const tool = askItem({ status: "inProgress" }, "running");
@@ -132,26 +133,26 @@ describe("question card", () => {
         id: "question",
         agent: AGENT,
         method: "item/tool/requestUserInput",
-        status: "pending",
+        status: RequestStatus.pending,
         params: { itemId: "toolu_1" },
       },
       {
         id: "approval",
         agent: AGENT,
         method: "item/commandExecution/requestApproval",
-        status: "pending",
+        status: RequestStatus.pending,
         params: { itemId: "command" },
       },
       {
         id: "other-agent",
         agent: "worker",
-        status: "pending",
+        status: RequestStatus.pending,
         params: { itemId: "command" },
       },
       {
         id: "outside-page",
         agent: AGENT,
-        status: "pending",
+        status: RequestStatus.pending,
         params: { itemId: "older" },
       },
     ];

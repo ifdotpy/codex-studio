@@ -1,3 +1,4 @@
+import { DeliveryMoment, DeliveryMomentInput } from "../../generated/api";
 import { required } from "../componentTestFixtures";
 import {
   componentMessage,
@@ -197,7 +198,7 @@ it("retires delivered local cards outside the page only with exact saved input p
 it("normalizes legacy next-turn rows without rewriting their retry payload", () => {
   const legacy: OutgoingMessage = {
     ...receipt,
-    body: { ...receipt.body, delivery: "after_turn" },
+    body: { ...receipt.body, delivery: DeliveryMomentInput.after_turn },
   };
   const row = required(outgoingTranscript([], [legacy]).items[0]);
   assert.equal(row.requestedDelivery, "next_turn");
@@ -417,12 +418,12 @@ it("updates a matching receipt without replacing existing transcript content", (
     assets: [componentAttachment({ id: "server-asset" })],
     pending: false,
     materialized: true,
-    requestedDelivery: "next_turn",
+    requestedDelivery: DeliveryMoment.next_turn,
     deliveryStatus: "sent",
   };
   const entry: OutgoingMessage = {
     ...receipt,
-    body: { ...receipt.body, delivery: "after_tool" },
+    body: { ...receipt.body, delivery: DeliveryMomentInput.after_tool },
     attachments: [componentAttachment({ id: "outbox-asset" })],
     status: "failed",
     error: "late receipt error",
@@ -473,7 +474,7 @@ it("restores attachments and requested delivery to a local transcript row", () =
     [
       {
         ...receipt,
-        body: { ...receipt.body, delivery: "after_tool" },
+        body: { ...receipt.body, delivery: DeliveryMomentInput.after_tool },
         attachments: [componentAttachment({ id: "asset-one" })],
       },
     ],
@@ -486,11 +487,16 @@ it("restores attachments and requested delivery to a local transcript row", () =
 
   const existingDelivery: Message = {
     ...materializing,
-    requestedDelivery: "next_turn",
+    requestedDelivery: DeliveryMoment.next_turn,
   };
   const unchangedDelivery = outgoingTranscript(
     [existingDelivery],
-    [{ ...receipt, body: { ...receipt.body, delivery: "after_tool" } }],
+    [
+      {
+        ...receipt,
+        body: { ...receipt.body, delivery: DeliveryMomentInput.after_tool },
+      },
+    ],
   );
   assert.equal(
     required(unchangedDelivery.items[0]).requestedDelivery,
@@ -551,7 +557,7 @@ it("creates local receipt rows with display content and accepted queue status", 
     body: {
       room: "lead",
       text: "Original text",
-      delivery: "after_turn",
+      delivery: DeliveryMomentInput.after_turn,
     } as OutgoingMessage["body"],
   };
   const row = required(outgoingTranscript([], [missingReceipt]).items[0]);
@@ -653,7 +659,7 @@ const steer: OutgoingMessage["body"] = {
   room: "lead",
   text: "Steer the turn",
   assets: [],
-  delivery: "current_turn",
+  delivery: DeliveryMomentInput.current_turn,
 };
 function localCards(
   outbox: OutboxEntry[],

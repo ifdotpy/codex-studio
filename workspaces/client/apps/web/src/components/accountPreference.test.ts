@@ -1,3 +1,7 @@
+import {
+  ProviderKind as GeneratedApiProviderKind,
+  AccountStatus as GeneratedApiAccountStatus,
+} from "../generated/api.ts";
 import { describe, expect, test } from "vitest";
 import contract from "../../../../contracts/account-preference.json";
 import {
@@ -14,8 +18,8 @@ test("the no-model default rejects accounts without a supported provider, matchi
     const unsupported = { id: "bad", provider, status: "ready" };
     const supported: PreferenceAccount = {
       id: "ok",
-      provider: "codex",
-      status: "ready",
+      provider: GeneratedApiProviderKind.codex,
+      status: GeneratedApiAccountStatus.ready,
     };
     // @ts-expect-error A malformed wire record cannot be a startable account.
     expect(canStart(unsupported)).toBe(false);

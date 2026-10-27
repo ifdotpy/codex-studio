@@ -1,3 +1,4 @@
+import { SubscriptionReplyKind } from "./generated/api";
 import { required } from "./components/componentTestFixtures.ts";
 import type { components } from "./generated/api";
 import { afterEach, expect, it, vi } from "vitest";
@@ -14,7 +15,7 @@ it("reads scoped fixture baselines from fragmented SSE and closes the stream", a
     resource: { agentId: "lead", kind: "agentDetail" },
     revision: 3,
     cursor: { workspaceId: "fixture", seq: 3 },
-    replyKind: "snapshot",
+    replyKind: SubscriptionReplyKind.snapshot,
     entityChanges: { after: 0, through: 3, documents: [] },
   } satisfies components["schemas"]["ResourceRevisionEntry"];
   const cancel = vi.fn();

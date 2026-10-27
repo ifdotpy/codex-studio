@@ -16,7 +16,7 @@
     "test:desktop:native": "pnpm --filter codex-agents-desktop run test:native",
     "test:native:schema": "CODEX_NATIVE_SCHEMA=1 pnpm --filter codex-agents-web run test:unit -- nativeErrors.schema",
     "test:mutation": "pnpm --filter codex-agents-web run test:mutation",
-    "lint:all": "oxlint --deny-warnings",
+    "lint:all": "node workspaces/tooling/apps/repository-checks/check-code.ts lint-all",
     "format:check:all": "oxfmt --check",
     "lint:staged": "node workspaces/tooling/apps/repository-checks/check-code.ts staged lint",
     "format:staged": "node workspaces/tooling/apps/repository-checks/check-code.ts staged format",

@@ -640,7 +640,7 @@ pub(crate) const WORKSPACE_PENDING_REASON: &str = "workspace-readiness/pending";
 pub(crate) const CATALOG_PENDING_REASON: &str = "model-catalog/refresh-pending";
 fn catalog_pending() -> WorkerError {
     WorkerError::PreparationPending(super::super::PreparationBlock::new(
-        studio_runtime_schema::agent_progress::StartWaitReason::ModelCatalog,
+        crate::account_worker::PreparationWaitReason::ModelCatalog,
         CATALOG_PENDING_REASON,
     ))
 }
@@ -1338,8 +1338,8 @@ pub(crate) async fn prepare_monitor_command(
     let observed = workspace_agent(&store, agent_id).await?.value();
     validate_monitor_actor(&observed, epoch)?;
     let agent_id = agent_id.to_owned();
-    let resources_for_snapshot = resources.for_sql(&store, &agent_id).await?;
     let state_root = store.root().to_path_buf();
+    let resources_for_snapshot = resources.for_sql(&state_root, &observed, None).await?;
     scheduler::lifecycle_transaction_with(&store, move |tx| {
         let current = agent(tx, &agent_id)?.value();
         validate_monitor_actor(&current, epoch)?;
@@ -1565,12 +1565,24 @@ async fn prepare_native_snapshot(
     let (identity, _) = catalog(resources, &intent)?;
     let state_root = store.root().to_path_buf();
     let intent = intent.clone();
-    let mut resources_for_snapshot = resources.for_sql(&store, &intent.agent_id).await?;
+    let observed = if restore_cwd.is_some() {
+        record.clone()
+    } else {
+        stored_agent_value(&store, &intent.agent_id).await?
+    };
+    let resources_for_snapshot = resources
+        .for_sql(
+            &state_root,
+            &observed,
+            restore_cwd.as_ref().map(|cwd| cwd.as_path()),
+        )
+        .await?;
     let generation = generation.to_string();
     let transfer_owner = account_transfer_owner.map(str::to_owned);
     scheduler::lifecycle_transaction_with(&store, move |tx| {
         let current =
             preconditions_for_purpose(tx, &intent, &filesystem, allow_paused_start, None)?;
+        resources_for_snapshot.validate_native_layr_source(&state_root, &current)?;
         let frozen = admission
             .selection
             .freeze_record(&current, &identity, Instant::now())
@@ -1587,7 +1599,7 @@ async fn prepare_native_snapshot(
                 .to_path_buf()
         };
         let mut frozen = frozen;
-        resources_for_snapshot.project_cwd(&state_root, &mut frozen, &cwd)?;
+        frozen["cwd"] = json!(cwd);
         thread_snapshot(
             tx,
             &resources_for_snapshot,
@@ -1633,8 +1645,8 @@ pub(crate) async fn prepare_safety_retry(
         .unwrap_or("safety-retry-preparation")
         .to_owned();
     let snapshot_request = request.clone();
-    let resources_for_snapshot = resources.for_sql(&store, &request.agent_id).await?;
     let state_root = store.root().to_path_buf();
+    let resources_for_snapshot = resources.for_sql(&state_root, &record, None).await?;
     let mut snapshot = scheduler::lifecycle_transaction_with(&store, move |tx| {
         let current = agent(tx, &snapshot_request.agent_id)?.value();
         if current.get("threadId").and_then(Value::as_str)
@@ -1769,8 +1781,9 @@ pub(crate) async fn prepare_ready(
     let token_for_snapshot = token.clone();
     let generation = generation.to_string();
     let state_root = store.root().to_path_buf();
-    let resources = resources.for_sql(&store, &intent.agent_id).await?;
-    let mut resources_for_snapshot = resources.clone();
+    let observed = stored_agent_value(&store, &intent.agent_id).await?;
+    let resources = resources.for_sql(&state_root, &observed, None).await?;
+    let resources_for_snapshot = resources.clone();
     let (
         mut snapshot,
         mut turn_snapshot,
@@ -1803,11 +1816,7 @@ pub(crate) async fn prepare_ready(
                 .map_err(|_| refusal(WORKSPACE_TOKEN_STALE.into()))?;
             let vm_reviewer = vm_reviewer_permissions(&frozen);
             if let Some(execution_cwd) = execution_cwd(&frozen, &cwd) {
-                resources_for_snapshot.project_cwd(
-                    &state_root,
-                    &mut frozen,
-                    Path::new(&execution_cwd),
-                )?;
+                frozen["cwd"] = json!(execution_cwd);
             }
             if frozen.get("nativeEffort").is_none() {
                 frozen["effort"] = json!(selection_for_snapshot.settings.effort);

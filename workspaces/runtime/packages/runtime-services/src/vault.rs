@@ -20,6 +20,8 @@ const DESK_OUTPUT_LIMIT: usize = 32 * 1024;
 
 /// Owns the OS notification source for a stream interested in vault readiness.
 /// It observes names and metadata only; key contents never enter the runtime.
+/// On Linux, a new directory event can precede recursive watch registration, so
+/// changes inside that directory may be missed. The stream heartbeat rereads readiness.
 pub struct VaultReadinessWatcher {
     _watcher: notify::RecommendedWatcher,
 }
@@ -893,14 +895,12 @@ mod tests {
         let root = tempfile::tempdir().expect("isolated settings");
         let settings = root.path().join("settings");
         let (sender, receiver) = std::sync::mpsc::channel();
-        let watched_settings = settings.clone();
         let _watcher = super::watch_readiness(
             &settings,
             std::sync::Arc::new(move || {
-                if super::keys_ready(&watched_settings, "project-one").expect("readiness") {
-                    // The receiver outlives the owned watcher in this fixture.
-                    sender.send(()).expect("readiness receiver is alive");
-                }
+                // Like the HTTP stream, the callback signals rather than reading readiness.
+                // A queued callback may finish after the receiver is dropped.
+                sender.send(()).unwrap_or(());
             }),
         )
         .expect("OS watcher");
@@ -914,6 +914,7 @@ mod tests {
         receiver
             .recv_timeout(std::time::Duration::from_secs(5))
             .expect("notification without a poll timer");
+        assert!(super::keys_ready(&settings, "project-one").expect("updated readiness"));
     }
 
     #[test]
