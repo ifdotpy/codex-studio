@@ -4,8 +4,9 @@ use super::*;
 use crate::recovery_history::ConnectionScope;
 use std::time::Instant;
 use studio_runtime_providers::RequestTicket;
-use tokio::sync::oneshot;
+use studio_runtime_schema::persistence::RequestIdentity;
 use studio_runtime_store::request_results::AdmittedRequest;
+use tokio::sync::oneshot;
 
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct RequestActor {
@@ -45,14 +46,10 @@ pub(crate) fn has_transport_evidence(
     tx: &studio_runtime_store::Transaction<'_>,
     account: &str,
     operation: &str,
+    admitted: Option<&AdmittedRequest>,
 ) -> Result<bool, WorkerError> {
     let key = Call::operation_key(account, operation);
-    for phase in ["submitted", "written", "result"] {
-        if store::receipt(tx, &key, phase)?.is_some() {
-            return Ok(true);
-        }
-    }
-    Ok(false)
+    Ok(storage::recorded_operation(tx, &key, admitted.map(AdmittedRequest::id))?.is_some())
 }
 
 impl SessionRequest {
@@ -1092,8 +1089,10 @@ fn valid_voice_speech(request: &SessionRequest) -> bool {
                 && params.get("text").and_then(Value::as_str).is_some()
         })
 }
-#[derive(Clone, serde::Serialize, serde::Deserialize, PartialEq)]
-pub(super) struct Call {
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, PartialEq)]
+pub(in crate::account_worker) struct Call {
+    root_request_id: String,
+    admitted_request: Option<AdmittedRequest>,
     scope: ConnectionScope,
     operation: String,
     actor: Option<RequestActor>,
@@ -1108,14 +1107,45 @@ fn monitor_call(
     tx: &rusqlite::Transaction<'_>,
     id: &str,
     operation: &crate::monitor_policy::Operation,
-) -> Result<Option<(Call, Value)>, WorkerError> {
+) -> Result<Option<(Call, storage::RecordedCall)>, WorkerError> {
     let identity = format!("monitor:{id}");
     let key = Call::operation_key(&operation.account_key, &identity);
-    let Some(value) = super::store::receipt(tx, &key, "submitted")? else {
+    let admitted = operation
+        .evidence
+        .get("providerRequest")
+        .cloned()
+        .map(serde_json::from_value::<AdmittedRequest>)
+        .transpose()
+        .map_err(StoreError::from)?;
+    let root = operation
+        .evidence
+        .get("rootRequestId")
+        .and_then(Value::as_str);
+    let result_id = if let Some(token) = admitted {
+        Some(token.id().to_owned())
+    } else if let Some(root) = root {
+        Some(
+            RequestIdentity::new(
+                "provider-call",
+                &[
+                    &operation.account_key,
+                    &operation.agent,
+                    &operation.epoch.to_string(),
+                ],
+                root,
+                &[&identity],
+            )
+            .map_err(|_| WorkerError::Capacity)?
+            .id()
+            .to_owned(),
+        )
+    } else {
+        None
+    };
+    let Some(value) = storage::recorded_operation(tx, &key, result_id.as_deref())? else {
         return Ok(None);
     };
-    let call: Call =
-        serde_json::from_value(value["call"].clone()).map_err(|_| WorkerError::Capacity)?;
+    let call = value.call().clone();
     if call.operation != identity
         || call.scope.account != operation.account_key
         || call.scope.connection != operation.connection_id
@@ -1149,12 +1179,10 @@ pub(crate) fn monitor_command_scope(
     let Some((call, submitted)) = monitor_call(tx, id, operation)? else {
         return Ok(None);
     };
-    // `submitted` precedes I/O and is not proof that a process exists. The
-    // provider task writes this record only for CommandReceipt::Written.
-    let Some(written) = store::receipt(tx, &call.key(), "written")? else {
+    if !submitted.written() {
         return Ok(None);
-    };
-    let written = store::decode(&written)?;
+    }
+    let written = submitted.request().recovered();
     if written.ticket.id != studio_runtime_providers::RequestId::String(call.key())
         || written.ticket.generation != call.scope.generation
         || written.ticket.method != Method::CommandExec
@@ -1162,9 +1190,9 @@ pub(crate) fn monitor_command_scope(
     {
         return Ok(None);
     }
-    Ok(match storage::replay_submitted(tx, &call, &submitted)? {
-        Ok(storage::Replay::Return(receipt)) => Some(receipt.scope),
-        _ => None,
+    Ok(match submitted.replay() {
+        storage::Replay::Return(receipt) => Some(receipt.scope),
+        storage::Replay::Miss | storage::Replay::Retry(_) => None,
     })
 }
 
@@ -1219,7 +1247,7 @@ pub async fn monitor_result(
             {
                 return Ok(None);
             }
-            let receipt = match storage::replay_submitted(tx, &call, &submitted)? {
+            let receipt = match Ok::<_, PortError>(submitted.replay()) {
                 Ok(storage::Replay::Return(receipt)) => receipt,
                 Ok(storage::Replay::Miss | storage::Replay::Retry(_)) => return Ok(None),
                 Err(_) => {
@@ -1268,8 +1296,7 @@ pub async fn monitor_late_result(
             let Some((call, submitted)) = monitor_call(tx, &id, &operation)? else {
                 return Ok(None);
             };
-            let Ok(storage::Replay::Return(receipt)) =
-                storage::replay_submitted(tx, &call, &submitted)?
+            let Ok(storage::Replay::Return(receipt)) = Ok::<_, PortError>(submitted.replay())
             else {
                 return Ok(None);
             };
@@ -1304,6 +1331,33 @@ pub async fn monitor_request_generation(
 }
 
 impl Call {
+    fn identity(&self) -> Result<RequestIdentity, PortError> {
+        let agent = self.actor.as_ref().map_or("", |actor| actor.agent.as_str());
+        let epoch = self
+            .actor
+            .as_ref()
+            .map(|actor| actor.epoch.to_string())
+            .unwrap_or_default();
+        RequestIdentity::new(
+            "provider-call",
+            &[&self.scope.account, agent, &epoch],
+            &self.root_request_id,
+            &[&self.operation],
+        )
+        .map_err(|_| PortError::Invalid)
+    }
+    fn signature(&self) -> String {
+        crate::event_write::request_signature(&json!((
+            &self.scope.account,
+            &self.operation,
+            &self.actor,
+            &self.transfer,
+            &self.deleted_actor_session,
+            &self.method,
+            &self.params
+        )))
+    }
+
     fn operation_key(account: &str, operation: &str) -> String {
         format!(
             "retained:{account}:{}",
@@ -1346,7 +1400,7 @@ pub(super) struct PendingBarrier {
 }
 
 mod runtime;
-mod storage;
+pub(in crate::account_worker) mod storage;
 pub(super) use storage::recover;
 pub use storage::vm_actor;
 #[cfg(test)]
@@ -1368,6 +1422,8 @@ mod validation_tests {
 
     fn turns_request(items_view: &str, limit: u64, actor: bool) -> SessionRequest {
         SessionRequest {
+            root_request_id: RequestIdentity::issue_root(),
+            admitted_request: None,
             scope: ConnectionScope {
                 account: "default".into(),
                 connection: "fixture-connection".into(),
@@ -1819,6 +1875,8 @@ mod validation_tests {
     #[test]
     fn retained_worker_accepts_only_bound_actorless_reset_credit_shapes() {
         let request = |method, operation: &str, params| SessionRequest {
+            root_request_id: RequestIdentity::issue_root(),
+            admitted_request: None,
             scope: ConnectionScope {
                 account: "default".into(),
                 connection: "fixture-connection".into(),

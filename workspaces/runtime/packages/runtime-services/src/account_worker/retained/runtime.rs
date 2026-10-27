@@ -59,6 +59,8 @@ impl Worker {
         let deferred_request = request.clone();
         let volatile = request.is_volatile_read();
         let call = Call {
+            root_request_id: request.root_request_id,
+            admitted_request: request.admitted_request,
             scope: request.scope,
             operation: request.operation,
             actor: request.actor,
@@ -388,7 +390,7 @@ impl Worker {
             SessionOutcome::Write {
                 recovery: Some(recovery),
                 ..
-            } => Some(store::record(recovery)),
+            } => Some(recovery.clone()),
             SessionOutcome::Write { .. }
             | SessionOutcome::Resolved { .. }
             | SessionOutcome::GenerationClosed { .. } => None,
@@ -399,27 +401,7 @@ impl Worker {
         } else {
             self.db("retained_result", move |s| async move {
                 scheduler::lifecycle_transaction_with(&s, move |tx| {
-                    if let Some(written) = written {
-                        store::replace(tx, &key, "written", written)?;
-                    }
-                    let Some(value) = value else {
-                        return Ok(None);
-                    };
-                    if let Some(old) = store::receipt(tx, &key, "result")? {
-                        let previous: RequestResult = serde_json::from_value(old["result"].clone())
-                            .map_err(|_| WorkerError::Capacity)?;
-                        if matches!(
-                            previous,
-                            RequestResult::Reply(_) | RequestResult::Rejected(_)
-                        ) {
-                            return Ok(Some((
-                                previous,
-                                old["cursor"].as_u64().ok_or(WorkerError::Capacity)?,
-                            )));
-                        }
-                    }
-                    store::replace(tx, &key, "result", json!({"result":value,"cursor":cursor}))?;
-                    Ok(Some((value, cursor)))
+                    storage::record_outcome(tx, &key, written, value, cursor)
                 })
                 .await
             })
@@ -640,6 +622,8 @@ mod tests {
         (
             PendingRequest {
                 call: Call {
+                    root_request_id: RequestIdentity::issue_root(),
+                    admitted_request: None,
                     scope: ConnectionScope {
                         account: "account".into(),
                         connection: "connection".into(),

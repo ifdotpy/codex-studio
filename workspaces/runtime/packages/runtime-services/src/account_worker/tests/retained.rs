@@ -61,6 +61,8 @@ impl AccountSessionPort for ResetBrokerSession {
                 .unwrap()
                 .push((request.operation.clone(), request.params.clone()));
             let call = SessionRequest {
+                root_request_id: retained_root(&request.operation),
+                admitted_request: None,
                 scope: self.port.scope().clone(),
                 expected_scope: request.expected_scope,
                 operation: request.operation,
@@ -92,8 +94,22 @@ impl AccountSessionPort for ResetBrokerSession {
     }
 }
 
+fn retained_root(operation: &str) -> String {
+    static ROOTS: std::sync::OnceLock<Mutex<std::collections::HashMap<String, String>>> =
+        std::sync::OnceLock::new();
+    ROOTS
+        .get_or_init(Default::default)
+        .lock()
+        .unwrap()
+        .entry(operation.into())
+        .or_insert_with(studio_runtime_schema::persistence::RequestIdentity::issue_root)
+        .clone()
+}
+
 fn request(state: &State, port: &RetainedSessionPort, operation: &str) -> SessionRequest {
     SessionRequest {
+        root_request_id: retained_root(operation),
+        admitted_request: None,
         scope: port.scope().clone(),
         expected_scope: None,
         operation: operation.into(),
@@ -674,6 +690,8 @@ async fn reset_service_recovers_lost_response_through_retained_worker_once() {
     // The first broker operation remains Unknown. Recovery used a fresh transport
     // identity, and replaying or rebinding either identity cannot send another write.
     let old = SessionRequest {
+        root_request_id: retained_root(&recorded[0].0),
+        admitted_request: None,
         scope: port.scope().clone(),
         expected_scope: None,
         operation: recorded[0].0.clone(),
@@ -779,6 +797,15 @@ impl crate::notification_runtime_effects::NotificationPostCommitSink
 #[tokio::test]
 async fn retained_reply_replays_without_resending_and_rejects_changed_payload() {
     let state = State::new().await;
+    state
+        .bridge
+        .store
+        .transaction(|tx| {
+            studio_runtime_store::receipt_schema::create(tx)?;
+            Ok(())
+        })
+        .await
+        .unwrap();
     let mut peer = Peer::new();
     let mut worker = peer.worker(state.bridge.clone()).await;
     let port = worker.retained_session();
@@ -787,6 +814,20 @@ async fn retained_reply_replays_without_resending_and_rejects_changed_payload() 
     let first = call.clone();
     let task = tokio::spawn(async move { sender.request(first).await });
     let wire = peer.write("thread/read").await;
+    state
+        .bridge
+        .store
+        .transaction(|tx| {
+            let outstanding: i64 = tx.query_row(
+                "SELECT count(*) FROM runtime_outbox WHERE kind='provider_call'",
+                [],
+                |row| row.get(0),
+            )?;
+            assert_eq!(outstanding, 1, "one typed call owns the pending attempt");
+            Ok(())
+        })
+        .await
+        .unwrap();
     peer.reply(&wire, json!({"thread":{"id":"fake-thread-0"}}))
         .await;
     let receipt = task.await.unwrap().unwrap();
@@ -2727,6 +2768,8 @@ fn monitor_request(
     params: Value,
 ) -> SessionRequest {
     SessionRequest {
+        root_request_id: studio_runtime_schema::persistence::RequestIdentity::issue_root(),
+        admitted_request: None,
         scope: port.scope().clone(),
         expected_scope: Some(port.scope().clone()),
         operation,
@@ -4247,6 +4290,7 @@ async fn manual_recovery_owner_to_callback_keeps_unknown_and_exact_replay() {
         .await
         .unwrap();
     let context = CallbackContext {
+        stream_id: "default".into(),
         agent: "lead-00000000".into(),
         account: "default".into(),
         connection: port.scope().connection.clone(),
