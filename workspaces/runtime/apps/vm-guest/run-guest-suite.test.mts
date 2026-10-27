@@ -26,9 +26,19 @@ import {
 function runnerFixture({
   probeFails = false,
   suiteFails = false,
-}: { probeFails?: boolean | string; suiteFails?: boolean } = {}) {
+  longTemporaryBase = false,
+}: {
+  probeFails?: boolean | string;
+  suiteFails?: boolean;
+  longTemporaryBase?: boolean;
+} = {}) {
   const folder = mkdtempSync(path.join(os.tmpdir(), "guest-runner-boundary-"));
   const log = path.join(folder, "calls.jsonl");
+  const inheritedTemporary = path.join(
+    folder,
+    "a-long-inherited-temporary-folder",
+  );
+  mkdirSync(inheritedTemporary);
   const calls = () =>
     existsSync(log)
       ? readFileSync(log, "utf8")
@@ -59,6 +69,7 @@ if (${probeFails === true || probeFails === name} || (${JSON.stringify(name)}===
         timeout: 10000,
         env: {
           ...process.env,
+          ...(longTemporaryBase ? { TMPDIR: inheritedTemporary } : {}),
           PATH: folder + path.delimiter + (process.env.PATH ?? ""),
           STUDIO_GUEST_PYTHON: path.join(folder, "python"),
           STUDIO_SUPERVISOR_BINARY: process.execPath,
@@ -72,16 +83,26 @@ if (${probeFails === true || probeFails === name} || (${JSON.stringify(name)}===
     for (const call of calls()) {
       if (call.name !== "suite") continue;
       assert.match(path.basename(call.temporary), /^g[^/]+$/);
-      assert.equal(path.dirname(call.temporary), suiteTemporaryBase());
       rmSync(call.temporary, { recursive: true, force: true });
     }
     rmSync(folder, { recursive: true, force: true });
   }
 }
 
+test("the actual runner uses a short temporary root even with a long TMPDIR", () => {
+  const { run, calls } = runnerFixture({ longTemporaryBase: true });
+  assert.equal(run.status, 0, run.stderr);
+  const suite = calls.find(({ name }) => name === "suite");
+  assert(suite);
+  assert.equal(path.dirname(suite.temporary), suiteTemporaryBase());
+});
+
 test("the actual runner limits whole-suite cleanup probes to its operator UID", () => {
   const { run, calls } = runnerFixture();
   assert.equal(run.status, 0, run.stderr);
+  const suite = calls.find(({ name }) => name === "suite");
+  assert(suite);
+  assert.equal(path.dirname(suite.temporary), suiteTemporaryBase());
   const probe = calls.find(({ name }) => name === "ps");
   assert(probe, "normal completion still checks for leaked processes");
   assert(!probe.args.includes("-A"));
