@@ -105,27 +105,17 @@ impl MessageAuthority {
                 Ok((id.clone(), Ok(agent.clone())))
             })
             .collect::<Result<_, CallbackError>>()?;
-        let mut exact = BTreeMap::new();
-        let mut respelled = BTreeMap::new();
-        for project in projects {
-            let path = project
-                .path
-                .as_ref()
-                .ok_or_else(|| CallbackError::Stored("runtime_projects/path".into()))?;
-            match paths.get(path) {
-                Some(resolved) if resolved != path => {
-                    respelled
-                        .entry(resolved.clone())
-                        .or_insert_with(|| Ok(project.clone()));
-                }
-                _ => {
-                    exact.insert(path.clone(), Ok(project.clone()));
-                }
-            }
-        }
-        for (path, project) in respelled {
-            exact.entry(path).or_insert(project);
-        }
+        let projects = projects
+            .iter()
+            .map(|project| {
+                let path = project
+                    .path
+                    .as_ref()
+                    .ok_or_else(|| CallbackError::Stored("runtime_projects/path".into()))?;
+                Ok((path.clone(), Ok(project.clone())))
+            })
+            .collect::<Result<Vec<_>, CallbackError>>()?;
+        let projects = projects_by_resolved_path(projects, &paths);
         Ok(Self {
             records: AuthorizationRecords {
                 recipient_id: String::new(),
@@ -138,7 +128,7 @@ impl MessageAuthority {
                 resolved_paths: paths,
             },
             agents,
-            projects: exact,
+            projects,
         })
     }
     fn authorize(
@@ -206,7 +196,13 @@ fn authorization_records_from(
             .collect::<Result<_, CallbackError>>()?,
         rooms: BTreeMap::new(),
         complaints: BTreeMap::new(),
-        projects: projects_by_resolved_path(projects, &paths)?,
+        projects: projects_by_resolved_path(
+            projects
+                .iter()
+                .map(|project| Ok((text(project, "path")?.to_owned(), project.to_string())))
+                .collect::<Result<Vec<_>, CallbackError>>()?,
+            &paths,
+        ),
         event_meta: BTreeMap::new(),
         events: Vec::new(),
         resolved_paths: paths,
@@ -215,29 +211,26 @@ fn authorization_records_from(
 /// The gate keys a project by its resolved path. When two records name one
 /// directory, the record whose stored path is already that form wins, so a
 /// second spelling never replaces the authority of an exact record.
-fn projects_by_resolved_path(
-    projects: &[Value],
+fn projects_by_resolved_path<T>(
+    projects: impl IntoIterator<Item = (String, T)>,
     paths: &BTreeMap<String, String>,
-) -> Result<BTreeMap<String, String>, CallbackError> {
+) -> BTreeMap<String, T> {
     let mut exact = BTreeMap::new();
     let mut respelled = BTreeMap::new();
-    for project in projects {
-        let path = text(project, "path")?;
-        match paths.get(path) {
-            Some(resolved) if resolved != path => {
-                respelled
-                    .entry(resolved.clone())
-                    .or_insert_with(|| project.to_string());
+    for (path, project) in projects {
+        match paths.get(&path) {
+            Some(resolved) if resolved != &path => {
+                respelled.entry(resolved.clone()).or_insert(project);
             }
             _ => {
-                exact.insert(path.to_owned(), project.to_string());
+                exact.insert(path, project);
             }
         }
     }
     for (key, project) in respelled {
         exact.entry(key).or_insert(project);
     }
-    Ok(exact)
+    exact
 }
 fn authorize(
     rows: &mut AuthorizationRecords,

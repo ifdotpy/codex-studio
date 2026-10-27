@@ -30,13 +30,11 @@ fn trace_agent_rows(event: rusqlite::trace::TraceEvent<'_>) {
 }
 
 #[tokio::test]
-#[ignore = "requires scoped typed message reads"]
 async fn message_ignores_unrelated_invalid_agent() {
     message_with_unrelated_invalid("runtime_agents", json!({"id":"unrelated-invalid","rootId":"unrelated-invalid", "provider":"codex", "epoch":"invalid", "status":"idle"})).await;
 }
 
 #[tokio::test]
-#[ignore = "requires scoped typed message reads"]
 async fn message_ignores_unrelated_invalid_project() {
     message_with_unrelated_invalid(
         "runtime_projects",
@@ -84,15 +82,30 @@ async fn message_with_unrelated_invalid(table: &'static str, record: Value) {
 }
 
 #[tokio::test]
-#[ignore = "requires scoped typed message reads"]
 async fn message_send_agent_rows_are_bounded() {
+    let small = count_message_agent_rows(0).await;
+    let large = count_message_agent_rows(64).await;
+    eprintln!(
+        "private message agent-record rows: {small} with 0 unrelated, {large} with 64 unrelated"
+    );
+    assert_eq!(
+        large, small,
+        "unrelated agents must not increase decoded rows"
+    );
+    assert!(
+        large <= 10,
+        "decoded {large} agent rows for a private message"
+    );
+}
+
+async fn count_message_agent_rows(unrelated: usize) -> usize {
     let (_directory, store, oracle) = frozen::state().await;
     let worker = oracle["agents"][1].clone();
     let lead = oracle["agents"][0]["id"].as_str().unwrap().to_owned();
     let seed = worker.clone();
     store
         .transaction(move |tx| {
-            for n in 0..64 {
+            for n in 0..unrelated {
                 let mut agent = seed.clone();
                 agent["id"] = json!(format!("unrelated-{n}"));
                 agent["rootId"] = agent["id"].clone();
@@ -135,10 +148,7 @@ async fn message_send_agent_rows_are_bounded() {
         })
         .await
         .unwrap();
-    assert!(
-        rows <= 10,
-        "decoded {rows} agent rows for a private message"
-    );
+    rows
 }
 
 #[tokio::test]
@@ -173,7 +183,7 @@ async fn message_refuses_unknown_foreign_and_deleted_targets() {
 }
 
 #[tokio::test]
-async fn message_send_reads_agent_directory_once() {
+async fn message_send_does_not_scan_agent_directory() {
     let (_directory, store, oracle) = frozen::state().await;
     let worker = oracle["agents"][1].clone();
     let lead = oracle["agents"][0]["id"].as_str().unwrap().to_owned();
@@ -207,7 +217,7 @@ async fn message_send_reads_agent_directory_once() {
         })
         .await
         .unwrap();
-    assert_eq!(scans, 1, "one message should read the agent directory once");
+    assert_eq!(scans, 0, "one message should not scan the agent directory");
 }
 
 #[path = "../../../../tests/provider_callbacks/fixture.rs"]
