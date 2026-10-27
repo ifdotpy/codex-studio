@@ -8,6 +8,8 @@ import { test } from "node:test";
 import type { components } from "../../../../client/apps/web/src/generated/api.ts";
 
 type Schema = components["schemas"];
+// Safety bound for a broken fixture; normal completion follows the SSE event.
+const fixtureDeadlineSeconds = 60;
 
 for (const scenario of [
   "success",
@@ -164,19 +166,31 @@ for (const scenario of [
     );
     const address = server.address();
     assert.ok(address && typeof address !== "string");
-    const child = spawn(process.execPath, [
-      "workspaces/tooling/apps/installed-smoke/approvals.ts",
-      `http://127.0.0.1:${address.port}`,
-      "agent",
-      "m1",
-      "r1",
-      accepted,
-      "m2",
-      "r2",
-      declined,
-      "1",
-      path.join(dir, "evidence.json"),
-    ]);
+    const child = spawn(
+      process.execPath,
+      [
+        "--import",
+        "./workspaces/tooling/apps/installed-smoke/tests/fixtures/approval-deadline.ts",
+        "workspaces/tooling/apps/installed-smoke/approvals.ts",
+        `http://127.0.0.1:${address.port}`,
+        "agent",
+        "m1",
+        "r1",
+        accepted,
+        "m2",
+        "r2",
+        declined,
+        String(fixtureDeadlineSeconds),
+        path.join(dir, "evidence.json"),
+      ],
+      {
+        env: {
+          ...process.env,
+          APPROVAL_DEADLINE_EVENT:
+            scenario === "wrong-owner" ? "initial" : "change",
+        },
+      },
+    );
     let output = "";
     child.stdout.on("data", (chunk: Buffer) => {
       output += chunk.toString();
@@ -201,7 +215,7 @@ for (const scenario of [
     });
     try {
       const code = await new Promise<number | null>((resolve) =>
-        child.on("exit", resolve),
+        child.on("close", resolve),
       );
       assert.equal(code, scenario === "success" ? 0 : 1, output);
       assert.ok(fs.existsSync(path.join(dir, "evidence.json")));
@@ -217,7 +231,7 @@ for (const scenario of [
                 ? /Invalid request/
                 : scenario === "invalid-monitor"
                   ? /Invalid monitor/
-                  : /removal was not witnessed/,
+                  : /decline: approval request removal was not witnessed/,
       );
     } finally {
       stream?.destroy();
