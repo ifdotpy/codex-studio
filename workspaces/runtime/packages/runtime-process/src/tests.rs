@@ -113,6 +113,42 @@ fn malformed_or_conflicting_supervisor_error_is_unknown() {
 }
 
 #[test]
+fn contradictory_write_and_status_receipts_are_unknown() {
+    for result in [
+        r#"{"accepted":false,"duplicate":true,"remoteId":7,"durableMs":1}"#,
+        r#"{"accepted":false,"duplicate":false,"remoteId":7,"durableMs":1}"#,
+    ] {
+        let frame = format!(r#"{{"requestId":17,"result":{result}}}"#);
+        assert!(matches!(
+            response_value::<WriteResult>(SupervisorAction::Write, 17, &frame),
+            Err(SupervisorError::UnknownOutcome { .. })
+        ));
+    }
+    for result in [
+        r#"{"accepted":true,"nativeId":null,"response":null}"#,
+        r#"{"accepted":false,"reason":"missing","nativeId":7,"response":{"result":{}}}"#,
+    ] {
+        let frame = format!(r#"{{"requestId":17,"result":{result}}}"#);
+        assert!(matches!(
+            response_value::<OperationStatusResult>(SupervisorAction::OperationStatus, 17, &frame),
+            Err(SupervisorError::UnknownOutcome { .. })
+        ));
+    }
+    for result in [
+        r#"{"accepted":true,"duplicate":false,"remoteId":null,"durableMs":1}"#,
+        r#"{"accepted":true,"duplicate":true,"remoteId":"reply-id","durableMs":1}"#,
+    ] {
+        let frame = format!(r#"{{"requestId":17,"result":{result}}}"#);
+        assert!(response_value::<WriteResult>(SupervisorAction::Write, 17, &frame).is_ok());
+    }
+    let frame = r#"{"requestId":17,"result":{"accepted":true,"nativeId":7,"response":null}}"#;
+    assert!(
+        response_value::<OperationStatusResult>(SupervisorAction::OperationStatus, 17, frame)
+            .is_ok()
+    );
+}
+
+#[test]
 fn event_payload_and_unknown_kind_round_trip() {
     let event: SupervisorEvent = serde_json::from_value(serde_json::json!({
         "sequence": 2, "kind": "future-event", "payload": "{\"x\":1}", "generation": 4, "extension": true

@@ -374,27 +374,75 @@ pub struct RetireCommandResult {
     #[serde(flatten)]
     pub extra: BTreeMap<String, Value>,
 }
-#[derive(Clone, Debug, Deserialize, Serialize)]
-pub struct WriteResult {
-    pub accepted: bool,
-    pub duplicate: bool,
-    #[serde(rename = "remoteId")]
-    pub remote_id: Option<NativeId>,
-    #[serde(rename = "durableMs")]
-    pub durable_ms: f64,
-    #[serde(flatten)]
-    pub extra: BTreeMap<String, Value>,
+#[derive(Clone, Debug)]
+pub enum WriteResult {
+    Refused,
+    Fresh {
+        remote_id: Option<NativeId>,
+        durable_ms: f64,
+    },
+    Duplicate {
+        remote_id: Option<NativeId>,
+        durable_ms: f64,
+    },
 }
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Deserialize)]
+struct WriteResultWire {
+    accepted: bool,
+    duplicate: bool,
+    #[serde(rename = "remoteId")]
+    remote_id: Option<NativeId>,
+    #[serde(rename = "durableMs")]
+    durable_ms: f64,
+}
+impl<'de> Deserialize<'de> for WriteResult {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let wire = WriteResultWire::deserialize(deserializer)?;
+        match (wire.accepted, wire.duplicate, wire.remote_id) {
+            (false, false, None) => Ok(Self::Refused),
+            (true, false, remote_id) => Ok(Self::Fresh {
+                remote_id,
+                durable_ms: wire.durable_ms,
+            }),
+            (true, true, remote_id) => Ok(Self::Duplicate {
+                remote_id,
+                durable_ms: wire.durable_ms,
+            }),
+            (false, _, _) => Err(serde::de::Error::custom("contradictory write receipt")),
+        }
+    }
+}
+#[derive(Clone, Debug)]
+pub enum OperationStatusResult {
+    Refused {
+        reason: Option<String>,
+    },
+    Accepted {
+        native_id: NativeId,
+        response: Option<Value>,
+    },
+}
+#[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct OperationStatusResult {
-    pub accepted: bool,
-    pub reason: Option<String>,
+struct OperationStatusWire {
+    accepted: bool,
+    reason: Option<String>,
     #[serde(rename = "nativeId")]
-    pub native_id: Option<NativeId>,
-    pub response: Option<Value>,
-    #[serde(flatten)]
-    pub extra: BTreeMap<String, Value>,
+    native_id: Option<NativeId>,
+    response: Option<Value>,
+}
+impl<'de> Deserialize<'de> for OperationStatusResult {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let wire = OperationStatusWire::deserialize(deserializer)?;
+        match (wire.accepted, wire.reason, wire.native_id, wire.response) {
+            (false, reason, None, None) => Ok(Self::Refused { reason }),
+            (true, None, Some(native_id), response) => Ok(Self::Accepted {
+                native_id,
+                response,
+            }),
+            _ => Err(serde::de::Error::custom("contradictory operation status")),
+        }
+    }
 }
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct AckResult {

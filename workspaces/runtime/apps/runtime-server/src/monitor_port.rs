@@ -67,17 +67,6 @@ enum CommandResponse {
     Direct(CommandExit),
 }
 #[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct OperationObservation {
-    accepted: bool,
-    #[serde(default)]
-    reason: Option<String>,
-    #[serde(default)]
-    native_id: Option<u64>,
-    #[serde(default)]
-    response: Option<CommandResponse>,
-}
-#[derive(Deserialize)]
 struct ConfigurationResponse {
     config: serde_json::Map<String, Value>,
 }
@@ -1494,30 +1483,37 @@ impl MonitorPort for RetainedMonitorPort {
             if receipt.certainty() != RequestCertainty::Written {
                 return Ok(ReattachOutcome::Pending);
             }
-            let observation: OperationObservation = match receipt.into_response() {
-                Some(ProviderResponse::Reply(value)) => match serde_json::from_value(value) {
-                    Ok(observation) => observation,
-                    Err(_) => {
+            let observation: studio_runtime_process::OperationStatusResult =
+                match receipt.into_response() {
+                    Some(ProviderResponse::Reply(value)) => match serde_json::from_value(value) {
+                        Ok(observation) => observation,
+                        Err(_) => {
+                            return Ok(ReattachOutcome::Pending);
+                        }
+                    },
+                    Some(ProviderResponse::Rejected(_)) => {
                         return Ok(ReattachOutcome::Gone(
-                            MonitorRecoveryReason::InvalidProviderObservation
-                                .code()
-                                .into(),
+                            MonitorRecoveryReason::ProviderRejected.code().into(),
                         ));
                     }
-                },
-                Some(ProviderResponse::Rejected(_)) => {
-                    return Ok(ReattachOutcome::Gone(
-                        MonitorRecoveryReason::ProviderRejected.code().into(),
-                    ));
+                    None => return Ok(ReattachOutcome::Pending),
+                };
+            let (native_id, response) = match observation {
+                studio_runtime_process::OperationStatusResult::Refused { reason } => {
+                    return Ok(ReattachOutcome::Gone(reason.unwrap_or_else(|| {
+                        MonitorRecoveryReason::OperationNotAccepted.code().into()
+                    })));
                 }
-                None => return Ok(ReattachOutcome::Pending),
+                studio_runtime_process::OperationStatusResult::Accepted {
+                    native_id,
+                    response,
+                } => (native_id, response),
             };
-            if !observation.accepted {
-                return Ok(ReattachOutcome::Gone(observation.reason.unwrap_or_else(
-                    || MonitorRecoveryReason::OperationNotAccepted.code().into(),
-                )));
-            }
-            if let Some(response) = observation.response {
+            if let Some(response) = response {
+                let response: CommandResponse = match serde_json::from_value(response) {
+                    Ok(response) => response,
+                    Err(_) => return Ok(ReattachOutcome::Pending),
+                };
                 let response = match response {
                     CommandResponse::Result { result } => ProviderResponse::Reply(
                         serde_json::to_value(result)
@@ -1540,7 +1536,7 @@ impl MonitorPort for RetainedMonitorPort {
                     Err(error) => Err(error),
                 };
             }
-            let Some(native_id) = observation.native_id else {
+            let Some(native_id) = native_id.rpc().and_then(|id| u64::try_from(id).ok()) else {
                 return Ok(ReattachOutcome::Pending);
             };
             Ok(ReattachOutcome::Running(ReattachProof {
