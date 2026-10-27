@@ -2,7 +2,7 @@
 import { waitForFixturePort } from "../playwright.ts";
 import { readCacheFixture } from "../cacheFixture.ts";
 import type { Route } from "@playwright/test";
-import type { JsonValue, PostBody, PostResult } from "../../src/apiTypes.ts";
+import type { PostBody, PostResult } from "../../src/apiTypes.ts";
 import {
   fixturePostBody,
   fixtureGetResult,
@@ -25,13 +25,18 @@ import { mkdtemp, mkdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 function hasConfirmedChatCount(expected: number) {
-  return (
-    (
-      JSON.parse(localStorage.getItem("codex-confirmed-chats")!) as {
-        value?: { agents?: JsonValue[] };
-      }
-    ).value?.agents?.length === expected
+  const stored: unknown = JSON.parse(
+    localStorage.getItem("codex-confirmed-chats") ?? "null",
   );
+  const cached =
+    stored && typeof stored === "object" && "value" in stored
+      ? stored.value
+      : undefined;
+  const agents =
+    cached && typeof cached === "object" && "agents" in cached
+      ? cached.agents
+      : undefined;
+  return Array.isArray(agents) && agents.length === expected;
 }
 
 test("Chat Create Latency Ui @performance", async ({

@@ -4756,14 +4756,6 @@
       "fingerprint": "8357db25cdae2426982ef3edb52333cd75de23bc13cb48824797a6a7523e45e4:0"
     },
     {
-      "file": "workspaces/client/apps/web/src/servers/managementRequests.ts",
-      "fingerprint": "a43eda32066998c5435f3e4183353fc61d68c6803417850e6c7cd578d1cf6b17:0"
-    },
-    {
-      "file": "workspaces/client/apps/web/src/servers/managementRequests.ts",
-      "fingerprint": "a43eda32066998c5435f3e4183353fc61d68c6803417850e6c7cd578d1cf6b17:1"
-    },
-    {
       "file": "workspaces/client/apps/web/src/servers/mergedSidebarPreferences.ts",
       "fingerprint": "6e5bd8ce2b4da42cb4fe1db7c83fbebb3e3987f5da8955224ff4f92f82403b40:0"
     },
@@ -4790,10 +4782,6 @@
     {
       "file": "workspaces/client/apps/web/src/usage/sessionCostCache.ts",
       "fingerprint": "cee6b1138720a7dc31199d4e4b179fba163387c839288231378ec120209fe1df:0"
-    },
-    {
-      "file": "workspaces/client/apps/web/tests/chat/chat-create-latency-ui.spec.ts",
-      "fingerprint": "1f51c9610aff7a37ac19a1d405d5c0e29c37343255b1c9d82dde96fb69ac3004:0"
     },
     {
       "file": "workspaces/client/apps/web/tests/chat/chat-prefetch-ui.fixture.ts",
