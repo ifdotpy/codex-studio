@@ -2,6 +2,7 @@ import { required } from "../components/componentTestFixtures.ts";
 import type { EntityRow } from "./entityProjection.ts";
 import type { Agent, Message, Request, Snapshot } from "../types";
 import type { SyncEntityPayload } from "../generated/api";
+import { RequestStatus } from "../generated/api";
 import assert from "node:assert/strict";
 import {
   applyEntityChanges,
@@ -713,7 +714,7 @@ it("shows only actionable request cards from cached and streamed entities", () =
     id: "approval",
     agent: "lead",
     method: "monitor/approve",
-    status: "pending",
+    status: RequestStatus.pending,
   } satisfies Request;
   const initial = applyEntityChanges(
     state,
@@ -722,7 +723,7 @@ it("shows only actionable request cards from cached and streamed entities", () =
       entityRow(
         "request",
         "answered",
-        { ...request, id: "answered", status: "answered" },
+        { ...request, id: "answered", status: RequestStatus.answered },
         2,
       ),
       entityRow(
@@ -741,7 +742,14 @@ it("shows only actionable request cards from cached and streamed entities", () =
   );
   const answered = applyEntityChanges(
     state,
-    [entityRow("request", request.id, { ...request, status: "answered" }, 5)],
+    [
+      entityRow(
+        "request",
+        request.id,
+        { ...request, status: RequestStatus.answered },
+        5,
+      ),
+    ],
     true,
   );
   assert.deepEqual(

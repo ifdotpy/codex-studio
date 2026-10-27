@@ -30,8 +30,16 @@ Choose the owner at the boundary that defines the contract:
   identifies those sources and the contract renderer. Committed OpenAPI and
   persisted-state schema sources remain authoritative where a Rust definition
   has not replaced them through generation and parity checks.
-- **Local implementation:** Keep types and helpers with their owning module.
-  Tests and fixtures consume the same owner.
+- **Frontend:** Reuse the backend-owned contract for every applicable type,
+  structure, field, state, and enumeration. Import generated types and runtime
+  enum values; do not recreate response shapes, status lists, or wire literals
+  in the frontend. Derive narrower views with indexed access, `Pick`, `Omit`,
+  or `Extract` from that owner. If a shared concept lacks a backend contract,
+  define it at that boundary and generate its consumers instead of inventing a
+  frontend substitute.
+- **Local implementation:** Keep genuinely local types and helpers with their
+  owning module, such as focus, expansion, or draft presentation state that has
+  no backend counterpart. Tests and fixtures consume the same owner.
 
 Generated files are consumers. Change the owner and regenerate them through the
 [root manifest](../package.json); do not repair drift by editing generated
@@ -52,12 +60,21 @@ a command cannot lack its required arguments. Do not widen a closed domain to
 to silence a compiler error. An external extension may be open only when its
 owner defines how it is preserved and consumed.
 
-Represent failure with `Result` or the language's typed error result. Use
-`Option`, nullable values, or optional fields only for meaningful absence;
-preserve distinctions between missing and explicit null when the wire contract
-requires them. Do not turn malformed data, failed reads, or failed operations
+Represent failure with `Result` or the language's typed error result. Prefer
+required, non-null fields. Use `Option`, nullable values, or optional fields
+only when absence is a real domain state; use one representation of absence
+unless missing and explicit null have different defined meanings. Preserve
+those distinctions when an existing wire contract requires them; remove
+unnecessary nullability at the owner through the normal compatibility process,
+not with consumer assertions or defaults. Do not turn malformed data, failed
+reads, or failed operations
 into an empty list, a default value, or successful absence. Unknown delivery or
 recovery evidence remains an explicit uncertain outcome.
+
+Use optional chaining only for absence that the owning type deliberately
+permits and whose result the caller handles. Access required fields directly.
+Do not use `?.`, `??`, or fallback values to make an unchecked or invalid
+structure appear usable; validate it at ingress or narrow its variant first.
 
 Convert domain values to storage or wire strings at the boundary through their
 owner's `Display`, `toString`, serde codec, or equivalent conversion. Parse them
@@ -68,6 +85,16 @@ Handle every variant explicitly. Rust matches must expose new enum variants to
 the compiler; TypeScript switches use a `never` proof and complete lookup tables
 use `satisfies Record<Domain, Value>`. Do not add wildcard success paths, casts,
 or fallbacks to make an incomplete dispatch compile.
+
+Use the strictest applicable compiler and lint checks. Every statically
+detectable contract violation must fail compilation, lint, or generated-contract
+checks, including fixtures and scripts. Add compile-time witnesses for contract
+constraints and exhaustive variants where the compiler needs help. Do not weaken
+types, make fields optional, or suppress diagnostics to accommodate a mismatch;
+correct the owning contract or its consumer. Runtime validation remains required
+for untrusted data and invariants that static checks cannot establish. The
+[TypeScript rules](typescript.md) own the language-specific prohibitions and
+compiler configuration.
 
 Prefer named enum variants when a boolean represents a domain outcome, phase,
 or authority to act. A checked negative receipt, for example, carries the

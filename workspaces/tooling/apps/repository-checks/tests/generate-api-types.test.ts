@@ -11,6 +11,7 @@ const schema = {
   info: { title: "Optional property witness", version: "1" },
   components: {
     schemas: {
+      RequestStatus: { type: "string", enum: ["pending", "answered"] },
       JsonValue: { type: "string" },
       WitnessEntityDto: {
         additionalProperties: { $ref: "#/components/schemas/JsonValue" },
@@ -40,6 +41,9 @@ test("generated optional properties allow undefined and required properties stay
     { input: JSON.stringify(schema), encoding: "utf8" },
   );
   assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /export const RequestStatus = \{/);
+  assert.match(result.stdout, /pending: "pending"/);
+  assert.match(result.stdout, /answered: "answered"/);
   const source = ts.createSourceFile(
     "generated.ts",
     result.stdout,

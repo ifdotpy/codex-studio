@@ -16,6 +16,25 @@ const JSON_VALUE_ALIAS =
   "export type JsonValue = null | boolean | number | string | JsonValue[] " +
   "| { [key: string]: JsonValue };";
 
+// Runtime consumers use these closed domains from the same schema as their types.
+function runtimeEnumValues(document: import("openapi-typescript").OpenAPI3) {
+  return ["RequestStatus"]
+    .flatMap((name) => {
+      const schema = document.components?.schemas?.[name];
+      if (!schema) return [];
+      if (
+        !("enum" in schema) ||
+        !schema.enum?.every((value) => typeof value === "string")
+      )
+        throw new Error(`${name} must be a closed string enum`);
+      const entries = schema.enum.map(
+        (value) => `${JSON.stringify(value)}: ${JSON.stringify(value)}`,
+      );
+      return [`export const ${name} = { ${entries.join(", ")} } as const;`];
+    })
+    .join("\n");
+}
+
 function run(command: string, args: string[]) {
   const result = spawnSync(join(BIN, command), args, {
     cwd: ROOT,
@@ -152,17 +171,21 @@ try {
     !rustOwned || recursiveJsonValue
       ? `${normalizeRecursiveJsonValue(generated)}\n\n${JSON_VALUE_ALIAS}`
       : generated;
+  const runtimeValues = runtimeEnumValues(document);
+  const runtimeDeclarations = runtimeValues ? `${runtimeValues}\n` : "";
   writeFileSync(
     output,
     rustOwned
-      ? `${declarations}\n${Object.keys(document.components?.schemas ?? {})
+      ? `${declarations}\n${runtimeDeclarations}${Object.keys(
+          document.components?.schemas ?? {},
+        )
           .filter((name) => name !== "JsonValue" || !recursiveJsonValue)
           .sort()
           .map(
             (name) => `export type ${name} = components["schemas"]["${name}"];`,
           )
           .join("\n")}\n`
-      : `${declarations}${entityAliases(document)}\n`,
+      : `${declarations}${entityAliases(document)}\n${runtimeDeclarations}`,
   );
   run("oxfmt", ["--write", `--config=${join(ROOT, ".oxfmtrc.json")}`, output]);
   process.stdout.write(readFileSync(output, "utf8"));
