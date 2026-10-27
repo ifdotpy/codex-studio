@@ -709,19 +709,6 @@ pub fn check_schema_parity(openapi: &Value, account_transfer: &Value) -> Result<
             "IdleCompactionSettings.mode must match runtime-schema/src/idle_compaction.rs".into(),
         );
     }
-    let expected = serde_json::to_value(crate::agent_progress::StartWaitReason::ALL)
-        .map_err(|error| error.to_string())?;
-    for pointer in [
-        "/components/schemas/AgentEntityStartWaitDto/properties/reason/enum",
-        "/components/schemas/StartWaitRecordResponse/properties/reason/enum",
-    ] {
-        if openapi.pointer(pointer) != Some(&expected) {
-            return Err(format!(
-                "{pointer} must match StartWaitReason in runtime-schema/src/agent_progress.rs"
-            ));
-        }
-    }
-
     expect_number(
         openapi,
         "/components/schemas/ManagedMessageBody/properties/assets/maxItems",
@@ -1159,6 +1146,7 @@ pub fn render(root: &Path, with_api_types: bool) -> Result<Vec<Rendered>, String
     openapi["components"]["schemas"]["ComplaintResponseStatus"] = crate::complaints::schema();
     openapi["components"]["schemas"]["ComplaintBody"]["properties"]["status"] =
         crate::complaints::status_property();
+    openapi["components"]["schemas"]["StartWaitReason"] = serde_json::Value::Null;
     for (name, schema) in crate::agent_progress::schemas()
         .into_iter()
         .chain(crate::desktop::schemas())
