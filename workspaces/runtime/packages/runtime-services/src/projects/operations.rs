@@ -4,6 +4,20 @@ use studio_runtime_store::request_results::{
     Admission, AdmittedRequest, RequestResultError, ResultEnvelope,
 };
 
+/// The existing project record is extensible, with a required owner identity.
+#[derive(serde::Serialize, serde::Deserialize)]
+struct ProjectReply {
+    id: String,
+    #[serde(flatten)]
+    fields: std::collections::BTreeMap<String, Value>,
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct SidebarReply {
+    revision: u64,
+    groups: std::collections::BTreeMap<String, Vec<String>>,
+}
+
 pub async fn peer_team_write(
     store: Arc<RuntimeStore>,
     body: Value,
@@ -94,10 +108,10 @@ pub async fn peer_team_write(
     let (prepared, path) = super::prepare_path(store.clone(), path_value, false).await?;
     store.transaction_with(move |tx| {
         prepared.recheck(tx)?;
-        if let Some(result) = crate::event_write::replay_request::<Value>(tx, &key, &signature, (now_seconds()*1000.0) as i64).map_err(request_error)? { return Ok(result.reply); }
+        if let Some(result) = crate::event_write::replay_request::<ProjectReply>(tx, &key, &signature, (now_seconds()*1000.0) as i64).map_err(request_error)? { return Ok(json!(result.reply)); }
         let admitted = match admit_operation(tx, "peer-team", &request_id, &signature)? {
             Admission::Fresh(admitted) => admitted,
-            Admission::Replay(result) => return saved_reply(&result.result),
+            Admission::Replay(result) => return Ok(json!(saved_reply::<ProjectReply>(&result.result)?)),
         };
         let mut project = match load_project(tx, &path)? {
             Some(project) => project,
@@ -164,7 +178,8 @@ pub async fn peer_team_write(
         }
         for id in previous_ids.difference(&live_ids) { SyncDocumentsRepository::put_entity(tx, "peerTeam", id, json!({}), true)?; }
         refresh_project_rooms(tx, &path, &prepared)?;
-        settle_operation(tx, &admitted, &project)?;
+        let reply: ProjectReply = serde_json::from_value(project.clone()).map_err(StoreError::from)?;
+        settle_operation(tx, &admitted, &reply)?;
         Ok(project)
     }).await
 }
@@ -202,15 +217,15 @@ pub(crate) fn admit_operation(
     .map_err(request_error)
 }
 
-pub(crate) fn saved_reply(raw: &str) -> Result<Value, ProjectsError> {
-    let result: ResultEnvelope<Value> = serde_json::from_str(raw).map_err(StoreError::from)?;
+pub(crate) fn saved_reply<R: serde::de::DeserializeOwned>(raw: &str) -> Result<R, ProjectsError> {
+    let result: ResultEnvelope<R> = serde_json::from_str(raw).map_err(StoreError::from)?;
     Ok(result.reply)
 }
 
-pub(crate) fn settle_operation(
+pub(crate) fn settle_operation<R: serde::Serialize>(
     tx: &studio_runtime_store::Transaction<'_>,
     admitted: &AdmittedRequest,
-    reply: &Value,
+    reply: &R,
 ) -> Result<(), ProjectsError> {
     crate::event_write::settle_request(tx, admitted, None, reply).map_err(request_error)
 }
@@ -375,7 +390,7 @@ pub(super) async fn reorder(store: &RuntimeStore, mut body: Value) -> Result<Val
     let migration = body.get("migration").and_then(Value::as_bool) == Some(true);
     store
         .transaction_with(move |tx| -> Result<Value, ProjectsError> {
-            if let Some(result) = crate::event_write::replay_request::<Value>(
+            if let Some(result) = crate::event_write::replay_request::<SidebarReply>(
                 tx,
                 &key,
                 &signature,
@@ -383,11 +398,13 @@ pub(super) async fn reorder(store: &RuntimeStore, mut body: Value) -> Result<Val
             )
             .map_err(request_error)?
             {
-                return Ok(result.reply);
+                return Ok(json!(result.reply));
             }
             let admitted = match admit_operation(tx, "sidebar-order", &request_id, &signature)? {
                 Admission::Fresh(admitted) => admitted,
-                Admission::Replay(result) => return saved_reply(&result.result),
+                Admission::Replay(result) => {
+                    return Ok(json!(saved_reply::<SidebarReply>(&result.result)?));
+                }
             };
             let current = ProjectsRepository::sidebar_order(tx)?;
             let revision = current.get("revision").and_then(Value::as_u64).ok_or(
@@ -410,10 +427,13 @@ pub(super) async fn reorder(store: &RuntimeStore, mut body: Value) -> Result<Val
                     "Sidebar order changed. Refreshed from the server",
                 ));
             }
-            let result = json!({"revision": revision.saturating_add(1), "groups": groups});
-            ProjectsRepository::put_sidebar_order(tx, &result)?;
+            let result = SidebarReply {
+                revision: revision.saturating_add(1),
+                groups: serde_json::from_value(groups).map_err(StoreError::from)?,
+            };
+            ProjectsRepository::put_sidebar_order(tx, &json!(result))?;
             settle_operation(tx, &admitted, &result)?;
-            Ok(result)
+            Ok(json!(result))
         })
         .await
 }
