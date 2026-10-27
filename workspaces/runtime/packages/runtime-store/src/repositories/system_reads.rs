@@ -20,14 +20,7 @@ pub fn validate(table: &str, id: &str, value: Value) -> StoreResult<Value> {
     } else {
         value.get("id")
     };
-    if !matches!(
-        table,
-        "runtime_tool_results"
-            | "runtime_operation_receipts"
-            | "runtime_event_meta"
-            | "runtime_tool_request_aliases"
-    ) && key.and_then(Value::as_str) != Some(id)
-    {
+    if !matches!(table, "runtime_event_meta") && key.and_then(Value::as_str) != Some(id) {
         return Err(invalid(table, id));
     }
     Ok(value)
@@ -51,11 +44,7 @@ pub fn get(connection: &Connection, table: &'static str, id: &str) -> StoreResul
     if !exists(connection, table)? {
         return Ok(None);
     }
-    let column = if matches!(table, "runtime_tool_results" | "runtime_operation_receipts") {
-        "result"
-    } else {
-        "record"
-    };
+    let column = "record";
     let raw: Option<String> = connection
         .query_row(
             &format!("SELECT {column} FROM {table} WHERE id=?1"),
@@ -110,20 +99,10 @@ pub(crate) const REQUIREMENTS: SchemaRequirements = SchemaRequirements {
     tables: &[],
     conditional_tables: &[crate::schema::ConditionalTableRequirement {
         table_exists: "runtime_tool_requests",
-        tables: &[
-            crate::schema::TableRequirement {
-                name: "runtime_tool_requests",
-                columns: &["id", "record"],
-            },
-            crate::schema::TableRequirement {
-                name: "runtime_tool_request_aliases",
-                columns: &["agent", "alias", "request"],
-            },
-            crate::schema::TableRequirement {
-                name: "runtime_tool_results",
-                columns: &["id", "result"],
-            },
-        ],
+        tables: &[crate::schema::TableRequirement {
+            name: "runtime_tool_requests",
+            columns: &["id", "record"],
+        }],
     }],
     triggers: &[],
     conditional_triggers: &[],
