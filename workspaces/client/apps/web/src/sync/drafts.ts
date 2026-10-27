@@ -20,6 +20,7 @@ import {
 } from "./draftSyncNotice";
 
 import { encodeDraftPayload } from "./draftPayload";
+import { decodeDraftVersion } from "./draftDecoder";
 import {
   readDraftJournal,
   writeDraftJournal,
@@ -179,7 +180,7 @@ export function createBrowserDrafts(options: {
           const latest = doc.getLatest();
           let version = decoded.current.get(latest);
           if (!version) {
-            version = JSON.parse(latest.payload) as DraftVersion;
+            version = decodeDraftVersion(JSON.parse(latest.payload));
             decoded.current.set(latest, version);
           }
           return version;
@@ -395,7 +396,7 @@ export function createBrowserDrafts(options: {
               const item = entry.version;
               const old = await db.drafts.findOne(item.id).exec();
               const previous: DraftVersion | undefined =
-                old && JSON.parse(old.payload);
+                old && decodeDraftVersion(JSON.parse(old.payload));
               // A recovered older edit must not replace a newer branch from another tab.
               const newer = previous && previous.updated > item.updated;
               const chosen = newer ? previous : item;
@@ -537,7 +538,15 @@ export function createBrowserDrafts(options: {
       const publication = createFrameBatch(() => {
         const docs = pendingDocuments;
         pendingDocuments = undefined;
-        if (!stopped && docs) reconcile(decodeDrafts(docs));
+        if (!stopped && docs) {
+          try {
+            reconcile(decodeDrafts(docs));
+          } catch {
+            reportLocalError(
+              "Some saved drafts could not be read. Keep this chat open.",
+            );
+          }
+        }
       });
       let retry: ReturnType<typeof setTimeout> | undefined;
       const bootstrapRetryDelays = [1_000, 3_000, 10_000];

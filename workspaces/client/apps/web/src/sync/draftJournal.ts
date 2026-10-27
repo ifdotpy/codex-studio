@@ -1,6 +1,7 @@
 import { serverLocalStorage as localStorage } from "../servers/storage";
 
 import { encodeDraftPayload } from "./draftPayload";
+import { decodeDraftVersion } from "./draftDecoder";
 
 import type { DraftVersion } from "./drafts";
 
@@ -13,18 +14,9 @@ export function createDraftJournal(localStorage: Storage) {
     for (let index = 0; index < localStorage.length; index++) {
       const key = localStorage.key(index)!;
       if (!key.startsWith(journalPrefix(scope))) continue;
-      const version = JSON.parse(localStorage.getItem(key)!);
-      if (
-        !version ||
-        typeof version.id !== "string" ||
-        typeof version.session !== "string" ||
-        typeof version.device !== "string" ||
-        typeof version.text !== "string" ||
-        !Number.isFinite(version.updated)
-      )
-        throw new Error(
-          "A saved draft could not be read. Keep this chat open.",
-        );
+      const version = decodeDraftVersion(
+        JSON.parse(localStorage.getItem(key)!),
+      );
       entries.push({ key, version });
     }
     return entries.sort(
