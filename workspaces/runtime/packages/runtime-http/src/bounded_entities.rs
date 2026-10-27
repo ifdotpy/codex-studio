@@ -711,7 +711,9 @@ async fn publish_session_roots(
     let rows=studio_runtime_process::blocking_pool::spawn_blocking("bounded-entities/session-costs",move || {
         #[cfg(test)]
         tests::wait_for_session_cost_gate(source.root());
-        ids.into_iter().map(|id| {
+        #[cfg(test)]
+        studio_runtime_store::analytics::take_cost_read_witness();
+        let rows = ids.into_iter().map(|id| {
         let value=studio_runtime_services::costs::session_cost_with_account_profiles(&source,&id,&profiles).unwrap_or_else(|error| {
             // A completed pricing attempt with no usable catalog is an unavailable
             // estimate (ready + null total), rather than work still loading.
@@ -725,7 +727,11 @@ async fn publish_session_roots(
             };
             json!({"rootId":id,"totalUSD":null,"pricedSamples":0,"breakdown":{"models":{},"providers":{}},"unknownModels":[],"estimated":true,"pricingState":pricing_state,"cacheAgeSeconds":0,"refreshing":false,"method":error.to_string()})});
         (id,value)
-    }).collect()}).await.map_err(|_|StoreError::ReadTaskFailed)?;
+    }).collect();
+        #[cfg(test)]
+        tests::record_cost_read_witness(source.root());
+        rows
+    }).await.map_err(|_|StoreError::ReadTaskFailed)?;
     match roots {
         None => replace(&store, "sessionCost", rows).await,
         Some(roots) => {
@@ -762,6 +768,139 @@ async fn publish_desktop(state: &HttpState) -> Result<(), StoreError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    static COST_READ_WITNESSES: std::sync::LazyLock<
+        std::sync::Mutex<
+            BTreeMap<std::path::PathBuf, studio_runtime_store::analytics::CostReadWitness>,
+        >,
+    > = std::sync::LazyLock::new(Default::default);
+
+    pub(super) fn record_cost_read_witness(root: &std::path::Path) {
+        COST_READ_WITNESSES.lock().expect("cost witnesses").insert(
+            root.into(),
+            studio_runtime_store::analytics::take_cost_read_witness(),
+        );
+    }
+
+    #[test]
+    fn session_cost_publish_reuses_reader_and_decodes_only_selected_members() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .max_blocking_threads(1)
+            .build()
+            .expect("one cost-reader thread");
+        runtime.block_on(async {
+            let (_root, state) = state().await;
+            let store = state.store.as_ref().expect("store");
+            std::fs::write(store.root().join("model-pricing/models-dev-v1.json"), json!({"version":1,"catalog":{"providers":{"openai":{"models":{"gpt-test":{"cost":{"input":1,"output":1}}}},"anthropic":{"models":{"claude-test":{"cost":{"input":1,"output":1}}}}}}}).to_string()).expect("pricing fixture");
+            store
+                .transaction(|tx| {
+                    for id in ["a", "b"] {
+                        tx.execute(
+                            "INSERT INTO runtime_agents(id,record) VALUES(?1,?2)",
+                            [
+                                id,
+                                &json!({"id":id,"rootId":id,"isLead":true,"provider":"codex"})
+                                    .to_string(),
+                            ],
+                        )?;
+                    }
+                    Ok(())
+                })
+                .await
+                .expect("roots");
+            store
+                .analytics_transaction::<_, StoreError>(|tx, _| {
+                    for (id, root) in [("a", "a"), ("child-a", "a"), ("b", "b"), ("child-b", "b")] {
+                        tx.execute(
+                            "INSERT INTO analytics_agents(id,record) VALUES(?1,?2)",
+                            [
+                                id,
+                                &json!({"id":id,"rootId":root,"provider":"codex"}).to_string(),
+                            ],
+                        )?;
+                    }
+                    for id in ["a", "b"] {
+                        studio_runtime_store::analytics_capture::AnalyticsCaptureRepository::write(tx, studio_runtime_store::analytics_capture::CaptureTable::Usage, &json!({"id":id,"agentId":id,"rootId":id,"at":1,"model":"gpt-test","responseId":id,"last":{"inputTokens":1,"cachedInputTokens":0,"cacheWriteInputTokens":0,"outputTokens":1},"total":{}}))?;
+                    }
+                    Ok(())
+                })
+                .await
+                .expect("members");
+            publish_session_roots(&state, None, PricingReadiness::Settled)
+                .await
+                .expect("warm publication");
+            let baseline = entity(&state, "sessionCost", "b");
+            assert_eq!(baseline["totalUSD"], 0.000002, "{baseline}");
+            publish_session_roots(
+                &state,
+                Some(["a".to_owned()].into()),
+                PricingReadiness::Settled,
+            )
+            .await
+            .expect("scoped publication");
+            let counts = COST_READ_WITNESSES
+                .lock()
+                .expect("cost witnesses")
+                .remove(store.root())
+                .expect("publication witness");
+            eprintln!("session-cost publish witness: {counts:?}");
+            assert_eq!(
+                counts,
+                studio_runtime_store::analytics::CostReadWitness {
+                    opens: 0,
+                    attaches: 0,
+                    decoded_rows: 2
+                }
+            );
+            assert_eq!(entity(&state, "sessionCost", "a")["rootId"], "a");
+            assert_eq!(entity(&state, "sessionCost", "a")["pricedSamples"], 1);
+            assert_eq!(entity(&state, "sessionCost", "b"), baseline);
+            store.analytics_transaction::<_, StoreError>(|tx, _| {
+                studio_runtime_store::analytics_capture::AnalyticsCaptureRepository::write(tx, studio_runtime_store::analytics_capture::CaptureTable::Usage, &json!({"id":"later","agentId":"a","rootId":"a","at":2,"model":"gpt-test","responseId":"later","last":{"inputTokens":1,"cachedInputTokens":0,"cacheWriteInputTokens":0,"outputTokens":1},"total":{}}))
+            }).await.expect("later committed usage");
+            publish_session_roots(
+                &state,
+                Some(["a".to_owned()].into()),
+                PricingReadiness::Settled,
+            )
+            .await
+            .expect("fresh snapshot on retained reader");
+            assert_eq!(entity(&state, "sessionCost", "a")["pricedSamples"], 2);
+            assert_eq!(entity(&state, "sessionCost", "a")["totalUSD"], 0.000004);
+            assert_eq!(entity(&state, "sessionCost", "b"), baseline);
+            assert_eq!(
+                COST_READ_WITNESSES
+                    .lock()
+                    .expect("cost witnesses")
+                    .remove(store.root())
+                    .expect("fresh publish witness"),
+                counts
+            );
+        });
+    }
+
+    #[tokio::test]
+    async fn session_cost_publish_members_seek_the_selected_root() {
+        let (_root, state) = state().await;
+        let db = studio_runtime_store::AnalyticsRepository::new(
+            state.store.as_ref().expect("store").root(),
+        )
+        .open_read_only()
+        .expect("analytics reader");
+        let plan = db.prepare("EXPLAIN QUERY PLAN SELECT id,record FROM analytics_agents WHERE id=?1 UNION ALL SELECT id,record FROM analytics_agents WHERE json_extract(record,'$.rootId')=?1 AND id<>?1").expect("plan").query_map(["a"], |row| row.get::<_, String>(3)).expect("plan rows").collect::<rusqlite::Result<Vec<_>>>().expect("plan details");
+        assert!(
+            plan.iter().any(|detail| detail
+                .contains("SEARCH analytics_agents USING INDEX analytics_agents_root")),
+            "{plan:?}"
+        );
+        assert!(
+            !plan
+                .iter()
+                .any(|detail| detail.contains("SCAN analytics_agents")),
+            "{plan:?}"
+        );
+    }
 
     type SessionCostGate = (Arc<tokio::sync::Notify>, std::sync::mpsc::Receiver<()>);
     static SESSION_COST_GATES: std::sync::LazyLock<
