@@ -304,8 +304,8 @@ async fn sync_stream(
     };
     let view = match state
         .resource_notifications
-        .changes_since_with_content(&resources, None, |resource| {
-            resource_content(state.clone(), resource)
+        .changes_since_with_incremental_content(&resources, None, |resource, previous| {
+            incremental_resource_content(state.clone(), resource, previous)
         })
         .await
     {
@@ -487,6 +487,23 @@ async fn sync_stream(
 /// local-cost scanners, terminal processes, or projection maintenance writes.
 async fn resource_content(state: HttpState, resource: Value) -> Option<Vec<u8>> {
     super::subscriptions::resource_content(state, resource).await
+}
+
+async fn incremental_resource_content(
+    state: HttpState,
+    resource: Value,
+    previous: Option<studio_runtime_services::resource_notify::EntityContentFingerprint>,
+) -> Option<studio_runtime_services::resource_notify::ContentProjection> {
+    use studio_runtime_services::resource_notify::ContentProjection;
+    let reference: crate::generated::ResourceRef = serde_json::from_value(resource.clone()).ok()?;
+    if super::entity_transfer::owns(&reference) {
+        return super::subscription_entities::incremental_fingerprint(state, reference, previous)
+            .await
+            .map(ContentProjection::Entity);
+    }
+    resource_content(state, resource)
+        .await
+        .map(ContentProjection::Bytes)
 }
 
 /// Only sessions with a live readiness selector own a filesystem source. Dropping
@@ -1218,8 +1235,8 @@ async fn subscription_frame(state: &mut ResourceStream, update: SubscriptionChan
         let http_state = state.http_state.as_ref()?;
         let view = state
             .notifications
-            .changes_since_with_content(&update.added, None, |resource| {
-                resource_content(http_state.clone(), resource)
+            .changes_since_with_incremental_content(&update.added, None, |resource, previous| {
+                incremental_resource_content(http_state.clone(), resource, previous)
             })
             .await
             .ok()?;
@@ -1384,17 +1401,24 @@ async fn next_frame(
                 _ = state.heartbeat.tick() => true,
             }
         };
-        let mut view = match state
-            .notifications
-            .changes_since_with_content(&state.resources, Some(state.last_revision), |resource| {
-                let http_state = state.http_state.clone();
-                async move { resource_content(http_state?, resource).await }
-            })
-            .await
-        {
-            Ok(view) if !view.cursor.closed => view,
-            _ => return None,
-        };
+        let mut view =
+            match state
+                .notifications
+                .changes_since_with_incremental_content(
+                    &state.resources,
+                    Some(state.last_revision),
+                    |resource, previous| {
+                        let http_state = state.http_state.clone();
+                        async move {
+                            incremental_resource_content(http_state?, resource, previous).await
+                        }
+                    },
+                )
+                .await
+            {
+                Ok(view) if !view.cursor.closed => view,
+                _ => return None,
+            };
         state.last_revision = view.cursor.revision;
         if !view.resources.is_empty() {
             state.consecutive_token_frames = 0;

@@ -7,6 +7,31 @@ use serde_json::{Value, json};
 use studio_runtime_store::{RuntimeStore, StoreError};
 
 #[tokio::test]
+async fn open_recreates_entity_scope_indexes_on_existing_state() {
+    let directory = temporary_state("entity-scope-index");
+    drop(
+        RuntimeStore::open(Some(directory.path()))
+            .await
+            .expect("fresh state"),
+    );
+    let connection = Connection::open(directory.path().join("canvas.sqlite3")).expect("canvas");
+    connection
+        .execute_batch(
+            "DROP INDEX sync_entities_live_agent_scope; DROP INDEX sync_entities_live_root_scope; DROP INDEX sync_entities_invalid_payload;",
+        )
+        .expect("old catalog");
+    drop(connection);
+    drop(
+        RuntimeStore::open(Some(directory.path()))
+            .await
+            .expect("upgrade existing state"),
+    );
+    let connection = Connection::open(directory.path().join("canvas.sqlite3")).expect("canvas");
+    let count: i64 = connection.query_row("SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name IN ('sync_entities_live_agent_scope','sync_entities_live_root_scope','sync_entities_invalid_payload')", [], |row| row.get(0)).expect("catalog");
+    assert_eq!(count, 3);
+}
+
+#[tokio::test]
 async fn open_recreates_the_task_indexes_rust_readers_rely_on() {
     let state_directory = temporary_state("task-index");
     let state = state_directory.path();
