@@ -10821,20 +10821,13 @@ export interface components {
       /** Request Id */
       request_id: string;
     };
-    /** ClaudeSessionRollbackRequest */
     ClaudeSessionRollbackRequest: {
-      /**
-       * Action
-       * @constant
-       */
+      /** @constant */
       action: "rollback";
-      /** Id */
       id: string;
-      /** Request Id */
       request_id: string;
       /** @default false */
       restore_files?: boolean | undefined;
-      /** Turn Id */
       turn_id: string;
     };
     /** ClaudeSessionSettings */
@@ -10881,20 +10874,11 @@ export interface components {
        */
       thinking?: boolean | null | undefined;
     };
-    /** ClaudeSessionSettingsRequest */
     ClaudeSessionSettingsRequest: {
-      /**
-       * Action
-       * @constant
-       */
+      /** @constant */
       action: "settings";
-      /** Id */
       id: string;
-      /**
-       * Request Id
-       * @default null
-       */
-      request_id?: string | null | undefined;
+      request_id: string;
       settings: components["schemas"]["ClaudeSettings"];
     };
     /** ClaudeSessionStateRequest */
@@ -10955,17 +10939,21 @@ export interface components {
       /** Task Id */
       task_id: string;
     };
-    /** ClaudeSettings */
     ClaudeSettings: {
-      /** Autocompactwindow */
+      /** Format: uint64 */
       autoCompactWindow?: number | null | undefined;
-      /** Permissionmode */
+      /**
+       * @description Claude session permission modes accepted by settings and child creation.
+       * @enum {string}
+       */
       permissionMode?:
-        | ("default" | "acceptEdits" | "auto" | "plan" | "bypassPermissions")
-        | null
+        | "default"
+        | "acceptEdits"
+        | "auto"
+        | "plan"
+        | "bypassPermissions"
         | undefined;
-      /** Thinking */
-      thinking?: boolean | null | undefined;
+      thinking?: boolean | undefined;
     };
     /** ClaudeSettingsResponse */
     ClaudeSettingsResponse: {

@@ -20788,16 +20788,16 @@
         "properties": {
           "action": {
             "const": "rollback",
-            "title": "Action",
             "type": "string"
           },
           "id": {
-            "title": "Id",
+            "maxLength": 1024,
+            "minLength": 1,
             "type": "string"
           },
           "request_id": {
+            "maxLength": 1024,
             "minLength": 1,
-            "title": "Request Id",
             "type": "string"
           },
           "restore_files": {
@@ -20805,17 +20805,17 @@
             "type": "boolean"
           },
           "turn_id": {
-            "title": "Turn Id",
+            "maxLength": 1024,
+            "minLength": 1,
             "type": "string"
           }
         },
         "required": [
           "action",
           "id",
-          "turn_id",
-          "request_id"
+          "request_id",
+          "turn_id"
         ],
-        "title": "ClaudeSessionRollbackRequest",
         "type": "object"
       },
       "ClaudeSessionSettings": {
@@ -20926,25 +20926,17 @@
         "properties": {
           "action": {
             "const": "settings",
-            "title": "Action",
             "type": "string"
           },
           "id": {
-            "title": "Id",
+            "maxLength": 1024,
+            "minLength": 1,
             "type": "string"
           },
           "request_id": {
-            "anyOf": [
-              {
-                "minLength": 1,
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Request Id"
+            "maxLength": 1024,
+            "minLength": 1,
+            "type": "string"
           },
           "settings": {
             "$ref": "#/components/schemas/ClaudeSettings"
@@ -20953,9 +20945,9 @@
         "required": [
           "action",
           "id",
+          "request_id",
           "settings"
         ],
-        "title": "ClaudeSessionSettingsRequest",
         "type": "object"
       },
       "ClaudeSessionStateRequest": {
@@ -21101,49 +21093,29 @@
         "additionalProperties": false,
         "properties": {
           "autoCompactWindow": {
-            "anyOf": [
-              {
-                "maximum": 1000000,
-                "minimum": 100000,
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Autocompactwindow"
+            "format": "uint64",
+            "maximum": 1000000,
+            "minimum": 100000,
+            "type": [
+              "integer",
+              "null"
+            ]
           },
           "permissionMode": {
-            "anyOf": [
-              {
-                "enum": [
-                  "default",
-                  "acceptEdits",
-                  "auto",
-                  "plan",
-                  "bypassPermissions"
-                ],
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
+            "description": "Claude session permission modes accepted by settings and child creation.",
+            "enum": [
+              "default",
+              "acceptEdits",
+              "auto",
+              "plan",
+              "bypassPermissions"
             ],
-            "title": "Permissionmode"
+            "type": "string"
           },
           "thinking": {
-            "anyOf": [
-              {
-                "type": "boolean"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Thinking"
+            "type": "boolean"
           }
         },
-        "title": "ClaudeSettings",
         "type": "object"
       },
       "ClaudeSettingsResponse": {

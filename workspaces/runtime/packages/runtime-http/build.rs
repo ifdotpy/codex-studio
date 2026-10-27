@@ -115,6 +115,40 @@ fn main() -> Result<(), Box<dyn Error>> {
             .remove(name)
             .ok_or("missing queue payload schema")?;
     }
+    // Claude mutations deserialize through their validated tagged command owner.
+    for (name, owner) in [
+        (
+            "ClaudeSessionSettingsRequest",
+            "studio_runtime_schema::claude_controls::ClaudeControlCommand",
+        ),
+        (
+            "ClaudeSessionRollbackRequest",
+            "studio_runtime_schema::claude_controls::ClaudeControlCommand",
+        ),
+        (
+            "ClaudeSettings",
+            "studio_runtime_schema::claude_controls::ClaudeSettings",
+        ),
+    ] {
+        analysis
+            .schemas
+            .get_mut(name)
+            .ok_or("missing Claude control schema")?
+            .schema_type = SchemaType::Primitive {
+            rust_type: owner.to_owned(),
+            serde_with: None,
+        };
+    }
+    for name in [
+        "ClaudeSessionSettingsRequestAction",
+        "ClaudeSessionRollbackRequestAction",
+        "ClaudeSettingsPermissionMode",
+    ] {
+        analysis
+            .schemas
+            .remove(name)
+            .ok_or("missing Claude control leaf schema")?;
+    }
     // Keep the wire schema shared, and deserialize ingress timing directly
     // into its runtime owner through the explicit compatibility codec.
     let SchemaType::Object { properties, .. } = &mut analysis

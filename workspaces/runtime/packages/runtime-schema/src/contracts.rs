@@ -607,7 +607,7 @@ pub fn check_schema_parity(openapi: &Value, account_transfer: &Value) -> Result<
     for path in [
         "/components/schemas/CreateAgentRequest/properties/permission_mode/enum",
         "/components/schemas/AgentEntityDto/properties/claudeOptions/anyOf/0/properties/permissionMode/enum",
-        "/components/schemas/ClaudeSettings/properties/permissionMode/anyOf/0/enum",
+        "/components/schemas/ClaudeSettings/properties/permissionMode/enum",
         "/components/schemas/ClaudeSessionSettings/properties/permissionMode/anyOf/0/enum",
     ] {
         if openapi.pointer(path) != Some(&modes) {
@@ -621,6 +621,7 @@ pub fn check_schema_parity(openapi: &Value, account_transfer: &Value) -> Result<
     crate::agent_progress::check_schema_parity(openapi)?;
     crate::studio_errors::check_schema_parity(openapi)?;
     crate::queue_command::check_schema_parity(openapi)?;
+    crate::claude_controls::check_schema_parity(openapi)?;
     crate::records::check_schema_parity(openapi)?;
     crate::task_gate::check_api_contract(openapi)?;
     for (suffix, value) in [
@@ -997,6 +998,7 @@ pub fn render(root: &Path, with_api_types: bool) -> Result<Vec<Rendered>, String
         .into_iter()
         .chain(crate::desktop::schemas())
         .chain(crate::queue_command::schemas())
+        .chain(crate::claude_controls::schemas())
     {
         *openapi
             .pointer_mut(&format!("/components/schemas/{name}"))
@@ -1713,7 +1715,7 @@ process.stdout.write(JSON.stringify(JSON.parse(input).map(([method, params]) => 
         for path in [
             "/components/schemas/CreateAgentRequest/properties/permission_mode/enum",
             "/components/schemas/AgentEntityDto/properties/claudeOptions/anyOf/0/properties/permissionMode/enum",
-            "/components/schemas/ClaudeSettings/properties/permissionMode/anyOf/0/enum",
+            "/components/schemas/ClaudeSettings/properties/permissionMode/enum",
             "/components/schemas/ClaudeSessionSettings/properties/permissionMode/anyOf/0/enum",
         ] {
             let mut drifted = openapi.clone();
