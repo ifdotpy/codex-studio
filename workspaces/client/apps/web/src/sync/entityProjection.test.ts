@@ -1062,7 +1062,14 @@ it("keeps the projects of paired servers apart from the local projects", () => {
   );
   const gone = applyEntityRows(
     state,
-    [entityRow("project", "peer:b:/there", {}, 3, { deleted: true })],
+    [
+      {
+        id: "entity:project:peer:b:/there",
+        seq: 3,
+        payload: "",
+        _deleted: true,
+      } as EntityRow,
+    ],
     true,
   );
   assert.deepEqual(gone.runtime.remoteProjects, []);
