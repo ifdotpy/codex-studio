@@ -74,6 +74,19 @@ pub enum ReasoningEffort {
     Ultra,
 }
 
+impl ReasoningEffort {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Low => "low",
+            Self::Medium => "medium",
+            Self::High => "high",
+            Self::Xhigh => "xhigh",
+            Self::Max => "max",
+            Self::Ultra => "ultra",
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default)]
 pub struct ProfileRepository;
 

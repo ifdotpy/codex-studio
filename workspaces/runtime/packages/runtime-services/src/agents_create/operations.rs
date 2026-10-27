@@ -662,8 +662,8 @@ async fn create(
             context,
             &request,
             &id,
-            &request.intent,
             &intent,
+            profile.as_ref(),
             std::sync::Arc::clone(&validate),
         )
         .await;
@@ -1081,8 +1081,8 @@ async fn create_child(
     context: &Context<'_>,
     request: &Creation,
     id: &str,
-    execution_intent: &Value,
     creation_intent: &Value,
+    profile: Option<&Value>,
     validate: PersistedRecordValidator,
 ) -> Result<Value, OperationError> {
     let parent_id = request.parent.as_deref().ok_or(OperationError::Internal)?;
@@ -1153,60 +1153,52 @@ async fn create_child(
     } else {
         cwd
     };
-    let defaults = root
-        .get("workerDefaults")
+    let environment = context
+        .managed_creation_environment
+        .ok_or(OperationError::Unavailable(
+            "account-driver/managed-child-account",
+        ))?;
+    let profile: Option<studio_runtime_store::ProfileRecord> = profile
         .cloned()
-        .unwrap_or_else(|| json!({}));
-    let account = request
-        .account
-        .as_deref()
-        .or_else(|| defaults.get("accountKey").and_then(Value::as_str))
-        .unwrap_or_else(|| {
-            parent
-                .get("accountKey")
-                .and_then(Value::as_str)
-                .unwrap_or("default")
-        });
-    let (identity, account_status, can_attempt_native_proof) =
-        account_identity_with_status(context, account.to_owned()).await?;
-    let parent_account_key = parent
-        .get("accountKey")
-        .and_then(Value::as_str)
-        .unwrap_or("default");
-    if account != parent_account_key
-        && account_status != AccountStatus::Ready
-        && !can_attempt_native_proof
-    {
-        return Err(OperationError::Unavailable("account-driver/unavailable"));
-    }
-    if defaults
-        .get("accountKey")
-        .and_then(Value::as_str)
-        .is_some_and(|selected| selected != account)
-    {
-        return Err(MutationError::IdentityChanged.into());
-    }
+        .map(serde_json::from_value)
+        .transpose()
+        .map_err(|_| OperationError::Internal)?;
+    let account_load = context
+        .store
+        .read_async("runtime-services/agents_create/read", |read| {
+            studio_runtime_store::AgentIndexedReads::slots_by_account(read)
+        })
+        .await?;
+    let resolved = crate::managed_child_create::resolve_worker_settings(
+        &context.store,
+        environment,
+        &parent,
+        &root,
+        creation_intent,
+        profile.as_ref(),
+        role,
+        request.account.as_deref(),
+        &account_load,
+    )
+    .await
+    .map_err(|error| match error {
+        crate::managed_child_create::WorkerSettingsError::Environment(
+            crate::managed_child_create::ManagedCreationEnvironmentError::Invalid(message),
+        ) => OperationError::Invalid(message),
+        crate::managed_child_create::WorkerSettingsError::Environment(
+            crate::managed_child_create::ManagedCreationEnvironmentError::Unavailable(name),
+        ) => OperationError::Unavailable(name),
+        crate::managed_child_create::WorkerSettingsError::Store(error) => {
+            OperationError::Store(error)
+        }
+    })?;
+    let account = &resolved.account_key;
+    let identity = resolved.account;
     let provider = identity.provider.key().to_owned();
-    let model = execution_intent
-        .get("model")
-        .and_then(Value::as_str)
-        .or_else(|| defaults.get("model").and_then(Value::as_str))
-        .or_else(|| root.get("model").and_then(Value::as_str))
-        .unwrap_or(crate::provider_adapter::default_model(identity.provider));
-    let effort = execution_intent
-        .get("effort")
-        .and_then(Value::as_str)
-        .or_else(|| defaults.get("effort").and_then(Value::as_str));
-    let fast_mode = execution_intent
-        .get("fast_mode")
-        .and_then(Value::as_bool)
-        .or_else(|| defaults.get("fastMode").and_then(Value::as_bool))
-        .unwrap_or(false);
-    let daybreak = execution_intent
-        .get("daybreak_enabled")
-        .and_then(Value::as_bool)
-        .or_else(|| defaults.get("daybreakEnabled").and_then(Value::as_bool))
-        .unwrap_or(false);
+    let model = &resolved.model;
+    let effort = resolved.effort.as_deref();
+    let fast_mode = resolved.fast_mode;
+    let daybreak = resolved.daybreak;
     let catalog = context.catalog.clone().ok_or(OperationError::Unavailable(
         crate::model_catalog::MODEL_CATALOG_DEPENDENCY,
     ))?;
@@ -1298,6 +1290,10 @@ async fn create_child(
         set_image_workspace_fields(&mut record, cwd);
     }
     record["creationIntent"] = creation_intent.clone();
+    record["profileId"] = json!(request.profile);
+    if let Some(profile) = &profile {
+        record["profileInstructions"] = json!(profile.instructions);
+    }
     record["provider"] = json!(provider);
     record["yoloMode"] = root_yolo;
     record["maxAgents"] = root_max_agents;
@@ -2654,19 +2650,6 @@ async fn account_identity(
     .map_err(|_| OperationError::Internal)?
 }
 
-async fn account_identity_with_status(
-    context: &Context<'_>,
-    account_key: String,
-) -> Result<(AccountIdentity, AccountStatus, bool), OperationError> {
-    let driver = context.driver.clone().ok_or(OperationError::Internal)?;
-    studio_runtime_process::blocking_pool::spawn_blocking(
-        "runtime-services/agents_create/account_identity",
-        move || account_identity_blocking(&driver, &account_key),
-    )
-    .await
-    .map_err(|_| OperationError::Internal)?
-}
-
 fn account_identity_blocking(
     driver: &AccountDriver,
     account_key: &str,
@@ -3262,6 +3245,9 @@ mod tests {
             {
                 return Err(CreateError::ModelUnavailable);
             }
+            if model == "opus" && effort == Some("xhigh") {
+                return Err(CreateError::InvalidCreation("effort"));
+            }
             if daybreak_enabled && account.provider != studio_runtime_providers::ProviderKind::Codex
             {
                 return Err(CreateError::InvalidCreation("daybreak_enabled"));
@@ -3458,6 +3444,221 @@ mod tests {
             managed_creation_environment: Some(environment),
             validate,
         }
+    }
+
+    #[tokio::test]
+    async fn child_creation_routes_profile_to_compatible_account() {
+        let state = tempfile::tempdir().expect("state");
+        let folder = tempfile::tempdir().expect("project");
+        let store =
+            std::sync::Arc::new(RuntimeStore::open(Some(state.path())).await.expect("store"));
+        let mut root = build_agent_record(
+            "root",
+            "Lead",
+            "",
+            folder.path().to_str().expect("path"),
+            "default",
+            ProviderKind::Codex,
+            true,
+            "implementer",
+            true,
+            "idle",
+            "shared",
+            Some(4),
+            20,
+            Value::Null,
+            false,
+            1.0,
+            None,
+        );
+        root["workerDefaults"] = json!({});
+        store.transaction(move |tx| {
+            tx.execute("INSERT INTO runtime_agents(id,record) VALUES(?1,?2)", rusqlite::params!["root", root.to_string()])?;
+            tx.execute("INSERT INTO runtime_profiles(id,record) VALUES(?1,?2)", rusqlite::params!["profile", json!({"id":"profile","name":"Reviewer","role":"implementer","model":"opus","effort":null,"instructions":""}).to_string()])?;
+            Ok(())
+        }).await.expect("seed");
+        let mut environment = managed_fixture();
+        environment.accounts.listing.accounts[1].group = Some("priority".to_owned());
+        let mut other = environment.accounts.listing.accounts[1].clone();
+        other.account_key = "codex-b".to_owned();
+        other.group = Some("secondary".to_owned());
+        environment.accounts.listing.accounts.push(other);
+        environment.catalog.models.insert(
+            "codex-b".to_owned(),
+            vec!["gpt-6-astra".to_owned(), "gpt-6-luna".to_owned()],
+        );
+        let context = Context {
+            store,
+            accounts: None,
+            driver: None,
+            catalog: Some(std::sync::Arc::new(CatalogFixture {
+                models: environment.catalog.models.clone(),
+            })),
+            managed_creation_environment: Some(&environment),
+            validate: std::sync::Arc::new(|_, _| true),
+        };
+        let result = agent(&context, Creation {
+            id: Some("child".to_owned()), parent: Some("root".to_owned()),
+            profile: Some("profile".to_owned()), prompt: "Review".to_owned(),
+            workspace: Some("shared".to_owned()),
+            intent: json!({"id":"child","parent":"root","profile_id":"profile","prompt":"Review","workspace_mode":"shared"}),
+            ..Creation::default()
+        }).await.expect("child creation");
+        assert_eq!(result["accountKey"], "claude-local");
+        assert_eq!(result["model"], "opus");
+        let saved = context
+            .store
+            .read_async("test/child", |read| {
+                studio_runtime_store::AgentRepository::get(read, &"child".into())
+            })
+            .await
+            .expect("read child")
+            .expect("saved child")
+            .value();
+        assert_eq!(saved["profileId"], "profile");
+
+        let update_root = |defaults: Value, review: Value, excluded: Value| {
+            let store = std::sync::Arc::clone(&context.store);
+            async move {
+                store
+                    .transaction(move |tx| {
+                        let mut root =
+                            studio_runtime_store::AgentRepository::get(tx, &"root".into())?
+                                .expect("root")
+                                .value();
+                        root["workerDefaults"] = defaults;
+                        root["reviewDefaults"] = review;
+                        root["excludedAccountKeys"] = excluded;
+                        studio_runtime_store::AgentRepository::put(
+                            tx,
+                            &studio_runtime_store::AgentRecord::from_value(root)?,
+                        )?;
+                        Ok(())
+                    })
+                    .await
+                    .expect("update root");
+            }
+        };
+        let request = |id: &str, role: &str, extra: Value| {
+            let mut intent = json!({"id":id,"parent":"root","role":role,"prompt":"Task","workspace_mode":"shared"});
+            intent
+                .as_object_mut()
+                .expect("object")
+                .extend(extra.as_object().expect("options").clone());
+            Creation {
+                id: Some(id.to_owned()),
+                parent: Some("root".to_owned()),
+                role: Some(role.to_owned()),
+                account: extra
+                    .get("account_key")
+                    .and_then(Value::as_str)
+                    .map(str::to_owned),
+                prompt: "Task".to_owned(),
+                workspace: Some("shared".to_owned()),
+                intent,
+                ..Creation::default()
+            }
+        };
+        update_root(
+            json!({"model":"gpt-6-luna","effort":"low"}),
+            json!({"model":"gpt-6-astra","effort":"high"}),
+            json!([]),
+        )
+        .await;
+        let reviewer = agent(&context, request("reviewer", "reviewer", json!({})))
+            .await
+            .expect("reviewer");
+        assert_eq!(reviewer["model"], "gpt-6-astra");
+        assert_eq!(reviewer["effort"], "high");
+        let cleared = agent(
+            &context,
+            request("cleared", "reviewer", json!({"effort":null})),
+        )
+        .await
+        .expect("explicit null");
+        assert!(cleared["effort"].is_null());
+
+        update_root(
+            json!({"model":"opus","effort":"xhigh"}),
+            json!({}),
+            json!([]),
+        )
+        .await;
+        let inherited = agent(&context, request("inherited", "implementer", json!({})))
+            .await
+            .expect("native effort");
+        assert!(inherited["effort"].is_null());
+        assert!(matches!(
+            agent(
+                &context,
+                request("explicit", "implementer", json!({"effort":"xhigh"}))
+            )
+            .await,
+            Err(OperationError::Create(CreateError::InvalidCreation(
+                "effort"
+            )))
+        ));
+
+        update_root(
+            json!({"accountKey":"default","model":"gpt-6-luna"}),
+            json!({}),
+            json!([]),
+        )
+        .await;
+        assert!(matches!(
+            agent(
+                &context,
+                request(
+                    "pin-conflict",
+                    "implementer",
+                    json!({"account_key":"claude-local"})
+                )
+            )
+            .await,
+            Err(OperationError::Invalid(
+                "Use the subagent account selected in chat settings"
+            ))
+        ));
+        update_root(json!({"model":"opus"}), json!({}), json!(["claude-local"])).await;
+        assert!(matches!(
+            agent(&context, request("excluded", "implementer", json!({}))).await,
+            Err(OperationError::Invalid(
+                "This model is not available for the selected worker accounts"
+            ))
+        ));
+        let project_id = folder.path().to_str().expect("project path").to_owned();
+        let project_for_write = project_id.clone();
+        context.store.transaction(move |tx| {
+            let mut root = studio_runtime_store::AgentRepository::get(tx, &"root".into())?.expect("root").value();
+            root["projectId"] = json!(project_for_write);
+            root["projectServerId"] = json!("local");
+            root["workerDefaults"] = json!({"model":"gpt-6-luna"});
+            root["excludedAccountKeys"] = json!([]);
+            studio_runtime_store::AgentRepository::put(tx, &studio_runtime_store::AgentRecord::from_value(root)?)?;
+            tx.execute("INSERT INTO runtime_projects(id,record) VALUES(?1,?2)", rusqlite::params![project_for_write, json!({"homeServerId":"local","accountKeys":["default","codex-b"],"accountGroups":["priority","secondary"]}).to_string()])?;
+            Ok(())
+        }).await.expect("bind project");
+        let ordered = agent(&context, request("ordered", "implementer", json!({})))
+            .await
+            .expect("ordered project");
+        assert_eq!(ordered["accountKey"], "default");
+        let project_for_write = project_id.clone();
+        context.store.transaction(move |tx| {
+            tx.execute("UPDATE runtime_projects SET record=?1 WHERE id=?2", rusqlite::params![json!({"homeServerId":"local","accountKeys":["default","codex-b"],"accountGroups":[]}).to_string(), project_for_write])?;
+            Ok(())
+        }).await.expect("clear project order");
+        let balanced = agent(&context, request("balanced", "implementer", json!({})))
+            .await
+            .expect("least loaded");
+        assert_eq!(balanced["accountKey"], "codex-b");
+        context.store.transaction(move |tx| {
+            tx.execute("UPDATE runtime_projects SET record=?1 WHERE id=?2", rusqlite::params![json!({"homeServerId":"local","accountKeys":["default"],"accountGroups":[]}).to_string(), project_id])?;
+            Ok(())
+        }).await.expect("restrict project");
+        let allowed = agent(&context, request("allowed", "implementer", json!({})))
+            .await
+            .expect("project allowlist");
+        assert_eq!(allowed["accountKey"], "default");
     }
 
     #[tokio::test]

@@ -556,65 +556,91 @@ impl CreationCatalog for RouteCreationCatalog {
         daybreak_enabled: bool,
     ) -> Result<ExecutionSettings, CreateError> {
         let row = self.model_row(account_key, account, model)?;
-        let supported = row
-            .get("supportedReasoningEfforts")
-            .and_then(Value::as_array)
-            .map(|rows| {
-                rows.iter()
-                    .filter_map(|row| row.get("reasoningEffort").and_then(Value::as_str))
-                    .collect::<Vec<_>>()
-            })
-            .unwrap_or_default();
-        if effort.is_some_and(|effort| !supported.contains(&effort)) {
-            return Err(CreateError::InvalidCreation("effort"));
-        }
-        if fast_mode
-            && !row
-                .get("serviceTiers")
-                .and_then(Value::as_array)
-                .is_some_and(|tiers| {
-                    tiers
-                        .iter()
-                        .any(|tier| tier.get("id").and_then(Value::as_str) == Some("priority"))
-                })
-        {
-            return Err(CreateError::InvalidCreation("fast_mode"));
-        }
-        let native_effort = effort.map(str::to_owned).or_else(|| {
-            row.get("defaultReasoningEffort")
-                .and_then(Value::as_str)
-                .map(str::to_owned)
-        });
-        let programs = row
-            .get("availableAccessPrograms")
-            .and_then(|programs| programs.get("cyber"))
-            .and_then(Value::as_array);
-        let program = if daybreak_enabled {
-            programs
-                .and_then(|programs| {
-                    ["daybreakBlue", "daybreakRed"]
-                        .into_iter()
-                        .find(|name| programs.iter().any(|entry| entry.as_str() == Some(name)))
-                })
-                .ok_or(CreateError::InvalidCreation("daybreak_enabled"))?
-        } else if programs.is_some_and(|programs| {
-            !programs
-                .iter()
-                .any(|entry| entry.as_str() == Some("standard"))
-        }) {
-            return Err(CreateError::InvalidCreation("daybreak_enabled"));
-        } else {
-            "standard"
-        };
-        Ok(ExecutionSettings {
-            model: model.to_owned(),
-            effort: effort.map(str::to_owned),
-            native_effort: native_effort.unwrap_or_else(|| "medium".to_owned()),
-            fast_mode,
-            daybreak_enabled,
-            cyber_access_program: program.to_owned(),
-        })
+        resolve_catalog_row(&row, model, effort, fast_mode, daybreak_enabled)
     }
+}
+
+fn resolve_catalog_row(
+    row: &Value,
+    model: &str,
+    effort: Option<&str>,
+    fast_mode: bool,
+    daybreak_enabled: bool,
+) -> Result<ExecutionSettings, CreateError> {
+    let supported = row
+        .get("supportedReasoningEfforts")
+        .and_then(Value::as_array)
+        .map(|rows| {
+            rows.iter()
+                .filter_map(|row| row.get("reasoningEffort").and_then(Value::as_str))
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    if effort.is_some_and(|effort| !supported.contains(&effort)) {
+        return Err(CreateError::InvalidCreation("effort"));
+    }
+    if fast_mode
+        && !row
+            .get("serviceTiers")
+            .and_then(Value::as_array)
+            .is_some_and(|tiers| {
+                tiers
+                    .iter()
+                    .any(|tier| tier.get("id").and_then(Value::as_str) == Some("priority"))
+            })
+    {
+        return Err(CreateError::InvalidCreation("fast_mode"));
+    }
+    let native_effort = effort.map(str::to_owned).or_else(|| {
+        row.get("defaultReasoningEffort")
+            .and_then(Value::as_str)
+            .map(str::to_owned)
+    });
+    let programs = row
+        .get("availableAccessPrograms")
+        .and_then(|programs| programs.get("cyber"))
+        .and_then(Value::as_array);
+    let program = if daybreak_enabled {
+        programs
+            .and_then(|programs| {
+                ["daybreakBlue", "daybreakRed"]
+                    .into_iter()
+                    .find(|name| programs.iter().any(|entry| entry.as_str() == Some(name)))
+            })
+            .ok_or(CreateError::InvalidCreation("daybreak_enabled"))?
+    } else if programs.is_some_and(|programs| {
+        !programs
+            .iter()
+            .any(|entry| entry.as_str() == Some("standard"))
+    }) {
+        return Err(CreateError::InvalidCreation("daybreak_enabled"));
+    } else {
+        "standard"
+    };
+    Ok(ExecutionSettings {
+        model: model.to_owned(),
+        effort: effort.map(str::to_owned),
+        native_effort: native_effort.unwrap_or_else(|| "medium".to_owned()),
+        fast_mode,
+        daybreak_enabled,
+        cyber_access_program: program.to_owned(),
+    })
+}
+
+#[cfg(test)]
+#[test]
+fn catalog_rejects_unsupported_effort_and_uses_native_default_when_omitted() {
+    let row = serde_json::json!({
+        "supportedReasoningEfforts":[{"reasoningEffort":"high"}],
+        "defaultReasoningEffort":"high"
+    });
+    assert!(matches!(
+        resolve_catalog_row(&row, "opus", Some("xhigh"), false, false),
+        Err(CreateError::InvalidCreation("effort"))
+    ));
+    let settings = resolve_catalog_row(&row, "opus", None, false, false).expect("native default");
+    assert_eq!(settings.effort, None);
+    assert_eq!(settings.native_effort, "high");
 }
 
 impl RouteCreationCatalog {
@@ -1007,22 +1033,23 @@ async fn create_agent_with_import(
         )?));
     }
     request.catalog = admission.needs_catalog;
-    // Python merges profile model/effort before computing `needs_catalog`; a
-    // role/instructions-only profile does not itself require provider access
-    // (`codex_runtime.py:4859-4888`).
-    wait_for_agent_catalog(
-        &state,
-        AgentCatalogWaitRequest {
-            parent_id: request.parent.as_deref(),
-            preferred_parent_account: None,
-            requested_account: admission.account.as_deref().or(request.account.as_deref()),
-            requested_model: admission.model.as_deref(),
-            needs_catalog: admission.needs_catalog,
-            ignore_stored_worker_account: false,
-            require_model_match: admission.model.is_some(),
-        },
-    )
-    .await?;
+    if let Some(parent_id) = request.parent.as_deref() {
+        wait_for_child_catalog(&state, parent_id).await?;
+    } else {
+        wait_for_agent_catalog(
+            &state,
+            AgentCatalogWaitRequest {
+                parent_id: None,
+                preferred_parent_account: None,
+                requested_account: admission.account.as_deref().or(request.account.as_deref()),
+                requested_model: admission.model.as_deref(),
+                needs_catalog: admission.needs_catalog,
+                ignore_stored_worker_account: false,
+                require_model_match: admission.model.is_some(),
+            },
+        )
+        .await?;
+    }
     dispatch::<generated::AgentResponse>(state, move |context| {
         Box::pin(agents_create::agent(context, request))
     })
@@ -1123,6 +1150,41 @@ fn stored_parent_defaults(
         );
     }
     Ok(Some(defaults))
+}
+
+async fn wait_for_child_catalog(state: &HttpState, parent_id: &str) -> Result<(), ApiError> {
+    let (Some(driver), Some(session)) = (&state.account_driver, &state.account_session) else {
+        return Ok(());
+    };
+    let store = state.store.clone().ok_or_else(ApiError::internal)?;
+    let parent_id = parent_id.to_owned();
+    let defaults = store
+        .read_async("runtime-http/routes/agents_create", move |read| {
+            stored_parent_defaults(read, &parent_id, false)
+        })
+        .await
+        .map_err(|_| ApiError::internal())?
+        .ok_or_else(ApiError::internal)?;
+    let parent_account = defaults.parent_account.as_deref().unwrap_or("default");
+    state
+        .model_catalog
+        .set_account_session(Some(std::sync::Arc::clone(session)));
+    let environment =
+        managed_creation_environment(std::sync::Arc::clone(driver), state.model_catalog.clone());
+    environment
+        .wait_for_catalog(parent_account)
+        .await
+        .map_err(|error| {
+            use studio_runtime_services::provider_callbacks::ManagedCreationEnvironmentError;
+            operation_error(match error {
+                ManagedCreationEnvironmentError::Invalid(message) => {
+                    OperationError::Invalid(message)
+                }
+                ManagedCreationEnvironmentError::Unavailable(name) => {
+                    OperationError::Unavailable(name)
+                }
+            })
+        })
 }
 
 async fn wait_for_agent_catalog(
