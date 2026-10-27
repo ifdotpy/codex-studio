@@ -723,6 +723,11 @@ async fn create(
     } else {
         project_directory_default_async().await?
     };
+    if crate::projects::refuses_worktree(&context.store, &cwd, &workspace).await? {
+        return Err(OperationError::Invalid(
+            crate::projects::WORKTREE_REFUSED_BY_LAYR_POLICY,
+        ));
+    }
     let admission_path = cwd.clone();
     let admission_version = context
         .store
@@ -1182,6 +1187,11 @@ async fn create_child(
     } else {
         cwd
     };
+    if crate::projects::refuses_worktree(&context.store, cwd, workspace).await? {
+        return Err(OperationError::Invalid(
+            crate::projects::WORKTREE_REFUSED_BY_LAYR_POLICY,
+        ));
+    }
     let environment = context
         .managed_creation_environment
         .ok_or(OperationError::Unavailable(
@@ -4457,5 +4467,141 @@ mod tests {
             );
         }
         drop(store);
+    }
+
+    const LAYR_ONLY_REFUSAL: &str =
+        "This project allows only Layr workspaces. Use Layr instead of WT.";
+
+    #[tokio::test]
+    async fn layr_only_project_refuses_new_worktree_chat() {
+        let state = tempfile::tempdir().expect("state");
+        let folder = tempfile::tempdir().expect("project");
+        let store =
+            std::sync::Arc::new(RuntimeStore::open(Some(state.path())).await.expect("store"));
+        let cwd = folder.path().to_str().expect("path").to_owned();
+        let project = json!({"id":cwd,"path":cwd,"name":"Layr only","workspacePolicy":"layr-native","workspacePolicyRevision":1});
+        store
+            .transaction_with::<_, StoreError>(move |tx| {
+                studio_runtime_store::ProjectsRepository::put_project(tx, &project)
+            })
+            .await
+            .expect("project fixture");
+        let context = Context {
+            store,
+            accounts: None,
+            driver: None,
+            catalog: None,
+            managed_creation_environment: None,
+            validate: std::sync::Arc::new(|_, _| true),
+        };
+        let result = lead(
+            &context,
+            Creation {
+                cwd: Some(cwd.clone()),
+                workspace: Some("worktree".to_owned()),
+                account: Some("default".to_owned()),
+                prompt: "Task".to_owned(),
+                intent: json!({"cwd":cwd,"prompt":"Task"}),
+                ..Creation::default()
+            },
+        )
+        .await;
+        assert!(
+            matches!(result, Err(OperationError::Invalid(message)) if message == LAYR_ONLY_REFUSAL),
+            "{result:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn layr_only_project_refuses_worktree_child_explicit_and_inherited() {
+        let state = tempfile::tempdir().expect("state");
+        let folder = tempfile::tempdir().expect("project");
+        let store =
+            std::sync::Arc::new(RuntimeStore::open(Some(state.path())).await.expect("store"));
+        let cwd = folder.path().to_str().expect("path").to_owned();
+        let root = build_agent_record(
+            "root",
+            "Lead",
+            "",
+            &cwd,
+            "default",
+            ProviderKind::Codex,
+            true,
+            "implementer",
+            true,
+            "idle",
+            "shared",
+            Some(4),
+            20,
+            false,
+            1.0,
+            None,
+        );
+        let project = json!({"id":cwd,"path":cwd,"name":"Layr only","workspacePolicy":"layr-native","workspacePolicyRevision":1});
+        store
+            .transaction_with::<_, StoreError>(move |tx| {
+                tx.execute(
+                    "INSERT INTO runtime_agents(id,record) VALUES(?1,?2)",
+                    rusqlite::params!["root", root.to_string()],
+                )?;
+                studio_runtime_store::ProjectsRepository::put_project(tx, &project)
+            })
+            .await
+            .expect("seed");
+        let environment = managed_fixture();
+        let context = Context {
+            store: std::sync::Arc::clone(&store),
+            accounts: None,
+            driver: None,
+            catalog: Some(std::sync::Arc::new(CatalogFixture {
+                models: environment.catalog.models.clone(),
+            })),
+            managed_creation_environment: Some(&environment),
+            validate: std::sync::Arc::new(|_, _| true),
+        };
+        let child = |id: &str, workspace: Option<&str>| {
+            let mut intent =
+                json!({"id":id,"parent":"root","prompt":"Task","workspace_mode":"worktree"});
+            if workspace.is_none() {
+                intent
+                    .as_object_mut()
+                    .expect("object")
+                    .remove("workspace_mode");
+            }
+            Creation {
+                id: Some(id.to_owned()),
+                parent: Some("root".to_owned()),
+                prompt: "Task".to_owned(),
+                workspace: workspace.map(str::to_owned),
+                intent,
+                ..Creation::default()
+            }
+        };
+        let refused = agent(&context, child("explicit", Some("worktree"))).await;
+        assert!(
+            matches!(refused, Err(OperationError::Invalid(message)) if message == LAYR_ONLY_REFUSAL),
+            "explicit WT child: {refused:?}"
+        );
+        agent(&context, child("shared", Some("shared")))
+            .await
+            .expect("shared child stays allowed in a Layr-only project");
+        store
+            .transaction_with::<_, StoreError>(|tx| {
+                let mut root = studio_runtime_store::AgentRepository::get(tx, &"root".into())?
+                    .expect("root")
+                    .value();
+                root["workspaceMode"] = json!("worktree");
+                studio_runtime_store::AgentRepository::put(
+                    tx,
+                    &studio_runtime_store::AgentRecord::from_value(root).expect("root record"),
+                )
+            })
+            .await
+            .expect("root update");
+        let inherited = agent(&context, child("inherited", None)).await;
+        assert!(
+            matches!(inherited, Err(OperationError::Invalid(message)) if message == LAYR_ONLY_REFUSAL),
+            "inherited WT child: {inherited:?}"
+        );
     }
 }

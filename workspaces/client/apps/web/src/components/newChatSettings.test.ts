@@ -2,6 +2,8 @@ import { expect, test } from "vitest";
 import {
   defaultWorkspaceMode,
   isNewChatSettings,
+  projectAllowsWorktree,
+  workspaceModeForProject,
   settingsForNewChatRequest,
   settingsForNewChatAccount,
   type NewChatWorkspaceMode,
@@ -225,4 +227,19 @@ test("Linux uses native Layr only when the server capability is ready", () => {
       reason: "A btrfs store is required.",
     }),
   ).toBe("worktree");
+});
+
+test("a Layr-only project preselects Layr and offers no WT", () => {
+  const layrOnly = { workspacePolicy: "layr-native" };
+  expect(projectAllowsWorktree(layrOnly)).toBe(false);
+  expect(workspaceModeForProject(layrOnly, "worktree")).toBe("layr-native");
+});
+
+test("a project without a policy keeps the chosen workspace", () => {
+  expect(projectAllowsWorktree(undefined)).toBe(true);
+  expect(projectAllowsWorktree({ workspacePolicy: null })).toBe(true);
+  expect(workspaceModeForProject({ workspacePolicy: null }, "worktree")).toBe(
+    "worktree",
+  );
+  expect(workspaceModeForProject(undefined, "layr")).toBe("layr");
 });
