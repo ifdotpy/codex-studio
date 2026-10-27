@@ -61,7 +61,7 @@ fn projects_by_resolved_path(
     let mut exact = BTreeMap::new();
     let mut respelled = BTreeMap::new();
     for project in projects {
-        let path = text(&project, "path")?;
+        let path = text(project, "path")?;
         match paths.get(path) {
             Some(resolved) if resolved != path => {
                 respelled
