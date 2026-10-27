@@ -1,8 +1,19 @@
 //! Read-only bounded monitor observation. A wait never renews a command lease.
-use crate::monitor_policy::MonitorError;
+use crate::monitor_policy::{MonitorError, MonitorStatus};
 use rusqlite::OptionalExtension;
+use serde::Deserialize;
 use serde_json::{Value, json};
 use studio_runtime_store::{RuntimeStore, StoreError};
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct Observation {
+    status: MonitorStatus,
+    #[serde(default)]
+    output_event_sequence: u64,
+    #[serde(default)]
+    output_event_ids: Vec<String>,
+}
 
 pub(crate) async fn read(
     store: &RuntimeStore,
@@ -72,11 +83,19 @@ fn read_in(
     }
     // The authenticated actor uses its current model account. Its existing
     // monitor output remains owned by that actor and epoch after a transfer.
-    let sequence = record["outputEventSequence"].as_u64().unwrap_or(0);
-    let terminal = !matches!(
-        record["status"].as_str(),
-        Some("approval" | "starting" | "running")
-    );
+    let observation: Observation =
+        serde_json::from_value(record.clone()).map_err(|_| MonitorError::InvalidStored {
+            id: id.to_owned(),
+            location: "observation".into(),
+        })?;
+    let sequence = observation.output_event_sequence;
+    let terminal = match observation.status {
+        MonitorStatus::Approval | MonitorStatus::Starting | MonitorStatus::Running => false,
+        MonitorStatus::Completed
+        | MonitorStatus::Failed
+        | MonitorStatus::Cancelled
+        | MonitorStatus::Lost => true,
+    };
     if deadline.is_some() && !terminal && !after_sequence.is_some_and(|initial| sequence > initial)
     {
         record["outputEvents"] = json!([]);
@@ -85,10 +104,7 @@ fn read_in(
         return Ok((record, sequence, terminal));
     }
     let mut events = Vec::new();
-    for id in record["outputEventIds"].as_array().into_iter().flatten() {
-        let id = id.as_str().ok_or(MonitorError::InvalidOutputReceipt(
-            "invalid saved output event ID",
-        ))?;
+    for id in &observation.output_event_ids {
         let event: Option<(String, String)> = tx
             .query_row(
                 "SELECT status,text FROM runtime_events WHERE id=? AND agent=?",
@@ -114,6 +130,58 @@ mod tests {
     use super::*;
     thread_local! { static EVENT_SELECTS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
 
+    #[test]
+    fn rejects_invalid_observation_fields_and_accepts_legacy_sequence() {
+        let db = rusqlite::Connection::open_in_memory().expect("database");
+        db.execute_batch("CREATE TABLE runtime_agents(id TEXT PRIMARY KEY,record TEXT);CREATE TABLE runtime_monitors(id TEXT PRIMARY KEY,record TEXT);CREATE TABLE runtime_events(id TEXT,agent TEXT,status TEXT,text TEXT);").expect("schema");
+        db.execute(
+            "INSERT INTO runtime_agents VALUES('owner',?1)",
+            [json!({"epoch":1,"autoWake":true}).to_string()],
+        )
+        .unwrap();
+        for (status, sequence) in [
+            (json!(null), json!(0)),
+            (json!("runnning"), json!(0)),
+            (json!("running"), json!("bad")),
+        ] {
+            let record =
+                json!({"agent":"owner","epoch":1,"status":status,"outputEventSequence":sequence});
+            db.execute(
+                "INSERT OR REPLACE INTO runtime_monitors VALUES('watch',?1)",
+                [record.to_string()],
+            )
+            .unwrap();
+            assert!(read_in(&db, "owner", 1, "default", "watch", None, None).is_err());
+        }
+        let missing = json!({"agent":"owner","epoch":1});
+        db.execute(
+            "INSERT OR REPLACE INTO runtime_monitors VALUES('watch',?1)",
+            [missing.to_string()],
+        )
+        .unwrap();
+        assert!(read_in(&db, "owner", 1, "default", "watch", None, None).is_err());
+        let record = json!({"agent":"owner","epoch":1,"status":"running"});
+        db.execute(
+            "INSERT OR REPLACE INTO runtime_monitors VALUES('watch',?1)",
+            [record.to_string()],
+        )
+        .unwrap();
+        let (_, sequence, terminal) =
+            read_in(&db, "owner", 1, "default", "watch", None, None).unwrap();
+        assert_eq!(sequence, 0);
+        assert!(!terminal);
+        let record = json!({"agent":"owner","epoch":1,"status":"completed"});
+        db.execute(
+            "INSERT OR REPLACE INTO runtime_monitors VALUES('watch',?1)",
+            [record.to_string()],
+        )
+        .unwrap();
+        assert!(
+            read_in(&db, "owner", 1, "default", "watch", None, None)
+                .unwrap()
+                .2
+        );
+    }
     #[test]
     fn unchanged_wait_does_not_select_events() {
         let db = rusqlite::Connection::open_in_memory().expect("database");
