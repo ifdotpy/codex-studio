@@ -1553,7 +1553,7 @@ mod tests {
     #[test]
     fn known_status_has_only_one_representation() {
         for known in AgentStatus::VALUES {
-            let decoded: AgentStatus = serde_json::from_value(json!(known)).unwrap();
+            let decoded: AgentStatus = serde_json::from_str(&format!("{known:?}")).unwrap();
             assert!(UnknownAgentStatus::new((*known).to_owned()).is_none());
             assert_eq!(decoded.as_str(), *known);
         }

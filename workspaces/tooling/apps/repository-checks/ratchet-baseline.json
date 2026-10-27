@@ -808,18 +808,6 @@
       "fingerprint": "6e5bd8ce2b4da42cb4fe1db7c83fbebb3e3987f5da8955224ff4f92f82403b40:0"
     },
     {
-      "file": "workspaces/client/apps/web/src/sync/drafts.ts",
-      "fingerprint": "e067b50bb83ab83bf5fc26fc26721938ed25297590f3fe2b2d1078130fc3e2e5:0"
-    },
-    {
-      "file": "workspaces/client/apps/web/src/sync/draftStorage.ts",
-      "fingerprint": "03cab603eea6ec55b1f598ef16f6748bde47501c9361729fe6438dc35d635b94:0"
-    },
-    {
-      "file": "workspaces/client/apps/web/src/sync/draftStorage.ts",
-      "fingerprint": "6f95ee32a55a4075e9a905dcf432d827212f3cb6c636d2b8524de65e476ba665:0"
-    },
-    {
       "file": "workspaces/client/apps/web/src/sync/resourceEvents.ts",
       "fingerprint": "555e733d0f0b9c74fc76f802f96da0e5bf877a35f165d076f55a0c934ea0eed4:0"
     },
@@ -901,18 +889,6 @@
     }
   ],
   "ts-json-parse-cast-tsx": [
-    {
-      "file": "workspaces/client/apps/web/src/components/agents/SubagentConcurrencyControl.tsx",
-      "fingerprint": "7f0c42b913f469de5868381dde031449cda2ed2bc5253f8d125d467ff3919295:0"
-    },
-    {
-      "file": "workspaces/client/apps/web/src/components/agents/SubagentConcurrencyControl.tsx",
-      "fingerprint": "7f0c42b913f469de5868381dde031449cda2ed2bc5253f8d125d467ff3919295:1"
-    },
-    {
-      "file": "workspaces/client/apps/web/src/components/agents/SubagentConcurrencyControl.tsx",
-      "fingerprint": "d9adb403d914e20bc76d92c0479cc5f655fb3e4f60c76077c827a76ca0ebdff4:0"
-    },
     {
       "file": "workspaces/client/apps/web/src/components/ProjectDelete.browser.fixture.tsx",
       "fingerprint": "157c0e43f1fbfe454daf186c9832b6e0d72691505182671193be4af37d079fd2:0"
