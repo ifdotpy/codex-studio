@@ -620,43 +620,58 @@ async function runMessageReceiptScenario(
       return;
     }
 
-    const shortCachedTranscript = await storage.evaluate(async (agentId) => {
-      const collection = window.receiptFixtureDb.projections;
-      // Read the committed IndexedDB rows independently of the seed tab's
-      // RxDB instance; the built renderer owns the active projection writer.
-      const name = `rxdb-dexie-${collection.database.name}--${collection.schema.version}--projections`;
-      const db = await new Promise<IDBDatabase>((resolve, reject) => {
-        const request = indexedDB.open(name);
-        request.onsuccess = () => resolve(request.result);
-        request.onerror = () => reject(request.error);
-      });
-      const read = (id: string) =>
-        new Promise<import("../../src/sync/client.ts").SyncDocument>(
-          (resolve, reject) => {
+    const shortCachedTranscript: Pick<
+      import("../../src/sync/client.ts").SyncDocument,
+      "id" | "payload" | "seq"
+    >[] = [];
+    // Visible receipts do not imply that the projection writer has committed.
+    await until(async () => {
+      const cached = await storage.evaluate(async (agentId) => {
+        const collection = window.receiptFixtureDb.projections;
+        // Read the committed IndexedDB rows independently of the seed tab's
+        // RxDB instance; the built renderer owns the active projection writer.
+        const name = `rxdb-dexie-${collection.database.name}--${collection.schema.version}--projections`;
+        const db = await new Promise<IDBDatabase>((resolve, reject) => {
+          const request = indexedDB.open(name);
+          request.onsuccess = () => resolve(request.result);
+          request.onerror = () => reject(request.error);
+        });
+        const read = (id: string) =>
+          new Promise<
+            import("../../src/sync/client.ts").SyncDocument | undefined
+          >((resolve, reject) => {
             const request = db
               .transaction("docs", "readonly")
               .objectStore("docs")
               .get(id);
             request.onsuccess = () => resolve(request.result);
             request.onerror = () => reject(request.error);
-          },
-        );
-      try {
-        const meta = await read(`transcript:${agentId}`);
-        const payload: import("../../src/sync/client.ts").TranscriptProjectionMeta =
-          JSON.parse(meta.payload);
-        const items = await Promise.all(
-          payload.order.map((key) => read(`transcript:item:${agentId}:${key}`)),
-        );
-        return [meta, ...items].map(({ id, payload, seq }) => ({
-          id,
-          payload,
-          seq,
-        }));
-      } finally {
-        db.close();
-      }
-    }, agent.id);
+          });
+        try {
+          const meta = await read(`transcript:${agentId}`);
+          if (!meta) return null;
+          const payload: import("../../src/sync/client.ts").TranscriptProjectionMeta =
+            JSON.parse(meta.payload);
+          const items = await Promise.all(
+            payload.order.map((key) =>
+              read(`transcript:item:${agentId}:${key}`),
+            ),
+          );
+          const committedItems = items.filter((item) => item !== undefined);
+          if (committedItems.length !== items.length) return null;
+          return [meta, ...committedItems].map(({ id, payload, seq }) => ({
+            id,
+            payload,
+            seq,
+          }));
+        } finally {
+          db.close();
+        }
+      }, agent.id);
+      if (!cached) return false;
+      shortCachedTranscript.push(...cached);
+      return true;
+    }, "The short transcript was not committed to the projection cache");
     assert.equal(
       JSON.parse(required(shortCachedTranscript[0]).payload).metadata.truncated,
       false,
