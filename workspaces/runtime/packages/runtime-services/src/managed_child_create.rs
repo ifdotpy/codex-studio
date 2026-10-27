@@ -306,17 +306,30 @@ pub(crate) struct ResolvedWorkerSettings {
     pub daybreak: bool,
 }
 
+pub(crate) struct WorkerSettingsRequest<'a> {
+    pub parent: &'a Value,
+    pub root: &'a Value,
+    pub spec: &'a Value,
+    pub profile: Option<&'a studio_runtime_store::ProfileRecord>,
+    pub role: &'a str,
+    pub requested_account_key: Option<&'a str>,
+    pub account_load: &'a std::collections::HashMap<String, i64>,
+}
+
 pub(crate) async fn resolve_worker_settings(
     store: &RuntimeStore,
     environment: &dyn ManagedCreationEnvironment,
-    parent: &Value,
-    root: &Value,
-    spec: &Value,
-    profile: Option<&studio_runtime_store::ProfileRecord>,
-    role: &str,
-    requested_account_key: Option<&str>,
-    account_load: &std::collections::HashMap<String, i64>,
+    request: WorkerSettingsRequest<'_>,
 ) -> Result<ResolvedWorkerSettings, WorkerSettingsError> {
+    let WorkerSettingsRequest {
+        parent,
+        root,
+        spec,
+        profile,
+        role,
+        requested_account_key,
+        account_load,
+    } = request;
     let defaults = &root["workerDefaults"];
     let profile_model = profile.map(|profile| profile.model.as_str());
     let review =
@@ -744,13 +757,15 @@ pub(crate) async fn spawn_agents(
         let resolved = resolve_worker_settings(
             store,
             environment,
-            &parent_value,
-            &root_value,
-            spec,
-            profile.as_ref(),
-            role,
-            requested_account_key,
-            &account_load,
+            WorkerSettingsRequest {
+                parent: &parent_value,
+                root: &root_value,
+                spec,
+                profile: profile.as_ref(),
+                role,
+                requested_account_key,
+                account_load: &account_load,
+            },
         )
         .await?;
         *account_load

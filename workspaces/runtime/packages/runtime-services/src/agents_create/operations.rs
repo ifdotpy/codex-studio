@@ -1172,13 +1172,15 @@ async fn create_child(
     let resolved = crate::managed_child_create::resolve_worker_settings(
         &context.store,
         environment,
-        &parent,
-        &root,
-        creation_intent,
-        profile.as_ref(),
-        role,
-        request.account.as_deref(),
-        &account_load,
+        crate::managed_child_create::WorkerSettingsRequest {
+            parent: &parent,
+            root: &root,
+            spec: creation_intent,
+            profile: profile.as_ref(),
+            role,
+            requested_account_key: request.account.as_deref(),
+            account_load: &account_load,
+        },
     )
     .await
     .map_err(|error| match error {
