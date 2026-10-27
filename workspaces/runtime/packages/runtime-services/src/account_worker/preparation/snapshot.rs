@@ -123,6 +123,7 @@ pub struct PreparationFilesystem {
     native_layr_inputs: Value,
     native_layr_environment: Map<String, Value>,
     native_reviewer_options: Map<String, Value>,
+    native_layr_error: Option<&'static str>,
 }
 
 fn native_layr_inputs(state_root: &Path, record: &Value) -> Value {
@@ -281,17 +282,27 @@ impl PreparationResources {
     ) -> Result<Self, WorkerError> {
         studio_runtime_store::debug_assert_outside_sql();
         if crate::layr_native::is_native(record) {
-            let environment = crate::layr_native::thread_environment_for_record(state_root, record)
-                .map_err(|_| invalid("native-layr/store"))?;
-            let options = native_reviewer_options(record, state_root)?;
+            let captured = crate::layr_native::thread_environment_for_record(state_root, record)
+                .map_err(|_| "native-layr/store")
+                .and_then(|environment| {
+                    native_reviewer_options(record, state_root)
+                        .map(|options| (environment, options))
+                });
             let inputs = Arc::make_mut(
                 self.filesystem_inputs
                     .as_mut()
                     .ok_or_else(|| invalid("thread guidance filesystem inputs"))?,
             );
             inputs.native_layr_inputs = native_layr_inputs(state_root, record);
-            inputs.native_layr_environment = environment;
-            inputs.native_reviewer_options = options;
+            // A receipt may not consume thread settings. Its SQL owner must
+            // surface local failures under the per-agent settlement savepoint.
+            match captured {
+                Ok((environment, options)) => {
+                    inputs.native_layr_environment = environment;
+                    inputs.native_reviewer_options = options;
+                }
+                Err(error) => inputs.native_layr_error = Some(error),
+            }
         }
         Ok(self)
     }
@@ -301,10 +312,37 @@ impl PreparationResources {
         state_root: &Path,
         record: &Value,
     ) -> Result<&PreparationFilesystem, WorkerError> {
-        self.filesystem_inputs
+        let inputs = self
+            .filesystem_inputs
             .as_deref()
             .filter(|inputs| inputs.native_layr_inputs == native_layr_inputs(state_root, record))
-            .ok_or_else(|| invalid("native-layr/filesystem-inputs"))
+            .ok_or_else(|| invalid("native-layr/filesystem-inputs"))?;
+        if let Some(error) = inputs.native_layr_error {
+            return Err(invalid(error));
+        }
+        Ok(inputs)
+    }
+
+    /// Validate stored inputs before applying the caller's validated cwd projection.
+    pub(super) fn project_cwd(
+        &mut self,
+        state_root: &Path,
+        record: &mut Value,
+        cwd: &Path,
+    ) -> Result<(), WorkerError> {
+        if crate::layr_native::is_native(record) {
+            self.native_filesystem(state_root, record)?;
+            record["cwd"] = json!(cwd);
+            let inputs = Arc::make_mut(
+                self.filesystem_inputs
+                    .as_mut()
+                    .ok_or_else(|| invalid("native-layr/filesystem-inputs"))?,
+            );
+            inputs.native_layr_inputs = native_layr_inputs(state_root, record);
+        } else {
+            record["cwd"] = json!(cwd);
+        }
+        Ok(())
     }
 
     pub(crate) async fn for_sql(
@@ -322,7 +360,7 @@ impl PreparationResources {
         prepared_cwd: Option<&str>,
     ) -> Result<Self, WorkerError> {
         let agent_id = agent_id.to_owned();
-        let record = store
+        let observed = store
             .read_async("runtime-services/thread-guidance/agent", move |tx| {
                 Ok::<_, WorkerError>(
                     AgentRepository::get(tx, &AgentId::from(agent_id.as_str()))?
@@ -330,7 +368,16 @@ impl PreparationResources {
                         .unwrap_or(Value::Null),
                 )
             })
-            .await?;
+            .await;
+        let record = match observed {
+            Ok(record) => record,
+            // Owning SQL logic re-reads this agent inside its isolation boundary.
+            // Missing observations cannot be used to construct a native snapshot.
+            Err(error) if crate::account_worker::agent_fault::data_fault(&error).is_some() => {
+                Value::Null
+            }
+            Err(error) => return Err(error),
+        };
         let receipt_cwd = prepared_cwd.and_then(|prepared| {
             record["cwd"]
                 .as_str()
@@ -1137,14 +1184,14 @@ fn frozen_params(record: &Value) -> Result<Option<thread::FrozenParams>, WorkerE
 fn native_reviewer_options(
     record: &Value,
     state_root: &Path,
-) -> Result<serde_json::Map<String, Value>, WorkerError> {
+) -> Result<serde_json::Map<String, Value>, &'static str> {
     let mut options = Map::new();
     if crate::layr_native::is_native(record) && record["role"] == "reviewer" {
         let scratch = record["layrScratch"]
             .as_str()
-            .ok_or_else(|| invalid("native-reviewer/scratch"))?;
+            .ok_or("native-reviewer/scratch")?;
         let root = crate::layr_native::settings::record_store(state_root, record)
-            .map_err(|_| invalid("native-layr/store"))?;
+            .map_err(|_| "native-layr/store")?;
         options.insert("sandbox".into(),json!({"enabled":true,"failIfUnavailable":true,"allowUnsandboxedCommands":false,
             "filesystem":{"allowWrite":[scratch],"denyWrite":[root]},
             "network":{"allowedDomains":[],"strictAllowlist":true,"allowUnixSockets":[],"allowAllUnixSockets":false}}));
@@ -1880,6 +1927,59 @@ mod resource_tests {
             })
             .await
             .expect("a review object is read as a review child");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn native_layr_paused_legacy_thread_uses_the_canonical_cwd_of_its_saved_alias() {
+        let directory = tempfile::tempdir().expect("state");
+        let store = Arc::new(
+            RuntimeStore::open(Some(directory.path()))
+                .await
+                .expect("store"),
+        );
+        let root = crate::layr_native::store_path(store.root());
+        let cwd = root.join("projects/project/lines/main");
+        std::fs::create_dir_all(&cwd).expect("legacy line");
+        let alias = directory.path().join("alias");
+        std::os::unix::fs::symlink(&root, &alias).expect("store alias");
+        let stored_cwd = alias.join("projects/project/lines/main");
+        let record = json!({"id":"worker", "rootId":"worker", "epoch":1,
+            "status":"paused", "isLead":true, "role":"implementer", "provider":"codex",
+            "model":"fake-model",
+            "accountKey":"default", "cwd":stored_cwd, "workspaceMode":"layr-native",
+            "layrReady":true, "nativeEffort":null, "effort":null, "autoWake":false});
+        store
+            .transaction(move |tx| {
+                AgentRepository::put(tx, &AgentRecord::from_value(record).expect("agent"))
+            })
+            .await
+            .expect("saved legacy worker");
+        let resources = PreparationResources::bundled(String::new(), ModelCatalogService::new())
+            .expect("resources");
+        let prepared = crate::account_worker::preparation::prepare_native_thread(
+            Arc::clone(&store),
+            &resources,
+            "worker",
+            "restore-thread",
+            1,
+        )
+        .await
+        .expect("paused legacy thread preparation preserves an equivalent cwd alias");
+        assert_eq!(prepared.params["cwd"], json!(cwd));
+        assert_eq!(
+            prepared.params["config"]["shell_environment_policy.set.LAYR_ROOT"],
+            json!(alias)
+        );
+        let saved = AgentRepository::get(
+            &store.test_reader().expect("reader"),
+            &AgentId::from("worker"),
+        )
+        .expect("agent")
+        .expect("saved agent")
+        .value();
+        assert_eq!(saved["cwd"], json!(stored_cwd));
+        assert_eq!(saved["status"], "paused");
     }
 
     #[cfg(unix)]
