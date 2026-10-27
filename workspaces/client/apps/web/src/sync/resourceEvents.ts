@@ -407,6 +407,7 @@ export function createResourceEvents(options: ResourceEventsOptions) {
   let stopResume: (() => void) | undefined;
 
   let validatedServerFrameAt: number | undefined;
+  let storageSlow = false;
   let healthSequence = 0;
   const peerHealth = createPeerConnectionHealth();
   const serverFrames = new WeakMap<
@@ -502,11 +503,17 @@ export function createResourceEvents(options: ResourceEventsOptions) {
       : {};
   }
 
+  function activityView(state: ConnectionState): ConnectionActivity {
+    return storageSlow && state.phase === "live"
+      ? "storage-slow"
+      : activityOf(state);
+  }
+
   function connectionView(state: ConnectionState) {
     const { failure, retryAt, attempt } = connectionDetail(state);
     return [
       healthOf(state),
-      activityOf(state),
+      activityView(state),
       failure,
       retryAt,
       attempt,
@@ -539,7 +546,7 @@ export function createResourceEvents(options: ResourceEventsOptions) {
     for (const listener of transportStatusListeners) {
       if (connectionState !== state) break;
       try {
-        listener(healthOf(state), activityOf(state), connectionDetail(state));
+        listener(healthOf(state), activityView(state), connectionDetail(state));
       } catch {
         // A status consumer cannot interrupt transport recovery.
       }
@@ -1038,6 +1045,16 @@ export function createResourceEvents(options: ResourceEventsOptions) {
     },
     dispatchEvent,
     (event, error) => recoverResourceApplication(event.resources, error),
+    (settled) => {
+      // Backpressure: the source takes no further frame until the write ends.
+      source?.holdUntil?.(settled);
+      storageSlow = true;
+      notifyConnectionListeners();
+      void settled.then(() => {
+        storageSlow = false;
+        notifyConnectionListeners();
+      });
+    },
   );
 
   let transferAssembler: EntityTransferAssembler | undefined;
@@ -2546,7 +2563,7 @@ export function createResourceEvents(options: ResourceEventsOptions) {
     transportStatusListeners.add(listener);
     listener(
       healthOf(connectionState),
-      activityOf(connectionState),
+      activityView(connectionState),
       connectionDetail(),
     );
     return () => transportStatusListeners.delete(listener);

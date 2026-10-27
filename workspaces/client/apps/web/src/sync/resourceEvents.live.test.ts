@@ -8,6 +8,7 @@ import {
   RESOURCE_COORDINATION_VERSION,
   RESOURCE_CURSOR_PREPARATION_TIMEOUT_MS,
 } from "./resourceConnection";
+import { PERSIST_DEADLINE_MS } from "./resourceEntityDelivery";
 import { createSubscriptionStore } from "./subscriptions/store";
 import { API_SCHEMA_HASH } from "../generated/apiSchema";
 import { SYNC_STREAM_EVENT_MAX_BYTES } from "../generated/sharedValues";
@@ -306,6 +307,73 @@ it.each(["overflow", "state hint"])(
     expect(f.sources).toHaveLength(1);
   },
 );
+
+it("waits for slow local storage without reconnecting, reports it, and applies the frame", async () => {
+  const f = await fixture();
+  f.persist.mockClear();
+  let finish!: () => void;
+  f.persist.mockImplementationOnce(
+    () =>
+      new Promise<void>((resolve) => {
+        finish = resolve;
+      }),
+  );
+  f.source.onopen?.();
+  const listener = vi.fn();
+  f.transport.watchResourceChanges({ kind: "state" }, listener);
+  listener.mockClear();
+  const states: string[] = [];
+  const failures: unknown[] = [];
+  f.transport.watchResourceConnection((health, stream, detail) => {
+    states.push(`${health}/${stream}`);
+    failures.push(detail.failure);
+  });
+  f.source.emit("resources", {
+    protocol: SYNC_PROTOCOL_VERSION,
+    workspaceId: "workspace",
+    epoch: "epoch",
+    revision: 2,
+    reason: "change",
+    resources: [{ kind: "state" }],
+    resourceVersions: [{ revision: 2 }],
+  });
+  await vi.advanceTimersByTimeAsync(PERSIST_DEADLINE_MS * 3);
+  expect(f.source.closed).toBe(false);
+  expect(f.sources).toHaveLength(1);
+  expect(states.at(-1)).toBe("live/storage-slow");
+  expect(failures.every((failure) => failure === undefined)).toBe(true);
+  expect(listener).not.toHaveBeenCalled();
+  finish();
+  await vi.advanceTimersByTimeAsync(0);
+  expect(listener).toHaveBeenCalledWith(
+    expect.objectContaining({ revision: 2 }),
+  );
+  expect(states.at(-1)).toBe("live/open");
+  expect(f.source.closed).toBe(false);
+  expect(f.sources).toHaveLength(1);
+});
+
+it("reports a rejected local write as a local-state-error", async () => {
+  const f = await fixture();
+  f.persist.mockRejectedValueOnce(new Error("quota exceeded"));
+  const error = vi.spyOn(console, "error").mockImplementation(() => {});
+  const details: unknown[] = [];
+  f.transport.watchResourceConnection((_health, _stream, detail) =>
+    details.push(detail.failure),
+  );
+  f.source.emit("resources", {
+    protocol: SYNC_PROTOCOL_VERSION,
+    workspaceId: "workspace",
+    epoch: "epoch",
+    revision: 2,
+    reason: "change",
+    resources: [{ kind: "state" }],
+    resourceVersions: [{ revision: 2 }],
+  });
+  await vi.advanceTimersByTimeAsync(0);
+  expect(details).toContain("local-state-error");
+  error.mockRestore();
+});
 
 it("publishes each resource event without a listener flush timer", async () => {
   const f = await fixture();
