@@ -18,7 +18,7 @@ import {
   modelValue,
   selectModel,
 } from "../fixtures/model-picker.ts";
-import { test } from "../playwright.ts";
+import { expect, test } from "../playwright.ts";
 import { setupControl, setupToggle } from "../fixtures/setup-controls.ts";
 
 type ResetModel = NonNullable<DaybreakReset["models"]>[number];
@@ -132,16 +132,13 @@ test("Daybreak settings", async ({ context }) => {
           exact: true,
         },
       );
-    const settled = async () =>
-      page.waitForFunction(
-        () =>
-          window.refreshCount === window.settingsCalls.length &&
-          window.settingsCalls.length > 0,
-      );
+    const settled = async () => {
+      await page.waitForFunction(() => window.settingsCalls.length > 0);
+      await expect(page.locator(".execution-status")).toContainText("Saved");
+    };
     const clearActivity = () =>
       page.evaluate(() => {
         window.settingsCalls = [];
-        window.refreshCount = 0;
       });
 
     const enable = async (defaults = false) => {

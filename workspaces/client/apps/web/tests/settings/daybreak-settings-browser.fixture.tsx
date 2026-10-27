@@ -1,5 +1,6 @@
 import type { Agent } from "../../src/types.ts";
 import type { WorkerModelInfo } from "../../src/components/agents/WorkerModelPicker.tsx";
+import { ModelCatalogReader } from "../../src/components/agents/WorkerModelPicker.tsx";
 import type { PostBody } from "../../src/apiTypes.ts";
 import { fixtureFetchInput, fixturePostBody } from "./fixture-helpers.ts";
 export type DaybreakReset = {
@@ -28,7 +29,6 @@ declare global {
     // Renamed from fail: chat/chat-read-client-browser.fixture.tsx declares a boolean.
     daybreakFail: "network" | "rejected" | null;
     reply: Agent | null;
-    refreshCount: number;
     retries: number;
     models: WorkerModelInfo[];
     agent: Agent;
@@ -60,6 +60,7 @@ import { ExecutionSettings } from "../../src/components/agents/ExecutionSettings
 const initial: Agent = {
   id: "first",
   accountKey: "default",
+  provider: "codex",
   name: "First",
   source: "managed",
   model: "gpt-5.6-sol",
@@ -78,6 +79,7 @@ const row = (
   extra: Partial<WorkerModelInfo> = {},
 ): WorkerModelInfo => ({
   model,
+  provider: "codex",
   displayName: model,
   supportedReasoningEfforts: ["low", "high", "max"].map((reasoningEffort) => ({
     reasoningEffort,
@@ -101,7 +103,6 @@ const initialModels = [
 window.settingsCalls = [];
 window.daybreakFail = null;
 window.reply = null;
-window.refreshCount = 0;
 window.retries = 0;
 
 const nativeFetch = window.fetch;
@@ -168,25 +169,59 @@ function Fixture() {
       window.daybreakFail = null;
       window.reply = null;
       window.hold = false;
-      window.refreshCount = 0;
       window.retries = 0;
     });
+  const reader: React.ContextType<typeof ModelCatalogReader> = {
+    scope: "daybreak-settings",
+    read: async () => {
+      throw new Error("Unexpected model catalog retry");
+    },
+    subscribeState: (accept) => {
+      accept({
+        entitiesComplete: true,
+        runtime: {
+          modelsByAccount: {
+            default: models.map((model, catalogPosition) => ({
+              model: model.model,
+              displayName: model.displayName ?? model.model,
+              isDefault: !!model.isDefault,
+              serviceTiers: model.serviceTiers.map(({ id }) => ({ id })),
+              supportedReasoningEfforts: model.supportedReasoningEfforts.map(
+                ({ reasoningEffort }) => ({ reasoningEffort }),
+              ),
+              ...(model.availableAccessPrograms?.cyber
+                ? {
+                    availableAccessPrograms: {
+                      cyber: model.availableAccessPrograms.cyber,
+                    },
+                  }
+                : {}),
+              accountKey: "default",
+              catalogPosition,
+              provider: "codex",
+            })),
+          },
+        },
+      });
+      return () => {};
+    },
+  };
   return (
     <MantineProvider>
-      <ExecutionSettings
-        key={mount}
-        agent={agent}
-        initialRole={defaults ? "worker" : "orchestrator"}
-        catalog={{
-          models,
-          loading: false,
-          error: "",
-          retry: () => window.retries++,
-        }}
-        refresh={async () => {
-          window.refreshCount++;
-        }}
-      />
+      <ModelCatalogReader.Provider value={reader}>
+        <ExecutionSettings
+          key={mount}
+          agent={agent}
+          initialRole={defaults ? "worker" : "orchestrator"}
+          catalog={{
+            models,
+            loading: false,
+            error: "",
+            retry: () => window.retries++,
+          }}
+          refresh={async () => {}}
+        />
+      </ModelCatalogReader.Provider>
     </MantineProvider>
   );
 }
