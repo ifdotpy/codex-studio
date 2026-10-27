@@ -1,11 +1,61 @@
-import { test } from "vitest";
+import { test, vi } from "vitest";
 import assert from "node:assert/strict";
 import { fork, type ChildProcess } from "node:child_process";
 import { once } from "node:events";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { HANG_GUARD_MS } from "./testing/file-signals.ts";
+import { existsSync, watch } from "node:fs";
+import { mock } from "node:test";
+import { HANG_GUARD_MS, waitForFile } from "./testing/file-signals.ts";
+
+vi.mock("node:fs", async (importOriginal) => {
+  const original = await importOriginal<typeof import("node:fs")>();
+  return {
+    ...original,
+    existsSync: vi.fn(original.existsSync),
+    watch: vi.fn(original.watch),
+  };
+});
+
+test.each([false, true])(
+  "file waits detect creation before the first stat sample without a watch event (frozen clock: %s)",
+  async (frozenClock) => {
+    const root = await fs.mkdtemp(
+      path.join(os.tmpdir(), "claude-file-signals-"),
+    );
+    const controller = new AbortController();
+    try {
+      const file = path.join(root, ".registered");
+      await fs.writeFile(file, "");
+      const original =
+        await vi.importActual<typeof import("node:fs")>("node:fs");
+      vi.mocked(watch).mockImplementation((...args) => {
+        const watcher = original.watch(...args);
+        watcher.removeAllListeners("change");
+        return watcher;
+      });
+      // The synchronous check sees absence, but the asynchronous stat starts with
+      // the file present. Neither watcher reports a later change in this ordering.
+      vi.mocked(existsSync).mockReturnValueOnce(false);
+      if (frozenClock)
+        mock.timers.enable({ apis: ["Date", "setTimeout", "setInterval"] });
+      await waitForFile(file, {
+        signal: AbortSignal.any([
+          controller.signal,
+          AbortSignal.timeout(HANG_GUARD_MS),
+        ]),
+      });
+      assert.equal(existsSync(file), true);
+    } finally {
+      controller.abort();
+      if (frozenClock) mock.timers.reset();
+      vi.mocked(existsSync).mockReset();
+      vi.mocked(watch).mockReset();
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  },
+);
 
 test("test-side file waits preserve IPC while awaiting a delayed parent reply", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "claude-file-signals-"));
