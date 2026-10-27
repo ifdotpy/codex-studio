@@ -556,6 +556,11 @@ fn callback_context_in(
     Ok(Some(crate::provider_callbacks::CallbackContext {
         agent: agent_id.to_owned(),
         account: account.to_owned(),
+        stream_id: if agent["executionMode"] == "vm" {
+            super::vm_journal_scope(account, agent_id)
+        } else {
+            account.to_owned()
+        },
         connection: connection.to_owned(),
         generation,
         epoch,
