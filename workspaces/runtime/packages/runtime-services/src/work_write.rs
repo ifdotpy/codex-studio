@@ -1085,7 +1085,7 @@ pub async fn prepare_vm_submission(
         let owner_id = work.owner().unwrap_or(&agent.id.0);
         let owner = event_write::checked_agent(tx, owner_id)?;
         // Invalid results reach submit's durable refusal before any VM operation.
-        if result_refusal(tx, work.value(), &owner, &input)?.is_some() {
+        if matches!(result_refusal(tx, work.value(), &owner, &input)?, ResultCheck::Refused { .. }) {
             return Ok(VmSubmissionPreparation::NotVm);
         }
         if work.get("resultSchema").is_none() {
@@ -2183,6 +2183,7 @@ fn decide_submit(
     snapshot: WorkSnapshot<'_>,
     submitter: &AgentRecord,
     input: &SubmitWork,
+    structured: Option<Value>,
     identity: Option<(String, Option<String>)>,
     now: f64,
     result_id: String,
@@ -2201,13 +2202,6 @@ fn decide_submit(
     let title = record.title().ok_or_else(|| invalid("runtime_work", id))?;
     let submitter_id = submitter.id.0.as_str();
     let path = result_path(&input.state_dir, id, &result_id)?;
-    let structured = record
-        .get("resultSchema")
-        .map(|schema| {
-            studio_runtime_schema::task_results::validate_result(schema, &input.result)
-                .map_err(|_| Error::InvalidRequest("Result does not match result_schema"))
-        })
-        .transpose()?;
     let result_text = if let Some(value) = &structured {
         value.to_string()
     } else {
@@ -2738,20 +2732,25 @@ fn submit(
     if !work.blocked_by(&dependency_statuses(tx, &work)?).is_empty() {
         return Err(Error::InvalidRequest("Dependencies have not been accepted").into());
     }
-    if let Some((counter_id, failed, errors)) =
-        result_refusal(tx, work.value(), &submitter, &input)?
-    {
-        return refuse_result(
-            tx,
-            work.value(),
-            &submitter,
-            &counter_id,
+    let structured = match result_refusal(tx, work.value(), &submitter, &input)? {
+        ResultCheck::Accepted(value) => value,
+        ResultCheck::Refused {
+            counter_id,
             failed,
             errors,
-            request_id,
-            signature,
-        );
-    }
+        } => {
+            return refuse_result(
+                tx,
+                work.value(),
+                &submitter,
+                &counter_id,
+                failed,
+                errors,
+                request_id,
+                signature,
+            );
+        }
+    };
     validate_submission_files(&submitter, &input.files, input.prepared_files.as_ref())?;
     if submitter.extra.get("executionMode").and_then(Value::as_str) == Some("vm")
         || submitter.extra.get("workspaceMode").and_then(Value::as_str) == Some("layr-native")
@@ -2793,6 +2792,7 @@ fn submit(
         },
         &submitter,
         &input,
+        structured,
         identity,
         now,
         result_id,
@@ -2920,17 +2920,26 @@ pub fn current_submission_refusal(
 
 /// Counter identity includes the task version, worker epoch and provider attempt.
 /// A lead update or a new provider attempt permits another bounded set of tries.
+enum ResultCheck {
+    Accepted(Option<Value>),
+    Refused {
+        counter_id: String,
+        failed: u64,
+        errors: Vec<Value>,
+    },
+}
+
 fn result_refusal(
     tx: &Transaction<'_>,
     work: &Value,
     owner: &AgentRecord,
     input: &SubmitWork,
-) -> Result<Option<(String, u64, Vec<Value>)>, WorkWriteError> {
+) -> Result<ResultCheck, WorkWriteError> {
     use studio_runtime_schema::task_results::{
         MAX_FAILED_RESULT_SUBMITS_PER_ATTEMPT, validate_result,
     };
     let Some(schema) = work.get("resultSchema") else {
-        return Ok(None);
+        return Ok(ResultCheck::Accepted(None));
     };
     let counter_id = submission_counter_id(tx, work, owner)?;
     let failed = EventWriteRepository::receipt(tx, &counter_id)?
@@ -2952,11 +2961,15 @@ fn result_refusal(
         ]
     } else {
         match validate_result(schema, &input.result) {
-            Ok(_) => return Ok(None),
+            Ok(value) => return Ok(ResultCheck::Accepted(Some(value))),
             Err(errors) => errors,
         }
     };
-    Ok(Some((counter_id, failed, errors)))
+    Ok(ResultCheck::Refused {
+        counter_id,
+        failed,
+        errors,
+    })
 }
 
 /// Persist refusal accounting and its receipt, but never mutate the task.

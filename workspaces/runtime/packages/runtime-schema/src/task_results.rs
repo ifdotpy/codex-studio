@@ -2,6 +2,11 @@
 use crate::{Draft, Validator};
 use serde_json::{Value, json};
 
+#[cfg(test)]
+thread_local! {
+    static RESULT_TRAVERSALS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 /// Maximum serialized UTF-8 bytes in a task's result schema.
 pub const MAX_RESULT_SCHEMA_BYTES: usize = 32_768;
 /// Maximum schema nesting depth, in subschemas.
@@ -106,13 +111,18 @@ pub fn validate_result(schema: &Value, input: &Value) -> Result<Value, Vec<Value
         )));
     }
     let validator = compile(schema).map_err(error)?;
-    let value = if validator.is_valid(input) {
-        input.clone()
-    } else if let Some(text) = input.as_str() {
+    #[cfg(test)]
+    RESULT_TRAVERSALS.with(|count| count.set(count.get() + 1));
+    if validator.is_valid(input) {
+        return Ok(input.clone());
+    }
+    let value = if let Some(text) = input.as_str() {
         serde_json::from_str(text).map_err(|e| error(format!("result must be valid JSON: {e}")))?
     } else {
         input.clone()
     };
+    #[cfg(test)]
+    RESULT_TRAVERSALS.with(|count| count.set(count.get() + 1));
     let errors: Vec<_> = validator
         .iter_errors(&value)
         .take(MAX_RESULT_VALIDATION_ERRORS)
@@ -203,6 +213,15 @@ pub fn check_schema_parity(openapi: &Value) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn valid_result_traverses_schema_once() {
+        RESULT_TRAVERSALS.with(|count| count.set(0));
+        assert_eq!(
+            validate_result(&json!({"type":"object"}), &json!({"x":1})).expect("valid"),
+            json!({"x":1})
+        );
+        assert_eq!(RESULT_TRAVERSALS.with(std::cell::Cell::get), 1);
+    }
     #[test]
     fn task_result_schema_rejects_invalid_and_oversized_contracts() {
         assert!(compile(&json!({"type":"object","properties":{"count":{"type":"integer"}},"required":["count"]})).is_ok());

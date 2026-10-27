@@ -179,6 +179,9 @@ async fn task_review_projects_default_and_current_refusals_through_http() {
         cleared["items"][0]["gate"], default,
         "existing task keeps its gate"
     );
+    let updated = write(&app, json!({"action":"update","agent":"lead","id":"clear-gate","task_id":task,"version":cleared["items"][0]["version"],"gate":null})).await;
+    let submitted = write(&app, json!({"action":"submit","agent":"worker","id":"valid-result","task_id":task,"version":updated["version"],"result":"{\"count\":7}","checks":"checked","revision":"abc","files":[]})).await;
+    assert_eq!(submitted["results"][0]["result"], json!({"count":7}));
 }
 
 fn projected(store: &RuntimeStore, collection: &str, id: &str) -> Value {
