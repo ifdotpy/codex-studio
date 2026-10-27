@@ -160,7 +160,7 @@ function apply(doc: unknown, fromStream: boolean) {
       value: doc.op === "upsert" ? doc.value : undefined,
     });
 }
-async function baseline() {
+async function baseline(): Promise<Schema["SubscriptionCursor"]> {
   let cursor = 0;
   for (;;) {
     const page = await get(
@@ -171,13 +171,15 @@ async function baseline() {
       !record(page.checkpoint) ||
       typeof page.checkpoint.seq !== "number" ||
       typeof page.maxSeq !== "number" ||
+      typeof page.workspaceId !== "string" ||
       !Array.isArray(page.documents) ||
       page.checkpoint.seq < cursor
     )
       throw new Error("Invalid entity checkpoint");
     for (const doc of page.documents) apply(doc, false);
     cursor = page.checkpoint.seq;
-    if (cursor >= page.maxSeq || page.documents.length === 0) return;
+    if (cursor >= page.maxSeq || page.documents.length === 0)
+      return { seq: cursor, workspaceId: page.workspaceId };
   }
 }
 function pending(t: (typeof targets)[number]) {
@@ -275,12 +277,15 @@ async function run() {
     { kind: "state" },
     { kind: "monitors", agentId: agent },
   ];
+  const checkpoint = await baseline();
+  const since: Schema["SubscriptionAdd"][] = [
+    { resource: { kind: "state" }, since: checkpoint },
+  ];
   const stream = await fetch(
-    `${base}/api/sync/stream?protocol=${protocol.protocolVersion}&resources=${encodeURIComponent(JSON.stringify(resources))}`,
+    `${base}/api/sync/stream?protocol=${protocol.protocolVersion}&resources=${encodeURIComponent(JSON.stringify(resources))}&since=${encodeURIComponent(JSON.stringify(since))}`,
     { signal, headers: { accept: "text/event-stream" } },
   );
   if (!stream.ok || !stream.body) throw new Error(`SSE HTTP ${stream.status}`);
-  await baseline();
   if (targets.every(pending)) {
     ready = true;
     console.log(
