@@ -9,6 +9,7 @@ pub(crate) mod m2026_10_26_canvas;
 mod m2026_10_26_provider_identity;
 mod m2026_10_26_registry;
 mod m2026_10_26_terminal_errors;
+pub(crate) mod m2026_10_27_cost_index;
 mod m2026_10_27_scheduler_indexes;
 
 #[cfg(any(test, feature = "test-support"))]
@@ -294,6 +295,16 @@ static CATALOG: &[&dyn Migration] = &[
             remove_when: REMOVE_AFTER_SOURCE_RETIRED,
         },
         apply: |c| m2026_10_26_terminal_errors::apply(c.transaction, c.canvas()?),
+    },
+    &SqlMigration {
+        definition: MigrationDefinition {
+            id: "2026-10-27-cost-group-cover",
+            introduced: OCTOBER_27,
+            target: MigrationTarget::Analytics,
+            supported_source: "Cost groups with the non-covering lookup index",
+            remove_when: REMOVE_AFTER_SOURCE_RETIRED,
+        },
+        apply: |c| m2026_10_27_cost_index::apply(c.transaction),
     },
     &RegistryMigration,
 ];
