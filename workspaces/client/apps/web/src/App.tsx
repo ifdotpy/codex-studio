@@ -708,12 +708,14 @@ export default function App({ active = true }: { active?: boolean }) {
     preferredPanelWidthRem,
     panePath: {
       panel:
-        panePanel ??
-        (workspaceOpen
-          ? "workspace"
-          : teamOpen || wideTeamOpen
-            ? "team"
-            : null),
+        schemaMismatch || !data
+          ? null
+          : (panePanel ??
+            (workspaceOpen
+              ? "workspace"
+              : teamOpen || wideTeamOpen
+                ? "team"
+                : null)),
       sidebarOverride: paneSidebar,
       fullScreen: paneFullScreen,
     },
@@ -1019,7 +1021,10 @@ export default function App({ active = true }: { active?: boolean }) {
       : null,
   );
   const room = data?.runtime?.rooms?.find((r) => r.id === opened);
-  const railGeometry = useEdgeRail(undefined, active && !!data && !room?.radio);
+  const railGeometry = useEdgeRail(
+    undefined,
+    active && (!!data || !!panePath) && (schemaMismatch || !room?.radio),
+  );
   const duoSurface = useDuoSurface();
   const [railTools] = useState(createConversationMenuTools);
   const legacy = data?.chats.find((c) => c.id === opened);
@@ -2491,28 +2496,68 @@ export default function App({ active = true }: { active?: boolean }) {
   );
   const studioErrors = useStudioErrorsState(data?.runtime.studioErrors);
   if (!active) return null;
-  // A server contract gate must not cover navigation to other server owners.
-  if (screen && schemaMismatch)
-    return (
-      <main className="startup" aria-label="Server update required">
-        <h2>{serverSettings?.server?.alias || "Server"}: update required</h2>
-        {schemaMismatchContent}
+  const startupScreen = (label: string, content: ReactNode) => {
+    const message = (
+      <main
+        className={panePath ? "startup workspace duo-pane-startup" : "startup"}
+        aria-label={label}
+        hidden={!!panePath && !panePath.panes.conversation}
+        style={
+          panePath ? panePathStyle(panePath.panes.conversation) : undefined
+        }
+      >
+        {panePath ? <div>{content}</div> : content}
       </main>
+    );
+    if (!panePath) return message;
+    return (
+      <>
+        <EdgeRail
+          geometry={railGeometry}
+          sidebar={{
+            id: "sidebar-toggle",
+            label: "Toggle conversations",
+            expanded: sidebarExpanded,
+            onClick: toggleSidebar,
+          }}
+        />
+        <div
+          className="workspace-frame workspace-layout-row"
+          ref={rowLayout.rowRef}
+          data-pane-path={panePath.mode}
+        >
+          {message}
+        </div>
+      </>
+    );
+  };
+  // A server contract gate must not cover navigation to other server owners.
+  if (schemaMismatch && (screen || (!data && panePath)))
+    return startupScreen(
+      screen ? "Server update required" : "Studio update required",
+      <>
+        <h2>
+          {serverSettings?.server?.alias || (screen ? "Server" : "Studio")}:
+          update required
+        </h2>
+        {schemaMismatchContent}
+      </>,
     );
   if (!data)
-    return schemaMismatch ? (
-      schemaMismatchDialog
-    ) : (
-      <main className="startup" aria-label="Studio startup">
-        <p
-          role={error ? "alert" : "status"}
-          className={error ? "studio-recovery-banner" : undefined}
-        >
-          {error || "Connecting to LAYR Studio…"}
-        </p>
-        {error && <a href="/">Reload Studio</a>}
-      </main>
-    );
+    return schemaMismatch
+      ? schemaMismatchDialog
+      : startupScreen(
+          "Studio startup",
+          <>
+            <p
+              role={error ? "alert" : "status"}
+              className={error ? "studio-recovery-banner" : undefined}
+            >
+              {error || "Connecting to LAYR Studio…"}
+            </p>
+            {error && <a href="/">Reload Studio</a>}
+          </>,
+        );
   const title = agent?.name || room?.name || legacy?.name || "New conversation";
   const projectName =
     data.runtime?.projects?.find((item) => item.path === agent?.cwd)?.name ||

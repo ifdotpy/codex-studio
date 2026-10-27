@@ -171,3 +171,16 @@
   z-index: var(--layout-layers-navigation);
   background: var(--sidebar);
 }
+
+/* Startup and contract errors use the conversation cell beside shell navigation. */
+.workspace-frame[data-pane-path] > .duo-pane-startup {
+  display: grid;
+  place-content: center;
+  box-sizing: border-box;
+  padding: var(--mantine-spacing-md);
+  overflow: auto;
+  overflow-wrap: anywhere;
+}
+.workspace-frame[data-pane-path] > .duo-pane-startup > div {
+  min-width: 0;
+}
