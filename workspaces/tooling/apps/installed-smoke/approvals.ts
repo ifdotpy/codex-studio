@@ -1,17 +1,19 @@
 /** Read-only approval lifecycle witness. Run before either card is answered. */
 import fs from "node:fs";
-import { RequestStatus } from "../../../client/apps/web/src/generated/api.ts";
+import {
+  RequestStatus,
+  TaskStatus,
+} from "../../../client/apps/web/src/generated/api.ts";
 import type { components } from "../../../client/apps/web/src/generated/api.ts";
 
 type Schema = components["schemas"];
-type Request = Pick<
-  Schema["RequestEntityDto"],
-  "id" | "agent" | "method" | "status"
+type Request = Required<
+  Pick<Schema["RequestEntityDto"], "id" | "agent" | "method" | "status">
 >;
-type Monitor = Pick<
-  Schema["MonitorEntityDto"],
-  "id" | "agent" | "status" | "exitCode"
->;
+type Monitor = Required<
+  Pick<Schema["MonitorEntityDto"], "id" | "agent" | "status">
+> &
+  Pick<Schema["MonitorEntityDto"], "exitCode">;
 const [
   url,
   agent,
@@ -74,23 +76,27 @@ const startedAt = new Date().toISOString();
 function record(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
+function requestStatus(value: unknown): value is Schema["RequestStatus"] {
+  return Object.values(RequestStatus).some((status) => status === value);
+}
+function monitorStatus(value: unknown): value is Schema["TaskStatus"] {
+  return Object.values(TaskStatus).some((status) => status === value);
+}
+
 function request(value: unknown, id: string): Request {
   if (
     !record(value) ||
     value.id !== id ||
     typeof value.agent !== "string" ||
     typeof value.method !== "string" ||
-    typeof value.status !== "string"
+    !requestStatus(value.status)
   )
     throw new Error(`Invalid request: ${id}`);
   return {
     id,
     agent: value.agent,
     method: value.method,
-    status:
-      value.status === RequestStatus.pending
-        ? RequestStatus.pending
-        : undefined,
+    status: value.status,
   };
 }
 function monitor(value: unknown, id: string): Monitor {
@@ -98,17 +104,16 @@ function monitor(value: unknown, id: string): Monitor {
     !record(value) ||
     value.id !== id ||
     typeof value.agent !== "string" ||
-    typeof value.status !== "string" ||
+    !monitorStatus(value.status) ||
     (value.exitCode != null && typeof value.exitCode !== "number")
   )
     throw new Error(`Invalid monitor: ${id}`);
-  const status =
-    value.status === "approval" ||
-    value.status === "completed" ||
-    value.status === "cancelled"
-      ? value.status
-      : undefined;
-  return { id, agent: value.agent, status, exitCode: value.exitCode };
+  return {
+    id,
+    agent: value.agent,
+    status: value.status,
+    exitCode: value.exitCode,
+  };
 }
 async function get(route: string): Promise<unknown> {
   const response = await fetch(base + route, { signal });
@@ -185,7 +190,7 @@ function pending(t: (typeof targets)[number]) {
     request.method === "monitor/approve" &&
     request.status === RequestStatus.pending &&
     monitor.agent === agent &&
-    monitor.status === "approval"
+    monitor.status === TaskStatus.approval
   );
 }
 function markerLines(file: string) {
@@ -203,7 +208,8 @@ function verify() {
     );
   for (const t of targets) {
     const monitor = monitors.get(t.monitorId);
-    const expected = t.decision === "accept" ? "completed" : "cancelled";
+    const expected =
+      t.decision === "accept" ? TaskStatus.completed : TaskStatus.cancelled;
     if (!removed.has(t.requestId) || requests.has(t.requestId))
       throw new Error(
         `${t.decision}: approval request removal was not witnessed over SSE`,

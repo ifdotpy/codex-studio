@@ -14,6 +14,8 @@ for (const scenario of [
   "duplicate",
   "wrong-owner",
   "no-removal",
+  "invalid-request",
+  "invalid-monitor",
 ] as const) {
   test(`approval probe ${scenario}`, async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "approval-probe-"));
@@ -128,15 +130,18 @@ for (const scenario of [
       const documents = [...pending, ...(changed ? resolved : [])].filter(
         (item) => item.seq > after,
       );
-      return res.end(
-        JSON.stringify({
-          generation: 1,
-          workspaceId: "fixture",
-          checkpoint: { seq: documents.at(-1)?.seq ?? after },
-          maxSeq: changed ? 8 : 4,
-          documents,
-        } satisfies Schema["SyncPullResponse"]),
-      );
+      let page = JSON.stringify({
+        generation: 1,
+        workspaceId: "fixture",
+        checkpoint: { seq: documents.at(-1)?.seq ?? after },
+        maxSeq: changed ? 8 : 4,
+        documents,
+      } satisfies Schema["SyncPullResponse"]);
+      if (scenario === "invalid-request")
+        page = page.replace('"status":"pending"', '"status":"bogus"');
+      if (scenario === "invalid-monitor")
+        page = page.replace('"status":"approval"', '"status":"bogus"');
+      return res.end(page);
     });
     await new Promise<void>((resolve) =>
       server.listen(0, "127.0.0.1", resolve),
@@ -192,7 +197,11 @@ for (const scenario of [
             ? /marker has 2/
             : scenario === "wrong-owner"
               ? /Did not observe both/
-              : /removal was not witnessed/,
+              : scenario === "invalid-request"
+                ? /Invalid request/
+                : scenario === "invalid-monitor"
+                  ? /Invalid monitor/
+                  : /removal was not witnessed/,
       );
     } finally {
       stream?.destroy();
