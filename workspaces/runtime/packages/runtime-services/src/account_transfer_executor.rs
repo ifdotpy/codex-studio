@@ -23,6 +23,7 @@ use crate::{
         StoredField,
     },
 };
+use serde::Deserialize;
 use serde_json::{Value, json};
 use std::{
     collections::HashMap,
@@ -41,6 +42,33 @@ use studio_runtime_store::path_identity::CanonicalPath;
 
 const READ_DEADLINE: Duration = Duration::from_secs(120);
 const MUTATION_DEADLINE: Duration = Duration::from_secs(60);
+
+#[derive(Deserialize)]
+struct SavedRead {
+    receipt: SavedReadReceipt,
+    result: SavedReadResponse,
+}
+
+#[derive(Deserialize)]
+struct SavedReadReceipt {
+    operation: String,
+    scope: crate::account_session_runtime::ConnectionScope,
+    ticket: SavedReadTicket,
+}
+
+#[derive(Deserialize)]
+struct SavedReadTicket {
+    generation: u64,
+    id: studio_runtime_providers::RequestId,
+    method: String,
+}
+
+#[derive(Deserialize)]
+#[serde(tag = "kind", content = "value", rename_all = "snake_case")]
+enum SavedReadResponse {
+    Reply(Value),
+    Rejected(Value),
+}
 static NATIVE_IMPORT_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 static NATIVE_IMPORT_LOCKS: LazyLock<Mutex<HashMap<PathBuf, Weak<Mutex<()>>>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
@@ -554,35 +582,27 @@ async fn session_reply(
     )
     .await?;
     if let Some(saved) = replay {
-        let value = match saved["result"]["kind"].as_str() {
-            Some("reply") => saved["result"].get("value").cloned().unwrap_or(Value::Null),
-            _ => {
+        let saved: SavedRead = serde_json::from_value(saved)
+            .map_err(|_| TransferError::Refused("Invalid saved provider receipt"))?;
+        let value = match saved.result {
+            SavedReadResponse::Reply(value) => value,
+            SavedReadResponse::Rejected(value) => {
+                drop(value);
                 return Err(TransferError::Refused(
                     "The provider rejected a transfer read",
                 ));
             }
         };
         let ticket = studio_runtime_providers::RequestTicket {
-            generation: saved["receipt"]["ticket"]["generation"]
-                .as_u64()
-                .unwrap_or_default(),
-            id: serde_json::from_value(saved["receipt"]["ticket"]["id"].clone())
-                .map_err(|_| TransferError::Refused("Invalid saved provider ticket"))?,
-            method: Method::from_wire(
-                saved["receipt"]["ticket"]["method"]
-                    .as_str()
-                    .unwrap_or_default(),
-            )
-            .ok_or(TransferError::Refused("Invalid saved provider ticket"))?,
+            generation: saved.receipt.ticket.generation,
+            id: saved.receipt.ticket.id,
+            method: Method::from_wire(&saved.receipt.ticket.method)
+                .ok_or(TransferError::Refused("Invalid saved provider ticket"))?,
         };
         return Ok((
             SessionReceipt {
-                scope: serde_json::from_value(saved["receipt"]["scope"].clone())
-                    .map_err(|_| TransferError::Refused("Invalid saved provider scope"))?,
-                operation: saved["receipt"]["operation"]
-                    .as_str()
-                    .unwrap_or_default()
-                    .into(),
+                scope: saved.receipt.scope,
+                operation: saved.receipt.operation,
                 replayed: true,
                 outcome: ReceiptOutcome::Written {
                     ticket,
@@ -634,29 +654,13 @@ async fn session_reply(
             ),
         })?;
         let certainty = receipt.certainty();
-        let ticket = receipt.ticket().map(|ticket| {
-            json!({
-                "generation":ticket.generation,
-                "id":ticket.id,
-                "method":ticket.method.as_str(),
-            })
-        });
-        let result = receipt.response().map(|value| match value {
-            ProviderResponse::Reply(value) => json!({"kind":"reply","value":value}),
-            ProviderResponse::Rejected(value) => json!({"kind":"rejected","value":value}),
-        });
-        let exact = json!({"operation":receipt.operation,"scope":receipt.scope,
-            "certainty":certainty.as_str(),"ticket":ticket,
-            "notSentReason":receipt.not_sent_reason().map(|reason| format!("{reason:?}"))});
-        driver::provider_read_receipt(
+        let receipt = driver::provider_read_receipt(
             context.store,
             driver::ProviderReadReceipt {
                 transfer: context.transfer,
                 agent: context.agent,
                 operation: &call.operation,
-                receipt: exact,
-                result: result.clone(),
-                certainty,
+                receipt,
             },
             context.now,
         )
@@ -1379,15 +1383,11 @@ impl TransferTransport for AccountTransferExecutor {
         scope: &'a crate::account_session_runtime::ConnectionScope,
         method: &'a str,
         params: &'a Value,
-    ) -> driver::TransferFuture<'a, TransferDispatch> {
+    ) -> driver::TransferFuture<'a, Result<TransferDispatch, TransferError>> {
         Box::pin(async move {
             let parsed = Method::from_wire(method);
             let Some(method) = parsed else {
-                return TransferDispatch {
-                    receipt: json!({"operation":ticket.request,"scope":scope,"certainty":"not_sent","ticket":null}),
-                    result: None,
-                    certainty: RequestCertainty::NotSent,
-                };
+                return Err(TransferError::Refused("Invalid transfer method"));
             };
             let request = ProviderRequest {
                 account: ticket.account.clone(),
@@ -1404,59 +1404,19 @@ impl TransferTransport for AccountTransferExecutor {
             };
             let session_receipt = self.session.provider_request(request).await;
             match session_receipt {
-                Ok(receipt) => {
-                    let certainty = receipt.certainty();
-                    let ticket_value = receipt.ticket().map(|ticket| json!({
-                        "generation": ticket.generation, "id": ticket.id, "method": ticket.method.as_str(),
-                    }));
-                    let reason = receipt
-                        .not_sent_reason()
-                        .map(|reason| format!("{reason:?}"));
-                    let result = match receipt.outcome {
-                        ReceiptOutcome::Written {
-                            response: ProviderResponse::Reply(value),
-                            ..
-                        } => Some(value),
-                        ReceiptOutcome::Written {
-                            response: ProviderResponse::Rejected(value),
-                            ..
-                        } => Some(json!({"rejected":value})),
-                        ReceiptOutcome::WorkerNotSent { .. }
-                        | ReceiptOutcome::Unknown { .. }
-                        | ReceiptOutcome::NoLiveAccountWorker
-                        | ReceiptOutcome::ExpectedScopeMismatch
-                        | ReceiptOutcome::DeadlineExpired
-                        | ReceiptOutcome::NotHandedOff => None,
-                    };
-                    let exact = json!({"operation":receipt.operation,"scope":receipt.scope,"certainty":certainty.as_str(),
-                        "ticket":ticket_value,"notSentReason":reason,"result":result});
-                    TransferDispatch {
-                        receipt: exact,
-                        result,
-                        certainty,
-                    }
-                }
-                Err(error) => {
-                    let certainty = certainty_after_session_error(error);
-                    TransferDispatch {
-                        receipt: json!({"operation":ticket.request,"scope":scope,"certainty":certainty.as_str(),"ticket":null}),
-                        result: None,
-                        certainty,
-                    }
-                }
+                Ok(receipt) => Ok(TransferDispatch::Receipt(receipt)),
+                Err(AccountSessionError::Requires(name)) => Err(TransferError::Requires(name)),
+                Err(AccountSessionError::Refused(reason)) => Err(TransferError::Refused(reason)),
+                Err(
+                    AccountSessionError::InvalidResponse(_)
+                    | AccountSessionError::Persistence
+                    | AccountSessionError::Unknown,
+                ) => Ok(TransferDispatch::Unknown {
+                    operation: ticket.request.clone(),
+                    scope: scope.clone(),
+                }),
             }
         })
-    }
-}
-
-fn certainty_after_session_error(error: AccountSessionError) -> RequestCertainty {
-    match error {
-        AccountSessionError::Requires(_) | AccountSessionError::Refused(_) => {
-            RequestCertainty::NotSent
-        }
-        AccountSessionError::InvalidResponse(_)
-        | AccountSessionError::Persistence
-        | AccountSessionError::Unknown => RequestCertainty::Unknown,
     }
 }
 
@@ -1731,28 +1691,12 @@ mod retained_executor_tests {
     use super::*;
     use crate::account_session_runtime::SessionOutcome as ReceiptOutcome;
     use crate::account_session_runtime::{
-        AccountSessionError, ConnectionScope, ProviderRequest, RequestCertainty, SessionReceipt,
+        AccountSessionError, ConnectionScope, ProviderRequest, SessionReceipt,
     };
     use serde_json::json;
     use std::sync::Mutex;
     use studio_runtime_providers::{RequestId, RequestTicket};
     use studio_runtime_store::{AgentId, AgentRecord, AgentRepository};
-
-    #[test]
-    fn only_pre_dispatch_session_errors_prove_not_sent() {
-        assert_eq!(
-            certainty_after_session_error(AccountSessionError::Unknown),
-            RequestCertainty::Unknown
-        );
-        assert_eq!(
-            certainty_after_session_error(AccountSessionError::Persistence),
-            RequestCertainty::Unknown
-        );
-        assert_eq!(
-            certainty_after_session_error(AccountSessionError::Refused("preflight")),
-            RequestCertainty::NotSent
-        );
-    }
 
     struct GuardSession {
         store: Arc<RuntimeStore>,

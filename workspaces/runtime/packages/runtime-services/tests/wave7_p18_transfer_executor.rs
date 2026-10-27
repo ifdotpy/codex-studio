@@ -12,7 +12,7 @@ use studio_runtime_store::{AccountTransferRepository, RuntimeStore};
 
 const OPERATION: &str = "41e0b552-0b0c-4c5c-9c37-2e7483cd05c9";
 
-use crate::account_transfer_driver::state as fixture;
+use crate::account_transfer_driver::{dispatch_from_raw, state as fixture};
 fn operation(store: &RuntimeStore) -> Value {
     serde_json::from_str(
         &AccountTransferRepository::get(&store.test_reader().expect("read"), OPERATION)
@@ -60,7 +60,7 @@ impl TransferTransport for Executor<'_> {
         scope: &'a ConnectionScope,
         method: &'a str,
         params: &'a Value,
-    ) -> TransferFuture<'a, TransferDispatch> {
+    ) -> TransferFuture<'a, Result<TransferDispatch, TransferError>> {
         Box::pin(async move {
             self.calls.fetch_add(1, Ordering::SeqCst);
             self.store
@@ -81,11 +81,11 @@ impl TransferTransport for Executor<'_> {
             } else {
                 RequestCertainty::Written
             };
-            TransferDispatch {
-                receipt: exact_receipt(ticket, scope, certainty.as_str()),
-                result: (!lost_response).then(|| json!({"thread":{"id":"destination-thread"}})),
+            Ok(dispatch_from_raw(
+                exact_receipt(ticket, scope, certainty.as_str()),
+                (!lost_response).then(|| json!({"thread":{"id":"destination-thread"}})),
                 certainty,
-            }
+            ))
         })
     }
 }
@@ -192,9 +192,11 @@ async fn executor_commits_intent_before_effect_and_never_resends_after_restart()
                 operation: OPERATION,
                 agent: "lead",
                 provider_operation: "exact-native-request",
-                receipt: late.clone(),
-                result: Some(json!({"thread":{"id":"destination-thread"}})),
-                certainty: RequestCertainty::Written,
+                receipt: dispatch_from_raw(
+                    late.clone(),
+                    Some(json!({"thread":{"id":"destination-thread"}})),
+                    RequestCertainty::Written,
+                ),
             },
             14.0,
         )
@@ -207,9 +209,11 @@ async fn executor_commits_intent_before_effect_and_never_resends_after_restart()
                 operation: OPERATION,
                 agent: "lead",
                 provider_operation: "exact-native-request",
-                receipt: late,
-                result: Some(json!({"thread":{"id":"destination-thread"}})),
-                certainty: RequestCertainty::Written,
+                receipt: dispatch_from_raw(
+                    late,
+                    Some(json!({"thread":{"id":"destination-thread"}})),
+                    RequestCertainty::Written,
+                ),
             },
             15.0,
         )
@@ -230,9 +234,11 @@ async fn executor_commits_intent_before_effect_and_never_resends_after_restart()
                         operation: OPERATION,
                         agent: "lead",
                         provider_operation: "exact-native-request",
-                        receipt,
-                        result: Some(json!({"thread":{"id":"foreign"}})),
-                        certainty: RequestCertainty::Written,
+                        receipt: dispatch_from_raw(
+                            receipt,
+                            Some(json!({"thread":{"id":"foreign"}})),
+                            RequestCertainty::Written
+                        ),
                     },
                     16.0,
                 )
