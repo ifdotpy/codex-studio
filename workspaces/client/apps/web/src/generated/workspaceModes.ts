@@ -4,6 +4,7 @@ export const CHAT_WORKSPACE_MODES = [
   "layr",
   "worktree",
 ] as const;
+export const PROJECT_LAYR_NATIVE_POLICY = "layr-native" as const;
 export const ALWAYS_NATIVE_SYSTEMS = ["Darwin"] as const;
 export const CAPABILITY_NATIVE_SYSTEMS = ["Linux"] as const;
 export const DEFAULT_CHAT_WORKSPACE_MODE = "layr-native";

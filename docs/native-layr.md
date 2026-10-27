@@ -526,6 +526,33 @@ Use `--help` for the operator steps without starting the migration.
 It starts no backend and opens no Studio database.
 `STUDIO_RUNTIME_SERVER` can select the exact server binary.
 
+## Project workspace policy
+
+A project can allow only native Layr workspaces. The server stores the policy on the
+project record as `workspacePolicy`. Absent means no policy; `"layr-native"` is the
+only other value.
+
+Set or clear it with `POST /api/projects`:
+
+```sh
+curl -s -X POST http://127.0.0.1:4621/api/projects \
+  -H "content-type: application/json" \
+  -H "x-canvas-token: $LOCAL_API_TOKEN" \
+  -H "X-Studio-API-Schema: $API_SCHEMA_HASH" \
+  -d '{"action":"set_workspace_policy","path":"/abs/project","expected_revision":0,"workspace_policy":"layr-native"}'
+```
+
+- `expected_revision` is the current `workspacePolicyRevision` (0 when never set).
+  A stale value returns a conflict. A repeated save returns the saved record.
+- `workspace_policy: null` clears the policy.
+- `$API_SCHEMA_HASH` is `API_SCHEMA_HASH` in `workspaces/client/apps/web/src/generated/apiSchema.ts`.
+- The write changes only the local server, which stores the project.
+
+With `layr-native`, the server refuses a new chat or worker in the project with
+mode `worktree`. A worker that inherits `worktree` from a WT lead is refused too.
+Other modes stay allowed. Existing WT chats are not changed. The new chat settings
+preselect Layr and disable WT for the project.
+
 ## Checks
 
 Run the focused Rust tests:

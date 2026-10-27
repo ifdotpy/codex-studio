@@ -267,6 +267,121 @@ async fn invalid_record_of_one_agent_in_a_provider_reply_retires_the_request_and
 }
 
 #[tokio::test]
+async fn native_layr_receipt_capture_faults_stay_inside_each_agents_settlement() {
+    for via_journal in [false, true] {
+        for corruption in [
+            "UPDATE runtime_agents SET record=json_set(record,'$.workspaceMode','layr-native','$.layrStoreRoot','relative') WHERE id=?1",
+            "UPDATE runtime_agents SET record=json_set(record,'$.status',7) WHERE id=?1",
+        ] {
+            let state = State::new().await;
+            let a = state.agent.clone();
+            second_agent(&state, "agent-b", "fake-thread-1", "b-input").await;
+            let mut peer = Peer::new();
+            let mut worker = peer.worker(state.bridge.clone()).await;
+            state.wake(&worker).await;
+            let resume = peer.write("thread/resume").await;
+            corrupt(&state, &a, corruption).await;
+            if !via_journal {
+                let context: Pending = {
+                    let reader = state.bridge.store.test_reader().unwrap();
+                    let raw: String = reader.query_row(
+                        "SELECT json_extract(result,'$.context') FROM runtime_operation_receipts WHERE signature='submitted' AND json_extract(result,'$.context.method')='thread/resume'",
+                        [], |row| row.get(0),
+                    ).unwrap();
+                    serde_json::from_str(&raw).unwrap()
+                };
+                if corruption.contains("layrStoreRoot") {
+                    let mut interrupt = context.clone();
+                    interrupt.method = Method::TurnInterrupt.as_str().into();
+                    interrupt.operation = "unused-native-layr-interrupt".into();
+                    interrupt.thread = None;
+                    let (settled, fault) = store::outcome(
+                        Arc::clone(&state.bridge.store),
+                        "default".into(),
+                        Arc::new(test_resources().unwrap()),
+                        Some(Arc::new(interrupt)),
+                        SessionOutcome::Resolved {
+                            ticket: studio_runtime_providers::RequestTicket {
+                                generation: peer.generation.0,
+                                id: serde_json::from_value(resume["id"].clone()).unwrap(),
+                                method: Method::TurnInterrupt,
+                            },
+                            outcome: RequestOutcome::Reply {
+                                body: ResponseBody::Result(json!({})),
+                                late: false,
+                            },
+                        },
+                        false,
+                    )
+                    .await
+                    .expect("an interrupt does not consume native thread settings");
+                    assert!(settled.retired);
+                    assert!(fault.is_none());
+                }
+                let (settled, fault) = store::outcome(
+                    Arc::clone(&state.bridge.store),
+                    "default".into(),
+                    Arc::new(test_resources().unwrap()),
+                    Some(Arc::new(context)),
+                    SessionOutcome::Resolved {
+                        ticket: studio_runtime_providers::RequestTicket {
+                            generation: peer.generation.0,
+                            id: serde_json::from_value(resume["id"].clone()).unwrap(),
+                            method: Method::ThreadResume,
+                        },
+                        outcome: RequestOutcome::Reply {
+                            body: ResponseBody::Result(json!({"thread":{"id":"fake-thread-0"}})),
+                            late: false,
+                        },
+                    },
+                    false,
+                )
+                .await
+                .expect("agent-local capture failures reach SQL isolation");
+                assert!(settled.retired);
+                assert_eq!(fault.unwrap().agent_id, a);
+            }
+            // The ordinary journal path also retires a replay after direct settlement.
+            let cursor = peer
+                .frame(json!({"id":resume["id"],"result":{"thread":{"id":"fake-thread-0"}}}))
+                .await;
+            peer.acknowledged_or_worker_exits(cursor, &mut worker).await;
+            let held = record_of(&state, &a).await;
+            if corruption.contains("layrStoreRoot") {
+                assert_held(&held, "native-layr/store");
+            } else {
+                // Undecodable rows retain their bytes; the existing hold receipt fences them.
+                assert_eq!(held["status"], 7);
+                let reader = state.bridge.store.test_reader().unwrap();
+                let hold = EventWriteRepository::receipt(
+                    &reader,
+                    &format!(
+                        "{}{a}",
+                        studio_runtime_store::INVALID_AGENT_HOLD_RECEIPT_PREFIX
+                    ),
+                )
+                .unwrap()
+                .expect("invalid agent hold receipt");
+                assert_eq!(
+                    hold.signature,
+                    studio_runtime_store::INVALID_AGENT_HOLD_RECEIPT_SIGNATURE
+                );
+            }
+            let b_start = start_agent(&state, &mut peer, &worker, "agent-b", "fake-thread-1").await;
+            peer.reply(&b_start, json!({"turn":{"id":"turn-b"}})).await;
+            assert_eq!(state.event_status("b-input").await, "delivered");
+            assert_running(&mut worker).await;
+            worker_barrier(&worker).await;
+            assert!(
+                peer.writes.try_recv().is_err(),
+                "the refused request is not sent again"
+            );
+            worker.shutdown().await.unwrap();
+        }
+    }
+}
+
+#[tokio::test]
 async fn poisoned_durable_effect_is_parked_once_and_does_not_end_the_worker() {
     let state = State::new().await;
     let a = state.agent.clone();

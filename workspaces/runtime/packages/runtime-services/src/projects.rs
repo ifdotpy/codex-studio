@@ -7,6 +7,7 @@ use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
+use studio_runtime_schema::workspace_modes::PROJECT_LAYR_NATIVE_POLICY;
 use studio_runtime_store::path_identity::CanonicalPath;
 use studio_runtime_store::{
     ProjectsRepository, RuntimeStore, StoreError, SyncDocumentsRepository, sha256_hex,
@@ -17,6 +18,10 @@ use uuid::Uuid;
 
 pub(crate) mod operations;
 pub use operations::peer_team_write;
+
+/// Refusal for a worktree chat or worker in a project whose policy is native Layr.
+pub const WORKTREE_REFUSED_BY_LAYR_POLICY: &str =
+    "This project allows only Layr workspaces. Use Layr instead of WT.";
 use operations::reorder;
 
 /// Match the Python cross-server UUIDv5 namespace and input encoding.
@@ -492,6 +497,9 @@ pub async fn write(
     if action == "set_worker_environment" {
         return set_worker_environment(store, body, default_account, known_accounts).await;
     }
+    if action == "set_workspace_policy" {
+        return set_workspace_policy(store, body, default_account, known_accounts).await;
+    }
     if action == "set_account_groups" {
         return set_account_groups(store, body, default_account, known_accounts).await;
     }
@@ -931,6 +939,103 @@ async fn set_worker_environment(
             Ok(project)
         })
         .await
+}
+
+/// Set or clear the project's workspace policy (`workspacePolicy`). `null` clears it.
+/// The revision guards concurrent saves, as for the other project settings.
+async fn set_workspace_policy(
+    store: Arc<RuntimeStore>,
+    body: Value,
+    default_account: String,
+    known_accounts: Vec<Value>,
+) -> Result<Value, ProjectsError> {
+    let policy = match body.get("workspace_policy") {
+        Some(Value::Null) => None,
+        Some(Value::String(policy)) if policy == PROJECT_LAYR_NATIVE_POLICY => Some(policy.clone()),
+        _ => return Err(ProjectsError::Invalid("workspace policy is invalid")),
+    };
+    let path_value = body.get("path").cloned();
+    let expected = body
+        .get("expected_revision")
+        .and_then(Value::as_u64)
+        .ok_or(ProjectsError::Invalid(
+            "workspace policy revision is invalid",
+        ))?;
+    let (prepared, path) = prepare_path(store.clone(), path_value, true).await?;
+    store
+        .transaction_with(move |tx| -> Result<Value, ProjectsError> {
+            prepared.recheck(tx)?;
+            let mut project = load_project(tx, &path)?;
+            if path.starts_with("project:") && project.is_none() {
+                return Err(ProjectsError::Invalid("select an existing project"));
+            }
+            let current = revision_of(project.as_ref(), "workspacePolicyRevision", &path)?;
+            if project.as_ref().is_some_and(|row| {
+                row.get("workspacePolicy").and_then(Value::as_str) == policy.as_deref()
+                    && (expected == current || expected.saturating_add(1) == current)
+            }) {
+                return Ok(project.unwrap_or(Value::Null));
+            }
+            if current != expected {
+                return Err(ProjectsError::Conflict(
+                    "Workspace policy changed. Reload it before saving",
+                ));
+            }
+            if project.is_none() {
+                let account = project_account(&prepared, tx, &path, &default_account)?;
+                project = Some(new_project(
+                    &prepared,
+                    &path,
+                    &project_name(None, &path)?,
+                    &account,
+                    &known_accounts,
+                )?);
+            }
+            let mut project = project.ok_or(ProjectsError::Invalid("project is unavailable"))?;
+            project["workspacePolicy"] = policy.map_or(Value::Null, |value| json!(value));
+            project["workspacePolicyRevision"] = json!(current + 1);
+            ProjectsRepository::put_project(tx, &project)?;
+            Ok(project)
+        })
+        .await
+}
+
+/// True when `workspace` is `worktree` and the deepest project folder that contains
+/// `directory` allows only native Layr. Other workspaces and projects without a policy
+/// are never refused here.
+pub async fn refuses_worktree(
+    store: &RuntimeStore,
+    directory: &str,
+    workspace: &str,
+) -> Result<bool, StoreError> {
+    if workspace != "worktree" {
+        return Ok(false);
+    }
+    let projects = store
+        .read_async("runtime-services/projects/workspace-policy", |read| {
+            ProjectsRepository::list(read)
+        })
+        .await?;
+    let directory = canonical_directory(directory);
+    let policy = projects
+        .into_iter()
+        .filter_map(|(_, project)| {
+            let policy = project.get("workspacePolicy")?.as_str()?;
+            let folder = canonical_directory(project.get("path")?.as_str()?);
+            directory
+                .starts_with(&folder)
+                .then_some((folder.components().count(), policy.to_owned()))
+        })
+        .max_by_key(|(depth, _)| *depth)
+        .map(|(_, policy)| policy);
+    Ok(policy.as_deref() == Some(PROJECT_LAYR_NATIVE_POLICY))
+}
+
+fn canonical_directory(path: &str) -> PathBuf {
+    let expanded = expand_home(path);
+    CanonicalPath::existing(&expanded)
+        .map(CanonicalPath::into_path_buf)
+        .unwrap_or(expanded)
 }
 
 /// Save the project's account order (`account_groups`, see

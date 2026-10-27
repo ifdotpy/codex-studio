@@ -17742,6 +17742,16 @@ export interface components {
        * @default null
        */
       workerEnvironmentRevision?: number | null | undefined;
+      /**
+       * Workspace Policy
+       * @default null
+       */
+      workspacePolicy?: "layr-native" | null | undefined;
+      /**
+       * Workspacepolicyrevision
+       * @default null
+       */
+      workspacePolicyRevision?: number | null | undefined;
     } & {
       [key: string]: components["schemas"]["JsonValue"] | undefined;
     };
@@ -18167,6 +18177,16 @@ export interface components {
        * @default null
        */
       workerEnvironmentRevision?: number | null | undefined;
+      /**
+       * Workspace Policy
+       * @default null
+       */
+      workspacePolicy?: "layr-native" | null | undefined;
+      /**
+       * Workspacepolicyrevision
+       * @default null
+       */
+      workspacePolicyRevision?: number | null | undefined;
     } & {
       [key: string]: components["schemas"]["JsonValue"] | undefined;
     };
@@ -18316,6 +18336,7 @@ export interface components {
             | "rename_folder"
             | "remove_folder"
             | "set_account_groups"
+            | "set_workspace_policy"
           )
         | null
         | undefined;
@@ -18361,6 +18382,11 @@ export interface components {
        * @default null
        */
       server?: string | null | undefined;
+      /**
+       * Workspace Policy
+       * @default null
+       */
+      workspace_policy?: "layr-native" | null | undefined;
     };
     /**
      * ProviderKind
