@@ -5,6 +5,19 @@ use std::sync::LazyLock;
 #[cfg(test)]
 thread_local! {
     pub(super) static COMPLAINT_DECODES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    pub(super) static DELIVERY_CHECKS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+pub(super) fn event_delivery(
+    event: &QueueEvent,
+    metadata: Option<&Value>,
+) -> Result<
+    studio_runtime_schema::DeliveryMoment,
+    studio_runtime_schema::delivery::InvalidDeliveryMoment,
+> {
+    #[cfg(test)]
+    DELIVERY_CHECKS.with(|count| count.set(count.get() + 1));
+    studio_runtime_schema::DeliveryMoment::for_event(&event.kind, &event.text, metadata)
 }
 
 /// `_v5` removes the obsolete capacity-start predicate. The 2026-10-21
@@ -972,7 +985,7 @@ impl SchedulerRepository {
         let mut events = Vec::with_capacity(joined.len());
         let mut metadata = BTreeMap::new();
         for (event, raw) in joined {
-            if let Some(value) = pending_metadata(&event, raw.as_deref())? {
+            if let (Some(value), _) = pending_metadata(&event, raw.as_deref())? {
                 metadata.insert(event.id.0.clone(), value);
             }
             events.push(event);
@@ -1365,7 +1378,7 @@ pub(super) fn refused(agent: &AgentRecord, reason: String) -> ClaimedEvents {
 pub(super) fn pending_metadata(
     event: &QueueEvent,
     raw: Option<&str>,
-) -> StoreResult<Option<Value>> {
+) -> StoreResult<(Option<Value>, studio_runtime_schema::DeliveryMoment)> {
     let value = raw
         .map(serde_json::from_str::<Value>)
         .transpose()
@@ -1376,16 +1389,12 @@ pub(super) fn pending_metadata(
             || !value
                 .get("radioAnswerTurnId")
                 .is_none_or(|v| v.is_null() || v.is_string())
-    }) || studio_runtime_schema::DeliveryMoment::for_event(
-        &event.kind,
-        &event.text,
-        value.as_ref(),
-    )
-    .is_err()
-    {
+    }) {
         return Err(invalid_object("runtime_event_meta", &event.id.0));
     }
-    Ok(value)
+    let delivery = event_delivery(event, value.as_ref())
+        .map_err(|_| invalid_object("runtime_event_meta", &event.id.0))?;
+    Ok((value, delivery))
 }
 
 impl SchedulerRepository {

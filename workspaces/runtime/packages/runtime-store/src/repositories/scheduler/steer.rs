@@ -154,10 +154,8 @@ fn steer_turn(agent: &AgentRecord) -> Option<(String, String)> {
 
 /// Delivery eligibility is separate from event order: deferred input stays in
 /// the same queue while later current-turn input can join the active turn.
-fn steerable(event: &QueueEvent, metadata: Option<&Value>) -> StoreResult<bool> {
-    let moment = DeliveryMoment::for_event(&event.kind, &event.text, metadata)
-        .map_err(|_| invalid_object("runtime_event_meta", &event.id.0))?;
-    Ok(moment == DeliveryMoment::CurrentTurn
+fn steerable(event: &QueueEvent, metadata: Option<&Value>, moment: DeliveryMoment) -> bool {
+    moment == DeliveryMoment::CurrentTurn
         && shares_turn(&event.kind, true)
         && !native_input_command(event)
         && !event.text.trim().is_empty()
@@ -166,7 +164,7 @@ fn steerable(event: &QueueEvent, metadata: Option<&Value>) -> StoreResult<bool> 
                 .and_then(Value::as_array)
                 .is_none_or(Vec::is_empty)
                 && meta.get("radioAnswerTurnId").is_none_or(Value::is_null)
-        }))
+        })
 }
 
 /// Ordered pending input with its stored metadata. Callers select a delivery
@@ -197,8 +195,8 @@ fn pending_steer_events(
     let mut metadata = BTreeMap::new();
     for row in rows {
         let (event, raw) = row?;
-        let meta = pending_metadata(&event, raw.as_deref())?;
-        if steerable(&event, meta.as_ref())? {
+        let (meta, moment) = pending_metadata(&event, raw.as_deref())?;
+        if steerable(&event, meta.as_ref(), moment) {
             if let Some(meta) = meta {
                 metadata.insert(event.id.0.clone(), meta);
             }

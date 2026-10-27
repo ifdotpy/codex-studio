@@ -30,6 +30,18 @@ use rusqlite::Connection;
 const AGENT: &str = "agent";
 const TURN: &str = "turn-1";
 
+#[test]
+fn busy_selection_resolves_each_delivery_once() {
+    let connection = database();
+    super::super::selection::DELIVERY_CHECKS.with(|count| count.set(0));
+    let (events, _) = pending_steer_events(&connection, AGENT, 4).expect("selection");
+    assert_eq!(events.len(), 3);
+    assert_eq!(
+        super::super::selection::DELIVERY_CHECKS.with(std::cell::Cell::get),
+        4
+    );
+}
+
 fn database() -> Connection {
     let mut connection = Connection::open_in_memory().expect("memory database opens");
     connection
