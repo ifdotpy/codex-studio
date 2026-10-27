@@ -1,8 +1,8 @@
 import test from "node:test";
-import type { GateStep } from "../facade.ts";
+import type { GateStep, PackageManifest } from "../facade.ts";
 import assert from "node:assert/strict";
 
-import { executeRecipe, gateSteps } from "../facade.ts";
+import { commandFor, discover, executeRecipe, gateSteps } from "../facade.ts";
 import { runLogged } from "../owned-process.ts";
 import {
   chmodSync,
@@ -384,6 +384,75 @@ test("Cargo compilation is confined to the fixed Rust lane and both tiers use on
   );
 });
 
+test("compiler policy witnesses run after dependency preparation outside the JS lane", () => {
+  for (const name of ["test-fast", "test-comprehensive", "test-fast-rest"]) {
+    const steps = gateSteps(process.cwd(), name);
+    const policy = steps.find((step) => step.id === "rust-lint-policy");
+    assert.ok(policy);
+    assert.equal(policy.lane, "rust");
+    assert.equal(policy.requires, "workspace");
+    assert.equal(policy.requiresCargo, true);
+    assert.deepEqual(policy.commands, [
+      ["pnpm", ["--dir", process.cwd(), "run", "test:rust-lint-policy"]],
+    ]);
+  }
+  const nonRust = gateSteps(process.cwd(), "test-fast-rest-non-rust");
+  assert.ok(nonRust.every((step) => step.id !== "rust-lint-policy"));
+  assert.equal(
+    nonRust.find((step) => step.id === "tooling")?.options?.script,
+    "test:tooling:js",
+  );
+  const workflow = readFileSync(".github/workflows/ci.yml", "utf8");
+  const rust = workflow.split("  rust:\n")[1]?.split("  rust-macos:\n")[0];
+  assert.ok(rust);
+  assert.match(rust, /run: pnpm run test:rust-lint-policy/);
+  assert.ok(
+    rust.indexOf("cargo clippy --workspace") <
+      rust.indexOf("run: pnpm run test:rust-lint-policy"),
+  );
+  const manifest: PackageManifest = JSON.parse(
+    readFileSync("package.json", "utf8"),
+  );
+  const files = (script: string) => {
+    const command = manifest.scripts?.[script];
+    assert.ok(command, script);
+    assert.ok(command.startsWith("node --test "), script);
+    return command.slice("node --test ".length).split(/\s+/);
+  };
+  // test:tooling owns the complete list; its two gate consumers must partition it.
+  const policyFiles = files("test:rust-lint-policy");
+  assert.deepEqual(policyFiles, [
+    "workspaces/tooling/apps/repository-checks/tests/rust-lint-policy.test.ts",
+  ]);
+  assert.deepEqual(
+    files("test:tooling:js"),
+    files("test:tooling").filter((file) => !policyFiles.includes(file)),
+  );
+  const tooling = discover(process.cwd()).find(
+    (item) => item.name === "codex-studio-tooling",
+  );
+  assert.ok(tooling);
+  assert.deepEqual(
+    commandFor(process.cwd(), tooling, "test", "native Clippy"),
+    [
+      [
+        "pnpm",
+        [
+          "--filter",
+          tooling.name,
+          "exec",
+          "node",
+          "--test",
+          "--test-reporter=tap",
+          "--test-name-pattern",
+          "native Clippy",
+          ...files("test:tooling"),
+        ],
+      ],
+    ],
+  );
+});
+
 test("archived CI partitions reuse prepared binaries without Cargo build options", () => {
   // just reports the real justfile directory, for example /private/var on macOS.
   const root = realpathSync(
@@ -448,6 +517,97 @@ require('node:fs').appendFileSync(process.env.CAPTURE, JSON.stringify({args: pro
     );
   } finally {
     rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("hosted shards omit native binaries while the prepared builder runs them", () => {
+  const workflow = readFileSync(".github/workflows/ci.yml", "utf8");
+  const builder = workflow
+    .split("  rust-build-tests:\n")[1]
+    ?.split("  fast-rest:\n")[0];
+  const shards = workflow
+    .split("  fast-rust:\n")[1]
+    ?.split("  fast-browser-smoke:\n")[0];
+  assert.ok(builder);
+  assert.ok(shards);
+  assert.match(builder, /run: just test-native-ci/);
+  assert.doesNotMatch(shards, /native-linux-deps|apt-get/);
+
+  const nativePackage = /^name = "([^"]+)"/m.exec(
+    readFileSync("workspaces/client/apps/native/src-tauri/Cargo.toml", "utf8"),
+  )?.[1];
+  assert.ok(nativePackage);
+  const filter = `package(=${nativePackage})`;
+  for (const [recipe, expected] of [
+    [["test-native-ci"], `-E '${filter}'`],
+    [["build-rust-test-archive", "archive.tar.zst"], `-E 'not ${filter}'`],
+  ] as const) {
+    const result = spawnSync("just", ["--dry-run", ...recipe], {
+      encoding: "utf8",
+      timeout: 10_000,
+    });
+    assert.equal(result.status, 0, result.stderr);
+    assert.ok(result.stderr.includes(expected), result.stderr);
+    assert.match(result.stderr, /--workspace --locked/);
+    assert.doesNotMatch(result.stderr, /--exclude|--package| -p /);
+  }
+});
+
+test("native dependency setup selects the Ubuntu archive before every apt operation", () => {
+  const actionPath = path.resolve(".github/actions/native-linux-deps");
+  const action = readFileSync(path.join(actionPath, "action.yml"), "utf8");
+  const script = action.split("      run: |\n")[1];
+  assert.ok(script);
+  const directory = mkdtempSync(path.join(tmpdir(), "studio-apt-mirror-"));
+  try {
+    writeFileSync(
+      path.join(directory, "apt-mirrors.txt"),
+      "http://azure.archive.ubuntu.com/ubuntu/\tpriority:1\nhttps://archive.ubuntu.com/ubuntu/\tpriority:2\n",
+    );
+    // Run the real action with isolated filesystem and apt stand-ins. No sudo or
+    // package manager on the test host is invoked.
+    const result = spawnSync(
+      "bash",
+      [
+        "-euc",
+        `
+        sudo() {
+          if [ "$1" = install ]; then
+            test "$2" = -m
+            test "$3" = 644
+            test "$5" = /etc/apt/apt-mirrors.txt
+            command install -m "$3" "$4" "$MIRROR_CAPTURE"
+          elif [ "$1" = apt-get ]; then
+            test "$(cat "$MIRROR_CAPTURE")" = https://archive.ubuntu.com/ubuntu/
+            printf '%s\\n' "$*" >> "$APT_CAPTURE"
+          else
+            return 1
+          fi
+        }
+        ${script}
+        `,
+      ],
+      {
+        encoding: "utf8",
+        timeout: 10_000,
+        env: {
+          ...process.env,
+          GITHUB_ACTION_PATH: actionPath,
+          MIRROR_CAPTURE: path.join(directory, "apt-mirrors.txt"),
+          APT_CAPTURE: path.join(directory, "apt.log"),
+        },
+      },
+    );
+    assert.equal(result.status, 0, result.stderr);
+    assert.deepEqual(
+      readFileSync(path.join(directory, "apt.log"), "utf8").trim().split("\n"),
+      [
+        "apt-get update",
+        "apt-get install -y --no-install-recommends libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf",
+      ],
+    );
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
   }
 });
 
