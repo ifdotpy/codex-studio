@@ -421,7 +421,9 @@ impl Listings {
         for component in rel.split('/') {
             let meta = match fs::symlink_metadata(folder.join(component)) {
                 Ok(meta) => meta,
-                Err(error) if not_found(&error) || error.raw_os_error() == Some(libc::ENOTDIR) => {
+                Err(error)
+                    if not_found(&error) || error.kind() == std::io::ErrorKind::NotADirectory =>
+                {
                     return Ok(None);
                 }
                 Err(error) => return Err(error),
@@ -2218,7 +2220,7 @@ impl<'a> ProjectSync<'a> {
             }
             let actual = match listings.actual(&self.root, rel) {
                 Ok(actual) => actual,
-                Err(error) if error.raw_os_error() == Some(libc::ENOTDIR) => None,
+                Err(error) if error.kind() == std::io::ErrorKind::NotADirectory => None,
                 Err(error) => return Err(io(error)),
             };
             if let Some(other) = actual.as_deref().filter(|actual| *actual != rel) {
@@ -2259,7 +2261,7 @@ impl<'a> ProjectSync<'a> {
             let meta = match fs::symlink_metadata(&path) {
                 Ok(meta) => Some(meta),
                 Err(error) if not_found(&error) => None,
-                Err(error) if error.raw_os_error() == Some(libc::ENOTDIR) => {
+                Err(error) if error.kind() == std::io::ErrorKind::NotADirectory => {
                     // A Mac file stands where main has a folder: that file is the conflict.
                     done.skipped.insert(rel.to_owned());
                     continue;
@@ -2454,6 +2456,77 @@ mod tests {
                 fs::read(path).is_ok_and(|content| content == bytes)
             }
         })
+    }
+
+    #[test]
+    fn listings_treat_a_file_in_a_parent_path_as_absent() {
+        let (_temp, root) = temporary();
+        fs::write(root.join("file"), b"local file").unwrap();
+        fs::create_dir(root.join("directory")).unwrap();
+        fs::write(root.join("directory/child"), b"local child").unwrap();
+        let mut listings = Listings::default();
+        assert_eq!(listings.actual(&root, "file/child").unwrap(), None);
+        assert_eq!(listings.actual(&root, "missing/child").unwrap(), None);
+        assert_eq!(
+            listings.actual(&root, "file").unwrap().as_deref(),
+            Some("file")
+        );
+        assert_eq!(
+            listings
+                .actual(&root, "directory/child")
+                .unwrap()
+                .as_deref(),
+            Some("directory/child")
+        );
+    }
+
+    #[test]
+    fn outbound_preserves_directory_and_file_conflicts() {
+        let (_temp, root) = temporary();
+        fs::write(root.join("file"), b"local file").unwrap();
+        fs::create_dir(root.join("directory")).unwrap();
+        fs::write(root.join("directory/child"), b"local child").unwrap();
+        // Conflicts must be skipped before any guest content is requested.
+        let guest = crate::linux_vm_guest::UnixSocketGuestRpc::new(root.join("unused.sock"));
+        let sync = ProjectSync {
+            guest: &guest,
+            project_id: "p1".into(),
+            root: root.clone(),
+            directory: root.join("sync"),
+            import_state: None,
+            file_limit: MAX_SYNC_FILE_BYTES,
+        };
+        let mut manifest = Manifest::new();
+        let done = sync
+            .outbound(
+                &Rules::new(&root).unwrap(),
+                &mut manifest,
+                &json!({
+                    "mainStateId": "s2", "merge": "none",
+                    "outbound": {"s1": [
+                        {"path": "file/child", "kind": "file", "sha256": hex_sha(b"remote")},
+                        {"path": "directory", "kind": "file", "sha256": hex_sha(b"remote")}
+                    ]}
+                }),
+                &BTreeMap::new(),
+                &BTreeSet::new(),
+                &Map::new(),
+                0,
+                &BTreeMap::new(),
+            )
+            .unwrap();
+        assert_eq!(
+            done.skipped,
+            BTreeSet::from(["directory".to_owned(), "file/child".to_owned()])
+        );
+        assert!(done.written.is_empty());
+        assert!(done.agreed.is_empty());
+        assert!(manifest.is_empty());
+        assert_eq!(fs::read(root.join("file")).unwrap(), b"local file");
+        assert_eq!(
+            fs::read(root.join("directory/child")).unwrap(),
+            b"local child"
+        );
     }
 
     #[test]
