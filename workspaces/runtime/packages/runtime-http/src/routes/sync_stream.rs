@@ -304,8 +304,8 @@ async fn sync_stream(
     };
     let view = match state
         .resource_notifications
-        .changes_since_with_content(&resources, None, |resource| {
-            resource_content(state.clone(), resource)
+        .changes_since_with_incremental_content(&resources, None, |resource, previous| {
+            incremental_resource_content(state.clone(), resource, previous)
         })
         .await
     {
@@ -314,13 +314,6 @@ async fn sync_stream(
     };
     let mut voice_sequences = BTreeMap::new();
     let mut transcript_sequences = BTreeMap::new();
-    let transcript_updates = read_transcript_changes(
-        Some(store.clone()),
-        &view.resources,
-        &mut transcript_sequences,
-        false,
-    )
-    .await;
     let subscription_snapshot = view.cursor.clone();
     let mut initial_event = match resource_changes_event(
         &state.workspace_id,
@@ -334,7 +327,6 @@ async fn sync_stream(
         Ok(event) => event,
         Err(error) => return error.into_response(),
     };
-    attach_transcript_changes(&mut initial_event, transcript_updates);
     if let Err(error) = attach_initial_entries(&state, &mut initial_event, &since).await {
         return error.into_response();
     }
@@ -489,6 +481,23 @@ async fn resource_content(state: HttpState, resource: Value) -> Option<Vec<u8>> 
     super::subscriptions::resource_content(state, resource).await
 }
 
+async fn incremental_resource_content(
+    state: HttpState,
+    resource: Value,
+    previous: Option<studio_runtime_services::resource_notify::EntityContentFingerprint>,
+) -> Option<studio_runtime_services::resource_notify::ContentProjection> {
+    use studio_runtime_services::resource_notify::ContentProjection;
+    let reference: crate::generated::ResourceRef = serde_json::from_value(resource.clone()).ok()?;
+    if super::entity_transfer::owns(&reference) {
+        return super::subscription_entities::incremental_fingerprint(state, reference, previous)
+            .await
+            .map(ContentProjection::Entity);
+    }
+    resource_content(state, resource)
+        .await
+        .map(ContentProjection::Bytes)
+}
+
 /// Only sessions with a live readiness selector own a filesystem source. Dropping
 /// the stream or removing that selector drops its OS watcher as well.
 async fn readiness_source(
@@ -559,6 +568,17 @@ pub(super) async fn append_progress_frames(
     }
 }
 
+#[cfg(test)]
+static TEST_TRANSCRIPT_PULLS: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
+
+#[cfg(test)]
+fn record_test_transcript_pull(agent: &str) {
+    if agent == "pull-count-fixture" {
+        TEST_TRANSCRIPT_PULLS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
 /// Reuse the durable transcript projection; the returned payload and checkpoint
 /// are produced by one serialized projection transaction, independent of SSE epochs.
 pub(super) async fn transcript_initial_snapshot(
@@ -576,6 +596,8 @@ pub(super) async fn transcript_initial_snapshot(
         .filter(|cursor| cursor.workspace_id == state.workspace_id)
         .map(|cursor| cursor.seq);
     let read = |after| {
+        #[cfg(test)]
+        record_test_transcript_pull(&transcript.agent_id);
         studio_runtime_services::transcript::pull_scope(
             store.clone(),
             &scope,
@@ -831,6 +853,8 @@ async fn read_transcript_changes(
         } else {
             None
         };
+        #[cfg(test)]
+        record_test_transcript_pull(&agent);
         let result = studio_runtime_services::transcript::pull_scope(
             store.clone(),
             &scope,
@@ -1218,8 +1242,8 @@ async fn subscription_frame(state: &mut ResourceStream, update: SubscriptionChan
         let http_state = state.http_state.as_ref()?;
         let view = state
             .notifications
-            .changes_since_with_content(&update.added, None, |resource| {
-                resource_content(http_state.clone(), resource)
+            .changes_since_with_incremental_content(&update.added, None, |resource, previous| {
+                incremental_resource_content(http_state.clone(), resource, previous)
             })
             .await
             .ok()?;
@@ -1245,13 +1269,6 @@ async fn subscription_frame(state: &mut ResourceStream, update: SubscriptionChan
                 .ok()?
                 .0;
         }
-        let updates = read_transcript_changes(
-            state.store.clone(),
-            &view.resources,
-            &mut state.transcript_sequences,
-            false,
-        )
-        .await;
         let mut event = resource_changes_event(
             &state.workspace_id,
             &view,
@@ -1262,7 +1279,6 @@ async fn subscription_frame(state: &mut ResourceStream, update: SubscriptionChan
             None,
         )
         .ok()?;
-        attach_transcript_changes(&mut event, updates);
         attach_initial_entries(http_state, &mut event, &update.since)
             .await
             .ok()?;
@@ -1325,7 +1341,7 @@ async fn next_frame(
         return Some((Ok(event), state));
     }
     while let Some(transfer) = state.entity_transfers.front_mut() {
-        match transfer.next() {
+        match transfer.next().await {
             Ok(Some(event)) => return Some((Ok(event), state)),
             Ok(None) => {
                 state.entity_transfers.pop_front();
@@ -1384,18 +1400,26 @@ async fn next_frame(
                 _ = state.heartbeat.tick() => true,
             }
         };
-        let mut view = match state
-            .notifications
-            .changes_since_with_content(&state.resources, Some(state.last_revision), |resource| {
-                let http_state = state.http_state.clone();
-                async move { resource_content(http_state?, resource).await }
-            })
-            .await
-        {
-            Ok(view) if !view.cursor.closed => view,
-            _ => return None,
-        };
+        let mut view =
+            match state
+                .notifications
+                .changes_since_with_incremental_content(
+                    &state.resources,
+                    Some(state.last_revision),
+                    |resource, previous| {
+                        let http_state = state.http_state.clone();
+                        async move {
+                            incremental_resource_content(http_state?, resource, previous).await
+                        }
+                    },
+                )
+                .await
+            {
+                Ok(view) if !view.cursor.closed => view,
+                _ => return None,
+            };
         state.last_revision = view.cursor.revision;
+        state.next_resources_frame_at = Some(Instant::now() + SYNC_FRAME_MIN_INTERVAL);
         if !view.resources.is_empty() {
             state.consecutive_token_frames = 0;
             let (sequence, batch) = if state.http_state.is_some() {
@@ -1481,7 +1505,6 @@ async fn next_frame(
             if event.resources.is_empty() && state.entity_transfers.is_empty() {
                 continue;
             }
-            state.next_resources_frame_at = Some(Instant::now() + SYNC_FRAME_MIN_INTERVAL);
             if let Some(http) = &state.http_state {
                 append_progress_frames(http, &view, &mut state.initial).await;
             }
@@ -3187,6 +3210,111 @@ mod tests {
             restored["records"], rates["records"],
             "full replay includes quiet agents"
         );
+    }
+
+    #[tokio::test]
+    async fn transcript_open_and_add_pull_one_baseline_for_each_cursor() {
+        use axum::{body::Body, extract::ConnectInfo, http::Request};
+        use std::sync::atomic::Ordering;
+        use tower::ServiceExt;
+
+        let root = tempfile::tempdir().expect("isolated state");
+        let store = Arc::new(RuntimeStore::open(Some(root.path())).await.expect("store"));
+        store.transaction(|tx| {
+            tx.execute("INSERT INTO runtime_agents(id,record) VALUES('pull-count-fixture',?1)", [json!({"provider":studio_runtime_schema::ProviderKind::Codex,"id":"pull-count-fixture","rootId":"pull-count-fixture","epoch":0,"status":"running","threadId":"thread","accountKey":"default","turnId":"turn","inFlight":true,"activeTools":[],"events":0}).to_string()])?;
+            tx.execute("INSERT INTO runtime_items(id,agent,record,created) VALUES('count-item','pull-count-fixture',?1,1)", [json!({"id":"count-item","role":"assistant","text":"message"}).to_string()])?;
+            Ok(())
+        }).await.expect("transcript fixture");
+        let http = HttpState::new(
+            "token".into(),
+            "workspace".into(),
+            root.path().display().to_string(),
+            4321,
+            None,
+            Some(store.clone()),
+            None,
+        );
+        let resource = json!({"kind":"transcript","agentId":"pull-count-fixture"});
+        let baseline = studio_runtime_services::transcript::pull_scope(
+            store.clone(),
+            "transcript:pull-count-fixture",
+            "pull-count-fixture",
+            0,
+        )
+        .await
+        .expect("baseline");
+        let current = baseline["checkpoint"]["seq"].as_i64().expect("checkpoint");
+        assert!(current > 0);
+        let app = crate::router(http.clone()).expect("router");
+        for (workspace, seq) in [
+            ("workspace", current),
+            ("workspace", 0),
+            ("foreign", current),
+        ] {
+            let cursor = SubscriptionCursor {
+                terminal_generation: None,
+                workspace_id: workspace.into(),
+                seq,
+            };
+            let addition = json!({"resource":resource,"since":cursor});
+            let query = form_urlencoded::Serializer::new(String::new())
+                .append_pair("protocol", SYNC_PROTOCOL_VERSION_TEXT)
+                .append_pair("resources", &json!([resource]).to_string())
+                .append_pair("since", &json!([addition]).to_string())
+                .finish();
+            TEST_TRANSCRIPT_PULLS.store(0, Ordering::Relaxed);
+            let response = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .uri(format!("/api/sync/stream?{query}"))
+                        .header("host", "127.0.0.1:4321")
+                        .header("x-canvas-token", "token")
+                        .extension(ConnectInfo(std::net::SocketAddr::from((
+                            [127, 0, 0, 1],
+                            12345,
+                        ))))
+                        .body(Body::empty())
+                        .expect("request"),
+                )
+                .await
+                .expect("open");
+            assert_eq!(response.status(), StatusCode::OK);
+            assert_eq!(
+                TEST_TRANSCRIPT_PULLS.load(Ordering::Relaxed),
+                1,
+                "open {workspace} {seq}"
+            );
+            drop(response);
+
+            let mut stream = test_stream(
+                &http.sync_changes,
+                &http.token_rates,
+                http.resource_notifications.clone(),
+                vec![],
+            );
+            stream.http_state = Some(http.clone());
+            stream.store = Some(store.clone());
+            let since = BTreeMap::from([(resource.to_string(), cursor)]);
+            TEST_TRANSCRIPT_PULLS.store(0, Ordering::Relaxed);
+            subscription_frame(
+                &mut stream,
+                SubscriptionChange {
+                    generation: 1,
+                    resources: vec![resource.clone()],
+                    added: vec![resource.clone()],
+                    token_rates: None,
+                    since,
+                },
+            )
+            .await
+            .expect("add");
+            assert_eq!(
+                TEST_TRANSCRIPT_PULLS.load(Ordering::Relaxed),
+                1,
+                "add {workspace} {seq}"
+            );
+        }
     }
 
     #[tokio::test]
@@ -5156,6 +5284,173 @@ mod tests {
                 .expect("data"),
         )
         .expect("document")
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn unchanged_resource_evaluations_are_paced() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use studio_runtime_services::account_session_runtime::{
+            AccountSessionError, AccountSessionPort,
+        };
+        struct CountingLimits(AtomicUsize);
+        impl AccountSessionPort for CountingLimits {
+            fn limits_snapshot(&self, account: &str) -> Result<Value, AccountSessionError> {
+                self.0.fetch_add(1, Ordering::SeqCst);
+                Ok(json!({"accountKey":account,"data":null,"error":null,"at":null}))
+            }
+        }
+        let hub = Arc::new(ChangeNotificationHub::new());
+        let tokens = TokenRateHub::new();
+        let notifications = Arc::new(ResourceNotifications::new(hub.clone()));
+        let port = Arc::new(CountingLimits(AtomicUsize::new(0)));
+        let mut http = HttpState::new(
+            "token".into(),
+            "workspace".into(),
+            String::new(),
+            4321,
+            None,
+            None,
+            None,
+        );
+        http.account_session = Some(port.clone());
+        let resources = vec![json!({"kind":"limits","accountKey":"default"})];
+        notifications
+            .changes_since_with_incremental_content(&resources, None, |resource, previous| {
+                incremental_resource_content(http.clone(), resource, previous)
+            })
+            .await
+            .expect("baseline");
+        port.0.store(0, Ordering::SeqCst);
+        let mut state = test_stream(&hub, &tokens, notifications, resources);
+        state.http_state = Some(http);
+        let mut pending = Box::pin(next_frame(state));
+        assert!(futures_util::poll!(&mut pending).is_pending());
+        for _ in 0..4 {
+            hub.notify_one();
+            assert!(futures_util::poll!(&mut pending).is_pending());
+        }
+        assert_eq!(
+            port.0.load(Ordering::SeqCst),
+            1,
+            "unchanged publications share the pacing window"
+        );
+        tokio::time::advance(SYNC_FRAME_MIN_INTERVAL).await;
+        assert!(futures_util::poll!(&mut pending).is_pending());
+        assert_eq!(
+            port.0.load(Ordering::SeqCst),
+            2,
+            "the coalesced publication is evaluated at the deadline"
+        );
+    }
+
+    #[tokio::test]
+    async fn gated_process_provider_does_not_block_another_stream() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use studio_runtime_services::account_session_runtime::{
+            AccountSessionError, AccountSessionFuture, AccountSessionPort, ConnectionScope,
+            ProviderRequest, SessionReceipt,
+        };
+        struct GatedProvider {
+            entered: tokio::sync::Notify,
+            release: tokio::sync::Notify,
+            limits: AtomicUsize,
+        }
+        impl AccountSessionPort for GatedProvider {
+            fn current_scope(&self, account: &str) -> Option<ConnectionScope> {
+                Some(ConnectionScope {
+                    account: account.into(),
+                    connection: "connection".into(),
+                    generation: 1,
+                })
+            }
+            fn provider_request(
+                &self,
+                request: ProviderRequest,
+            ) -> AccountSessionFuture<'_, SessionReceipt> {
+                Box::pin(async move {
+                    assert_eq!(request.method.as_str(), "thread/read");
+                    self.entered.notify_one();
+                    self.release.notified().await;
+                    Err(AccountSessionError::Unknown)
+                })
+            }
+            fn limits_snapshot(&self, account: &str) -> Result<Value, AccountSessionError> {
+                self.limits.fetch_add(1, Ordering::SeqCst);
+                Ok(json!({"accountKey":account,"data":null,"error":null,"at":null}))
+            }
+        }
+        let root = tempfile::tempdir().expect("isolated state");
+        let store = Arc::new(
+            studio_runtime_store::RuntimeStore::open(Some(root.path()))
+                .await
+                .expect("store"),
+        );
+        store.transaction(|tx| {
+            let owner = json!({"id":"owner","rootId":"owner","epoch":1,"status":"interrupted","accountKey":"default","provider":"claude","threadId":"thread","turnId":"turn","inFlight":false,"autoWake":false,"nativeResponseTurn":"turn","restartRecovery":{"stage":"held","epoch":1,"accountKey":"default","threadId":"thread","turnId":null},"disconnectRecovery":{"source":"restart","epoch":1,"accountKey":"default","threadId":"thread"}});
+            tx.execute("INSERT INTO runtime_agents(id,record) VALUES('owner',?1)", [owner.to_string()])?;
+            Ok(())
+        }).await.expect("held owner");
+        let port = Arc::new(GatedProvider {
+            entered: tokio::sync::Notify::new(),
+            release: tokio::sync::Notify::new(),
+            limits: AtomicUsize::new(0),
+        });
+        let mut http = HttpState::new(
+            "token".into(),
+            "workspace".into(),
+            root.path().display().to_string(),
+            4321,
+            None,
+            Some(store),
+            None,
+        );
+        http.account_session = Some(port.clone());
+        let hub = Arc::new(ChangeNotificationHub::new());
+        let notifications = Arc::new(ResourceNotifications::new(hub.clone()));
+        let blocked = {
+            let notifications = notifications.clone();
+            let http = http.clone();
+            tokio::spawn(async move {
+                notifications
+                    .changes_since_with_incremental_content(
+                        &[json!({"kind":"processes","agentId":"owner"})],
+                        None,
+                        |resource, previous| {
+                            incremental_resource_content(http.clone(), resource, previous)
+                        },
+                    )
+                    .await
+            })
+        };
+        tokio::time::timeout(Duration::from_secs(2), port.entered.notified())
+            .await
+            .expect("provider read started");
+        let tokens = TokenRateHub::new();
+        let mut other = test_stream(
+            &hub,
+            &tokens,
+            notifications,
+            vec![json!({"kind":"limits","accountKey":"default"})],
+        );
+        other.http_state = Some(http);
+        other.heartbeat = interval_at(Instant::now(), Duration::from_secs(15));
+        hub.notify_one();
+        let (frame, other) = tokio::time::timeout(Duration::from_secs(2), next_frame(other))
+            .await
+            .expect("other stream frame")
+            .expect("open stream");
+        assert_eq!(
+            event_document(frame).await["resources"][0]["kind"],
+            "limits"
+        );
+        assert_eq!(port.limits.load(Ordering::SeqCst), 1);
+        let (heartbeat, _) = tokio::time::timeout(Duration::from_secs(2), next_frame(other))
+            .await
+            .expect("other stream heartbeat")
+            .expect("open stream");
+        assert!(event_document(heartbeat).await.get("resources").is_none());
+        port.release.notify_one();
+        blocked.await.expect("provider task").expect("projection");
     }
 
     #[test]

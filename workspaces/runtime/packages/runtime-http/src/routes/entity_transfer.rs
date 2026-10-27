@@ -1,7 +1,7 @@
 //! Scoped intervals are read once in one SQLite snapshot. Large intervals spool
 //! bounded wire frames to an unlinked temporary file, owned by the live stream.
 use std::collections::BTreeMap;
-use std::io::{BufRead, BufReader, Seek, Write};
+use std::io::{Seek, Write};
 
 use axum::response::sse::Event;
 use serde_json::{Value, json};
@@ -10,6 +10,7 @@ use studio_runtime_schema::shared_values::{
 };
 use studio_runtime_schema::sync_protocol::subscription_entity_scopes;
 use studio_runtime_store::SyncDocumentsRepository;
+use tokio::io::{AsyncBufReadExt, BufReader};
 
 use crate::error::ApiError;
 use crate::generated::{
@@ -17,24 +18,21 @@ use crate::generated::{
 };
 use crate::router::HttpState;
 
-pub(super) struct TransferReader(BufReader<std::fs::File>);
+pub(super) struct TransferReader(BufReader<tokio::fs::File>);
 impl TransferReader {
-    pub(super) fn next(&mut self) -> Result<Option<Event>, ApiError> {
+    pub(super) async fn next(&mut self) -> Result<Option<Event>, ApiError> {
         let mut line = String::new();
         if self
             .0
             .read_line(&mut line)
+            .await
             .map_err(|_| ApiError::internal())?
             == 0
         {
             return Ok(None);
         }
-        let value: Value = serde_json::from_str(&line).map_err(|_| ApiError::internal())?;
-        Ok(Some(super::sync_stream::sse_event(
-            "entity-transfer",
-            None,
-            value,
-        )))
+        let data = line.strip_suffix('\n').ok_or_else(ApiError::internal)?;
+        Ok(Some(Event::default().event("entity-transfer").data(data)))
     }
 }
 
@@ -145,15 +143,14 @@ async fn prepare(
             let batches = byte_pages(after, checkpoint, documents)?;
             for (index, batch) in batches.iter().enumerate() {
                 let complete = final_sql_page && index + 1 == batches.len();
-                let canonical = serde_json::to_value(batch).map_err(|_| ApiError::internal())?;
-                if !validators.validate_component("EntityChangeBatch", &canonical) { eprintln!("entity transfer canonical page rejected: {:?}", studio_runtime_schema::first_error("EntityChangeBatch", &canonical)); return Err(ApiError::internal()); }
+                if cfg!(debug_assertions) && !serde_json::to_value(batch).is_ok_and(|value| validators.validate_component("EntityChangeBatch", &value)) { return Err(ApiError::internal()); }
                 if page_index == 0 && complete {
-                    let entry: ResourceRevisionEntry = serde_json::from_value(json!({"resource":resource,"revision":through,"cursor":cursor,"replyKind":if snapshot {"snapshot"}else{"delta"},"entityChanges":batch})).map_err(|_| ApiError::internal())?;
-                    let ordinary = json!({"protocol":studio_runtime_schema::SYNC_PROTOCOL_VERSION,"workspaceId":workspace,"epoch":epoch,"revision":revision,"reason":reason,"resources":[resource],"resourceVersions":[entry]});
-                    if wire_bytes("resources", Some(revision), &ordinary)? <= SYNC_STREAM_EVENT_MAX_BYTES { return Ok((Some(entry), None, cursor)); }
+                    let entry = ResourceRevisionEntry { resource: Some(Some(resource.clone())), revision: through, cursor: Some(cursor.clone()), reply_kind: Some(if snapshot { crate::generated::SubscriptionReplyKind::Snapshot } else { crate::generated::SubscriptionReplyKind::Delta }), entity_changes: Some(Some(batch.clone())), discovery_snapshot: None, voice_records: None, view_snapshot: None, draft_changes: None, entity_sequence_reset: None, entity_sequences: None, terminal_base_offset: None, transcript_changes: None, transcript_snapshot: None };
+                    let ordinary = ResourceChangeEvent { protocol: i64::from(studio_runtime_schema::SYNC_PROTOCOL_VERSION), workspace_id: workspace.clone(), epoch: epoch.clone(), revision, reason: reason.clone(), resources: vec![resource.clone()], resource_versions: vec![entry.clone()] };
+                    if "event: resources\nid: \ndata: \n\n".len() + revision.to_string().len() + serde_json::to_vec(&ordinary).map_err(|_| ApiError::internal())?.len() <= SYNC_STREAM_EVENT_MAX_BYTES { return Ok((Some(entry), None, cursor)); }
                 }
                 let file = match &mut spool { Some(file) => file, None => spool.insert(tempfile::tempfile().map_err(|_| ApiError::internal())?) };
-                spool_page(file, &metadata, page_index, complete, &canonical, &validators)?;
+                spool_page(file, &metadata, page_index, complete, batch, &validators)?;
                 page_index += 1;
             }
             if final_sql_page { break; }
@@ -162,17 +159,8 @@ async fn prepare(
         }
         let mut file = spool.ok_or_else(ApiError::internal)?;
         file.rewind().map_err(|_| ApiError::internal())?;
-        Ok((None, Some(TransferReader(BufReader::new(file))), cursor))
+        Ok((None, Some(TransferReader(BufReader::new(tokio::fs::File::from_std(file)))), cursor))
     }).await
-}
-
-fn wire_bytes(name: &str, revision: Option<i64>, value: &Value) -> Result<usize, ApiError> {
-    Ok("event: \ndata: \n\n".len()
-        + name.len()
-        + revision.map_or(0, |revision| "id: \n".len() + revision.to_string().len())
-        + serde_json::to_vec(value)
-            .map_err(|_| ApiError::internal())?
-            .len())
 }
 
 /// Split at record boundaries first. A single existing oversized canonical
@@ -215,7 +203,7 @@ fn spool_page(
     metadata: &Value,
     page_index: usize,
     complete: bool,
-    page: &Value,
+    page: &EntityChangeBatch,
     validators: &crate::validation::Registry,
 ) -> Result<(), ApiError> {
     let data = serde_json::to_string(page).map_err(|_| ApiError::internal())?;
@@ -226,11 +214,14 @@ fn spool_page(
     fields.insert("partCount".into(), json!(1));
     fields.insert("complete".into(), json!(complete));
     fields.insert("data".into(), json!(&data));
-    if wire_bytes("entity-transfer", None, &direct)? <= SYNC_STREAM_EVENT_MAX_BYTES {
-        if !validators.validate_component("ResourceEntityTransferEvent", &direct) {
+    let encoded = serde_json::to_vec(&direct).map_err(|_| ApiError::internal())?;
+    if "event: entity-transfer\ndata: \n\n".len() + encoded.len() <= SYNC_STREAM_EVENT_MAX_BYTES {
+        if cfg!(debug_assertions)
+            && !validators.validate_component("ResourceEntityTransferEvent", &direct)
+        {
             return Err(ApiError::internal());
         }
-        serde_json::to_writer(&mut *file, &direct).map_err(|_| ApiError::internal())?;
+        file.write_all(&encoded).map_err(|_| ApiError::internal())?;
         file.write_all(b"\n").map_err(|_| ApiError::internal())?;
         return Ok(());
     }
@@ -258,12 +249,14 @@ fn spool_page(
             json!(complete && index + 1 == parts.len()),
         );
         fields.insert("data".into(), json!(part));
-        if wire_bytes("entity-transfer", None, &frame)? > SYNC_STREAM_EVENT_MAX_BYTES
-            || !validators.validate_component("ResourceEntityTransferEvent", &frame)
+        let encoded = serde_json::to_vec(&frame).map_err(|_| ApiError::internal())?;
+        if "event: entity-transfer\ndata: \n\n".len() + encoded.len() > SYNC_STREAM_EVENT_MAX_BYTES
+            || (cfg!(debug_assertions)
+                && !validators.validate_component("ResourceEntityTransferEvent", &frame))
         {
             return Err(ApiError::internal());
         }
-        serde_json::to_writer(&mut *file, &frame).map_err(|_| ApiError::internal())?;
+        file.write_all(&encoded).map_err(|_| ApiError::internal())?;
         file.write_all(b"\n").map_err(|_| ApiError::internal())?;
     }
     Ok(())
@@ -311,6 +304,19 @@ mod tests {
             .await
             .expect("bounded frame")
             .to_vec()
+    }
+    #[tokio::test]
+    async fn spool_frame_is_emitted_without_reencoding() {
+        let mut file = tempfile::tempfile().expect("spool");
+        let saved = r#"{ "z": 1, "a": 2 }"#;
+        writeln!(file, "{saved}").expect("write frame");
+        file.rewind().expect("rewind");
+        let mut reader = TransferReader(BufReader::new(tokio::fs::File::from_std(file)));
+        let frame = reader.next().await.expect("read frame").expect("frame");
+        assert_eq!(
+            wire(frame).await,
+            format!("event: entity-transfer\ndata: {saved}\n\n").as_bytes()
+        );
     }
     #[tokio::test]
     async fn scoped_membership_swaps_and_reassignment_reset_but_unrelated_moves_and_appends_stay_delta()
@@ -517,7 +523,7 @@ mod tests {
         let mut pages = 0;
         let mut maximum_wire_bytes = 0;
         let mut complete = false;
-        while let Some(frame) = reader.next().expect("next frame") {
+        while let Some(frame) = reader.next().await.expect("next frame") {
             let wire = wire(frame).await;
             maximum_wire_bytes = maximum_wire_bytes.max(wire.len());
             assert!(wire.len() <= SYNC_STREAM_EVENT_MAX_BYTES);

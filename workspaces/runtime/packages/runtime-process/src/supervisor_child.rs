@@ -1,7 +1,7 @@
 //! Owned pipes and process group. Socket disconnects never stop a child.
 use super::supervisor_daemon::{Error, Result, lock, now};
 use super::supervisor_identity::{RETRY, free_space, start_time};
-use process_wrap::std::{ChildWrapper, CommandWrap, ProcessGroup};
+use process_wrap::std::{CommandWrap, ProcessGroup};
 use serde_json::{Value, json};
 use std::{
     collections::BTreeMap,
@@ -48,14 +48,12 @@ pub(super) struct OwnedChild {
     pub paused: AtomicBool,
     pub errors: Mutex<BTreeMap<String, String>>,
     pub stdout_error: Mutex<Option<String>>,
-    process: Mutex<Box<dyn ChildWrapper>>,
     exit_status: Mutex<Option<std::result::Result<i32, String>>>,
     exit_changed: Condvar,
     exit_published: AtomicBool,
     exit_event_state: AtomicU8,
     exit_event_sequence: AtomicU64,
     append_lock: Mutex<()>,
-    pub write_lock: Mutex<()>,
     writer: mpsc::SyncSender<(Vec<u8>, mpsc::SyncSender<std::io::Result<()>>)>,
     journal: Arc<SupervisorJournal>,
     root: PathBuf,
@@ -146,14 +144,12 @@ impl OwnedChild {
             paused: AtomicBool::new(false),
             errors: Mutex::new(BTreeMap::new()),
             stdout_error: Mutex::new(None),
-            process: Mutex::new(process),
             exit_status: Mutex::new(None),
             exit_changed: Condvar::new(),
             exit_published: AtomicBool::new(false),
             exit_event_state: AtomicU8::new(ExitEventState::Pending as u8),
             exit_event_sequence: AtomicU64::new(0),
             append_lock: Mutex::new(()),
-            write_lock: Mutex::new(()),
             writer,
             journal,
             root: root.to_owned(),
@@ -162,8 +158,8 @@ impl OwnedChild {
         let copy = child.clone();
         thread::spawn(move || {
             use std::os::unix::process::ExitStatusExt;
-            let status = lock(&copy.process)
-                .and_then(|mut process| process.wait().map_err(Error::from))
+            let status = process
+                .wait()
                 .map(|status| {
                     status
                         .code()

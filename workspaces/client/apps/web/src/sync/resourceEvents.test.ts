@@ -7,10 +7,11 @@ import {
 } from "../generated/apiSchema";
 
 const workspaceId = "b".repeat(32);
-const { resumeListeners, syncDatabase } = vi.hoisted(() => ({
-  resumeListeners: new Set<() => void>(),
+const { syncDatabase, appendAppLog } = vi.hoisted(() => ({
   syncDatabase: vi.fn(),
+  appendAppLog: vi.fn(),
 }));
+vi.mock("../appLog", () => ({ appendAppLog }));
 vi.mock("../servers/eventSource", () => ({
   openServerEvents: (url: string) =>
     new (
@@ -26,12 +27,6 @@ vi.mock("./client", () => ({
 vi.mock("../usage/tokenRate", async (original) => ({
   ...(await original<typeof import("../usage/tokenRate")>()),
   configureTokenRateStream: vi.fn(),
-}));
-vi.mock("./resume", () => ({
-  onResume: (listener: () => void) => {
-    resumeListeners.add(listener);
-    return () => resumeListeners.delete(listener);
-  },
 }));
 
 class Source {
@@ -202,6 +197,7 @@ async function loadTransport() {
 
 beforeEach(async () => {
   vi.useFakeTimers();
+  appendAppLog.mockClear();
   vi.stubGlobal("window", {
     addEventListener: vi.fn(),
     removeEventListener: vi.fn(),
@@ -392,7 +388,6 @@ describe("shared resource event transport", () => {
     Source.skipNextAutoHandshake = false;
     Channel.instances = [];
     syncDatabase.mockClear();
-    resumeListeners.clear();
   });
 
   it("delivers a hint-only transcript failure even when its publication revision is below the durable cursor", async () => {
@@ -1136,8 +1131,11 @@ describe("shared resource event transport", () => {
   it("retries pre-handshake failures three times and ignores a late handshake", async () => {
     vi.spyOn(Math, "random").mockReturnValue(0.5);
     syncDatabase.mockResolvedValue({ workspaceId });
+    const windowListeners = new Map<string, () => void>();
     vi.stubGlobal("window", {
-      addEventListener: vi.fn(),
+      addEventListener: vi.fn((name: string, listener: () => void) =>
+        windowListeners.set(name, listener),
+      ),
       removeEventListener: vi.fn(),
       dispatchEvent: vi.fn(),
     });
@@ -1158,7 +1156,7 @@ describe("shared resource event transport", () => {
     expect(states).not.toContain("schema-mismatch");
     for (let attempt = 2; attempt <= 3; attempt++) {
       Source.skipNextAutoHandshake = true;
-      resumeListeners.forEach((resume) => resume());
+      windowListeners.get("pageshow")?.();
       await vi.advanceTimersByTimeAsync(20);
       expect(Source.instances).toHaveLength(attempt);
       const next = Source.instances.at(-1)!;
@@ -1702,14 +1700,13 @@ describe("shared resource event transport", () => {
     await vi.advanceTimersByTimeAsync(1_000);
     const visibility = vi
       .mocked(document.addEventListener)
-      .mock.calls.find(
-        ([name]) => name === "visibilitychange",
-      )![1] as EventListener;
+      .mock.calls.filter(([name]) => name === "visibilitychange")
+      .at(-1)![1] as EventListener;
     Object.assign(document, { hidden: true });
     visibility(new Event("visibilitychange"));
     await vi.advanceTimersByTimeAsync(1_000);
     Object.assign(document, { hidden: false });
-    for (const resume of resumeListeners) resume();
+    visibility(new Event("visibilitychange"));
     await vi.advanceTimersByTimeAsync(4_000);
     expect(Source.instances).toHaveLength(1);
     expect(readSubscriptionCursor).toHaveBeenCalledTimes(2);
@@ -1885,18 +1882,134 @@ describe("shared resource event transport", () => {
 
     navigatorStub.onLine = false;
     windowListeners.get("offline")?.();
-    expect(first.closed).toBe(false);
-    // A transport error, rather than the reachability hint, ends this stream.
-    first.open();
-    first.onerror?.();
     expect(first.closed).toBe(true);
     navigatorStub.onLine = true;
     windowListeners.get("online")?.();
-    for (const listener of resumeListeners) listener();
+    windowListeners.get("pageshow")?.();
 
     await vi.advanceTimersByTimeAsync(20);
     expect(Source.instances).toHaveLength(2);
     expect(Source.instances.filter((source) => !source.closed)).toHaveLength(1);
+    stop();
+  });
+
+  it("cancels backoff offline and reconnects immediately online with one log per attempt", async () => {
+    syncDatabase.mockResolvedValue({ workspaceId });
+    const listeners = new Map<string, () => void>();
+    vi.stubGlobal("window", {
+      addEventListener: (name: string, listener: () => void) =>
+        listeners.set(name, listener),
+      removeEventListener: vi.fn(),
+    });
+    const transport = await loadTransport();
+    const states = vi.fn();
+    const stop = transport.watchResourceChanges({ kind: "state" }, vi.fn());
+    const stopConnection = transport.watchResourceConnection(states);
+    await vi.advanceTimersByTimeAsync(20);
+    Source.instances[0]!.onerror?.();
+    expect(appendAppLog).toHaveBeenCalledTimes(1);
+    expect(appendAppLog).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        title: "Reconnecting",
+        reason: "Connection failed.",
+      }),
+    );
+    listeners.get("offline")?.();
+    expect(states).toHaveBeenLastCalledWith("offline", "offline", {});
+    await vi.advanceTimersByTimeAsync(20_000);
+    expect(Source.instances).toHaveLength(1);
+    listeners.get("online")?.();
+    expect(appendAppLog).toHaveBeenCalledTimes(2);
+    expect(appendAppLog).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        title: "Reconnecting",
+        reason: "The device is online again.",
+      }),
+    );
+    await vi.advanceTimersByTimeAsync(20);
+    expect(Source.instances).toHaveLength(2);
+    stopConnection();
+    stop();
+  });
+
+  it("reconnects a restarted coordinator that missed the online event while stopped", async () => {
+    syncDatabase.mockResolvedValue({ workspaceId });
+    const listeners = new Map<string, () => void>();
+    vi.stubGlobal("window", {
+      addEventListener: (name: string, listener: () => void) =>
+        listeners.set(name, listener),
+      removeEventListener: (name: string) => listeners.delete(name),
+    });
+    const navigatorStub = { onLine: true };
+    vi.stubGlobal("navigator", navigatorStub);
+    const transport = await loadTransport();
+    const stopFirst = transport.watchResourceChanges(
+      { kind: "state" },
+      vi.fn(),
+    );
+    await vi.advanceTimersByTimeAsync(20);
+    expect(Source.instances).toHaveLength(1);
+    navigatorStub.onLine = false;
+    listeners.get("offline")?.();
+    stopFirst();
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(listeners.has("online")).toBe(false);
+    // Connectivity returns while no coordinator listens for it.
+    navigatorStub.onLine = true;
+    const stopSecond = transport.watchResourceChanges(
+      { kind: "state" },
+      vi.fn(),
+    );
+    await vi.advanceTimersByTimeAsync(20);
+    expect(Source.instances).toHaveLength(2);
+    stopSecond();
+  });
+
+  it("an online event interrupts an existing backoff", async () => {
+    syncDatabase.mockResolvedValue({ workspaceId });
+    const listeners = new Map<string, () => void>();
+    vi.stubGlobal("window", {
+      addEventListener: (name: string, listener: () => void) =>
+        listeners.set(name, listener),
+      removeEventListener: vi.fn(),
+    });
+    const transport = await loadTransport();
+    const stop = transport.watchResourceChanges({ kind: "state" }, vi.fn());
+    await vi.advanceTimersByTimeAsync(20);
+    Source.instances[0]!.onerror?.();
+    listeners.get("online")?.();
+    expect(appendAppLog).toHaveBeenLastCalledWith(
+      expect.objectContaining({ reason: "The device is online again." }),
+    );
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(Source.instances).toHaveLength(2);
+    stop();
+  });
+
+  it("cancels a retry when a status listener goes offline during scheduling", async () => {
+    syncDatabase.mockResolvedValue({ workspaceId });
+    const listeners = new Map<string, () => void>();
+    vi.stubGlobal("window", {
+      addEventListener: (name: string, listener: () => void) =>
+        listeners.set(name, listener),
+      removeEventListener: vi.fn(),
+    });
+    const transport = await loadTransport();
+    const stop = transport.watchResourceChanges({ kind: "state" }, vi.fn());
+    const stopConnection = transport.watchResourceConnection((status) => {
+      if (status === "degraded") listeners.get("offline")?.();
+    });
+    await vi.advanceTimersByTimeAsync(20);
+    vi.spyOn(Math, "random").mockReturnValue(0.5);
+    const schedule = vi.spyOn(globalThis, "setTimeout");
+    const cancel = vi.spyOn(globalThis, "clearTimeout");
+    Source.instances[0]!.onerror?.();
+    const index = schedule.mock.calls.findIndex((call) => call[1] === 500);
+    expect(index).toBeGreaterThanOrEqual(0);
+    expect(cancel).toHaveBeenCalledWith(schedule.mock.results[index]!.value);
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(Source.instances).toHaveLength(1);
+    stopConnection();
     stop();
   });
 
@@ -2016,11 +2129,15 @@ describe("shared resource event transport", () => {
     expect(subscriptionPosts).toHaveLength(3);
     expect(subscriptionPosts[2]?.tokenRates).toBe(true);
     expect(Source.instances).toHaveLength(1);
+    const visibilityChanged = vi
+      .mocked(visibility.addEventListener)
+      .mock.calls.filter(([name]) => name === "visibilitychange")
+      .at(-1)![1] as EventListener;
     visibility.hidden = true;
-    for (const resume of resumeListeners) resume();
+    visibilityChanged(new Event("visibilitychange"));
     expect(Source.instances[0]!.closed).toBe(true);
     visibility.hidden = false;
-    for (const resume of resumeListeners) resume();
+    visibilityChanged(new Event("visibilitychange"));
     await vi.advanceTimersByTimeAsync(20);
     expect(Source.instances).toHaveLength(2);
     expect(interest(Source.instances[1]!)).toBe("true");
@@ -2655,6 +2772,8 @@ describe("shared resource event transport", () => {
 
   it("native stream waits for the core after a lost connection and answers its resume request", async () => {
     const { source, listener, states, streams } = await openNative();
+    source.emit("heartbeat", { workspaceId, epoch: "native", revision: 1 });
+    expect(appendAppLog).not.toHaveBeenCalled();
     source.onretry?.({ opened: true, retryAt: Date.now() + 5_000 });
     expect(states.at(-1)).toBe("degraded");
     expect(streams.at(-1)).toBe("retry-scheduled");
@@ -2703,6 +2822,12 @@ describe("shared resource event transport", () => {
     expect(String(source.restart.mock.calls[0]![0])).toMatch(/^invalid-frame/);
     expect(source.closed).toBe(false);
     expect(states.at(-1)).toBe("degraded");
+    expect(appendAppLog).toHaveBeenCalledOnce();
+    expect(appendAppLog).toHaveBeenLastCalledWith(
+      expect.objectContaining({ reason: "Received invalid server updates." }),
+    );
+    source.onretry?.({ opened: false, retryAt: Date.now() + 5_000 });
+    expect(appendAppLog).toHaveBeenCalledOnce();
     await vi.advanceTimersByTimeAsync(60_000);
     expect(Source.instances).toHaveLength(1);
     expect(source.restart).toHaveBeenCalledOnce();

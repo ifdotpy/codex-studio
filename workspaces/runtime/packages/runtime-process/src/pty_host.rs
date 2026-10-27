@@ -166,6 +166,8 @@ struct PtyShared {
     before_kill: Mutex<Option<BeforeKillHook>>,
     #[cfg(test)]
     fail_next_kill: AtomicBool,
+    #[cfg(test)]
+    read_attempts: std::sync::atomic::AtomicUsize,
 }
 
 struct PtyChild {
@@ -374,6 +376,8 @@ impl PtyHost for LocalPtyHost {
             before_kill: Mutex::new(None),
             #[cfg(test)]
             fail_next_kill: AtomicBool::new(false),
+            #[cfg(test)]
+            read_attempts: std::sync::atomic::AtomicUsize::new(0),
         })))
     }
 
@@ -402,9 +406,18 @@ impl PtyHost for LocalPtyHost {
     fn read(&self, session: &mut Self::Session, buffer: &mut [u8]) -> Result<usize, Self::Error> {
         let mut master = session.0.master.as_ref();
         loop {
+            #[cfg(test)]
+            session.0.read_attempts.fetch_add(1, Ordering::Relaxed);
             match master.read(buffer) {
                 Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                    std::thread::sleep(Duration::from_millis(10));
+                    let mut fd = rustix::event::PollFd::new(master, rustix::event::PollFlags::IN);
+                    loop {
+                        match rustix::event::poll(std::slice::from_mut(&mut fd), None) {
+                            Err(rustix::io::Errno::INTR) => continue,
+                            Err(error) => return Err(PtyHostError::Io(error.into())),
+                            Ok(_) => break,
+                        }
+                    }
                 }
                 result => return result.map_err(PtyHostError::Io),
             }
@@ -772,6 +785,42 @@ mod tests {
         );
         assert!(matches!(result, Err(PtyHostError::Io(error))
             if error.kind() == std::io::ErrorKind::Unsupported));
+    }
+
+    #[test]
+    fn idle_reader_waits_after_input() {
+        use std::sync::atomic::Ordering;
+        use std::time::Duration;
+
+        let root = tempfile::tempdir().unwrap();
+        let host = LocalPtyHost;
+        let mut session = host
+            .open(
+                &[
+                    "/bin/sh".into(),
+                    "-c".into(),
+                    "stty -echo; printf ready; read line".into(),
+                ],
+                root.path(),
+                &[],
+            )
+            .unwrap();
+        let mut ready = [0; 64];
+        assert!(host.read(&mut session, &mut ready).unwrap() > 0);
+        host.write(&mut session, b"x").unwrap();
+        let mut reader_session = session.clone();
+        let reader = thread::spawn(move || {
+            let mut buffer = [0; 64];
+            LocalPtyHost.read(&mut reader_session, &mut buffer)
+        });
+        // A dedicated test thread observes the idle window; there is no runtime to yield to.
+        #[allow(clippy::disallowed_methods)]
+        thread::sleep(Duration::from_millis(150));
+        let attempts = session.0.read_attempts.load(Ordering::Relaxed);
+        host.write(&mut session, b"\n").unwrap();
+        host.close(session).unwrap();
+        assert!(reader.join().is_ok(), "reader thread panicked");
+        assert!(attempts <= 3, "idle reader attempted {attempts} reads");
     }
 
     #[test]

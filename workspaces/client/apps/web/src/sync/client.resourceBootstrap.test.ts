@@ -1,3 +1,4 @@
+import type { ConnectionActivity, ConnectionHealth } from "./connectionState";
 import {
   SubscriptionReplyKind,
   AgentStatus,
@@ -12,8 +13,6 @@ import type { Snapshot } from "../types";
 import { SYNC_PROTOCOL_VERSION, type components } from "../generated/api";
 import type {
   ResourceChangeEvent,
-  ResourceConnectionState,
-  ResourceStreamState,
   ResourceVersion,
 } from "./subscriptions/events";
 import { ResourceEntityDelivery } from "./resourceEntityDelivery";
@@ -25,7 +24,7 @@ const mocks = vi.hoisted(() => ({
   syncGet: vi.fn(),
   changes: new Set<(version?: ResourceVersion) => void>(),
   connections: new Set<
-    (state: ResourceConnectionState, stream: ResourceStreamState) => void
+    (state: ConnectionHealth, stream: ConnectionActivity) => void
   >(),
   watch: vi.fn(),
   watchConnection: vi.fn(),
@@ -275,8 +274,8 @@ async function setup() {
     ],
   });
   const connection = (
-    state: ResourceConnectionState,
-    stream: ResourceStreamState = "open",
+    state: ConnectionHealth,
+    stream: ConnectionActivity = "open",
   ) => {
     for (const callback of mocks.connections) callback(state, stream);
   };

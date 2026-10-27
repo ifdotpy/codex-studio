@@ -1,6 +1,6 @@
-import { onResume } from "./resume";
 import { API_SCHEMA_HASH } from "../generated/apiSchema";
 import { hasNativeClient } from "../native/client";
+import type { ConnectionHealth, ReconnectCause } from "./connectionState";
 
 /**
  * Whether the sync transport treats the page as hidden. The desktop app keeps
@@ -21,41 +21,15 @@ export function resourceCoordinationNames(origin: string, workspaceId: string) {
 /** Maximum retained owner generations, in tab identities. */
 const MAX_PEER_OWNER_HISTORY = 128;
 
-export type ResourceConnectionState =
-  | "connecting"
-  | "live"
-  | "degraded"
-  | "offline"
-  | "paused"
-  | "schema-mismatch";
 /** Current local recovery work, independently of validated server health. */
-export type ResourceStreamState =
-  | "stopped"
-  | "preparing"
-  | "waiting-owner"
-  | "retry-scheduled"
-  | "connecting"
-  | "open"
-  /** The open stream waits for a local write that outlasted its deadline. */
-  | "storage-slow"
-  | "paused"
-  | "offline";
 
 /** Observed failure boundaries; browsers do not expose a stream error's cause. */
-export type ResourceConnectionFailure =
-  | "stream-error"
-  | "heartbeat-timeout"
-  | "schema-handshake-timeout"
-  | "subscription-timeout"
-  | "subscription-rejected"
-  | "invalid-frame"
-  | "local-state-error"
-  | "unknown";
 
 export type ResourceConnectionDetail = {
-  failure?: ResourceConnectionFailure | undefined;
+  failure?: ReconnectCause | undefined;
   /** Deadline of the current scheduled retry, in Unix epoch milliseconds. */
   retryAt?: number | undefined;
+  attempt?: number | undefined;
 };
 
 /** Maximum wait for optional local resume cursors, in milliseconds. */
@@ -68,7 +42,7 @@ export const RESOURCE_PEER_TIMEOUT_MS = 10_000;
 
 export function isResourceConnectionState(
   value: unknown,
-): value is ResourceConnectionState {
+): value is ConnectionHealth {
   return (
     value === "connecting" ||
     value === "live" ||
@@ -80,7 +54,7 @@ export function isResourceConnectionState(
 }
 
 export type ResourceConnectionHealth = {
-  status: ResourceConnectionState;
+  status: ConnectionHealth;
   /** Monotonic source generation within one tab identity. */
   generation: number;
   /** Monotonic publication sequence within one tab identity. */
@@ -110,11 +84,12 @@ export function createPeerConnectionHealth() {
       current = undefined;
       owners.clear();
     },
-    status(now = Date.now()): ResourceConnectionState | undefined {
+    status(now = Date.now()): ConnectionHealth | undefined {
       if (!current) return;
       const { health } = current;
       if (now - health.sentAt > RESOURCE_PEER_TIMEOUT_MS) return "degraded";
-      if (health.status === "paused") return "degraded";
+      if (health.status === "paused" || health.status === "offline")
+        return "degraded";
       if (health.status !== "live") return health.status;
       return hasFreshServerFrame(health.validatedAt, now) ? "live" : "degraded";
     },
@@ -162,21 +137,25 @@ export function createPeerConnectionHealth() {
   };
 }
 
-/** Resume owns online/pageshow/visible coalescing; this registration owns pauses. */
+/** Each lifecycle event reaches the transport once. */
 export function onResourceConnectionLifecycle(actions: {
   resume: () => void;
+  online: () => void;
   offline: () => void;
   pause: () => void;
 }) {
-  const stopResume = onResume(actions.resume);
   const visibility = () => {
     if (pageHidden()) actions.pause();
+    else actions.resume();
   };
+  window.addEventListener("pageshow", actions.resume);
   window.addEventListener("offline", actions.offline);
+  window.addEventListener("online", actions.online);
   document.addEventListener("visibilitychange", visibility);
   return () => {
-    stopResume();
+    window.removeEventListener("pageshow", actions.resume);
     window.removeEventListener("offline", actions.offline);
+    window.removeEventListener("online", actions.online);
     document.removeEventListener("visibilitychange", visibility);
   };
 }

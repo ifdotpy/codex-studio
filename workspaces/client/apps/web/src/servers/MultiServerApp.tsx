@@ -1,3 +1,4 @@
+import type { ConnectionHealth } from "../sync/connectionState";
 import { randomUUID } from "../uuid";
 import { restoreSidebarFocus } from "../components/sidebar/SidebarFrame";
 import { readTerminalDockHeight } from "../layout/terminalGeometry";
@@ -68,7 +69,7 @@ import {
   type StudioServer,
 } from "./registry";
 import type { ServerCommand, ServerNavigation } from "./navigation";
-import type { ResourceConnectionState } from "../sync/subscriptions/events";
+
 import ServerManager from "./ServerManager";
 import ServerAccountsPanel from "./ServerAccountsPanel";
 import { accountServers } from "./accountServers";
@@ -167,9 +168,7 @@ function MultiServerShell({
   const sidebarSources = useRef(createSidebarSourceStore());
   const navigationRef = useRef(navigation);
   navigationRef.current = navigation;
-  const [status, setStatus] = useState<Record<string, ResourceConnectionState>>(
-    {},
-  );
+  const [status, setStatus] = useState<Record<string, ConnectionHealth>>({});
   const statusRef = useRef(status);
   statusRef.current = status;
   const [accountsByServer, setAccountsByServer] = useState<
@@ -712,7 +711,7 @@ function MultiServerShell({
     ) {
       setStatus((old) => ({
         ...old,
-        [id]: data.status as ResourceConnectionState,
+        [id]: data.status as ConnectionHealth,
       }));
       if (data.status === "live")
         setLastSeen((old) => ({ ...old, [id]: Date.now() / 1000 }));
@@ -808,7 +807,8 @@ function MultiServerShell({
                 restoreAccountActionFocus.current || undefined
               }
               onInitialFocus={() => {
-                restoreAccountActionFocus.current = null;
+                if (!restoreManagerAfterAccountDialog.current)
+                  restoreAccountActionFocus.current = null;
               }}
               servicesFor={(id) => services.get(id)}
               servers={accountsServers}

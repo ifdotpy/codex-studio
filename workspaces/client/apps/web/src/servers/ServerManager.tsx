@@ -1,3 +1,4 @@
+import type { ConnectionHealth } from "../sync/connectionState";
 import { randomUUID } from "../uuid";
 import { ProviderKind } from "../generated/providerKind.ts";
 import { serverRows, relativeSeen } from "./serverRows";
@@ -7,7 +8,7 @@ import DiscoveryPanel from "./DiscoveryPanel";
 import ServerAccessSettings from "./ServerAccessSettings";
 import { setServerExcluded } from "./automaticAccessStore";
 import type { useServerDiscovery } from "./useServerDiscovery";
-import type { ResourceConnectionState } from "../sync/subscriptions/events";
+
 import { parseInvitation } from "./pairing";
 import {
   Badge,
@@ -49,7 +50,7 @@ export default function ServerManager({
   remove: (server: StudioServer) => void;
   discovery: ReturnType<typeof useServerDiscovery>;
   localEnabled: boolean;
-  statuses?: Record<string, ResourceConnectionState>;
+  statuses?: Record<string, ConnectionHealth>;
   lastSeen?: Record<string, number>;
   navigation?: Record<string, ServerNavigation>;
   accountsByServer?: Record<string, ServerAccount[]>;

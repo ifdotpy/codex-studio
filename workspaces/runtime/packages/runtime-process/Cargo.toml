@@ -22,7 +22,7 @@ pty-process = "=0.5.4"
 [target.'cfg(unix)'.dependencies]
 command-fds = "=0.3.3"
 process-wrap.workspace = true
-rustix.workspace = true
+rustix = { workspace = true, features = ["event"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 studio-runtime-priority-sys = { path = "../runtime-priority-sys" }

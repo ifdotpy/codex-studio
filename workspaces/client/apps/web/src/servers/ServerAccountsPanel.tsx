@@ -65,6 +65,15 @@ function signInStatus(status: string) {
   return "Sign-in status unknown";
 }
 
+/** Statuses where the inline sign-in button is shown; others use the account menu. */
+function needsSignIn(status: string) {
+  return (
+    status === AccountStatus.signedOut ||
+    status === AccountStatus.changed ||
+    status === AccountStatus.error
+  );
+}
+
 /** The copies of one provider account on each server that has it, with the
  * server's full account record. A disconnected copy is left out. */
 export function accountSources(
@@ -498,6 +507,12 @@ export default function ServerAccountsPanel({
                                           : "Remove"}
                                 </Menu.Item>
                               ))}
+                              <Menu.Item
+                                disabled={cannotSignIn(server)}
+                                onClick={() => signIn(server)}
+                              >
+                                {`Sign in again on ${server.label}`}
+                              </Menu.Item>
                             </div>
                           ))}
                       </Menu.Dropdown>
@@ -508,7 +523,12 @@ export default function ServerAccountsPanel({
                       aria-label={`Sign in for ${row.email || row.label}`}
                     >
                       {servers
-                        .filter((server) => row.byServer[server.id])
+                        .filter(
+                          (server) =>
+                            row.byServer[server.id] &&
+                            (!exactAccountKey(server.id) ||
+                              needsSignIn(row.byServer[server.id]!.status)),
+                        )
                         .map((server) => (
                           <ActionButton
                             key={server.id}

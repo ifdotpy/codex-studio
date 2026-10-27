@@ -1,10 +1,8 @@
-import {
-  watchResourceConnection,
-  type ResourceConnectionState,
-} from "../sync/client";
+import type { ConnectionHealth } from "../sync/connectionState";
+import { watchResourceConnection } from "../sync/client";
 
 export function watchVoiceTransport(
-  onState: (state: ResourceConnectionState) => void,
+  onState: (state: ConnectionHealth) => void,
   stopVoice: () => void,
   watchConnection: typeof watchResourceConnection = watchResourceConnection,
 ): () => void {

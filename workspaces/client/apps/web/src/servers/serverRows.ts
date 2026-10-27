@@ -1,6 +1,7 @@
+import type { ConnectionHealth } from "../sync/connectionState";
 import type { StudioServer } from "./registry";
 import type { DiscoveredServer } from "./discoveryModel";
-import type { ResourceConnectionState } from "../sync/subscriptions/events";
+
 export type ServerStatus =
   | "Active"
   | "Online"
@@ -13,7 +14,7 @@ export type ServerStatus =
 export function serverRows(
   servers: StudioServer[],
   peers: DiscoveredServer[],
-  statuses: Record<string, ResourceConnectionState>,
+  statuses: Record<string, ConnectionHealth>,
 ) {
   const rows = [
     ...servers,

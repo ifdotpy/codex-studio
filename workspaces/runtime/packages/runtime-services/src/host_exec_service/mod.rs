@@ -266,13 +266,10 @@ impl HostService {
         )
         .map_err(std::io::Error::other)?;
         let db = Arc::new(Mutex::new(db));
-        if let Err(error) = studio_runtime_store::sqlite_durability::spawn_periodic_flush(
+        studio_runtime_store::sqlite_durability::spawn_periodic_flush(
             "host-exec",
             Arc::downgrade(&db),
-        ) {
-            // Automatic checkpoints and the close checkpoint still flush the database.
-            eprintln!("host_exec service periodic WAL flush did not start: {error}");
-        }
+        )?;
         Ok(Self {
             state,
             browser_host: None,

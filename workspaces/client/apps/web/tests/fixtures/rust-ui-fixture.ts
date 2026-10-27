@@ -38,11 +38,12 @@ import {
   readProviderObject,
   type FixtureControlReply,
 } from "./fixture-scripts.ts";
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import {
   existsSync,
   mkdirSync,
   readdirSync,
+  realpathSync,
   mkdtempSync,
   rmSync,
   statSync,
@@ -53,7 +54,7 @@ import { tmpdir } from "node:os";
 import { connect } from "node:net";
 import { waitForFixturePort } from "../fixture-readiness.ts";
 import { createInterface } from "node:readline";
-import { delimiter, dirname, join, resolve } from "node:path";
+import { delimiter, dirname, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   ACCOUNT_RUNNING_TURNS_MAX,
@@ -95,6 +96,46 @@ function parseHookMessage(text: string): FixtureHookMessage {
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repository = resolve(here, "../../../../../..");
+export function fixtureProjectDirectory(root: string) {
+  const base = realpathSync(root);
+  const enclosing = realpathSync(repository);
+  if (base === enclosing || base.startsWith(enclosing + sep)) {
+    throw new Error("Fixture project must be outside the enclosing checkout");
+  }
+  const project = join(base, "project");
+  mkdirSync(project);
+  const env = Object.fromEntries(
+    Object.entries(process.env).filter(([key]) => !key.startsWith("GIT_")),
+  );
+  env.GIT_CONFIG_NOSYSTEM = "1";
+  env.GIT_CONFIG_GLOBAL = "/dev/null";
+  const git = (args: string[]) =>
+    execFileSync(
+      "git",
+      ["-C", project, "-c", "core.hooksPath=/dev/null", ...args],
+      { env, encoding: "utf8" },
+    ).trim();
+  git(["init", "-q"]);
+  if (
+    realpathSync(git(["rev-parse", "--absolute-git-dir"])) !==
+    realpathSync(join(project, ".git"))
+  ) {
+    throw new Error("Fixture project must own its Git repository");
+  }
+  git([
+    "-c",
+    "user.name=Fixture",
+    "-c",
+    "user.email=fixture@example.invalid",
+    "-c",
+    "commit.gpgsign=false",
+    "commit",
+    "--allow-empty",
+    "-qm",
+    "Fixture",
+  ]);
+  return project;
+}
 const dist = join(repository, "workspaces/client/apps/web/dist");
 const fakeCodex = join(here, "fake-codex-app-server.ts");
 /** Longest wait for the server to answer its first request, milliseconds. */
@@ -212,8 +253,7 @@ const DEFAULT_WORKER_COUNT = 6;
 
 /** Server state directory of a fixture rooted at `root`. */
 export function fixtureStateDirectory(root: string) {
-  // Beside the root, not inside it: the server's writes must not change the
-  // project directory that agents work in.
+  // Beside the root, not inside it: the server owns a separate state directory.
   return `${root.replace(/\/+$/, "")}-fixture-state`;
 }
 
@@ -583,7 +623,7 @@ async function main() {
     pauseSeconds: 0,
     maxRunningTurns: ACCOUNT_RUNNING_TURNS_MAX,
   });
-  const cwd = repository;
+  const cwd = fixtureProjectDirectory(scratch);
   const lead: PostResult<"/api/agents"> & {
     agent?: Pick<PostResult<"/api/agents">, "id">;
   } = await backend.post("/api/agents", {

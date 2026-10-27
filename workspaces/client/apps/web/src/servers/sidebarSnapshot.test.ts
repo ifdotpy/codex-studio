@@ -1,3 +1,4 @@
+import { StudioErrorLevel } from "../generated/api";
 import {
   AgentSource,
   AgentStatus,
@@ -332,6 +333,7 @@ describe("server sidebar projection", () => {
     const item: Snapshot["runtime"]["studioErrors"][number] = {
       id: "agent:worker:turn",
       kind: "turn_disconnected",
+      level: StudioErrorLevel.error,
       diagnostics: {
         context: { source: "agent", turnId: "turn", epoch: 0 },
         certainty: StudioErrorEffectCertainty.unknown,

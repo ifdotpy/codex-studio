@@ -1,3 +1,5 @@
+import { StudioErrorLevel } from "../generated/api";
+import { appendAppLog, clearAppLog } from "../appLog";
 import { StudioErrorEffectCertainty as GeneratedApiStudioErrorEffectCertainty } from "../generated/api.ts";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
@@ -14,6 +16,7 @@ import {
 const lost: StudioErrorItem = {
   id: "monitor:watch",
   kind: "monitor_outcome_lost",
+  level: StudioErrorLevel.error,
   reason:
     "Studio lost the result of this command. The command may have run. Studio does not run it again.",
   action: "check",
@@ -44,6 +47,7 @@ const disconnected: StudioErrorItem = {
   ...lost,
   id: "agent:worker:turn",
   kind: "turn_disconnected",
+  level: StudioErrorLevel.error,
   reason: "The provider connection ended during the turn.",
   action: "resume",
   monitorId: null,
@@ -107,6 +111,7 @@ test("server incidents expose details without inventing an agent action", () => 
   const incident: StudioErrorItem = {
     id: "http:failed-read",
     kind: "http_failure",
+    level: StudioErrorLevel.error,
     action: "details",
     reason: "The server could not complete this request.",
     detail: "store_data",
@@ -171,4 +176,46 @@ test("the server-scoped warning owner consumes streamed error rows", () => {
     ),
   );
   expect(markup).toContain("Streamed errors: 2");
+});
+
+test("levels are counted and displayed in severity order", () => {
+  const warning: StudioErrorItem = {
+    ...lost,
+    id: "warning",
+    level: StudioErrorLevel.warning,
+    at: 9,
+  };
+  const critical: StudioErrorItem = {
+    ...lost,
+    id: "critical",
+    level: StudioErrorLevel.critical,
+    at: 1,
+  };
+  const markup = render([warning, critical, lost]);
+  expect(markup).toContain("CRITICAL (1)");
+  expect(markup).toContain("ERROR (1)");
+  expect(markup).toContain("WARNING (1)");
+  expect(markup.indexOf('data-kind="monitor_outcome_lost"')).toBeGreaterThan(
+    -1,
+  );
+  expect(markup.indexOf("Select error critical")).toBeLessThan(
+    markup.indexOf("Select error warning"),
+  );
+});
+
+test("local logs share the list without a dismissal checkbox", () => {
+  appendAppLog({
+    at: 1234,
+    title: "Reconnected",
+    reason: "Connection restored",
+  });
+  try {
+    const markup = render([]);
+    expect(markup).toContain("LOG (1)");
+    expect(markup).toContain("Reconnected");
+    expect(markup).toContain("Clear local logs");
+    expect(markup).not.toContain('type="checkbox"');
+  } finally {
+    clearAppLog();
+  }
 });

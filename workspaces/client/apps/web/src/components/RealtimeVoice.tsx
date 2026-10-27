@@ -1,3 +1,4 @@
+import type { ConnectionHealth } from "../sync/connectionState";
 import { VoiceRecordKind as GeneratedApiVoiceRecordKind } from "../generated/api.ts";
 import {
   useServerApi,
@@ -11,7 +12,7 @@ import { useEffect, useRef, useState } from "react";
 import { ActionIcon, Popover } from "@mantine/core";
 import { AudioLines, X } from "lucide-react";
 import { errorText, type PostResult } from "../api";
-import type { ResourceConnectionState } from "../sync/client";
+
 import type { ResourceVersion } from "../sync/subscriptions/events";
 import "./realtime-voice.css";
 import { useServerResourceReads } from "../servers/ServerServicesContext";
@@ -68,7 +69,7 @@ function NativeVoice({
   const muteWanted = useRef(false);
   const mounted = useRef(true);
   const starting = useRef(false);
-  const transportState = useRef<ResourceConnectionState>("connecting");
+  const transportState = useRef<ConnectionHealth>("connecting");
   const pendingSession = useRef<Session | null>(null);
   const cursor = useRef(0);
   const cursorEpoch = useRef<string | undefined>(undefined);

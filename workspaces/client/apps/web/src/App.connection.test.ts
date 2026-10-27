@@ -1,17 +1,17 @@
-import { afterEach, expect, it, vi } from "vitest";
 import type {
-  ResourceConnectionDetail,
-  ResourceConnectionState,
-  ResourceStreamState,
-} from "./sync/resourceConnection";
+  ConnectionActivity,
+  ConnectionHealth,
+} from "./sync/connectionState";
+import { afterEach, expect, it, vi } from "vitest";
+import type { ResourceConnectionDetail } from "./sync/resourceConnection";
 
 const h = vi.hoisted(() => ({
   effects: [] as Array<() => void | (() => void)>,
   connection: undefined as
     | undefined
     | ((
-        health: ResourceConnectionState,
-        activity: ResourceStreamState,
+        health: ConnectionHealth,
+        activity: ConnectionActivity,
         detail: ResourceConnectionDetail,
       ) => void),
   start: vi.fn(() => () => {}),

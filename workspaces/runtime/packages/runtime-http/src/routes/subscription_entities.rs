@@ -103,22 +103,40 @@ pub(super) async fn content_fingerprint(
     state: HttpState,
     resource: ResourceRef,
 ) -> Option<Vec<u8>> {
+    Some(
+        incremental_fingerprint(state, resource, None)
+            .await?
+            .digest
+            .to_vec(),
+    )
+}
+
+pub(super) async fn incremental_fingerprint(
+    state: HttpState,
+    resource: ResourceRef,
+    previous: Option<studio_runtime_services::resource_notify::EntityContentFingerprint>,
+) -> Option<studio_runtime_services::resource_notify::EntityContentFingerprint> {
+    use studio_runtime_services::resource_notify::EntityContentFingerprint;
     let (scope, id, agent) = selection(&resource).ok()?;
     let collections = serde_json::to_string(&scope.collections).ok()?;
-    let fingerprint = state
+    state
         .store?
         .read_async("runtime-http/subscription-entity-fingerprint", move |tx| {
-            SyncDocumentsRepository::entity_scope_fingerprint(
+            let sequence = SyncDocumentsRepository::entity_sequence(tx)?;
+            if let Some(previous) = previous.filter(|previous| previous.sequence == sequence) {
+                return Ok(previous);
+            }
+            let digest = SyncDocumentsRepository::entity_scope_fingerprint(
                 tx,
                 Some(&collections),
                 id.as_deref(),
                 agent.as_deref(),
                 scope.include_team_members,
-            )
+            )?;
+            Ok::<_, studio_runtime_store::StoreError>(EntityContentFingerprint { sequence, digest })
         })
         .await
-        .ok()?;
-    Some(fingerprint.to_vec())
+        .ok()
 }
 
 inventory::submit! {
@@ -134,6 +152,127 @@ mod tests {
     use super::*;
     use std::sync::Arc;
     use studio_runtime_store::{AgentRecord, AgentRepository, RuntimeStore, StoreError};
+
+    #[tokio::test]
+    async fn incremental_fingerprint_handles_offscreen_moves_and_deletion() {
+        let directory = tempfile::tempdir().expect("isolated state");
+        let store = Arc::new(
+            RuntimeStore::open(Some(directory.path()))
+                .await
+                .expect("store"),
+        );
+        store
+            .transaction(|tx| {
+                SyncDocumentsRepository::put_entity(
+                    tx,
+                    "agentSummary",
+                    "worker",
+                    json!({"rootId":"lead"}),
+                    false,
+                )?;
+                SyncDocumentsRepository::put_entity(
+                    tx,
+                    "task",
+                    "visible",
+                    json!({"agent":"worker"}),
+                    false,
+                )?;
+                Ok(())
+            })
+            .await
+            .expect("seed");
+        let workspace = store
+            .test_read_transaction(|tx| SyncDocumentsRepository::workspace_id(tx))
+            .expect("workspace");
+        let state = HttpState::new(
+            "token".into(),
+            workspace,
+            directory.path().display().to_string(),
+            4620,
+            None,
+            Some(store.clone()),
+            None,
+        );
+        let resource: ResourceRef =
+            serde_json::from_value(json!({"kind":"tasks","agentId":"lead"})).expect("tasks");
+        let initial = incremental_fingerprint(state.clone(), resource.clone(), None)
+            .await
+            .expect("initial");
+        let unchanged = incremental_fingerprint(state.clone(), resource.clone(), Some(initial))
+            .await
+            .expect("unchanged");
+        assert_eq!(unchanged.sequence, initial.sequence);
+        assert_eq!(unchanged.digest, initial.digest);
+        store
+            .transaction(|tx| {
+                SyncDocumentsRepository::put_entity(
+                    tx,
+                    "task",
+                    "offscreen",
+                    json!({"agent":"other"}),
+                    false,
+                )?;
+                Ok(())
+            })
+            .await
+            .expect("offscreen");
+        let offscreen = incremental_fingerprint(state.clone(), resource.clone(), Some(unchanged))
+            .await
+            .expect("offscreen fingerprint");
+        assert_eq!(offscreen.digest, initial.digest);
+        assert!(offscreen.sequence > initial.sequence);
+        store
+            .transaction(|tx| {
+                SyncDocumentsRepository::put_entity(
+                    tx,
+                    "agentSummary",
+                    "worker",
+                    json!({"rootId":"other"}),
+                    false,
+                )?;
+                Ok(())
+            })
+            .await
+            .expect("move");
+        let moved = incremental_fingerprint(state.clone(), resource.clone(), Some(offscreen))
+            .await
+            .expect("moved fingerprint");
+        assert_ne!(moved.digest, initial.digest);
+        store
+            .transaction(|tx| {
+                SyncDocumentsRepository::put_entity(
+                    tx,
+                    "agentSummary",
+                    "worker",
+                    json!({"rootId":"lead"}),
+                    false,
+                )?;
+                Ok(())
+            })
+            .await
+            .expect("restore");
+        let restored = incremental_fingerprint(state.clone(), resource.clone(), Some(moved))
+            .await
+            .expect("restored fingerprint");
+        assert_eq!(restored.digest, initial.digest);
+        store
+            .transaction(|tx| {
+                SyncDocumentsRepository::put_entity(
+                    tx,
+                    "task",
+                    "visible",
+                    json!({"agent":"worker"}),
+                    true,
+                )?;
+                Ok(())
+            })
+            .await
+            .expect("delete");
+        let deleted = incremental_fingerprint(state, resource, Some(restored))
+            .await
+            .expect("deleted fingerprint");
+        assert_ne!(deleted.digest, initial.digest);
+    }
 
     #[tokio::test]
     async fn view_scoped_entities_fingerprint_detects_changes_beyond_the_stream_page() {

@@ -33,6 +33,8 @@ jobs:
         run: cargo fmt --check
       - name: Rust Clippy
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - name: Rust compiler policy witnesses
+        run: pnpm run test:rust-lint-policy
       - name: Rust documentation tests
         run: cargo test --doc --workspace --locked
 
@@ -94,6 +96,15 @@ jobs:
         run: |
           mkdir -p "$RUNNER_TEMP/rust-workspace-tests"
           just build-rust-test-archive "$RUNNER_TEMP/rust-workspace-tests/workspace.tar.zst"
+      - name: Run native tests with the installed WebView libraries
+        run: just test-native-ci
+      - name: Upload native nextest report
+        if: failure() || cancelled()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: rust-nextest-native
+          path: target/nextest/ci/junit.xml
+          if-no-files-found: ignore
       - name: Pack the renderer build that the native crate embeds
         run: tar -cf "$RUNNER_TEMP/rust-workspace-tests/renderer.tar" workspaces/client/apps/web/dist workspaces/client/apps/web/src/wasm/generated
       - uses: ./.github/actions/upload-build-output
@@ -170,8 +181,7 @@ jobs:
             exit 1
           fi
       - uses: ./.github/actions/fast-tier-setup
-      # The native crate's tests link the WebView libraries at run time.
-      - uses: ./.github/actions/native-linux-deps
+      # The archive omits native tests, which run on the prepared builder.
       - uses: ./.github/actions/download-build-output
         with:
           name: rust-workspace-tests

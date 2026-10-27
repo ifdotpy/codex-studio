@@ -1,12 +1,13 @@
+import type { ConnectionHealth } from "./connectionState";
 import type { Snapshot } from "../types";
-import type { ResourceConnectionState } from "./resourceEvents";
+
 import type { ViteDevServer } from "vite";
 import type { components } from "../generated/api";
 
 declare global {
   interface Window {
     snapshot: Snapshot | null;
-    connection: ResourceConnectionState | "closed";
+    connection: ConnectionHealth | "closed";
     checkpoint: () => Promise<number | undefined>;
   }
 }

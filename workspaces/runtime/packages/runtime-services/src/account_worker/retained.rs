@@ -1103,18 +1103,14 @@ fn monitor_call(
     tx: &rusqlite::Transaction<'_>,
     id: &str,
     operation: &crate::monitor_policy::Operation,
-) -> Result<Option<Call>, WorkerError> {
-    #[derive(serde::Deserialize)]
-    struct Submitted {
-        call: Call,
-    }
+) -> Result<Option<(Call, Value)>, WorkerError> {
     let identity = format!("monitor:{id}");
     let key = Call::operation_key(&operation.account_key, &identity);
     let Some(value) = super::store::receipt(tx, &key, "submitted")? else {
         return Ok(None);
     };
-    let submitted: Submitted = serde_json::from_value(value).map_err(|_| WorkerError::Capacity)?;
-    let call = submitted.call;
+    let call: Call =
+        serde_json::from_value(value["call"].clone()).map_err(|_| WorkerError::Capacity)?;
     if call.operation != identity
         || call.scope.account != operation.account_key
         || call.scope.connection != operation.connection_id
@@ -1129,7 +1125,7 @@ fn monitor_call(
             "monitor retained receipt identity changed".into(),
         ));
     }
-    Ok(Some(call))
+    Ok(Some((call, value)))
 }
 
 /// The original host command's durable scope. Account transfer never changes
@@ -1145,7 +1141,7 @@ pub(crate) fn monitor_command_scope(
     if record.value().get("operation") != Some(&json!(operation)) {
         return Ok(None);
     }
-    let Some(call) = monitor_call(tx, id, operation)? else {
+    let Some((call, submitted)) = monitor_call(tx, id, operation)? else {
         return Ok(None);
     };
     // `submitted` precedes I/O and is not proof that a process exists. The
@@ -1161,7 +1157,7 @@ pub(crate) fn monitor_command_scope(
     {
         return Ok(None);
     }
-    Ok(match storage::replay_recorded(tx, &call)? {
+    Ok(match storage::replay_submitted(tx, &call, &submitted)? {
         Ok(storage::Replay::Return(receipt)) => Some(receipt.scope),
         _ => None,
     })
@@ -1210,7 +1206,7 @@ pub async fn monitor_result(
     let operation = operation.clone();
     store
         .read_async("runtime-services/retained_monitor_result", move |tx| {
-            let Some(call) = monitor_call(tx, &id, &operation)? else {
+            let Some((call, submitted)) = monitor_call(tx, &id, &operation)? else {
                 return Ok(None);
             };
             if studio_runtime_store::MonitorsRepository::get(tx, &id)?
@@ -1218,7 +1214,7 @@ pub async fn monitor_result(
             {
                 return Ok(None);
             }
-            let receipt = match storage::replay_recorded(tx, &call)? {
+            let receipt = match storage::replay_submitted(tx, &call, &submitted)? {
                 Ok(storage::Replay::Return(receipt)) => receipt,
                 Ok(storage::Replay::Miss | storage::Replay::Retry(_)) => return Ok(None),
                 Err(_) => {
@@ -1264,10 +1260,12 @@ pub async fn monitor_late_result(
             if !snapshot.deadline_lost() || snapshot.operation() != Some(&operation) {
                 return Ok(None);
             }
-            let Some(call) = monitor_call(tx, &id, &operation)? else {
+            let Some((call, submitted)) = monitor_call(tx, &id, &operation)? else {
                 return Ok(None);
             };
-            let Ok(storage::Replay::Return(receipt)) = storage::replay_recorded(tx, &call)? else {
+            let Ok(storage::Replay::Return(receipt)) =
+                storage::replay_submitted(tx, &call, &submitted)?
+            else {
                 return Ok(None);
             };
             Ok(match receipt.result {

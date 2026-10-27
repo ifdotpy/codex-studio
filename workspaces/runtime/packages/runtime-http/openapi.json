@@ -49176,6 +49176,9 @@
           "kind": {
             "$ref": "#/components/schemas/StudioErrorKind"
           },
+          "level": {
+            "$ref": "#/components/schemas/StudioErrorLevel"
+          },
           "monitorId": {
             "type": [
               "string",
@@ -49199,6 +49202,7 @@
         "required": [
           "id",
           "kind",
+          "level",
           "reason",
           "detail",
           "subject",
@@ -49712,6 +49716,16 @@
             "type": "string"
           }
         ]
+      },
+      "StudioErrorLevel": {
+        "description": "Severity of an app error or local log entry.",
+        "enum": [
+          "critical",
+          "error",
+          "warning",
+          "log"
+        ],
+        "type": "string"
       },
       "StudioErrorsDismissRequest": {
         "additionalProperties": false,

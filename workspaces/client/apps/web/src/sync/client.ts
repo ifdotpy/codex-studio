@@ -1,3 +1,4 @@
+import type { ConnectionHealth } from "./connectionState";
 import { SubscriptionReplyKind } from "../generated/api";
 import { mergeTerminalOutput } from "./subscriptions/terminalOutput";
 import { SUBSCRIPTION_ENTITY_SCOPES } from "../generated/subscriptionEntities";
@@ -56,7 +57,6 @@ import {
 import {
   watchResourceChanges,
   watchResourceConnection,
-  type ResourceConnectionState,
   type ResourceRef,
   type ResourceVersion,
 } from "./subscriptions/events";
@@ -123,7 +123,6 @@ export function entityCacheRow(
 export {
   watchResourceChanges,
   watchResourceConnection,
-  type ResourceConnectionState,
 } from "./subscriptions/events";
 
 export type { ResourceRef } from "./subscriptions/events";
@@ -1749,7 +1748,7 @@ export function createSyncClient(options: SyncClientOptions) {
       const resetReadRecovery = () => {
         recovery = new ReadRecoveryBudget();
       };
-      let connectionStatus: ResourceConnectionState = "connecting";
+      let connectionStatus: ConnectionHealth = "connecting";
       const retryAbort = new AbortController();
       let stopConnection: (() => void) | undefined;
       const report = (error: unknown | null) => {
@@ -3055,7 +3054,7 @@ export function createSyncClient(options: SyncClientOptions) {
     let dispose = () => {};
     let hasData = false;
     let recovery = new ReadRecoveryBudget();
-    let connectionStatus: ResourceConnectionState = "connecting";
+    let connectionStatus: ConnectionHealth = "connecting";
     let retryTimer: ReturnType<typeof setTimeout> | undefined;
     const clearRetry = () => {
       clearTimeout(retryTimer);

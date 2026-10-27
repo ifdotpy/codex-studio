@@ -12,9 +12,9 @@ use serde_json::{Map, Value};
 use studio_runtime_process::{
     EventCursor, Generation, OperationId, ProviderHandle,
     provider_seam::{
-        AdapterCommand, AdapterError, AttachmentStatus, CommandReceipt, InitializationStatus,
-        JournalEntry, JournalPayload, LANE_CAPACITY, OpenOptions, PreparedWrite,
-        ProviderAttachment, ProviderTaskFactory, SessionClock, Shutdown, TaskExit,
+        AdapterCommand, AdapterError, AttachmentInfo, AttachmentStatus, CommandReceipt,
+        InitializationStatus, JournalEntry, JournalPayload, LANE_CAPACITY, OpenOptions,
+        PreparedWrite, ProviderAttachment, ProviderTaskFactory, SessionClock, Shutdown, TaskExit,
         initialized_operation,
     },
 };
@@ -182,6 +182,24 @@ pub struct SessionStatus {
 }
 
 impl SessionStatus {
+    /// SessionState owns protocol readiness. Transport initialization is only
+    /// recovery metadata: direct transports do not maintain a second handshake.
+    pub(crate) fn ready_connection(
+        &self,
+        handle: &ProviderHandle,
+        generation: Generation,
+    ) -> Option<&AttachmentInfo> {
+        let info = self.attachment.info.as_ref()?;
+        (self.initialization == InitializationStatus::Ready
+            && self.generation == generation
+            && self.attachment.open_attempted
+            && self.attachment.handle == *handle
+            && info.handle == *handle
+            && info.generation == generation
+            && info.pid > 0)
+            .then_some(info)
+    }
+
     /// A capability belongs to the ready, exact account handle and generation.
     /// Missing metadata, an old reply, and non-boolean values grant nothing.
     pub(crate) fn has_capability(
@@ -190,13 +208,7 @@ impl SessionStatus {
         generation: Generation,
         capability: &str,
     ) -> bool {
-        self.generation == generation
-            && self.initialization == InitializationStatus::Ready
-            && self.attachment.initialization == InitializationStatus::Ready
-            && self.attachment.handle == *handle
-            && self.attachment.info.as_ref().is_some_and(|info| {
-                info.handle == *handle && info.generation == generation && info.pid > 0
-            })
+        self.ready_connection(handle, generation).is_some()
             && self.initialize_result.as_ref().is_some_and(|result| {
                 result
                     .get("capabilities")

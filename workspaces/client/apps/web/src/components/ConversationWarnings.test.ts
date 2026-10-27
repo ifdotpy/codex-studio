@@ -1,3 +1,4 @@
+import { appendAppLog, clearAppLog } from "../appLog";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { MantineProvider } from "@mantine/core";
@@ -56,4 +57,31 @@ test("keeps the warnings trigger reachable when there are no notices", () => {
     ),
   );
   expect(markup).toContain("conversation-warning-trigger");
+});
+
+test("local log alone uses the informational trigger", () => {
+  appendAppLog({ at: 1, title: "Connected", reason: "Connection restored" });
+  try {
+    const markup = renderToStaticMarkup(
+      createElement(
+        MantineProvider,
+        null,
+        createElement(
+          StudioErrorsProvider,
+          null,
+          createElement(ConversationWarnings, {
+            scope: "logs",
+            accountKey: "work",
+            notices: [],
+            messages: [],
+          }),
+        ),
+      ),
+    );
+    expect(markup).toContain('aria-label="Notices"');
+    expect(markup).toContain("lucide-info");
+    expect(markup).not.toContain("lucide-circle-alert");
+  } finally {
+    clearAppLog();
+  }
 });

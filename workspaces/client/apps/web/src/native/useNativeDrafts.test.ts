@@ -1,9 +1,9 @@
-import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type {
-  ResourceConnectionState,
-  ResourceStreamState,
-  ResourceVersion,
-} from "../sync/subscriptions/events";
+  ConnectionActivity,
+  ConnectionHealth,
+} from "../sync/connectionState";
+import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import type { ResourceVersion } from "../sync/subscriptions/events";
 import type { DraftView } from "./draftState";
 
 const mocks = vi.hoisted(() => ({
@@ -11,7 +11,7 @@ const mocks = vi.hoisted(() => ({
   cleanups: [] as Array<() => void>,
   changes: new Set<(version?: ResourceVersion) => void>(),
   connections: new Set<
-    (status: ResourceConnectionState, stream: ResourceStreamState) => void
+    (status: ConnectionHealth, stream: ConnectionActivity) => void
   >(),
   resumes: new Set<() => void>(),
   request: vi.fn(),
@@ -42,10 +42,7 @@ vi.mock("../sync/subscriptions/events", () => ({
     return () => mocks.changes.delete(callback);
   },
   watchResourceConnection: (
-    callback: (
-      status: ResourceConnectionState,
-      stream: ResourceStreamState,
-    ) => void,
+    callback: (status: ConnectionHealth, stream: ConnectionActivity) => void,
   ) => {
     mocks.connections.add(callback);
     callback("connecting", "connecting");
@@ -74,7 +71,7 @@ function mount() {
 function notify(revision: number) {
   for (const callback of mocks.changes) callback({ epoch: "epoch", revision });
 }
-function connection(status: ResourceConnectionState) {
+function connection(status: ConnectionHealth) {
   for (const callback of mocks.connections)
     callback(status, status === "live" ? "open" : "connecting");
 }

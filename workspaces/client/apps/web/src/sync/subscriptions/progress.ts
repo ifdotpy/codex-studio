@@ -1,9 +1,5 @@
-import type {
-  ResourceConnectionState,
-  ResourceProgress,
-  ResourceRef,
-  ResourceVersion,
-} from "./events";
+import type { ConnectionHealth } from "../connectionState";
+import type { ResourceProgress, ResourceRef, ResourceVersion } from "./events";
 
 type ProgressResource = Extract<
   ResourceRef,
@@ -15,7 +11,7 @@ type ProgressEvents = {
     accept: (version?: ResourceVersion) => void,
   ) => () => void;
   watchResourceConnection: (
-    accept: (state: ResourceConnectionState) => void,
+    accept: (state: ConnectionHealth) => void,
   ) => () => void;
 };
 

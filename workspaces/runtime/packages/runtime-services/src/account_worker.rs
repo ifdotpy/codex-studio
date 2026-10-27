@@ -4133,8 +4133,9 @@ impl Worker {
     /// accepted; this runs again when a handler or an answer finishes.
     async fn start_callbacks(&mut self) -> Result<(), WorkerError> {
         let status = self.session.status.borrow().clone();
-        if status.initialization != InitializationStatus::Ready
-            || status.attachment.initialization != InitializationStatus::Ready
+        if status
+            .ready_connection(&ProviderHandle::for_account(&self.account), self.generation)
+            .is_none()
         {
             return Ok(());
         }

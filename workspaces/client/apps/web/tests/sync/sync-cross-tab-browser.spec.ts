@@ -7,7 +7,7 @@ import type {
   OutgoingTabMessage,
   ResourceVersion,
 } from "../../src/sync/resourceEvents.ts";
-import type { ResourceConnectionState } from "../../src/sync/resourceConnection.ts";
+import type { ConnectionHealth } from "../../src/sync/connectionState.ts";
 import { fixtureOrigin, fixtureResources } from "./helpers.ts";
 // Same-origin Chromium proof: one elected sync stream fans out to eight tabs.
 import assert from "node:assert/strict";
@@ -1445,7 +1445,7 @@ declare global {
       at: number;
     }[];
     hasStateWatch: boolean;
-    crossTabStates: ResourceConnectionState[];
+    crossTabStates: ConnectionHealth[];
     stop: () => void;
     stopState: () => void;
     stopTranscript: () => void;

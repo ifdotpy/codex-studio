@@ -107,6 +107,7 @@ pub(super) struct Faults {
     pub(super) shutdown_wait: tokio::sync::Notify,
     pub(super) startup_recovery_done: std::sync::atomic::AtomicBool,
     pub(super) startup_recovery: tokio::sync::Notify,
+    pub(super) vm_readiness_waiting: tokio::sync::Notify,
     pub(super) shutdown_callbacks_draining: tokio::sync::Notify,
     pub(super) shutdown_phase: std::sync::Mutex<&'static str>,
     pub(super) shutdown_phase_changed: tokio::sync::Notify,

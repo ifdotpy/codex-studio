@@ -1,15 +1,11 @@
+import type { ConnectionHealth } from "../connectionState";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import type {
-  ResourceVersion,
-  ResourceConnectionState,
-} from "../resourceEvents";
+import type { ResourceVersion } from "../resourceEvents";
 import type { ResourceRef } from "./contracts";
 
 const mocks = vi.hoisted(() => ({
   changes: new Map<string, Set<(version?: ResourceVersion) => void>>(),
-  connections: new Set<
-    (status: ResourceConnectionState, stream: "open") => void
-  >(),
+  connections: new Set<(status: ConnectionHealth, stream: "open") => void>(),
 }));
 vi.mock("../resourceEvents", () => ({
   createResourceEvents: () => ({
@@ -24,7 +20,7 @@ vi.mock("../resourceEvents", () => ({
       return () => listeners.delete(accept);
     },
     watchResourceConnection: (
-      accept: (status: ResourceConnectionState, stream: "open") => void,
+      accept: (status: ConnectionHealth, stream: "open") => void,
     ) => {
       mocks.connections.add(accept);
       accept("live", "open");

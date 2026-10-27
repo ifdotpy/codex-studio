@@ -152,14 +152,11 @@ fn retained_monitor_scope(
 /// observes those accounts' existing sessions; it never starts another session.
 pub fn monitor_sources(
     tx: &Transaction<'_>,
-    owners: &[Value],
+    rows: &[(bool, &Value, Value)],
 ) -> Result<Vec<ConnectionScope>, Error> {
     let mut scopes = BTreeMap::new();
-    for (_, raw) in studio_runtime_store::StartupRecoveryRepository::active_monitors(tx)? {
-        let monitor: Value = serde_json::from_str(&raw).map_err(StoreError::from)?;
-        if let Some(owner) = owners.iter().find(|owner| owner["id"] == monitor["agent"])
-            && let Some(scope) = retained_monitor_scope(tx, &monitor, owner)?
-        {
+    for (_, owner, monitor) in rows.iter().filter(|(monitor, _, _)| *monitor) {
+        if let Some(scope) = retained_monitor_scope(tx, monitor, owner)? {
             scopes.insert(scope.account.clone(), scope);
         }
     }
@@ -224,42 +221,73 @@ pub fn owner(connection: &Connection, scope: &str) -> Result<Value, Error> {
 }
 pub fn owners(connection: &Connection, scope: &str) -> Result<Vec<Value>, Error> {
     let root = owner(connection, scope)?;
+    if root["id"].as_str().is_none() {
+        return Err(Error::Invalid("Invalid process owner"));
+    }
     let mut statement = connection
         .prepare(
-            "SELECT record FROM runtime_agents WHERE json_extract(record,'$.deletedAt') IS NULL",
+            "WITH RECURSIVE descendants(id) AS (
+             SELECT ?1 UNION SELECT child.id FROM runtime_agents child
+             JOIN descendants parent ON child.parent_id=parent.id
+             WHERE child.deleted_at IS NULL
+         ) SELECT agent.record FROM descendants JOIN runtime_agents agent ON agent.id=descendants.id
+           WHERE descendants.id != ?1",
         )
         .map_err(StoreError::from)?;
     let rows = statement
-        .query_map([], |row| row.get::<_, String>(0))
+        .query_map([scope], |row| row.get::<_, String>(0))
         .map_err(StoreError::from)?;
-    let mut children: BTreeMap<String, Vec<Value>> = BTreeMap::new();
-    for row in rows {
-        let value: Value =
-            serde_json::from_str(&row.map_err(StoreError::from)?).map_err(StoreError::from)?;
-        if let Some(parent) = value["parentId"].as_str() {
-            children.entry(parent.to_owned()).or_default().push(value);
-        }
-    }
     let mut result = vec![root];
-    let mut seen = HashSet::from([scope.to_owned()]);
-    let mut index = 0;
-    while index < result.len() {
-        let id = result[index]["id"]
-            .as_str()
-            .ok_or(Error::Invalid("Invalid process owner"))?;
-        if let Some(children) = children.remove(id) {
-            for child in children {
-                if let Some(id) = child["id"].as_str()
-                    && seen.insert(id.to_owned())
-                {
-                    result.push(child);
-                }
-            }
-        }
-        index += 1;
+    for row in rows {
+        result
+            .push(serde_json::from_str(&row.map_err(StoreError::from)?).map_err(StoreError::from)?);
     }
     Ok(result)
 }
+
+/// Scoped active commands paired with their already-loaded owners.
+pub fn process_rows<'a>(
+    connection: &Connection,
+    owners: &'a [Value],
+) -> Result<Vec<(bool, &'a Value, Value)>, Error> {
+    let mut result = Vec::new();
+    for table in ["runtime_monitors", "runtime_tasks"] {
+        let (index, status) = if table == "runtime_monitors" {
+            ("runtime_monitor_agent_status", "IN (?2,?3,?4)")
+        } else {
+            ("runtime_task_agent_created_id", "= ?2")
+        };
+        let sql = format!(
+            "SELECT record FROM {table} INDEXED BY {index} WHERE json_extract(record,'$.agent')=?1 AND json_extract(record,'$.status') {status}"
+        );
+        let mut statement = connection.prepare_cached(&sql).map_err(StoreError::from)?;
+        for owner in owners {
+            let id = text(owner, "id", "");
+            let statuses = studio_runtime_store::startup_recovery::ACTIVE_MONITOR_STATUSES;
+            let args = [id, statuses[0], statuses[1], statuses[2]];
+            let args = if table == "runtime_monitors" {
+                &args[..]
+            } else {
+                &args[..2]
+            };
+            let rows = statement
+                .query_map(rusqlite::params_from_iter(args), |row| {
+                    row.get::<_, String>(0)
+                })
+                .map_err(StoreError::from)?;
+            for row in rows {
+                result.push((
+                    table == "runtime_monitors",
+                    owner,
+                    serde_json::from_str(&row.map_err(StoreError::from)?)
+                        .map_err(StoreError::from)?,
+                ));
+            }
+        }
+    }
+    Ok(result)
+}
+
 fn text<'a>(value: &'a Value, key: &str, default: &'a str) -> &'a str {
     value[key]
         .as_str()
@@ -437,69 +465,49 @@ fn project_bound(
 }
 pub fn processes(
     connection: &Transaction<'_>,
-    scope: &str,
+    rows: &[(bool, &Value, Value)],
     connections: &Connections,
-) -> Result<(Vec<Value>, Vec<Value>), Error> {
-    let owners = owners(connection, scope)?;
+) -> Result<Vec<Value>, Error> {
     let mut output = Vec::new();
-    for table in ["runtime_monitors", "runtime_tasks"] {
-        let rows = if table == "runtime_monitors" {
-            studio_runtime_store::StartupRecoveryRepository::active_monitors(connection)?
-                .into_iter()
-                .map(|(_, raw)| raw)
-                .collect::<Vec<_>>()
+    for (monitor, owner, raw) in rows {
+        let mut raw = raw.clone();
+        let provider = text(
+            &raw,
+            "sourceProvider",
+            text(owner, "provider", ProviderKind::Codex.key()),
+        )
+        .to_owned();
+        let source = if *monitor {
+            "monitor"
+        } else if raw["kind"] == "command" && studio_runtime_store::truthy(raw.get("processId")) {
+            "codex_task"
+        } else if provider == ProviderKind::Claude.key()
+            && raw["kind"] == "tool"
+            && text(&raw, "itemId", "")
+                .strip_prefix("task:")
+                .is_some_and(|v| !v.is_empty())
+        {
+            "claude_task"
         } else {
-            let mut statement=connection.prepare("SELECT record FROM runtime_tasks WHERE json_extract(record,'$.status')='running'").map_err(StoreError::from)?;
-            statement
-                .query_map([], |row| row.get::<_, String>(0))
-                .map_err(StoreError::from)?
-                .collect::<Result<Vec<_>, _>>()
-                .map_err(StoreError::from)?
+            continue;
         };
-        for row in rows {
-            let mut raw: Value = serde_json::from_str(&row).map_err(StoreError::from)?;
-            let Some(owner) = owners.iter().find(|o| o["id"] == raw["agent"]) else {
-                continue;
-            };
-            let provider = text(
-                &raw,
-                "sourceProvider",
-                text(owner, "provider", ProviderKind::Codex.key()),
-            )
-            .to_owned();
-            let source = if table == "runtime_monitors" {
-                "monitor"
-            } else if raw["kind"] == "command" && studio_runtime_store::truthy(raw.get("processId"))
-            {
-                "codex_task"
-            } else if provider == ProviderKind::Claude.key()
-                && raw["kind"] == "tool"
-                && text(&raw, "itemId", "")
-                    .strip_prefix("task:")
-                    .is_some_and(|v| !v.is_empty())
-            {
-                "claude_task"
-            } else {
-                continue;
-            };
-            if source != "monitor" {
-                raw["sourceProvider"] = json!(provider);
-            }
-            let owner_connection = connections.get(text(owner, "id", "")).map(String::as_str);
-            output.push(if source == "monitor" {
-                project_monitor(
-                    connection,
-                    &raw,
-                    owner,
-                    owner_connection,
-                    connections
-                        .sources
-                        .get(text(&raw["operation"], "accountKey", "default")),
-                )?
-            } else {
-                project(source, &raw, owner, owner_connection)
-            });
+        if source != "monitor" {
+            raw["sourceProvider"] = json!(provider);
         }
+        let owner_connection = connections.get(text(owner, "id", "")).map(String::as_str);
+        output.push(if source == "monitor" {
+            project_monitor(
+                connection,
+                &raw,
+                owner,
+                owner_connection,
+                connections
+                    .sources
+                    .get(text(&raw["operation"], "accountKey", "default")),
+            )?
+        } else {
+            project(source, &raw, owner, owner_connection)
+        });
     }
     output.sort_by(|a, b| {
         b["created"]
@@ -508,7 +516,7 @@ pub fn processes(
             .unwrap_or(std::cmp::Ordering::Equal)
             .then_with(|| text(a, "key", "").cmp(text(b, "key", "")))
     });
-    Ok((owners, output))
+    Ok(output)
 }
 pub fn response_target(owner: &Value, connection: Option<&str>) -> Value {
     if owner["inFlight"] == true
@@ -539,10 +547,11 @@ fn response_identity(owner: &Value, connection: &str) -> Value {
 }
 pub fn listing(
     connection: &Transaction<'_>,
-    scope: &str,
+    owners: &[Value],
+    rows: &[(bool, &Value, Value)],
     connections: &Connections,
 ) -> Result<Value, Error> {
-    let (owners, mut processes) = processes(connection, scope, connections)?;
+    let mut processes = processes(connection, rows, connections)?;
     for p in &mut processes {
         p.as_object_mut()
             .expect("process object")
@@ -592,7 +601,9 @@ pub fn claim(
     let id = text(request, "requestId", "");
     let signature = digest(request);
     let scope = text(request, "agent", "");
-    let (owners, processes) = processes(tx, scope, connections)?;
+    let owners = owners(tx, scope)?;
+    let rows = process_rows(tx, &owners)?;
+    let processes = processes(tx, &rows, connections)?;
     let owner = &owners[0];
     if text(owner, "accountKey", "default") != request["accountKey"]
         || owner["epoch"] != request["epoch"]

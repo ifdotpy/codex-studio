@@ -1,13 +1,11 @@
+import type { ConnectionHealth } from "./connectionState";
 import { expect, it, vi } from "vitest";
 import { subscribeProgress } from "./progressSubscription";
-import type {
-  ResourceConnectionState,
-  ResourceVersion,
-} from "./resourceEvents";
+import type { ResourceVersion } from "./resourceEvents";
 
 it("uses transient values while idle and performs one recovery read after interruption", async () => {
   let changed!: (version?: ResourceVersion) => void;
-  let connection!: (state: ResourceConnectionState) => void;
+  let connection!: (state: ConnectionHealth) => void;
   const remove = vi.fn();
   const events = {
     watchResourceChanges: vi.fn((_resource, accept) => {

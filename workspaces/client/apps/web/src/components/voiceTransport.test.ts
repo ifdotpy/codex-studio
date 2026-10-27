@@ -1,14 +1,12 @@
+import type { ConnectionHealth } from "../sync/connectionState";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { ResourceConnectionState } from "../sync/client";
 
 const { listeners } = vi.hoisted(() => ({
-  listeners: new Set<(state: ResourceConnectionState) => void>(),
+  listeners: new Set<(state: ConnectionHealth) => void>(),
 }));
 
 vi.mock("../sync/client", () => ({
-  watchResourceConnection: (
-    listener: (state: ResourceConnectionState) => void,
-  ) => {
+  watchResourceConnection: (listener: (state: ConnectionHealth) => void) => {
     listeners.add(listener);
     listener("live");
     return () => listeners.delete(listener);
@@ -17,7 +15,7 @@ vi.mock("../sync/client", () => ({
 
 import { watchVoiceTransport } from "./voiceTransport";
 
-function broadcast(state: ResourceConnectionState) {
+function broadcast(state: ConnectionHealth) {
   for (const listener of listeners) listener(state);
 }
 
@@ -25,7 +23,7 @@ describe("watchVoiceTransport", () => {
   beforeEach(() => listeners.clear());
 
   it("stops voice on every unavailable state without making a request", () => {
-    const states: ResourceConnectionState[] = [];
+    const states: ConnectionHealth[] = [];
     const stopVoice = vi.fn();
     const stop = watchVoiceTransport((state) => states.push(state), stopVoice);
 

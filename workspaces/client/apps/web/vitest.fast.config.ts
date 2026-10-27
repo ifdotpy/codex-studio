@@ -25,6 +25,7 @@ export default {
       "src/precompressedAssets.test.ts",
       "src/platformNeutralCopy.test.ts",
       "src/App.connection.test.ts",
+      "src/sync/connectionState.test.ts",
       "src/scrollbars.test.ts",
       "src/sync/subscriptions/store.test.ts",
       "src/sync/subscriptions/viewData.test.ts",
@@ -57,6 +58,7 @@ export default {
       // Token snapshots carry each agent once and derive team membership without entity projections.
       "src/usage/tokenRate.records.test.ts",
       "src/usage/tokenRate.test.ts",
+      "src/appLog.test.ts",
       "src/components/StudioErrors.test.ts",
       "src/components/SidebarWarnings.test.ts",
       "src/components/Sidebar.controls.test.ts",

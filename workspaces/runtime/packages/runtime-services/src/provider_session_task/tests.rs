@@ -29,7 +29,8 @@ fn lifecycle_capability_requires_exact_ready_connection_and_boolean_proof() {
         attachment: AttachmentStatus {
             handle: handle.clone(),
             open_attempted: true,
-            initialization: InitializationStatus::Ready,
+            // Direct stdio has no supervisor handshake state. SessionState owns readiness.
+            initialization: InitializationStatus::AwaitingReply,
             info: Some(AttachmentInfo {
                 handle: handle.clone(),
                 generation,
@@ -62,7 +63,7 @@ fn lifecycle_capability_requires_exact_ready_connection_and_boolean_proof() {
         match change {
             0 => stale.generation = Generation(8),
             1 => stale.initialization = InitializationStatus::AwaitingReply,
-            2 => stale.attachment.initialization = InitializationStatus::AwaitingReply,
+            2 => stale.attachment.open_attempted = false,
             3 => stale.attachment.info.as_mut().unwrap().generation = Generation(8),
             4 => {
                 stale.attachment.info.as_mut().unwrap().handle =

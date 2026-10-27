@@ -10,10 +10,15 @@ struct ExistingGuest {
     infos: AtomicUsize,
     info_override: std::sync::Mutex<Option<Value>>,
     info_change: std::sync::Mutex<Option<InfoChange>>,
+    reattach_gate: std::sync::Mutex<Option<(Arc<tokio::sync::Notify>, Arc<tokio::sync::Notify>)>>,
     credential_copies_at_turn_start: std::sync::Mutex<Vec<usize>>,
     new_turns: AtomicUsize,
 }
 impl GuestRpc for ExistingGuest {
+    fn reattach_gate(&self) -> Option<(Arc<tokio::sync::Notify>, Arc<tokio::sync::Notify>)> {
+        self.reattach_gate.lock().unwrap().clone()
+    }
+
     #[allow(
         clippy::disallowed_methods,
         reason = "The guest RPC fixture runs on a dedicated blocking pool thread"
@@ -638,6 +643,7 @@ async fn vm_existing_reattach_on_demand_read_reuses_the_existing_actor_connectio
     };
     let receipt = port.request(request.clone()).await.unwrap();
     assert!(matches!(receipt.result, RequestResult::Reply(_)));
+    assert_eq!(guest.infos.load(std::sync::atomic::Ordering::SeqCst), 2);
     let repeated = port.request(request).await.unwrap();
     assert!(repeated.replayed);
     {
@@ -648,6 +654,75 @@ async fn vm_existing_reattach_on_demand_read_reuses_the_existing_actor_connectio
         assert!(native.stops.is_empty());
     }
     worker.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn vm_reattach_read_waits_for_handshake_and_rechecks_authority() {
+    use crate::account_worker::retained::{PortError, RequestActor, RequestResult, SessionRequest};
+    for (change_authority, cancel) in [(false, false), (true, false), (false, true)] {
+        let (state, guest) = existing_actor(false).await;
+        *guest.info_override.lock().unwrap() = Some(json!({"initResult":null}));
+        let (_peer, mut worker) = existing_worker(&state, guest.clone()).await;
+        worker_barrier(&worker).await;
+        *guest.info_override.lock().unwrap() = None;
+        let held = Arc::new(tokio::sync::Notify::new());
+        let release = Arc::new(tokio::sync::Notify::new());
+        *guest.reattach_gate.lock().unwrap() = Some((held.clone(), release.clone()));
+        let port = worker.retained_session();
+        let request = SessionRequest {
+            scope: port.scope().clone(),
+            expected_scope: None,
+            operation: "held-vm-read".into(),
+            actor: Some(RequestActor {
+                agent: state.agent.clone(),
+                epoch: state.epoch,
+            }),
+            transfer: None,
+            deleted_actor_session: None,
+            method: Method::ThreadRead,
+            params: json!({"threadId":"fake-thread-0","includeTurns":false}),
+            deadline: (tokio::time::Instant::now() + std::time::Duration::from_secs(10)).into_std(),
+        };
+        let pending = port.request(request.clone());
+        tokio::pin!(pending);
+        tokio::select! {
+            result = &mut pending => panic!("request ended before readiness: {result:?}"),
+            () = held.notified() => {},
+        }
+        tokio::select! {
+            result = &mut pending => panic!("request ended while handshake was held: {result:?}"),
+            () = worker.faults.vm_readiness_waiting.notified() => {},
+        }
+        assert!(guest.inner.state.lock().unwrap().writes.is_empty());
+        if cancel {
+            worker.cancel();
+            let result = pending.await;
+            release.notify_one();
+            let shutdown = worker.shutdown().await;
+            assert_eq!(result.unwrap_err(), PortError::NotSent);
+            shutdown.unwrap();
+            assert!(guest.inner.state.lock().unwrap().writes.is_empty());
+            continue;
+        }
+        if change_authority {
+            edit_actor(&state, json!({"cwd":"/home/studio/other"})).await;
+        }
+        release.notify_one();
+        let result = pending.await;
+        if change_authority {
+            assert_eq!(result.unwrap_err(), PortError::NotSent);
+            assert!(guest.inner.state.lock().unwrap().writes.is_empty());
+        } else {
+            assert!(matches!(result.unwrap().result, RequestResult::Reply(_)));
+            assert!(port.request(request).await.unwrap().replayed);
+            let native = guest.inner.state.lock().unwrap();
+            assert_eq!(native.starts, 1);
+            assert_eq!(native.writes.len(), 1);
+            assert_eq!(native.writes[0]["method"], "thread/read");
+            assert!(native.stops.is_empty());
+        }
+        worker.shutdown().await.unwrap();
+    }
 }
 
 struct NoResolver(Arc<AtomicUsize>);

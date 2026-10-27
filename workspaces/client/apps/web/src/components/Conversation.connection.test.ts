@@ -1,15 +1,15 @@
+import type {
+  ConnectionActivity,
+  ConnectionHealth,
+} from "../sync/connectionState";
 import { required } from "./componentTestFixtures";
 import { afterEach, expect, it, vi } from "vitest";
 import type { ComponentProps, ReactElement } from "react";
-import type {
-  ResourceConnectionDetail,
-  ResourceConnectionState,
-  ResourceStreamState,
-} from "../sync/resourceConnection";
+import type { ResourceConnectionDetail } from "../sync/resourceConnection";
 
 const h = vi.hoisted(() => ({
-  health: "live" as ResourceConnectionState,
-  activity: "open" as ResourceStreamState,
+  health: "live" as ConnectionHealth,
+  activity: "open" as ConnectionActivity,
   detail: {} as ResourceConnectionDetail,
   online: false,
   feedback: false,

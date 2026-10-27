@@ -250,6 +250,11 @@ struct ChangedRowHints {
     rows: [Vec<i64>; OBSERVED_TABLES.len()],
 }
 
+thread_local! {
+    // The SQLite writer and its hooks run on the same actor thread.
+    static CHANGED_ROWS: std::cell::RefCell<ChangedRowHints> = std::cell::RefCell::new(ChangedRowHints::default());
+}
+
 impl ChangedRowHints {
     fn record(&mut self, table: ObservedTable, row_id: i64) {
         let bit = table.change_bit();
@@ -607,7 +612,6 @@ fn install_table_change_hooks(
     resource_receipt_update_count: Arc<AtomicU64>,
     resource_entity_update_count: Arc<AtomicU64>,
     row_interest: Arc<AtomicU32>,
-    changed_rows: Arc<Mutex<ChangedRowHints>>,
 ) -> rusqlite::Result<()> {
     connection.update_hook(Some(
         move |_action: rusqlite::hooks::Action,
@@ -634,10 +638,7 @@ fn install_table_change_hooks(
             // SQLite reports the row being written. A raw UPDATE that changes a
             // rowid is not tracked, so no repository writer relies on that path.
             if row_interest.load(Ordering::Relaxed) & observed.change_bit() != 0 {
-                changed_rows
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .record(*observed, row_id);
+                CHANGED_ROWS.with_borrow_mut(|rows| rows.record(*observed, row_id));
             }
         },
     ))?;
@@ -933,7 +934,6 @@ pub struct RuntimeStore {
     resource_entity_update_count: Arc<AtomicU64>,
     /// Observed tables with a row-aware observer; set before the observer is added.
     table_row_interest: Arc<AtomicU32>,
-    changed_rows: Arc<Mutex<ChangedRowHints>>,
     #[cfg(test)]
     simulate_unknown_commit_after_success: Arc<AtomicBool>,
     /// Count of committed transactions that changed rows; owned and advanced by the writer.
@@ -1289,9 +1289,7 @@ impl RuntimeStore {
         let hook_resource_receipt_update_count = Arc::clone(&resource_receipt_update_count);
         let hook_resource_entity_update_count = Arc::clone(&resource_entity_update_count);
         let table_row_interest = Arc::new(AtomicU32::new(0));
-        let changed_rows = Arc::new(Mutex::new(ChangedRowHints::default()));
         let hook_table_row_interest = Arc::clone(&table_row_interest);
-        let hook_changed_rows = Arc::clone(&changed_rows);
         writer
             .call(move |connection| {
                 connection
@@ -1308,7 +1306,6 @@ impl RuntimeStore {
                     hook_resource_receipt_update_count,
                     hook_resource_entity_update_count,
                     hook_table_row_interest,
-                    hook_changed_rows,
                 )
                 .map_err(StoreError::from)?;
                 Ok::<(), StoreError>(())
@@ -1362,7 +1359,6 @@ impl RuntimeStore {
             resource_receipt_update_count,
             resource_entity_update_count,
             table_row_interest,
-            changed_rows,
             #[cfg(test)]
             simulate_unknown_commit_after_success: Arc::new(AtomicBool::new(false)),
             committed_change_generation: Arc::new(AtomicU64::new(0)),
@@ -1627,24 +1623,27 @@ impl RuntimeStore {
             })
             .await
             .map_err(StoreError::writer_actor_control)?;
-        self.checkpoint_analytics(mode)?;
+        self.checkpoint_analytics(mode).await?;
         Ok(())
     }
 
-    fn checkpoint_analytics(
+    async fn checkpoint_analytics(
         &self,
         mode: sqlite_durability::CheckpointMode,
     ) -> StoreResult<sqlite_durability::CheckpointOutcome> {
-        let analytics = self
-            .analytics
-            .lock()
-            .map_err(|_| StoreError::WriterPoisoned)?;
-        Ok(Self::checkpoint_connection(
-            &analytics,
-            StoreDatabaseKind::Analytics,
-            &self.root.join("analytics.sqlite3-wal"),
-            mode,
-        )?)
+        let analytics = Arc::clone(&self.analytics);
+        let wal_path = self.root.join("analytics.sqlite3-wal");
+        blocking_pool::spawn_blocking("analytics/checkpoint", move || {
+            let analytics = analytics.lock().map_err(|_| StoreError::WriterPoisoned)?;
+            Ok(Self::checkpoint_connection(
+                &analytics,
+                StoreDatabaseKind::Analytics,
+                &wal_path,
+                mode,
+            )?)
+        })
+        .await
+        .map_err(|_| StoreError::ReadTaskFailed)?
     }
 
     /// Flush both databases when commits wait for a flush and the last flush is
@@ -1682,7 +1681,8 @@ impl RuntimeStore {
     /// before this call is on disk; Canvas may prune projected log rows only then.
     pub async fn flush_analytics_wal(&self) -> StoreResult<bool> {
         Ok(self
-            .checkpoint_analytics(sqlite_durability::CheckpointMode::Passive)?
+            .checkpoint_analytics(sqlite_durability::CheckpointMode::Passive)
+            .await?
             .is_complete())
     }
 
@@ -1836,7 +1836,6 @@ impl RuntimeStore {
         let resource_receipt_update_count = Arc::clone(&self.resource_receipt_update_count);
         let resource_entity_update_count = Arc::clone(&self.resource_entity_update_count);
         let table_row_interest = Arc::clone(&self.table_row_interest);
-        let changed_rows = Arc::clone(&self.changed_rows);
         let entity_publisher = self.entity_publisher.get().cloned();
         #[cfg(test)]
         let simulate_unknown_commit_after_success =
@@ -1848,12 +1847,12 @@ impl RuntimeStore {
                 resource_receipt_update_count.store(0, Ordering::Release);
                 resource_entity_update_count.store(0, Ordering::Release);
                 // Row precision is kept only for tables observed when this transaction starts.
-                *changed_rows
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner) = ChangedRowHints {
-                    complete: table_row_interest.load(Ordering::Acquire),
-                    ..ChangedRowHints::default()
-                };
+                CHANGED_ROWS.with_borrow_mut(|rows| {
+                    *rows = ChangedRowHints {
+                        complete: table_row_interest.load(Ordering::Acquire),
+                        ..ChangedRowHints::default()
+                    }
+                });
                 let transaction = writer
                     .transaction_with_behavior(TransactionBehavior::Immediate)
                     .map_err(StoreError::from)?;
@@ -1887,11 +1886,7 @@ impl RuntimeStore {
                             receipt_updates,
                             resource_entity_update_count.load(Ordering::Acquire),
                         );
-                        let transaction_rows = std::mem::take(
-                            &mut *changed_rows
-                                .lock()
-                                .unwrap_or_else(std::sync::PoisonError::into_inner),
-                        );
+                        let transaction_rows = CHANGED_ROWS.with_borrow_mut(std::mem::take);
                         let commit_started = diagnostics_enabled.then(Instant::now);
                         if let Err(error) = transaction.commit() {
                             return Ok(WriterTransactionOutcome::CommitOutcomeUnknown {
@@ -3347,7 +3342,6 @@ mod commit_notification_tests {
             Arc::clone(&receipt_update_count),
             Arc::new(AtomicU64::new(0)),
             Arc::new(AtomicU32::new(0)),
-            Arc::new(Mutex::new(ChangedRowHints::default())),
         )
         .expect("install update and delete hooks");
 
@@ -3765,7 +3759,6 @@ mod commit_notification_tests {
         let receipt_update_count = Arc::clone(&store.resource_receipt_update_count);
         let entity_update_count = Arc::clone(&store.resource_entity_update_count);
         let row_interest = Arc::clone(&store.table_row_interest);
-        let changed_rows = Arc::clone(&store.changed_rows);
         store
             .writer
             .call(move |connection| {
@@ -3775,7 +3768,6 @@ mod commit_notification_tests {
                     receipt_update_count,
                     entity_update_count,
                     row_interest,
-                    changed_rows,
                 )
                 .map_err(StoreError::from)?;
                 connection
@@ -4664,6 +4656,33 @@ mod projection_generation_tests {
 #[cfg(test)]
 mod wal_flush_tests {
     use super::*;
+
+    #[tokio::test]
+    async fn analytics_checkpoint_does_not_block_the_async_worker() {
+        let directory = tempfile::tempdir().expect("temporary state directory");
+        let store = Arc::new(
+            RuntimeStore::open(Some(directory.path()))
+                .await
+                .expect("open"),
+        );
+        let analytics = Arc::clone(&store.analytics);
+        let (locked_tx, locked_rx) = std::sync::mpsc::sync_channel(1);
+        let (progress_tx, progress_rx) = std::sync::mpsc::sync_channel(1);
+        let holder = std::thread::spawn(move || {
+            let _guard = analytics.lock().expect("analytics lock");
+            locked_tx.send(()).expect("locked");
+            progress_rx.recv_timeout(Duration::from_secs(2)).is_ok()
+        });
+        locked_rx.recv().expect("lock acquired");
+        let task = tokio::spawn(async move { store.flush_analytics_wal().await });
+        tokio::task::yield_now().await;
+        progress_tx.send(()).expect("progress");
+        assert!(
+            holder.join().expect("holder"),
+            "async worker blocked on analytics mutex"
+        );
+        task.await.expect("checkpoint task").expect("checkpoint");
+    }
 
     /// Open a store in paused time and complete one flush, so each test starts
     /// with no pending request and a known last-flush instant.
