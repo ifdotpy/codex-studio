@@ -39918,6 +39918,37 @@ export type WorkReleaseEntityDto =
 export type WorkResultEntityDto = components["schemas"]["WorkResultEntityDto"];
 export type WorkspaceEntityDto = components["schemas"]["WorkspaceEntityDto"];
 export type SyncEntityPayload = components["schemas"]["SyncEntityPayload"];
+export const RequestStatus = {
+  pending: "pending",
+  blocked: "blocked",
+  answering: "answering",
+  answered: "answered",
+  declined: "declined",
+  resolved: "resolved",
+  expired: "expired",
+  submitted: "submitted",
+  acknowledged: "acknowledged",
+  failed: "failed",
+  uncertain: "uncertain",
+} as const;
+export const TaskStatus = {
+  running: "running",
+  starting: "starting",
+  approval: "approval",
+  queued: "queued",
+  waiting: "waiting",
+  completed: "completed",
+  failed: "failed",
+  interrupted: "interrupted",
+  cancelled: "cancelled",
+  lost: "lost",
+  unknown: "unknown",
+} as const;
+export const TransferStatus = {
+  pending: "pending",
+  completed: "completed",
+  cancelled: "cancelled",
+} as const;
 
 export const SYNC_PROTOCOL_VERSION = 4 as const;
 export const SYNC_IDENTITY_PROTOCOL_VERSION = 2 as const;

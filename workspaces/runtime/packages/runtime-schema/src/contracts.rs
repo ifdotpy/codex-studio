@@ -846,10 +846,10 @@ fn check_delivery_parity(openapi: &Value) -> Result<(), String> {
     clippy::disallowed_methods,
     reason = "contract generator runs on the synchronous studio-contracts CLI thread, outside Tokio"
 )]
-fn api_types(root: &Path, document: &Value, argument: &str) -> Result<String, String> {
+fn run_node(root: &Path, script: &str, argument: &str, input: &str) -> Result<String, String> {
     let node = std::env::var(NODE_ENVIRONMENT).unwrap_or_else(|_| "node".into());
     let mut child = Command::new(&node)
-        .arg(root.join(API_TYPES_SCRIPT))
+        .arg(root.join(script))
         .arg(argument)
         .current_dir(root)
         .stdin(Stdio::piped())
@@ -861,26 +861,26 @@ fn api_types(root: &Path, document: &Value, argument: &str) -> Result<String, St
         .stdin
         .take()
         .ok_or("missing schema input")?
-        .write_all(document.to_string().as_bytes())
+        .write_all(input.as_bytes())
         .map_err(|error| error.to_string())?;
     let output = child
         .wait_with_output()
         .map_err(|error| error.to_string())?;
     if !output.status.success() {
         return Err(format!(
-            "{API_TYPES_SCRIPT} failed: {}",
+            "{script} failed: {}",
             String::from_utf8_lossy(&output.stderr)
         ));
     }
     let body = String::from_utf8(output.stdout)
-        .map_err(|error| format!("{API_TYPES_SCRIPT} printed invalid UTF-8: {error}"))?;
+        .map_err(|error| format!("{script} printed invalid UTF-8: {error}"))?;
     Ok(body)
 }
 
-#[allow(
-    clippy::disallowed_methods,
-    reason = "contract generator runs on the synchronous studio-contracts CLI thread, outside Tokio"
-)]
+fn api_types(root: &Path, document: &Value, argument: &str) -> Result<String, String> {
+    run_node(root, API_TYPES_SCRIPT, argument, &document.to_string())
+}
+
 fn task_tool_schema_ts(
     root: &Path,
     schema: &serde_json::Map<String, Value>,
@@ -889,32 +889,12 @@ fn task_tool_schema_ts(
         "// {HEADER}\nimport type {{ core }} from \"zod\";\nexport const TASK_COMMAND_TOOL_SCHEMA = {} satisfies core.JSONSchema.JSONSchema;\n",
         serde_json::to_string_pretty(schema).map_err(|error| error.to_string())?
     );
-    let node = std::env::var(NODE_ENVIRONMENT).unwrap_or_else(|_| "node".into());
-    let mut child = Command::new(&node)
-        .arg(root.join("node_modules/oxfmt/bin/oxfmt"))
-        .arg("--stdin-filepath=workspaces/providers/apps/claude-bridge/task-command-tool.generated.ts")
-        .current_dir(root)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|error| format!("cannot start task schema formatter: {error}"))?;
-    child
-        .stdin
-        .take()
-        .ok_or("missing task schema input")?
-        .write_all(text.as_bytes())
-        .map_err(|error| error.to_string())?;
-    let output = child
-        .wait_with_output()
-        .map_err(|error| error.to_string())?;
-    if !output.status.success() {
-        return Err(format!(
-            "task schema formatter failed: {}",
-            String::from_utf8_lossy(&output.stderr)
-        ));
-    }
-    String::from_utf8(output.stdout).map_err(|error| error.to_string())
+    run_node(
+        root,
+        "node_modules/oxfmt/bin/oxfmt",
+        "--stdin-filepath=workspaces/providers/apps/claude-bridge/task-command-tool.generated.ts",
+        &text,
+    )
 }
 
 fn subscription_scopes_ts(
@@ -1145,19 +1125,6 @@ pub fn render(root: &Path, with_api_types: bool) -> Result<Vec<Rendered>, String
                 crate::task_gate::DEFAULT_TIMEOUT_MS,
                 crate::task_gate::MAX_TIMEOUT_MS,
                 crate::task_results::MAX_RESULT_SCHEMA_BYTES
-            ),
-        },
-        Rendered {
-            path: web("accountTransfer.ts"),
-            text: format!(
-                "// {HEADER}\n// Owner: OpenAPI TransferStatus.\nexport const TRANSFER_STATUSES = [{}] as const;\n",
-                openapi["components"]["schemas"]["TransferStatus"]["enum"]
-                    .as_array()
-                    .ok_or("OpenAPI TransferStatus must be a closed enum")?
-                    .iter()
-                    .map(Value::to_string)
-                    .collect::<Vec<_>>()
-                    .join(", ")
             ),
         },
         Rendered {

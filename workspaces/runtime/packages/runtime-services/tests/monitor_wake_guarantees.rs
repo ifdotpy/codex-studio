@@ -294,6 +294,80 @@ async fn unstarted_cancel_and_start_refusal_each_wake_once() {
 }
 
 #[tokio::test]
+async fn answered_approval_retires_card_and_replays_without_another_start() {
+    for decision in ["accept", "decline"] {
+        let (_root, store, id, _operation) = fixture().await;
+        let selected = id.clone();
+        store.transaction(move |tx| {
+            tx.execute("UPDATE runtime_monitors SET record=json_remove(json_set(record,'$.status','approval'),'$.operation') WHERE id=?1", [&selected])?;
+            let request = studio_runtime_store::RequestRecord::from_value(json!({"id":"approval","agent":"agent","method":"monitor/approve","status":"pending","params":{"monitorId":selected},"createdAt":2000.0}))?;
+            studio_runtime_store::Table::new(tx).put(&request)?;
+            let view = studio_runtime_services::sync_views::project_persisted_record("request", request.value()).expect("pending view");
+            studio_runtime_store::SyncDocumentsRepository::put_entity(tx, "request", "approval", view, false)?;
+            Ok(())
+        }).await.expect("pending approval");
+        let pending_seq: i64 = store.test_reader().expect("reader").query_row("SELECT seq FROM sync_entities WHERE collection='request' AND id='approval' AND deleted=0", [], |row| row.get(0)).expect("pending card");
+        let data = json!({"decision":decision});
+        let answer = monitor_runtime::answer_approval(&store, "approval", &data, 2001.0, true)
+            .await
+            .expect("answer")
+            .expect("monitor approval");
+        assert_eq!(answer.accepted, decision == "accept");
+        let (seq, deleted): (i64, bool) = store.test_reader().expect("reader").query_row("SELECT seq,deleted FROM sync_entities WHERE collection='request' AND id='approval'", [], |row| Ok((row.get(0)?, row.get(1)?))).expect("card update");
+        assert!(deleted, "answered card must be removed from sync");
+        assert!(seq > pending_seq, "removal must reach existing subscribers");
+        let starts = studio_runtime_services::monitor_driver::pending_start_ids(&store)
+            .await
+            .expect("pending starts");
+        assert_eq!(
+            starts,
+            if decision == "accept" {
+                vec![id]
+            } else {
+                vec![]
+            }
+        );
+        let replay = monitor_runtime::answer_approval(&store, "approval", &data, 2002.0, true)
+            .await
+            .expect("replay")
+            .expect("monitor approval");
+        assert_eq!(replay.response["replayed"], true);
+        assert_eq!(
+            studio_runtime_services::monitor_driver::pending_start_ids(&store)
+                .await
+                .expect("replayed starts"),
+            starts
+        );
+        let replay_seq: i64 = store
+            .test_reader()
+            .expect("reader")
+            .query_row(
+                "SELECT seq FROM sync_entities WHERE collection='request' AND id='approval'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("card sequence");
+        assert_eq!(replay_seq, seq);
+        let other = if decision == "accept" {
+            "decline"
+        } else {
+            "accept"
+        };
+        assert!(
+            monitor_runtime::answer_approval(
+                &store,
+                "approval",
+                &json!({"decision":other}),
+                2003.0,
+                true
+            )
+            .await
+            .is_err()
+        );
+    }
+}
+
+#[tokio::test]
 async fn restart_preserves_unsubmitted_start_and_pending_approval() {
     for status in ["starting", "approval"] {
         let (root, store, id, _operation) = fixture().await;

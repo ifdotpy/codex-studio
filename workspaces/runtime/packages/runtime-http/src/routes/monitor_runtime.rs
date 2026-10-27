@@ -186,14 +186,12 @@ mod tests {
 
     #[test]
     fn http_input_preserves_runtime_input_type_and_dimension_presence() {
-        fn typed_input<F: Future<Output = Result<Json<Value>, ApiError>>>(
-            _: fn(
-                State<HttpState>,
-                Option<Extension<Arc<MonitorRuntime>>>,
-                ApiJson<MonitorInputRequest>,
-            ) -> F,
-        ) {
-        }
+        type InputHandler<F> = fn(
+            State<HttpState>,
+            Option<Extension<Arc<MonitorRuntime>>>,
+            ApiJson<MonitorInputRequest>,
+        ) -> F;
+        fn typed_input<F: Future<Output = Result<Json<Value>, ApiError>>>(_: InputHandler<F>) {}
         typed_input(input);
         let request: MonitorInputRequest =
             serde_json::from_value(serde_json::json!({"id": "monitor"}))

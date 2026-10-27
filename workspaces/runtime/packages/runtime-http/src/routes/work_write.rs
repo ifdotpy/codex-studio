@@ -148,8 +148,13 @@ pub(crate) async fn perform(
         .filter(|id| !id.is_empty())
         .map(str::to_owned);
     let signature = work_items::work_request_signature(&agent, actor_id.as_deref(), &body)?;
-    let command = studio_runtime_schema::task_command::TaskCommand::parse(&body)
-        .map_err(|message| ApiError::new(StatusCode::BAD_REQUEST, message))?;
+    use studio_runtime_schema::task_command::TaskCommand;
+    let command = if actor_id.is_some() {
+        TaskCommand::parse_tool(&body)
+    } else {
+        TaskCommand::parse(&body)
+    }
+    .map_err(|message| ApiError::new(StatusCode::BAD_REQUEST, message))?;
     if let studio_runtime_schema::task_command::TaskCommand::SetDefaultGate { gate } = command {
         let store = state.store.clone().ok_or_else(ApiError::internal)?;
         let gate = gate.map_or(
@@ -994,6 +999,56 @@ mod managed_work_port_tests {
         }
     }
 
+    #[tokio::test]
+    async fn managed_task_text_bounds_use_the_tool_transport() {
+        let (state, _store, _directory) = state().await;
+        let port = managed_work_port(state, None);
+        let created = written(
+            port.act(
+                "lead",
+                &json!({"action":"create","title":"Task","description":"🙂".repeat(32000)}),
+                "tool-bound-create",
+            )
+            .await,
+        );
+        let task = &created["id"];
+        for action in ["create", "update"] {
+            let outcome = port.act("lead", &json!({"action":action,"task_id":task,"title":"Task","description":"🙂".repeat(32001)}), &format!("tool-bound-{action}")).await;
+            assert!(
+                matches!(outcome, WorkActionOutcome::Refused(_)),
+                "{outcome:?}"
+            );
+        }
+        written(
+            port.act(
+                "lead",
+                &json!({"action":"update","task_id":task,"description":"🙂".repeat(32000)}),
+                "tool-bound-update",
+            )
+            .await,
+        );
+        let outcome = port
+            .act(
+                "lead",
+                &json!({"action":"cancel","task_id":task,"reason":"🙂".repeat(32001)}),
+                "tool-bound-reason-long",
+            )
+            .await;
+        assert!(
+            matches!(outcome, WorkActionOutcome::Refused(_)),
+            "{outcome:?}"
+        );
+        let cancelled = written(
+            port.act(
+                "lead",
+                &json!({"action":"cancel","task_id":task,"reason":"🙂".repeat(32000)}),
+                "tool-bound-reason",
+            )
+            .await,
+        );
+        assert_eq!(cancelled["status"], "cancelled");
+    }
+
     fn schema() -> Value {
         json!({"type":"object","properties":{"count":{"type":"integer"}},"required":["count"],"additionalProperties":false})
     }
@@ -1069,7 +1124,7 @@ mod managed_work_port_tests {
     async fn task_command_ingress_preserves_receipt_body_and_owner_presence() {
         let (state, _store, _directory) = state().await;
         let port = managed_work_port(state, None);
-        let created = written(port.act("lead", &json!({"action":"create","title":"Typed ingress","description":"x".repeat(64000),"owner":"worker"}), "typed-create").await);
+        let created = written(port.act("lead", &json!({"action":"create","title":"Typed ingress","description":"x".repeat(32000),"owner":"worker"}), "typed-create").await);
         let task = &created["id"];
         let update =
             json!({"action":"update","task_id":task,"version":1.0,"description":"Changed"});

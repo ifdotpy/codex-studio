@@ -4,7 +4,7 @@ import { MantineProvider } from "@mantine/core";
 import { expect, expectTypeOf, test, vi } from "vitest";
 import { confirmedTransfer, ExecutionSettings } from "./ExecutionSettings";
 import type { PostResult } from "../../apiTypes.ts";
-import { TRANSFER_STATUSES } from "../../generated/accountTransfer.ts";
+import { TransferStatus } from "../../generated/api";
 import type { Agent } from "../../types";
 
 const capability = vi.hoisted(() => ({ priority: false }));
@@ -28,9 +28,9 @@ const transferResponse = {
 } satisfies TransferResponse;
 
 test("transfer confirmation preserves the generated response and receipt types", () => {
-  expectTypeOf<(typeof TRANSFER_STATUSES)[number]>().toEqualTypeOf<
-    TransferResponse["status"]
-  >();
+  expectTypeOf<
+    (typeof TransferStatus)[keyof typeof TransferStatus]
+  >().toEqualTypeOf<TransferResponse["status"]>();
   expectTypeOf(confirmedTransfer)
     .parameter(0)
     .toEqualTypeOf<TransferResponse>();

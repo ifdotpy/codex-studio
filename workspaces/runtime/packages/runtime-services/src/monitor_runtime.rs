@@ -520,11 +520,7 @@ pub async fn answer_approval(
             let request = RequestRecord::from_value(request.clone())
                 .map_err(studio_runtime_store::StoreError::from)?;
             Table::<RequestRecord>::new(tx).put(&request)?;
-            let request_view =
-                crate::sync_views::project_persisted_record("request", request.value()).ok_or(
-                    MonitorError::Refused("Monitor approval projection is invalid"),
-                )?;
-            SyncDocumentsRepository::put_entity(tx, "request", &request_id, request_view, false)?;
+            SyncDocumentsRepository::put_entity(tx, "request", &request_id, json!({}), true)?;
             Ok(Some(MonitorApprovalAnswer {
                 response: json!({"status":"answered"}),
                 accepted,

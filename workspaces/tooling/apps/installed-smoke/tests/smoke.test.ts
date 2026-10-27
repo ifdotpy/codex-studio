@@ -429,7 +429,7 @@ test("the cheapest priced visible model wins, and an alias prices by its resolve
   };
   const codex = cheapestModel(
     [
-      { model: "big", supportedReasoningEfforts: ["low"] },
+      { model: "big", supportedReasoningEfforts: [{ reasoningEffort: "low" }] },
       {
         model: "small",
         supportedReasoningEfforts: [{ reasoningEffort: "low" }],

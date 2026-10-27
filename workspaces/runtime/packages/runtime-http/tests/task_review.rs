@@ -257,3 +257,38 @@ async fn legacy_work_is_available_in_the_first_sse_baseline_without_an_entity_pu
     assert!(received.contains("workResult"), "{received}");
     assert!(received.contains("Legacy assignment"), "{received}");
 }
+
+#[tokio::test]
+async fn task_http_description_and_reason_keep_their_transport_bounds() {
+    let directory = tempfile::tempdir().unwrap();
+    let store = Arc::new(RuntimeStore::open(Some(directory.path())).await.unwrap());
+    store.transaction(|tx| {
+        AgentRepository::put(tx, &AgentRecord::from_value(json!({"provider":studio_runtime_schema::ProviderKind::Codex,"id":"lead","rootId":"lead","parentId":null,"epoch":1,"status":"running","autoWake":true,"isLead":true,"name":"lead"}))?)?;
+        Ok(())
+    }).await.unwrap();
+    let app = router(HttpState::new(
+        "fixture-token".into(),
+        "lead".into(),
+        store.root().to_string_lossy().into(),
+        49171,
+        None,
+        Some(store.clone()),
+        None,
+    ))
+    .unwrap();
+    for (index, token) in ["x", "🙂"].into_iter().enumerate() {
+        let (status, created) = call(&app, "POST", Some(json!({"action":"create","agent":"lead","id":format!("desc-{index}"),"title":"Task","description":token.repeat(64000)}))).await;
+        assert_eq!(status, 200, "{created}");
+        let task = &created["id"];
+        for action in ["create", "update"] {
+            let (status, _) = call(&app, "POST", Some(json!({"action":action,"agent":"lead","id":format!("too-long-{index}-{action}"),"task_id":task,"title":"Task","description":token.repeat(64001)}))).await;
+            assert_eq!(status, 400);
+        }
+        let (status, result) = call(&app, "POST", Some(json!({"action":"update","agent":"lead","id":format!("update-{index}"),"task_id":task,"description":token.repeat(64000)}))).await;
+        assert_eq!(status, 200, "{result}");
+        let (status, _) = call(&app, "POST", Some(json!({"action":"cancel","agent":"lead","id":format!("reason-long-{index}"),"task_id":task,"reason":token.repeat(12001)}))).await;
+        assert_eq!(status, 400);
+        let (status, result) = call(&app, "POST", Some(json!({"action":"cancel","agent":"lead","id":format!("reason-{index}"),"task_id":task,"reason":token.repeat(12000)}))).await;
+        assert_eq!(status, 200, "{result}");
+    }
+}

@@ -1,7 +1,8 @@
 import { required } from "../components/componentTestFixtures.ts";
 import type { EntityRow } from "./entityProjection.ts";
-import type { Agent, Message, Snapshot } from "../types";
+import type { Agent, Message, Request, Snapshot } from "../types";
 import type { SyncEntityPayload } from "../generated/api";
+import { RequestStatus } from "../generated/api";
 import assert from "node:assert/strict";
 import {
   applyEntityChanges,
@@ -705,6 +706,62 @@ const entityRow = (
   entity: { collection, id, value } as SyncEntityPayload,
   seq,
   ...extra,
+});
+
+it("shows only actionable request cards from cached and streamed entities", () => {
+  const state = emptyEntityProjection();
+  const request = {
+    id: "approval",
+    agent: "lead",
+    method: "monitor/approve",
+    status: RequestStatus.pending,
+  } satisfies Request;
+  const initial = applyEntityChanges(
+    state,
+    [
+      entityRow("request", request.id, request, 1),
+      entityRow(
+        "request",
+        "answered",
+        { ...request, id: "answered", status: RequestStatus.answered },
+        2,
+      ),
+      entityRow(
+        "request",
+        "deferred",
+        { ...request, id: "deferred", deferred: true },
+        3,
+      ),
+      entityRow("request", "legacy", { id: "legacy" }, 4),
+    ],
+    true,
+  );
+  assert.deepEqual(
+    initial.runtime.requests.map((entry) => entry.id),
+    ["approval", "deferred", "legacy"],
+  );
+  const answered = applyEntityChanges(
+    state,
+    [
+      entityRow(
+        "request",
+        request.id,
+        { ...request, status: RequestStatus.answered },
+        5,
+      ),
+    ],
+    true,
+  );
+  assert.deepEqual(
+    answered.runtime.requests.map((entry) => entry.id),
+    ["deferred", "legacy"],
+  );
+  const unrelated = applyEntityChanges(
+    state,
+    [entityRow("agentSummary", "lead", { id: "lead", status: "idle" }, 6)],
+    true,
+  );
+  assert.equal(unrelated.runtime.requests, answered.runtime.requests);
 });
 
 it("projects entity rows and preserves server sequence ordering", () => {

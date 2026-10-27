@@ -12,7 +12,7 @@ pub(super) fn execute(
         None
     } else {
         Some(
-            TaskCommand::parse(args)
+            TaskCommand::parse_tool(args)
                 .map_err(|_| CallbackError::Invalid("Invalid task command field or bound"))?,
         )
     };
@@ -139,13 +139,13 @@ mod command_tests {
     #[test]
     fn task_transport_accepts_canonical_description_and_integral_decimal_version() {
         assert!(
-            studio_runtime_schema::task_command::TaskCommand::parse(
-                &json!({"action":"create", "title":"Work", "description":"x".repeat(64000)})
+            studio_runtime_schema::task_command::TaskCommand::parse_tool(
+                &json!({"action":"create", "title":"Work", "description":"x".repeat(32000)})
             )
             .is_ok()
         );
         assert!(
-            studio_runtime_schema::task_command::TaskCommand::parse(
+            studio_runtime_schema::task_command::TaskCommand::parse_tool(
                 &json!({"action":"update", "task_id":"task", "version":2.0})
             )
             .is_ok()

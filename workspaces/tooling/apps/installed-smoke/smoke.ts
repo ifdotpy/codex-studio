@@ -41,7 +41,6 @@ import {
   processStartIdentity,
   sqliteEvidence,
   PRICING_PROVIDERS,
-  isRecord,
 } from "./usage.ts";
 import {
   ProviderKind,
@@ -287,7 +286,7 @@ export function cheapestModel(
   let best: {
     model: string;
     price: number;
-    efforts: Schema["JsonValue"][];
+    efforts: NonNullable<Schema["ProviderModel"]["supportedReasoningEfforts"]>;
   } | null = null;
   for (const row of models) {
     if (row?.hidden || typeof row?.model !== "string") {
@@ -316,15 +315,13 @@ export function cheapestModel(
 }
 
 /** The lowest reasoning effort that a model row lists, or undefined. */
-export function lowestEffort(efforts: readonly Schema["JsonValue"][]) {
+export function lowestEffort(
+  efforts: Readonly<
+    NonNullable<Schema["ProviderModel"]["supportedReasoningEfforts"]>
+  >,
+) {
   const order = ["minimal", "low", "medium", "high"];
-  const names = efforts.map((entry) =>
-    typeof entry === "string"
-      ? entry
-      : isRecord(entry)
-        ? entry.reasoningEffort
-        : undefined,
-  );
+  const names = efforts.map((entry) => entry.reasoningEffort);
   return order.find((name) => names.includes(name));
 }
 

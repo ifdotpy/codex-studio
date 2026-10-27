@@ -196,6 +196,6 @@ mod tests {
         ) {
         }
         typed_execute(execute);
-        let _: fn(&Value, &crate::generated::McpSessionBinding) -> bool = matches_agent;
+        const _: fn(&Value, &crate::generated::McpSessionBinding) -> bool = matches_agent;
     }
 }

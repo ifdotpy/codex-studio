@@ -855,7 +855,8 @@ pub(crate) mod tests {
 
     #[test]
     fn typed_cache_and_admission_signatures() {
-        let _: fn(&ProviderModel) -> crate::submit_gates::ModelCapabilities = |model| model.into();
+        const _: fn(&ProviderModel) -> crate::submit_gates::ModelCapabilities =
+            |model| model.into();
         let service = ModelCatalogService::new();
         if let AdmissionCatalogRead::Fresh { value, .. } =
             service.read_for_admission("account", "/home", ProviderKind::Codex)

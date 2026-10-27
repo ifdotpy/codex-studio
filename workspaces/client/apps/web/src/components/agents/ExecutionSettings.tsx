@@ -32,7 +32,7 @@ import {
 import { createPortal } from "react-dom";
 import { ApiError, errorText, type PostBody, type PostResult } from "../../api";
 import { busy, type Agent, type JsonValue } from "../../types";
-import { TRANSFER_STATUSES } from "../../generated/accountTransfer.ts";
+import { TransferStatus } from "../../generated/api";
 import {
   isDaybreakAlias,
   useModelCatalogReader,
@@ -209,7 +209,9 @@ export const confirmedTransfer = (
     operation.leadId !== leadId ||
     operation.targetAccountKey !== target ||
     operation.scope !== scope ||
-    !TRANSFER_STATUSES.some((status) => status === operation.status) ||
+    !Object.values(TransferStatus).some(
+      (status) => status === operation.status,
+    ) ||
     (operation.id !== requestId &&
       (!isRecord(receipt) ||
         receipt.leadId !== leadId ||

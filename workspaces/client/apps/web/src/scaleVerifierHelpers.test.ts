@@ -1490,6 +1490,7 @@ describe("scale verifier retained-input audit", () => {
     temporaryPaths.push(directory);
     const canvas = new DatabaseSync(join(directory, "canvas.sqlite3"));
     try {
+      canvas.exec("BEGIN");
       canvas.exec(
         "CREATE TABLE sync_identity(id TEXT PRIMARY KEY); INSERT INTO sync_identity VALUES ('workspace');" +
           "CREATE TABLE runtime_events(id TEXT PRIMARY KEY,agent TEXT,kind TEXT,status TEXT,error TEXT);" +
@@ -1522,6 +1523,7 @@ describe("scale verifier retained-input audit", () => {
             events: ["event"],
           }),
         );
+      canvas.exec("COMMIT");
     } finally {
       canvas.close();
     }
@@ -1585,6 +1587,7 @@ describe("scale verifier retained-input audit", () => {
     temporaryPaths.push(directory);
     const canvas = new DatabaseSync(join(directory, "canvas.sqlite3"));
     try {
+      canvas.exec("BEGIN");
       canvas.exec(
         "CREATE TABLE sync_identity(id TEXT PRIMARY KEY); INSERT INTO sync_identity VALUES ('workspace'); CREATE TABLE runtime_events(id TEXT PRIMARY KEY,agent TEXT NOT NULL,kind TEXT NOT NULL,status TEXT NOT NULL,text TEXT NOT NULL)",
       );
@@ -1619,6 +1622,7 @@ describe("scale verifier retained-input audit", () => {
             .prepare("INSERT INTO sync_entities VALUES (?,?,?)")
             .run(`new-${index}`, "event", "delivered");
       }
+      canvas.exec("COMMIT");
       expect(
         canvas.prepare("SELECT count(*) AS count FROM sync_entities").get()!
           .count,

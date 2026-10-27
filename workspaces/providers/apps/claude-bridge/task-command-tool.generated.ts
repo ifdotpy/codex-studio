@@ -52,7 +52,7 @@ export const TASK_COMMAND_TOOL_SCHEMA = {
       ],
     },
     description: {
-      maxLength: 64000,
+      maxLength: 32000,
       type: ["string", "null"],
     },
     files: {
@@ -123,7 +123,7 @@ export const TASK_COMMAND_TOOL_SCHEMA = {
     reason: {
       anyOf: [
         {
-          maxLength: 12000,
+          maxLength: 32000,
           type: "string",
         },
         {

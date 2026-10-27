@@ -8,10 +8,14 @@ use serde_json::{Value, json};
 
 /// Task title length, in Unicode code points.
 pub const MAX_TITLE_CODEPOINTS: usize = 160;
-/// Task description length, in Unicode code points (the existing HTTP limit).
-pub const MAX_DESCRIPTION_CODEPOINTS: usize = 64_000;
-/// Task cancellation reason length, in Unicode code points.
-pub const MAX_CANCEL_REASON_CODEPOINTS: usize = 12_000;
+/// HTTP task description length, in Unicode code points.
+pub const MAX_HTTP_DESCRIPTION_CODEPOINTS: usize = 64_000;
+/// Agent-tool task description length, in Unicode code points.
+pub const MAX_TOOL_DESCRIPTION_CODEPOINTS: usize = 32_000;
+/// HTTP cancellation reason length, in Unicode code points.
+pub const MAX_HTTP_CANCEL_REASON_CODEPOINTS: usize = 12_000;
+/// Agent-tool cancellation reason length, in Unicode code points.
+pub const MAX_TOOL_CANCEL_REASON_CODEPOINTS: usize = 32_000;
 /// Submission checks length, in Unicode code points.
 pub const MAX_CHECKS_CODEPOINTS: usize = 12_000;
 /// Review decision length, in Unicode code points.
@@ -86,11 +90,13 @@ pub enum TaskCommand {
         #[schemars(length(min = 1, max = MAX_TITLE_CODEPOINTS))]
         title: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        #[schemars(length(max = MAX_DESCRIPTION_CODEPOINTS))]
+        #[schemars(length(max = MAX_HTTP_DESCRIPTION_CODEPOINTS))]
+        #[schemars(transform = tool_non_null)]
         description: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         owner: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[schemars(transform = tool_non_null)]
         status: Option<InitialStatus>,
         #[serde(default)]
         #[schemars(length(max = MAX_DEPENDENCIES))]
@@ -108,17 +114,21 @@ pub enum TaskCommand {
         version: Option<Version>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         #[schemars(length(min = 1, max = MAX_TITLE_CODEPOINTS))]
+        #[schemars(transform = tool_non_null)]
         title: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        #[schemars(length(max = MAX_DESCRIPTION_CODEPOINTS))]
+        #[schemars(length(max = MAX_HTTP_DESCRIPTION_CODEPOINTS))]
+        #[schemars(transform = tool_non_null)]
         description: Option<String>,
         #[serde(default, skip_serializing_if = "Field::is_missing")]
         #[schemars(with = "Option<String>")]
         owner: Field<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[schemars(transform = tool_non_null)]
         status: Option<InitialStatus>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         #[schemars(length(max = MAX_DEPENDENCIES))]
+        #[schemars(transform = tool_non_null)]
         dependencies: Option<Vec<String>>,
         #[serde(default, skip_serializing_if = "Field::is_missing")]
         #[schemars(with = "Option<Value>")]
@@ -131,7 +141,7 @@ pub enum TaskCommand {
         task_id: String,
         #[serde(default)]
         version: Option<Version>,
-        #[schemars(length(min = 1, max = MAX_CANCEL_REASON_CODEPOINTS))]
+        #[schemars(length(min = 1, max = MAX_TOOL_CANCEL_REASON_CODEPOINTS))]
         reason: String,
     },
     Reject {
@@ -181,12 +191,23 @@ impl TaskCommand {
     pub fn parse(value: &Value) -> Result<Self, String> {
         static CONTRACT: std::sync::OnceLock<(Value, crate::Validator)> =
             std::sync::OnceLock::new();
-        // The generated schema is compiled and checked by the contract witnesses.
-        let (schema, validator) = CONTRACT.get_or_init(|| {
-            let schema = schema();
-            let validator = crate::Validator::new(&schema).expect("task command schema");
-            (schema, validator)
-        });
+        Self::parse_contract(value, CONTRACT.get_or_init(|| compiled_contract(schema())))
+    }
+
+    /// The agent transport retains its historical description and reason budgets.
+    pub fn parse_tool(value: &Value) -> Result<Self, String> {
+        static CONTRACT: std::sync::OnceLock<(Value, crate::Validator)> =
+            std::sync::OnceLock::new();
+        Self::parse_contract(
+            value,
+            CONTRACT.get_or_init(|| compiled_contract(tool_schema())),
+        )
+    }
+
+    fn parse_contract(
+        value: &Value,
+        (schema, validator): &(Value, crate::Validator),
+    ) -> Result<Self, String> {
         let action = value["action"].as_str().ok_or("Invalid task action")?;
         let variant = schema["oneOf"]
             .as_array()
@@ -222,8 +243,35 @@ impl TaskCommand {
     }
 }
 
-/// Derive the HTTP request and tool mutation variants from serde's tagged owner.
+fn compiled_contract(schema: Value) -> (Value, crate::Validator) {
+    // Schemars derives this schema from the command owner; parity witnesses compile it.
+    let validator = crate::Validator::new(&schema).expect("task command schema");
+    (schema, validator)
+}
+
+/// Derive HTTP mutation variants from the shared payload owner.
 pub fn schema() -> Value {
+    schema_with_bounds(
+        MAX_HTTP_DESCRIPTION_CODEPOINTS,
+        MAX_HTTP_CANCEL_REASON_CODEPOINTS,
+        false,
+    )
+}
+
+/// Derive agent-tool mutation variants from the same payload owner.
+pub fn tool_schema() -> Value {
+    schema_with_bounds(
+        MAX_TOOL_DESCRIPTION_CODEPOINTS,
+        MAX_TOOL_CANCEL_REASON_CODEPOINTS,
+        true,
+    )
+}
+
+fn schema_with_bounds(
+    description_max_codepoints: usize,
+    cancel_reason_max_codepoints: usize,
+    reject_consumed_null: bool,
+) -> Value {
     let mut schema = schemars::generate::SchemaSettings::draft2020_12()
         .with(|settings| settings.inline_subschemas = true)
         .for_deserialize()
@@ -239,6 +287,9 @@ pub fn schema() -> Value {
             .expect("command properties");
         for field in ["agent", "id"] {
             properties.insert(field.into(), json!({"type":["string","null"]}));
+        }
+        if let Some(reason) = properties.get_mut("reason") {
+            reason["maxLength"] = json!(cancel_reason_max_codepoints);
         }
         if properties.contains_key("gate") {
             properties.insert("gate".into(), crate::task_gate::input_schema());
@@ -257,7 +308,39 @@ pub fn schema() -> Value {
         schema["oneOf"].as_array().expect("command variants"),
     ));
     schema["additionalProperties"] = json!(false);
+    // The shared flat envelope keeps unused legacy fields. Only an action that
+    // consumes a field applies its transport's narrower budget.
+    for variant in schema["oneOf"].as_array_mut().expect("command variants") {
+        for property in variant["properties"]
+            .as_object_mut()
+            .expect("command properties")
+            .values_mut()
+        {
+            let non_null = property
+                .as_object_mut()
+                .expect("property schema")
+                .remove(TOOL_NON_NULL_EXTENSION)
+                .is_some();
+            if reject_consumed_null && non_null {
+                if let Some(types) = property.get_mut("type").and_then(Value::as_array_mut) {
+                    types.retain(|value| value != "null");
+                }
+                if let Some(values) = property.get_mut("enum").and_then(Value::as_array_mut) {
+                    values.retain(|value| !value.is_null());
+                }
+            }
+        }
+        if let Some(description) = variant["properties"].get_mut("description") {
+            description["maxLength"] = json!(description_max_codepoints);
+        }
+    }
     schema
+}
+
+const TOOL_NON_NULL_EXTENSION: &str = "x-studio-tool-non-null";
+
+fn tool_non_null(schema: &mut schemars::Schema) {
+    schema.insert(TOOL_NON_NULL_EXTENSION.into(), json!(true));
 }
 
 fn command_properties(variants: &[Value]) -> serde_json::Map<String, Value> {
@@ -268,6 +351,10 @@ fn command_properties(variants: &[Value]) -> serde_json::Map<String, Value> {
             .expect("command properties")
         {
             let mut optional = schema.clone();
+            optional
+                .as_object_mut()
+                .expect("property schema")
+                .remove(TOOL_NON_NULL_EXTENSION);
             // A required action's nonempty text constraint does not apply when
             // that field is unused. Its action variant still enforces it.
             optional
@@ -330,7 +417,13 @@ pub fn apply_tool_contract(name: &str, input: &mut serde_json::Map<String, Value
     if name != "orchestration_task" {
         return;
     }
-    let variants = schema()["oneOf"]
+    // A flat advertisement cannot distinguish used from unused fields. Keep
+    // nullable legacy fields; action-specific tool ingress enforces null refusal.
+    let variants = schema_with_bounds(
+        MAX_TOOL_DESCRIPTION_CODEPOINTS,
+        MAX_TOOL_CANCEL_REASON_CODEPOINTS,
+        false,
+    )["oneOf"]
         .as_array()
         .expect("command variants")
         .clone();
@@ -373,7 +466,7 @@ mod tests {
         );
         let validator = crate::Validator::new(&Value::Object(tool)).expect("tool variants");
         for raw in [
-            json!({"action":"create","title":"Task","description":"x".repeat(64000)}),
+            json!({"action":"create","title":"Task","description":"x".repeat(32000)}),
             json!({"action":"create","title":"Task","checks":null,"task_id":null,"reason":null,"revision":null,"files":null}),
             json!({"action":"create","title":"Task","reason":""}),
             json!({"action":"cancel","task_id":"task","reason":"done","title":""}),
@@ -381,7 +474,7 @@ mod tests {
             json!({"action":"update","task_id":"task","version":2.0,"owner":null}),
         ] {
             assert!(validator.is_valid(&raw), "{raw}");
-            assert!(TaskCommand::parse(&raw).is_ok());
+            assert!(TaskCommand::parse_tool(&raw).is_ok());
         }
         for raw in [
             json!({"action":"create"}),
@@ -397,13 +490,13 @@ mod tests {
             json!({"action":"update","task_id":"task","owner":42}),
             json!({"action":"update","task_id":"task","version":2.5}),
         ] {
-            assert!(TaskCommand::parse(&raw).is_err());
+            assert!(TaskCommand::parse_tool(&raw).is_err());
         }
         // The advertisement describes fields; the server requires the payload
         // selected by the action even when the SDK accepts an incomplete object.
         let incomplete = json!({"action":"cancel","task_id":"task"});
         assert!(validator.is_valid(&incomplete));
-        assert!(TaskCommand::parse(&incomplete).is_err());
+        assert!(TaskCommand::parse_tool(&incomplete).is_err());
         for malformed in [
             json!({"action":"update","task_id":"task","owner":42}),
             json!({"action":"update","task_id":"task","version":2.5}),
@@ -455,5 +548,52 @@ mod tests {
             )
             .is_ok()
         );
+    }
+    #[test]
+    fn task_transport_text_bounds_and_consumed_nulls_remain_distinct() {
+        for token in ["x", "🙂"] {
+            for action in ["create", "update"] {
+                for (size, valid) in [(160, true), (161, false)] {
+                    let value =
+                        json!({"action":action,"task_id":"task","title":token.repeat(size)});
+                    assert_eq!(TaskCommand::parse(&value).is_ok(), valid);
+                    assert_eq!(TaskCommand::parse_tool(&value).is_ok(), valid);
+                }
+                for (size, http, tool) in [
+                    (32000, true, true),
+                    (32001, true, false),
+                    (64000, true, false),
+                    (64001, false, false),
+                ] {
+                    let value = json!({"action":action,"task_id":"task","title":"Task","description":token.repeat(size)});
+                    assert_eq!(TaskCommand::parse(&value).is_ok(), http);
+                    assert_eq!(TaskCommand::parse_tool(&value).is_ok(), tool);
+                }
+                for field in ["description", "status"] {
+                    let mut value = json!({"action":action,"task_id":"task","title":"Task"});
+                    value[field] = Value::Null;
+                    assert!(TaskCommand::parse(&value).is_ok());
+                    assert!(TaskCommand::parse_tool(&value).is_err());
+                }
+            }
+            for (size, http, tool) in [
+                (12000, true, true),
+                (12001, false, true),
+                (32000, false, true),
+                (32001, false, false),
+            ] {
+                let value = json!({"action":"cancel","task_id":"task","reason":token.repeat(size)});
+                assert_eq!(TaskCommand::parse(&value).is_ok(), http);
+                assert_eq!(TaskCommand::parse_tool(&value).is_ok(), tool);
+            }
+        }
+        for value in [
+            json!({"action":"cancel","task_id":"task","reason":"done","description":null,"status":null}),
+            json!({"action":"cancel","task_id":"task","reason":"done","description":"x".repeat(32001)}),
+            json!({"action":"create","title":"Task","reason":null}),
+        ] {
+            assert!(TaskCommand::parse(&value).is_ok());
+            assert!(TaskCommand::parse_tool(&value).is_ok());
+        }
     }
 }

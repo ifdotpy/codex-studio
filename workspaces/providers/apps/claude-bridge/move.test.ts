@@ -31,6 +31,40 @@ test("generated task advertisement converts through the real bridge SDK and pres
   ]) {
     assert.deepEqual(schema.parse(input), input);
   }
+  for (const token of ["x", "🙂"]) {
+    for (const [size, expected] of [
+      [32000, true],
+      [32001, false],
+    ] as const) {
+      assert.equal(
+        schema.safeParse({
+          action: "create",
+          title: "Task",
+          description: token.repeat(size),
+        }).success,
+        expected,
+      );
+      assert.equal(
+        schema.safeParse({
+          action: "cancel",
+          task_id: "task",
+          reason: token.repeat(size),
+        }).success,
+        expected,
+      );
+    }
+  }
+  // A flat SDK advertisement permits unused nullable fields; the server's
+  // action-specific owner still refuses null in a consumed native field.
+  assert.deepEqual(
+    schema.parse({
+      action: "cancel",
+      task_id: "task",
+      reason: "done",
+      description: null,
+    }),
+    { action: "cancel", task_id: "task", reason: "done", description: null },
+  );
 });
 import assert from "node:assert/strict";
 import fs from "node:fs/promises";

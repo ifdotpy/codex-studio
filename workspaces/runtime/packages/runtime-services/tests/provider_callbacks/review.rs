@@ -550,3 +550,32 @@ async fn resolve_retirement_rolls_back_with_card_and_agent() {
         );
     }
 }
+
+#[tokio::test]
+async fn task_tool_cancel_retains_its_historical_reason_bound() {
+    let (_directory, store, context) = fixture().await;
+    let before = &template().value["reviewCases"][0]["before"];
+    for (token_index, token) in ["x", "🙂"].into_iter().enumerate() {
+        for (size, expected) in [(32000, true), (32001, false)] {
+            put_record(&store, "runtime_work", before).await;
+            let frame = call(
+                &context,
+                &format!("reason-bound-{token_index}-{size}"),
+                "orchestration_task",
+                json!({"action":"cancel","task_id":before["id"],"reason":token.repeat(size)}),
+            );
+            let result = reply(
+                dispatch(std::sync::Arc::clone(&store), &context, &frame, 20.0)
+                    .await
+                    .unwrap(),
+            );
+            assert_eq!(body(&result)["success"], expected, "{token_index}/{size}");
+            if !expected {
+                assert_eq!(
+                    record(&store, "runtime_work", before["id"].as_str().unwrap()),
+                    *before
+                );
+            }
+        }
+    }
+}
