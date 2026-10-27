@@ -39,10 +39,10 @@ pub(crate) struct AgentProgress {
     pub stall: Option<AgentStall>,
 }
 
-pub(crate) fn derive(
+pub(crate) fn derive<'a>(
     connection: &Connection,
     record: &serde_json::Value,
-    assignments: &[Assignment],
+    assignments: impl IntoIterator<Item = &'a Assignment>,
 ) -> StoreResult<AgentProgress> {
     let agent: AgentSource = serde_json::from_value(record.clone())?;
     let mut commands = Vec::new();
@@ -104,7 +104,7 @@ pub(crate) fn derive(
             });
         }
     }
-    let assignment = assignments.iter().find(|task| {
+    let assignment = assignments.into_iter().find(|task| {
         task.owner() == Some(&agent.id)
             && matches!(
                 task.status(),

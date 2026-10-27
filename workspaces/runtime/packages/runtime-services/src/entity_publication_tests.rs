@@ -49,8 +49,25 @@ async fn work_metadata_skips_history_and_explicit_publication_is_not_repeated() 
         .await
         .expect("refusal-only publication");
     assert_eq!(work_publication_probe::take(id).history_entries, 0);
+    let second_id = "metadata-history-cost-second";
+    let mut second_work = work.clone();
+    second_work["id"] = json!(second_id);
+    second_work["owner"] = json!(CHAT);
+    write(
+        &store,
+        "INSERT INTO runtime_work(id,record) VALUES(?1,?2)",
+        vec![second_id.into(), second_work.to_string()],
+    )
+    .await;
+    work_publication_probe::take(id);
+    work_publication_probe::take(second_id);
     write(&store, "UPDATE runtime_agents SET record=json_set(record,'$.name','Renamed owner','$.status','running') WHERE id=?1", vec![CHAT.into()]).await;
     let owner_update = work_publication_probe::take(id);
+    assert_eq!(
+        owner_update.owned_decodes, 1,
+        "owned work must be decoded once per agent publication"
+    );
+    assert_eq!(work_publication_probe::take(second_id).owned_decodes, 1);
     assert_eq!(
         owner_update.metadata, 0,
         "unrelated owner updates must not reread owned task metadata"
