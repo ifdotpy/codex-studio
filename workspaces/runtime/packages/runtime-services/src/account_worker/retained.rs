@@ -5,6 +5,7 @@ use crate::recovery_history::ConnectionScope;
 use std::time::Instant;
 use studio_runtime_providers::RequestTicket;
 use tokio::sync::oneshot;
+use studio_runtime_store::request_results::AdmittedRequest;
 
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct RequestActor {
@@ -20,6 +21,10 @@ pub struct TransferAuthorization {
 }
 #[derive(Clone)]
 pub struct SessionRequest {
+    /// The owner persists this root before making the provider obligation.
+    pub root_request_id: String,
+    /// The final effect token, when the owner already admitted this exact call.
+    pub admitted_request: Option<AdmittedRequest>,
     pub scope: ConnectionScope,
     pub expected_scope: Option<ConnectionScope>,
     pub operation: String,
