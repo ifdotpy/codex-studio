@@ -150,13 +150,13 @@ fn blocked_write_on_one_handle_does_not_block_another_handle() {
         supervisor
             .child_action(Command::Ack {
                 handle: handle.into(),
-                sequence: crate::EventCursor(sequence),
+                sequence,
             })
             .unwrap();
         supervisor
             .child_action(Command::RetireCommand {
                 handle: handle.into(),
-                generation: crate::Generation(child.generation),
+                generation: child.generation,
             })
             .unwrap();
     }

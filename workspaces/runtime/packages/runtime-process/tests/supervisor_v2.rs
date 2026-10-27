@@ -576,7 +576,7 @@ printf '{"id":%s,"result":{"echo":"%s"}}\n' "$id" "$text"
     let ready = poll_event(
         &mut client,
         &handle,
-        opened.position.acknowledged(),
+        EventCursor(opened.acknowledged),
         |event| {
             event.kind == EventKind::Stdout
                 && event.payload.get("ready") == Some(&Value::Bool(true))
@@ -739,7 +739,7 @@ printf '{"id":%s,"result":{"echo":"%s"}}\n' "$id" "$text"
     let exit = poll_event(
         &mut client,
         &command_handle,
-        quick_open.position.acknowledged(),
+        EventCursor(quick_open.acknowledged),
         |event| event.kind == EventKind::Exit,
     );
     // The committed exit event follows reader shutdown. Its journal row can be

@@ -1,20 +1,12 @@
 //! Pure supervisor admission and journal decisions. No I/O or clock access.
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{Value, json};
 use std::collections::BTreeMap;
 
 /// Version of the maintained process supervisor wire protocol.
 pub const SUPERVISOR_PROTOCOL_V2: u64 = 2;
 pub const HANDLE_LIMIT: u64 = 256 * 1024 * 1024;
 pub const MAX_HANDLE_CHARACTERS: usize = 180;
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Deserialize, Serialize)]
-#[serde(transparent)]
-pub struct EventCursor(pub u64);
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Deserialize, Serialize)]
-#[serde(transparent)]
-pub struct Generation(pub u64);
 
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
 #[error("{0}")]
@@ -184,14 +176,11 @@ pub enum Command {
         message: serde_json::Map<String, Value>,
     },
     #[serde(rename = "next")]
-    Next { handle: String, cursor: EventCursor },
+    Next { handle: String, cursor: u64 },
     #[serde(rename = "replay")]
-    Replay { handle: String, cursor: EventCursor },
+    Replay { handle: String, cursor: u64 },
     #[serde(rename = "ack")]
-    Ack {
-        handle: String,
-        sequence: EventCursor,
-    },
+    Ack { handle: String, sequence: u64 },
     #[serde(rename = "operationStatus")]
     OperationStatus {
         handle: String,
@@ -203,10 +192,7 @@ pub enum Command {
     #[serde(rename = "detach")]
     Detach { handle: String },
     #[serde(rename = "retireCommand")]
-    RetireCommand {
-        handle: String,
-        generation: Generation,
-    },
+    RetireCommand { handle: String, generation: u64 },
     #[serde(rename = "adminCloseHandle")]
     AdminCloseHandle {
         handle: String,
@@ -397,20 +383,19 @@ impl ReceiptSnapshot {
         }
         Ok(Self { record })
     }
-    pub fn status(&self, current: &HandleSnapshot) -> Result<Value, Refusal> {
-        use serde_json::json;
+    pub fn status(&self, current: &HandleSnapshot) -> Value {
         if self.record.generation != Some(current.record.generation) {
-            return Ok(json!({"accepted":false,"reason":"native_generation_changed"}));
+            return json!({"accepted":false,"reason":"native_generation_changed"});
         }
         // Only an integer id proves the RPC identity of a monitor request.
         let Some(native_id) = self.record.native_id.as_ref().and_then(NativeId::rpc) else {
-            return Ok(json!({"accepted":false,"reason":"rpc_identity_missing"}));
+            return json!({"accepted":false,"reason":"rpc_identity_missing"});
         };
         let response = match (&self.record.response, self.record.response_sequence) {
             (Some(response), Some(seq)) if seq <= current.record.acknowledged => response.clone(),
             _ => Value::Null,
         };
-        Ok(json!({"accepted":true,"nativeId":native_id,"response":response}))
+        json!({"accepted":true,"nativeId":native_id,"response":response})
     }
 }
 pub enum WriteDecision {
@@ -468,13 +453,13 @@ mod start_identity_tests {
             )
             .unwrap()
         };
-        assert!(receipt.status(&snapshot(1)).unwrap()["response"].is_null());
+        assert!(receipt.status(&snapshot(1))["response"].is_null());
         assert_eq!(
-            receipt.status(&snapshot(2)).unwrap()["response"]["result"]["exitCode"],
+            receipt.status(&snapshot(2))["response"]["result"]["exitCode"],
             0
         );
         let partial = ReceiptSnapshot::from_record(json!({"digest":"d","native_id":7,"generation":1,"response":"{}","response_sequence":null})).unwrap();
-        assert!(partial.status(&snapshot(2)).unwrap()["response"].is_null());
+        assert!(partial.status(&snapshot(2))["response"].is_null());
         assert!(ReceiptSnapshot::from_record(json!({"digest":"d","native_id":7,"generation":1,"response":"bad","response_sequence":2})).is_err());
     }
 

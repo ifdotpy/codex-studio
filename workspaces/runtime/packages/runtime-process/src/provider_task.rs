@@ -539,7 +539,7 @@ impl AdapterTask {
             {
                 self.adopt_reattach_command(rpc, prior.pid).await?;
             }
-            if self.handled_cursor > prior.position.sequence().0 {
+            if self.handled_cursor > prior.sequence {
                 return Err(AdapterError::InvalidConfiguration);
             }
         } else if self.handled_cursor != 0 || self.expected_generation.is_some() {
@@ -565,14 +565,15 @@ impl AdapterTask {
             handle: self.handle.clone(),
             generation: opened.generation,
             pid: opened.pid,
-            acknowledged: opened.position.acknowledged(),
+            acknowledged: EventCursor(opened.acknowledged),
             resumed: opened.resumed,
         });
         if opened.resumed && prior.as_ref().is_none_or(|prior| prior.pid != opened.pid)
             || self
                 .expected_generation
                 .is_some_and(|generation| generation != opened.generation)
-            || self.handled_cursor > opened.position.sequence().0
+            || opened.acknowledged > opened.sequence
+            || self.handled_cursor > opened.sequence
         {
             return Err(AdapterError::UnverifiableChild);
         }
@@ -588,7 +589,7 @@ impl AdapterTask {
             self.stop = activated.shutdown.subscribe();
             let options = activated.options;
             if options.expected_generation != Some(opened.generation)
-                || options.launch.handled_cursor > opened.position.sequence().0
+                || options.launch.handled_cursor > opened.sequence
             {
                 return Err(AdapterError::InvalidConfiguration);
             }
@@ -619,7 +620,7 @@ impl AdapterTask {
         let mut event_stop = event_shutdown.subscribe();
         let handle = self.open.handle.clone();
         let generation = opened.generation;
-        let cursor = opened.position.acknowledged();
+        let cursor = EventCursor(opened.acknowledged);
         let event_pump = tokio::spawn(async move {
             let result = tokio::select! {
                 biased;

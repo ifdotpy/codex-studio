@@ -529,33 +529,30 @@ impl Supervisor {
                 Ok(self.journal.operation_status(&handle, &operation_id)?)
             }
             Command::Ack { sequence, .. } => {
-                self.journal.ack(&handle, sequence.0)?;
+                self.journal.ack(&handle, sequence)?;
                 Ok(json!({"acknowledged":sequence}))
             }
             Command::Next { cursor, .. } => {
                 // Sample readers before querying so the final committed tail cannot be hidden.
                 let stdout = child.stdout_alive.load(Ordering::Acquire);
                 let stderr = child.stderr_alive.load(Ordering::Acquire);
-                let events = self.journal.events(&handle, cursor.0, true)?;
+                let events = self.journal.events(&handle, cursor, true)?;
                 let event = events["events"].get(0);
                 let last_event_cursor = event
                     .and_then(|event| event.get("sequence"))
                     .and_then(Value::as_u64);
-                let return_code = if exit_delivered(
-                    cursor.0,
-                    last_event_cursor,
-                    child.durable_exit_sequence()?,
-                ) {
-                    child.code()?
-                } else {
-                    None
-                };
+                let return_code =
+                    if exit_delivered(cursor, last_event_cursor, child.durable_exit_sequence()?) {
+                        child.code()?
+                    } else {
+                        None
+                    };
                 Ok(
                     json!({"event":events["events"].get(0),"returnCode":return_code,"backpressure":child.paused.load(Ordering::Acquire),"stdoutReaderAlive":stdout,"stderrReaderAlive":stderr}),
                 )
             }
             Command::Replay { cursor, .. } => {
-                let mut result = self.journal.events(&handle, cursor.0, false)?;
+                let mut result = self.journal.events(&handle, cursor, false)?;
                 result["backpressure"] = json!(child.paused.load(Ordering::Acquire));
                 Ok(result)
             }
@@ -571,12 +568,8 @@ impl Supervisor {
                 if exit_event_durable {
                     stop_verified(child.pid, child.pid, &child.start)?;
                 }
-                self.journal.retire(
-                    &handle,
-                    generation.0,
-                    exit_event_durable,
-                    exit_event_durable,
-                )?;
+                self.journal
+                    .retire(&handle, generation, exit_event_durable, exit_event_durable)?;
                 *lock(&slot.child)? = None;
                 self.active_children.fetch_sub(1, Ordering::AcqRel);
                 Ok(json!({"retired":true}))
