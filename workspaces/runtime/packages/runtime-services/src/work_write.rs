@@ -639,15 +639,18 @@ pub async fn next_archive_retry_at(
         .read_async("runtime-services/work_write", move |connection| {
             let accepted: Option<f64> = connection
                 .query_row(
-                    "SELECT MIN(CAST(json_extract(result,'$.nextAttemptAt') AS REAL)) \
+                    "SELECT CAST(json_extract(result,'$.nextAttemptAt') AS REAL) \
              FROM runtime_operation_receipts \
              WHERE signature='accepted-archive-v1' \
                AND json_extract(result,'$.status') IN ('pending','retryable','unknown') \
+               AND COALESCE(json_extract(result,'$.nextAttemptAt'),0)>?1 \
                AND json_type(result,'$.nextAttemptAt') IN ('integer','real') \
-               AND CAST(json_extract(result,'$.nextAttemptAt') AS REAL)>?1",
+               AND CAST(json_extract(result,'$.nextAttemptAt') AS REAL)>?1 \
+             ORDER BY COALESCE(json_extract(result,'$.nextAttemptAt'),0),id LIMIT 1",
                     [now],
                     |row| row.get(0),
                 )
+                .optional()
                 .map_err(studio_runtime_store::StoreError::from)?;
             let reviewer = ReviewerArchiveRepository::next_retry_at(connection, now)?;
             Ok::<_, WorkWriteError>(accepted.into_iter().chain(reviewer).reduce(f64::min))
@@ -3733,6 +3736,17 @@ mod actor_tests {
                     rusqlite::params![id, json!({"status":"retryable","nextAttemptAt":due + 100.0}).to_string()],
                     )?;
                 }
+                for (id, result) in [
+                    ("text", json!({"status":"pending","nextAttemptAt":"101"})),
+                    ("missing", json!({"status":"pending"})),
+                    ("finished", json!({"status":"done","nextAttemptAt":101})),
+                    ("past", json!({"status":"unknown","nextAttemptAt":100})),
+                ] {
+                    tx.execute(
+                        "INSERT INTO runtime_operation_receipts(id,signature,result) VALUES (?1,'accepted-archive-v1',?2)",
+                        rusqlite::params![id, result.to_string()],
+                    )?;
+                }
                 Ok(())
             })
             .await
@@ -3748,6 +3762,17 @@ mod actor_tests {
                 .await
                 .expect("full batch deadline"),
             Some(100.0)
+        );
+        store.transaction(|tx| {
+            tx.execute("INSERT INTO runtime_operation_receipts(id,signature,result) VALUES('large','accepted-archive-v1',?1)",
+                [r#"{"status":"pending","nextAttemptAt":9007199254740993}"#])?;
+            Ok(())
+        }).await.expect("large integer receipt");
+        assert_eq!(
+            next_archive_retry_at(&store, 9007199254740992.0, false)
+                .await
+                .expect("rounded deadline"),
+            None
         );
     }
 
