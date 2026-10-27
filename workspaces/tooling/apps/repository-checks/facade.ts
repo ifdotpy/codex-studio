@@ -999,6 +999,17 @@ export function gateSteps(root: string, name: string): GateStep[] {
         requires: "workspace",
         crateReuse: true,
       },
+      {
+        ...cargo("schema-doctests", "Schema compile-fail doctests", [
+          "test",
+          "--locked",
+          "-p",
+          "studio-runtime-schema",
+          "--doc",
+        ]),
+        requires: "workspace",
+        crateReuse: true,
+      },
       ...(!fast
         ? [
             {
