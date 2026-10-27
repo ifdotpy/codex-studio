@@ -563,8 +563,16 @@ pub(super) fn replay_recorded(
     if !same_replay_identity(&prior_call, call) {
         return Ok(Err(PortError::Identity));
     }
+    replay_submitted(tx, &prior_call, &prior)
+}
+
+pub(super) fn replay_submitted(
+    tx: &rusqlite::Transaction<'_>,
+    prior_call: &Call,
+    prior: &Value,
+) -> Result<Result<Replay, PortError>, WorkerError> {
     let request = store::decode(&prior["request"])?;
-    let saved = store::receipt(tx, &call.key(), "result")?;
+    let saved = store::receipt(tx, &prior_call.key(), "result")?;
     let result = if let Some(saved) = saved {
         // The result receipt is committed before its journal event advances
         // the checkpoint. Only expose it after that event is known committed
@@ -1110,6 +1118,7 @@ mod replay_identity_tests {
 
     #[tokio::test]
     async fn transferred_monitor_controls_require_the_original_retained_generation() {
+        thread_local! { static SUBMITTED_READS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
         let root = tempfile::tempdir().expect("root");
         let store = RuntimeStore::open(Some(root.path())).await.expect("store");
         let cwd = root.path().to_owned();
@@ -1131,6 +1140,19 @@ mod replay_identity_tests {
             let original_key=Call::operation_key("default","monitor:watch");
             let submitted=store::receipt(tx,&original_key,"submitted")?.expect("original submission");
             store::save(tx,&original_key,"written",submitted["request"].clone())?;
+            SUBMITTED_READS.with(|count| count.set(0));
+            tx.trace_v2(rusqlite::trace::TraceEventCodes::SQLITE_TRACE_STMT, Some(|event| {
+                if let rusqlite::trace::TraceEvent::Stmt(statement, _) = event
+                    && statement.sql().starts_with("SELECT signature,result FROM runtime_operation_receipts")
+                    && statement.expanded_sql().is_some_and(|sql| sql.contains(":submitted'"))
+                {
+                    SUBMITTED_READS.with(|count| count.set(count.get() + 1));
+                }
+            }));
+            let operation = serde_json::from_value(json!({"agent":"agent-1","epoch":7,"accountKey":"default","connectionId":"old-connection"})).expect("operation");
+            assert!(super::super::monitor_command_scope(tx,"watch",&operation)?.is_some());
+            tx.trace_v2(rusqlite::trace::TraceEventCodes::SQLITE_TRACE_STMT, None);
+            assert_eq!(SUBMITTED_READS.with(std::cell::Cell::get), 1);
             assert!(authorize(tx,&exact)?,"only the original written process is cancelled after transfer");
             for field in ["account","generation","epoch","process","operation","method","shape"] {
                 let mut invalid=exact.clone();
