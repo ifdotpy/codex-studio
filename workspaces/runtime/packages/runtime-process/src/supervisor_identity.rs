@@ -715,6 +715,61 @@ mod tests {
     }
 
     #[test]
+    #[cfg(target_os = "linux")]
+    fn captured_group_kills_member_created_after_term() {
+        use std::io::{BufRead, BufReader, Read};
+        use std::os::unix::process::CommandExt;
+        use std::process::Stdio;
+
+        // Keep the unreaped leader as the cleanup anchor on every failure.
+        struct Fixture(std::process::Child);
+        impl Drop for Fixture {
+            fn drop(&mut self) {
+                let group = native_pid(self.0.id()).expect("fixture group");
+                let _signal = kill_process_group(group, Signal::KILL);
+                let _wait = self.0.wait();
+            }
+        }
+
+        let mut child = Fixture(
+            Command::new("/bin/sh")
+                .args([
+                    "-c",
+                    "trap 'trap \"\" TERM; /bin/cat <&0 & echo $!; wait $!' TERM; echo ready; /bin/cat >/dev/null",
+                ])
+                .process_group(0)
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .spawn()
+                .expect("owned group starts"),
+        );
+        let mut output = BufReader::new(child.0.stdout.take().expect("fixture output"));
+        let mut line = String::new();
+        output.read_line(&mut line).expect("fixture ready");
+        assert_eq!(line.trim(), "ready");
+        let group = capture_groups(GroupScope::Group(child.0.id()))
+            .expect("capture original members")
+            .pop()
+            .expect("owned group");
+        assert!(group.signal(Signal::TERM).expect("send TERM"));
+        line.clear();
+        output.read_line(&mut line).expect("replacement created");
+        let replacement: u32 = line.trim().parse().expect("replacement pid");
+        assert!(!group.members.iter().any(|member| member.pid == replacement));
+        assert!(
+            start_time(replacement, false)
+                .expect("replacement status")
+                .is_some()
+        );
+        assert!(group.has_live_anchor().expect("original member remains"));
+        assert!(group.signal(Signal::KILL).expect("send KILL"));
+        let mut tail = String::new();
+        output
+            .read_to_string(&mut tail)
+            .expect("all writers stopped");
+    }
+
+    #[test]
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     fn captured_group_refuses_changed_boot_start_group_or_session() {
         let (_blocker, pid, identity) = Blocker::start();
