@@ -70,7 +70,7 @@ pub fn apply_limits_observation(snapshot: &mut Value, observation: &mut Value) {
 }
 
 /// Initialize only current account state; migrations seed historical generations once.
-fn ensure_account(tx: &Transaction<'_>, account: &str) -> StoreResult<()> {
+pub fn ensure_account(tx: &Transaction<'_>, account: &str) -> StoreResult<()> {
     tx.execute("INSERT INTO runtime_account_state(account,next_generation,journal_ack,recovery_required,streams) VALUES(?1,0,0,0,'null') ON CONFLICT(account) DO NOTHING", [account])?;
     Ok(())
 }
