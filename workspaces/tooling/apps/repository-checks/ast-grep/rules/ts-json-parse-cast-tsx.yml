@@ -1,0 +1,6 @@
+id: ts-json-parse-cast-tsx
+language: Tsx
+message: Parse to unknown and decode through the owning contract.
+severity: warning
+rule:
+  pattern: JSON.parse($X) as $T

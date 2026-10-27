@@ -1,0 +1,943 @@
+{
+  "ts-json-parse-cast": [
+    {
+      "file": "workspaces/client/apps/desktop/layr-binary.ts",
+      "fingerprint": "30c951a519de8b24758a9f9c2d334f4eb0fcda25e2c2f29d17ea27b8cd71f73a:0"
+    },
+    {
+      "file": "workspaces/client/apps/desktop/profile-export-test.ts",
+      "fingerprint": "f64c9b2d1735796952bb4bbc68d35f3586cf16328cec8bb452e1e226dc4dc7b1:0"
+    },
+    {
+      "file": "workspaces/client/apps/desktop/restart-environment.ts",
+      "fingerprint": "7b2e2faea7f4dfe66d482b7eb2e06d91a55ed917b960409bbf8a60a762f71532:0"
+    },
+    {
+      "file": "workspaces/client/apps/web/scripts/uiTeamScaleAudit.ts",
+      "fingerprint": "00d77a140b5a9cf2fea5afbbd3b133bbac810bf0325035035ef4bdefc15bc461:0"
+    },
+    {
+      "file": "workspaces/client/apps/web/scripts/verify-rust-chat-lifecycle.ts",
+      "fingerprint": "1113d8d16bcb6beec401d47a0bba79571fb155c578a8b1bd6e6598bbf148d2a8:0"
+    },
+    {
+      "file": "workspaces/client/apps/web/scripts/verify-rust-worker-defaults.ts",
+      "fingerprint": "557e679b7841c17ce689363f15df9b4e8e8cdc21310c77f296a3fa655eb79e09:0"
+    },
+    {
+      "file": "workspaces/client/apps/web/scripts/verify-rust-worker-defaults.ts",
+      "fingerprint": "f1cf9913728d78fe54debdb506c944f431ed56852a86e2210a8a6dbf9d78f57a:0"
+    },
+    {
+      "file": "workspaces/client/apps/web/src/components/conversation-results/conversationResultModel.ts",
+      "fingerprint": "f01e944d16680ca56e4af149b78b271b61ed1b8c6e57b242a5f49da9fc73f7b8:0"
+    },
+    {
+      "file": "workspaces/client/apps/web/src/components/models/modelWhitelist.ts",
+      "fingerprint": "0bc5baaf3c460ffb6ada678fa5c341c4a9277a5e382adcede629fe2bea254ae1:0"
+    },
+    {
+      "file": "workspaces/client/apps/web/src/components/removeSendingMessages.test.ts",
+      "fingerprint": "857b9923deed044644ba41cc33c29625e96722781c5f75cc6570999b26618a6d:0"
+    },
+    {
+      "file": "workspaces/client/apps/web/src/native/legacyDrafts.ts",
+      "fingerprint": "f4460a93e520362395430f70e9746a214762e88a945eb8538acd252eafbf2678:0"
+    },
+    {
+      "file": "workspaces/client/apps/web/src/projectDelete.ts",
+      "fingerprint": "583a401ae25b9e0645db639672fa0549801b4b93ac26a29fee090b5fec8aab7e:0"
+    },
+    {
+      "file": "workspaces/client/apps/web/src/projectDelete.ts",
+      "fingerprint": "8357db25cdae2426982ef3edb52333cd75de23bc13cb48824797a6a7523e45e4:0"
+    },
+    {
+      "file": "workspaces/client/apps/web/src/servers/managementRequests.ts",
+      "fingerprint": "a43eda32066998c5435f3e4183353fc61d68c6803417850e6c7cd578d1cf6b17:0"
+    },
+    {
+      "file": "workspaces/client/apps/web/src/servers/managementRequests.ts",
+      "fingerprint": "a43eda32066998c5435f3e4183353fc61d68c6803417850e6c7cd578d1cf6b17:1"
+    },
+    {
+      "file": "workspaces/client/apps/web/src/servers/mergedSidebarPreferences.ts",
+      "fingerprint": "6e5bd8ce2b4da42cb4fe1db7c83fbebb3e3987f5da8955224ff4f92f82403b40:0"
+    },
+    {
+      "file": "workspaces/client/apps/web/src/sync/drafts.ts",
+      "fingerprint": "e067b50bb83ab83bf5fc26fc26721938ed25297590f3fe2b2d1078130fc3e2e5:0"
+    },
+    {
+      "file": "workspaces/client/apps/web/src/sync/draftStorage.ts",
+      "fingerprint": "03cab603eea6ec55b1f598ef16f6748bde47501c9361729fe6438dc35d635b94:0"
+    },
+    {
+      "file": "workspaces/client/apps/web/src/sync/draftStorage.ts",
+      "fingerprint": "6f95ee32a55a4075e9a905dcf432d827212f3cb6c636d2b8524de65e476ba665:0"
+    },
+    {
+      "file": "workspaces/client/apps/web/src/sync/resourceEvents.ts",
+      "fingerprint": "555e733d0f0b9c74fc76f802f96da0e5bf877a35f165d076f55a0c934ea0eed4:0"
+    },
+    {
+      "file": "workspaces/client/apps/web/src/sync/resourceEvents.ts",
+      "fingerprint": "d06ccee7f680cdc132fa8fa90fa8521626ec9d772a411d34ce3273fcc1cda6bf:0"
+    },
+    {
+      "file": "workspaces/client/apps/web/src/sync/subscriptions/cursors.ts",
+      "fingerprint": "7f427fa136049c853c20d9c9c56a96e65c3d94236ff2cb52203e3e4e64873123:0"
+    },
+    {
+      "file": "workspaces/client/apps/web/src/sync/syncBrowserFixture.ts",
+      "fingerprint": "427f2103d9127996eb11862d4feb3ebb4248c235600b96c5c11f0d1599930c68:0"
+    },
+    {
+      "file": "workspaces/client/apps/web/src/sync/syncBrowserFixture.ts",
+      "fingerprint": "5fb4df4e30379ee9ef807c7d573adb828fc958eb388320770ee9aacba45e6bd3:0"
+    },
+    {
+      "file": "workspaces/client/apps/web/src/usage/sessionCostCache.ts",
+      "fingerprint": "cee6b1138720a7dc31199d4e4b179fba163387c839288231378ec120209fe1df:0"
+    },
+    {
+      "file": "workspaces/client/apps/web/tests/chat/chat-create-latency-ui.spec.ts",
+      "fingerprint": "1f51c9610aff7a37ac19a1d405d5c0e29c37343255b1c9d82dde96fb69ac3004:0"
+    },
+    {
+      "file": "workspaces/client/apps/web/tests/chat/chat-prefetch-ui.fixture.ts",
+      "fingerprint": "1409a4a95411b5e8e8d8090f4723be87d109b75d9c0df0d0d10ec8539e2f625f:0"
+    },
+    {
+      "file": "workspaces/client/apps/web/tests/chat/chat-prefetch-ui.spec.ts",
+      "fingerprint": "2a05259101a76be66735b6cdb24ae27918e536584112f5b2c9e05ebb05d6a09b:0"
+    },
+    {
+      "file": "workspaces/client/apps/web/tests/chat/chat-prefetch-ui.spec.ts",
+      "fingerprint": "f91d3bafe4fb2e27af0996524a67b6181ad1514f2a08e1864d2dd22e91145f6d:0"
+    },
+    {
+      "file": "workspaces/client/apps/web/tests/chat/chat-read-state.fixture.ts",
+      "fingerprint": "e306ba8f50a59275467a1ca836dfc01b147b3dfd7e7239b0d4e60f75b6880ec8:0"
+    },
+    {
+      "file": "workspaces/client/apps/web/tests/chat/chat-switch-latency-ui.fixture.ts",
+      "fingerprint": "1409a4a95411b5e8e8d8090f4723be87d109b75d9c0df0d0d10ec8539e2f625f:0"
+    },
+    {
+      "file": "workspaces/client/apps/web/tests/chat/http.ts",
+      "fingerprint": "d31bedce6882a6f47be9f9483ef977f6f484d77b91fe668130659aa82520042d:0"
+    },
+    {
+      "file": "workspaces/client/apps/web/tests/markdown/wasm-offline.spec.ts",
+      "fingerprint": "2ad49d046c311ba92da84ad7b74174ad9590fcd070f621d80193e132c3a29c46:0"
+    },
+    {
+      "file": "workspaces/client/apps/web/tests/servers/server-names-ui.spec.ts",
+      "fingerprint": "050425cfada6ddb90252349fd583fcf52129c38ec4b73993cb56699376c84522:0"
+    },
+    {
+      "file": "workspaces/client/apps/web/tests/sidebar/ui-preference-projection-bridge.browser.spec.ts",
+      "fingerprint": "716c5c047200226b22c7488fc8f03529e0a6f481c5c648d388ea911de675651b:0"
+    },
+    {
+      "file": "workspaces/client/apps/web/tests/sync/entity-schema-cache-browser.spec.ts",
+      "fingerprint": "0e72a76faffbd17201b56186b8121ccad9f978f13754779dd616131e9bfad1a4:0"
+    },
+    {
+      "file": "workspaces/client/apps/web/tests/sync/helpers.ts",
+      "fingerprint": "30de5745928ab453010299a0c2788edce45ce2c3a80013b2169ffa0698ccf387:0"
+    },
+    {
+      "file": "workspaces/client/apps/web/tests/workspace/rewind-api.ts",
+      "fingerprint": "c144c087580e38dddde64f6803378af73cf4b30af8b9be1c4eb395e14e32ae04:0"
+    },
+    {
+      "file": "workspaces/tooling/apps/repository-checks/test-result-cache.ts",
+      "fingerprint": "9e26f293bf2bd4d009d5114d7c4ac9d965b4e0913d946d43d9e41c38d2708b8e:0"
+    }
+  ],
+  "ts-double-cast": [
+    {
+      "file": "workspaces/client/apps/web/src/chatCreation.test.ts",
+      "fingerprint": "a4fc2c6fe5816e16795ca4090209d675f02e5346505e127aabe49153c12acfe6:0"
+    },
+    {
+      "file": "workspaces/client/apps/web/src/chatScope.test.ts",
+      "fingerprint": "83d82ab31733123b72cc0cdf363641970882e31a4062affc7563656c2ff8e4a4:0"
+    },
+    {
+      "file": "workspaces/client/apps/web/src/components/AccountStartThrottle.test.ts",
+      "fingerprint": "52267d508df7d569aba04cdc59896349d716a9af4da62368ba0d7cb3493e1205:0"
+    },
+    {
+      "file": "workspaces/client/apps/web/src/components/AccountTiles.test.ts",
+      "fingerprint": "fa4f6030fbefdc035adeef2d5436936265f3b7f870746f8ec99214263f6012f3:0"
+    },
+    {
+      "file": "workspaces/client/apps/web/src/components/Conversation.connection.test.ts",
+      "fingerprint": "803c52f2c878d6bdcce5cd577342aadd30d9b023a532ddf6c63934f00e9510fa:0"
+    },
+    {
+      "file": "workspaces/client/apps/web/src/components/Conversation.connection.test.ts",
+      "fingerprint": "9d020cf46284832b6f0b7a48a81444921767e4f54515a4c1eb2e5f73a07acb8f:0"
+    },
+    {
+      "file": "workspaces/client/apps/web/src/components/Conversation.connection.test.ts",
+      "fingerprint": "eddc22f900c390fa02b69b8a57df6883cccc65d4f78af3dc8a6ef644fc55461a:0"
+    },
+    {
+      "file": "workspaces/client/apps/web/src/components/Conversation.connection.test.ts",
+      "fingerprint": "f9fecd10ae52a13cb504c83cc8ad282b1abe468b2a27cd2d06f80a20dddda0c6:0"
+    },
+    {
+      "file": "workspaces/client/apps/web/src/components/Conversation.limits.test.ts",
+      "fingerprint": "ef061af224e61e360270c9b8d4fac594582783958e7c0f1d5f54cad5da2f8860:0"
+    },
+    {
+      "file": "workspaces/client/apps/web/src/components/liveRequestConsumers.test.ts",
+      "fingerprint": "5dd99924262143a5b700fbe1c54170c3fc0bd6acd8975886361c7ade130adbb2:0"
+    },
+    {
+      "file": "workspaces/client/apps/web/src/components/liveRequestConsumers.test.ts",
+      "fingerprint": "d0e937cfbdae4bc3877719bf6d9ee51eb08473f396ec691ca0e8dd345c0d5a19:0"
+    },
+    {
+      "file": "workspaces/client/apps/web/src/components/readState.noRefetch.test.ts",
+      "fingerprint": "ad3857efd77e2c68df3e2e3769523323078df4a2bce162303af80e15b7756a79:0"
+    },
+    {
+      "file": "workspaces/client/apps/web/src/components/shell/WorkerPermissions.test.ts",
+      "fingerprint": "c2f64c59a6bd90c6ed8bbaeed42b85975e9eda3f4b036864029a4ecfb03cd1a0:0"
+    },
+    {
+      "file": "workspaces/client/apps/web/src/components/sidebar/services.test.ts",
+      "fingerprint": "b82160817a0c5d578825d701a5483cae958e3466610c06e5a8e3dc15ad1ce717:0"
+    },
+    {
+      "file": "workspaces/client/apps/web/src/components/sidebar/services.test.ts",
+      "fingerprint": "b82160817a0c5d578825d701a5483cae958e3466610c06e5a8e3dc15ad1ce717:1"
+    },
+    {
+      "file": "workspaces/client/apps/web/src/components/sidebar/services.test.ts",
+      "fingerprint": "edada8886fc62e27c56e89c38a37395a3e8150b2fda9c93394b5e8bbf49614b0:0"
+    },
+    {
+      "file": "workspaces/client/apps/web/src/components/sidebar/services.test.ts",
+      "fingerprint": "edada8886fc62e27c56e89c38a37395a3e8150b2fda9c93394b5e8bbf49614b0:1"
+    },
+    {
+      "file": "workspaces/client/apps/web/src/components/sidebarOrder.migration.test.ts",
+      "fingerprint": "c6487191939083ff97210a7759a52e86b7d6062414f1dd85390b015410faf8f5:0"
+    },
+    {
+      "file": "workspaces/client/apps/web/src/components/SidebarWarnings.test.ts",
+      "fingerprint": "b67a32f1b7da5f70d42e609275fdf152fc0c350881bb33fcb97ae9524a6376d3:0"
+    },
+    {
+      "file": "workspaces/client/apps/web/src/hooks/mobileViewport.test.ts",
+      "fingerprint": "69d1dc386914d5abc5b5a3e330ea6d60632d17d778b851eec08d3c91801727ee:0"
+    },
+    {
+      "file": "workspaces/client/apps/web/src/hooks/snapshotDeleteReadback.test.ts",
+      "fingerprint": "b3f2d33979f6f5b2081292f8d0bef7246b2633c338a69b974665f355239c2c01:0"
+    },
+    {
+      "file": "workspaces/client/apps/web/src/native/audioFrames.test.ts",
+      "fingerprint": "41b0e38d1064a7820fcdae1a395462deb510a04127f5437e32094b3aedc559c0:0"
+    },
+    {
+      "file": "workspaces/client/apps/web/src/native/audioFrames.test.ts",
+      "fingerprint": "c91d87988e59eec9475ab0e5020f7b3ee5d80a7c445f791cae749538a2a0a716:0"
+    },
+    {
+      "file": "workspaces/client/apps/web/src/native/close.test.ts",
+      "fingerprint": "1d7ba54c84844dcbd79074ed650a49881b8082ea90a99178e44cc80b35ea3bba:0"
+    },
+    {
+      "file": "workspaces/client/apps/web/src/native/close.test.ts",
+      "fingerprint": "2ceaedd95ba265331ac6d051df71e0f95c557562b9b2c77df9296178d76999bb:0"
+    },
+    {
+      "file": "workspaces/client/apps/web/src/native/close.test.ts",
+      "fingerprint": "6c3c396824c7a998a6ad49589a5df2813ecfc0a8455b3c51c58313b9a9a39dd7:0"
+    },
+    {
+      "file": "workspaces/client/apps/web/src/native/frame.test.ts",
+      "fingerprint": "2ceaedd95ba265331ac6d051df71e0f95c557562b9b2c77df9296178d76999bb:0"
+    },
+    {
+      "file": "workspaces/client/apps/web/src/native/frame.test.ts",
+      "fingerprint": "2ceaedd95ba265331ac6d051df71e0f95c557562b9b2c77df9296178d76999bb:1"
+    },
+    {
+      "file": "workspaces/client/apps/web/src/native/frame.test.ts",
+      "fingerprint": "2ceaedd95ba265331ac6d051df71e0f95c557562b9b2c77df9296178d76999bb:2"
+    },
+    {
+      "file": "workspaces/client/apps/web/src/native/frame.test.ts",
+      "fingerprint": "2ceaedd95ba265331ac6d051df71e0f95c557562b9b2c77df9296178d76999bb:3"
+    },
+    {
+      "file": "workspaces/client/apps/web/src/native/frame.test.ts",
+      "fingerprint": "31a10dbf7287cc28f816818959d32bd285201718e1ad2654cf79c41d2e19f1ce:0"
+    },
+    {
+      "file": "workspaces/client/apps/web/src/native/frame.test.ts",
+      "fingerprint": "4d91107033fb9bcddc4a269852ae480979d7741c899bd986c10d1864c66f34a3:0"
+    },
+    {
+      "file": "workspaces/client/apps/web/src/native/frame.test.ts",
+      "fingerprint": "60064be50e4661964f76fa41524999188a74ebdf75041e586e8b29b715b67412:0"
+    },
+    {
+      "file": "workspaces/client/apps/web/src/native/frame.test.ts",
+      "fingerprint": "6f9d7d9ded53020c733ccaff44714f31ae8b41169827b03b6dff205f21ef12f3:0"
+    },
+    {
+      "file": "workspaces/client/apps/web/src/native/frame.test.ts",
+      "fingerprint": "7159e9e110197192b583a8da96647eff283750bd388adf566162cfeb3dee42c1:0"
+    },
+    {
+      "file": "workspaces/client/apps/web/src/native/frame.test.ts",
+      "fingerprint": "80e1cea481914ec0f6cd62ccab2bc3c61abc2f963cb351a1b33a34c0a6625683:0"
+    },
+    {
+      "file": "workspaces/client/apps/web/src/native/frame.test.ts",
+      "fingerprint": "84464255876cdc06f97408a9815532c3cfff432da715f6312b99dccfa9f812e3:0"
+    },
+    {
+      "file": "workspaces/client/apps/web/src/native/frame.test.ts",
+      "fingerprint": "933b5dd10bbdb80a2f8341e389afef0b08fd42de3a6a8598bd28d25ee3ca44ba:0"
+    },
+    {
+      "file": "workspaces/client/apps/web/src/native/frame.test.ts",
+      "fingerprint": "bd7352040e5ac9e2b34fda09f6a3309dbf4b696814666804e06d0ad3719c0e51:0"
+    },
+    {
+      "file": "workspaces/client/apps/web/src/native/frame.test.ts",
+      "fingerprint": "d16d5037c20fc15f799b8a796257f6b14d8aaaee1f67cdea939a56e76526fc3f:0"
+    },
+    {
+      "file": "workspaces/client/apps/web/src/native/frame.test.ts",
+      "fingerprint": "ffdcc476d3524ddd05da41b8d43d84a5fd917ea20ac0a9747a8d49b029dea353:0"
+    },
+    {
+      "file": "workspaces/client/apps/web/src/servers/eventSource.test.ts",
+      "fingerprint": "03d24bdba8c9e272d6948e30c32dbe670cbac161425bf16fe401ee51cdd0a4f1:0"
+    },
+    {
+      "file": "workspaces/client/apps/web/src/servers/eventSource.test.ts",
+      "fingerprint": "03d24bdba8c9e272d6948e30c32dbe670cbac161425bf16fe401ee51cdd0a4f1:1"
+    },
+    {
+      "file": "workspaces/client/apps/web/src/servers/logicalProjects.test.ts",
+      "fingerprint": "9d5d88e384ff762325254c34a39eef2ef92cc361f3e028d9b7cf2bad6f4b860d:0"
+    },
+    {
+      "file": "workspaces/client/apps/web/src/servers/ServerAccountLimits.reads.test.ts",
+      "fingerprint": "6f2ad7f8927616383aab613be24417028b53d81f30e621f998c3f14f58bb734a:0"
+    },
+    {
+      "file": "workspaces/client/apps/web/src/servers/ServerAccountLimits.test.ts",
+      "fingerprint": "86fa6d3dee3e84fdca6b05d2f35c055ae078f5a5cd6b5b43fa01dea47193b486:0"
+    },
+    {
+      "file": "workspaces/client/apps/web/src/servers/ServerAccountLimits.test.ts",
+      "fingerprint": "946d8fdd234323eb48d8998a3d6abe322a8ba492a3d067861b72c01903361fe3:0"
+    },
+    {
+      "file": "workspaces/client/apps/web/src/servers/shellTransport.test.ts",
+      "fingerprint": "2ceaedd95ba265331ac6d051df71e0f95c557562b9b2c77df9296178d76999bb:0"
+    },
+    {
+      "file": "workspaces/client/apps/web/src/servers/shellTransport.test.ts",
+      "fingerprint": "2ceaedd95ba265331ac6d051df71e0f95c557562b9b2c77df9296178d76999bb:1"
+    },
+    {
+      "file": "workspaces/client/apps/web/src/servers/sidebarRpc.test.ts",
+      "fingerprint": "1507e9449002c3eb6292fc06b45c403836368727a31fee409e312a4d806aa6d9:0"
+    },
+    {
+      "file": "workspaces/client/apps/web/src/servers/sidebarRpc.test.ts",
+      "fingerprint": "a9bc3f808802a0e50667ec0c2841804856773ac46b5aad56d715ed44fa272ef3:0"
+    },
+    {
+      "file": "workspaces/client/apps/web/src/startWait.test.ts",
+      "fingerprint": "391849f6f40641a6032f6944b2068cff6c57b8bc2cdef60fd670a9f08a5fcb8b:0"
+    },
+    {
+      "file": "workspaces/client/apps/web/src/sync/client.resourceBootstrap.test.ts",
+      "fingerprint": "fd67da7ce2ad142446f48cf59739fe37769dd9933dedb49c477b060e25a92e6c:0"
+    },
+    {
+      "file": "workspaces/client/apps/web/src/sync/client.resourceBootstrap.test.ts",
+      "fingerprint": "fd67da7ce2ad142446f48cf59739fe37769dd9933dedb49c477b060e25a92e6c:1"
+    },
+    {
+      "file": "workspaces/client/apps/web/src/sync/drafts.publication.test.ts",
+      "fingerprint": "dd1d8d394612269617aceac79f1f00410d3ce10200c6ef7cd57c309815151a73:0"
+    },
+    {
+      "file": "workspaces/client/apps/web/src/sync/entityCacheStorage.test.ts",
+      "fingerprint": "bf0b6d16f3c25f33e3fd0ccd18db74085a2d5ca02d3f48067a9e0bae1aa4d696:0"
+    },
+    {
+      "file": "workspaces/client/apps/web/src/sync/entityProjectionObserver.test.ts",
+      "fingerprint": "07681657de419f1cb9016ce24b9d71325f4ec541af10e2378cd4765b855b4308:0"
+    },
+    {
+      "file": "workspaces/client/apps/web/src/sync/resourceEvents.test.ts",
+      "fingerprint": "8fb58d8c21c7b7caa4638a04e14322c27ba9c34f91b6ed97884e6ea4a8d70f39:0"
+    },
+    {
+      "file": "workspaces/client/apps/web/src/sync/subscriptions/entityData.test.ts",
+      "fingerprint": "3bb98627034015a6c9c2681586705c9458f99c21aa24865f243f728b4aea1ed1:0"
+    },
+    {
+      "file": "workspaces/client/apps/web/src/sync/subscriptions/entityData.test.ts",
+      "fingerprint": "66d3696b6262bec9da8048876505f197f95706779338c65103a72869b6ce1b00:0"
+    },
+    {
+      "file": "workspaces/client/apps/web/src/sync/subscriptions/entityData.test.ts",
+      "fingerprint": "cb5d9da164ac9fcfe6d54639c6b4c476c5b7b559d56525a76893d2cd0446128c:0"
+    },
+    {
+      "file": "workspaces/client/apps/web/src/sync/subscriptions/server.readiness.test.ts",
+      "fingerprint": "342cf73e7344b251e0e5037f18ba4e219ef8463419518f694284e6cb9766f936:0"
+    },
+    {
+      "file": "workspaces/client/apps/web/src/sync/subscriptions/server.test.ts",
+      "fingerprint": "357bddd01f01e74983563c621bc0013cfefb49c854302174df21068711f0abdb:0"
+    },
+    {
+      "file": "workspaces/client/apps/web/src/useProjectDelete.test.ts",
+      "fingerprint": "2ebfd9d24e18773172e185fca4d5ccb63c9d81261f036418544170bb7aafaa11:0"
+    },
+    {
+      "file": "workspaces/client/apps/web/src/useProjectDelete.test.ts",
+      "fingerprint": "dc87706f322cf57b84a43bd4f1cacf737238e2c2923378e614991ea687e41b6f:0"
+    },
+    {
+      "file": "workspaces/client/apps/web/tests/servers/accounts-settings-browser.spec.ts",
+      "fingerprint": "a48e126442bdd4e6ae1d327ea71ec2edac987df36c7c025c62f908087aa6c327:0"
+    },
+    {
+      "file": "workspaces/client/apps/web/tests/servers/accounts-settings-browser.spec.ts",
+      "fingerprint": "a48e126442bdd4e6ae1d327ea71ec2edac987df36c7c025c62f908087aa6c327:1"
+    },
+    {
+      "file": "workspaces/client/apps/web/tests/servers/monitor-input-store-browser.spec.ts",
+      "fingerprint": "d7e9596b2ae88cedff51d8a44caa7b3743580356d3936b02beb70b0f5304c2ef:0"
+    },
+    {
+      "file": "workspaces/client/apps/web/tests/servers/monitor-input-store-browser.spec.ts",
+      "fingerprint": "d7e9596b2ae88cedff51d8a44caa7b3743580356d3936b02beb70b0f5304c2ef:1"
+    },
+    {
+      "file": "workspaces/client/apps/web/tests/servers/monitor-input-store-browser.spec.ts",
+      "fingerprint": "d7e9596b2ae88cedff51d8a44caa7b3743580356d3936b02beb70b0f5304c2ef:2"
+    },
+    {
+      "file": "workspaces/client/apps/web/tests/servers/monitor-input-store-browser.spec.ts",
+      "fingerprint": "d7e9596b2ae88cedff51d8a44caa7b3743580356d3936b02beb70b0f5304c2ef:3"
+    },
+    {
+      "file": "workspaces/client/apps/web/tests/servers/monitor-input-store-browser.spec.ts",
+      "fingerprint": "d7e9596b2ae88cedff51d8a44caa7b3743580356d3936b02beb70b0f5304c2ef:4"
+    },
+    {
+      "file": "workspaces/client/apps/web/tests/servers/monitor-input-store-browser.spec.ts",
+      "fingerprint": "d7e9596b2ae88cedff51d8a44caa7b3743580356d3936b02beb70b0f5304c2ef:5"
+    },
+    {
+      "file": "workspaces/client/apps/web/tests/servers/monitor-input-store-browser.spec.ts",
+      "fingerprint": "d7e9596b2ae88cedff51d8a44caa7b3743580356d3936b02beb70b0f5304c2ef:6"
+    },
+    {
+      "file": "workspaces/providers/apps/claude-bridge/file-signals.test.ts",
+      "fingerprint": "d04d4e2da88a000a246881d3159c28eb4760baf7dcebcc57303be02fc3af187a:0"
+    }
+  ],
+  "ts-json-parse-cast-tsx": [
+    {
+      "file": "workspaces/client/apps/web/src/components/agents/SubagentConcurrencyControl.tsx",
+      "fingerprint": "7f0c42b913f469de5868381dde031449cda2ed2bc5253f8d125d467ff3919295:0"
+    },
+    {
+      "file": "workspaces/client/apps/web/src/components/agents/SubagentConcurrencyControl.tsx",
+      "fingerprint": "7f0c42b913f469de5868381dde031449cda2ed2bc5253f8d125d467ff3919295:1"
+    },
+    {
+      "file": "workspaces/client/apps/web/src/components/agents/SubagentConcurrencyControl.tsx",
+      "fingerprint": "d9adb403d914e20bc76d92c0479cc5f655fb3e4f60c76077c827a76ca0ebdff4:0"
+    },
+    {
+      "file": "workspaces/client/apps/web/src/components/ProjectDelete.browser.fixture.tsx",
+      "fingerprint": "157c0e43f1fbfe454daf186c9832b6e0d72691505182671193be4af37d079fd2:0"
+    },
+    {
+      "file": "workspaces/client/apps/web/src/components/shell/BackgroundTasks.tsx",
+      "fingerprint": "25eb064b5da850b90f51e8e4eec57d15a83381121d4c000c9d8b9f0f98d53026:0"
+    },
+    {
+      "file": "workspaces/client/apps/web/src/components/shell/MonitorRestart.tsx",
+      "fingerprint": "9217db42f84c8bae50a0c9b0873bf5c390d08fdcca1852450a457563e9a67409:0"
+    },
+    {
+      "file": "workspaces/client/apps/web/tests/agents/agent-phase-browser.fixture.tsx",
+      "fingerprint": "ef8faf965d18f1b26f79b093501df67122872504c3bbd84994619adfb7a00cc0:0"
+    },
+    {
+      "file": "workspaces/client/apps/web/tests/sync/disconnect-recovery-ui.fixture.tsx",
+      "fingerprint": "5c2cdce6d1582cc634a479fdbd25591cb830134392f44eff1da028c4968362ed:0"
+    },
+    {
+      "file": "workspaces/client/apps/web/tests/usage/limit-recovery-state-ui.fixture.tsx",
+      "fingerprint": "7cd349ad09a13cfda2987eee22e61ebcbb1f08a6ea9899dcad53db87feb22549:0"
+    },
+    {
+      "file": "workspaces/client/apps/web/tests/voice/realtime-voice-ux-ui.fixture.tsx",
+      "fingerprint": "4f317f62a0f189a4b83a805650d2ce3d8f6dc9e8a525855807b61107df4f7e55:0"
+    }
+  ],
+  "ts-double-cast-tsx": [
+    {
+      "file": "workspaces/client/apps/web/src/components/ConversationWarnings.stories.tsx",
+      "fingerprint": "925bba0caf98ff346b265f0abd0811b92656c45c6afb71110f8c86c3033f9cbb:0"
+    },
+    {
+      "file": "workspaces/client/apps/web/src/components/Sidebar.stories.tsx",
+      "fingerprint": "24bc5d4e643f262bda7b6beab88091674db9bdfa2d366082fe9079b294cf862f:0"
+    }
+  ],
+  "rust-serde-default-field": [
+    {
+      "file": "workspaces/client/packages/client-core/src/backend.rs",
+      "fingerprint": "96259e540b3f5f319eb30da96b6ace77a3210c3aec2fbcbe9e5a111aa6d494b0:0"
+    },
+    {
+      "file": "workspaces/runtime/apps/layr/crates/layr-model/src/probes.rs",
+      "fingerprint": "4108ab7e58dab40efa43ec4f3d93bf014f33b7abf5489689179d503500b04f32:0"
+    },
+    {
+      "file": "workspaces/runtime/apps/layr/src/probes.rs",
+      "fingerprint": "4108ab7e58dab40efa43ec4f3d93bf014f33b7abf5489689179d503500b04f32:0"
+    },
+    {
+      "file": "workspaces/runtime/packages/runtime-services/src/analytics_history_schedule.rs",
+      "fingerprint": "bf90d1ad0c428657b388ad8cf66fc858ef133cbd67f2ede04cc20de9c71f007d:0"
+    }
+  ],
+  "rust-json-value-roundtrip": [
+    {
+      "file": "workspaces/client/packages/client-core/src/draft_store.rs",
+      "fingerprint": "e996683448f1993a65a180a3509b3fcaf3f78a613df7fae36f573fc5feca9e06:0"
+    },
+    {
+      "file": "workspaces/client/packages/client-domain/src/protocol.rs",
+      "fingerprint": "632f99f99f5300ca136cf77c004d141e7214b2307bb4d5ddc836505ddb4c1923:0"
+    },
+    {
+      "file": "workspaces/runtime/apps/layr/crates/layr-model/examples/index_bench.rs",
+      "fingerprint": "7e6f74fb7ef5acdded9d3d0f18e0c756e745e11f3931e45483bcd1f8137502e5:0"
+    },
+    {
+      "file": "workspaces/runtime/apps/layr/crates/layr-model/examples/index_bench.rs",
+      "fingerprint": "f3ccf033be3a1fa0ad592e6d0f2d87e4153e7eb0292b1a561deb1a25618bb9ea:0"
+    },
+    {
+      "file": "workspaces/runtime/apps/layr/crates/layr-model/tests/index.rs",
+      "fingerprint": "20d4f95f55ccb54f49b18087f3e1eba9563f2f91bd67eba37e037c36d4046097:0"
+    },
+    {
+      "file": "workspaces/runtime/apps/layr/crates/layr-model/tests/index.rs",
+      "fingerprint": "65d574016a827c9af25fde6f4ba91b0662d08ade4bbc1d86886df36187bf2abd:0"
+    },
+    {
+      "file": "workspaces/runtime/apps/layr/crates/layr-model/tests/index.rs",
+      "fingerprint": "a4d0798b97148592378b96805da61edb32a90dd9f7d5cfaa05f810b56b0dcc7f:0"
+    },
+    {
+      "file": "workspaces/runtime/apps/layr/src/cmd/replicate.rs",
+      "fingerprint": "8c247275bc45fe986c5c87492f84d1144dc2d7dc94d61295715420a4f04c0454:0"
+    },
+    {
+      "file": "workspaces/runtime/apps/layr/src/store_remote/legacy.rs",
+      "fingerprint": "ee8a3166c521f95b254620245f53f0af152e6b397ce65422bb7008fafb7ca0a7:0"
+    },
+    {
+      "file": "workspaces/runtime/apps/layr/src/store_remote/writer.rs",
+      "fingerprint": "92b710c6e9a9fa4de762549ef5bd66146fc67b85698319c708af85c8b7aaab06:0"
+    },
+    {
+      "file": "workspaces/runtime/apps/layr/src/store_remote/writer.rs",
+      "fingerprint": "9820bb674e3934b10ec1d4902c8f67767f110cf50a9f48c36c5d0a30703aeeda:0"
+    },
+    {
+      "file": "workspaces/runtime/packages/runtime-http/src/routes/agent_management.rs",
+      "fingerprint": "3996adf15d9b3ae4148a33e47f14a9cc69f904777e4266585f558b7405ff61a5:0"
+    },
+    {
+      "file": "workspaces/runtime/packages/runtime-http/src/routes/agents_create.rs",
+      "fingerprint": "189eeef48e9c9ffdf3f515bdf2d77164141e9846d2682bba4d53b08842b10324:0"
+    },
+    {
+      "file": "workspaces/runtime/packages/runtime-http/src/routes/branches.rs",
+      "fingerprint": "0a885ea91b339a810c0c31d44c34a8d85c27a5d376503cd2ebf9d30322e58628:0"
+    },
+    {
+      "file": "workspaces/runtime/packages/runtime-http/src/routes/entity_transfer.rs",
+      "fingerprint": "0f93b4b0a7feaea6dfba8a3194eefdb7f9d9fc467072160ed6bd866ebcab38cd:0"
+    },
+    {
+      "file": "workspaces/runtime/packages/runtime-http/src/routes/entity_transfer.rs",
+      "fingerprint": "18961bb52c7b3987269dc72288e5e6db2a2770fc7becea2cceb5cc8725e37f6d:0"
+    },
+    {
+      "file": "workspaces/runtime/packages/runtime-http/src/routes/entity_transfer.rs",
+      "fingerprint": "18970af0544e735976f8099486db48d172d46a99c1bcd10befa5c95ceb593446:0"
+    },
+    {
+      "file": "workspaces/runtime/packages/runtime-http/src/routes/entity_transfer.rs",
+      "fingerprint": "8b582c2d996807fda25c32832e8c44ca3fd3dceac9f649690f959c03ed3a08f8:0"
+    },
+    {
+      "file": "workspaces/runtime/packages/runtime-http/src/routes/entity_transfer.rs",
+      "fingerprint": "ed493f88a31139567da0ed1881c63f1d75d068ba1877229bc8252bcf0a74a91e:0"
+    },
+    {
+      "file": "workspaces/runtime/packages/runtime-http/src/routes/imports.rs",
+      "fingerprint": "3f223c2d90590a080ef4f29ddb3c58c45c8656029c5a9a792bfa345b74a63fca:0"
+    },
+    {
+      "file": "workspaces/runtime/packages/runtime-http/src/routes/imports.rs",
+      "fingerprint": "a49ec0ab9068bc53888e62e17ee5a1b605ee210b824b15b3d9d6ace15873dbc0:0"
+    },
+    {
+      "file": "workspaces/runtime/packages/runtime-http/src/routes/monitor_runtime.rs",
+      "fingerprint": "357e3da59150dfb0f458182970552574cbc5cf59ed3afccde7399165bd3c408f:0"
+    },
+    {
+      "file": "workspaces/runtime/packages/runtime-http/src/routes/subscription_entities.rs",
+      "fingerprint": "007a97caf81a1167e7b4796a8c4f32c712026320ce3d1a75a76bdb3a720cb6c5:0"
+    },
+    {
+      "file": "workspaces/runtime/packages/runtime-http/src/routes/subscription_entities.rs",
+      "fingerprint": "18970af0544e735976f8099486db48d172d46a99c1bcd10befa5c95ceb593446:0"
+    },
+    {
+      "file": "workspaces/runtime/packages/runtime-http/src/routes/subscription_entities.rs",
+      "fingerprint": "18970af0544e735976f8099486db48d172d46a99c1bcd10befa5c95ceb593446:1"
+    },
+    {
+      "file": "workspaces/runtime/packages/runtime-http/src/routes/subscription_entities.rs",
+      "fingerprint": "47c9510459f3844c7a79eeb0c32469095b52991f46bdb4b6bd2c1186fb69fb28:0"
+    },
+    {
+      "file": "workspaces/runtime/packages/runtime-http/src/routes/subscription_entities.rs",
+      "fingerprint": "7719b8a61bfe3254e596af86a0daf208003ba5c81f4d0058b4e88fbaeeab7ff3:0"
+    },
+    {
+      "file": "workspaces/runtime/packages/runtime-http/src/routes/subscription_entities.rs",
+      "fingerprint": "dab33bb2f671ed47f06b1cc12d4e972829b546eea059d707349406497f2c12f2:0"
+    },
+    {
+      "file": "workspaces/runtime/packages/runtime-http/src/routes/subscription_entities.rs",
+      "fingerprint": "dbb11221947216c89fb6967e9810d29deb0aba867c3d2ebee4dcb6c992ec3b0b:0"
+    },
+    {
+      "file": "workspaces/runtime/packages/runtime-http/src/routes/subscription_entities.rs",
+      "fingerprint": "ed493f88a31139567da0ed1881c63f1d75d068ba1877229bc8252bcf0a74a91e:0"
+    },
+    {
+      "file": "workspaces/runtime/packages/runtime-http/src/routes/subscriptions.rs",
+      "fingerprint": "1c6b1ffac672445c53eb204706880e5b090048f5ae2da56bd70e249210ccf2a3:0"
+    },
+    {
+      "file": "workspaces/runtime/packages/runtime-http/src/routes/subscriptions.rs",
+      "fingerprint": "22967b561b4b9081572299c97a7b9dd9cf946eceb0ee094dca4a601f0a995e0b:0"
+    },
+    {
+      "file": "workspaces/runtime/packages/runtime-http/src/routes/subscriptions.rs",
+      "fingerprint": "22a2432fb12673d751702eaa584537efdd4c1cd737456ce8cfe0141e6486cd5c:0"
+    },
+    {
+      "file": "workspaces/runtime/packages/runtime-http/src/routes/subscriptions.rs",
+      "fingerprint": "416ca163dc6b8a87ae096a2a47fcc26abdfcb7b6bb36f17f45bb79db04573c8b:0"
+    },
+    {
+      "file": "workspaces/runtime/packages/runtime-http/src/routes/subscriptions.rs",
+      "fingerprint": "7a75564c112fe4340841913a72a6825a25e6f727be8ee7c6be2e581cb8a94bd3:0"
+    },
+    {
+      "file": "workspaces/runtime/packages/runtime-http/src/routes/subscriptions.rs",
+      "fingerprint": "baf61bf0790df564ead31a9042eca9e57bd39dd9e1d283180da376de4c8f8da7:0"
+    },
+    {
+      "file": "workspaces/runtime/packages/runtime-http/src/routes/subscriptions.rs",
+      "fingerprint": "cbd282595bc8a1f828a3aeaa709fea7e999ffe4f1837ffadf56aa6fd0f0f1358:0"
+    },
+    {
+      "file": "workspaces/runtime/packages/runtime-http/src/routes/sync_stream.rs",
+      "fingerprint": "05bb0624515a1ca851e08d41bac2f84f501a7365c625bad088d13cfe50c7de2e:0"
+    },
+    {
+      "file": "workspaces/runtime/packages/runtime-http/src/routes/sync_stream.rs",
+      "fingerprint": "07983af70cb55a5265148a5bbf740f6e50ca5b1edbb20f5494a593e38d49eb8a:0"
+    },
+    {
+      "file": "workspaces/runtime/packages/runtime-http/src/routes/sync_stream.rs",
+      "fingerprint": "154ba05f3c1a7f60018d71c457bb33859b74733fa3b8ae0c5e4f5ab69b9d4645:0"
+    },
+    {
+      "file": "workspaces/runtime/packages/runtime-http/src/routes/sync_stream.rs",
+      "fingerprint": "3832d3f3aa8c3d63a33802222132418c7b0f2e8dd03c5f90a0658e809de9a3fc:0"
+    },
+    {
+      "file": "workspaces/runtime/packages/runtime-http/src/routes/sync_stream.rs",
+      "fingerprint": "415fcd9645461c9de64120f4bcc0f7403cc93ebba7b91d82c0e06ebb31431615:0"
+    },
+    {
+      "file": "workspaces/runtime/packages/runtime-http/src/routes/sync_stream.rs",
+      "fingerprint": "479484212283c62fdddc769e49600f159df70def4234b22917ca36fdae3df58a:0"
+    },
+    {
+      "file": "workspaces/runtime/packages/runtime-http/src/routes/sync_stream.rs",
+      "fingerprint": "8ec747c1b9d78087ebd5915e8d76a343fa4bb3e688948615060ac9e49977c7e3:0"
+    },
+    {
+      "file": "workspaces/runtime/packages/runtime-http/src/routes/sync_stream.rs",
+      "fingerprint": "cb9d3e9173f0e5b07511546362b1c7a61265b2749edb2f957b5981fe41af64ba:0"
+    },
+    {
+      "file": "workspaces/runtime/packages/runtime-http/src/routes/transcript.rs",
+      "fingerprint": "de3cb5cbcab51771edd386e4bbfb266126cdfe4dd79fb2b70c9344c697da76ee:0"
+    },
+    {
+      "file": "workspaces/runtime/packages/runtime-process/src/supervisor_daemon.rs",
+      "fingerprint": "11993d625d54c901ff1d43f847de5d071ee96539ec2bc5d568f52e9a425d0f18:0"
+    },
+    {
+      "file": "workspaces/runtime/packages/runtime-process/src/tests.rs",
+      "fingerprint": "862ea0b59a328e22bef8cae76b79e1cab18c5c8ca647e3ef28e15726dc09f424:0"
+    },
+    {
+      "file": "workspaces/runtime/packages/runtime-process/src/tests.rs",
+      "fingerprint": "c561134022751e5032b017f28ce8ce13cf637826a234d7119c8baab02fb0a488:0"
+    },
+    {
+      "file": "workspaces/runtime/packages/runtime-schema/src/agent_progress.rs",
+      "fingerprint": "4c871f573b738f817ade56bd8115d910a159b9cabc8249342270fe5cc1f1be2f:0"
+    },
+    {
+      "file": "workspaces/runtime/packages/runtime-schema/src/agent_progress.rs",
+      "fingerprint": "64f0d0bfb24bac180230fa8d9427646c83e00bdf79e544f85044f96fe05db91c:0"
+    },
+    {
+      "file": "workspaces/runtime/packages/runtime-schema/src/complaints.rs",
+      "fingerprint": "0f89f9483053f6b324fcaf680ef12f2dcf5eb4b0280839063cdd7f3e290207b4:0"
+    },
+    {
+      "file": "workspaces/runtime/packages/runtime-schema/src/delivery.rs",
+      "fingerprint": "6129696418e74db267f86bfbb0b228525d3dab6e73a12c2677a67d4c08ec3b00:0"
+    },
+    {
+      "file": "workspaces/runtime/packages/runtime-schema/src/delivery.rs",
+      "fingerprint": "f318a86fa6dae57aa82045bfe3164353db0103dec6a772b152f8cd5ac4cd39b1:0"
+    },
+    {
+      "file": "workspaces/runtime/packages/runtime-schema/src/usage/ledger.rs",
+      "fingerprint": "f4d4e4cc700685feef0a8ebb8c52251dfca9f90ebaddcd6e2e8496e8e2b6675d:0"
+    },
+    {
+      "file": "workspaces/runtime/packages/runtime-schema/src/usage/ledger.rs",
+      "fingerprint": "f4d4e4cc700685feef0a8ebb8c52251dfca9f90ebaddcd6e2e8496e8e2b6675d:1"
+    },
+    {
+      "file": "workspaces/runtime/packages/runtime-services/src/account_transfer_driver.rs",
+      "fingerprint": "b4ec202ac73b7649908f3d4ee6cc4958646ebd983cc20ff75d851c26c9614bb7:0"
+    },
+    {
+      "file": "workspaces/runtime/packages/runtime-services/src/account_worker/preparation/compaction_tests.rs",
+      "fingerprint": "2cf4a7835cf163e4169a01b97801af6f4599556c7ddbb117ca32d7e44eec3cea:0"
+    },
+    {
+      "file": "workspaces/runtime/packages/runtime-services/src/account_worker/preparation/compaction_tests.rs",
+      "fingerprint": "b2304f48b06d17120d64cc41bf927f8f28ceb035fe4bf6ee19a7f31bde6988f3:0"
+    },
+    {
+      "file": "workspaces/runtime/packages/runtime-services/src/account_worker/preparation/compaction_tests.rs",
+      "fingerprint": "e028a2a30af01719efbe540fbebd0fbeef55b038e0752950c36aca70f734f3c9:0"
+    },
+    {
+      "file": "workspaces/runtime/packages/runtime-services/src/account_worker/retained/storage.rs",
+      "fingerprint": "81fe464894ee2aa0a65a863997f4cd397e079dc3c218d5aeb154ab9badb027b5:0"
+    },
+    {
+      "file": "workspaces/runtime/packages/runtime-services/src/account_worker/tests/native_requests.rs",
+      "fingerprint": "ef9b2e9bf0ff1cde241496302aa718d5b64eddc83f8e6ad0d7f61f693dd621be:0"
+    },
+    {
+      "file": "workspaces/runtime/packages/runtime-services/src/account_worker/tests/retained.rs",
+      "fingerprint": "a2e7835bb55b044b28104f13a1960ec5be09299d8c5a44f1bc1ca6c4419d2dce:0"
+    },
+    {
+      "file": "workspaces/runtime/packages/runtime-services/src/account_worker/tests/retained.rs",
+      "fingerprint": "f2a14a0b13ca3d1a7723c86db2abec1d0b0910568c2ff12ae0cc4d3d5387c1f2:0"
+    },
+    {
+      "file": "workspaces/runtime/packages/runtime-services/src/agent_progress.rs",
+      "fingerprint": "ae30a1b9effc337d8564d0a1880b51e8791069f2e61fd8f200554d55f13e72ed:0"
+    },
+    {
+      "file": "workspaces/runtime/packages/runtime-services/src/coordination.rs",
+      "fingerprint": "e46ba3f5da274c0714e9819ee3723b2543277743db3418a216260677e80225f7:0"
+    },
+    {
+      "file": "workspaces/runtime/packages/runtime-services/src/layr_read.rs",
+      "fingerprint": "d72c615b6dd4784e8434417f275c0804b8ce2d7ffe82a762b0750cd4b8d9e73f:0"
+    },
+    {
+      "file": "workspaces/runtime/packages/runtime-services/src/managed_host_tools.rs",
+      "fingerprint": "cf14cfb5a945a36d1af7301ab53d9f7764e3ea1d1fcf05e687640a1d674630e8:0"
+    },
+    {
+      "file": "workspaces/runtime/packages/runtime-services/src/notification_dispatch.rs",
+      "fingerprint": "8da05beba2d72828d5c00814aed197755d910aa49a376765f72f1fb7664b71d7:0"
+    },
+    {
+      "file": "workspaces/runtime/packages/runtime-services/src/notification_dispatch/stream.rs",
+      "fingerprint": "6ae8bc7dfe70e9e6d05ef793d2c60d22fae942dc29dd112eb9d1321ab6268a80:0"
+    },
+    {
+      "file": "workspaces/runtime/packages/runtime-services/src/notification_dispatch/stream.rs",
+      "fingerprint": "6ae8bc7dfe70e9e6d05ef793d2c60d22fae942dc29dd112eb9d1321ab6268a80:1"
+    },
+    {
+      "file": "workspaces/runtime/packages/runtime-services/src/notification_dispatch/stream.rs",
+      "fingerprint": "794e48a8ba5e20a979d418be73f66bc913d6433b1940e31d4684021f7e246947:0"
+    },
+    {
+      "file": "workspaces/runtime/packages/runtime-services/src/provider_callbacks/tools.rs",
+      "fingerprint": "3452d37068408bf7a09bbc8d0fe2f62a5aeef63d66447d8d4028334cdffb6c58:0"
+    },
+    {
+      "file": "workspaces/runtime/packages/runtime-services/src/submit_gates.rs",
+      "fingerprint": "459ff80c51d9a9680285e82d6c104bbe88b6f0a384efda13a73844b12742b6b4:0"
+    },
+    {
+      "file": "workspaces/runtime/packages/runtime-services/src/token_rate.rs",
+      "fingerprint": "96a8570272a266fe4d71660fc1eec206f9956ca53c8a538c502baf7a38dbfc41:0"
+    },
+    {
+      "file": "workspaces/runtime/packages/runtime-services/src/turn_prepare/budget_tests.rs",
+      "fingerprint": "a5ca0f54fa95b87a5abd4a5b83b64cfb54b11ce757793481eb374f5e52ae0d8e:0"
+    },
+    {
+      "file": "workspaces/runtime/packages/runtime-services/src/vm_attachments.rs",
+      "fingerprint": "01f27b10b8ef5e93e647ca29fd505cce51d1ec51645a0d03bee9639fba4c3120:0"
+    },
+    {
+      "file": "workspaces/runtime/packages/runtime-services/src/vm_attachments.rs",
+      "fingerprint": "17bddd3fbec98b920c5403c5f59fe685493385466098b15d32b3b9da1ac22e9d:0"
+    },
+    {
+      "file": "workspaces/runtime/packages/runtime-services/tests/claude_controls_actor.rs",
+      "fingerprint": "21cdb2a22b894db5c4bdcc87cf98d91671687fbb83efba5a4f6790cabec605eb:0"
+    },
+    {
+      "file": "workspaces/runtime/packages/runtime-services/tests/claude_controls_actor.rs",
+      "fingerprint": "4afcf36c1d6001fe61f1aa3a0efa07ec1a55d244e160b6c094afd45e6d71e202:0"
+    },
+    {
+      "file": "workspaces/runtime/packages/runtime-services/tests/claude_controls_actor.rs",
+      "fingerprint": "58c2e806e45edcd3cc97acaf57adc7bdf5c1990ee0ed31494dd2d0fe7cbb4305:0"
+    },
+    {
+      "file": "workspaces/runtime/packages/runtime-services/tests/claude_controls_actor.rs",
+      "fingerprint": "71ed83cf0bacd5c727bd62613677c1ae4ac1da7b18e30f354aa13e163539a3c7:0"
+    },
+    {
+      "file": "workspaces/runtime/packages/runtime-services/tests/claude_controls_actor.rs",
+      "fingerprint": "a08baebb6f0f4c9da38a99969ed4d684dc83c277524513dd3185a3df2fea4724:0"
+    },
+    {
+      "file": "workspaces/runtime/packages/runtime-services/tests/claude_controls_actor.rs",
+      "fingerprint": "a2e7835bb55b044b28104f13a1960ec5be09299d8c5a44f1bc1ca6c4419d2dce:0"
+    },
+    {
+      "file": "workspaces/runtime/packages/runtime-services/tests/claude_controls_actor.rs",
+      "fingerprint": "c613132b522b78ef4da4351122c277e802d4109a0b4fc510966e159fa5504bf9:0"
+    },
+    {
+      "file": "workspaces/runtime/packages/runtime-services/tests/claude_controls_actor.rs",
+      "fingerprint": "f2a14a0b13ca3d1a7723c86db2abec1d0b0910568c2ff12ae0cc4d3d5387c1f2:0"
+    },
+    {
+      "file": "workspaces/runtime/packages/runtime-services/tests/provider_callbacks.rs",
+      "fingerprint": "5b73608c52988d422e28ee8b22fb9302735380f0548cebc37fbb9738a10eb74d:0"
+    },
+    {
+      "file": "workspaces/runtime/packages/runtime-services/tests/provider_callbacks.rs",
+      "fingerprint": "87f62bc250927b043a72280721d2451a9fb6e3f6aed60a57f9fc9be0676fa495:0"
+    },
+    {
+      "file": "workspaces/runtime/packages/runtime-services/tests/thread_prepare_corpus.rs",
+      "fingerprint": "10496339ac954c86270b5c9355a14e02675a82c4f589d91ac6055128c0c4852f:0"
+    },
+    {
+      "file": "workspaces/runtime/packages/runtime-services/tests/turn_prepare_corpus.rs",
+      "fingerprint": "77e8b9e7b4c22473edac9a16490d94be4c7244a158d0405b5fc79ac551fc7736:0"
+    },
+    {
+      "file": "workspaces/runtime/packages/runtime-services/tests/wave7_p08_submission.rs",
+      "fingerprint": "5d3071be2b711d03626a1dcd2ebf142712de2ddb848e793c4e2f757513d4e9ee:0"
+    },
+    {
+      "file": "workspaces/runtime/packages/runtime-services/tests/workspace_ready/decisions.rs",
+      "fingerprint": "ad06ecde1d8a4a3aa42b620dd69e6c1055c599aa4e2e0dd4d5253403d6d3b22c:0"
+    },
+    {
+      "file": "workspaces/runtime/packages/runtime-services/tests/workspace_ready/decisions.rs",
+      "fingerprint": "f7837a1a8370bfc25d1b3b10f3ecbd821d474c258d502104dd609d2d27755912:0"
+    },
+    {
+      "file": "workspaces/runtime/packages/runtime-store/tests/schema_compat.rs",
+      "fingerprint": "b1da955ee0003e853b429c698e24ee317a9291ea01148d5e68ebb387ac373423:0"
+    }
+  ],
+  "rust-json-dispatch": [
+    {
+      "file": "workspaces/runtime/packages/runtime-services/src/multi_server.rs",
+      "fingerprint": "1c4d758b9bd9fcfceae3212230a564e2b45f3f6e04aadf5a006afc54d0bc7250:0"
+    },
+    {
+      "file": "workspaces/runtime/packages/runtime-services/src/multi_server.rs",
+      "fingerprint": "2777bfa57ef26c386ab69cd571e66b5f4e7b3c34227432c5ebe91baac3579e11:0"
+    },
+    {
+      "file": "workspaces/runtime/packages/runtime-services/src/multi_server.rs",
+      "fingerprint": "8748a083474924d49a0d2a482645e17541d97a86458b2db14e292644549a7fe6:0"
+    },
+    {
+      "file": "workspaces/runtime/packages/runtime-services/src/multi_server.rs",
+      "fingerprint": "8748a083474924d49a0d2a482645e17541d97a86458b2db14e292644549a7fe6:1"
+    },
+    {
+      "file": "workspaces/runtime/packages/runtime-services/src/multi_server.rs",
+      "fingerprint": "983734895f5842d88b4927d904d74356a8451972a088767c0b78c9fb74751481:0"
+    },
+    {
+      "file": "workspaces/runtime/packages/runtime-services/src/multi_server.rs",
+      "fingerprint": "ed390076af1c67b8fe5d2f95e2ebb5f0375d0bc72b4c13dd82648bb2c289abf8:0"
+    },
+    {
+      "file": "workspaces/runtime/packages/runtime-services/src/multi_server.rs",
+      "fingerprint": "ed390076af1c67b8fe5d2f95e2ebb5f0375d0bc72b4c13dd82648bb2c289abf8:1"
+    }
+  ],
+  "rust-json-string-roundtrip": [],
+  "ts-as-any-tsx": [],
+  "ts-as-any": []
+}

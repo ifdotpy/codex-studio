@@ -8,6 +8,7 @@ overrides:
   "typed-rest-client>qs": 6.16.1
 
 allowBuilds:
+  "@ast-grep/cli": true
   esbuild: true
   playwright: true
 

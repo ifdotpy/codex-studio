@@ -1,0 +1,6 @@
+id: ts-as-any
+language: TypeScript
+message: Narrow unknown through the owning contract instead of casting to any.
+severity: warning
+rule:
+  pattern: $X as any

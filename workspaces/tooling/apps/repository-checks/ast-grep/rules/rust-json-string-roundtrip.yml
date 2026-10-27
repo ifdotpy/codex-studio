@@ -1,0 +1,8 @@
+id: rust-json-string-roundtrip
+language: Rust
+message: Pass the owned value directly instead of serializing and parsing JSON.
+severity: warning
+rule:
+  any:
+    - pattern: serde_json::from_str(&serde_json::to_string($$$ARGS)?)
+    - pattern: serde_json::from_str(&serde_json::to_string($$$ARGS).unwrap())

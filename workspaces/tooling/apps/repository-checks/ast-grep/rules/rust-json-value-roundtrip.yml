@@ -1,0 +1,10 @@
+id: rust-json-value-roundtrip
+language: Rust
+message: Construct the owned value directly instead of serializing and deserializing JSON.
+severity: warning
+rule:
+  any:
+    - pattern: serde_json::from_value(json!($$$ARGS))
+    - pattern: serde_json::from_value(serde_json::json!($$$ARGS))
+    - pattern: serde_json::from_value(serde_json::to_value($$$ARGS)?)
+    - pattern: serde_json::from_value(serde_json::to_value($$$ARGS).unwrap())
