@@ -1,3 +1,4 @@
+import { StudioErrorLevel } from "../generated/api";
 import { AgentSource, StudioErrorEffectCertainty } from "../generated/api";
 import { required } from "../components/componentTestFixtures.ts";
 import assert from "node:assert/strict";
@@ -201,6 +202,7 @@ describe("complete multi-server sidebar projection", () => {
       {
         id: "event:local",
         kind: "input_uncertain",
+        level: StudioErrorLevel.error,
         diagnostics: {
           context: { source: "input", turnId: null, epoch: 0 },
           certainty: StudioErrorEffectCertainty.unknown,
