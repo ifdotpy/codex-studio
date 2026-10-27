@@ -31,8 +31,8 @@ pub(super) const RETRY: Duration = Duration::from_millis(20);
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct ProcStat {
     pub(crate) state: char,
-    pub(crate) process_group: u32,
-    pub(crate) session: u32,
+    pub(crate) process_group: i32,
+    pub(crate) session: i32,
     pub(crate) start_ticks: u64,
 }
 
@@ -68,6 +68,23 @@ impl ProcStat {
             session,
             start_ticks,
         })
+    }
+
+    pub(crate) fn is_terminal(self) -> bool {
+        matches!(self.state, 'Z' | 'X')
+    }
+
+    /// Terminal rows may retain the kernel's unavailable (-1) group IDs.
+    /// Live rows must still provide unsigned IDs before a scan can use them.
+    pub(crate) fn live_group_ids(self) -> Result<Option<(u32, u32)>> {
+        if self.is_terminal() {
+            return Ok(None);
+        }
+        let group = u32::try_from(self.process_group)
+            .map_err(|_| Error::Refused("Cannot verify process identity"))?;
+        let session = u32::try_from(self.session)
+            .map_err(|_| Error::Refused("Cannot verify process identity"))?;
+        Ok(Some((group, session)))
     }
 
     pub(crate) fn start_identity(self, boot_id: &str) -> String {
@@ -155,7 +172,7 @@ pub(crate) fn start_time(pid: u32, allow_zombie: bool) -> Result<Option<String>>
         Err(e) => return Err(e.into()),
     };
     let stat = ProcStat::parse(&stat)?;
-    if !allow_zombie && stat.state == 'Z' {
+    if stat.live_group_ids()?.is_none() && !allow_zombie {
         return Ok(None);
     }
     Ok(Some(stat.start_identity(&boot_id()?)))
@@ -274,6 +291,10 @@ impl GroupScope {
 /// A failed enumeration cannot prove an empty group or completed teardown.
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 pub(crate) fn capture_groups(scope: GroupScope) -> Result<Vec<VerifiedProcessGroup>> {
+    let scope_id = match scope {
+        GroupScope::Group(id) | GroupScope::Session(id) => id,
+    };
+    let _scope_pid = native_pid(scope_id)?;
     let mut groups = std::collections::BTreeMap::<(u32, u32), Vec<GroupMember>>::new();
     let boot = boot_id()?;
     #[cfg(target_os = "linux")]
@@ -292,9 +313,15 @@ pub(crate) fn capture_groups(scope: GroupScope) -> Result<Vec<VerifiedProcessGro
             Err(error) => return Err(error.into()),
         };
         let stat = ProcStat::parse(&raw)?;
-        if stat.state != 'Z' && scope.includes(stat.process_group, stat.session) {
+        let Some((group, session)) = stat.live_group_ids()? else {
+            continue;
+        };
+        if scope.includes(group, session) {
+            if group == 0 || session == 0 {
+                return Err(Error::Refused("Invalid process group identity"));
+            }
             groups
-                .entry((stat.process_group, stat.session))
+                .entry((group, session))
                 .or_default()
                 .push(GroupMember {
                     pid,
@@ -560,6 +587,73 @@ mod tests {
         assert_eq!(stat.session, 33);
         assert_eq!(stat.start_ticks, 1234);
         assert_eq!(stat.start_identity("boot-id"), "linux:boot-id:1234");
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn terminal_proc_stat_with_kernel_unavailable_group_ids_can_be_classified() {
+        // do_task_stat leaves PGID/SID at -1 when exit has released sighand.
+        // A group scan must classify these terminal rows before requiring live IDs.
+        for state in ["Z", "X"] {
+            let mut fields = vec!["1"; 20];
+            fields[0] = state;
+            fields[2] = "-1";
+            fields[3] = "-1";
+            fields[19] = "1234";
+            let raw = format!("42 (exited) {}", fields.join(" "));
+            let stat = ProcStat::parse(&raw).expect("valid terminal kernel record");
+            assert_eq!(stat.state.to_string(), state);
+            assert_eq!(stat.process_group, -1);
+            assert_eq!(stat.session, -1);
+            assert!(stat.is_terminal());
+            assert_eq!(
+                stat.live_group_ids().expect("terminal classification"),
+                None
+            );
+            assert_eq!(stat.start_identity("boot-id"), "linux:boot-id:1234");
+        }
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn live_proc_stat_unavailable_ids_cannot_supply_group_ownership() {
+        for state in ["R", "S", "?"] {
+            for (group, session) in [("-1", "33"), ("22", "-1"), ("-1", "-1")] {
+                let mut fields = vec!["1"; 20];
+                fields[0] = state;
+                fields[2] = group;
+                fields[3] = session;
+                let raw = format!("42 (live) {}", fields.join(" "));
+                let stat = ProcStat::parse(&raw).expect("signed kernel fields");
+                assert!(!stat.is_terminal());
+                assert!(stat.live_group_ids().is_err());
+            }
+        }
+        assert!(capture_groups(GroupScope::Group(0)).is_err());
+        assert!(capture_groups(GroupScope::Session(0)).is_err());
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn terminal_leader_keeps_exact_start_anchor_without_live_identity() {
+        use rustix::process::{WaitId, WaitIdOptions, waitid};
+        let mut child = Command::new("/bin/sh")
+            .args(["-c", "exit 0"])
+            .spawn()
+            .expect("owned fixture");
+        let pid = child.id();
+        let anchor = start_time(pid, true).expect("captured native start");
+        waitid(
+            WaitId::Pid(native_pid(pid).expect("fixture pid")),
+            WaitIdOptions::EXITED | WaitIdOptions::NOWAIT,
+        )
+        .expect("fixture exited without reaping");
+        let retained = start_time(pid, true).expect("terminal anchor");
+        let live = start_time(pid, false).expect("live identity");
+        child.wait().expect("reap owned fixture");
+        assert!(anchor.is_some());
+        assert_eq!(retained, anchor);
+        assert_eq!(live, None);
     }
 
     #[test]

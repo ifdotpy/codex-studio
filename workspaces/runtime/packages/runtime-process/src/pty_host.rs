@@ -555,14 +555,15 @@ fn process_identity(pid: i32) -> Option<PtyIdentity> {
     let pid = u32::try_from(pid).ok()?;
     let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
     let stat = ProcStat::parse(&stat).ok()?;
-    if stat.state == 'Z' {
+    let (process_group, session) = stat.live_group_ids().ok()??;
+    if process_group == 0 || session == 0 {
         return None;
     }
     let boot_id = boot_id().ok()?;
     Some(PtyIdentity {
         pid,
-        process_group: stat.process_group,
-        session: stat.session,
+        process_group,
+        session,
         start_time_ticks: stat.start_ticks,
         boot_id,
     })
