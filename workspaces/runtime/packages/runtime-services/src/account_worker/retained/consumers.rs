@@ -86,7 +86,17 @@ impl ClaudeSessionPort for ClaudePort {
                     restore_files: true,
                     ..
                 } => Some((request_id.as_str().to_owned(), turn_id.as_str().to_owned())),
-                _ => None,
+                ControlInvocation::State { .. }
+                | ControlInvocation::Queue { .. }
+                | ControlInvocation::RepairReport { .. }
+                | ControlInvocation::Commands { .. }
+                | ControlInvocation::Settings { .. }
+                | ControlInvocation::Rollback {
+                    restore_files: false,
+                    ..
+                }
+                | ControlInvocation::StopTask { .. }
+                | ControlInvocation::FileBackups { .. } => None,
             };
             let restoring_files = rewind.is_some();
             let timeout_seconds = if restoring_files {

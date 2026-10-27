@@ -428,7 +428,13 @@ impl Controls {
                     .await?
                 {
                     ControlReply::State(state) => state,
-                    _ => return Err(ControlError::Unknown),
+                    ControlReply::Queue(_)
+                    | ControlReply::RepairReport(_)
+                    | ControlReply::Commands(_)
+                    | ControlReply::Settings(_)
+                    | ControlReply::Rollback(_)
+                    | ControlReply::StopTask(_)
+                    | ControlReply::FileBackups(_) => return Err(ControlError::Unknown),
                 };
                 let queue = if matches!(request, ControlRequest::Rollback { .. }) {
                     Some(
@@ -444,7 +450,13 @@ impl Controls {
                             .await?
                         {
                             ControlReply::Queue(queue) => queue,
-                            _ => return Err(ControlError::Unknown),
+                            ControlReply::State(_)
+                            | ControlReply::RepairReport(_)
+                            | ControlReply::Commands(_)
+                            | ControlReply::Settings(_)
+                            | ControlReply::Rollback(_)
+                            | ControlReply::StopTask(_)
+                            | ControlReply::FileBackups(_) => return Err(ControlError::Unknown),
                         },
                     )
                 } else {
@@ -637,7 +649,13 @@ impl Controls {
                         ControlReply::State(state) => {
                             serde_json::to_value(state).map_err(|_| ControlError::Unknown)?
                         }
-                        _ => return Err(ControlError::Unknown),
+                        ControlReply::Queue(_)
+                        | ControlReply::RepairReport(_)
+                        | ControlReply::Commands(_)
+                        | ControlReply::Settings(_)
+                        | ControlReply::Rollback(_)
+                        | ControlReply::StopTask(_)
+                        | ControlReply::FileBackups(_) => return Err(ControlError::Unknown),
                     }
                 } else {
                     json!({"settings":agent.get("claudeOptions").cloned().unwrap_or(json!({})),"turns":[],"tasks":[]})
@@ -663,7 +681,13 @@ impl Controls {
                     .await?
                 {
                     ControlReply::Commands(result) => Ok(result),
-                    _ => Err(ControlError::Unknown),
+                    ControlReply::State(_)
+                    | ControlReply::Queue(_)
+                    | ControlReply::RepairReport(_)
+                    | ControlReply::Settings(_)
+                    | ControlReply::Rollback(_)
+                    | ControlReply::StopTask(_)
+                    | ControlReply::FileBackups(_) => Err(ControlError::Unknown),
                 }
             }
             Some("stop_task") => {
@@ -696,7 +720,13 @@ impl Controls {
                     .await?
                 {
                     ControlReply::StopTask(result) => Ok(result),
-                    _ => Err(ControlError::Unknown),
+                    ControlReply::State(_)
+                    | ControlReply::Queue(_)
+                    | ControlReply::RepairReport(_)
+                    | ControlReply::Commands(_)
+                    | ControlReply::Settings(_)
+                    | ControlReply::Rollback(_)
+                    | ControlReply::FileBackups(_) => Err(ControlError::Unknown),
                 }
             }
             _ => Err(ControlError::Request),
