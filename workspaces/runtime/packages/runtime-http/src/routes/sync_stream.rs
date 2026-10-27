@@ -304,8 +304,8 @@ async fn sync_stream(
     };
     let view = match state
         .resource_notifications
-        .changes_since_with_incremental_content(&resources, None, |resource, previous| {
-            incremental_resource_content(state.clone(), resource, previous)
+        .changes_since_with_content(&resources, None, |resource| {
+            resource_content(state.clone(), resource)
         })
         .await
     {
@@ -479,23 +479,6 @@ async fn sync_stream(
 /// local-cost scanners, terminal processes, or projection maintenance writes.
 async fn resource_content(state: HttpState, resource: Value) -> Option<Vec<u8>> {
     super::subscriptions::resource_content(state, resource).await
-}
-
-async fn incremental_resource_content(
-    state: HttpState,
-    resource: Value,
-    previous: Option<studio_runtime_services::resource_notify::EntityContentFingerprint>,
-) -> Option<studio_runtime_services::resource_notify::ContentProjection> {
-    use studio_runtime_services::resource_notify::ContentProjection;
-    let reference: crate::generated::ResourceRef = serde_json::from_value(resource.clone()).ok()?;
-    if super::entity_transfer::owns(&reference) {
-        return super::subscription_entities::incremental_fingerprint(state, reference, previous)
-            .await
-            .map(ContentProjection::Entity);
-    }
-    resource_content(state, resource)
-        .await
-        .map(ContentProjection::Bytes)
 }
 
 /// Only sessions with a live readiness selector own a filesystem source. Dropping
@@ -686,10 +669,11 @@ async fn attach_initial_entries(
     since: &BTreeMap<String, SubscriptionCursor>,
 ) -> Result<(), ApiError> {
     for (resource, entry) in event.resources.iter().zip(&mut event.resource_versions) {
-        let value = serde_json::to_value(resource).map_err(|_| ApiError::internal())?;
         if entity_transfer::owns(resource) {
+            // Scoped transfer delivery owns the baseline read and durable cursor.
             continue;
         }
+        let value = serde_json::to_value(resource).map_err(|_| ApiError::internal())?;
         let cursor = since.get(&value.to_string()).cloned();
         let mut initial =
             super::subscriptions::initial_snapshot(state.clone(), resource.clone(), cursor).await?;
@@ -1242,8 +1226,8 @@ async fn subscription_frame(state: &mut ResourceStream, update: SubscriptionChan
         let http_state = state.http_state.as_ref()?;
         let view = state
             .notifications
-            .changes_since_with_incremental_content(&update.added, None, |resource, previous| {
-                incremental_resource_content(http_state.clone(), resource, previous)
+            .changes_since_with_content(&update.added, None, |resource| {
+                resource_content(http_state.clone(), resource)
             })
             .await
             .ok()?;
@@ -1400,24 +1384,17 @@ async fn next_frame(
                 _ = state.heartbeat.tick() => true,
             }
         };
-        let mut view =
-            match state
-                .notifications
-                .changes_since_with_incremental_content(
-                    &state.resources,
-                    Some(state.last_revision),
-                    |resource, previous| {
-                        let http_state = state.http_state.clone();
-                        async move {
-                            incremental_resource_content(http_state?, resource, previous).await
-                        }
-                    },
-                )
-                .await
-            {
-                Ok(view) if !view.cursor.closed => view,
-                _ => return None,
-            };
+        let mut view = match state
+            .notifications
+            .changes_since_with_content(&state.resources, Some(state.last_revision), |resource| {
+                let http_state = state.http_state.clone();
+                async move { resource_content(http_state?, resource).await }
+            })
+            .await
+        {
+            Ok(view) if !view.cursor.closed => view,
+            _ => return None,
+        };
         state.last_revision = view.cursor.revision;
         state.next_resources_frame_at = Some(Instant::now() + SYNC_FRAME_MIN_INTERVAL);
         if !view.resources.is_empty() {
@@ -5315,8 +5292,8 @@ mod tests {
         http.account_session = Some(port.clone());
         let resources = vec![json!({"kind":"limits","accountKey":"default"})];
         notifications
-            .changes_since_with_incremental_content(&resources, None, |resource, previous| {
-                incremental_resource_content(http.clone(), resource, previous)
+            .changes_since_with_content(&resources, None, |resource| {
+                resource_content(http.clone(), resource)
             })
             .await
             .expect("baseline");
@@ -5412,12 +5389,10 @@ mod tests {
             let http = http.clone();
             tokio::spawn(async move {
                 notifications
-                    .changes_since_with_incremental_content(
+                    .changes_since_with_content(
                         &[json!({"kind":"processes","agentId":"owner"})],
                         None,
-                        |resource, previous| {
-                            incremental_resource_content(http.clone(), resource, previous)
-                        },
+                        |resource| resource_content(http.clone(), resource),
                     )
                     .await
             })

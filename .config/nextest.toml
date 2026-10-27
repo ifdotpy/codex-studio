@@ -86,12 +86,12 @@ default-filter = '''
     (package(=studio-runtime-services) & kind(lib) & (test(analytics_requests_reuse_the_store_reader_connection) | test(profile_invalidation_forces_one_full_discovery_scan) | test(usage_reconciliation_prefers_final_recorded_response_to_later_legacy_rows))) |
     (package(=studio-runtime-services) & kind(lib) & (test(complaint_names_preserve_missing_and_null) | test(snapshot_rechecks_unprojected_and_volatile_agent_fields) | test(message_send_agent_rows_are_bounded) | test(message_send_does_not_scan_agent_directory) | test(message_ignores_unrelated_invalid_agent) | test(message_ignores_unrelated_invalid_project) | test(message_ignores_invalid_parent_project_outside_sender_cwd) | test(message_delivers_between_user_grouped_leads) | test(message_refuses_unknown_foreign_and_deleted_targets) | test(same_team_target_is_resolved_before_message_validation_without_project_reads))) |
     (package(=studio-runtime-store) & kind(lib) & test(message_records_use_both_indexes_and_keep_row_order)) |
-    (package(=studio-runtime-store) & kind(lib) & test(scoped_fingerprint_ignores_offscreen_rows_and_tracks_moves_and_deletions)) |
+    (package(=studio-runtime-store) & kind(lib) & test(resume_entities_seq_cursor_reads_only_changed_collection_rows)) |
     (package(=studio-runtime-store) & kind(lib) & (test(scoped_page_reads_only_its_collection_and_id) | test(pull_page_without_priority_stops_at_limit))) |
-    (package(=studio-runtime-store) & kind(test) & binary(=integration) & test(open_recreates_entity_scope_indexes_on_existing_state)) |
-    (package(=studio-runtime-http) & kind(lib) & test(incremental_fingerprint_handles_offscreen_moves_and_deletion)) |
+    (package(=studio-runtime-store) & kind(test) & binary(=integration) & test(open_removes_retired_entity_scope_fingerprint_indexes)) |
+    (package(=studio-runtime-http) & kind(lib) & test(typed_entity_selectors_match_every_openapi_scope)) |
     (package(=studio-runtime-http) & kind(lib) & (test(unchanged_resource_evaluations_are_paced) | test(gated_process_provider_does_not_block_another_stream))) |
-    (package(=studio-runtime-services) & kind(lib) & (test(unrelated_content_reads_do_not_wait_for_a_projection) | test(older_projection_cannot_overwrite_a_newer_revision) | test(incremental_projection_receives_the_previous_entity_snapshot))) |
+    (package(=studio-runtime-services) & kind(lib) & (test(unrelated_content_reads_do_not_wait_for_a_projection) | test(older_projection_cannot_overwrite_a_newer_revision) | test(entity_candidates_bypass_content_reads_for_seq_cursor_delivery))) |
     (package(=studio-runtime-http) & kind(lib) & test(/^bounded_entities::tests::desktop_source_projects_legacy_native_rotation_without_mutating_status$/)) |
     (package(=studio-runtime-server) & kind(lib) & test(/^provider_ports::tests::supervisor_health_(accepts_current_protocol_and_preserves_exact_handles|rejects_incompatible_or_degraded_status)$/)) |
     (package(=studio-runtime-services) & kind(test) & binary(=integration) & test(/^claude_controls_actor::mcp_auto_background_accepts_only_booleans$/)) |
@@ -320,12 +320,12 @@ default-filter = '''
     (package(=studio-runtime-services) & kind(lib) & (test(analytics_requests_reuse_the_store_reader_connection) | test(profile_invalidation_forces_one_full_discovery_scan) | test(usage_reconciliation_prefers_final_recorded_response_to_later_legacy_rows))) |
     (package(=studio-runtime-services) & kind(lib) & (test(complaint_names_preserve_missing_and_null) | test(snapshot_rechecks_unprojected_and_volatile_agent_fields) | test(message_send_agent_rows_are_bounded) | test(message_send_does_not_scan_agent_directory) | test(message_ignores_unrelated_invalid_agent) | test(message_ignores_unrelated_invalid_project) | test(message_ignores_invalid_parent_project_outside_sender_cwd) | test(message_delivers_between_user_grouped_leads) | test(message_refuses_unknown_foreign_and_deleted_targets) | test(same_team_target_is_resolved_before_message_validation_without_project_reads))) |
     (package(=studio-runtime-store) & kind(lib) & test(message_records_use_both_indexes_and_keep_row_order)) |
-    (package(=studio-runtime-store) & kind(lib) & test(scoped_fingerprint_ignores_offscreen_rows_and_tracks_moves_and_deletions)) |
+    (package(=studio-runtime-store) & kind(lib) & test(resume_entities_seq_cursor_reads_only_changed_collection_rows)) |
     (package(=studio-runtime-store) & kind(lib) & (test(scoped_page_reads_only_its_collection_and_id) | test(pull_page_without_priority_stops_at_limit))) |
-    (package(=studio-runtime-store) & kind(test) & binary(=integration) & test(open_recreates_entity_scope_indexes_on_existing_state)) |
-    (package(=studio-runtime-http) & kind(lib) & test(incremental_fingerprint_handles_offscreen_moves_and_deletion)) |
+    (package(=studio-runtime-store) & kind(test) & binary(=integration) & test(open_removes_retired_entity_scope_fingerprint_indexes)) |
+    (package(=studio-runtime-http) & kind(lib) & test(typed_entity_selectors_match_every_openapi_scope)) |
     (package(=studio-runtime-http) & kind(lib) & (test(unchanged_resource_evaluations_are_paced) | test(gated_process_provider_does_not_block_another_stream))) |
-    (package(=studio-runtime-services) & kind(lib) & (test(unrelated_content_reads_do_not_wait_for_a_projection) | test(older_projection_cannot_overwrite_a_newer_revision) | test(incremental_projection_receives_the_previous_entity_snapshot))) |
+    (package(=studio-runtime-services) & kind(lib) & (test(unrelated_content_reads_do_not_wait_for_a_projection) | test(older_projection_cannot_overwrite_a_newer_revision) | test(entity_candidates_bypass_content_reads_for_seq_cursor_delivery))) |
     (package(=studio-runtime-http) & kind(lib) & test(/^bounded_entities::tests::desktop_source_projects_legacy_native_rotation_without_mutating_status$/)) |
     (package(=studio-runtime-server) & kind(lib) & test(/^provider_ports::tests::supervisor_health_(accepts_current_protocol_and_preserves_exact_handles|rejects_incompatible_or_degraded_status)$/)) |
     (package(=studio-runtime-services) & kind(test) & binary(=integration) & test(/^claude_controls_actor::mcp_auto_background_accepts_only_booleans$/)) |
