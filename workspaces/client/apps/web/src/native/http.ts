@@ -1,4 +1,3 @@
-import { nativeEventResponse } from "./stream";
 import { nativeRequest } from "./client";
 
 import type { HttpResponse } from "./host";
@@ -32,11 +31,8 @@ export async function nativeFetch(
     throw new Error("The request does not belong to this server API.");
   if (request.method !== "GET" && request.method !== "POST")
     throw new Error("The native API accepts only GET and POST requests.");
-  if (
-    request.method === "GET" &&
-    request.headers.get("Accept") === "text/event-stream"
-  )
-    return nativeEventResponse(request, url.pathname + url.search);
+  if (request.headers.get("Accept") === "text/event-stream")
+    throw new Error("Native event streams use NativeEventSource.");
   let body: unknown;
   if (request.method === "POST") {
     const text = await waitFor(request.text(), request.signal);

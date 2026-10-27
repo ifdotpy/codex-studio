@@ -410,7 +410,12 @@ export function createResourceEvents(options: ResourceEventsOptions) {
     if (!coordinatorActive) return "stopped";
     if (navigator.onLine === false) return "offline";
     if (pageHidden()) return "paused";
-    if (source) return sourceOpened ? "open" : "connecting";
+    if (source)
+      return sourceOpened
+        ? "open"
+        : reconnectRetryAt !== undefined
+          ? "retry-scheduled"
+          : "connecting";
     if (openingSource || initializing) return "preparing";
     if (reconnectTimer !== undefined) return "retry-scheduled";
     if (ownerRequestPending) return "waiting-owner";
@@ -1245,6 +1250,8 @@ export function createResourceEvents(options: ResourceEventsOptions) {
   }
 
   function refreshHeartbeatTimeout() {
+    // The native core owns the silence watchdog of its streams.
+    if (source?.restart) return;
     clearTimeout(heartbeatTimeout);
     heartbeatTimeout = setTimeout(
       () => reconnectNow("heartbeat-timeout"),
@@ -1485,6 +1492,13 @@ export function createResourceEvents(options: ResourceEventsOptions) {
   function closeSource(reason = "closed") {
     openingSource?.abort();
     openingSource = undefined;
+    resetConnection();
+    (source as { close(reason?: string): void } | undefined)?.close(reason);
+    source = undefined;
+  }
+
+  /** Forgets the state of one server connection; a native source survives it. */
+  function resetConnection() {
     validatedServerFrameAt = undefined;
     clearTimeout(subscriptionTimer);
     subscriptionTimer = undefined;
@@ -1505,8 +1519,6 @@ export function createResourceEvents(options: ResourceEventsOptions) {
     heartbeatTimeout = undefined;
     clearTimeout(schemaHandshakeTimeout);
     schemaHandshakeTimeout = undefined;
-    (source as { close(reason?: string): void } | undefined)?.close(reason);
-    source = undefined;
     sourceOpened = false;
   }
 
@@ -1561,8 +1573,97 @@ export function createResourceEvents(options: ResourceEventsOptions) {
     detail?: string,
   ) {
     if (source) requireBaselineReconciliation();
-    closeSource(detail ? `${failure}: ${detail}` : failure);
-    scheduleReconnect(failure);
+    recover(failure, detail);
+  }
+
+  /** Ends an unusable connection. A native source reconnects in the core. */
+  function recover(failure: ResourceConnectionFailure, detail?: string) {
+    const reason = detail ? `${failure}: ${detail}` : failure;
+    const native = source?.restart ? source : undefined;
+    if (!native) {
+      closeSource(reason);
+      scheduleReconnect(failure);
+      return;
+    }
+    connectionLost(failure);
+    native.restart!(reason);
+  }
+
+  function connectionLost(failure: ResourceConnectionFailure) {
+    resetConnection();
+    connectionFailure = failure;
+    reconnecting = true;
+    setStatus("degraded");
+  }
+
+  function probeIdentity() {
+    if (identityProbe) return;
+    // EventSource hides HTTP rejection details. Check the identity once
+    // to distinguish a server rollback from a temporary network failure.
+    const probe = new AbortController();
+    identityProbe = probe;
+    void get("/api/sync/identity", {
+      timeoutMs: 5_000,
+      cache: "no-store",
+      signal: probe.signal,
+    })
+      .catch(() => {})
+      .finally(() => {
+        if (identityProbe === probe) identityProbe = undefined;
+      });
+  }
+
+  /** Reads cursors for today's resource union and makes it the wire set. */
+  async function prepareStreamPath(signal: AbortSignal) {
+    const prepared = await prepareResourceCursors(
+      owner ? aggregateResources() : localResources(),
+      signal,
+      () => (owner ? aggregateResources() : localResources()),
+    );
+    if (signal.aborted || !canOpenSource()) return;
+    // Screens can change while optional local cursors are being read. Open
+    // exactly today's union; late selectors share the original cursor budget.
+    const currentResources = owner ? aggregateResources() : localResources();
+    const currentTokenRates = owner
+      ? hasTokenRateInterest()
+      : tokenRateListeners.size > 0;
+    if (!currentResources.length && !currentTokenRates) return;
+    const currentKeys = new Set(currentResources.map(resourceKey));
+    const since = prepared.filter((entry) =>
+      currentKeys.has(resourceKey(entry.resource)),
+    );
+    wireResources = currentResources;
+    wireTokenRates = currentTokenRates;
+    acceptedResources = currentKeys;
+    blockedResources.clear();
+    blockedSelectors = [];
+    const subscription: NonNullable<
+      operations["sync_stream_api_sync_stream_get"]["parameters"]["query"]
+    > = {
+      protocol: String(SYNC_PROTOCOL_VERSION),
+      resources: JSON.stringify(currentResources),
+      since: JSON.stringify(since.filter((entry) => entry.since)),
+      tokenRates: currentTokenRates,
+      reconnect: reconnecting,
+      [API_SCHEMA_HASH_PARAM]: API_SCHEMA_HASH,
+    };
+    const query = new URLSearchParams(
+      Object.entries(subscription).map(([key, value]) => [key, String(value)]),
+    );
+    return `/api/sync/stream?${query}`;
+  }
+
+  /** Answers a native source that asks for its next connection's path. */
+  async function resumeSource(connected: ServerEventSource) {
+    const path = await prepareStreamPath(new AbortController().signal);
+    if (source !== connected) return;
+    if (path === undefined) closeSource();
+    else {
+      reconnecting = false;
+      reconnectRetryAt = undefined;
+      connected.resume!(path);
+    }
+    notifyConnectionListeners();
   }
 
   async function prepareResourceCursors(
@@ -1652,37 +1753,13 @@ export function createResourceEvents(options: ResourceEventsOptions) {
     const attempt = new AbortController();
     openingSource = attempt;
     notifyConnectionListeners();
-    const prepared = await prepareResourceCursors(
-      resources,
-      attempt.signal,
-      () => (owner ? aggregateResources() : localResources()),
-    );
+    const path = await prepareStreamPath(attempt.signal);
     if (openingSource !== attempt) return;
-    if (attempt.signal.aborted || !canOpenSource()) {
+    if (path === undefined) {
       openingSource = undefined;
       notifyConnectionListeners();
       return;
     }
-    // Screens can change while optional local cursors are being read. Open
-    // exactly today's union; late selectors share the original cursor budget.
-    const currentResources = owner ? aggregateResources() : localResources();
-    const currentTokenRates = owner
-      ? hasTokenRateInterest()
-      : tokenRateListeners.size > 0;
-    if (!currentResources.length && !currentTokenRates) {
-      openingSource = undefined;
-      notifyConnectionListeners();
-      return;
-    }
-    const currentKeys = new Set(currentResources.map(resourceKey));
-    const since = prepared.filter((entry) =>
-      currentKeys.has(resourceKey(entry.resource)),
-    );
-    wireResources = currentResources;
-    wireTokenRates = currentTokenRates;
-    acceptedResources = currentKeys;
-    blockedResources.clear();
-    blockedSelectors = [];
     // Opening a retry does not recover the lost stream. Keep that server-wide
     // state until a valid frame arrives, including for newly visible chats.
     setStatus(
@@ -1692,25 +1769,7 @@ export function createResourceEvents(options: ResourceEventsOptions) {
     );
     if (openingSource !== attempt || !canOpenSource()) return;
     try {
-      const subscription: NonNullable<
-        operations["sync_stream_api_sync_stream_get"]["parameters"]["query"]
-      > = {
-        protocol: String(SYNC_PROTOCOL_VERSION),
-        resources: JSON.stringify(currentResources),
-        since: JSON.stringify(since.filter((entry) => entry.since)),
-        tokenRates: currentTokenRates,
-        reconnect: reconnecting,
-        [API_SCHEMA_HASH_PARAM]: API_SCHEMA_HASH,
-      };
-      const query = new URLSearchParams(
-        Object.entries(subscription).map(([key, value]) => [
-          key,
-          String(value),
-        ]),
-      );
-      const connected = openServerEvents(`/api/sync/stream?${query}`, {
-        backpressure: true,
-      });
+      const connected = openServerEvents(path, { backpressure: true });
       if (openingSource !== attempt || !canOpenSource()) {
         connected.close();
         return;
@@ -1727,20 +1786,39 @@ export function createResourceEvents(options: ResourceEventsOptions) {
       ) => {
         if (source !== connected || schemaHandshakeReceived) return;
         requireBaselineReconciliation();
-        closeSource();
         if (preHandshakeFailures === 0)
           preHandshakeResponseGeneration =
             matchingApiSchemaResponseGeneration();
         preHandshakeFailures++;
-        if (preHandshakeFailures >= SCHEMA_HANDSHAKE_FAILURE_LIMIT) {
-          if (
-            preHandshakeResponseGeneration !== undefined &&
-            matchingApiSchemaResponseGeneration() >
-              preHandshakeResponseGeneration
-          ) {
-            scheduleReconnect(failure);
-          } else markApiSchemaMismatch();
-        } else scheduleReconnect(failure);
+        if (
+          preHandshakeFailures >= SCHEMA_HANDSHAKE_FAILURE_LIMIT &&
+          (preHandshakeResponseGeneration === undefined ||
+            matchingApiSchemaResponseGeneration() <=
+              preHandshakeResponseGeneration)
+        ) {
+          closeSource();
+          markApiSchemaMismatch();
+        } else recover(failure);
+      };
+      // The native core reports each lost connection, then asks for a path.
+      connected.onretry = ({ opened, retryAt }) => {
+        if (source !== connected) return;
+        if (!opened) {
+          connectionLost("stream-error");
+          probeIdentity();
+        } else if (sourceOpened && !schemaHandshakeReceived)
+          failHandshake("stream-error");
+        else if (sourceOpened) {
+          requireBaselineReconciliation();
+          connectionLost("stream-error");
+        }
+        reconnectRetryAt = retryAt;
+        notifyConnectionListeners();
+      };
+      connected.onresume = () => {
+        if (source !== connected) return;
+        schemaHandshakeReceived = false;
+        void resumeSource(connected);
       };
       connected.onopen = () => {
         if (source !== connected) return;
@@ -1892,24 +1970,10 @@ export function createResourceEvents(options: ResourceEventsOptions) {
         }
         requireBaselineReconciliation();
         closeSource();
-        if (!connectionOpened && !identityProbe) {
-          // EventSource hides HTTP rejection details. Check the identity once
-          // to distinguish a server rollback from a temporary network failure.
-          const probe = new AbortController();
-          identityProbe = probe;
-          void get("/api/sync/identity", {
-            timeoutMs: 5_000,
-            cache: "no-store",
-            signal: probe.signal,
-          })
-            .catch(() => {})
-            .finally(() => {
-              if (identityProbe === probe) identityProbe = undefined;
-            });
-        }
+        if (!connectionOpened) probeIdentity();
         scheduleReconnect("stream-error");
       };
-      if (!heartbeatTimeout) {
+      if (!heartbeatTimeout && !connected.restart) {
         heartbeatTimeout = setTimeout(
           () => reconnectNow("heartbeat-timeout"),
           RESOURCE_HEARTBEAT_TIMEOUT_MS,

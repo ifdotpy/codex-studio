@@ -12,7 +12,11 @@ const { resumeListeners, syncDatabase } = vi.hoisted(() => ({
   syncDatabase: vi.fn(),
 }));
 vi.mock("../servers/eventSource", () => ({
-  openServerEvents: (url: string) => new EventSource(url),
+  openServerEvents: (url: string) =>
+    new (
+      (globalThis as { NativeTestSource?: typeof EventSource })
+        .NativeTestSource ?? EventSource
+    )(url),
 }));
 vi.mock("./client", () => ({
   syncDatabase,
@@ -102,6 +106,15 @@ class Source {
   open() {
     this.onopen?.();
   }
+}
+
+/** A source whose reconnects belong to the native core (native/stream.ts). */
+class NativeSource extends Source {
+  restart = vi.fn();
+  resume = vi.fn();
+  onretry: ((detail: { opened: boolean; retryAt: number }) => void) | null =
+    null;
+  onresume: (() => void) | null = null;
 }
 
 class Channel {
@@ -2605,5 +2618,93 @@ describe("shared resource event transport", () => {
     expect(identityProbe).not.toHaveBeenCalled();
     stopA();
     stopB();
+  });
+
+  async function openNative() {
+    syncDatabase.mockResolvedValue({ workspaceId });
+    vi.stubGlobal("NativeTestSource", NativeSource);
+    const transport = await loadTransport();
+    const listener = vi.fn();
+    const states: string[] = [];
+    const streams: string[] = [];
+    transport.watchResourceConnection((state, stream) => {
+      states.push(state);
+      streams.push(stream);
+    });
+    // Each native connection sends its own session and schema handshake.
+    Source.skipNextAutoHandshake = true;
+    transport.watchResourceChanges({ kind: "costs" }, listener);
+    await vi.advanceTimersByTimeAsync(20);
+    expect(Source.instances).toHaveLength(1);
+    const source = Source.instances[0] as NativeSource;
+    source.open();
+    source.emit("session", { sessionId: "session-one" });
+    source.emit("api-schema", { hash: API_SCHEMA_HASH });
+    source.emit("resources", {
+      protocol: 4,
+      workspaceId,
+      epoch: "native",
+      revision: 1,
+      reason: "initial",
+      resources: [{ kind: "costs" }],
+    });
+    await vi.advanceTimersByTimeAsync(20);
+    expect(states.at(-1)).toBe("live");
+    return { source, listener, states, streams };
+  }
+
+  it("native stream waits for the core after a lost connection and answers its resume request", async () => {
+    const { source, listener, states, streams } = await openNative();
+    source.onretry?.({ opened: true, retryAt: Date.now() + 5_000 });
+    expect(states.at(-1)).toBe("degraded");
+    expect(streams.at(-1)).toBe("retry-scheduled");
+    // No web backoff, heartbeat watchdog or second stream runs on top.
+    await vi.advanceTimersByTimeAsync(120_000);
+    expect(Source.instances).toHaveLength(1);
+    expect(source.closed).toBe(false);
+    expect(source.restart).not.toHaveBeenCalled();
+    expect(source.resume).not.toHaveBeenCalled();
+
+    source.onresume?.();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(source.resume).toHaveBeenCalledOnce();
+    const path = new URL(
+      String(source.resume.mock.calls[0]![0]),
+      "http://studio.test",
+    );
+    expect(path.pathname).toBe("/api/sync/stream");
+    expect(path.searchParams.get("reconnect")).toBe("true");
+    expect(JSON.parse(path.searchParams.get("resources")!)).toEqual([
+      { kind: "costs" },
+    ]);
+    source.open();
+    source.emit("session", { sessionId: "session-two" });
+    source.emit("api-schema", { hash: API_SCHEMA_HASH });
+    source.emit("resources", {
+      protocol: 4,
+      workspaceId,
+      epoch: "native",
+      revision: 2,
+      reason: "reconnect",
+      resources: [{ kind: "costs" }],
+    });
+    await vi.advanceTimersByTimeAsync(20);
+    expect(states.at(-1)).toBe("live");
+    expect(listener).toHaveBeenLastCalledWith(
+      expect.objectContaining({ revision: 2 }),
+    );
+    expect(Source.instances).toHaveLength(1);
+  });
+
+  it("native stream asks the core to restart a connection the page cannot use", async () => {
+    const { source, states } = await openNative();
+    source.emitRaw("resources", null);
+    expect(source.restart).toHaveBeenCalledOnce();
+    expect(String(source.restart.mock.calls[0]![0])).toMatch(/^invalid-frame/);
+    expect(source.closed).toBe(false);
+    expect(states.at(-1)).toBe("degraded");
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(Source.instances).toHaveLength(1);
+    expect(source.restart).toHaveBeenCalledOnce();
   });
 });

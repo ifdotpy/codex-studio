@@ -1,28 +1,16 @@
 import { afterEach, expect, it, vi } from "vitest";
-import { nativeEventResponse } from "./stream";
-import { SignedEventSource } from "../servers/eventSource";
-import {
-  NATIVE_SSE_EVENT_MAX_BYTES,
-  SYNC_STREAM_EVENT_MAX_BYTES,
-} from "../generated/sharedValues";
-import { SYNC_PROTOCOL_VERSION } from "../generated/api";
-import { required } from "../components/componentTestFixtures";
+import { NativeEventSource } from "./stream";
 
 afterEach(() => vi.unstubAllGlobals());
+
+/** A fake native core that sends an event only for a granted credit. */
 function setup(options: { rejectGrant?: boolean } = {}) {
-  let emit: (event: { payload: unknown }) => void;
-  let subscription: string;
-  let acknowledge: () => void;
-  let started: () => void;
-  let closed: () => void;
-  const startedPromise = new Promise<void>((resolve) => {
-    started = resolve;
-  });
-  const closedPromise = new Promise<void>((resolve) => {
-    closed = resolve;
-  });
+  let emit: (event: { payload: unknown }) => void = () => {};
+  let subscription = "";
+  let acknowledge: () => void = () => {};
+  const started = Promise.withResolvers<void>();
+  const closed = Promise.withResolvers<void>();
   const unlisten = vi.fn();
-  const requested = Promise.withResolvers<void>();
   let credit = "credit-0";
   let granted: string | undefined;
   let sequence = 0;
@@ -42,25 +30,26 @@ function setup(options: { rejectGrant?: boolean } = {}) {
     });
   };
   const invoke = vi.fn(async (_command, { request }) => {
+    const reply = (result: unknown) => ({ id: request.id, result });
     if (request.method === "view.subscribe") {
       subscription = request.params.subscription;
-      started();
+      started.resolve();
       return new Promise((resolve) => {
-        acknowledge = () =>
-          resolve({ id: request.id, result: { subscribed: true } });
+        acknowledge = () => resolve(reply({ subscribed: true }));
       });
     }
     if (request.method === "view.next") {
-      requested.resolve();
       if (options.rejectGrant) throw new Error("The grant response was lost.");
       if (request.params.credit !== credit || granted)
         throw new Error("Invalid credit");
       granted = credit;
       flush();
-      return { id: request.id, result: { granted: true } };
+      return reply({ granted: true });
     }
-    closed();
-    return { id: request.id, result: { closed: true } };
+    if (request.method === "view.resume" || request.method === "view.restart")
+      return reply({ accepted: true });
+    closed.resolve();
+    return reply({ closed: true });
   });
   vi.stubGlobal("__TAURI__", {
     core: { invoke },
@@ -71,18 +60,25 @@ function setup(options: { rejectGrant?: boolean } = {}) {
       },
     },
   });
+  const calls = (method: string) =>
+    invoke.mock.calls
+      .map((call) => call[1].request)
+      .filter((request) => request.method === method);
   return {
-    started: startedPromise,
-    closed: closedPromise,
-    invoke,
+    started: started.promise,
+    closed: closed.promise,
     unlisten,
-    requested: requested.promise,
-    event: (value: { type: string; data?: string; [key: string]: unknown }) => {
-      if (value.data !== undefined) {
-        queued.push(value);
-        flush();
-      } else emit({ payload: { event: subscription, credit, value } });
+    calls,
+    open: () =>
+      emit({
+        payload: { event: subscription, credit, value: { type: "open" } },
+      }),
+    event: (value: { type: string; data: string }) => {
+      queued.push(value);
+      flush();
     },
+    control: (value: Record<string, unknown>) =>
+      emit({ payload: { event: subscription, value } }),
     raw: (value: unknown, consumedCredit?: string, nextCredit = "foreign") =>
       emit({
         payload: {
@@ -96,262 +92,165 @@ function setup(options: { rejectGrant?: boolean } = {}) {
   };
 }
 
-it("keeps a native initial transfer larger than the queue bound while its consumer holds", async () => {
-  vi.stubGlobal("location", { origin: "http://localhost", search: "" });
+async function settle() {
+  for (let index = 0; index < 5; index++) await Promise.resolve();
+}
+
+it("grants the next credit only after the page releases its hold", async () => {
   const host = setup();
+  const source = new NativeEventSource("/api/sync/stream");
   const held = Promise.withResolvers<void>();
-  const first = Promise.withResolvers<void>();
-  const settled = Promise.withResolvers<void>();
-  const readFailures: unknown[] = [];
-  const frames = Array.from({ length: 20 }, (_, index) =>
-    JSON.stringify({
-      protocol: SYNC_PROTOCOL_VERSION,
-      workspaceId: "a".repeat(32),
-      epoch: "initial",
-      revision: 1,
-      reason: "initial",
-      resource: { kind: "state" },
-      cursor: { workspaceId: "a".repeat(32), seq: 20 },
-      replyKind: "snapshot",
-      transferId: "native-initial-transfer",
-      pageIndex: index,
-      partIndex: 0,
-      partCount: 1,
-      complete: index === 19,
-      data: JSON.stringify({
-        after: index,
-        through: index + 1,
-        documents: [
-          {
-            collection: "workspace",
-            id: `workspace-${index}`,
-            seq: index + 1,
-            op: "upsert",
-            value: { stateDir: "x".repeat(240 * 1024) },
-          },
-        ],
-      }),
-    }),
-  );
-  expect(
-    frames.every(
-      (frame) =>
-        new TextEncoder().encode(frame).byteLength <
-        SYNC_STREAM_EVENT_MAX_BYTES,
-    ),
-  ).toBe(true);
-  expect(
-    frames.reduce(
-      (size, frame) => size + new TextEncoder().encode(frame).byteLength,
-      0,
-    ),
-  ).toBeGreaterThan(NATIVE_SSE_EVENT_MAX_BYTES);
-  const source = new SignedEventSource("/api/sync/stream", async (request) => {
-    const response = await nativeEventResponse(request, "/api/sync/stream");
-    const getReader = response.body!.getReader.bind(
-      response.body,
-    ) as () => ReadableStreamDefaultReader<Uint8Array<ArrayBuffer>>;
-    vi.spyOn(response.body!, "getReader").mockImplementation(() => {
-      const reader = getReader();
-      const read = reader.read.bind(reader);
-      reader.read = async () => {
-        try {
-          return await read();
-        } catch (error) {
-          readFailures.push(error);
-          throw error;
-        }
-      };
-      return reader;
-    });
-    return response;
-  });
   const delivered: string[] = [];
   source.addEventListener("entity-transfer", (event) => {
     delivered.push((event as MessageEvent<string>).data);
-    if (delivered.length === 1) {
-      source.holdUntil(held.promise);
-      first.resolve();
-    }
-    if (delivered.length === frames.length) settled.resolve();
+    if (delivered.length === 1) source.holdUntil(held.promise);
   });
-  const failed = vi.fn(() => settled.resolve());
-  source.onerror = failed;
-  try {
-    await host.started;
-    host.acknowledge();
-    host.event({ type: "open" });
-    host.event({ type: "entity-transfer", data: required(frames[0]) });
-    await first.promise;
-    for (const data of frames.slice(1))
-      host.event({ type: "entity-transfer", data });
-    expect(
-      host.invoke.mock.calls.filter(
-        (call) => call[1].request.method === "view.next",
-      ),
-    ).toHaveLength(1);
-    held.resolve();
-    await settled.promise;
-    expect(readFailures.map(String)).toEqual([]);
-    expect(failed).not.toHaveBeenCalled();
-    expect(delivered).toEqual(frames);
-  } finally {
-    held.resolve();
-    source.close();
-    await host.closed;
-  }
-});
-it("rejects an oversized individual event without increasing the stream buffer", async () => {
-  const host = setup();
-  const result = nativeEventResponse(
-    new Request("http://localhost/api/events"),
-    "/api/events",
-  );
   await host.started;
   host.acknowledge();
-  host.event({ type: "open" });
-  const reader = (await result).body!.getReader();
-  const read = reader.read();
-  host.event({
-    type: "message",
-    data: "x".repeat(NATIVE_SSE_EVENT_MAX_BYTES),
-  });
-  await expect(read).rejects.toThrow(
-    "The native event exceeds its size limit.",
-  );
+  host.open();
+  await settle();
+  for (const data of ["one", "two", "three"])
+    host.event({ type: "entity-transfer", data });
+  await settle();
+  expect(delivered).toEqual(["one"]);
+  // Only the open credit was granted; the next one waits for the hold.
+  expect(host.calls("view.next")).toHaveLength(1);
+  held.resolve();
+  await vi.waitFor(() => expect(delivered).toEqual(["one", "two", "three"]));
+  source.close();
   await host.closed;
+  expect(host.unlisten).toHaveBeenCalledOnce();
 });
-it("rejects a stale data credit during a later read", async () => {
+
+it("reports a core retry without unsubscribing and answers its resume request", async () => {
   const host = setup();
-  const result = nativeEventResponse(
-    new Request("http://localhost/api/events"),
-    "/api/events",
+  const source = new NativeEventSource("/api/sync/stream?first");
+  const retry = vi.fn();
+  const delivered: string[] = [];
+  source.onretry = retry;
+  source.onresume = () => source.resume("/api/sync/stream?second");
+  source.onerror = vi.fn();
+  source.addEventListener("message", (event) =>
+    delivered.push((event as MessageEvent<string>).data),
   );
   await host.started;
   host.acknowledge();
-  host.event({ type: "open" });
-  const reader = (await result).body!.getReader();
+  host.open();
+  await settle();
   host.event({ type: "message", data: "first" });
-  await reader.read();
-  const second = reader.read();
-  host.raw({ type: "message", data: "old" }, "credit-0", "credit-old");
-  await expect(second).rejects.toThrow("The native event credit is invalid.");
-  await host.closed;
+  await settle();
+  vi.spyOn(Date, "now").mockReturnValue(1_000);
+  host.control({
+    type: "error",
+    closed: false,
+    opened: true,
+    retryInMs: 750,
+    message: "The server event stream closed.",
+  });
+  expect(retry).toHaveBeenCalledWith({ opened: true, retryAt: 1_750 });
+  host.control({ type: "resume" });
+  await settle();
+  expect(host.calls("view.resume")).toEqual([
+    expect.objectContaining({
+      params: expect.objectContaining({ path: "/api/sync/stream?second" }),
+    }),
+  ]);
+  // The credit granted before the drop admits the next connection's event.
+  host.open();
+  await settle();
+  host.event({ type: "message", data: "second" });
+  await settle();
+  expect(delivered).toEqual(["first", "second"]);
+  expect(host.calls("view.subscribe")).toHaveLength(1);
+  expect(host.calls("view.unsubscribe")).toHaveLength(0);
+  expect(source.onerror).not.toHaveBeenCalled();
+  source.close();
 });
-it("rejects data without consumer demand", async () => {
+
+it("drops late events after a page restart until the core reopens", async () => {
   const host = setup();
-  const result = nativeEventResponse(
-    new Request("http://localhost/api/events"),
-    "/api/events",
+  const source = new NativeEventSource("/api/sync/stream");
+  const delivered: string[] = [];
+  source.addEventListener("message", (event) =>
+    delivered.push((event as MessageEvent<string>).data),
   );
   await host.started;
   host.acknowledge();
-  host.event({ type: "open" });
-  const response = await result;
-  host.raw({ type: "message", data: "unsolicited" }, "credit-0", "credit-1");
-  await expect(response.body!.getReader().read()).rejects.toThrow(
-    "The native event credit is invalid.",
-  );
-  await host.closed;
-  expect(
-    host.invoke.mock.calls.filter(
-      (call) => call[1].request.method === "view.next",
-    ),
-  ).toHaveLength(0);
-});
-it("closes after a lost grant response without retrying it", async () => {
-  const host = setup({ rejectGrant: true });
-  const result = nativeEventResponse(
-    new Request("http://localhost/api/events"),
-    "/api/events",
-  );
-  await host.started;
-  host.acknowledge();
-  host.event({ type: "open" });
-  const reader = (await result).body!.getReader();
-  await expect(reader.read()).rejects.toThrow("The grant response was lost.");
-  await host.closed;
-  expect(
-    host.invoke.mock.calls.filter(
-      (call) => call[1].request.method === "view.next",
-    ),
-  ).toHaveLength(1);
-});
-it("cancels a pending credit wait and discards its late event", async () => {
-  const host = setup();
-  const controller = new AbortController();
-  const result = nativeEventResponse(
-    new Request("http://localhost/api/events", { signal: controller.signal }),
-    "/api/events",
-  );
-  await host.started;
-  host.acknowledge();
-  host.event({ type: "open" });
-  const reader = (await result).body!.getReader();
-  const read = reader.read();
-  await host.requested;
-  controller.abort();
-  await expect(read).rejects.toMatchObject({ name: "AbortError" });
+  host.open();
+  await settle();
+  source.restart("invalid-frame: bad revision");
   host.event({ type: "message", data: "late" });
-  await host.closed;
-  expect(host.unlisten).toHaveBeenCalledTimes(1);
+  await settle();
+  expect(delivered).toEqual([]);
+  expect(host.calls("view.restart")).toEqual([
+    expect.objectContaining({
+      params: expect.objectContaining({
+        reason: "invalid-frame: bad revision",
+      }),
+    }),
+  ]);
+  // The late event consumed the only grant; the reopen grants its successor.
+  expect(host.calls("view.next")).toHaveLength(1);
+  host.open();
+  await settle();
+  expect(host.calls("view.next")).toHaveLength(2);
+  host.event({ type: "message", data: "fresh" });
+  await settle();
+  expect(delivered).toEqual(["fresh"]);
+  source.close();
 });
-it("carries multiline Unicode events and releases the stream on cancellation", async () => {
+
+it("stops on a terminal close from the core", async () => {
   const host = setup();
-  const result = nativeEventResponse(
-    new Request("http://localhost/api/events"),
-    "/api/events",
-  );
+  const source = new NativeEventSource("/api/sync/stream");
+  const failed = vi.fn();
+  source.onerror = failed;
   await host.started;
   host.acknowledge();
-  host.event({ type: "open" });
-  const response = await result;
-  const reader = response.body!.getReader();
-  host.event({ type: "updated", data: "Привет 🦀\nsecond", id: "rev-1" });
-  expect(new TextDecoder().decode((await reader.read()).value)).toBe(
-    "id: rev-1\nevent: updated\ndata: Привет 🦀\ndata: second\n\n",
-  );
-  host.event({ type: "error", data: "application event", id: "rev-2" });
-  expect(new TextDecoder().decode((await reader.read()).value)).toBe(
-    "id: rev-2\nevent: error\ndata: application event\n\n",
-  );
-  await reader.cancel();
+  await settle();
+  host.control({
+    type: "error",
+    closed: true,
+    message: "Backend denied access",
+  });
+  expect(failed).toHaveBeenCalledOnce();
   await host.closed;
-  expect(host.unlisten).toHaveBeenCalledTimes(1);
-  expect(
-    host.invoke.mock.calls.filter(
-      (call) => call[1].request.method === "view.unsubscribe",
-    ),
-  ).toHaveLength(1);
+  expect(host.unlisten).toHaveBeenCalledOnce();
 });
-it("closes a subscription acknowledged after the caller already aborted", async () => {
+
+it("rejects a stale data credit and data without demand", async () => {
   const host = setup();
-  const controller = new AbortController();
-  const result = nativeEventResponse(
-    new Request("http://localhost/api/events", { signal: controller.signal }),
-    "/api/events",
-  );
-  await host.started;
-  controller.abort();
-  await expect(result).rejects.toMatchObject({ name: "AbortError" });
-  host.acknowledge();
-  await host.closed;
-  expect(host.unlisten).toHaveBeenCalledTimes(1);
-  expect(
-    host.invoke.mock.calls.filter(
-      (call) => call[1].request.method === "view.unsubscribe",
-    ),
-  ).toHaveLength(1);
-});
-it("rejects a failed stream handshake without reporting an HTTP success", async () => {
-  const host = setup();
-  const result = nativeEventResponse(
-    new Request("http://localhost/api/events"),
-    "/api/events",
-  );
+  const source = new NativeEventSource("/api/sync/stream");
+  const failed = vi.fn();
+  source.onerror = failed;
   await host.started;
   host.acknowledge();
-  host.event({ type: "error", message: "Backend denied access" });
-  await expect(result).rejects.toThrow("Backend denied access");
-  expect(host.unlisten).toHaveBeenCalledTimes(1);
+  await settle();
+  host.raw({ type: "message", data: "unsolicited" }, "credit-0", "credit-1");
+  expect(failed).toHaveBeenCalledOnce();
+  expect(host.calls("view.next")).toHaveLength(0);
+});
+
+it("closes after a lost grant response without repeating it", async () => {
+  const host = setup({ rejectGrant: true });
+  const source = new NativeEventSource("/api/sync/stream");
+  const failed = vi.fn();
+  source.onerror = failed;
+  await host.started;
+  host.acknowledge();
+  host.open();
+  await vi.waitFor(() => expect(failed).toHaveBeenCalledOnce());
+  await host.closed;
+  expect(host.calls("view.next")).toHaveLength(1);
+});
+
+it("unsubscribes once when closed before the subscription is acknowledged", async () => {
+  const host = setup();
+  const source = new NativeEventSource("/api/sync/stream");
+  await host.started;
+  source.close();
+  host.acknowledge();
+  await host.closed;
+  expect(host.unlisten).toHaveBeenCalledOnce();
+  expect(host.calls("view.unsubscribe")).toHaveLength(1);
 });
