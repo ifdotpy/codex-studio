@@ -614,10 +614,6 @@ pub fn room_entity_view(record: &Value, context: &RoomViewContext) -> Option<Val
     }
     let kind = record.get("kind").and_then(Value::as_str)?;
     let mut view = record.as_object()?.clone();
-    view.insert(
-        studio_runtime_schema::agent_progress::START_WAIT_FIELD.into(),
-        serde_json::to_value(agent_start_wait(record).ok()?).ok()?,
-    );
 
     let members: Vec<String>;
     if kind == "federated" {
@@ -835,10 +831,6 @@ pub fn project_entity_view(
     vault: Option<&Value>,
 ) -> Option<Value> {
     let mut view = record.as_object()?.clone();
-    view.insert(
-        studio_runtime_schema::agent_progress::START_WAIT_FIELD.into(),
-        serde_json::to_value(agent_start_wait(record).ok()?).ok()?,
-    );
 
     if let Some(readiness) = readiness.filter(|value| truthy(Some(value))) {
         view.insert("layrReadiness".to_owned(), readiness.clone());
@@ -881,6 +873,13 @@ mod projection_plan_tests {
         schema_projection_properties,
     };
     use serde_json::json;
+
+    #[test]
+    fn project_with_extension_status_is_projected() {
+        let view =
+            super::project_entity_view(&json!({"id": "project", "status": 42}), None, None, None);
+        assert!(view.is_some());
+    }
 
     /// The agent view publishes no team budget or token count, also when an
     /// older build stored them. The older view never published an empty pattern list, and
