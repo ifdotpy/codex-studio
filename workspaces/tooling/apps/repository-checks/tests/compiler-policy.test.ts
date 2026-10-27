@@ -397,3 +397,66 @@ test("contract gates select runtime-services typed owner doctests", () => {
     ],
   );
 });
+
+test("generated types reject duplicate names and handwritten union copies", async () => {
+  const { generatedTypeDiagnostics } = await import("../enum-literals.ts");
+  const directory = mkdtempSync(path.join(tmpdir(), "studio-generated-types-"));
+  try {
+    const owner = path.join(directory, "generated.ts");
+    const target = path.join(directory, "consumer.ts");
+    writeFileSync(
+      owner,
+      'export type State = "open" | "closed"; export const KINDS = ["one", "two"] as const; export type Kind = typeof KINDS[number]; export interface components { schemas: { Message: { id: string } } }',
+    );
+    writeFileSync(
+      target,
+      'type Message = { id: string }; type Other = "closed" | "open"; type Copy = "two" | "one"; type Local = "other" | "local";',
+    );
+    const program = ts.createProgram([owner, target], {
+      strict: true,
+      noEmit: true,
+    });
+    const findings = generatedTypeDiagnostics(program, [target], [owner]);
+    assert.equal(findings.length, 3);
+    assert.match(findings[0]?.message ?? "", /Message/);
+    assert.match(findings[1]?.message ?? "", /State/);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("union switches require a terminating or never-checked default", async () => {
+  const { switchDefaultDiagnostics } = await import("../enum-literals.ts");
+  const directory = mkdtempSync(path.join(tmpdir(), "studio-switch-policy-"));
+  try {
+    const target = path.join(directory, "consumer.ts");
+    writeFileSync(
+      target,
+      `
+      type State = "open" | "closed";
+      declare const item: { state: State; count: number; mode: 1 | 2 };
+      declare function assertNever(value: never): never;
+      declare const unrelated: never;
+      switch (item.state) { case "open": break; default: console.log(item.state); }
+      switch (item.state) { case "open": break; default: returnValue(); }
+      switch (item.state) { case "open": break; default: throw new Error(); }
+      function done() { switch (item.state) { default: return; } }
+      function checked(value: { state: State }) { switch (value.state) { case "open": break; case "closed": break; default: assertNever(value.state); } }
+      function binding(value: { state: State }) { switch (value.state) { case "open": break; case "closed": break; default: { const exhaustive: never = value.state; } } }
+      switch (item.count) { default: console.log(item.count); }
+      switch (item.mode) { default: console.log(item.mode); }
+      function wrong(value: { state: State }) { switch (value.state) { default: assertNever(unrelated); } }
+      function returnValue() { return 1; }
+    `,
+    );
+    const program = ts.createProgram([target], { strict: true, noEmit: true });
+    const findings = switchDefaultDiagnostics(program, [target]);
+    assert.equal(
+      findings.length,
+      4,
+      findings.map((item) => item.text).join("\n"),
+    );
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
