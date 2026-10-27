@@ -6,6 +6,7 @@ use rusqlite::{OptionalExtension, Transaction};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::BTreeSet;
+pub use studio_runtime_schema::persistence::RemoteOutcome as LocationOutcome;
 use studio_runtime_store::{
     ProjectLocationsRepository as Repository, ProjectsRepository, RuntimeStore,
 };
@@ -23,13 +24,6 @@ pub struct LocationResult {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
 }
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum LocationOutcome {
-    Applied,
-    NotApplied,
-    Unknown,
-}
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LocationValue {
@@ -40,14 +34,162 @@ pub struct LocationValue {
     pub canonical_path: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub project_id: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub git_origin: Option<String>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "present_nullable"
+    )]
+    pub git_origin: Option<Option<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub home_project_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub request_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub removed: Option<bool>,
+}
+
+fn present_nullable<'de, D, T>(deserializer: D) -> Result<Option<Option<T>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    Option::<T>::deserialize(deserializer).map(Some)
+}
+
+#[cfg(test)]
+mod receipt_tests {
+    use super::*;
+    use studio_runtime_schema::persistence::RequestIdentity;
+    use studio_runtime_store::request_results::{Admission, RequestResults};
+
+    #[test]
+    fn location_reply_preserves_missing_and_null_origin() {
+        for value in [
+            json!({"serverId":"peer"}),
+            json!({"serverId":"peer","gitOrigin":null}),
+            json!({"serverId":"peer","gitOrigin":"origin"}),
+        ] {
+            let parsed: LocationValue =
+                serde_json::from_value(value.clone()).expect("location value");
+            assert_eq!(json!(parsed), value);
+        }
+        assert!(
+            serde_json::from_value::<LocationResult>(
+                json!({"requestId":"request","outcome":"other"})
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn hidden_project_completes_pending_location_once() {
+        let fixture: Value =
+            serde_json::from_str(include_str!("../tests/relocation/oracle.json")).expect("fixture");
+        let case = &fixture["cases"][0];
+        let mut raw = case["outbox"].clone();
+        let key = raw["id"].as_str().expect("operation").to_owned();
+        let signature = raw["body"]["payload"]["signature"]
+            .as_str()
+            .expect("signature");
+        let identity = RequestIdentity::new(
+            "project-location",
+            &["local-fixture", "ui"],
+            &RequestIdentity::issue_root(),
+            &["location"],
+        )
+        .expect("identity");
+        let now_ms = identity.issued_ms();
+        let mut db = rusqlite::Connection::open_in_memory().expect("database");
+        db.execute_batch("CREATE TABLE runtime_projects(id TEXT PRIMARY KEY,record TEXT NOT NULL);
+            CREATE TABLE sync_entities(collection TEXT,id TEXT,seq INTEGER,hash TEXT,payload TEXT,deleted INTEGER,PRIMARY KEY(collection,id));
+            CREATE TABLE sync_documents(seq INTEGER);
+            CREATE TABLE sync_versions(seq INTEGER);
+            CREATE TABLE runtime_orchestration_settings(id TEXT,record TEXT);
+            CREATE TABLE runtime_server_outbox(id TEXT PRIMARY KEY,server TEXT,body TEXT,state TEXT,result TEXT,error TEXT,fingerprint TEXT,attempts INTEGER DEFAULT 0,created_at REAL DEFAULT 0,completed_at REAL DEFAULT 0);").expect("schema");
+        studio_runtime_store::receipt_schema::create(&db).expect("request schema");
+        let tx = db.transaction().expect("transaction");
+        let Admission::Fresh(admitted) =
+            RequestResults::admit(&tx, &identity, signature, now_ms).expect("admit")
+        else {
+            panic!("fresh request")
+        };
+        raw["body"]["payload"]["resultId"] = json!(admitted.id());
+        ProjectsRepository::put_project(&tx, &case["project"]).expect("project");
+        ProjectsRepository::put_location_request(&tx, "/home-project", &key, &admitted)
+            .expect("intent");
+        tx.execute(
+            "INSERT INTO runtime_server_outbox(id,server,body,state) VALUES(?1,'peer',?2,'queued')",
+            rusqlite::params![key, raw["body"].to_string()],
+        )
+        .expect("transport");
+        ProjectsRepository::remove(&tx, "/home-project").expect("hide");
+        let unknown = json!({"requestId":key,"outcome":"unknown"});
+        complete_in_transaction(
+            &tx,
+            &key,
+            "peer",
+            &raw["body"],
+            &unknown,
+            "local-fixture",
+            now_ms as f64 / 1000.0,
+        )
+        .expect("unknown");
+        assert!(
+            ProjectsRepository::location_request(&tx, "/home-project", &key)
+                .expect("intent")
+                .is_some()
+        );
+        complete_in_transaction(
+            &tx,
+            &key,
+            "peer",
+            &raw["body"],
+            &case["receipt"],
+            "local-fixture",
+            now_ms as f64 / 1000.0,
+        )
+        .expect("complete");
+        let project = ProjectsRepository::get(&tx, "/home-project")
+            .expect("owner")
+            .expect("retained")
+            .1;
+        assert_eq!(project["sidebarHidden"], true);
+        assert_eq!(
+            project["locations"],
+            case["expected"]["project"]["locations"]
+        );
+        assert!(ProjectsRepository::list(&tx).expect("sidebar").is_empty());
+        assert!(
+            ProjectsRepository::location_request(&tx, "/home-project", &key)
+                .expect("settled intent")
+                .is_none()
+        );
+        let result = crate::event_write::replay_request::<LocationResult>(
+            &tx,
+            admitted.id(),
+            signature,
+            now_ms,
+        )
+        .expect("replay")
+        .expect("reply");
+        assert_eq!(json!(result.reply), case["receipt"]);
+        apply_completed_in_transaction(
+            &tx,
+            &key,
+            "peer",
+            &case["receipt"],
+            "local-fixture",
+            now_ms as f64 / 1000.0,
+        )
+        .expect("repeat");
+        assert_eq!(
+            ProjectsRepository::get(&tx, "/home-project")
+                .expect("owner")
+                .expect("retained")
+                .1,
+            project
+        );
+    }
 }
 
 #[derive(Clone, Copy, Deserialize, PartialEq)]
