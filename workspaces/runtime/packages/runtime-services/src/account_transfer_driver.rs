@@ -18,8 +18,8 @@ pub fn load(tx: &Transaction<'_>, id: &str) -> Result<Snapshot, TransferError> {
             "store-bootstrap/account-transfer-schema",
         ));
     }
-    let raw = Repository::get(tx, id)?.ok_or(TransferError::Refused("Unknown account transfer"))?;
-    let op: Value = serde_json::from_str(&raw).map_err(studio_runtime_store::StoreError::from)?;
+    let (op, raw) = Repository::get_with_raw(tx, id)?
+        .ok_or(TransferError::Refused("Unknown account transfer"))?;
     let mut ids = op["members"]
         .as_object()
         .map(|m| m.keys().cloned().collect::<Vec<_>>())
@@ -447,9 +447,6 @@ fn persist(tx: &Transaction<'_>, mut decision: Decision, now: f64) -> Result<Val
         .map(|id| Repository::get(tx, id))
         .transpose()?
         .flatten()
-        .map(|raw| serde_json::from_str::<Value>(&raw))
-        .transpose()
-        .map_err(studio_runtime_store::StoreError::from)?
         .and_then(|op| op["created"].as_f64());
     decision.stamp(now, previous_created)?;
     let raw = decision.encoded()?;
@@ -935,9 +932,7 @@ mod background_read_compat_tests {
                 _ => {
                     store
                         .transaction(move |tx| {
-                            let mut op: Value = serde_json::from_str(
-                                &Repository::get(tx, TRANSFER)?.expect("transfer"),
-                            )?;
+                            let mut op = Repository::get(tx, TRANSFER)?.expect("transfer");
                             let saved =
                                 &mut op["members"]["member"]["providerReadIntents"][TURN_READ];
                             match change {
@@ -1111,9 +1106,7 @@ mod background_read_compat_tests {
                 _ => {
                     store
                         .transaction(move |tx| {
-                            let mut operation: Value = serde_json::from_str(
-                                &Repository::get(tx, TRANSFER)?.expect("transfer"),
-                            )?;
+                            let mut operation = Repository::get(tx, TRANSFER)?.expect("transfer");
                             let saved =
                                 &mut operation["members"]["member"]["providerReadIntents"][READ];
                             match change {
@@ -2125,12 +2118,11 @@ mod request_tests {
                 .contains("verified source monitor ownership")
         );
         let before=run_async(store.transaction(|tx| {
-            let raw=Repository::get(tx,transfer)?.expect("transfer remains");
-            let operation:Value=serde_json::from_str(&raw)?;
+            let operation=Repository::get(tx,transfer)?.expect("transfer remains");
             assert!(operation["members"]["lead"]["waiting"].as_str().expect("visible wait reason").contains("verified source monitor ownership"));
             assert_eq!(operation["members"]["lead"]["phase"],"lazy");
             tx.execute_batch("CREATE TRIGGER no_repeated_transfer_write BEFORE UPDATE ON runtime_account_transfers BEGIN SELECT RAISE(ABORT,'repeated transfer write'); END; CREATE TRIGGER no_repeated_actor_write BEFORE UPDATE ON runtime_agents BEGIN SELECT RAISE(ABORT,'repeated actor write'); END;")?;
-            Ok(raw)
+            Ok(operation)
         })).expect("save the wait and install no-write guards");
         let second = run_async(execute_member(&store, &NoNative, transfer, "lead", 3.0))
             .expect_err("the same blocker remains read-only");
