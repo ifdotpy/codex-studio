@@ -181,7 +181,13 @@ mod tests {
     }
     #[test]
     fn native_sse_flow_control_reaches_the_existing_client_service() {
-        for method in ["view.subscribe", "view.next", "view.unsubscribe"] {
+        for method in [
+            "view.subscribe",
+            "view.next",
+            "view.resume",
+            "view.restart",
+            "view.unsubscribe",
+        ] {
             assert!(super::connected_view_method(method), "{method}");
         }
         for method in ["view.reset", "view.next.other", "views.next", "api.delete"] {
@@ -284,7 +290,10 @@ fn approved_peer(
 }
 
 fn connected_view_method(method: &str) -> bool {
-    matches!(method, "view.subscribe" | "view.next" | "view.unsubscribe")
+    matches!(
+        method,
+        "view.subscribe" | "view.next" | "view.resume" | "view.restart" | "view.unsubscribe"
+    )
 }
 
 #[tauri::command]

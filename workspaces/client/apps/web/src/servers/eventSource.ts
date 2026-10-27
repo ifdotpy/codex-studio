@@ -1,7 +1,10 @@
 import { hasNativeClient } from "../native/client";
+import { NativeEventSource } from "../native/stream";
 import { apiOrigin, serverFetch } from "./transport";
 import { serverViewId, isolatedServerView } from "./environment";
 
+/** A lost native connection; the core reconnects at `retryAt` (epoch ms). */
+export type NativeStreamRetry = { opened: boolean; retryAt: number };
 type EventSourceHandlers = {
   [K in "onopen" | "onerror"]: OmitThisParameter<
     NonNullable<EventSource[K]>
@@ -11,6 +14,14 @@ export type ServerEventSource = Pick<EventSource, "close"> &
   EventSourceHandlers &
   Pick<EventTarget, "addEventListener"> & {
     holdUntil?(ready: Promise<unknown>): void;
+    /**
+     * Only a native source has these. The native core reconnects by itself
+     * (see native/stream.ts); the page reports, answers and never retries.
+     */
+    onretry?: ((detail: NativeStreamRetry) => void) | null;
+    onresume?: (() => void) | null;
+    resume?(path: string): void;
+    restart?(reason: string): void;
   };
 export class EventStreamParser {
   private buffer = "";
@@ -144,6 +155,8 @@ export function openServerEvents(
   url: string,
   options?: { backpressure?: boolean },
 ): ServerEventSource {
+  // The same condition sends this page's requests to the native client.
+  if (hasNativeClient() && !serverViewId) return new NativeEventSource(url);
   return options?.backpressure ||
     hasNativeClient() ||
     (serverViewId && (serverViewId !== "local" || isolatedServerView))

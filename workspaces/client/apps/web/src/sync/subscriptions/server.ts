@@ -1,4 +1,6 @@
 import { SignedEventSource } from "../../servers/eventSource";
+import { hasNativeClient } from "../../native/client";
+import { NativeEventSource } from "../../native/stream";
 import type { createApiScope } from "../../api";
 import type { createSyncClient } from "../client";
 import {
@@ -31,11 +33,14 @@ export function createServerSubscriptions(options: ServerSubscriptionOptions) {
       persistStagedEntityTransfer: (...args) =>
         sync().persistStagedEntityTransfer(...args),
     },
+    // The local server's requests use the native client there (serverServices.ts).
     openEvents: (url) =>
-      new SignedEventSource(
-        new URL(url, owner.origin).href,
-        api.fetchApiRequest,
-      ),
+      owner.id === "local" && hasNativeClient()
+        ? new NativeEventSource(url)
+        : new SignedEventSource(
+            new URL(url, owner.origin).href,
+            api.fetchApiRequest,
+          ),
     storageName: (name) =>
       owner.id === "local" ? name : `${name}:server:${owner.id}`,
   });
