@@ -230,6 +230,28 @@ it("does not rescan an idle outbox on a timer", async () => {
   unmount();
 });
 
+it("drains valid messages despite a malformed persisted row", async () => {
+  const fixture = databaseFixture([
+    { id: "invalid", status: "queued", created: 0 },
+    {
+      id: "valid",
+      body: { id: "valid", room: "chat", text: "hello" },
+      status: "queued",
+      created: 1,
+    },
+  ]);
+  fixture.docs[0]!.payload = "null";
+  mocks.syncDatabase.mockResolvedValue(fixture.database);
+  mocks.syncGet.mockResolvedValue({ workspaceId: "workspace" });
+  mocks.refreshSession.mockResolvedValue({ token: "session" });
+  mocks.syncPost.mockResolvedValue({ id: "valid", status: "accepted" });
+  const unmount = mount();
+  await flushMicrotasks();
+  expect(mocks.syncPost).toHaveBeenCalledTimes(1);
+  expect(fixture.docs[0]!.payload).toBe("null");
+  unmount();
+});
+
 it("retries a failed subscription once after the backoff deadline", async () => {
   const fixture = databaseFixture();
   mocks.syncDatabase
