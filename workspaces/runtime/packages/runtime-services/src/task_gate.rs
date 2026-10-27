@@ -18,7 +18,7 @@ pub fn normalize(value: &Value) -> Result<Value, EventWriteError> {
 pub fn set_default(
     tx: &Transaction<'_>,
     actor_id: &str,
-    gate: &Value,
+    gate: &Option<studio_runtime_schema::task_gate::Gate>,
     request_id: Option<&str>,
     signature: &str,
 ) -> Result<Value, EventWriteError> {
@@ -28,7 +28,7 @@ pub fn set_default(
             "Only the lead can set the default acceptance gate",
         ));
     }
-    let gate = normalize(gate)?;
+    let gate = json!(gate);
     if let Some(saved) =
         event_write::read_receipt(tx, request_id, signature, "runtime_agents", actor_id, |v| {
             v["id"] == actor_id && v.get("defaultGate").is_some()

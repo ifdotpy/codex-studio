@@ -867,7 +867,7 @@ fn accepted_archive_due_records(
 }
 
 pub struct CreateWork {
-    pub gate: Option<Value>,
+    pub gate: Option<Option<studio_runtime_schema::task_gate::Gate>>,
     pub actor_id: String,
     pub title: String,
     pub description: String,
@@ -884,7 +884,7 @@ pub enum WorkActorWrite {
 
 pub enum WorkMutation {
     Update {
-        gate: Option<Value>,
+        gate: Option<Option<studio_runtime_schema::task_gate::Gate>>,
         task_id: String,
         version: Option<i64>,
         title: Option<String>,
@@ -1437,12 +1437,13 @@ pub fn task_command(
         Field::Null => Some(Value::Null),
         Field::Value(value) => Some(value),
     };
-    let provided_gate = |field| match field {
-        Field::Missing => None,
-        Field::Null => Some(Value::Null),
-        Field::Value(value) => Some(studio_runtime_schema::task_gate::GateInput::into_value(
-            value,
-        )),
+    let provided_gate = |field: Field<studio_runtime_schema::task_gate::GateInput>| match field {
+        Field::Missing => Ok(None),
+        Field::Null => Ok(Some(None)),
+        Field::Value(value) => value
+            .normalize()
+            .map(|gate| Some(Some(gate)))
+            .map_err(Error::InvalidRequest),
     };
     Ok(match command {
         TaskCommand::Create {
@@ -1461,7 +1462,7 @@ pub fn task_command(
             status,
             dependencies,
             result_schema: provided(result_schema),
-            gate: provided_gate(gate),
+            gate: provided_gate(gate)?,
         }),
         TaskCommand::Update {
             task_id,
@@ -1486,7 +1487,7 @@ pub fn task_command(
             status,
             dependencies,
             result_schema: provided(result_schema),
-            gate: provided_gate(gate),
+            gate: provided_gate(gate)?,
         }),
         TaskCommand::Cancel {
             task_id,
@@ -2419,14 +2420,16 @@ fn create(
     let id = work_id(event_write::unix_time()?);
     let dependencies = unique(input.dependencies);
     validate_dependencies(tx, &agent.root_id.0, &id, &dependencies)?;
-    let gate = crate::task_gate::normalize(
-        input.gate.as_ref().unwrap_or(
+    let gate = if let Some(gate) = input.gate {
+        json!(gate)
+    } else {
+        crate::task_gate::normalize(
             root_agent(tx, agent)?
                 .extra
                 .get("taskDefaultGate")
                 .unwrap_or(&Value::Null),
-        ),
-    )?;
+        )?
+    };
     let mut work = json!({
         "gate":gate,
         "id": id, "rootId": agent.root_id.0, "title": title, "description": description,
@@ -2523,7 +2526,7 @@ fn mutate(
                 work["resultSchema"] = schema;
             }
             if let Some(gate) = gate {
-                work["gate"] = crate::task_gate::normalize(&gate)?;
+                work["gate"] = json!(gate);
             }
             if let Some(title) = title {
                 work["title"] = json!(text(&title, false)?);
