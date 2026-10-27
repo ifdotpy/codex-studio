@@ -1010,6 +1010,24 @@ export function gateSteps(root: string, name: string): GateStep[] {
         requires: "workspace",
         crateReuse: true,
       },
+      ...(fast ? ["ControlInvocation", "provider_receipt"] : [""]).map(
+        (filter) => ({
+          ...cargo(
+            `services-doctests${filter ? `-${filter}` : ""}`,
+            "Runtime services doctests",
+            [
+              "test",
+              "--locked",
+              "-p",
+              "studio-runtime-services",
+              "--doc",
+              ...(filter ? [filter] : []),
+            ],
+          ),
+          requires: "workspace",
+          crateReuse: true,
+        }),
+      ),
       ...(!fast
         ? [
             {
@@ -1148,6 +1166,7 @@ export function gateSteps(root: string, name: string): GateStep[] {
         id: "root-lint",
         label: "repository lint policy",
         lane: "js",
+        requires: "wasm",
         item: tooling,
         options: { script: "lint:all", allowZeroTests: true },
       },
