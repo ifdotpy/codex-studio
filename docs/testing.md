@@ -51,7 +51,11 @@ its two-tab owner lease, orphan cleanup and cancellation assertions need Chromiu
 and Web Locks. The [smoke selector](../workspaces/client/apps/web/package.json)
 includes it, while deterministic transfer assembly remains in the short unit tier.
 Hosted Rust jobs build only the renderer bundle; API drift and TypeScript checks
-run once in their owning jobs. Run it on the exact commit before every push to `main` and before packaging for
+run once in their owning jobs. The hosted test builder runs native tests with its
+installed WebView libraries. It builds the full workspace but archives only the
+remaining test binaries, so the Rust partitions need no WebView installation.
+The complementary selections are owned by the [Just recipes](../justfile).
+Run it on the exact commit before every push to `main` and before packaging for
 installation. Run `just test-fast` before every PR and merge and state its result
 in the PR. Workers run focused witnesses; the lead runs these gates on the
 integrated batch.

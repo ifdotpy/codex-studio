@@ -451,6 +451,39 @@ require('node:fs').appendFileSync(process.env.CAPTURE, JSON.stringify({args: pro
   }
 });
 
+test("hosted shards omit native binaries while the prepared builder runs them", () => {
+  const workflow = readFileSync(".github/workflows/ci.yml", "utf8");
+  const builder = workflow
+    .split("  rust-build-tests:\n")[1]
+    ?.split("  fast-rest:\n")[0];
+  const shards = workflow
+    .split("  fast-rust:\n")[1]
+    ?.split("  fast-browser-smoke:\n")[0];
+  assert.ok(builder);
+  assert.ok(shards);
+  assert.match(builder, /run: just test-native-ci/);
+  assert.doesNotMatch(shards, /native-linux-deps|apt-get/);
+
+  const nativePackage = /^name = "([^"]+)"/m.exec(
+    readFileSync("workspaces/client/apps/native/src-tauri/Cargo.toml", "utf8"),
+  )?.[1];
+  assert.ok(nativePackage);
+  const filter = `package(=${nativePackage})`;
+  for (const [recipe, expected] of [
+    [["test-native-ci"], `-E '${filter}'`],
+    [["build-rust-test-archive", "archive.tar.zst"], `-E 'not ${filter}'`],
+  ] as const) {
+    const result = spawnSync("just", ["--dry-run", ...recipe], {
+      encoding: "utf8",
+      timeout: 10_000,
+    });
+    assert.equal(result.status, 0, result.stderr);
+    assert.ok(result.stderr.includes(expected), result.stderr);
+    assert.match(result.stderr, /--workspace --locked/);
+    assert.doesNotMatch(result.stderr, /--exclude|--package| -p /);
+  }
+});
+
 test("native platform filter keeps every common clause identical", () => {
   const source = readFileSync(".config/nextest.toml", "utf8");
   const [common, linux] = [
