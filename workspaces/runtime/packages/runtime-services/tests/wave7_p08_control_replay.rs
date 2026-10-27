@@ -221,7 +221,12 @@ async fn restart_at_each_control_transport_boundary_never_resends_an_uncertain_m
                     Arc::new(RetainedClaudeSession::new(owner.clone())),
                 );
                 let request = || {
-                    ControlRequest::from_value(&json!({"id":"agent","action":action,"request_id":"control-one","turn_id":"two","settings":{"permissionMode":"plan"}})).expect("request")
+                    let body = if action == "rollback" {
+                        json!({"id":"agent","action":action,"request_id":"control-one","turn_id":"two"})
+                    } else {
+                        json!({"id":"agent","action":action,"request_id":"control-one","settings":{"permissionMode":"plan"}})
+                    };
+                    serde_json::from_value::<ControlRequest>(body).expect("request")
                 };
                 tokio::select! {
                     _ = owner.reached.notified() => {},

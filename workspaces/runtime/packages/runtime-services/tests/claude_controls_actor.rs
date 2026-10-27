@@ -110,7 +110,7 @@ async fn stored_control_replay_and_unknown_never_repeat_native_write() {
         }
 
         let request = || {
-            ControlRequest::from_value(&json!({"id":"agent","action":"rollback","request_id":"control-one","turn_id":"two"})).expect("valid fixture")
+            serde_json::from_value::<ControlRequest>(json!({"id":"agent","action":"rollback","request_id":"control-one","turn_id":"two"})).expect("valid fixture")
         };
         let first = service.execute(request()).await;
         assert_eq!(
@@ -280,7 +280,7 @@ async fn durable_control_store_boundaries_resume_or_hold_without_duplicate_write
             });
             let service = Controls::new(cut.clone(), native.clone());
             let request = || {
-                ControlRequest::from_value(&json!({"id":"agent","action":"rollback","request_id":"control-one","turn_id":"two"})).expect("valid fixture")
+                serde_json::from_value::<ControlRequest>(json!({"id":"agent","action":"rollback","request_id":"control-one","turn_id":"two"})).expect("valid fixture")
             };
             tokio::select! { _=cut.reached.notified()=>{}, result=service.execute(request())=>panic!("{step}/{after}: unexpected completion {}",result.is_ok()) }
             drop(service);
@@ -391,13 +391,19 @@ async fn combined_rewind_for_image_workspace_settles_history_and_replays_once() 
     );
     let body = json!({"id":"agent","action":"rollback","turn_id":"two","request_id":"combined","restore_files":true});
     let result = controls
-        .execute(ControlRequest::from_value(&body).expect("rollback request parses"))
+        .execute(
+            serde_json::from_value::<ControlRequest>(body.clone())
+                .expect("rollback request parses"),
+        )
         .await
         .expect("combined rewind succeeds");
     assert_eq!(result["filesRestored"], true);
     assert_eq!(
         controls
-            .execute(ControlRequest::from_value(&body).expect("replay request parses"))
+            .execute(
+                serde_json::from_value::<ControlRequest>(body.clone())
+                    .expect("replay request parses")
+            )
             .await
             .expect("combined rewind replay succeeds"),
         result
@@ -429,7 +435,10 @@ async fn combined_rewind_for_image_workspace_settles_history_and_replays_once() 
     changed["restore_files"] = json!(false);
     assert!(matches!(
         controls
-            .execute(ControlRequest::from_value(&changed).expect("changed request parses"))
+            .execute(
+                serde_json::from_value::<ControlRequest>(changed.clone())
+                    .expect("changed request parses")
+            )
             .await,
         Err(ControlError::Conflict)
     ));
@@ -453,7 +462,7 @@ async fn combined_rewind_rejection_holds_the_workspace_for_recovery() {
         Arc::new(RewindNative(Mutex::new(vec![]), true)),
     );
     let request = || {
-        ControlRequest::from_value(&json!({"id":"agent","action":"rollback","turn_id":"two","request_id":"combined","restore_files":true})).expect("rollback request parses")
+        serde_json::from_value::<ControlRequest>(json!({"id":"agent","action":"rollback","turn_id":"two","request_id":"combined","restore_files":true})).expect("rollback request parses")
     };
     assert!(matches!(
         controls.execute(request()).await,
@@ -522,7 +531,7 @@ async fn separate_control_instances_cannot_release_an_in_progress_rewind() {
         native.clone(),
     );
     let request = || {
-        ControlRequest::from_value(&json!({"id":"agent","action":"rollback","turn_id":"two","request_id":"race","restore_files":true})).expect("rollback request parses")
+        serde_json::from_value::<ControlRequest>(json!({"id":"agent","action":"rollback","turn_id":"two","request_id":"race","restore_files":true})).expect("rollback request parses")
     };
     let first_request = request();
     let task = tokio::spawn(async move { first.execute(first_request).await });
@@ -583,7 +592,7 @@ async fn stale_failure_cannot_clear_a_newer_durable_submission() {
             .expect("runtime store opens"),
     );
     let adapter = StoredControls::new(store.clone(), Arc::new(|_| {}));
-    let request=ControlRequest::from_value(&json!({"id":"agent","action":"rollback","turn_id":"two","request_id":"race","restore_files":true})).expect("rollback request parses");
+    let request=serde_json::from_value::<ControlRequest>(json!({"id":"agent","action":"rollback","turn_id":"two","request_id":"race","restore_files":true})).expect("rollback request parses");
     let binding = ControlBinding::new("account".into(), "connection".into(), 1)
         .expect("control binding validates");
     let stale = adapter
@@ -679,7 +688,7 @@ async fn definite_not_sent_releases_and_retries_the_same_request_after_fresh_idl
         native.clone(),
     );
     let request = || {
-        ControlRequest::from_value(&json!({"id":"agent","action":"rollback","turn_id":"two","request_id":"not-sent","restore_files":true})).expect("rollback request parses")
+        serde_json::from_value::<ControlRequest>(json!({"id":"agent","action":"rollback","turn_id":"two","request_id":"not-sent","restore_files":true})).expect("rollback request parses")
     };
     assert!(matches!(
         controls.execute(request()).await,
@@ -768,7 +777,7 @@ async fn quota_preparation_refusal_releases_and_retries_after_fresh_idle_proof()
         native.clone(),
     );
     let request = || {
-        ControlRequest::from_value(&json!({"id":"agent","action":"rollback","turn_id":"two","request_id":"quota-refusal","restore_files":true})).expect("rollback request parses")
+        serde_json::from_value::<ControlRequest>(json!({"id":"agent","action":"rollback","turn_id":"two","request_id":"quota-refusal","restore_files":true})).expect("rollback request parses")
     };
     assert!(matches!(
         controls.execute(request()).await,
@@ -867,7 +876,7 @@ async fn rewind_rejection_preserves_the_reason_without_claiming_no_file_effects(
         Arc::new(StoredControls::new(store.clone(), Arc::new(|_| {}))),
         Arc::new(RejectedRewind(RewindNative(Mutex::new(vec![]), false))),
     );
-    let request = ControlRequest::from_value(&json!({"id":"agent","action":"rollback","turn_id":"two","request_id":"quota","restore_files":true})).expect("rollback request parses");
+    let request = serde_json::from_value::<ControlRequest>(json!({"id":"agent","action":"rollback","turn_id":"two","request_id":"quota","restore_files":true})).expect("rollback request parses");
     let result = controls.execute(request).await;
     assert!(
         matches!(&result, Err(ControlError::RewindRejected(message)) if message.contains("only one file"))
@@ -939,13 +948,13 @@ async fn live_permissions_claude_control_applies_while_running_and_pending_witho
                 )),
                 native.clone(),
             );
-            let other_setting = ControlRequest::from_value(&json!({"id":"agent","action":"settings","request_id":"thinking","settings":{"permissionMode":"default","thinking":false}})).expect("request");
+            let other_setting = serde_json::from_value::<ControlRequest>(json!({"id":"agent","action":"settings","request_id":"thinking","settings":{"permissionMode":"default","thinking":false}})).expect("request");
             assert!(matches!(
                 service.execute(other_setting).await,
                 Err(ControlError::Busy)
             ));
 
-            let request = ControlRequest::from_value(&json!({"id":"agent","action":"settings","request_id":"live-permission","settings":{"permissionMode":"bypassPermissions","thinking":true}})).expect("request");
+            let request = serde_json::from_value::<ControlRequest>(json!({"id":"agent","action":"settings","request_id":"live-permission","settings":{"permissionMode":"bypassPermissions","thinking":true}})).expect("request");
             let result = service.execute(request.clone()).await;
             assert_eq!(result.is_ok(), !fail, "{status}: {result:?}");
             let agent = AgentRepository::get(

@@ -49,6 +49,8 @@ impl Native {
                 json!({"tasks":[],"turns":[{"id":"one","status":"completed","canRestoreFiles":true},{"id":"two","status":"completed","canRestoreFiles":true}]})
             }
             "thread/queue/list" => json!({"data":[]}),
+            "claude/settings" => json!({"settings":p["settings"]}),
+            "claude/stopTask" => json!({"stopped":true}),
             "thread/rollback" => {
                 let id = p["requestId"].as_str().unwrap();
                 if self.full.load(Ordering::SeqCst) || ["partial", "wrong-id"].contains(&id) {
@@ -279,6 +281,81 @@ fn agent(store: &RuntimeStore) -> Value {
         .unwrap()
         .unwrap()
         .value()
+}
+
+#[tokio::test]
+async fn claude_control_session_reads_and_stop_keep_dispatch() {
+    let (_root, _store, app, mut worker, native) = fixture().await;
+    for (action, expected) in [("state", 200), ("commands", 409), ("stop_task", 200)] {
+        let body = if action == "stop_task" {
+            json!({"id":"agent","action":action,"task_id":"task"})
+        } else {
+            json!({"id":"agent","action":action})
+        };
+        let result = post(&app, "/api/claude/session", body).await;
+        assert_eq!(result.0, expected, "{action}: {result:?}");
+    }
+    let methods: Vec<Value> = native
+        .calls
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|call| call["method"].clone())
+        .collect();
+    assert_eq!(
+        methods,
+        json!(["claude/state", "claude/stopTask"])
+            .as_array()
+            .unwrap()
+            .clone()
+    );
+    worker.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn claude_control_settings_ingress_and_exact_receipt_replay() {
+    let (_root, store, app, mut worker, native) = fixture().await;
+    for body in [
+        json!({"id":"agent","action":"settings","settings":{}}),
+        json!({"id":"agent","action":"settings","request_id":null,"settings":{}}),
+        json!({"id":"agent","action":"settings","request_id":"","settings":{}}),
+        json!({"id":"agent","action":"settings","request_id":"invalid","settings":{"thinking":null}}),
+        json!({"id":"agent","action":"settings","request_id":"invalid","settings":{"permissionMode":null}}),
+        json!({"id":"agent","action":"settings","request_id":"invalid","settings":{},"turn_id":"two"}),
+        json!({"id":"agent","action":"rollback","request_id":"invalid","turn_id":"two","settings":{}}),
+    ] {
+        let result = post(&app, "/api/claude/session", body).await;
+        assert_eq!(result.0, 400, "{result:?}");
+    }
+    assert!(native.calls.lock().unwrap().is_empty());
+    assert!(agent(&store)["workspaceReservationId"].is_null());
+
+    let body = json!({"id":"agent","action":"settings","request_id":"settings-one","settings":{"permissionMode":"plan","thinking":false,"autoCompactWindow":null}});
+    let result = post(&app, "/api/claude/session", body.clone()).await;
+    assert_eq!(result.0, 200, "{result:?}");
+    assert_eq!(agent(&store)["claudeOptions"], body["settings"]);
+    assert_eq!(agent(&store)["yoloMode"], false);
+    let calls = native.calls.lock().unwrap().clone();
+    assert_eq!(
+        calls
+            .iter()
+            .filter(|call| call["method"] == "claude/settings")
+            .count(),
+        1
+    );
+    let replay = post(&app, "/api/claude/session", body.clone()).await;
+    assert_eq!(replay, result);
+    assert_eq!(*native.calls.lock().unwrap(), calls);
+
+    let mut conflict = body;
+    conflict["settings"]
+        .as_object_mut()
+        .unwrap()
+        .remove("autoCompactWindow");
+    let conflict = post(&app, "/api/claude/session", conflict).await;
+    assert_eq!(conflict.0, 409, "{conflict:?}");
+    assert_eq!(*native.calls.lock().unwrap(), calls);
+    worker.shutdown().await.unwrap();
 }
 
 #[tokio::test]

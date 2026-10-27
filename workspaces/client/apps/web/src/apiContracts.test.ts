@@ -274,6 +274,50 @@ function generatedFacadeRequestAssertions() {
   post("/api/accounts/default");
   // @ts-expect-error queue actions are limited to the generated discriminator values
   post("/api/queue", { action: "unknown" });
+  post("/api/claude/session", {
+    action: "settings",
+    id: "agent",
+    request_id: "settings-one",
+    settings: {
+      thinking: true,
+      permissionMode: "plan",
+      autoCompactWindow: null,
+    },
+  });
+  // @ts-expect-error settings mutations require a durable request identity
+  post("/api/claude/session", {
+    action: "settings",
+    id: "agent",
+    settings: {},
+  });
+  post("/api/claude/session", {
+    action: "settings",
+    id: "agent",
+    request_id: "one",
+    // @ts-expect-error thinking may be absent but cannot be null
+    settings: { thinking: null },
+  });
+  post("/api/claude/session", {
+    action: "settings",
+    id: "agent",
+    request_id: "one",
+    // @ts-expect-error permissionMode may be absent but cannot be null
+    settings: { permissionMode: null },
+  });
+  post("/api/claude/session", {
+    action: "rollback",
+    id: "agent",
+    request_id: "one",
+    turn_id: "turn",
+    // @ts-expect-error rollback arguments cannot carry settings
+    settings: {},
+  });
+  // @ts-expect-error rollback requires its target turn
+  post("/api/claude/session", {
+    action: "rollback",
+    id: "agent",
+    request_id: "one",
+  });
 }
 void generatedFacadeRequestAssertions;
 

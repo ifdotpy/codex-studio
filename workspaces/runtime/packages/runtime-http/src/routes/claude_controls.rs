@@ -100,8 +100,17 @@ async fn repair_report(
 
 async fn session(
     State(state): State<HttpState>,
-    ApiJson(body): ApiJson<Value>,
+    ApiJson(body): ApiJson<crate::generated::ClaudeSessionApiClaudeSessionPostRequest>,
 ) -> Result<Json<Value>, ApiError> {
+    use crate::generated::ClaudeSessionApiClaudeSessionPostRequest as SessionRequest;
+    let control_request: Option<ControlRequest> = match &body {
+        SessionRequest::ClaudeSessionSettingsRequest(request)
+        | SessionRequest::ClaudeSessionRollbackRequest(request) => Some(request.clone()),
+        SessionRequest::ClaudeSessionCommandRequest(_)
+        | SessionRequest::ClaudeSessionStateRequest(_)
+        | SessionRequest::ClaudeSessionStopTaskRequest(_) => None,
+    };
+    let body = serde_json::to_value(body).map_err(|_| ApiError::internal())?;
     let action = body
         .get("action")
         .and_then(Value::as_str)
@@ -133,11 +142,6 @@ async fn session(
         operation.clone(),
     )
     .map_err(control_error)?;
-    let control_request = if matches!(action, "settings" | "rollback") {
-        Some(ControlRequest::from_value(&body).map_err(control_error)?)
-    } else {
-        None
-    };
     let account = if action == "state" {
         agent
             .get("lazyAccountTransfer")

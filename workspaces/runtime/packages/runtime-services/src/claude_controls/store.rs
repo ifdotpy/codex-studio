@@ -51,7 +51,7 @@ fn now() -> f64 {
 }
 impl ControlStorage for StoredControls {
     fn execution_key(&self, request: &ControlRequest) -> String {
-        format!("{}:{}", self.store.state_dir().display(), request.id)
+        format!("{}:{}", self.store.state_dir().display(), request.id())
     }
 
     fn reserve(
@@ -61,10 +61,10 @@ impl ControlStorage for StoredControls {
     ) -> ControlFuture<'_, ControlSnapshot> {
         let store = self.store.clone();
         Box::pin(async move {
-            let workspace = checkpoints::capture_context(&store, &request.id)
+            let workspace = checkpoints::capture_context(&store, request.id())
                 .await
                 .map_err(|_| ControlError::Unavailable)?;
-            let request_id = request.id.clone();
+            let request_id = request.id().to_owned();
             let operation_id = request.operation_id();
             let saved = store
                 .transaction(move |tx| Repository::load(tx, &request_id, &operation_id))
@@ -88,7 +88,7 @@ impl ControlStorage for StoredControls {
             let reserved = store
                 .transaction_with(move |tx| {
                     let (agent, operation) =
-                        Repository::load(tx, &request.id, &request.operation_id())?
+                        Repository::load(tx, request.id(), &request.operation_id())?
                             .ok_or(ControlError::Changed)?;
                     if operation.as_ref().is_none_or(|op| op["phase"] == "failed")
                         && (!is_new || !CheckpointsRepository::workspace_unchanged(tx, &workspace)?)
@@ -103,7 +103,7 @@ impl ControlStorage for StoredControls {
                         serde_json::to_value(&binding).map_err(|_| ControlError::Changed)?;
                     let mut writes = match snapshot.reserve(
                         &request,
-                        Repository::pending(tx, &request.id)?,
+                        Repository::pending(tx, request.id())?,
                         now(),
                     ) {
                         Ok(writes) => writes,
