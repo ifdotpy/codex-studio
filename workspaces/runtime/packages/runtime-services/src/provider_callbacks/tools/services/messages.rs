@@ -202,7 +202,7 @@ fn authorization_records_from(
         recipient_id: String::new(),
         agents: agents
             .iter()
-            .map(|a| Ok((text(&a, "id")?.to_owned(), a.to_string())))
+            .map(|a| Ok((text(a, "id")?.to_owned(), a.to_string())))
             .collect::<Result<_, CallbackError>>()?,
         rooms: BTreeMap::new(),
         complaints: BTreeMap::new(),
@@ -222,7 +222,7 @@ fn projects_by_resolved_path(
     let mut exact = BTreeMap::new();
     let mut respelled = BTreeMap::new();
     for project in projects {
-        let path = text(&project, "path")?;
+        let path = text(project, "path")?;
         match paths.get(path) {
             Some(resolved) if resolved != path => {
                 respelled
