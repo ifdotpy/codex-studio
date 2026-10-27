@@ -783,6 +783,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::disallowed_methods)] // Test fixture setup outside any HTTP handler.
     fn session_cost_publish_reuses_reader_and_decodes_only_selected_members() {
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
