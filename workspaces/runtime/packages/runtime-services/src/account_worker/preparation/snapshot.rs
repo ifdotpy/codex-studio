@@ -2050,7 +2050,10 @@ mod resource_tests {
         let resources = PreparationResources::bundled(String::new(), ModelCatalogService::new())
             .expect("resources");
         // A selected store is canonicalized by settings::configure; a recorded root is kept as given.
-        let canonical_custom = std::fs::canonicalize(custom.path()).expect("canonical custom");
+        let canonical_custom =
+            studio_runtime_store::path_identity::CanonicalPath::existing(custom.path())
+                .expect("canonical custom")
+                .into_path_buf();
         for (root, ready, expected_root) in [
             (json!(alias), false, alias.clone()),
             (json!(custom.path()), false, custom.path().to_owned()),
