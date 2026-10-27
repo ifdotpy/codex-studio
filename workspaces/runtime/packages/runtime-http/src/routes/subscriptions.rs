@@ -191,7 +191,7 @@ async fn view_value(
                 if messages.len() <= 1 {
                     break;
                 }
-                messages.remove(0);
+                messages.drain(..messages.len() / 2);
                 let first = messages[0]["seq"].clone();
                 room["nextBefore"] = first;
             }
@@ -607,6 +607,61 @@ mod tests {
     use super::*;
     use serde_json::json;
     use std::collections::BTreeSet;
+
+    #[tokio::test]
+    async fn room_tail_reduces_geometrically_and_keeps_history_boundary() {
+        use std::sync::Arc;
+        use studio_runtime_store::{RuntimeStore, StoreError};
+        let directory = tempfile::tempdir().expect("isolated state");
+        let store = Arc::new(
+            RuntimeStore::open(Some(directory.path()))
+                .await
+                .expect("store"),
+        );
+        store.transaction_with(|tx| {
+            tx.execute("INSERT INTO runtime_agents(id,record) VALUES('lead',?1)", [json!({"provider":studio_runtime_schema::ProviderKind::Codex,"id":"lead","rootId":"lead","isLead":true,"epoch":1,"status":"idle","name":"Lead","threadId":"thread"}).to_string()])?;
+            tx.execute("INSERT INTO runtime_rooms(id,record) VALUES('room',?1)", [json!({"id":"room","kind":"broadcast","rootId":"lead","members":["lead"],"name":"Team"}).to_string()])?;
+            for i in 0..40 {
+                tx.execute("INSERT INTO runtime_chat_messages(id,room,sender,text,created,deliveries) VALUES(?1,'room','lead',?2,?3,'{}')", rusqlite::params![format!("message-{i}"), "x".repeat(10_000), i])?;
+            }
+            Ok::<_, StoreError>(())
+        }).await.expect("room fixture");
+        let state = HttpState::new(
+            "token".into(),
+            "workspace".into(),
+            directory.path().to_string_lossy().into_owned(),
+            4620,
+            None,
+            Some(store),
+            None,
+        );
+        let resource =
+            serde_json::from_value(json!({"kind":"room","roomId":"room"})).expect("room resource");
+        let value = view_value(state.clone(), resource, None)
+            .await
+            .expect("room tail");
+        let room = &value["room"];
+        let messages = room["messages"].as_array().expect("messages");
+        assert_eq!(messages.len(), 10);
+        assert_eq!(room["nextBefore"], messages[0]["seq"]);
+        let before = room["nextBefore"].as_i64().expect("history boundary");
+        let history =
+            super::super::messages::room_snapshot(state, "room".into(), Some(before), None, 40)
+                .await
+                .expect("history");
+        let history = serde_json::to_value(history).expect("history value");
+        assert_eq!(
+            history["messages"]
+                .as_array()
+                .expect("history messages")
+                .len(),
+            30
+        );
+        assert!(
+            serde_json::to_vec(room).expect("serialized tail").len()
+                <= SYNC_STREAM_EVENT_MAX_BYTES / 2
+        );
+    }
 
     #[tokio::test]
     async fn subscribed_views_carry_bounded_records_and_terminal_resume() {
