@@ -1627,24 +1627,27 @@ impl RuntimeStore {
             })
             .await
             .map_err(StoreError::writer_actor_control)?;
-        self.checkpoint_analytics(mode)?;
+        self.checkpoint_analytics(mode).await?;
         Ok(())
     }
 
-    fn checkpoint_analytics(
+    async fn checkpoint_analytics(
         &self,
         mode: sqlite_durability::CheckpointMode,
     ) -> StoreResult<sqlite_durability::CheckpointOutcome> {
-        let analytics = self
-            .analytics
-            .lock()
-            .map_err(|_| StoreError::WriterPoisoned)?;
-        Ok(Self::checkpoint_connection(
-            &analytics,
-            StoreDatabaseKind::Analytics,
-            &self.root.join("analytics.sqlite3-wal"),
-            mode,
-        )?)
+        let analytics = Arc::clone(&self.analytics);
+        let wal_path = self.root.join("analytics.sqlite3-wal");
+        blocking_pool::spawn_blocking("analytics/checkpoint", move || {
+            let analytics = analytics.lock().map_err(|_| StoreError::WriterPoisoned)?;
+            Ok(Self::checkpoint_connection(
+                &analytics,
+                StoreDatabaseKind::Analytics,
+                &wal_path,
+                mode,
+            )?)
+        })
+        .await
+        .map_err(|_| StoreError::ReadTaskFailed)?
     }
 
     /// Flush both databases when commits wait for a flush and the last flush is
@@ -1682,7 +1685,8 @@ impl RuntimeStore {
     /// before this call is on disk; Canvas may prune projected log rows only then.
     pub async fn flush_analytics_wal(&self) -> StoreResult<bool> {
         Ok(self
-            .checkpoint_analytics(sqlite_durability::CheckpointMode::Passive)?
+            .checkpoint_analytics(sqlite_durability::CheckpointMode::Passive)
+            .await?
             .is_complete())
     }
 
@@ -4664,6 +4668,33 @@ mod projection_generation_tests {
 #[cfg(test)]
 mod wal_flush_tests {
     use super::*;
+
+    #[tokio::test]
+    async fn analytics_checkpoint_does_not_block_the_async_worker() {
+        let directory = tempfile::tempdir().expect("temporary state directory");
+        let store = Arc::new(
+            RuntimeStore::open(Some(directory.path()))
+                .await
+                .expect("open"),
+        );
+        let analytics = Arc::clone(&store.analytics);
+        let (locked_tx, locked_rx) = std::sync::mpsc::sync_channel(1);
+        let (progress_tx, progress_rx) = std::sync::mpsc::sync_channel(1);
+        let holder = std::thread::spawn(move || {
+            let _guard = analytics.lock().expect("analytics lock");
+            locked_tx.send(()).expect("locked");
+            progress_rx.recv_timeout(Duration::from_secs(2)).is_ok()
+        });
+        locked_rx.recv().expect("lock acquired");
+        let task = tokio::spawn(async move { store.flush_analytics_wal().await });
+        tokio::task::yield_now().await;
+        progress_tx.send(()).expect("progress");
+        assert!(
+            holder.join().expect("holder"),
+            "async worker blocked on analytics mutex"
+        );
+        task.await.expect("checkpoint task").expect("checkpoint");
+    }
 
     /// Open a store in paused time and complete one flush, so each test starts
     /// with no pending request and a known last-flush instant.
