@@ -375,20 +375,29 @@ impl StdioProviderTaskFactory {
                 } else {
                     child.start_kill()
                 };
+                #[cfg(test)]
+                let killed = match crate::owned_process_group::test_darwin_race_until(pid) {
+                    Some(_) => Err(io::Error::from_raw_os_error(
+                        rustix::io::Errno::PERM.raw_os_error(),
+                    )),
+                    None => killed,
+                };
                 let reaped = reap_with_deadline(pid, child.wait()).await;
-                let cleanup = killed
-                    .or_else(|error| {
-                        if error.raw_os_error() == Some(NO_SUCH_PROCESS)
-                            || (reaped.is_ok()
-                                && crate::owned_process_group::vanished_after_reap(pid, &error))
+                let killed = match killed {
+                    Err(error) if error.raw_os_error() == Some(NO_SUCH_PROCESS) => Ok(()),
+                    Err(error) if reaped.is_ok() => {
+                        let deadline = Instant::now() + REAP_GRACE;
+                        if crate::owned_process_group::vanishes_after_reap(pid, &error, deadline)
+                            .await
                         {
                             Ok(())
                         } else {
                             Err(error)
                         }
-                    })
-                    .and(reaped.map(|_| ()))
-                    .map_err(process_error);
+                    }
+                    killed => killed,
+                };
+                let cleanup = killed.and(reaped.map(|_| ())).map_err(process_error);
                 // close() fences new admission but outstanding Tokio permits can
                 // still enqueue. After bounded reaping, this task owns only the
                 // closed channel and rejects late writes without holding cleanup.
@@ -1060,6 +1069,53 @@ mod tests {
             .expect("the frame written after stdin EOF is journaled");
         assert_eq!(entry.cursor, EventCursor(1));
         assert!(attachment.journal.try_recv().is_err());
+    }
+
+    /// Darwin answers EPERM to a kill of an exiting leader, and the group can
+    /// still answer EPERM for a moment after the reap. Cleanup must wait for the
+    /// group to vanish instead of reporting the first refusal.
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn refused_group_signal_is_forgiven_once_the_reaped_group_vanishes() {
+        let attachment = StdioProviderTaskFactory {
+            deadline: None,
+            max_frame_bytes: 1024,
+            max_output_bytes: None,
+            stderr_log: None,
+        }
+        .open(
+            ProviderHandle::for_account("stdio-darwin-race"),
+            OpenOptions {
+                clock: SessionClock::default(),
+                expected_generation: Some(Generation(1)),
+                launch: ProviderLaunchSpec::new(
+                    vec!["/bin/sh".into(), "-c".into(), "cat >/dev/null".into()],
+                    std::collections::BTreeMap::new(),
+                    std::env::temp_dir(),
+                ),
+            },
+            Shutdown::default(),
+        )
+        .await
+        .expect("child starts");
+        let pid = attachment
+            .status
+            .borrow()
+            .info
+            .as_ref()
+            .expect("child info")
+            .pid;
+        crate::owned_process_group::TEST_DARWIN_RACE
+            .lock()
+            .expect("race table")
+            .insert(
+                pid,
+                std::time::Instant::now() + std::time::Duration::from_millis(300),
+            );
+        let mut attachment = attachment;
+        let exit = attachment.shutdown().await;
+        assert!(exit.result.is_ok(), "{:?}", exit.result);
+        assert!(exit.cleanup_error.is_none(), "{:?}", exit.cleanup_error);
     }
     use std::{
         pin::Pin,

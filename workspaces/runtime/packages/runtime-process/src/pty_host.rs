@@ -243,9 +243,10 @@ impl PtyShared {
         let signal_error = signal_groups(&current_groups, self.session, Signal::KILL).err();
         if already_reaped {
             if let Some(error) = signal_error
-                && !crate::owned_process_group::vanished_after_reap(
+                && !crate::owned_process_group::vanishes_after_reap_blocking(
                     Some(self.process_group),
                     &std::io::Error::from_raw_os_error(error.raw_os_error()),
+                    std::time::Instant::now() + crate::owned_process_group::GROUP_VANISH_GRACE,
                 )
             {
                 return Err(PtyHostError::Signal(error));
@@ -270,9 +271,10 @@ impl PtyShared {
             std::thread::park_timeout(Duration::from_millis(5));
         };
         if let Some(error) = signal_error
-            && !crate::owned_process_group::vanished_after_reap(
+            && !crate::owned_process_group::vanishes_after_reap_blocking(
                 Some(self.process_group),
                 &std::io::Error::from_raw_os_error(error.raw_os_error()),
+                std::time::Instant::now() + crate::owned_process_group::GROUP_VANISH_GRACE,
             )
         {
             return Err(PtyHostError::Signal(error));
