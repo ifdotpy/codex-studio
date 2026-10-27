@@ -314,6 +314,14 @@ async fn claude_control_session_reads_and_stop_keep_dispatch() {
 
 #[tokio::test]
 async fn claude_control_settings_ingress_and_exact_receipt_replay() {
+    use studio_runtime_http::generated::ClaudeSessionApiClaudeSessionPostRequest as SessionRequest;
+    use studio_runtime_schema::claude_controls::ClaudeControlCommand;
+
+    let rollback: SessionRequest = serde_json::from_value(rewind("discriminator")).unwrap();
+    assert!(matches!(
+        rollback,
+        SessionRequest::ClaudeSessionRollbackRequest(ClaudeControlCommand::Rollback { .. })
+    ));
     let (_root, store, app, mut worker, native) = fixture().await;
     for body in [
         json!({"id":"agent","action":"settings","settings":{}}),
