@@ -49,6 +49,27 @@ pub struct AdmittedRequest {
     created: i64,
 }
 impl AdmittedRequest {
+    /// A result suboperation of this persisted admitted owner token. This is
+    /// completion, never ingress: preserve issuance and do not refresh its TTL.
+    pub fn derive_result(&self, namespace: &str, operation: &[&str], signature: &str) -> Self {
+        // A tuple of strings always serializes. The owner token remains the scope fence.
+        let id = serde_json::to_string(&("owner-result", namespace, &self.id, operation))
+            .expect("owner result identity serializes");
+        Self {
+            id,
+            signature: signature.into(),
+            created: self.created,
+        }
+    }
+
+    /// Used only by classified cutover migrations, never to admit a runtime caller.
+    pub(crate) fn from_migration(id: &str, signature: &str, cutover_ms: i64) -> Self {
+        Self {
+            id: id.into(),
+            signature: signature.into(),
+            created: cutover_ms,
+        }
+    }
     pub fn id(&self) -> &str {
         &self.id
     }
@@ -177,6 +198,58 @@ mod tests {
     use crate::{Connection, RuntimeStore, StoreError};
     use std::sync::Arc;
     use studio_runtime_schema::persistence::REQUEST_ID_FUTURE_SKEW_MS;
+
+    #[test]
+    fn receipt_result_derived_owner_tokens_preserve_issuance_after_expiry() {
+        let mut db = database();
+        let issued = REQUEST_RESULT_TTL_MS * 2;
+        let tx = db.transaction().expect("tx");
+        let Admission::Fresh(root) =
+            RequestResults::admit(&tx, &identity(issued, "root"), "root", issued)
+                .expect("root admission")
+        else {
+            panic!("fresh root");
+        };
+        let persisted: AdmittedRequest =
+            serde_json::from_str(&serde_json::to_string(&root).expect("persist token"))
+                .expect("restore token");
+        let final_result =
+            persisted.derive_result("execution-attempt", &["terminal"], "exact callback input");
+        assert_eq!(final_result.created(), root.created());
+        assert_eq!(
+            final_result,
+            root.derive_result("execution-attempt", &["terminal"], "exact callback input")
+        );
+        assert_ne!(
+            final_result.id(),
+            root.derive_result("another-owner", &["terminal"], "exact callback input")
+                .id()
+        );
+        RequestResults::gc(&tx, issued + REQUEST_RESULT_TTL_MS + 1).expect("expire ingress");
+        RequestResults::settle(
+            &tx,
+            &final_result,
+            &ResultEnvelope {
+                actor: None,
+                reply: "original reply",
+                references: vec![],
+            },
+        )
+        .expect("late completion remains allowed");
+        let migrated = crate::receipt_migration_contract::admitted_owner_token(
+            "opaque migrated pk",
+            "original signature",
+            issued,
+        );
+        assert_eq!(migrated.id(), "opaque migrated pk");
+        assert_eq!(migrated.created(), issued);
+        assert_eq!(
+            migrated
+                .derive_result("execution-attempt", &["terminal"], "callback")
+                .created(),
+            issued
+        );
+    }
 
     fn identity(ms: i64, discriminator: &str) -> RequestIdentity {
         let root = uuid::Uuid::from_u128(((ms as u128) << 80) | (7 << 76) | (2 << 62));

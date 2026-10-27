@@ -1,6 +1,8 @@
 //! Shared primitives for independent, catalog-registered receipt-family migrations.
 //! Each file owns its mapping and prepare/move/finish implementation. No family calls another.
+use crate::request_results::{AdmittedRequest, ResultEnvelope};
 use rusqlite::{OptionalExtension, Transaction, params};
+use serde::{Serialize, de::DeserializeOwned};
 use studio_runtime_schema::persistence::{MigrationStatus, ReceiptMigrationPhase, enum_check};
 
 /// Maximum input rows in one migration batch. Unit: source rows.
@@ -25,6 +27,173 @@ pub enum ReceiptMigrationError {
     },
 }
 pub type Result<T> = std::result::Result<T, ReceiptMigrationError>;
+
+/// Raw receipt bytes at the migration boundary. Families classify before any deletion.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SourceReceipt {
+    pub rowid: i64,
+    pub id: String,
+    pub signature: String,
+    pub result: String,
+}
+impl SourceReceipt {
+    pub fn json<T: DeserializeOwned>(&self, table: &str) -> Result<T> {
+        serde_json::from_str(&self.result)
+            .map_err(|_| unclassifiable(table, &self.id, &self.signature))
+    }
+}
+
+pub fn unclassifiable(table: &str, id: &str, signature: &str) -> ReceiptMigrationError {
+    ReceiptMigrationError::Unclassifiable {
+        table: table.into(),
+        key: id.into(),
+        signature: signature.into(),
+    }
+}
+
+/// Trusted static SQL expressions, owned by the independent family migration.
+/// They may project composite IDs or correlate a task's original signature.
+pub struct ReceiptProjection<'a> {
+    pub id: &'a str,
+    pub signature: &'a str,
+    pub result: &'a str,
+}
+
+fn identifier(name: &str) -> String {
+    format!("\"{}\"", name.replace('"', "\"\""))
+}
+
+pub fn read_receipt_batch(
+    tx: &Transaction<'_>,
+    table: &str,
+    checkpoint: &MigrationCheckpoint,
+    predicate: &str,
+) -> Result<Vec<SourceReceipt>> {
+    read_source_batch(
+        tx,
+        table,
+        checkpoint,
+        &ReceiptProjection {
+            id: "source.id",
+            signature: "source.signature",
+            result: "source.result",
+        },
+        predicate,
+    )
+}
+
+/// Size metadata is read before fetching/decoding any selected payload. The
+/// predicate/expressions are trusted family SQL; source is the table alias.
+pub fn read_source_batch(
+    tx: &Transaction<'_>,
+    table: &str,
+    checkpoint: &MigrationCheckpoint,
+    projection: &ReceiptProjection<'_>,
+    predicate: &str,
+) -> Result<Vec<SourceReceipt>> {
+    let table_sql = identifier(table);
+    let ReceiptProjection {
+        id,
+        signature,
+        result,
+    } = projection;
+    let sql = format!(
+        "SELECT source.rowid,({id}),({signature}),coalesce(length(CAST(({result}) AS BLOB)),0)+coalesce(length(CAST(({id}) AS BLOB)),0)+coalesce(length(CAST(({signature}) AS BLOB)),0) FROM {table_sql} AS source WHERE source.rowid>?1 AND ({predicate}) ORDER BY source.rowid LIMIT ?2"
+    );
+    let mut statement = tx.prepare(&sql)?;
+    let mut metadata = statement.query(params![checkpoint.cursor, MIGRATION_BATCH_ROWS as i64])?;
+    let mut budget = BatchBudget::default();
+    let mut batch = Vec::new();
+    while let Some(row) = metadata.next()? {
+        let rowid = row.get::<_, i64>(0)?;
+        let identity = || -> rusqlite::Result<(String, String)> { Ok((row.get(1)?, row.get(2)?)) };
+        let (id,signature)=identity().map_err(|_| {
+            let (key,signature)=tx.query_row(&format!("SELECT hex(CAST(({id}) AS BLOB)),hex(CAST(({signature}) AS BLOB)) FROM {table_sql} AS source WHERE source.rowid=?1"),[rowid],|row|Ok((row.get::<_,String>(0)?,row.get::<_,String>(1)?))).unwrap_or_else(|_|(format!("rowid:{rowid}"),"unreadable".into()));
+            unclassifiable(table,&format!("rowid:{rowid};hex:{key}"),&format!("hex:{signature}"))
+        })?;
+        let bytes = usize::try_from(row.get::<_, i64>(3)?)
+            .map_err(|_| unclassifiable(table, &id, &signature))?
+            .saturating_add(std::mem::size_of::<i64>());
+        if !budget.include(bytes) {
+            break;
+        }
+        let result = tx
+            .query_row(
+                &format!("SELECT ({result}) FROM {table_sql} AS source WHERE source.rowid=?1"),
+                [rowid],
+                |row| row.get::<_, String>(0),
+            )
+            .map_err(|_| unclassifiable(table, &id, &signature))?;
+        batch.push(SourceReceipt {
+            rowid,
+            id,
+            signature,
+            result,
+        });
+    }
+    Ok(batch)
+}
+
+/// Import exact envelopes without replacing a signature or choosing between replies.
+pub fn import_result<R: Serialize>(
+    tx: &Transaction<'_>,
+    id: &str,
+    signature: &str,
+    envelope: &ResultEnvelope<R>,
+    created: i64,
+) -> Result<()> {
+    let result = serde_json::to_string(envelope)
+        .map_err(|_| unclassifiable("request_results", id, signature))?;
+    let existing: Option<(String, String)> = tx
+        .query_row(
+            "SELECT signature,result FROM request_results WHERE id=?1",
+            [id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()?;
+    if let Some((saved_signature, saved_result)) = existing {
+        if saved_signature != signature || saved_result != result {
+            return Err(unclassifiable("request_results", id, signature));
+        }
+        return Ok(());
+    }
+    let admitted = admitted_owner_token(id, signature, created);
+    tx.execute(
+        "INSERT INTO request_results(id,signature,result,created) VALUES(?1,?2,?3,?4)",
+        params![
+            admitted.id(),
+            admitted.signature(),
+            result,
+            admitted.created()
+        ],
+    )?;
+    Ok(())
+}
+
+pub fn delete_source(tx: &Transaction<'_>, table: &str, rowid: i64) -> Result<()> {
+    tx.execute(
+        &format!("DELETE FROM {} WHERE rowid=?1", identifier(table)),
+        [rowid],
+    )?;
+    Ok(())
+}
+
+pub fn import_outbox<P: Serialize>(
+    tx: &Transaction<'_>,
+    row: &crate::outbox::OutboxRow<P>,
+) -> Result<()> {
+    crate::outbox::Outbox::put(tx, row).map_err(|error| match error {
+        crate::outbox::OutboxError::Sql(error) => ReceiptMigrationError::Sql(error),
+        crate::outbox::OutboxError::Json(_) | crate::outbox::OutboxError::Conflict(_) => {
+            unclassifiable("runtime_outbox", &row.id, &row.signature)
+        }
+    })
+}
+
+/// Only startup migration modules may hydrate tokens from classified old owners.
+pub(crate) fn admitted_owner_token(id: &str, signature: &str, cutover_ms: i64) -> AdmittedRequest {
+    AdmittedRequest::from_migration(id, signature, cutover_ms)
+}
 
 /// Budget is checked before decoding a payload. An oversized row runs alone.
 #[derive(Debug, Default)]
@@ -147,6 +316,96 @@ pub fn phase_id(migration: &str, phase: ReceiptMigrationPhase) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn receipt_migration_scan_is_keyset_bounded_and_imports_are_atomic() {
+        let mut db = rusqlite::Connection::open_in_memory().expect("database");
+        let tx = db.transaction().expect("tx");
+        prepare_schema(&tx).expect("schema");
+        tx.execute_batch("CREATE TABLE old_rows(id TEXT PRIMARY KEY,signature TEXT,result TEXT); INSERT INTO old_rows VALUES('first','sig','{\"ok\":true}')").expect("source");
+        let oversized = "x".repeat(MIGRATION_BATCH_BYTES + 1);
+        tx.execute("INSERT INTO old_rows VALUES('big','sig',?1)", [&oversized])
+            .expect("oversized fixture");
+        tx.execute(
+            "INSERT INTO old_rows VALUES('last','sig','{\"ok\":false}')",
+            [],
+        )
+        .expect("tail");
+        let mut checkpoint =
+            MigrationCheckpoint::begin(&tx, "family", "old_rows", 1000).expect("checkpoint");
+        let first =
+            read_receipt_batch(&tx, "old_rows", &checkpoint, "1").expect("first bounded page");
+        assert_eq!(first.len(), 1);
+        checkpoint.cursor = first[0].rowid;
+        let big = read_receipt_batch(&tx, "old_rows", &checkpoint, "1").expect("oversized alone");
+        assert_eq!(big.len(), 1);
+        assert_eq!(big[0].id, "big");
+        assert!(
+            matches!(big[0].json::<ResultEnvelope<bool>>("old_rows"),Err(ReceiptMigrationError::Unclassifiable{table,key,signature}) if table=="old_rows"&&key=="big"&&signature=="sig")
+        );
+        checkpoint.cursor = big[0].rowid;
+        let last = read_source_batch(
+            &tx,
+            "old_rows",
+            &checkpoint,
+            &ReceiptProjection {
+                id: "source.id",
+                signature: "source.signature",
+                result: "source.result",
+            },
+            "1",
+        )
+        .expect("tail page");
+        assert_eq!(last.len(), 1);
+        assert_eq!(last[0].id, "last");
+        let result = ResultEnvelope {
+            actor: Some("actor".into()),
+            reply: true,
+            references: vec!["attempt".into()],
+        };
+        import_result(&tx, "first", "sig", &result, 1000).expect("import");
+        import_result(&tx, "first", "sig", &result, 2000).expect("same import keeps time");
+        assert!(matches!(
+            import_result(&tx, "first", "changed", &result, 1000),
+            Err(ReceiptMigrationError::Unclassifiable { .. })
+        ));
+        assert!(matches!(
+            import_result(
+                &tx,
+                "first",
+                "sig",
+                &ResultEnvelope {
+                    actor: Some("actor".into()),
+                    reply: false,
+                    references: vec!["attempt".into()]
+                },
+                1000
+            ),
+            Err(ReceiptMigrationError::Unclassifiable { .. })
+        ));
+        assert_eq!(
+            tx.query_row(
+                "SELECT created FROM request_results WHERE id='first'",
+                [],
+                |row| row.get::<_, i64>(0)
+            )
+            .expect("original cutover"),
+            1000
+        );
+        delete_source(&tx, "old_rows", first[0].rowid).expect("delete moved row");
+        checkpoint
+            .save(&tx, "family", "old_rows", 2000)
+            .expect("checkpoint");
+        tx.rollback().expect("failed batch rollback");
+        assert_eq!(
+            db.query_row(
+                "SELECT count(*) FROM sqlite_schema WHERE name='request_results'",
+                [],
+                |row| row.get::<_, i64>(0)
+            )
+            .expect("schema rolled back"),
+            0
+        );
+    }
     #[test]
     fn receipt_migration_independent_checkpoints_bounded_and_atomic() {
         let mut db = rusqlite::Connection::open_in_memory().expect("database");
