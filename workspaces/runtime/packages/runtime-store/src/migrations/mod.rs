@@ -12,6 +12,7 @@ mod m2026_10_26_terminal_errors;
 pub(crate) mod m2026_10_27_cost_index;
 mod m2026_10_27_retired_sqlite;
 mod m2026_10_27_scheduler_indexes;
+mod m2026_10_28_receipts_schema;
 
 #[cfg(any(test, feature = "test-support"))]
 pub use m2026_10_20_agents::migrate_2026_10_20;
@@ -58,6 +59,11 @@ const OCTOBER_27: MigrationDate = MigrationDate {
     year: 2026,
     month: 10,
     day: 27,
+};
+const OCTOBER_28: MigrationDate = MigrationDate {
+    year: 2026,
+    month: 10,
+    day: 28,
 };
 const OCTOBER_22: MigrationDate = MigrationDate {
     year: 2026,
@@ -328,6 +334,16 @@ static CATALOG: &[&dyn Migration] = &[
             remove_when: REMOVE_AFTER_SOURCE_RETIRED,
         },
         apply: |c| m2026_10_27_cost_index::apply(c.transaction),
+    },
+    &SqlMigration {
+        definition: MigrationDefinition {
+            id: "2026-10-28-receipts-schema",
+            introduced: OCTOBER_28,
+            target: MigrationTarget::Canvas,
+            supported_source: "Receipt tables before per-family cutover",
+            remove_when: REMOVE_AFTER_SOURCE_RETIRED,
+        },
+        apply: |c| m2026_10_28_receipts_schema::apply(c.transaction),
     },
     &RegistryMigration,
 ];
