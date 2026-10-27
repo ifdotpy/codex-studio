@@ -8,6 +8,14 @@ pub const SUPERVISOR_PROTOCOL_V2: u64 = 2;
 pub const HANDLE_LIMIT: u64 = 256 * 1024 * 1024;
 pub const MAX_HANDLE_CHARACTERS: usize = 180;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Deserialize, Serialize)]
+#[serde(transparent)]
+pub struct EventCursor(pub u64);
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Deserialize, Serialize)]
+#[serde(transparent)]
+pub struct Generation(pub u64);
+
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
 #[error("{0}")]
 pub struct Refusal(pub &'static str);
@@ -176,11 +184,14 @@ pub enum Command {
         message: serde_json::Map<String, Value>,
     },
     #[serde(rename = "next")]
-    Next { handle: String, cursor: u64 },
+    Next { handle: String, cursor: EventCursor },
     #[serde(rename = "replay")]
-    Replay { handle: String, cursor: u64 },
+    Replay { handle: String, cursor: EventCursor },
     #[serde(rename = "ack")]
-    Ack { handle: String, sequence: u64 },
+    Ack {
+        handle: String,
+        sequence: EventCursor,
+    },
     #[serde(rename = "operationStatus")]
     OperationStatus {
         handle: String,
@@ -192,7 +203,10 @@ pub enum Command {
     #[serde(rename = "detach")]
     Detach { handle: String },
     #[serde(rename = "retireCommand")]
-    RetireCommand { handle: String, generation: u64 },
+    RetireCommand {
+        handle: String,
+        generation: Generation,
+    },
     #[serde(rename = "adminCloseHandle")]
     AdminCloseHandle {
         handle: String,

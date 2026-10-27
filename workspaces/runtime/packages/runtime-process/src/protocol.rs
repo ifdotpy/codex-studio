@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, value::RawValue};
 use strum::Display;
-pub use studio_runtime_providers::supervisor_protocol::NativeId;
+pub use studio_runtime_providers::supervisor_protocol::{EventCursor, Generation, NativeId};
 
 pub use studio_runtime_providers::supervisor_protocol::SUPERVISOR_PROTOCOL_V2;
 pub const SUPERVISOR_NEXT_BATCH_MAX_EVENTS: usize = 64;
@@ -69,20 +69,12 @@ pub struct SupervisorHandle(pub String);
 #[serde(transparent)]
 pub struct OperationId(pub String);
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
-#[serde(transparent)]
-pub struct EventCursor(pub u64);
-
 /// Stable supervisor handle together with its process generation.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct HandleIdentity {
     pub handle: SupervisorHandle,
     pub generation: Generation,
 }
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
-#[serde(transparent)]
-pub struct Generation(pub u64);
 
 #[derive(Clone, Copy, Debug, Deserialize, Display, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -215,13 +207,48 @@ pub struct AdminCloseHandleRequest {
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(try_from = "SnapshotPositionWire")]
+pub struct SnapshotPosition {
+    sequence: EventCursor,
+    acknowledged: EventCursor,
+}
+
+#[derive(Deserialize)]
+struct SnapshotPositionWire {
+    sequence: EventCursor,
+    acknowledged: EventCursor,
+}
+
+impl TryFrom<SnapshotPositionWire> for SnapshotPosition {
+    type Error = &'static str;
+
+    fn try_from(wire: SnapshotPositionWire) -> Result<Self, Self::Error> {
+        if wire.acknowledged > wire.sequence {
+            return Err("acknowledgement exceeds sequence");
+        }
+        Ok(Self {
+            sequence: wire.sequence,
+            acknowledged: wire.acknowledged,
+        })
+    }
+}
+impl SnapshotPosition {
+    pub fn sequence(&self) -> EventCursor {
+        self.sequence
+    }
+    pub fn acknowledged(&self) -> EventCursor {
+        self.acknowledged
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct OpenResult {
     pub resumed: bool,
     #[serde(rename = "initResult")]
     pub init_result: Option<Value>,
-    pub acknowledged: u64,
-    pub sequence: u64,
+    #[serde(flatten)]
+    pub position: SnapshotPosition,
     pub generation: Generation,
     #[serde(rename = "returnCode")]
     pub return_code: Option<i32>,
@@ -454,8 +481,8 @@ pub struct AckResult {
 #[serde(rename_all = "camelCase")]
 pub struct ReplayResult {
     pub events: Vec<SupervisorEvent>,
-    pub sequence: u64,
-    pub acknowledged: u64,
+    #[serde(flatten)]
+    pub position: SnapshotPosition,
     pub backpressure: bool,
     #[serde(flatten)]
     pub extra: BTreeMap<String, Value>,
@@ -463,8 +490,8 @@ pub struct ReplayResult {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct StatusResult {
-    pub sequence: u64,
-    pub acknowledged: u64,
+    #[serde(flatten)]
+    pub position: SnapshotPosition,
     pub backpressure: bool,
     pub pid: u32,
     #[serde(rename = "returnCode")]

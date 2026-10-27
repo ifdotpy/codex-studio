@@ -149,6 +149,24 @@ fn contradictory_write_and_status_receipts_are_unknown() {
 }
 
 #[test]
+fn snapshot_responses_reject_acknowledgement_ahead_of_sequence() {
+    let open = r#"{"requestId":17,"result":{"resumed":true,"initResult":null,"acknowledged":3,"sequence":2,"generation":1,"returnCode":null,"pid":1}}"#;
+    let replay = r#"{"requestId":17,"result":{"events":[],"acknowledged":3,"sequence":2,"backpressure":false}}"#;
+    let status = r#"{"requestId":17,"result":{"acknowledged":3,"sequence":2,"backpressure":false,"returnCode":null,"pid":1}}"#;
+    assert!(response_value::<OpenResult>(SupervisorAction::Open, 17, open).is_err());
+    assert!(response_value::<ReplayResult>(SupervisorAction::Replay, 17, replay).is_err());
+    assert!(response_value::<StatusResult>(SupervisorAction::Status, 17, status).is_err());
+    let valid = r#"{"requestId":17,"result":{"resumed":true,"initResult":null,"acknowledged":2,"sequence":3,"generation":1,"returnCode":null,"pid":1,"extension":true}}"#;
+    let decoded = response_value::<OpenResult>(SupervisorAction::Open, 17, valid).unwrap();
+    assert_eq!(decoded.position.acknowledged(), EventCursor(2));
+    assert_eq!(decoded.position.sequence(), EventCursor(3));
+    let encoded = serde_json::to_value(decoded).unwrap();
+    assert_eq!(encoded["extension"], true);
+    assert_eq!(encoded["sequence"], 3);
+    assert_eq!(encoded["acknowledged"], 2);
+}
+
+#[test]
 fn event_payload_and_unknown_kind_round_trip() {
     let event: SupervisorEvent = serde_json::from_value(serde_json::json!({
         "sequence": 2, "kind": "future-event", "payload": "{\"x\":1}", "generation": 4, "extension": true
