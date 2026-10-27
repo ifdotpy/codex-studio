@@ -67,6 +67,7 @@ fn connections(
     state: &HttpState,
     tx: &studio_runtime_store::Transaction<'_>,
     owners: &[Value],
+    rows: &[(bool, &Value, Value)],
 ) -> Result<controls::Connections, controls::Error> {
     let mut connections = controls::Connections::default();
     for owner in owners {
@@ -79,7 +80,7 @@ fn connections(
         }
     }
     if let Some(source) = &state.account_session {
-        for original in controls::monitor_sources(tx, owners)? {
+        for original in controls::monitor_sources(tx, rows)? {
             if let Some(scope) = source.current_scope(&original.account) {
                 connections.observe_source(scope);
             }
@@ -93,11 +94,12 @@ pub(super) async fn read_listing(state: HttpState, scope: String) -> Result<Valu
     store
         .read_async("runtime-http/routes/process_controls", move |tx| {
             let owners = controls::owners(tx, &scope).map_err(error)?;
-            let mut connections = connections(&state, tx, &owners).map_err(error)?;
+            let rows = controls::process_rows(tx, &owners).map_err(error)?;
+            let mut connections = connections(&state, tx, &owners, &rows).map_err(error)?;
             if let Some(proof) = proof {
                 connections.observe_response(proof);
             }
-            controls::listing(tx, &scope, &connections).map_err(error)
+            controls::listing(tx, &owners, &rows, &connections).map_err(error)
         })
         .await
 }
@@ -208,7 +210,8 @@ async fn execute(
     let claim = store
         .transaction_with(move |tx| {
             let owners = controls::owners(tx, &claim_request.command().scope().agent)?;
-            let mut connections = connections(&claim_state, tx, &owners)?;
+            let rows = controls::process_rows(tx, &owners)?;
+            let mut connections = connections(&claim_state, tx, &owners, &rows)?;
             if let Some(proof) = claim_proof {
                 connections.observe_response(proof);
             }
@@ -340,17 +343,12 @@ async fn bind(
         let agent = text(&expected, "agent").to_owned();
         store(&state)?
             .read_async("runtime-http/routes/process_controls", move |connection| {
-                controls::processes(
-                    connection,
-                    &agent,
-                    &connections(
-                        &state,
-                        connection,
-                        &controls::owners(connection, &agent).map_err(error)?,
-                    )
-                    .map_err(error)?,
-                )
-                .map_err(error)
+                let owners = controls::owners(connection, &agent).map_err(error)?;
+                let rows = controls::process_rows(connection, &owners).map_err(error)?;
+                let connections = connections(&state, connection, &owners, &rows).map_err(error)?;
+                let processes =
+                    controls::processes(connection, &rows, &connections).map_err(error)?;
+                Ok::<_, ApiError>((owners, processes))
             })
             .await?
     };
