@@ -43,6 +43,58 @@ async fn message_ignores_unrelated_invalid_project() {
     .await;
 }
 
+#[tokio::test]
+async fn message_ignores_invalid_parent_project_outside_sender_cwd() {
+    let (_directory, store, oracle) = frozen::state().await;
+    let worker = oracle["agents"][1].clone();
+    let lead = oracle["agents"][0]["id"].as_str().unwrap().to_owned();
+    let context = CallbackContext {
+        agent: worker["id"].as_str().unwrap().into(),
+        account: "default".into(),
+        connection: "connection".into(),
+        generation: 7,
+        epoch: worker["epoch"].as_u64().unwrap(),
+        thread: worker["threadId"].as_str().unwrap().into(),
+        turn: worker["turnId"].as_str().unwrap().into(),
+    };
+    store.transaction_with(move |tx| {
+        tx.execute("UPDATE runtime_agents SET record=json_set(record,'$.cwd','/sender-project') WHERE id=?1", [&context.agent])?;
+        tx.execute("UPDATE runtime_agents SET record=json_set(record,'$.cwd','/other-parent-project') WHERE id=?1", [&lead])?;
+        tx.execute("INSERT INTO runtime_projects(id,record) VALUES('invalid-parent-project',?1)", [json!({"id":"invalid-parent-project","path":"/other-parent-project","peerTeams":"invalid"}).to_string()])?;
+        let snapshot = super::super::super::storage::snapshot(tx, &context)?;
+        messages::send(tx, &snapshot, &json!({"target":"lead","text":"hello"}), "parent-project-witness", 20.0)?;
+        Ok::<_, CallbackError>(())
+    }).await.unwrap();
+}
+
+#[tokio::test]
+async fn message_delivers_between_user_grouped_leads() {
+    let (_directory, store, oracle) = frozen::state().await;
+    let worker = oracle["agents"][1].clone();
+    let lead = oracle["agents"][0]["id"].as_str().unwrap().to_owned();
+    let context = CallbackContext {
+        agent: worker["id"].as_str().unwrap().into(),
+        account: "default".into(),
+        connection: "connection".into(),
+        generation: 7,
+        epoch: worker["epoch"].as_u64().unwrap(),
+        thread: worker["threadId"].as_str().unwrap().into(),
+        turn: worker["turnId"].as_str().unwrap().into(),
+    };
+    store.transaction_with(move |tx| {
+        tx.execute("UPDATE runtime_agents SET record=json_set(record,'$.rootId',id,'$.parentId',NULL,'$.isLead',json('true'),'$.cwd','/peer-project') WHERE id=?1", [&context.agent])?;
+        tx.execute("UPDATE runtime_agents SET record=json_set(record,'$.cwd','/peer-project') WHERE id=?1", [&lead])?;
+        tx.execute("INSERT INTO runtime_projects(id,record) VALUES('peer-project',?1)", [json!({"id":"peer-project","path":"/peer-project","peerTeams":[{"id":"peers","name":"Peers","members":[context.agent,lead]}]}).to_string()])?;
+        let snapshot = super::super::super::storage::snapshot(tx, &context)?;
+        let sent = messages::send(tx, &snapshot, &json!({"target":lead,"text":"hello"}), "peer-message-witness", 20.0)?;
+        assert!(sent["deliveries"].get(&lead).is_some());
+        let payload: String = tx.query_row("SELECT payload FROM sync_entities WHERE collection='room' AND id=?1", [sent["room"].as_str().unwrap()], |row| row.get(0))?;
+        let projection: Value = serde_json::from_str(&payload)?;
+        assert_eq!(projection["value"]["peerTeamId"], "peers");
+        Ok::<_, CallbackError>(())
+    }).await.unwrap();
+}
+
 async fn message_with_unrelated_invalid(table: &'static str, record: Value) {
     let (_directory, store, oracle) = frozen::state().await;
     let worker = oracle["agents"][1].clone();

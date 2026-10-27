@@ -40,9 +40,11 @@ fn message_agents(
 fn message_projects(
     tx: &Transaction<'_>,
     agents: &[AgentAuthorityRow],
+    sender: &str,
 ) -> Result<Vec<ProjectAuthorityRow>, CallbackError> {
     let paths = agents
         .iter()
+        .filter(|agent| agent.id.as_deref() == Some(sender))
         .filter_map(|agent| agent.cwd.as_deref())
         .filter_map(studio_runtime_store::path_identity::lexical_text)
         .collect::<std::collections::BTreeSet<_>>();
@@ -407,7 +409,7 @@ fn send_as_actor(
         let authority = if exact_team {
             None
         } else {
-            let projects = message_projects(tx, &agents)?;
+            let projects = message_projects(tx, &agents, who)?;
             let mut authority = MessageAuthority::new(&agents, &projects)?;
             let target = resolve_message_target(supplied, actor, who, &agents, &mut authority)?;
             resolved_args["target"] = json!(target);
@@ -499,7 +501,7 @@ fn send_as_actor(
     let (projects, mut authority) = match prepared_authority {
         Some(prepared) => prepared,
         None => {
-            let projects = message_projects(tx, &agents)?;
+            let projects = message_projects(tx, &agents, who)?;
             let authority = MessageAuthority::new(&agents, &projects)?;
             (projects, authority)
         }
