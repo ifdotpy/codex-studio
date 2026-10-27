@@ -152,16 +152,13 @@ pub async fn accepted_archive_tick(
             continue;
         }
         let receipt_id = format!("work-archive:{intent_id}");
-        let intent_id_for_claim = intent_id.clone();
         let receipt_id_for_claim = receipt_id.clone();
         let task_id_for_claim = task_id.clone();
         let intent_for_claim = intent.clone();
         let owner_for_claim = owner_id.clone();
         let root_for_claim = root_id.clone();
-        let (should_dispatch, dispatch_actor_epoch, prior_status) =
-            store.transaction_with_error(move |tx| -> Result<(bool, i64, String), WorkWriteError> {
-                let mut dispatch_actor_epoch = 0_i64;
-                let mut prior_status = String::new();
+        let Some((dispatch_actor_epoch, prior_status)) = store
+            .transaction_with_error(move |tx| -> Result<Option<(i64, String)>, WorkWriteError> {
                 let current = WorkItemsRepository::work_record(tx, &task_id_for_claim)?
                     .ok_or(Error::InvalidRequest("Unknown work item"))?;
                 if current.status() != studio_runtime_store::WorkStatus::Accepted
@@ -173,7 +170,7 @@ pub async fn accepted_archive_tick(
                     )
                     || intent_for_claim["nextAttemptAt"].as_f64().unwrap_or(0.0) > now
                 {
-                    return Ok((false, 0, String::new()));
+                    return Ok(None);
                 }
                 let receipt = tx
                     .query_row(
@@ -183,45 +180,41 @@ pub async fn accepted_archive_tick(
                     )
                     .optional()
                     .map_err(studio_runtime_store::StoreError::from)?;
-                let mut receipt = if let Some(receipt) = receipt {
-                    let receipt: Value = serde_json::from_str(&receipt)
-                        .map_err(studio_runtime_store::StoreError::from)?;
-                    if !matches!(
-                        receipt["status"].as_str(),
-                        Some("pending" | "retryable" | "unknown")
-                    ) || receipt["nextAttemptAt"].as_f64().unwrap_or(0.0) > now
-                    {
-                        return Ok((false, 0, String::new()));
-                    }
-                    prior_status = receipt["status"].as_str().unwrap_or_default().to_owned();
-                    dispatch_actor_epoch = receipt["actorEpoch"].as_i64().unwrap_or_default();
-                    receipt
-                } else {
-                    json!({"status":"pending","taskId":task_id_for_claim,"intentId":intent_id_for_claim,
-                        "actor":root_for_claim,"target":owner_for_claim,"attempts":0,"created":now})
+                let Some(receipt) = receipt else {
+                    return Ok(None);
                 };
-                let actor_epoch = if dispatch_actor_epoch == 0 {
-                    AgentRepository::get(tx, &AgentId::from(root_for_claim.as_str()))?
-                        .map(|actor| actor.epoch)
-                        .unwrap_or_default()
-                } else {
-                    dispatch_actor_epoch
+                let mut receipt: Value = serde_json::from_str(&receipt)
+                    .map_err(studio_runtime_store::StoreError::from)?;
+                if !matches!(
+                    receipt["status"].as_str(),
+                    Some("pending" | "retryable" | "unknown")
+                ) || receipt["nextAttemptAt"].as_f64().unwrap_or(0.0) > now
+                {
+                    return Ok(None);
+                }
+                let prior_status = receipt["status"].as_str().unwrap_or_default().to_owned();
+                let Some(actor_epoch) = receipt["actorEpoch"].as_i64() else {
+                    return Ok(None);
                 };
-                dispatch_actor_epoch = actor_epoch;
                 receipt["status"] = json!("unknown");
                 receipt["actorEpoch"] = json!(actor_epoch);
                 receipt["attemptStartedAt"] = json!(now);
                 tx.execute(
                     "INSERT INTO runtime_operation_receipts(id,signature,result) VALUES (?1,?2,?3) \
                  ON CONFLICT(id) DO UPDATE SET result=excluded.result",
-                    rusqlite::params![receipt_id_for_claim, "accepted-archive-v1", receipt.to_string()],
+                    rusqlite::params![
+                        receipt_id_for_claim,
+                        "accepted-archive-v1",
+                        receipt.to_string()
+                    ],
                 )
                 .map_err(studio_runtime_store::StoreError::from)?;
-                Ok((true, dispatch_actor_epoch, prior_status))
-            }).await?;
-        if !should_dispatch {
+                Ok(Some((actor_epoch, prior_status)))
+            })
+            .await?
+        else {
             continue;
-        }
+        };
 
         let task_for_preflight = task_id.clone();
         let work_for_preflight = work.clone();
@@ -3848,6 +3841,83 @@ mod actor_tests {
             receipt["outcome"]["reason"],
             "The remote worker workspace requires review on its own server"
         );
+        let encoded_work: String = connection
+            .query_row(
+                "SELECT record FROM runtime_work WHERE id=?1",
+                ["accepted-task"],
+                |row| row.get(0),
+            )
+            .expect("accepted work record");
+        let work: Value = serde_json::from_str(&encoded_work).expect("work JSON");
+        assert_eq!(work["archive"]["status"], "kept");
+        assert_eq!(work["archiveIntent"]["status"], "terminal");
+    }
+
+    #[tokio::test]
+    async fn accepted_archive_tick_preserves_zero_epoch_on_retry() {
+        let root = tempfile::tempdir().expect("state directory");
+        let store = Arc::new(
+            RuntimeStore::open(Some(root.path()))
+                .await
+                .expect("runtime store"),
+        );
+        store
+            .transaction(|tx| {
+                for agent in [
+                    json!({"provider":studio_runtime_schema::ProviderKind::Codex,"id":"lead","rootId":"lead","epoch":1,"status":"running"}),
+                    json!({"provider":studio_runtime_schema::ProviderKind::Codex,"id":"worker","rootId":"lead","epoch":2,"status":"paused",
+                        "remoteWorker":{"server":"remote","link":"worker-link"}}),
+                ] {
+                    AgentRepository::put(tx, &AgentRecord::from_value(agent)?)?;
+                }
+                let work = json!({
+                    "id":"accepted-task","rootId":"lead","owner":"worker",
+                    "status":"accepted","version":3,"title":"Accepted result",
+                    "description":"","dependencies":[],"results":[{"id":"result-1",
+                        "text":"verified","revision":"abc1234"}],"decisions":[],
+                    "archiveIntent":{"id":"accepted-task:result-1","owner":"worker",
+                        "status":"pending","attempts":0,"created":10.0}
+                });
+                tx.execute(
+                    "INSERT INTO runtime_work(id,record) VALUES (?1,?2)",
+                    rusqlite::params!["accepted-task", work.to_string()],
+                )?;
+                tx.execute(
+                    "INSERT INTO runtime_operation_receipts(id,signature,result) VALUES (?1,?2,?3)",
+                    rusqlite::params![
+                        "work-archive:accepted-task:result-1",
+                        "accepted-archive-v1",
+                        json!({"taskId":"accepted-task","intentId":"accepted-task:result-1",
+                            "actor":"lead","actorEpoch":0,"target":"worker","attempts":0,
+                            "created":10.0,"status":"retryable","nextAttemptAt":100.0})
+                        .to_string(),
+                    ],
+                )?;
+                Ok(())
+            })
+            .await
+            .expect("archive intent state commits");
+
+        assert_eq!(
+            accepted_archive_tick(Arc::clone(&store), 100.0)
+                .await
+                .expect("tick succeeds"),
+            1
+        );
+
+        let connection = store.test_reader().expect("read tick result");
+        let encoded_receipt: String = connection
+            .query_row(
+                "SELECT result FROM runtime_operation_receipts WHERE id=?1",
+                ["work-archive:accepted-task:result-1"],
+                |row| row.get(0),
+            )
+            .expect("archive outcome receipt");
+        let receipt: Value = serde_json::from_str(&encoded_receipt).expect("receipt JSON");
+        assert_eq!(receipt["actorEpoch"], 0);
+        assert_eq!(receipt["status"], "terminal");
+        assert_eq!(receipt["outcome"]["status"], "kept");
+        assert_eq!(receipt["outcome"]["reason"], "The archive actor changed");
         let encoded_work: String = connection
             .query_row(
                 "SELECT record FROM runtime_work WHERE id=?1",
