@@ -77,7 +77,7 @@ default-filter = '''
     (package(=studio-runtime-services) & binary(=integration) & (test(recovery_history::exact_start_rejects_invalid_negative_receipt_identity) | test(recovery_history::exact_start_refuses_malformed_delivered_items))) |
     (package(=studio-runtime-services) & kind(test) & binary(=integration) & test(non_radio_async_answer_is_steered_and_acknowledged)) |
     (package(=studio-runtime-services) & kind(lib) & test(private_answer_waits_while_shared_turn_holds_floor)) |
-    (package(=studio-runtime-http) & kind(lib) & (test(pricing_refresh) | test(generated_provider_identity_is_the_schema_owner))) |
+    (package(=studio-runtime-http) & kind(lib) & (test(pricing_refresh) | test(generated_provider_identity_is_the_schema_owner) | test(catalog_rejects_unsupported_effort_and_uses_native_default_when_omitted))) |
     (package(=studio-runtime-services) & kind(lib) & (test(rejected_usage_does_not_feed_rate_or_move_cache) | test(usage::tests::claude_cost_snapshot_) | test(usage::tests::local_claude_session_fixture_) | test(usage::tests::claude_refresh_uses_completion_time))) |
     (package(=studio-runtime-schema) & kind(lib) & (test(bridge_wire) | test(provider_kind::tests::) | test(provider_identity) | test(provider_errors::) | test(studio_errors::) | test(provider_lifecycle::) | test(provider_parity_rejects_each_native_discriminator_and_sql_drift))) |
     (package(=studio-runtime-providers) & kind(lib) & test(provider_kind::tests::)) |
@@ -102,7 +102,7 @@ default-filter = '''
     (package(=studio-runtime-store) & kind(lib) & test(repositories::cost_aggregate::tests::typed_usage_)) |
     (package(=studio-runtime-services) & kind(lib) & (test(analytics_capture::usage_contract_tests::) | test(analytics_history_repair::usage_contract_tests::) | test(analytics_rollout::tests::typed_usage_))) |
     (package(=studio-runtime-schema) & kind(lib) & test(usage::persisted::tests::)) |
-    (package(=studio-runtime-services) & kind(lib) & test(/::(managed_reviewer_defaults_reach_public_spawn_tool|reviewer_defaults_are_explained_in_emitted_tools_and_role_guidance|review_fast_mode_defaults_preserve_explicit_false_and_inheritance)$/)) |
+    (package(=studio-runtime-services) & kind(lib) & test(/::(managed_reviewer_defaults_reach_public_spawn_tool|reviewer_defaults_are_explained_in_emitted_tools_and_role_guidance|review_fast_mode_defaults_preserve_explicit_false_and_inheritance|child_creation_routes_profile_to_compatible_account)$/)) |
     (package(=studio-runtime-services) & kind(test) & binary(=integration) & test(review_fast_mode_uses_optional_team_default_before_actor))
     | ((package(=studio-runtime-server)) & ((kind(lib) | kind(bin) | kind(test))) & (test(operator_cli::)))
     | (package(=studio-runtime-server) & kind(bin) & test(web_assets::tests::))
@@ -201,7 +201,7 @@ default-filter = '''
     | (package(=studio-runtime-services) & kind(test) & binary(=integration) & test(recovery_history::thread_observation_preserves_unknown_status_and_external_fields))
     | (package(=studio-runtime-services) & kind(lib) & test(account_worker::tests::idle_unload::malformed_))
     | (package(=studio-runtime-services) & kind(lib) & test(account_worker::tests::idle_unload::typed_idle_evidence_preserves_pagination_extensions_and_unload_statuses))
-    | (package(=studio-runtime-http) & kind(test) & binary(=integration) & (test(complaint_http_) | test(mcp_reconnect::mcp_reconnect_missing_account_is_not_classified_as_codex)))
+    | (package(=studio-runtime-http) & kind(test) & binary(=integration) & (test(complaint_http_) | test(mcp_reconnect::mcp_reconnect_missing_account_is_not_classified_as_codex) | test(automatic_http_child_warms_higher_priority_catalog_before_selection)))
     | (package(=studio-runtime-schema) & kind(lib) & (test(model_catalog::tests::optional_nullable_fields_and_opaque_metadata_round_trip) | test(model_catalog::tests::known_fields_reject_invalid_types_in_serde_and_generated_schema) | test(claude_controls::tests::claude_control_command_ingress_contract) | test(claude_controls::tests::claude_control_identity_limit_remains_utf8_bytes) | test(claude_controls::tests::claude_control_settings_preserve_presence) | test(claude_controls::tests::settings_schema_rejects_null_nonnullable_fields)))
     | (package(=studio-runtime-http) & kind(lib) & (test(reconnect_helpers_preserve_request_types) | test(http_input_preserves_runtime_input_type_and_dimension_presence)))
     | (package(=studio-runtime-schema) & kind(lib) & (test(task_command::tests::task_commands_validate_variants_and_keep_presence_and_opaque_results) | test(task_command_schema_matches_owner_and_transport_variants)))
@@ -243,7 +243,7 @@ default-filter = '''
     (package(=studio-runtime-services) & binary(=integration) & (test(recovery_history::exact_start_rejects_invalid_negative_receipt_identity) | test(recovery_history::exact_start_refuses_malformed_delivered_items))) |
     (package(=studio-runtime-services) & kind(test) & binary(=integration) & test(non_radio_async_answer_is_steered_and_acknowledged)) |
     (package(=studio-runtime-services) & kind(lib) & test(private_answer_waits_while_shared_turn_holds_floor)) |
-    (package(=studio-runtime-http) & kind(lib) & (test(pricing_refresh) | test(generated_provider_identity_is_the_schema_owner))) |
+    (package(=studio-runtime-http) & kind(lib) & (test(pricing_refresh) | test(generated_provider_identity_is_the_schema_owner) | test(catalog_rejects_unsupported_effort_and_uses_native_default_when_omitted))) |
     (package(=studio-runtime-services) & kind(lib) & (test(rejected_usage_does_not_feed_rate_or_move_cache) | test(usage::tests::claude_cost_snapshot_) | test(usage::tests::local_claude_session_fixture_) | test(usage::tests::claude_refresh_uses_completion_time))) |
     (package(=studio-runtime-schema) & kind(lib) & (test(bridge_wire) | test(provider_kind::tests::) | test(provider_identity) | test(provider_errors::) | test(studio_errors::) | test(provider_lifecycle::) | test(provider_parity_rejects_each_native_discriminator_and_sql_drift))) |
     (package(=studio-runtime-providers) & kind(lib) & test(provider_kind::tests::)) |
@@ -268,7 +268,7 @@ default-filter = '''
     (package(=studio-runtime-store) & kind(lib) & test(repositories::cost_aggregate::tests::typed_usage_)) |
     (package(=studio-runtime-services) & kind(lib) & (test(analytics_capture::usage_contract_tests::) | test(analytics_history_repair::usage_contract_tests::) | test(analytics_rollout::tests::typed_usage_))) |
     (package(=studio-runtime-schema) & kind(lib) & test(usage::persisted::tests::)) |
-    (package(=studio-runtime-services) & kind(lib) & test(/::(managed_reviewer_defaults_reach_public_spawn_tool|reviewer_defaults_are_explained_in_emitted_tools_and_role_guidance|review_fast_mode_defaults_preserve_explicit_false_and_inheritance)$/)) |
+    (package(=studio-runtime-services) & kind(lib) & test(/::(managed_reviewer_defaults_reach_public_spawn_tool|reviewer_defaults_are_explained_in_emitted_tools_and_role_guidance|review_fast_mode_defaults_preserve_explicit_false_and_inheritance|child_creation_routes_profile_to_compatible_account)$/)) |
     (package(=studio-runtime-services) & kind(test) & binary(=integration) & test(review_fast_mode_uses_optional_team_default_before_actor))
     | ((package(=studio-runtime-server)) & ((kind(lib) | kind(bin) | kind(test))) & (test(operator_cli::)))
     | (package(=studio-runtime-server) & kind(bin) & test(web_assets::tests::))
@@ -367,7 +367,7 @@ default-filter = '''
     | (package(=studio-runtime-services) & kind(test) & binary(=integration) & test(recovery_history::thread_observation_preserves_unknown_status_and_external_fields))
     | (package(=studio-runtime-services) & kind(lib) & test(account_worker::tests::idle_unload::malformed_))
     | (package(=studio-runtime-services) & kind(lib) & test(account_worker::tests::idle_unload::typed_idle_evidence_preserves_pagination_extensions_and_unload_statuses))
-    | (package(=studio-runtime-http) & kind(test) & binary(=integration) & (test(complaint_http_) | test(mcp_reconnect::mcp_reconnect_missing_account_is_not_classified_as_codex)))
+    | (package(=studio-runtime-http) & kind(test) & binary(=integration) & (test(complaint_http_) | test(mcp_reconnect::mcp_reconnect_missing_account_is_not_classified_as_codex) | test(automatic_http_child_warms_higher_priority_catalog_before_selection)))
     | (package(=studio-runtime-schema) & kind(lib) & (test(model_catalog::tests::optional_nullable_fields_and_opaque_metadata_round_trip) | test(model_catalog::tests::known_fields_reject_invalid_types_in_serde_and_generated_schema) | test(claude_controls::tests::claude_control_command_ingress_contract) | test(claude_controls::tests::claude_control_identity_limit_remains_utf8_bytes) | test(claude_controls::tests::claude_control_settings_preserve_presence) | test(claude_controls::tests::settings_schema_rejects_null_nonnullable_fields)))
     | (package(=studio-runtime-http) & kind(lib) & (test(reconnect_helpers_preserve_request_types) | test(http_input_preserves_runtime_input_type_and_dimension_presence)))
     | (package(=studio-runtime-schema) & kind(lib) & (test(task_command::tests::task_commands_validate_variants_and_keep_presence_and_opaque_results) | test(task_command_schema_matches_owner_and_transport_variants)))

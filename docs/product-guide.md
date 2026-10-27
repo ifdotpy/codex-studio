@@ -79,8 +79,9 @@ That history stays with its original members when the team changes.
 Managed workers can use a different provider from their parent. The default is
 `gpt-6-luna` with `high` reasoning. The orchestrator selects each worker's model
 and reasoning level through `orchestration_spawn`. Studio selects an available
-account for that model, preferring the parent's account, then the application
-default. `account_key` selects a specific account. Model and account validation
+account for that model under the chat and project restrictions, using estimated
+capacity, account-group order, and active-agent counts. `account_key` selects a
+specific account and must respect the team's pinned account. Model and account validation
 finish before any worker in the batch is created. A team transfer moves existing
 workers whose provider matches the destination. Workers on another provider stay
 on their current account. New workers use the team's destination account and
