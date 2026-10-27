@@ -248,7 +248,7 @@ async fn invalid_record_of_one_agent_in_a_provider_reply_retires_the_request_and
     corrupt(
         &state,
         &a,
-        "UPDATE runtime_agents SET record=json_set(record,'$.startAttempt.events',json('[]')) WHERE id=?1",
+        "UPDATE runtime_agents SET record=json_set(record,'$.startAttempt.events',json('[]'),'$.workspaceMode','layr-native','$.layrStoreRoot','relative') WHERE id=?1",
     )
     .await;
     let reply = peer

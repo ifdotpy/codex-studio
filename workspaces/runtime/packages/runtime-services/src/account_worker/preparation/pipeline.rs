@@ -1339,7 +1339,7 @@ pub(crate) async fn prepare_monitor_command(
     validate_monitor_actor(&observed, epoch)?;
     let agent_id = agent_id.to_owned();
     let state_root = store.root().to_path_buf();
-    let resources_for_snapshot = resources.for_sql(&state_root, &observed).await?;
+    let resources_for_snapshot = resources.for_sql(&state_root, &observed, None).await?;
     scheduler::lifecycle_transaction_with(&store, move |tx| {
         let current = agent(tx, &agent_id)?.value();
         validate_monitor_actor(&current, epoch)?;
@@ -1565,13 +1565,24 @@ async fn prepare_native_snapshot(
     let (identity, _) = catalog(resources, &intent)?;
     let state_root = store.root().to_path_buf();
     let intent = intent.clone();
-    let observed = stored_agent_value(&store, &intent.agent_id).await?;
-    let resources_for_snapshot = resources.for_sql(&state_root, &observed).await?;
+    let observed = if restore_cwd.is_some() {
+        record.clone()
+    } else {
+        stored_agent_value(&store, &intent.agent_id).await?
+    };
+    let resources_for_snapshot = resources
+        .for_sql(
+            &state_root,
+            &observed,
+            restore_cwd.as_ref().map(|cwd| cwd.as_path()),
+        )
+        .await?;
     let generation = generation.to_string();
     let transfer_owner = account_transfer_owner.map(str::to_owned);
     scheduler::lifecycle_transaction_with(&store, move |tx| {
         let current =
             preconditions_for_purpose(tx, &intent, &filesystem, allow_paused_start, None)?;
+        resources_for_snapshot.validate_native_layr_source(&state_root, &current)?;
         let frozen = admission
             .selection
             .freeze_record(&current, &identity, Instant::now())
@@ -1635,7 +1646,7 @@ pub(crate) async fn prepare_safety_retry(
         .to_owned();
     let snapshot_request = request.clone();
     let state_root = store.root().to_path_buf();
-    let resources_for_snapshot = resources.for_sql(&state_root, &record).await?;
+    let resources_for_snapshot = resources.for_sql(&state_root, &record, None).await?;
     let mut snapshot = scheduler::lifecycle_transaction_with(&store, move |tx| {
         let current = agent(tx, &snapshot_request.agent_id)?.value();
         if current.get("threadId").and_then(Value::as_str)
@@ -1771,7 +1782,7 @@ pub(crate) async fn prepare_ready(
     let generation = generation.to_string();
     let state_root = store.root().to_path_buf();
     let observed = stored_agent_value(&store, &intent.agent_id).await?;
-    let resources = resources.for_sql(&state_root, &observed).await?;
+    let resources = resources.for_sql(&state_root, &observed, None).await?;
     let resources_for_snapshot = resources.clone();
     let (
         mut snapshot,

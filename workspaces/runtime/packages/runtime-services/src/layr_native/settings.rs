@@ -104,7 +104,26 @@ pub(super) fn root_from_cwd(cwd: &Path) -> Option<PathBuf> {
     })
 }
 
-pub fn record_store(state: &Path, record: &Value) -> Result<PathBuf> {
+#[derive(Clone, PartialEq, Eq)]
+pub(crate) enum StoreAssociation {
+    Recorded(PathBuf),
+    LegacyLine(PathBuf),
+    Selected,
+}
+
+impl StoreAssociation {
+    pub(crate) fn resolve(&self, state: &Path) -> Result<PathBuf> {
+        match self {
+            Self::Recorded(root) => Ok(root.clone()),
+            Self::LegacyLine(cwd) => root_from_cwd(cwd).ok_or_else(|| {
+                NativeLayrError::Refused("Invalid native Layr cwd association".into())
+            }),
+            Self::Selected => selected_store(state),
+        }
+    }
+}
+
+pub(crate) fn store_association(record: &Value) -> Result<StoreAssociation> {
     if let Some(root) = record["layrStoreRoot"].as_str() {
         let root = PathBuf::from(root);
         if !root.is_absolute() {
@@ -112,7 +131,7 @@ pub fn record_store(state: &Path, record: &Value) -> Result<PathBuf> {
                 "Invalid native Layr store association".into(),
             ));
         }
-        return Ok(root);
+        return Ok(StoreAssociation::Recorded(root));
     }
     // Records from before store selection have an authoritative saved line path.
     if record["layrReady"] == true {
@@ -123,10 +142,13 @@ pub fn record_store(state: &Path, record: &Value) -> Result<PathBuf> {
         }]
         .as_str()
         .ok_or_else(|| NativeLayrError::Refused("Missing native Layr cwd".into()))?;
-        return root_from_cwd(Path::new(cwd))
-            .ok_or_else(|| NativeLayrError::Refused("Invalid native Layr cwd association".into()));
+        return Ok(StoreAssociation::LegacyLine(PathBuf::from(cwd)));
     }
-    selected_store(state)
+    Ok(StoreAssociation::Selected)
+}
+
+pub fn record_store(state: &Path, record: &Value) -> Result<PathBuf> {
+    store_association(record)?.resolve(state)
 }
 
 #[cfg(test)]
