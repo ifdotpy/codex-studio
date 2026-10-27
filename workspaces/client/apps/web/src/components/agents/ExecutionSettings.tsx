@@ -30,8 +30,9 @@ import {
   useState,
 } from "react";
 import { createPortal } from "react-dom";
-import { ApiError, errorText, type PostBody } from "../../api";
-import { busy, type Agent, type Json, type JsonValue } from "../../types";
+import { ApiError, errorText, type PostBody, type PostResult } from "../../api";
+import { busy, type Agent, type JsonValue } from "../../types";
+import { TRANSFER_STATUSES } from "../../generated/accountTransfer.ts";
 import {
   isDaybreakAlias,
   useModelCatalogReader,
@@ -189,33 +190,28 @@ const isJsonValue = (value: unknown): value is JsonValue => {
   if (Array.isArray(value)) return value.every(isJsonValue);
   return isRecord(value) && Object.values(value).every(isJsonValue);
 };
-const jsonObject = (value: unknown): Json | null => {
-  if (!isRecord(value)) return null;
-  const result: Json = {};
-  for (const [key, item] of Object.entries(value)) {
-    if (!isJsonValue(item)) return null;
-    result[key] = item;
-  }
-  return result;
-};
-const confirmedTransfer = (
-  value: unknown,
+type TransferResponse = PostResult<"/api/agents/account-transfer">;
+export const confirmedTransfer = (
+  operation: TransferResponse,
   requestId: string,
   leadId: string,
   target: string,
-  scope: "team" | "subagents",
-): Json => {
-  const operation = jsonObject(value);
-  const receipt = jsonObject(jsonObject(operation?.requests)?.[requestId]);
+  scope: TransferResponse["scope"],
+): TransferResponse => {
+  // HTTP payloads still need runtime checks; generated types do not validate ingress.
+  if (!isRecord(operation) || !isJsonValue(operation))
+    throw new Error("The server did not confirm this account transfer.");
+  const receipt = isRecord(operation.requests)
+    ? operation.requests[requestId]
+    : undefined;
   if (
-    !operation ||
     typeof operation.id !== "string" ||
     operation.leadId !== leadId ||
     operation.targetAccountKey !== target ||
     operation.scope !== scope ||
-    !["pending", "completed", "cancelled"].includes(String(operation.status)) ||
+    !TRANSFER_STATUSES.some((status) => status === operation.status) ||
     (operation.id !== requestId &&
-      (!receipt ||
+      (!isRecord(receipt) ||
         receipt.leadId !== leadId ||
         receipt.targetAccountKey !== target ||
         receipt.scope !== scope))
@@ -557,7 +553,7 @@ function ScopedExecutionSettings({
     baseline: string | null;
   } | null>(null);
   const [transfer, setTransfer] = useState<{
-    value: Json;
+    value: TransferResponse;
     baseline: string;
   } | null>(null);
   const [retryTarget, setRetryTarget] = useState<string | null>(null);
@@ -1021,7 +1017,7 @@ function ScopedExecutionSettings({
       `${modelDisplayName(wanted)} is not available on ${setupAccountName(accounts.find((account) => account.id === stored.account_key))}. Using ${modelDisplayName(replacement)}, the account default.`,
     );
   });
-  const storedTransfer = jsonObject(agent.accountTransfer);
+  const storedTransfer = agent.accountTransfer;
   const snapshotTransfer =
     storedTransfer &&
     (teamDefaults

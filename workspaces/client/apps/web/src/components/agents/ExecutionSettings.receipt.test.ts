@@ -1,5 +1,6 @@
 import { Button, NativeSelect, Switch, Textarea } from "@mantine/core";
-import type { PostBody } from "../../apiTypes";
+import type { PostBody, PostResult } from "../../apiTypes";
+import { AccountTransferStatus } from "../Accounts";
 import { required, type ComponentHookCell } from "../componentTestFixtures";
 import type { EffectCallback, PropsWithChildren, ComponentProps } from "react";
 import {
@@ -278,6 +279,50 @@ afterEach(() => {
   h.post.mockReset();
   h.refresh.mockClear();
   h.emptyCatalog = false;
+});
+
+test("transfer actions retain response identity and retry the same request after a lost response", async () => {
+  const operation = {
+    id: "saved-transfer",
+    leadId: initial.id,
+    targetAccountKey: "work",
+    scope: "team",
+    status: "pending",
+    created: 1,
+    updated: 2,
+    members: {},
+    canRetry: true,
+  } satisfies PostResult<"/api/agents/account-transfer">;
+  const agent: Agent = { ...initial, accountTransfer: operation };
+  const transfer = () => {
+    const status = children(render(agent).controls).find(
+      (
+        node,
+      ): node is ReactElement<ComponentProps<typeof AccountTransferStatus>> =>
+        node.type === AccountTransferStatus,
+    );
+    return required(status).props;
+  };
+  h.post.mockRejectedValueOnce(new Error("response lost"));
+  transfer().onAction?.("retry");
+  await vi.waitFor(() => expect(transfer().pending).toBe(false));
+  expect(transfer().transfer).toBe(operation);
+  const response = {
+    ...operation,
+    updated: 3,
+    waiting: "Waiting for the current turn",
+  };
+  h.post.mockResolvedValueOnce(response);
+  transfer().onAction?.("retry");
+  await vi.waitFor(() => expect(transfer().pending).toBe(false));
+  expect(h.post).toHaveBeenCalledTimes(2);
+  expect(h.post.mock.calls[0]).toEqual(h.post.mock.calls[1]);
+  expect(h.post).toHaveBeenLastCalledWith("/api/agents/account-transfer", {
+    action: "retry",
+    scope: "team",
+    request_id: operation.id,
+  });
+  expect(transfer().transfer).toBe(response);
 });
 
 for (const provider of ["Future Provider", "codex", "claude"]) {
