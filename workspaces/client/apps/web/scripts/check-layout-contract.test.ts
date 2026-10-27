@@ -92,7 +92,9 @@ test("rejects invalid units and duplicate generated owners", () => {
   navigation.unit = "pt";
   assert.throws(() => validateContract(bad), /navigation.inlineMin/);
   const badKind = structuredClone(contract);
-  Object.assign(badKind.tokens["navigation.inlineMin"], { kind: "colour" });
+  const kindOwner = badKind.tokens["navigation.inlineMin"];
+  assert.ok(kindOwner, "The navigation boundary has an owner");
+  Object.assign(kindOwner, { kind: "colour" });
   assert.throws(() => validateContract(badKind), /navigation.inlineMin/);
   const duplicate = structuredClone(contract);
   const panel = duplicate.tokens["workspacePanel.min"];
