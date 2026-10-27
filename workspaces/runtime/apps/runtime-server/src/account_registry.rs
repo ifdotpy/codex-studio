@@ -119,7 +119,8 @@ mod registry_hints {
                             | ObservedTable::OrchestrationSettings
                             | ObservedTable::RuntimeRequests
                             | ObservedTable::RuntimeToolRequests
-                            | ObservedTable::AnalyticsProjection => return self.wake.notify_one(),
+                            | ObservedTable::AnalyticsProjection
+                            | ObservedTable::Projects => return self.wake.notify_one(),
                         };
                         if rows.len() + ids.len() > MAX_PENDING_ROW_HINTS {
                             rows.clear();

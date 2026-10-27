@@ -203,6 +203,7 @@ pub enum ObservedTable {
     RuntimeRequests,
     RuntimeToolRequests,
     AnalyticsProjection,
+    Projects,
 }
 
 /// Maximum rowid occurrences recorded per observed table for one writer transaction.
@@ -294,6 +295,7 @@ impl ObservedTable {
             Self::RuntimeRequests => "runtime_requests",
             Self::RuntimeToolRequests => "runtime_tool_requests",
             Self::AnalyticsProjection => "runtime_analytics_projection",
+            Self::Projects => "runtime_projects",
         }
     }
 
@@ -324,6 +326,7 @@ impl ObservedTable {
             Self::RuntimeRequests => 1 << 24,
             Self::RuntimeToolRequests => 1 << 25,
             Self::AnalyticsProjection => 1 << 26,
+            Self::Projects => 1 << 20,
         }
     }
 
@@ -335,7 +338,7 @@ impl ObservedTable {
     }
 }
 
-const OBSERVED_TABLES: [ObservedTable; 25] = [
+const OBSERVED_TABLES: [ObservedTable; 26] = [
     ObservedTable::AccessClients,
     ObservedTable::UsageResumes,
     ObservedTable::Agents,
@@ -361,6 +364,7 @@ const OBSERVED_TABLES: [ObservedTable; 25] = [
     ObservedTable::RuntimeRequests,
     ObservedTable::RuntimeToolRequests,
     ObservedTable::AnalyticsProjection,
+    ObservedTable::Projects,
 ];
 
 /// Value-free observations emitted by the optional diagnostics callback.
@@ -3391,6 +3395,7 @@ mod commit_notification_tests {
                 ("runtime_requests", 0),
                 ("runtime_tool_requests", 0),
                 ("runtime_analytics_projection", 0),
+                ("runtime_projects", 0),
             ]
         );
     }

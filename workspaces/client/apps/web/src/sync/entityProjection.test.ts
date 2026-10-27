@@ -1031,6 +1031,42 @@ it("skips malformed entity rows once and still applies the rest of the batch", (
   }
 });
 
+it("keeps the projects of paired servers apart from the local projects", () => {
+  const state = emptyEntityProjection();
+  const shown = applyEntityRows(
+    state,
+    [
+      entityRow("project", "/here", { id: "/here", name: "here" }, 1),
+      entityRow(
+        "project",
+        "peer:b:/there",
+        {
+          id: "peer:b:/there",
+          name: "there",
+          homeServerId: "b",
+          serverLabel: "Laptop",
+        },
+        2,
+      ),
+    ],
+    true,
+  );
+  assert.deepEqual(
+    shown.runtime.projects.map((project) => project.id),
+    ["/here"],
+  );
+  assert.deepEqual(
+    shown.runtime.remoteProjects?.map((project) => project.serverLabel),
+    ["Laptop"],
+  );
+  const gone = applyEntityRows(
+    state,
+    [entityRow("project", "peer:b:/there", {}, 3, { deleted: true })],
+    true,
+  );
+  assert.deepEqual(gone.runtime.remoteProjects, []);
+});
+
 it("moves replaced entities between collections and removes rows omitted by RxDB", () => {
   const state = emptyEntityProjection();
   const first = applyEntityRows(
