@@ -309,7 +309,7 @@ pub(super) fn acknowledge(
                 || context.intent.agent_id != *agent_id
                 || context.intent.thread_id.as_deref() != Some(thread)
                 || context.operation != operation
-                || context.method != Method::TurnSteer.as_str()
+                || context.method != Method::TurnSteer
                 || context
                     .intent
                     .events

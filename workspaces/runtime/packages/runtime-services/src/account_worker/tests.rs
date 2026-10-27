@@ -1664,7 +1664,7 @@ async fn scenario_restart_after_submitted_before_written_recovers_unknown_withou
                         thread: prepared.thread,
                         compiled: prepared.compiled,
                         intent: prepared.intent,
-                        method: "turn/start".into(),
+                        method: Method::TurnStart,
                         operation
                     },
                     "default",
@@ -1782,7 +1782,7 @@ async fn restart_held_first_input_is_reconciled_by_the_first_worker() {
                             thread: prepared.thread,
                             compiled: prepared.compiled,
                             intent: prepared.intent,
-                            method: "turn/start".into(),
+                            method: Method::TurnStart,
                             operation
                         },
                         "default",
@@ -6335,7 +6335,7 @@ async fn preparation_commit_rechecks_workspace_settings_and_input() {
                 lightweight: false, deadline_ms: 60_000, unknown: false, remote_id: None,
             };
             let context = Pending { thread: prepared.thread, compiled: prepared.compiled,
-                intent: prepared.intent, method: "turn/start".into(), operation: operation.clone() };
+                intent: prepared.intent, method: Method::TurnStart, operation: operation.clone() };
             assert!(!store::submitted(
                 &store,
                 context,

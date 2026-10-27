@@ -307,9 +307,6 @@ pub(super) async fn recover(
             let value: Value = serde_json::from_str(&raw).map_err(|_| invalid(&account))?;
             let context: Pending =
                 serde_json::from_value(value["context"].clone()).map_err(|_| invalid(&account))?;
-            if Method::from_wire(&context.method).is_none() {
-                return Err(invalid(&account));
-            }
             let held: bool = tx.query_row_cached(
                 "SELECT EXISTS(SELECT 1 FROM runtime_operation_receipts \
                  WHERE id=?1 AND signature=?2)",
@@ -338,11 +335,11 @@ pub(super) async fn recover(
             if vm_owned {
                 continue;
             }
-            if context.method()? == Method::TurnStart {
+            if context.method == Method::TurnStart {
                 uncertain(tx, &context, Some(&request.ticket), false, false)?;
             }
             if matches!(
-                context.method()?,
+                context.method,
                 Method::ThreadStart | Method::ThreadResume
             ) {
                 if continued_after(tx, &context)? {
@@ -830,7 +827,7 @@ pub(super) async fn submitted(
     } = evidence;
     let account = account.to_owned();
     let blocked_intent = context.intent.clone();
-    let blocked_method = context.method.clone();
+    let blocked_method = context.method;
     let result = scheduler::lifecycle_transaction_with(store, move |tx| {
         if receipt(tx, &context.operation, "submitted")?.is_some() {
             return Ok(false);
@@ -844,7 +841,7 @@ pub(super) async fn submitted(
         }
         // Retirement is a committed outcome, whereas a stale preparation must
         // roll back its freeze. Reconcile before making any preparation writes.
-        if context.method()? == Method::TurnStart
+        if context.method == Method::TurnStart
             && guard.is_some()
             && !SchedulerRepository::reconcile_obsolete_before_submit(
                 tx,
@@ -871,7 +868,7 @@ pub(super) async fn submitted(
             }
         }
         let authorized = stage("turn_submission.submitted.authorize", || {
-            Ok::<_, WorkerError>(match context.method()? {
+            Ok::<_, WorkerError>(match context.method {
                 Method::TurnStart
                     if i.provider == studio_runtime_providers::ProviderKind::Claude =>
                 {
@@ -1090,7 +1087,7 @@ pub(super) async fn submitted(
         }
         Err(WorkerError::PreparationRefused(reason)) => {
             let reason = if preparation::snapshot_changed(&reason) {
-                let reason = changed_start_reason(&blocked_method, &reason);
+                let reason = changed_start_reason(blocked_method.as_str(), &reason);
                 if return_changed_start(store, &blocked_intent, &reason).await? {
                     return Ok(false);
                 }
@@ -1216,8 +1213,8 @@ fn settle_outcome_isolated(
     // provider may have created the thread, and another start would create a
     // second one. Its agent stays held by that receipt as well (see `recover`).
     let retire = || {
-        if final_outcome && context.method != Method::ThreadStart.as_str() {
-            if context.method == Method::TurnStart.as_str()
+        if final_outcome && context.method != Method::ThreadStart {
+            if context.method == Method::TurnStart
                 && let Some(key) = effect_key(&account, &Effect::Submit(context.intent.clone()))
             {
                 delete_effect(tx, &key)?;
@@ -1270,7 +1267,7 @@ fn settle_outcome(
         session_closed,
     } = step;
     let i = &context.intent;
-    if context.method()? == Method::TurnSteer {
+    if context.method == Method::TurnSteer {
         let wake = steer::outcome(tx, &context, &outcome)?;
         if let SessionOutcome::Write {
             outcome: WriteOutcome::Written,
@@ -1348,7 +1345,7 @@ fn settle_outcome(
             ticket,
             outcome: RequestOutcome::Reply { body, .. },
         } => {
-            match context.method()? {
+            match context.method {
                 Method::ThreadResume | Method::ThreadStart if start_settled(tx, &i.attempt_id)? => {
                     // A reply after its attempt's start outcome settled (for
                     // example held at the reply deadline) is stale for that
@@ -1644,7 +1641,7 @@ fn settle_outcome(
     if retired {
         // A retained Submit owns the same prepared/request identity. Retire
         // it with that identity's guard, never in an independent commit.
-        if context.method()? == Method::TurnStart
+        if context.method == Method::TurnStart
             && let Some(key) = effect_key(&account, &Effect::Submit(i.clone()))
         {
             delete_effect(tx, &key)?;
@@ -1729,7 +1726,7 @@ fn settle_not_sent(
     cause: Option<crate::provider_session_task::NotSentCause>,
     session_closed: bool,
 ) -> Result<Option<(String, i64)>, WorkerError> {
-    let method = context.method()?;
+    let method = context.method;
     if method == Method::TurnInterrupt {
         uncertain(tx, context, ticket, true, session_closed)?;
         return Ok(None);
@@ -1799,7 +1796,7 @@ fn retry_unknown_resume(
     context: &Pending,
     session_closed: bool,
 ) -> Result<Option<(String, i64)>, WorkerError> {
-    if session_closed || context.method()? != Method::ThreadResume {
+    if session_closed || context.method != Method::ThreadResume {
         return Ok(None);
     }
     let identity = context.intent.identity();
@@ -1823,7 +1820,7 @@ fn uncertain(
     not_sent: bool,
     session_closed: bool,
 ) -> Result<bool, WorkerError> {
-    let thread_request = !matches!(context.method()?, Method::TurnInterrupt | Method::TurnStart);
+    let thread_request = !matches!(context.method, Method::TurnInterrupt | Method::TurnStart);
     // A thread request that died with its provider process never submitted the
     // input; the attempt retries on the next session instead of holding it.
     if thread_request
@@ -1832,7 +1829,7 @@ fn uncertain(
     {
         return Ok(true);
     }
-    if context.method()? == Method::TurnInterrupt {
+    if context.method == Method::TurnInterrupt {
         let ticket = ticket.ok_or_else(|| invalid(&context.operation))?;
         SchedulerRepository::settle_interrupt(
             tx,
@@ -1843,11 +1840,11 @@ fn uncertain(
     } else {
         let outcome = if not_sent {
             TurnStart::NotSubmitted
-        } else if context.method()? == Method::TurnStart {
+        } else if context.method == Method::TurnStart {
             TurnStart::Unknown
         } else {
             TurnStart::Blocked {
-                reason: if context.method()? == Method::ThreadStart {
+                reason: if context.method == Method::ThreadStart {
                     PROVIDER_THREAD_START_UNKNOWN_ERROR
                 } else {
                     PROVIDER_RESUME_UNKNOWN_ERROR
@@ -3919,7 +3916,7 @@ fn continued_after(
     tx: &studio_runtime_store::Transaction<'_>,
     context: &Pending,
 ) -> Result<bool, WorkerError> {
-    if context.method()? != Method::ThreadResume {
+    if context.method != Method::ThreadResume {
         return Ok(false);
     }
     let agent_id = context.intent.agent_id.as_str();

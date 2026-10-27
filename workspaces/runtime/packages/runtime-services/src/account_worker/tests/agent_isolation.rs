@@ -292,7 +292,7 @@ async fn native_layr_receipt_capture_faults_stay_inside_each_agents_settlement()
                 };
                 if corruption.contains("layrStoreRoot") {
                     let mut interrupt = context.clone();
-                    interrupt.method = Method::TurnInterrupt.as_str().into();
+                    interrupt.method = Method::TurnInterrupt;
                     interrupt.operation = "unused-native-layr-interrupt".into();
                     interrupt.thread = None;
                     let (settled, fault) = store::outcome(

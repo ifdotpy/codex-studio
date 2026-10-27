@@ -65,7 +65,7 @@ async fn unknown_start_then_disconnect(state: &State, generation: u64) -> (Peer,
                         thread: prepared.thread,
                         compiled: prepared.compiled,
                         intent: prepared.intent,
-                        method: "turn/start".into(),
+                        method: Method::TurnStart,
                         operation
                     },
                     "default",
@@ -80,6 +80,17 @@ async fn unknown_start_then_disconnect(state: &State, generation: u64) -> (Peer,
                 )
                 .await?
             );
+            // Historical envelopes may omit optional preparation fields.
+            crate::scheduler::lifecycle_transaction(&store, |tx| {
+                let changed = tx.execute(
+                    "UPDATE runtime_operation_receipts SET result=json_remove(result,'$.context.thread') \
+                     WHERE signature='submitted' AND json_extract(result,'$.context.method')='turn/start'",
+                    [],
+                )?;
+                assert_eq!(changed, 1);
+                Ok(())
+            })
+            .await?;
             crate::scheduler::settle_start_outcome(
                 &store,
                 &intent,

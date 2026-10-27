@@ -110,7 +110,7 @@ async fn compiler_dependencies_and_late_holds_are_checked_before_commit() {
                 Ok::<(), WorkerError>(())
             })
             .await?;
-            let pending = Pending {intent:prepared.intent,method:"turn/start".into(),operation:"test".into(),thread:prepared.thread,compiled:prepared.compiled};
+            let pending = Pending {intent:prepared.intent,method:Method::TurnStart,operation:"test".into(),thread:prepared.thread,compiled:prepared.compiled};
             let error = scheduler::lifecycle_transaction_with(store.as_ref(), move |tx| preparation::commit(tx,&pending,&prepared.guard)).await.unwrap_err();
             assert!(matches!(error, WorkerError::PreparationRefused(_)), "{mutation}: {error}");
             let db = store.test_reader()?;
@@ -288,7 +288,7 @@ pub(super) async fn scenario_late_context_change_refuses_submission() {
                 };
                 let context = Pending {
                     intent: prepared.intent,
-                    method: "turn/start".into(),
+                    method: Method::TurnStart,
                     operation,
                     thread: prepared.thread,
                     compiled: prepared.compiled,
@@ -456,7 +456,7 @@ pub(super) async fn scenario_sibling_completion_does_not_refuse_non_lead() {
                 };
                 let context = Pending {
                     intent: prepared.intent,
-                    method: "turn/start".into(),
+                    method: Method::TurnStart,
                     operation,
                     thread: prepared.thread,
                     compiled: prepared.compiled,
