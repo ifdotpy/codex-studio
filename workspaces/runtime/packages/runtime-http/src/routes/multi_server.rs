@@ -970,7 +970,7 @@ fn map_credential_error(error: CredentialError) -> ApiError {
         CredentialError::RemoteRequired => {
             unavailable_for("POST", "/api/multi-server", MANAGEMENT_DEPENDENCIES)
         }
-        _ => ApiError::new(
+        CredentialError::Storage | CredentialError::Store(_) => ApiError::new(
             StatusCode::SERVICE_UNAVAILABLE,
             "The local server credentials are unavailable",
         ),

@@ -59,7 +59,7 @@ test("Context repair notice ui", async ({
     );
     const error =
       "Context repair waits for monitors: 3c403ca5-4143-5750-a061-dd19ab5aab5c";
-    const agent: Agent = {
+    const agent = {
       id: "fixture",
       name: "Fixture",
       status: "queued",
@@ -70,7 +70,7 @@ test("Context repair notice ui", async ({
       epoch: 0,
       error,
       contextRepairWait: { scope: "local", error },
-    };
+    } satisfies Agent;
     let cases = 0;
     const check = async (
       label: string,

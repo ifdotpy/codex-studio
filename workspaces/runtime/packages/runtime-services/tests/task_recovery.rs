@@ -57,7 +57,12 @@ fn malformed_persisted_recovery_inputs_are_located() {
             Ok(_) => panic!("accepted invalid {field}"),
             Err(e) => e,
         };
-        assert!(error.location.starts_with("runtime_agents"));
+        assert!(matches!(
+            error,
+            studio_runtime_services::recovery_policy::InvalidRecoveryRecord::Schema {
+                location: "runtime_agents.recovery"
+            }
+        ));
     }
 }
 

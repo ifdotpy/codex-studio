@@ -358,7 +358,36 @@ async fn sync_stream(
             ResourceRef::StateResource(_) if entry.cursor.is_some() => {
                 initial_entity_sequence = entry.revision
             }
-            _ => {}
+            ResourceRef::AccountsResource(_)
+            | ResourceRef::CostsResource(_)
+            | ResourceRef::DesktopResource(_)
+            | ResourceRef::DraftsResource(_)
+            | ResourceRef::LimitsResource(_)
+            | ResourceRef::ModelsResource(_)
+            | ResourceRef::MultiServerResource(_)
+            | ResourceRef::QueueResource(_)
+            | ResourceRef::ReceiptsResource(_)
+            | ResourceRef::RoomResource(_)
+            | ResourceRef::SessionCostResource(_)
+            | ResourceRef::StateResource(_)
+            | ResourceRef::TaskResource(_)
+            | ResourceRef::TasksResource(_)
+            | ResourceRef::TerminalResource(_)
+            | ResourceRef::TerminalsResource(_)
+            | ResourceRef::TranscriptResource(_)
+            | ResourceRef::TranscriptsResource(_)
+            | ResourceRef::VoiceResource(_)
+            | ResourceRef::WorkspaceResource(_)
+            | ResourceRef::AuthProgressResource(_)
+            | ResourceRef::VaultReadinessResource(_)
+            | ResourceRef::VaultJobProgressResource(_)
+            | ResourceRef::RenameProgressResource(_)
+            | ResourceRef::AgentDetailResource(_)
+            | ResourceRef::MonitorsResource(_)
+            | ResourceRef::ProcessesResource(_)
+            | ResourceRef::WorkResource(_)
+            | ResourceRef::ComplaintResource(_)
+            | ResourceRef::TerminalOutputResource(_) => {}
         }
     }
     let mut terminal_cursors = BTreeMap::new();
@@ -1069,7 +1098,35 @@ async fn attach_transient_snapshots(
                         .map(Some);
                 }
             }
-            _ => {}
+            ResourceRef::AccountsResource(_)
+            | ResourceRef::CostsResource(_)
+            | ResourceRef::DesktopResource(_)
+            | ResourceRef::DraftsResource(_)
+            | ResourceRef::LimitsResource(_)
+            | ResourceRef::ModelsResource(_)
+            | ResourceRef::MultiServerResource(_)
+            | ResourceRef::QueueResource(_)
+            | ResourceRef::ReceiptsResource(_)
+            | ResourceRef::RoomResource(_)
+            | ResourceRef::SessionCostResource(_)
+            | ResourceRef::StateResource(_)
+            | ResourceRef::TaskResource(_)
+            | ResourceRef::TasksResource(_)
+            | ResourceRef::TerminalResource(_)
+            | ResourceRef::TerminalsResource(_)
+            | ResourceRef::TranscriptResource(_)
+            | ResourceRef::TranscriptsResource(_)
+            | ResourceRef::WorkspaceResource(_)
+            | ResourceRef::AuthProgressResource(_)
+            | ResourceRef::VaultReadinessResource(_)
+            | ResourceRef::VaultJobProgressResource(_)
+            | ResourceRef::RenameProgressResource(_)
+            | ResourceRef::AgentDetailResource(_)
+            | ResourceRef::MonitorsResource(_)
+            | ResourceRef::ProcessesResource(_)
+            | ResourceRef::WorkResource(_)
+            | ResourceRef::ComplaintResource(_)
+            | ResourceRef::TerminalOutputResource(_) => {}
         }
     }
 }

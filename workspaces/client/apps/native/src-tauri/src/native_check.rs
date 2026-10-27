@@ -98,19 +98,27 @@ pub fn loaded(window: &tauri::Webview) {
             .menu()
             .expect("Desktop menu must be installed");
         for id in ["reload-workspace", "reset-zoom", "zoom-in", "zoom-out"] {
+            // The hidden check treats a missing or unreadable installed menu as a failure.
             assert!(
-                menu.items().unwrap().iter().any(|item| match item {
-                    tauri::menu::MenuItemKind::Submenu(submenu) => submenu.get(id).is_some(),
-                    _ => false,
-                }),
+                menu.items()
+                    .expect("read desktop menu items")
+                    .iter()
+                    .any(|item| match item {
+                        tauri::menu::MenuItemKind::Submenu(submenu) => submenu.get(id).is_some(),
+                        tauri::menu::MenuItemKind::MenuItem(_)
+                        | tauri::menu::MenuItemKind::Predefined(_)
+                        | tauri::menu::MenuItemKind::Check(_)
+                        | tauri::menu::MenuItemKind::Icon(_) => false,
+                    }),
                 "Missing desktop command: {id}"
             );
         }
     }
     let mode = std::env::var("STUDIO_NATIVE_CHECK_MODE").unwrap_or_else(|_| "write".into());
+    // A string always serializes to valid JSON, including any mode supplied by the harness.
     let script = format!(
         "window.__studioCheckMode = {};\n{}",
-        serde_json::to_string(&mode).unwrap(),
+        serde_json::to_string(&mode).expect("mode string serializes"),
         include_str!("native-check.js")
     );
     if let Err(error) = window.eval(script) {

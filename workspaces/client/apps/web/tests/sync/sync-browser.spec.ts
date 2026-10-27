@@ -1,3 +1,4 @@
+import { required } from "../teams/helpers.ts";
 import type { FixturePullResponse, FixtureResourceChange } from "./helpers.ts";
 import type { PostBody } from "../../src/apiTypes.ts";
 import type { components } from "../../src/generated/api.ts";
@@ -225,10 +226,10 @@ test("Sync Browser", async ({
       await new Promise((resolve) => setTimeout(resolve, 50));
     assert.equal(draftPushes.length, 1);
     assert.equal(
-      JSON.parse(draftPushes[0].newDocumentState.payload).text,
+      JSON.parse(required(draftPushes[0]).newDocumentState.payload).text,
       "draft",
     );
-    assert.equal(draftPushes[0].newForkState, undefined);
+    assert.equal(required(draftPushes[0]).newForkState, undefined);
     const result = await page.evaluate(async () =>
       (await import("/src/sync/send.ts")).durableSend({
         id: "intent-one",
@@ -267,6 +268,8 @@ test("Sync Browser", async ({
     await page.evaluate(async () => {
       const { db } = await (await import("/src/sync/client.ts")).syncDatabase();
       const doc = await db.outbox.findOne("intent-one").exec();
+      if (!doc) throw new Error("Missing accepted outbox row");
+
       if (JSON.parse(doc!.payload).status !== "accepted")
         throw Error("Receipt not saved");
       type Handler =

@@ -190,8 +190,7 @@ export class NativePreferenceStorage implements Storage {
     if (this.running) return this.running;
     this.failed = false;
     const run = async () => {
-      while (this.writes.length) {
-        const write = this.writes[0];
+      for (let write = this.writes[0]; write; write = this.writes[0]) {
         await this.invoke(write.method, write.params, write.id);
         const next = this.writes.slice(1);
         this.save(next);

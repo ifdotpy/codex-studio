@@ -17,6 +17,7 @@ import type {
   BridgeEmpty,
   BridgeMethod,
   BridgeNotification,
+  BridgeHistoricalItemEvent,
   BridgeParams,
   BridgeResponse,
   BridgeResult,
@@ -61,7 +62,10 @@ export type BridgeFixtureNotification = {
   };
 }[keyof BridgeFixtureNotifications];
 export type BridgeNote =
-  | BridgeNotification
+  | Exclude<BridgeNotification, { method: "item/started" | "item/completed" }>
+  // The reader also observes historical item re-emissions on this same wire.
+  | { method: "item/started"; params: BridgeHistoricalItemEvent }
+  | { method: "item/completed"; params: BridgeHistoricalItemEvent }
   | BridgeServerRequest
   | BridgeFixtureNotification;
 export type BridgeNoteFor<M extends BridgeNote["method"]> = Extract<

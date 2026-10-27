@@ -9,7 +9,6 @@ import type {
   SDKTaskUpdatedMessage,
   SDKTaskNotificationMessage,
   SDKBackgroundTasksChangedMessage,
-  SDKRateLimitInfo,
   SDKControlGetUsageResponse,
   Query,
   SlashCommand,
@@ -75,9 +74,8 @@ export interface BridgePageParams {
   cursor?: string | null | undefined;
   limit?: number | undefined;
 }
-export interface BridgeThreadParams {
-  threadId: string;
-}
+export type BridgeThreadParams =
+  import("./runtime-contract.generated.ts").ThreadIdentity;
 export type BridgeSessionParams = Partial<
   Pick<
     Session,
@@ -136,13 +134,6 @@ export type BridgeCommand = Required<
     "name" | "description" | "argumentHint" | "aliases" | "builtin"
   >
 >;
-export type BridgeRateLimitInfo = Omit<
-  Partial<SDKRateLimitInfo>,
-  "rateLimitType" | "utilization"
-> & {
-  rateLimitType?: string | undefined;
-  utilization?: number | null | undefined;
-};
 export type BridgeRateWindow = Pick<
   RateLimitWindowDto,
   "usedPercent" | "resetsAt" | "windowDurationMins"
@@ -152,7 +143,7 @@ export type BridgeRateBucket = Pick<
   "primary" | "secondary"
 > & {
   [K in "limitId" | "limitName"]: NonNullable<RateLimitBucketDto[K]>;
-} & { claudeRateLimit?: BridgeRateLimitInfo | undefined };
+} & { claudeRateLimit?: unknown };
 export interface BridgeRateLimits {
   rateLimits: BridgeRateBucket;
   rateLimitsByLimitId: Record<string, BridgeRateBucket>;
@@ -160,15 +151,11 @@ export interface BridgeRateLimits {
     | SDKControlGetUsageResponse["subscription_type"]
     | undefined;
   extraUsage?:
-    | Partial<
-        NonNullable<
-          NonNullable<SDKControlGetUsageResponse["rate_limits"]>["extra_usage"]
-        >
-      >
+    | NonNullable<SDKControlGetUsageResponse["rate_limits"]>["extra_usage"]
     | null
     | undefined;
   accountId?: string | undefined;
-  claudeRateLimit?: BridgeRateLimitInfo | undefined;
+  claudeRateLimit?: unknown;
 }
 export type BridgeModel = {
   id: ModelInfo["value"];
@@ -178,8 +165,14 @@ export type BridgeModel = {
   description: ModelInfo["description"];
   isDefault: boolean;
   hidden: false;
-  supportedReasoningEfforts: { reasoningEffort: string; description: string }[];
-  defaultReasoningEffort: "medium" | null;
+  supportedReasoningEfforts: {
+    reasoningEffort: NonNullable<ModelInfo["supportedEffortLevels"]>[number];
+    description: string;
+  }[];
+  defaultReasoningEffort: Extract<
+    NonNullable<ModelInfo["supportedEffortLevels"]>[number],
+    "medium"
+  > | null;
   serviceTiers: { id: "priority"; name: "Fast" }[];
 };
 export type BridgeMoveProof = MoveProof & {
@@ -473,6 +466,13 @@ export interface BridgeItemEvent extends BridgeThreadParams {
   startedAtMs?: number | undefined;
   completedAtMs?: number | undefined;
 }
+// Existing rows can be re-emitted unchanged without claiming fresh guarantees.
+export interface BridgeHistoricalItemEvent extends Omit<
+  BridgeItemEvent,
+  "item"
+> {
+  item: Item & { id: string; type: string };
+}
 export interface BridgeNotifications {
   "item/started": BridgeItemEvent;
   "item/completed": BridgeItemEvent;
@@ -521,15 +521,12 @@ export type BridgeNotification<
 }[M];
 
 type NativeQuestion = AskUserQuestionInput["questions"][number];
-// The bridge forwards parsed questions; SDK input tuple cardinalities and
-// required multi-select defaults are not enforced on this wire boundary.
-export type BridgeUserQuestion = Pick<NativeQuestion, "question" | "header"> &
-  Partial<Omit<NativeQuestion, "question" | "header" | "options">> & {
-    options: NativeQuestion["options"][number][];
-    id: string;
-    isOther: true;
-    isSecret: false;
-  };
+// Fresh questions have passed the SDK-owned field and cardinality contract.
+export type BridgeUserQuestion = NativeQuestion & {
+  id: string;
+  isOther: true;
+  isSecret: false;
+};
 
 export interface BridgeServerRequests {
   "item/tool/requestUserInput": [

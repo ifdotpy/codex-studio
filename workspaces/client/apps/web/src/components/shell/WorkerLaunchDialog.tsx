@@ -1,3 +1,4 @@
+import { isProviderKind, ProviderKind } from "../../generated/providerKind.ts";
 import { Button, Modal, Textarea } from "@mantine/core";
 import { useState } from "react";
 import type { PostBody } from "../../api";
@@ -34,14 +35,17 @@ export function WorkerLaunchDialog({
   const [prompt, setPrompt] = useState("");
   const [permissionMode, setPermissionMode] = useState<ClaudePermissionMode>();
   const allowed = allowedWorkerModes(lead, launch.reviewer);
+  const invalidProvider =
+    !isProviderKind(launch.provider) || !isProviderKind(lead.provider);
   const invalidMode =
-    launch.provider === "claude" &&
+    launch.provider === ProviderKind.Claude &&
     (!inheritedClaudeMode(lead) ||
       (permissionMode !== undefined && !allowed.includes(permissionMode)));
   const invalid =
     !prompt.trim() ||
     Array.from(prompt).length > MAX_MANAGED_MESSAGE_CODEPOINTS ||
-    invalidMode;
+    invalidMode ||
+    invalidProvider;
   return (
     <Modal
       opened
@@ -61,7 +65,7 @@ export function WorkerLaunchDialog({
             prompt,
             parent: lead.id,
             cwd: lead.cwd ?? undefined,
-            ...(launch.provider === "claude" &&
+            ...(launch.provider === ProviderKind.Claude &&
             (launch.reviewer || permissionMode)
               ? { permission_mode: launch.reviewer ? "plan" : permissionMode }
               : {}),
@@ -79,7 +83,10 @@ export function WorkerLaunchDialog({
           value={permissionMode}
           onChange={setPermissionMode}
         />
-        {invalidMode && (
+        {invalidProvider && (
+          <p role="alert">The lead or profile provider is unavailable.</p>
+        )}
+        {!invalidProvider && invalidMode && (
           <p role="alert">
             Select a mode allowed by the lead's current permissions.
           </p>

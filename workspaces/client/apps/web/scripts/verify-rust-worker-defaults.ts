@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { ProviderKind } from "../src/generated/providerKind.ts";
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
 import type { Page, Response } from "playwright";
@@ -61,7 +62,7 @@ type Journal = JournalBase & {
   };
 };
 
-const LEAD_PROVIDER = "claude";
+const LEAD_PROVIDER = ProviderKind.Claude;
 const WORKER_MODEL = "gpt-6-luna";
 const WORKER_EFFORT = "high";
 const ACTION_TIMEOUT_MS = 15_000;
@@ -82,8 +83,8 @@ export function parseArgs(argv: string[]) {
       string
     >
   > & { resume?: true; help?: true } = {};
-  for (let index = 0; index < argv.length; index += 1) {
-    const value = argv[index];
+  const argumentsLeft = argv.values();
+  for (const value of argumentsLeft) {
     if (value === "--resume") {
       options.resume = true;
       continue;
@@ -95,11 +96,10 @@ export function parseArgs(argv: string[]) {
     if (!value.startsWith("--"))
       throw new Error(`Unexpected argument: ${value}`);
     const key = value.slice(2);
-    const next = argv[index + 1];
+    const next = argumentsLeft.next().value;
     if (!next || next.startsWith("--"))
       throw new Error(`Missing value for --${key}`);
     options[key as Exclude<keyof typeof options, "help" | "resume">] = next;
-    index += 1;
   }
   return options;
 }

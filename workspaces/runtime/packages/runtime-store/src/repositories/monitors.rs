@@ -45,27 +45,36 @@ const QUEUED_STREAM_PREDICATE: &str =
 /// Canvas writer transaction; through the status index that read parsed 6,771
 /// records (17 MB) on 25 October 2026, mostly commands that ended with their
 /// own exit code, to keep about 680.
-const STUDIO_ERROR_INDEX: &str = "runtime_monitor_studio_error";
+const STUDIO_ERROR_INDEX: &str = "runtime_monitor_studio_error_v2";
+/// Retired derived index; its predicate excluded malformed and unclassified failed records.
+const LEGACY_STUDIO_ERROR_INDEX: &str = "runtime_monitor_studio_error";
 
 /// SQL predicate of `STUDIO_ERROR_INDEX` and of the read that must use it.
 /// It mirrors `studio_errors::monitor_kind` in `studio-runtime-services`, which
 /// stays the exact classifier: a `lost` monitor, or a `failed` monitor with no
-/// (or a null) `exitCode` and a non-empty text `error`. The owner-stop test is
+/// (or a null) `exitCode`. The owner-stop test is
 /// left to the classifier, so this is a superset of its accepted rows. A
-/// malformed record is never selected, so it cannot refuse the index build or
-/// the read.
-const STUDIO_ERROR_PREDICATE: &str = "CASE WHEN json_valid(record) THEN \
-     json_extract(record,'$.status')='lost' OR (json_extract(record,'$.status')='failed' \
-     AND json_extract(record,'$.exitCode') IS NULL AND json_type(record,'$.error')='text' \
-     AND json_extract(record,'$.error')<>'') ELSE 0 END";
+/// malformed record is selected as a diagnostic, without parsing it in SQL.
+fn studio_error_predicate() -> String {
+    let statuses = studio_runtime_schema::studio_errors::MonitorStatus::ALL
+        .iter()
+        .map(|status| format!("'{}'", status.as_str()))
+        .collect::<Vec<_>>()
+        .join(",");
+    format!(
+        "CASE WHEN json_valid(record) THEN json_type(record,'$.status') IS NOT 'text' OR json_extract(record,'$.status') NOT IN ({statuses}) OR json_extract(record,'$.status')='lost' OR (json_extract(record,'$.status')='failed' AND json_type(record,'$.exitCode') IS NOT 'integer') ELSE 1 END"
+    )
+}
 
 /// Creation time of a monitor, in Unix seconds; the key of `STUDIO_ERROR_INDEX`.
-const CREATED_EXPRESSION: &str = "json_extract(record,'$.created')";
+const CREATED_EXPRESSION: &str = "CASE WHEN json_valid(record) THEN CASE WHEN json_type(record,'$.created') IN ('integer','real') AND json_extract(record,'$.created')>=0 THEN json_extract(record,'$.created') ELSE 0 END ELSE 0 END";
 
 fn studio_error_candidates_sql() -> String {
+    let predicate = studio_error_predicate();
     format!(
-        "SELECT id,record FROM runtime_monitors WHERE {STUDIO_ERROR_PREDICATE} \
-         AND {CREATED_EXPRESSION}>=?1"
+        "SELECT id,record FROM runtime_monitors WHERE {predicate} \
+         AND {CREATED_EXPRESSION}>=?1 UNION ALL \
+         SELECT id,record FROM runtime_monitors WHERE {predicate} AND {CREATED_EXPRESSION}=0"
     )
 }
 
@@ -91,11 +100,13 @@ impl MonitorsRepository {
     /// build pass over malformed rows of an older state.
     pub(crate) fn prepare_indexes(connection: &Connection) -> StoreResult<()> {
         if crate::schema::table_exists(connection, MONITOR_TABLE.name)? {
+            let predicate = studio_error_predicate();
             connection.execute_batch(&format!(
                 "CREATE INDEX IF NOT EXISTS {QUEUED_STREAM_INDEX} ON runtime_monitors(id) \
                  WHERE {QUEUED_STREAM_PREDICATE};
                  CREATE INDEX IF NOT EXISTS {STUDIO_ERROR_INDEX} \
-                 ON runtime_monitors({CREATED_EXPRESSION}) WHERE {STUDIO_ERROR_PREDICATE}"
+                 ON runtime_monitors({CREATED_EXPRESSION}) WHERE {predicate}; \
+                 DROP INDEX IF EXISTS {LEGACY_STUDIO_ERROR_INDEX}"
             ))?;
         }
         Ok(())
@@ -121,10 +132,11 @@ impl MonitorsRepository {
         id: &str,
         since: f64,
     ) -> StoreResult<Option<String>> {
+        let predicate = studio_error_predicate();
         Ok(connection
             .prepare_cached(&format!(
-                "SELECT record FROM runtime_monitors WHERE id=?1 AND {STUDIO_ERROR_PREDICATE} \
-                 AND {CREATED_EXPRESSION}>=?2"
+                "SELECT record FROM runtime_monitors WHERE id=?1 AND {predicate} \
+                 AND ({CREATED_EXPRESSION}>=?2 OR {CREATED_EXPRESSION}=0)"
             ))?
             .query_row(rusqlite::params![id, since], |row| row.get(0))
             .optional()?)
@@ -241,7 +253,18 @@ mod tests {
             .map(|(id, _)| id)
             .collect::<Vec<_>>();
         ids.sort();
-        assert_eq!(ids, ["b-lost", "d-not-recorded", "e-no-exit-key"]);
+        assert_eq!(
+            ids,
+            [
+                "a-malformed",
+                "b-lost",
+                "d-not-recorded",
+                "e-no-exit-key",
+                "h-empty-error",
+                "i-no-error",
+                "j-number-error"
+            ]
+        );
         let plan = connection
             .prepare(&format!(
                 "EXPLAIN QUERY PLAN {}",
@@ -253,10 +276,17 @@ mod tests {
             .collect::<Result<Vec<_>, _>>()
             .expect("plan rows");
         assert_eq!(
-            plan,
-            [format!(
-                "SEARCH runtime_monitors USING INDEX {STUDIO_ERROR_INDEX} (<expr>>?)"
-            )]
+            plan.iter()
+                .filter(|step| step.contains(STUDIO_ERROR_INDEX))
+                .count(),
+            2,
+            "both dated and undated ranges use the derived index: {plan:?}"
+        );
+        assert!(
+            !plan
+                .iter()
+                .any(|step| step.contains("SCAN runtime_monitors")),
+            "{plan:?}"
         );
     }
 }

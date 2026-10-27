@@ -1,3 +1,4 @@
+import { required } from "./componentTestFixtures";
 import type { GetResult } from "../apiTypes";
 import type { Message } from "../types";
 import type { get, syncPost, PostBody } from "../api";
@@ -141,7 +142,7 @@ it("loads cancellation eligibility through the typed queue query", async () => {
   assert.deepEqual(mocks.get.mock.calls, [
     ["/api/queue", { query: { agent: "chat" }, workspaceId: "workspace" }],
   ]);
-  const [path, request, options] = mocks.syncPost.mock.calls[0];
+  const [path, request, options] = required(mocks.syncPost.mock.calls[0]);
   assert.equal(path, "/api/queue");
   assert.equal(options!.workspaceId, "workspace");
   assert.deepEqual(

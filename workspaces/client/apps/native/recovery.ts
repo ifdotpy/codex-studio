@@ -3,7 +3,7 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 
 async function main() {
-  const [executable, resources, enabled] = process.argv.slice(2);
+  const [executable = "", resources = "", enabled = ""] = process.argv.slice(2);
   if (!["true", "false"].includes(enabled))
     throw new Error("Invalid recovery setting.");
   if (

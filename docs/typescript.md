@@ -5,13 +5,9 @@ product code, tests, fixtures, scripts, and tool configuration.
 
 ## Where types come from
 
-- Rust owns every contract that crosses the server boundary. The
-  [runtime schema](../workspaces/runtime/packages/runtime-schema/README.md)
-  generates its TypeScript. Import the generated type or its named alias; never
-  restate a generated shape. When a Rust-owned shape has no generated type, add
-  it to the generator instead of writing a TypeScript copy.
-- A TypeScript-only type, constant, or helper has one owning module. Other
-  modules, tests, and fixtures import it.
+Follow [Type contracts](type-contracts.md) for ownership, vendor types,
+generation, boundary validation, closed domains, and error results.
+
 - Test data names its type from the owner, for example with `satisfies`, so a
   contract change fails the type check instead of leaving a stale fixture.
 - Code in this repository has no hand-written declaration file (`.d.ts`,
@@ -30,7 +26,6 @@ product code, tests, fixtures, scripts, and tool configuration.
   after `has()` or inside a bounds-checked loop. Cast only after a runtime check
   of untrusted input, or `error as Error` in a `catch` whose JavaScript read the
   error's fields.
-- A copied type, constant, or helper instead of an import of its owner.
 
 ## How TypeScript runs
 
@@ -45,8 +40,9 @@ Code therefore uses only syntax that can be removed without a transform: no
 Types add no behavior: a converted file with its types removed matches the
 JavaScript it replaced, except for a bug fix with its failing test or one named
 boundary for untrusted input.
-[`tsconfig.base.json`](../tsconfig.base.json) owns these compiler settings.
-Every project extends it, and `just test-fast` checks every project.
+[`tsconfig.base.json`](../tsconfig.base.json) owns compiler settings. See
+[enforcement owners](type-contracts.md#enforcement-owners) for inheritance and
+parity checks, and [Testing](testing.md) for check selection.
 
 ## JavaScript exceptions
 

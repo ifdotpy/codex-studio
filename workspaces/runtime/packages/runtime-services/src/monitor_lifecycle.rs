@@ -86,6 +86,17 @@ fn lifecycle_monitor_error(error: MonitorError) -> ManagementError {
     match error {
         MonitorError::Unavailable(dependency) => ManagementError::Unavailable(dependency),
         MonitorError::Store(error) => ManagementError::Store(error),
-        _ => ManagementError::Invalid("Invalid monitor cancellation"),
+        MonitorError::InvalidStored { .. }
+        | MonitorError::InvalidResultReceipt(_)
+        | MonitorError::InvalidDeliveryIdentity(_)
+        | MonitorError::InvalidOutputReceipt(_)
+        | MonitorError::TaskFailed
+        | MonitorError::Refused(_)
+        | MonitorError::ProviderRequest { .. }
+        | MonitorError::ConfigurationRejected { .. }
+        | MonitorError::ConfigurationReceipt { .. }
+        | MonitorError::Event(_)
+        | MonitorError::Rules(_)
+        | MonitorError::Io(_) => ManagementError::Invalid("Invalid monitor cancellation"),
     }
 }

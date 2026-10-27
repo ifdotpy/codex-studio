@@ -656,7 +656,17 @@ fn safety_error(
         ),
         SafetyError::ProviderUnknown => ApiError::new(StatusCode::CONFLICT, error.to_string()),
         SafetyError::Persistence | SafetyError::InvalidStoredState => ApiError::internal(),
-        _ => ApiError::new(StatusCode::BAD_REQUEST, error.to_string()),
+        SafetyError::StaleRetry
+        | SafetyError::Inactive
+        | SafetyError::InvalidChoice
+        | SafetyError::NoRetryToCancel
+        | SafetyError::StartAlreadySubmitted
+        | SafetyError::ThreadNotOpen
+        | SafetyError::MissingFasterModel
+        | SafetyError::Preparation(_)
+        | SafetyError::ProviderRejected => {
+            ApiError::new(StatusCode::BAD_REQUEST, error.to_string())
+        }
     }
 }
 

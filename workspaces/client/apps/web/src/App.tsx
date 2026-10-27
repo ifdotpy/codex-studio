@@ -1,5 +1,5 @@
 import { useSubscription } from "./sync/subscriptions";
-import type { ProviderKind } from "./generated/providerKind.ts";
+import { ProviderKind } from "./generated/providerKind.ts";
 import { submitRename, watchRenameResult } from "./renameRequest";
 import {
   createConversationMenuTools,
@@ -104,6 +104,7 @@ import {
   Menu,
   NativeSelect,
   Slider,
+  Switch,
   Tabs,
   useMantineColorScheme,
   TextInput,
@@ -666,7 +667,7 @@ export default function App({ active = true }: { active?: boolean }) {
   const rowLayout = useWorkspaceLayout({
     workspaceOpen,
     teamPreferred: wideTeamOpen,
-    preferredPanelWidthRem,
+    ...(preferredPanelWidthRem !== undefined ? { preferredPanelWidthRem } : {}),
   });
   const narrowTeam =
     !(teamHasSidebar ? teamFitsWithSidebar : teamFitsWithoutSidebar) ||
@@ -2391,6 +2392,7 @@ export default function App({ active = true }: { active?: boolean }) {
         setSidebarCollapsed(false);
         setSidebar(true);
       }
+      return undefined;
     },
     new Set(
       agents
@@ -3010,8 +3012,8 @@ export default function App({ active = true }: { active?: boolean }) {
                 onSignIn={
                   (
                     {
-                      codex: setCodexLoginKey,
-                      claude: setClaudeLoginKey,
+                      [ProviderKind.Codex]: setCodexLoginKey,
+                      [ProviderKind.Claude]: setClaudeLoginKey,
                     } satisfies Record<ProviderKind, (key: string) => void>
                   )[account.provider]
                 }
@@ -3368,10 +3370,9 @@ export default function App({ active = true }: { active?: boolean }) {
                     })
                   }
                 />
-                <label className="settings-field studio-preference-toggle">
-                  <span className="settings-label">Show terminals</span>
-                  <input
-                    type="checkbox"
+                <SettingsRow label="Show terminals">
+                  <Switch
+                    aria-label="Show terminals"
                     checked={studioPreferences.showTerminals}
                     onChange={(event) =>
                       updateStudioPreferences({
@@ -3380,7 +3381,7 @@ export default function App({ active = true }: { active?: boolean }) {
                       })
                     }
                   />
-                </label>
+                </SettingsRow>
                 <SettingsRow label="Text size">
                   <div
                     className="studio-appearance-segments"
@@ -3817,21 +3818,17 @@ export default function App({ active = true }: { active?: boolean }) {
       <ProjectDeleteDialog {...projectDeletion.dialog} />
       <Modal
         opened={!!modal}
-        padding={
-          modal?.title === "New chat"
-            ? "var(--studio-model-dialog-padding)"
-            : undefined
-        }
+        {...(modal?.title === "New chat"
+          ? { padding: "var(--studio-model-dialog-padding)" }
+          : {})}
         closeOnEscape={modal?.title !== "New chat"}
         onClose={() => setModal(null)}
-        title={modal?.title}
-        size={
-          modal?.title === "Project settings"
-            ? modalSizes.settings
-            : modal?.title === "New chat"
-              ? "var(--studio-model-dialog-size)"
-              : undefined
-        }
+        {...(modal ? { title: modal.title } : {})}
+        {...(modal?.title === "Project settings"
+          ? { size: modalSizes.settings }
+          : modal?.title === "New chat"
+            ? { size: "var(--studio-model-dialog-size)" }
+            : {})}
       >
         <div className={modal?.title === "New chat" ? undefined : "picker"}>
           {modal?.body}

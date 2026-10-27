@@ -1,3 +1,4 @@
+import { required } from "../teams/helpers.ts";
 import {
   API_SCHEMA_HASH_HEADER,
   entityPullFixtureForRequest,
@@ -100,9 +101,11 @@ test("transcript paging returns from the oldest row to the newest", async ({
       headers: schemaHeaders,
       json: {
         items: selected,
-        nextCursor: before && first > 0 ? items[first].id : null,
+        nextCursor: before && first > 0 ? required(items[first]).id : null,
         nextAfterCursor:
-          last >= 0 && last < items.length - 1 ? items[last].id : null,
+          last >= 0 && last < items.length - 1
+            ? required(items[last]).id
+            : null,
         historyVersion: "forward-paging-fixture",
       },
     });

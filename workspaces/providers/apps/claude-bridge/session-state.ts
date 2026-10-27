@@ -1,8 +1,17 @@
 import type { StallReport } from "./stall-watch.ts";
+import type { CodexErrorInfo } from "./provider-errors.generated.ts";
 import type {
   CacheReport,
   ToolDefinition,
+  FreshItem,
+  TerminalTurn,
 } from "./runtime-contract.generated.ts";
+export type { FreshItem } from "./runtime-contract.generated.ts";
+export type FreshToolItem = Extract<
+  FreshItem,
+  { type: "commandExecution" | "fileChange" | "mcpToolCall" }
+>;
+import type { TurnStatus } from "./codex-generated/TurnStatus.ts";
 import type {
   Options,
   RewindFilesResult,
@@ -42,7 +51,7 @@ export interface FileRestorePlan {
 export interface TurnError {
   resetsAt?: number | undefined;
   message: string;
-  codexErrorInfo?: string | undefined;
+  codexErrorInfo?: CodexErrorInfo | undefined;
   data?:
     | (Record<string, unknown> & {
         claudeToolStall?: StallReport | undefined;
@@ -67,9 +76,7 @@ export interface Item {
   backgroundedByUser?: boolean | undefined;
   outputFile?: string | undefined;
   stalled?: boolean | undefined;
-  compactionMetadata?:
-    | import("@anthropic-ai/claude-agent-sdk").SDKCompactBoundaryMessage["compact_metadata"]
-    | undefined;
+  compactionMetadata?: unknown;
   clientId?: string | undefined;
   elapsedSeconds?: number | undefined;
   phase?: string | undefined;
@@ -85,7 +92,7 @@ export interface Item {
   result?: unknown | undefined;
   server?: string | undefined;
   changes?: {
-    path: unknown;
+    path?: unknown;
     kind: { type: string };
     diff: unknown;
   }[];
@@ -113,17 +120,13 @@ export interface Turn {
 }
 // Disk mirrors retain optional legacy fields; newly produced values have these
 // stronger guarantees before crossing the bridge notification boundary.
-export type FreshItem = Item & { id: string; type: string };
-export type CompletedTurn = Pick<
-  Turn,
-  "id" | "error" | "clientUserMessageId"
-> & {
-  status: "completed" | "failed" | "interrupted";
-  startOutcome?: "not_applied" | undefined;
-};
+export type CompletedTurn = TerminalTurn &
+  Pick<Turn, "error" | "clientUserMessageId"> & {
+    startOutcome?: "not_applied" | undefined;
+  };
 export type FreshTurn = Omit<Turn, "status" | "startOutcome" | "items"> & {
   items: FreshItem[];
-  status: "inProgress" | CompletedTurn["status"];
+  status: TurnStatus;
   startOutcome?: "preparing" | "accepted" | CompletedTurn["startOutcome"];
 };
 export interface MoveTurnOptions {

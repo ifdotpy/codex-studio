@@ -65,7 +65,9 @@ fn target_path(target: Target, endpoint: &str) -> Result<String, String> {
     } else if target.agent.is_none() || target.path.is_none() {
         return Err("Select a workspace file or attachment.".into());
     }
-    let mut query = reqwest::Url::parse(&format!("http://127.0.0.1{endpoint}")).unwrap();
+    // Both callers pass a fixed absolute API path on this HTTP base.
+    let mut query =
+        reqwest::Url::parse(&format!("http://127.0.0.1{endpoint}")).expect("valid file API path");
     for (key, value) in [
         ("agent", target.agent),
         ("path", target.path),
@@ -75,7 +77,12 @@ fn target_path(target: Target, endpoint: &str) -> Result<String, String> {
             query.query_pairs_mut().append_pair(key, &value);
         }
     }
-    Ok(format!("{}?{}", query.path(), query.query().unwrap()))
+    // Validation requires an asset or an agent/path, so a pair was appended above.
+    Ok(format!(
+        "{}?{}",
+        query.path(),
+        query.query().expect("file query has a pair")
+    ))
 }
 
 fn validate_file(action: Action, info: Value) -> Result<ResolvedFile, String> {

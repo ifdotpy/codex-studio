@@ -23,7 +23,7 @@ declare global {
     resizeDuoViewport: (patch: KeyboardPatch) => void;
   }
 }
-export const keyboardSequences: Record<string, KeyboardPatch[]> = {
+export const keyboardSequences = {
   "shrink then pan": [
     { height: 323, innerHeight: 323 },
     { offsetTop: 346, pageTop: 346, scrollY: 346 },
@@ -70,7 +70,7 @@ export const keyboardSequences: Record<string, KeyboardPatch[]> = {
       scrollY: 346,
     },
   ],
-};
+} satisfies Record<string, KeyboardPatch[]>;
 export const keyboardCycleFrames = (steps: KeyboardPatch[]) => [
   ...steps,
   { height: 669, innerHeight: 669 },

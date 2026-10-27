@@ -12,7 +12,7 @@ use studio_runtime_services::title_generation::{
     TitleReceipt, TitleRequest, TitleRequestPort, TitleResult, WriteOutcome, admit_python_request,
     generate, generate_admitted, settle_catalog_failure,
 };
-use studio_runtime_store::provider_identity::TITLE_FINGERPRINT_PROVIDER_2026_10_26;
+use studio_runtime_store::migrations::TITLE_FINGERPRINT_PROVIDER_2026_10_26;
 use studio_runtime_store::{AgentRecord, AgentRepository, RuntimeStore};
 use tokio::sync::{mpsc, oneshot};
 

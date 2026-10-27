@@ -14,6 +14,9 @@ use crate::{
 };
 use std::sync::{Arc, Mutex};
 
+/// Maximum wait for a first-pass fixture result; unit: elapsed duration.
+const FIRST_PASS_TEST_DEADLINE: std::time::Duration = std::time::Duration::from_secs(10);
+
 struct ResetBrokerSession {
     port: RetainedSessionPort,
     requests: Arc<Mutex<Vec<(String, Value)>>>,
@@ -76,7 +79,14 @@ impl AccountSessionPort for ResetBrokerSession {
             }
             .map_err(|error| match error {
                 PortError::Unknown => AccountSessionError::Unknown,
-                _ => AccountSessionError::Refused("Retained reset request was refused"),
+                PortError::Identity
+                | PortError::ScopeMismatch
+                | PortError::Invalid
+                | PortError::NotSent
+                | PortError::Deadline
+                | PortError::Capacity => {
+                    AccountSessionError::Refused("Retained reset request was refused")
+                }
             })?;
             let (certainty, result) = match receipt.result {
                 RequestResult::Reply(value) => (
@@ -382,7 +392,19 @@ impl crate::notification_runtime_effects::NotificationPostCommitSink
                     self.changed.notify_one();
                     Ok(())
                 }
-                _ => Err(crate::notification_dispatch::NotificationDispatchError::invalid()),
+                crate::notification_dispatch::NotificationPostCommit::Analytics { .. }
+                | crate::notification_dispatch::NotificationPostCommit::AnalyticsStream {
+                    ..
+                }
+                | crate::notification_dispatch::NotificationPostCommit::AnalyticsCaptured(_)
+                | crate::notification_dispatch::NotificationPostCommit::AnalyticsStreamCaptured(
+                    _,
+                )
+                | crate::notification_dispatch::NotificationPostCommit::TokenRateStream(_)
+                | crate::notification_dispatch::NotificationPostCommit::TokenRateAssociation(_)
+                | crate::notification_dispatch::NotificationPostCommit::TokenRateUsage(_) => {
+                    Err(crate::notification_dispatch::NotificationDispatchError::invalid())
+                }
             }
         })
     }
@@ -1069,11 +1091,9 @@ async fn diagnostics_probe_of_each_provider_replies_without_a_receipt() {
     worker.shutdown().await.unwrap();
 }
 
-async fn restart_history_case(outcome: &str) {
-    let state = State::new().await;
+async fn seed_restart_input(state: &State, fail_terminal_settlement: bool) {
     let agent_id = state.agent.clone();
     let epoch = state.epoch;
-    let fail_terminal_settlement = outcome == "terminal_failure";
     state
         .bridge
         .run(move |store| async move {
@@ -1109,6 +1129,11 @@ async fn restart_history_case(outcome: &str) {
         })
         .await
         .expect("seed restart wait");
+}
+
+async fn restart_history_case(outcome: &str) {
+    let state = State::new().await;
+    seed_restart_input(&state, outcome == "terminal_failure").await;
 
     let mut peer = Peer::new();
     let publication_attempted = Arc::new(tokio::sync::Notify::new());
@@ -1142,7 +1167,21 @@ async fn restart_history_case(outcome: &str) {
                     "items":items,"clientUserMessageId":"annotation:input"}]}),
             )
             .await;
-            worker_barrier(&worker).await;
+            if outcome == "terminal_failure" {
+                assert!(
+                    matches!(
+                        tokio::time::timeout(FIRST_PASS_TEST_DEADLINE, worker.completion())
+                            .await
+                            .expect("fatal recovery must return to its caller"),
+                        Err(WorkerError::Recovery(
+                            crate::recovery::RecoveryError::Store(StoreError::Sqlite(_))
+                        ))
+                    ),
+                    "the transcript store failure must reach the account caller"
+                );
+            } else {
+                worker_barrier(&worker).await;
+            }
             if outcome == "terminal_failure" {
                 assert_eq!(
                     state.record().await["restartRecovery"]["stage"],
@@ -1211,6 +1250,22 @@ async fn restart_history_case(outcome: &str) {
                 "delivered input is never submitted again"
             );
         }
+        "foreign_not_applied" | "missing_id_not_applied" => {
+            let mut turn = json!({"id":"rejected","threadId":"fake-thread-0","status":"failed",
+                "items":[],"clientUserMessageId":"annotation:input","startOutcome":"not_applied"});
+            if outcome == "foreign_not_applied" {
+                turn["threadId"] = json!("foreign");
+            } else {
+                turn.as_object_mut().unwrap().remove("id");
+            }
+            peer.reply(&history, json!({"data":[turn]})).await;
+            tokio::select! {
+                () = worker_barrier(&worker) => {},
+                _request = peer.writes.recv() => panic!("invalid negative receipt authorized another read"),
+            }
+            assert_eq!(state.record().await["restartRecovery"]["stage"], "held");
+            assert_eq!(state.event_status("input").await, "uncertain");
+        }
         "not_applied" => {
             peer.reply(
                 &history,
@@ -1246,7 +1301,9 @@ async fn restart_history_case(outcome: &str) {
         }
         _ => unreachable!(),
     }
-    worker.shutdown().await.unwrap();
+    if outcome != "terminal_failure" {
+        worker.shutdown().await.unwrap();
+    }
 }
 
 macro_rules! recovery_cases {
@@ -1256,7 +1313,300 @@ macro_rules! recovery_cases {
     )*};
 }
 
+#[derive(Clone, Copy)]
+enum ConnectionCompletionFailure {
+    History,
+    Store,
+}
+
+async fn seed_empty_recovered_message(state: &State) {
+    let agent = state.agent.clone();
+    state.bridge.run(move |store| async move {
+        store.transaction(move |tx| {
+            let id = format!("{agent}:answer");
+            studio_runtime_store::NotificationDispatchRepository::put_transcript_item(
+                tx, &id, &agent,
+                &json!({"id":id,"role":"assistant","text":"","streaming":false,"turnId":"old-turn","at":1.0}),
+                1.0, "", true,
+            )?;
+            Ok(())
+        }).await?;
+        Ok(())
+    }).await.unwrap();
+}
+
+async fn connection_completion_failure(case: ConnectionCompletionFailure) {
+    let state = State::new().await;
+    let mut peer = Peer::identity("default", 2, None);
+    let mut worker = peer.worker(state.bridge.clone()).await;
+    worker_barrier(&worker).await;
+    seed_transport_turn(&state).await;
+    if matches!(case, ConnectionCompletionFailure::History) {
+        seed_empty_recovered_message(&state).await;
+    }
+    let agent_id = state.agent.clone();
+    state.bridge.run(move |store| async move {
+        store.transaction_with(move |tx| {
+            let mut agent = AgentRepository::get(tx, &AgentId::from(agent_id.as_str()))?.unwrap();
+            let attempt = agent.extra["disconnectRecovery"]["startAttempt"].clone();
+            agent.extra.insert("startAttempt".into(), attempt);
+            AgentRepository::put(tx, &agent)?;
+            if matches!(case, ConnectionCompletionFailure::Store) {
+                tx.execute("CREATE TRIGGER fail_connection_transcript BEFORE INSERT ON runtime_items BEGIN SELECT RAISE(ABORT,'connection settlement failpoint'); END", [])?;
+            }
+            Ok::<(), WorkerError>(())
+        }).await?;
+        Ok(())
+    }).await.unwrap();
+    let before = state.record().await;
+    let snapshot = RecoverySnapshot::from_record(before.clone()).unwrap();
+    assert!(snapshot.eligibility().transport_turn);
+    let scope = worker.retained_session().scope().clone();
+    let completion = crate::account_worker::connection_recovery::lifecycle_completion(
+        &state.bridge.store,
+        "default",
+        "connection-error-witness".into(),
+        2.0,
+    )
+    .await
+    .unwrap();
+    let text = if matches!(case, ConnectionCompletionFailure::History) {
+        Value::Null
+    } else {
+        json!("answer")
+    };
+    let result = crate::scheduler::lifecycle_transaction_with(&state.bridge.store, move |tx| {
+        completion.lock().unwrap().complete(tx, &snapshot, &scope, &RecoveryAction::Terminal {
+            turn: json!({"id":"old-turn","threadId":"fake-thread-0","status":"completed", "items":[{"id":"answer","type":"agentMessage","text":text}]}),
+            native_state:"notLoaded".into(), mode:crate::recovery::CompletionMode::AutomaticConnection,
+        })
+    }).await;
+    match case {
+        ConnectionCompletionFailure::History => assert!(
+            matches!(
+                result,
+                Err(crate::recovery::RecoveryError::History(
+                    crate::recovery_history::HistoryError::Notification { .. }
+                ))
+            ),
+            "malformed provider text must remain a located history refusal: {result:?}"
+        ),
+        ConnectionCompletionFailure::Store => assert!(
+            matches!(
+                result,
+                Err(crate::recovery::RecoveryError::Store(StoreError::Sqlite(_)))
+            ),
+            "the production connection adapter must preserve the store failure: {result:?}"
+        ),
+    }
+    assert_eq!(
+        state.record().await,
+        before,
+        "failed completion must roll back"
+    );
+    assert_eq!(state.event_status("input").await, "delivered");
+    assert!(peer.writes.try_recv().is_err());
+    worker.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn connection_completion_refuses_malformed_message_text() {
+    connection_completion_failure(ConnectionCompletionFailure::History).await;
+}
+#[tokio::test]
+async fn connection_completion_preserves_store_failure() {
+    connection_completion_failure(ConnectionCompletionFailure::Store).await;
+}
+
+enum RestartRefusal {
+    Scan,
+    HistoryUnavailable,
+    HistoryItems,
+    HistoryText,
+    RestartText,
+}
+
+async fn restart_isolation_case(refusal: RestartRefusal) {
+    let invalid_scan = matches!(refusal, RestartRefusal::Scan);
+    let state = State::new().await;
+    seed_restart_input(&state, false).await;
+    if matches!(refusal, RestartRefusal::HistoryText) {
+        seed_empty_recovered_message(&state).await;
+    }
+    let agent_id = state.agent.clone();
+    state.bridge.run(move |store| async move {
+        store.transaction_with(move |tx| {
+            let mut later = AgentRepository::get(tx, &AgentId::from(agent_id.as_str()))?.unwrap();
+            later.id = AgentId::from("z-later");
+            later.root_id = later.id.clone();
+            later.extra.get_mut("restartRecovery").unwrap()["startAttempt"]["id"] = json!("later-attempt");
+            later.extra.get_mut("restartRecovery").unwrap()["startAttempt"]["events"] = json!(["annotation:later"]);
+            later.extra.get_mut("contextRepairWait").unwrap()["events"] = json!(["annotation:later"]);
+            later.extra.get_mut("contextRepairWait").unwrap()["source"]["id"] = json!("z-later");
+            AgentRepository::put(tx, &later)?;
+            if invalid_scan {
+                tx.execute("UPDATE runtime_agents SET record=json_set(record,'$.restartRecovery.startAttempt.submitted','invalid') WHERE id=?1", [&agent_id])?;
+            }
+            Ok::<(), WorkerError>(())
+        }).await?;
+        Ok(())
+    }).await.unwrap();
+    state.enqueue_for("z-later", "later").await;
+    state
+        .bridge
+        .run(|store| async move {
+            store
+                .transaction(|tx| {
+                    tx.execute(
+                        "UPDATE runtime_events SET status='uncertain' WHERE id='annotation:later'",
+                        [],
+                    )?;
+                    Ok(())
+                })
+                .await?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    if invalid_scan {
+        let mut cursor = crate::recovery_runtime::RecoveryCursor::sweep();
+        let refusal = crate::recovery_runtime::load_recovery_jobs(
+            &state.bridge.store,
+            "default",
+            &mut cursor,
+        )
+        .await;
+        assert!(
+            matches!(refusal, Err(crate::recovery::RecoveryError::Store(
+            StoreError::InvalidStoredObject { table: "runtime_agents", ref id }
+        )) if id == &state.agent),
+            "fixture must refuse the authoritative scanned record"
+        );
+    }
+    if matches!(refusal, RestartRefusal::RestartText) {
+        seed_restart_turn(&state).await;
+    }
+    let mut peer = Peer::new();
+    let mut worker = peer.worker(state.bridge.clone()).await;
+    if matches!(refusal, RestartRefusal::RestartText) {
+        reply_restart_turn_history_items(
+            &mut peer,
+            "completed",
+            json!([
+                {"id":"answer","type":"agentMessage","text":null}
+            ]),
+        )
+        .await;
+    }
+    if matches!(refusal, RestartRefusal::HistoryUnavailable) {
+        let early = peer.write("thread/turns/list").await;
+        peer.reply(
+            &early,
+            json!({"data":[{"id":"rejected","threadId":"fake-thread-0",
+            "clientUserMessageId":"annotation:input","startOutcome":"not_applied","items":[]}]}),
+        )
+        .await;
+        let thread = peer.write("thread/read").await;
+        let cursor = peer
+            .frame(json!({"id":thread["id"],"error":{"code":-32000,"message":"unavailable"}}))
+            .await;
+        peer.acknowledged(cursor).await;
+    }
+    if matches!(
+        refusal,
+        RestartRefusal::HistoryItems | RestartRefusal::HistoryText
+    ) {
+        let early = peer.write("thread/turns/list").await;
+        let items = if matches!(refusal, RestartRefusal::HistoryItems) {
+            Value::Null
+        } else {
+            json!([{"id":"answer","type":"agentMessage","text":null}])
+        };
+        peer.reply(
+            &early,
+            json!({"data":[{"id":"old-turn","threadId":"fake-thread-0",
+            "clientUserMessageId":"annotation:input","status":"completed","items":items}]}),
+        )
+        .await;
+    }
+    let mut finished = worker.completion_signal();
+    let later = tokio::select! {
+        later = peer.write("thread/turns/list") => later,
+        () = worker_barrier(&worker) => panic!("an early refusal discarded the later recovery job"),
+        _result = finished.changed() => panic!("a row refusal aborted the recovery account"),
+    };
+    peer.reply(
+        &later,
+        json!({"data":[{"id":"later-turn","threadId":"fake-thread-0",
+        "clientUserMessageId":"annotation:later","status":"completed","items":[]}]}),
+    )
+    .await;
+    worker_barrier(&worker).await;
+    if matches!(refusal, RestartRefusal::RestartText) {
+        assert_eq!(state.record().await["restartRecovery"]["stage"], "pending");
+        assert_eq!(state.event_status("input").await, "delivered");
+    } else {
+        assert_eq!(state.event_status("input").await, "uncertain");
+    }
+    let saved = state
+        .bridge
+        .run(|store| async move {
+            Ok(
+                AgentRepository::get(&store.test_reader()?, &AgentId::from("z-later"))?
+                    .unwrap()
+                    .value(),
+            )
+        })
+        .await
+        .unwrap();
+    assert_eq!(saved["lastCompletedTurn"], "later-turn");
+    assert_eq!(saved["restartRecovery"]["stage"], "finished");
+    assert!(peer.writes.try_recv().is_err());
+    worker.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn startup_first_pass_reports_fatal_store_failure() {
+    let state = State::new().await;
+    seed_restart_input(&state, false).await;
+    let mut peer = Peer::new();
+    let mut worker = peer.worker(state.bridge.clone()).await;
+    let history = peer.write("thread/turns/list").await;
+    // The next task scan fails after a real recovery read has started.
+    state
+        .bridge
+        .run(|store| async move {
+            store
+                .transaction(|tx| {
+                    tx.execute("DROP TABLE runtime_tasks", [])?;
+                    Ok(())
+                })
+                .await?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    let cursor = peer
+        .frame(json!({"id":history["id"],"error":{"code":-32000,"message":"unavailable"}}))
+        .await;
+    peer.acknowledged(cursor).await;
+    let faults = worker.faults.clone();
+    tokio::select! {
+        result = worker.completion() => assert!(matches!(result, Err(WorkerError::Recovery(
+            crate::recovery::RecoveryError::Store(StoreError::Sqlite(_))
+        ))), "the original fatal store failure must reach the account caller"),
+        () = faults.startup_recovery.notified() => panic!("fatal store failure reported recovery Done"),
+    }
+}
+
 recovery_cases! {
+    startup_first_pass_isolates_invalid_scan_row => restart_isolation_case(RestartRefusal::Scan),
+    startup_first_pass_isolates_held_history_failure => restart_isolation_case(RestartRefusal::HistoryUnavailable),
+    startup_first_pass_isolates_malformed_terminal_history => restart_isolation_case(RestartRefusal::HistoryItems),
+    startup_first_pass_isolates_malformed_message_text => restart_isolation_case(RestartRefusal::HistoryText),
+    startup_first_pass_isolates_malformed_restart_text => restart_isolation_case(RestartRefusal::RestartText),
+    startup_first_pass_refuses_foreign_negative_proof => restart_history_case("foreign_not_applied"),
+    startup_first_pass_refuses_missing_id_negative_proof => restart_history_case("missing_id_not_applied"),
     startup_first_pass_reconciles_exact_history_without_replaying_unknown_input_delivered => restart_history_case("delivered"),
     startup_first_pass_reconciles_exact_history_without_replaying_unknown_input_terminal => restart_history_case("terminal"),
     startup_first_pass_reconciles_exact_history_without_replaying_unknown_input_terminal_failure => restart_history_case("terminal_failure"),
@@ -1275,6 +1625,42 @@ recovery_cases! {
 /// left it interrupted with a pending marker. The first worker of the new
 /// backend reads native history and continues it, as Python's connection
 /// recovery does, without submitting the old input again.
+async fn seed_transport_turn(state: &State) {
+    let agent_id = state.agent.clone();
+    state.bridge.run(move |store| async move {
+        store.transaction_with(move |tx| {
+            let mut agent = AgentRepository::get(tx, &AgentId::from(agent_id.as_str()))?.unwrap();
+            agent.status = studio_runtime_store::AgentStatus::Running;
+            agent.extra.insert("threadId".into(), json!("fake-thread-0"));
+            agent.extra.insert("turnId".into(), json!("old-turn"));
+            agent.extra.insert("turnEpoch".into(), json!(agent.epoch));
+            agent.extra.insert("inFlight".into(), json!(true));
+            agent.extra.insert("autoWake".into(), json!(true));
+            agent.extra.remove("contextRepairWait");
+            agent.extra.remove("restartRecovery");
+            agent.extra.insert("startAttempt".into(), json!({
+                "id":"old-attempt","accountKey":"default","epoch":agent.epoch,
+                "threadId":"fake-thread-0","turnId":"old-turn","submitted":true,
+                "connectionGeneration":1,"events":["annotation:input"],
+                "activeAtReservation":false,"settingsFixed":true
+            }));
+            AgentRepository::put(tx, &agent)?;
+            tx.execute("UPDATE runtime_events SET status='delivered',turn_id='old-turn' WHERE id='annotation:input'", [])?;
+            let interrupted = studio_runtime_store::SchedulerRepository::disconnect_account(tx, "default", 1, 1.0, false)?;
+            assert!(interrupted.contains(&agent_id));
+            Ok::<(), WorkerError>(())
+        }).await?;
+        Ok(())
+    }).await.unwrap();
+    let snapshot = RecoverySnapshot::from_record(state.record().await).unwrap();
+    assert!(snapshot.eligibility().transport_turn);
+    assert!(crate::recovery::completion_permission(
+        &snapshot,
+        &json!({"id":"old-turn","status":"completed","items":[]}),
+        false
+    ));
+}
+
 async fn seed_restart_turn(state: &State) {
     let agent_id = state.agent.clone();
     let epoch = state.epoch;
@@ -1322,13 +1708,24 @@ async fn seed_restart_turn(state: &State) {
 }
 
 async fn reply_restart_turn_history(peer: &mut Peer, status: &str) {
+    reply_restart_turn_history_items(
+        peer,
+        status,
+        json!([
+            {"id":"answer","type":"agentMessage","text":"before restart"}
+        ]),
+    )
+    .await;
+}
+
+async fn reply_restart_turn_history_items(peer: &mut Peer, status: &str, items: Value) {
     for method in ["thread/read", "thread/turns/list", "thread/read"] {
         let request = peer.write(method).await;
         let result = if method == "thread/read" {
             json!({"thread":{"id":"fake-thread-0","status":{"type":"notLoaded"}}})
         } else {
             json!({"data":[{"id":"old-turn","threadId":"fake-thread-0","status":status,
-                "items":[{"id":"answer","type":"agentMessage","text":"before restart"}]}]})
+                "items":items}]})
         };
         peer.reply(&request, result).await;
     }
@@ -1336,11 +1733,24 @@ async fn reply_restart_turn_history(peer: &mut Peer, status: &str) {
 
 #[tokio::test]
 async fn startup_first_pass_continues_an_interrupted_restart_turn_from_native_history() {
+    restart_turn_text_compatibility(Some("before restart")).await;
+}
+
+#[tokio::test]
+async fn startup_first_pass_continues_restart_with_missing_message_text() {
+    restart_turn_text_compatibility(None).await;
+}
+
+async fn restart_turn_text_compatibility(text: Option<&str>) {
     let state = State::new().await;
     seed_restart_turn(&state).await;
     let mut peer = Peer::new();
     let mut worker = peer.worker(state.bridge.clone()).await;
-    reply_restart_turn_history(&mut peer, "interrupted").await;
+    let mut item = json!({"id":"answer","type":"agentMessage"});
+    if let Some(text) = text {
+        item["text"] = json!(text);
+    }
+    reply_restart_turn_history_items(&mut peer, "interrupted", json!([item])).await;
     // The continuation wakes the worker: it resumes the thread and submits only
     // the restart follow-up. The old input stays delivered.
     let resume = peer.write("thread/resume").await;
@@ -1715,7 +2125,7 @@ async fn restart_terminal_commit_before_wake_converges_on_next_worker_start() {
                 |row| row.get(0),
             )?;
             let snapshot = RecoverySnapshot::from_record(serde_json::from_str(&raw).unwrap())
-                .map_err(|error| StoreError::SchemaMismatch(error.location))
+                .map_err(|error| StoreError::SchemaMismatch(error.to_string()))
                 .map_err(WorkerError::from)?;
             let scope = ConnectionScope {
                 account: "default".into(),

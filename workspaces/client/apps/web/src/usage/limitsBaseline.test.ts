@@ -1,3 +1,4 @@
+import { required } from "../components/componentTestFixtures.ts";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ResourceVersion } from "../sync/resourceEvents";
 import {
@@ -124,12 +125,12 @@ describe("limits baseline hydration", () => {
 
     expect(read).toHaveBeenCalledTimes(1);
 
-    pendingReads[0](true);
+    required(pendingReads[0])(true);
     await vi.advanceTimersByTimeAsync(20);
     expect(read).toHaveBeenCalledTimes(2);
     const duplicateVersionThree = onBaseline(version(3));
 
-    pendingReads[1](true);
+    required(pendingReads[1])(true);
     await Promise.all([versionTwo, versionThree, duplicateVersionThree]);
 
     await onBaseline(version(3));
@@ -162,11 +163,11 @@ describe("limits baseline hydration", () => {
     expect(read).toHaveBeenCalledTimes(1);
     const versionThree = onBaseline(version(3));
 
-    pendingReads[0].reject(new Error("version 2 read failed"));
+    required(pendingReads[0]).reject(new Error("version 2 read failed"));
     await vi.advanceTimersByTimeAsync(20);
     expect(read).toHaveBeenCalledTimes(2);
 
-    pendingReads[1].resolve(true);
+    required(pendingReads[1]).resolve(true);
     await Promise.all([versionTwo, versionThree]);
 
     await onBaseline(version(3));
@@ -198,11 +199,11 @@ describe("limits baseline hydration", () => {
     expect(read).toHaveBeenCalledTimes(1);
     const versionOne = onBaseline(version(1));
 
-    pendingReads[0].reject(new Error("versionless read failed"));
+    required(pendingReads[0]).reject(new Error("versionless read failed"));
     await vi.advanceTimersByTimeAsync(20);
     expect(read).toHaveBeenCalledTimes(2);
 
-    pendingReads[1].resolve(true);
+    required(pendingReads[1]).resolve(true);
     await Promise.all([versionlessBaseline, versionOne]);
 
     expect(read).toHaveBeenCalledTimes(2);

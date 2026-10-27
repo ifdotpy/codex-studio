@@ -1,3 +1,4 @@
+import { required } from "../componentTestFixtures";
 import type { Agent, Snapshot } from "../../types";
 import type { ChatActivity } from "./chatStatusModel";
 import { componentSnapshot } from "../componentTestFixtures";
@@ -13,6 +14,50 @@ import {
 } from "./chatStatusModel.ts";
 
 import { it } from "vitest";
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
+import { readFileSync } from "node:fs";
+import { PROVIDER_KINDS } from "../../generated/providerKind.ts";
+import ChatStatus from "../agents/ChatStatus";
+
+it("activity CSS selectors consume every generated provider identity", () => {
+  const css = readFileSync(
+    new URL("../agents/provider-activity.css", import.meta.url),
+    "utf8",
+  );
+  const identities = [
+    ...css.matchAll(/\[data-agent-provider="([^"]+)"\]/g),
+  ].map((match) => match[1]);
+  assert.deepEqual(
+    identities.sort(),
+    [...PROVIDER_KINDS].sort(),
+    "generated/providerKind.ts owns provider-activity.css identities",
+  );
+});
+
+it("chat status preserves unknown and missing identities without a provider default", () => {
+  for (const [provider, label] of [
+    ["codex", "Codex"],
+    ["claude", "Claude"],
+    ["Future Provider", "Future Provider"],
+    ["CODEX", "CODEX"],
+    [" claude ", " claude "],
+    ["", ""],
+    [undefined, ""],
+  ]) {
+    const markup = renderToStaticMarkup(
+      createElement(ChatStatus, {
+        status: { kind: "working", label: "Working" },
+        provider,
+        model: "custom-model",
+      }),
+    );
+    assert.ok(markup.includes(`${label} · custom-model`), markup);
+    if (provider !== undefined)
+      assert.ok(markup.includes(`data-agent-provider="${provider}"`), markup);
+    else assert.ok(!markup.includes('data-agent-provider="codex"'), markup);
+  }
+});
 
 // Partial activity fixtures omit display-only agentName, label and status.
 type ActivityFixture = Omit<ChatActivity, "agentName" | "label" | "status"> &
@@ -37,23 +82,27 @@ it("keeps unread and attention indicators correct with summaries and empty panel
     "answer",
   );
   assert.equal(
-    chatIndicators(
-      snapshot({ ...summary, status: "waiting", hasBackgroundWork: true }),
-    ).get("chat")!.kind,
+    required(
+      chatIndicators(
+        snapshot({ ...summary, status: "waiting", hasBackgroundWork: true }),
+      ).get("chat"),
+    ).kind,
     "working",
   );
   assert.equal(
-    chatIndicators(
-      snapshot({
-        ...summary,
-        readState: {
-          threadId: "thread",
-          turnId: "turn",
-          read: true,
-          revision: 1,
-        },
-      }),
-    ).get("chat")!.kind,
+    required(
+      chatIndicators(
+        snapshot({
+          ...summary,
+          readState: {
+            threadId: "thread",
+            turnId: "turn",
+            read: true,
+            revision: 1,
+          },
+        }),
+      ).get("chat"),
+    ).kind,
     "none",
   );
 });
@@ -262,18 +311,22 @@ it("classifies unread, work, answer, error and paused states from current runtim
     "unread",
   );
   assert.equal(
-    chatIndicators(snapshot([lead, { ...child, status: "running" }])).get(
-      "lead",
-    )!.kind,
+    required(
+      chatIndicators(snapshot([lead, { ...child, status: "running" }])).get(
+        "lead",
+      ),
+    ).kind,
     "working",
   );
   assert.equal(
-    chatIndicators(
-      snapshot([
-        { ...lead, status: "waiting" },
-        { ...child, status: "running" },
-      ]),
-    ).get("lead")!.kind,
+    required(
+      chatIndicators(
+        snapshot([
+          { ...lead, status: "waiting" },
+          { ...child, status: "running" },
+        ]),
+      ).get("lead"),
+    ).kind,
     "working",
     "A lead waiting for an active child remains busy",
   );
@@ -356,7 +409,9 @@ it("classifies unread, work, answer, error and paused states from current runtim
     );
   }
   assert.equal(
-    chatIndicators(snapshot([lead, child], inboxAttention)).get("lead")!.kind,
+    required(
+      chatIndicators(snapshot([lead, child], inboxAttention)).get("lead"),
+    ).kind,
     "unread",
     "A child user task cannot mark the lead as awaiting an answer",
   );
@@ -379,11 +434,20 @@ it("classifies unread, work, answer, error and paused states from current runtim
   };
   const activeSnapshot = snapshot([lead, pausedChild], { tasks: [command] });
   const reasons = chatActivities(activeSnapshot);
-  assert.equal(reasons.get("lead")![0].id, command.id);
-  assert.equal(reasons.get("lead")![0].agentName, child.name);
-  assert.equal(reasons.get("lead")![0].command, command.command);
-  assert.equal(reasons.get("child")![0].created, 10);
-  assert.equal(chatIndicators(activeSnapshot).get("lead")!.kind, "working");
+  assert.equal(required(required(reasons.get("lead"))[0]).id, command.id);
+  assert.equal(
+    required(required(reasons.get("lead"))[0]).agentName,
+    child.name,
+  );
+  assert.equal(
+    required(required(reasons.get("lead"))[0]).command,
+    command.command,
+  );
+  assert.equal(required(required(reasons.get("child"))[0]).created, 10);
+  assert.equal(
+    required(chatIndicators(activeSnapshot).get("lead")).kind,
+    "working",
+  );
   assert.equal(
     chatActivities(
       snapshot([lead, pausedChild], {
@@ -394,13 +458,17 @@ it("classifies unread, work, answer, error and paused states from current runtim
   );
   const activeChild: Agent = { ...child, status: "running", inFlight: true };
   assert.equal(
-    chatActivities(snapshot([lead, activeChild], { tasks: [command] })).get(
-      "lead",
-    )!.length,
+    required(
+      chatActivities(snapshot([lead, activeChild], { tasks: [command] })).get(
+        "lead",
+      ),
+    ).length,
     1,
   );
   assert.equal(
-    chatActivities(snapshot([lead, activeChild])).get("lead")![0].kind,
+    required(
+      required(chatActivities(snapshot([lead, activeChild])).get("lead"))[0],
+    ).kind,
     "agent",
   );
   const otherRoot: Agent = { ...lead, id: "other-root", rootId: "other-root" };
@@ -423,7 +491,9 @@ it("classifies unread, work, answer, error and paused states from current runtim
     agents: Agent[] = [lead, turnChild],
   ) =>
     backgroundActivities(
-      chatActivities(snapshot(agents, { tasks, monitors })).get("lead")! || [],
+      required(
+        chatActivities(snapshot(agents, { tasks, monitors })).get("lead"),
+      ) || [],
     ).map((activity) => activity.id);
   assert.deepEqual(strip([{ ...command, turnId: "t2" }]), []);
   assert.deepEqual(strip([{ ...command, turnId: "t1" }]), [command.id]);
@@ -434,7 +504,9 @@ it("classifies unread, work, answer, error and paused states from current runtim
   );
   assert.deepEqual(strip([]), []);
   assert.equal(
-    chatActivities(snapshot([lead, turnChild])).get("lead")![0].kind,
+    required(
+      required(chatActivities(snapshot([lead, turnChild])).get("lead"))[0],
+    ).kind,
     "agent",
   );
   console.log(
@@ -446,19 +518,22 @@ it("classifies unread, work, answer, error and paused states from current runtim
     agents: Agent[] = [waitingLead],
     runtime: Parameters<typeof componentSnapshot>[1] = {},
     agent = agents[0],
-  ) => chatWaitState(snapshot(agents, runtime), agent);
+  ) => chatWaitState(snapshot(agents, runtime), required(agent));
   assert.equal(waitState().live, false);
   assert.equal(waitState().label, "Turn ended. Send a message to continue.");
   assert.deepEqual(waitState().commands, []);
   assert.deepEqual(waitState().monitors, []);
-  assert.deepEqual(chatIndicators(snapshot([waitingLead])).get("lead")!, {
-    kind: "none",
-    label: endedWaitLabel,
-  });
+  assert.deepEqual(
+    required(chatIndicators(snapshot([waitingLead])).get("lead")),
+    {
+      kind: "none",
+      label: endedWaitLabel,
+    },
+  );
   for (const status of ["queued", "starting", "running", "approval"] as const) {
     const agents = [waitingLead, { ...child, status }];
     assert.equal(waitState(agents).label, "Waiting for 1 agent", status);
-    assert.deepEqual(chatIndicators(snapshot(agents)).get("lead")!, {
+    assert.deepEqual(required(chatIndicators(snapshot(agents)).get("lead")), {
       kind: "working",
       label: "Waiting for 1 agent",
     });
@@ -618,7 +693,7 @@ it("classifies unread, work, answer, error and paused states from current runtim
     autoWake: false,
   };
   assert.equal(waitState([parked]).label, "Waiting for event build-ready");
-  assert.deepEqual(chatIndicators(snapshot([parked])).get("lead")!, {
+  assert.deepEqual(required(chatIndicators(snapshot([parked])).get("lead")), {
     kind: "working",
     label: "Waiting for event build-ready",
   });
@@ -632,9 +707,10 @@ it("classifies unread, work, answer, error and paused states from current runtim
     waitState(undefined, { requests: [input] }).label,
     "Waiting for 1 input",
   );
+  const withoutRequests = snapshot([waitingLead]);
+  Reflect.deleteProperty(withoutRequests.runtime, "requests");
   assert.equal(
-    chatWaitState(snapshot([waitingLead], { requests: undefined }), waitingLead)
-      .inputs,
+    chatWaitState(withoutRequests, waitingLead).inputs,
     0,
     "snapshots without a requests collection contain no input triggers",
   );
@@ -649,7 +725,11 @@ it("classifies unread, work, answer, error and paused states from current runtim
     "an unscoped request epoch remains current",
   );
   assert.deepEqual(
-    chatIndicators(snapshot([waitingLead], { requests: [input] })).get("lead")!,
+    required(
+      chatIndicators(snapshot([waitingLead], { requests: [input] })).get(
+        "lead",
+      ),
+    ),
     {
       kind: "answer",
       label: "Waiting for 1 input",
@@ -731,7 +811,7 @@ it("keeps a parent waiting for a child with current command or monitor work", ()
       const snapshot = makeSnapshot([lead, child], {
         [kind]: [{ ...work, status }],
       });
-      assert.deepEqual(chatIndicators(snapshot).get(lead.id)!, {
+      assert.deepEqual(required(chatIndicators(snapshot).get(lead.id)), {
         kind: "working",
         label: "Waiting for 1 agent",
       });
@@ -754,7 +834,7 @@ it("keeps a parent waiting for a child with current command or monitor work", ()
       const snapshot = makeSnapshot([lead, child], {
         [kind]: [{ ...work, ...change }],
       });
-      assert.deepEqual(chatIndicators(snapshot).get(lead.id)!, {
+      assert.deepEqual(required(chatIndicators(snapshot).get(lead.id)), {
         kind: "none",
         label: endedWaitLabel,
       });
@@ -784,7 +864,10 @@ it("keeps a parent waiting for a child with current command or monitor work", ()
         },
       ],
     });
-    assert.equal(chatIndicators(snapshot).get(lead.id)!.kind, "answer");
+    assert.equal(
+      required(chatIndicators(snapshot).get(lead.id)).kind,
+      "answer",
+    );
   }
   assert.equal(
     chatWaitState(
@@ -818,13 +901,16 @@ it("counts active work through waiting descendants without crossing stopped bran
   const snapshot = makeSnapshot([lead, middle, child], { monitors: [monitor] });
   const indicators = chatIndicators(snapshot);
   for (const agent of [lead, middle] as const) {
-    assert.deepEqual(indicators.get(agent.id)!, {
+    assert.deepEqual(required(indicators.get(agent.id)), {
       kind: "working",
       label: "Waiting for 1 agent",
     });
-    assert.equal(chatWaitState(snapshot, agent).agents[0].parentId, agent.id);
+    assert.equal(
+      required(chatWaitState(snapshot, agent).agents[0]).parentId,
+      agent.id,
+    );
   }
-  assert.deepEqual(indicators.get(child.id)!, {
+  assert.deepEqual(required(indicators.get(child.id)), {
     kind: "working",
     label: "Waiting for 1 monitor",
   });
@@ -930,7 +1016,7 @@ it("indexes one wide team's children once for all chat indicators", () => {
     monitors: [
       {
         id: "watch",
-        agent: children[0].id,
+        agent: required(children[0]).id,
         status: "running",
         epoch: 2,
       },
@@ -946,7 +1032,7 @@ it("indexes one wide team's children once for all chat indicators", () => {
   });
   const indicators = chatIndicators(snapshot);
   assert.equal(indicators.size, 1025);
-  assert.equal(indicators.get(lead.id)!.label, "Waiting for 1 agent");
+  assert.equal(required(indicators.get(lead.id)).label, "Waiting for 1 agent");
   assert(reads <= 3, `the team roster was read ${reads} times`);
 });
 
@@ -975,9 +1061,11 @@ it("rejects malformed request epochs while preserving absent, null and numeric r
       `wait input epoch ${JSON.stringify(record)}`,
     );
     assert.equal(
-      chatIndicators(makeSnapshot([failed], { requests: [request] })).get(
-        "lead",
-      )!.kind,
+      required(
+        chatIndicators(makeSnapshot([failed], { requests: [request] })).get(
+          "lead",
+        ),
+      ).kind,
       current ? "answer" : "error",
       `indicator request epoch ${JSON.stringify(record)}`,
     );
@@ -1046,11 +1134,11 @@ it("maps live runtime records to sorted caller-visible activities", () => {
 
   const activities = chatActivities(snapshot);
   assert.deepEqual(
-    activities.get("lead")!.map(({ id }) => id),
+    required(activities.get("lead")).map(({ id }) => id),
     ["command", "monitor", "monitor-no-command", "tool", "z"],
     "activities are shared with the root chat and sort by time, then ID",
   );
-  assert.deepEqual(activities.get("lead")![0], {
+  assert.deepEqual(required(required(activities.get("lead"))[0]), {
     id: "command",
     kind: "task",
     agentId: "child",
@@ -1062,7 +1150,7 @@ it("maps live runtime records to sorted caller-visible activities", () => {
     background: true,
     commandTask: true,
   });
-  assert.deepEqual(activities.get("lead")![1], {
+  assert.deepEqual(required(required(activities.get("lead"))[1]), {
     id: "monitor",
     kind: "monitor",
     agentId: "child",
@@ -1074,15 +1162,30 @@ it("maps live runtime records to sorted caller-visible activities", () => {
     background: true,
     commandTask: false,
   });
-  assert.equal(activities.get("lead")![2].label, "Background command");
-  assert.equal(activities.get("lead")![2].command, "watcher without a command");
-  assert.equal(activities.get("lead")![3].label, "Tool call");
-  assert.equal(activities.get("lead")![3].command, "search query");
-  assert.equal(activities.get("lead")![3].background, false);
-  assert.equal(activities.get("lead")![3].commandTask, false);
-  assert.equal(activities.get("child")!.length, 5);
+  assert.equal(
+    required(required(activities.get("lead"))[2]).label,
+    "Background command",
+  );
+  assert.equal(
+    required(required(activities.get("lead"))[2]).command,
+    "watcher without a command",
+  );
+  assert.equal(
+    required(required(activities.get("lead"))[3]).label,
+    "Tool call",
+  );
+  assert.equal(
+    required(required(activities.get("lead"))[3]).command,
+    "search query",
+  );
+  assert.equal(required(required(activities.get("lead"))[3]).background, false);
+  assert.equal(
+    required(required(activities.get("lead"))[3]).commandTask,
+    false,
+  );
+  assert.equal(required(activities.get("child")).length, 5);
   assert.deepEqual(
-    backgroundActivities(activities.get("lead")!).map(({ id }) => id),
+    backgroundActivities(required(activities.get("lead"))).map(({ id }) => id),
     ["command", "monitor", "monitor-no-command"],
   );
 
@@ -1092,7 +1195,7 @@ it("maps live runtime records to sorted caller-visible activities", () => {
     }),
   );
   assert.deepEqual(
-    selfActivity.get("lead")!.map(({ id }) => id),
+    required(selfActivity.get("lead")).map(({ id }) => id),
     ["self"],
   );
   const unknownRootActivity = chatActivities(
@@ -1198,7 +1301,7 @@ it("uses the runtime command, turn, epoch and fallback rules for activities", ()
     }),
   );
   assert.deepEqual(
-    activities.get("lead")!.map(({ id }) => id),
+    required(activities.get("lead")).map(({ id }) => id),
     [
       "agent-without-epoch",
       "command-kind-only",
@@ -1210,36 +1313,45 @@ it("uses the runtime command, turn, epoch and fallback rules for activities", ()
     ],
   );
   assert.deepEqual(
-    activities
-      .get("lead")!
+    required(activities.get("lead"))
       .map(({ id }) => id)
       .filter((id) =>
-        backgroundActivities(activities.get("lead")!).some(
+        backgroundActivities(required(activities.get("lead"))).some(
           (entry) => entry.id === id,
         ),
       ),
     ["different-turn"],
   );
   assert.equal(
-    activities.get("lead")!.find(({ id }) => id === "same-turn")!.label,
+    required(activities.get("lead")).find(({ id }) => id === "same-turn")
+      ?.label,
     "Command",
   );
   assert.equal(
-    activities.get("lead")!.find(({ id }) => id === "command-without-kind")!
-      .commandTask,
+    required(activities.get("lead")).find(
+      ({ id }) => id === "command-without-kind",
+    )?.commandTask,
     true,
   );
   assert.equal(
-    activities.get("lead")!.find(({ id }) => id === "command-kind-only")!
-      .commandTask,
+    required(activities.get("lead")).find(
+      ({ id }) => id === "command-kind-only",
+    )?.commandTask,
     true,
   );
   assert.equal(
-    activities.get("lead")!.find(({ id }) => id === "tool-by-kind")!.command,
+    required(activities.get("lead")).find(({ id }) => id === "tool-by-kind")
+      ?.command,
     "tool",
   );
-  assert.equal(activities.get("no-epoch")![0].command, "named task");
-  assert.equal(activities.get("no-epoch")![0].label, "Tool call");
+  assert.equal(
+    required(required(activities.get("no-epoch"))[0]).command,
+    "named task",
+  );
+  assert.equal(
+    required(required(activities.get("no-epoch"))[0]).label,
+    "Tool call",
+  );
 
   const fallback = (agent: Agent) =>
     chatActivities(makeSnapshot([agent])).get(agent.id)?.[0];
@@ -1286,7 +1398,7 @@ it("uses the runtime command, turn, epoch and fallback rules for activities", ()
     ),
   );
   assert.deepEqual(
-    concreteWins.get("concrete")!.map(({ id }) => id),
+    required(concreteWins.get("concrete")).map(({ id }) => id),
     ["actual"],
   );
 });
@@ -1458,25 +1570,29 @@ it("keeps completion receipts and operational indicator priority aligned", () =>
     tasks: [{ id: "task", agent: "lead", command: "build", status: "running" }],
   });
   const indicators = chatIndicators(snapshot, () => null);
-  assert.deepEqual(indicators.get("lead")!, {
+  assert.deepEqual(required(indicators.get("lead")), {
     kind: "answer",
     label: "Needs your answer",
   });
-  assert.deepEqual(indicators.get("child")!, {
+  assert.deepEqual(required(indicators.get("child")), {
     kind: "answer",
     label: "Needs your answer",
   });
   assert.equal(indicators.has("missing"), false);
   assert.deepEqual(
-    chatIndicators(makeSnapshot([makeAgent({ status: "failed" })])).get(
-      "lead",
-    )!,
+    required(
+      chatIndicators(makeSnapshot([makeAgent({ status: "failed" })])).get(
+        "lead",
+      ),
+    ),
     { kind: "error", label: "Failed" },
   );
   assert.deepEqual(
-    chatIndicators(makeSnapshot([makeAgent({ status: "interrupted" })])).get(
-      "lead",
-    )!,
+    required(
+      chatIndicators(makeSnapshot([makeAgent({ status: "interrupted" })])).get(
+        "lead",
+      ),
+    ),
     { kind: "paused", label: "Interrupted" },
   );
   assert.deepEqual(
@@ -1488,45 +1604,55 @@ it("keeps completion receipts and operational indicator priority aligned", () =>
     { kind: "paused", label: "Question deferred" },
   );
   assert.deepEqual(
-    chatIndicators(
-      makeSnapshot([
-        makeAgent({ status: "idle", autoWake: false, empty: false }),
-      ]),
-    ).get("lead")!,
+    required(
+      chatIndicators(
+        makeSnapshot([
+          makeAgent({ status: "idle", autoWake: false, empty: false }),
+        ]),
+      ).get("lead"),
+    ),
     { kind: "paused", label: "Stopped" },
   );
   assert.deepEqual(
-    chatIndicators(
-      makeSnapshot([
-        makeAgent({ status: "idle", autoWake: false, empty: true }),
-      ]),
-    ).get("lead")!,
+    required(
+      chatIndicators(
+        makeSnapshot([
+          makeAgent({ status: "idle", autoWake: false, empty: true }),
+        ]),
+      ).get("lead"),
+    ),
     { kind: "none", label: "Ready" },
   );
   assert.deepEqual(
-    chatIndicators(makeSnapshot([makeAgent({ status: "paused" })])).get(
-      "lead",
-    )!,
+    required(
+      chatIndicators(makeSnapshot([makeAgent({ status: "paused" })])).get(
+        "lead",
+      ),
+    ),
     { kind: "paused", label: "Stopped" },
   );
   assert.deepEqual(
-    chatIndicators(
-      makeSnapshot([
-        makeAgent({
-          status: "completed",
-          readState: {
-            threadId: "thread",
-            turnId: "turn",
-            read: true,
-            revision: 1,
-          },
-        }),
-      ]),
-    ).get("lead")!,
+    required(
+      chatIndicators(
+        makeSnapshot([
+          makeAgent({
+            status: "completed",
+            readState: {
+              threadId: "thread",
+              turnId: "turn",
+              read: true,
+              revision: 1,
+            },
+          }),
+        ]),
+      ).get("lead"),
+    ),
     { kind: "none", label: "Read" },
   );
   assert.deepEqual(
-    chatIndicators(makeSnapshot([makeAgent({ status: "idle" })])).get("lead")!,
+    required(
+      chatIndicators(makeSnapshot([makeAgent({ status: "idle" })])).get("lead"),
+    ),
     { kind: "none", label: "Ready" },
   );
   const withSavedReceipt = makeAgent({
@@ -1534,7 +1660,7 @@ it("keeps completion receipts and operational indicator priority aligned", () =>
     readState: { threadId: "thread", turnId: "turn", read: true, revision: 3 },
   });
   assert.deepEqual(
-    chatIndicators(makeSnapshot([withSavedReceipt])).get("lead")!,
+    required(chatIndicators(makeSnapshot([withSavedReceipt])).get("lead")),
     { kind: "none", label: "Read" },
     "the default read-state lookup uses the agent's saved receipt",
   );
@@ -1629,11 +1755,13 @@ it("keeps completion receipts and operational indicator priority aligned", () =>
     ],
   ]) as Map<string, ChatActivity[]>;
   assert.deepEqual(
-    chatIndicators(
-      makeSnapshot([makeAgent({ inFlight: true })]),
-      undefined,
-      currentWork,
-    ).get("lead")!,
+    required(
+      chatIndicators(
+        makeSnapshot([makeAgent({ inFlight: true })]),
+        undefined,
+        currentWork,
+      ).get("lead"),
+    ),
     { kind: "working", label: "Working" },
     "a mix of task and monitor activity keeps both operational kinds visible",
   );
@@ -1655,11 +1783,13 @@ it("keeps completion receipts and operational indicator priority aligned", () =>
     ],
   ]) as Map<string, ChatActivity[]>;
   assert.deepEqual(
-    chatIndicators(
-      makeSnapshot([makeAgent({ status: "completed", inFlight: false })]),
-      undefined,
-      stoppedTask,
-    ).get("lead")!,
+    required(
+      chatIndicators(
+        makeSnapshot([makeAgent({ status: "completed", inFlight: false })]),
+        undefined,
+        stoppedTask,
+      ).get("lead"),
+    ),
     { kind: "working", label: "Waiting for 1 command" },
     "a stopped turn includes the wait label for its remaining command",
   );
@@ -1672,7 +1802,7 @@ it("keeps completion receipts and operational indicator priority aligned", () =>
           "lead",
           [
             {
-              ...stoppedTask.get("lead")![0],
+              ...required(required(stoppedTask.get("lead"))[0]),
               kind: "monitor",
               commandTask: false,
             },
@@ -1692,7 +1822,7 @@ it("keeps completion receipts and operational indicator priority aligned", () =>
           "lead",
           [
             {
-              ...stoppedTask.get("lead")![0],
+              ...required(required(stoppedTask.get("lead"))[0]),
               commandTask: false,
               command: undefined,
             },
@@ -1726,9 +1856,11 @@ it("keeps completion receipts and operational indicator priority aligned", () =>
     "an empty activity group is not active work",
   );
   assert.deepEqual(
-    chatIndicators(
-      makeSnapshot([makeAgent({ status: "waiting", inFlight: false })]),
-    ).get("lead")!,
+    required(
+      chatIndicators(
+        makeSnapshot([makeAgent({ status: "waiting", inFlight: false })]),
+      ).get("lead"),
+    ),
     { kind: "none", label: "Turn ended. Send a message to continue." },
   );
 });

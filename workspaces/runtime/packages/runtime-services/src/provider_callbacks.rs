@@ -292,5 +292,5 @@ pub(crate) async fn dispatch_with_managed_tools(
 }
 
 fn tool_result(value: Value, success: bool) -> Value {
-    json!({"success":success,"contentItems":[{"type":"inputText","text":match value { Value::String(text)=>text, other=>other.to_string() }}]})
+    json!({"success":success,"contentItems":[{"type":"inputText","text":match value { Value::String(text)=>text, other @ Value::Null | other @ Value::Bool(_) | other @ Value::Number(_) | other @ Value::Array(_) | other @ Value::Object(_)=>other.to_string() }}]})
 }

@@ -96,7 +96,7 @@ pub(super) fn accept(
     let method = match frame {
         Frame::Request(request) => request.method.as_str().to_owned(),
         Frame::UnknownMethod(request) => request.method.clone(),
-        _ => return Ok(()),
+        Frame::Notification(_) | Frame::Response { .. } => return Ok(()),
     };
     let operation = operation(journal_scope, entry.generation.0, entry.cursor.0);
     let line = encode_line(frame).map_err(|_| invalid(&operation))?;
@@ -182,7 +182,7 @@ pub(super) async fn written(
         .transaction_with(move |tx| match outcome {
             WriteOutcome::NotSent => delete_receipt(tx, &operation, SUBMITTED),
             WriteOutcome::Written => retire(tx, &operation),
-            _ => save(tx, &operation, UNKNOWN, json!(true)),
+            WriteOutcome::Unknown => save(tx, &operation, UNKNOWN, json!(true)),
         })
         .await
 }

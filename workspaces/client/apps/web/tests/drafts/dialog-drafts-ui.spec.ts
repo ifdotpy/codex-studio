@@ -1,3 +1,4 @@
+import { required } from "../teams/helpers.ts";
 import { requestBody } from "../messages/helpers.ts";
 import type { PostBody, GetResult } from "../../src/apiTypes.ts";
 // Real components, isolated Vite server, mocked requests. No model or user state.
@@ -83,6 +84,8 @@ test("dialog-drafts-ui", async ({ page: fixturePage }) => {
       }
       if (path === "/api/complaints") {
         const body = requestBody<PostBody<"/api/complaints">>(route);
+        if (!body.status) throw new Error("Expected response status");
+
         sent.push(body);
         if (sent.length === 1)
           return route.fulfill({
@@ -111,7 +114,7 @@ test("dialog-drafts-ui", async ({ page: fixturePage }) => {
       }
       return route.fulfill({ json: {} });
     });
-    await page.goto(server.resolvedUrls!.local[0]);
+    await page.goto(required(required(server.resolvedUrls).local[0]));
     await page
       .locator("[data-missing-date]")
       .getByText("Date unavailable", { exact: true })
@@ -295,7 +298,7 @@ test("dialog-drafts-ui", async ({ page: fixturePage }) => {
     await waitForSent(2);
     assert.deepEqual(
       sent[1],
-      sent[0],
+      required(sent[0]),
       "Retry after reload retains the exact message identity and payload",
     );
     releaseSend!();
@@ -321,12 +324,12 @@ test("dialog-drafts-ui", async ({ page: fixturePage }) => {
       .locator(".complaint-response")
       .getByText("New reply")
       .waitFor();
-    assert.equal(sent[2].text, "New reply");
-    assert.equal(sent[0].action, "respond");
-    assert.equal(sent[0].complaint_id, "complaint");
-    assert.equal(sent[0].version, 1);
-    assert.equal(sent[2].version, 2);
-    assert.notEqual(sent[0].id, sent[2].id);
+    assert.equal(required(sent[2]).text, "New reply");
+    assert.equal(required(sent[0]).action, "respond");
+    assert.equal(required(sent[0]).complaint_id, "complaint");
+    assert.equal(required(sent[0]).version, 1);
+    assert.equal(required(sent[2]).version, 2);
+    assert.notEqual(required(sent[0]).id, required(sent[2]).id);
     assert.deepEqual(pageErrors, []);
     console.log(
       JSON.stringify({

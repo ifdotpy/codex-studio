@@ -20,6 +20,8 @@ function AccountLimitsFixture({
   settings?: boolean;
   light?: boolean;
 }) {
+  const [firstAccountFixture] = accountLimitFixtures;
+  if (!firstAccountFixture) throw new Error("Missing account limit fixture");
   const services = useMemo(() => {
     const value = createServerServices({
       id: "local",
@@ -114,7 +116,7 @@ function AccountLimitsFixture({
                 } as Agent
               }
               stateDir="limits-fixture"
-              limits={accountLimitFixtures[0].limits}
+              limits={firstAccountFixture.limits}
               accounts={accountLimitFixtures}
               reload={() => {}}
               opened
@@ -234,7 +236,10 @@ export const SettingsDark = {
     const controls = canvas.getAllByRole("button", {
       name: /Limit details for/,
     });
-    await userEvent.click(controls[0]);
+    const [first, , third, fourth] = controls;
+    if (!first || !third || !fourth)
+      throw new Error("Missing limit detail controls");
+    await userEvent.click(first);
     await expect(
       canvas.getByRole("meter", { name: "Spark 5h remaining" }),
     ).toBeVisible();
@@ -242,7 +247,7 @@ export const SettingsDark = {
     await expect(
       canvas.queryByRole("button", { name: "Apply reset" }),
     ).not.toBeInTheDocument();
-    await userEvent.click(controls[3]);
+    await userEvent.click(fourth);
     await expect(
       canvas.getByRole("meter", { name: "Opus 7d remaining" }),
     ).toBeVisible();
@@ -250,7 +255,7 @@ export const SettingsDark = {
     await expect(
       canvasElement.querySelectorAll(".account-expanded"),
     ).toHaveLength(1);
-    await userEvent.click(controls[2]);
+    await userEvent.click(third);
     await expect(
       canvas.getByText("Limits temporarily unavailable"),
     ).toBeVisible();

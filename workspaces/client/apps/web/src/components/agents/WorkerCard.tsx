@@ -142,7 +142,7 @@ const WorkerCardView = memo(function WorkerCardView({
   remove,
 }: WorkerCardProps) {
   reportPromptComposerRender("team-row", agent.id);
-  const provider = agent.provider || "codex";
+  const provider = agent.provider || "";
   const models = useContext(TeamModelCatalog).filter(
     (row) => !row.provider || row.provider === provider,
   );
@@ -169,8 +169,7 @@ const WorkerCardView = memo(function WorkerCardView({
           agent.model || "",
         );
   const connected = accounts.filter(
-    (account) =>
-      !account.disconnected && (account.provider || "codex") === provider,
+    (account) => !account.disconnected && account.provider === provider,
   );
   const account = connected.find(
     (account) => account.id === (agent.accountKey || "default"),
@@ -204,7 +203,7 @@ const WorkerCardView = memo(function WorkerCardView({
         (indicator?.kind === "answer" ||
         ["waiting", "parked"].includes(agent.status ?? "") ||
         (indicator?.kind === "working" && !agent.inFlight)
-          ? indicator?.label || statusLabel(agent.status ?? "")
+          ? indicator?.label || statusLabel(agent.status)
           : awaitingAnswer
             ? "Needs your answer"
             : agent.status === "starting" && agent.worktreePreparation
@@ -230,7 +229,7 @@ const WorkerCardView = memo(function WorkerCardView({
                                 agent.activity?.phase || undefined,
                               )
                             : statusLabel(
-                                agent.status ?? "",
+                                agent.status,
                                 undefined,
                                 agent.parkedEvent ?? undefined,
                               ),

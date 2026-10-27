@@ -13,6 +13,16 @@ import {
 import { serverCredentialAdapter } from "../servers/transport";
 import type { StudioServer } from "../servers/registry";
 
+export type NewChatWorkspaceMode = NonNullable<
+  PostBody<"/api/leads">["workspaceMode"]
+>;
+
+const newChatWorkspaceModes = {
+  layr: true,
+  image: true,
+  worktree: true,
+} satisfies Record<NewChatWorkspaceMode, true>;
+
 export type NewChatSettings = Pick<
   PostBody<"/api/conversation">,
   | "model"
@@ -21,7 +31,7 @@ export type NewChatSettings = Pick<
   | "daybreak_enabled"
   | "worker_defaults"
   | "review_defaults"
-> & { account_key?: string; workspaceMode: "layr" | "image" | "worktree" };
+> & { account_key?: string; workspaceMode: NewChatWorkspaceMode };
 
 export type NewChatSettingsDraft = Omit<NewChatSettings, "workspaceMode">;
 
@@ -62,7 +72,7 @@ export function settingsForNewChatAccount(
   };
 }
 
-export function defaultWorkspaceMode(system?: string) {
+export function defaultWorkspaceMode(system?: string): NewChatWorkspaceMode {
   return system === "Darwin" ? "layr" : "worktree";
 }
 
@@ -132,7 +142,10 @@ export function isNewChatSettings(value: unknown): value is NewChatSettings {
     "review_defaults",
   ];
   if (Object.keys(value).some((key) => !allowed.includes(key))) return false;
-  if (!["layr", "image", "worktree"].includes(String(value.workspaceMode)))
+  if (
+    typeof value.workspaceMode !== "string" ||
+    !Object.hasOwn(newChatWorkspaceModes, value.workspaceMode)
+  )
     return false;
   if (
     value.account_key !== undefined &&

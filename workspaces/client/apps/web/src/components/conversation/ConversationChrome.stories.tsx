@@ -35,11 +35,12 @@ const titles = [
   "Проверка интерфейса нескольких проектов на узком экране",
   "Prepare the next release",
 ] as const;
-const recentChats = indicators.map((indicator, index) => ({
-  id: `chat-${index}`,
-  title: titles[index],
-  indicator,
-}));
+const recentChats = indicators.map((indicator, index) => {
+  const title = titles[index];
+  if (title === undefined)
+    throw new Error("Missing conversation title fixture");
+  return { id: `chat-${index}`, title, indicator };
+});
 const lead = {
   id: "story-lead",
   rootId: "story-lead",
@@ -86,9 +87,11 @@ const limits: Json = {
 const observedAt = Date.now() / 1000;
 const usageAccounts = [10, 15, 40].map((usedPercent, index): UsageAccount => {
   const key = index === 0 ? "default" : `account-${index}`;
+  const label = ["Engineering", "Research", "Review"][index];
+  if (label === undefined) throw new Error("Missing account label fixture");
   return {
     key,
-    label: ["Engineering", "Research", "Review"][index],
+    label,
     provider: index === 2 ? "claude" : "codex",
     loading: false,
     reload: fn(),

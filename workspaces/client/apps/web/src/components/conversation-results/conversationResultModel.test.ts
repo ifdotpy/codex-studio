@@ -1,3 +1,4 @@
+import { required } from "../componentTestFixtures";
 import type { ConversationResult } from "./conversationResultModel";
 import { componentAttachment } from "../componentTestFixtures";
 import type { Message, JsonValue } from "../../types";
@@ -35,7 +36,7 @@ check("linked paths preserve labels, line numbers and local images", () => {
   assert.equal(results.length, 2);
   assert.deepEqual(
     {
-      label: results[0].label,
+      label: required(results[0]).label,
       path: (results[0] as FileResult).path,
       line: (results[0] as FileResult).line,
     },
@@ -82,7 +83,7 @@ check(
       { id: "user-link", role: "user", text: "[Input](private.md)" },
     ]);
     assert.equal(results.length, 1);
-    assert.equal(results[0].kind, "asset");
+    assert.equal(required(results[0]).kind, "asset");
   },
 );
 check("missing assistant text still exposes recorded attachments", () => {
@@ -123,9 +124,9 @@ check(
       }),
     ]);
     assert.equal((results[0] as SourceResult).source, diff);
-    assert.equal(results[0].label, "old.ts");
+    assert.equal(required(results[0]).label, "old.ts");
     assert.deepEqual((results[0] as PatchResult).paths, ["src/old.ts"]);
-    assert.equal(results[0].kind, "patch");
+    assert.equal(required(results[0]).kind, "patch");
   },
 );
 check(
@@ -175,9 +176,9 @@ check(
       ),
     ]);
     assert.equal(results.length, 2);
-    assert.equal(results[0].kind, "mermaid");
+    assert.equal(required(results[0]).kind, "mermaid");
     assert.equal((results[0] as SourceResult).source, "graph TD; A-->B");
-    assert.equal(results[1].kind, "html");
+    assert.equal(required(results[1]).kind, "html");
     assert.match(
       (results[1] as SourceResult).source,
       /<style>.*<\/style>[\s\S]*<div>/,
@@ -195,7 +196,7 @@ check(
       assistant("```html\n<p>Two</p>\n```", { id: "answer-3" }),
     ]);
     assert.equal(results.length, 3);
-    assert.equal(results[2].messageId, "answer-3");
+    assert.equal(required(results[2]).messageId, "answer-3");
   },
 );
 check("turn diffs collapse against the same recorded file-change patch", () => {
@@ -209,9 +210,9 @@ check("turn diffs collapse against the same recorded file-change patch", () => {
     output({ diff }, { id: "turn/diff/updated", title: "Changes" }),
   ]);
   assert.equal(results.length, 1);
-  assert.equal(results[0].kind, "patch");
+  assert.equal(required(results[0]).kind, "patch");
   assert.equal((results[0] as SourceResult).source, diff);
-  assert.equal(results[0].messageId, "tool");
+  assert.equal(required(results[0]).messageId, "tool");
   assert.equal(
     (
       (results[0] as PatchResult).change as {
@@ -249,7 +250,7 @@ check(
       ),
     ]);
     assert.equal(results.length, 4);
-    assert.equal(results[0].kind, "patch");
+    assert.equal(required(results[0]).kind, "patch");
     assert.deepEqual((results[2] as PatchResult).paths, [
       "first.ts",
       "second.ts",
@@ -618,9 +619,10 @@ check(
       "+++ b/another.ts",
       "@@ changes",
     ].join("\n");
-    const result = conversationResults([
-      output({ diff }, { title: "Changes" }),
-    ])[0];
+    const result = required(
+      conversationResults([output({ diff }, { title: "Changes" })])[0],
+    );
+    assert.ok(result.kind === "patch");
     assert.equal(result.label, "Changes · 4 files");
     assert.deepEqual((result as PatchResult).paths, [
       "name with spaces.txt",

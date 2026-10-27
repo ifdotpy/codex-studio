@@ -370,6 +370,7 @@ for (const format of ["gif", "webp"] as const) {
           .extract({ left: 0, top: 0, width: 1, height: 1 })
           .raw()
           .toBuffer();
+        assert.ok(pixel[0] !== undefined && pixel[2] !== undefined);
         assert.ok(pixel[0] > 240 && pixel[2] < 10, "the first frame is red");
       }
     });

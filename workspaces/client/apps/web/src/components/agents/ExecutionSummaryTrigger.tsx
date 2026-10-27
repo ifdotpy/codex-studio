@@ -1,3 +1,5 @@
+import { ProviderKind } from "../../generated/providerKind.ts";
+import { modelProvider } from "../accountPreference.ts";
 import type { Agent } from "../../types";
 import type { ComponentProps } from "react";
 import { ActionButton } from "../ui/primitives";
@@ -39,7 +41,7 @@ export function ExecutionSummaryTrigger({
     review = false,
   ) => {
     const rows = review
-      ? workers.models.filter((row) => row.provider !== "claude")
+      ? workers.models.filter((row) => row.provider !== ProviderKind.Claude)
       : worker
         ? workers.models
         : catalog.models;
@@ -48,13 +50,11 @@ export function ExecutionSummaryTrigger({
     return {
       name: modelDisplayName(display, model || "Default"),
       provider: review
-        ? "codex"
-        : info?.provider ||
-          (/^claude-|^(opus|sonnet|haiku)/.test(model || "")
-            ? "claude"
-            : !worker
-              ? agent.provider || "codex"
-              : "codex"),
+        ? ProviderKind.Codex
+        : ((!worker ? agent.provider : undefined) ??
+          info?.provider ??
+          modelProvider(model ?? "") ??
+          ""),
       effort: (effort || info?.defaultReasoningEffort || "").replace(
         /^./,
         (letter) => letter.toUpperCase(),

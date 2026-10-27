@@ -10,20 +10,20 @@ import {
   PairingNotAppliedError,
 } from "./pairing";
 import { serverViewId } from "./environment";
-import type { DesktopBridge } from "../desktop";
 export type {
   CredentialRequest,
   CredentialResponse,
   StreamChunk,
 } from "../../../desktop/api.ts";
-import type { CredentialResponse, StreamChunk } from "../../../desktop/api.ts";
+import type { CredentialBridge, StreamChunk } from "../../../desktop/api.ts";
+import { isServerMethod } from "../../../desktop/api.ts";
 export class DesktopServerCredentials implements ServerCredentialAdapter {
-  declare private bridge: DesktopBridge;
-  constructor(bridge: DesktopBridge) {
+  declare private bridge: CredentialBridge;
+  constructor(bridge: CredentialBridge) {
     this.bridge = bridge;
   }
   async hasPairAttempt(attempt: PairAttemptIdentity): Promise<boolean> {
-    const result = await this.bridge.serverCredentialAction!({
+    const result = await this.bridge.serverCredentialAction({
       action: "pairAttempt",
       ...attempt,
     });
@@ -37,22 +37,18 @@ export class DesktopServerCredentials implements ServerCredentialAdapter {
     requestId: string,
     approval?: AutomaticPairApproval,
   ): Promise<StudioServer> {
-    const result = await this.bridge.serverCredentialAction!({
+    const result = await this.bridge.serverCredentialAction({
       ...(approval ? { action: "pairApproved", approval } : { action: "pair" }),
       origin,
       invitation: parseInvitation(code, origin),
       requestId,
     });
-    if (
-      result &&
-      typeof result === "object" &&
-      "notApplied" in result &&
-      result.notApplied === "invite_unavailable"
-    )
-      throw new PairingNotAppliedError();
-    return result as StudioServer;
+    if ("notApplied" in result) throw new PairingNotAppliedError();
+    return result;
   }
   async fetch(server: StudioServer, request: Request): Promise<Response> {
+    const method = request.method;
+    if (!isServerMethod(method)) throw new Error("Unsupported server method.");
     const streamId = crypto.randomUUID();
     let receiver: ReadableStreamDefaultController<Uint8Array> | undefined;
     let ready = false;
@@ -69,19 +65,21 @@ export class DesktopServerCredentials implements ServerCredentialAdapter {
         stop();
       } else if (value.bytes) receiver.enqueue(new Uint8Array(value.bytes));
     };
-    const stop = this.bridge.onServerStream!((value) => {
+    const stop = this.bridge.onServerStream((value) => {
       if (value.serverId !== server.id || value.streamId !== streamId) return;
       if (!ready) buffered.push(value);
       else apply(value);
     });
     const cancel = () => {
       stop();
-      void this.bridge.serverCredentialAction!({
-        action: "cancel",
-        serverId: server.id,
-        streamId,
-        frameOwner: serverViewId || undefined,
-      }).catch(() => {});
+      void this.bridge
+        .serverCredentialAction({
+          action: "cancel",
+          serverId: server.id,
+          streamId,
+          frameOwner: serverViewId || undefined,
+        })
+        .catch(() => {});
     };
     const abort = () => {
       cancel();
@@ -95,18 +93,18 @@ export class DesktopServerCredentials implements ServerCredentialAdapter {
     }
     request.signal.addEventListener("abort", abort, { once: true });
     try {
-      const result = (await this.bridge.serverCredentialAction!({
+      const result = await this.bridge.serverCredentialAction({
         action: "request",
         serverId: server.id,
         credentialId: server.credentialId,
         url: request.url,
-        method: request.method,
+        method,
         headers: [...request.headers],
         body: await request.clone().arrayBuffer(),
         requestId: await requestIdentity(request),
         streamId,
         frameOwner: serverViewId || undefined,
-      })) as CredentialResponse;
+      });
       if (request.signal.aborted) {
         cancel();
         throw request.signal.reason;
@@ -146,13 +144,18 @@ export class DesktopServerCredentials implements ServerCredentialAdapter {
     }
   }
   async forget(server: StudioServer) {
-    await this.bridge.serverCredentialAction!({
+    await this.bridge.serverCredentialAction({
       action: "forget",
       serverId: server.id,
     });
   }
 }
-export function nativeCredentialBridge(): DesktopBridge | undefined {
-  if (window.codexDesktop?.serverCredentialAction) return window.codexDesktop;
+export function nativeCredentialBridge(): CredentialBridge | undefined {
+  const bridge = window.codexDesktop;
+  if (bridge?.serverCredentialAction && bridge.onServerStream)
+    return {
+      serverCredentialAction: bridge.serverCredentialAction,
+      onServerStream: bridge.onServerStream,
+    };
   return undefined;
 }

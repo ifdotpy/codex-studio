@@ -214,6 +214,7 @@ try {
     "// @ts-ignore reason\nexport const value = 1;\n",
     "// @ts-nocheck reason\nexport const value = 1;\n",
     "// @ts-expect-error\nexport const value = 1;\n",
+    "// @ts-expect-error production code must not suppress a type mismatch\nexport const value: string = 1;\n",
   ]) {
     const root = fixture();
     stage(root, "invalid.ts", source);
@@ -223,7 +224,7 @@ try {
     const root = fixture();
     stage(
       root,
-      "negative.ts",
+      "negative.type-test.ts",
       "// @ts-expect-error value deliberately violates its declared string type\nexport const value: string = 1;\n",
     );
     const result = runHook(root);

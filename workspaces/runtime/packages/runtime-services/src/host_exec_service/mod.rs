@@ -16,6 +16,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
 
+use rusqlite::OptionalExtension;
 use serde_json::{Map, Value, json};
 
 mod clone_ffi;
@@ -441,7 +442,12 @@ impl HostService {
             {
                 fields
             }
-            _ => {
+            Value::Null
+            | Value::Bool(_)
+            | Value::Number(_)
+            | Value::String(_)
+            | Value::Array(_)
+            | Value::Object(_) => {
                 return Err(invalid(format!(
                     "{shown} accepts only slots, diskBudgetGiB and macOnly"
                 )));
@@ -477,7 +483,11 @@ impl HostService {
                             .ok_or_else(refusal)?;
                         (size * 1024.0 * 1024.0 * 1024.0) as u64
                     }
-                    _ => return Err(refusal()),
+                    Value::Null
+                    | Value::Bool(_)
+                    | Value::String(_)
+                    | Value::Array(_)
+                    | Value::Object(_) => return Err(refusal()),
                 }
             }
         };
@@ -777,11 +787,7 @@ impl HostService {
                     [&id],
                     |row| Ok((row.get(0)?, row.get(1)?)),
                 )
-                .map(Some)
-                .or_else(|error| match error {
-                    rusqlite::Error::QueryReturnedNoRows => Ok(None),
-                    error => Err(error),
-                })?;
+                .optional()?;
             if saved.is_none() {
                 db.execute(
                     "INSERT INTO receipts VALUES (?1,?2,NULL)",

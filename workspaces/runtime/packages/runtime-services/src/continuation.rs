@@ -4,6 +4,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::OnceLock;
+use studio_runtime_schema::provider_errors::is_misalignment_policy_violation;
 use studio_runtime_schema::shared_values::MAX_SAFE_INTEGER;
 use studio_runtime_store::AgentRecord;
 use thiserror::Error;
@@ -261,9 +262,8 @@ pub(crate) fn native_thread_blocked(agent: &Value) -> bool {
     (present(&agent["nativeThreadBlock"], "threadId")
         && agent["nativeThreadBlock"].get("threadId") == thread)
         || (present(agent, "threadId")
-            && (text(&agent["error"], "codexErrorInfo") == "misalignmentPolicyViolation"
+            && (is_misalignment_policy_violation(&agent["error"])
                 || (present(&agent["nativeTurnError"], "turnId")
                     && agent["nativeTurnError"].get("turnId") == agent.get("turnId")
-                    && text(&agent["nativeTurnError"]["error"], "codexErrorInfo")
-                        == "misalignmentPolicyViolation")))
+                    && is_misalignment_policy_violation(&agent["nativeTurnError"]["error"]))))
 }

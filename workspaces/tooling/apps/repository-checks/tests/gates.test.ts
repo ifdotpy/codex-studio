@@ -7,6 +7,7 @@ import { runLogged } from "../owned-process.ts";
 import {
   chmodSync,
   mkdtempSync,
+  realpathSync,
   writeFileSync,
   readFileSync,
   mkdirSync,
@@ -231,7 +232,9 @@ test("interrupt waits for running children and cancels unstarted dependents", as
     },
   );
   assert.ok(stopped);
-  assert.equal(result.steps[2].status, "cancelled");
+  const [, , cancelled] = result.steps;
+  assert.ok(cancelled);
+  assert.equal(cancelled.status, "cancelled");
   assert.equal(result.exitCode, 1);
 });
 
@@ -261,7 +264,7 @@ test(
               captured += text;
               const match = captured.match(/READY (\d+)/);
               if (match) {
-                pid = +match[1];
+                pid = Number(match[1]);
                 if (cancel) controller.abort();
               }
             },
@@ -295,8 +298,21 @@ test("Cargo compilation is confined to the fixed Rust lane and both tiers use on
     assert.ok(
       steps.filter((s) => s.requiresCargo).every((s) => s.lane === "rust"),
     );
+    const providerContracts = steps.find((s) => s.id === "provider-contracts");
+    assert.ok(
+      providerContracts,
+      "provider source mutations must run in both tiers",
+    );
+    assert.equal(providerContracts.lane, "rust");
+    assert.equal(providerContracts.requiresCargo, true);
+    assert.equal(providerContracts.requires, "workspace");
+    assert.deepEqual(providerContracts.commands, [
+      ["pnpm", ["--dir", process.cwd(), "run", "test:provider-contracts"]],
+    ]);
     const rust = steps.find((s) => s.id === "rust-tests");
-    assert.deepEqual(rust!.commands![0][1].slice(0, 4), [
+    const [rustCommand] = rust?.commands ?? [];
+    assert.ok(rustCommand);
+    assert.deepEqual(rustCommand[1].slice(0, 4), [
       "nextest",
       "run",
       "--workspace",
@@ -308,11 +324,10 @@ test("Cargo compilation is confined to the fixed Rust lane and both tiers use on
       steps.find((s) => s.id === "web unit tests")!.requires,
       "workspace",
     );
-    assert.ok(
-      steps
-        .find((s) => s.id === "workspace")!
-        .commands![0][1].includes("--examples"),
-    );
+    const [workspaceCommand] =
+      steps.find((s) => s.id === "workspace")?.commands ?? [];
+    assert.ok(workspaceCommand);
+    assert.ok(workspaceCommand[1].includes("--examples"));
   }
   assert.ok(
     gateSteps(process.cwd(), "test-fast-rest-non-rust").every(
@@ -322,7 +337,10 @@ test("Cargo compilation is confined to the fixed Rust lane and both tiers use on
 });
 
 test("archived CI partitions reuse prepared binaries without Cargo build options", () => {
-  const root = mkdtempSync(path.join(tmpdir(), "studio-gate-archive-"));
+  // just reports the real justfile directory, for example /private/var on macOS.
+  const root = realpathSync(
+    mkdtempSync(path.join(tmpdir(), "studio-gate-archive-")),
+  );
   try {
     const owner = "workspaces/tooling/apps/repository-checks/gate-config.ts";
     mkdirSync(path.dirname(path.join(root, owner)), { recursive: true });

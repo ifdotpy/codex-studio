@@ -7,6 +7,8 @@ import { test, expect } from "../playwright.ts";
 // The renderer build writes this manifest before this spec reads it.
 function readShellManifest(worker: string): ShellManifest {
   const line = worker.split("\n", 1)[0];
+  if (!line) throw new Error("Missing worker shell manifest");
+
   return JSON.parse(
     line!.slice("self.STUDIO_SHELL = ".length, -1),
   ) as ShellManifest;
@@ -69,6 +71,7 @@ test("built PWA caches its exact Rust WASM module for offline use", async ({
       await page.evaluate(() => !!navigator.serviceWorker.controller),
     ).toBe(true);
     await context.setOffline(true);
+    if (!wasm[0]) throw new Error("Missing WASM asset");
     const exports = await page.evaluate(async (path) => {
       const response = await fetch(path);
       if (!response.ok) throw new Error(`Offline WASM: ${response.status}`);

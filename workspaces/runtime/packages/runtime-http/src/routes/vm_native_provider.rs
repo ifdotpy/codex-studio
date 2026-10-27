@@ -312,7 +312,8 @@ impl VmNativeProvider {
                 studio_runtime_providers::Frame::UnknownMethod(frame) => {
                     !frame.fields.contains_key("id")
                 }
-                _ => false,
+                studio_runtime_providers::Frame::Request(_)
+                | studio_runtime_providers::Frame::Response { .. } => false,
             });
             owned_prefix &= reply || notification;
             if owned_prefix {

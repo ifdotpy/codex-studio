@@ -379,7 +379,9 @@ impl PathEvidence {
                     let candidate = resolved.join(name);
                     resolved = canonicalize(&candidate).unwrap_or(candidate);
                 }
-                value => resolved.push(value.as_os_str()),
+                value @ Component::Prefix(_) | value @ Component::RootDir => {
+                    resolved.push(value.as_os_str())
+                }
             }
         }
         Self(resolved)
@@ -413,7 +415,9 @@ fn collapse(path: &Path) -> PathBuf {
             Component::ParentDir => {
                 result.pop();
             }
-            value => result.push(value.as_os_str()),
+            value @ Component::Prefix(_)
+            | value @ Component::RootDir
+            | value @ Component::Normal(_) => result.push(value.as_os_str()),
         }
     }
     result

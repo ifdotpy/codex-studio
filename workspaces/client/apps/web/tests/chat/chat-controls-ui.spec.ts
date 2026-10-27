@@ -281,7 +281,7 @@ test("Chat controls", async ({ page }) => {
   await page.getByText("Test transport failure", { exact: true }).waitFor();
   await page.getByRole("button", { name: "Stop retries", exact: true }).click();
   const firstAttempt = attachmentPosts[0];
-  assert.ok(firstAttempt.id, "Failed send has a durable message identity");
+  assert.ok(firstAttempt?.id, "Failed send has a durable message identity");
   const failedMessage = page.locator("#messages .message.user").filter({
     has: page.getByRole("button", { name: "evidence.txt", exact: true }),
   });

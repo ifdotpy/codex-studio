@@ -1,3 +1,4 @@
+import assert from "node:assert/strict";
 import type { BrowserRectangle } from "../chat/browser.ts";
 import type { TestAgent } from "../playwright.ts";
 // The base settings fixture omits workerDefaults.fastMode.
@@ -244,6 +245,8 @@ test("composer keeps one tools row and readable mixed-provider execution summary
             await expect(settings).toHaveClass(/mantine-Popover-dropdown/);
             const anchor = await trigger.boundingBox();
             const popup = await settings.boundingBox();
+            assert.ok(popup && anchor);
+
             expect(Math.abs(popup!.x - anchor!.x)).toBeLessThanOrEqual(1);
           }
           await expect(
@@ -258,8 +261,13 @@ test("composer keeps one tools row and readable mixed-provider execution summary
           const geometry = await page
             .locator("#composer")
             .evaluate((composer) => {
+              const required = <T>(value: T | null | undefined): T => {
+                if (value == null)
+                  throw new Error("Missing composer geometry element");
+                return value;
+              };
               const r = (element: Element | null): BrowserRectangle =>
-                element!.getBoundingClientRect().toJSON();
+                required(element).getBoundingClientRect().toJSON();
               const trigger = composer.querySelector(
                 ".execution-summary-trigger",
               )!;
@@ -316,8 +324,8 @@ test("composer keeps one tools row and readable mixed-provider execution summary
                     name: button.getAttribute("aria-label"),
                     inRow:
                       getComputedStyle(button).position !== "absolute" &&
-                      getComputedStyle(button.parentElement!).position !==
-                        "absolute",
+                      getComputedStyle(required(button.parentElement))
+                        .position !== "absolute",
                     ...r(button),
                   })),
               };
@@ -352,7 +360,8 @@ test("composer keeps one tools row and readable mixed-provider execution summary
                     ".composer-draft-control button,.composer-tools button,.composer-submit-actions>button",
                   ),
                 ].filter((button) => {
-                  const parent = button.parentElement!;
+                  const parent = button.parentElement;
+                  if (!parent) throw new Error("Missing button parent");
                   return (
                     button.getClientRects().length &&
                     !button.closest(".attachment-list,details:not([open])") &&
@@ -412,6 +421,8 @@ test("composer keeps one tools row and readable mixed-provider execution summary
         for (let j = i + 1; j < result.controls.length; j++) {
           const a = result.controls[i],
             b = result.controls[j];
+          assert.ok(a && b);
+
           expect(
             Math.min(a.right, b.right) > Math.max(a.left, b.left) &&
               Math.min(a.bottom, b.bottom) > Math.max(a.top, b.top),
@@ -442,6 +453,8 @@ test("composer keeps one tools row and readable mixed-provider execution summary
         for (let i = 1; i < chip.segments.length; i++) {
           const current = chip.segments[i],
             previous = chip.segments[i - 1];
+          assert.ok(current && previous);
+
           expect(current.left, JSON.stringify(result)).toBeGreaterThanOrEqual(
             previous.right,
           );

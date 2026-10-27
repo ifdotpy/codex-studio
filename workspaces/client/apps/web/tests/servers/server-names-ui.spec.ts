@@ -1,3 +1,4 @@
+import { required } from "../teams/helpers.ts";
 import type { StudioServer } from "../../src/servers/registry.ts";
 import { settings } from "./browser-fixture.ts";
 import { test, expect } from "../playwright.ts";
@@ -231,8 +232,8 @@ test("a UI-only client renames through its signed credential and retries the sam
       (body) => body.action === "name",
     );
     expect(requests).toHaveLength(2);
-    expect(requests[0]).toEqual(requests[1]);
-    expect(requests[0].serverId).toBe("local");
+    expect(required(requests[0])).toEqual(requests[1]);
+    expect(required(requests[0]).serverId).toBe("local");
     expect(
       local.accessRequests.filter((body) => body.action === "name"),
     ).toHaveLength(0);

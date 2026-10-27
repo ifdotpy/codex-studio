@@ -104,7 +104,27 @@ pub async fn push_drafts(
             StoreError::InvalidSyncObject { scope, id } if scope == "drafts" => {
                 DraftPushError::InvalidStored { id }
             }
-            error => DraftPushError::Store(error),
+            error @ StoreError::StateDirectory(_)
+            | error @ StoreError::AlreadyOwned
+            | error @ StoreError::MissingDatabase(_)
+            | error @ StoreError::Migration { .. }
+            | error @ StoreError::UnsafeStateDirectory
+            | error @ StoreError::SchemaMismatch(_)
+            | error @ StoreError::InvalidSyncObject { .. }
+            | error @ StoreError::InvalidSyncObjectField { .. }
+            | error @ StoreError::InvalidStoredRecord { .. }
+            | error @ StoreError::SchemaObjectMismatch { .. }
+            | error @ StoreError::Sqlite(_)
+            | error @ StoreError::CommitOutcomeUnknown(_)
+            | error @ StoreError::Json(_)
+            | error @ StoreError::InvalidStoredObject { .. }
+            | error @ StoreError::SchemaValidation(_)
+            | error @ StoreError::RecordContract(_)
+            | error @ StoreError::WriterPoisoned
+            | error @ StoreError::WriterActorInitialization(_)
+            | error @ StoreError::WriterActorControl(_)
+            | error @ StoreError::CommitActorOutcomeUnknown(_)
+            | error @ StoreError::ReadTaskFailed => DraftPushError::Store(error),
         })?;
     Ok(result)
 }

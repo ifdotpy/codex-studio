@@ -75,7 +75,7 @@ impl Client {
                         .map_err(|_| CLOSED)?
                         .remove(&response.id)
                         .ok_or("Unexpected native response identity.")?;
-                    let _ = sender.send(Ok(response));
+                    drop(sender.send(Ok(response)));
                 }
             }
             .await;
@@ -83,7 +83,7 @@ impl Client {
             reader_closed.store(true, Ordering::Release);
             if let Ok(mut pending) = responses.lock() {
                 for (_, sender) in pending.drain() {
-                    let _ = sender.send(Err(error.clone()));
+                    drop(sender.send(Err(error.clone())));
                 }
             }
         });
@@ -110,7 +110,7 @@ impl Client {
                     reader_abort.abort();
                     if let Ok(mut pending) = writer_pending.lock() {
                         for (_, sender) in pending.drain() {
-                            let _ = sender.send(Err(CLOSED.into()));
+                            drop(sender.send(Err(CLOSED.into())));
                         }
                     }
                     break;
@@ -173,7 +173,7 @@ impl Drop for Client {
         self.writer.abort();
         if let Ok(mut pending) = self.pending.lock() {
             for (_, sender) in pending.drain() {
-                let _ = sender.send(Err(CLOSED.into()));
+                drop(sender.send(Err(CLOSED.into())));
             }
         }
     }

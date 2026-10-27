@@ -33,7 +33,7 @@ async fn read(
             studio_runtime_services::studio_errors::list(tx, now)
         })
         .await
-        .map_err(|_| ApiError::internal())?;
+        .map_err(ApiError::stored)?;
     Ok(Json(super::generated_json(value)?))
 }
 
@@ -52,7 +52,7 @@ async fn dismiss(
     let value = store
         .transaction(move |tx| studio_runtime_services::studio_errors::dismiss_many(tx, &ids, now))
         .await
-        .map_err(|_| ApiError::internal())?;
+        .map_err(ApiError::stored)?;
     Ok(Json(super::generated_json(value)?))
 }
 

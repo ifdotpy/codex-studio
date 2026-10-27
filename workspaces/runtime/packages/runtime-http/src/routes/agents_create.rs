@@ -4,6 +4,7 @@ use super::manifest::{OperationStatus, RouteGroup, post};
 use crate::{error::ApiError, generated, router::HttpState};
 use axum::{Json, extract::State, http::StatusCode, response::IntoResponse};
 use serde_json::Value;
+use studio_runtime_providers::ProviderKind;
 use studio_runtime_services::agents_create::{
     self, Context, CreateError, Creation, OperationError,
 };
@@ -45,7 +46,7 @@ impl studio_runtime_services::provider_callbacks::ManagedCreationEnvironment
                 .resolve_identity(account_key, account_key)
                 .map_err(|_| E::Unavailable("account-driver/managed-child-account"))?;
             let account = host_account_identity(&identity);
-            let (Some(home), provider) = (account.home.as_deref(), account.provider.key()) else {
+            let (Some(home), provider) = (account.home.as_deref(), account.provider) else {
                 return Err(E::Unavailable("provider-session/model-list"));
             };
             // Worker selection reads every candidate's catalog synchronously, so
@@ -64,7 +65,7 @@ impl studio_runtime_services::provider_callbacks::ManagedCreationEnvironment
                 })
                 .filter_map(|row| {
                     let worker = host_account_identity(&row.identity);
-                    Some((row.account_key, worker.home?, worker.provider.key()))
+                    Some((row.account_key, worker.home?, worker.provider))
                 })
                 .collect::<Vec<_>>();
             let (parent, _) = futures_util::future::join(
@@ -74,7 +75,7 @@ impl studio_runtime_services::provider_callbacks::ManagedCreationEnvironment
                 futures_util::future::join_all(workers.iter().map(|(key, home, provider)| {
                     self.catalog
                         .service
-                        .wait_for_admission_catalog(key, home, provider)
+                        .wait_for_admission_catalog(key, home, *provider)
                 })),
             )
             .await;
@@ -422,7 +423,20 @@ fn account_read_error(
         E::UnknownAccount => M::Unknown,
         E::DeletedAccount => M::Deleted,
         E::SignInRequired => M::SignInRequired,
-        _ => M::Unavailable,
+        E::ReadRegistry
+        | E::InvalidRegistry
+        | E::WriteRegistry
+        | E::DurabilityUnconfirmed
+        | E::Poisoned
+        | E::InvalidAccountOrder(_)
+        | E::NameRequestConflict
+        | E::DeleteRequestConflict
+        | E::NoDisconnectReplacement
+        | E::NoDeleteReplacement
+        | E::InvalidCodexProfile
+        | E::LoginResponseUnknown
+        | E::UnknownLogin
+        | E::LoginCancellationUnavailable => M::Unavailable,
     }
 }
 
@@ -616,7 +630,7 @@ impl RouteCreationCatalog {
             .ok_or(CreateError::CapabilityUnavailable(
                 "provider-session/model-list",
             ))?;
-        let provider = account.provider.key();
+        let provider = account.provider;
         let (value, fresh_key, fresh_home, fresh_provider, expires_at) =
             match self.service.read_for_admission(account_key, home, provider) {
                 studio_runtime_services::model_catalog::AdmissionCatalogRead::Fresh {
@@ -627,7 +641,8 @@ impl RouteCreationCatalog {
                     expires_at,
                     ..
                 } => (value, account_key, home, provider, expires_at),
-                _ => {
+                studio_runtime_services::model_catalog::AdmissionCatalogRead::Pending
+                | studio_runtime_services::model_catalog::AdmissionCatalogRead::Unavailable => {
                     return Err(CreateError::CapabilityUnavailable(
                         "provider-session/model-list",
                     ));
@@ -1019,8 +1034,8 @@ fn catalog_admission_candidates(
     ordered_keys: &[String],
     parent_account: Option<&str>,
     account_is_pinned: bool,
-    expected_provider: Option<&str>,
-) -> Vec<(String, String, String)> {
+    expected_provider: Option<ProviderKind>,
+) -> Vec<(String, String, ProviderKind)> {
     ordered_keys
         .iter()
         .filter_map(|key| {
@@ -1037,13 +1052,11 @@ fn catalog_admission_candidates(
             {
                 return None;
             }
-            let provider = studio_runtime_providers::ProviderKind::of_record(row)
-                .ok()?
-                .key();
+            let provider = ProviderKind::of_record(row).ok()?;
             if !account_is_pinned && expected_provider.is_some_and(|wanted| wanted != provider) {
                 return None;
             }
-            Some((key.clone(), home, provider.to_owned()))
+            Some((key.clone(), home, provider))
         })
         .collect()
 }
@@ -1171,11 +1184,10 @@ async fn wait_for_agent_catalog(
                     .or(worker_model)
                     .or(root_model)
                     .unwrap_or_else(|| "gpt-6-astra".to_owned());
-                let provider =
-                    model_provider(&model).map(studio_runtime_providers::ProviderKind::key);
+                let provider = model_provider(&model);
                 let pinned = explicit.or(selected_account);
                 let mut keys = Vec::new();
-                let mut add = |key: Option<&str>, expected_provider: Option<&str>| {
+                let mut add = |key: Option<&str>, expected_provider: Option<ProviderKind>| {
                     if let Some(key) = key.filter(|key| !excluded.contains(*key))
                         && !keys.iter().any(|known| known == key)
                         && expected_provider.is_none_or(|expected| {
@@ -1183,7 +1195,7 @@ async fn wait_for_agent_catalog(
                                 .accounts
                                 .iter()
                                 .find(|row| row.get("id").and_then(Value::as_str) == Some(key))
-                                .and_then(studio_runtime_providers::ProviderKind::key_of)
+                                .and_then(|row| ProviderKind::of_record(row).ok())
                                 == Some(expected)
                         })
                     {
@@ -1241,7 +1253,7 @@ async fn wait_for_agent_catalog(
     for (account, home, provider) in &accounts {
         if let studio_runtime_services::model_catalog::AdmissionCatalogRead::Fresh {
             value, ..
-        } = catalog.read_for_admission(account, home, provider)
+        } = catalog.read_for_admission(account, home, *provider)
         {
             saw_fresh_catalog = true;
             if !require_model_match || explicit_account || has_requested_model(&value) {
@@ -1259,7 +1271,7 @@ async fn wait_for_agent_catalog(
         }
         let catalog_read = tokio::time::timeout_at(
             deadline,
-            catalog.wait_for_admission_catalog(&account, &home, &provider),
+            catalog.wait_for_admission_catalog(&account, &home, provider),
         )
         .await
         .ok();
@@ -1574,10 +1586,7 @@ async fn finish_title_request(
                         .and_then(Value::as_str)
                         .unwrap_or("default")
                         .to_owned(),
-                    studio_runtime_providers::ProviderKind::of_record(&record)
-                        .map_err(|_| ApiError::internal())?
-                        .key()
-                        .to_owned(),
+                    ProviderKind::of_record(&record).map_err(|_| ApiError::internal())?,
                 ))
             },
         )
@@ -1598,7 +1607,7 @@ async fn finish_title_request(
         return;
     }
     let models = match catalog
-        .wait_for_admission_catalog(&account, &home, &provider_name)
+        .wait_for_admission_catalog(&account, &home, provider_name)
         .await
     {
         studio_runtime_services::model_catalog::AdmissionCatalogRead::Fresh { value, .. } => value,
@@ -1894,6 +1903,7 @@ mod creation_catalog_flow_tests {
         existing_conversation_catalog_parent,
     };
     use serde_json::json;
+    use studio_runtime_providers::ProviderKind;
 
     #[test]
     fn conversation_catalog_wait_does_not_apply_new_worker_account_exclusions() {
@@ -1920,7 +1930,7 @@ mod creation_catalog_flow_tests {
             ],
             Some("parent-claude"),
             false,
-            Some("codex"),
+            Some(ProviderKind::Codex),
         );
         assert_eq!(
             candidates,
@@ -1928,12 +1938,12 @@ mod creation_catalog_flow_tests {
                 (
                     "default-codex".to_owned(),
                     "/codex".to_owned(),
-                    "codex".to_owned()
+                    ProviderKind::Codex
                 ),
                 (
                     "later-codex".to_owned(),
                     "/codex-2".to_owned(),
-                    "codex".to_owned()
+                    ProviderKind::Codex
                 ),
             ]
         );
@@ -1949,7 +1959,7 @@ mod creation_catalog_flow_tests {
                 &["only-claude".to_owned()],
                 None,
                 false,
-                Some("codex"),
+                Some(ProviderKind::Codex),
             )
             .is_empty()
         );
@@ -2132,7 +2142,16 @@ async fn rename(
                 error @ studio_runtime_services::title_generation::TitleError::Conflict => {
                     ApiError::new(StatusCode::BAD_REQUEST, error.to_string())
                 }
-                _ => ApiError::internal(),
+                studio_runtime_services::title_generation::TitleError::NoModel
+                | studio_runtime_services::title_generation::TitleError::ChatModelUnavailable
+                | studio_runtime_services::title_generation::TitleError::UnknownHeld
+                | studio_runtime_services::title_generation::TitleError::InvalidStoredObject {
+                    ..
+                }
+                | studio_runtime_services::title_generation::TitleError::InvalidTitle
+                | studio_runtime_services::title_generation::TitleError::Store(_) => {
+                    ApiError::internal()
+                }
             })?;
         if should_finish {
             let store = store.clone();
@@ -2233,7 +2252,7 @@ fn operation_error(error: OperationError) -> ApiError {
         OperationError::Internal
         | OperationError::Store(_)
         | OperationError::Create(MutationError::Store(_)) => StatusCode::INTERNAL_SERVER_ERROR,
-        _ => StatusCode::BAD_REQUEST,
+        OperationError::Invalid(_) | OperationError::Create(_) => StatusCode::BAD_REQUEST,
     };
     if matches!(
         error,
@@ -2255,7 +2274,12 @@ fn operation_error(error: OperationError) -> ApiError {
         OperationError::Create(MutationError::CapabilityUnavailable(
             "worker-driver/settings-catalog",
         )) => "Worker model catalog is unavailable",
-        _ => return ApiError::new(status, error.to_string()),
+        OperationError::Invalid(_)
+        | OperationError::Forbidden(_)
+        | OperationError::Unavailable(_)
+        | OperationError::Create(_)
+        | OperationError::Store(_)
+        | OperationError::Internal => return ApiError::new(status, error.to_string()),
     };
     ApiError::new(status, message)
 }

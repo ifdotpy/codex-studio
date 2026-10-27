@@ -303,7 +303,13 @@ fn terminal_body_error(error: TerminalError) -> ApiError {
         | TerminalError::ReceiptConflict => {
             ApiError::validation(vec![Value::String("body".to_owned())])
         }
-        other => terminal_error(other),
+        other @ TerminalError::InvalidStoredObject(_)
+        | other @ TerminalError::InvalidCursor
+        | other @ TerminalError::InvalidHistoryRange
+        | other @ TerminalError::StartupRecovery(_)
+        | other @ TerminalError::BlockingTask
+        | other @ TerminalError::Store(_)
+        | other @ TerminalError::Session(_) => terminal_error(other),
     }
 }
 
@@ -324,7 +330,11 @@ pub(super) fn terminal_error(error: TerminalError) -> ApiError {
             table,
             id,
         }) => ApiError::invalid_stored(table, &id),
-        _ => ApiError::internal(),
+        TerminalError::ReceiptConflict
+        | TerminalError::StartupRecovery(_)
+        | TerminalError::BlockingTask
+        | TerminalError::Store(_)
+        | TerminalError::Session(_) => ApiError::internal(),
     }
 }
 inventory::submit! {

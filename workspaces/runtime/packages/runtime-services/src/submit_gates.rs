@@ -137,7 +137,9 @@ impl AuthorizationSnapshot {
             EventSnapshot::Other => return Ok(()),
             EventSnapshot::ChatReview => return Err(D::ChatReviewRemoved),
             EventSnapshot::RadioTurn => return Err(D::RadioUnsupported),
-            _ => {}
+            EventSnapshot::AgentMessage { .. }
+            | EventSnapshot::Followup { .. }
+            | EventSnapshot::ComplaintResponse { .. } => {}
         }
         let recipient = self
             .agents
@@ -204,7 +206,9 @@ impl AuthorizationSnapshot {
                 }
                 responder.as_deref()
             }
-            _ => return Ok(()),
+            EventSnapshot::ChatReview | EventSnapshot::RadioTurn | EventSnapshot::Other => {
+                return Ok(());
+            }
         };
         if self.same_team(root, sender)
             || (matches!(event, EventSnapshot::AgentMessage { .. })
@@ -529,7 +533,7 @@ impl AuthorizationSnapshot {
                 | EventSnapshot::ComplaintResponse {
                     responder: sender, ..
                 } => sender.as_deref(),
-                _ => None,
+                EventSnapshot::ChatReview | EventSnapshot::RadioTurn | EventSnapshot::Other => None,
             };
             if let Some(error) = sender.and_then(|sender| malformed_agents.get(sender)) {
                 return Err(error.clone());
@@ -568,7 +572,7 @@ impl<T: Serialize> Serialize for StoredField<T> {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         match self {
             Self::Value(value) => value.serialize(serializer),
-            _ => serializer.serialize_none(),
+            Self::Missing | Self::Null => serializer.serialize_none(),
         }
     }
 }
@@ -596,7 +600,7 @@ fn default_false() -> Option<bool> {
 pub struct CatalogIdentity {
     pub account_key: String,
     pub home: String,
-    pub provider: String,
+    pub provider: studio_runtime_providers::ProviderKind,
     pub generation: u64,
 }
 

@@ -106,7 +106,9 @@ impl ClaudeSessionPort for ClaudePort {
                     PortError::Identity => ControlError::Changed,
                     PortError::Invalid => ControlError::Request,
                     PortError::NotSent | PortError::Capacity => ControlError::NotSent,
-                    _ => ControlError::Unknown,
+                    PortError::ScopeMismatch | PortError::Unknown | PortError::Deadline => {
+                        ControlError::Unknown
+                    }
                 })?;
             if self.binding() != call.identity.binding {
                 return Err(ControlError::Changed);
@@ -155,7 +157,7 @@ impl ClaudeSessionPort for ClaudePort {
                 }
                 RequestResult::Rejected(_) => Err(ControlError::Request),
                 RequestResult::NotSent => Err(ControlError::NotSent),
-                _ => Err(ControlError::Unknown),
+                RequestResult::Unknown => Err(ControlError::Unknown),
             }
         })
     }
@@ -191,7 +193,9 @@ fn history_error(error: PortError) -> HistoryError {
         PortError::Identity => HistoryError::Identity,
         PortError::Deadline => HistoryError::Deadline,
         PortError::Capacity => HistoryError::Capacity,
-        _ => HistoryError::Unavailable,
+        PortError::ScopeMismatch | PortError::Invalid | PortError::NotSent | PortError::Unknown => {
+            HistoryError::Unavailable
+        }
     }
 }
 impl crate::recovery_runtime::RetainedHistory for HistoryPort {
@@ -228,7 +232,9 @@ impl crate::recovery_runtime::RetainedHistory for HistoryPort {
                     scope: receipt.scope,
                     body,
                 }),
-                _ => Err(HistoryError::Unavailable),
+                RequestResult::Rejected(_) | RequestResult::NotSent | RequestResult::Unknown => {
+                    Err(HistoryError::Unavailable)
+                }
             }
         })
     }

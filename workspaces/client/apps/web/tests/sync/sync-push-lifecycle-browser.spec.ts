@@ -119,9 +119,17 @@ test("Sync Push Lifecycle Browser", async ({
       1,
       "Subscriptions to one scope must share one stream.",
     );
-    await page.evaluate(() => window.stops[0]());
+    await page.evaluate(() => {
+      const stop = window.stops[0];
+      if (!stop) throw new Error("Missing first subscriber");
+      stop();
+    });
     assert.equal(streams.size, 1, "The remaining subscriber keeps its stream.");
-    await page.evaluate(() => window.stops[1]());
+    await page.evaluate(() => {
+      const stop = window.stops[1];
+      if (!stop) throw new Error("Missing second subscriber");
+      stop();
+    });
     await expect.poll(() => streams.size).toBe(0);
     assert.deepEqual(errors, []);
     console.log("sync push lifecycle browser contract passed");

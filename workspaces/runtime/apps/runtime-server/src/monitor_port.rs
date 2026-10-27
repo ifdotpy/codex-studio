@@ -13,6 +13,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 use std::sync::{Arc, Mutex, OnceLock, Weak};
 use std::time::{Duration, Instant};
+use studio_runtime_schema::studio_errors::MonitorRecoveryReason;
 use tokio::sync::Notify;
 
 use serde::Deserialize;
@@ -317,7 +318,7 @@ impl RetainedMonitorPort {
                         studio_runtime_services::monitor_runtime::settle_reattach(
                             store,
                             monitor_id,
-                            "retained_exit_unavailable",
+                            MonitorRecoveryReason::RetainedExitUnavailable.code(),
                             now,
                         )
                         .await
@@ -356,7 +357,7 @@ impl RetainedMonitorPort {
                 return match self.command_result(id, operation, response).await {
                     Ok(()) => Ok(Some(ReattachOutcome::TerminalQueued)),
                     Err(MonitorError::Refused(_)) => Ok(Some(ReattachOutcome::Gone(
-                        "invalid_terminal_receipt".into(),
+                        MonitorRecoveryReason::InvalidTerminalReceipt.code().into(),
                     ))),
                     Err(error) => Err(error),
                 };
@@ -1430,7 +1431,9 @@ impl MonitorPort for RetainedMonitorPort {
     ) -> futures_util::future::BoxFuture<'a, Result<ReattachOutcome, MonitorError>> {
         Box::pin(async move {
             let Some(operation) = snapshot.operation() else {
-                return Ok(ReattachOutcome::Gone("no_operation".into()));
+                return Ok(ReattachOutcome::Gone(
+                    MonitorRecoveryReason::NoOperation.code().into(),
+                ));
             };
             let operation_id = format!("monitor:{}", snapshot.id());
             let Some(scope) = self.session.current_scope(&operation.account_key) else {
@@ -1463,20 +1466,24 @@ impl MonitorPort for RetainedMonitorPort {
                 Some(ProviderResponse::Reply(value)) => match serde_json::from_value(value) {
                     Ok(observation) => observation,
                     Err(_) => {
-                        return Ok(ReattachOutcome::Gone("invalid_provider_observation".into()));
+                        return Ok(ReattachOutcome::Gone(
+                            MonitorRecoveryReason::InvalidProviderObservation
+                                .code()
+                                .into(),
+                        ));
                     }
                 },
                 Some(ProviderResponse::Rejected(_)) => {
-                    return Ok(ReattachOutcome::Gone("provider_rejected".into()));
+                    return Ok(ReattachOutcome::Gone(
+                        MonitorRecoveryReason::ProviderRejected.code().into(),
+                    ));
                 }
                 None => return Ok(ReattachOutcome::Pending),
             };
             if !observation.accepted {
-                return Ok(ReattachOutcome::Gone(
-                    observation
-                        .reason
-                        .unwrap_or_else(|| "operation_not_accepted".into()),
-                ));
+                return Ok(ReattachOutcome::Gone(observation.reason.unwrap_or_else(
+                    || MonitorRecoveryReason::OperationNotAccepted.code().into(),
+                )));
             }
             if let Some(response) = observation.response {
                 let response = match response {
@@ -1495,9 +1502,9 @@ impl MonitorPort for RetainedMonitorPort {
                     .await
                 {
                     Ok(()) => Ok(ReattachOutcome::TerminalQueued),
-                    Err(MonitorError::Refused(_)) => {
-                        Ok(ReattachOutcome::Gone("invalid_terminal_receipt".into()))
-                    }
+                    Err(MonitorError::Refused(_)) => Ok(ReattachOutcome::Gone(
+                        MonitorRecoveryReason::InvalidTerminalReceipt.code().into(),
+                    )),
                     Err(error) => Err(error),
                 };
             }
@@ -2102,7 +2109,12 @@ mod tests {
             {
                 let error = match &self.0 {
                     AccountSessionError::Unknown => AccountSessionError::Unknown,
-                    _ => AccountSessionError::Refused("Callback barrier was not completed"),
+                    AccountSessionError::Requires(_)
+                    | AccountSessionError::Refused(_)
+                    | AccountSessionError::InvalidResponse(_)
+                    | AccountSessionError::Persistence => {
+                        AccountSessionError::Refused("Callback barrier was not completed")
+                    }
                 };
                 Box::pin(async move { Err(error) })
             }
@@ -2241,7 +2253,145 @@ mod tests {
                             self.executions.fetch_add(1, Ordering::SeqCst);
                             (json!({"exitCode":0}), false)
                         }
-                        _ => panic!("unexpected monitor preparation request"),
+                        Method::Initialize
+                        | Method::Initialized
+                        | Method::Ack
+                        | Method::AccountLoginCancel
+                        | Method::AccountLoginStart
+                        | Method::AccountRateLimitResetCreditConsume
+                        | Method::ThreadLoadedList
+                        | Method::SkillsExtraRootsSet
+                        | Method::ModelList
+                        | Method::AccountRead
+                        | Method::AccountRateLimitsRead
+                        | Method::ThreadStart
+                        | Method::ThreadRealtimeStart
+                        | Method::ThreadRealtimeStop
+                        | Method::ThreadRealtimeAppendSpeech
+                        | Method::ThreadRealtimeItemStarted
+                        | Method::ThreadRealtimeTranscriptDelta
+                        | Method::ThreadRealtimeTranscriptDone
+                        | Method::ThreadRealtimeSdp
+                        | Method::ThreadRealtimeError
+                        | Method::ThreadRealtimeClosed
+                        | Method::ThreadResume
+                        | Method::ThreadRead
+                        | Method::ThreadTurnsList
+                        | Method::TurnStart
+                        | Method::TurnSteer
+                        | Method::TurnInterrupt
+                        | Method::ThreadList
+                        | Method::ThreadArchive
+                        | Method::ThreadFork
+                        | Method::ThreadNameSet
+                        | Method::ThreadMetadataUpdate
+                        | Method::ThreadSettingsUpdate
+                        | Method::ThreadCompactStart
+                        | Method::ThreadRollback
+                        | Method::ThreadItemsList
+                        | Method::ThreadGoalSet
+                        | Method::ThreadGoalUpdated
+                        | Method::ThreadUnarchive
+                        | Method::ThreadUnsubscribe
+                        | Method::ProcessSpawn
+                        | Method::ProcessWriteStdin
+                        | Method::ProcessKill
+                        | Method::ProcessResizePty
+                        | Method::CommandExecWrite
+                        | Method::CommandExecResize
+                        | Method::CommandExecTerminate
+                        | Method::ThreadBackgroundTerminalsList
+                        | Method::ThreadBackgroundTerminalsTerminate
+                        | Method::ThreadBackgroundTerminalsClean
+                        | Method::ThreadCommandExecutionBackground
+                        | Method::ThreadQueueList
+                        | Method::ClaudeState
+                        | Method::ClaudeRepairReport
+                        | Method::ClaudeFileBackups
+                        | Method::ClaudeSettings
+                        | Method::ClaudeActivity
+                        | Method::ClaudeStopTask
+                        | Method::ClaudeDiagnostics
+                        | Method::ClaudeMoveVersions
+                        | Method::McpServerReconnect
+                        | Method::McpServerStatusList
+                        | Method::SkillsList
+                        | Method::OperationStatus
+                        | Method::ReviewStart
+                        | Method::BrowserAnswer
+                        | Method::BrowserCallback
+                        | Method::BrowserClose
+                        | Method::BrowserWait
+                        | Method::ClaudeCommands
+                        | Method::ClaudeMoveExport
+                        | Method::ClaudeMoveIdentity
+                        | Method::ClaudeMovePreflight
+                        | Method::ClaudeMoveProof
+                        | Method::Detach
+                        | Method::EventRead
+                        | Method::Exec
+                        | Method::Generate
+                        | Method::Health
+                        | Method::Info
+                        | Method::LayrHealth
+                        | Method::Next
+                        | Method::Open
+                        | Method::ProjectEnsure
+                        | Method::ProjectExec
+                        | Method::ProjectImport
+                        | Method::ProviderList
+                        | Method::Replay
+                        | Method::ResponseStatus
+                        | Method::RetireCommand
+                        | Method::SecretsList
+                        | Method::SecretsRemove
+                        | Method::SecretsSet
+                        | Method::ShareConfigure
+                        | Method::ShareName
+                        | Method::ShareStatus
+                        | Method::Sign
+                        | Method::Status
+                        | Method::SyncMacApply
+                        | Method::SyncMacHandoff
+                        | Method::SyncMacHashes
+                        | Method::SyncMacHead
+                        | Method::SyncMacRead
+                        | Method::SyncMacWorktree
+                        | Method::VaultConfigure
+                        | Method::VaultPush
+                        | Method::VaultStatus
+                        | Method::UploadBegin
+                        | Method::UploadChunk
+                        | Method::UploadCommit
+                        | Method::Verify
+                        | Method::Write
+                        | Method::CurrentTimeRead
+                        | Method::ItemToolCall
+                        | Method::ItemCommandExecutionRequestApproval
+                        | Method::ItemFileChangeRequestApproval
+                        | Method::ItemPermissionsRequestApproval
+                        | Method::McpServerElicitationRequest
+                        | Method::ItemToolRequestUserInput
+                        | Method::ItemStarted
+                        | Method::ItemCompleted
+                        | Method::ItemAgentMessageDelta
+                        | Method::ItemReasoningTextDelta
+                        | Method::ItemCommandExecutionOutputDelta
+                        | Method::CommandExecOutputDelta
+                        | Method::TurnStarted
+                        | Method::TurnCompleted
+                        | Method::TurnPlanUpdated
+                        | Method::TurnDiffUpdated
+                        | Method::ThreadClosed
+                        | Method::ThreadStatusChanged
+                        | Method::ThreadTokenUsageUpdated
+                        | Method::ThreadIdleCompactionUpdated
+                        | Method::AccountLoginCompleted
+                        | Method::AccountUpdated
+                        | Method::AccountRateLimitsUpdated
+                        | Method::ModelSafetyBufferingUpdated
+                        | Method::ProviderGenerationStarted
+                        | Method::ProtocolError => panic!("unexpected monitor preparation request"),
                     };
                     Ok(SessionReceipt {
                         scope,
@@ -2724,7 +2874,147 @@ mod tests {
                                 .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                             json!({})
                         }
-                        _ => panic!("inactive owner must never start or resume a command"),
+                        Method::Initialize
+                        | Method::Initialized
+                        | Method::Ack
+                        | Method::AccountLoginCancel
+                        | Method::AccountLoginStart
+                        | Method::AccountRateLimitResetCreditConsume
+                        | Method::ThreadLoadedList
+                        | Method::ConfigRead
+                        | Method::SkillsExtraRootsSet
+                        | Method::ModelList
+                        | Method::AccountRead
+                        | Method::AccountRateLimitsRead
+                        | Method::ThreadStart
+                        | Method::ThreadRealtimeStart
+                        | Method::ThreadRealtimeStop
+                        | Method::ThreadRealtimeAppendSpeech
+                        | Method::ThreadRealtimeItemStarted
+                        | Method::ThreadRealtimeTranscriptDelta
+                        | Method::ThreadRealtimeTranscriptDone
+                        | Method::ThreadRealtimeSdp
+                        | Method::ThreadRealtimeError
+                        | Method::ThreadRealtimeClosed
+                        | Method::ThreadResume
+                        | Method::ThreadRead
+                        | Method::ThreadTurnsList
+                        | Method::TurnStart
+                        | Method::TurnSteer
+                        | Method::TurnInterrupt
+                        | Method::ThreadList
+                        | Method::ThreadArchive
+                        | Method::ThreadFork
+                        | Method::ThreadNameSet
+                        | Method::ThreadMetadataUpdate
+                        | Method::ThreadSettingsUpdate
+                        | Method::ThreadCompactStart
+                        | Method::ThreadRollback
+                        | Method::ThreadItemsList
+                        | Method::ThreadGoalSet
+                        | Method::ThreadGoalUpdated
+                        | Method::ThreadUnarchive
+                        | Method::ThreadUnsubscribe
+                        | Method::ProcessSpawn
+                        | Method::ProcessWriteStdin
+                        | Method::ProcessKill
+                        | Method::ProcessResizePty
+                        | Method::CommandExec
+                        | Method::CommandExecWrite
+                        | Method::CommandExecResize
+                        | Method::ThreadBackgroundTerminalsList
+                        | Method::ThreadBackgroundTerminalsTerminate
+                        | Method::ThreadBackgroundTerminalsClean
+                        | Method::ThreadCommandExecutionBackground
+                        | Method::ThreadQueueList
+                        | Method::ClaudeState
+                        | Method::ClaudeRepairReport
+                        | Method::ClaudeFileBackups
+                        | Method::ClaudeSettings
+                        | Method::ClaudeActivity
+                        | Method::ClaudeStopTask
+                        | Method::ClaudeDiagnostics
+                        | Method::ClaudeMoveVersions
+                        | Method::McpServerReconnect
+                        | Method::McpServerStatusList
+                        | Method::SkillsList
+                        | Method::ReviewStart
+                        | Method::BrowserAnswer
+                        | Method::BrowserCallback
+                        | Method::BrowserClose
+                        | Method::BrowserWait
+                        | Method::ClaudeCommands
+                        | Method::ClaudeMoveExport
+                        | Method::ClaudeMoveIdentity
+                        | Method::ClaudeMovePreflight
+                        | Method::ClaudeMoveProof
+                        | Method::Detach
+                        | Method::EventRead
+                        | Method::Exec
+                        | Method::Generate
+                        | Method::Health
+                        | Method::Info
+                        | Method::LayrHealth
+                        | Method::Next
+                        | Method::Open
+                        | Method::ProjectEnsure
+                        | Method::ProjectExec
+                        | Method::ProjectImport
+                        | Method::ProviderList
+                        | Method::Replay
+                        | Method::ResponseStatus
+                        | Method::RetireCommand
+                        | Method::SecretsList
+                        | Method::SecretsRemove
+                        | Method::SecretsSet
+                        | Method::ShareConfigure
+                        | Method::ShareName
+                        | Method::ShareStatus
+                        | Method::Sign
+                        | Method::Status
+                        | Method::SyncMacApply
+                        | Method::SyncMacHandoff
+                        | Method::SyncMacHashes
+                        | Method::SyncMacHead
+                        | Method::SyncMacRead
+                        | Method::SyncMacWorktree
+                        | Method::VaultConfigure
+                        | Method::VaultPush
+                        | Method::VaultStatus
+                        | Method::UploadBegin
+                        | Method::UploadChunk
+                        | Method::UploadCommit
+                        | Method::Verify
+                        | Method::Write
+                        | Method::CurrentTimeRead
+                        | Method::ItemToolCall
+                        | Method::ItemCommandExecutionRequestApproval
+                        | Method::ItemFileChangeRequestApproval
+                        | Method::ItemPermissionsRequestApproval
+                        | Method::McpServerElicitationRequest
+                        | Method::ItemToolRequestUserInput
+                        | Method::ItemStarted
+                        | Method::ItemCompleted
+                        | Method::ItemAgentMessageDelta
+                        | Method::ItemReasoningTextDelta
+                        | Method::ItemCommandExecutionOutputDelta
+                        | Method::CommandExecOutputDelta
+                        | Method::TurnStarted
+                        | Method::TurnCompleted
+                        | Method::TurnPlanUpdated
+                        | Method::TurnDiffUpdated
+                        | Method::ThreadClosed
+                        | Method::ThreadStatusChanged
+                        | Method::ThreadTokenUsageUpdated
+                        | Method::ThreadIdleCompactionUpdated
+                        | Method::AccountLoginCompleted
+                        | Method::AccountUpdated
+                        | Method::AccountRateLimitsUpdated
+                        | Method::ModelSafetyBufferingUpdated
+                        | Method::ProviderGenerationStarted
+                        | Method::ProtocolError => {
+                            panic!("inactive owner must never start or resume a command")
+                        }
                     };
                     let result =
                         if request.method == Method::CommandExecTerminate && !self.confirmed {

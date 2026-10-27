@@ -47,6 +47,12 @@ pub(super) fn claim(
     if !owned {
         return Ok(None);
     }
+    let agent = AgentRepository::get(tx, &AgentId::from(agent_id))?.ok_or(WorkerError::Closed)?;
+    if crate::radio_runtime::shared_turn_active(tx, &agent.value())
+        .map_err(|error| WorkerError::PreparationRefused(error.to_string()))?
+    {
+        return Ok(None);
+    }
     let Some(claimed) = SchedulerRepository::claim_steer(tx, agent_id, epoch, steer_id, created)?
     else {
         return Ok(None);
@@ -236,7 +242,7 @@ pub(super) fn outcome(
                 return Ok(wake(SchedulerRepository::steer_rejected(tx, agent, steer)?));
             }
         },
-        _ => {}
+        SessionOutcome::Write { .. } | SessionOutcome::GenerationClosed { .. } => {}
     }
     Ok(None)
 }

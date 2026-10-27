@@ -294,6 +294,7 @@ test("Sync recovery browser", async ({
       } catch (error) {
         return (error as Error).message;
       }
+      return undefined;
     });
 
     assert.match(rejected!, /workspace changed/);

@@ -1,3 +1,4 @@
+import assert from "node:assert/strict";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Snapshot } from "../types";
 import { navigationSnapshot } from "./navigation";
@@ -321,6 +322,11 @@ describe("server sidebar projection", () => {
     const item: Snapshot["runtime"]["studioErrors"][number] = {
       id: "agent:worker:turn",
       kind: "turn_disconnected",
+      diagnostics: {
+        context: { source: "agent", turnId: "turn", epoch: 0 },
+        certainty: "unknown",
+        causes: [],
+      },
       action: "resume",
       agentId: "worker",
       agentName: "Worker",
@@ -353,6 +359,7 @@ describe("server sidebar projection", () => {
       unread: true,
       inFlight: true,
     });
+    assert.ok(navigation.chats[0] != null);
     expect(navigation.sidebar?.indicators).toEqual([
       ["lead", navigation.chats[0].indicator],
     ]);

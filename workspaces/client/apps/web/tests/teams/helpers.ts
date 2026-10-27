@@ -36,3 +36,9 @@ export async function fixtureGetResult<Path extends ApiGetPath>(
 ): Promise<GetResult<Path>> {
   return response.json();
 }
+
+export function required<T>(value: T | null | undefined): T {
+  if (value === null || value === undefined)
+    throw new Error("Missing fixture value");
+  return value;
+}

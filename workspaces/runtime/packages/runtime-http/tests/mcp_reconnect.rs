@@ -327,6 +327,20 @@ async fn mcp_reconnect_unknown_is_never_resent_and_codex_is_explicitly_unsupport
     assert!(session.calls.lock().unwrap().is_empty());
 }
 #[tokio::test]
+async fn mcp_reconnect_missing_account_is_not_classified_as_codex() {
+    let (_root, _store, app, session) = fixture("claude", false).await;
+    let mut missing = body();
+    missing["session"]["account"] = json!("missing");
+    let response = request(&app, "/api/mcp/reconnect", Some(missing), true).await;
+    assert_eq!(response.0, 400);
+    assert_eq!(
+        response.1["error"],
+        "MCP server reconnect requires a supported account provider."
+    );
+    assert!(session.calls.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
 async fn mcp_inventory_follows_cursor_and_returns_session_binding() {
     let (_root, _store, app, session) = fixture("claude", false).await;
     let first = request(&app, "/api/capabilities?agent=agent", None, true).await;

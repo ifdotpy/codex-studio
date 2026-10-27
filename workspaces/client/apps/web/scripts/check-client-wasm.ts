@@ -42,12 +42,14 @@ const actual: MarkdownBlock[][] = cases.map(([text, streaming]) =>
   JSON.parse(parse_markdown(text, streaming)),
 );
 assert.deepEqual(actual, JSON.parse(native.stdout));
+const [, , unfinished, completed] = actual;
+assert.ok(unfinished && completed);
 assert.equal(
-  (actual[2][0] as Extract<MarkdownBlock, { kind: string }>).kind,
+  (unfinished[0] as Extract<MarkdownBlock, { kind: string }>).kind,
   undefined,
 );
 assert.deepEqual(
-  actual[3].map(
+  completed.map(
     (block) => (block as Extract<MarkdownBlock, { kind: string }>).kind,
   ),
   ["html", "html"],

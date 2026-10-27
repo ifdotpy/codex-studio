@@ -88,6 +88,125 @@ export interface components {
        */
       thinking?: boolean | null | undefined;
     };
+    /** @enum {string} */
+    FreshAgentPhase: "commentary" | "final_answer";
+    /** @enum {string} */
+    FreshCompactionStatus: "completed";
+    FreshFileChange: {
+      diff: unknown;
+      kind: components["schemas"]["FreshFileChangeKind"];
+      path?: unknown | undefined;
+    };
+    FreshFileChangeKind:
+      | {
+          /** @constant */
+          type: "add";
+        }
+      | {
+          /** @constant */
+          type: "update";
+        };
+    /** @enum {string} */
+    FreshInputDelivery: "steer";
+    /** @enum {string} */
+    FreshInputDeliveryStatus:
+      | "preparing"
+      | "submitted"
+      | "delivered"
+      | "not_applied"
+      | "cancelled";
+    FreshItem:
+      | {
+          clientId?: string | undefined;
+          content: unknown[];
+          delivery?: components["schemas"]["FreshInputDelivery"] | undefined;
+          deliveryStatus?:
+            | components["schemas"]["FreshInputDeliveryStatus"]
+            | undefined;
+          error?: string | undefined;
+          id: string;
+          nativeId?: string | undefined;
+          nativeIds?: string[] | undefined;
+          nativeSubmissionAttemptId?: string | undefined;
+          /** @constant */
+          type: "userMessage";
+        }
+      | {
+          id: string;
+          nativeId?: string | undefined;
+          nativeSubagent?: boolean | undefined;
+          phase: components["schemas"]["FreshAgentPhase"];
+          studioNotice?: boolean | undefined;
+          text: string;
+          thinking?: boolean | undefined;
+          /** @constant */
+          type: "agentMessage";
+        }
+      | {
+          aggregatedOutput?: string | undefined;
+          arguments: {
+            [key: string]: unknown;
+          };
+          backgroundedByUser?: boolean | undefined;
+          backgroundTaskId?: string | undefined;
+          canMoveToBackground?: boolean | undefined;
+          command?: unknown | undefined;
+          cwd: string;
+          /** Format: double */
+          elapsedSeconds?: number | undefined;
+          /** Format: int32 */
+          exitCode?: number | null | undefined;
+          id: string;
+          result?: components["schemas"]["FreshToolResult"] | undefined;
+          stalled?: boolean | undefined;
+          status: components["schemas"]["FreshToolStatus"];
+          tool: string;
+          /** @constant */
+          type: "commandExecution";
+        }
+      | {
+          arguments: {
+            [key: string]: unknown;
+          };
+          changes: components["schemas"]["FreshFileChange"][];
+          /** Format: double */
+          elapsedSeconds?: number | undefined;
+          id: string;
+          result?: components["schemas"]["FreshToolResult"] | undefined;
+          stalled?: boolean | undefined;
+          status: components["schemas"]["FreshToolStatus"];
+          tool: string;
+          /** @constant */
+          type: "fileChange";
+        }
+      | {
+          arguments: {
+            [key: string]: unknown;
+          };
+          /** Format: double */
+          elapsedSeconds?: number | undefined;
+          id: string;
+          outputFile?: string | undefined;
+          result?: components["schemas"]["FreshToolResult"] | undefined;
+          server: string;
+          stalled?: boolean | undefined;
+          status: components["schemas"]["FreshToolStatus"];
+          tool: string;
+          /** @constant */
+          type: "mcpToolCall";
+        }
+      | {
+          compactionMetadata: unknown;
+          id: string;
+          status: components["schemas"]["FreshCompactionStatus"];
+          /** @constant */
+          type: "contextCompaction";
+        };
+    FreshToolResult: {
+      content?: unknown | undefined;
+    };
+    /** @enum {string} */
+    FreshToolStatus: "inProgress" | "completed" | "failed";
     /** JsonValue */
     JsonValue: JsonValue;
     /**
@@ -125,6 +244,18 @@ export interface components {
     } & {
       [key: string]: components["schemas"]["JsonValue"] | undefined;
     };
+    TerminalTurn: {
+      id: string;
+      status: components["schemas"]["TerminalTurnStatus"];
+    };
+    /**
+     * @description Studio terminal outcomes shared by native Codex and the Claude bridge.
+     * @enum {string}
+     */
+    TerminalTurnStatus: "completed" | "interrupted" | "failed";
+    ThreadIdentity: {
+      threadId: string;
+    };
     ToolDefinition: {
       description: string;
       inputSchema: {
@@ -133,6 +264,15 @@ export interface components {
       name: string;
     } & {
       [key: string]: unknown;
+    };
+    /**
+     * @description Unsupported live rate-limit evidence remains opaque and cannot supply an
+     *     ordinary-usage or overage decision. This tag is generated for the bridge.
+     */
+    UnsupportedClaudeRateLimit: {
+      raw: unknown;
+      /** @constant */
+      type: "unsupported";
     };
   };
   responses: never;
@@ -159,6 +299,22 @@ export type ClaudeBridgeTurnWire =
 export type ClaudeCustomModel = components["schemas"]["ClaudeCustomModel"];
 export type ClaudeSessionSettings =
   components["schemas"]["ClaudeSessionSettings"];
+export type FreshAgentPhase = components["schemas"]["FreshAgentPhase"];
+export type FreshCompactionStatus =
+  components["schemas"]["FreshCompactionStatus"];
+export type FreshFileChange = components["schemas"]["FreshFileChange"];
+export type FreshFileChangeKind = components["schemas"]["FreshFileChangeKind"];
+export type FreshInputDelivery = components["schemas"]["FreshInputDelivery"];
+export type FreshInputDeliveryStatus =
+  components["schemas"]["FreshInputDeliveryStatus"];
+export type FreshItem = components["schemas"]["FreshItem"];
+export type FreshToolResult = components["schemas"]["FreshToolResult"];
+export type FreshToolStatus = components["schemas"]["FreshToolStatus"];
 export type RateLimitBucketDto = components["schemas"]["RateLimitBucketDto"];
 export type RateLimitWindowDto = components["schemas"]["RateLimitWindowDto"];
+export type TerminalTurn = components["schemas"]["TerminalTurn"];
+export type TerminalTurnStatus = components["schemas"]["TerminalTurnStatus"];
+export type ThreadIdentity = components["schemas"]["ThreadIdentity"];
 export type ToolDefinition = components["schemas"]["ToolDefinition"];
+export type UnsupportedClaudeRateLimit =
+  components["schemas"]["UnsupportedClaudeRateLimit"];

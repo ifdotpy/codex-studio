@@ -1,3 +1,4 @@
+import { required } from "../teams/helpers.ts";
 import type { AddressInfo } from "node:net";
 import type { Server, ServerResponse } from "node:http";
 import type { ViteDevServer } from "vite";
@@ -220,8 +221,8 @@ test("Ux Chat Ui", async ({
             : `Message ${index}. ` + "Readable history. ".repeat(25),
       }),
     );
-    records[10].truncated = true;
-    records[10].text = "Clipped original prompt";
+    required(records[10]).truncated = true;
+    required(records[10]).text = "Clipped original prompt";
     let latestItems = records.slice(10);
     let historyVersion = "version-1";
     let failBranch = true;
@@ -275,7 +276,7 @@ test("Ux Chat Ui", async ({
       if (path === "/api/transcript/item")
         return fulfillApi(route, {
           json: {
-            ...records[10],
+            ...required(records[10]),
             sourceId: "native-user-batch",
             text: "Full original prompt beyond clipped text",
             truncated: false,
@@ -360,6 +361,8 @@ test("Ux Chat Ui", async ({
         () =>
           new Promise<void>((resolve) => {
             const status = document.querySelector("#send-state");
+            if (!status) throw new Error("Missing send state");
+
             let active = !!status!.textContent;
             const observer = new MutationObserver(() => {
               if (status!.textContent) active = true;
@@ -392,9 +395,9 @@ test("Ux Chat Ui", async ({
       true,
     );
     assert.equal(writes.length, 1);
-    assert.equal(writes[0].path, "/api/fixture-send");
-    assert.equal(writes[0].body.text, "Draft must remain unsent");
-    assert.equal(writes[0].body.delivery, "next_turn");
+    assert.equal(required(writes[0]).path, "/api/fixture-send");
+    assert.equal(required(writes[0]).body.text, "Draft must remain unsent");
+    assert.equal(required(writes[0]).body.delivery, "next_turn");
     await composer.fill("Send from button");
     const buttonSend = page.waitForResponse(
       (response) => new URL(response.url()).pathname === "/api/fixture-send",
@@ -408,8 +411,8 @@ test("Ux Chat Ui", async ({
         document.querySelector<HTMLTextAreaElement>("#message")!.value === "",
     );
     assert.equal(writes.length, 2);
-    assert.equal(writes[1].body.delivery, "current_turn");
-    assert.equal(writes[1].body.text, "Send from button");
+    assert.equal(required(writes[1]).body.delivery, "current_turn");
+    assert.equal(required(writes[1]).body.text, "Send from button");
     const longDraft = "L".repeat(12050);
     await composer.fill(longDraft);
     assert.equal(await composer.inputValue(), longDraft);
@@ -522,6 +525,8 @@ test("Ux Chat Ui", async ({
       .locator('[data-message="item-3"]')
       .evaluate((element) => {
         const root = document.querySelector("#messages");
+        if (!root) throw new Error("Missing messages");
+
         return (
           element.getBoundingClientRect().top -
           root!.getBoundingClientRect().top
@@ -636,13 +641,13 @@ test("Ux Chat Ui", async ({
     );
     const attempts = writes.filter((write) => write.path === "/api/branch");
     assert.equal(
-      attempts[0].body.id,
-      attempts[1].body.id,
+      required(attempts[0]).body.id,
+      required(attempts[1]).body.id,
       "retry preserves the native branch request identity",
     );
-    assert.equal(attempts[0].body.before, true);
+    assert.equal(required(attempts[0]).body.before, true);
     assert.equal(
-      attempts[0].body.message_id,
+      required(attempts[0]).body.message_id,
       "item-10",
       "edit preserves the selected input identity inside a native batch",
     );

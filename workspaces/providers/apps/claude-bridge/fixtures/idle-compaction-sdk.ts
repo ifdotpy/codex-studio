@@ -1,3 +1,4 @@
+import { inputText } from "../sdk-fixtures.ts";
 import type {
   SessionFixtureTextQuery as SessionFixtureQuery,
   SessionFixtureLegacyMessage as SessionFixtureMessage,
@@ -52,7 +53,7 @@ export function query({ prompt, options }: SessionFixtureQuery) {
           subtype: "init",
           session_id: options.resume || options.sessionId,
         };
-        if (input.message.content[0].text === "/compact")
+        if (inputText(input) === "/compact")
           yield {
             type: "system",
             subtype: "compact_boundary",
@@ -86,6 +87,7 @@ export function query({ prompt, options }: SessionFixtureQuery) {
         yield {
           type: "result",
           subtype: "success",
+          is_error: false,
           usage: { input_tokens: 9999999, output_tokens: 9999999 },
           result: "done",
         };

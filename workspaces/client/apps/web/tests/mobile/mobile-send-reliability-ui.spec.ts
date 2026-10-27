@@ -1,3 +1,4 @@
+import { required } from "../teams/helpers.ts";
 import { installMobileSend } from "./mobile-send.fixture.ts";
 import { createFixtureViteServer as createServer } from "../playwright.ts";
 import { fixtureServerOrigin, fixturePostBody } from "./browser-fixture.ts";
@@ -84,6 +85,7 @@ test("mobile-send-reliability-ui", async ({ browser }) => {
             status: replyStatus,
           } satisfies PostResult<"/api/messages">,
         });
+      return undefined;
     });
     await page.goto(fixtureServerOrigin(server));
     const until = async (check: () => boolean | Promise<boolean>) => {
@@ -161,7 +163,7 @@ test("mobile-send-reliability-ui", async ({ browser }) => {
     await input.fill("Same intentional message");
     await send.click();
     await until(() => posts.length === 1);
-    assert.equal(posts[0].assets!.length, 1);
+    assert.equal(required(posts[0]).assets!.length, 1);
     await input.fill("Same intentional message");
     const nextStart = Date.now();
     await send.click();
@@ -176,11 +178,14 @@ test("mobile-send-reliability-ui", async ({ browser }) => {
     assert.equal(posts.length, 1, "Same-chat HTTP requests retain their order");
     const initial = await page.evaluate(() => window.queued());
     assert.notEqual(
-      initial[0].id,
-      initial[1].id,
+      required(initial[0]).id,
+      required(initial[1]).id,
       "Two intentional sends have distinct identities",
     );
-    assert.equal(initial[0].body.text, initial[1].body.text);
+    assert.equal(
+      required(initial[0]).body.text,
+      required(initial[1]).body.text,
+    );
     replyStatus = "delivered";
     await pending.shift()!.fulfill({
       status: 400,
@@ -207,7 +212,7 @@ test("mobile-send-reliability-ui", async ({ browser }) => {
       0,
       "An older failure cannot restore attachments after a later submission",
     );
-    assert.equal(posts[1].assets!.length, 0);
+    assert.equal(required(posts[1]).assets!.length, 0);
 
     // Hold the next IndexedDB insert. An older HTTP failure must not release the
     // newer send's lock before that send has a durable record.
@@ -337,7 +342,7 @@ test("mobile-send-reliability-ui", async ({ browser }) => {
     const stateDir = (await readTestState(target)).stateDir;
     const failedBody: PostBody<"/api/messages"> = {
       id: "old-failed-after-reload",
-      room: posts[0].room,
+      room: required(posts[0]).room,
       text: "Retry a stored terminal failure",
       assets: [],
       delivery: "queue",
@@ -452,12 +457,12 @@ test("mobile-send-reliability-ui", async ({ browser }) => {
         temporary,
         "SELECT COUNT(*) AS n FROM runtime_events WHERE id=?",
         realBody.id,
-      )[0].n,
+      )?.[0]?.n,
       queryFixtureDatabase(
         temporary,
         "SELECT COUNT(*) AS n FROM messages WHERE id=?",
         realBody.id,
-      )[0].n,
+      )?.[0]?.n,
     ];
     assert.deepEqual(counts, [1, 1]);
     expect(errors).toEqual([]);

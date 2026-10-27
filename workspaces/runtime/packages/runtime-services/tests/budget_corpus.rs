@@ -66,9 +66,9 @@ fn db(records: &Value, case: &Value) -> Connection {
         }
     }
     let tx = connection.transaction().expect("fixture migration");
-    studio_runtime_store::provider_identity::migrate_canvas_2026_10_26(&tx, &BTreeMap::new())
+    studio_runtime_store::migrations::migrate_canvas_2026_10_26(&tx, &BTreeMap::new())
         .expect("migrate historical provider identities");
-    studio_runtime_store::agent_columns::prepare(&tx).expect("canonical agent columns");
+    studio_runtime_store::migrations::prepare_columns(&tx).expect("canonical agent columns");
     tx.commit().expect("fixture migration commit");
     connection
 }

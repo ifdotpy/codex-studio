@@ -53,6 +53,7 @@ test("Transcript render performance @performance", async () => {
         },
         resolveId(id) {
           if (id === "/transcript-audit.tsx") return entry;
+          return undefined;
         },
       },
     ],

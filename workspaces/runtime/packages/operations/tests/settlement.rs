@@ -171,7 +171,9 @@ fn decision(state: &State, input: &SettlementInput) -> (Outcome, SettlementKind)
         OperationState::Applied => Outcome::Applied,
         OperationState::NotApplied | OperationState::CancelledBeforeDispatch => Outcome::NotApplied,
         OperationState::Unknown => Outcome::Unknown,
-        _ => panic!("expected terminal operation state"),
+        OperationState::Reserved | OperationState::Dispatched | OperationState::CancelRequested => {
+            panic!("expected terminal operation state")
+        }
     };
     (outcome, kind)
 }

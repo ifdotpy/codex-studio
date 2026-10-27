@@ -212,7 +212,7 @@ fn validate_usage(value: &Value) -> StoreResult<()> {
         let ledger = &details.ledger;
         let thread = match &ledger.usage_identity {
             UsageIdentity::Cumulative { thread_id, .. } => thread_id.as_deref(),
-            _ => None,
+            UsageIdentity::Response { .. } => None,
         };
         let (kind, total) = match &ledger.studio_usage {
             UsageObservation::Response { tokens, .. } => ("response", tokens.total()),
@@ -308,7 +308,7 @@ pub fn check_usage_readonly(db: &Connection) -> StoreResult<crate::StateCheckTab
                 rusqlite::types::ValueRef::Text(v) => std::str::from_utf8(v)
                     .map(|v| json!(v))
                     .unwrap_or(Value::Null),
-                _ => Value::Null,
+                rusqlite::types::ValueRef::Null | rusqlite::types::ValueRef::Blob(_) => Value::Null,
             };
             value.insert(name.into(), field);
         }
@@ -318,14 +318,18 @@ pub fn check_usage_readonly(db: &Connection) -> StoreResult<crate::StateCheckTab
                 .ok()
                 .and_then(|tokens| serde_json::to_value(tokens).ok())
                 .unwrap_or_else(|| json!("invalid usage breakdown")),
-            _ => json!("invalid usage breakdown"),
+            rusqlite::types::ValueRef::Integer(_)
+            | rusqlite::types::ValueRef::Real(_)
+            | rusqlite::types::ValueRef::Blob(_) => json!("invalid usage breakdown"),
         };
         value.insert("breakdown".into(), breakdown);
         let details = match row.get_ref(6)? {
             rusqlite::types::ValueRef::Null => Value::Null,
             rusqlite::types::ValueRef::Text(raw) => serde_json::from_slice::<Value>(raw)
                 .unwrap_or_else(|_| json!("invalid usage details")),
-            _ => json!("invalid usage details"),
+            rusqlite::types::ValueRef::Integer(_)
+            | rusqlite::types::ValueRef::Real(_)
+            | rusqlite::types::ValueRef::Blob(_) => json!("invalid usage details"),
         };
         value.insert("details".into(), details);
         let value = Value::Object(value);

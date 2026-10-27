@@ -36,8 +36,11 @@ test("desktop conversation header keeps title and actions on one row", async ({
     JSON.stringify(geometry),
   ).toBeLessThanOrEqual(1);
   for (let index = 1; index < geometry.length; index++) {
-    expect(geometry[index].x, JSON.stringify(geometry)).toBeGreaterThanOrEqual(
-      geometry[index - 1].right,
+    const current = geometry[index],
+      previous = geometry[index - 1];
+    if (!current || !previous) throw new Error("Missing chip geometry");
+    expect(current.x, JSON.stringify(geometry)).toBeGreaterThanOrEqual(
+      previous.right,
     );
   }
   await expect(page.locator("#conversation-status")).toHaveCount(0);

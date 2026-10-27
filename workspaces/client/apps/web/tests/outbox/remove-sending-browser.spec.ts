@@ -1,3 +1,4 @@
+import { required } from "../teams/helpers.ts";
 import type { Agent } from "../../src/types.ts";
 import { requestBody } from "../messages/helpers.ts";
 import type { Page } from "playwright";
@@ -44,6 +45,8 @@ async function setupSendingRemovePointer(page: Page) {
   const origin = `http://127.0.0.1:${port}`;
   const initial = await readTestState(origin);
   const lead = initial.threads.find((agent) => agent.name === "Release lead");
+  assert.ok(lead);
+
   await fetch(`${origin}/api/messages`, {
     method: "POST",
     headers: {
@@ -79,16 +82,22 @@ async function setupSendingRemovePointer(page: Page) {
   await remove.waitFor({ state: "visible", timeout: 10_000 });
   await copy.waitFor({ state: "visible", timeout: 10_000 });
   const body = await card.locator(".prose.plain").boundingBox();
+  assert.ok(body);
+
   await page.mouse.move(body!.x + body!.width / 2, body!.y + body!.height / 2, {
     steps: 5,
   });
   const removeBox = await remove.boundingBox();
+  assert.ok(removeBox);
+
   await page.mouse.move(
     removeBox!.x + removeBox!.width / 2,
     removeBox!.y + removeBox!.height / 2,
     { steps: 5 },
   );
   const hovered = await remove.boundingBox();
+  assert.ok(hovered);
+
   const center = {
     x: hovered!.x + hovered!.width / 2,
     y: hovered!.y + hovered!.height / 2,
@@ -142,7 +151,11 @@ test("remove-sending-browser", async ({ page: fixturePage }) => {
   const origin = `http://127.0.0.1:${port}`;
   const initial = await readTestState(origin);
   const lead = initial.threads.find((a) => a.name === "Release lead");
+  assert.ok(lead);
+
   const other = initial.threads.find((a) => a.name === "Other project");
+  assert.ok(other);
+
   const post = async <Path extends "/api/queue" | "/api/stop">(
     path: Path,
     body: PostBody<Path>,
@@ -198,6 +211,8 @@ test("remove-sending-browser", async ({ page: fixturePage }) => {
       const row = database
         .prepare("SELECT record FROM runtime_agents WHERE id=?")
         .get(agent.id);
+      assert.ok(row && typeof row.record === "string");
+
       const record = readAgentRecord(row!.record as string);
       database
         .prepare(
@@ -279,7 +294,7 @@ test("remove-sending-browser", async ({ page: fixturePage }) => {
       JSON.parse(payload);
     return keys.map((key) => readCommand(localStorage.getItem(key)!));
   });
-  assert.deepEqual(savedCancellation, [mutations[0]]);
+  assert.deepEqual(savedCancellation, [required(mutations[0])]);
   assert.equal(
     await page.evaluate(
       async ({ token, body }) => {
@@ -298,7 +313,10 @@ test("remove-sending-browser", async ({ page: fixturePage }) => {
     200,
   );
   await card("Remove one").waitFor({ state: "hidden" });
-  assert.equal(mutations[0].request_id, mutations[1].request_id);
+  assert.equal(
+    required(mutations[0]).request_id,
+    required(mutations[1]).request_id,
+  );
   const removeSecond = card("Remove two").getByRole("button", {
     name: "Remove sending message",
     exact: true,

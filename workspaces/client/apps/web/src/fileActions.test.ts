@@ -1,3 +1,4 @@
+import { required } from "./components/componentTestFixtures.ts";
 import assert from "node:assert/strict";
 import type { DesktopBridge } from "./desktop";
 import type { FileTarget } from "./fileActions";
@@ -155,7 +156,7 @@ test("file actions preserve the native gesture and browser save paths", async ()
       saveFile({ name: "report.md", data: "x" }),
       /write failure/,
     );
-    window.codexDesktop = undefined;
+    delete window.codexDesktop;
     assert.equal(canUseNativeFiles(), false);
     assert.equal(await openFile({ agent: "a", path: "report.md" }), false);
     let shared: File | undefined;
@@ -177,9 +178,10 @@ test("file actions preserve the native gesture and browser save paths", async ()
       }),
       true,
     );
-    assert.equal(shared!.name, "report.md");
-    assert.equal(shared!.type, "text/markdown");
-    assert.equal(await shared!.text(), "# Progress");
+    assert.ok(shared);
+    assert.equal(shared.name, "report.md");
+    assert.equal(shared.type, "text/markdown");
+    assert.equal(await shared.text(), "# Progress");
     navigator.share = async () => {
       throw new DOMException("User cancelled", "AbortError");
     };
@@ -218,8 +220,9 @@ test("file actions preserve the native gesture and browser save paths", async ()
     try {
       assert.equal(await saveFile({ name: "report.md", data: "x" }), true);
       assert.deepEqual(calls.at(-1), ["browser-save", "report.md"]);
-      assert.match(link.href!, /^blob:/);
-      release!();
+      assert.match(required(link.href), /^blob:/);
+      assert.ok(release);
+      release();
     } finally {
       globalThis.setTimeout = originalTimeout;
     }

@@ -631,3 +631,109 @@ async fn deferring_a_question_publishes_the_request_entity() {
             .contains("\"deferred\":true")
     );
 }
+
+#[tokio::test]
+async fn non_radio_async_answer_is_steered_and_acknowledged() {
+    use studio_runtime_services::{
+        coordination::CoordinationError,
+        host_project_runtime::PreparedHost,
+        message_admission::MessageAdmission,
+        questions_write::{AsyncQuestionAnswerInput, answer_async_question},
+    };
+    use studio_runtime_store::{
+        AgentId, AgentRecord, AgentRepository, SchedulerRepository, Transaction,
+    };
+    struct Allow;
+    impl MessageAdmission for Allow {
+        fn workspace(
+            &self,
+            _: &Transaction<'_>,
+            _: &AgentRecord,
+        ) -> Result<Vec<serde_json::Value>, CoordinationError> {
+            Ok(vec![])
+        }
+        fn budget(
+            &self,
+            _: &Transaction<'_>,
+            _: &AgentRecord,
+            _: &AgentRecord,
+        ) -> Result<(), CoordinationError> {
+            Ok(())
+        }
+    }
+    let (_root, store, context) = fixture().await;
+    let agent = context.agent.clone();
+    let agent_for_setup = agent.clone();
+    store.transaction(move |tx| {
+        tx.execute("DELETE FROM runtime_events WHERE agent=?1", [&agent_for_setup])?;
+        let mut record = AgentRepository::get(tx, &AgentId::from(agent_for_setup.as_str()))?.unwrap();
+        record.status = studio_runtime_store::AgentStatus::Running;
+        for (key, value) in [
+            ("isLead", json!(true)), ("autoWake", json!(true)), ("inFlight", json!(true)),
+            ("threadId", json!("thread-0")), ("turnId", json!("turn-0")),
+            ("startAttempt", json!({"id":"start","epoch":3,"submitted":true,"turnId":"turn-0","threadId":"thread-0","accountKey":"default","events":["initial"],"connectionGeneration":7})),
+        ] { record.extra.insert(key.into(), value); }
+        AgentRepository::put(tx, &record)?;
+        Ok(())
+    }).await.unwrap();
+    card(&store, &json!({"id":"question","agent":agent,"epoch":3,"turnId":"turn-0","method":"agent/asyncQuestion","status":"pending","params":{"questions":[{"id":"q","question":"Choose"}]}})).await;
+    let prepared = PreparedHost::load(&store).await.unwrap();
+    let agent_for_write = agent.clone();
+    store
+        .transaction_with_error(move |tx| {
+            let data = json!({"answers":{"q":{"answers":["yes"]}}});
+            answer_async_question(
+                tx,
+                AsyncQuestionAnswerInput {
+                    id: "question",
+                    data: &data,
+                    text: "yes",
+                    admission: &Allow,
+                    prepared: &prepared,
+                    now: 30.0,
+                    validate: |_: &serde_json::Value| true,
+                },
+            )?;
+            let claim = SchedulerRepository::claim_steer(tx, &agent_for_write, 3, "steer", 31.0)?
+                .expect("answer must be eligible for the running turn");
+            assert_eq!(
+                claim
+                    .events
+                    .iter()
+                    .map(|e| e.id.0.as_str())
+                    .collect::<Vec<_>>(),
+                ["question:answer"]
+            );
+            assert!(SchedulerRepository::steer_submitted(
+                tx,
+                &agent_for_write,
+                "steer",
+                "ticket",
+                7
+            )?);
+            assert!(
+                SchedulerRepository::acknowledge_steer(
+                    tx,
+                    &agent_for_write,
+                    "question:answer",
+                    "thread-0",
+                    "turn-0"
+                )?
+                .is_some()
+            );
+            let (status, turn): (String, Option<String>) = tx
+                .query_row(
+                    "SELECT status,turn_id FROM runtime_events WHERE id='question:answer'",
+                    [],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )
+                .map_err(studio_runtime_store::StoreError::from)?;
+            assert_eq!(
+                (status.as_str(), turn.as_deref()),
+                ("delivered", Some("turn-0"))
+            );
+            Ok::<_, studio_runtime_services::questions_write::QuestionsWriteError>(())
+        })
+        .await
+        .unwrap();
+}

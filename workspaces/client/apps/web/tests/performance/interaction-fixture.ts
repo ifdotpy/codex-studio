@@ -1,3 +1,4 @@
+import { required } from "./performance-fixture.ts";
 import { fileURLToPath } from "node:url";
 import type { components } from "../../src/generated/api.ts";
 import type { PerformanceTranscriptItem as TranscriptWireItem } from "./performance-fixture.ts";
@@ -52,14 +53,14 @@ const transcript = (
     items: all.slice(start, end),
     historyVersion: "perf-1",
     truncated: start > 0,
-    nextCursor: start ? all[start]!.id : null,
+    nextCursor: start ? required(all[start]).id : null,
     nextAfterCursor: end < all.length ? all[end - 1]?.id : null,
     tail: null,
     unavailable: null,
   };
 };
 instance = await fixture("Performance", false, {
-  dist: process.argv[4],
+  ...(process.argv[4] === undefined ? {} : { dist: process.argv[4] }),
   handle({ url, json, snapshot }) {
     if (url.pathname === "/api/changes") {
       json({ scope: "chat", git: true, files: [], diff: "" } satisfies Pick<
@@ -124,16 +125,19 @@ instance = await fixture("Performance", false, {
       );
       return true;
     }
+    return undefined;
   },
 });
-const base = instance.snapshot.threads[0]!;
+const base = required(instance.snapshot.threads[0]);
 instance.setChats(
   ["short", "long", "other"].map((id, i) => ({
     ...base,
     id,
     rootId: id,
     threadId: `thread-${id}`,
-    name: ["Short conversation", "Long conversation", "Other conversation"][i]!,
+    name: required(
+      ["Short conversation", "Long conversation", "Other conversation"][i],
+    ),
   })),
 );
 const scenario = await build({
@@ -146,22 +150,25 @@ const scenario = await build({
   platform: "browser",
 });
 const server = createServer(async (req, res) => {
-  if (req.url!.startsWith("/api/"))
-    await appendFile(dir + "/requests.log", req.method + " " + req.url! + "\n");
-  if (req.url! === "/benchmark-result") {
+  if (required(req.url).startsWith("/api/"))
+    await appendFile(
+      dir + "/requests.log",
+      req.method + " " + required(req.url) + "\n",
+    );
+  if (required(req.url) === "/benchmark-result") {
     let body = "";
     for await (const chunk of req) body += chunk;
     await writeFile(dir + "/browser-latest.json", body);
     res.end("ok");
     return;
   }
-  if (req.url! === "/scenario.js") {
+  if (required(req.url) === "/scenario.js") {
     res.setHeader("Content-Type", "text/javascript");
-    res.end(scenario.outputFiles[0]!.contents);
+    res.end(required(scenario.outputFiles[0]).contents);
     return;
   }
   const forward = httpRequest(
-    instance.origin + req.url!,
+    instance.origin + required(req.url),
     { method: req.method, headers: req.headers },
     (up) => {
       const headers = { ...up.headers };
@@ -171,11 +178,11 @@ const server = createServer(async (req, res) => {
         ).replace("script-src 'self'", "script-src 'self' 'wasm-unsafe-eval'");
       delete headers["content-length"];
       headers["cache-control"] = "no-store";
-      if (req.url! === "/" || req.url!.startsWith("/?")) {
+      if (required(req.url) === "/" || required(req.url).startsWith("/?")) {
         let body = "";
         up.on("data", (v) => (body += v));
         up.on("end", () => {
-          res.writeHead(up.statusCode!, headers);
+          res.writeHead(required(up.statusCode), headers);
           res.end(
             body.replace(
               "<head>",
@@ -184,9 +191,9 @@ const server = createServer(async (req, res) => {
           );
         });
       } else {
-        if (req.url!.endsWith(".wasm"))
+        if (required(req.url).endsWith(".wasm"))
           headers["content-type"] = "application/wasm";
-        res.writeHead(up.statusCode!, headers);
+        res.writeHead(required(up.statusCode), headers);
         up.pipe(res);
       }
     },

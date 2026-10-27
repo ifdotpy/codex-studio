@@ -36,6 +36,8 @@ Rust, provider, and client suites in [docs/testing.md](docs/testing.md) as the p
 - [Client](workspaces/client/README.md): web renderer and Electron desktop app.
 - [Tooling](workspaces/tooling/README.md): repository checks and commit hooks.
 - [Documentation](docs): product, operator, design, testing, and verification pages.
+- [Type contracts](docs/type-contracts.md): authoritative typing policy and
+  current migration coverage.
 - [Move an existing installation](docs/relocating-installation.md) while
   preserving its state directory and active work.
 - [Workspace migration specification](docs/plans/rust-workspaces.md) and

@@ -438,7 +438,7 @@ fn v2_wait_disconnect_preserves_child_and_shared_backend_owner() {
     let row = supervisor.journal.handle(handle).unwrap().unwrap();
     stop_verified(child.pid, row.pgid.unwrap(), &child.start).unwrap();
     child.stopping.store(true, Ordering::Release);
-    child.reap().unwrap();
+    child.reap_leader().unwrap();
 }
 
 // This exercises a real retained child with Linux kernel process identity.
@@ -473,7 +473,7 @@ async fn v2_batches_do_not_mark_terminal_until_the_exit_sequence_is_returned() {
         .unwrap()
         .clone()
         .unwrap();
-    child.reap().unwrap();
+    child.reap_leader().unwrap();
     let exit_sequence = tokio::time::timeout(Duration::from_secs(30), async {
         loop {
             let changed = child.notify.notified();
@@ -571,7 +571,7 @@ fn empty_batch_queried_before_exit_commit_is_not_terminal_after_commit() {
     assert!(stale_query.is_empty());
 
     child.write(&json!({"finish":true})).unwrap();
-    child.reap().unwrap();
+    child.reap_leader().unwrap();
     let deadline = Instant::now() + Duration::from_secs(5);
     while child.stdout_alive.load(Ordering::Acquire) || child.stderr_alive.load(Ordering::Acquire) {
         assert!(Instant::now() < deadline, "child readers did not finish");

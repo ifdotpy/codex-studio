@@ -28,12 +28,15 @@ fn decode(document: &Document) -> Result<DraftVersion, String> {
     DraftVersion::from_stored_value(&document.id, value)
 }
 fn document(version: &DraftVersion) -> Document {
+    // DraftVersion contains only JSON-serializable fields with string map keys.
     // Value's ordered map matches the server's canonical key order.
     Document {
         id: version.id.clone(),
         seq: 0,
         deleted: false,
-        payload: serde_json::to_value(version).unwrap().to_string(),
+        payload: serde_json::to_value(version)
+            .expect("draft version is JSON-serializable")
+            .to_string(),
     }
 }
 #[cfg(test)]
@@ -91,8 +94,9 @@ fn save(
     master: Option<&Document>,
     dirty: bool,
 ) -> Result<(), String> {
+    // Document fields are strings, integers and booleans, so JSON serialization is infallible.
     sql(db.execute("INSERT INTO client_draft_branches VALUES(?1,?2,?3,?4,?5) ON CONFLICT(workspace,id) DO UPDATE SET document=excluded.document,master=excluded.master,dirty=excluded.dirty",
-        params![workspace,local.id,serde_json::to_string(local).unwrap(),master.map(|v|serde_json::to_string(v).unwrap()),dirty]))?;
+        params![workspace,local.id,serde_json::to_string(local).expect("document is JSON-serializable"),master.map(|v|serde_json::to_string(v).expect("document is JSON-serializable")),dirty]))?;
     Ok(())
 }
 fn revision(db: &Connection, workspace: &str) -> Result<(), String> {
@@ -122,8 +126,10 @@ pub fn view(db: &Connection, workspace: &str) -> Result<Value, String> {
         .map_err(|e| e.to_string())?;
     // Dirty means pending replication, not an uncommitted renderer edit. All
     // these branches are committed; reconcile them so conflicts remain visible.
+    // Reconciled draft fields have the same infallible JSON shape as DraftVersion.
     let mut value =
-        serde_json::to_value(drafts::reconcile(&versions, &BTreeMap::new(), &dismissed)?).unwrap();
+        serde_json::to_value(drafts::reconcile(&versions, &BTreeMap::new(), &dismissed)?)
+            .expect("draft view is JSON-serializable");
     let revision = sql(db
         .query_row(
             "SELECT revision FROM client_draft_scopes WHERE workspace=?1",

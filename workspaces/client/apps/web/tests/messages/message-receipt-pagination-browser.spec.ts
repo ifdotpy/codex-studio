@@ -1,3 +1,4 @@
+import { required } from "./helpers.ts";
 import type { TranscriptPageResponse } from "../playwright.ts";
 import type { Message } from "../../src/types.ts";
 import { responseJson } from "./helpers.ts";
@@ -58,7 +59,7 @@ async function runMessageReceiptScenario(
     },
   );
   let log = "";
-  fixture.stderr!.on("data", (chunk) => {
+  required(fixture.stderr).on("data", (chunk) => {
     log = (log + chunk).slice(-8000);
   });
   let server;
@@ -230,16 +231,18 @@ async function runMessageReceiptScenario(
           id: messageId,
           value,
         });
-        const seq = db
-          .prepare(
-            "SELECT max(seq)+1 AS seq FROM (SELECT COALESCE(MAX(seq),0) seq FROM sync_entities UNION ALL SELECT COALESCE(MAX(seq),0) FROM sync_documents UNION ALL SELECT COALESCE(MAX(seq),0) FROM sync_versions)",
-          )
-          .get()!.seq;
+        const seq = required(
+          db
+            .prepare(
+              "SELECT max(seq)+1 AS seq FROM (SELECT COALESCE(MAX(seq),0) seq FROM sync_entities UNION ALL SELECT COALESCE(MAX(seq),0) FROM sync_documents UNION ALL SELECT COALESCE(MAX(seq),0) FROM sync_versions)",
+            )
+            .get(),
+        ).seq;
         db.prepare(
           "INSERT INTO sync_entities(collection,id,seq,hash,payload,deleted) VALUES('messageReceipt',?,?,?,?,0) ON CONFLICT(collection,id) DO UPDATE SET seq=excluded.seq,hash=excluded.hash,payload=excluded.payload,deleted=0",
         ).run(
           messageId,
-          seq!,
+          required(seq),
           createHash("sha256").update(payload).digest("hex"),
           payload,
         );
@@ -247,8 +250,9 @@ async function runMessageReceiptScenario(
       // This external writer also owns its queue summary; a notification does
       // not ask the server to reconstruct values from an event hint.
       const epoch = JSON.parse(
-        db.prepare("SELECT record FROM runtime_agents WHERE id=?").get(agent)!
-          .record as string,
+        required(
+          db.prepare("SELECT record FROM runtime_agents WHERE id=?").get(agent),
+        ).record as string,
       ).epoch;
       const queueItems = db
         .prepare(
@@ -274,16 +278,18 @@ async function runMessageReceiptScenario(
         id: agent,
         value: queueValue,
       });
-      const queueSeq = db
-        .prepare(
-          "SELECT max(seq)+1 AS seq FROM (SELECT COALESCE(MAX(seq),0) seq FROM sync_entities UNION ALL SELECT COALESCE(MAX(seq),0) FROM sync_documents UNION ALL SELECT COALESCE(MAX(seq),0) FROM sync_versions)",
-        )
-        .get()!.seq;
+      const queueSeq = required(
+        db
+          .prepare(
+            "SELECT max(seq)+1 AS seq FROM (SELECT COALESCE(MAX(seq),0) seq FROM sync_entities UNION ALL SELECT COALESCE(MAX(seq),0) FROM sync_documents UNION ALL SELECT COALESCE(MAX(seq),0) FROM sync_versions)",
+          )
+          .get(),
+      ).seq;
       db.prepare(
         "INSERT INTO sync_entities(collection,id,seq,hash,payload,deleted) VALUES('queue',?,?,?,?,0) ON CONFLICT(collection,id) DO UPDATE SET seq=excluded.seq,hash=excluded.hash,payload=excluded.payload,deleted=0",
       ).run(
         agent,
-        queueSeq!,
+        required(queueSeq),
         createHash("sha256").update(queuePayload).digest("hex"),
         queuePayload,
       );
@@ -335,7 +341,7 @@ async function runMessageReceiptScenario(
         // Keep fixture setup separate from the delivery assertions below.
         60000,
       );
-      fixture.stdout!.once("data", (chunk) => {
+      required(fixture.stdout).once("data", (chunk) => {
         clearTimeout(timer);
         const value = Number(String(chunk).trim());
         if (!Number.isInteger(value))
@@ -384,7 +390,9 @@ async function runMessageReceiptScenario(
       "The private fixture API schema did not become ready: " + log,
       60000,
     );
-    const agent = state.threads.find((agent) => agent.name === "Release lead")!;
+    const agent = required(
+      state.threads.find((agent) => agent.name === "Release lead"),
+    );
     assert.ok(agent?.id);
     await changeFixture(agent.id, "initial", target, state.token);
 
@@ -414,7 +422,7 @@ async function runMessageReceiptScenario(
       },
     });
     await server.listen();
-    const origin = server.resolvedUrls!.local[0];
+    const origin = required(required(server.resolvedUrls).local[0]);
     const context = await testBrowser.newContext({
       viewport: { width: 1440, height: 960 },
       serviceWorkers: "block",
@@ -581,9 +589,9 @@ async function runMessageReceiptScenario(
         "The transcript did not retire the local copy before the delivered receipt",
       );
       const hiddenAccepted = await readOutboxReceipt(id);
-      assert.equal(hiddenAccepted!.status, "accepted");
-      assert.equal(hiddenAccepted!.receipt?.status, "dispatching");
-      assert.equal(hiddenAccepted!.displayPending, false);
+      assert.equal(required(hiddenAccepted).status, "accepted");
+      assert.equal(required(hiddenAccepted).receipt?.status, "dispatching");
+      assert.equal(required(hiddenAccepted).displayPending, false);
       await bubble(text)
         .getByRole("status")
         .filter({ hasText: "Waiting for agent" })
@@ -650,7 +658,7 @@ async function runMessageReceiptScenario(
       }
     }, agent.id);
     assert.equal(
-      JSON.parse(shortCachedTranscript[0].payload).metadata.truncated,
+      JSON.parse(required(shortCachedTranscript[0]).payload).metadata.truncated,
       false,
     );
     await changeFixture(agent.id, "delivered", target, state.token);
@@ -717,18 +725,18 @@ async function runMessageReceiptScenario(
       (key) => window.readReceiptFixture(key),
       id,
     );
-    assert.equal(delivered!.body.id, id);
-    assert.equal(delivered!.body.text, text);
-    assert.equal(delivered!.status, "accepted");
-    assert.equal(delivered!.receipt!.status, "delivered");
-    assert.equal(delivered!.receipt!.materialized, true);
-    assert.equal(delivered!.displayPending, false);
+    assert.equal(required(delivered).body.id, id);
+    assert.equal(required(delivered).body.text, text);
+    assert.equal(required(delivered).status, "accepted");
+    assert.equal(required(required(delivered).receipt).status, "delivered");
+    assert.equal(required(required(delivered).receipt).materialized, true);
+    assert.equal(required(delivered).displayPending, false);
     const uncertain = await storage.evaluate(
       (key) => window.readReceiptFixture(key),
       uncertainId,
     );
-    assert.equal(uncertain!.status, "uncertain");
-    assert.equal(uncertain!.receipt!.status, "uncertain");
+    assert.equal(required(uncertain).status, "uncertain");
+    assert.equal(required(required(uncertain).receipt).status, "uncertain");
     await bubble(uncertainText)
       .getByText("Delivery unconfirmed", { exact: true })
       .waitFor();
@@ -737,7 +745,7 @@ async function runMessageReceiptScenario(
       missingId,
     );
     assert.equal(
-      missing!.receipt!.status,
+      required(required(missing).receipt).status,
       "queued",
       "An omitted receipt must not become confirmed delivery",
     );
@@ -751,7 +759,9 @@ async function runMessageReceiptScenario(
     {
       await page.goto(origin + "check");
       await storage.evaluate(async (rows) => {
-        for (const row of [...rows.slice(1), rows[0]]) {
+        const first = rows[0];
+        if (!first) throw new Error("Missing cached transcript row");
+        for (const row of [...rows.slice(1), first]) {
           await window.receiptFixtureDb.projections.incrementalUpsert(row);
         }
       }, shortCachedTranscript);

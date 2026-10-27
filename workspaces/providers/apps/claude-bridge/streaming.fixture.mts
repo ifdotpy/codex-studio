@@ -1,3 +1,4 @@
+import { inputText } from "./sdk-fixtures.ts";
 export { resolveSettings } from "./sdk-fixtures.ts";
 import type { SessionFixtureLegacyMessage as SessionFixtureMessage } from "./fixtures/session-sdk-types.ts";
 import type { FixtureTextQuery as FixtureQuery } from "./sdk-fixtures.ts";
@@ -42,7 +43,7 @@ export function query({ prompt, options }: FixtureQuery) {
     > {
       const input = await prompt.next();
       if (input.done) return;
-      const count = Number(input.value.message.content[0].text);
+      const count = Number(inputText(input.value));
       yield { type: "user", isReplay: true, uuid: input.value.uuid };
       yield {
         type: "system",
@@ -77,9 +78,15 @@ export function query({ prompt, options }: FixtureQuery) {
           content: blocks.map((text) => ({ type: "text", text })),
         },
       };
-      yield { type: "result", subtype: "success", usage, result: "done" };
-      await new Promise<unknown>((resolve) =>
-        abort.signal.addEventListener("abort", resolve, { once: true }),
+      yield {
+        type: "result",
+        subtype: "success",
+        is_error: false,
+        usage,
+        result: "done",
+      };
+      await new Promise<void>((resolve) =>
+        abort.signal.addEventListener("abort", () => resolve(), { once: true }),
       );
     },
   };

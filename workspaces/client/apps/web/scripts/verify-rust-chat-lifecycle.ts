@@ -174,8 +174,8 @@ export function isAcceptedMessageReceiptStatus(
 
 function argumentsFrom(argv: string[]) {
   const options: Options = {};
-  for (let index = 0; index < argv.length; index += 1) {
-    const value = argv[index];
+  const argumentsLeft = argv.values();
+  for (const value of argumentsLeft) {
     if (value === "--resume") {
       options.resume = true;
       continue;
@@ -187,11 +187,10 @@ function argumentsFrom(argv: string[]) {
     if (!value.startsWith("--"))
       throw new Error(`Unexpected argument: ${value}`);
     const key = value.slice(2);
-    const next = argv[index + 1];
+    const next = argumentsLeft.next().value;
     if (!next || next.startsWith("--"))
       throw new Error(`Missing value for --${key}`);
     options[key] = next;
-    index += 1;
   }
   return options;
 }

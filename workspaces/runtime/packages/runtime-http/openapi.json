@@ -4508,13 +4508,7 @@
           "workspaceMode": {
             "anyOf": [
               {
-                "enum": [
-                  "layr",
-                  "image",
-                  "worktree",
-                  "shared"
-                ],
-                "type": "string"
+                "$ref": "#/components/schemas/WorkspaceMode"
               },
               {
                 "type": "null"
@@ -6156,13 +6150,7 @@
           "workspaceMode": {
             "anyOf": [
               {
-                "enum": [
-                  "layr",
-                  "image",
-                  "worktree",
-                  "shared"
-                ],
-                "type": "string"
+                "$ref": "#/components/schemas/WorkspaceMode"
               },
               {
                 "type": "null"
@@ -8249,13 +8237,7 @@
           "workspaceMode": {
             "anyOf": [
               {
-                "enum": [
-                  "layr",
-                  "image",
-                  "worktree",
-                  "shared"
-                ],
-                "type": "string"
+                "$ref": "#/components/schemas/WorkspaceMode"
               },
               {
                 "type": "null"
@@ -10012,13 +9994,7 @@
           "workspaceMode": {
             "anyOf": [
               {
-                "enum": [
-                  "layr",
-                  "image",
-                  "worktree",
-                  "shared"
-                ],
-                "type": "string"
+                "$ref": "#/components/schemas/WorkspaceMode"
               },
               {
                 "type": "null"
@@ -18056,13 +18032,7 @@
           "workspaceMode": {
             "anyOf": [
               {
-                "enum": [
-                  "layr",
-                  "image",
-                  "worktree",
-                  "shared"
-                ],
-                "type": "string"
+                "$ref": "#/components/schemas/WorkspaceMode"
               },
               {
                 "type": "null"
@@ -21614,12 +21584,7 @@
           "status": {
             "anyOf": [
               {
-                "enum": [
-                  "in_progress",
-                  "resolved",
-                  "declined"
-                ],
-                "type": "string"
+                "$ref": "#/components/schemas/ComplaintResponseStatus"
               },
               {
                 "type": "null"
@@ -22225,6 +22190,14 @@
         ],
         "title": "ComplaintResponseDto",
         "type": "object"
+      },
+      "ComplaintResponseStatus": {
+        "enum": [
+          "in_progress",
+          "resolved",
+          "declined"
+        ],
+        "type": "string"
       },
       "ComplaintStatus": {
         "enum": [
@@ -23706,15 +23679,9 @@
             "default": null
           },
           "workspaceMode": {
+            "$ref": "#/components/schemas/WorkspaceMode",
             "default": "worktree",
-            "enum": [
-              "layr",
-              "image",
-              "worktree",
-              "shared"
-            ],
-            "title": "Workspacemode",
-            "type": "string"
+            "title": "Workspacemode"
           },
           "yolo_mode": {
             "default": true,
@@ -28213,6 +28180,24 @@
         "title": "HostResources",
         "type": "object"
       },
+      "HttpErrorKind": {
+        "description": "Safe HTTP classifications, shared with the existing operator log.",
+        "enum": [
+          "handler_panic",
+          "store_configuration",
+          "store_data",
+          "store_database",
+          "store_io",
+          "store_ownership",
+          "store_schema",
+          "store_concurrency",
+          "response_body_read",
+          "costs_computation",
+          "costs_state",
+          "unclassified"
+        ],
+        "type": "string"
+      },
       "HttpMetricSummary": {
         "additionalProperties": false,
         "properties": {
@@ -30516,6 +30501,24 @@
         "title": "MessageRequest",
         "type": "object"
       },
+      "MigrationPhase": {
+        "enum": [
+          "validate",
+          "apply",
+          "commit",
+          "rollback"
+        ],
+        "type": "string"
+      },
+      "MigrationRollbackOutcome": {
+        "description": "A failed step's rollback, never a claim about previously committed migration steps.",
+        "enum": [
+          "not_required",
+          "rolled_back",
+          "unknown"
+        ],
+        "type": "string"
+      },
       "MigrationStatus": {
         "additionalProperties": false,
         "properties": {
@@ -30574,6 +30577,16 @@
         },
         "title": "MigrationStatus",
         "type": "object"
+      },
+      "MigrationTarget": {
+        "description": "Migration execution stays in runtime-store; these facts are shared operator and UI evidence.",
+        "enum": [
+          "canvas",
+          "analytics",
+          "account_registry",
+          "supervisor"
+        ],
+        "type": "string"
       },
       "MissingToolRequestResponse": {
         "additionalProperties": {
@@ -31174,6 +31187,32 @@
         "title": "MonitorInput",
         "type": "object"
       },
+      "MonitorOperationIdentity": {
+        "additionalProperties": false,
+        "description": "Public projection of the native operation identity, without open transport evidence.",
+        "properties": {
+          "accountKey": {
+            "type": "string"
+          },
+          "agent": {
+            "type": "string"
+          },
+          "connectionId": {
+            "type": "string"
+          },
+          "epoch": {
+            "format": "int64",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "agent",
+          "epoch",
+          "accountKey",
+          "connectionId"
+        ],
+        "type": "object"
+      },
       "MonitorOutputWakeBudget": {
         "additionalProperties": false,
         "description": "Public output wake budget. The monitor matcher owns the stored budget. Tokens count available output wake batches.",
@@ -31464,6 +31503,95 @@
         "title": "MonitorRecordResponse",
         "type": "object"
       },
+      "MonitorRecoveryEvidence": {
+        "additionalProperties": false,
+        "properties": {
+          "proof": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/MonitorRecoveryProof"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "startedAt": {
+            "description": "Unix seconds.",
+            "format": "double",
+            "type": "number"
+          },
+          "status": {
+            "$ref": "#/components/schemas/MonitorRecoveryStatus"
+          }
+        },
+        "required": [
+          "status",
+          "startedAt",
+          "proof"
+        ],
+        "type": "object"
+      },
+      "MonitorRecoveryProof": {
+        "description": "Unclassified text stays private in the retained record; its digest permits exact correlation.",
+        "oneOf": [
+          {
+            "additionalProperties": false,
+            "properties": {
+              "classification": {
+                "const": "recognized",
+                "type": "string"
+              },
+              "reason": {
+                "$ref": "#/components/schemas/MonitorRecoveryReason"
+              }
+            },
+            "required": [
+              "classification",
+              "reason"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "classification": {
+                "const": "unclassified",
+                "type": "string"
+              },
+              "sha256": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "classification",
+              "sha256"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "MonitorRecoveryReason": {
+        "description": "Studio-owned recovery proof codes. A retained native reason outside this set remains unclassified.",
+        "enum": [
+          "no_operation",
+          "invalid_provider_observation",
+          "provider_rejected",
+          "operation_not_accepted",
+          "invalid_terminal_receipt",
+          "termination_unconfirmed",
+          "retained_exit_unavailable",
+          "reattach_window_expired"
+        ],
+        "type": "string"
+      },
+      "MonitorRecoveryStatus": {
+        "enum": [
+          "running",
+          "not_reattachable"
+        ],
+        "type": "string"
+      },
       "MonitorRestartRequest": {
         "additionalProperties": false,
         "properties": {
@@ -31510,15 +31638,14 @@
       },
       "MonitorState": {
         "enum": [
-          "starting",
           "approval",
+          "starting",
           "running",
           "completed",
           "failed",
           "cancelled",
           "lost"
         ],
-        "title": "MonitorState",
         "type": "string"
       },
       "MonitorsResource": {
@@ -39482,68 +39609,37 @@
         "properties": {
           "action": {
             "const": "cancel",
-            "title": "Action",
             "type": "string"
           },
           "agent": {
-            "anyOf": [
-              {
-                "type": "null"
-              },
-              {
-                "type": "string"
-              }
-            ],
-            "default": null,
-            "title": "Agent"
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "expectedText": {
-            "anyOf": [
-              {
-                "type": "null"
-              },
-              {
-                "type": "string"
-              }
-            ],
-            "default": null,
-            "title": "Expectedtext"
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "expected_revision": {
-            "anyOf": [
-              {
-                "type": "null"
-              },
-              {
-                "type": "string"
-              }
-            ],
-            "default": null,
-            "title": "Expected Revision"
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "id": {
-            "anyOf": [
-              {
-                "type": "null"
-              },
-              {
-                "type": "string"
-              }
-            ],
-            "default": null,
-            "title": "Id"
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "message_id": {
-            "anyOf": [
-              {
-                "type": "null"
-              },
-              {
-                "type": "string"
-              }
-            ],
-            "default": null,
-            "title": "Message Id"
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "request_id": {
             "anyOf": [
@@ -39554,15 +39650,12 @@
               {
                 "type": "null"
               }
-            ],
-            "default": null,
-            "title": "Request Id"
+            ]
           }
         },
         "required": [
           "action"
         ],
-        "title": "QueueCancelBody",
         "type": "object"
       },
       "QueueCapabilities": {
@@ -39589,68 +39682,37 @@
         "properties": {
           "action": {
             "const": "edit",
-            "title": "Action",
             "type": "string"
           },
           "agent": {
-            "anyOf": [
-              {
-                "type": "null"
-              },
-              {
-                "type": "string"
-              }
-            ],
-            "default": null,
-            "title": "Agent"
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "expectedText": {
-            "anyOf": [
-              {
-                "type": "null"
-              },
-              {
-                "type": "string"
-              }
-            ],
-            "default": null,
-            "title": "Expectedtext"
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "expected_revision": {
-            "anyOf": [
-              {
-                "type": "null"
-              },
-              {
-                "type": "string"
-              }
-            ],
-            "default": null,
-            "title": "Expected Revision"
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "id": {
-            "anyOf": [
-              {
-                "type": "null"
-              },
-              {
-                "type": "string"
-              }
-            ],
-            "default": null,
-            "title": "Id"
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "message_id": {
-            "anyOf": [
-              {
-                "type": "null"
-              },
-              {
-                "type": "string"
-              }
-            ],
-            "default": null,
-            "title": "Message Id"
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "request_id": {
             "anyOf": [
@@ -39661,13 +39723,10 @@
               {
                 "type": "null"
               }
-            ],
-            "default": null,
-            "title": "Request Id"
+            ]
           },
           "text": {
             "maxLength": 32000,
-            "title": "Text",
             "type": "string"
           }
         },
@@ -39675,7 +39734,6 @@
           "action",
           "text"
         ],
-        "title": "QueueEditBody",
         "type": "object"
       },
       "QueueEntityDto": {
@@ -39712,68 +39770,37 @@
               "first",
               "send_now"
             ],
-            "title": "Action",
             "type": "string"
           },
           "agent": {
-            "anyOf": [
-              {
-                "type": "null"
-              },
-              {
-                "type": "string"
-              }
-            ],
-            "default": null,
-            "title": "Agent"
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "expectedText": {
-            "anyOf": [
-              {
-                "type": "null"
-              },
-              {
-                "type": "string"
-              }
-            ],
-            "default": null,
-            "title": "Expectedtext"
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "expected_revision": {
-            "anyOf": [
-              {
-                "type": "null"
-              },
-              {
-                "type": "string"
-              }
-            ],
-            "default": null,
-            "title": "Expected Revision"
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "id": {
-            "anyOf": [
-              {
-                "type": "null"
-              },
-              {
-                "type": "string"
-              }
-            ],
-            "default": null,
-            "title": "Id"
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "message_id": {
-            "anyOf": [
-              {
-                "type": "null"
-              },
-              {
-                "type": "string"
-              }
-            ],
-            "default": null,
-            "title": "Message Id"
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "request_id": {
             "anyOf": [
@@ -39784,15 +39811,12 @@
               {
                 "type": "null"
               }
-            ],
-            "default": null,
-            "title": "Request Id"
+            ]
           }
         },
         "required": [
           "action"
         ],
-        "title": "QueueFirstBody",
         "type": "object"
       },
       "QueueItem": {
@@ -39893,42 +39917,27 @@
         "properties": {
           "action": {
             "const": "reorder",
-            "title": "Action",
             "type": "string"
           },
           "agent": {
-            "anyOf": [
-              {
-                "type": "null"
-              },
-              {
-                "type": "string"
-              }
-            ],
-            "default": null,
-            "title": "Agent"
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "expected_revision": {
-            "title": "Expected Revision",
             "type": "string"
           },
           "id": {
-            "anyOf": [
-              {
-                "type": "null"
-              },
-              {
-                "type": "string"
-              }
-            ],
-            "default": null,
-            "title": "Id"
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "ordered_ids": {
             "items": {
               "type": "string"
             },
-            "title": "Ordered Ids",
             "type": "array"
           },
           "request_id": {
@@ -39940,9 +39949,7 @@
               {
                 "type": "null"
               }
-            ],
-            "default": null,
-            "title": "Request Id"
+            ]
           }
         },
         "required": [
@@ -39950,7 +39957,6 @@
           "expected_revision",
           "ordered_ids"
         ],
-        "title": "QueueReorderBody",
         "type": "object"
       },
       "QueueResource": {
@@ -40647,6 +40653,13 @@
           "interrupted"
         ],
         "title": "RecoveryOutcome",
+        "type": "string"
+      },
+      "RecoveryPhase": {
+        "enum": [
+          "scan",
+          "history"
+        ],
         "type": "string"
       },
       "RecoveryResponse": {
@@ -49262,88 +49275,96 @@
         "type": "object"
       },
       "StudioError": {
-        "additionalProperties": false,
-        "description": "One agent work item that ended because of a Studio error, not because of the agent's own work.",
-        "properties": {
-          "action": {
-            "description": "resume runs connection recovery for the agent; check opens the agent for the owner.",
-            "enum": [
-              "resume",
-              "check"
+        "description": "An action always carries its real destination. Server incidents have no invented agent.",
+        "oneOf": [
+          {
+            "properties": {
+              "action": {
+                "const": "resume",
+                "type": "string"
+              },
+              "agentId": {
+                "type": "string"
+              },
+              "agentName": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "action",
+              "agentId",
+              "agentName"
             ],
-            "title": "Action",
-            "type": "string"
+            "type": "object"
           },
-          "agentId": {
-            "title": "Agentid",
-            "type": "string"
+          {
+            "properties": {
+              "action": {
+                "const": "check",
+                "type": "string"
+              },
+              "agentId": {
+                "type": "string"
+              },
+              "agentName": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "action",
+              "agentId",
+              "agentName"
+            ],
+            "type": "object"
           },
-          "agentName": {
-            "title": "Agentname",
-            "type": "string"
-          },
+          {
+            "properties": {
+              "action": {
+                "const": "details",
+                "type": "string"
+              }
+            },
+            "required": [
+              "action"
+            ],
+            "type": "object"
+          }
+        ],
+        "properties": {
           "at": {
-            "description": "Unix seconds of the failure.",
+            "description": "Unix seconds.",
+            "format": "double",
             "minimum": 0,
-            "title": "At",
             "type": "number"
           },
           "detail": {
-            "description": "The stored error.",
-            "title": "Detail",
             "type": "string"
           },
+          "diagnostics": {
+            "$ref": "#/components/schemas/StudioErrorDiagnostics"
+          },
           "eventId": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Eventid"
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "id": {
-            "description": "Row identity; dismissing it hides this row only.",
-            "title": "Id",
             "type": "string"
           },
           "kind": {
-            "enum": [
-              "monitor_outcome_lost",
-              "monitor_not_recorded",
-              "input_not_sent",
-              "input_unconfirmed",
-              "input_uncertain",
-              "input_stuck",
-              "turn_disconnected",
-              "workspace_failed"
-            ],
-            "title": "Kind",
-            "type": "string"
+            "$ref": "#/components/schemas/StudioErrorKind"
           },
           "monitorId": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "default": null,
-            "title": "Monitorid"
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "reason": {
-            "description": "The reason in plain words.",
-            "title": "Reason",
             "type": "string"
           },
           "subject": {
-            "description": "The command or the start of the message.",
-            "title": "Subject",
             "type": "string"
           }
         },
@@ -49351,15 +49372,494 @@
           "id",
           "kind",
           "reason",
-          "action",
-          "agentId",
-          "agentName",
           "detail",
           "subject",
-          "at"
+          "at",
+          "diagnostics"
         ],
-        "title": "StudioError",
         "type": "object"
+      },
+      "StudioErrorCause": {
+        "description": "Only facts extracted by typed adapters belong here; never arbitrary error strings or payloads.",
+        "oneOf": [
+          {
+            "additionalProperties": false,
+            "properties": {
+              "kind": {
+                "const": "monitor",
+                "type": "string"
+              },
+              "operation": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/MonitorOperationIdentity"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "recovery": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/MonitorRecoveryEvidence"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "status": {
+                "$ref": "#/components/schemas/MonitorState"
+              }
+            },
+            "required": [
+              "kind",
+              "status",
+              "operation",
+              "recovery"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "keyword": {
+                "type": "string"
+              },
+              "kind": {
+                "const": "schema_violation",
+                "type": "string"
+              },
+              "pointer": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind",
+              "pointer",
+              "keyword"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "kind": {
+                "const": "unclassified",
+                "type": "string"
+              },
+              "sha256": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind",
+              "sha256"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "kind": {
+                "const": "migration",
+                "type": "string"
+              },
+              "phase": {
+                "$ref": "#/components/schemas/MigrationPhase"
+              },
+              "rollback": {
+                "$ref": "#/components/schemas/MigrationRollbackOutcome"
+              },
+              "target": {
+                "$ref": "#/components/schemas/MigrationTarget"
+              }
+            },
+            "required": [
+              "kind",
+              "id",
+              "target",
+              "phase",
+              "rollback"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "kind": {
+                "const": "stored_record",
+                "type": "string"
+              },
+              "object": {
+                "type": "string"
+              },
+              "pointer": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "kind",
+              "object",
+              "id",
+              "pointer"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "extendedCode": {
+                "format": "int32",
+                "type": "integer"
+              },
+              "kind": {
+                "const": "sqlite",
+                "type": "string"
+              },
+              "primaryCode": {
+                "format": "int32",
+                "type": "integer"
+              }
+            },
+            "required": [
+              "kind",
+              "primaryCode",
+              "extendedCode"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "category": {
+                "$ref": "#/components/schemas/StudioErrorJsonCategory"
+              },
+              "column": {
+                "format": "uint",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "kind": {
+                "const": "json",
+                "type": "string"
+              },
+              "line": {
+                "format": "uint",
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "kind",
+              "line",
+              "column",
+              "category"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "kind": {
+                "const": "io",
+                "type": "string"
+              },
+              "osCode": {
+                "format": "int32",
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "kind",
+              "osCode"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "kind": {
+                "const": "schema_object",
+                "type": "string"
+              },
+              "object": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind",
+              "object"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "class": {
+                "$ref": "#/components/schemas/HttpErrorKind"
+              },
+              "kind": {
+                "const": "runtime",
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind",
+              "class"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "StudioErrorContext": {
+        "oneOf": [
+          {
+            "additionalProperties": false,
+            "properties": {
+              "epoch": {
+                "format": "int64",
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "requestId": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "source": {
+                "const": "monitor",
+                "type": "string"
+              },
+              "turnId": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "source",
+              "requestId",
+              "turnId",
+              "epoch"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "epoch": {
+                "format": "int64",
+                "type": "integer"
+              },
+              "source": {
+                "const": "input",
+                "type": "string"
+              },
+              "turnId": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "source",
+              "turnId",
+              "epoch"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "epoch": {
+                "format": "int64",
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "source": {
+                "const": "agent",
+                "type": "string"
+              },
+              "turnId": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "source",
+              "turnId",
+              "epoch"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "class": {
+                "$ref": "#/components/schemas/HttpErrorKind"
+              },
+              "requestId": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "route": {
+                "type": "string"
+              },
+              "source": {
+                "const": "http",
+                "type": "string"
+              },
+              "status": {
+                "format": "uint16",
+                "maximum": 65535,
+                "minimum": 0,
+                "type": "integer"
+              }
+            },
+            "required": [
+              "source",
+              "route",
+              "requestId",
+              "status",
+              "class"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "account": {
+                "type": "string"
+              },
+              "agentId": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "phase": {
+                "$ref": "#/components/schemas/RecoveryPhase"
+              },
+              "source": {
+                "const": "recovery",
+                "type": "string"
+              }
+            },
+            "required": [
+              "source",
+              "account",
+              "phase",
+              "agentId"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "description": "The incident timestamp is the server observation time; the source's invalid values stay private in that row.",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "object": {
+                "type": "string"
+              },
+              "source": {
+                "const": "stored",
+                "type": "string"
+              }
+            },
+            "required": [
+              "source",
+              "object",
+              "id"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "StudioErrorDiagnostics": {
+        "additionalProperties": false,
+        "properties": {
+          "causes": {
+            "description": "Ordered from the owning boundary to the underlying safe machine facts.",
+            "items": {
+              "$ref": "#/components/schemas/StudioErrorCause"
+            },
+            "type": "array"
+          },
+          "certainty": {
+            "$ref": "#/components/schemas/StudioErrorEffectCertainty"
+          },
+          "context": {
+            "$ref": "#/components/schemas/StudioErrorContext"
+          }
+        },
+        "required": [
+          "context",
+          "certainty",
+          "causes"
+        ],
+        "type": "object"
+      },
+      "StudioErrorEffectCertainty": {
+        "description": "Evidence about effects, distinct from provider delivery (\"written\" is not applied).",
+        "enum": [
+          "read_only",
+          "not_applied",
+          "unknown"
+        ],
+        "type": "string"
+      },
+      "StudioErrorJsonCategory": {
+        "enum": [
+          "io",
+          "syntax",
+          "data",
+          "eof"
+        ],
+        "type": "string"
+      },
+      "StudioErrorKind": {
+        "description": "Why work needs attention. The service owns classification and publication.",
+        "enum": [
+          "monitor_outcome_lost",
+          "monitor_not_recorded",
+          "input_unconfirmed",
+          "input_uncertain",
+          "input_stuck",
+          "turn_disconnected",
+          "workspace_failed",
+          "http_failure",
+          "recovery_failed",
+          "stored_record_invalid",
+          "unclassified_failure"
+        ],
+        "type": "string"
       },
       "StudioErrorsDismissRequest": {
         "additionalProperties": false,
@@ -60914,15 +61414,7 @@
           "status": {
             "anyOf": [
               {
-                "enum": [
-                  "ready",
-                  "running",
-                  "blocked",
-                  "review",
-                  "accepted",
-                  "cancelled"
-                ],
-                "type": "string"
+                "$ref": "#/components/schemas/WorkStatus"
               },
               {
                 "type": "null"
@@ -61150,16 +61642,8 @@
             "type": "string"
           },
           "status": {
-            "enum": [
-              "ready",
-              "blocked",
-              "running",
-              "review",
-              "accepted",
-              "cancelled"
-            ],
-            "title": "Status",
-            "type": "string"
+            "$ref": "#/components/schemas/WorkStatus",
+            "title": "Status"
           },
           "submissionRefusal": {
             "$ref": "#/components/schemas/TaskSubmissionRefusal"
@@ -61587,6 +62071,17 @@
         "title": "WorkResultRecordResponse",
         "type": "object"
       },
+      "WorkStatus": {
+        "enum": [
+          "ready",
+          "blocked",
+          "running",
+          "review",
+          "accepted",
+          "cancelled"
+        ],
+        "type": "string"
+      },
       "WorkViewRecordResponse": {
         "additionalProperties": {
           "$ref": "#/components/schemas/JsonValue"
@@ -61641,15 +62136,7 @@
                 "type": "string"
               },
               {
-                "enum": [
-                  "ready",
-                  "running",
-                  "blocked",
-                  "review",
-                  "accepted",
-                  "cancelled"
-                ],
-                "type": "string"
+                "$ref": "#/components/schemas/WorkStatus"
               }
             ],
             "title": "Displaystatus"
@@ -61713,16 +62200,8 @@
             "type": "string"
           },
           "status": {
-            "enum": [
-              "ready",
-              "running",
-              "blocked",
-              "review",
-              "accepted",
-              "cancelled"
-            ],
-            "title": "Status",
-            "type": "string"
+            "$ref": "#/components/schemas/WorkStatus",
+            "title": "Status"
           },
           "submissionRefusal": {
             "$ref": "#/components/schemas/TaskSubmissionRefusal"
@@ -62117,6 +62596,15 @@
         },
         "title": "WorkspaceEntityDto",
         "type": "object"
+      },
+      "WorkspaceMode": {
+        "enum": [
+          "layr",
+          "image",
+          "worktree",
+          "shared"
+        ],
+        "type": "string"
       },
       "WorkspaceResource": {
         "additionalProperties": false,

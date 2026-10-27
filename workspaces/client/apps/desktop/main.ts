@@ -10,35 +10,24 @@ import type {
   Event,
   WebContentsDidStartNavigationEventParams,
 } from "electron";
-import type { DesktopBridge, SignInForward, ServerRequest } from "./api.ts";
+import type {
+  DesktopBridge,
+  SignInForward,
+  NativeRequest,
+  NativeMethod,
+  NativeResult,
+  CredentialResult,
+  StreamChunk,
+} from "./api.ts";
+import {
+  isCredentialAction,
+  isServerMethod,
+  isServerNativeMethod,
+} from "./api.ts";
+export type { NativeRequest } from "./api.ts";
 import { createServerCredentials } from "./server-credentials.ts";
 import { transcribe } from "./speech.ts";
 import type { BackendIdentity } from "./backend.ts";
-type BridgeMethod = Exclude<
-  {
-    [K in keyof DesktopBridge]-?: NonNullable<DesktopBridge[K]> extends (
-      ...args: never[]
-    ) => Promise<unknown>
-      ? K
-      : never;
-  }[keyof DesktopBridge],
-  "serverNativeAction"
->;
-type BridgeRequest = {
-  [K in BridgeMethod]: {
-    method: K;
-    value?: Parameters<
-      Extract<NonNullable<DesktopBridge[K]>, (...args: never[]) => unknown>
-    >[0];
-  };
-}[BridgeMethod];
-export type NativeRequest =
-  | BridgeRequest
-  | { method: "releaseServerView"; value?: string }
-  | {
-      method: "serverNativeAction";
-      value: NativeRequest & { serverId: string };
-    };
 export type NativeFrame = Pick<
   WebFrameMain,
   "url" | "send" | "isDestroyed" | "processId" | "routingId"
@@ -411,10 +400,14 @@ async function holdSignInPort(forward: SignInForward) {
       result.error || "This computer could not hold the sign-in port.",
     );
 }
+function nativeAction<M extends NativeMethod>(
+  event: NativeEvent,
+  request: NativeRequest<M>,
+): Promise<NativeResult<M>>;
 async function nativeAction(
   event: NativeEvent,
   request: NativeRequest,
-): Promise<unknown> {
+): Promise<NativeResult> {
   const owner = trusted(event);
   if (!request || typeof request !== "object")
     throw new Error("Invalid native action.");
@@ -432,52 +425,31 @@ async function nativeAction(
         "This file belongs to another computer. Use the server folder list or Save As.",
       );
     if (
-      ![
-        "requestMicrophone",
-        "prepareTranscription",
-        "transcribeAudio",
-        "cancelTranscription",
-        "pickDirectory",
-        "pickFiles",
-        "revealPath",
-        "saveFile",
-        "fileAction",
-        "openExternal",
-        "openSignIn",
-        "getBackendUpdate",
-        "showVaultKeys",
-      ].includes(request.method)
+      !isServerNativeMethod(request.method) &&
+      request.method !== "showVaultKeys"
     )
       throw new Error("Unknown server native action.");
     if (owner !== "local" && request.method === "getBackendUpdate")
-      return { availableBackendBuild: null, updateRequired: null };
+      return {
+        availableBackendBuild: null,
+        updateRequired: null,
+      } satisfies NativeResult<"getBackendUpdate">;
   }
   switch (request.method) {
     case "releaseServerView": {
       if (owner) throw new Error("Use the workspace shell.");
       const serverId = string(request.value, 128);
       releaseServerView(serverId);
-      return;
+      return undefined satisfies NativeResult<"releaseServerView">;
     }
     case "serverCredentialAction": {
       const value = request.value;
-      if (
-        !value ||
-        ![
-          "pair",
-          "pairApproved",
-          "request",
-          "summary",
-          "cancel",
-          "forget",
-          "pairAttempt",
-        ].includes(value.action)
-      )
+      if (!value || !isCredentialAction(value.action))
         throw new Error("Invalid server credential action.");
       if (
-        ["request", "cancel"].includes(value.action) &&
+        (value.action === "request" || value.action === "cancel") &&
         (!owner ||
-          (value as Pick<ServerRequest, "serverId">).serverId !== owner ||
+          value.serverId !== owner ||
           (value.frameOwner && value.frameOwner !== owner))
       )
         throw new Error("Invalid server frame owner.");
@@ -486,227 +458,239 @@ async function nativeAction(
         ["pair", "pairApproved", "forget", "pairAttempt"].includes(value.action)
       )
         throw new Error("Use the server manager.");
-      if (value.action === "pairApproved") {
-        if (uiOnly || value.frameOwner)
-          throw new Error("Use the local server for automatic access.");
-        return pairApproved({
-          origin: backend.origin,
-          value,
-          credentials: serverCredentials,
-          trusted: () => trusted(event),
-        }).catch((error: unknown) => {
-          if ((error as NodeJS.ErrnoException).code === "invite_unavailable")
-            return { notApplied: "invite_unavailable" };
-          throw error;
-        });
-      }
-      if (value.action === "pairAttempt") {
-        if (owner || value.frameOwner)
-          throw new Error("Use the server manager.");
-        return serverCredentials.hasPairAttempt({
-          origin: value.origin,
-          serverId: string(value.serverId, 128),
-          requestId: string(value.requestId, 128),
-          inviteId: value.inviteId ? string(value.inviteId, 128) : undefined,
-        });
-      }
-      if (value.action === "summary") {
-        if (
-          owner ||
-          value.frameOwner ||
-          value.method !== "GET" ||
-          value.body ||
-          new URL(value.url).pathname !== "/api/ui-summary" ||
-          new URL(value.url).search ||
-          new URL(value.url).hash
-        )
-          throw new Error("Invalid shell summary request.");
-        const controller = new AbortController();
-        const deadline = setTimeout(() => controller.abort(), 15000);
-        try {
-          let response;
-          if (value.serverId === "local") {
-            if (uiOnly || new URL(value.url).origin !== backend.origin)
-              throw new Error("The request does not belong to this server.");
-            response = await fetch(value.url, {
-              method: "GET",
-              headers: value.headers!,
-              signal: controller.signal,
-              redirect: "error",
-            });
-          } else
-            response = await serverCredentials.request(
-              value,
-              controller.signal,
-            );
-          trusted(event);
-          return {
-            status: response.status,
-            statusText: response.statusText,
-            headers: [...response.headers],
-            body: await response.arrayBuffer(),
-          };
-        } finally {
-          clearTimeout(deadline);
+      switch (value.action) {
+        case "pairApproved": {
+          if (uiOnly || value.frameOwner)
+            throw new Error("Use the local server for automatic access.");
+          return (await pairApproved({
+            origin: backend.origin,
+            value,
+            credentials: serverCredentials,
+            trusted: () => trusted(event),
+          }).catch((error: unknown) => {
+            if ((error as NodeJS.ErrnoException).code === "invite_unavailable")
+              return {
+                notApplied: "invite_unavailable",
+              } satisfies CredentialResult<"pairApproved">;
+            throw error;
+          })) satisfies CredentialResult<"pairApproved">;
         }
-      }
-      if (value.action === "pair") {
-        if (value.frameOwner) throw new Error("Pair from the server manager.");
-        return serverCredentials.pair(value);
-      }
-      if (value.action === "forget") {
-        if (value.frameOwner)
-          throw new Error("Remove from the server manager.");
-        for (const stream of serverStreams.values())
-          if (stream.serverId === value.serverId) stream.controller.abort();
-        return serverCredentials.forget(value.serverId);
-      }
-      if (value.action === "request") {
-        const path = decodeURIComponent(new URL(value.url).pathname).replace(
-          /\/+$/,
-          "",
-        );
-        if (
-          (value.method === "POST" &&
-            (path === "/api/multi-server" ||
-              path.startsWith("/api/multi-server/"))) ||
-          path.startsWith("/api/multi-server/v1/")
-        )
-          throw new Error("Use the workspace shell for server management.");
-      }
-      const id = string(value.streamId, 128);
-      if (value.action === "cancel") {
-        const stream = serverStreams.get(id);
-        if (
-          stream &&
-          stream.serverId === value.serverId &&
-          stream.frameOwner === owner
-        )
-          stream.controller.abort();
-        return;
-      }
-      if (serverStreams.has(id))
-        throw new Error("The server stream identity is already in use.");
-      const controller = new AbortController();
-      const pending = {
-        serverId: owner,
-        frameOwner: owner,
-        controller,
-      };
-      serverStreams.set(id, pending);
-      const deadline = setTimeout(() => controller.abort(), 15000);
-      try {
-        let response;
-        if (owner === "local") {
-          if (uiOnly)
-            throw new Error("The local server is unavailable in UI-only mode.");
-          const url = new URL(value.url);
+        case "pairAttempt": {
+          if (owner || value.frameOwner)
+            throw new Error("Use the server manager.");
+          return (await serverCredentials.hasPairAttempt({
+            origin: value.origin,
+            serverId: string(value.serverId, 128),
+            requestId: string(value.requestId, 128),
+            inviteId: value.inviteId ? string(value.inviteId, 128) : undefined,
+          })) satisfies CredentialResult<"pairAttempt">;
+        }
+        case "summary": {
           if (
-            url.origin !== backend.origin ||
-            !url.pathname.startsWith("/api/") ||
-            !["GET", "POST", "HEAD"].includes(value.method!)
+            owner ||
+            value.frameOwner ||
+            value.method !== "GET" ||
+            value.body ||
+            new URL(value.url).pathname !== "/api/ui-summary" ||
+            new URL(value.url).search ||
+            new URL(value.url).hash
           )
-            throw new Error("The request does not belong to this server.");
-          response = await fetch(url, {
-            method: value.method,
-            headers: value.headers!,
-            ...(value.body?.byteLength ? { body: value.body } : {}),
-            signal: controller.signal,
-            redirect: "error",
-          });
-        } else
-          response = await serverCredentials.request(value, controller.signal);
-        trusted(event);
-        const metadata = {
-          status: response.status,
-          statusText: response.statusText,
-          headers: [...response.headers],
-        };
-        if (
-          response.body &&
-          response.headers.get("Content-Type")?.startsWith("text/event-stream")
-        ) {
-          clearTimeout(deadline);
-          void (async () => {
-            const reader = response.body!.getReader();
-            let bytesSinceYield = 0;
-            try {
-              while (!controller.signal.aborted) {
-                const chunk = await reader.read();
-                if (chunk.done) break;
-                trusted(event);
-                event.senderFrame!.send("codex-desktop-server-stream", {
-                  serverId: value.serverId,
-                  streamId: id,
-                  bytes: chunk.value.buffer.slice(
-                    chunk.value.byteOffset,
-                    chunk.value.byteOffset + chunk.value.byteLength,
-                  ),
-                });
-                bytesSinceYield += chunk.value.byteLength;
-                if (bytesSinceYield >= 1024 * 1024) {
-                  bytesSinceYield = 0;
-                  await new Promise((resolve) => setImmediate(resolve));
-                }
-              }
-              if (!win.isDestroyed())
-                event.senderFrame!.send("codex-desktop-server-stream", {
-                  serverId: value.serverId,
-                  streamId: id,
-                  done: true,
-                });
-            } catch {
-              if (!win.isDestroyed())
-                event.senderFrame!.send("codex-desktop-server-stream", {
-                  serverId: value.serverId,
-                  streamId: id,
-                  error: "The server connection closed.",
-                });
-            } finally {
-              controller.abort();
-              await reader.cancel().catch(() => {});
-              serverStreams.delete(id);
-            }
-          })();
-          return { ...metadata, streamId: id };
+            throw new Error("Invalid shell summary request.");
+          const controller = new AbortController();
+          const deadline = setTimeout(() => controller.abort(), 15000);
+          try {
+            let response;
+            if (value.serverId === "local") {
+              if (uiOnly || new URL(value.url).origin !== backend.origin)
+                throw new Error("The request does not belong to this server.");
+              response = await fetch(value.url, {
+                method: "GET",
+                ...(value.headers === undefined
+                  ? {}
+                  : { headers: value.headers }),
+                signal: controller.signal,
+                redirect: "error",
+              });
+            } else
+              response = await serverCredentials.request(
+                value,
+                controller.signal,
+              );
+            trusted(event);
+            return {
+              status: response.status,
+              statusText: response.statusText,
+              headers: [...response.headers],
+              body: await response.arrayBuffer(),
+            } satisfies CredentialResult<"summary">;
+          } finally {
+            clearTimeout(deadline);
+          }
         }
-        const body = await response.arrayBuffer();
-        clearTimeout(deadline);
-        trusted(event);
-        serverStreams.delete(id);
-        return { ...metadata, body };
-      } catch (error) {
-        clearTimeout(deadline);
-        controller.abort();
-        serverStreams.delete(id);
-        throw error as NodeJS.ErrnoException;
+        case "pair": {
+          if (value.frameOwner)
+            throw new Error("Pair from the server manager.");
+          return (await serverCredentials.pair(
+            value,
+          )) satisfies CredentialResult<"pair">;
+        }
+        case "forget": {
+          if (value.frameOwner)
+            throw new Error("Remove from the server manager.");
+          for (const stream of serverStreams.values())
+            if (stream.serverId === value.serverId) stream.controller.abort();
+          return (await serverCredentials.forget(
+            value.serverId,
+          )) satisfies CredentialResult<"forget">;
+        }
+        case "cancel": {
+          const id = string(value.streamId, 128);
+          const stream = serverStreams.get(id);
+          if (
+            stream &&
+            stream.serverId === value.serverId &&
+            stream.frameOwner === owner
+          )
+            stream.controller.abort();
+          return undefined satisfies CredentialResult<"cancel">;
+        }
+        case "request": {
+          const path = decodeURIComponent(new URL(value.url).pathname).replace(
+            /\/+$/,
+            "",
+          );
+          if (
+            (value.method === "POST" &&
+              (path === "/api/multi-server" ||
+                path.startsWith("/api/multi-server/"))) ||
+            path.startsWith("/api/multi-server/v1/")
+          )
+            throw new Error("Use the workspace shell for server management.");
+          const id = string(value.streamId, 128);
+          if (serverStreams.has(id))
+            throw new Error("The server stream identity is already in use.");
+          const controller = new AbortController();
+          const pending = {
+            serverId: owner,
+            frameOwner: owner,
+            controller,
+          };
+          serverStreams.set(id, pending);
+          const deadline = setTimeout(() => controller.abort(), 15000);
+          try {
+            let response;
+            if (owner === "local") {
+              if (uiOnly)
+                throw new Error(
+                  "The local server is unavailable in UI-only mode.",
+                );
+              const url = new URL(value.url);
+              if (
+                url.origin !== backend.origin ||
+                !url.pathname.startsWith("/api/") ||
+                !isServerMethod(value.method)
+              )
+                throw new Error("The request does not belong to this server.");
+              response = await fetch(url, {
+                method: value.method,
+                ...(value.headers === undefined
+                  ? {}
+                  : { headers: value.headers }),
+                ...(value.body?.byteLength ? { body: value.body } : {}),
+                signal: controller.signal,
+                redirect: "error",
+              });
+            } else
+              response = await serverCredentials.request(
+                value,
+                controller.signal,
+              );
+            trusted(event);
+            const metadata = {
+              status: response.status,
+              statusText: response.statusText,
+              headers: [...response.headers],
+            };
+            if (
+              response.body &&
+              response.headers
+                .get("Content-Type")
+                ?.startsWith("text/event-stream")
+            ) {
+              clearTimeout(deadline);
+              void (async () => {
+                const reader = response.body!.getReader();
+                let bytesSinceYield = 0;
+                try {
+                  while (!controller.signal.aborted) {
+                    const chunk = await reader.read();
+                    if (chunk.done) break;
+                    trusted(event);
+                    event.senderFrame!.send("codex-desktop-server-stream", {
+                      serverId: value.serverId,
+                      streamId: id,
+                      bytes: chunk.value.buffer.slice(
+                        chunk.value.byteOffset,
+                        chunk.value.byteOffset + chunk.value.byteLength,
+                      ),
+                    } satisfies StreamChunk);
+                    bytesSinceYield += chunk.value.byteLength;
+                    if (bytesSinceYield >= 1024 * 1024) {
+                      bytesSinceYield = 0;
+                      await new Promise((resolve) => setImmediate(resolve));
+                    }
+                  }
+                  if (!win.isDestroyed())
+                    event.senderFrame!.send("codex-desktop-server-stream", {
+                      serverId: value.serverId,
+                      streamId: id,
+                      done: true,
+                    } satisfies StreamChunk);
+                } catch {
+                  if (!win.isDestroyed())
+                    event.senderFrame!.send("codex-desktop-server-stream", {
+                      serverId: value.serverId,
+                      streamId: id,
+                      error: "The server connection closed.",
+                    } satisfies StreamChunk);
+                } finally {
+                  controller.abort();
+                  await reader.cancel().catch(() => {});
+                  serverStreams.delete(id);
+                }
+              })();
+              return {
+                ...metadata,
+                streamId: id,
+              } satisfies CredentialResult<"request">;
+            }
+            const body = await response.arrayBuffer();
+            clearTimeout(deadline);
+            trusted(event);
+            serverStreams.delete(id);
+            return { ...metadata, body } satisfies CredentialResult<"request">;
+          } catch (error) {
+            clearTimeout(deadline);
+            controller.abort();
+            serverStreams.delete(id);
+            throw error as NodeJS.ErrnoException;
+          }
+        }
+        default: {
+          value satisfies never;
+          throw new Error("Invalid server credential action.");
+        }
       }
     }
     case "serverNativeAction": {
       if (!owner || request.value?.serverId !== owner)
         throw new Error("Invalid server frame owner.");
       const method = string(request.value?.method, 128);
-      const allowed = new Set([
-        "requestMicrophone",
-        "prepareTranscription",
-        "transcribeAudio",
-        "cancelTranscription",
-        "pickDirectory",
-        "pickFiles",
-        "revealPath",
-        "saveFile",
-        "fileAction",
-        "openExternal",
-        "openSignIn",
-        "getBackendUpdate",
-      ]);
-      if (!allowed.has(method))
+      if (!isServerNativeMethod(method))
         throw new Error("Unknown server native action.");
-      // The allowlist above validates this untrusted IPC envelope before dispatch.
-      return nativeAction(event, {
-        method,
-        value: request.value.value,
-      } as NativeRequest);
+      return nativeAction(event, request.value) satisfies Promise<
+        NativeResult<"serverNativeAction">
+      >;
     }
 
     case "saveFile": {
@@ -723,7 +707,8 @@ async function nativeAction(
         defaultPath: path.join(app.getPath("downloads"), name),
         properties: ["createDirectory", "showOverwriteConfirmation"],
       });
-      if (result.canceled || !result.filePath) return false;
+      if (result.canceled || !result.filePath)
+        return false satisfies NativeResult<"saveFile">;
       trusted(event);
       const temporary = path.join(
         path.dirname(result.filePath),
@@ -741,7 +726,7 @@ async function nativeAction(
         await fs.rm(temporary, { force: true }).catch(() => {});
         throw error as NodeJS.ErrnoException;
       }
-      return true;
+      return true satisfies NativeResult<"saveFile">;
     }
     case "fileAction": {
       const action = request.value?.action;
@@ -756,7 +741,7 @@ async function nativeAction(
           process.platform !== "darwin" ||
           typeof win.previewFile !== "function"
         )
-          return false;
+          return false satisfies NativeResult<"fileAction">;
         win.previewFile(file.path, file.name);
       } else {
         if (
@@ -768,7 +753,7 @@ async function nativeAction(
         const error = await shell.openPath(file.path);
         if (error) throw new Error(error);
       }
-      return true;
+      return true satisfies NativeResult<"fileAction">;
     }
     case "requestMicrophone": {
       if (
@@ -781,7 +766,7 @@ async function nativeAction(
       trusted(event);
       microphoneUntil = Date.now() + 15000;
       microphoneOwner = event.studioServerId;
-      return true;
+      return true satisfies NativeResult<"requestMicrophone">;
     }
     case "prepareTranscription": {
       if (process.platform !== "darwin")
@@ -794,7 +779,7 @@ async function nativeAction(
         sender: event.sender,
         serverId: event.studioServerId,
       });
-      return token;
+      return token satisfies NativeResult<"prepareTranscription">;
     }
     case "transcribeAudio": {
       const token = request.value?.permit;
@@ -863,7 +848,7 @@ async function nativeAction(
         const helper = app.isPackaged
           ? path.join(process.resourcesPath, "studio-speech")
           : path.join(import.meta.dirname, "native", "studio-speech");
-        return await transcribe(request.value!, helper, {
+        return (await transcribe(request.value, helper, {
           signal: controller.signal,
           onProgress: (progress) => {
             if (!controller.signal.aborted && !sender.isDestroyed())
@@ -872,7 +857,7 @@ async function nativeAction(
                 ...progress,
               });
           },
-        });
+        })) satisfies NativeResult<"transcribeAudio">;
       } finally {
         cleanup();
         if (transcriptionRunning === running) transcriptionRunning = null;
@@ -886,16 +871,18 @@ async function nativeAction(
         transcriptionRunning.sender !== event.sender ||
         transcriptionRunning.serverId !== event.studioServerId
       )
-        return false;
+        return false satisfies NativeResult<"cancelTranscription">;
       transcriptionRunning.controller.abort();
-      return true;
+      return true satisfies NativeResult<"cancelTranscription">;
     }
     case "pickDirectory": {
       const result = await dialog.showOpenDialog(win, {
         properties: ["openDirectory", "createDirectory"],
       });
       trusted(event);
-      return result.canceled ? null : result.filePaths[0];
+      return (
+        result.canceled ? null : (result.filePaths[0] ?? null)
+      ) satisfies NativeResult<"pickDirectory">;
     }
     case "pickFiles": {
       const result = await dialog.showOpenDialog(win, {
@@ -923,7 +910,7 @@ async function nativeAction(
         });
       }
       trusted(event);
-      return files;
+      return files satisfies NativeResult<"pickFiles">;
     }
     case "revealPath": {
       const value = string(request.value);
@@ -932,11 +919,11 @@ async function nativeAction(
       await fs.stat(value);
       trusted(event);
       shell.showItemInFolder(value);
-      return;
+      return undefined satisfies NativeResult<"revealPath">;
     }
     case "openExternal":
       await shell.openExternal(externalURL(request.value), { activate: false });
-      return;
+      return undefined satisfies NativeResult<"openExternal">;
     case "openSignIn": {
       // The person approved this sign-in link, so the browser comes to the front. A link of a
       // command on another server comes with a forward: this Mac's Studio server holds the
@@ -951,7 +938,7 @@ async function nativeAction(
         trusted(event);
       }
       await shell.openExternal(url, { activate: true });
-      return;
+      return undefined satisfies NativeResult<"openSignIn">;
     }
     case "showVaultKeys": {
       const file = await vaultKeysScript(request.value, {
@@ -968,17 +955,25 @@ async function nativeAction(
         await fs.rm(file, { force: true });
         throw new Error(failed);
       }
-      return;
+      return undefined satisfies NativeResult<"showVaultKeys">;
     }
     case "getBackendUpdate": {
-      if (uiOnly) return { availableBackendBuild: null, updateRequired: false };
+      if (uiOnly)
+        return {
+          availableBackendBuild: null,
+          updateRequired: false,
+        } satisfies NativeResult<"getBackendUpdate">;
       const running = await identity(backend.origin, backend.stateDir!);
       if (!running) throw new Error("The local backend is unavailable.");
       trusted(event);
-      return updateStatus(backendResources, running);
+      return updateStatus(
+        backendResources,
+        running,
+      ) satisfies NativeResult<"getBackendUpdate">;
     }
     case "notify": {
-      if (!Notification.isSupported()) return false;
+      if (!Notification.isSupported())
+        return false satisfies NativeResult<"notify">;
       const target = notificationTarget(request.value?.target);
       const notification = new Notification({
         title: string(request.value?.title, 160),
@@ -1002,7 +997,7 @@ async function nativeAction(
       notification.once("close", () =>
         activeNotifications.delete(notification),
       );
-      return await new Promise((resolve, reject) => {
+      return await new Promise<NativeResult<"notify">>((resolve, reject) => {
         const timer = setTimeout(() => {
           activeNotifications.delete(notification);
           reject(
@@ -1030,6 +1025,7 @@ async function nativeAction(
       });
     }
     default:
+      request satisfies never;
       throw new Error("Unknown native action.");
   }
 }

@@ -1,6 +1,6 @@
 //! Indexed agent fields as typed columns of `runtime_agents`.
 //!
-//! Storage format introduced on 2026-10-20; [`prepare`] also applies the explicit-provider cutover of 2026-10-26. Every agent
+//! Storage format introduced on 2026-10-20; the dated migrations apply the explicit-provider cutover of 2026-10-26. Every agent
 //! field that an index or an indexed query reads is a STORED generated column
 //! of `runtime_agents`, computed by SQLite from the record when the row is
 //! written. Indexes are plain column indexes, and queries filter and sort on
@@ -299,7 +299,7 @@ pub(crate) fn has_explicit_provider_column(connection: &Connection) -> StoreResu
     )?)
 }
 
-fn table_sql(name: &str) -> String {
+pub(crate) fn table_sql(name: &str) -> String {
     let columns = AGENT_COLUMNS
         .iter()
         .map(column_sql)
@@ -317,7 +317,7 @@ pub fn agent_table_sql() -> &'static str {
 }
 
 /// Whether `table` has exactly the columns of this format, in order.
-fn has_columns(transaction: &Transaction<'_>) -> StoreResult<bool> {
+pub(crate) fn has_columns(transaction: &Transaction<'_>) -> StoreResult<bool> {
     let mut statement = transaction.prepare(&format!("PRAGMA table_xinfo({AGENT_TABLE})"))?;
     let names = statement
         .query_map([], |row| row.get::<_, String>(1))?
@@ -326,82 +326,6 @@ fn has_columns(transaction: &Transaction<'_>) -> StoreResult<bool> {
         .chain(AGENT_COLUMNS.iter().map(|column| column.name))
         .chain(std::iter::once("record"));
     Ok(names.iter().map(String::as_str).eq(expected))
-}
-
-/// Bring `runtime_agents` to this format; the first startup step, before any
-/// index on the columns is created. `RuntimeStore::open` calls it.
-pub fn prepare(transaction: &Transaction<'_>) -> StoreResult<()> {
-    if crate::schema::table_exists(transaction, AGENT_TABLE)? {
-        migrate_2026_10_21_capacity_retry_column(transaction)?;
-        // 2026-10-26: identity leaves were migrated before rebuilding strict columns.
-        if !has_columns(transaction)? || !has_explicit_provider_column(transaction)? {
-            rebuild_columns(transaction)?;
-        }
-    }
-    Ok(())
-}
-
-/// Remove the obsolete capacity-start column and its dependent v4 wake index.
-/// Startup installs the replacement index later in the same transaction. Records,
-/// rowids and triggers stay unchanged; reopening after commit is a no-op. Keep
-/// this migration until every state has opened with a build of 2026-10-21 or later.
-fn migrate_2026_10_21_capacity_retry_column(transaction: &Transaction<'_>) -> StoreResult<()> {
-    let has_legacy_column: bool = transaction.query_row(
-        "SELECT EXISTS(SELECT 1 FROM pragma_table_xinfo('runtime_agents') \
-         WHERE name='start_attempt_capacity_retry_id')",
-        [],
-        |row| row.get(0),
-    )?;
-    if has_legacy_column {
-        transaction.execute_batch(
-            "DROP INDEX IF EXISTS runtime_agent_account_wake_candidates_v4;
-             ALTER TABLE runtime_agents DROP COLUMN start_attempt_capacity_retry_id;",
-        )?;
-    }
-    Ok(())
-}
-
-/// Shared rebuild for the 2026-10-20 columns and 2026-10-26 explicit provider: rebuild `runtime_agents` with the generated
-/// columns of [`AGENT_COLUMNS`]. Rows keep their rowid, id and record; the
-/// table's triggers are recreated unchanged. Its JSON expression indexes are
-/// dropped with the old table; their owners create the column indexes that
-/// replace them later in the same startup transaction. No trigger fires, so
-/// no change journal entry, transcript revision or sync projection follows.
-/// It runs in the caller's startup transaction, so a crash leaves either the
-/// old table or the complete new one. Keep this helper while either dated
-/// startup upgrade still supports old states or restorable backups.
-fn rebuild_columns(transaction: &Transaction<'_>) -> StoreResult<()> {
-    const STAGING: &str = "runtime_agents_2026_10_20";
-    const RETIRED: &str = "runtime_agents_before_2026_10_20";
-    let triggers = transaction
-        .prepare(&format!(
-            "SELECT sql FROM sqlite_master WHERE type='trigger' AND tbl_name='{AGENT_TABLE}' \
-             AND sql IS NOT NULL ORDER BY rowid"
-        ))?
-        .query_map([], |row| row.get::<_, String>(0))?
-        .collect::<Result<Vec<_>, _>>()?;
-    // The old table is renamed away before it is dropped: the store's
-    // authorizer ignores deletes from `runtime_agents` (to keep row-level
-    // change hooks), which would make `DROP TABLE runtime_agents` a no-op.
-    // Legacy renames neither rewrite nor re-check other schema objects, so a
-    // state whose other objects startup has yet to repair still migrates; no
-    // object outside this table names it, and its triggers are recreated.
-    transaction.execute_batch(&format!(
-        "DROP TABLE IF EXISTS \"{STAGING}\";
-         DROP TABLE IF EXISTS \"{RETIRED}\";
-         {};
-         INSERT INTO \"{STAGING}\"(rowid,id,record) SELECT rowid,id,record FROM {AGENT_TABLE} ORDER BY rowid;
-         PRAGMA legacy_alter_table=ON;
-         ALTER TABLE {AGENT_TABLE} RENAME TO \"{RETIRED}\";
-         ALTER TABLE \"{STAGING}\" RENAME TO {AGENT_TABLE};
-         PRAGMA legacy_alter_table=OFF;
-         DROP TABLE \"{RETIRED}\";",
-        table_sql(STAGING)
-    ))?;
-    for trigger in triggers {
-        transaction.execute_batch(&trigger)?;
-    }
-    Ok(())
 }
 
 /// `batch` with its `CREATE TABLE runtime_agents(...)` statement replaced by

@@ -4,6 +4,7 @@ import { expect, within } from "storybook/test";
 import type { ChatIndicatorKind } from "../components/chat-status/chatStatusModel";
 import { type CSSProperties, useEffect } from "react";
 import { ActionButton } from "../components/ui/primitives";
+import { computedContrast } from "./computedContrast";
 import "../components/realtime-voice.css";
 import "./foundation.css";
 
@@ -163,24 +164,7 @@ async function verifyFoundation(canvasElement: HTMLElement) {
   expect(getComputedStyle(action).backgroundColor).toBe(
     getComputedStyle(signal).backgroundColor,
   );
-  const luminance = (color: string) => {
-    const channels = color
-      .match(/[\d.]+/g)!
-      .slice(0, 3)
-      .map(Number)
-      .map((v) => v / 255)
-      .map((v) => (v <= 0.04045 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4));
-    return channels.reduce(
-      (sum, channel, index) => sum + channel * [0.2126, 0.7152, 0.0722][index],
-      0,
-    );
-  };
-  const foreground = luminance(getComputedStyle(action).color);
-  const background = luminance(getComputedStyle(action).backgroundColor);
-  expect(
-    (Math.max(foreground, background) + 0.05) /
-      (Math.min(foreground, background) + 0.05),
-  ).toBeGreaterThanOrEqual(4.5);
+  expect(computedContrast(action).ratio).toBeGreaterThanOrEqual(4.5);
 }
 export const Light: Story = {
   args: { scheme: "light" },

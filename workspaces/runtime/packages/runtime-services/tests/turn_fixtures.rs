@@ -83,7 +83,11 @@ impl FixtureValue {
                     .iter()
                     .map(|p| match p.expand(values) {
                         Value::String(s) => s,
-                        _ => panic!("fixture concatenation requires text"),
+                        Value::Null
+                        | Value::Bool(_)
+                        | Value::Number(_)
+                        | Value::Array(_)
+                        | Value::Object(_) => panic!("fixture concatenation requires text"),
                     })
                     .collect(),
             ),

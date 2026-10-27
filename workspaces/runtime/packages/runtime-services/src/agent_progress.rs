@@ -3,7 +3,7 @@ use crate::monitor_policy::MonitorStatus;
 use rusqlite::{Connection, OptionalExtension, Transaction};
 use serde::Deserialize;
 use studio_runtime_schema::agent_progress::{AgentCommandProgress, AgentStall};
-use studio_runtime_store::{AgentStatus, StoreResult, WorkStatus};
+use studio_runtime_store::{AgentStatus, StoreResult, WorkItemRecord, WorkStatus};
 
 // These are projections of open persisted records: unrelated stored fields are ignored.
 #[derive(Deserialize)]
@@ -15,15 +15,7 @@ struct AgentSource {
     is_lead: bool,
     deleted_at: Option<f64>,
 }
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct Assignment {
-    pub id: String,
-    pub owner: Option<String>,
-    status: Option<WorkStatus>,
-    #[serde(default)]
-    updated: f64,
-}
+pub(crate) type Assignment = WorkItemRecord;
 #[derive(Deserialize)]
 struct MonitorSource {
     id: String,
@@ -113,10 +105,10 @@ pub(crate) fn derive(
         }
     }
     let assignment = assignments.iter().find(|task| {
-        task.owner.as_deref() == Some(&agent.id)
+        task.owner() == Some(&agent.id)
             && matches!(
-                task.status,
-                Some(WorkStatus::Ready | WorkStatus::Running | WorkStatus::Blocked)
+                task.status(),
+                WorkStatus::Ready | WorkStatus::Running | WorkStatus::Blocked
             )
     });
     let stall = if !agent.is_lead
@@ -128,7 +120,7 @@ pub(crate) fn derive(
         && commands.is_empty()
     {
         if let Some(task) = assignment {
-            let mut since = task.updated;
+            let mut since = task.updated();
             if crate::sync_policy::table_exists(connection, "runtime_execution_runs")? {
                 let raw: Option<String> = connection.query_row(
                     "SELECT record FROM runtime_execution_runs WHERE agent=?1 ORDER BY created DESC LIMIT 1",
@@ -140,7 +132,7 @@ pub(crate) fn derive(
                 }
             }
             Some(AgentStall {
-                task_id: task.id.clone(),
+                task_id: task.id().0.clone(),
                 since,
             })
         } else {
@@ -157,10 +149,16 @@ pub(crate) fn assignments(connection: &Connection, agent_id: &str) -> StoreResul
         return Ok(Vec::new());
     }
     let mut statement = connection.prepare_cached(
-        "SELECT record FROM runtime_work WHERE json_extract(record,'$.owner')=?1 ORDER BY rowid",
+        "SELECT id,record FROM runtime_work WHERE json_extract(record,'$.owner')=?1 ORDER BY rowid",
     )?;
-    let rows = statement.query_map([agent_id], |row| row.get::<_, String>(0))?;
-    rows.map(|row| Ok(serde_json::from_str(&row?)?)).collect()
+    let rows = statement.query_map([agent_id], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+    })?;
+    rows.map(|row| {
+        let (id, raw) = row?;
+        WorkItemRecord::decode(&id, &raw)
+    })
+    .collect()
 }
 
 /// Publish the owner after a managed-command write, including output-only updates.
@@ -189,6 +187,60 @@ pub(crate) fn publish_owner(transaction: &Transaction<'_>, agent_id: &str) -> St
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn stored_review_boundary_progress_refuses_present_invalid_updated() {
+        let connection = Connection::open_in_memory().expect("fixture database");
+        connection
+            .execute_batch("CREATE TABLE runtime_work(id TEXT PRIMARY KEY,record TEXT NOT NULL)")
+            .expect("fixture work table");
+        for updated in [json!("bad"), json!(null), json!(false), json!([])] {
+            connection.execute("INSERT OR REPLACE INTO runtime_work VALUES('assigned',?1)",[json!({"id":"assigned","status":"running","owner":"worker","dependencies":[],"updated":updated}).to_string()]).expect("corrupt timestamp fixture");
+            let error = assignments(&connection, "worker")
+                .expect_err("malformed timestamp cannot become epoch zero");
+            assert!(
+                error.to_string().contains("runtime_work/assigned"),
+                "{error:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn stored_work_boundary_progress_refuses_missing_status_instead_of_omitting_assignment() {
+        let connection = Connection::open_in_memory().expect("fixture database");
+        connection
+            .execute_batch("CREATE TABLE runtime_work(id TEXT PRIMARY KEY, record TEXT NOT NULL)")
+            .expect("fixture work table");
+        for record in [
+            json!({"id":"assigned","owner":"worker"}),
+            json!({"id":"assigned","owner":"worker","status":null}),
+        ] {
+            connection
+                .execute(
+                    "INSERT OR REPLACE INTO runtime_work VALUES('assigned',?1)",
+                    [record.to_string()],
+                )
+                .expect("corrupt fixture");
+            assert!(
+                matches!(assignments(&connection,"worker"), Err(studio_runtime_store::StoreError::InvalidSyncObjectField {scope,id,..}) if scope == "runtime_work" && id == "assigned")
+            );
+        }
+        connection
+            .execute(
+                "UPDATE runtime_work SET record=?1 WHERE id='assigned'",
+                [
+                    json!({"id":"assigned","owner":"worker","status":"running","dependencies":[]})
+                        .to_string(),
+                ],
+            )
+            .expect("healthy assignment");
+        assert_eq!(
+            assignments(&connection, "worker")
+                .expect("healthy assignment remains visible")
+                .len(),
+            1
+        );
+    }
 
     #[test]
     fn idle_assignment_stalls_but_live_commands_and_submitted_work_do_not() {
@@ -263,7 +315,7 @@ mod tests {
             WorkStatus::Accepted,
             WorkStatus::Cancelled,
         ] {
-            tasks[0].status = Some(status);
+            tasks[0].set_status(status);
             assert!(
                 derive(&connection, &agent, &tasks)
                     .expect("test fixture value")
@@ -271,7 +323,7 @@ mod tests {
                     .is_none()
             );
         }
-        tasks[0].status = Some(WorkStatus::Running);
+        tasks[0].set_status(WorkStatus::Running);
         for (id, status) in [("m1", "running"), ("m2", "starting"), ("old", "completed")] {
             connection.execute("INSERT INTO runtime_monitors VALUES(?1,?2)",rusqlite::params![id,json!({"id":id,"agent":"worker","status":status,"command":"just test-fast\nsecond line","created":5,"tail":"old output\nfinal output\n"}).to_string()]).expect("test fixture value");
         }

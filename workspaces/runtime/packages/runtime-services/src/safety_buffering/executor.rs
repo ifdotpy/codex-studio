@@ -484,7 +484,9 @@ async fn request_for_stage(
         Stage::Interrupt => Method::TurnInterrupt,
         Stage::Fork => Method::ThreadFork,
         Stage::Start => Method::TurnStart,
-        _ => return Err(Error::InvalidStoredState),
+        Stage::Running | Stage::Unknown | Stage::Failed | Stage::Cancelled => {
+            return Err(Error::InvalidStoredState);
+        }
     };
     let params = match stage {
         Stage::Turns | Stage::VerifyTurns => {
@@ -526,7 +528,9 @@ async fn request_for_stage(
                 prepared.turn_params
             }
         }
-        _ => return Err(Error::InvalidStoredState),
+        Stage::Running | Stage::Unknown | Stage::Failed | Stage::Cancelled => {
+            return Err(Error::InvalidStoredState);
+        }
     };
     Ok((method, params))
 }
@@ -822,7 +826,9 @@ async fn advance_stage(
                     operation["error"] = Value::Null;
                     agent = read_agent(tx, required_str(&operation, "agent")?)?;
                 }
-                _ => return Err(Error::InvalidStoredState),
+                Stage::Running | Stage::Unknown | Stage::Failed | Stage::Cancelled => {
+                    return Err(Error::InvalidStoredState);
+                }
             }
             operation["dispatch"] = json!("ready");
             operation["updated"] = json!(unix_seconds());

@@ -425,7 +425,9 @@ fn insert_row(
                 }
             }
             Value::String(s) => rusqlite::types::Value::Text(s.clone()),
-            _ => rusqlite::types::Value::Text(v.to_string()),
+            Value::Bool(_) | Value::Array(_) | Value::Object(_) => {
+                rusqlite::types::Value::Text(v.to_string())
+            }
         })
         .collect();
     let slots = vec!["?"; values.len()].join(",");

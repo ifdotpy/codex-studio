@@ -4,6 +4,8 @@
 pub mod agent_limits;
 pub mod agent_progress;
 pub mod api_schema;
+mod codex_generated;
+pub mod complaints;
 pub mod contracts;
 pub mod delivery;
 pub mod desktop;
@@ -13,10 +15,16 @@ pub mod json_compat;
 pub mod multi_server_protocol;
 pub mod pricing;
 pub mod provider_diagnostics;
+pub mod provider_errors;
 pub mod provider_input;
 pub mod provider_kind;
+pub mod provider_lifecycle;
 pub mod provider_method_policy;
+pub mod provider_rate_limits;
+pub mod queue_command;
+pub mod records;
 pub mod shared_values;
+pub mod studio_errors;
 pub mod supervisor_contract;
 pub mod task_results;
 pub mod usage;
@@ -638,7 +646,38 @@ fn extra_field_errors(error: &ValidationError<'_>) -> Vec<(String, Vec<String>)>
             }
         }
         ValidationErrorKind::OneOfMultipleValid { .. } => Vec::new(),
-        _ => Vec::new(),
+        ValidationErrorKind::AdditionalItems { .. }
+        | ValidationErrorKind::BacktrackLimitExceeded { .. }
+        | ValidationErrorKind::RegexEngineFailure { .. }
+        | ValidationErrorKind::Constant { .. }
+        | ValidationErrorKind::Contains
+        | ValidationErrorKind::ContentEncoding { .. }
+        | ValidationErrorKind::ContentMediaType { .. }
+        | ValidationErrorKind::Custom { .. }
+        | ValidationErrorKind::Enum { .. }
+        | ValidationErrorKind::ExclusiveMaximum { .. }
+        | ValidationErrorKind::ExclusiveMinimum { .. }
+        | ValidationErrorKind::FalseSchema
+        | ValidationErrorKind::Format { .. }
+        | ValidationErrorKind::FromUtf8 { .. }
+        | ValidationErrorKind::MaxItems { .. }
+        | ValidationErrorKind::Maximum { .. }
+        | ValidationErrorKind::MaxLength { .. }
+        | ValidationErrorKind::MaxProperties { .. }
+        | ValidationErrorKind::MinItems { .. }
+        | ValidationErrorKind::Minimum { .. }
+        | ValidationErrorKind::MinLength { .. }
+        | ValidationErrorKind::MinProperties { .. }
+        | ValidationErrorKind::MultipleOf { .. }
+        | ValidationErrorKind::Not { .. }
+        | ValidationErrorKind::Pattern { .. }
+        | ValidationErrorKind::PropertyNames { .. }
+        | ValidationErrorKind::Required { .. }
+        | ValidationErrorKind::Type { .. }
+        | ValidationErrorKind::UnevaluatedItems { .. }
+        | ValidationErrorKind::UnevaluatedProperties { .. }
+        | ValidationErrorKind::UniqueItems
+        | ValidationErrorKind::Referencing(_) => Vec::new(),
     }
 }
 
@@ -659,7 +698,38 @@ fn non_extra_error_count(error: &ValidationError<'_>) -> usize {
             .map(|branch| branch.iter().map(non_extra_error_count).sum::<usize>())
             .min()
             .unwrap_or(1),
-        _ => 1,
+        ValidationErrorKind::AdditionalItems { .. }
+        | ValidationErrorKind::BacktrackLimitExceeded { .. }
+        | ValidationErrorKind::RegexEngineFailure { .. }
+        | ValidationErrorKind::Constant { .. }
+        | ValidationErrorKind::Contains
+        | ValidationErrorKind::ContentEncoding { .. }
+        | ValidationErrorKind::ContentMediaType { .. }
+        | ValidationErrorKind::Custom { .. }
+        | ValidationErrorKind::Enum { .. }
+        | ValidationErrorKind::ExclusiveMaximum { .. }
+        | ValidationErrorKind::ExclusiveMinimum { .. }
+        | ValidationErrorKind::FalseSchema
+        | ValidationErrorKind::Format { .. }
+        | ValidationErrorKind::FromUtf8 { .. }
+        | ValidationErrorKind::MaxItems { .. }
+        | ValidationErrorKind::Maximum { .. }
+        | ValidationErrorKind::MaxLength { .. }
+        | ValidationErrorKind::MaxProperties { .. }
+        | ValidationErrorKind::MinItems { .. }
+        | ValidationErrorKind::Minimum { .. }
+        | ValidationErrorKind::MinLength { .. }
+        | ValidationErrorKind::MinProperties { .. }
+        | ValidationErrorKind::MultipleOf { .. }
+        | ValidationErrorKind::Not { .. }
+        | ValidationErrorKind::Pattern { .. }
+        | ValidationErrorKind::PropertyNames { .. }
+        | ValidationErrorKind::Required { .. }
+        | ValidationErrorKind::Type { .. }
+        | ValidationErrorKind::UnevaluatedItems { .. }
+        | ValidationErrorKind::UnevaluatedProperties { .. }
+        | ValidationErrorKind::UniqueItems
+        | ValidationErrorKind::Referencing(_) => 1,
     }
 }
 

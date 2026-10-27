@@ -68,7 +68,7 @@ fn image_sizes(value: &Value, images: &mut Vec<Value>) {
                 }
             }
         }
-        _ => {}
+        Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) => {}
     }
 }
 pub(crate) fn item_sizes(kind: &str, item: &Value) -> (Value, Value) {

@@ -204,6 +204,7 @@ if (process.argv.includes("--unlock-contract")) {
       assert.equal(readFileSync(lease, "utf8"), expectedLease);
       execFileSync("codesign", ["--verify", "--deep", "--strict", app]);
     }
+    assert.ok(requirements[0]);
     assert.match(requirements[0], /certificate leaf/);
     assert.equal(
       requirements[0],

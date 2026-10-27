@@ -484,8 +484,8 @@ function killBarrierProcesses() {
 
 function parseArgs(argv: string[]) {
   const result: Record<string, string | boolean | undefined> = {};
-  for (let i = 0; i < argv.length; i += 1) {
-    const arg = argv[i];
+  const argumentsLeft = argv.values();
+  for (const arg of argumentsLeft) {
     if (arg === "--resume") {
       result.resume = true;
       continue;
@@ -497,11 +497,10 @@ function parseArgs(argv: string[]) {
 
     if (!arg.startsWith("--")) throw new Error(`Unexpected argument: ${arg}`);
     const key = arg.slice(2);
-    const value = argv[i + 1];
+    const value = argumentsLeft.next().value;
     if (!value || value.startsWith("--"))
       throw new Error(`Missing value for ${arg}`);
     result[key] = value;
-    i += 1;
   }
   return result;
 }
@@ -841,10 +840,9 @@ async function waitForCallbackReadiness(
   while (ready.size < ids.length) {
     const index = (await markers.next(deadlineAt))!;
 
-    const agentId = ids[index];
-
-    const owner = journal.ownedAgents.find((item) => item.id === agentId);
-    assert.ok(owner, `Worker ${agentId} is not journal-owned.`);
+    const owner = journal.ownedAgents.find((item) => item.id === ids[index]);
+    assert.ok(owner, `Worker ${ids[index]} is not journal-owned.`);
+    const agentId = owner.id;
     assert.ok(
       !ready.has(agentId),
       `Worker ${agentId} published its readiness marker twice.`,
@@ -871,13 +869,15 @@ async function waitForCallbackReadiness(
       0o700,
     );
     assertOwnedEntry(await lstat(path), path, (info) => info.isFIFO(), 0o600);
+    const token = tokens[index];
+    assert.ok(token, `Missing callback token for ${agentId}.`);
     ready.set(agentId, {
       agentId,
       index,
       cwd,
       directory,
       path,
-      token: tokens[index],
+      token,
     });
     const barrier = {
       barrierDirectory: directory,
@@ -1362,6 +1362,10 @@ async function main({
               const workerAccount =
                 workerRole.accountKeys[index % workerRole.accountKeys.length];
 
+              assert.ok(
+                workerAccount,
+                "Worker account rotation requires a ready account.",
+              );
               const workerModel = workerRole.modelByAccount.get(workerAccount);
 
               const tag = `STUDIO_SCALE_${runId.slice(0, 8)}_${workers}_${index}`;
@@ -1598,12 +1602,16 @@ async function main({
       await saveJournal(journalPath, journal);
       stage.firstExchangeCount = workers;
       stage.secondExchangeLatenciesMs = [];
-      stage.secondExchangeIds = ids.map(() => randomUUID());
+      const secondExchanges = ids.map((agentId) => ({
+        agentId,
+        messageId: randomUUID(),
+      }));
+      stage.secondExchangeIds = secondExchanges.map(
+        ({ messageId }) => messageId,
+      );
       stage.state = "sending-second-exchanges";
       const secondResults = await Promise.allSettled(
-        ids.map(async (agentId, index) => {
-          const messageId = stage.secondExchangeIds![index];
-
+        secondExchanges.map(async ({ agentId, messageId }, index) => {
           const before = await client.receipt(agentId, messageId);
           assert.equal(
             before,
@@ -2188,7 +2196,9 @@ async function createClient(
         parentId: identity.parentId || null,
         isLead: identity.isLead === true,
         stageWorkers: identity.stageWorkers,
-        stageIndex: identity.stageIndex,
+        ...(identity.stageIndex === undefined
+          ? {}
+          : { stageIndex: identity.stageIndex }),
         create: intent,
         exchanges: [],
         cleanup: { state: "pending" },
@@ -2981,10 +2991,9 @@ export function runEventEvidenceQuery(
           "SELECT e.id,e.agent AS agentId,e.kind,e.status,e.error,m.record FROM runtime_events e LEFT JOIN runtime_event_meta m ON m.id=e.id WHERE e.id=? AND e.agent=?",
         )
         .get(item.id, item.agentId) as
-        | (Pick<
-            EvidenceEvent,
-            "id" | "agentId" | "kind" | "status" | "error"
-          > & { record: string | null })
+        | (Required<
+            Pick<EvidenceEvent, "id" | "agentId" | "kind" | "status">
+          > & { error: string | null; record: string | null })
         | undefined;
       if (!row)
         return {
@@ -3070,14 +3079,14 @@ async function readEventEvidence(
   stage: Stage,
   deadlineAt: number,
 ) {
-  const eventIds = stage.agentIds.flatMap((agentId, index) => [
-    { id: `${agentId}:initial`, agentId, exchange: 1 },
-    {
-      id: stage.secondExchangeIds![index],
-      agentId,
-      exchange: 2,
-    },
-  ]);
+  const eventIds = stage.agentIds.flatMap((agentId, index) => {
+    const secondId = stage.secondExchangeIds?.[index];
+    assert.ok(secondId, `Missing second exchange identity for ${agentId}.`);
+    return [
+      { id: `${agentId}:initial`, agentId, exchange: 1 },
+      { id: secondId, agentId, exchange: 2 },
+    ];
+  });
   const evidence = runEventEvidenceQuery(
     stateDir,
     workspaceId,
@@ -3204,6 +3213,7 @@ export async function readCurrentTeamChildren(
           )
           .all(leadId, leadId);
     return rows.map(({ id, record: raw }) => {
+      assert.ok(typeof id === "string", "Agent evidence row requires an ID.");
       const record: Schema["AgentRecordResponse"] & Record<string, unknown> =
         JSON.parse(raw as string);
       const item = Object.fromEntries(
@@ -3533,11 +3543,19 @@ function releaseUnfinishedCallbacks(owners: OwnedAgent[], journal: Journal) {
             proof.callbackProcessesRetired === true,
         ),
   );
-  const entries = pending.map((owner) => ({
-    path: ownerBarrierPath(owner)!,
-    token: journal.stages.find((stage) => stage.workers === owner.stageWorkers)!
-      .toolBarrierTokens![owner.stageIndex!],
-  }));
+  const entries = pending.map((owner) => {
+    const path = ownerBarrierPath(owner);
+    const stage = journal.stages.find(
+      (stage) => stage.workers === owner.stageWorkers,
+    );
+    assert.ok(
+      path && stage && owner.stageIndex !== undefined,
+      `Missing owned callback barrier for ${owner.id}.`,
+    );
+    const token = stage.toolBarrierTokens?.[owner.stageIndex];
+    assert.ok(token, `Missing owned callback token for ${owner.id}.`);
+    return { path, token };
+  });
   releaseBarriersNow(entries);
   const releasedAt = new Date().toISOString();
   for (const owner of pending) owner.callbackReleasedAt = releasedAt;
@@ -3829,17 +3847,20 @@ async function verifyOwnedWorktreesRemoved(
         1,
         `Could not identify exactly one verifier-owned registered worktree for ${owner.id}.`,
       );
-      owner.worktree.registeredRoot = owned[0].path;
+      const [registration] = owned;
+      assert.ok(registration);
+      owner.worktree.registeredRoot = registration.path;
       await saveJournal(journalPath, journal);
     }
     const root = resolve(owner.worktree.registeredRoot!);
-    if (owned.length) {
+    const [registration] = owned;
+    if (registration) {
       assert.ok(
-        owned.length === 1 && owned[0].path === root,
+        owned.length === 1 && registration.path === root,
         `Owned worktree registration changed for ${owner.id}.`,
       );
       assert.equal(
-        owned[0].branch,
+        registration.branch,
         `refs/heads/${owner.worktree.branch}`,
         `Owned worktree branch identity changed for ${owner.id}.`,
       );

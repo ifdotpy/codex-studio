@@ -1,3 +1,4 @@
+import { required } from "../teams/helpers.ts";
 import { remoteNetwork } from "./browser-fixture.ts";
 import { test, expect } from "../playwright.ts";
 import { fixture } from "./multi-server-fixture.ts";
@@ -56,7 +57,7 @@ test("direct screens keep overlapping chat drafts and sends with their owner", a
       .getByRole("button", { name: "Send message", exact: true })
       .click();
     await expect.poll(() => remote.writes.length).toBe(1);
-    expect(remote.writes[0].text).toBe("remote draft");
+    expect(required(remote.writes[0]).text).toBe("remote draft");
     expect(local.writes).toHaveLength(0);
     quotaFault = true;
     await page.evaluate(() => {
@@ -195,7 +196,7 @@ test("direct screens automatically include paired servers on phones", async ({
       .getByRole("button", { name: "Send message", exact: true })
       .click();
     await expect.poll(() => remote.writes.length).toBe(1);
-    expect(remote.writes[0]!.text).toBe("phone message for remote");
+    expect(required(remote.writes[0])!.text).toBe("phone message for remote");
     expect(local.writes).toHaveLength(0);
     await openChats();
     await chat("Local").click();

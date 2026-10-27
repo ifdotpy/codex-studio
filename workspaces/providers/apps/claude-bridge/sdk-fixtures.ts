@@ -33,12 +33,11 @@ export const forkSession = async () => ({
 });
 export const getSessionMessages = async () => [];
 export function inputText(input: SDKUserMessage) {
-  return (
-    input.message.content[0] as Extract<
-      Exclude<SDKUserMessage["message"]["content"], string>[number],
-      { type: "text" }
-    >
-  ).text;
+  const content = input.message.content;
+  const first = Array.isArray(content) ? content[0] : undefined;
+  if (!first || first.type !== "text")
+    throw new Error("Expected fixture text input");
+  return first.text;
 }
 
 // Scripted SDK waits keep the child IPC channel alive until their signal settles.

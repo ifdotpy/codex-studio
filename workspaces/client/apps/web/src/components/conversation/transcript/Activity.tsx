@@ -548,7 +548,7 @@ export default memo(function Activity({
             <strong className="activity-limit">Account limit reached · </strong>
           )}
           {items.length === 1
-            ? describe(items[0], payload(items[0])).label
+            ? describe(items[0]!, payload(items[0]!)).label
             : summary.label}
         </span>
         {items.length === 1 && reads.length > 0 && (

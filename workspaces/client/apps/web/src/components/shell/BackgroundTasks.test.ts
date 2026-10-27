@@ -1,4 +1,6 @@
 import { describe, expect, it } from "vitest";
+import type { Agent } from "../../types";
+import type { DisplayBackgroundTask } from "../backgroundTaskModel";
 import {
   backgroundProcessGroups,
   monitorTask,
@@ -24,7 +26,7 @@ describe("response stop identity", () => {
       inFlight: false,
       threadId: "thread-current",
       turnId: null,
-    };
+    } satisfies Agent;
     const active = { ...idle, inFlight: true, turnId: "turn-1" };
     const nextTurn = { ...active, turnId: "turn-2" };
     expect(responseOwnerIdentityKey(idle)).not.toBe(
@@ -43,7 +45,7 @@ describe("response stop identity", () => {
       connectionId: "connection-current",
       threadId: "thread-current",
       turnId: "turn-current",
-    };
+    } satisfies NonNullable<Parameters<typeof responseStopIdentity>[0]>;
     expect(responseStopIdentity(target)).toEqual({ responseTarget: target });
     expect(responseStopIdentity(null)).toEqual({});
   });
@@ -125,7 +127,7 @@ describe("dispatch strip states", () => {
       created: 1,
       command: "pnpm test",
       status: "approval",
-    };
+    } satisfies DisplayBackgroundTask;
     expect(backgroundTaskState(task)).toBe("answer");
     expect(backgroundTaskState({ ...task, status: "running" })).toBe("working");
     expect(backgroundTaskState({ ...task, status: "lost" })).toBe("error");

@@ -28,6 +28,7 @@ test("Dictation ui", async ({
               import.meta.dirname,
               "./dictation-capture.fixture.ts",
             );
+          return undefined;
         },
         configureServer(server) {
           server.middlewares.use("/dictation-test", (_request, response) => {
@@ -191,7 +192,9 @@ test("Dictation ui", async ({
           { ...row, transcriptionAttempt: "old", transcript: "Old result" },
           "old",
         );
-        const result = (await store.listRecordings("first"))[0].transcript;
+        const recording = (await store.listRecordings("first"))[0];
+        if (!recording) throw new Error("Missing recording");
+        const result = recording.transcript;
         await store.deleteRecording(row.id);
         return result;
       }),

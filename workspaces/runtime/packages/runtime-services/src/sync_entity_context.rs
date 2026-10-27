@@ -174,10 +174,10 @@ pub(crate) fn agent_view_contexts(
         }
     }
     let mut assigned = HashMap::<String, Vec<crate::agent_progress::Assignment>>::new();
-    for (_, raw) in work_records {
-        let task: crate::agent_progress::Assignment = serde_json::from_str(raw)?;
-        if let Some(owner) = &task.owner {
-            assigned.entry(owner.clone()).or_default().push(task);
+    for (id, raw) in work_records {
+        let task = crate::agent_progress::Assignment::decode(id, raw)?;
+        if let Some(owner) = task.owner() {
+            assigned.entry(owner.to_owned()).or_default().push(task);
         }
     }
     let mut contexts = HashMap::with_capacity(agents.len());
@@ -248,17 +248,17 @@ pub(crate) fn agent_view_context(
         )?;
     let mut latest: Option<(f64, String)> = None;
     let mut statement = transaction.prepare_cached(
-        "SELECT record FROM runtime_work WHERE json_extract(record,'$.owner')=?1",
+        "SELECT id,record FROM runtime_work WHERE json_extract(record,'$.owner')=?1",
     )?;
     let rows = statement
-        .query_map([id], |row| row.get::<_, String>(0))?
+        .query_map([id], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?
         .collect::<Result<Vec<_>, _>>()?;
     let mut assigned = Vec::with_capacity(rows.len());
-    for raw in rows {
-        assigned.push(serde_json::from_str::<crate::agent_progress::Assignment>(
-            &raw,
-        )?);
-        let work: Value = serde_json::from_str(&raw)?;
+    for (work_id, raw) in rows {
+        let assignment = crate::agent_progress::Assignment::decode(&work_id, &raw)?;
+        let work = assignment.value();
         for result in work
             .get("results")
             .and_then(Value::as_array)
@@ -282,6 +282,7 @@ pub(crate) fn agent_view_context(
                 latest = Some((created, path.to_owned()));
             }
         }
+        assigned.push(assignment);
     }
     let progress = crate::agent_progress::derive(transaction, record, &assigned)?;
     let attention = pending_attention(transaction, id, record)?;
@@ -663,7 +664,7 @@ mod room_preparation_tests {
             let id = format!("agent-{index:04}");
             let agent = json!({"id":id,"provider":studio_runtime_schema::ProviderKind::Codex,"status":"idle"}).to_string();
             let work_id = format!("work-{index:04}");
-            let task = json!({"id":work_id,"owner":id,"results":[]}).to_string();
+            let task = json!({"id":work_id,"owner":id,"status":"running","results":[]}).to_string();
             transaction
                 .execute(
                     "INSERT INTO runtime_agents(id,record) VALUES(?1,?2)",

@@ -1,3 +1,5 @@
+import { required } from "../components/componentTestFixtures.ts";
+import assert from "node:assert/strict";
 import { expect, it, vi } from "vitest";
 import {
   mergeSidebar,
@@ -77,6 +79,7 @@ function preferences(a: SidebarSource, b?: SidebarSource) {
 it("ignores explicit shared project heading edits", () => {
   const a = source("local"),
     b = source("remote");
+  assert.ok(b.sidebar.projects[0] != null);
   b.sidebar.projects[0].projectAliases = [
     { serverId: "local", projectId: "p-local", name: "local" },
   ];
@@ -103,6 +106,7 @@ it("ignores saved collapse state for an unregistered project directory", () => {
 it("a reorder with shared chats on each server round-trips the sidebar order", () => {
   const a = source("local", 3),
     b = source("remote", 3);
+  assert.ok(b.sidebar.projects[0] != null);
   b.sidebar.projects[0].projectAliases = [
     { serverId: "local", projectId: "p-local", name: "local" },
   ];
@@ -112,7 +116,7 @@ it("a reorder with shared chats on each server round-trips the sidebar order", (
     model.projectKey("local", "/local"),
     null,
   ]);
-  const desired = [...model.order[group]].reverse();
+  const desired = [...required(model.order[group])].reverse();
   const payload = sidebarOrderWrite(model, "local", {
     ...model.order,
     [group]: desired,
@@ -177,6 +181,7 @@ it("classic mode does not request sources or construct the merged model", () => 
 it("an explicit reorder converts legacy combined ranks without changing unknown native IDs", () => {
   const a = source("local", 2),
     b = source("remote", 2);
+  assert.ok(b.sidebar.projects[0] != null);
   b.sidebar.projects[0].projectAliases = [
     { serverId: "local", projectId: "p-local", name: "local" },
   ];
@@ -186,12 +191,15 @@ it("an explicit reorder converts legacy combined ranks without changing unknown 
     initial.projectKey("local", "/local"),
     null,
   ]);
-  const oldOrder = [...initial.order[group]].reverse();
+  const oldOrder = [...required(initial.order[group])].reverse();
   const legacyKey = JSON.stringify(["combined-sidebar", group]);
   a.sidebar.sidebarOrder!.groups![legacyKey] = oldOrder;
   const nativeGroup = JSON.stringify(["items", "/local", null]);
-  a.sidebar.sidebarOrder!.groups![nativeGroup].push("unknown-native-id");
+  required(required(a.sidebar.sidebarOrder).groups![nativeGroup]).push(
+    "unknown-native-id",
+  );
   const model = mergeSidebar([a, b]);
+  assert.ok(model.order[group] != null);
   expect(model.order[group].slice(0, 4)).toEqual(oldOrder);
   const desired = [...model.order[group]].reverse();
   const payload = sidebarOrderWrite(model, "local", {

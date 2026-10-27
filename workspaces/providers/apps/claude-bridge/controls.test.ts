@@ -4,6 +4,9 @@ import type { ControlDependencies } from "./controls.ts";
 import { messageIndex } from "./history-index.ts";
 import { test } from "vitest";
 import assert from "node:assert/strict";
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import {
   commandCatalog,
   explicitNativeCommand,
@@ -112,6 +115,47 @@ test("rollback preserves steers, remaps UUIDs, archives source, and retries exac
     /different content/,
   );
 });
+test.each(["symlink", "letter case"])(
+  "rollback and branch give the SDK the real project path: %s",
+  async (kind) => {
+    const root = await fs.realpath(
+      await fs.mkdtemp(path.join(os.tmpdir(), "claude-controls-dir-")),
+    );
+    try {
+      const project = path.join(root, "Project");
+      await fs.mkdir(project);
+      let cwd = path.join(root, "link");
+      if (kind === "symlink") await fs.symlink(project, cwd);
+      else {
+        cwd = path.join(root, "PROJECT");
+        // Only a case-insensitive volume, such as default APFS, has this alias.
+        if (!(await fs.stat(cwd).catch(() => null))) return;
+      }
+      const f = fixture();
+      f.session.cwd = cwd;
+      const dirs: unknown[] = [];
+      const { getHistoryIndex, forkSession } = f.deps;
+      f.deps.getHistoryIndex = (id, options) => {
+        dirs.push(options?.dir);
+        return getHistoryIndex(id, options);
+      };
+      f.deps.forkSession = (id, options) => {
+        dirs.push(options.dir);
+        return forkSession(id, options);
+      };
+      await forkAtTurn(f.session, { lastTurnId: "u1" }, f.deps);
+      await rollbackSession(
+        f.session,
+        { requestId: "r", turnId: "u2" },
+        f.deps,
+      );
+      assert.ok(dirs.length >= 4);
+      assert.deepEqual(new Set(dirs), new Set([project]));
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  },
+);
 test("lost native response cannot repeat a fork, including under a new request identity", async () => {
   const f = fixture();
   f.deps.forkSession = async () => {

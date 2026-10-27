@@ -1,3 +1,5 @@
+import { required } from "../components/componentTestFixtures.ts";
+import assert from "node:assert/strict";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { TranscriptWireItem } from "../types";
 // Cache reset fixtures omit message role/text when only item identity/status is exercised.
@@ -559,6 +561,7 @@ describe("entity pull reset wiring", () => {
         ],
       };
       if (scenario.startsWith("window")) {
+        assert.ok(event.resourceVersions[0] != null);
         const delta = event.resourceVersions[0].transcriptChanges!.delta;
         delta.items.unshift({
           id: "older",
@@ -575,6 +578,7 @@ describe("entity pull reset wiring", () => {
             : scenario === "snapshot-change"
               ? "change"
               : "initial";
+        assert.ok(event.resourceVersions[0]);
         delete event.resourceVersions[0].transcriptChanges;
         event.resourceVersions[0].transcriptSnapshot = {
           items: [{ id: "answer", role: "assistant", text: "streamed" }],
@@ -594,6 +598,7 @@ describe("entity pull reset wiring", () => {
       }
       const stringify = vi.spyOn(JSON, "stringify");
       await client.persistResourceEntityChanges(event, () => true);
+      assert.ok(event.resourceVersions[0] != null);
       expect(stringify).not.toHaveBeenCalledWith(
         event.resourceVersions[0].transcriptChanges,
       );
@@ -1382,17 +1387,19 @@ describe("entity pull reset wiring", () => {
       });
       const emptyDelta = event(11, "delta");
       const overlapping = event(13, "delta");
-      overlapping.resourceVersions[0].entityChanges!.after = 10;
+      assert.ok(overlapping.resourceVersions[0]?.entityChanges);
+      overlapping.resourceVersions[0].entityChanges.after = 10;
       await client.persistResourceEntityChanges(overlapping, () => true);
       expect(await client.readSubscriptionCursor(resource)).toEqual({
         workspaceId,
         seq: 13,
       });
-      delete emptyDelta.resourceVersions![0].entityChanges;
+      assert.ok(emptyDelta.resourceVersions[0]);
+      delete emptyDelta.resourceVersions[0].entityChanges;
       let current = true;
       storageInstance.findDocumentsById.mockImplementationOnce(async () => {
         current = false;
-        delete emptyDelta.resourceVersions![0].cursor;
+        delete required(emptyDelta.resourceVersions![0]).cursor;
         return [];
       });
       await expect(
@@ -1475,6 +1482,7 @@ describe("entity pull reset wiring", () => {
       () => true,
     );
     const resumed = event("中", 3, "delta");
+    assert.ok(resumed.resourceVersions[0]);
     const wrongBase = {
       ...resumed,
       resourceVersions: [
@@ -1485,11 +1493,13 @@ describe("entity pull reset wiring", () => {
       client.persistResourceEntityChanges(wrongBase, () => true),
     ).rejects.toThrow("local base");
     await client.persistResourceEntityChanges(resumed, () => true);
+    assert.ok(resumed.resourceVersions[0] != null);
     expect(resumed.resourceVersions[0].viewSnapshot?.terminalOutput?.text).toBe(
       "a🙂中",
     );
     const replay = event("中", 3, "delta");
     await client.persistResourceEntityChanges(replay, () => true);
+    assert.ok(replay.resourceVersions[0] != null);
     expect(replay.resourceVersions[0].viewSnapshot?.terminalOutput?.text).toBe(
       "a🙂中",
     );
@@ -1500,6 +1510,7 @@ describe("entity pull reset wiring", () => {
     });
     const late = event("a🙂", 2, "delta");
     await client.persistResourceEntityChanges(late, () => true);
+    assert.ok(late.resourceVersions[0] != null);
     expect(late.resourceVersions[0].viewSnapshot?.terminalOutput?.text).toBe(
       "a🙂中",
     );
@@ -1529,6 +1540,7 @@ describe("entity pull reset wiring", () => {
     });
     fail = false;
     const exited = event("", 3, "delta", 4);
+    assert.ok(exited.resourceVersions[0] != null);
     exited.resourceVersions[0].viewSnapshot!.terminalOutput!.status = "exited";
     await client.persistResourceEntityChanges(exited, () => true);
     const stored = () =>

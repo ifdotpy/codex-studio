@@ -1,3 +1,4 @@
+import { required } from "./components/componentTestFixtures.ts";
 // Compare UI coverage to the installed native protocol without model requests.
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
@@ -11,6 +12,8 @@ import {
   nativeThreadError,
 } from "./nativeErrors.ts";
 import { test } from "vitest";
+import { KNOWN_CODEX_ERROR_KINDS } from "studio-claude-bridge/provider-errors.generated.ts";
+import { knownCodexErrorKind } from "studio-claude-bridge/provider-errors.ts";
 
 const expectedMessages = new Map([
   ["cyberPolicy", "Codex refused this turn under its cybersecurity policy."],
@@ -33,9 +36,10 @@ function assertKnownVariants(codes: string[]) {
         view!.message,
         expectedMessages.get(code) ?? "Native message",
       );
-      assert.equal(view!.kind, code);
-
-      assert.ok(view!.hint.length > 0);
+      assert.equal(view.kind, code);
+      assert.ok(view);
+      assert.ok(view.hint);
+      assert.ok(view.hint.length > 0);
       assert.ok(view.details.includes("Cause"));
     }
   }
@@ -56,14 +60,14 @@ test.skipIf(!process.env.CODEX_NATIVE_SCHEMA)(
       const schema: {
         definitions: {
           CodexErrorInfo: {
-            oneOf: { enum?: string[]; properties?: Record<string, unknown> }[];
+            anyOf: { enum?: string[]; properties?: Record<string, unknown> }[];
           };
         };
       } = JSON.parse(
         readFileSync(join(dir, "v2/ErrorNotification.json"), "utf8"),
       );
-      const codes = schema.definitions.CodexErrorInfo.oneOf.flatMap(
-        (v) => v.enum || Object.keys(v.properties!),
+      const codes = schema.definitions.CodexErrorInfo.anyOf.flatMap(
+        (v) => v.enum ?? Object.keys(v.properties ?? {}),
       );
       assert.deepEqual([...codes].sort(), Object.keys(nativeErrorHints).sort());
       assertKnownVariants(codes);
@@ -73,6 +77,23 @@ test.skipIf(!process.env.CODEX_NATIVE_SCHEMA)(
     }
   },
 );
+
+test("committed vendor classifications exhaust the renderer hints", () => {
+  assert.deepEqual(
+    [...KNOWN_CODEX_ERROR_KINDS].sort(),
+    Object.keys(nativeErrorHints).sort(),
+  );
+  for (const kind of KNOWN_CODEX_ERROR_KINDS) {
+    assert.equal(knownCodexErrorKind(kind), kind);
+    assert.equal(knownCodexErrorKind({ [kind]: {} }), kind);
+  }
+  for (const info of [
+    "futureCode",
+    { futureCode: { opaque: [1, null] } },
+    ["serverOverloaded"],
+  ])
+    assert.equal(knownCodexErrorKind(info), undefined);
+});
 
 test("native error rendering handles structured and plain errors", () => {
   assertKnownVariants(Object.keys(nativeErrorHints));
@@ -139,9 +160,9 @@ test("native error rendering handles structured and plain errors", () => {
     const view = nativeErrorView({ message, codexErrorInfo: "other" });
     assert.equal(view!.title, "This content can't be shown");
     assert.equal(view.severity, "info");
-
+    assert.ok(view);
     assert.equal(
-      view!.links[0].href,
+      required(view!.links[0]).href,
       "https://chatgpt.com/r/b749fb02595e04c3007a54375f3f4374",
     );
   }
@@ -150,7 +171,7 @@ test("native error rendering handles structured and plain errors", () => {
       .length,
     0,
   );
-
+  assert.ok(nativeErrorView);
   for (const [plan, link] of [
     ["pro", "https://chatgpt.com/cyber/"],
     [
@@ -160,7 +181,9 @@ test("native error rendering handles structured and plain errors", () => {
     [undefined, "https://openai.com/form/enterprise-trusted-access-for-cyber/"],
   ] as const)
     assert.equal(
-      nativeErrorView({ codexErrorInfo: "cyberPolicy" }, plan).links[0].href,
+      required(
+        nativeErrorView({ codexErrorInfo: "cyberPolicy" }, plan).links[0],
+      ).href,
       link,
     );
   const cyber = nativeErrorView(
@@ -172,8 +195,8 @@ test("native error rendering handles structured and plain errors", () => {
     "Codex refused this turn under its cybersecurity policy.",
   );
   assert.equal(cyber.title, "Cybersecurity policy refusal");
-
-  assert.match(cyber.hint!, /narrower or rephrased task/);
+  assert.ok(cyber.hint);
+  assert.match(cyber.hint, /narrower or rephrased task/);
   assert.equal(cyber.details.includes("Raw refusal detail"), true);
   const nestedError = {
     error: { message: "Service unavailable", code: "unavailable" },
@@ -256,4 +279,16 @@ test("native error rendering handles structured and plain errors", () => {
     }).message,
     '<img src=x onerror="alert(1)"> {text}',
   );
+});
+
+test("ambiguous error objects stay unclassified and retain every raw field", () => {
+  const error = {
+    message: "Provider extension",
+    codexErrorInfo: { serverOverloaded: {}, futureDiagnostic: { id: 42 } },
+    vendorExtension: ["keep", { nested: true }],
+  };
+  const original = JSON.stringify(error);
+  assert.equal(nativeErrorKind(error), "");
+  assert.deepEqual(JSON.parse(nativeErrorView(error).details), error);
+  assert.equal(JSON.stringify(error), original);
 });

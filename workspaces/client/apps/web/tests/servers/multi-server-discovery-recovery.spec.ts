@@ -1,3 +1,4 @@
+import { required } from "../teams/helpers.ts";
 import { fixturePostBody } from "./browser-fixture.ts";
 import { fixtureBarrier } from "./browser-fixture.ts";
 import type { AutomaticAccessAttempt } from "../../src/servers/automaticUiAccess.ts";
@@ -384,7 +385,9 @@ test("an unused legacy invitation expires into a new attempt without a credentia
 
     expect(request!.requestId).not.toBe("legacy-invite");
     expect(remote.pairs).toHaveLength(1);
-    expect(JSON.parse(remote.pairs[0]).requestId).not.toBe("legacy-pair");
+    expect(JSON.parse(required(remote.pairs[0])).requestId).not.toBe(
+      "legacy-pair",
+    );
   } finally {
     await local.close();
     await remote.close();
@@ -476,8 +479,8 @@ test("startup migration preserves a saved pair receipt without keeping its legac
       .toBe(true);
     const state = await attempts(page);
     expect(JSON.stringify(state.rows)).not.toContain('"token"');
-    expect(state.rows[0].pairRequestId).toBe("legacy-pair");
-    expect(state.rows[0].needsPairCheck).toBeUndefined();
+    expect(required(state.rows[0]).pairRequestId).toBe("legacy-pair");
+    expect(required(state.rows[0]).needsPairCheck).toBeUndefined();
     expect(
       local.accessRequests.filter((row) => row.action === "ui_invite"),
     ).toHaveLength(0);

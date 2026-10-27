@@ -236,7 +236,7 @@ export function createSidebarCatalogSelector() {
           high = ids.length;
         while (low < high) {
           const mid = (low + high) >>> 1;
-          if (compare(ids[mid], id) <= 0) low = mid + 1;
+          if (compare(ids[mid]!, id) <= 0) low = mid + 1;
           else high = mid;
         }
         ids.splice(low, 0, id);

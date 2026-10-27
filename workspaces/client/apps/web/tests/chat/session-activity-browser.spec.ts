@@ -103,7 +103,11 @@ test("session activity browser", async ({ browser: _browser }) => {
     await page.evaluate(() =>
       window.setActivities(
         Array.from({ length: 40 }, (_, index) => ({
-          ...window.activities[index % 4],
+          ...(() => {
+            const item = window.activities[index % 4];
+            if (!item) throw new Error("Missing activity");
+            return item;
+          })(),
           id: `many-${index}`,
         })),
       ),
@@ -125,7 +129,9 @@ test("session activity browser", async ({ browser: _browser }) => {
       document.dispatchEvent(new Event("visibilitychange"));
     });
     await strip.getByText("14h 2m", { exact: true }).waitFor();
-    await page.evaluate(() => window.setActivities([window.activities[0]]));
+    await page.evaluate(() =>
+      window.setActivities(window.activities.slice(0, 1)),
+    );
     assert.equal(await strip.getByRole("button", { name: /Show/ }).count(), 0);
     await page.evaluate(() => window.setActivities([]));
     await strip.waitFor({ state: "detached" });

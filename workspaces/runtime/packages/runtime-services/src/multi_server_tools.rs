@@ -113,7 +113,12 @@ impl From<crate::project_locations::LocationError> for Step {
     fn from(error: crate::project_locations::LocationError) -> Self {
         match error {
             crate::project_locations::LocationError::Store(error) => Self::Store(error),
-            other => Self::Refused(other.to_string()),
+            other @ crate::project_locations::LocationError::InvalidStored { .. }
+            | other @ crate::project_locations::LocationError::Refused(_)
+            | other @ crate::project_locations::LocationError::Requires(_)
+            | other @ crate::project_locations::LocationError::Sqlite(_) => {
+                Self::Refused(other.to_string())
+            }
         }
     }
 }
@@ -677,7 +682,8 @@ impl ServerTools {
                     .map_err(|error| match error {
                         AccessError::Store(error) => Step::Store(error),
                         AccessError::Sqlite(error) => Step::Store(error.into()),
-                        other => Step::Refused(other.to_string()),
+                        other @ AccessError::Refused { .. }
+                        | other @ AccessError::Stored { .. } => Step::Refused(other.to_string()),
                     })?;
                     if !owned {
                         return refuse("The command handle belongs to another actor or server");
@@ -1019,7 +1025,8 @@ impl ServerTools {
                     .map_err(|error| match error {
                         AccessError::Store(error) => Step::Store(error),
                         AccessError::Sqlite(error) => Step::Store(error.into()),
-                        other => Step::Refused(other.to_string()),
+                        other @ AccessError::Refused { .. }
+                        | other @ AccessError::Stored { .. } => Step::Refused(other.to_string()),
                     })?;
                 }
                 Ok(())

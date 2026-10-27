@@ -25,6 +25,10 @@ use std::ffi::OsStr;
 use std::fs::{self, File};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
+use studio_runtime_providers::ProviderKind;
+#[cfg(test)]
+use studio_runtime_store::account_registry::atomic_replace_with;
+use studio_runtime_store::account_registry::{ReplaceError, atomic_replace};
 use studio_runtime_store::path_identity::CanonicalPath;
 
 /// The account's provider server directory: the state root for `default`,
@@ -231,7 +235,7 @@ const CODEX_CREDENTIAL_FILES: &[auth_cache::CredentialFile] = &[auth_cache::Cred
 
 pub(crate) fn codex_location(profile: &AuthProfile) -> auth_cache::CredentialLocation {
     auth_cache::CredentialLocation {
-        identity: "codex".to_owned(),
+        identity: ProviderKind::Codex.key().to_owned(),
         directories: vec![profile.home.clone()],
         credential_files: CODEX_CREDENTIAL_FILES,
     }
@@ -1078,7 +1082,7 @@ impl<R: ProviderAuthReader> AccountDriver<R> {
             .ok_or(AccountDriverError::InvalidRegistry)?
             .to_owned();
         if studio_runtime_providers::ProviderKind::key_of(registry_account(&state.value, &account)?)
-            != Some("codex")
+            != Some(ProviderKind::Codex.key())
         {
             return Err(AccountMutationError::Refused(
                 "Select a Codex sign-in request",
@@ -1144,7 +1148,8 @@ impl<R: ProviderAuthReader> AccountDriver<R> {
                 })
             });
         if !starting
-            || studio_runtime_providers::ProviderKind::key_of(row) != Some("codex")
+            || studio_runtime_providers::ProviderKind::key_of(row)
+                != Some(ProviderKind::Codex.key())
             || row.get("deleted").is_some_and(truthy_value)
             || row.get("disconnected").is_some_and(truthy_value)
         {
@@ -1186,7 +1191,8 @@ impl<R: ProviderAuthReader> AccountDriver<R> {
         let mut receipt = serde_json::json!({"requestId":request.login_id,"accountKey":key,"status":"starting","createdAt":now});
         if let Some(account) = &request.account_key {
             let row = registry_account(&value, account)?;
-            if studio_runtime_providers::ProviderKind::key_of(row) != Some("codex")
+            if studio_runtime_providers::ProviderKind::key_of(row)
+                != Some(ProviderKind::Codex.key())
                 || !row.get("accountId").is_some_and(truthy_value)
                 || row.get("duplicateOf").is_some_and(truthy_value)
             {
@@ -1615,7 +1621,9 @@ impl<R: ProviderAuthReader> AccountDriver<R> {
             let Ok(row) = registry_account(&value, &account) else {
                 continue;
             };
-            if studio_runtime_providers::ProviderKind::key_of(row) != Some("codex") {
+            if studio_runtime_providers::ProviderKind::key_of(row)
+                != Some(ProviderKind::Codex.key())
+            {
                 continue;
             }
             let profile = auth_profile(row)?;
@@ -1679,7 +1687,7 @@ impl<R: ProviderAuthReader> AccountDriver<R> {
             .map_err(|_| AccountDriverError::Poisoned)?;
         let mut value = state.value.clone();
         let row = registry_account_mut(&mut value, key)?;
-        if row["provider"] != "claude" {
+        if row["provider"] != ProviderKind::Claude.key() {
             return Err(AccountMutationError::Refused(
                 "Select a Claude Code profile",
             ));
@@ -1740,7 +1748,7 @@ impl<R: ProviderAuthReader> AccountDriver<R> {
             return Ok(());
         }
         let mut value = state.value.clone();
-        let mut row = serde_json::json!({"id":"claude-local","provider":"claude","home":home,"label":"Claude Code","source":"Claude Code","status":"signedOut"});
+        let mut row = serde_json::json!({"id":"claude-local","provider":ProviderKind::Claude.key(),"home":home,"label":"Claude Code","source":"Claude Code","status":"signedOut"});
         apply_metadata(
             row.as_object_mut()
                 .ok_or(AccountDriverError::InvalidRegistry)?,
@@ -2931,7 +2939,7 @@ fn apply_metadata(row: &mut serde_json::Map<String, Value>, metadata: &AuthMetad
                     .filter(|v| !v.is_empty()),
             )
             .is_some_and(|(a, b)| {
-                if row.get("provider").and_then(Value::as_str) == Some("claude") {
+                if row.get("provider").and_then(Value::as_str) == Some(ProviderKind::Claude.key()) {
                     !claude_identity::accepts(a, b)
                 } else {
                     a != b
@@ -2941,7 +2949,7 @@ fn apply_metadata(row: &mut serde_json::Map<String, Value>, metadata: &AuthMetad
         row.insert("status".into(), Value::String("changed".into()));
         row.insert("error".into(), Value::String(CHANGED_ERROR.into()));
         row.remove("organizationMismatch");
-        if row.get("provider").and_then(Value::as_str) == Some("claude")
+        if row.get("provider").and_then(Value::as_str) == Some(ProviderKind::Claude.key())
             && let Some(mismatch) = claude_identity::organization_mismatch(
                 expected_credential.as_deref(),
                 row.get("_organizationName").and_then(Value::as_str),
@@ -3067,91 +3075,6 @@ fn read_registry(path: &Path) -> Result<Vec<u8>, AccountDriverError> {
     Ok(bytes)
 }
 
-/// Upgrade 2026-10-26 identity leaves once at startup, before strict consumers.
-/// Keep until supported states and restorable backups have crossed this format,
-/// or the older upgrade path is explicitly retired. Atomic replacement retains
-/// the existing unconfirmed-directory-durability outcome; startup can be retried.
-pub fn migrate_provider_identity_2026_10_26(
-    path: &Path,
-    bytes: Vec<u8>,
-) -> Result<Vec<u8>, AccountDriverError> {
-    if bytes.len() > studio_runtime_store::account_state::MAX_PERSISTED_DOCUMENT_BYTES
-        || !studio_runtime_store::account_state::persisted_document_within_bounds(&bytes)
-    {
-        return Err(AccountDriverError::InvalidRegistry);
-    }
-    let mut value: Value =
-        serde_json::from_slice(&bytes).map_err(|_| AccountDriverError::InvalidRegistry)?;
-    let changed = studio_runtime_store::provider_identity::migrate_registry_2026_10_26(&mut value)
-        .map_err(|_| AccountDriverError::InvalidRegistry)?;
-    if !changed {
-        decode_registry(&bytes).map_err(|_| AccountDriverError::InvalidRegistry)?;
-        return Ok(bytes);
-    }
-    let order = RegistryOrder::deserialize(&mut serde_json::Deserializer::from_slice(&bytes))
-        .map_err(|_| AccountDriverError::InvalidRegistry)?;
-    let encoded =
-        encode_registry(&value, &order).map_err(|_| AccountDriverError::InvalidRegistry)?;
-    decode_registry(&encoded).map_err(|_| AccountDriverError::InvalidRegistry)?;
-    match atomic_replace(path, &encoded) {
-        Ok(()) => Ok(encoded),
-        Err(ReplaceError::NotReplaced) => Err(AccountDriverError::WriteRegistry),
-        Err(ReplaceError::ReplacedNotDurable) => Err(AccountDriverError::DurabilityUnconfirmed),
-    }
-}
-
-enum ReplaceError {
-    NotReplaced,
-    ReplacedNotDurable,
-}
-
-fn atomic_replace(path: &Path, bytes: &[u8]) -> Result<(), ReplaceError> {
-    atomic_replace_with(
-        path,
-        bytes,
-        |temp, target| fs::rename(temp, target),
-        |parent| File::open(parent).and_then(|directory| directory.sync_all()),
-    )
-}
-
-fn atomic_replace_with(
-    path: &Path,
-    bytes: &[u8],
-    replace: impl FnOnce(&Path, &Path) -> std::io::Result<()>,
-    sync_parent: impl FnOnce(&Path) -> std::io::Result<()>,
-) -> Result<(), ReplaceError> {
-    let parent = path.parent().ok_or(ReplaceError::NotReplaced)?;
-    // Registry rows may contain login codes and verification URLs. Unix
-    // permissions must be private even when the previous file or directory was
-    // created with broader permissions. Other platforms rely on their default
-    // temporary-file ACLs; this code does not explicitly rewrite those ACLs.
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(parent, fs::Permissions::from_mode(0o700))
-            .map_err(|_| ReplaceError::NotReplaced)?;
-    }
-    let mut temp =
-        tempfile::NamedTempFile::new_in(parent).map_err(|_| ReplaceError::NotReplaced)?;
-    (|| {
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            temp.as_file()
-                .set_permissions(fs::Permissions::from_mode(0o600))
-                .map_err(|_| ReplaceError::NotReplaced)?;
-        }
-        temp.write_all(bytes)
-            .map_err(|_| ReplaceError::NotReplaced)?;
-        temp.as_file()
-            .sync_all()
-            .map_err(|_| ReplaceError::NotReplaced)?;
-        replace(temp.path(), path).map_err(|_| ReplaceError::NotReplaced)?;
-        sync_parent(parent).map_err(|_| ReplaceError::ReplacedNotDurable)?;
-        Ok(())
-    })()
-}
-
 fn hex_sha256(value: &[u8]) -> String {
     studio_runtime_store::sha256_hex(value)
 }
@@ -3238,17 +3161,26 @@ mod tests {
             .expect("strict current profile row");
     }
 
-    #[test]
-    fn migration_2026_10_26_registry_precedes_strict_policy_and_driver() {
+    #[tokio::test]
+    async fn migration_2026_10_26_registry_precedes_strict_policy_and_driver() {
         let fixture = TestDir::new();
-        let path = fixture.path.join("registry.json");
+        let store = studio_runtime_store::RuntimeStore::open(Some(&fixture.path))
+            .await
+            .expect("fresh state");
+        drop(store);
+        fs::create_dir(fixture.path.join("accounts")).expect("accounts");
+        let path = fixture.path.join("accounts/registry.json");
         let bytes = br#"{"version":1,"defaultAccountKey":"default","accounts":{"z":{"id":"z","provider":"claude","home":"/fixture/z","label":"Z","source":"fixture","status":"ready"},"default":{"id":"default","provider":null,"home":"/fixture/default","label":"Default","source":"fixture","status":"signedOut"}},"logins":{},"deleteReceipts":{}}"#.to_vec();
         fs::write(&path, &bytes).expect("legacy registry");
         assert!(
             decode_registry(&bytes).is_err(),
             "ordinary policy has no legacy fallback"
         );
-        let migrated = migrate_provider_identity_2026_10_26(&path, bytes).expect("dated migration");
+        let store = studio_runtime_store::RuntimeStore::open(Some(&fixture.path))
+            .await
+            .expect("dated migration");
+        drop(store);
+        let migrated = fs::read(&path).expect("migrated registry");
         assert_eq!(
             serde_json::from_slice::<Value>(&migrated).expect("current registry")["version"],
             studio_runtime_schema::shared_values::ACCOUNT_REGISTRY_FORMAT_VERSION
@@ -3270,15 +3202,27 @@ mod tests {
         );
         assert_eq!(fs::read(&path).expect("persisted"), migrated);
         assert_eq!(
-            migrate_provider_identity_2026_10_26(&path, migrated.clone()).expect("repeat"),
+            {
+                drop(
+                    studio_runtime_store::RuntimeStore::open(Some(&fixture.path))
+                        .await
+                        .expect("repeat"),
+                );
+                fs::read(&path).expect("registry")
+            },
             migrated
         );
     }
 
-    #[test]
-    fn migration_2026_10_26_registry_failure_preserves_original_bytes() {
+    #[tokio::test]
+    async fn migration_2026_10_26_registry_failure_preserves_original_bytes() {
         let fixture = TestDir::new();
-        let path = fixture.path.join("registry.json");
+        let store = studio_runtime_store::RuntimeStore::open(Some(&fixture.path))
+            .await
+            .expect("fresh state");
+        drop(store);
+        fs::create_dir(fixture.path.join("accounts")).expect("accounts");
+        let path = fixture.path.join("accounts/registry.json");
         for provider in [
             serde_json::json!("unknown"),
             serde_json::json!(1),
@@ -3289,7 +3233,11 @@ mod tests {
             value["accounts"]["default"]["provider"] = provider;
             let bytes = serde_json::to_vec(&value).expect("bytes");
             fs::write(&path, &bytes).expect("invalid registry");
-            assert!(migrate_provider_identity_2026_10_26(&path, bytes.clone()).is_err());
+            assert!(
+                studio_runtime_store::RuntimeStore::open(Some(&fixture.path))
+                    .await
+                    .is_err()
+            );
             assert_eq!(fs::read(&path).expect("preserved source"), bytes);
         }
         for field in [None, Some(Value::Null)] {
@@ -3306,17 +3254,23 @@ mod tests {
             }
             let bytes = serde_json::to_vec(&value).expect("bytes");
             fs::write(&path, &bytes).expect("corrupt current registry");
-            assert!(migrate_provider_identity_2026_10_26(&path, bytes.clone()).is_err());
+            assert!(
+                studio_runtime_store::RuntimeStore::open(Some(&fixture.path))
+                    .await
+                    .is_err()
+            );
             assert_eq!(fs::read(&path).expect("unchanged current bytes"), bytes);
         }
         let mut explicit_legacy: Value =
             serde_json::from_slice(&registry(&fixture.path)).expect("registry");
         explicit_legacy["version"] = Value::from(1);
-        let upgraded = migrate_provider_identity_2026_10_26(
-            &path,
-            serde_json::to_vec(&explicit_legacy).expect("bytes"),
-        )
-        .expect("explicit legacy still crosses version cutoff");
+        fs::write(&path, serde_json::to_vec(&explicit_legacy).expect("bytes")).expect("old source");
+        drop(
+            studio_runtime_store::RuntimeStore::open(Some(&fixture.path))
+                .await
+                .expect("explicit legacy still crosses version cutoff"),
+        );
+        let upgraded = fs::read(&path).expect("registry");
         assert_eq!(
             serde_json::from_slice::<Value>(&upgraded).expect("current")["version"],
             studio_runtime_schema::shared_values::ACCOUNT_REGISTRY_FORMAT_VERSION

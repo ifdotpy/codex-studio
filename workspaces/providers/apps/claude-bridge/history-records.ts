@@ -120,10 +120,15 @@ const queuedCommand = z.object({
     commandMode: z.string().optional(),
     runId: z.string().optional(),
     deliveryId: z.string().optional(),
+    // Claude 2.1.310 writes these receipt fields.
+    delivery_id: z.string().optional(),
+    timestamp: timestamp.optional(),
   }),
 });
 // Non-input attachment kinds have a closed outer payload shape. Their named
-// provider-owned objects remain opaque; new kinds or payload keys need review.
+// provider-owned objects remain opaque. Other kinds or payload keys are
+// "opaque": they cannot prove that an input is absent, but they do not hide
+// the inputs recorded around them.
 const opaqueObject = z.record(z.string(), z.unknown());
 const names = z.array(z.string());
 const nonInputAttachment = z.discriminatedUnion("type", [
@@ -195,7 +200,12 @@ const metadataTypes = new Set([
   "api-request-blob",
   "api-request",
 ]);
-export type HistoryRecordKind = "input" | "nonInput" | "metadata" | "queue";
+export type HistoryRecordKind =
+  | "input"
+  | "nonInput"
+  | "opaque"
+  | "metadata"
+  | "queue";
 export const object = (value: unknown): value is Record<string, unknown> =>
   !!value && typeof value === "object" && !Array.isArray(value);
 /** Tool receipts cannot carry a Studio instruction, including ToolSearch's new
@@ -227,10 +237,10 @@ export function historyRecordKind(
     if (!object(attachment) || typeof attachment.type !== "string") return null;
     if (attachment.type === "queued_command")
       return queuedCommand.safeParse(row).success ? "input" : null;
-    return basicChain.safeParse(row).success &&
-      nonInputAttachment.safeParse(attachment).success
+    if (!basicChain.safeParse(row).success) return null;
+    return nonInputAttachment.safeParse(attachment).success
       ? "nonInput"
-      : null;
+      : "opaque";
   }
   if (["assistant", "system", "progress"].includes(row.type))
     return basicChain.safeParse(row).success ? "nonInput" : null;

@@ -105,7 +105,12 @@ pub(crate) fn log_effect(
     let observation = match &effect {
         NotificationPostCommit::Analytics { observation, .. }
         | NotificationPostCommit::AnalyticsStream { observation, .. } => observation,
-        _ => return Ok(Some(effect)),
+        NotificationPostCommit::AnalyticsCaptured(_)
+        | NotificationPostCommit::AnalyticsStreamCaptured(_)
+        | NotificationPostCommit::TokenRateStream(_)
+        | NotificationPostCommit::TokenRateAssociation(_)
+        | NotificationPostCommit::TokenRateUsage(_)
+        | NotificationPostCommit::Recovered { .. } => return Ok(Some(effect)),
     };
     // An agent-less effect is logged anyway: the projector counts its refusal.
     if let Some(agent) = &observation.agent {
@@ -134,7 +139,12 @@ pub(crate) fn log_effect(
         NotificationPostCommit::AnalyticsStream { observation, .. } => {
             Some(NotificationPostCommit::AnalyticsStreamCaptured(observation))
         }
-        other => Some(other),
+        other @ NotificationPostCommit::AnalyticsCaptured(_)
+        | other @ NotificationPostCommit::AnalyticsStreamCaptured(_)
+        | other @ NotificationPostCommit::TokenRateStream(_)
+        | other @ NotificationPostCommit::TokenRateAssociation(_)
+        | other @ NotificationPostCommit::TokenRateUsage(_)
+        | other @ NotificationPostCommit::Recovered { .. } => Some(other),
     })
 }
 

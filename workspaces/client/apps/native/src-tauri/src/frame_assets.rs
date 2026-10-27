@@ -15,7 +15,13 @@ pub(crate) fn respond_with_app<R: Runtime>(
     app: &tauri::AppHandle<R>,
     request: Request<Vec<u8>>,
 ) -> Response<Vec<u8>> {
-    let fail = |status| Response::builder().status(status).body(Vec::new()).unwrap();
+    // Callers pass fixed valid HTTP status codes and add no headers.
+    let fail = |status| {
+        Response::builder()
+            .status(status)
+            .body(Vec::new())
+            .expect("valid error response")
+    };
     if !matches!(request.method().as_str(), "GET" | "HEAD") {
         return fail(405);
     }
@@ -69,6 +75,7 @@ pub(crate) fn respond_with_app<R: Runtime>(
         "frame-src 'self' blob:",
         "frame-ancestors tauri://localhost",
     ]);
+    // MIME and CSP values come from the bundled asset resolver and fixed directives.
     Response::builder()
         .header("Content-Type", asset.mime_type)
         .header("Content-Security-Policy", directives.join("; "))
@@ -78,5 +85,5 @@ pub(crate) fn respond_with_app<R: Runtime>(
         } else {
             asset.bytes
         })
-        .unwrap()
+        .expect("valid bundled asset response")
 }

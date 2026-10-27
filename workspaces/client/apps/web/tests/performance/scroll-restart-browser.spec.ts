@@ -40,6 +40,7 @@ test("Scroll restart", async () => {
             return fileURLToPath(
               new URL("./scroll-restart.fixture.tsx", import.meta.url),
             );
+          return undefined;
         },
       },
     ],
@@ -49,8 +50,9 @@ test("Scroll restart", async () => {
     await server.listen();
     browser = await browserType.launch({
       headless: true,
-      executablePath:
-        browserType === chromium ? browserExecutablePath : undefined,
+      ...(browserType === chromium && browserExecutablePath
+        ? { executablePath: browserExecutablePath }
+        : {}),
     });
     const page = await browser.newPage();
     await page.clock.install();

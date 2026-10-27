@@ -525,7 +525,7 @@ fn refusal(s: &Snapshot) -> Option<Refusal> {
     match s.workspace {
         WorkspaceReadiness::Image => Some(Refusal::ImageWorkspace),
         WorkspaceReadiness::Vm => Some(Refusal::VmWorkspace),
-        _ => s.unsupported,
+        WorkspaceReadiness::Ready | WorkspaceReadiness::Pending => s.unsupported,
     }
 }
 

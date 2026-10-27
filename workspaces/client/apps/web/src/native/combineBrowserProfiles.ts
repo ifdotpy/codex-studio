@@ -13,8 +13,9 @@ export function combineBrowserProfiles(
     owner: string;
     snapshot: BrowserProfileSnapshot;
   }[];
-  if (!Array.isArray(profiles) || !profiles.some((row) => row.owner === "root"))
-    throw new Error("The profile archive needs a root owner.");
+  const root =
+    Array.isArray(profiles) && profiles.find((row) => row.owner === "root");
+  if (!root) throw new Error("The profile archive needs a root owner.");
   const owners = new Set();
   const preferences: BrowserProfileSnapshot["preferences"] =
     Object.create(null);
@@ -61,7 +62,7 @@ export function combineBrowserProfiles(
     }
   }
   // Preserve the existing receipt identity for archives that were root-only.
-  if (profiles.length === 1) return profiles[0].snapshot;
+  if (profiles.length === 1) return root.snapshot;
   return {
     version: version!,
     preferences,

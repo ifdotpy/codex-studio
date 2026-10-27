@@ -335,7 +335,13 @@ async fn sequence_and_index_order_survive_a_sink_failure() {
         .iter()
         .map(|effect| match effect {
             NotificationPostCommit::TokenRateStream(value) => value.delivery.cursor,
-            _ => unreachable!(),
+            NotificationPostCommit::Analytics { .. }
+            | NotificationPostCommit::AnalyticsStream { .. }
+            | NotificationPostCommit::AnalyticsCaptured(_)
+            | NotificationPostCommit::AnalyticsStreamCaptured(_)
+            | NotificationPostCommit::TokenRateAssociation(_)
+            | NotificationPostCommit::TokenRateUsage(_)
+            | NotificationPostCommit::Recovered { .. } => unreachable!(),
         })
         .collect::<Vec<_>>();
     assert_eq!(cursors, [1, 2, 3]);
@@ -1084,7 +1090,13 @@ async fn unmapped_token_rate_receipts_do_not_block_later_observations() {
             NotificationPostCommit::TokenRateStream(observation)
             | NotificationPostCommit::TokenRateAssociation(observation)
             | NotificationPostCommit::TokenRateUsage(observation) => observation.agent = None,
-            _ => panic!("the fixture must be a token-rate observation"),
+            NotificationPostCommit::Analytics { .. }
+            | NotificationPostCommit::AnalyticsStream { .. }
+            | NotificationPostCommit::AnalyticsCaptured(_)
+            | NotificationPostCommit::AnalyticsStreamCaptured(_)
+            | NotificationPostCommit::Recovered { .. } => {
+                panic!("the fixture must be a token-rate observation")
+            }
         }
         assert_drains_before_current_receipt(effect).await;
     }

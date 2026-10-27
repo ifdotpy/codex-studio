@@ -1,16 +1,18 @@
 //! Durable per-account usage observations and their compact sync projections.
 
-use rusqlite::{Connection, OptionalExtension, Transaction};
+use rusqlite::{Connection, OptionalExtension};
 use serde_json::Value;
 
+use crate::StoreResult;
 use crate::records::{RecordOrder, RecordPredicate, Table, UsageResumeRecord};
 use crate::schema::{SchemaRequirements, TableRequirement};
-use crate::{StoreError, StoreResult, SyncDocumentsRepository};
 
 pub const MAX_PERSISTED_DOCUMENT_BYTES: usize = 64 * 1024 * 1024;
 pub const MAX_PERSISTED_DOCUMENT_DEPTH: usize = 128;
 /// Namespace of the single durable observation receipt per account. Unit: key prefix.
 const LIMITS_OBSERVATION_PREFIX: &str = "account-limits-observation:";
+/// Current Claude account sign-in refusal, also retained by the retired auth-wait migration.
+pub const CLAUDE_SIGN_IN_MESSAGE: &str = "Sign in with claude auth login first";
 pub const AUTH_WAIT_NOTICE_SECONDS: f64 = 1800.0;
 pub(crate) const REQUIREMENTS: SchemaRequirements = SchemaRequirements {
     conditional_tables: &[],
@@ -114,58 +116,6 @@ pub fn limits_snapshot_with_observation(
 }
 
 /// Move persisted v3 workspace snapshots once, without changing their account identity.
-pub(crate) fn migrate_workspace_limits(transaction: &Transaction<'_>) -> StoreResult<()> {
-    let raw: Option<String> = transaction.query_row(
-        "SELECT payload FROM sync_entities WHERE collection='workspace' AND id='current' AND deleted=0",
-        [], |row| row.get(0),
-    ).optional()?;
-    let Some(raw) = raw else {
-        return Ok(());
-    };
-    let mut envelope: Value = serde_json::from_str(&raw)?;
-    let Some(value) = envelope.get_mut("value").and_then(Value::as_object_mut) else {
-        return Ok(());
-    };
-    if value
-        .get("rateLimitsByAccount")
-        .is_some_and(|accounts| !accounts.is_null() && !accounts.is_object())
-    {
-        return Err(StoreError::InvalidSyncObject {
-            scope: "workspace".into(),
-            id: "current".into(),
-        });
-    }
-    let accounts = value.remove("rateLimitsByAccount");
-    let default = value.remove("rateLimits");
-    if accounts.is_none() && default.is_none() {
-        return Ok(());
-    }
-    if let Some(Value::Object(accounts)) = accounts {
-        for (key, snapshot) in accounts {
-            let exists: bool = transaction.query_row(
-                "SELECT EXISTS(SELECT 1 FROM sync_entities WHERE collection='rateLimit' AND id=?1)",
-                [&key],
-                |row| row.get(0),
-            )?;
-            if !exists {
-                SyncDocumentsRepository::put_entity(
-                    transaction,
-                    "rateLimit",
-                    &key,
-                    snapshot,
-                    false,
-                )?;
-            }
-        }
-    }
-    let value = envelope
-        .get_mut("value")
-        .map(Value::take)
-        .ok_or_else(|| StoreError::SchemaMismatch("workspace value missing".into()))?;
-    SyncDocumentsRepository::put_entity(transaction, "workspace", "current", value, false)?;
-    Ok(())
-}
-
 /// Restore bounded, validated per-account observations; invalid accounts remain isolated.
 pub fn limits_snapshots(connection: &Connection) -> StoreResult<LimitsRead> {
     let mut statement = connection.prepare(
@@ -503,9 +453,10 @@ mod tests {
         crate::SyncDocumentsRepository::put_entity(&tx,"workspace","current",json!({"stateDir":"fixture","rateLimitsByAccount":{"alpha":{"accountKey":"alpha","at":1.0},"beta":beta},"rateLimits":{"accountKey":"default","at":1.0}}),false).expect("workspace");
         crate::SyncDocumentsRepository::put_entity(&tx, "rateLimit", "alpha", newer.clone(), false)
             .expect("existing account");
-        super::migrate_workspace_limits(&tx).expect("migration");
+        crate::migrations::m2026_10_26_canvas::migrate_workspace_limits(&tx).expect("migration");
         let seq = crate::SyncDocumentsRepository::entity_sequence(&tx).expect("sequence");
-        super::migrate_workspace_limits(&tx).expect("repeat migration");
+        crate::migrations::m2026_10_26_canvas::migrate_workspace_limits(&tx)
+            .expect("repeat migration");
         assert_eq!(
             crate::SyncDocumentsRepository::entity_sequence(&tx).expect("sequence"),
             seq

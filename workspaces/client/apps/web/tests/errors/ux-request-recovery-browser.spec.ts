@@ -1,3 +1,4 @@
+import { required } from "../teams/helpers.ts";
 import { fixtureSnapshot } from "../fixtures/snapshot.ts";
 import type { PostBody } from "../../src/apiTypes.ts";
 import { createServer } from "vite";
@@ -349,7 +350,7 @@ test("Ux request recovery browser", async ({
           const oldResponse = page.waitForResponse((response) =>
             response.url().endsWith("/api/accounts"),
           );
-          releaseOld!();
+          required(releaseOld)();
           await oldResponse;
           await page.evaluate(
             () =>
@@ -437,8 +438,11 @@ test("Ux request recovery browser", async ({
               .click();
             await page.waitForFunction(() => window.saves === 1);
             assert.equal(writes.length, 2);
-            assert.equal(writes[0]!.folder_id, writes[1]!.folder_id);
-            assert.equal(writes[1]!.name, "Different name");
+            assert.equal(
+              required(writes[0]).folder_id,
+              required(writes[1]).folder_id,
+            );
+            assert.equal(required(writes[1]).name, "Different name");
             assert.deepEqual(errors, []);
             results.push({ mode, passed: true });
             continue;
@@ -471,7 +475,8 @@ test("Ux request recovery browser", async ({
               (window.location.search.includes("confirmed") ? 2 : 1),
           );
           assert.equal(writes.length, mode === "confirmed" ? 1 : 2);
-          if (writes.length === 2) assert.deepEqual(writes[0], writes[1]);
+          if (writes.length === 2)
+            assert.deepEqual(required(writes[0]), required(writes[1]));
         }
         assert.deepEqual(errors, []);
         results.push({ mode, passed: true });

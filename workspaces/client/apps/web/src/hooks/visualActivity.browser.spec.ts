@@ -45,20 +45,20 @@ test("hidden visual rows stop timers and rate renders and resume current values"
     window.visualMetrics = { ticks: 0, observers: 0 };
     window.activeVisualTimers = () => timers.size;
     timerWindow.setInterval = (
-      callback: (...args: unknown[]) => void,
+      callback: TimerHandler,
       delay?: number,
       ...args: unknown[]
     ) => {
       if (delay !== 1000) return interval(callback, delay, ...args);
       const id = interval(() => {
         window.visualMetrics.ticks++;
-        callback(...args);
+        if (typeof callback === "function") callback(...args);
       }, delay);
       timers.set(id, true);
       return id;
     };
     timerWindow.clearInterval = (id) => {
-      timers.delete(id!);
+      if (id !== undefined) timers.delete(id);
       clear(id);
     };
     const Observer = window.IntersectionObserver;
@@ -69,7 +69,7 @@ test("hidden visual rows stop timers and rate renders and resume current values"
         window.visualMetrics.observers++;
         this.active = true;
       }
-      disconnect() {
+      override disconnect() {
         if (this.active) window.visualMetrics.observers--;
         this.active = false;
         super.disconnect();
@@ -104,7 +104,7 @@ test("hidden visual rows stop timers and rate renders and resume current values"
       .poll(() => page.evaluate(() => window.activeVisualTimers()))
       .toBe(1);
     expect(await page.evaluate(() => window.visualMetrics.observers)).toBe(1);
-    expect(await page.evaluate(() => window.rateInterests.size)).toBe(2);
+    expect(await page.evaluate(() => window.rateInterests.size)).toBe(3);
     expect(
       await page
         .locator("#far .chat-status svg")
@@ -135,7 +135,7 @@ test("hidden visual rows stop timers and rate renders and resume current values"
     );
     await page.locator("#fold summary").click();
     await expect(page.locator("#closed .token-rate")).toHaveText("129 tok/s");
-    expect(await page.evaluate(() => window.rateInterests.size)).toBe(3);
+    expect(await page.evaluate(() => window.rateInterests.size)).toBe(4);
     await expect
       .poll(() => page.evaluate(() => window.activeVisualTimers()))
       .toBe(2);
@@ -143,7 +143,8 @@ test("hidden visual rows stop timers and rate renders and resume current values"
     await expect
       .poll(() => page.evaluate(() => window.activeVisualTimers()))
       .toBe(0);
-    expect(await page.evaluate(() => window.rateInterests.size)).toBe(0);
+    // The open team owns its interest until unmount, as in App.
+    expect(await page.evaluate(() => window.rateInterests.size)).toBe(1);
     const ticks = await page.evaluate(() => window.visualMetrics.ticks);
     await page.waitForTimeout(1200);
     expect(await page.evaluate(() => window.visualMetrics.ticks)).toBe(ticks);
@@ -164,14 +165,14 @@ test("hidden visual rows stop timers and rate renders and resume current values"
       "true",
     );
     await expect(page.locator("#far .token-rate")).toHaveText("129 tok/s");
-    expect(await page.evaluate(() => window.rateInterests.size)).toBe(1);
+    expect(await page.evaluate(() => window.rateInterests.size)).toBe(2);
     await expect
       .poll(() => page.evaluate(() => window.activeVisualTimers()))
       .toBe(1);
     await expect
       .poll(async () => {
         const text = await page.locator("#far .reasoning-time").textContent();
-        return Number.parseInt(text!) >= 4;
+        return Number.parseInt(text ?? "") >= 4;
       })
       .toBe(true);
     await page.evaluate(() => window.unmount());
@@ -181,9 +182,7 @@ test("hidden visual rows stop timers and rate renders and resume current values"
     // Without an observer, keep visible-tab updates active after hide/resume.
     // There is no scroll observer to reactivate an offscreen row in this mode.
     await page.addInitScript(() => {
-      (
-        window as { IntersectionObserver?: typeof IntersectionObserver }
-      ).IntersectionObserver = undefined;
+      Reflect.deleteProperty(window, "IntersectionObserver");
     });
     await page.reload();
     await expect

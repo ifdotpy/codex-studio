@@ -29,7 +29,12 @@ impl Gate {
         if self.pending.map(|pending| pending.0) != Some(id) {
             return Err("This close request is no longer active.".into());
         }
-        Ok(self.pending.take().unwrap().1)
+        // The matching identity check above proved the pending action exists.
+        Ok(self
+            .pending
+            .take()
+            .expect("matching pending close action")
+            .1)
     }
 }
 
@@ -93,12 +98,12 @@ pub fn close_on_terminate(app: &tauri::AppHandle) -> Result<(), String> {
     tauri::async_runtime::spawn(async move {
         while terminate.recv().await.is_some() {
             let handle = app.clone();
-            let _ = app.run_on_main_thread(move || {
+            drop(app.run_on_main_thread(move || {
                 // Without a renderer close check (none yet, or it failed) exit at once.
                 if !request(&handle) {
                     handle.exit(0);
                 }
-            });
+            }));
         }
     });
     Ok(())

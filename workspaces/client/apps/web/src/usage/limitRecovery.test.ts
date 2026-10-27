@@ -48,6 +48,21 @@ const limits = (
     ...overrides,
   }) satisfies RecoveryLimits;
 
+test("future and ambiguous vendor error records cannot enable limit recovery", () => {
+  for (const codexErrorInfo of [
+    "futureLimit",
+    { futureLimit: { opaque: [1, null] } },
+    { rateLimitExceeded: {}, futureLimit: { id: 42 } },
+  ]) {
+    const error = { message: "Provider extension", codexErrorInfo };
+    const original = JSON.stringify(error);
+    const current = { ...agent, error } satisfies Agent;
+    assert.equal(limitRecovered(current, limits(), now), false);
+    assert.equal(limitRecovery(current, limits(), now), null);
+    assert.equal(JSON.stringify(error), original);
+  }
+});
+
 test("recovery consumes the Rust decision and validates its identity and validity", () => {
   const available = limits(
     { primary: { usedPercent: 100 } },
@@ -191,6 +206,26 @@ test("billing guidance keeps workspace roles and uses the Rust reset time", () =
       limitRecovery(agent, snapshot, now)!.message,
       /^View account limits/,
     );
+  }
+});
+
+test("unsupported provider identities retain generic recovery without Codex billing actions", () => {
+  for (const provider of [undefined, null, "future-provider"]) {
+    const unknown: Agent = {
+      ...agent,
+      // @ts-expect-error An unknown wire provider must not authorize billing actions.
+      provider,
+    };
+    for (const data of [
+      { rateLimitReachedType: "workspace_owner_credits_depleted" },
+      { rateLimitReachedType: "workspace_member_credits_depleted" },
+      { planType: "pro" },
+    ]) {
+      const recovery = limitRecovery(unknown, limits(data), now);
+      assert.equal(recovery?.action, undefined);
+      assert.equal(recovery?.ownerRequest, undefined);
+      assert.match(recovery!.message, /^View account limits/);
+    }
   }
 });
 

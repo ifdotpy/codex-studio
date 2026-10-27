@@ -711,7 +711,9 @@ async fn seed_radio_interrupt(fixture: &Fixture, snapshot: &Value) {
                             Value::Number(value) => {
                                 rusqlite::types::Value::Real(value.as_f64().unwrap())
                             }
-                            _ => panic!("unsupported radio fixture SQL value"),
+                            Value::Bool(_) | Value::Array(_) | Value::Object(_) => {
+                                panic!("unsupported radio fixture SQL value")
+                            }
                         })
                         .collect::<Vec<_>>();
                     db.execute(
@@ -1799,8 +1801,8 @@ fn pending_backlog_pages_traverse_and_wrap() {
         let page = account_registry::target_page(&db, "", &after).unwrap();
         let rows = &page["default"];
         assert!(rows.len() <= 32);
-        actual.extend(rows.iter().map(|(id, _, _)| id.clone()));
-        after.insert("default".into(), rows.last().unwrap().0.clone());
+        actual.extend(rows.iter().map(|row| row.agent_id.clone()));
+        after.insert("default".into(), rows.last().unwrap().agent_id.clone());
     }
     assert_eq!(actual, expected);
     let wrapped_agents = account_registry::target_page(
@@ -1812,7 +1814,7 @@ fn pending_backlog_pages_traverse_and_wrap() {
     assert_eq!(
         wrapped_agents["default"]
             .iter()
-            .map(|(id, _, _)| id)
+            .map(|row| &row.agent_id)
             .collect::<Vec<_>>(),
         actual.iter().take(32).collect::<Vec<_>>()
     );
@@ -1830,7 +1832,7 @@ fn pending_backlog_tail_beyond_the_historical_total_limit_is_reachable() {
     assert_eq!(
         page["default"]
             .iter()
-            .map(|(id, _, _)| id)
+            .map(|row| &row.agent_id)
             .collect::<Vec<_>>(),
         expected[4096..].iter().collect::<Vec<_>>()
     );
@@ -4780,7 +4782,16 @@ async fn wait_for_wal_flush(
                     assert_eq!(busy, 0);
                     assert_eq!(checkpointed_frames, log_frames);
                 }
-                _ => unreachable!("observer sends only checkpoint events"),
+                StoreDiagnosticsEvent::WriterAdmission { .. }
+                | StoreDiagnosticsEvent::WriterWaiters { .. }
+                | StoreDiagnosticsEvent::ReadAdmission { .. }
+                | StoreDiagnosticsEvent::ReadWaiters { .. }
+                | StoreDiagnosticsEvent::WriterTransaction { .. }
+                | StoreDiagnosticsEvent::SqlProfile { .. }
+                | StoreDiagnosticsEvent::CommitDuration { .. }
+                | StoreDiagnosticsEvent::SqliteLockError { .. } => {
+                    unreachable!("observer sends only checkpoint events")
+                }
             }
         }
     })

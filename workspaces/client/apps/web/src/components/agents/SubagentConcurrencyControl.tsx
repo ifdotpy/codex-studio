@@ -21,7 +21,10 @@ const CONCURRENCY_SCHEMA_VERSION = 2;
 
 type Confirmed = { concurrency: number; revision: number };
 type PendingRequest = PostBody<"/api/conversation">;
-type Stored = { confirmed?: Confirmed; pending?: PendingRequest | undefined };
+type Stored = {
+  confirmed?: Confirmed | undefined;
+  pending?: PendingRequest | undefined;
+};
 type ConcurrencyAgent = Pick<
   Agent,
   "subagentConcurrencyVersion" | "concurrency" | "agentModeRevision"
@@ -266,9 +269,10 @@ function ScopedConcurrencyControl({
         workspaceId,
         timeoutMs: 15000,
       });
+      const accepted = stateOf(result);
       if (
         result.id !== lead.id ||
-        !stateOf(result) ||
+        !accepted ||
         !validConcurrency(result.concurrency) ||
         !validRevision(result.agentModeRevision) ||
         result.agentModeRevision < expectedRevision
@@ -276,13 +280,12 @@ function ScopedConcurrencyControl({
         throw new Error(
           "The server did not confirm the concurrency request. Retry the same request.",
         );
-      const accepted = stateOf(result);
       const disk = JSON.parse(
         localStorage.getItem(storageKey) || "{}",
       ) as Stored;
       const newest = [latest.current, disk.confirmed, accepted]
         .filter(validConfirmed)
-        .sort((a, b) => b.revision - a.revision)[0];
+        .sort((a, b) => b.revision - a.revision)[0]!;
       const next: Stored = {
         confirmed: newest,
         ...(disk.pending?.request_id !== request.request_id
@@ -315,7 +318,7 @@ function ScopedConcurrencyControl({
           if (mounted.current) {
             setStored(next);
             dirty.current = false;
-            setDraft(newest.concurrency);
+            if (newest) setDraft(newest.concurrency);
           }
         } catch {
           // Keep the receipt until its confirmed rejection can be saved.

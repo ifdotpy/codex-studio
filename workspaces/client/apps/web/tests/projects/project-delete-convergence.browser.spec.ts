@@ -35,10 +35,12 @@ test("App keeps confirmed deleted chats unreadable when HTTP wins before SSE", a
       .filter((agent) => !agent.parentId)
       .map((agent) => agent.id);
     const firstAgent = state.runtime.agents[0];
+    if (!firstAgent) throw new Error("Missing first fixture agent");
 
     const project = state.runtime.projects.find(
       (project) => project.path === firstAgent.cwd,
     );
+    if (!project) throw new Error("Missing fixture project");
 
     let deletes = 0;
     await page.route("**/api/projects/delete", async (route) => {

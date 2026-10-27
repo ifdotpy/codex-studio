@@ -3,6 +3,7 @@
 //! with the exact prepared wire params and request generation. No provider call or journal ACK belongs here.
 use super::{TransportSnapshot, capture_input};
 use serde_json::{Value, json};
+use studio_runtime_providers::ProviderKind;
 use studio_runtime_store::{
     AgentRecord, AgentRepository, ClaudeRetryRecords, ClaudeRetryRepository, StoreError,
     StoreResult, Transaction,
@@ -34,7 +35,7 @@ fn reserved(
         .agent
         .get("startAttempt")
         .ok_or_else(|| invalid(agent))?;
-    if rows.agent.get("provider") != Some(&json!("claude"))
+    if rows.agent.get("provider") != Some(&json!(ProviderKind::Claude.key()))
         || rows.agent.get("autoWake") != Some(&json!(true))
         || rows.agent.get("status") == Some(&json!("paused"))
         || [
@@ -164,7 +165,7 @@ pub fn bind_submitted(
         .get("startAttempt")
         .ok_or_else(|| invalid(agent))?;
     if transport.closed
-        || rows.agent.get("provider") != Some(&json!("claude"))
+        || rows.agent.get("provider") != Some(&json!(ProviderKind::Claude.key()))
         || rows
             .agent
             .get("accountKey")

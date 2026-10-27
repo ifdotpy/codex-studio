@@ -120,7 +120,9 @@ test("passes with the keychain path and the identity fingerprint", () =>
     assert.equal(calls.unlock, 1);
     assert.equal(calls.find, 1);
     // The password reaches security only through stdin.
-    assert.match(calls.inputs[0], /^unlock-keychain -p "fixture-password/);
+    const [input] = calls.inputs;
+    assert.ok(input);
+    assert.match(input, /^unlock-keychain -p "fixture-password/);
     assert.equal(JSON.stringify(calls.args).includes(password), false);
   }));
 

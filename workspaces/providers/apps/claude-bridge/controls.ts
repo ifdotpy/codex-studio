@@ -44,6 +44,7 @@ import { checkpointSourceMatches } from "./file-checkpoints.ts";
 import { messageIndex } from "./history-index.ts";
 import type { HistoryIndex } from "./history-index.ts";
 import { nativeInputIds } from "./input-messages.ts";
+import { nativeProjectCwd } from "./native-history.ts";
 import { randomUUID } from "node:crypto";
 
 // Initialization is the CLI's authoritative list after native skill policy.
@@ -257,7 +258,7 @@ export async function rollbackSession(
   if (!receipt) {
     const sourceNativeId = session.nativeId || session.id;
     const history = await deps.getHistoryIndex(sourceNativeId, {
-      dir: session.nativeHistoryCwd || session.cwd,
+      dir: await nativeProjectCwd(session.nativeHistoryCwd || session.cwd),
     });
     sourceHistory = history;
     const { messages } = history;
@@ -325,7 +326,7 @@ export async function rollbackSession(
     await deps.persist(session);
     const result = boundary.index
       ? await deps.forkSession(sourceNativeId, {
-          dir: session.nativeHistoryCwd || session.cwd,
+          dir: await nativeProjectCwd(session.nativeHistoryCwd || session.cwd),
           ...(boundary.upToMessageId === null
             ? {}
             : { upToMessageId: boundary.upToMessageId }),
@@ -350,7 +351,7 @@ export async function rollbackSession(
   const nativeRetained = currentNativeTurns(retained, receipt.sourceNativeId);
   if (nativeRetained.length) {
     const fork = await deps.getHistoryIndex(receipt.targetNativeId, {
-      dir: session.nativeHistoryCwd || session.cwd,
+      dir: await nativeProjectCwd(session.nativeHistoryCwd || session.cwd),
     });
     const forkMessages = fork.messages;
     const source = receipt.sourceMessages;
@@ -478,7 +479,7 @@ export async function forkAtTurn(
     targetNativeId = (deps.randomUUID || randomUUID)();
   } else {
     const nativeId = source.nativeId || source.id;
-    const dir = source.nativeHistoryCwd || source.cwd;
+    const dir = await nativeProjectCwd(source.nativeHistoryCwd || source.cwd);
     const history = await deps.getHistoryIndex(nativeId, { dir });
     const { messages } = history;
     const nativeTurns = currentNativeTurns(source.turns, nativeId);

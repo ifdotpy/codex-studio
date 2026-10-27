@@ -61,6 +61,8 @@ declare global {
   }
 }
 const fixtureRoot = document.getElementById("root");
+if (!fixtureRoot) throw new Error("Missing fixture root");
+
 import {
   API_SCHEMA_HASH,
   API_SCHEMA_HASH_HEADER,
@@ -98,7 +100,9 @@ const initial: Agent = {
 // Partial fixture view: the base fixture omits inherited worker model, effort and fastMode.
 function partialAgent(
   value: Omit<Agent, "workerDefaults"> & {
-    workerDefaults?: Partial<NonNullable<Agent["workerDefaults"]>> | null;
+    workerDefaults?:
+      | Partial<NonNullable<Agent["workerDefaults"]>>
+      | Agent["workerDefaults"];
   },
 ): Agent {
   return value as Agent;

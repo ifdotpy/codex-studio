@@ -1,6 +1,7 @@
 use super::{model::*, storage};
 use rusqlite::Transaction;
 use serde_json::{Value, json};
+use studio_runtime_providers::ProviderKind;
 use studio_runtime_providers::{RequestId, ResponseBody};
 use studio_runtime_store::{QuestionsWriteRepository, RuntimeStore, system_reads as records};
 
@@ -81,7 +82,7 @@ pub async fn admit_native(
                 return Ok(NativeAdmission::Answer(body));
             }
             // Read the mode once; Ask can race an approval already admitted.
-            if snapshot.actor()["provider"] != "claude"
+            if snapshot.actor()["provider"] != ProviderKind::Claude.key()
                 && snapshot.actor()["yoloMode"] == true
                 && let Some(result) = full_access_answer(&request.method, &request.params)?
             {
@@ -680,7 +681,12 @@ fn provider_context(tx: &Transaction<'_>, card: &Value) -> Result<CallbackContex
         CallbackError::Stored(_) | CallbackError::Stale => {
             CallbackError::Dependency("provider-session/question-answer")
         }
-        error => error,
+        error @ CallbackError::Invalid(_)
+        | error @ CallbackError::InvalidResultSchema(_)
+        | error @ CallbackError::Dependency(_)
+        | error @ CallbackError::Conflict
+        | error @ CallbackError::Unknown
+        | error @ CallbackError::Store(_) => error,
     })
 }
 
@@ -796,7 +802,16 @@ pub async fn prepare_delete(
                 crate::questions_write::QuestionsWriteError::QuestionAnswerUnavailable => {
                     CallbackError::Dependency("provider-session/question-answer")
                 }
-                _ => CallbackError::Invalid("Unable to delete question"),
+                crate::questions_write::QuestionsWriteError::Conflict(_)
+                | crate::questions_write::QuestionsWriteError::InvalidStoredObject { .. }
+                | crate::questions_write::QuestionsWriteError::Event(_)
+                | crate::questions_write::QuestionsWriteError::Store(_)
+                | crate::questions_write::QuestionsWriteError::Json(_)
+                | crate::questions_write::QuestionsWriteError::Clock
+                | crate::questions_write::QuestionsWriteError::Coordination(_)
+                | crate::questions_write::QuestionsWriteError::Projects(_) => {
+                    CallbackError::Invalid("Unable to delete question")
+                }
             })?;
             if !allowed {
                 return Ok(None);

@@ -10,6 +10,11 @@ import { StudioErrorsProvider, type StudioErrorItem } from "./StudioErrors";
 const errors: StudioErrorItem[] = ["one", "two", "three"].map((id) => ({
   id: `monitor:${id}`,
   kind: "monitor_outcome_lost",
+  diagnostics: {
+    context: { source: "monitor", requestId: id, turnId: null, epoch: 0 },
+    certainty: "unknown",
+    causes: [],
+  },
   reason: "Studio lost the command result.",
   action: "check",
   agentId: id,

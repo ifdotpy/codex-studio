@@ -84,6 +84,8 @@ pub fn gesture_for_method(method: &str) -> u64 {
 
 /// Called synchronously by the Attar native adapter on the UI thread.
 /// Zero means no authorization. The token remains private to this process.
+// SAFETY: The host calls this scalar-only gesture entry point by its exported symbol.
+#[allow(unsafe_code)]
 #[unsafe(no_mangle)]
 pub extern "C" fn studio_core_gesture_v1(purpose: u32) -> u64 {
     std::panic::catch_unwind(|| {
@@ -433,6 +435,8 @@ fn read_selected_files(paths: Value) -> Result<Value, String> {
 }
 
 #[cfg(target_os = "macos")]
+// SAFETY: Native AppKit bindings are confined to this desktop adapter.
+#[allow(unsafe_code)]
 mod mac {
     use super::*;
     use objc2::{MainThreadMarker, rc::autoreleasepool};
@@ -442,6 +446,7 @@ mod mac {
     };
     use objc2_foundation::{NSArray, NSError, NSString, NSURL};
 
+    // Native callbacks may finish after their caller disconnects; reply delivery is best effort.
     pub async fn file_action(file: crate::file_actions::ResolvedFile) -> Result<Value, String> {
         use crate::file_actions::Action;
         let (reply, receive) = tokio::sync::oneshot::channel();
@@ -455,12 +460,12 @@ mod mac {
                     Action::Reveal => {
                         NSWorkspace::sharedWorkspace()
                             .activateFileViewerSelectingURLs(&NSArray::from_retained_slice(&[url]));
-                        let _ = reply.send(Ok(Value::Bool(true)));
+                        drop(reply.send(Ok(Value::Bool(true))));
                     }
                     Action::Preview => {
-                        let _ = reply.send(
+                        drop(reply.send(
                             crate::quick_look::show(&url, &file.name).map(|()| Value::Bool(true)),
-                        );
+                        ));
                     }
                     Action::Open => {
                         let config = NSWorkspaceOpenConfiguration::configuration();
@@ -476,7 +481,7 @@ mod mac {
                                 if let Some(reply) =
                                     reply.lock().ok().and_then(|mut value| value.take())
                                 {
-                                    let _ = reply.send(result);
+                                    drop(reply.send(result));
                                 }
                             },
                         );
@@ -527,7 +532,7 @@ mod mac {
                         let address = match external_url(&value) {
                             Ok(value) => value,
                             Err(error) => {
-                                let _ = reply.send(Err(error));
+                                drop(reply.send(Err(error)));
                                 return;
                             }
                         };
@@ -547,7 +552,7 @@ mod mac {
                                 if let Some(reply) =
                                     reply.lock().ok().and_then(|mut value| value.take())
                                 {
-                                    let _ = reply.send(result);
+                                    drop(reply.send(result));
                                 }
                             },
                         );
@@ -560,7 +565,7 @@ mod mac {
                     }
                     _ => Err("This native action is not available.".into()),
                 };
-                let _ = reply.send(result);
+                drop(reply.send(result));
             });
         });
         receive

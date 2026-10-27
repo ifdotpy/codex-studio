@@ -106,6 +106,7 @@ test("the real image caller sends a bounded base64 image with its actual MIME ty
     });
     const input = await bridge.note((note) => note.method === "fixture/input");
     const [block] = (input.params as FixtureMessage).content as FixtureImage[];
+    assert.ok(block);
     assert.equal(block.type, "image");
     assert.equal(block.source.media_type, "image/png");
     assert.ok(block.source.data.length <= MAX_IMAGE_BASE64_BYTES);
@@ -146,6 +147,7 @@ test("a refused image steer leaves the active turn unchanged", async () => {
       threadId: bridge.thread,
       includeTurns: true,
     });
+    assert.ok(saved.thread.turns[0]);
     assert.equal(saved.thread.turns[0].status, "inProgress");
     assert.equal(
       saved.thread.turns[0].items.some((item) => item.id === "refused-steer"),

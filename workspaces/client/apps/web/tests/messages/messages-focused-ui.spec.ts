@@ -1,3 +1,4 @@
+import { required } from "./helpers.ts";
 import { responseJson } from "./helpers.ts";
 import { requestBody } from "./helpers.ts";
 import type { ComplaintBody } from "./helpers.ts";
@@ -41,27 +42,35 @@ test("messages focused ui", async ({ browser: _browser }) => {
   let browser,
     page,
     log = "";
-  fixture.stderr!.on("data", (data) => {
+  required(fixture.stderr).on("data", (data) => {
     log += data;
   });
   try {
     const port = await new Promise((resolve, reject) => {
-      fixture.stdout!.once("data", (data) =>
+      required(fixture.stdout).once("data", (data) =>
         resolve(Number(String(data).trim())),
       );
       fixture.once("exit", () => reject(Error(log)));
     });
     const origin = `http://127.0.0.1:${port}`;
     const state = await readTestState(origin);
-    const lead = state.threads.find((a) => a.name === "Release lead")!;
+    const lead = required(state.threads.find((a) => a.name === "Release lead"));
     const records = state.runtime.complaints;
     assert.equal(records.length, 2);
-    assert.equal(records.find((c) => c.author === lead.id)!.recipient, "user");
-    assert.equal(records.find((c) => c.author !== lead.id)!.recipient, "lead");
-    const leadMessage = records.find((c) => c.author === lead.id)!;
-    const direct = state.runtime.rooms.find(
-      (r) => r.kind === "private" && r.members!.includes(lead.id),
-    )!;
+    assert.equal(
+      required(records.find((c) => c.author === lead.id)).recipient,
+      "user",
+    );
+    assert.equal(
+      required(records.find((c) => c.author !== lead.id)).recipient,
+      "lead",
+    );
+    const leadMessage = required(records.find((c) => c.author === lead.id));
+    const direct = required(
+      state.runtime.rooms.find(
+        (r) => r.kind === "private" && required(r.members).includes(lead.id),
+      ),
+    );
     browser = _browser;
     page = await browser.newPage({ viewport: { width: 1280, height: 900 } });
     page.setDefaultTimeout(10000);
@@ -144,31 +153,36 @@ test("messages focused ui", async ({ browser: _browser }) => {
     assert.equal(attempts.length, 2);
     assert.deepEqual(
       attempts[1],
-      attempts[0],
+      required(attempts[0]),
       "retry preserves the request after drawer unmount",
     );
     const saved = await responseJson<import("./helpers.ts").ComplaintDetail>(
       await fetch(origin + "/api/complaint?id=" + leadMessage.id),
     );
     assert.equal(saved.responses.length, 1);
-    assert.equal(saved.responses[0].id, `user:${attempts[0].id}`);
-    assert.equal(saved.responses[0].author, "user");
+    assert.equal(
+      required(saved.responses[0]).id,
+      `user:${required(attempts[0]).id}`,
+    );
+    assert.equal(required(saved.responses[0]).author, "user");
     const delivery = queryFixtureDatabase(
       root,
       "select * from runtime_events where kind='complaint_response'",
     );
     assert.equal(delivery.length, 1);
     assert.equal(
-      delivery[0].agent,
+      required(delivery[0]).agent,
       leadMessage.author,
       "response reaches the lead who sent the message",
     );
     await complaint
       .getByRole("button", { name: "Close reply", exact: true })
       .click();
-    const broadcast = state.runtime.rooms.find(
-      (room) => room.kind === "broadcast" && room.rootId === lead.id,
-    )!;
+    const broadcast = required(
+      state.runtime.rooms.find(
+        (room) => room.kind === "broadcast" && room.rootId === lead.id,
+      ),
+    );
     assert.ok(broadcast);
     if (!(await drawer.locator(`[data-room="${broadcast.id}"]`).count()))
       await drawer
@@ -216,7 +230,7 @@ test("messages focused ui", async ({ browser: _browser }) => {
       assert.equal(await youRow.getAttribute("aria-pressed"), "true");
       const row = await youRow.boundingBox();
       assert.ok(
-        row!.x >= 0 && row!.x + row!.width <= width,
+        required(row).x >= 0 && required(row).x + required(row).width <= width,
         `selected conversation visible at ${width}`,
       );
       assert.ok(
@@ -307,7 +321,7 @@ test("messages focused ui", async ({ browser: _browser }) => {
         },
       },
     ];
-    fixture.stdin!.write(
+    required(fixture.stdin).write(
       JSON.stringify({
         method: "fixture/request",
         params: quietState.runtime.requests[0],
@@ -416,7 +430,7 @@ test("messages focused ui", async ({ browser: _browser }) => {
     console.error("Evidence:", root, error);
     throw error;
   } finally {
-    fixture.stdin?.end();
+    required(fixture.stdin)?.end();
   }
 });
 

@@ -172,7 +172,7 @@ fn options(state: &DisposableState) -> OpenOptions {
 fn frame(value: Value) -> Frame {
     match decode_journal_entry(0, 1, value.to_string().into_bytes()).payload {
         DecodedJournalPayload::Frame(frame) => frame,
-        _ => panic!("not a frame"),
+        DecodedJournalPayload::RawStdout { .. } => panic!("not a frame"),
     }
 }
 fn write(operation: &str, value: Value) -> (AdapterCommand, Receipt) {

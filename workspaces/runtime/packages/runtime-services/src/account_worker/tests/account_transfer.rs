@@ -10,6 +10,112 @@ use crate::account_session_runtime::{
 
 const TRANSFER: &str = "5a300f72-4ea6-4d30-8a0e-9b2c13c4a001";
 
+#[tokio::test]
+async fn bridge_startup_recovers_transfer_phases_before_exposing_workers() {
+    let root = tempfile::tempdir().expect("isolated state");
+    let store = Arc::new(RuntimeStore::open(Some(root.path())).await.expect("store"));
+    store
+        .transaction(|tx| {
+            for id in ["lead", "submitted", "lazy-submitted", "interrupting"] {
+                let row = AgentRecord::from_value(
+                    json!({"id":id,"rootId":"lead","epoch":1,"status":"idle",
+                "provider":"codex","accountKey":"source","isLead":id=="lead"}),
+                )?;
+                AgentRepository::put(tx, &row)?;
+            }
+            Ok(())
+        })
+        .await
+        .expect("agents");
+    crate::account_transfer_driver::request(
+        &store, TRANSFER, "lead", "target", "team", "codex", 1.0,
+    )
+    .await
+    .expect("request");
+    let saved = store.transaction(|tx| {
+        let raw = studio_runtime_store::AccountTransferRepository::get(tx, TRANSFER)?.expect("operation");
+        let mut operation: Value = serde_json::from_str(&raw)?;
+        for (id, phase) in [("lead","reading"), ("submitted","submitted"), ("lazy-submitted","lazy_submitted"), ("interrupting","interrupting")] {
+            operation["members"][id]["phase"] = json!(phase);
+            if id == "lead" {
+                operation["members"][id]["providerReadIntents"] = json!({"source-history":{
+                    "operation":"exact-read", "method":"thread/read", "scope":{"generation":1}
+                }});
+            } else {
+                operation["members"][id]["providerIntent"] = json!({"operation":format!("exact-{id}"),
+                    "method":if id == "interrupting" {"turn/interrupt"} else {"thread/fork"},"scope":{"generation":1}});
+            }
+            operation["members"][id]["providerReceipts"] = json!([]);
+        }
+        studio_runtime_store::AccountTransferRepository::put(tx, TRANSFER, &operation.to_string())?;
+        Ok(operation)
+    }).await.expect("persist crash phases");
+    let _bridge = StoreBridge::new(store.clone())
+        .await
+        .expect("startup barrier");
+    let read = || {
+        let raw = studio_runtime_store::AccountTransferRepository::get(
+            &store.test_reader().expect("reader"),
+            TRANSFER,
+        )
+        .expect("operation")
+        .expect("exists");
+        serde_json::from_str::<Value>(&raw).expect("JSON")
+    };
+    let recovered = read();
+    assert_eq!(recovered["members"]["lead"]["phase"], "lazy");
+    assert_eq!(recovered["members"]["submitted"]["phase"], "unknown");
+    assert_eq!(recovered["members"]["lazy-submitted"]["phase"], "unknown");
+    assert_eq!(recovered["members"]["interrupting"]["phase"], "blocked");
+    for id in ["lead", "submitted", "lazy-submitted", "interrupting"] {
+        assert_eq!(
+            recovered["members"][id]["providerIntent"],
+            saved["members"][id]["providerIntent"]
+        );
+        assert_eq!(
+            recovered["members"][id]["providerReceipts"],
+            saved["members"][id]["providerReceipts"]
+        );
+        assert_eq!(
+            recovered["members"][id]["providerReadIntents"],
+            saved["members"][id]["providerReadIntents"]
+        );
+    }
+    assert_eq!(
+        crate::account_transfer_driver::recover(&store, 3.0)
+            .await
+            .expect("repeat recovery"),
+        0
+    );
+    assert_eq!(read(), recovered);
+}
+
+#[tokio::test]
+async fn bridge_startup_refuses_invalid_transfer_state_before_exposing_workers() {
+    let root = tempfile::tempdir().expect("isolated state");
+    let store = Arc::new(RuntimeStore::open(Some(root.path())).await.expect("store"));
+    store
+        .transaction(|tx| {
+            let invalid = json!({"id":"invalid", "leadId":"lead", "targetAccountKey":"target",
+            "status":"future-status", "created":1.0, "members":{}})
+            .to_string();
+            tx.execute(
+                "INSERT INTO runtime_account_transfers(id,record) VALUES('invalid',?1)",
+                [invalid],
+            )?;
+            Ok(())
+        })
+        .await
+        .expect("invalid transfer fixture");
+    let error = StoreBridge::new(store)
+        .await
+        .err()
+        .expect("invalid recovery must block bridge construction");
+    assert!(
+        matches!(error, WorkerError::PreparationRefused(reason) if reason.starts_with("account-transfer/startup-recovery/"))
+    );
+}
+
 async fn edit_agent(state: &State, edit: impl FnOnce(&mut AgentRecord) + Send + 'static) {
     let agent = state.agent.clone();
     state

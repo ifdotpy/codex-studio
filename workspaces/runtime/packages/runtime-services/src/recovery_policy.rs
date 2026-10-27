@@ -3,6 +3,7 @@ use crate::event_write::truthy;
 use serde::Serialize;
 use serde_json::{Value, json};
 use std::sync::Arc;
+use studio_runtime_schema::provider_errors::is_misalignment_policy_violation;
 use studio_runtime_schema::shared_values::LEGACY_VM_PROVIDER_DISCONNECTED_TURN_ERROR;
 use studio_runtime_store::{
     BACKEND_RESTARTED_TURN_ERROR, PROVIDER_DISCONNECTED_TURN_ERROR,
@@ -17,9 +18,11 @@ const SUPERVISOR_UNKNOWN: &str =
 const ACTIVE_REPAIR: &[&str] = &["preparing", "submitted", "unknown", "ready"];
 
 #[derive(Debug, thiserror::Error)]
-#[error("invalid recovery record at {location}")]
-pub struct InvalidRecoveryRecord {
-    pub location: String,
+pub enum InvalidRecoveryRecord {
+    #[error("invalid recovery record at {location}")]
+    Schema { location: &'static str },
+    #[error("invalid recovery record {table}/{id}")]
+    Stored { table: &'static str, id: String },
 }
 
 /// Built only from persisted JSON. Keep the source intact for compare-and-apply.
@@ -62,12 +65,12 @@ impl AutomaticTurnRecovery<'_> {
 impl RecoverySnapshot {
     pub fn from_record(agent: Value) -> Result<Self, InvalidRecoveryRecord> {
         if !studio_runtime_schema::validate("RecoveryAgentRecord", &agent).map_err(|_| {
-            InvalidRecoveryRecord {
-                location: "RecoveryAgentRecord.schema".into(),
+            InvalidRecoveryRecord::Schema {
+                location: "RecoveryAgentRecord.schema",
             }
         })? {
-            return Err(InvalidRecoveryRecord {
-                location: "runtime_agents.recovery".into(),
+            return Err(InvalidRecoveryRecord::Schema {
+                location: "runtime_agents.recovery",
             });
         }
         Ok(Self {
@@ -181,11 +184,10 @@ fn account_equal(a: &Value, b: &Value) -> bool {
 fn thread_block(a: &Value) -> bool {
     (has(a, "threadId") && a["nativeThreadBlock"]["threadId"] == a["threadId"])
         || (has(a, "threadId")
-            && (a["error"]["codexErrorInfo"] == "misalignmentPolicyViolation"
+            && (is_misalignment_policy_violation(&a["error"])
                 || (has(&a["nativeTurnError"], "turnId")
                     && a["nativeTurnError"]["turnId"] == a["turnId"]
-                    && a["nativeTurnError"]["error"]["codexErrorInfo"]
-                        == "misalignmentPolicyViolation")))
+                    && is_misalignment_policy_violation(&a["nativeTurnError"]["error"]))))
 }
 fn clear(a: &Value) -> bool {
     ![

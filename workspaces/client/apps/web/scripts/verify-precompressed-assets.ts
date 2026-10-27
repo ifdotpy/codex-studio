@@ -137,7 +137,11 @@ try {
       await context.close();
     }
   }
-  assert.ok(runs[1].transferredBodyBytes < runs[0].transferredBodyBytes);
+  const [uncompressed, compressed] = runs;
+  assert.ok(uncompressed && compressed);
+  assert.ok(
+    compressed.transferredBodyBytes < uncompressed.transferredBodyBytes,
+  );
   await writeFile(
     reportPath,
     JSON.stringify(

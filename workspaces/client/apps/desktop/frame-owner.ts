@@ -18,7 +18,7 @@ function frameOwner(
   url: string | undefined,
   assetsOrigin: string | undefined,
   shellOrigin: string,
-) {
+): string | null | undefined {
   try {
     const value = new URL(url!);
     const base = new URL(assetsOrigin!);
@@ -42,8 +42,7 @@ function frameOwner(
     const navigation = value.searchParams.getAll("studio-navigation");
     if (
       navigation.length > 1 ||
-      (navigation.length === 1 &&
-        !["classic", "combined"].includes(navigation[0]))
+      navigation.some((value) => !["classic", "combined"].includes(value))
     )
       return;
     if (
@@ -60,6 +59,8 @@ function frameOwner(
     )
       return;
     return owner;
-  } catch {}
+  } catch {
+    return undefined;
+  }
 }
 export { frameOwner, serverFrameHost };

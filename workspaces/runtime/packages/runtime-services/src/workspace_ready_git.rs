@@ -994,7 +994,13 @@ impl Git {
         )
         .map_err(|error| match error {
             WorkspaceError::Git(_) => WorkspaceError::CheckpointRefConflict,
-            other => other,
+            other @ WorkspaceError::Store(_)
+            | other @ WorkspaceError::InvalidRecord
+            | other @ WorkspaceError::Deadline(_)
+            | other @ WorkspaceError::CheckpointRefConflict
+            | other @ WorkspaceError::Lock
+            | other @ WorkspaceError::Worker
+            | other @ WorkspaceError::WorktreeRoot(_) => other,
         })?;
         Ok(
             json!({"id":id,"agent":plan.agent,"rootId":plan.source.get("rootId"),"label":"Before first turn",

@@ -7,10 +7,51 @@
       {
         "ts-ignore": true,
         "ts-nocheck": true,
-        "ts-expect-error": "allow-with-description",
+        "ts-expect-error": true,
         "ts-check": false,
         "minimumDescriptionLength": 3
       }
     ]
-  }
+  },
+  "overrides": [
+    {
+      "files": ["workspaces/providers/apps/claude-bridge/sdk-contract-gaps.ts"],
+      "rules": {
+        "typescript/ban-ts-comment": [
+          "error",
+          {
+            "ts-ignore": true,
+            "ts-nocheck": true,
+            "ts-expect-error": "allow-with-description",
+            "ts-check": false,
+            "minimumDescriptionLength": 3
+          }
+        ]
+      }
+    },
+    {
+      "files": [
+        "**/*.test.*",
+        "**/*.spec.*",
+        "**/*.type-test.*",
+        "**/*.fixture.*",
+        "**/tests/**",
+        "**/fixtures/**",
+        "workspaces/client/apps/desktop/test.ts",
+        "workspaces/client/apps/desktop/server-access-native.ts"
+      ],
+      "rules": {
+        "typescript/ban-ts-comment": [
+          "error",
+          {
+            "ts-ignore": true,
+            "ts-nocheck": true,
+            "ts-expect-error": "allow-with-description",
+            "ts-check": false,
+            "minimumDescriptionLength": 3
+          }
+        ]
+      }
+    }
+  ]
 }

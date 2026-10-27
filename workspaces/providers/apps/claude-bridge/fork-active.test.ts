@@ -53,7 +53,7 @@ for (const mode of ["running", "background"]) {
       ).thread;
       assert.notEqual(target.id, bridge.thread);
       assert.equal(target.turns.length, 1);
-      assert.equal(target.turns[0].status, "completed");
+      assert.equal(target.turns[0]?.status, "completed");
       assert.deepEqual(
         (
           await bridge.call("thread/read", {
@@ -93,7 +93,7 @@ for (const mode of ["running", "background"]) {
             await bridge.call("thread/backgroundTerminals/list", {
               threadId: bridge.thread,
             })
-          ).data[0].task_id,
+          ).data[0]?.task_id,
           "bg",
         );
     } finally {

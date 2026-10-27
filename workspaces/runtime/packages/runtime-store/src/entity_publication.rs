@@ -364,7 +364,7 @@ pub(crate) fn pending(
                 .query_row(
                     &match source {
                         Source::QueueAsset => "SELECT json_extract(record,'$.agent') FROM runtime_assets WHERE rowid=?1".to_owned(),
-                        _ => format!("SELECT id FROM {} WHERE rowid=?1", source.table()),
+                        Source::Agent | Source::Request | Source::Event | Source::EventMeta | Source::Item | Source::Plan | Source::Annotation | Source::Task | Source::Work | Source::Terminal | Source::Monitor | Source::Receipt => format!("SELECT id FROM {} WHERE rowid=?1", source.table()),
                     },
                     [row_id],
                     |row| row.get::<_, String>(0),

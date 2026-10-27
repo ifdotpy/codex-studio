@@ -52,7 +52,9 @@ export function EdgeRail({
           aria-label={label}
           title={label}
           aria-expanded={action.expanded}
-          disabled={action.disabled}
+          {...(action.disabled !== undefined
+            ? { disabled: action.disabled }
+            : {})}
           onClick={action.onClick}
         >
           {icon}

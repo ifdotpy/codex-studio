@@ -1,3 +1,5 @@
+import { required } from "../components/componentTestFixtures.ts";
+import assert from "node:assert/strict";
 import { DRAFT_SERVER_READY_TIMEOUT_MS } from "./draftServerFixture";
 import { afterAll, afterEach, beforeAll, expect, it, vi } from "vitest";
 import { spawn } from "node:child_process";
@@ -175,7 +177,7 @@ async function request(path: string, body?: unknown) {
   const response = await fetch(`${origin}${path}`, {
     headers,
     method: body === undefined ? "GET" : "POST",
-    body: body === undefined ? undefined : JSON.stringify(body),
+    ...(body === undefined ? {} : { body: JSON.stringify(body) }),
   });
   const value = await response.json();
   expect(response.ok, JSON.stringify(value)).toBe(true);
@@ -267,6 +269,7 @@ it.each(fixture.orders)(
     });
     function deliver(frame: ResourceChangeEvent) {
       const version = frame.resourceVersions[0];
+      assert.ok(version != null);
       mocks.invalidate?.({
         epoch: frame.epoch,
         reason: frame.reason,
@@ -277,6 +280,7 @@ it.each(fixture.orders)(
     try {
       deliver(await firstValueFrom(received));
       await pulled.promise;
+      assert.ok(mocks.replications[0] != null);
       await mocks.replications[0].awaitInSync();
       expect(
         mocks.syncGet.mock.calls.some(([path]) => path === "/api/sync/pull"),
@@ -305,9 +309,9 @@ it.each(fixture.orders)(
             received.pipe(
               filter(
                 (frame) =>
-                  !!frame.resourceVersions[0].draftChanges?.documents.some(
-                    (doc) => doc.id === id,
-                  ),
+                  !!required(
+                    frame.resourceVersions[0],
+                  ).draftChanges?.documents.some((doc) => doc.id === id),
               ),
             ),
           ),
@@ -319,7 +323,9 @@ it.each(fixture.orders)(
       );
       if (order === "echo-first" || order === "lost-response") await echo();
       if (order === "second-writer") {
-        const row = posts[0].body.rows[0].newDocumentState;
+        assert.ok(posts[0] != null);
+        assert.ok(posts[0].body.rows[0] != null);
+        const row = posts[0].body.rows[0]?.newDocumentState;
         const payload = encodeDraftPayload({
           ...JSON.parse(row.payload),
           text: "other writer",
@@ -343,10 +349,12 @@ it.each(fixture.orders)(
         if (order === "late-echo") {
           await secondPost.promise;
           expect(posts).toHaveLength(2);
+          assert.ok(mocks.replications[0] != null);
           await mocks.replications[0].awaitInSync();
         }
         await echo();
         if (order === "late-echo") {
+          assert.ok(mocks.replications[0] != null);
           await mocks.replications[0].awaitInSync();
         }
       }
@@ -361,17 +369,17 @@ it.each(fixture.orders)(
         received.pipe(
           filter(
             (frame) =>
-              !!frame.resourceVersions[0].draftChanges?.documents.some(
-                (doc) => {
-                  if (doc.id !== id) return false;
-                  const payload = JSON.parse(doc.payload);
-                  return (
-                    payload.text === expectedText &&
-                    (order !== "second-writer" ||
-                      payload.alternatives?.includes("edit-3"))
-                  );
-                },
-              ),
+              !!required(
+                frame.resourceVersions[0],
+              ).draftChanges?.documents.some((doc) => {
+                if (doc.id !== id) return false;
+                const payload = JSON.parse(doc.payload);
+                return (
+                  payload.text === expectedText &&
+                  (order !== "second-writer" ||
+                    payload.alternatives?.includes("edit-3"))
+                );
+              }),
           ),
         ),
       );
@@ -387,18 +395,21 @@ it.each(fixture.orders)(
           .$.pipe(filter((doc) => !!doc?.payload.includes("edit-3"))),
       );
       expect(local?.payload).toContain("edit-3");
-      expect(posts.at(-1)?.body.rows[0].newDocumentState.payload).toContain(
-        "edit-3",
-      );
+      expect(
+        required(required(posts.at(-1)).body.rows[0]).newDocumentState.payload,
+      ).toContain("edit-3");
       console.log(
         JSON.stringify({
           order,
           posts: posts.length,
           conflicts: posts.filter((post) => post.conflicts.length).length,
           trace: posts.map(({ body, conflicts }) => ({
-            sent: JSON.parse(body.rows[0].newDocumentState.payload).updated,
-            assumed: body.rows[0].assumedMasterState
-              ? JSON.parse(body.rows[0].assumedMasterState.payload).updated
+            sent: JSON.parse(required(body.rows[0]).newDocumentState.payload)
+              .updated,
+            assumed: required(body.rows[0]).assumedMasterState
+              ? JSON.parse(
+                  required(required(body.rows[0]).assumedMasterState).payload,
+                ).updated
               : null,
             conflicts: conflicts.map((row) => JSON.parse(row.payload).updated),
           })),
@@ -467,6 +478,7 @@ it.each([false, true])(
     );
     stop = await client.startDraftReplication(() => {});
     mocks.invalidate?.({ epoch: "witness", reason: "initial", revision: 0 });
+    assert.ok(mocks.replications[0] != null);
     await mocks.replications[0].awaitInitialReplication();
     const { db } = await client.syncDatabase();
     const before = (
@@ -551,6 +563,7 @@ it.each(fixture.legacy.map(({ session }) => session))(
       return conflicts;
     });
     stop = await client.startDraftReplication(() => {});
+    assert.ok(mocks.replications[0] != null);
     await mocks.replications[0].awaitInSync();
     expect(posts).toHaveLength(session === "legacy-conflict" ? 2 : 1);
     const latest = (
@@ -559,15 +572,20 @@ it.each(fixture.legacy.map(({ session }) => session))(
     const payload = JSON.parse(latest.payload);
     expect(payload.metadata).toEqual({ kept: true });
     if (session === "legacy-conflict") {
+      assert.ok(posts[0] != null);
       expect(posts[0].conflicts).toHaveLength(1);
+      assert.ok(posts[1] != null);
       expect(posts[1].conflicts).toEqual([]);
+      assert.ok(posts[1].body.rows[0] != null);
       expect(posts[1].body.rows[0].assumedMasterState?.payload).toBe(
         master.payload,
       );
       expect(payload.alternatives).toContain("pending local");
     } else {
       expect(latest.seq).toBe(master.seq);
-      expect(posts[0].body.rows[0].newDocumentState.payload).toBe(
+      assert.ok(posts[0] != null);
+      assert.ok(posts[0].body.rows[0] != null);
+      expect(posts[0].body.rows[0]?.newDocumentState.payload).toBe(
         master.payload,
       );
     }

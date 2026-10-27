@@ -192,6 +192,7 @@ test("an open transcript streams text without pulls and recovers incomplete inte
         for (const response of streams) response.end();
       } else {
         const payload = delta();
+        assert.ok(payload.items[0]);
         if (recovery === "oversize")
           payload.items[0].text = "x".repeat(maxBytes + 1);
         send(frame("change", recovery === "gap" ? after + 1 : after, payload));

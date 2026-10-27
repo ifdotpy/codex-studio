@@ -1,3 +1,4 @@
+export { required } from "./browser-helpers.ts";
 import type { Route } from "@playwright/test";
 import type { components } from "../../src/generated/api.ts";
 

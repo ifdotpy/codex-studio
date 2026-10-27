@@ -29,7 +29,9 @@ fn snapshot(value: &Value) -> Snapshot {
 fn attempt(outcome: Outcome) -> PreparedAttempt {
     match outcome {
         Outcome::Start(value) | Outcome::Resume(value) => *value,
-        other => panic!("expected preparation, got {other:?}"),
+        other @ Outcome::Ready(_) | other @ Outcome::Hold(_) | other @ Outcome::Refuse(_) => {
+            panic!("expected preparation, got {other:?}")
+        }
     }
 }
 fn receipt(a: &PreparedAttempt) -> ProviderReceipt {
@@ -63,7 +65,9 @@ fn every_hold_releases_and_accepts_without_consuming_input() {
                 })
             }
             HoldReason::Inactive => s.closed = true,
-            _ => s.admission = Some(reason),
+            HoldReason::ContextRepair | HoldReason::NativeRelease | HoldReason::AccountTransfer => {
+                s.admission = Some(reason)
+            }
         }
         let unchanged = s.clone();
         assert_eq!(plan(&s, "attempt", "ticket"), Outcome::Hold(reason));
@@ -108,7 +112,16 @@ fn named_refusals_have_no_intents_and_preserve_snapshot() {
         match refusal {
             Refusal::ImageWorkspace => s.workspace = WorkspaceReadiness::Image,
             Refusal::VmWorkspace => s.workspace = WorkspaceReadiness::Vm,
-            _ => s.unsupported = Some(refusal),
+            Refusal::NativeCatalogMutation
+            | Refusal::PortableHistoryImport
+            | Refusal::FrozenImport
+            | Refusal::BrowserRegistration
+            | Refusal::Daybreak
+            | Refusal::CatalogIdentity
+            | Refusal::MissingGuidance
+            | Refusal::EmptyThreadIdentity
+            | Refusal::PreparationIdentity
+            | Refusal::MalformedCatalog => s.unsupported = Some(refusal),
         }
         let before = s.clone();
         assert_eq!(plan(&s, "attempt", "ticket"), Outcome::Refuse(refusal));

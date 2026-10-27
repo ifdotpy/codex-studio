@@ -1,3 +1,4 @@
+import { providerLabel } from "../../generated/providerKind.ts";
 import { Button, NativeSelect, Text } from "@mantine/core";
 import {
   INHERITED_MODEL,
@@ -41,23 +42,20 @@ export function ModelField({
   if (presentation === "select") {
     return (
       <NativeSelect
-        id={id}
+        {...(id !== undefined ? { id } : {})}
         aria-label={label}
         size="sm"
         value={selectedValue}
         data-value={selectedValue}
-        disabled={disabled}
-        description={selected?.disabledReason}
+        disabled={!!disabled}
+        {...(selected?.disabledReason !== undefined
+          ? { description: selected.disabledReason }
+          : {})}
         onChange={(event) => onChange(event.currentTarget.value)}
         className="model-select"
         data={[...new Set(options.map((option) => option.provider))].map(
           (provider) => ({
-            group:
-              provider === "claude"
-                ? "Claude"
-                : provider === "codex"
-                  ? "Codex"
-                  : provider,
+            group: providerLabel(provider),
             items: options
               .filter((option) => option.provider === provider)
               .map((option) => ({

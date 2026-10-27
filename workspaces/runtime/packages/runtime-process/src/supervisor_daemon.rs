@@ -1,8 +1,8 @@
 //! Standalone supervisor. One lease, bounded connections and owned children.
 use super::supervisor_child::{OwnedChild, SpawnOutcome};
 use super::supervisor_identity::{
-    RETRY, free_space, inspect_start, legacy_python_start, legacy_start_ended, process_gone_error,
-    start_time, stop_verified, valid_start, verify_group,
+    RETRY, free_space, inspect_start, legacy_python_start, legacy_start_ended, start_time,
+    stop_verified, valid_start,
 };
 use crate::{
     NextBatchRequestEnvelope, NextBatchResult, SUPERVISOR_NEXT_BATCH_MAX_EVENTS,
@@ -235,6 +235,7 @@ impl Supervisor {
                             "Native child exit event is not yet durably recorded",
                         ));
                     }
+                    stop_verified(child.pid, child.pid, &child.start)?;
                     child.stopping.store(true, Ordering::Release);
                     self.journal.close(handle, "Native child exited", now()?)?;
                     *lock(&slot.child)? = None;
@@ -335,23 +336,17 @@ impl Supervisor {
                         ));
                     }
                     if let Some(expected) = &row.start_time {
-                        match inspect_start(row.pid, expected)?.0 {
-                            StartMatch::Gone => {}
-                            StartMatch::Exact => {
-                                if let Some(verified) = self.verified_start(&row)? {
-                                    stop_verified(
-                                        row.pid,
-                                        row.pgid
-                                            .ok_or(Error::Refused("Missing child process group"))?,
-                                        &verified,
-                                    )?;
-                                }
-                            }
-                            StartMatch::Different => {
-                                return Err(Error::Refused(
-                                    "Operator close refused: child identity changed",
-                                ));
-                            }
+                        if valid_start(expected) {
+                            stop_verified(
+                                row.pid,
+                                row.pgid
+                                    .ok_or(Error::Refused("Missing child process group"))?,
+                                expected,
+                            )?;
+                        } else if inspect_start(row.pid, expected)?.0 != StartMatch::Gone {
+                            return Err(Error::Refused(
+                                "Operator close refused: child identity changed",
+                            ));
                         }
                     }
                     // Exact operator acknowledgement clears unknown ownership without
@@ -402,7 +397,7 @@ impl Supervisor {
                     &expected_start_time,
                 )?;
                 child.stopping.store(true, Ordering::Release);
-                child.reap()?;
+                child.reap_leader()?;
                 self.journal.close(&handle, OPERATOR_CLOSED, now()?)?;
                 drop(_write);
                 if let Some(slot) = slot.as_ref() {
@@ -411,7 +406,14 @@ impl Supervisor {
                 }
                 Ok(json!({"closed":true,"handle":handle,"pid":expected_pid}))
             }
-            other => self.child_action(other),
+            other @ Command::Write { .. }
+            | other @ Command::Next { .. }
+            | other @ Command::Replay { .. }
+            | other @ Command::Ack { .. }
+            | other @ Command::OperationStatus { .. }
+            | other @ Command::Status { .. }
+            | other @ Command::Detach { .. }
+            | other @ Command::RetireCommand { .. } => self.child_action(other),
         }
     }
     fn next_batch_ready(
@@ -567,93 +569,42 @@ impl Supervisor {
             Command::RetireCommand { generation, .. } => {
                 let _write = lock(&child.write_lock)?;
                 let exit_event_durable = child.committed_exit_sequence()?.is_some();
+                if exit_event_durable {
+                    stop_verified(child.pid, child.pid, &child.start)?;
+                }
                 self.journal
                     .retire(&handle, generation, exit_event_durable, exit_event_durable)?;
                 *lock(&slot.child)? = None;
                 self.active_children.fetch_sub(1, Ordering::AcqRel);
                 Ok(json!({"retired":true}))
             }
-            _ => Err(Error::Refused("Unknown supervisor action")),
+            Command::Health
+            | Command::FinishFallback
+            | Command::Open { .. }
+            | Command::AdminCloseHandle { .. } => Err(Error::Refused("Unknown supervisor action")),
         }
-    }
-    fn verified_start(&self, row: &StoredHandle) -> Result<Option<String>> {
-        let expected = row
-            .start_time
-            .as_deref()
-            .ok_or(Error::Refused("Missing child start identity"))?;
-        let pgid = row
-            .pgid
-            .ok_or(Error::Refused("Missing child process group"))?;
-        let (kind, actual) = inspect_start(row.pid, expected)?;
-        let Some(actual) = actual else {
-            return Ok(None);
-        };
-        match kind {
-            StartMatch::Exact => {}
-            StartMatch::Gone => return Ok(None),
-            _ => return Err(Error::Refused("Child identity changed before signal")),
-        }
-        match verify_group(row.pid, pgid) {
-            Ok(_) => {}
-            Err(Error::Io(error))
-                if process_gone_error(&error) && start_time(row.pid, false)?.is_none() =>
-            {
-                return Ok(None);
-            }
-            Err(error) => return Err(error),
-        }
-        match start_time(row.pid, false)? {
-            None => return Ok(None),
-            Some(current) if current == actual => {}
-            Some(_) => return Err(Error::Refused("Child identity changed before signal")),
-        }
-        Ok(Some(actual))
     }
     fn recover(&self) -> Result<()> {
         let mut recovery = json!({"degraded":false,"fallbackReady":false,"blocked":null});
         for row in self.journal.handles(true)? {
-            let (outcome, detail) = if let (Some(expected), Some(pgid)) =
+            let (outcome, detail): (&str, String) = if let (Some(expected), Some(pgid)) =
                 (&row.start_time, row.pgid)
             {
-                match inspect_start(row.pid, expected)?.0 {
-                    StartMatch::Gone => (
-                        "already-exited",
-                        "Native child was no longer running when the supervisor recovered",
+                let live_leader = inspect_start(row.pid, expected)?.0 == StartMatch::Exact;
+                if live_leader {
+                    recovery["degraded"] = json!(true);
+                    recovery["notice"] =
+                        json!("The process supervisor restarted; native work is using recovery.");
+                }
+                match stop_verified(row.pid, pgid, expected) {
+                    Ok(outcome) => (
+                        outcome.journal_outcome(),
+                        "verified process group terminated".into(),
                     ),
-                    StartMatch::Different => (
-                        "identity-mismatch",
-                        "PID belongs to a different process start time",
-                    ),
-                    StartMatch::Exact => {
-                        recovery["degraded"] = json!(true);
-                        recovery["notice"] = json!(
-                            "The process supervisor restarted; native work is using recovery."
-                        );
-                        match self.verified_start(&row) {
-                            Ok(None) => (
-                                "already-exited",
-                                "Native child exited while its identity was being verified",
-                            ),
-                            Ok(Some(verified)) => match stop_verified(row.pid, pgid, &verified) {
-                                Ok(outcome) => (outcome, "verified process group terminated"),
-                                Err(_) => {
-                                    recovery["blocked"] =
-                                        json!("Could not terminate verified child process group");
-                                    (
-                                        "termination-failed",
-                                        "Could not terminate verified child process group",
-                                    )
-                                }
-                            },
-                            Err(_) => {
-                                recovery["blocked"] =
-                                    json!("Could not terminate verified child process group");
-                                (
-                                    "termination-failed",
-                                    "Could not terminate verified child process group",
-                                )
-                            }
-                        }
+                    Err(error) => {
+                        let blocked = "Could not terminate verified child process group";
+                        recovery["blocked"] = json!(blocked);
+                        ("termination-failed", format!("{blocked}: {error}"))
                     }
                 }
             } else {
@@ -661,11 +612,11 @@ impl Supervisor {
                     json!("A native child is missing its recorded PID and start time");
                 (
                     "missing-identity",
-                    "Native child PID and start time were not recorded",
+                    "Native child PID and start time were not recorded".into(),
                 )
             };
             self.journal
-                .recovered(&self.saved(&row.id)?, outcome, detail, now()?)?;
+                .recovered(&self.saved(&row.id)?, outcome, &detail, now()?)?;
         }
         recovery["fallbackReady"] =
             json!(recovery["degraded"] == true && recovery["blocked"].is_null());

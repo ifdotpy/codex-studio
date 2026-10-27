@@ -140,6 +140,7 @@ export async function fixture(
     isLead: true,
     rootId: "overlap",
     source: "managed",
+    provider: "codex",
     cwd: "/same/project",
     status: "waiting",
     autoWake: true,
@@ -233,7 +234,7 @@ export async function fixture(
       const h = request.headers as Record<string, string>;
       const ownKey = url.pathname.endsWith("/pair")
         ? body.publicKey
-        : clients.get(h["x-studio-client"]);
+        : clients.get(h["x-studio-client"] ?? "");
 
       const canonical = [
         "studio-multi-server-v1",
@@ -465,7 +466,11 @@ export async function fixture(
           (row) => row.clientId === body.clientId,
         );
         if (peer) peer.status = "revoked";
-        else accessClients[0].status = "revoked";
+        else {
+          const first = accessClients[0];
+          assert.ok(first);
+          first.status = "revoked";
+        }
       }
       if (body.action === "unrevoke") {
         const peer = discoveredPeers.find(

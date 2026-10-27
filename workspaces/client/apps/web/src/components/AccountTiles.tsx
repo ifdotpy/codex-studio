@@ -15,13 +15,13 @@ import { remainingLimitColor } from "./accountLimitColor";
 import {
   isProviderKind,
   providerLabel,
-  type ProviderKind,
+  ProviderKind,
 } from "../generated/providerKind.ts";
 export function setupAccountName(account?: Account) {
   return account ? accountDisplayName(account) : "";
 }
 const PROVIDER_MARKS: Record<ProviderKind, ReactNode> = {
-  claude: (
+  [ProviderKind.Claude]: (
     <svg
       width="17"
       height="17"
@@ -37,7 +37,7 @@ const PROVIDER_MARKS: Record<ProviderKind, ReactNode> = {
       ))}
     </svg>
   ),
-  codex: (
+  [ProviderKind.Codex]: (
     <svg
       width="17"
       height="17"
@@ -279,7 +279,7 @@ export function AccountTiles(p: AccountTilesProps) {
   const automaticName = useId();
   const selected = p.multiple ? p.value[0] : p.value;
   const selectedProvider =
-    p.accounts.find((account) => account.id === selected)?.provider || "codex";
+    p.accounts.find((account) => account.id === selected)?.provider || "";
   const [localProvider, setLocalProvider] = useState<string>(selectedProvider);
   const provider = p.provider || localProvider;
   useEffect(() => {
@@ -317,7 +317,7 @@ export function AccountTiles(p: AccountTilesProps) {
           fullWidth
           aria-label={`${p.label} provider`}
           value={provider}
-          disabled={p.disabled}
+          disabled={!!p.disabled}
           onChange={(value) => {
             setLocalProvider(value);
             p.onProvider?.(value);

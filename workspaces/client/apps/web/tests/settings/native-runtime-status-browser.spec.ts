@@ -44,6 +44,7 @@ test("Native runtime status", async ({ context }) => {
               import.meta.dirname,
               "native-runtime-resource-events.fixture.ts",
             );
+          return undefined;
         },
       },
     ],
@@ -114,7 +115,7 @@ test("Native runtime status", async ({ context }) => {
       installedVersion: "0.153.3",
       configuredVersion: null,
       baseline: "0.153.4",
-      message: providerWarning.message,
+      message: providerWarning.message ?? null,
     };
     let body: PartialFixture<
       Pick<

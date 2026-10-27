@@ -1582,7 +1582,7 @@ async fn oversized_batches() {
             match table {
                 Table::Outbox => tx.execute("INSERT INTO runtime_federation_outbox(id,peer_id,record) VALUES('large',?1,?2)",params![peer_id,raw])?,
                 Table::Inbox => tx.execute("INSERT INTO runtime_federation_inbox(peer_id,message_id,record) VALUES(?1,'large',?2)",params![peer_id,raw])?,
-                _ => unreachable!(),
+                Table::Settings | Table::Peer | Table::Room => unreachable!(),
             };
             let error=Repo::batch(tx,table,&peer_id,0.0).expect_err("oversized row refused by SQL projection");
             assert!(matches!(error,studio_runtime_store::StoreError::InvalidStoredObject {..}));

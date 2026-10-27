@@ -461,7 +461,20 @@ fn send_to_user(
             crate::notification_dispatch::NotificationDispatchError::Dependency(name) => {
                 CallbackError::Dependency(name)
             }
-            _ => CallbackError::Invalid("A complaint needs an existing lead"),
+            crate::notification_dispatch::NotificationDispatchError::InvalidNotification {
+                ..
+            }
+            | crate::notification_dispatch::NotificationDispatchError::InvalidAccountState {
+                ..
+            }
+            | crate::notification_dispatch::NotificationDispatchError::StreamCapacity
+            | crate::notification_dispatch::NotificationDispatchError::ConflictingDelivery
+            | crate::notification_dispatch::NotificationDispatchError::UnauthorizedSubmission
+            | crate::notification_dispatch::NotificationDispatchError::Budget(_)
+            | crate::notification_dispatch::NotificationDispatchError::Move(_)
+            | crate::notification_dispatch::NotificationDispatchError::Json(_) => {
+                CallbackError::Invalid("A complaint needs an existing lead")
+            }
         })?;
     let result = json!({"id":message["id"],"room":format!("user:{who}"),"recipient":"user"});
     event_write::save_receipt(tx, Some(key), &signature, &result)?;
@@ -475,7 +488,9 @@ fn radio_guard_error(error: crate::projects::ProjectsError) -> CallbackError {
         E::Store(error) => CallbackError::Store(error),
         E::Sqlite(error) => CallbackError::Store(error.into()),
         E::InvalidStored { table, id } => CallbackError::Stored(format!("{table}/{id}")),
-        _ => CallbackError::Stored("runtime_rooms radio".into()),
+        E::Conflict(_) | E::BadRequest(_) | E::Requires(_) | E::PreparationWorker => {
+            CallbackError::Stored("runtime_rooms radio".into())
+        }
     }
 }
 

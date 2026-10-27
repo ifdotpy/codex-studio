@@ -65,6 +65,7 @@ export function query({ prompt, options }: FixtureQuery) {
       yield {
         type: "result",
         subtype: "success",
+        is_error: false,
         result: "done",
         usage: { input_tokens: 1, output_tokens: 1 },
         modelUsage: {

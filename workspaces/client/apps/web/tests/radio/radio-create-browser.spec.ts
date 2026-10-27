@@ -1,3 +1,4 @@
+import { required } from "../../src/components/componentTestFixtures.ts";
 import { radioSnapshot } from "./radio-fixture.ts";
 import type { components } from "../../src/generated/api.ts";
 import { createFixtureViteServer as createServer } from "../playwright.ts";
@@ -312,8 +313,8 @@ test("radio create browser", async ({ page: runnerPage }) => {
     await page.getByRole("button", { name: "Retry creation" }).click();
     await page.waitForFunction(() => window.radioOpened === "radio:direct");
     assert.equal(requests.length, 2);
-    assert.deepEqual(requests[0], requests[1]);
-    const { request_id, ...body } = requests[0]!;
+    assert.deepEqual(required(requests[0]), requests[1]);
+    const { request_id, ...body } = required(requests[0]);
     assert.match(request_id, /^[0-9a-f-]{36}$/);
     assert.deepEqual(body, {
       action: "radio",
@@ -375,8 +376,8 @@ test("radio create browser", async ({ page: runnerPage }) => {
     await page.keyboard.press("Escape");
     await create.click();
     await form.waitFor({ state: "detached" });
-    assert.equal(requests.at(-1)!.path, "/p");
-    assert.deepEqual(requests.at(-1)!.participants, [
+    assert.equal(required(requests.at(-1)).path, "/p");
+    assert.deepEqual(required(requests.at(-1)).participants, [
       { account_key: "extra0", model: "gpt-6-luna" },
       { account_key: "claude", model: "opus", effort: "high" },
     ]);

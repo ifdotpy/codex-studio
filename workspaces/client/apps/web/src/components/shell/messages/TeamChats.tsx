@@ -277,20 +277,20 @@ export default function TeamChats({
       const offsets: number[] = Array.from({ length: items.length + 1 });
       offsets[0] = 0;
       for (let index = 0; index < items.length; index++)
-        offsets[index + 1] = offsets[index] + estimate(items[index]);
+        offsets[index + 1] = offsets[index]! + estimate(items[index]!);
       const top = root.scrollTop;
       const bottom = top + root.clientHeight;
       let start = 0;
-      while (start < items.length && offsets[start + 1] < top) start++;
+      while (start < items.length && offsets[start + 1]! < top) start++;
       let end = start;
-      while (end < items.length && offsets[end] < bottom) end++;
+      while (end < items.length && offsets[end]! < bottom) end++;
       start = Math.max(0, start - 8);
       end = Math.min(items.length, Math.max(start + 1, end + 8));
       const next = {
         start,
         end,
-        top: offsets[start],
-        bottom: offsets.at(-1)! - offsets[end],
+        top: offsets[start]!,
+        bottom: offsets.at(-1)! - offsets[end]!,
       };
       setVirtualRange((old) =>
         old.start === next.start &&

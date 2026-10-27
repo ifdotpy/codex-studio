@@ -100,7 +100,8 @@ function nativeFilesystem(
         },
         async read(buffer, offset, length, position) {
           raw.copy(buffer, offset, position, position + length);
-          if (changed && ++reads > 1) buffer[0] ^= 1;
+          if (changed && ++reads > 1)
+            buffer.writeUInt8(buffer.readUInt8(0) ^ 1, 0);
           return { bytesRead: length };
         },
         async close() {},
@@ -115,7 +116,7 @@ async function loadStale(
 ) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "claude-restart-"));
   try {
-    const original: Session = {
+    const original: Session & { turns: [Turn] } = {
       id: sessionId,
       cwd,
       turns: [
@@ -154,7 +155,9 @@ async function loadStale(
       },
     });
     const restored = await store.get(sessionId);
-    await check(restored.turns[0]);
+    const [restoredTurn] = restored.turns;
+    assert.ok(restoredTurn);
+    await check(restoredTurn);
     await store.persist(restored);
     const again = await createSessionStore(root).get(sessionId);
     assert.deepEqual(
@@ -434,9 +437,9 @@ test("thread/read and resume deliver the recovered final reply without a model q
         threadId: sessionId,
         includeTurns: true,
       });
-      assert.equal(result.thread.turns[0].status, "completed");
+      assert.equal(result.thread.turns[0]?.status, "completed");
       assert.equal(
-        result.thread.turns[0].items.at(-1)!.text,
+        result.thread.turns[0]?.items.at(-1)?.text,
         "The task is complete.",
       );
     }
@@ -459,8 +462,8 @@ test("restart replaces a partial mirror reply with all native text blocks", asyn
     assert.equal(turn.status, "completed");
     const answers = turn.items.filter((item) => item.type === "agentMessage");
     assert.equal(answers.length, 1);
-    assert.equal(answers[0].text, "The task is complete.\nThe checks pass.");
-    assert.equal(answers[0].phase, "final_answer");
+    assert.equal(answers[0]?.text, "The task is complete.\nThe checks pass.");
+    assert.equal(answers[0]?.phase, "final_answer");
   });
 });
 
@@ -492,11 +495,12 @@ test("bridge reads retain the unconfirmed outcome and reason without a model que
       threadId: sessionId,
       includeTurns: true,
     });
-    assert.equal(result.thread.turns[0].status, "uncertain");
-    assert.match(result.thread.turns[0].error!.message, /could not confirm/);
+    assert.equal(result.thread.turns[0]?.status, "uncertain");
+    assert.ok(result.thread.turns[0]?.error);
+    assert.match(result.thread.turns[0].error.message, /could not confirm/);
     const state = await bridge.call("claude/state", { threadId: sessionId });
-    assert.equal(state.turns[0].status, "uncertain");
-    assert.deepEqual(state.turns[0].error, result.thread.turns[0].error);
+    assert.equal(state.turns[0]?.status, "uncertain");
+    assert.deepEqual(state.turns[0]?.error, result.thread.turns[0]?.error);
     assert.equal(
       bridge.notes.some((entry) => entry.method === "turn/started"),
       false,

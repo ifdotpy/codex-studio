@@ -1,3 +1,4 @@
+import { required } from "../componentTestFixtures.ts";
 import type { Agent } from "../../types";
 import type { ChatIndicator } from "../chat-status/chatStatusModel";
 import assert from "node:assert/strict";
@@ -57,7 +58,7 @@ it("orders actionable indicators before work and keeps completed results collaps
     ["unread", "read"],
   );
   assert.equal(
-    groups[0].workers[0].id,
+    required(required(groups[0]).workers[0]).id,
     "answer",
     "an in-flight question stays actionable",
   );

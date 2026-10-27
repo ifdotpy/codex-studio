@@ -188,7 +188,8 @@ fn recovery_signals_only_exact_native_identity() {
                 probe.0.try_wait().unwrap().is_none(),
                 "{case:?}: must not signal probe"
             );
-            assert!(health.recovery.blocked.is_none());
+            assert!(health.recovery.blocked.is_some());
+            assert!(health.handles.iter().any(|row| row.id == "fixture"));
         }
         let db = rusqlite::Connection::open_with_flags(
             state.0.join("supervisor.sqlite3"),
@@ -209,7 +210,7 @@ fn recovery_signals_only_exact_native_identity() {
             assert!(matches!(outcome.as_str(), "terminated" | "killed"));
         } else {
             assert_eq!(&start, saved);
-            assert_eq!(outcome, "identity-mismatch");
+            assert_eq!(outcome, "termination-failed");
         }
     }
 }
