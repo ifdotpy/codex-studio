@@ -1,3 +1,4 @@
+import { StartWaitReason } from "./generated/api";
 import type { Agent } from "./types";
 
 /** Render the server's epoch-scoped wait, shared with orchestration_status. */
@@ -10,27 +11,29 @@ export function startWaitLabel(agent: Agent): string | null {
   )
     return null;
   switch (wait.reason) {
-    case "slot":
+    case StartWaitReason.slot:
       return `Waiting for an account slot (${wait.runningTurns}/${wait.maxRunningTurns})`;
-    case "pause":
+    case StartWaitReason.pause:
       return "Waiting for the account pause";
-    case "start_queue":
+    case StartWaitReason.start_queue:
       return "Waiting behind an earlier account start";
-    case "disk":
+    case StartWaitReason.disk:
       return "Waiting for free disk space";
-    case "model_catalog":
+    case StartWaitReason.model_catalog:
       return "Waiting for the model catalog";
-    case "provider_session":
+    case StartWaitReason.provider_session:
       return "Waiting for the provider session";
-    case "dependency":
+    case StartWaitReason.dependency:
       return "Waiting for a preparation dependency";
-    case "dispatch_pending":
+    case StartWaitReason.dispatch_pending:
       return "Waiting for dispatch handoff";
-    case "paused":
+    case StartWaitReason.paused:
       return "Automatic continuation is paused";
-    case "native_failure":
+    case StartWaitReason.native_failure:
       return "Waiting for native failure recovery";
-    case "account_transfer":
+    case StartWaitReason.account_transfer:
       return "Waiting for account transfer";
   }
+  const unreachable: never = wait;
+  return unreachable;
 }

@@ -66,7 +66,7 @@ pub trait VmProviderLaunchResolver: Send + Sync {
         Box::pin(async {
             Err(WorkerError::PreparationPending(
                 crate::account_worker::PreparationBlock::new(
-                    studio_runtime_schema::agent_progress::StartWaitReason::ProviderSession,
+                    crate::account_worker::PreparationWaitReason::ProviderSession,
                     "provider-session/vm-token-refresh",
                 ),
             ))

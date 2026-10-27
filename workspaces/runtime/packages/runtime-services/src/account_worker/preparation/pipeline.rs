@@ -640,7 +640,7 @@ pub(crate) const WORKSPACE_PENDING_REASON: &str = "workspace-readiness/pending";
 pub(crate) const CATALOG_PENDING_REASON: &str = "model-catalog/refresh-pending";
 fn catalog_pending() -> WorkerError {
     WorkerError::PreparationPending(super::super::PreparationBlock::new(
-        studio_runtime_schema::agent_progress::StartWaitReason::ModelCatalog,
+        crate::account_worker::PreparationWaitReason::ModelCatalog,
         CATALOG_PENDING_REASON,
     ))
 }

@@ -1453,23 +1453,22 @@ mod tests {
             })
             .await
             .expect("enable queued owner");
-        use studio_runtime_schema::agent_progress::{AgentStartWait, StartWaitReason};
-        for reason in [
-            StartWaitReason::Pause,
-            StartWaitReason::Slot,
-            StartWaitReason::Disk,
-            StartWaitReason::ModelCatalog,
-            StartWaitReason::ProviderSession,
-            StartWaitReason::Dependency,
+        use studio_runtime_schema::agent_progress::AgentStartWait;
+        for wait in [
+            AgentStartWait::Pause {
+                epoch: 4,
+                until: 5.0,
+            },
+            AgentStartWait::Slot {
+                epoch: 4,
+                running_turns: 2,
+                max_running_turns: 3,
+            },
+            AgentStartWait::Disk { epoch: 4 },
+            AgentStartWait::ModelCatalog { epoch: 4 },
+            AgentStartWait::ProviderSession { epoch: 4 },
+            AgentStartWait::Dependency { epoch: 4 },
         ] {
-            let mut wait = AgentStartWait::new(reason, 4);
-            if reason == StartWaitReason::Pause {
-                wait.until = Some(4000.0);
-            }
-            if reason == StartWaitReason::Slot {
-                wait.running_turns = Some(8);
-                wait.max_running_turns = Some(8);
-            }
             crate::account_start_gate::show_blocked(&store, vec![("queued".into(), wait.clone())])
                 .await
                 .expect("owner publishes wait");
@@ -1492,10 +1491,7 @@ mod tests {
         // A stale owner cannot replace the current epoch's blocker.
         crate::account_start_gate::show_blocked(
             &store,
-            vec![(
-                "queued".into(),
-                AgentStartWait::new(StartWaitReason::Disk, 3),
-            )],
+            vec![("queued".into(), AgentStartWait::Disk { epoch: 3 })],
         )
         .await
         .expect("stale wait ignored");

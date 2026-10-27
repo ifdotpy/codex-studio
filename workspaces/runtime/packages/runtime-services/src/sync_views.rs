@@ -359,7 +359,7 @@ pub(crate) fn invalid_agent_view(id: &str, record: &Value, diagnostic: &str) -> 
 pub(crate) fn agent_start_wait(
     record: &Value,
 ) -> Result<Option<studio_runtime_schema::agent_progress::AgentStartWait>, serde_json::Error> {
-    use studio_runtime_schema::agent_progress::{AgentStartWait, StartWaitReason};
+    use studio_runtime_schema::agent_progress::AgentStartWait;
     // Older private native holds can carry a diagnostic object. Decode the
     // envelope without exposing or inspecting its diagnostic fields.
     #[derive(serde::Deserialize)]
@@ -376,6 +376,15 @@ pub(crate) fn agent_start_wait(
             }
         }
     }
+    fn stored_wait<'de, D: serde::Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<Option<AgentStartWait>, D::Error> {
+        use serde::Deserialize;
+        Option::<Value>::deserialize(deserializer)?
+            .map(studio_runtime_schema::agent_progress::decode_stored_wait)
+            .transpose()
+            .map_err(serde::de::Error::custom)
+    }
     // Agent records are open documents; this typed projection reads only wait ownership.
     #[derive(serde::Deserialize)]
     #[serde(rename_all = "camelCase")]
@@ -388,6 +397,7 @@ pub(crate) fn agent_start_wait(
         #[serde(default)]
         native_failure_hold: Option<NativeHold>,
         account_transfer_id: Option<String>,
+        #[serde(default, deserialize_with = "stored_wait")]
         start_wait: Option<AgentStartWait>,
     }
     let source: Source = serde_json::from_value(record.clone())?;
@@ -399,23 +409,32 @@ pub(crate) fn agent_start_wait(
     ) {
         return Ok(None);
     }
-    let persisted = source.start_wait.filter(|wait| wait.epoch == source.epoch);
+    let persisted = source
+        .start_wait
+        .filter(|wait| wait.epoch() == source.epoch);
     if source.status == Some(studio_runtime_store::AgentStatus::Starting) {
         return Ok(persisted);
     }
     let hold = if !source.auto_wake {
-        Some(StartWaitReason::Paused)
+        Some(AgentStartWait::Paused {
+            epoch: source.epoch,
+        })
     } else if source.native_failure_hold.is_some_and(NativeHold::active) {
-        Some(StartWaitReason::NativeFailure)
+        Some(AgentStartWait::NativeFailure {
+            epoch: source.epoch,
+        })
     } else if source.account_transfer_id.is_some() {
-        Some(StartWaitReason::AccountTransfer)
+        Some(AgentStartWait::AccountTransfer {
+            epoch: source.epoch,
+        })
     } else {
         None
     };
     Ok(Some(match hold {
-        Some(reason) => AgentStartWait::new(reason, source.epoch),
-        None => persisted
-            .unwrap_or_else(|| AgentStartWait::new(StartWaitReason::DispatchPending, source.epoch)),
+        Some(wait) => wait,
+        None => persisted.unwrap_or_else(|| AgentStartWait::DispatchPending {
+            epoch: source.epoch,
+        }),
     }))
 }
 

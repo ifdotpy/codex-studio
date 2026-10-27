@@ -528,17 +528,16 @@ async fn hold_agent_turn_with_gate(
                 _ => false,
             };
             use studio_runtime_schema::agent_progress::{
-                AgentStartWait, START_WAIT_FIELD, StartWaitReason,
+                AgentStartWait, START_WAIT_FIELD,
             };
             let previous_wait = agent
                 .extra
                 .get(START_WAIT_FIELD)
                 .cloned()
-                .map(serde_json::from_value::<AgentStartWait>)
+                .map(studio_runtime_schema::agent_progress::decode_stored_wait)
                 .transpose()?;
             let wait_changed = if held {
-                let value =
-                    serde_json::to_value(AgentStartWait::new(StartWaitReason::Disk, epoch))?;
+                let value = serde_json::to_value(AgentStartWait::Disk { epoch })?;
                 if agent.extra.get(START_WAIT_FIELD) != Some(&value) {
                     agent.extra.insert(START_WAIT_FIELD.into(), value);
                     true
@@ -546,7 +545,7 @@ async fn hold_agent_turn_with_gate(
                     false
                 }
             } else if previous_wait
-                .is_some_and(|wait| wait.epoch == epoch && wait.reason == StartWaitReason::Disk)
+                .is_some_and(|wait| matches!(wait, AgentStartWait::Disk { epoch: wait_epoch } if wait_epoch == epoch))
             {
                 agent.extra.remove(START_WAIT_FIELD);
                 true
