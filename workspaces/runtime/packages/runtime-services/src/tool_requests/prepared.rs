@@ -44,7 +44,7 @@ impl Rows {
                 continue;
             }
             let id = text(request, "id");
-            results.insert(id.to_owned(), records::get(tx, "runtime_tool_results", id)?);
+            results.insert(id.to_owned(), saved_result(tx, id)?);
         }
         let studio_input = if let Selection::StudioInput(hash) = &selection {
             tx.query_row(
